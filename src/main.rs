@@ -3,9 +3,11 @@ use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::binary_ast::BinaryAstCompiler;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::parser::Parser;
+use aipl_core::resolver::Resolver;
 use aipl_core::vm::VM;
 use clap::{Parser as ClapParser, Subcommand};
 use std::fs;
+use std::path::Path;
 
 #[derive(ClapParser)]
 #[command(name = "aipl")]
@@ -51,8 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Eval { file, func } => {
-            let src = fs::read_to_string(&file)?;
-            let module = Parser::parse(&src)?;
+            let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
@@ -63,8 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[AIPL Result]: {:?}", res);
         }
         Commands::Compile { file, output } => {
-            let src = fs::read_to_string(&file)?;
-            let module = Parser::parse(&src)?;
+            let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
@@ -73,8 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
         }
         Commands::Verify { file } => {
-            let src = fs::read_to_string(&file)?;
-            let module = Parser::parse(&src)?;
+            let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
             println!("[AIPL Verifier] SUCCESS: Module '{}' is 100% type-safe and contracts verified!", module.name);

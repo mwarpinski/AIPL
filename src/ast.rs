@@ -36,10 +36,12 @@ pub enum OpCode {
     Shr,
     BitAnd,
     BitOr,
+    MemLoad8,
     MemLoad32,
     MemLoad64,
     MemLoadF32,
     MemLoadF64,
+    MemStore8,
     MemStore32,
     MemStore64,
     MemStoreF32,
@@ -139,7 +141,14 @@ pub struct FnDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    pub name: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Module {
     pub name: String,
+    pub imports: Vec<Import>,
     pub functions: Vec<FnDef>,
 }

@@ -16,6 +16,7 @@ impl WasmCompiler {
         let mut codes = CodeSection::new();
 
         let mut fn_indices: HashMap<String, u32> = HashMap::new();
+        let mut fn_returns: HashMap<String, Type> = HashMap::new();
 
         // 1. Build type section and function index mapping
         for (idx, f) in module.functions.iter().enumerate() {
@@ -30,6 +31,7 @@ impl WasmCompiler {
             functions.function(idx as u32);
             exports.export(&f.name, ExportKind::Func, idx as u32);
             fn_indices.insert(f.name.clone(), idx as u32);
+            fn_returns.insert(f.name.clone(), f.return_type.clone());
         }
 
         // 2. Build code section (body compilation)
@@ -55,9 +57,21 @@ impl WasmCompiler {
             }
 
             let mut func = Function::new(wasm_locals);
+            let ctx = Ctx { locals: &local_map, fn_indices: &fn_indices, fn_returns: &fn_returns };
 
-            for expr in &f.body {
-                self::compile_expr(expr, &local_map, &fn_indices, &mut func)?;
+            // Every statement but the last is executed purely for effect: drop
+            // any value it leaves behind so it doesn't corrupt the wasm stack.
+            // The last statement's value (if any) is the function's implicit
+            // return, so it's kept - unless the function is declared void, in
+            // which case it must be dropped too.
+            let body_len = f.body.len();
+            for (i, expr) in f.body.iter().enumerate() {
+                compile_expr(expr, &ctx, &mut func)?;
+                let is_last = i + 1 == body_len;
+                let keep_value = is_last && f.return_type != Type::Void;
+                if !keep_value && !is_void_expr(expr, &ctx) {
+                    func.instruction(&Instruction::Drop);
+                }
             }
             func.instruction(&Instruction::End);
             codes.function(&func);
@@ -83,6 +97,14 @@ impl WasmCompiler {
     }
 }
 
+/// Bundles the read-only context threaded through codegen so it isn't passed
+/// as four separate parameters everywhere.
+struct Ctx<'a> {
+    locals: &'a HashMap<String, u32>,
+    fn_indices: &'a HashMap<String, u32>,
+    fn_returns: &'a HashMap<String, Type>,
+}
+
 fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
     for expr in exprs {
         match expr {
@@ -96,8 +118,26 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
             Expr::If { cond, then_branch, else_branch } => {
                 collect_lets(&[*(cond.clone()), *(then_branch.clone()), *(else_branch.clone())], lets);
             }
-            Expr::Loop { body, .. } | Expr::While { body, .. } | Expr::Block(body) => {
+            // The loop induction variable is never declared via `let` but still
+            // needs a wasm local slot - without this, codegen silently drops
+            // the whole loop body (see Expr::Loop in compile_expr).
+            Expr::Loop { var, body, .. } => {
+                lets.push((var.clone(), Type::I32));
                 collect_lets(body, lets);
+            }
+            Expr::While { body, .. } | Expr::Block(body) => {
+                collect_lets(body, lets);
+            }
+            Expr::Call { args, .. } => {
+                collect_lets(args, lets);
+            }
+            Expr::MatchResult { expr, ok_body, err_body, .. } => {
+                collect_lets(&[*(expr.clone())], lets);
+                collect_lets(ok_body, lets);
+                collect_lets(err_body, lets);
+            }
+            Expr::Ok(inner) | Expr::Err(inner) => {
+                collect_lets(&[*(inner.clone())], lets);
             }
             _ => {}
         }
@@ -114,12 +154,19 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
     }
 }
 
-fn compile_expr(
-    expr: &Expr,
-    locals: &HashMap<String, u32>,
-    fn_indices: &HashMap<String, u32>,
-    func: &mut Function,
-) -> Result<(), String> {
+/// Compiles a statement that appears in a purely-effectful position (a
+/// non-final entry in a block/function body, or any statement in a while/loop
+/// body): the statement runs, and any value it leaves behind is dropped so it
+/// never corrupts the surrounding block's stack balance.
+fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    compile_expr(expr, ctx, func)?;
+    if !is_void_expr(expr, ctx) {
+        func.instruction(&Instruction::Drop);
+    }
+    Ok(())
+}
+
+fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
     match expr {
         Expr::Lit(lit) => match lit {
             Literal::Int(i) => {
@@ -136,42 +183,42 @@ fn compile_expr(
             }
         },
         Expr::Var(name) => {
-            if let Some(&idx) = locals.get(name) {
+            if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalGet(idx));
             } else {
                 return Err(format!("Wasm Codegen: Unbound local variable '{}'", name));
             }
         }
         Expr::Let { name, ty: _, val } => {
-            compile_expr(val, locals, fn_indices, func)?;
-            if let Some(&idx) = locals.get(name) {
+            compile_expr(val, ctx, func)?;
+            if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalSet(idx));
             }
         }
         Expr::Set { name, val } => {
-            compile_expr(val, locals, fn_indices, func)?;
-            if let Some(&idx) = locals.get(name) {
+            compile_expr(val, ctx, func)?;
+            if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalSet(idx));
             }
         }
         Expr::If { cond, then_branch, else_branch } => {
-            compile_expr(cond, locals, fn_indices, func)?;
-            let block_ty = if is_void_expr(then_branch) {
+            compile_expr(cond, ctx, func)?;
+            let block_ty = if is_void_expr(then_branch, ctx) {
                 wasm_encoder::BlockType::Empty
             } else {
                 wasm_encoder::BlockType::Result(wasm_encoder::ValType::I32)
             };
             func.instruction(&Instruction::If(block_ty));
-            compile_expr(then_branch, locals, fn_indices, func)?;
+            compile_expr(then_branch, ctx, func)?;
             func.instruction(&Instruction::Else);
-            compile_expr(else_branch, locals, fn_indices, func)?;
+            compile_expr(else_branch, ctx, func)?;
             func.instruction(&Instruction::End);
         }
         Expr::Call { func: f_name, args } => {
             for arg in args {
-                compile_expr(arg, locals, fn_indices, func)?;
+                compile_expr(arg, ctx, func)?;
             }
-            if let Some(&idx) = fn_indices.get(f_name) {
+            if let Some(&idx) = ctx.fn_indices.get(f_name) {
                 func.instruction(&Instruction::Call(idx));
             } else {
                 return Err(format!("Wasm Codegen: Call to unknown function '{}'", f_name));
@@ -179,110 +226,119 @@ fn compile_expr(
         }
         Expr::Op { op, args } => match op {
             OpCode::Add => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Add);
             }
             OpCode::Sub => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Sub);
             }
             OpCode::Mul => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Mul);
             }
             OpCode::Div => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32DivS);
             }
             OpCode::BitXor => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Xor);
             }
             OpCode::Shl => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Shl);
             }
             OpCode::Shr => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32ShrS);
             }
             OpCode::BitAnd => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32And);
             }
             OpCode::BitOr => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Or);
             }
+            OpCode::MemLoad8 => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+            }
+            OpCode::MemStore8 => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+            }
             OpCode::MemLoad32 => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
             }
             OpCode::MemStore32 => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
             }
             OpCode::MemLoad64 => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
             OpCode::MemStore64 => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
             OpCode::Eq => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Eq);
             }
             OpCode::Neq => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Ne);
             }
             OpCode::Lt => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32LtS);
             }
             OpCode::Lte => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32LeS);
             }
             OpCode::Gt => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32GtS);
             }
             OpCode::Gte => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32GeS);
             }
             OpCode::And => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32And);
             }
             OpCode::Or => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
-                compile_expr(&args[1], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Or);
             }
             OpCode::Not => {
-                compile_expr(&args[0], locals, fn_indices, func)?;
+                compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Eqz);
             }
             _ => {
@@ -290,44 +346,51 @@ fn compile_expr(
             }
         },
         Expr::Block(exprs) => {
-            for e in exprs {
-                compile_expr(e, locals, fn_indices, func)?;
+            let len = exprs.len();
+            for (i, e) in exprs.iter().enumerate() {
+                if i + 1 == len {
+                    compile_expr(e, ctx, func)?;
+                } else {
+                    compile_stmt(e, ctx, func)?;
+                }
             }
         }
         Expr::While { cond, body } => {
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-            compile_expr(cond, locals, fn_indices, func)?;
+            compile_expr(cond, ctx, func)?;
             func.instruction(&Instruction::I32Eqz);
             func.instruction(&Instruction::BrIf(1));
             for e in body {
-                compile_expr(e, locals, fn_indices, func)?;
+                compile_stmt(e, ctx, func)?;
             }
             func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
         Expr::Loop { var, start, end, step, body } => {
-            compile_expr(start, locals, fn_indices, func)?;
-            if let Some(&var_idx) = locals.get(var) {
-                func.instruction(&Instruction::LocalSet(var_idx));
-                func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
-                func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-                func.instruction(&Instruction::LocalGet(var_idx));
-                compile_expr(end, locals, fn_indices, func)?;
-                func.instruction(&Instruction::I32GeS);
-                func.instruction(&Instruction::BrIf(1));
-                for e in body {
-                    compile_expr(e, locals, fn_indices, func)?;
-                }
-                func.instruction(&Instruction::LocalGet(var_idx));
-                compile_expr(step, locals, fn_indices, func)?;
-                func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::LocalSet(var_idx));
-                func.instruction(&Instruction::Br(0));
-                func.instruction(&Instruction::End);
-                func.instruction(&Instruction::End);
+            let var_idx = *ctx
+                .locals
+                .get(var)
+                .ok_or_else(|| format!("Wasm Codegen: loop variable '{}' has no local slot", var))?;
+            compile_expr(start, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(var_idx));
+            func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
+            func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
+            func.instruction(&Instruction::LocalGet(var_idx));
+            compile_expr(end, ctx, func)?;
+            func.instruction(&Instruction::I32GeS);
+            func.instruction(&Instruction::BrIf(1));
+            for e in body {
+                compile_stmt(e, ctx, func)?;
             }
+            func.instruction(&Instruction::LocalGet(var_idx));
+            compile_expr(step, ctx, func)?;
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::LocalSet(var_idx));
+            func.instruction(&Instruction::Br(0));
+            func.instruction(&Instruction::End);
+            func.instruction(&Instruction::End);
         }
         _ => {
             func.instruction(&Instruction::Nop);
@@ -336,15 +399,47 @@ fn compile_expr(
     Ok(())
 }
 
-fn is_void_expr(expr: &Expr) -> bool {
+/// True if `expr`, as actually compiled by `compile_expr` above, leaves
+/// nothing on the wasm value stack - used to decide `if` block result types
+/// and whether a statement-position value needs an explicit `drop`. This must
+/// track the real codegen above, not the AIPL-level type system: e.g. `set!`
+/// has a non-void AIPL type but its codegen never leaves a value.
+fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
-        Expr::Set { .. } => true,
-        Expr::Block(exprs) => exprs.last().map_or(true, is_void_expr),
-        Expr::Op { op, .. } => match op {
-            OpCode::MemStore32 | OpCode::MemStore64 | OpCode::MemStoreF32 | OpCode::MemStoreF64
-            | OpCode::MemFree | OpCode::AtomicLock | OpCode::AtomicUnlock => true,
-            _ => false,
-        },
+        Expr::Set { .. } | Expr::Let { .. } => true,
+        Expr::Block(exprs) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
+        // An if/else is void only if BOTH branches are void - if they disagreed,
+        // whichever branch actually produced a value would leave the wasm value
+        // stack unbalanced relative to this if's declared block type.
+        Expr::If { then_branch, else_branch, .. } => {
+            is_void_expr(then_branch, ctx) && is_void_expr(else_branch, ctx)
+        }
+        Expr::While { .. } | Expr::Loop { .. } => true,
+        Expr::Call { func, .. } => ctx.fn_returns.get(func).map_or(false, |t| *t == Type::Void),
+        Expr::Op { op, .. } => !matches!(
+            op,
+            OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Div
+                | OpCode::BitXor
+                | OpCode::Shl
+                | OpCode::Shr
+                | OpCode::BitAnd
+                | OpCode::BitOr
+                | OpCode::MemLoad8
+                | OpCode::MemLoad32
+                | OpCode::MemLoad64
+                | OpCode::Eq
+                | OpCode::Neq
+                | OpCode::Lt
+                | OpCode::Lte
+                | OpCode::Gt
+                | OpCode::Gte
+                | OpCode::And
+                | OpCode::Or
+                | OpCode::Not
+        ),
         _ => false,
     }
 }

@@ -142,13 +142,51 @@ impl Parser {
             other => return Err(format!("Expected module name, got {:?}", other)),
         };
 
+        let mut imports = Vec::new();
         let mut functions = Vec::new();
         while let Some(Token::LParen) = self.peek() {
-            functions.push(self.parse_fn_def()?);
+            if self.is_import_ahead() {
+                imports.push(self.parse_import()?);
+            } else {
+                functions.push(self.parse_fn_def()?);
+            }
         }
 
         self.expect(Token::RParen)?;
-        Ok(Module { name, functions })
+        Ok(Module { name, imports, functions })
+    }
+
+    fn is_import_ahead(&self) -> bool {
+        if self.pos + 1 < self.tokens.len() {
+            if let Token::Symbol(s) = &self.tokens[self.pos + 1] {
+                return s == "import";
+            }
+        }
+        false
+    }
+
+    fn parse_import(&mut self) -> Result<Import, String> {
+        self.expect(Token::LParen)?;
+        match self.next() {
+            Some(Token::Symbol(s)) if s == "import" => {}
+            other => return Err(format!("Expected 'import', got {:?}", other)),
+        }
+        let name = match self.next() {
+            Some(Token::Symbol(s)) => s,
+            other => return Err(format!("Expected module name in import, got {:?}", other)),
+        };
+        let alias = match self.peek() {
+            Some(Token::Symbol(s)) if s == "as" => {
+                self.next();
+                match self.next() {
+                    Some(Token::Symbol(a)) => Some(a),
+                    other => return Err(format!("Expected alias after 'as', got {:?}", other)),
+                }
+            }
+            _ => None,
+        };
+        self.expect(Token::RParen)?;
+        Ok(Import { name, alias })
     }
 
     fn parse_fn_def(&mut self) -> Result<FnDef, String> {
@@ -470,10 +508,12 @@ impl Parser {
                             "shr" => OpCode::Shr,
                             "bitand" => OpCode::BitAnd,
                             "bitor" => OpCode::BitOr,
+                            "mem.load8" => OpCode::MemLoad8,
                             "mem.load32" => OpCode::MemLoad32,
                             "mem.load64" => OpCode::MemLoad64,
                             "mem.load_f32" => OpCode::MemLoadF32,
                             "mem.load_f64" => OpCode::MemLoadF64,
+                            "mem.store8" => OpCode::MemStore8,
                             "mem.store32" => OpCode::MemStore32,
                             "mem.store64" => OpCode::MemStore64,
                             "mem.store_f32" => OpCode::MemStoreF32,

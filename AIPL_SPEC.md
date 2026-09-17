@@ -47,8 +47,8 @@ op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op 
 
 arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "bitand" | "bitor" ;
-memory_op      ::= "mem.load32" | "mem.load64" | "mem.load_f32" | "mem.load_f64"
-                 | "mem.store32" | "mem.store64" | "mem.store_f32" | "mem.store_f64"
+memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | "mem.load_f64"
+                 | "mem.store8" | "mem.store32" | "mem.store64" | "mem.store_f32" | "mem.store_f64"
                  | "mem.alloc" | "mem.free" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;

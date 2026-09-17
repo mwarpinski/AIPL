@@ -168,11 +168,12 @@ impl TypeChecker {
                     }
                     Ok(t1)
                 }
+                OpCode::MemLoad8 => Ok(Type::I32),
                 OpCode::MemLoad32 => Ok(Type::I32),
                 OpCode::MemLoad64 => Ok(Type::I64),
                 OpCode::MemLoadF32 => Ok(Type::F32),
                 OpCode::MemLoadF64 => Ok(Type::F64),
-                OpCode::MemStore32 | OpCode::MemStore64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => Ok(Type::Void),
+                OpCode::MemStore8 | OpCode::MemStore32 | OpCode::MemStore64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => Ok(Type::Void),
                 OpCode::MemAlloc => Ok(Type::I32),
                 OpCode::MemFree => Ok(Type::Void),
                 OpCode::AtomicAdd => Ok(Type::I32),

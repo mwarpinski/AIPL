@@ -282,6 +282,31 @@ impl VM {
                     _ => Err("Invalid types for bitor".to_string()),
                 }
             }
+            OpCode::MemLoad8 => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("mem.load8 requires Int ptr".to_string()),
+                };
+                if ptr >= self.linear_memory.len() {
+                    return Err(format!("Memory load out of bounds: ptr {}", ptr));
+                }
+                Ok(Value::Int(self.linear_memory[ptr] as i64))
+            }
+            OpCode::MemStore8 => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("mem.store8 requires Int ptr".to_string()),
+                };
+                let val = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => (i & 0xFF) as u8,
+                    _ => return Err("mem.store8 requires Int val".to_string()),
+                };
+                if ptr >= self.linear_memory.len() {
+                    return Err(format!("Memory store out of bounds: ptr {}", ptr));
+                }
+                self.linear_memory[ptr] = val;
+                Ok(Value::Void)
+            }
             OpCode::MemLoad32 => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,

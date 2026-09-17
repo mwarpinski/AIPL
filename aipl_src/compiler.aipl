@@ -40,19 +40,143 @@
     (mem.store32 (+ ptr 7) 0)
     8)
 
-  ;; Dynamic Tokenizer Pass
+  ;; ===== Real Tokenizer =====
+  ;; Token record layout: 12 bytes per token at (tok_ptr + idx*12) = [kind:i32, a:i32, b:i32]
+  ;; kind: 0=LParen 1=RParen 2=LBracket 3=RBracket 4=Colon 5=Arrow
+  ;;       6=Symbol(a=src offset,b=length) 7=IntLit(a=value) 8=BoolLit(a=0/1)
+  ;;       9=StringLit(a=src offset of first char inside quotes,b=length)
+  ;; Mirrors src/parser.rs::Parser::tokenize exactly (same delimiter set, same
+  ;; keyword/int classification rules) so the two tokenizers accept identical input.
+
+  (fn is_whitespace [ch:i32] -> bool
+    (or (or (eq ch 32) (eq ch 9)) (or (eq ch 13) (eq ch 10))))
+
+  (fn is_delim [ch:i32] -> bool
+    (or (call is_whitespace ch)
+        (or (or (eq ch 40) (eq ch 41)) (or (or (eq ch 91) (eq ch 93)) (eq ch 58)))))
+
+  (fn is_digit [ch:i32] -> bool
+    (and (gte ch 48) (lte ch 57)))
+
+  (fn write_token [tok_ptr:i32 idx:i32 kind:i32 a:i32 b:i32] -> i32
+    (req (gte tok_ptr 0))
+    (req (gte idx 0))
+    (ens (eq res (+ idx 1)))
+    (let base:i32 (+ tok_ptr (* idx 12)))
+    (mem.store32 (+ base 0) kind)
+    (mem.store32 (+ base 4) a)
+    (mem.store32 (+ base 8) b)
+    (+ idx 1))
+
+  (fn is_arrow [src_ptr:i32 pos:i32 len:i32] -> bool
+    (if (neq len 2)
+        false
+        (and (eq (mem.load8 (+ src_ptr pos)) 45)
+             (eq (mem.load8 (+ src_ptr (+ pos 1))) 62))))
+
+  (fn is_true_kw [src_ptr:i32 pos:i32 len:i32] -> bool
+    (if (neq len 4)
+        false
+        (and (eq (mem.load8 (+ src_ptr pos)) 116)
+        (and (eq (mem.load8 (+ src_ptr (+ pos 1))) 114)
+        (and (eq (mem.load8 (+ src_ptr (+ pos 2))) 117)
+             (eq (mem.load8 (+ src_ptr (+ pos 3))) 101))))))
+
+  (fn is_false_kw [src_ptr:i32 pos:i32 len:i32] -> bool
+    (if (neq len 5)
+        false
+        (and (eq (mem.load8 (+ src_ptr pos)) 102)
+        (and (eq (mem.load8 (+ src_ptr (+ pos 1))) 97)
+        (and (eq (mem.load8 (+ src_ptr (+ pos 2))) 108)
+        (and (eq (mem.load8 (+ src_ptr (+ pos 3))) 115)
+             (eq (mem.load8 (+ src_ptr (+ pos 4))) 101)))))))
+
+  ;; True if the span is a valid integer literal: optional leading '-' then >=1 digits.
+  (fn is_int_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+    (req (gte pos 0))
+    (req (gt len 0))
+    (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
+    (let start:i32 pos)
+    (let digit_len:i32 len)
+    (if has_sign (set! start (+ pos 1)) (set! start start))
+    (if has_sign (set! digit_len (- len 1)) (set! digit_len digit_len))
+    (if (eq digit_len 0)
+        false
+        (block
+          (let all_digits:bool true)
+          (let i:i32 0)
+          (while (lt i digit_len)
+            (if (call is_digit (mem.load8 (+ src_ptr (+ start i))))
+                (set! all_digits all_digits)
+                (set! all_digits false))
+            (set! i (+ i 1)))
+          all_digits)))
+
+  (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
+    (req (gte pos 0))
+    (req (gt len 0))
+    (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
+    (let start:i32 pos)
+    (let digit_len:i32 len)
+    (if has_sign (set! start (+ pos 1)) (set! start start))
+    (if has_sign (set! digit_len (- len 1)) (set! digit_len digit_len))
+    (let value:i32 0)
+    (let i:i32 0)
+    (while (lt i digit_len)
+      (set! value (+ (* value 10) (- (mem.load8 (+ src_ptr (+ start i))) 48)))
+      (set! i (+ i 1)))
+    (if has_sign (- 0 value) value))
+
+  ;; Dynamic Tokenizer Pass: scans real source bytes and writes real token records.
   (fn tokenize [input_ptr:i32 input_len:i32 token_out_ptr:i32] -> i32
     (req (gte input_ptr 0))
-    (req (gt input_len 0))
+    (req (gte input_len 0))
+    (req (gte token_out_ptr 0))
     (ens (gte res 0))
+    (let i:i32 0)
     (let count:i32 0)
-    (loop i 0 input_len 1
-      (let ch:i32 (bitand (mem.load32 (+ input_ptr i)) 255))
-      (if (or (eq ch 40) (eq ch 41))
-        (block
-          (mem.store32 (+ token_out_ptr (* count 4)) ch)
-          (set! count (+ count 1)))
-        (set! count count)))
+    (while (lt i input_len)
+      (let ch:i32 (mem.load8 (+ input_ptr i)))
+      (if (call is_whitespace ch)
+          (set! i (+ i 1))
+          (if (eq ch 59)
+              (block
+                (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 10))
+                  (set! i (+ i 1)))
+                (if (lt i input_len) (set! i (+ i 1)) (set! i i)))
+              (if (eq ch 40)
+                  (block (set! count (call write_token token_out_ptr count 0 0 0)) (set! i (+ i 1)))
+                  (if (eq ch 41)
+                      (block (set! count (call write_token token_out_ptr count 1 0 0)) (set! i (+ i 1)))
+                      (if (eq ch 91)
+                          (block (set! count (call write_token token_out_ptr count 2 0 0)) (set! i (+ i 1)))
+                          (if (eq ch 93)
+                              (block (set! count (call write_token token_out_ptr count 3 0 0)) (set! i (+ i 1)))
+                              (if (eq ch 58)
+                                  (block (set! count (call write_token token_out_ptr count 4 0 0)) (set! i (+ i 1)))
+                                  (if (eq ch 34)
+                                      (block
+                                        (set! i (+ i 1))
+                                        (let str_start:i32 i)
+                                        (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 34))
+                                          (set! i (+ i 1)))
+                                        (let str_len:i32 (- i str_start))
+                                        (set! count (call write_token token_out_ptr count 9 str_start str_len))
+                                        (if (lt i input_len) (set! i (+ i 1)) (set! i i)))
+                                      (block
+                                        (let sym_start:i32 i)
+                                        (while (and (lt i input_len) (not (call is_delim (mem.load8 (+ input_ptr i)))))
+                                          (set! i (+ i 1)))
+                                        (let sym_len:i32 (- i sym_start))
+                                        (if (call is_arrow input_ptr sym_start sym_len)
+                                            (set! count (call write_token token_out_ptr count 5 0 0))
+                                            (if (call is_true_kw input_ptr sym_start sym_len)
+                                                (set! count (call write_token token_out_ptr count 8 1 0))
+                                                (if (call is_false_kw input_ptr sym_start sym_len)
+                                                    (set! count (call write_token token_out_ptr count 8 0 0))
+                                                    (if (call is_int_literal input_ptr sym_start sym_len)
+                                                        (set! count (call write_token token_out_ptr count 7 (call parse_int_literal input_ptr sym_start sym_len) 0))
+                                                        (set! count (call write_token token_out_ptr count 6 sym_start sym_len))))))))))))))))
     count)
 
   ;; Symbol Table Lookup Pass: maps variable names to local register/stack indices (0, 1, 2, 3...)
@@ -171,4 +295,129 @@
     (req (gt source_len 0))
     (req (gte wasm_out_ptr 0))
     (ens (gt res 0))
-    (call compile_to_target source_ptr source_len wasm_out_ptr 0)))
+    (call compile_to_target source_ptr source_len wasm_out_ptr 0))
+
+  ;; ===== Tokenizer self-tests (content assertions, not just shape checks) =====
+  ;; Each test builds a real source string byte-by-byte, tokenizes it, and checks
+  ;; the exact token count/kinds/values/text-offsets produced.
+
+  (fn test_tokenize_signature [] -> i32
+    (ens (eq res 1))
+    (let src1:i32 8000)
+    (let tok1:i32 9000)
+    (mem.store8 (+ src1 0) 40) ;; '('
+    (mem.store8 (+ src1 1) 102) ;; 'f'
+    (mem.store8 (+ src1 2) 110) ;; 'n'
+    (mem.store8 (+ src1 3) 32) ;; ' '
+    (mem.store8 (+ src1 4) 97) ;; 'a'
+    (mem.store8 (+ src1 5) 100) ;; 'd'
+    (mem.store8 (+ src1 6) 100) ;; 'd'
+    (mem.store8 (+ src1 7) 32) ;; ' '
+    (mem.store8 (+ src1 8) 91) ;; '['
+    (mem.store8 (+ src1 9) 120) ;; 'x'
+    (mem.store8 (+ src1 10) 58) ;; ':'
+    (mem.store8 (+ src1 11) 105) ;; 'i'
+    (mem.store8 (+ src1 12) 51) ;; '3'
+    (mem.store8 (+ src1 13) 50) ;; '2'
+    (mem.store8 (+ src1 14) 32) ;; ' '
+    (mem.store8 (+ src1 15) 121) ;; 'y'
+    (mem.store8 (+ src1 16) 58) ;; ':'
+    (mem.store8 (+ src1 17) 105) ;; 'i'
+    (mem.store8 (+ src1 18) 51) ;; '3'
+    (mem.store8 (+ src1 19) 50) ;; '2'
+    (mem.store8 (+ src1 20) 93) ;; ']'
+    (mem.store8 (+ src1 21) 32) ;; ' '
+    (mem.store8 (+ src1 22) 45) ;; '-'
+    (mem.store8 (+ src1 23) 62) ;; '>'
+    (mem.store8 (+ src1 24) 32) ;; ' '
+    (mem.store8 (+ src1 25) 105) ;; 'i'
+    (mem.store8 (+ src1 26) 51) ;; '3'
+    (mem.store8 (+ src1 27) 50) ;; '2'
+    (mem.store8 (+ src1 28) 32) ;; ' '
+    (mem.store8 (+ src1 29) 40) ;; '('
+    (mem.store8 (+ src1 30) 43) ;; '+'
+    (mem.store8 (+ src1 31) 32) ;; ' '
+    (mem.store8 (+ src1 32) 120) ;; 'x'
+    (mem.store8 (+ src1 33) 32) ;; ' '
+    (mem.store8 (+ src1 34) 121) ;; 'y'
+    (mem.store8 (+ src1 35) 41) ;; ')'
+    (mem.store8 (+ src1 36) 41) ;; ')'
+    (let n:i32 (call tokenize src1 37 tok1))
+    (let t0_kind:i32 (mem.load32 (+ tok1 0)))
+    (let t1_kind:i32 (mem.load32 (+ tok1 12)))
+    (let t1_a:i32 (mem.load32 (+ tok1 16)))
+    (let t1_b:i32 (mem.load32 (+ tok1 20)))
+    (let t11_kind:i32 (mem.load32 (+ tok1 132)))
+    (let t18_kind:i32 (mem.load32 (+ tok1 216)))
+    (let f_char:i32 (mem.load8 (+ src1 t1_a)))
+    (if (and (eq n 19) (and (eq t0_kind 0) (and (eq t1_kind 6) (and (eq t1_b 2) (and (eq f_char 102) (and (eq t11_kind 5) (eq t18_kind 1)))))))
+        1
+        0))
+
+  (fn test_tokenize_literals [] -> i32
+    (ens (eq res 1))
+    (let src2:i32 8100)
+    (let tok2:i32 9100)
+    (mem.store8 (+ src2 0) 52) ;; '4'
+    (mem.store8 (+ src2 1) 50) ;; '2'
+    (mem.store8 (+ src2 2) 32) ;; ' '
+    (mem.store8 (+ src2 3) 45) ;; '-'
+    (mem.store8 (+ src2 4) 55) ;; '7'
+    (mem.store8 (+ src2 5) 32) ;; ' '
+    (mem.store8 (+ src2 6) 116) ;; 't'
+    (mem.store8 (+ src2 7) 114) ;; 'r'
+    (mem.store8 (+ src2 8) 117) ;; 'u'
+    (mem.store8 (+ src2 9) 101) ;; 'e'
+    (mem.store8 (+ src2 10) 32) ;; ' '
+    (mem.store8 (+ src2 11) 102) ;; 'f'
+    (mem.store8 (+ src2 12) 97) ;; 'a'
+    (mem.store8 (+ src2 13) 108) ;; 'l'
+    (mem.store8 (+ src2 14) 115) ;; 's'
+    (mem.store8 (+ src2 15) 101) ;; 'e'
+    (mem.store8 (+ src2 16) 32) ;; ' '
+    (mem.store8 (+ src2 17) 34) ;; '"'
+    (mem.store8 (+ src2 18) 104) ;; 'h'
+    (mem.store8 (+ src2 19) 105) ;; 'i'
+    (mem.store8 (+ src2 20) 34) ;; '"'
+    (mem.store8 (+ src2 21) 32) ;; ' '
+    (mem.store8 (+ src2 22) 59) ;; ';'
+    (mem.store8 (+ src2 23) 59) ;; ';'
+    (mem.store8 (+ src2 24) 32) ;; ' '
+    (mem.store8 (+ src2 25) 99) ;; 'c'
+    (mem.store8 (+ src2 26) 111) ;; 'o'
+    (mem.store8 (+ src2 27) 109) ;; 'm'
+    (mem.store8 (+ src2 28) 109) ;; 'm'
+    (mem.store8 (+ src2 29) 101) ;; 'e'
+    (mem.store8 (+ src2 30) 110) ;; 'n'
+    (mem.store8 (+ src2 31) 116) ;; 't'
+    (mem.store8 (+ src2 32) 10) ;; '\n'
+    (mem.store8 (+ src2 33) 57) ;; '9'
+    (mem.store8 (+ src2 34) 57) ;; '9'
+    (let n:i32 (call tokenize src2 35 tok2))
+    (let t0_kind:i32 (mem.load32 (+ tok2 0)))
+    (let t0_a:i32 (mem.load32 (+ tok2 4)))
+    (let t1_kind:i32 (mem.load32 (+ tok2 12)))
+    (let t1_a:i32 (mem.load32 (+ tok2 16)))
+    (let t2_kind:i32 (mem.load32 (+ tok2 24)))
+    (let t2_a:i32 (mem.load32 (+ tok2 28)))
+    (let t3_kind:i32 (mem.load32 (+ tok2 36)))
+    (let t3_a:i32 (mem.load32 (+ tok2 40)))
+    (let t4_kind:i32 (mem.load32 (+ tok2 48)))
+    (let t4_a:i32 (mem.load32 (+ tok2 52)))
+    (let t4_b:i32 (mem.load32 (+ tok2 56)))
+    (let t5_kind:i32 (mem.load32 (+ tok2 60)))
+    (let t5_a:i32 (mem.load32 (+ tok2 64)))
+    (let str_c0:i32 (mem.load8 (+ src2 t4_a)))
+    (let str_c1:i32 (mem.load8 (+ src2 (+ t4_a 1))))
+    (if (and (eq n 6) (and (eq t0_kind 7) (and (eq t0_a 42) (and (eq t1_kind 7) (and (eq t1_a -7) (and (eq t2_kind 8) (and (eq t2_a 1) (and (eq t3_kind 8) (and (eq t3_a 0) (and (eq t4_kind 9) (and (eq t4_b 2) (and (eq str_c0 104) (and (eq str_c1 105) (and (eq t5_kind 7) (eq t5_a 99)))))))))))))))
+        1
+        0))
+
+  (fn run_tokenizer_tests [] -> i32
+    (ens (gte res 0))
+    (let p:i32 0)
+    (let r1:i32 (call test_tokenize_signature))
+    (if (eq r1 1) (set! p (+ p 1)) (set! p p))
+    (let r2:i32 (call test_tokenize_literals))
+    (if (eq r2 1) (set! p (+ p 1)) (set! p p))
+    p))

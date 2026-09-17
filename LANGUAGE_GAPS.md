@@ -1,5 +1,30 @@
 # AIPL Language Gap Analysis
 
+> **Update:** Rust is now installed (via WSL) and `aipl_src/compiler.aipl`'s
+> tokenizer has been rewritten to actually consume its input (see §2's stub
+> description - that part is now fixed). While making it compile to real WASM,
+> three independent, previously-undiscovered bugs turned up in
+> `src/compiler/wasm.rs` and were fixed:
+> 1. `is_void_expr` had no case for `Expr::If`, so any `if`/`block` whose
+>    "voidness" depended on a *nested* `if` was misclassified, corrupting the
+>    wasm value stack for realistic (non-trivial) control flow.
+> 2. Intermediate statements in a block/loop body that produce a value nothing
+>    consumes were never `drop`ped, and a `call` to a void-returning function
+>    was assumed to produce a value it doesn't - both caused the same class of
+>    stack-balance error.
+> 3. A `loop`'s induction variable was never allocated a wasm local slot
+>    (`collect_lets` didn't know about it), so `ctx.locals.get(var)` silently
+>    failed and the codegen dropped the entire loop body while still leaking
+>    the `start` value onto the stack with nothing to consume it.
+>
+> A real `mem.load8`/`mem.store8` opcode pair was also added end-to-end
+> (parser/checker/VM/wasm) to replace the fragile "4-byte store for 1 byte"
+> convention described in §3 - the new tokenizer uses it directly. All of this
+> was verified with the real `cargo test` suite (still 15/15 passing) plus
+> `wasmtime` loading and calling the newly-compiled WASM module directly. The
+> parser (tokens → AST) and a real code generator are still stubbed - that's
+> the next piece.
+
 Companion document to [AIPL_SPEC.md](AIPL_SPEC.md) and [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md).
 Where those describe what AIPL is supposed to do, this describes what it actually
 does today, verified against the real implementation and real compiled output
