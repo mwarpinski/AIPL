@@ -1,0 +1,227 @@
+;; AIPL WebAssembly Binary Emitter (100% Self-Hosted Wasm Generator)
+;; Written entirely in AIPL S-Expressions
+;; Generates standard Wasm binary header, sections, LEB128 varints, and opcodes
+
+(module wasm_emitter
+  ;; LEB128 Unsigned 32-bit Integer Encoder
+  ;; Writes LEB128 bytes starting at ptr, returns number of bytes written
+  (fn encode_u32 [ptr:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte val 0))
+    (ens (gt res 0))
+    (let bytes_written:i32 0)
+    (let temp:i32 val)
+    (let keep_looping:bool true)
+    (while keep_looping
+      (let byte_val:i32 (bitand temp 127))
+      (set! temp (shr temp 7))
+      (if (neq temp 0)
+        (let byte_out:i32 (bitor byte_val 128))
+        (let byte_out:i32 byte_val))
+      (mem.store32 (+ ptr bytes_written) byte_val)
+      (set! bytes_written (+ bytes_written 1))
+      (if (eq temp 0)
+        (set! keep_looping false)
+        (set! keep_looping true)))
+    bytes_written)
+
+  ;; Wasm Magic Header Emission (8 bytes: \0asm \x01\x00\x00\x00)
+  (fn emit_header [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 8))
+    (mem.store32 (+ ptr 0) 0)   ;; \0
+    (mem.store32 (+ ptr 1) 97)  ;; a
+    (mem.store32 (+ ptr 2) 115) ;; s
+    (mem.store32 (+ ptr 3) 109) ;; m
+    (mem.store32 (+ ptr 4) 1)   ;; version 1
+    (mem.store32 (+ ptr 5) 0)
+    (mem.store32 (+ ptr 6) 0)
+    (mem.store32 (+ ptr 7) 0)
+    8)
+
+  ;; Bytecode Instruction Emitter: i32.const <val> (opcode 0x41)
+  (fn emit_i32_const [ptr:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 1))
+    (mem.store32 ptr 65) ;; 0x41 i32.const
+    (let leb_len:i32 (call encode_u32 (+ ptr 1) val))
+    (+ 1 leb_len))
+
+  ;; Bytecode Instruction Emitter: local.get <idx> (opcode 0x20)
+  (fn emit_local_get [ptr:i32 idx:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte idx 0))
+    (ens (gt res 1))
+    (mem.store32 ptr 32) ;; 0x20 local.get
+    (let leb_len:i32 (call encode_u32 (+ ptr 1) idx))
+    (+ 1 leb_len))
+
+  ;; Bytecode Instruction Emitter: local.set <idx> (opcode 0x21)
+  (fn emit_local_set [ptr:i32 idx:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte idx 0))
+    (ens (gt res 1))
+    (mem.store32 ptr 33) ;; 0x21 local.set
+    (let leb_len:i32 (call encode_u32 (+ ptr 1) idx))
+    (+ 1 leb_len))
+
+  ;; Bytecode Instruction Emitter: i32.add (opcode 0x6a)
+  (fn emit_i32_add [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 1))
+    (mem.store32 ptr 106) ;; 0x6a i32.add
+    1)
+
+  ;; Bytecode Instruction Emitter: i32.sub (opcode 0x6b)
+  (fn emit_i32_sub [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 1))
+    (mem.store32 ptr 107) ;; 0x6b i32.sub
+    1)
+
+  ;; Bytecode Instruction Emitter: i32.mul (opcode 0x6c)
+  (fn emit_i32_mul [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 1))
+    (mem.store32 ptr 108) ;; 0x6c i32.mul
+    1)
+
+  ;; Bytecode Instruction Emitter: i32.load (opcode 0x28)
+  (fn emit_i32_load [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 2))
+    (mem.store32 ptr 40) ;; 0x28 i32.load
+    (let l1:i32 (call encode_u32 (+ ptr 1) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 1) l1) offset))
+    (+ 1 (+ l1 l2)))
+
+  ;; Bytecode Instruction Emitter: i32.store (opcode 0x36)
+  (fn emit_i32_store [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 2))
+    (mem.store32 ptr 54) ;; 0x36 i32.store
+    (let l1:i32 (call encode_u32 (+ ptr 1) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 1) l1) offset))
+    (+ 1 (+ l1 l2)))
+
+  ;; Bytecode Instruction Emitter: end (opcode 0x0b)
+  (fn emit_end [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 1))
+    (mem.store32 ptr 11) ;; 0x0b end
+    1)
+
+  ;; Wasm Memory Section Emitter (Section ID 0x05, 1 page min)
+  (fn emit_mem_section [ptr:i32 min_pages:i32] -> i32
+    (req (gte ptr 0))
+    (req (gt min_pages 0))
+    (ens (gt res 3))
+    (mem.store32 (+ ptr 0) 5) ;; Memory Section ID
+    (mem.store32 (+ ptr 1) 3) ;; Payload length (3 bytes)
+    (mem.store32 (+ ptr 2) 1) ;; Count = 1 memory
+    (mem.store32 (+ ptr 3) 0) ;; Limits flag: min only
+    (mem.store32 (+ ptr 4) min_pages) ;; Min pages
+    5)
+
+  ;; Helper function: Generate a simple 1-function WASM module in buffer
+  (fn emit_simple_add_wasm [buf_ptr:i32] -> i32
+    (req (gte buf_ptr 0))
+    (ens (gt res 20))
+    (let offset:i32 0)
+    
+    ;; 1. Header
+    (set! offset (+ offset (call emit_header (+ buf_ptr offset))))
+
+    ;; 2. Type Section (ID 0x01): func(i32, i32) -> i32
+    (mem.store32 (+ buf_ptr offset) 1) ;; Section ID 1
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 7) ;; Payload len 7
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 1) ;; 1 type
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 96) ;; 0x60 func type
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 2) ;; 2 params
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 127) ;; param 0: i32 (0x7f = 127)
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 127) ;; param 1: i32
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 1) ;; 1 result
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 127) ;; result: i32
+    (set! offset (+ offset 1))
+
+    ;; 3. Function Section (ID 0x03): fn 0 uses type index 0
+    (mem.store32 (+ buf_ptr offset) 3) ;; Section ID 3
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 2) ;; Payload len 2
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 1) ;; 1 function
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 0) ;; type index 0
+    (set! offset (+ offset 1))
+
+    ;; 4. Export Section (ID 0x07): export "add" func index 0
+    (mem.store32 (+ buf_ptr offset) 7) ;; Section ID 7
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 7) ;; Payload len 7
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 1) ;; 1 export
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 3) ;; name len = 3 ("add")
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 97) ;; 'a'
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 100) ;; 'd'
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 100) ;; 'd'
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 0) ;; export kind: func (0)
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 0) ;; func index 0
+    (set! offset (+ offset 1))
+
+    ;; 5. Code Section (ID 0x0a): fn 0 body (local.get 0, local.get 1, i32.add, end)
+    (mem.store32 (+ buf_ptr offset) 10) ;; Section ID 10 (0x0a)
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 9) ;; Payload len 9
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 1) ;; 1 function body
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 7) ;; Body len = 7 bytes
+    (set! offset (+ offset 1))
+    (mem.store32 (+ buf_ptr offset) 0) ;; 0 local decl vectors
+    (set! offset (+ offset 1))
+
+    ;; Opcodes: local.get 0
+    (set! offset (+ offset (call emit_local_get (+ buf_ptr offset) 0)))
+    ;; local.get 1
+    (set! offset (+ offset (call emit_local_get (+ buf_ptr offset) 1)))
+    ;; i32.add
+    (set! offset (+ offset (call emit_i32_add (+ buf_ptr offset))))
+    ;; end
+    (set! offset (+ offset (call emit_end (+ buf_ptr offset))))
+
+    offset)
+
+  ;; Wasm Data Section Emitter (Section ID 0x0b) for static string & byte array embedding
+  (fn emit_data_section [ptr:i32 mem_offset:i32 data_ptr:i32 data_len:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte mem_offset 0))
+    (req (gt data_len 0))
+    (ens (gt res 6))
+    (mem.store32 (+ ptr 0) 11) ;; Section ID 11 (0x0b)
+    (mem.store32 (+ ptr 1) (+ 6 data_len)) ;; Payload length
+    (mem.store32 (+ ptr 2) 1)  ;; 1 segment
+    (mem.store32 (+ ptr 3) 0)  ;; memory index 0
+    (mem.store32 (+ ptr 4) 65) ;; i32.const opcode
+    (mem.store32 (+ ptr 5) mem_offset)
+    (mem.store32 (+ ptr 6) 11) ;; end opcode
+    (mem.store32 (+ ptr 7) data_len)
+    
+    (loop i 0 data_len 1
+      (let byte_val:i32 (bitand (mem.load32 (+ data_ptr i)) 255))
+      (mem.store32 (+ ptr (+ 8 i)) byte_val))
+
+    (+ 8 data_len)))

@@ -1,0 +1,12 @@
+;; Matrix Multiplication Benchmark written in AIPL
+(module matrix_math
+  (fn compute_dot [v1_1:f64 v1_2:f64 v2_1:f64 v2_2:f64] -> f64
+    (req (gt v1_1 0.0))
+    (ens (gt res 0.0))
+    (+ (* v1_1 v2_1) (* v1_2 v2_2)))
+
+  (fn run_benchmark [iterations:i32] -> f64
+    (let total:f64 0.0)
+    (loop i 1 iterations 1
+      (set! total (+ total (call compute_dot 2.5 4.0 3.0 1.5))))
+    total))

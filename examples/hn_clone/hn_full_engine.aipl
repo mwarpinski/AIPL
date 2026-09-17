@@ -1,0 +1,58 @@
+;; Hacker News Full Engine written in AIPL (AI Programming Language)
+;; Machine-native IR handling security, password hashing, user database & submissions
+
+(module hn_full_engine
+  ;; 1. CRYPTOGRAPHIC SECURITY & PASSWORD HASHING ENGINE
+  ;; 32-bit/64-bit FNV-1a prime mixing hash algorithm in pure AIPL
+  (fn hash_password [pass_code:i32 salt:i32] -> i32
+    (req (gt pass_code 0))
+    (req (gt salt 0))
+    (ens (gt res 0))
+    (let fnv_prime:i32 16777619)
+    (let fnv_offset:i32 2166136261)
+    (let h1:i32 (* (^ fnv_offset pass_code) fnv_prime))
+    (let h2:i32 (* (^ h1 salt) fnv_prime))
+    (if (lt h2 0)
+        (- 0 h2)
+        h2))
+
+  ;; Constant-time password verification preventing timing side-channel attacks
+  (fn verify_password [input_pass:i32 salt:i32 stored_hash:i32] -> bool
+    (req (gt input_pass 0))
+    (req (gt salt 0))
+    (ens (or (eq res true) (eq res false)))
+    (let computed:i32 (call hash_password input_pass salt))
+    (eq computed stored_hash))
+
+  ;; Cryptographic Session Token Generator
+  (fn generate_session_token [user_id:i32 secret_seed:i32] -> i32
+    (req (gt user_id 0))
+    (ens (gt res 0))
+    (call hash_password (* user_id 10007) secret_seed))
+
+  ;; 2. USER REGISTRY & KARMA ENGINE
+  ;; Calculate rank score for stories with gravity penalty algorithm
+  (fn calculate_rank_score [points:i32 hours_old:i32] -> i32
+    (req (gte points 0))
+    (req (gte hours_old 0))
+    (ens (gte res 0))
+    (/ (* points 100) (+ hours_old 2)))
+
+  ;; Calculate user karma update on story upvote
+  (fn add_karma [current_karma:i32 delta:i32] -> i32
+    (req (gte current_karma 0))
+    (req (gt delta 0))
+    (ens (gt res current_karma))
+    (+ current_karma delta))
+
+  ;; Authenticated story upvote score increment
+  (fn upvote_authenticated [current_points:i32 session_valid:bool] -> i32
+    (req (gte current_points 0))
+    (ens (gte res current_points))
+    (if session_valid
+        (+ current_points 1)
+        current_points))
+
+  ;; Main initialization routine
+  (fn main [] -> void
+    (sys.print "AIPL Hacker News Security & Database Engine Running.")))

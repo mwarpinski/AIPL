@@ -1,0 +1,182 @@
+;; AIPL Bare-Metal ELF64 Linux Machine Code Emitter
+;; Written 100% in canonical AIPL S-Expressions
+;; Generates valid 64-bit Linux ELF binary headers, program headers, and raw x86_64 machine code bytes
+
+(module aipl_elf_emitter
+
+  ;; 1. Emit 64-bit Linux ELF Executable Header (64 bytes)
+  ;; Magic: 0x7f 0x45 0x4c 0x46 (\x7fELF)
+  (fn emit_elf64_header [ptr:i32 entry_addr:i32] -> i32
+    (req (gte ptr 0))
+    (req (gt entry_addr 0))
+    (ens (eq res 64))
+
+    ;; e_ident: \x7fELF
+    (mem.store32 (+ ptr 0) 1179403647) ;; 0x7f 'E' 'L' 'F'
+    (mem.store32 (+ ptr 4) 65538)      ;; Class 2 (64-bit), Data 1 (Little-Endian), Version 1
+    (mem.store32 (+ ptr 8) 0)          ;; OS ABI 0 (System V)
+    (mem.store32 (+ ptr 12) 0)         ;; Padding
+
+    ;; e_type (2 = Executable), e_machine (0x3e = x86_64)
+    (mem.store32 (+ ptr 16) 4063234)   ;; 0x0002 (ET_EXEC) | (0x003e << 16) (x86_64)
+    ;; e_version = 1
+    (mem.store32 (+ ptr 20) 1)
+
+    ;; e_entry = entry_addr (e.g. 0x400078)
+    (mem.store32 (+ ptr 24) entry_addr)
+    (mem.store32 (+ ptr 28) 0)
+
+    ;; e_phoff = 64 (Program header table offset)
+    (mem.store32 (+ ptr 32) 64)
+    (mem.store32 (+ ptr 36) 0)
+
+    ;; e_shoff = 0 (No section header table needed for bare-metal execution)
+    (mem.store32 (+ ptr 40) 0)
+    (mem.store32 (+ ptr 44) 0)
+
+    ;; e_flags = 0
+    (mem.store32 (+ ptr 48) 0)
+    ;; e_ehsize = 64 (ELF header size), e_phentsize = 56 (Program header size)
+    (mem.store32 (+ ptr 52) 3670080)   ;; (64) | (56 << 16)
+    ;; e_phnum = 1 (1 Program Header Segment), e_shentsize = 0, e_shnum = 0, e_shstrndx = 0
+    (mem.store32 (+ ptr 56) 1)
+    (mem.store32 (+ ptr 60) 0)
+
+    64)
+
+  ;; 2. Emit 64-bit Program Header Segment Table (56 bytes: PT_LOAD, PF_X | PF_R)
+  (fn emit_elf64_program_header [ptr:i32 filesz:i32 memsz:i32] -> i32
+    (req (gte ptr 0))
+    (req (gt filesz 0))
+    (ens (eq res 56))
+
+    ;; p_type = 1 (PT_LOAD)
+    (mem.store32 (+ ptr 0) 1)
+    ;; p_flags = 5 (PF_X | PF_R: Read + Execute)
+    (mem.store32 (+ ptr 4) 5)
+
+    ;; p_offset = 0 (Offset in ELF file)
+    (mem.store32 (+ ptr 8) 0)
+    (mem.store32 (+ ptr 12) 0)
+
+    ;; p_vaddr = 0x400000 (Virtual address in process memory)
+    (mem.store32 (+ ptr 16) 4194304)
+    (mem.store32 (+ ptr 20) 0)
+
+    ;; p_paddr = 0x400000 (Physical address)
+    (mem.store32 (+ ptr 24) 4194304)
+    (mem.store32 (+ ptr 28) 0)
+
+    ;; p_filesz = filesz
+    (mem.store32 (+ ptr 32) filesz)
+    (mem.store32 (+ ptr 36) 0)
+
+    ;; p_memsz = memsz
+    (mem.store32 (+ ptr 40) memsz)
+    (mem.store32 (+ ptr 44) 0)
+
+    ;; p_align = 0x1000 (4KB alignment)
+    (mem.store32 (+ ptr 48) 4096)
+    (mem.store32 (+ ptr 52) 0)
+
+    56)
+
+  ;; 3. x86_64 Machine Code Instruction Emitters
+
+  ;; Emit: mov rax, imm32 (opcode 0xb8 val_u32)
+  (fn emit_x86_mov_rax_imm32 [ptr:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 5))
+    (mem.store32 (+ ptr 0) 184) ;; 0xb8 mov rax
+    (mem.store32 (+ ptr 1) val)
+    5)
+
+  ;; Emit: mov rbx, imm32 (opcode 0xbb val_u32)
+  (fn emit_x86_mov_rbx_imm32 [ptr:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 5))
+    (mem.store32 (+ ptr 0) 187) ;; 0xbb mov rbx
+    (mem.store32 (+ ptr 1) val)
+    5)
+
+  ;; Emit: add rax, rbx (opcode 0x48 0x01 0xd8)
+  (fn emit_x86_add_rax_rbx [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 3))
+    (mem.store32 (+ ptr 0) 72)  ;; REX.W prefix (0x48)
+    (mem.store32 (+ ptr 1) 1)   ;; 0x01 add
+    (mem.store32 (+ ptr 2) 216) ;; ModR/M 0xd8 (rax, rbx)
+    3)
+
+  ;; Emit: sub rax, rbx (opcode 0x48 0x29 0xd8)
+  (fn emit_x86_sub_rax_rbx [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 3))
+    (mem.store32 (+ ptr 0) 72)  ;; REX.W prefix
+    (mem.store32 (+ ptr 1) 41)  ;; 0x29 sub
+    (mem.store32 (+ ptr 2) 216) ;; ModR/M
+    3)
+
+  ;; Emit: imul rax, rbx (opcode 0x48 0x0f 0xaf 0xc3)
+  (fn emit_x86_imul_rax_rbx [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 4))
+    (mem.store32 (+ ptr 0) 72)  ;; REX.W prefix
+    (mem.store32 (+ ptr 1) 15)  ;; 0x0f
+    (mem.store32 (+ ptr 2) 175) ;; 0xaf imul
+    (mem.store32 (+ ptr 3) 195) ;; ModR/M 0xc3
+    4)
+
+  ;; Emit Linux x86_64 sys_exit syscall sequence:
+  ;; mov rdi, rax (mov return value to exit code register rdi: 0x48 0x89 0xc7)
+  ;; mov rax, 60  (sys_exit syscall number 60: 0xb8 0x3c 0x00 0x00 0x00)
+  ;; syscall      (opcode 0x0f 0x05)
+  (fn emit_x86_sys_exit [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 10))
+    ;; mov rdi, rax
+    (mem.store32 (+ ptr 0) 72)
+    (mem.store32 (+ ptr 1) 137)
+    (mem.store32 (+ ptr 2) 199)
+    ;; mov rax, 60 (sys_exit)
+    (mem.store32 (+ ptr 3) 184)
+    (mem.store32 (+ ptr 4) 60)
+    (mem.store32 (+ ptr 5) 0)
+    (mem.store32 (+ ptr 6) 0)
+    (mem.store32 (+ ptr 7) 0)
+    ;; syscall
+    (mem.store32 (+ ptr 8) 15)
+    (mem.store32 (+ ptr 9) 5)
+    10)
+
+  ;; Master ELF64 Machine Code Emitter
+  ;; Combines ELF header, program header, and x86_64 instructions into executable Linux binary payload
+  (fn emit_elf64_binary [ast_op:i32 arg1:i32 arg2:i32 out_elf_ptr:i32] -> i32
+    (req (gte out_elf_ptr 0))
+    (ens (gt res 120))
+    (let offset:i32 0)
+    (let entry_point:i32 4194424) ;; 0x400078 (0x400000 base + 64 ELF + 56 Phdr)
+
+    ;; 1. ELF Header (64 bytes)
+    (set! offset (+ offset (call emit_elf64_header (+ out_elf_ptr offset) entry_point)))
+
+    ;; 2. Program Header (56 bytes)
+    (set! offset (+ offset (call emit_elf64_program_header (+ out_elf_ptr offset) 256 256)))
+
+    ;; 3. x86_64 Machine Code Section (Starts at entry point 0x400078)
+    ;; Load operand 1 into RAX
+    (set! offset (+ offset (call emit_x86_mov_rax_imm32 (+ out_elf_ptr offset) arg1)))
+    ;; Load operand 2 into RBX
+    (set! offset (+ offset (call emit_x86_mov_rbx_imm32 (+ out_elf_ptr offset) arg2)))
+
+    ;; Perform operation
+    (if (eq ast_op 106) ;; add
+      (set! offset (+ offset (call emit_x86_add_rax_rbx (+ out_elf_ptr offset))))
+      (if (eq ast_op 107) ;; sub
+        (set! offset (+ offset (call emit_x86_sub_rax_rbx (+ out_elf_ptr offset))))
+        (set! offset (+ offset (call emit_x86_imul_rax_rbx (+ out_elf_ptr offset))))))
+
+    ;; Exit process with return value in RAX
+    (set! offset (+ offset (call emit_x86_sys_exit (+ out_elf_ptr offset))))
+
+    offset))

@@ -1,0 +1,33 @@
+;; Hacker News Aggregator Clone written in AIPL (AI Programming Language)
+;; Machine-native IR compiled to WebAssembly for browser execution
+
+(module hacker_news
+  ;; Calculate rank number (1-indexed)
+  (fn get_rank [idx:i32] -> i32
+    (req (gte idx 0))
+    (ens (gt res 0))
+    (+ idx 1))
+
+  ;; Formally verified upvote logic (increments score deterministically)
+  (fn upvote_score [current_points:i32] -> i32
+    (req (gte current_points 0))
+    (ens (gt res current_points))
+    (+ current_points 1))
+
+  ;; Calculate score penalty over time (gravity factor algorithm)
+  (fn calculate_rank_score [points:i32 hours_old:i32] -> i32
+    (req (gte points 0))
+    (req (gte hours_old 0))
+    (/ (* points 100) (+ hours_old 2)))
+
+  ;; Initialize Header Navigation
+  (fn init_hn_header [] -> void
+    (let logo:i32 (dom.elem "span" "hn-logo" "Y"))
+    (let title:i32 (dom.elem "span" "hn-title" "Hacker News"))
+    (dom.mount "#hn-nav-left" logo)
+    (dom.mount "#hn-nav-left" title))
+
+  ;; Main Application Entry Point
+  (fn main [] -> void
+    (call init_hn_header)
+    (sys.print "AIPL Hacker News Aggregator Initialized.")))

@@ -1,0 +1,71 @@
+;; AIPL Native Diagnostic & Error Reporting Module
+;; Written 100% in canonical AIPL S-Expressions
+;; Generates structured machine-parsable diagnostic error payloads for AI agents
+
+(module aipl_diagnostics
+  ;; Error Category Constants
+  ;; 1001: ERR_CONTRACT_VIOLATION
+  ;; 1002: ERR_TYPE_MISMATCH
+  ;; 1003: ERR_MEMORY_BOUNDS
+  ;; 1004: ERR_SYNTAX_AST
+
+  ;; Map error code to category integer ID
+  (fn get_error_category [err_code:i32] -> i32
+    (req (gte err_code 1000))
+    (ens (gt res 0))
+    (if (eq err_code 1001)
+      1001
+      (if (eq err_code 1002)
+        1002
+        (if (eq err_code 1003)
+          1003
+          1004))))
+
+  ;; Format structured diagnostic record into linear memory (20 bytes)
+  (fn format_diagnostic [err_code:i32 fn_id:i32 node_idx:i32 mem_offset:i32 out_ptr:i32] -> i32
+    (req (gte err_code 1000))
+    (req (gte fn_id 0))
+    (req (gte node_idx 0))
+    (req (gte mem_offset 0))
+    (req (gte out_ptr 0))
+    (ens (gt res 16))
+
+    (let category:i32 (call get_error_category err_code))
+    (mem.store32 (+ out_ptr 0) err_code)
+    (mem.store32 (+ out_ptr 4) category)
+    (mem.store32 (+ out_ptr 8) fn_id)
+    (mem.store32 (+ out_ptr 12) node_idx)
+    (mem.store32 (+ out_ptr 16) mem_offset)
+    20)
+
+  ;; Validate memory access range and report ERR_MEMORY_BOUNDS (1003) if out of bounds
+  (fn check_memory_bounds [ptr:i32 size:i32 max_bound:i32 out_diag_ptr:i32] -> i32
+    (req (gte ptr 0))
+    (req (gt size 0))
+    (req (gt max_bound 0))
+    (ens (gte res 0))
+    (if (gt (+ ptr size) max_bound)
+      (block
+        (let _tmp:i32 (call format_diagnostic 1003 0 0 ptr out_diag_ptr))
+        1)
+      0))
+
+  ;; Validate contract precondition and report ERR_CONTRACT_VIOLATION (1001) if false
+  (fn enforce_precondition [condition:bool fn_id:i32 node_idx:i32 out_diag_ptr:i32] -> i32
+    (req (gte fn_id 0))
+    (ens (gte res 0))
+    (if (not condition)
+      (block
+        (let _tmp:i32 (call format_diagnostic 1001 fn_id node_idx 0 out_diag_ptr))
+        1)
+      0))
+
+  ;; Static Type Checker Guardrail: verifies expected vs actual types, emitting ERR_TYPE_MISMATCH (1002)
+  (fn verify_type_guardrail [expected_ty:i32 actual_ty:i32 fn_id:i32 node_idx:i32 out_diag_ptr:i32] -> i32
+    (req (gte fn_id 0))
+    (ens (gte res 0))
+    (if (neq expected_ty actual_ty)
+      (block
+        (let _tmp:i32 (call format_diagnostic 1002 fn_id node_idx 0 out_diag_ptr))
+        1002)
+      0)))
