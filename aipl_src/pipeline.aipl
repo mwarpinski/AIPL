@@ -113,13 +113,26 @@
     (mem.store32 (+ ast_out_ptr 4) 0)
     (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
 
+  ;; Helper: Walk dynamic AST tree to extract operator opcode (106=add, 107=sub, 108=mul, 109=div)
+  (fn ast_extract_opcode [ast_ptr:i32] -> i32
+    (req (gte ast_ptr 0))
+    (ens (gt res 0))
+    (let root_child:i32 (mem.load32 (+ ast_ptr 4)))
+    (if (neq root_child 0)
+      (block
+        (let sym_char:i32 (mem.load32 (+ root_child 4)))
+        (if (eq sym_char 45) 107  ;; '-' -> sub (107)
+          (if (eq sym_char 42) 108  ;; '*' -> mul (108)
+            (if (eq sym_char 47) 109  ;; '/' -> div (109)
+              106))))  ;; '+' -> add (106)
+      106))
+
   ;; Step 3: Wasm Binary Header & Dynamic Section Emitter (\0asm version 1)
   (fn pipeline_emit_wasm [ast_ptr:i32 out_buf_ptr:i32] -> i32
     (req (gte ast_ptr 0))
     (req (gte out_buf_ptr 0))
     (ens (gt res 30))
-    (let op_kind:i32 (mem.load32 (+ ast_ptr 4)))
-    (if (eq op_kind 0) (set! op_kind 106) (set! op_kind op_kind))
+    (let op_kind:i32 (call ast_extract_opcode ast_ptr))
 
     (let offset:i32 0)
     ;; Wasm Magic Header (8 bytes)
@@ -169,7 +182,7 @@
     (mem.store32 (+ out_buf_ptr offset) 0) (set! offset (+ offset 1))
     (mem.store32 (+ out_buf_ptr offset) 32) (set! offset (+ offset 1))
     (mem.store32 (+ out_buf_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ out_buf_ptr offset) op_kind) (set! offset (+ offset 1)) ;; Dynamic opcode
+    (mem.store32 (+ out_buf_ptr offset) op_kind) (set! offset (+ offset 1)) ;; Dynamic AST Opcode!
     (mem.store32 (+ out_buf_ptr offset) 11) (set! offset (+ offset 1))
 
     offset)

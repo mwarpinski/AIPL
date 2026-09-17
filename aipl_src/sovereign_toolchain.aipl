@@ -312,6 +312,20 @@
     (mem.store32 (+ ast_out_ptr 4) 0)
     (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
 
+  ;; Helper: Walk dynamic AST tree to extract operator opcode (106=add, 107=sub, 108=mul, 109=div)
+  (fn ast_extract_opcode [ast_ptr:i32] -> i32
+    (req (gte ast_ptr 0))
+    (ens (gt res 0))
+    (let root_child:i32 (mem.load32 (+ ast_ptr 4)))
+    (if (neq root_child 0)
+      (block
+        (let sym_char:i32 (mem.load32 (+ root_child 4)))
+        (if (eq sym_char 45) 107  ;; '-' -> sub (107)
+          (if (eq sym_char 42) 108  ;; '*' -> mul (108)
+            (if (eq sym_char 47) 109  ;; '/' -> div (109)
+              106))))  ;; '+' -> add (106)
+      106))
+
   (fn emit_wasm_binary [ast_ptr:i32 wasm_out_ptr:i32] -> i32
     (req (gte ast_ptr 0))
     (req (gte wasm_out_ptr 0))
@@ -353,7 +367,7 @@
 
     (set! offset (+ offset (call emit_local_get (+ wasm_out_ptr offset) 0)))
     (set! offset (+ offset (call emit_local_get (+ wasm_out_ptr offset) 1)))
-    (let op:i32 (mem.load32 (+ ast_ptr 12)))
+    (let op:i32 (call ast_extract_opcode ast_ptr))
     (mem.store32 (+ wasm_out_ptr offset) op) (set! offset (+ offset 1))
     (set! offset (+ offset (call emit_end (+ wasm_out_ptr offset))))
 
