@@ -221,7 +221,7 @@
             <div class="logo-badge">AIPL</div>
             <div class="title">AI Programming Language (Machine-Native Architecture)</div>
         </div>
-        <div class="badge-tag">Self-Hosted Wasm v1.0</div>
+        <div class="badge-tag">Live via Rust Agent Server (Stage 0)</div>
     </header>
 
     <main>
@@ -236,11 +236,7 @@
     (ens (gt res 0))
     (if (lte n 1)
         1
-        (* n (call calculate_factorial (- n 1)))))
-
-  (fn render_app [] -> void
-    (let header:i32 (dom.elem "h1" "title" "AIPL: Native WebAssembly Browser Runtime"))
-    (dom.mount "#app" header)))</textarea>
+        (* n (call calculate_factorial (- n 1))))))</textarea>
             <div class="btn-group">
                 <button class="btn" onclick="executeAipl()">Compile & Run Wasm</button>
                 <button class="btn btn-secondary" onclick="verifyContracts()">Verify Contracts</button>
@@ -253,8 +249,9 @@
                 <span id="status-tag" style="color: var(--success); font-size: 0.85rem;">Ready</span>
             </div>
             <div id="output-terminal" class="output-box">[AIPL Runtime System Ready]
-Click "Compile & Run Wasm" to parse, verify, compile to WebAssembly, and execute logic directly in browser.</div>
-            <div class="panel-title" style="margin-top: 0.5rem;">Browser DOM Mount Target (#app)</div>
+Click "Compile & Run Wasm" to send this source to a local AIPL Agent Server, compile it to a real WebAssembly module, and execute it in this browser.
+Requires: cargo run --bin aipl -- serve (listens on 127.0.0.1:8080)</div>
+            <div class="panel-title" style="margin-top: 0.5rem;">Wasm Exports (DOM binding not yet implemented in the compiler)</div>
             <div id="app"></div>
         </div>
 
@@ -280,35 +277,96 @@ Click "Compile & Run Wasm" to parse, verify, compile to WebAssembly, and execute
 
     <script src="aipl-web-runner.js"></script>
     <script>
+        const AGENT_SERVER = "http://127.0.0.1:8080";
+
         function log(msg) {
             const term = document.getElementById("output-terminal");
             term.textContent += "\n" + msg;
             term.scrollTop = term.scrollHeight;
         }
 
-        async function executeAipl() {
-            const src = document.getElementById("aipl-source").value;
-            log("[AIPL] Sending payload to AIPL Stage 0 Compiler...");
-            
-            // Simulating parsing & execution test
-            log("[AIPL] Parsing S-Expressions -> Canonical AST...");
-            log("[AIPL Verification] Pre-conditions (req) & Post-conditions (ens) verified statically!");
-            log("[AIPL Codegen] Generating WebAssembly binary module (magic: 0x6d736100)...");
-            
-            const app = document.getElementById("app");
-            app.innerHTML = "";
-            const h = document.createElement("h2");
-            h.style.color = "#38bdf8";
-            h.textContent = "⚡ Rendered via AIPL WebAssembly DOM Binding";
-            app.appendChild(h);
-            
-            log("[AIPL VM Result]: Function 'calculate_factorial(5)' -> 120");
-            log("[AIPL Success] Execution complete with zero runtime errors.");
+        function setStatus(text, color) {
+            const tag = document.getElementById("status-tag");
+            tag.textContent = text;
+            tag.style.color = color || "var(--success)";
         }
 
-        function verifyContracts() {
-            log("[AIPL Verifier] Checking formal invariant contracts...");
-            log("[AIPL Verifier] SUCCESS: 100% Type-Safe & Contracts Satisfied!");
+        function base64ToBytes(b64) {
+            const binStr = atob(b64);
+            const bytes = new Uint8Array(binStr.length);
+            for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+            return bytes;
+        }
+
+        // Fetches a URL and gives a clear, honest error if the local AIPL Agent
+        // Server (`cargo run --bin aipl -- serve`) isn't running, instead of
+        // silently faking a result.
+        async function callAgentServer(path, body) {
+            try {
+                const resp = await fetch(AGENT_SERVER + path, { method: "POST", body });
+                return await resp.json();
+            } catch (e) {
+                log("[AIPL Error] Could not reach the AIPL Agent Server at " + AGENT_SERVER + ".");
+                log("Start it with: cargo run --bin aipl -- serve");
+                setStatus("Server offline", "#f87171");
+                return null;
+            }
+        }
+
+        async function executeAipl() {
+            const src = document.getElementById("aipl-source").value;
+            const app = document.getElementById("app");
+            app.innerHTML = "";
+            setStatus("Compiling...", "var(--primary)");
+
+            log("[AIPL] Sending source to AIPL Agent Server (" + AGENT_SERVER + "/compile)...");
+            const data = await callAgentServer("/compile", src);
+            if (!data) return;
+
+            if (!data.success) {
+                log("[AIPL Error] " + data.error);
+                setStatus("Compile failed", "#f87171");
+                return;
+            }
+
+            log("[AIPL Codegen] Real WebAssembly module received (" + data.wasm_base64.length + " base64 chars).");
+
+            let instance;
+            try {
+                const wasmBytes = base64ToBytes(data.wasm_base64);
+                const result = await WebAssembly.instantiate(wasmBytes, window.AIPLRunner.getImports());
+                instance = result.instance;
+            } catch (e) {
+                log("[AIPL Error] WebAssembly instantiation failed: " + e.message);
+                setStatus("Wasm error", "#f87171");
+                return;
+            }
+
+            const exportNames = Object.keys(instance.exports).filter(n => typeof instance.exports[n] === "function");
+            log("[AIPL Wasm] Instantiated. Exported functions: " + exportNames.join(", "));
+
+            if (typeof instance.exports.calculate_factorial === "function") {
+                const result = instance.exports.calculate_factorial(5);
+                log("[AIPL VM Result]: Function 'calculate_factorial(5)' -> " + result);
+            } else {
+                log("[AIPL Notice] No 'calculate_factorial' export found - showing exports only. Call one from the DevTools console via the returned instance.");
+            }
+
+            app.textContent = "Wasm module compiled and instantiated. See the terminal for real output.";
+            setStatus("Ready");
+        }
+
+        async function verifyContracts() {
+            const src = document.getElementById("aipl-source").value;
+            log("[AIPL Verifier] Sending source to AIPL Agent Server (" + AGENT_SERVER + "/verify)...");
+            const data = await callAgentServer("/verify", src);
+            if (!data) return;
+
+            if (data.success) {
+                log("[AIPL Verifier] SUCCESS: " + data.result);
+            } else {
+                log("[AIPL Verifier] FAILED: " + data.error);
+            }
         }
     </script>
 </body>

@@ -86,34 +86,39 @@ class AIPLHackerNewsFullHost {
             this.wasmInstance = instance;
             console.log("AIPL Full Engine Wasm Loaded!", instance.exports);
         } catch (e) {
-            console.warn("Wasm load fallback (using JS AIPL simulation):", e);
+            // No JS fallback: hashing, verification, karma, and scoring are AIPL's
+            // job. If the engine can't load, those features stay unavailable
+            // rather than silently reimplemented here.
+            console.error("AIPL Wasm engine failed to load - auth, karma, and scoring are disabled until hn_full_engine.wasm is served correctly:", e);
         }
     }
 
-    // Hash password using AIPL Wasm hash_password algorithm
-    hashPasswordAipl(rawPassStr, saltInt = 991) {
+    engineReady(...exportNames) {
+        return !!this.wasmInstance && exportNames.every(name => typeof this.wasmInstance.exports[name] === "function");
+    }
+
+    // AIPL's hash_password/verify_password operate on i32, so a raw password
+    // string has to be reduced to a number before it crosses into Wasm. This is
+    // the one unavoidable JS-side boundary shim - it does no hashing itself.
+    passwordToNumericCode(rawPassStr) {
         let code = 0;
         for (let i = 0; i < rawPassStr.length; i++) {
             code = (code * 31 + rawPassStr.charCodeAt(i)) & 0x7fffffff;
         }
-        if (code === 0) code = 12345;
-
-        if (this.wasmInstance && this.wasmInstance.exports.hash_password) {
-            const hash = this.wasmInstance.exports.hash_password(code, saltInt);
-            console.log(`[AIPL Wasm hash_password("${rawPassStr}", ${saltInt})] -> Hash: ${hash}`);
-            return hash;
-        }
-        return (code ^ (saltInt * 10007)) & 0x7fffffff;
+        return code === 0 ? 12345 : code;
     }
 
     // Register User Account
     registerUser(username, password) {
+        if (!this.engineReady("hash_password")) {
+            return { success: false, error: "AIPL Wasm engine not loaded - cannot register" };
+        }
         if (!username || !password) return { success: false, error: "Username and password required" };
         const users = JSON.parse(localStorage.getItem(this.usersKey));
         if (users[username]) return { success: false, error: "Username already exists" };
 
         const salt = Math.floor(Math.random() * 8999) + 1000;
-        const passHash = this.hashPasswordAipl(password, salt);
+        const passHash = this.wasmInstance.exports.hash_password(this.passwordToNumericCode(password), salt);
         const newUser = {
             id: Object.keys(users).length + 101,
             username: username,
@@ -132,37 +137,33 @@ class AIPLHackerNewsFullHost {
 
     // Login User
     loginUser(username, password) {
+        if (!this.engineReady("verify_password", "generate_session_token")) {
+            return { success: false, error: "AIPL Wasm engine not loaded - cannot log in" };
+        }
         const users = JSON.parse(localStorage.getItem(this.usersKey));
         const user = users[username];
         if (!user) return { success: false, error: "User not found" };
 
-        const computedHash = this.hashPasswordAipl(password, user.salt);
-        let valid = false;
+        // verify_password re-derives the hash from the raw numeric code inside
+        // AIPL and compares it to the stored hash - pass the code, not a hash.
+        const code = this.passwordToNumericCode(password);
+        const valid = this.wasmInstance.exports.verify_password(code, user.salt, user.passHash) !== 0;
 
-        if (this.wasmInstance && this.wasmInstance.exports.verify_password) {
-            valid = this.wasmInstance.exports.verify_password(this.hashPasswordAipl(password, user.salt), user.salt, user.passHash) !== 0;
-        } else {
-            valid = computedHash === user.passHash;
-        }
-
-        if (computedHash === user.passHash || valid) {
-            let sessionToken = 123456;
-            if (this.wasmInstance && this.wasmInstance.exports.generate_session_token) {
-                sessionToken = this.wasmInstance.exports.generate_session_token(user.id, user.passHash);
-            }
-
-            this.currentUser = {
-                id: user.id,
-                username: user.username,
-                karma: user.karma,
-                sessionToken: sessionToken,
-                createdAt: user.createdAt
-            };
-            localStorage.setItem(this.sessionKey, JSON.stringify(this.currentUser));
-            return { success: true, user: this.currentUser };
-        } else {
+        if (!valid) {
             return { success: false, error: "Invalid password" };
         }
+
+        const sessionToken = this.wasmInstance.exports.generate_session_token(user.id, user.passHash);
+
+        this.currentUser = {
+            id: user.id,
+            username: user.username,
+            karma: user.karma,
+            sessionToken: sessionToken,
+            createdAt: user.createdAt
+        };
+        localStorage.setItem(this.sessionKey, JSON.stringify(this.currentUser));
+        return { success: true, user: this.currentUser };
     }
 
     logoutUser() {
@@ -206,16 +207,16 @@ class AIPLHackerNewsFullHost {
 
     // Authenticated Upvote
     upvoteStory(storyId) {
+        if (!this.engineReady("upvote_authenticated")) {
+            alert("AIPL Wasm engine not loaded - cannot upvote");
+            return;
+        }
         const stories = JSON.parse(localStorage.getItem(this.storiesKey));
         const story = stories.find(s => s.id === storyId);
         if (!story) return;
 
         const sessionValid = this.currentUser !== null;
-        let newScore = story.points + 1;
-
-        if (this.wasmInstance && this.wasmInstance.exports.upvote_authenticated) {
-            newScore = this.wasmInstance.exports.upvote_authenticated(story.points, sessionValid ? 1 : 0);
-        }
+        const newScore = this.wasmInstance.exports.upvote_authenticated(story.points, sessionValid ? 1 : 0);
 
         if (newScore > story.points) {
             story.points = newScore;
@@ -227,13 +228,13 @@ class AIPLHackerNewsFullHost {
     }
 
     addKarmaToUser(username, delta) {
+        if (!this.engineReady("add_karma")) {
+            console.error("AIPL Wasm engine not loaded - cannot update karma");
+            return;
+        }
         const users = JSON.parse(localStorage.getItem(this.usersKey));
         if (users[username]) {
-            if (this.wasmInstance && this.wasmInstance.exports.add_karma) {
-                users[username].karma = this.wasmInstance.exports.add_karma(users[username].karma, delta);
-            } else {
-                users[username].karma += delta;
-            }
+            users[username].karma = this.wasmInstance.exports.add_karma(users[username].karma, delta);
             localStorage.setItem(this.usersKey, JSON.stringify(users));
 
             if (this.currentUser && this.currentUser.username === username) {

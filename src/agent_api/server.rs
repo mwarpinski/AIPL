@@ -1,4 +1,5 @@
 use crate::checker::TypeChecker;
+use crate::compiler::wasm::WasmCompiler;
 use crate::parser::Parser;
 use crate::vm::{Value, VM};
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,13 @@ pub struct EvalResponse {
     pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct CompileResponse {
+    pub success: bool,
+    pub wasm_base64: Option<String>,
+    pub error: Option<String>,
+}
+
 pub struct AgentServer;
 
 impl AgentServer {
@@ -33,19 +41,34 @@ impl AgentServer {
             if url == "/eval" && request.method() == &tiny_http::Method::Post {
                 let resp = Self::handle_eval(&body);
                 let json = serde_json::to_string(&resp).unwrap_or_default();
-                let response = Response::from_string(json).with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-                );
+                let response = Response::from_string(json)
+                    .with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                    )
+                    .with_header(Self::cors_header());
                 let _ = request.respond(response);
             } else if url == "/verify" && request.method() == &tiny_http::Method::Post {
                 let resp = Self::handle_verify(&body);
                 let json = serde_json::to_string(&resp).unwrap_or_default();
-                let response = Response::from_string(json).with_header(
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-                );
+                let response = Response::from_string(json)
+                    .with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                    )
+                    .with_header(Self::cors_header());
+                let _ = request.respond(response);
+            } else if url == "/compile" && request.method() == &tiny_http::Method::Post {
+                let resp = Self::handle_compile(&body);
+                let json = serde_json::to_string(&resp).unwrap_or_default();
+                let response = Response::from_string(json)
+                    .with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                    )
+                    .with_header(Self::cors_header());
                 let _ = request.respond(response);
             } else {
-                let response = Response::from_string("AIPL Agent Server Online. Use /eval or /verify").with_status_code(200);
+                let response = Response::from_string("AIPL Agent Server Online. Use /eval, /verify, or /compile")
+                    .with_status_code(200)
+                    .with_header(Self::cors_header());
                 let _ = request.respond(response);
             }
         }
@@ -134,4 +157,64 @@ impl AgentServer {
             },
         }
     }
+
+    /// Parses, type-checks, and compiles raw AIPL source (the POST body) to a real
+    /// WebAssembly module, returned base64-encoded so browser hosts (which cannot
+    /// invoke the Rust toolchain directly) can `WebAssembly.instantiate` it.
+    fn handle_compile(body: &str) -> CompileResponse {
+        let module = match Parser::parse(body) {
+            Ok(m) => m,
+            Err(e) => {
+                return CompileResponse {
+                    success: false,
+                    wasm_base64: None,
+                    error: Some(format!("Parse error: {}", e)),
+                }
+            }
+        };
+
+        let mut checker = TypeChecker::new();
+        if let Err(e) = checker.check_module(&module) {
+            return CompileResponse {
+                success: false,
+                wasm_base64: None,
+                error: Some(format!("Type check error: {}", e)),
+            };
+        }
+
+        match WasmCompiler::compile(&module) {
+            Ok(bytes) => CompileResponse {
+                success: true,
+                wasm_base64: Some(base64_encode(&bytes)),
+                error: None,
+            },
+            Err(e) => CompileResponse {
+                success: false,
+                wasm_base64: None,
+                error: Some(format!("Wasm codegen error: {}", e)),
+            },
+        }
+    }
+
+    fn cors_header() -> tiny_http::Header {
+        tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap()
+    }
+}
+
+/// Minimal RFC 4648 base64 encoder. Hand-rolled instead of pulling in a crate so the
+/// RPC boundary stays as small a non-AIPL surface as possible.
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(CHARS[((n >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
 }
