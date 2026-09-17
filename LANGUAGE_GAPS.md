@@ -24,6 +24,54 @@
 > `wasmtime` loading and calling the newly-compiled WASM module directly. The
 > parser (tokens → AST) and a real code generator are still stubbed - that's
 > the next piece.
+>
+> `(import name)` / `(import name as alias)` now works end-to-end (parser +
+> `src/resolver.rs`), flattening imported modules into one qualified-name
+> program before the existing checker/VM/wasm backend ever sees it - the
+> `sovereign_toolchain.aipl` copy-paste problem in §6.4 no longer has to exist
+> for new code. **But `resolver.rs` is explicitly temporary Rust scaffolding**,
+> not a permanent part of the toolchain: AIPL has no file I/O opcode at all
+> today, so import resolution (finding/reading/merging files) cannot yet be
+> expressed in AIPL. Once minimal WASI file primitives are added, this Rust
+> module should be deleted and rewritten as real AIPL source. Don't mistake
+> its existence for "imports are self-hosted" - they aren't yet.
+>
+> `parse_ast` is now real too - pure AIPL, no Rust changes needed for this
+> one. It's a recursive-descent reader (`parse_node`) producing a generic
+> S-expression tree in memory (atoms + parenthesized/bracketed groups, 16
+> bytes/node), not yet a grammar-aware typed AST - that's the next piece
+> (walking this tree and dispatching on head symbols like `if`/`let`/`call`
+> the way `src/parser.rs` does). Mutable state shared across the recursive
+> calls (the token position, the node-allocator cursor) lives in memory cells
+> rather than being threaded through return values, since AIPL functions only
+> return one value - documented at the top of that section in
+> `aipl_src/compiler.aipl`. Verified the same way as the tokenizer: real
+> content-assertion tests, checked to actually fail on a wrong assertion, run
+> through both the VM and real compiled WASM.
+>
+> Writing this surfaced a genuine language design tension worth flagging
+> here rather than just fixing quietly: **`set!` has a real AIPL type (the
+> variable's declared type) but its wasm codegen never produces a value on
+> the stack.** Two `if` branches that each `set!` a *differently-typed*
+> variable (e.g. one sets a `bool` flag, the other a running `i32` counter)
+> can't satisfy both the type checker (which requires the two branches to
+> have the same AIPL type) and the wasm backend (which requires them to have
+> the same actual stack effect) using `set!`'s value alone - because that
+> value is fictional. The workaround used here is to end both branches in an
+> explicit, real value (a trailing `0` literal, or a self-referential
+> `(set! x x)` no-op) so both properties line up. A real fix would probably
+> make `set!`'s AIPL type `void` rather than the variable's type, matching
+> what it actually compiles to - but that's a breaking grammar/type-system
+> change, not something to make as a side effect of writing a parser.
+>
+> `compile_to_target`/`emit_wasm_binary`/`compile_aipl` are now *more*
+> visibly broken than before, on purpose: they still read the AST using the
+> old hardcoded 4-field layout (`(mem.load32 (+ ast_ptr 12))` for "the
+> opcode"), which no longer matches the real tree `parse_ast` now produces.
+> This isn't a regression - those functions were never functionally correct
+> (§2) - but don't be confused by them producing different garbage than
+> before. Rewriting `emit_wasm_binary` to actually walk the real tree is the
+> next milestone.
 
 Companion document to [AIPL_SPEC.md](AIPL_SPEC.md) and [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md).
 Where those describe what AIPL is supposed to do, this describes what it actually

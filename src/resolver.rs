@@ -1,5 +1,16 @@
 //! Import/module resolution.
 //!
+//! STATUS: this is deliberately temporary, Stage-0-only scaffolding, not a
+//! permanent part of the toolchain. AIPL has no file I/O primitive today (no
+//! opcode can open/read a file), so this logic - finding files, parsing them,
+//! merging and renaming functions - cannot be expressed in AIPL yet. Once
+//! minimal WASI file I/O (path_open/fd_read/fd_close) is wired into the wasm
+//! backend, this entire module should be deleted and rewritten as real AIPL
+//! source (e.g. `aipl_src/resolver.aipl`) that calls those primitives
+//! directly. Nothing here should grow new unrelated functionality in the
+//! meantime - it exists only so `(import ...)` works for the current Rust
+//! bootstrap CLI while the self-hosted compiler catches up.
+//!
 //! AIPL's import model is deliberately simple, no dynamic linking: every
 //! `(import name)` or `(import name as alias)` is resolved at compile time by
 //! finding `name.aipl`, parsing it, and merging its functions into one flat
