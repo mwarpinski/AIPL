@@ -1,105 +1,108 @@
 ;; Native Stage 0 File Disk I/O Module
-;; Written 100% in canonical AIPL S-Expressions
-;; Provides bare-metal Linux syscall file operations and high-level disk buffer reader/writer utilities.
+;; Thin AIPL wrappers over the real fs.open/fs.read/fs.write/fs.close opcodes.
+;; These opcodes perform genuine OS file I/O via Rust's std::fs in the VM
+;; (see src/vm.rs) - real syscalls, not a simulation. The previous version of
+;; this file claimed "bare-metal Linux syscall file operations" while its
+;; fs_read/fs_write bodies just echoed the byte-count argument back without
+;; touching any file - that has been replaced with the real opcodes below.
+;; The wasm backend does not support these yet (needs WASI file I/O imports);
+;; compiling a program that uses them to .wasm is a compile error, not a
+;; silent no-op - see src/compiler/wasm.rs.
 
 (module file_io
 
-  ;; Low-level Linux Syscall 2 (sys_open)
-  ;; Open flags: O_RDONLY=0, O_WRONLY|O_CREAT|O_TRUNC=577 (0x241)
-  ;; Default permissions mode: 420 (0644 octal)
-  (fn fs_open [path_ptr:i32 flags:i32 mode:i32] -> i32
+  ;; path_ptr/path_len point at UTF-8 path bytes in linear memory (matching
+  ;; WASI's path_open convention, so this signature won't need to change once
+  ;; a wasm+WASI backend exists). flags: 0 = read-only, non-zero =
+  ;; write/create/truncate. Returns a file descriptor, or -1 on error.
+  (fn fs_open [path_ptr:i32 path_len:i32 flags:i32] -> i32
     (req (gte path_ptr 0))
-    (req (gte flags 0))
-    (req (gte mode 0))
-    (ens (gt res -100))
-    ;; Syscall open: return pseudo-fd based on offset for VM, bare-metal syscall on ELF
-    (if (eq flags 0)
-      10  ;; Read file handle descriptor
-      11)) ;; Write file handle descriptor
+    (req (gt path_len 0))
+    (fs.open path_ptr path_len flags))
 
-  ;; Low-level Syscall 0 (sys_read)
-  ;; Reads up to count bytes from fd into memory offset buf_ptr
-  (fn fs_read [fd:i32 buf_ptr:i32 count:i32] -> i32
-    (req (gte fd 0))
+  ;; Reads up to max_len bytes from fd into linear memory at buf_ptr. Returns
+  ;; the number of bytes actually read, or -1 on error.
+  (fn fs_read [fd:i32 buf_ptr:i32 max_len:i32] -> i32
     (req (gte buf_ptr 0))
-    (req (gt count 0))
-    (ens (gte res 0))
-    ;; Simulated memory read verification payload when in VM harness mode
-    (let bytes_read:i32 count)
-    bytes_read)
+    (req (gt max_len 0))
+    (fs.read fd buf_ptr max_len))
 
-  ;; Low-level Syscall 1 (sys_write)
-  ;; Writes count bytes from memory offset buf_ptr to fd
-  (fn fs_write [fd:i32 buf_ptr:i32 count:i32] -> i32
-    (req (gte fd 0))
+  ;; Writes len bytes from linear memory at buf_ptr to fd. Returns the number
+  ;; of bytes actually written, or -1 on error.
+  (fn fs_write [fd:i32 buf_ptr:i32 len:i32] -> i32
     (req (gte buf_ptr 0))
-    (req (gt count 0))
-    (ens (gte res 0))
-    (let bytes_written:i32 count)
-    bytes_written)
+    (req (gt len 0))
+    (fs.write fd buf_ptr len))
 
-  ;; Low-level Syscall 3 (sys_close)
-  ;; Closes file descriptor
+  ;; Closes fd. Returns 0 on success, -1 on error.
   (fn fs_close [fd:i32] -> i32
-    (req (gte fd 0))
-    (ens (eq res 0))
-    0)
+    (fs.close fd))
 
-  ;; High-Level Disk File Utility: Read entire file into linear memory buffer
-  ;; Returns total bytes read into out_buf_ptr
-  (fn fs_read_file [path_ptr:i32 out_buf_ptr:i32 max_len:i32] -> i32
+  ;; High-level: open (create/truncate), write len bytes from buf_ptr, close.
+  ;; Returns bytes written, or -1 if the file couldn't be opened.
+  (fn fs_write_file [path_ptr:i32 path_len:i32 buf_ptr:i32 len:i32] -> i32
     (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (req (gte buf_ptr 0))
+    (req (gt len 0))
+    (let fd:i32 (call fs_open path_ptr path_len 1))
+    (if (lt fd 0)
+        -1
+        (block
+          (let written:i32 (call fs_write fd buf_ptr len))
+          (let _c:i32 (call fs_close fd))
+          written)))
+
+  ;; High-level: open (read-only), read up to max_len bytes into out_buf_ptr,
+  ;; close. Returns bytes read, or -1 if the file couldn't be opened.
+  (fn fs_read_file [path_ptr:i32 path_len:i32 out_buf_ptr:i32 max_len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
     (req (gte out_buf_ptr 0))
     (req (gt max_len 0))
-    (ens (gte res 0))
-    (let fd:i32 (call fs_open path_ptr 0 0))
-    (let bytes_read:i32 (call fs_read fd out_buf_ptr max_len))
-    (let _close_status:i32 (call fs_close fd))
-    bytes_read)
+    (let fd:i32 (call fs_open path_ptr path_len 0))
+    (if (lt fd 0)
+        -1
+        (block
+          (let n:i32 (call fs_read fd out_buf_ptr max_len))
+          (let _c:i32 (call fs_close fd))
+          n)))
 
-  ;; High-Level Disk File Utility: Write binary buffer payload from memory to file
-  ;; Flags: O_WRONLY | O_CREAT | O_TRUNC (577), Mode: 0644 (420)
-  (fn fs_write_file [path_ptr:i32 in_buf_ptr:i32 len:i32] -> i32
-    (req (gte path_ptr 0))
-    (req (gte in_buf_ptr 0))
-    (req (gt len 0))
-    (ens (gte res 0))
-    (let fd:i32 (call fs_open path_ptr 577 420))
-    (let bytes_written:i32 (call fs_write fd in_buf_ptr len))
-    (let _close_status:i32 (call fs_close fd))
-    bytes_written)
-
-  ;; Dynamic Bump Pointer Allocator
-  (fn aipl_heap_alloc [size:i32] -> i32
-    (req (gt size 0))
-    (ens (gte res 8192))
-    (let current_ptr:i32 (mem.load32 0))
-    (if (eq current_ptr 0)
-      (set! current_ptr 8192)
-      (set! current_ptr current_ptr))
-    (let allocated_ptr:i32 current_ptr)
-    (mem.store32 0 (+ current_ptr size))
-    allocated_ptr)
-
-  ;; Master Disk I/O Self-Test Harness
-  ;; Verifies memory buffer read/write roundtrip and syscall return codes
+  ;; Master Disk I/O Self-Test: writes real bytes to a real file on disk,
+  ;; reads them back, and verifies an exact byte-for-byte match - this is a
+  ;; genuine round trip through the OS filesystem, not a self-fulfilling
+  ;; count-echo. The caller is responsible for deleting the file afterward
+  ;; (AIPL has no delete opcode yet); see tests/test_v2.rs for the Rust-side
+  ;; cleanup when this runs under `cargo test`.
   (fn run_file_io_tests [] -> i32
-    (let path_buf:i32 (call aipl_heap_alloc 64))
-    (let test_buf:i32 (call aipl_heap_alloc 1024))
-    (let read_buf:i32 (call aipl_heap_alloc 1024))
+    (mem.store8 (+ 400 0) 97) (mem.store8 (+ 400 1) 105) (mem.store8 (+ 400 2) 112)
+    (mem.store8 (+ 400 3) 108) (mem.store8 (+ 400 4) 95) (mem.store8 (+ 400 5) 102)
+    (mem.store8 (+ 400 6) 105) (mem.store8 (+ 400 7) 108) (mem.store8 (+ 400 8) 101)
+    (mem.store8 (+ 400 9) 105) (mem.store8 (+ 400 10) 111) (mem.store8 (+ 400 11) 95)
+    (mem.store8 (+ 400 12) 115) (mem.store8 (+ 400 13) 101) (mem.store8 (+ 400 14) 108)
+    (mem.store8 (+ 400 15) 102) (mem.store8 (+ 400 16) 116) (mem.store8 (+ 400 17) 101)
+    (mem.store8 (+ 400 18) 115) (mem.store8 (+ 400 19) 116) (mem.store8 (+ 400 20) 46)
+    (mem.store8 (+ 400 21) 116) (mem.store8 (+ 400 22) 109) (mem.store8 (+ 400 23) 112)
+    (let path_len:i32 24)
 
-    ;; Store string bytes "(module test)" inside dynamic test_buf
-    (mem.store32 (+ test_buf 0) 40)   ;; '('
-    (mem.store32 (+ test_buf 1) 109)  ;; 'm'
-    (mem.store32 (+ test_buf 2) 111)  ;; 'o'
-    (mem.store32 (+ test_buf 3) 100)  ;; 'd'
+    (mem.store8 (+ 500 0) 82) (mem.store8 (+ 500 1) 69) (mem.store8 (+ 500 2) 65)
+    (mem.store8 (+ 500 3) 76) (mem.store8 (+ 500 4) 45) (mem.store8 (+ 500 5) 68)
+    (mem.store8 (+ 500 6) 73) (mem.store8 (+ 500 7) 83) (mem.store8 (+ 500 8) 75)
+    (mem.store8 (+ 500 9) 45) (mem.store8 (+ 500 10) 67) (mem.store8 (+ 500 11) 79)
+    (mem.store8 (+ 500 12) 78) (mem.store8 (+ 500 13) 84) (mem.store8 (+ 500 14) 69)
+    (mem.store8 (+ 500 15) 78) (mem.store8 (+ 500 16) 84)
+    (let payload_len:i32 17)
 
-    ;; Test fs_write_file
-    (let write_res:i32 (call fs_write_file path_buf test_buf 13))
+    (let written:i32 (call fs_write_file 400 path_len 500 payload_len))
+    (let read_n:i32 (call fs_read_file 400 path_len 600 64))
 
-    ;; Test fs_read_file
-    (let read_res:i32 (call fs_read_file path_buf read_buf 13))
+    (let i:i32 0)
+    (let mismatch:i32 0)
+    (loop i 0 16 1
+      (if (neq (mem.load8 (+ 600 i)) (mem.load8 (+ 500 i)))
+          (set! mismatch (+ mismatch 1))
+          (set! mismatch mismatch)))
 
-    (if (and (eq write_res 13) (eq read_res 13))
-      1  ;; SUCCESS
-      0))))
+    (if (and (eq written 17) (and (eq read_n 17) (eq mismatch 0)))
+        1
+        0)))

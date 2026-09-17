@@ -1,5 +1,9 @@
 use crate::ast::*;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -13,29 +17,76 @@ pub enum Value {
     Void,
 }
 
-pub struct VM {
-    functions: HashMap<String, FnDef>,
-    globals: HashMap<String, Value>,
-    pub linear_memory: Vec<u8>,
+/// Linear memory and the bump-allocator cursor, shared (via `Arc<Mutex<..>>`
+/// on `VM`) across every real OS thread spawned by `thread.spawn` - this is
+/// what makes `atomic.*` and `mem.*` ops actually mean something under real
+/// concurrency, instead of each thread getting its own disconnected copy.
+pub struct SharedMemory {
+    pub bytes: Vec<u8>,
     pub heap_ptr: usize,
-    pub locks: HashMap<usize, bool>,
+}
+
+pub struct VM {
+    functions: Arc<HashMap<String, FnDef>>,
+    globals: HashMap<String, Value>,
+    pub shared: Arc<Mutex<SharedMemory>>,
+    fd_table: HashMap<i32, File>,
+    next_fd: i32,
+    thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
+    next_thread_id: i32,
 }
 
 impl VM {
     pub fn new() -> Self {
         VM {
-            functions: HashMap::new(),
+            functions: Arc::new(HashMap::new()),
             globals: HashMap::new(),
-            linear_memory: vec![0u8; 1024 * 1024], // 1MB linear Wasm memory
-            heap_ptr: 1024,
-            locks: HashMap::new(),
+            shared: Arc::new(Mutex::new(SharedMemory {
+                bytes: vec![0u8; 1024 * 1024], // 1MB linear Wasm memory
+                heap_ptr: 1024,
+            })),
+            fd_table: HashMap::new(),
+            next_fd: 3,
+            thread_handles: HashMap::new(),
+            next_thread_id: 1,
         }
     }
 
-    pub fn load_module(&mut self, module: Module) {
-        for f in module.functions {
-            self.functions.insert(f.name.clone(), f);
+    /// A fresh VM sharing this one's function table and linear memory - used
+    /// by `thread.spawn` so the spawned OS thread runs against the same
+    /// program and the same memory, but with its own call stack, its own
+    /// file descriptors, and its own thread-handle table (join handles
+    /// aren't transferable across threads in this model).
+    fn spawn_child(&self) -> VM {
+        VM {
+            functions: Arc::clone(&self.functions),
+            globals: HashMap::new(),
+            shared: Arc::clone(&self.shared),
+            fd_table: HashMap::new(),
+            next_fd: 3,
+            thread_handles: HashMap::new(),
+            next_thread_id: 1,
         }
+    }
+
+    /// Convenience accessor for host code (CLI, agent server, tests) that
+    /// needs to seed or inspect linear memory without reaching into the
+    /// mutex directly.
+    pub fn read_bytes(&self, ptr: usize, len: usize) -> Vec<u8> {
+        self.shared.lock().unwrap().bytes[ptr..ptr + len].to_vec()
+    }
+
+    pub fn write_bytes(&self, ptr: usize, data: &[u8]) {
+        let mut mem = self.shared.lock().unwrap();
+        mem.bytes[ptr..ptr + data.len()].copy_from_slice(data);
+    }
+
+    pub fn load_module(&mut self, module: Module) {
+        let mut map = (*self.functions).clone();
+        for f in module.functions {
+            map.insert(f.name.clone(), f);
+        }
+        self.functions = Arc::new(map);
     }
 
     pub fn invoke(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -287,10 +338,11 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.load8 requires Int ptr".to_string()),
                 };
-                if ptr >= self.linear_memory.len() {
+                let mem = self.shared.lock().unwrap();
+                if ptr >= mem.bytes.len() {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
-                Ok(Value::Int(self.linear_memory[ptr] as i64))
+                Ok(Value::Int(mem.bytes[ptr] as i64))
             }
             OpCode::MemStore8 => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
@@ -301,10 +353,11 @@ impl VM {
                     Value::Int(i) => (i & 0xFF) as u8,
                     _ => return Err("mem.store8 requires Int val".to_string()),
                 };
-                if ptr >= self.linear_memory.len() {
+                let mut mem = self.shared.lock().unwrap();
+                if ptr >= mem.bytes.len() {
                     return Err(format!("Memory store out of bounds: ptr {}", ptr));
                 }
-                self.linear_memory[ptr] = val;
+                mem.bytes[ptr] = val;
                 Ok(Value::Void)
             }
             OpCode::MemLoad32 => {
@@ -312,10 +365,11 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.load32 requires Int ptr".to_string()),
                 };
-                if ptr + 4 > self.linear_memory.len() {
+                let mem = self.shared.lock().unwrap();
+                if ptr + 4 > mem.bytes.len() {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
-                let bytes: [u8; 4] = self.linear_memory[ptr..ptr + 4].try_into().unwrap();
+                let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
                 Ok(Value::Int(i32::from_le_bytes(bytes) as i64))
             }
             OpCode::MemLoad64 => {
@@ -323,10 +377,11 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.load64 requires Int ptr".to_string()),
                 };
-                if ptr + 8 > self.linear_memory.len() {
+                let mem = self.shared.lock().unwrap();
+                if ptr + 8 > mem.bytes.len() {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
-                let bytes: [u8; 8] = self.linear_memory[ptr..ptr + 8].try_into().unwrap();
+                let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
                 Ok(Value::Int(i64::from_le_bytes(bytes)))
             }
             OpCode::MemStore32 => {
@@ -338,10 +393,11 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
                 };
-                if ptr + 4 > self.linear_memory.len() {
+                let mut mem = self.shared.lock().unwrap();
+                if ptr + 4 > mem.bytes.len() {
                     return Err(format!("Memory store out of bounds: ptr {}", ptr));
                 }
-                self.linear_memory[ptr..ptr + 4].copy_from_slice(&val.to_le_bytes());
+                mem.bytes[ptr..ptr + 4].copy_from_slice(&val.to_le_bytes());
                 Ok(Value::Void)
             }
             OpCode::MemStore64 => {
@@ -353,10 +409,11 @@ impl VM {
                     Value::Int(i) => i,
                     _ => return Err("mem.store64 requires Int val".to_string()),
                 };
-                if ptr + 8 > self.linear_memory.len() {
+                let mut mem = self.shared.lock().unwrap();
+                if ptr + 8 > mem.bytes.len() {
                     return Err(format!("Memory store out of bounds: ptr {}", ptr));
                 }
-                self.linear_memory[ptr..ptr + 8].copy_from_slice(&val.to_le_bytes());
+                mem.bytes[ptr..ptr + 8].copy_from_slice(&val.to_le_bytes());
                 Ok(Value::Void)
             }
             OpCode::MemAlloc => {
@@ -364,11 +421,16 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.alloc requires Int size".to_string()),
                 };
-                let allocated_ptr = self.heap_ptr;
-                self.heap_ptr += size;
+                let mut mem = self.shared.lock().unwrap();
+                let allocated_ptr = mem.heap_ptr;
+                mem.heap_ptr += size;
                 Ok(Value::Int(allocated_ptr as i64))
             }
             OpCode::MemFree => Ok(Value::Void),
+            // Atomics: the whole read-modify-write happens while holding the
+            // one lock on `shared`, so these are genuinely atomic across real
+            // OS threads spawned by thread.spawn, not just single-threaded
+            // bookkeeping.
             OpCode::AtomicAdd => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
@@ -378,10 +440,11 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
                 };
-                let bytes: [u8; 4] = self.linear_memory[ptr..ptr + 4].try_into().unwrap();
+                let mut mem = self.shared.lock().unwrap();
+                let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
                 let prev = i32::from_le_bytes(bytes);
-                let new_val = prev + val;
-                self.linear_memory[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
+                let new_val = prev.wrapping_add(val);
+                mem.bytes[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
                 Ok(Value::Int(prev as i64))
             }
             OpCode::AtomicCas => {
@@ -397,29 +460,51 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int new_val".to_string()),
                 };
-                let bytes: [u8; 4] = self.linear_memory[ptr..ptr + 4].try_into().unwrap();
+                let mut mem = self.shared.lock().unwrap();
+                let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
                 let prev = i32::from_le_bytes(bytes);
                 if prev == expected {
-                    self.linear_memory[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
+                    mem.bytes[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
                     Ok(Value::Bool(true))
                 } else {
                     Ok(Value::Bool(false))
                 }
             }
+            // Real spinlock: the memory word at `ptr` (0=unlocked, 1=locked)
+            // IS the lock, shared for real across threads. Each attempt takes
+            // the mutex just long enough to check-and-set, then releases it
+            // before retrying, so a thread holding the AIPL-level lock isn't
+            // blocked from calling atomic.unlock by a spinning contender.
             OpCode::AtomicLock => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
-                self.locks.insert(ptr, true);
-                Ok(Value::Void)
+                loop {
+                    {
+                        let mut mem = self.shared.lock().unwrap();
+                        if ptr + 4 > mem.bytes.len() {
+                            return Err(format!("atomic.lock out of bounds: ptr {}", ptr));
+                        }
+                        let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
+                        if i32::from_le_bytes(bytes) == 0 {
+                            mem.bytes[ptr..ptr + 4].copy_from_slice(&1i32.to_le_bytes());
+                            return Ok(Value::Void);
+                        }
+                    }
+                    std::thread::yield_now();
+                }
             }
             OpCode::AtomicUnlock => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
-                self.locks.insert(ptr, false);
+                let mut mem = self.shared.lock().unwrap();
+                if ptr + 4 > mem.bytes.len() {
+                    return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
+                }
+                mem.bytes[ptr..ptr + 4].copy_from_slice(&0i32.to_le_bytes());
                 Ok(Value::Void)
             }
             OpCode::Mul => {
@@ -524,6 +609,155 @@ impl VM {
                     }
                 }
                 Ok(Value::Void)
+            }
+            // Real file I/O: path is read as UTF-8 bytes out of linear memory
+            // (pointer+length, not a language-level string) so this matches
+            // the pointer/length convention WASI's path_open needs too - the
+            // signature won't need to change when a wasm+WASI backend for
+            // this lands. flags: 0 = read-only, non-zero = write/create/truncate.
+            OpCode::FsOpen => {
+                let path_ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.open requires Int path_ptr".to_string()),
+                };
+                let path_len = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.open requires Int path_len".to_string()),
+                };
+                let flags = match self.eval_expr(&args[2], scope)? {
+                    Value::Int(i) => i,
+                    _ => return Err("fs.open requires Int flags".to_string()),
+                };
+                let path_bytes = self.read_bytes(path_ptr, path_len);
+                let path_str = match std::str::from_utf8(&path_bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(Value::Int(-1)),
+                };
+                let opened = if flags == 0 {
+                    File::open(path_str)
+                } else {
+                    OpenOptions::new().write(true).create(true).truncate(true).open(path_str)
+                };
+                match opened {
+                    Ok(file) => {
+                        let fd = self.next_fd;
+                        self.next_fd += 1;
+                        self.fd_table.insert(fd, file);
+                        Ok(Value::Int(fd as i64))
+                    }
+                    Err(_) => Ok(Value::Int(-1)),
+                }
+            }
+            OpCode::FsRead => {
+                let fd = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("fs.read requires Int fd".to_string()),
+                };
+                let buf_ptr = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.read requires Int buf_ptr".to_string()),
+                };
+                let max_len = match self.eval_expr(&args[2], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.read requires Int max_len".to_string()),
+                };
+                let file = match self.fd_table.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return Ok(Value::Int(-1)),
+                };
+                let mut buf = vec![0u8; max_len];
+                match file.read(&mut buf) {
+                    Ok(n) => {
+                        self.write_bytes(buf_ptr, &buf[..n]);
+                        Ok(Value::Int(n as i64))
+                    }
+                    Err(_) => Ok(Value::Int(-1)),
+                }
+            }
+            OpCode::FsWrite => {
+                let fd = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("fs.write requires Int fd".to_string()),
+                };
+                let buf_ptr = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.write requires Int buf_ptr".to_string()),
+                };
+                let len = match self.eval_expr(&args[2], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.write requires Int len".to_string()),
+                };
+                let data = self.read_bytes(buf_ptr, len);
+                let file = match self.fd_table.get_mut(&fd) {
+                    Some(f) => f,
+                    None => return Ok(Value::Int(-1)),
+                };
+                match file.write(&data) {
+                    Ok(n) => Ok(Value::Int(n as i64)),
+                    Err(_) => Ok(Value::Int(-1)),
+                }
+            }
+            OpCode::FsClose => {
+                let fd = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("fs.close requires Int fd".to_string()),
+                };
+                if self.fd_table.remove(&fd).is_some() {
+                    Ok(Value::Int(0))
+                } else {
+                    Ok(Value::Int(-1))
+                }
+            }
+            // Real OS thread spawn: the named function is looked up in the
+            // SAME function table (Arc-shared, not copied) and run on a real
+            // std::thread with a fresh child VM that shares `self.shared`
+            // linear memory. AIPL has no first-class function values yet, so
+            // the target function is named by (ptr,len) into linear memory -
+            // matching the fs.* pointer/length convention above - rather than
+            // passed as a function pointer.
+            OpCode::ThreadSpawn => {
+                let name_ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("thread.spawn requires Int fn_name_ptr".to_string()),
+                };
+                let name_len = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("thread.spawn requires Int fn_name_len".to_string()),
+                };
+                let arg = match self.eval_expr(&args[2], scope)? {
+                    Value::Int(i) => i,
+                    _ => return Err("thread.spawn requires Int arg".to_string()),
+                };
+                let name_bytes = self.read_bytes(name_ptr, name_len);
+                let fn_name = match String::from_utf8(name_bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Err("thread.spawn: function name is not valid UTF-8".to_string()),
+                };
+                if !self.functions.contains_key(&fn_name) {
+                    return Err(format!("thread.spawn: unknown function '{}'", fn_name));
+                }
+                let mut child = self.spawn_child();
+                let handle = std::thread::spawn(move || child.invoke(&fn_name, vec![Value::Int(arg)]));
+                let tid = self.next_thread_id;
+                self.next_thread_id += 1;
+                self.thread_handles.insert(tid, handle);
+                Ok(Value::Int(tid as i64))
+            }
+            OpCode::ThreadJoin => {
+                let tid = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("thread.join requires Int handle".to_string()),
+                };
+                let handle = match self.thread_handles.remove(&tid) {
+                    Some(h) => h,
+                    None => return Err(format!("thread.join: unknown thread handle {}", tid)),
+                };
+                match handle.join() {
+                    Ok(Ok(Value::Int(i))) => Ok(Value::Int(i)),
+                    Ok(Ok(_)) => Ok(Value::Int(0)),
+                    Ok(Err(e)) => Err(format!("Spawned thread's function failed: {}", e)),
+                    Err(_) => Err("Spawned thread panicked".to_string()),
+                }
             }
             _ => Ok(Value::Int(0)),
         }

@@ -1,194 +1,127 @@
 # AIPL Language Gap Analysis
 
-> **Update:** Rust is now installed (via WSL) and `aipl_src/compiler.aipl`'s
-> tokenizer has been rewritten to actually consume its input (see §2's stub
-> description - that part is now fixed). While making it compile to real WASM,
-> three independent, previously-undiscovered bugs turned up in
-> `src/compiler/wasm.rs` and were fixed:
-> 1. `is_void_expr` had no case for `Expr::If`, so any `if`/`block` whose
->    "voidness" depended on a *nested* `if` was misclassified, corrupting the
->    wasm value stack for realistic (non-trivial) control flow.
-> 2. Intermediate statements in a block/loop body that produce a value nothing
->    consumes were never `drop`ped, and a `call` to a void-returning function
->    was assumed to produce a value it doesn't - both caused the same class of
->    stack-balance error.
-> 3. A `loop`'s induction variable was never allocated a wasm local slot
->    (`collect_lets` didn't know about it), so `ctx.locals.get(var)` silently
->    failed and the codegen dropped the entire loop body while still leaking
->    the `start` value onto the stack with nothing to consume it.
->
-> A real `mem.load8`/`mem.store8` opcode pair was also added end-to-end
-> (parser/checker/VM/wasm) to replace the fragile "4-byte store for 1 byte"
-> convention described in §3 - the new tokenizer uses it directly. All of this
-> was verified with the real `cargo test` suite (still 15/15 passing) plus
-> `wasmtime` loading and calling the newly-compiled WASM module directly. The
-> parser (tokens → AST) and a real code generator are still stubbed - that's
-> the next piece.
->
-> `(import name)` / `(import name as alias)` now works end-to-end (parser +
-> `src/resolver.rs`), flattening imported modules into one qualified-name
-> program before the existing checker/VM/wasm backend ever sees it - the
-> `sovereign_toolchain.aipl` copy-paste problem in §6.4 no longer has to exist
-> for new code. **But `resolver.rs` is explicitly temporary Rust scaffolding**,
-> not a permanent part of the toolchain: AIPL has no file I/O opcode at all
-> today, so import resolution (finding/reading/merging files) cannot yet be
-> expressed in AIPL. Once minimal WASI file primitives are added, this Rust
-> module should be deleted and rewritten as real AIPL source. Don't mistake
-> its existence for "imports are self-hosted" - they aren't yet.
->
-> `parse_ast` is now real too - pure AIPL, no Rust changes needed for this
-> one. It's a recursive-descent reader (`parse_node`) producing a generic
-> S-expression tree in memory (atoms + parenthesized/bracketed groups, 16
-> bytes/node), not yet a grammar-aware typed AST - that's the next piece
-> (walking this tree and dispatching on head symbols like `if`/`let`/`call`
-> the way `src/parser.rs` does). Mutable state shared across the recursive
-> calls (the token position, the node-allocator cursor) lives in memory cells
-> rather than being threaded through return values, since AIPL functions only
-> return one value - documented at the top of that section in
-> `aipl_src/compiler.aipl`. Verified the same way as the tokenizer: real
-> content-assertion tests, checked to actually fail on a wrong assertion, run
-> through both the VM and real compiled WASM.
->
-> Writing this surfaced a genuine language design tension worth flagging
-> here rather than just fixing quietly: **`set!` has a real AIPL type (the
-> variable's declared type) but its wasm codegen never produces a value on
-> the stack.** Two `if` branches that each `set!` a *differently-typed*
-> variable (e.g. one sets a `bool` flag, the other a running `i32` counter)
-> can't satisfy both the type checker (which requires the two branches to
-> have the same AIPL type) and the wasm backend (which requires them to have
-> the same actual stack effect) using `set!`'s value alone - because that
-> value is fictional. The workaround used here is to end both branches in an
-> explicit, real value (a trailing `0` literal, or a self-referential
-> `(set! x x)` no-op) so both properties line up. A real fix would probably
-> make `set!`'s AIPL type `void` rather than the variable's type, matching
-> what it actually compiles to - but that's a breaking grammar/type-system
-> change, not something to make as a side effect of writing a parser.
->
-> `compile_to_target`/`emit_wasm_binary`/`compile_aipl` are now *more*
-> visibly broken than before, on purpose: they still read the AST using the
-> old hardcoded 4-field layout (`(mem.load32 (+ ast_ptr 12))` for "the
-> opcode"), which no longer matches the real tree `parse_ast` now produces.
-> This isn't a regression - those functions were never functionally correct
-> (§2) - but don't be confused by them producing different garbage than
-> before. Rewriting `emit_wasm_binary` to actually walk the real tree is the
-> next milestone.
+Companion document to [AIPL_SPEC.md](AIPL_SPEC.md), [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md),
+and [PROGRESS.md](PROGRESS.md) (session handoff / how-to-verify notes). Where
+those describe what AIPL is supposed to do, this describes what it actually
+does *right now*, kept current as work lands rather than left to accumulate
+contradictory update notes. If you're an agent (or a human) about to "fix" or
+"add" something below, check the file/line references first — several things
+this document used to call missing have since been built, by more than one
+contributor to this repo.
 
-Companion document to [AIPL_SPEC.md](AIPL_SPEC.md) and [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md).
-Where those describe what AIPL is supposed to do, this describes what it actually
-does today, verified against the real implementation and real compiled output
-(not just the source code). Written for AI agents and contributors picking up
-self-hosting work on this repo.
-
-Verification method: no Rust toolchain, Node, or WASM runtime was available in
-the environment this was written in. `wasmtime` (Python bindings) was installed
-via `pip install wasmtime` to actually load and execute the `.wasm` files
-already committed to this repo, and to call their exported functions with real
-arguments. Everything marked **VERIFIED** below was checked this way, not
-inferred from reading source.
+Verification method: every claim below was checked against the real
+implementation, not inferred from reading source or trusting a self-test's
+own "SUCCESS" return value. A real Rust toolchain and a real WASM runtime
+(`wasmtime`, via Python bindings) are both available in this environment now
+— see [PROGRESS.md](PROGRESS.md) for exact setup/verification commands.
+Anything still marked as a gap here was re-checked against the current code,
+not left over from an earlier pass.
 
 ---
 
-## 1. Empirical findings: committed `.wasm` binaries
+## 1. Committed `.wasm` binaries drift from source
 
-Every `.wasm` file in the repo was loaded with a real, spec-compliant WASM
-runtime (`wasmtime`). Five of seven fail to even instantiate:
+Three committed `.wasm` files still fail to load in a real, spec-compliant
+WASM runtime — re-verified just now, not a stale finding:
 
 | File | Result |
 |---|---|
-| `aipl_compiler.wasm` | Loads. Exports `tokenize`, `parse_ast`, `emit_wasm_binary`, `compile_aipl`, etc. |
+| `aipl_compiler.wasm` | Loads. Exports `tokenize`, `parse_ast`, `emit_wasm_binary`, `compile_aipl`, etc. — but see §2, this binary predates the real tokenizer/parser and was never rebuilt, so it still behaves like the old stub. |
 | `aipl_db.wasm` | **FAILS.** `type mismatch: expected i32 but nothing on stack` at byte offset 327. |
 | `aipl_sovereign_toolchain.wasm` | **FAILS.** `type mismatch: values remaining on stack at end of block` at offset 1107. |
 | `examples/aipl_database/aisql_engine.wasm` | **FAILS.** `type mismatch: expected i32 but nothing on stack` at offset 232. |
 
-**This means the HN clone demo (`hn_clone.html`) was never actually able to run
-its security engine in any spec-compliant WASM host, including real browsers**
-(V8/SpiderMonkey/JSC enforce the same validation rules `wasmtime` does) — not
-just "unverified," but rejected at load time. Hand-decoding the `hn_full_engine.wasm`
-bytecode around offset 221 shows the root cause: the `(^ ...)` (XOR) operation in
-`hash_password` was encoded as opcode `0x85` (`i64.xor`) operating on two `i32`
-locals, instead of `0x73` (`i32.xor`). The **current** `src/compiler/wasm.rs`
-source correctly emits `Instruction::I32Xor` for `OpCode::BitXor` — so this
-binary was built by an older/different version of the compiler and never
-rebuilt. This is a concrete instance of the general problem in critique #7
-(committing compiled binaries instead of building from source): the artifacts
-in the repo no longer match the source that supposedly produced them, and
-nothing caught the drift because nothing here can currently rebuild them to
-compare.
+(The HN clone demo and its `.wasm` files that used to be discussed here —
+`hn_full_engine.wasm`, `hn_cli.wasm`, `examples/hn_clone/*` — were deleted
+from the repo in a later pass ("early testing to make a hacker news clone and
+it was garbage"). That finding no longer applies to anything that exists.)
 
-**Practical consequence of the JS decoupling done earlier this session:** the
-fix to `hn_runner.js` (removing JS fallback math, requiring the real WASM
-engine) means the app will now correctly report "AIPL Wasm engine not loaded"
-when this broken binary fails to instantiate, instead of silently limping along
-on JS math. That is the correct behavior given the binary is genuinely broken —
-but the binary itself still needs to be regenerated once a working compiler is
-available.
+The general lesson stands and is worth keeping: committing compiled binaries
+instead of building from source means artifacts silently drift from the code
+that supposedly produced them, and nothing catches it until someone actually
+tries to load the binary. `aipl_compiler.wasm` at the repo root is a live
+example right now — rebuild it from current `aipl_src/compiler.aipl` before
+trusting it for anything.
 
-## 2. Empirical findings: the "self-hosted compiler" is provably a stub
+## 2. Self-hosted compiler status: tokenizer and parser are real; codegen is not
 
-`aipl_compiler.wasm`'s `compile_aipl(source_ptr, source_len, out_ptr)` was
-called with two completely different inputs written into linear memory:
+This used to say the whole compiler was a stub that ignored its input. That's
+no longer accurate for two of its three stages:
 
-- `"(module a (fn add [x:i32 y:i32] -> i32 (+ x y)))"`
-- `"totally different garbage input !!! 12345 #####"`
+- **`tokenize`** (in `aipl_src/compiler.aipl`) is real: it scans actual source
+  bytes and correctly handles parens/brackets/colons/arrows/symbols/signed-int
+  literals/bools/strings/comments, verified through both the VM and real
+  compiled WASM with content-assertion tests (`run_tokenizer_tests`).
+- **`parse_ast`** is real: a recursive-descent reader (`parse_node`) that
+  turns the token stream into a generic S-expression tree in memory (atoms +
+  parenthesized/bracketed groups, 16 bytes/node) — not yet a grammar-aware
+  typed AST (see the next section), but genuinely reads its input, verified
+  the same way (`run_parser_tests`).
 
-**Both calls returned exactly 42 bytes of byte-for-byte identical output**
-(`0061736d0100000001070160027f7f...`), a fixed WASM module exporting a `main`
-function that does `local.get 0; local.get 1; i32.add; end`. This is not a
-matter of interpretation — `aipl_src/compiler.aipl`'s `tokenize` only reacts to
-`(`/`)` characters, `parse_ast` never reads the tokens it's given (lines 76-85:
-it writes 4 hardcoded constants regardless of input), and `emit_wasm_binary`
-hardcodes an entire fixed module byte-by-byte, reading only one dynamic value
-(`(mem.load32 (+ ast_ptr 12))`, the opcode) out of the AST buffer it just
-hardcoded itself in the previous step. **The compiler does not compile.**
+**Codegen is still the original hardcoded stub, and now more visibly broken
+on purpose**: `emit_wasm_binary`/`compile_to_target`/`compile_aipl` still read
+the AST using the *old* fixed 4-field layout (`(mem.load32 (+ ast_ptr 12))`
+for "the opcode"), which no longer matches the real tree `parse_ast` now
+produces. This isn't a regression — these functions were never functionally
+correct — but don't be confused by them now producing *different* garbage
+than before. **Rewriting `emit_wasm_binary` to walk the real tree and
+generate real WASM instructions is the next milestone**, and the biggest
+remaining piece of the self-hosting story.
 
-`tests/test_v2.rs`'s self-hosting tests only assert the output starts with the
-WASM magic bytes and is `>20` bytes long — exactly the constants this stub
-always emits. They would pass on empty or garbage input and currently give
-false confidence that self-hosting works.
+`tests/test_v2.rs` has several tests that only assert output starts with the
+WASM magic bytes and is some minimum length (`test_self_hosted_wasm_emitter`,
+`test_sovereign_wasm_roundtrip_execution`, and the newer
+`test_e2e_sovereign_pipeline_bootstrap`) — these give false confidence and
+should be rewritten to check varied, non-trivial input once codegen is real.
 
-## 3. A real but subtle finding: no byte-granularity memory op
+**A second, worse copy of this problem exists**: `aipl_src/pipeline.aipl` (a
+separate file, added later) reimplements a tokenizer from scratch that only
+recognizes `(` and `)` — a regression to the *original* stub behavior,
+despite the real tokenizer above already existing and being importable via
+`(import compiler)` (see §6). Its `ast_extract_opcode` reads AST fields
+assuming symbol atoms the regressed tokenizer can never produce, so it
+silently always falls through to a default. Its self-test's own comment
+claims it stores a 34-character source string but the code only writes 5
+bytes then passes the longer length anyway. **`aipl_src/sovereign_toolchain.aipl`**
+separately copy-pasted the *real* `parse_node`/`ast_alloc_node` from
+`compiler.aipl` (a third copy of that logic in the repo) but pasted it against
+a token-kind numbering scheme that doesn't match that file's own (still
+original, char-code-only) tokenizer — it's dead, non-functional code sitting
+in the file. **Don't rewrite the tokenizer or parser again for either of these
+files — wire them to `(import compiler)` and delete the duplicates instead.**
 
-Every AIPL byte-buffer-writer (`wasm_emitter.aipl`, `compiler.aipl`,
-`elf_emitter.aipl`) builds output one byte at a time using `mem.store32` at
-consecutive offsets, e.g.:
+## 3. Byte-granularity memory ops — RESOLVED
 
-```lisp
-(mem.store32 (+ ptr 0) 0)    ;; \0
-(mem.store32 (+ ptr 1) 97)   ;; a
-(mem.store32 (+ ptr 2) 115)  ;; s
-```
+Previously: every byte-buffer-writer relied on `mem.store32` at consecutive
+offsets, which happened to produce correct output by an accident of
+little-endian byte ordering, but had no real single-byte primitive and no
+guard against a stored value silently corrupting neighboring bytes above 255.
 
-`mem.store32` writes 4 little-endian bytes, not 1, so this writes overlapping
-4-byte spans at every offset. Tracing it carefully: this happens to produce the
-*correct* byte sequence, because each store's low byte (the intended value) is
-always written last for its own address by construction of increasing offsets,
-and every stored "byte value" here is `< 256` so its upper 3 bytes are always
-zero. **It works, but by accident of convention, not by design** — there is no
-compiler-enforced guarantee that a value passed to this pattern stays under
-256, no `mem.store8`/`mem.load8` opcode, and no documentation anywhere that
-this is the required idiom. A value that leaks through at 256 or above (e.g.
-from an arithmetic bug) would silently corrupt the following 3 bytes with no
-error. This is a real, missing primitive: **byte-level (8-bit) memory
-load/store**, needed for any serious binary-format, string, or I/O work, not
-just a convention issue.
+**Fixed**: `mem.load8`/`mem.store8` now exist end-to-end (parser, checker, VM,
+WASM backend). The real tokenizer and parser in `compiler.aipl`, and the new
+`file_io.aipl`, use them directly. The old 4-byte-store convention still
+appears in not-yet-rewritten files (`wasm_emitter.aipl`, the stub parts of
+`compiler.aipl`'s codegen, `elf_emitter.aipl`) — not wrong, just worth
+migrating to the real primitive when those files are next touched.
 
 ## 4. Type/opcode coverage matrix (parser → checker → VM → WASM backend)
 
-Cross-referencing `src/ast.rs`'s `OpCode` enum (44 variants) against every
-place it's consumed:
+Cross-referencing `src/ast.rs`'s `OpCode` enum (50 variants — 44 original +
+6 added since) against every place it's consumed:
 
 | OpCode | Parsed | Type-checked | VM (`vm.rs`) | WASM (`wasm.rs`) |
 |---|---|---|---|---|
 | Add, Sub, Mul, Div | Yes | Yes | Yes | Yes |
 | **Mod** (`%`) | Yes | Yes | **No** (falls to `Int(0)`) | **No** (falls to `Nop`) |
 | BitXor, Shl, Shr, BitAnd, BitOr | Yes | Yes | Yes | Yes |
+| **MemLoad8/MemStore8** | Yes | Yes | Yes | Yes |
 | MemLoad32/64, MemStore32/64 | Yes | Yes | Yes | Yes |
 | **MemLoadF32/F64, MemStoreF32/F64** | Yes | Yes | **No** | **No** |
 | MemAlloc | Yes | Yes | Yes (bump allocator, never frees) | **No** |
 | MemFree | Yes | Yes | No-op (documented as no-op) | **No** |
-| AtomicAdd | Yes | Yes | Yes | **No** |
-| **AtomicCas** | Yes | Yes | **No** | **No** |
-| AtomicLock/Unlock | Yes | Yes | Yes (a `HashMap<usize,bool>`, not a real mutex — see §6) | Compiles (marked void) but no real instruction emitted beyond whatever falls through |
+| AtomicAdd | Yes | Yes | Yes (genuinely atomic — see §6) | **No** |
+| AtomicCas | Yes | Yes | **Yes** (real compare-and-swap) | **No** |
+| AtomicLock/Unlock | Yes | Yes | **Yes** (real spinlock on shared memory — see §6, no longer a fake side-table) | **No** (falls to `Nop`) |
 | Eq, Neq, Lt, Lte, Gt, Gte | Yes | Yes | Yes | Yes |
 | And, Or | Yes | Yes | Yes (**does not short-circuit** — see §5) | Yes (compiles to bitwise `i32.and`/`i32.or`, also non-short-circuiting, and wrong if operands aren't exactly 0/1) |
 | Not | Yes | Yes | Yes | Yes |
@@ -197,19 +130,26 @@ place it's consumed:
 | **DomElem, DomMount, DomAppend, DomOnEvent, WebAlert** | Yes | Yes | **No** | **No** (silent `Nop`) |
 | SysPrint | Yes | Yes | Yes | **No** (silent `Nop` — a compiled program can never print) |
 | **SysTime, SysExit** | Yes | Yes | **No** | **No** |
+| **FsOpen/FsRead/FsWrite/FsClose** | Yes | Yes | **Yes** (real `std::fs` I/O) | **No** — explicit compile error, not a silent no-op (needs WASI) |
+| **ThreadSpawn/ThreadJoin** | Yes | Yes | **Yes** (real `std::thread` OS threads) | **No** — explicit compile error, not a silent no-op (needs shared memory + wasi-threads) |
 
-17 of 44 opcodes (39%) silently return `0`/no-op in the VM instead of running
-or erroring. Roughly the same set silently `Nop` in the WASM backend. This
-means any AIPL program using vectors, matrices, arrays, DOM, `sys.exit`,
-`sys.time`, float memory ops, or CAS **executes without any error message and
-produces meaningless results** — this is worse than a crash, because nothing
-tells the author (human or AI) that anything went wrong.
+14 of 50 opcodes still silently return `0`/no-op in the VM instead of running
+or erroring (down from 17 of 44 — `AtomicCas`/`AtomicLock`/`AtomicUnlock`
+moved from the fake column to the real one, and the 6 new ops added real).
+The remaining silent-no-op set (`Mod`, float memory ops, `MemAlloc`/`MemFree`,
+`VecDot`/`MatMul`, `ArrGet`/`ArrSet`, DOM ops, `SysTime`/`SysExit`) means any
+AIPL program using those still executes without any error message and
+produces meaningless results in the VM — worse than a crash, because nothing
+tells the author anything went wrong. The WASM backend's silent-`Nop` set is
+similar, except the 6 new ops explicitly refuse to compile rather than
+joining it — that pattern (loud error over silent no-op) is the right one and
+worth applying to the rest of this list eventually.
 
-Type-level gaps in `src/parser.rs::parse_type` (only `i32/i64/f32/f64/bool/str/
-void/arr/vec` are parseable, despite `Type::Ptr`, `Type::Fn`, and
-`Type::ResultType` existing in the AST): a source file using `(ptr i32)` or
-`(fn (i32) -> i32)` in a type position — both in the grammar in
-`AIPL_SPEC.md` §2 — fails to parse with "Unknown compound type: ptr".
+Type-level gaps in `src/parser.rs::parse_type` are unchanged: only
+`i32/i64/f32/f64/bool/str/void/arr/vec` are parseable, despite `Type::Ptr`,
+`Type::Fn`, and `Type::ResultType` existing in the AST — a source file using
+`(ptr i32)` or `(fn (i32) -> i32)` in a type position still fails to parse
+with "Unknown compound type: ptr".
 
 ## 5. Correctness bugs worth fixing regardless of self-hosting
 
@@ -228,34 +168,44 @@ void/arr/vec` are parseable, despite `Type::Ptr`, `Type::Fn`, and
 - **`Div` never checks for zero in the WASM backend** (only the VM does, via a
   Rust-side `if y == 0` check) — a WASM-compiled program dividing by zero traps
   with an opaque WASM runtime error instead of a diagnosable AIPL error.
-- **`match_result`'s `wasm.rs::collect_lets` doesn't recurse into `Call` args,
-  `MatchResult` bodies, or `Ok`/`Err`** — `let`s declared inside those
-  constructs never get a WASM local slot allocated, which is a real crash
-  waiting to happen (`Wasm Codegen: Unbound local variable`) for any program
-  using those constructs together, not just a style nit.
 - **`Literal::Str` compiles to `I32Const(0)`** in the WASM backend — every
   string literal is silently discarded. Combined with `SysPrint` compiling to
   `Nop`, a WASM-compiled AIPL program cannot ever meaningfully use a string.
 
+~~`match_result`'s `collect_lets` doesn't recurse into `Call` args,
+`MatchResult` bodies, or `Ok`/`Err`~~ — **RESOLVED**. `collect_lets` in
+`src/compiler/wasm.rs` now handles all of these, alongside a separate fix for
+loop induction variables never getting a wasm local slot at all (that one
+doesn't just miss allocating a local — it silently drops the entire loop body
+while leaking a value onto the wasm stack; fixed by registering the loop
+variable in `collect_lets` and by making `Expr::Loop`'s codegen error loudly
+instead of silently no-op-ing if a local is still somehow missing).
+
 ## 6. What's missing for AIPL to be a "full, extensible" language
 
-These aren't overclaims to correct — they're just absent, and are what
-"extensible" would require:
-
-- **No module/import system.** A file can't reference another file's
-  functions. This is why `sovereign_toolchain.aipl` is a 407-line hand
-  copy-paste of 5 other files. Almost everything else on this list is blocked
-  or made much harder without this, since without it there's no way to build a
-  standard library out of small composable files.
+- ~~No module/import system.~~ **RESOLVED, with a caveat.** `(import name)` /
+  `(import name as alias)` works end-to-end: the parser accepts it, and
+  `src/resolver.rs` flattens imported modules into one qualified-name
+  (`module_name.fn_name`) program before the checker/VM/wasm backend ever
+  runs — handling aliasing, transitive imports, diamond-dependency
+  de-duplication, and circular-import detection. **The caveat**:
+  `src/resolver.rs` is explicitly temporary Rust scaffolding, not part of the
+  self-hosted toolchain — AIPL has no file I/O *opcode* usable from a
+  compiled/portable program in a host-independent way for this purpose yet
+  (the VM's new `fs.*` ops, §4, are real but Rust-side-only for now; nothing
+  reads another `.aipl` file from *within* AIPL source). Once WASI file I/O
+  exists for the wasm target, this module should be deleted and rewritten as
+  real AIPL. Also worth knowing: the import system exists but is **underused**
+  — see §2's note on `pipeline.aipl` and `sovereign_toolchain.aipl`, which
+  duplicate (and in one case regress) the real tokenizer/parser instead of
+  importing them.
 - **No user-defined types.** No `struct`, `record`, or `enum`. The only
   compound types are `(arr T N)` and `(vec T N)` — fixed-size, single-element-
   type collections. There is no way to define e.g. a `User { id: i32, karma:
   i32 }` record; every "object" in the existing example programs (users,
   stories, AST nodes) is represented as raw offsets into linear memory with
-  comments as the only documentation of the layout (`;; AST Node Structure:
-  [node_kind:i32, param_count:i32, ...]` in `compiler.aipl`). No compiler
-  anywhere checks that a memory layout comment matches what the code actually
-  does.
+  comments as the only documentation of the layout. No compiler anywhere
+  checks that a memory layout comment matches what the code actually does.
 - **No generics.** `(arr T N)` requires a literal `N`; there's no way to write
   a function generic over array length or element type. Every "container"
   algorithm has to be hand-specialized per size/type.
@@ -263,7 +213,10 @@ These aren't overclaims to correct — they're just absent, and are what
   (`PROMPT_GUIDE_FOR_AIS.md`, `hello_browser.aipl`) passing an inline `(fn
   [e:i32] -> void ...)` as a callback to `dom.on`. `parse_expr` has no grammar
   rule for a `fn` literal in expression position — only top-level named
-  functions parse. This construct almost certainly doesn't parse today.
+  functions parse. This construct almost certainly doesn't parse today. (The
+  new `thread.spawn` opcode works around this by naming its target function
+  via a pointer+length into memory rather than a function value — a real,
+  usable pattern, but a workaround, not first-class functions.)
 - **No `break`/`continue`/early-return.** `loop`/`while` always run to
   completion of their bound or condition. `resolve_symbol_index` in
   `compiler.aipl` "finds" a match early but has no way to stop iterating.
@@ -271,10 +224,14 @@ These aren't overclaims to correct — they're just absent, and are what
   `let`. (The VM's `eval_expr` for `Set` *will* fall back to a `self.globals`
   map if the name isn't in local scope, but there's no syntax to declare or
   read a global explicitly, and the WASM backend has no globals section at
-  all — this only works in the tree-walking interpreter.)
-- **No visibility/namespacing** — every function in a module is globally
-  addressable by bare name; once modules exist, nothing will stop name
-  collisions across files.
+  all — this only works in the tree-walking interpreter. Several `aipl_src`
+  files work around this with a "bump allocator state lives in a well-known
+  memory cell" convention — see `memory.aipl`'s `aipl_heap_alloc` — which is a
+  legitimate, reusable pattern for this language, not a bug.)
+- **No visibility/namespacing beyond what imports now provide.** Within a
+  single module, every function is still addressable by bare name with no
+  privacy — the import system (above) namespaces *across* files, but there's
+  no way to mark a function private to its own module.
 - **No generic pattern matching** — `match_result` is hard-coded to the
   2-variant `Result` shape. There's no `match`/`case`/`switch` over arbitrary
   values or user-defined enums (which don't exist yet either).
@@ -287,32 +244,35 @@ These aren't overclaims to correct — they're just absent, and are what
   representation in the WASM backend (§4, §5). There's no string
   concatenation opcode, no length/indexing/slicing, no UTF-8-aware operations
   — "str" today means "can be typed and printed by the interpreter only."
-- **No real standard library.** `stdlib::sys` is wall-clock time only.
-  `stdlib::web` is a single hardcoded JS string (`get_browser_js_bridge`) —
-  i.e., the "standard library" for the web target *is* JavaScript source code
-  generated by Rust, the opposite of self-hosting. There's no collections
-  library, no string library, no math library (beyond raw arithmetic
-  opcodes) — every example program hand-rolls everything (FNV hashing,
-  ranking formulas) from scratch because there's nothing to import.
+- **A real (if small) standard library has started to exist.** This used to
+  say there was none. `aipl_src/memory.aipl` (a correct bump allocator + arena
+  allocator, with genuine content-assertion tests), `aipl_src/file_io.aipl`,
+  and `aipl_src/thread_sync.aipl` (both real as of this pass — see below) are
+  legitimate reusable modules now. Still missing: a collections library, a
+  string library, a math library beyond raw arithmetic opcodes. `stdlib::web`
+  (Rust-side) is still a single hardcoded JS string
+  (`get_browser_js_bridge`) — the "standard library" for the web target *is*
+  JavaScript source code generated by Rust, the opposite of self-hosting;
+  that part of the finding stands.
 - **No source location tracking.** The tokenizer discards line/column
   information; every parser/checker error message reports only the offending
   token's value, not where in the file it came from. For a language pitched
   at AI-generated code, an AI fixing a reported error has to search the whole
-  file for the mentioned symbol rather than jump to a location — this
-  directly undercuts the "excellent diagnostics for AI agents" pitch, and
-  matters more here than in a typical human-authored-code compiler.
+  file for the mentioned symbol rather than jump to a location.
 - **The "20-byte binary diagnostic record" system (`diagnostics.aipl`) isn't
   wired to anything.** The Rust parser/checker/VM all return plain `String`
-  errors; nothing calls into `diagnostics.aipl`'s formatter. The one polished
-  piece of the aspirational diagnostics story is disconnected from the actual
-  error path.
-- **No real concurrency**, despite "atomic swarm synchronization" being a
-  headline pitch. `AtomicLock`/`AtomicUnlock` in the VM just flip a boolean in
-  a `HashMap` — there's no actual thread, no blocking, and nothing enforces
-  mutual exclusion (two "locked" sections can still interleave freely since
-  the VM is single-threaded and nothing checks the lock before proceeding).
-  There is no thread/task primitive of any kind, in the VM or the WASM
-  backend.
+  errors; nothing calls into `diagnostics.aipl`'s formatter.
+- ~~No real concurrency.~~ **RESOLVED in the VM; still absent in the WASM
+  backend.** `thread.spawn`/`thread.join` launch genuine OS threads
+  (`std::thread`) sharing real linear memory (`Arc<Mutex<SharedMemory>>` in
+  `src/vm.rs`), and `atomic.lock`/`atomic.unlock` are a real spinlock on that
+  shared memory (not a side-table nothing waits on). Verified with 4 real
+  threads each incrementing a shared counter 1000 times via `atomic.add`,
+  landing on exactly 4000 — a result that requires the concurrency to be
+  genuinely correct, not just structurally present. The WASM backend has none
+  of this (§4) — it needs shared memory + wasi-threads, neither wired up yet,
+  and explicitly refuses to compile programs using these ops rather than
+  silently producing a broken binary.
 - **No error/exception mechanism beyond the 2-variant `Result`.** No panics
   with unwinding, no typed error hierarchies — every function that can fail
   returns an `(ok/err ...)` and the caller must use `match_result`, which
@@ -320,8 +280,9 @@ These aren't overclaims to correct — they're just absent, and are what
   inline, so composing several fallible calls means deeply nested
   `match_result`s, not a `?`-style short-circuit).
 - **No package/dependency system at all** — no manifest format, no versioning,
-  no way to reference a published AIPL library. Every "distribution" today is
-  a single `.aipl` file or hand-copied source.
+  no way to reference a published AIPL library (the new import system, above,
+  resolves by bare filename search only). Every "distribution" today is a
+  single `.aipl` file or a hand-copied/imported source tree.
 - **No formatter, linter, or language server.** For a language whose stated
   audience is AI agents generating code, tooling that gives fast, structured
   feedback on style/shape before a full compile would matter more than for
@@ -334,37 +295,33 @@ The README's own 3-stage plan (Stage 0: Rust bootstrap → Stage 1: self-hosted
 AIPL compiler running in WASM → Stage 2: native ELF, zero dependencies) is the
 right shape. Where it actually stands:
 
-1. **Rust is not installed anywhere on this machine** — not just missing from
-   PATH; there's no `.cargo`/`.rustup` directory. Nothing in this repo can
-   currently be built, and no existing test (`cargo test`) can currently be
-   run, by anyone working on this machine. This needs to be resolved (install
-   Rust, even if only temporarily as the one-time Stage 0 bootstrap tool)
-   before any further self-hosting work can be verified rather than written
-   blind.
-2. The self-hosted compiler (`aipl_src/compiler.aipl`) needs an actual
-   tokenizer, parser, and code generator that consume their real input — not
-   the current hardcoded-output stub (§2). This is the single largest and
-   most important piece of work, and it's large enough to warrant its own
-   pass rather than being bundled with everything else here.
-3. A **`wasm_runtime.aipl`** — an AIPL-native interpreter for the specific,
-   small subset of WASM instructions AIPL's own compiler emits (i32/i64
-   const, local get/set, the arithmetic/comparison/memory ops already listed
-   in §4, `block`/`loop`/`if`/`br`/`br_if`/`call`/`end`) — is a genuinely good
-   next step, and pairs naturally with fixing the compiler stub. If this is
-   compiled to native ELF (once `elf_emitter.aipl` is built out — currently it
-   only handles one fixed "load 2 constants, do 1 op, exit" program, per the
-   original critique), the result is a real, dependency-free way to *run*
-   AIPL-compiled WASM without wasmtime, Node, or a browser: `aipl_compiler`
-   (native binary) compiles `foo.aipl` → `foo.wasm`, then `wasm_runtime`
-   (native binary) executes `foo.wasm` directly, and neither step touches
-   Rust, JS, or any external runtime ever again. That's the actual "sever all
-   dependencies" finish line for the execution side. It only needs to
-   interpret the small opcode subset AIPL itself emits, not the full WASM
-   spec — full WASM (SIMD, multi-value, reference types, exception handling,
-   threads) is a much bigger undertaking that isn't needed here.
-4. Rewriting `tests/test_v2.rs`'s self-hosting tests so they exercise varied,
-   non-trivial input (§2) should happen alongside item 2, not after — the
-   current tests would give false confidence again on the next stub.
+1. **Rust is installed** (via WSL — Cargo isn't on the Windows PATH directly;
+   see [PROGRESS.md](PROGRESS.md) for the exact invocation). This used to be a
+   hard blocker (nothing could be built or verified at all); it no longer is.
+2. The self-hosted compiler's tokenizer and parser are real (§2). **Codegen
+   (`emit_wasm_binary`) is the single largest remaining piece of work** —
+   walking the real AST tree `parse_ast` now produces and emitting real WASM
+   instructions for it, replacing the hardcoded stub.
+3. A **`wasm_runtime.aipl`** (an AIPL-native interpreter for the specific,
+   small subset of WASM instructions AIPL's own compiler emits) plus a fully
+   built-out `elf_emitter.aipl` would be the genuinely dependency-free way to
+   both compile *and run* AIPL without wasmtime/Node/a browser — but note the
+   explicit decision made this session: for the "as fast as native/assembly"
+   target, the chosen near-term direction is **WASM + an external AOT
+   compiler** (e.g. Cranelift via wasmtime) rather than a hand-rolled native
+   backend. That's a deliberate trade of full sovereignty for reaching real
+   native performance sooner, and it deprioritizes further investment in
+   `elf_emitter.aipl`/`wasm_runtime.aipl` unless that decision gets revisited.
+   `elf_emitter.aipl` does now contain several *correct* individual x86-64
+   syscall-emission helpers (`emit_x86_sys_open/read/write/close/clone`) added
+   in a later pass — real machine code, verified by inspection — but they are
+   not called from anywhere in the codebase yet; they're real primitives
+   sitting unused, not a working native pipeline.
+4. `tests/test_v2.rs`'s weak self-hosting tests (§2) still need rewriting to
+   exercise varied, non-trivial input — the scope of this grew rather than
+   shrank, since a later pass added more tests following the same weak
+   pattern (`test_e2e_sovereign_pipeline_bootstrap`) rather than fixing the
+   original ones.
 
 ## 8. On the longer-term ambition (standalone browser / PDF viewer in pure AIPL)
 
@@ -393,10 +350,10 @@ language:
   (parsing a well-specified binary format, rendering vector graphics and text
   is a much smaller and more self-contained problem than an HTML/CSS/JS
   engine), and would be a reasonable "prove the language can do real systems
-  work" milestone once §6's structs/arrays/strings/modules exist — still a
+  work" milestone once §6's structs/arrays/strings exist — still a
   multi-month project, but a realistic one, and it wouldn't need a windowing
   host if it only needs to rasterize to a memory buffer.
 
 Neither is a near-term goal. The realistic path there runs through §6 (types,
-modules, real strings/arrays, a standard library) and §7 (a compiler that
-actually compiles, plus a native runner), not around them.
+real strings/arrays, a standard library) and §7 (a compiler that actually
+compiles, plus a native runner), not around them.

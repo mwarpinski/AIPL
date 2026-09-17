@@ -217,6 +217,38 @@ impl TypeChecker {
                 OpCode::SysPrint => Ok(Type::Void),
                 OpCode::SysTime => Ok(Type::F64),
                 OpCode::SysExit => Ok(Type::Void),
+                OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite => {
+                    if args.len() != 3 {
+                        return Err(format!("{:?} requires 3 arguments", op));
+                    }
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::FsClose => {
+                    if args.len() != 1 {
+                        return Err("fs.close requires 1 argument".to_string());
+                    }
+                    self.infer_expr_type(&args[0], env)?;
+                    Ok(Type::I32)
+                }
+                OpCode::ThreadSpawn => {
+                    if args.len() != 3 {
+                        return Err("thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)".to_string());
+                    }
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::ThreadJoin => {
+                    if args.len() != 1 {
+                        return Err("thread.join requires 1 argument (thread handle)".to_string());
+                    }
+                    self.infer_expr_type(&args[0], env)?;
+                    Ok(Type::I32)
+                }
                 _ => Ok(Type::I32),
             },
             Expr::Ok(val) => {

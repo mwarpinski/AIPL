@@ -73,6 +73,12 @@ pub enum OpCode {
     SysPrint,
     SysTime,
     SysExit,
+    FsOpen,
+    FsRead,
+    FsWrite,
+    FsClose,
+    ThreadSpawn,
+    ThreadJoin,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

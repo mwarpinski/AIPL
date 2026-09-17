@@ -50,12 +50,13 @@ fn test_v2_atomic_concurrency() {
     let src = r#"
     (module test_atomics
       (fn test_mutex [] -> i32
-        (let ptr:i32 100)
-        (atomic.lock ptr)
-        (mem.store32 ptr 10)
-        (atomic.add ptr 5)
-        (atomic.unlock ptr)
-        (mem.load32 ptr)))
+        (let mutex_ptr:i32 96)
+        (let data_ptr:i32 100)
+        (atomic.lock mutex_ptr)
+        (mem.store32 data_ptr 10)
+        (atomic.add data_ptr 5)
+        (atomic.unlock mutex_ptr)
+        (mem.load32 data_ptr)))
     "#;
     let module = Parser::parse(src).expect("Parse failed");
     let mut checker = TypeChecker::new();
@@ -97,9 +98,7 @@ fn test_self_hosted_wasm_emitter() {
     let input_src = "(module sample (fn add [a:i32 b:i32] -> i32 (+ a b)))";
     let src_ptr = 100usize;
     let wasm_out_ptr = 1000usize;
-    for (i, byte) in input_src.bytes().enumerate() {
-        vm.linear_memory[src_ptr + i] = byte;
-    }
+    vm.write_bytes(src_ptr, input_src.as_bytes());
 
     let res = vm.invoke(
         "compile_aipl",
@@ -113,7 +112,7 @@ fn test_self_hosted_wasm_emitter() {
     if let Value::Int(written_bytes) = res {
         assert!(written_bytes > 20, "Wasm compiler should emit at least 20 bytes");
         // Verify Wasm header \0asm magic bytes in linear memory
-        let header = &vm.linear_memory[wasm_out_ptr..wasm_out_ptr + 8];
+        let header = vm.read_bytes(wasm_out_ptr, 8);
         assert_eq!(header, &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00], "Generated Wasm header must match standard Wasm magic");
     } else {
         panic!("Expected Int return value for written Wasm bytes");
@@ -145,9 +144,9 @@ fn test_sovereign_aipl_diagnostics() {
     assert_eq!(res, Value::Int(20));
 
     // Verify written diagnostic fields in linear memory
-    let err_code = i32::from_le_bytes(vm.linear_memory[out_ptr..out_ptr + 4].try_into().unwrap());
-    let category = i32::from_le_bytes(vm.linear_memory[out_ptr + 4..out_ptr + 8].try_into().unwrap());
-    let fn_id = i32::from_le_bytes(vm.linear_memory[out_ptr + 8..out_ptr + 12].try_into().unwrap());
+    let err_code = i32::from_le_bytes(vm.read_bytes(out_ptr, 4).try_into().unwrap());
+    let category = i32::from_le_bytes(vm.read_bytes(out_ptr + 4, 4).try_into().unwrap());
+    let fn_id = i32::from_le_bytes(vm.read_bytes(out_ptr + 8, 4).try_into().unwrap());
 
     assert_eq!(err_code, 1001);
     assert_eq!(category, 1001);
@@ -192,7 +191,7 @@ fn test_dual_target_native_elf_emitter() {
     if let Value::Int(written) = res {
         assert!(written >= 120, "ELF64 binary should emit at least 120 bytes");
         // Verify 64-bit Linux ELF magic header bytes: \x7fELF (0x7f 0x45 0x4c 0x46)
-        let header = &vm.linear_memory[elf_out_ptr..elf_out_ptr + 4];
+        let header = vm.read_bytes(elf_out_ptr, 4);
         assert_eq!(header, &[0x7f, 0x45, 0x4c, 0x46], "Generated binary must match ELF64 magic header");
     } else {
         panic!("Expected Int return value for ELF binary emission");
@@ -238,9 +237,7 @@ fn test_sovereign_wasm_roundtrip_execution() {
     let src_ptr = 100usize;
     let wasm_out_ptr = 5000usize;
 
-    for (i, byte) in input_src.bytes().enumerate() {
-        vm.linear_memory[src_ptr + i] = byte;
-    }
+    vm.write_bytes(src_ptr, input_src.as_bytes());
 
     let res = vm.invoke(
         "compile_to_target",
@@ -254,7 +251,7 @@ fn test_sovereign_wasm_roundtrip_execution() {
 
     if let Value::Int(written_bytes) = res {
         assert!(written_bytes > 20);
-        let wasm_bytes = &vm.linear_memory[wasm_out_ptr..wasm_out_ptr + written_bytes as usize];
+        let wasm_bytes = vm.read_bytes(wasm_out_ptr, written_bytes as usize);
         assert_eq!(&wasm_bytes[0..8], &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00], "Emitted Wasm header must match spec");
     } else {
         panic!("Expected Int return value for compiled Wasm bytes count");
@@ -348,6 +345,43 @@ fn test_v2_multi_module_linkage() {
 
     let res_nominal = vm.invoke("evaluate_load", vec![Value::Int(40), Value::Int(75)]).expect("VM failed");
     assert_eq!(res_nominal, Value::Int(0)); // Nominal status
+}
+
+// Real concurrency: 4 real OS threads (thread.spawn) each increment a SHARED
+// counter 1000 times via atomic.add, then join. This can only land on
+// exactly 4000 if the threads are real, memory is genuinely shared across
+// them, and atomic.add is genuinely atomic - a fake/no-op implementation of
+// any of those would very likely lose updates under real scheduling.
+#[test]
+fn test_real_multithreading() {
+    let src = std::fs::read_to_string("aipl_src/thread_sync.aipl").expect("Read thread_sync.aipl failed");
+    let module = Parser::parse(&src).expect("Parse thread_sync failed");
+    let mut checker = TypeChecker::new();
+    assert!(checker.check_module(&module).is_ok());
+
+    let mut vm = VM::new();
+    vm.load_module(module);
+
+    let res = vm.invoke("run_thread_tests", vec![]).expect("run_thread_tests failed");
+    assert_eq!(res, Value::Int(1), "4 real threads x 1000 atomic increments must total exactly 4000");
+}
+
+// Real file I/O: writes real bytes to a real file via fs.write, reads them
+// back via fs.read, and verifies an exact byte-for-byte match - a genuine
+// round trip through the OS filesystem, not a self-fulfilling count-echo.
+#[test]
+fn test_real_file_io() {
+    let src = std::fs::read_to_string("aipl_src/file_io.aipl").expect("Read file_io.aipl failed");
+    let module = Parser::parse(&src).expect("Parse file_io failed");
+    let mut checker = TypeChecker::new();
+    assert!(checker.check_module(&module).is_ok());
+
+    let mut vm = VM::new();
+    vm.load_module(module);
+
+    let res = vm.invoke("run_file_io_tests", vec![]);
+    let _ = std::fs::remove_file("aipl_fileio_selftest.tmp");
+    assert_eq!(res.expect("run_file_io_tests failed"), Value::Int(1), "real disk round trip must match byte-for-byte");
 }
 
 

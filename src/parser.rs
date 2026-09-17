@@ -545,6 +545,12 @@ impl Parser {
                             "sys.print" => OpCode::SysPrint,
                             "sys.time" => OpCode::SysTime,
                             "sys.exit" => OpCode::SysExit,
+                            "fs.open" => OpCode::FsOpen,
+                            "fs.read" => OpCode::FsRead,
+                            "fs.write" => OpCode::FsWrite,
+                            "fs.close" => OpCode::FsClose,
+                            "thread.spawn" => OpCode::ThreadSpawn,
+                            "thread.join" => OpCode::ThreadJoin,
                             other => return Err(format!("Unknown op/keyword: {}", other)),
                         };
 
