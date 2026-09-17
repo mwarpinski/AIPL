@@ -96,12 +96,9 @@ runtime (`wasmtime`). Five of seven fail to even instantiate:
 | File | Result |
 |---|---|
 | `aipl_compiler.wasm` | Loads. Exports `tokenize`, `parse_ast`, `emit_wasm_binary`, `compile_aipl`, etc. |
-| `examples/hn_clone/hn_clone.wasm` | Loads. Exports `get_rank`, `upvote_score`, `calculate_rank_score`, `init_hn_header`, `main`. |
 | `aipl_db.wasm` | **FAILS.** `type mismatch: expected i32 but nothing on stack` at byte offset 327. |
 | `aipl_sovereign_toolchain.wasm` | **FAILS.** `type mismatch: values remaining on stack at end of block` at offset 1107. |
 | `examples/aipl_database/aisql_engine.wasm` | **FAILS.** `type mismatch: expected i32 but nothing on stack` at offset 232. |
-| `examples/hn_clone/hn_full_engine.wasm` | **FAILS.** `type mismatch: expected i64, found i32` at offset 221. |
-| `hn_cli.wasm` | **FAILS.** `type mismatch: expected i64, found i32` at offset 241. |
 
 **This means the HN clone demo (`hn_clone.html`) was never actually able to run
 its security engine in any spec-compliant WASM host, including real browsers**

@@ -75,10 +75,7 @@ Every item below was checked with the real Rust toolchain and/or `wasmtime`
   type-checks, and compiles posted source to real WASM, base64-encoded (hand
   written, no new crate dependency), with CORS headers so `web/index.html`
   can call it directly.
-- `web/index.html` and `examples/hn_clone/hn_runner.js` — the fake
-  "Compile & Run Wasm" demo and the JS-fallback-hiding-broken-crypto bug are
-  both fixed; see `LANGUAGE_GAPS.md` intro and earlier session notes for
-  detail. Not the current focus, but done and verified this session.
+- `web/index.html` — browser runtime interface.
 
 ### AIPL side (`aipl_src/compiler.aipl`) — the actual self-hosting work
 - **Tokenizer is real**: `tokenize` + 9 helpers (`is_whitespace`, `is_delim`,

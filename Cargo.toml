@@ -22,10 +22,6 @@ name = "execution_bench"
 path = "benches/execution_bench.rs"
 
 [[bin]]
-name = "hn_cli_runner"
-path = "src/bin/hn_cli_runner.rs"
-
-[[bin]]
 name = "aisql"
 path = "src/bin/aisql_runner.rs"
 

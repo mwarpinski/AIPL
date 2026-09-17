@@ -1,155 +1,183 @@
 # AIPL (AI Programming Language)
 
-> **Machine-Native, Token-Dense, Formally Verifiable Dual-Target Systems Language, Self-Hosting Compiler & Autonomous Agent Ecosystem**
+> **Machine-Native, Token-Dense, Formally Verifiable Systems Language, Self-Hosting Compiler Pipeline & Sovereign Agent Ecosystem**
 
 ---
 
 ## 1. Executive Summary & Core Philosophy
 
-**AIPL (AI Programming Language)** is a machine-native, token-dense, formally verifiable programming language, self-hosting compiler pipeline, and Intermediate Representation (IR) designed exclusively for AI agent consumption, high-performance WebAssembly compilation, linear memory manipulation, atomic swarm concurrency, and bare-metal native execution.
+**AIPL (AI Programming Language)** is a machine-native, token-dense, formally verifiable programming language, self-hosting compiler pipeline, and Intermediate Representation (IR) designed exclusively for AI agent consumption, high-performance WebAssembly compilation, bare-metal native execution, linear memory manipulation, and atomic swarm concurrency.
 
 Traditional programming languages designed for human readability introduce severe cognitive friction and token waste for Large Language Models (LLMs) and AI agents:
-- Indentation semantics, semicolon rules, and complex operator precedence create syntactic ambiguity.
-- Opaque human stack traces waste thousands of LLM context window tokens.
-- Relying on heavy external toolchains (Cargo, npm, pip) breaks sovereign execution loops.
+- **Syntactic Overhead**: Indentation semantics, semicolon rules, and complex operator precedence create ambiguity and waste context window tokens.
+- **Opaque Errors**: Verbose human stack traces consume thousands of LLM context tokens without offering machine-actionable repair signals.
+- **Toolchain Lock-in**: Relying on heavy external build environments (Cargo, npm, pip) breaks sovereign agent execution loops.
 
-AIPL solves this by introducing a dual-representation architecture with formal mathematical guardrails, structured machine diagnostics, and zero external language dependencies.
+AIPL solves this by introducing a dual-syntax architecture, formal mathematical guardrails (`req`/`ens` contracts), structured 20-byte machine diagnostics, and a self-hosted toolchain written 100% in canonical AIPL S-expressions.
 
 ---
 
-## 2. Core Architecture & Language Features
+## 2. Core Language Features & Architecture
 
 ### Dual Syntax Representation
-1. **Canonical S-Expression Format (`.aipl`)**: Parenthesis-delimited, context-free AST eliminating human syntactic ambiguities.
-2. **Compact Binary AST Payload (`.baipl`)**: 1-byte opcode encoded MessagePack binary payload for zero-parse inter-agent serialization over IPC, HTTP, or gRPC.
+1. **Canonical S-Expression Format (`.aipl`)**: Parenthesis-delimited, context-free Abstract Syntax Tree (AST) that eliminates syntactic ambiguities for LLMs.
+2. **Compact Binary AST Payload (`.baipl`)**: 1-byte opcode-encoded MessagePack binary payload for zero-parse inter-agent serialization over IPC, HTTP, or gRPC.
 
-### Formal Verification Contracts
-Functions enforce mathematical boundaries evaluated statically before compilation:
+### Design-by-Contract & Formal Guardrails
+Functions enforce mathematical boundaries evaluated statically before compilation and trapped dynamically at runtime:
 ```lisp
-(fn db_read_slot [ptr:i32 offset:i32] -> i32
-  (req (gt ptr 0))
-  (req (gte offset 0))
-  (ens (gte res 0))
-  (mem.load32 (+ ptr offset)))
+(module math_core
+  (fn clamp_min [val:i32 min_val:i32] -> i32
+    (req (gte val 0))
+    (req (gte min_val 0))
+    (ens (gte res min_val))
+    (if (lt val min_val) 
+      min_val 
+      val)))
 ```
 
 ### 20-Byte Machine-Parsable Diagnostics
-Instead of verbose human stack traces, AIPL emits structured 20-byte binary diagnostic payloads (`aipl_src/diagnostics.aipl`) containing:
+Instead of verbose human stack traces, AIPL emits structured 20-byte binary diagnostic payloads ([aipl_src/diagnostics.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/diagnostics.aipl)) containing:
 - **Error Category**: `ERR_CONTRACT_VIOLATION` (`1001`), `ERR_TYPE_MISMATCH` (`1002`), `ERR_MEMORY_BOUNDS` (`1003`), `ERR_SYNTAX_AST` (`1004`).
-- **Location Trace**: Function ID, AST node index, and linear memory offset.
+- **Location Trace**: Function ID, AST node index, and linear memory offset for instant LLM self-correction.
 
-### Raw Systems Primitives
-- **Linear Memory Loads & Stores**: `mem.load32`, `mem.store32`, `mem.load64`, `mem.store64`, `mem.alloc`, `mem.free`.
+### Raw Systems & Memory Primitives
+- **Linear Memory Manipulation**: `mem.load32`, `mem.store32`, `mem.load64`, `mem.store64`, `mem.alloc`, `mem.free`.
 - **Bitwise Operations**: `shl`, `shr`, `bitand`, `bitor`, `^`.
-- **Atomic Swarm Concurrency**: `atomic.lock`, `atomic.unlock`, `atomic.add`, `atomic.cas`.
-- **SIMD AI Vector Embeddings**: `vec.dot` (native dot-product vector similarity scoring for RAG lookups).
-- **Result Match Error Handling**: `ok`, `err`, `match_result`.
+- **Atomic Swarm Concurrency**: `atomic_add`, `atomic_cas`, `atomic_lock`, `atomic_unlock` with hardware-backed pause/yield spinlock loops ([aipl_src/thread_sync.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/thread_sync.aipl)).
+- **SIMD AI Vector Embeddings**: `vec.dot` (native dot-product vector similarity scoring for real-time RAG lookups).
+- **Result Type Pattern Matching**: `ok`, `err`, `match_result`.
 
 ---
 
-## 3. Dual-Target Compilation Pipeline
+## 3. Sovereign Ecosystem Toolchain (`aipl_src/`)
 
-AIPL features a dual-target compilation architecture built natively in S-expressions:
+The core compiler, parser, optimizer, and code generators are written **100% natively in AIPL S-expressions**:
 
 ```
-                          ┌───────────────────────────┐
-                          │   AIPL Source (.aipl)     │
-                          └─────────────┬─────────────┘
-                                        │
-                                        ▼
-                          ┌───────────────────────────┐
-                          │  Tokenizer & Dynamic AST  │
-                          │   Symbol Table Resolver   │
-                          └─────────────┬─────────────┘
-                                        │
-                         ┌──────────────┴──────────────┐
-                         │ compile_to_target Router   │
-                         └──────┬──────────────┬───────┘
-                                │              │
-            Target 0: Wasm      │              │      Target 1: Native ELF64
-                                ▼              ▼
-                    ┌─────────────────┐  ┌───────────────────┐
-                    │ Wasm Emitter    │  │ Heavy Optimizer   │
-                    │ & LEB128        │  │ Constant Folding  │
-                    └────────┬────────┘  │ RegAlloc (x86_64) │
-                             │           └─────────┬─────────┘
-                             ▼                     │
-                    ┌─────────────────┐            ▼
-                    │ Standalone      │  ┌───────────────────┐
-                    │ .wasm Binary    │  │ Bare-Metal Linux  │
-                    └─────────────────┘  │ ELF64 Executable  │
+                       ┌───────────────────────────────┐
+                       │  AIPL Source Code (.aipl)     │
+                       └───────────────┬───────────────┘
+                                       │
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │ sovereign_toolchain.aipl       │
+                       │ - Lexer / Tokenizer           │
+                       │ - Recursive AST Parser        │
+                       │ - Symbol Table Resolver       │
+                       └───────────────┬───────────────┘
+                                       │
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │ pipeline.aipl                 │
+                       │ Ingest ──► Parse ──► Emit    │
+                       └───────┬───────────────┬───────┘
+                               │               │
+            Target 0: Wasm     │               │      Target 1: Native ELF64
+                               ▼               ▼
+                 ┌──────────────────┐    ┌───────────────────┐
+                 │ wasm_emitter.aipl│    │ optimizer.aipl    │
+                 │ LEB128 Varint    │    │ Constant Folding  │
+                 │ Section Encoders │    │ Register Allocator│
+                 └────────┬─────────┘    └─────────┬─────────┘
+                          │                        │
+                          ▼                        ▼
+                 ┌──────────────────┐    ┌───────────────────┐
+                 │ Standalone .wasm │    │ elf_emitter.aipl  │
+                 │ Binary Payload   │    │ Bare-Metal Linux  │
+                 └──────────────────┘    │ ELF64 Executable  │
                                          └───────────────────┘
 ```
 
-1. **Portability Target (`--target wasm`)**: Compiles source modules into standard, spec-compliant WebAssembly binaries (`.wasm`) via `wasm_emitter.aipl`.
-2. **Bare-Metal Speed Target (`--target native`)**: Routes AST nodes through `optimizer.aipl` (constant tree folding & x86_64 physical register allocation) and `elf_emitter.aipl` to generate raw 64-bit Linux ELF executables executing at uncompromised assembly speed.
+### Module Breakdown
 
----
-
-## 4. Sovereign AIPL Ecosystem Toolchain (`aipl_src/`)
-
-The entire compiler toolchain is written 100% in canonical AIPL S-expressions:
-
-- **[aipl_src/diagnostics.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/diagnostics.aipl)**: Structured 20-byte diagnostic payload engine and static type guardrails.
-- **[aipl_src/aipl_test.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl_test.aipl)**: Native sovereign test runner, content-level byte asserter, and negative contract trap verifier.
-- **[aipl_src/wasm_emitter.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/wasm_emitter.aipl)**: LEB128 varint encoder, magic header, and section builders (Type, Function, Memory, Export, Code, Data).
-- **[aipl_src/optimizer.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/optimizer.aipl)**: Heavy optimizer pass performing static constant folding and physical x86_64 register mapping (`RAX`, `RBX`, `RCX`, `RDX`, `RDI`).
+- **[aipl_src/sovereign_toolchain.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/sovereign_toolchain.aipl)**: Master orchestration module packaging the lexer, AST builder, symbol resolver, and emitter routers into a single unified binary (`aipl_sovereign_toolchain.wasm`).
+- **[aipl_src/pipeline.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/pipeline.aipl)**: End-to-end self-compiling pipeline (`sovereign_e2e_pipeline`) that ingests source code from linear memory, tokenizes, parses dynamic AST trees, compiles target bytecode, and verifies execution instantly.
+- **[aipl_src/compiler.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/compiler.aipl)**: Self-hosting AST parser, token classifier, and symbol index resolver.
+- **[aipl_src/wasm_emitter.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/wasm_emitter.aipl)**: Complete WebAssembly binary encoder emitting spec-compliant `.wasm` files with LEB128 varint encoding, multi-section header generation (Type, Function, Memory, Export, Code, Data), and dynamic locals.
 - **[aipl_src/elf_emitter.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/elf_emitter.aipl)**: Bare-metal 64-bit Linux ELF header (`\x7fELF`) and x86_64 machine code generator (`mov`, `add`, `sub`, `imul`, `syscall`).
-- **[aipl_src/compiler.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/compiler.aipl)**: Dynamic AST parser, symbol table index resolver, and dual-target compiler router.
-- **[aipl_src/sovereign_toolchain.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/sovereign_toolchain.aipl)**: Unified master module packaging all passes into a single standalone artifact (`aipl_sovereign_toolchain.wasm`).
+- **[aipl_src/optimizer.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/optimizer.aipl)**: AST optimization pass performing static constant tree folding, dead code elimination, and physical x86_64 register allocation (`RAX`, `RBX`, `RCX`, `RDX`, `RDI`).
+- **[aipl_src/thread_sync.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/thread_sync.aipl)**: Swarm atomic concurrency and synchronization primitives (`atomic_add`, `atomic_cas`, `atomic_lock`, `atomic_unlock`).
+- **[aipl_src/aipl_db.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl_db.aipl)**: AISQL Engine — a 100% AIPL-native hybrid relational and vector embedding database engine with hash index lookups and `vec.dot` similarity search.
+- **[aipl_src/aipl_test.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl_test.aipl)**: Sovereign self-testing framework with assertions, contract verification traps, and test reporting.
+- **[aipl_src/diagnostics.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/diagnostics.aipl)**: 20-byte structured error payload generation.
+- **[aipl_src/file_io.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/file_io.aipl)**: Virtual and linear memory I/O interface.
+- **[aipl_src/memory.aipl](file:///home/matt/Projects/Repos/AIPL/aipl_src/memory.aipl)**: Dynamic bump allocator and stack-frame linear memory allocator (`mem.alloc`, `mem.free`).
 
 ---
 
-## 5. Applications & Infrastructure Built in AIPL
+## 4. Rust Engine & Tooling Infrastructure (`src/`)
 
-- **[AISQL Hybrid Database Engine](file:///home/matt/Projects/Repos/AIPL/examples/aipl_database/aisql_engine.aipl)**: Real-memory hybrid relational + vector embedding database engine written 100% in AIPL S-expressions, featuring schema definition, hash index lookups, and AI vector similarity dot-product scoring.
-- **Native System Binaries**: `bin/aisql` and `./bin/aipl-test` CLI runners.
+For initial bootstrap execution, verification, and host integration, the repository includes a lightweight Rust runner framework:
+
+- **[src/parser.rs](file:///home/matt/Projects/Repos/AIPL/src/parser.rs)**: Recursive-descent S-expression parser for multi-module source files (`Parser::parse`).
+- **[src/checker.rs](file:///home/matt/Projects/Repos/AIPL/src/checker.rs)**: Static type checker and contract verifier supporting type inference (`i32`, `i64`, `f32`, `f64`, `bool`, `void`, `ptr`) and multi-module linkage (`check_module`).
+- **[src/vm.rs](file:///home/matt/Projects/Repos/AIPL/src/vm.rs)**: Virtual Machine interpreter executing linear memory operations, atomic primitives, contract traps, and WASM binary embedding.
+- **[src/resolver.rs](file:///home/matt/Projects/Repos/AIPL/src/resolver.rs)**: Cross-module symbol resolver and import linker.
+- **[src/bin/aipl_test_runner.rs](file:///home/matt/Projects/Repos/AIPL/src/bin/aipl_test_runner.rs)**: CLI runner executable for `./bin/aipl-test`.
+- **[src/bin/aisql_runner.rs](file:///home/matt/Projects/Repos/AIPL/src/bin/aisql_runner.rs)**: CLI runner executable for `./bin/aisql`.
 
 ---
 
-## 6. Future State: Total Severance of Rust & Host Code
+## 5. Applications & Demonstration Programs
 
-The project follows a 3-stage bootstrap model to achieve total self-reliance:
+### AISQL Hybrid Database Engine
+Written 100% in AIPL ([examples/aipl_database/aisql_engine.aipl](file:///home/matt/Projects/Repos/AIPL/examples/aipl_database/aisql_engine.aipl)), AISQL combines relational table storage with vector embedding similarity scoring.
+```bash
+./bin/aisql demo
+```
+
+### Multi-Module Linkage & State Evaluation
+AIPL supports modular program composition across distinct file boundaries:
+- **[examples/math_core.aipl](file:///home/matt/Projects/Repos/AIPL/examples/math_core.aipl)**: Foundation math utility library.
+- **[examples/system_policy.aipl](file:///home/matt/Projects/Repos/AIPL/examples/system_policy.aipl)**: Policy threshold evaluator with contracts.
+- **[examples/compound_test.aipl](file:///home/matt/Projects/Repos/AIPL/examples/compound_test.aipl)**: Multi-expression state evaluator with sequential bindings, bitwise shifts (`shl`), and conditional branching (`if (gt scaled threshold)`).
+
+---
+
+## 6. Self-Hosting Bootstrap & Roadmap
+
+AIPL follows a 3-stage bootstrap model toward total agent self-reliance:
 
 ```
 ┌───────────────────────────┐     ┌───────────────────────────┐     ┌───────────────────────────┐
-│ Stage 0: Rust Bootstrap   │ ──► │ Stage 1: Wasm Self-Host   │ ──► │ Stage 2: Absolute         │
-│ Cargo compiler used as    │     │ AIPL compiler compiled to │     │ Sovereign Native ELF      │
+│ Stage 0: Rust Bootstrap   │ ──► │ Stage 1: Wasm Self-Host   │ ──► │ Stage 2: Sovereign        │
+│ Cargo compiler used as    │     │ AIPL compiler compiled to │     │ Bare-Metal Native ELF     │
 │ temporary sandbox driver. │     │ .wasm runs inside Wasm.   │     │ Sever all Rust/JS/host    │
-└───────────────────────────┘     └───────────────────────────┘     │ dependencies. Runs        │
-                                                                    │ directly on Linux kernel. │
-                                                                    └───────────────────────────┘
+│                           │     │                           │     │ dependencies. Runs on     │
+│                           │     │                           │     │ Linux kernel directly.    │
+└───────────────────────────┘     └───────────────────────────┘     └───────────────────────────┘
 ```
 
-1. **Stage 0 (Current Bootstrap)**: Rust driver (`cargo run --bin aipl`) serves as the initial sandbox verifier and Stage 0 bootstrap compiler.
-2. **Stage 1 (Self-Hosting Wasm)**: `aipl_compiler.wasm` / `aipl_sovereign_toolchain.wasm` running inside a lightweight Wasm runtime compiles AIPL files without calling Rust or Cargo.
-3. **Stage 2 (Absolute Sovereignty)**: Severing 100% of host language code (Rust, JS, C, Python). The self-hosted AIPL compiler compiled directly to a native Linux ELF64 binary executes on bare-metal hardware with zero virtual machine overhead.
+1. **Stage 0 (Current Bootstrap)**: Rust driver (`cargo run --bin aipl`) serves as the initial sandbox verifier and test harness.
+2. **Stage 1 (Self-Hosting Wasm)**: `aipl_sovereign_toolchain.wasm` running inside a lightweight Wasm runtime compiles AIPL files directly into target binaries without calling Rust or Cargo.
+3. **Stage 2 (Absolute Sovereignty)**: Complete severance from host environments (Rust, JS, C, Python). The self-hosted AIPL compiler compiled to a native Linux ELF64 binary executes on bare metal with zero virtual machine overhead.
 
 ---
 
 ## 7. Command Reference
+
+### Run Workspace Test Suite (18 Integration & Unit Tests)
+```bash
+cargo test
+```
+
+### Execute Sovereign AIPL Test Harness
+```bash
+./bin/aipl-test
+```
+
+### Run AISQL Relational & Vector Database Engine
+```bash
+./bin/aisql demo
+```
 
 ### Verify AIPL Source Code
 ```bash
 cargo run --bin aipl -- verify aipl_src/sovereign_toolchain.aipl
 ```
 
-### Compile AIPL to WebAssembly
+### Compile AIPL Source to WebAssembly
 ```bash
 cargo run --bin aipl -- compile aipl_src/compiler.aipl -o aipl_compiler.wasm
-```
-
-### Run Native Sovereign AIPL Test Harness
-```bash
-./bin/aipl-test
-```
-
-### Execute AISQL Vector & Relational Database Demo
-```bash
-./bin/aisql demo
-```
-
-### Run Workspace Test Suite
-```bash
-cargo test
 ```
