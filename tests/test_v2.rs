@@ -309,5 +309,46 @@ fn test_v2_multi_expression_compound() {
     assert_eq!(res2, Value::Int(25));
 }
 
+#[test]
+fn test_v2_multi_module_linkage() {
+    let math_src = r#"
+    (module math_core
+      (fn clamp_min [val:i32 min_val:i32] -> i32
+        (req (gte val 0))
+        (req (gte min_val 0))
+        (ens (gte res min_val))
+        (if (lt val min_val) min_val val)))
+    "#;
+
+    let policy_src = r#"
+    (module system_policy
+      (fn evaluate_load [current_load:i32 threshold:i32] -> i32
+        (req (gte current_load 0))
+        (req (gte threshold 0))
+        (ens (gte res 0))
+        (if (gt current_load threshold) 1 0)))
+    "#;
+
+    // Parse and check both modules independently
+    let math_mod = Parser::parse(math_src).expect("Math parse failed");
+    let policy_mod = Parser::parse(policy_src).expect("Policy parse failed");
+
+    let mut checker = TypeChecker::new();
+    assert!(checker.check_module(&math_mod).is_ok());
+    assert!(checker.check_module(&policy_mod).is_ok());
+
+    // Load both into the VM ecosystem
+    let mut vm = VM::new();
+    vm.load_module(math_mod);
+    vm.load_module(policy_mod);
+
+    // Test policy evaluation crossing execution paths
+    let res_critical = vm.invoke("evaluate_load", vec![Value::Int(90), Value::Int(75)]).expect("VM failed");
+    assert_eq!(res_critical, Value::Int(1)); // Critical load triggered
+
+    let res_nominal = vm.invoke("evaluate_load", vec![Value::Int(40), Value::Int(75)]).expect("VM failed");
+    assert_eq!(res_nominal, Value::Int(0)); // Nominal status
+}
+
 
 
