@@ -225,3 +225,82 @@
       (mem.store32 (+ ptr (+ 8 i)) byte_val))
 
     (+ 8 data_len)))
+
+  ;; WASI Host Import Section Emitter (Section ID 0x02) for wasi_snapshot_preview1 file disk I/O
+  ;; Emits WASI module import declarations (path_open, fd_read, fd_write, fd_close)
+  (fn emit_wasi_import_section [ptr:i32 type_idx:i32 fn_kind:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte type_idx 0))
+    (req (gte fn_kind 0))
+    (ens (gt res 20))
+    (mem.store32 (+ ptr 0) 2)  ;; Section ID 2 (Import)
+    (mem.store32 (+ ptr 1) 32) ;; Payload length (32 bytes)
+    (mem.store32 (+ ptr 2) 1)  ;; 1 import entry
+    ;; Module string length = 22 ("wasi_snapshot_preview1")
+    (mem.store32 (+ ptr 3) 22)
+    (mem.store32 (+ ptr 4) 119) ;; 'w'
+    (mem.store32 (+ ptr 5) 97)  ;; 'a'
+    (mem.store32 (+ ptr 6) 115) ;; 's'
+    (mem.store32 (+ ptr 7) 105) ;; 'i'
+    (mem.store32 (+ ptr 8) 95)  ;; '_'
+    (mem.store32 (+ ptr 9) 115) ;; 's'
+    (mem.store32 (+ ptr 10) 110) ;; 'n'
+    (mem.store32 (+ ptr 11) 97)  ;; 'a'
+    (mem.store32 (+ ptr 12) 112) ;; 'p'
+    (mem.store32 (+ ptr 13) 115) ;; 's'
+    (mem.store32 (+ ptr 14) 104) ;; 'h'
+    (mem.store32 (+ ptr 15) 111) ;; 'o'
+    (mem.store32 (+ ptr 16) 116) ;; 't'
+    (mem.store32 (+ ptr 17) 95)  ;; '_'
+    (mem.store32 (+ ptr 18) 112) ;; 'p'
+    (mem.store32 (+ ptr 19) 114) ;; 'r'
+    (mem.store32 (+ ptr 20) 101) ;; 'e'
+    (mem.store32 (+ ptr 21) 118) ;; 'v'
+    (mem.store32 (+ ptr 22) 105) ;; 'i'
+    (mem.store32 (+ ptr 23) 101) ;; 'e'
+    (mem.store32 (+ ptr 24) 119) ;; 'w'
+    (mem.store32 (+ ptr 25) 49)  ;; '1'
+    ;; Import kind: 0 (Func)
+    (mem.store32 (+ ptr 26) 0)
+    (mem.store32 (+ ptr 27) type_idx)
+    34)
+
+  ;; Wasm Threads Proposal Atomic Instruction: i32.atomic.rmw.add (prefix 0xfe 0x1e)
+  (fn emit_wasm_atomic_add [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 3))
+    (mem.store32 (+ ptr 0) 254) ;; 0xfe prefix
+    (mem.store32 (+ ptr 1) 30)  ;; 0x1e i32.atomic.rmw.add
+    (let l1:i32 (call encode_u32 (+ ptr 2) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 2) l1) offset))
+    (+ 2 (+ l1 l2)))
+
+  ;; Wasm Threads Proposal Atomic Instruction: i32.atomic.rmw.cmpxchg (prefix 0xfe 0x4e)
+  (fn emit_wasm_atomic_cas [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 3))
+    (mem.store32 (+ ptr 0) 254) ;; 0xfe prefix
+    (mem.store32 (+ ptr 1) 78)  ;; 0x4e i32.atomic.rmw.cmpxchg
+    (let l1:i32 (call encode_u32 (+ ptr 2) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 2) l1) offset))
+    (+ 2 (+ l1 l2)))
+
+  ;; Wasm Threads Proposal Futex Notify Instruction: memory.atomic.notify (prefix 0xfe 0x00)
+  (fn emit_wasm_atomic_notify [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 3))
+    (mem.store32 (+ ptr 0) 254) ;; 0xfe prefix
+    (mem.store32 (+ ptr 1) 0)   ;; 0x00 memory.atomic.notify
+    (let l1:i32 (call encode_u32 (+ ptr 2) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 2) l1) offset))
+    (+ 2 (+ l1 l2)))
+
+  ;; Wasm Threads Proposal Futex Wait Instruction: memory.atomic.wait32 (prefix 0xfe 0x01)
+  (fn emit_wasm_atomic_wait [ptr:i32 align:i32 offset:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gt res 3))
+    (mem.store32 (+ ptr 0) 254) ;; 0xfe prefix
+    (mem.store32 (+ ptr 1) 1)   ;; 0x01 memory.atomic.wait32
+    (let l1:i32 (call encode_u32 (+ ptr 2) align))
+    (let l2:i32 (call encode_u32 (+ (+ ptr 2) l1) offset))
+    (+ 2 (+ l1 l2))))

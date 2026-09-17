@@ -384,6 +384,28 @@ impl VM {
                 self.linear_memory[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
                 Ok(Value::Int(prev as i64))
             }
+            OpCode::AtomicCas => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("atomic.cas requires Int ptr".to_string()),
+                };
+                let expected = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("atomic.cas requires Int expected".to_string()),
+                };
+                let new_val = match self.eval_expr(&args[2], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("atomic.cas requires Int new_val".to_string()),
+                };
+                let bytes: [u8; 4] = self.linear_memory[ptr..ptr + 4].try_into().unwrap();
+                let prev = i32::from_le_bytes(bytes);
+                if prev == expected {
+                    self.linear_memory[ptr..ptr + 4].copy_from_slice(&new_val.to_le_bytes());
+                    Ok(Value::Bool(true))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
             OpCode::AtomicLock => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,

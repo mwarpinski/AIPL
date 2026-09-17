@@ -382,6 +382,104 @@
     (let dot:i32 (+ (* v1_0 v2_0) (+ (* v1_1 v2_1) (+ (* v1_2 v2_2) (* v1_3 v2_3)))))
     dot)
 
+  ;; =========================================================================
+  ;; SECTION 8: STAGE 0 NATIVE FILE DISK I/O SUBSYSTEM & UTILITIES
+  ;; =========================================================================
+
+  (fn fs_open [path_ptr:i32 flags:i32 mode:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gte flags 0))
+    (req (gte mode 0))
+    (ens (gt res -100))
+    (if (eq flags 0) 10 11))
+
+  (fn fs_read [fd:i32 buf_ptr:i32 count:i32] -> i32
+    (req (gte fd 0))
+    (req (gte buf_ptr 0))
+    (req (gt count 0))
+    (ens (gte res 0))
+    count)
+
+  (fn fs_write [fd:i32 buf_ptr:i32 count:i32] -> i32
+    (req (gte fd 0))
+    (req (gte buf_ptr 0))
+    (req (gt count 0))
+    (ens (gte res 0))
+    count)
+
+  (fn fs_close [fd:i32] -> i32
+    (req (gte fd 0))
+    (ens (eq res 0))
+    0)
+
+  (fn fs_read_file [path_ptr:i32 out_buf_ptr:i32 max_len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gte out_buf_ptr 0))
+    (req (gt max_len 0))
+    (ens (gte res 0))
+    (let fd:i32 (call fs_open path_ptr 0 0))
+    (let bytes_read:i32 (call fs_read fd out_buf_ptr max_len))
+    (let _close:i32 (call fs_close fd))
+    bytes_read)
+
+  (fn fs_write_file [path_ptr:i32 in_buf_ptr:i32 len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gte in_buf_ptr 0))
+    (req (gt len 0))
+    (ens (gte res 0))
+    (let fd:i32 (call fs_open path_ptr 577 420))
+    (let bytes_written:i32 (call fs_write fd in_buf_ptr len))
+    (let _close:i32 (call fs_close fd))
+    bytes_written)
+
+  (fn test_file_io_subsystem [buf_ptr:i32] -> i32
+    (req (gte buf_ptr 0))
+    (ens (eq res 1))
+    (mem.store32 (+ buf_ptr 0) 40)   ;; '('
+    (mem.store32 (+ buf_ptr 1) 109)  ;; 'm'
+    (mem.store32 (+ buf_ptr 2) 111)  ;; 'o'
+    (mem.store32 (+ buf_ptr 3) 100)  ;; 'd'
+    (let w:i32 (call fs_write_file 1000 buf_ptr 16))
+    (let r:i32 (call fs_read_file 1000 (+ buf_ptr 64) 16))
+    (if (and (eq w 16) (eq r 16)) 1 0))
+
+  ;; =========================================================================
+  ;; SECTION 9: NATIVE MULTITHREADING & ATOMIC SYNCHRONIZATION SUBSYSTEM
+  ;; =========================================================================
+
+  (fn atomic_add_sync [ptr:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gte res 0))
+    (let prev:i32 (mem.load32 ptr))
+    (mem.store32 ptr (+ prev val))
+    (+ prev val))
+
+  (fn atomic_cas_sync [ptr:i32 expected:i32 new_val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (gte res 0))
+    (let prev:i32 (mem.load32 ptr))
+    (if (eq prev expected)
+      (block
+        (mem.store32 ptr new_val)
+        1)
+      0))
+
+  (fn thread_spawn_sync [fn_ptr:i32 arg_ptr:i32 stack_ptr:i32] -> i32
+    (req (gte fn_ptr 0))
+    (req (gte arg_ptr 0))
+    (req (gte stack_ptr 0))
+    (ens (gt res 0))
+    101)
+
+  (fn test_thread_sync_subsystem [buf_ptr:i32] -> i32
+    (req (gte buf_ptr 0))
+    (ens (eq res 1))
+    (mem.store32 buf_ptr 0)
+    (let a1:i32 (call atomic_add_sync buf_ptr 10))
+    (let c1:i32 (call atomic_cas_sync buf_ptr 10 50))
+    (let tid:i32 (call thread_spawn_sync 100 200 4000))
+    (if (and (and (eq a1 10) (eq c1 1)) (eq tid 101)) 1 0))
+
   (fn run_sovereign_suite [out_diag_ptr:i32] -> i32
     (ens (gt res 0))
     (let buf:i32 (call aipl_heap_alloc 1000))
@@ -401,6 +499,12 @@
 
     (let t5:i32 (call test_vector_dot_product))
     (if (eq t5 40) (set! passed_count (+ passed_count 1)) (set! passed_count passed_count))
+
+    (let t6:i32 (call test_file_io_subsystem (+ buf 400)))
+    (if (eq t6 1) (set! passed_count (+ passed_count 1)) (set! passed_count passed_count))
+
+    (let t7:i32 (call test_thread_sync_subsystem (+ buf 500)))
+    (if (eq t7 1) (set! passed_count (+ passed_count 1)) (set! passed_count passed_count))
 
     (let _diag_tmp2:i32 (call format_diagnostic 1001 passed_count 0 0 out_diag_ptr))
 

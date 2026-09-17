@@ -149,6 +149,240 @@
     (mem.store32 (+ ptr 9) 5)
     10)
 
+  ;; Emit Linux x86_64 sys_write syscall sequence (22 bytes)
+  ;; rax = 1 (sys_write), rdi = fd, rsi = buf_ptr, rdx = count
+  (fn emit_x86_sys_write [ptr:i32 fd:i32 buf_ptr:i32 count:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte fd 0))
+    (req (gte buf_ptr 0))
+    (req (gte count 0))
+    (ens (eq res 22))
+    ;; mov rax, 1
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 1)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, fd
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand fd 255))
+    (mem.store32 (+ ptr 7) (bitand (shr fd 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr fd 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr fd 24) 255))
+    ;; mov rsi, buf_ptr
+    (mem.store32 (+ ptr 10) 190)
+    (mem.store32 (+ ptr 11) (bitand buf_ptr 255))
+    (mem.store32 (+ ptr 12) (bitand (shr buf_ptr 8) 255))
+    (mem.store32 (+ ptr 13) (bitand (shr buf_ptr 16) 255))
+    (mem.store32 (+ ptr 14) (bitand (shr buf_ptr 24) 255))
+    ;; mov rdx, count
+    (mem.store32 (+ ptr 15) 186)
+    (mem.store32 (+ ptr 16) (bitand count 255))
+    (mem.store32 (+ ptr 17) (bitand (shr count 8) 255))
+    (mem.store32 (+ ptr 18) (bitand (shr count 16) 255))
+    (mem.store32 (+ ptr 19) (bitand (shr count 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 20) 15)
+    (mem.store32 (+ ptr 21) 5)
+    22)
+
+  ;; Emit Linux x86_64 sys_read syscall sequence (22 bytes)
+  ;; rax = 0 (sys_read), rdi = fd, rsi = buf_ptr, rdx = count
+  (fn emit_x86_sys_read [ptr:i32 fd:i32 buf_ptr:i32 count:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte fd 0))
+    (req (gte buf_ptr 0))
+    (req (gte count 0))
+    (ens (eq res 22))
+    ;; mov rax, 0
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 0)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, fd
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand fd 255))
+    (mem.store32 (+ ptr 7) (bitand (shr fd 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr fd 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr fd 24) 255))
+    ;; mov rsi, buf_ptr
+    (mem.store32 (+ ptr 10) 190)
+    (mem.store32 (+ ptr 11) (bitand buf_ptr 255))
+    (mem.store32 (+ ptr 12) (bitand (shr buf_ptr 8) 255))
+    (mem.store32 (+ ptr 13) (bitand (shr buf_ptr 16) 255))
+    (mem.store32 (+ ptr 14) (bitand (shr buf_ptr 24) 255))
+    ;; mov rdx, count
+    (mem.store32 (+ ptr 15) 186)
+    (mem.store32 (+ ptr 16) (bitand count 255))
+    (mem.store32 (+ ptr 17) (bitand (shr count 8) 255))
+    (mem.store32 (+ ptr 18) (bitand (shr count 16) 255))
+    (mem.store32 (+ ptr 19) (bitand (shr count 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 20) 15)
+    (mem.store32 (+ ptr 21) 5)
+    22)
+
+  ;; Emit Linux x86_64 sys_open syscall sequence (22 bytes)
+  ;; rax = 2 (sys_open), rdi = path_ptr, rsi = flags, rdx = mode
+  (fn emit_x86_sys_open [ptr:i32 path_ptr:i32 flags:i32 mode:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte path_ptr 0))
+    (req (gte flags 0))
+    (req (gte mode 0))
+    (ens (eq res 22))
+    ;; mov rax, 2
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 2)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, path_ptr
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand path_ptr 255))
+    (mem.store32 (+ ptr 7) (bitand (shr path_ptr 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr path_ptr 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr path_ptr 24) 255))
+    ;; mov rsi, flags
+    (mem.store32 (+ ptr 10) 190)
+    (mem.store32 (+ ptr 11) (bitand flags 255))
+    (mem.store32 (+ ptr 12) (bitand (shr flags 8) 255))
+    (mem.store32 (+ ptr 13) (bitand (shr flags 16) 255))
+    (mem.store32 (+ ptr 14) (bitand (shr flags 24) 255))
+    ;; mov rdx, mode
+    (mem.store32 (+ ptr 15) 186)
+    (mem.store32 (+ ptr 16) (bitand mode 255))
+    (mem.store32 (+ ptr 17) (bitand (shr mode 8) 255))
+    (mem.store32 (+ ptr 18) (bitand (shr mode 16) 255))
+    (mem.store32 (+ ptr 19) (bitand (shr mode 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 20) 15)
+    (mem.store32 (+ ptr 21) 5)
+    22)
+
+  ;; Emit Linux x86_64 sys_close syscall sequence (12 bytes)
+  ;; rax = 3 (sys_close), rdi = fd
+  (fn emit_x86_sys_close [ptr:i32 fd:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte fd 0))
+    (ens (eq res 12))
+    ;; mov rax, 3
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 3)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, fd
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand fd 255))
+    (mem.store32 (+ ptr 7) (bitand (shr fd 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr fd 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr fd 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 10) 15)
+    (mem.store32 (+ ptr 11) 5)
+    12)
+
+  ;; Emit Linux x86_64 sys_clone syscall sequence (17 bytes)
+  ;; rax = 56 (sys_clone), rdi = flags (0x00010f00), rsi = child_stack_ptr
+  (fn emit_x86_sys_clone [ptr:i32 flags:i32 stack_ptr:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte flags 0))
+    (req (gte stack_ptr 0))
+    (ens (eq res 17))
+    ;; mov rax, 56
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 56)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, flags
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand flags 255))
+    (mem.store32 (+ ptr 7) (bitand (shr flags 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr flags 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr flags 24) 255))
+    ;; mov rsi, stack_ptr
+    (mem.store32 (+ ptr 10) 190)
+    (mem.store32 (+ ptr 11) (bitand stack_ptr 255))
+    (mem.store32 (+ ptr 12) (bitand (shr stack_ptr 8) 255))
+    (mem.store32 (+ ptr 13) (bitand (shr stack_ptr 16) 255))
+    (mem.store32 (+ ptr 14) (bitand (shr stack_ptr 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 15) 15)
+    (mem.store32 (+ ptr 16) 5)
+    17)
+
+  ;; Emit Linux x86_64 sys_futex syscall sequence (22 bytes)
+  ;; rax = 202 (sys_futex), rdi = uaddr, rsi = op (0=WAIT, 1=WAKE), rdx = val
+  (fn emit_x86_sys_futex [ptr:i32 uaddr:i32 op:i32 val:i32] -> i32
+    (req (gte ptr 0))
+    (req (gte uaddr 0))
+    (req (gte op 0))
+    (req (gte val 0))
+    (ens (eq res 22))
+    ;; mov rax, 202
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) 202)
+    (mem.store32 (+ ptr 2) 0)
+    (mem.store32 (+ ptr 3) 0)
+    (mem.store32 (+ ptr 4) 0)
+    ;; mov rdi, uaddr
+    (mem.store32 (+ ptr 5) 191)
+    (mem.store32 (+ ptr 6) (bitand uaddr 255))
+    (mem.store32 (+ ptr 7) (bitand (shr uaddr 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr uaddr 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr uaddr 24) 255))
+    ;; mov rsi, op
+    (mem.store32 (+ ptr 10) 190)
+    (mem.store32 (+ ptr 11) (bitand op 255))
+    (mem.store32 (+ ptr 12) (bitand (shr op 8) 255))
+    (mem.store32 (+ ptr 13) (bitand (shr op 16) 255))
+    (mem.store32 (+ ptr 14) (bitand (shr op 24) 255))
+    ;; mov rdx, val
+    (mem.store32 (+ ptr 15) 186)
+    (mem.store32 (+ ptr 16) (bitand val 255))
+    (mem.store32 (+ ptr 17) (bitand (shr val 8) 255))
+    (mem.store32 (+ ptr 18) (bitand (shr val 16) 255))
+    (mem.store32 (+ ptr 19) (bitand (shr val 24) 255))
+    ;; syscall (0x0f 0x05)
+    (mem.store32 (+ ptr 20) 15)
+    (mem.store32 (+ ptr 21) 5)
+    22)
+
+  ;; Emit x86_64 Atomic Add: lock xadd [rdi], eax (4 bytes)
+  (fn emit_x86_atomic_add [ptr:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 4))
+    (mem.store32 (+ ptr 0) 240) ;; 0xf0 lock prefix
+    (mem.store32 (+ ptr 1) 15)  ;; 0x0f
+    (mem.store32 (+ ptr 2) 193) ;; 0xc1 xadd
+    (mem.store32 (+ ptr 3) 7)   ;; 0x07 [rdi]
+    4)
+
+  ;; Emit x86_64 Atomic Compare-And-Swap: lock cmpxchg [rdi], ebx (14 bytes)
+  (fn emit_x86_atomic_cas [ptr:i32 expected:i32 new_val:i32] -> i32
+    (req (gte ptr 0))
+    (ens (eq res 14))
+    ;; mov eax, expected
+    (mem.store32 (+ ptr 0) 184)
+    (mem.store32 (+ ptr 1) (bitand expected 255))
+    (mem.store32 (+ ptr 2) (bitand (shr expected 8) 255))
+    (mem.store32 (+ ptr 3) (bitand (shr expected 16) 255))
+    (mem.store32 (+ ptr 4) (bitand (shr expected 24) 255))
+    ;; mov ebx, new_val
+    (mem.store32 (+ ptr 5) 187)
+    (mem.store32 (+ ptr 6) (bitand new_val 255))
+    (mem.store32 (+ ptr 7) (bitand (shr new_val 8) 255))
+    (mem.store32 (+ ptr 8) (bitand (shr new_val 16) 255))
+    (mem.store32 (+ ptr 9) (bitand (shr new_val 24) 255))
+    ;; lock cmpxchg [rdi], ebx
+    (mem.store32 (+ ptr 10) 240) ;; 0xf0 lock prefix
+    (mem.store32 (+ ptr 11) 15)  ;; 0x0f
+    (mem.store32 (+ ptr 12) 176) ;; 0xb0 cmpxchg
+    (mem.store32 (+ ptr 13) 31)  ;; 0x1f [rdi], ebx
+    14)
+
   ;; Master ELF64 Machine Code Emitter
   ;; Combines ELF header, program header, and x86_64 instructions into executable Linux binary payload
   (fn emit_elf64_binary [ast_op:i32 arg1:i32 arg2:i32 out_elf_ptr:i32] -> i32
