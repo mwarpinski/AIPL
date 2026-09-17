@@ -450,19 +450,12 @@
   (fn atomic_add_sync [ptr:i32 val:i32] -> i32
     (req (gte ptr 0))
     (ens (gte res 0))
-    (let prev:i32 (mem.load32 ptr))
-    (mem.store32 ptr (+ prev val))
-    (+ prev val))
+    (atomic.add ptr val))
 
   (fn atomic_cas_sync [ptr:i32 expected:i32 new_val:i32] -> i32
     (req (gte ptr 0))
     (ens (gte res 0))
-    (let prev:i32 (mem.load32 ptr))
-    (if (eq prev expected)
-      (block
-        (mem.store32 ptr new_val)
-        1)
-      0))
+    (if (atomic.cas ptr expected new_val) 1 0))
 
   (fn thread_spawn_sync [fn_ptr:i32 arg_ptr:i32 stack_ptr:i32] -> i32
     (req (gte fn_ptr 0))
