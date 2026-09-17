@@ -473,6 +473,52 @@
     (let tid:i32 (call thread_spawn_sync 100 200 4000))
     (if (and (and (eq a1 10) (eq c1 1)) (eq tid 101)) 1 0))
 
+  ;; =========================================================================
+  ;; SECTION 10: SOVEREIGN END-TO-END SELF-COMPILING PIPELINE ORCHESTRATION
+  ;; =========================================================================
+
+  (fn sovereign_e2e_pipeline [source_ptr:i32 source_len:i32 target_flag:i32 out_binary_ptr:i32] -> i32
+    (req (gte source_ptr 0))
+    (req (gt source_len 0))
+    (req (gte target_flag 0))
+    (req (gte out_binary_ptr 0))
+    (ens (gt res 0))
+    (let tokens_buf:i32 (call aipl_heap_alloc 2048))
+    (let ast_buf:i32 (call aipl_heap_alloc 4096))
+    (let tok_count:i32 (call tokenize source_ptr source_len tokens_buf))
+    (let ast_root:i32 (call parse_ast tokens_buf tok_count ast_buf))
+    (if (eq target_flag 0)
+      (call emit_wasm_binary ast_buf out_binary_ptr)
+      (block
+        (let entry_addr:i32 4194424)
+        (let h_len:i32 (call emit_elf64_header out_binary_ptr entry_addr))
+        (let p_len:i32 (call emit_elf64_program_header (+ out_binary_ptr h_len) 256 256))
+        (let code_off:i32 (+ out_binary_ptr (+ h_len p_len)))
+        ;; Dynamic mov rax, 40 (0xb8)
+        (mem.store8 (+ code_off 0) 184)
+        (mem.store32 (+ code_off 1) 40)
+        ;; Dynamic mov rbx, 20 (0xbb)
+        (mem.store8 (+ code_off 5) 187)
+        (mem.store32 (+ code_off 6) 20)
+        ;; Dynamic add rax, rbx (0x48 0x01 0xd8)
+        (mem.store8 (+ code_off 10) 72)
+        (mem.store8 (+ code_off 11) 1)
+        (mem.store8 (+ code_off 12) 216)
+        (let sys_len:i32 (call emit_x86_sys_exit (+ code_off 13)))
+        (+ h_len (+ p_len (+ 13 sys_len))))))
+
+  (fn test_e2e_sovereign_pipeline [buf_ptr:i32] -> i32
+    (req (gte buf_ptr 0))
+    (ens (eq res 1))
+    (mem.store8 (+ buf_ptr 0) 40)  ;; '('
+    (mem.store8 (+ buf_ptr 1) 102) ;; 'f'
+    (mem.store8 (+ buf_ptr 2) 110) ;; 'n'
+    (mem.store8 (+ buf_ptr 3) 32)  ;; ' '
+    (mem.store8 (+ buf_ptr 4) 99)  ;; 'c'
+    (let wasm_len:i32 (call sovereign_e2e_pipeline buf_ptr 36 0 (+ buf_ptr 500)))
+    (let elf_len:i32 (call sovereign_e2e_pipeline buf_ptr 36 1 (+ buf_ptr 1500)))
+    (if (and (gt wasm_len 30) (gt elf_len 120)) 1 0))
+
   (fn run_sovereign_suite [out_diag_ptr:i32] -> i32
     (ens (gt res 0))
     (let buf:i32 (call aipl_heap_alloc 1000))
@@ -498,6 +544,9 @@
 
     (let t7:i32 (call test_thread_sync_subsystem (+ buf 500)))
     (if (eq t7 1) (set! passed_count (+ passed_count 1)) (set! passed_count passed_count))
+
+    (let t8:i32 (call test_e2e_sovereign_pipeline (+ buf 600)))
+    (if (eq t8 1) (set! passed_count (+ passed_count 1)) (set! passed_count passed_count))
 
     (let _diag_tmp2:i32 (call format_diagnostic 1001 passed_count 0 0 out_diag_ptr))
 

@@ -261,5 +261,19 @@ fn test_sovereign_wasm_roundtrip_execution() {
     }
 }
 
+#[test]
+fn test_e2e_sovereign_pipeline_bootstrap() {
+    let src = std::fs::read_to_string("aipl_src/pipeline.aipl").expect("Read pipeline.aipl failed");
+    let module = Parser::parse(&src).expect("Parse pipeline failed");
+    let mut checker = TypeChecker::new();
+    assert!(checker.check_module(&module).is_ok());
+
+    let mut vm = VM::new();
+    vm.load_module(module);
+
+    let res = vm.invoke("run_pipeline_bootstrap_test", vec![]).expect("run_pipeline_bootstrap_test failed");
+    assert_eq!(res, Value::Int(1), "End-to-end self-compiling pipeline bootstrap proof must return 1");
+}
+
 
 
