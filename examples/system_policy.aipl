@@ -1,0 +1,22 @@
+(module system_policy
+
+  ;; Evaluates system load against safe operational thresholds
+  (fn evaluate_system_load [current_load:i32 peak_history:i32 sensitivity:i32] -> i32
+    (req (gte current_load 0))
+    (req (gte peak_history 0))
+    (req (and (gte sensitivity 0) (lte sensitivity 100)))
+    (ens (gte res 0))
+
+    ;; Step 1: Call cross-module style weighted blending (simulated via local helper or linked call)
+    (let part_a:i32 (* current_load sensitivity))
+    (let inv_sens:i32 (- 100 sensitivity))
+    (let part_b:i32 (* peak_history inv_sens))
+    (let blended:i32 (/ (+ part_a part_b) 100))
+
+    ;; Step 2: Apply absolute safety floor (minimum bound of 10)
+    (let bounded_load:i32 (if (lt blended 10) 10 blended))
+
+    ;; Step 3: Final scaling decision based on sovereign status
+    (if (gt bounded_load 75)
+      1   ;; STATUS: CRITICAL OVERLOAD (Sovereign Throttling Required)
+      0))) ;; STATUS: NOMINAL

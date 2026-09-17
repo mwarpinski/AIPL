@@ -275,5 +275,39 @@ fn test_e2e_sovereign_pipeline_bootstrap() {
     assert_eq!(res, Value::Int(1), "End-to-end self-compiling pipeline bootstrap proof must return 1");
 }
 
+#[test]
+fn test_v2_multi_expression_compound() {
+    let src = r#"
+    (module compound_test
+      (fn process_metrics [base:i32 scale:i32] -> i32
+        (req (gte base 0))
+        (req (gte scale 0))
+        (ens (gte res 0))
+        (let sum_val:i32 (+ base scale))
+        (let scaled:i32 (shl sum_val 1))
+        (let threshold:i32 50)
+        (if (gt scaled threshold)
+          (- scaled 10)
+          (+ scaled 5))))
+    "#;
+    
+    let module = Parser::parse(src).expect("Parse failed");
+    let mut checker = TypeChecker::new();
+    assert!(checker.check_module(&module).is_ok());
+
+    let mut vm = VM::new();
+    vm.load_module(module);
+    
+    // Test Case A: base = 20, scale = 10 
+    // sum = 30 -> scaled = 60 (> 50 threshold) -> 60 - 10 = 50
+    let res1 = vm.invoke("process_metrics", vec![Value::Int(20), Value::Int(10)]).expect("VM failed");
+    assert_eq!(res1, Value::Int(50));
+
+    // Test Case B: base = 5, scale = 5 
+    // sum = 10 -> scaled = 20 (<= 50 threshold) -> 20 + 5 = 25
+    let res2 = vm.invoke("process_metrics", vec![Value::Int(5), Value::Int(5)]).expect("VM failed");
+    assert_eq!(res2, Value::Int(25));
+}
+
 
 

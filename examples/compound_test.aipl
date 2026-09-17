@@ -1,0 +1,19 @@
+(module compound_test
+  (fn process_metrics [base:i32 scale:i32] -> i32
+    (req (gte base 0))
+    (req (gte scale 0))
+    (ens (gte res 0))
+    
+    ;; Expression 1: Bind addition of base and scale
+    (let sum_val:i32 (+ base scale))
+    
+    ;; Expression 2: Multiply/shift the sum (using bitwise shift left by 1, doubling it)
+    (let scaled:i32 (shl sum_val 1))
+    
+    ;; Expression 3: Bind a local threshold constant
+    (let threshold:i32 50)
+    
+    ;; Expression 4: Conditional branch (if scaled > 50, subtract 10, else add 5)
+    (if (gt scaled threshold)
+      (- scaled 10)
+      (+ scaled 5))))

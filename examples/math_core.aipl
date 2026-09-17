@@ -1,0 +1,20 @@
+(module math_core
+
+  (fn clamp_min [val:i32 min_val:i32] -> i32
+    (req (gte val 0))
+    (req (gte min_val 0))
+    (ens (gte res min_val))
+    (if (lt val min_val)
+      min_val
+      val))
+
+  (fn weighted_average [a:i32 b:i32 weight_a:i32] -> i32
+    (req (gte a 0))
+    (req (gte b 0))
+    (req (and (gte weight_a 0) (lte weight_a 100)))
+    (ens (gte res 0))
+    ;; Computes weighted blend: (a * weight_a + b * (100 - weight_a)) / 100
+    (let part_a:i32 (* a weight_a))
+    (let inverse_weight:i32 (- 100 weight_a))
+    (let part_b:i32 (* b inverse_weight))
+    (/ (+ part_a part_b) 100)))
