@@ -1,0 +1,13 @@
+# Rust build artifacts and target directory
+target/
+
+# Compiled AIPL native binaries or test objects (optional, if you want to keep them untracked)
+*.wasm
+*.elf
+*.o
+
+# OS and editor junk
+.DS_Store
+.vscode/
+.idea/
+*.swp
