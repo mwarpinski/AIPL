@@ -1,0 +1,66 @@
+;; Unified Dynamic Heap Memory & Scoped Arena Allocator Module
+;; Written 100% in canonical AIPL S-Expressions
+;; Provides collision-free dynamic bump heap allocation and fast O(1) scoped arena allocators.
+
+(module memory
+
+  ;; Global Dynamic Bump Pointer Allocator
+  ;; Heap metadata pointer stored at offset 0, dynamic allocations start at offset 8192
+  (fn aipl_heap_alloc [size:i32] -> i32
+    (req (gt size 0))
+    (ens (gte res 8192))
+    (let current_ptr:i32 (mem.load32 0))
+    (if (eq current_ptr 0)
+      (set! current_ptr 8192)
+      (set! current_ptr current_ptr))
+    (let allocated_ptr:i32 current_ptr)
+    (mem.store32 0 (+ current_ptr size))
+    allocated_ptr)
+
+  ;; Scoped Arena Allocator Creation
+  ;; Creates an arena descriptor at allocated_ptr: [offset_0: current_offset, offset_4: capacity, offset_8: base_data_ptr]
+  (fn arena_create [capacity:i32] -> i32
+    (req (gt capacity 0))
+    (ens (gte res 8192))
+    (let descriptor_ptr:i32 (call aipl_heap_alloc 12))
+    (let data_ptr:i32 (call aipl_heap_alloc capacity))
+    (mem.store32 (+ descriptor_ptr 0) 0)        ;; current offset
+    (mem.store32 (+ descriptor_ptr 4) capacity) ;; total capacity
+    (mem.store32 (+ descriptor_ptr 8) data_ptr) ;; base data pointer
+    descriptor_ptr)
+
+  ;; Scoped Arena Allocator Fast Allocation
+  ;; Allocates size bytes within specified arena descriptor
+  (fn arena_alloc [arena_ptr:i32 size:i32] -> i32
+    (req (gte arena_ptr 8192))
+    (req (gt size 0))
+    (ens (gte res 8192))
+    (let current_offset:i32 (mem.load32 (+ arena_ptr 0)))
+    (let base_data_ptr:i32 (mem.load32 (+ arena_ptr 8)))
+    (let allocated_ptr:i32 (+ base_data_ptr current_offset))
+    (mem.store32 (+ arena_ptr 0) (+ current_offset size))
+    allocated_ptr)
+
+  ;; Scoped Arena Reset (Instant O(1) Bulk Deallocation)
+  ;; Resets current offset back to 0 without freeing backing memory block
+  (fn arena_reset [arena_ptr:i32] -> i32
+    (req (gte arena_ptr 8192))
+    (ens (eq res 0))
+    (mem.store32 (+ arena_ptr 0) 0)
+    0)
+
+  ;; Master Memory Subsystem Self-Test Harness
+  ;; Verifies unique allocation offsets and arena reset functionality
+  (fn run_memory_tests [] -> i32
+    (let p1:i32 (call aipl_heap_alloc 64))
+    (let p2:i32 (call aipl_heap_alloc 128))
+    
+    (let arena:i32 (call arena_create 1024))
+    (let a1:i32 (call arena_alloc arena 32))
+    (let a2:i32 (call arena_alloc arena 64))
+    (let _reset:i32 (call arena_reset arena))
+    (let a3:i32 (call arena_alloc arena 32))
+
+    (if (and (gt p2 p1) (and (gt a2 a1) (eq a3 a1)))
+      1  ;; SUCCESS
+      0)))

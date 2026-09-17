@@ -45,11 +45,23 @@
     (ens (gt res 0))
     101)
 
+  ;; Dynamic Bump Pointer Allocator
+  (fn aipl_heap_alloc [size:i32] -> i32
+    (req (gt size 0))
+    (ens (gte res 8192))
+    (let current_ptr:i32 (mem.load32 0))
+    (if (eq current_ptr 0)
+      (set! current_ptr 8192)
+      (set! current_ptr current_ptr))
+    (let allocated_ptr:i32 current_ptr)
+    (mem.store32 0 (+ current_ptr size))
+    allocated_ptr)
+
   ;; Master Multithreading & Hardware Atomic Synchronization Self-Test Harness
   ;; Verifies atomic increment operations and lock/unlock memory invariants
   (fn run_thread_tests [] -> i32
-    (let counter_ptr:i32 32768)
-    (let mutex_ptr:i32 32772)
+    (let counter_ptr:i32 (call aipl_heap_alloc 8))
+    (let mutex_ptr:i32 (call aipl_heap_alloc 8))
     (mem.store32 counter_ptr 0)
     (mem.store32 mutex_ptr 0)
 
@@ -68,4 +80,4 @@
     (let final_val:i32 (mem.load32 counter_ptr))
     (if (and (eq c1 1) (eq final_val 150))
       1  ;; SUCCESS
-      0)))
+      0))))

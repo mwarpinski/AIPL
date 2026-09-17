@@ -331,6 +331,18 @@
 
     offset)
 
+  ;; Dynamic Bump Pointer Allocator
+  (fn aipl_heap_alloc [size:i32] -> i32
+    (req (gt size 0))
+    (ens (gte res 8192))
+    (let current_ptr:i32 (mem.load32 0))
+    (if (eq current_ptr 0)
+      (set! current_ptr 8192)
+      (set! current_ptr current_ptr))
+    (let allocated_ptr:i32 current_ptr)
+    (mem.store32 0 (+ current_ptr size))
+    allocated_ptr)
+
   ;; DUAL-TARGET COMPILER ENTRY POINT (target_flag: 0 = Wasm, 1 = Native ELF64)
   (fn compile_to_target [source_ptr:i32 source_len:i32 out_ptr:i32 target_flag:i32] -> i32
     (req (gte source_ptr 0))
@@ -338,8 +350,8 @@
     (req (gte out_ptr 0))
     (req (gte target_flag 0))
     (ens (gt res 0))
-    (let tokens_buf:i32 2048)
-    (let ast_buf:i32 4096)
+    (let tokens_buf:i32 (call aipl_heap_alloc 2048))
+    (let ast_buf:i32 (call aipl_heap_alloc 4096))
     (let token_count:i32 (call tokenize source_ptr source_len tokens_buf))
     (let ast_id:i32 (call parse_ast tokens_buf token_count ast_buf))
 

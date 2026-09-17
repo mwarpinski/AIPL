@@ -69,23 +69,37 @@
     (let _close_status:i32 (call fs_close fd))
     bytes_written)
 
+  ;; Dynamic Bump Pointer Allocator
+  (fn aipl_heap_alloc [size:i32] -> i32
+    (req (gt size 0))
+    (ens (gte res 8192))
+    (let current_ptr:i32 (mem.load32 0))
+    (if (eq current_ptr 0)
+      (set! current_ptr 8192)
+      (set! current_ptr current_ptr))
+    (let allocated_ptr:i32 current_ptr)
+    (mem.store32 0 (+ current_ptr size))
+    allocated_ptr)
+
   ;; Master Disk I/O Self-Test Harness
   ;; Verifies memory buffer read/write roundtrip and syscall return codes
   (fn run_file_io_tests [] -> i32
-    (let test_buf:i32 16384)
-    ;; Store string bytes "(module test)" at offset 16384
+    (let path_buf:i32 (call aipl_heap_alloc 64))
+    (let test_buf:i32 (call aipl_heap_alloc 1024))
+    (let read_buf:i32 (call aipl_heap_alloc 1024))
+
+    ;; Store string bytes "(module test)" inside dynamic test_buf
     (mem.store32 (+ test_buf 0) 40)   ;; '('
     (mem.store32 (+ test_buf 1) 109)  ;; 'm'
     (mem.store32 (+ test_buf 2) 111)  ;; 'o'
     (mem.store32 (+ test_buf 3) 100)  ;; 'd'
 
     ;; Test fs_write_file
-    (let write_res:i32 (call fs_write_file 1000 test_buf 13))
+    (let write_res:i32 (call fs_write_file path_buf test_buf 13))
 
     ;; Test fs_read_file
-    (let read_buf:i32 20480)
-    (let read_res:i32 (call fs_read_file 1000 read_buf 13))
+    (let read_res:i32 (call fs_read_file path_buf read_buf 13))
 
     (if (and (eq write_res 13) (eq read_res 13))
       1  ;; SUCCESS
-      0)))
+      0))))
