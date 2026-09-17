@@ -249,15 +249,68 @@
         index))
     (if found index sym_count))
 
+  ;; ===== Full Recursive-Descent AST Builder (tokens -> multi-node AST tree) =====
+  (fn ast_alloc_node [ast_buf:i32 kind:i32 a:i32 b:i32] -> i32
+    (req (gte ast_buf 0))
+    (ens (gt res ast_buf))
+    (let next_free:i32 (mem.load32 ast_buf))
+    (let node_ptr:i32 (+ ast_buf (+ 8 next_free)))
+    (mem.store32 (+ node_ptr 0) kind)
+    (mem.store32 (+ node_ptr 4) a)
+    (mem.store32 (+ node_ptr 8) b)
+    (mem.store32 (+ node_ptr 12) 0)
+    (mem.store32 ast_buf (+ next_free 16))
+    node_ptr)
+
+  (fn tok_field [tokens_ptr:i32 idx:i32 field:i32] -> i32
+    (req (gte idx 0))
+    (mem.load32 (+ tokens_ptr (+ (* idx 16) (* field 4)))))
+
+  (fn parse_node [tokens_ptr:i32 token_count:i32 ast_buf:i32 state_ptr:i32] -> i32
+    (req (gte tokens_ptr 0))
+    (req (gte ast_buf 0))
+    (req (gte state_ptr 0))
+    (ens (gt res 0))
+    (let idx:i32 (mem.load32 state_ptr))
+    (let kind:i32 (call tok_field tokens_ptr idx 0))
+    (if (or (eq kind 1) (eq kind 3))
+      (block
+        (let group_kind:i32 (if (eq kind 1) 20 21))
+        (let close_kind:i32 (if (eq kind 1) 2 4))
+        (mem.store32 state_ptr (+ idx 1))
+        (let first_child:i32 0)
+        (let prev_child:i32 0)
+        (let count:i32 0)
+        (let done:bool false)
+        (while (not done)
+          (let cur_idx:i32 (mem.load32 state_ptr))
+          (if (or (gte cur_idx token_count) (eq (call tok_field tokens_ptr cur_idx 0) close_kind))
+            (block (set! done true) 0)
+            (block
+              (let child:i32 (call parse_node tokens_ptr token_count ast_buf state_ptr))
+              (if (eq prev_child 0)
+                (set! first_child child)
+                (block (mem.store32 (+ prev_child 12) child) (set! first_child child)))
+              (set! prev_child child)
+              (set! count (+ count 1))
+              0)))
+        (let idx2:i32 (mem.load32 state_ptr))
+        (if (lt idx2 token_count) (mem.store32 state_ptr (+ idx2 1)) (mem.store32 state_ptr idx2))
+        (call ast_alloc_node ast_buf group_kind first_child count))
+      (block
+        (let a:i32 (call tok_field tokens_ptr idx 1))
+        (let b:i32 (call tok_field tokens_ptr idx 2))
+        (mem.store32 state_ptr (+ idx 1))
+        (call ast_alloc_node ast_buf kind a b))))
+
   (fn parse_ast [token_ptr:i32 token_count:i32 ast_out_ptr:i32] -> i32
     (req (gte token_ptr 0))
     (req (gte token_count 0))
+    (req (gte ast_out_ptr 0))
     (ens (gt res 0))
-    (mem.store32 (+ ast_out_ptr 0) 1)   ;; Module node
-    (mem.store32 (+ ast_out_ptr 4) 1)   ;; Function count
-    (mem.store32 (+ ast_out_ptr 8) 2)   ;; Param count
-    (mem.store32 (+ ast_out_ptr 12) 106) ;; Opcode i32.add
-    1)
+    (mem.store32 (+ ast_out_ptr 0) 0)
+    (mem.store32 (+ ast_out_ptr 4) 0)
+    (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
 
   (fn emit_wasm_binary [ast_ptr:i32 wasm_out_ptr:i32] -> i32
     (req (gte ast_ptr 0))

@@ -42,39 +42,76 @@
         (set! count count)))
     (if (eq count 0) 4 count))
 
-  ;; Step 2: Dynamic Token-Driven AST Parser
-  ;; Walks token records and dynamically builds AST node [kind, op_kind, arg1, arg2]
-  (fn pipeline_parse_ast [tokens_ptr:i32 token_count:i32 ast_out_ptr:i32] -> i32
+  ;; ===== Full Recursive-Descent AST Builder (tokens -> multi-node AST tree) =====
+  ;; Node record: 16 bytes at (ast_buf + 8 + offset) = [kind:i32, a:i32, b:i32, next_sibling:i32]
+  ;;   Atom kinds: 6=Symbol, 7=IntLit, 8=BoolLit, 9=StringLit
+  ;;   Group kinds: 20=ParenGroup "(...)", 21=BracketGroup "[...]"
+  ;;     For groups: a=pointer to first child node, b=child count
+  ;;   next_sibling: pointer to next node in same parent list, 0=end of list
+
+  (fn ast_alloc_node [ast_buf:i32 kind:i32 a:i32 b:i32] -> i32
+    (req (gte ast_buf 0))
+    (ens (gt res ast_buf))
+    (let next_free:i32 (mem.load32 ast_buf))
+    (let node_ptr:i32 (+ ast_buf (+ 8 next_free)))
+    (mem.store32 (+ node_ptr 0) kind)
+    (mem.store32 (+ node_ptr 4) a)
+    (mem.store32 (+ node_ptr 8) b)
+    (mem.store32 (+ node_ptr 12) 0)
+    (mem.store32 ast_buf (+ next_free 16))
+    node_ptr)
+
+  (fn tok_field [tokens_ptr:i32 idx:i32 field:i32] -> i32
+    (req (gte idx 0))
+    (mem.load32 (+ tokens_ptr (+ (* idx 16) (* field 4)))))
+
+  ;; Recursive-descent reader: consumes single atom or balanced (...) / [...] group
+  (fn parse_node [tokens_ptr:i32 token_count:i32 ast_buf:i32 state_ptr:i32] -> i32
     (req (gte tokens_ptr 0))
+    (req (gte ast_buf 0))
+    (req (gte state_ptr 0))
+    (ens (gt res 0))
+    (let idx:i32 (mem.load32 state_ptr))
+    (let kind:i32 (call tok_field tokens_ptr idx 0))
+    (if (or (eq kind 1) (eq kind 3))
+      (block
+        (let group_kind:i32 (if (eq kind 1) 20 21))
+        (let close_kind:i32 (if (eq kind 1) 2 4))
+        (mem.store32 state_ptr (+ idx 1))
+        (let first_child:i32 0)
+        (let prev_child:i32 0)
+        (let count:i32 0)
+        (let done:bool false)
+        (while (not done)
+          (let cur_idx:i32 (mem.load32 state_ptr))
+          (if (or (gte cur_idx token_count) (eq (call tok_field tokens_ptr cur_idx 0) close_kind))
+            (block (set! done true) 0)
+            (block
+              (let child:i32 (call parse_node tokens_ptr token_count ast_buf state_ptr))
+              (if (eq prev_child 0)
+                (set! first_child child)
+                (block (mem.store32 (+ prev_child 12) child) (set! first_child child)))
+              (set! prev_child child)
+              (set! count (+ count 1))
+              0)))
+        (let idx2:i32 (mem.load32 state_ptr))
+        (if (lt idx2 token_count) (mem.store32 state_ptr (+ idx2 1)) (mem.store32 state_ptr idx2))
+        (call ast_alloc_node ast_buf group_kind first_child count))
+      (block
+        (let a:i32 (call tok_field tokens_ptr idx 1))
+        (let b:i32 (call tok_field tokens_ptr idx 2))
+        (mem.store32 state_ptr (+ idx 1))
+        (call ast_alloc_node ast_buf kind a b))))
+
+  ;; Dynamic AST Parser Pass: turns a real token stream into a real multi-node AST tree.
+  (fn pipeline_parse_ast [token_ptr:i32 token_count:i32 ast_out_ptr:i32] -> i32
+    (req (gte token_ptr 0))
     (req (gte token_count 0))
     (req (gte ast_out_ptr 0))
     (ens (gt res 0))
-    (let op_kind:i32 106) ;; Default opcode 106 (i32.add)
-    (let arg1:i32 40)
-    (let arg2:i32 20)
-
-    (loop i 0 token_count 1
-      (let tok_off:i32 (+ tokens_ptr (* i 16)))
-      (let kind:i32 (mem.load32 (+ tok_off 0)))
-      (let a:i32 (mem.load32 (+ tok_off 4)))
-      (let b:i32 (mem.load32 (+ tok_off 8)))
-      (if (eq kind 6) ;; Symbol token
-        (if (eq a 107) ;; '-' / sub
-          (set! op_kind 107)
-          (if (eq a 108) ;; '*' / mul
-            (set! op_kind 108)
-            (set! op_kind 106)))
-        (if (eq kind 7) ;; Int literal
-          (if (eq arg1 40)
-            (set! arg1 a)
-            (set! arg2 a))
-          (set! op_kind op_kind))))
-
-    (mem.store32 (+ ast_out_ptr 0) 1)       ;; Node Kind: Module
-    (mem.store32 (+ ast_out_ptr 4) op_kind) ;; Dynamic Operator Opcode (106/107/108)
-    (mem.store32 (+ ast_out_ptr 8) arg1)    ;; Operand 1
-    (mem.store32 (+ ast_out_ptr 12) arg2)   ;; Operand 2
-    1)
+    (mem.store32 (+ ast_out_ptr 0) 0)
+    (mem.store32 (+ ast_out_ptr 4) 0)
+    (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
 
   ;; Step 3: Wasm Binary Header & Dynamic Section Emitter (\0asm version 1)
   (fn pipeline_emit_wasm [ast_ptr:i32 out_buf_ptr:i32] -> i32
