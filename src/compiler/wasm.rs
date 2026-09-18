@@ -87,9 +87,20 @@ impl WasmCompiler {
         });
         exports.export("memory", ExportKind::Memory, 0);
 
+        let mut globals = wasm_encoder::GlobalSection::new();
+        globals.global(
+            wasm_encoder::GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &wasm_encoder::ConstExpr::i32_const(1024),
+        );
+
         wasm_module.section(&types);
         wasm_module.section(&functions);
         wasm_module.section(&memories);
+        wasm_module.section(&globals);
         wasm_module.section(&exports);
         wasm_module.section(&codes);
 
@@ -146,11 +157,15 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
 
 fn aipl_to_wasm_type(ty: &Type) -> ValType {
     match ty {
-        Type::I32 | Type::Bool => ValType::I32,
+        Type::I32 | Type::Bool | Type::Str | Type::Void => ValType::I32,
         Type::I64 => ValType::I64,
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
-        _ => ValType::I32,
+        Type::Ptr(_)
+        | Type::ResultType(_, _)
+        | Type::Array(_, _)
+        | Type::Vector(_, _)
+        | Type::Fn(_, _) => ValType::I32,
     }
 }
 
@@ -245,6 +260,11 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32DivS);
             }
+            OpCode::Mod => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32RemS);
+            }
             OpCode::BitXor => {
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
@@ -297,6 +317,16 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
+            OpCode::MemAlloc => {
+                func.instruction(&Instruction::GlobalGet(0));
+                func.instruction(&Instruction::GlobalGet(0));
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I32Add);
+                func.instruction(&Instruction::GlobalSet(0));
+            }
+            OpCode::MemFree => {
+                // No-op for bump allocator
+            }
             OpCode::Eq => {
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
@@ -341,6 +371,21 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Eqz);
             }
+            OpCode::SysPrint => {
+                return Err("sys.print not supported in wasm backend: comes with WASI in P6".to_string());
+            }
+            OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
+                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
+            }
+            OpCode::AtomicAdd | OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock => {
+                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend (needs shared memory + atomics)", op));
+            }
+            OpCode::ArrGet | OpCode::ArrSet => {
+                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
+            }
+            OpCode::SysTime | OpCode::SysExit => {
+                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
+            }
             OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite | OpCode::FsClose | OpCode::FsDelete => {
                 return Err(format!(
                     "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs WASI file I/O imports)",
@@ -352,9 +397,6 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs shared memory + wasi-threads)",
                     op
                 ));
-            }
-            _ => {
-                func.instruction(&Instruction::Nop);
             }
         },
         Expr::Block(exprs) => {
@@ -408,8 +450,14 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        _ => {
-            func.instruction(&Instruction::Nop);
+        Expr::Ok(inner) => {
+            compile_expr(inner, ctx, func)?;
+        }
+        Expr::Err(inner) => {
+            compile_expr(inner, ctx, func)?;
+        }
+        Expr::MatchResult { .. } => {
+            return Err("Wasm Codegen: MatchResult is not supported in the wasm backend".to_string());
         }
     }
     Ok(())
@@ -438,6 +486,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Sub
                 | OpCode::Mul
                 | OpCode::Div
+                | OpCode::Mod
                 | OpCode::BitXor
                 | OpCode::Shl
                 | OpCode::Shr
@@ -446,6 +495,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::MemLoad8
                 | OpCode::MemLoad32
                 | OpCode::MemLoad64
+                | OpCode::MemAlloc
                 | OpCode::Eq
                 | OpCode::Neq
                 | OpCode::Lt

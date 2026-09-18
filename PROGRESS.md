@@ -91,6 +91,15 @@ resolver's "temporary scaffolding" doc comment + gap-doc updates). Diff vs.
 - **Cleaned `tests/test_v2.rs`**: Deleted 7 tests that certified attic modules or stubbed compiler functions.
 - **Cleaned `aipl_src/compiler.aipl`**: Removed `emit_wasm_binary`, `aipl_heap_alloc` (duplicate of `memory.aipl`), and the ELF branch from `compile_to_target` (which now returns `-1` with a comment `;; not yet wired to codegen.aipl`).
 
+### Eliminating Silent Fallbacks & OpCode Conformance (P2 Audit Task)
+- **Eliminated 4 silent fallbacks**: Removed `_ => Ok(Value::Int(0))` in `vm.rs`, `_ => Nop` (both Op and Expr matches) in `wasm.rs`, `_ => Ok(Type::I32)` in `checker.rs`, and `_ => ValType::I32` in `aipl_to_wasm_type`.
+- **Implemented `OpCode::Mod`**: In VM (`%` with div-by-zero check) and WASM (`I32RemS`).
+- **Implemented `MemAlloc` in WASM**: Dynamic bump allocator using a WASM global (index 0, `ValType::I32`, mutable, initialized to 1024 via `GlobalSection`).
+- **Configured `SysPrint` in WASM**: Returns an explicit `Err` ("comes with WASI in P6").
+- **Removed 7 unsupported OpCodes**: `VecDot`, `MatMul`, `DomElem`, `DomMount`, `DomAppend`, `DomOnEvent`, `WebAlert` removed from `ast.rs`, `parser.rs`, `checker.rs`, and `AIPL_SPEC.md`.
+- **Added `tests/test_opcode_conformance.rs`**: Conformance test powered by `wasmparser` verifying every remaining OpCode satisfies option (a) or option (b).
+
+
 ### Rust side (`src/`) — infrastructure fixes, not application logic
 - **`mem.load8` / `mem.store8`** — new opcodes, full stack (`ast.rs`,
   `parser.rs`, `checker.rs`, `vm.rs`, `compiler/wasm.rs`). Replaces the

@@ -106,7 +106,7 @@ Ordered by dependency and leverage. Each prompt is self-contained and ends in a 
 
 ---
 
-### P1 — Quarantine fabrications and delete the tests that certify them
+### P1 — Quarantine fabrications and delete the tests that certify them [DONE]
 
 ```
 Repo: AIPL. Move aipl_src/sovereign_toolchain.aipl, aipl_src/pipeline.aipl, aipl_src/elf_emitter.aipl, aipl_src/optimizer.aipl, aipl_src/diagnostics.aipl, aipl_src/aipl_test.aipl, aipl_src/aipl_db.aipl into a new attic/ directory with a one-paragraph attic/README.md stating these modules return constants instead of doing work (cite: sovereign_toolchain.aipl fs_open returns 10/11, fs_read returns count, thread_spawn_sync returns 101, tokenize counts parens only; pipeline.aipl pipeline_tokenize returns 4 on zero tokens; compiler.aipl emit_wasm_binary reads opcode from the next_sibling field at ast_ptr+12). Delete src/bin/aipl_test_runner.rs and src/bin/aisql_runner.rs and their [[bin]] entries in Cargo.toml. In tests/test_v2.rs delete every #[test] that loads any attic module (test_self_hosted_wasm_emitter, test_sovereign_aipl_diagnostics, test_sovereign_aipl_test_runner, test_dual_target_native_elf_emitter, test_heavy_optimizer_constant_folding, test_sovereign_wasm_roundtrip_execution, test_e2e_sovereign_pipeline_bootstrap). In aipl_src/compiler.aipl delete emit_wasm_binary, compile_to_target's ELF branch, and aipl_heap_alloc (it duplicates memory.aipl); make compile_to_target return -1 with a comment "not yet wired to codegen.aipl". Run `cargo test` and `aipl test aipl_src/test_suite.aipl`; both must pass. Update LANGUAGE_GAPS.md and PROGRESS.md to list what moved and why. Do not rewrite or "fix" any attic module. Do not add new functionality.

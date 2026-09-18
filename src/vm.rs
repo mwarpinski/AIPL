@@ -531,6 +531,20 @@ impl VM {
                     _ => Err("Invalid types for /".to_string()),
                 }
             }
+            OpCode::Mod => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int(x % y))
+                        }
+                    }
+                    _ => Err("Invalid types for %".to_string()),
+                }
+            }
             OpCode::Eq => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
@@ -778,7 +792,15 @@ impl VM {
                     Err(_) => Err("Spawned thread panicked".to_string()),
                 }
             }
-            _ => Ok(Value::Int(0)),
+            OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
+                Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
+            }
+            OpCode::ArrGet | OpCode::ArrSet => {
+                Err(format!("{:?} not supported in VM backend: array ops not implemented", op))
+            }
+            OpCode::SysTime | OpCode::SysExit => {
+                Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
+            }
         }
     }
 }

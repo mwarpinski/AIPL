@@ -103,6 +103,21 @@ The following 7 fabricated `.aipl` modules were moved into a new `attic/` direct
 
 Associated fake test runners (`src/bin/aipl_test_runner.rs` and `src/bin/aisql_runner.rs`) and their `Cargo.toml` `[[bin]]` entries were deleted. All 7 tests certifying these fabricated modules were removed from `tests/test_v2.rs` (`test_self_hosted_wasm_emitter`, `test_sovereign_aipl_diagnostics`, `test_sovereign_aipl_test_runner`, `test_dual_target_native_elf_emitter`, `test_heavy_optimizer_constant_folding`, `test_sovereign_wasm_roundtrip_execution`, `test_e2e_sovereign_pipeline_bootstrap`).
 
+### OpCode Conformance & Fallback Elimination (P2 Audit Task)
+All four silent wildcard `_ =>` fallbacks were eliminated:
+1. `src/vm.rs` `eval_op` `_ => Ok(Value::Int(0))` replaced with explicit match arms and error reporting.
+2. `src/compiler/wasm.rs` `compile_expr` `Op` and `Expr` wildcards `_ => Nop` replaced with explicit arms returning `Err(...)` for unsupported operations.
+3. `src/checker.rs` `infer_expr_type` `_ => Ok(Type::I32)` replaced with explicit type inference arms.
+4. `src/compiler/wasm.rs` `aipl_to_wasm_type` `_ => ValType::I32` replaced with explicit `Type` matching.
+
+Additionally:
+- `OpCode::Mod` implemented in VM (`%` with div-by-zero check) and WASM (`I32RemS`).
+- `OpCode::MemAlloc` implemented in WASM as a bump allocator using Global 0 (`GlobalSection` initialized to 1024).
+- `OpCode::SysPrint` in WASM configured to return explicit `Err`.
+- 7 unused OpCodes (`VecDot`, `MatMul`, `DomElem`, `DomMount`, `DomAppend`, `DomOnEvent`, `WebAlert`) removed from `ast.rs`, `parser.rs`, `checker.rs`, and `AIPL_SPEC.md`.
+- `tests/test_opcode_conformance.rs` added using `wasmparser` validation to enforce that every OpCode variant either (a) succeeds in VM + compiles/validates in WASM, or (b) returns an explicit `Err`.
+
+
 
 ## 3. Byte-granularity memory ops — RESOLVED
 

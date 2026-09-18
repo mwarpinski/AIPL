@@ -24,3 +24,7 @@ path = "benches/execution_bench.rs"
 [lib]
 name = "aipl_core"
 path = "src/lib.rs"
+
+[dev-dependencies]
+wasmparser = "0.224.0"
+

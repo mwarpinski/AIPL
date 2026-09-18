@@ -168,14 +168,110 @@ impl TypeChecker {
                     }
                     Ok(t1)
                 }
-                OpCode::MemLoad8 => Ok(Type::I32),
-                OpCode::MemLoad32 => Ok(Type::I32),
-                OpCode::MemLoad64 => Ok(Type::I64),
-                OpCode::MemLoadF32 => Ok(Type::F32),
-                OpCode::MemLoadF64 => Ok(Type::F64),
-                OpCode::MemStore8 | OpCode::MemStore32 | OpCode::MemStore64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => Ok(Type::Void),
-                OpCode::MemAlloc => Ok(Type::I32),
-                OpCode::MemFree => Ok(Type::Void),
+                OpCode::MemLoad8 | OpCode::MemLoad32 => {
+                    if args.len() != 1 {
+                        return Err(format!("{:?} requires 1 argument (ptr: i32)", op));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{:?} requires i32 ptr, got {:?}", op, t));
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::MemLoad64 => {
+                    if args.len() != 1 {
+                        return Err("mem.load64 requires 1 argument (ptr: i32)".to_string());
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("mem.load64 requires i32 ptr, got {:?}", t));
+                    }
+                    Ok(Type::I64)
+                }
+                OpCode::MemLoadF32 => {
+                    if args.len() != 1 {
+                        return Err("mem.load_f32 requires 1 argument (ptr: i32)".to_string());
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("mem.load_f32 requires i32 ptr, got {:?}", t));
+                    }
+                    Ok(Type::F32)
+                }
+                OpCode::MemLoadF64 => {
+                    if args.len() != 1 {
+                        return Err("mem.load_f64 requires 1 argument (ptr: i32)".to_string());
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("mem.load_f64 requires i32 ptr, got {:?}", t));
+                    }
+                    Ok(Type::F64)
+                }
+                OpCode::MemStore8 | OpCode::MemStore32 => {
+                    if args.len() != 2 {
+                        return Err(format!("{:?} requires 2 arguments (ptr: i32, val: i32)", op));
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != Type::I32 || t2 != Type::I32 {
+                        return Err(format!("{:?} requires (i32, i32), got ({:?}, {:?})", op, t1, t2));
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::MemStore64 => {
+                    if args.len() != 2 {
+                        return Err("mem.store64 requires 2 arguments (ptr: i32, val: i64)".to_string());
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != Type::I32 || t2 != Type::I64 {
+                        return Err(format!("mem.store64 requires (i32, i64), got ({:?}, {:?})", t1, t2));
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::MemStoreF32 => {
+                    if args.len() != 2 {
+                        return Err("mem.store_f32 requires 2 arguments (ptr: i32, val: f32)".to_string());
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != Type::I32 || t2 != Type::F32 {
+                        return Err(format!("mem.store_f32 requires (i32, f32), got ({:?}, {:?})", t1, t2));
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::MemStoreF64 => {
+                    if args.len() != 2 {
+                        return Err("mem.store_f64 requires 2 arguments (ptr: i32, val: f64)".to_string());
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != Type::I32 || t2 != Type::F64 {
+                        return Err(format!("mem.store_f64 requires (i32, f64), got ({:?}, {:?})", t1, t2));
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::MemAlloc => {
+                    if args.len() != 1 {
+                        return Err("mem.alloc requires 1 argument (size: i32)".to_string());
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("mem.alloc requires i32 size, got {:?}", t));
+                    }
+                    Ok(Type::I32)
+                }
+                OpCode::MemFree => {
+                    if args.len() != 1 {
+                        return Err("mem.free requires 1 argument (ptr: i32)".to_string());
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("mem.free requires i32 ptr, got {:?}", t));
+                    }
+                    Ok(Type::Void)
+                }
                 OpCode::AtomicAdd => Ok(Type::I32),
                 OpCode::AtomicCas => Ok(Type::Bool),
                 OpCode::AtomicLock | OpCode::AtomicUnlock => Ok(Type::Void),
@@ -209,10 +305,23 @@ impl TypeChecker {
                     }
                     Ok(Type::Bool)
                 }
-                OpCode::VecDot => Ok(Type::F64),
-                OpCode::MatMul => Ok(Type::Array(Box::new(Type::F64), 4)),
-                OpCode::DomElem | OpCode::DomMount | OpCode::DomAppend | OpCode::DomOnEvent | OpCode::WebAlert => {
+                OpCode::ArrGet => {
+                    if args.len() != 2 {
+                        return Err("arr.get requires 2 arguments (arr, index)".to_string());
+                    }
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
                     Ok(Type::I32)
+                }
+                OpCode::ArrSet => {
+                    if args.len() != 3 {
+                        return Err("arr.set requires 3 arguments (arr, index, val)".to_string());
+                    }
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
+                    Ok(Type::Void)
                 }
                 OpCode::SysPrint => Ok(Type::Void),
                 OpCode::SysTime => Ok(Type::F64),
@@ -258,7 +367,6 @@ impl TypeChecker {
                     self.infer_expr_type(&args[0], env)?;
                     Ok(Type::I32)
                 }
-                _ => Ok(Type::I32),
             },
             Expr::Ok(val) => {
                 let inner_ty = self.infer_expr_type(val, env)?;

@@ -43,7 +43,7 @@ expr           ::= literal
                  | "(" "match_result" expr "(" "ok" identifier expr* ")" "(" "err" identifier expr* ")" ")"
                  | "(" op expr expr* ")" ;
 
-op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op | vector_op ;
+op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op | array_op ;
 
 arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "bitand" | "bitor" ;
@@ -52,7 +52,7 @@ memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | 
                  | "mem.alloc" | "mem.free" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;
-vector_op      ::= "vec.dot" | "matmul" | "arr.get" | "arr.set" | "dom.elem" | "dom.mount" ;
+array_op       ::= "arr.get" | "arr.set" ;
 ```
 
 ---
@@ -84,7 +84,7 @@ Functions support formal pre-conditions and post-conditions evaluated statically
 
 ---
 
-## 4. Systems Operations (Memory, Atomics & Vector Search)
+## 4. Systems Operations (Memory & Atomics)
 
 ### A. Raw WebAssembly Linear Memory Loads & Stores
 - `(mem.load32 ptr)` -> Reads 4 bytes from linear memory offset `ptr` (`i32.load`).
@@ -95,9 +95,6 @@ Functions support formal pre-conditions and post-conditions evaluated statically
 - `(atomic.lock mutex_ptr)` -> Acquires thread-safe mutex lock.
 - `(atomic.unlock mutex_ptr)` -> Releases mutex lock.
 - `(atomic.add ptr val)` -> Atomic memory addition.
-
-### C. Hybrid Relational + AI Vector Similarity Search
-- `(vec.dot v1 v2)` -> SIMD vector dot product similarity scoring for AI RAG embeddings.
 
 ---
 
