@@ -363,7 +363,72 @@ right shape. Where it actually stands:
    pattern (`test_e2e_sovereign_pipeline_bootstrap`) rather than fixing the
    original ones.
 
-## 8. On the longer-term ambition (standalone browser / PDF viewer in pure AIPL)
+## 8. Architectural bets still needed before "massively more modules" is safe
+
+Written ~12 hours into the project, deliberately: these are the criticisms
+worth tracking now precisely *because* they're architectural rather than
+bugs — the earlier this is written down, the less gets built on top of an
+assumption that later has to be ripped out. Everything here is a real,
+identified gap, not speculation; several items below are cross-references to
+existing bullets in §6 rather than new findings, consolidated here because
+together they answer one question: can this scale to many modules from many
+authors, not just to more features in one file?
+
+1. **No user-defined types is the load-bearing gap, not a nice-to-have.**
+   §6 already lists "no structs/records/enums" and "no generics" as separate
+   bullets; the reason to call it out again here is what happens as module
+   *count* grows, not just feature count. Every piece of structured data that
+   crosses a module boundary today is "some bytes at fixed offsets," with the
+   layout documented only in a comment, enforced by nothing. That's tolerable
+   for one author's one file. It gets *worse*, not better, as more modules
+   from more authors need to agree on shared layouts — there's no type-level
+   contract to catch drift, only tribal knowledge. This is the one change
+   most likely to require touching the parser, checker, VM, and wasm backend
+   simultaneously (a real "serious architectural change," not a bolt-on).
+
+2. **The self-hosted compiler's own scratch memory is fixed-size and
+   unchecked.** New finding, not yet in §2/§4: `aipl_src/codegen.aipl` uses
+   hardcoded, fixed-capacity regions for its keyword table (20000), function
+   table (30000), locals table (41000), and per-function code-emission
+   scratch (60000/61000/70000...), plus single memory cells for parser/
+   allocator state (40500, 40600). None of these grow dynamically or check
+   bounds. This works for the test programs compiled so far; it will
+   *silently corrupt memory* rather than error on a large enough program or
+   module count. This needs fixing (dynamic growth, or at minimum generous
+   capacity plus explicit bounds checks with a loud error) before "massive"
+   module counts are even mechanically safe to compile, independent of any
+   language-design question.
+
+3. **Nothing stops duplication even though imports exist.** Already
+   documented in §2 as a concrete incident (`pipeline.aipl` reimplementing,
+   and regressing, the tokenizer that already existed in `compiler.aipl`,
+   despite `(import compiler)` being available). Worth restating as a
+   pattern, not a one-off: the import mechanism being *possible* doesn't
+   make reuse the default behavior, for a human or an AI. At small module
+   counts this is a nuisance; at "massive" module counts it's how an
+   ecosystem ends up with a dozen slightly-different half-working tokenizers.
+   Closing this needs more than a language feature — some combination of
+   discoverability (a way to answer "does a module for X already exist?"),
+   convention, and possibly lint tooling (§6 already lists "no formatter,
+   linter, or language server" as a gap).
+
+4. **No versioning or dependency resolution** (§6 has this already): the
+   import resolver does a bare filename search with no version concept. Two
+   modules wanting different versions of a shared dependency have no way to
+   express that. Not urgent at current scale (one author, ~10 modules); real
+   at the scale this question is asking about.
+
+5. **No visibility/privacy** (§6 has this already): every function in every
+   module is globally addressable via its qualified name. Fine for a handful
+   of modules; at scale it means every module's internal helpers pollute the
+   same flat namespace as its public API, with nothing distinguishing them.
+
+None of these are reasons not to build more modules now — they're reasons to
+expect a real migration (likely breaking) once structs/generics land, and to
+resist the temptation to route around that by hand-rolling "yet another"
+memory-layout convention per module in the meantime.
+
+## 9. On the longer-term ambition (standalone browser / PDF viewer in pure AIPL)
 
 Worth naming honestly: reaching a point where an AI can generate something
 like a full browser engine or PDF viewer as pure AIPL source and get a
