@@ -21,14 +21,6 @@ path = "src/main.rs"
 name = "execution_bench"
 path = "benches/execution_bench.rs"
 
-[[bin]]
-name = "aisql"
-path = "src/bin/aisql_runner.rs"
-
-[[bin]]
-name = "aipl-test"
-path = "src/bin/aipl_test_runner.rs"
-
 [lib]
 name = "aipl_core"
 path = "src/lib.rs"

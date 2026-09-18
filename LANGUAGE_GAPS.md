@@ -89,37 +89,20 @@ no longer accurate for two of its three stages:
   typed AST (see the next section), but genuinely reads its input, verified
   the same way (`run_parser_tests`).
 
-**Codegen is still the original hardcoded stub, and now more visibly broken
-on purpose**: `emit_wasm_binary`/`compile_to_target`/`compile_aipl` still read
-the AST using the *old* fixed 4-field layout (`(mem.load32 (+ ast_ptr 12))`
-for "the opcode"), which no longer matches the real tree `parse_ast` now
-produces. This isn't a regression — these functions were never functionally
-correct — but don't be confused by them now producing *different* garbage
-than before. **Rewriting `emit_wasm_binary` to walk the real tree and
-generate real WASM instructions is the next milestone**, and the biggest
-remaining piece of the self-hosting story.
+**Codegen is still being wired to real ASTs; stubbed functions removed**: `emit_wasm_binary` (which read AST fields using the old 4-field layout) and `compile_to_target`'s ELF branch were removed from `aipl_src/compiler.aipl`, and `compile_to_target` now returns `-1` with a comment `;; not yet wired to codegen.aipl`. Real WASM codegen lives in `aipl_src/codegen.aipl`.
 
-`tests/test_v2.rs` has several tests that only assert output starts with the
-WASM magic bytes and is some minimum length (`test_self_hosted_wasm_emitter`,
-`test_sovereign_wasm_roundtrip_execution`, and the newer
-`test_e2e_sovereign_pipeline_bootstrap`) — these give false confidence and
-should be rewritten to check varied, non-trivial input once codegen is real.
+### Quarantined Fabrications (`attic/`)
+The following 7 fabricated `.aipl` modules were moved into a new `attic/` directory with `attic/README.md` documenting their fake return values:
+- `sovereign_toolchain.aipl` (`fs_open` returned 10/11, `fs_read` returned count, `thread_spawn_sync` returned 101, `tokenize` counted parens only)
+- `pipeline.aipl` (`pipeline_tokenize` returned 4 on zero tokens)
+- `elf_emitter.aipl`
+- `optimizer.aipl`
+- `diagnostics.aipl`
+- `aipl_test.aipl`
+- `aipl_db.aipl`
 
-**A second, worse copy of this problem exists**: `aipl_src/pipeline.aipl` (a
-separate file, added later) reimplements a tokenizer from scratch that only
-recognizes `(` and `)` — a regression to the *original* stub behavior,
-despite the real tokenizer above already existing and being importable via
-`(import compiler)` (see §6). Its `ast_extract_opcode` reads AST fields
-assuming symbol atoms the regressed tokenizer can never produce, so it
-silently always falls through to a default. Its self-test's own comment
-claims it stores a 34-character source string but the code only writes 5
-bytes then passes the longer length anyway. **`aipl_src/sovereign_toolchain.aipl`**
-separately copy-pasted the *real* `parse_node`/`ast_alloc_node` from
-`compiler.aipl` (a third copy of that logic in the repo) but pasted it against
-a token-kind numbering scheme that doesn't match that file's own (still
-original, char-code-only) tokenizer — it's dead, non-functional code sitting
-in the file. **Don't rewrite the tokenizer or parser again for either of these
-files — wire them to `(import compiler)` and delete the duplicates instead.**
+Associated fake test runners (`src/bin/aipl_test_runner.rs` and `src/bin/aisql_runner.rs`) and their `Cargo.toml` `[[bin]]` entries were deleted. All 7 tests certifying these fabricated modules were removed from `tests/test_v2.rs` (`test_self_hosted_wasm_emitter`, `test_sovereign_aipl_diagnostics`, `test_sovereign_aipl_test_runner`, `test_dual_target_native_elf_emitter`, `test_heavy_optimizer_constant_folding`, `test_sovereign_wasm_roundtrip_execution`, `test_e2e_sovereign_pipeline_bootstrap`).
+
 
 ## 3. Byte-granularity memory ops — RESOLVED
 

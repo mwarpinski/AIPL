@@ -84,10 +84,12 @@ currently staged but not committed**: `LANGUAGE_GAPS.md`,
 resolver's "temporary scaffolding" doc comment + gap-doc updates). Diff vs.
 `origin/master`: 14 files, +1539/-197.
 
-## What's real now (verified, not just written)
-
-Every item below was checked with the real Rust toolchain and/or `wasmtime`
-— see "how to re-verify" at the end.
+### Quarantining Fabrications (P1 Audit Task)
+- **Moved 7 fabricated `.aipl` modules to `attic/`**: `sovereign_toolchain.aipl`, `pipeline.aipl`, `elf_emitter.aipl`, `optimizer.aipl`, `diagnostics.aipl`, `aipl_test.aipl`, and `aipl_db.aipl` were quarantined into `attic/`.
+- **Created `attic/README.md`**: Explains that these modules return hardcoded constants instead of performing work, citing specific instances (`sovereign_toolchain.aipl` `fs_open` returning 10/11, `fs_read` returning count, `thread_spawn_sync` returning 101, `tokenize` counting parens; `pipeline.aipl` `pipeline_tokenize` returning 4 on zero tokens; `compiler.aipl` `emit_wasm_binary` reading opcode from `ast_ptr+12`).
+- **Deleted unused runner binaries**: `src/bin/aipl_test_runner.rs` and `src/bin/aisql_runner.rs` were removed along with their `[[bin]]` sections in `Cargo.toml`.
+- **Cleaned `tests/test_v2.rs`**: Deleted 7 tests that certified attic modules or stubbed compiler functions.
+- **Cleaned `aipl_src/compiler.aipl`**: Removed `emit_wasm_binary`, `aipl_heap_alloc` (duplicate of `memory.aipl`), and the ELF branch from `compile_to_target` (which now returns `-1` with a comment `;; not yet wired to codegen.aipl`).
 
 ### Rust side (`src/`) — infrastructure fixes, not application logic
 - **`mem.load8` / `mem.store8`** — new opcodes, full stack (`ast.rs`,

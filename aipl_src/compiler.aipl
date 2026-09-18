@@ -276,106 +276,15 @@
     (mem.store32 (+ ast_out_ptr 4) 0)
     (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
 
-  ;; Wasm Binary Emitter Pass
-  (fn emit_wasm_binary [ast_ptr:i32 wasm_out_ptr:i32] -> i32
-    (req (gte ast_ptr 0))
-    (req (gte wasm_out_ptr 0))
-    (ens (gt res 20))
-    (let offset:i32 0)
-    (set! offset (+ offset (call emit_header (+ wasm_out_ptr offset))))
-
-    ;; Type Section (0x01)
-    (mem.store32 (+ wasm_out_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 7) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 96) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 2) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 127) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 127) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 127) (set! offset (+ offset 1))
-
-    ;; Function Section (0x03)
-    (mem.store32 (+ wasm_out_ptr offset) 3) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 2) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 0) (set! offset (+ offset 1))
-
-    ;; Export Section (0x07)
-    (mem.store32 (+ wasm_out_ptr offset) 7) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 8) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 1) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 4) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 109) (set! offset (+ offset 1)) ;; m
-    (mem.store32 (+ wasm_out_ptr offset) 97)  (set! offset (+ offset 1)) ;; a
-    (mem.store32 (+ wasm_out_ptr offset) 105) (set! offset (+ offset 1)) ;; i
-    (mem.store32 (+ wasm_out_ptr offset) 110) (set! offset (+ offset 1)) ;; n
-    (mem.store32 (+ wasm_out_ptr offset) 0)   (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 0)   (set! offset (+ offset 1))
-
-    ;; Code Section (0x0a)
-    (mem.store32 (+ wasm_out_ptr offset) 10) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 9)  (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 1)  (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 7)  (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 0)  (set! offset (+ offset 1))
-
-    (mem.store32 (+ wasm_out_ptr offset) 32) (set! offset (+ offset 1)) ;; local.get 0
-    (mem.store32 (+ wasm_out_ptr offset) 0)  (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 32) (set! offset (+ offset 1)) ;; local.get 1
-    (mem.store32 (+ wasm_out_ptr offset) 1)  (set! offset (+ offset 1))
-
-    (let op:i32 (mem.load32 (+ ast_ptr 12)))
-    (mem.store32 (+ wasm_out_ptr offset) op) (set! offset (+ offset 1))
-    (mem.store32 (+ wasm_out_ptr offset) 11) (set! offset (+ offset 1)) ;; end
-
-    offset)
-
-  ;; Dynamic Bump Pointer Allocator
-  (fn aipl_heap_alloc [size:i32] -> i32
-    (req (gt size 0))
-    (ens (gte res 8192))
-    (let current_ptr:i32 (mem.load32 0))
-    (if (eq current_ptr 0)
-      (set! current_ptr 8192)
-      (set! current_ptr current_ptr))
-    (let allocated_ptr:i32 current_ptr)
-    (mem.store32 0 (+ current_ptr size))
-    allocated_ptr)
-
   ;; DUAL-TARGET COMPILER ENTRY POINT (target_flag: 0 = Wasm, 1 = Native ELF64)
+  ;; not yet wired to codegen.aipl
   (fn compile_to_target [source_ptr:i32 source_len:i32 out_ptr:i32 target_flag:i32] -> i32
-    (req (gte source_ptr 0))
-    (req (gt source_len 0))
-    (req (gte out_ptr 0))
-    (req (gte target_flag 0))
-    (ens (gt res 0))
-    (let tokens_buf:i32 (call aipl_heap_alloc 2048))
-    (let ast_buf:i32 (call aipl_heap_alloc 4096))
-    (let token_count:i32 (call tokenize source_ptr source_len tokens_buf))
-    (let ast_id:i32 (call parse_ast tokens_buf token_count ast_buf))
-
-    (if (eq target_flag 0)
-      ;; Target 0: WebAssembly Binary (.wasm)
-      (call emit_wasm_binary ast_buf out_ptr)
-      ;; Target 1: Bare-Metal Native ELF64 Binary (.elf)
-      (block
-        ;; ELF Header (64 bytes) + Program Header (56 bytes) + x86_64 Machine Code
-        (mem.store32 (+ out_ptr 0) 1179403647) ;; \x7fELF
-        (mem.store32 (+ out_ptr 4) 65538)
-        (mem.store32 (+ out_ptr 24) 4194424)   ;; Entry point
-        (mem.store32 (+ out_ptr 32) 64)        ;; Program header offset
-        (mem.store32 (+ out_ptr 52) 3670080)
-        (mem.store32 (+ out_ptr 56) 1)
-        120)))
+    -1)
 
   ;; Backward-compatible compile_aipl entry point (defaults to Wasm)
   (fn compile_aipl [source_ptr:i32 source_len:i32 wasm_out_ptr:i32] -> i32
-    (req (gte source_ptr 0))
-    (req (gt source_len 0))
-    (req (gte wasm_out_ptr 0))
-    (ens (gt res 0))
     (call compile_to_target source_ptr source_len wasm_out_ptr 0))
+
 
   ;; ===== Tokenizer self-tests (content assertions, not just shape checks) =====
   ;; Each test builds a real source string byte-by-byte, tokenizes it, and checks
