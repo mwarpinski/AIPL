@@ -391,7 +391,11 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::LocalGet(var_idx));
             compile_expr(end, ctx, func)?;
-            func.instruction(&Instruction::I32GeS);
+            // VM semantics (vm.rs) run the loop `while curr <= end` - inclusive
+            // of the end bound. This must use I32GtS (exit only once the
+            // counter exceeds end), not I32GeS, or a wasm-compiled loop runs
+            // one fewer iteration than the same source does in the VM.
+            func.instruction(&Instruction::I32GtS);
             func.instruction(&Instruction::BrIf(1));
             for e in body {
                 compile_stmt(e, ctx, func)?;

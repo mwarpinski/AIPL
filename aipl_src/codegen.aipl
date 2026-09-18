@@ -1,0 +1,799 @@
+;; AIPL Self-Hosted Code Generator: generic S-expression tree (from
+;; compiler.tokenize + compiler.parse_ast) -> real WebAssembly bytes.
+;;
+;; Scope is deliberately bounded to match exactly what src/compiler/wasm.rs
+;; genuinely implements today - not the full language spec. Anything outside
+;; that set is a loud compile error here too, never a silent wrong answer:
+;;   - types: i32, i64, f32, f64, bool, void (param/return types)
+;;   - operators: + - * / ^ shl shr bitand bitor, mem.load8/32/64,
+;;     mem.store8/32/64, eq neq lt lte gt gte and or not
+;;   - forms: let, set!, if, loop, while, call, block
+;; NOT supported (loud error, matching wasm.rs's real gaps): strings, mod,
+;; float memory ops, atomics, vectors/arrays, DOM/web/sys/fs/thread ops,
+;; (ptr T)/(fn ...)/(arr T N)/(vec T N) types.
+;;
+;; This is a from-scratch reimplementation of wasm.rs's codegen operating on
+;; the generic tree instead of a typed Rust enum, so it re-derives (and must
+;; stay consistent with) several non-obvious things the Rust side already
+;; learned the hard way this session: an `if`'s wasm block type must agree
+;; with what BOTH branches actually leave on the stack (not just the then
+;; branch), intermediate statement-position values must be `drop`ped, and a
+;; `loop`'s induction variable needs a real local slot.
+
+(module codegen
+  (import compiler)
+
+  ;; ===== Generic byte-span comparison =====
+  (fn sym_eq [src_ptr:i32 pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
+    (if (neq len lit_len)
+        false
+        (block
+          (let i:i32 0)
+          (let eq_so_far:bool true)
+          (while (lt i len)
+            (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ lit_ptr i)))
+                (set! eq_so_far false)
+                (set! eq_so_far eq_so_far))
+            (set! i (+ i 1)))
+          eq_so_far)))
+
+  ;; ===== Node accessors (see compiler.aipl for the tree layout) =====
+  (fn node_kind [node:i32] -> i32 (mem.load32 (+ node 0)))
+  (fn node_a [node:i32] -> i32 (mem.load32 (+ node 4)))
+  (fn node_b [node:i32] -> i32 (mem.load32 (+ node 8)))
+  (fn node_next [node:i32] -> i32 (mem.load32 (+ node 12)))
+  (fn nth_child [group:i32 n:i32] -> i32
+    (req (gte n 0))
+    (let cur:i32 (call node_a group))
+    (let i:i32 0)
+    (while (lt i n)
+      (set! cur (call node_next cur))
+      (set! i (+ i 1)))
+    cur)
+  ;; ===== Keyword table (populated once via init_keywords) =====
+  (fn init_keywords [] -> i32
+    (mem.store8 (+ 20000 0) 43) ;; '+'[0]
+    (mem.store8 (+ 20000 1) 45) ;; '-'[0]
+    (mem.store8 (+ 20000 2) 42) ;; '*'[0]
+    (mem.store8 (+ 20000 3) 47) ;; '/'[0]
+    (mem.store8 (+ 20000 4) 94) ;; '^'[0]
+    (mem.store8 (+ 20000 5) 115) ;; 'shl'[0]
+    (mem.store8 (+ 20000 6) 104) ;; 'shl'[1]
+    (mem.store8 (+ 20000 7) 108) ;; 'shl'[2]
+    (mem.store8 (+ 20000 8) 115) ;; 'shr'[0]
+    (mem.store8 (+ 20000 9) 104) ;; 'shr'[1]
+    (mem.store8 (+ 20000 10) 114) ;; 'shr'[2]
+    (mem.store8 (+ 20000 11) 98) ;; 'bitand'[0]
+    (mem.store8 (+ 20000 12) 105) ;; 'bitand'[1]
+    (mem.store8 (+ 20000 13) 116) ;; 'bitand'[2]
+    (mem.store8 (+ 20000 14) 97) ;; 'bitand'[3]
+    (mem.store8 (+ 20000 15) 110) ;; 'bitand'[4]
+    (mem.store8 (+ 20000 16) 100) ;; 'bitand'[5]
+    (mem.store8 (+ 20000 17) 98) ;; 'bitor'[0]
+    (mem.store8 (+ 20000 18) 105) ;; 'bitor'[1]
+    (mem.store8 (+ 20000 19) 116) ;; 'bitor'[2]
+    (mem.store8 (+ 20000 20) 111) ;; 'bitor'[3]
+    (mem.store8 (+ 20000 21) 114) ;; 'bitor'[4]
+    (mem.store8 (+ 20000 22) 109) ;; 'mem.load8'[0]
+    (mem.store8 (+ 20000 23) 101) ;; 'mem.load8'[1]
+    (mem.store8 (+ 20000 24) 109) ;; 'mem.load8'[2]
+    (mem.store8 (+ 20000 25) 46) ;; 'mem.load8'[3]
+    (mem.store8 (+ 20000 26) 108) ;; 'mem.load8'[4]
+    (mem.store8 (+ 20000 27) 111) ;; 'mem.load8'[5]
+    (mem.store8 (+ 20000 28) 97) ;; 'mem.load8'[6]
+    (mem.store8 (+ 20000 29) 100) ;; 'mem.load8'[7]
+    (mem.store8 (+ 20000 30) 56) ;; 'mem.load8'[8]
+    (mem.store8 (+ 20000 31) 109) ;; 'mem.load32'[0]
+    (mem.store8 (+ 20000 32) 101) ;; 'mem.load32'[1]
+    (mem.store8 (+ 20000 33) 109) ;; 'mem.load32'[2]
+    (mem.store8 (+ 20000 34) 46) ;; 'mem.load32'[3]
+    (mem.store8 (+ 20000 35) 108) ;; 'mem.load32'[4]
+    (mem.store8 (+ 20000 36) 111) ;; 'mem.load32'[5]
+    (mem.store8 (+ 20000 37) 97) ;; 'mem.load32'[6]
+    (mem.store8 (+ 20000 38) 100) ;; 'mem.load32'[7]
+    (mem.store8 (+ 20000 39) 51) ;; 'mem.load32'[8]
+    (mem.store8 (+ 20000 40) 50) ;; 'mem.load32'[9]
+    (mem.store8 (+ 20000 41) 109) ;; 'mem.load64'[0]
+    (mem.store8 (+ 20000 42) 101) ;; 'mem.load64'[1]
+    (mem.store8 (+ 20000 43) 109) ;; 'mem.load64'[2]
+    (mem.store8 (+ 20000 44) 46) ;; 'mem.load64'[3]
+    (mem.store8 (+ 20000 45) 108) ;; 'mem.load64'[4]
+    (mem.store8 (+ 20000 46) 111) ;; 'mem.load64'[5]
+    (mem.store8 (+ 20000 47) 97) ;; 'mem.load64'[6]
+    (mem.store8 (+ 20000 48) 100) ;; 'mem.load64'[7]
+    (mem.store8 (+ 20000 49) 54) ;; 'mem.load64'[8]
+    (mem.store8 (+ 20000 50) 52) ;; 'mem.load64'[9]
+    (mem.store8 (+ 20000 51) 109) ;; 'mem.store8'[0]
+    (mem.store8 (+ 20000 52) 101) ;; 'mem.store8'[1]
+    (mem.store8 (+ 20000 53) 109) ;; 'mem.store8'[2]
+    (mem.store8 (+ 20000 54) 46) ;; 'mem.store8'[3]
+    (mem.store8 (+ 20000 55) 115) ;; 'mem.store8'[4]
+    (mem.store8 (+ 20000 56) 116) ;; 'mem.store8'[5]
+    (mem.store8 (+ 20000 57) 111) ;; 'mem.store8'[6]
+    (mem.store8 (+ 20000 58) 114) ;; 'mem.store8'[7]
+    (mem.store8 (+ 20000 59) 101) ;; 'mem.store8'[8]
+    (mem.store8 (+ 20000 60) 56) ;; 'mem.store8'[9]
+    (mem.store8 (+ 20000 61) 109) ;; 'mem.store32'[0]
+    (mem.store8 (+ 20000 62) 101) ;; 'mem.store32'[1]
+    (mem.store8 (+ 20000 63) 109) ;; 'mem.store32'[2]
+    (mem.store8 (+ 20000 64) 46) ;; 'mem.store32'[3]
+    (mem.store8 (+ 20000 65) 115) ;; 'mem.store32'[4]
+    (mem.store8 (+ 20000 66) 116) ;; 'mem.store32'[5]
+    (mem.store8 (+ 20000 67) 111) ;; 'mem.store32'[6]
+    (mem.store8 (+ 20000 68) 114) ;; 'mem.store32'[7]
+    (mem.store8 (+ 20000 69) 101) ;; 'mem.store32'[8]
+    (mem.store8 (+ 20000 70) 51) ;; 'mem.store32'[9]
+    (mem.store8 (+ 20000 71) 50) ;; 'mem.store32'[10]
+    (mem.store8 (+ 20000 72) 109) ;; 'mem.store64'[0]
+    (mem.store8 (+ 20000 73) 101) ;; 'mem.store64'[1]
+    (mem.store8 (+ 20000 74) 109) ;; 'mem.store64'[2]
+    (mem.store8 (+ 20000 75) 46) ;; 'mem.store64'[3]
+    (mem.store8 (+ 20000 76) 115) ;; 'mem.store64'[4]
+    (mem.store8 (+ 20000 77) 116) ;; 'mem.store64'[5]
+    (mem.store8 (+ 20000 78) 111) ;; 'mem.store64'[6]
+    (mem.store8 (+ 20000 79) 114) ;; 'mem.store64'[7]
+    (mem.store8 (+ 20000 80) 101) ;; 'mem.store64'[8]
+    (mem.store8 (+ 20000 81) 54) ;; 'mem.store64'[9]
+    (mem.store8 (+ 20000 82) 52) ;; 'mem.store64'[10]
+    (mem.store8 (+ 20000 83) 101) ;; 'eq'[0]
+    (mem.store8 (+ 20000 84) 113) ;; 'eq'[1]
+    (mem.store8 (+ 20000 85) 110) ;; 'neq'[0]
+    (mem.store8 (+ 20000 86) 101) ;; 'neq'[1]
+    (mem.store8 (+ 20000 87) 113) ;; 'neq'[2]
+    (mem.store8 (+ 20000 88) 108) ;; 'lt'[0]
+    (mem.store8 (+ 20000 89) 116) ;; 'lt'[1]
+    (mem.store8 (+ 20000 90) 108) ;; 'lte'[0]
+    (mem.store8 (+ 20000 91) 116) ;; 'lte'[1]
+    (mem.store8 (+ 20000 92) 101) ;; 'lte'[2]
+    (mem.store8 (+ 20000 93) 103) ;; 'gt'[0]
+    (mem.store8 (+ 20000 94) 116) ;; 'gt'[1]
+    (mem.store8 (+ 20000 95) 103) ;; 'gte'[0]
+    (mem.store8 (+ 20000 96) 116) ;; 'gte'[1]
+    (mem.store8 (+ 20000 97) 101) ;; 'gte'[2]
+    (mem.store8 (+ 20000 98) 97) ;; 'and'[0]
+    (mem.store8 (+ 20000 99) 110) ;; 'and'[1]
+    (mem.store8 (+ 20000 100) 100) ;; 'and'[2]
+    (mem.store8 (+ 20000 101) 111) ;; 'or'[0]
+    (mem.store8 (+ 20000 102) 114) ;; 'or'[1]
+    (mem.store8 (+ 20000 103) 110) ;; 'not'[0]
+    (mem.store8 (+ 20000 104) 111) ;; 'not'[1]
+    (mem.store8 (+ 20000 105) 116) ;; 'not'[2]
+    (mem.store8 (+ 20000 106) 108) ;; 'let'[0]
+    (mem.store8 (+ 20000 107) 101) ;; 'let'[1]
+    (mem.store8 (+ 20000 108) 116) ;; 'let'[2]
+    (mem.store8 (+ 20000 109) 115) ;; 'set!'[0]
+    (mem.store8 (+ 20000 110) 101) ;; 'set!'[1]
+    (mem.store8 (+ 20000 111) 116) ;; 'set!'[2]
+    (mem.store8 (+ 20000 112) 33) ;; 'set!'[3]
+    (mem.store8 (+ 20000 113) 105) ;; 'if'[0]
+    (mem.store8 (+ 20000 114) 102) ;; 'if'[1]
+    (mem.store8 (+ 20000 115) 108) ;; 'loop'[0]
+    (mem.store8 (+ 20000 116) 111) ;; 'loop'[1]
+    (mem.store8 (+ 20000 117) 111) ;; 'loop'[2]
+    (mem.store8 (+ 20000 118) 112) ;; 'loop'[3]
+    (mem.store8 (+ 20000 119) 119) ;; 'while'[0]
+    (mem.store8 (+ 20000 120) 104) ;; 'while'[1]
+    (mem.store8 (+ 20000 121) 105) ;; 'while'[2]
+    (mem.store8 (+ 20000 122) 108) ;; 'while'[3]
+    (mem.store8 (+ 20000 123) 101) ;; 'while'[4]
+    (mem.store8 (+ 20000 124) 99) ;; 'call'[0]
+    (mem.store8 (+ 20000 125) 97) ;; 'call'[1]
+    (mem.store8 (+ 20000 126) 108) ;; 'call'[2]
+    (mem.store8 (+ 20000 127) 108) ;; 'call'[3]
+    (mem.store8 (+ 20000 128) 98) ;; 'block'[0]
+    (mem.store8 (+ 20000 129) 108) ;; 'block'[1]
+    (mem.store8 (+ 20000 130) 111) ;; 'block'[2]
+    (mem.store8 (+ 20000 131) 99) ;; 'block'[3]
+    (mem.store8 (+ 20000 132) 107) ;; 'block'[4]
+    (mem.store8 (+ 20000 133) 114) ;; 'req'[0]
+    (mem.store8 (+ 20000 134) 101) ;; 'req'[1]
+    (mem.store8 (+ 20000 135) 113) ;; 'req'[2]
+    (mem.store8 (+ 20000 136) 101) ;; 'ens'[0]
+    (mem.store8 (+ 20000 137) 110) ;; 'ens'[1]
+    (mem.store8 (+ 20000 138) 115) ;; 'ens'[2]
+    (mem.store8 (+ 20000 139) 105) ;; 'inv'[0]
+    (mem.store8 (+ 20000 140) 110) ;; 'inv'[1]
+    (mem.store8 (+ 20000 141) 118) ;; 'inv'[2]
+    (mem.store8 (+ 20000 142) 109) ;; 'module'[0]
+    (mem.store8 (+ 20000 143) 111) ;; 'module'[1]
+    (mem.store8 (+ 20000 144) 100) ;; 'module'[2]
+    (mem.store8 (+ 20000 145) 117) ;; 'module'[3]
+    (mem.store8 (+ 20000 146) 108) ;; 'module'[4]
+    (mem.store8 (+ 20000 147) 101) ;; 'module'[5]
+    (mem.store8 (+ 20000 148) 102) ;; 'fn'[0]
+    (mem.store8 (+ 20000 149) 110) ;; 'fn'[1]
+    (mem.store8 (+ 20000 150) 105) ;; 'i32'[0]
+    (mem.store8 (+ 20000 151) 51) ;; 'i32'[1]
+    (mem.store8 (+ 20000 152) 50) ;; 'i32'[2]
+    (mem.store8 (+ 20000 153) 105) ;; 'i64'[0]
+    (mem.store8 (+ 20000 154) 54) ;; 'i64'[1]
+    (mem.store8 (+ 20000 155) 52) ;; 'i64'[2]
+    (mem.store8 (+ 20000 156) 102) ;; 'f32'[0]
+    (mem.store8 (+ 20000 157) 51) ;; 'f32'[1]
+    (mem.store8 (+ 20000 158) 50) ;; 'f32'[2]
+    (mem.store8 (+ 20000 159) 102) ;; 'f64'[0]
+    (mem.store8 (+ 20000 160) 54) ;; 'f64'[1]
+    (mem.store8 (+ 20000 161) 52) ;; 'f64'[2]
+    (mem.store8 (+ 20000 162) 98) ;; 'bool'[0]
+    (mem.store8 (+ 20000 163) 111) ;; 'bool'[1]
+    (mem.store8 (+ 20000 164) 111) ;; 'bool'[2]
+    (mem.store8 (+ 20000 165) 108) ;; 'bool'[3]
+    (mem.store8 (+ 20000 166) 118) ;; 'void'[0]
+    (mem.store8 (+ 20000 167) 111) ;; 'void'[1]
+    (mem.store8 (+ 20000 168) 105) ;; 'void'[2]
+    (mem.store8 (+ 20000 169) 100) ;; 'void'[3]
+    0)
+
+  ;; Returns a unified keyword id (operators 0-23, structural forms
+  ;; 100-111, types 200-205), or -1 if the span is a variable/function name.
+  (fn classify_keyword [src_ptr:i32 pos:i32 len:i32] -> i32
+    (if (call sym_eq src_ptr pos len 20000 1) 0 (if (call sym_eq src_ptr pos len 20001 1) 1 (if (call sym_eq src_ptr pos len 20002 1) 2 (if (call sym_eq src_ptr pos len 20003 1) 3 (if (call sym_eq src_ptr pos len 20004 1) 4 (if (call sym_eq src_ptr pos len 20005 3) 5 (if (call sym_eq src_ptr pos len 20008 3) 6 (if (call sym_eq src_ptr pos len 20011 6) 7 (if (call sym_eq src_ptr pos len 20017 5) 8 (if (call sym_eq src_ptr pos len 20022 9) 9 (if (call sym_eq src_ptr pos len 20031 10) 10 (if (call sym_eq src_ptr pos len 20041 10) 11 (if (call sym_eq src_ptr pos len 20051 10) 12 (if (call sym_eq src_ptr pos len 20061 11) 13 (if (call sym_eq src_ptr pos len 20072 11) 14 (if (call sym_eq src_ptr pos len 20083 2) 15 (if (call sym_eq src_ptr pos len 20085 3) 16 (if (call sym_eq src_ptr pos len 20088 2) 17 (if (call sym_eq src_ptr pos len 20090 3) 18 (if (call sym_eq src_ptr pos len 20093 2) 19 (if (call sym_eq src_ptr pos len 20095 3) 20 (if (call sym_eq src_ptr pos len 20098 3) 21 (if (call sym_eq src_ptr pos len 20101 2) 22 (if (call sym_eq src_ptr pos len 20103 3) 23 (if (call sym_eq src_ptr pos len 20106 3) 100 (if (call sym_eq src_ptr pos len 20109 4) 101 (if (call sym_eq src_ptr pos len 20113 2) 102 (if (call sym_eq src_ptr pos len 20115 4) 103 (if (call sym_eq src_ptr pos len 20119 5) 104 (if (call sym_eq src_ptr pos len 20124 4) 105 (if (call sym_eq src_ptr pos len 20128 5) 106 (if (call sym_eq src_ptr pos len 20133 3) 107 (if (call sym_eq src_ptr pos len 20136 3) 108 (if (call sym_eq src_ptr pos len 20139 3) 109 (if (call sym_eq src_ptr pos len 20142 6) 110 (if (call sym_eq src_ptr pos len 20148 2) 111 (if (call sym_eq src_ptr pos len 20150 3) 200 (if (call sym_eq src_ptr pos len 20153 3) 201 (if (call sym_eq src_ptr pos len 20156 3) 202 (if (call sym_eq src_ptr pos len 20159 3) 203 (if (call sym_eq src_ptr pos len 20162 4) 204 (if (call sym_eq src_ptr pos len 20166 4) 205 -1)))))))))))))))))))))))))))))))))))))))))))
+
+
+  (fn type_id_to_valtype [type_id:i32] -> i32
+    (if (eq type_id 200) 127
+    (if (eq type_id 201) 126
+    (if (eq type_id 202) 125
+    (if (eq type_id 203) 124
+    (if (eq type_id 204) 127
+    127))))))
+
+  ;; ===== Pass 1: function signature table =====
+  ;; Entry = 56 bytes: [name_ptr,name_len,param_count,ret_type_id,
+  ;;                    wasm_func_index,fndef_group, param_type_id x8]
+  (fn func_entry_ptr [func_table_base:i32 idx:i32] -> i32
+    (+ func_table_base (* idx 56)))
+
+  (fn collect_functions [src_ptr:i32 root:i32 func_table_base:i32] -> i32
+    (let count:i32 0)
+    (let child:i32 (call node_next (call node_next (call node_a root))))
+    (let done:bool false)
+    (while (not done)
+      (if (eq child 0)
+          (block (set! done true) 0)
+          (block
+            (let fname_node:i32 (call nth_child child 1))
+            (let params_node:i32 (call nth_child child 2))
+            (let rettype_node:i32 (call nth_child child 4))
+            (let entry:i32 (call func_entry_ptr func_table_base count))
+            (mem.store32 (+ entry 0) (call node_a fname_node))
+            (mem.store32 (+ entry 4) (call node_b fname_node))
+            (mem.store32 (+ entry 12) (call classify_keyword src_ptr (call node_a rettype_node) (call node_b rettype_node)))
+            (mem.store32 (+ entry 16) count)
+            (mem.store32 (+ entry 20) child)
+            (let pcount:i32 0)
+            (let pchild:i32 (call node_a params_node))
+            (let pdone:bool false)
+            (while (not pdone)
+              (if (eq pchild 0)
+                  (block (set! pdone true) 0)
+                  (block
+                    (let ptype_node:i32 (call node_next (call node_next pchild)))
+                    (mem.store32 (+ entry (+ 24 (* pcount 4)))
+                                 (call classify_keyword src_ptr (call node_a ptype_node) (call node_b ptype_node)))
+                    (set! pcount (+ pcount 1))
+                    (set! pchild (call node_next ptype_node))
+                    0)))
+            (mem.store32 (+ entry 8) pcount)
+            (set! count (+ count 1))
+            (set! child (call node_next child))
+            0)))
+    count)
+
+  ;; Looks up a function by name; returns its wasm_func_index, or -1.
+  (fn find_function [src_ptr:i32 func_table_base:i32 func_count:i32 name_ptr:i32 name_len:i32] -> i32
+    (let i:i32 0)
+    (let found:i32 -1)
+    (while (lt i func_count)
+      (let entry:i32 (call func_entry_ptr func_table_base i))
+      (let e_name_ptr:i32 (mem.load32 (+ entry 0)))
+      (let e_name_len:i32 (mem.load32 (+ entry 4)))
+      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr e_name_ptr) e_name_len)
+          (set! found i)
+          (set! found found))
+      (set! i (+ i 1)))
+    found)
+
+  ;; ===== Pass 2 (per function): local variable table =====
+  ;; Entry = 12 bytes: [name_ptr, name_len, type_id]. A local's wasm index
+  ;; IS its position in the table (params occupy the first slots, in order).
+  ;; The running count lives at a fixed memory cell (40500) - functions only
+  ;; return one value, so state shared across the recursive tree walk below
+  ;; lives in memory, same pattern used by the parser's parse_node.
+
+  (fn locals_entry_ptr [base:i32 idx:i32] -> i32
+    (+ base (* idx 12)))
+
+  (fn find_local [base:i32 count:i32 src_ptr:i32 name_ptr:i32 name_len:i32] -> i32
+    (let i:i32 0)
+    (let found:i32 -1)
+    (while (lt i count)
+      (let e:i32 (call locals_entry_ptr base i))
+      (let e_name_ptr:i32 (mem.load32 (+ e 0)))
+      (let e_name_len:i32 (mem.load32 (+ e 4)))
+      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr e_name_ptr) e_name_len)
+          (set! found i)
+          (set! found found))
+      (set! i (+ i 1)))
+    found)
+
+  (fn add_local_if_new [src_ptr:i32 base:i32 name_ptr:i32 name_len:i32 type_id:i32] -> i32
+    (let count:i32 (mem.load32 40500))
+    (let existing:i32 (call find_local base count src_ptr name_ptr name_len))
+    (if (eq existing -1)
+        (block
+          (let e:i32 (call locals_entry_ptr base count))
+          (mem.store32 (+ e 0) name_ptr)
+          (mem.store32 (+ e 4) name_len)
+          (mem.store32 (+ e 8) type_id)
+          (mem.store32 40500 (+ count 1))
+          0)
+        0))
+
+  ;; Recurses into every child of every paren-group looking for `let`/`loop`
+  ;; forms anywhere in the subtree, regardless of what construct contains
+  ;; them - the generic tree makes this simpler than Rust's collect_lets,
+  ;; which has to special-case every AST variant that can nest a body.
+  (fn collect_locals_walk [src_ptr:i32 base:i32 node:i32] -> i32
+    (if (neq (call node_kind node) 20)
+        0
+        (block
+          (let head:i32 (call node_a node))
+          (let kw:i32 -1)
+          (if (eq (call node_kind head) 6)
+              (set! kw (call classify_keyword src_ptr (call node_a head) (call node_b head)))
+              (set! kw -1))
+          (if (eq kw 100)
+              (block
+                (let name_node:i32 (call nth_child node 1))
+                (let type_node:i32 (call nth_child node 3))
+                (let type_id:i32 (call classify_keyword src_ptr (call node_a type_node) (call node_b type_node)))
+                (call add_local_if_new src_ptr base (call node_a name_node) (call node_b name_node) type_id))
+              (if (eq kw 103)
+                  (block
+                    (let var_node:i32 (call nth_child node 1))
+                    (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200))
+                  0))
+          (let child:i32 (call node_a node))
+          (let done:bool false)
+          (while (not done)
+            (if (eq child 0)
+                (block (set! done true) 0)
+                (block
+                  (let _w:i32 (call collect_locals_walk src_ptr base child))
+                  (set! child (call node_next child))
+                  0)))
+          0)))
+
+  (fn is_contract_head [src_ptr:i32 group:i32] -> bool
+    (let head:i32 (call node_a group))
+    (if (neq (call node_kind head) 6)
+        false
+        (block
+          (let kw:i32 (call classify_keyword src_ptr (call node_a head) (call node_b head)))
+          (or (eq kw 107) (or (eq kw 108) (eq kw 109))))))
+
+  ;; Populates `base` with this function's params (first, in order) then any
+  ;; let/loop-introduced locals found anywhere in its body. Returns the total
+  ;; local count (== the number of wasm locals, params included).
+  (fn collect_locals_for_function [src_ptr:i32 entry:i32 base:i32] -> i32
+    (mem.store32 40500 0)
+    (let fndef_group:i32 (mem.load32 (+ entry 20)))
+    (let params_node:i32 (call nth_child fndef_group 2))
+    (let pchild:i32 (call node_a params_node))
+    (let pdone:bool false)
+    (while (not pdone)
+      (if (eq pchild 0)
+          (block (set! pdone true) 0)
+          (block
+            (let type_node:i32 (call node_next (call node_next pchild)))
+            (let type_id:i32 (call classify_keyword src_ptr (call node_a type_node) (call node_b type_node)))
+            (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id))
+            (set! pchild (call node_next type_node))
+            0)))
+    (let bchild:i32 (call nth_child fndef_group 5))
+    (let bdone:bool false)
+    (while (not bdone)
+      (if (eq bchild 0)
+          (block (set! bdone true) 0)
+          (block
+            (if (call is_contract_head src_ptr bchild)
+                0
+                (call collect_locals_walk src_ptr base bchild))
+            (set! bchild (call node_next bchild))
+            0)))
+    (mem.load32 40500))
+
+  ;; ===== TEMPORARY test harness (removed once verified) =====
+  (fn test_signatures_and_locals [] -> i32
+    (let _kw_init:i32 (call init_keywords))
+    (let src:i32 500)
+    (mem.store8 (+ src 0) 40) ;; '('
+    (mem.store8 (+ src 1) 109) ;; 'm'
+    (mem.store8 (+ src 2) 111) ;; 'o'
+    (mem.store8 (+ src 3) 100) ;; 'd'
+    (mem.store8 (+ src 4) 117) ;; 'u'
+    (mem.store8 (+ src 5) 108) ;; 'l'
+    (mem.store8 (+ src 6) 101) ;; 'e'
+    (mem.store8 (+ src 7) 32) ;; ' '
+    (mem.store8 (+ src 8) 116) ;; 't'
+    (mem.store8 (+ src 9) 101) ;; 'e'
+    (mem.store8 (+ src 10) 115) ;; 's'
+    (mem.store8 (+ src 11) 116) ;; 't'
+    (mem.store8 (+ src 12) 95) ;; '_'
+    (mem.store8 (+ src 13) 109) ;; 'm'
+    (mem.store8 (+ src 14) 111) ;; 'o'
+    (mem.store8 (+ src 15) 100) ;; 'd'
+    (mem.store8 (+ src 16) 32) ;; ' '
+    (mem.store8 (+ src 17) 40) ;; '('
+    (mem.store8 (+ src 18) 102) ;; 'f'
+    (mem.store8 (+ src 19) 110) ;; 'n'
+    (mem.store8 (+ src 20) 32) ;; ' '
+    (mem.store8 (+ src 21) 97) ;; 'a'
+    (mem.store8 (+ src 22) 100) ;; 'd'
+    (mem.store8 (+ src 23) 100) ;; 'd'
+    (mem.store8 (+ src 24) 32) ;; ' '
+    (mem.store8 (+ src 25) 91) ;; '['
+    (mem.store8 (+ src 26) 97) ;; 'a'
+    (mem.store8 (+ src 27) 58) ;; ':'
+    (mem.store8 (+ src 28) 105) ;; 'i'
+    (mem.store8 (+ src 29) 51) ;; '3'
+    (mem.store8 (+ src 30) 50) ;; '2'
+    (mem.store8 (+ src 31) 32) ;; ' '
+    (mem.store8 (+ src 32) 98) ;; 'b'
+    (mem.store8 (+ src 33) 58) ;; ':'
+    (mem.store8 (+ src 34) 105) ;; 'i'
+    (mem.store8 (+ src 35) 51) ;; '3'
+    (mem.store8 (+ src 36) 50) ;; '2'
+    (mem.store8 (+ src 37) 93) ;; ']'
+    (mem.store8 (+ src 38) 32) ;; ' '
+    (mem.store8 (+ src 39) 45) ;; '-'
+    (mem.store8 (+ src 40) 62) ;; '>'
+    (mem.store8 (+ src 41) 32) ;; ' '
+    (mem.store8 (+ src 42) 105) ;; 'i'
+    (mem.store8 (+ src 43) 51) ;; '3'
+    (mem.store8 (+ src 44) 50) ;; '2'
+    (mem.store8 (+ src 45) 32) ;; ' '
+    (mem.store8 (+ src 46) 40) ;; '('
+    (mem.store8 (+ src 47) 43) ;; '+'
+    (mem.store8 (+ src 48) 32) ;; ' '
+    (mem.store8 (+ src 49) 97) ;; 'a'
+    (mem.store8 (+ src 50) 32) ;; ' '
+    (mem.store8 (+ src 51) 98) ;; 'b'
+    (mem.store8 (+ src 52) 41) ;; ')'
+    (mem.store8 (+ src 53) 41) ;; ')'
+    (mem.store8 (+ src 54) 32) ;; ' '
+    (mem.store8 (+ src 55) 40) ;; '('
+    (mem.store8 (+ src 56) 102) ;; 'f'
+    (mem.store8 (+ src 57) 110) ;; 'n'
+    (mem.store8 (+ src 58) 32) ;; ' '
+    (mem.store8 (+ src 59) 99) ;; 'c'
+    (mem.store8 (+ src 60) 111) ;; 'o'
+    (mem.store8 (+ src 61) 109) ;; 'm'
+    (mem.store8 (+ src 62) 112) ;; 'p'
+    (mem.store8 (+ src 63) 117) ;; 'u'
+    (mem.store8 (+ src 64) 116) ;; 't'
+    (mem.store8 (+ src 65) 101) ;; 'e'
+    (mem.store8 (+ src 66) 32) ;; ' '
+    (mem.store8 (+ src 67) 91) ;; '['
+    (mem.store8 (+ src 68) 120) ;; 'x'
+    (mem.store8 (+ src 69) 58) ;; ':'
+    (mem.store8 (+ src 70) 105) ;; 'i'
+    (mem.store8 (+ src 71) 51) ;; '3'
+    (mem.store8 (+ src 72) 50) ;; '2'
+    (mem.store8 (+ src 73) 93) ;; ']'
+    (mem.store8 (+ src 74) 32) ;; ' '
+    (mem.store8 (+ src 75) 45) ;; '-'
+    (mem.store8 (+ src 76) 62) ;; '>'
+    (mem.store8 (+ src 77) 32) ;; ' '
+    (mem.store8 (+ src 78) 105) ;; 'i'
+    (mem.store8 (+ src 79) 51) ;; '3'
+    (mem.store8 (+ src 80) 50) ;; '2'
+    (mem.store8 (+ src 81) 32) ;; ' '
+    (mem.store8 (+ src 82) 40) ;; '('
+    (mem.store8 (+ src 83) 108) ;; 'l'
+    (mem.store8 (+ src 84) 101) ;; 'e'
+    (mem.store8 (+ src 85) 116) ;; 't'
+    (mem.store8 (+ src 86) 32) ;; ' '
+    (mem.store8 (+ src 87) 121) ;; 'y'
+    (mem.store8 (+ src 88) 58) ;; ':'
+    (mem.store8 (+ src 89) 105) ;; 'i'
+    (mem.store8 (+ src 90) 51) ;; '3'
+    (mem.store8 (+ src 91) 50) ;; '2'
+    (mem.store8 (+ src 92) 32) ;; ' '
+    (mem.store8 (+ src 93) 40) ;; '('
+    (mem.store8 (+ src 94) 99) ;; 'c'
+    (mem.store8 (+ src 95) 97) ;; 'a'
+    (mem.store8 (+ src 96) 108) ;; 'l'
+    (mem.store8 (+ src 97) 108) ;; 'l'
+    (mem.store8 (+ src 98) 32) ;; ' '
+    (mem.store8 (+ src 99) 97) ;; 'a'
+    (mem.store8 (+ src 100) 100) ;; 'd'
+    (mem.store8 (+ src 101) 100) ;; 'd'
+    (mem.store8 (+ src 102) 32) ;; ' '
+    (mem.store8 (+ src 103) 120) ;; 'x'
+    (mem.store8 (+ src 104) 32) ;; ' '
+    (mem.store8 (+ src 105) 53) ;; '5'
+    (mem.store8 (+ src 106) 41) ;; ')'
+    (mem.store8 (+ src 107) 41) ;; ')'
+    (mem.store8 (+ src 108) 32) ;; ' '
+    (mem.store8 (+ src 109) 40) ;; '('
+    (mem.store8 (+ src 110) 108) ;; 'l'
+    (mem.store8 (+ src 111) 101) ;; 'e'
+    (mem.store8 (+ src 112) 116) ;; 't'
+    (mem.store8 (+ src 113) 32) ;; ' '
+    (mem.store8 (+ src 114) 122) ;; 'z'
+    (mem.store8 (+ src 115) 58) ;; ':'
+    (mem.store8 (+ src 116) 105) ;; 'i'
+    (mem.store8 (+ src 117) 51) ;; '3'
+    (mem.store8 (+ src 118) 50) ;; '2'
+    (mem.store8 (+ src 119) 32) ;; ' '
+    (mem.store8 (+ src 120) 48) ;; '0'
+    (mem.store8 (+ src 121) 41) ;; ')'
+    (mem.store8 (+ src 122) 32) ;; ' '
+    (mem.store8 (+ src 123) 40) ;; '('
+    (mem.store8 (+ src 124) 108) ;; 'l'
+    (mem.store8 (+ src 125) 111) ;; 'o'
+    (mem.store8 (+ src 126) 111) ;; 'o'
+    (mem.store8 (+ src 127) 112) ;; 'p'
+    (mem.store8 (+ src 128) 32) ;; ' '
+    (mem.store8 (+ src 129) 105) ;; 'i'
+    (mem.store8 (+ src 130) 32) ;; ' '
+    (mem.store8 (+ src 131) 48) ;; '0'
+    (mem.store8 (+ src 132) 32) ;; ' '
+    (mem.store8 (+ src 133) 57) ;; '9'
+    (mem.store8 (+ src 134) 32) ;; ' '
+    (mem.store8 (+ src 135) 49) ;; '1'
+    (mem.store8 (+ src 136) 32) ;; ' '
+    (mem.store8 (+ src 137) 40) ;; '('
+    (mem.store8 (+ src 138) 115) ;; 's'
+    (mem.store8 (+ src 139) 101) ;; 'e'
+    (mem.store8 (+ src 140) 116) ;; 't'
+    (mem.store8 (+ src 141) 33) ;; '!'
+    (mem.store8 (+ src 142) 32) ;; ' '
+    (mem.store8 (+ src 143) 122) ;; 'z'
+    (mem.store8 (+ src 144) 32) ;; ' '
+    (mem.store8 (+ src 145) 40) ;; '('
+    (mem.store8 (+ src 146) 43) ;; '+'
+    (mem.store8 (+ src 147) 32) ;; ' '
+    (mem.store8 (+ src 148) 122) ;; 'z'
+    (mem.store8 (+ src 149) 32) ;; ' '
+    (mem.store8 (+ src 150) 105) ;; 'i'
+    (mem.store8 (+ src 151) 41) ;; ')'
+    (mem.store8 (+ src 152) 41) ;; ')'
+    (mem.store8 (+ src 153) 41) ;; ')'
+    (mem.store8 (+ src 154) 32) ;; ' '
+    (mem.store8 (+ src 155) 40) ;; '('
+    (mem.store8 (+ src 156) 43) ;; '+'
+    (mem.store8 (+ src 157) 32) ;; ' '
+    (mem.store8 (+ src 158) 121) ;; 'y'
+    (mem.store8 (+ src 159) 32) ;; ' '
+    (mem.store8 (+ src 160) 122) ;; 'z'
+    (mem.store8 (+ src 161) 41) ;; ')'
+    (mem.store8 (+ src 162) 41) ;; ')'
+    (mem.store8 (+ src 163) 41) ;; ')'
+    (let tok:i32 9000)
+    (let ast:i32 12000)
+    (let n:i32 (call compiler.tokenize src 164 tok))
+    (let root:i32 (call compiler.parse_ast tok n ast))
+    (let func_count:i32 (call collect_functions src root 30000))
+    (let e0:i32 (call func_entry_ptr 30000 0))
+    (let e0_pcount:i32 (mem.load32 (+ e0 8)))
+    (let e0_ret:i32 (mem.load32 (+ e0 12)))
+    (let e0_p0:i32 (mem.load32 (+ e0 24)))
+    (let e0_p1:i32 (mem.load32 (+ e0 28)))
+    (let e0_name0:i32 (mem.load8 (+ src (mem.load32 (+ e0 0)))))
+    (let e1:i32 (call func_entry_ptr 30000 1))
+    (let e1_pcount:i32 (mem.load32 (+ e1 8)))
+    (let e1_ret:i32 (mem.load32 (+ e1 12)))
+    (let local_count:i32 (call collect_locals_for_function src e1 41000))
+    (let l0_name:i32 (mem.load8 (+ src (mem.load32 (+ 41000 0)))))
+    (let l1_name:i32 (mem.load8 (+ src (mem.load32 (+ (+ 41000 12) 0)))))
+    (let l2_name:i32 (mem.load8 (+ src (mem.load32 (+ (+ 41000 24) 0)))))
+    (let l3_name:i32 (mem.load8 (+ src (mem.load32 (+ (+ 41000 36) 0)))))
+    (let l3_type:i32 (mem.load32 (+ (+ 41000 36) 8)))
+    (if (and (eq func_count 2)
+        (and (eq e0_pcount 2) (and (eq e0_ret 200) (and (eq e0_p0 200) (and (eq e0_p1 200) (and (eq e0_name0 97)
+        (and (eq e1_pcount 1) (and (eq e1_ret 200)
+        (and (eq local_count 4)
+        (and (eq l0_name 120) (and (eq l1_name 121) (and (eq l2_name 122) (and (eq l3_name 105) (eq l3_type 200))))))))))))))
+        1
+        0))
+
+  ;; ===== Low-level WASM instruction emitters =====
+
+  (fn encode_s32 [ptr:i32 val:i32] -> i32
+    (let bytes_written:i32 0)
+    (let value:i32 val)
+    (let more:bool true)
+    (while more
+      (let byte_val:i32 (bitand value 127))
+      (set! value (shr value 7))
+      (let sign_bit:i32 (bitand byte_val 64))
+      (let done_now:bool false)
+      (if (and (eq value 0) (eq sign_bit 0))
+          (set! done_now true)
+          (if (and (eq value -1) (neq sign_bit 0))
+              (set! done_now true)
+              (set! done_now false)))
+      (let byte_out:i32 byte_val)
+      (if done_now (set! byte_out byte_val) (set! byte_out (bitor byte_val 128)))
+      (mem.store8 (+ ptr bytes_written) byte_out)
+      (set! bytes_written (+ bytes_written 1))
+      (if done_now (set! more false) (set! more true)))
+    bytes_written)
+
+  (fn emit_byte [ptr:i32 b:i32] -> i32
+    (mem.store8 ptr b)
+    1)
+
+  (fn emit_i32_const [ptr:i32 val:i32] -> i32
+    (mem.store8 ptr 65)
+    (+ 1 (call encode_s32 (+ ptr 1) val)))
+
+  (fn emit_local_get [ptr:i32 idx:i32] -> i32
+    (mem.store8 ptr 32)
+    (+ 1 (call compiler.encode_u32 (+ ptr 1) idx)))
+
+  (fn emit_local_set [ptr:i32 idx:i32] -> i32
+    (mem.store8 ptr 33)
+    (+ 1 (call compiler.encode_u32 (+ ptr 1) idx)))
+
+  (fn emit_call [ptr:i32 idx:i32] -> i32
+    (mem.store8 ptr 16)
+    (+ 1 (call compiler.encode_u32 (+ ptr 1) idx)))
+
+  (fn emit_memop [ptr:i32 opcode:i32 align:i32] -> i32
+    (mem.store8 ptr opcode)
+    (mem.store8 (+ ptr 1) align)
+    (mem.store8 (+ ptr 2) 0)
+    3)
+
+  ;; Maps an operator id (0-23, from classify_keyword) to its real wasm
+  ;; opcode byte, matching src/compiler/wasm.rs exactly. Memory ops are
+  ;; handled by the caller via emit_memop instead (they need a memarg).
+  (fn emit_binop [ptr:i32 op_id:i32] -> i32
+    (if (eq op_id 0) (call emit_byte ptr 106)
+    (if (eq op_id 1) (call emit_byte ptr 107)
+    (if (eq op_id 2) (call emit_byte ptr 108)
+    (if (eq op_id 3) (call emit_byte ptr 109)
+    (if (eq op_id 4) (call emit_byte ptr 115)
+    (if (eq op_id 5) (call emit_byte ptr 116)
+    (if (eq op_id 6) (call emit_byte ptr 117)
+    (if (eq op_id 7) (call emit_byte ptr 113)
+    (if (eq op_id 8) (call emit_byte ptr 114)
+    (if (eq op_id 15) (call emit_byte ptr 70)
+    (if (eq op_id 16) (call emit_byte ptr 71)
+    (if (eq op_id 17) (call emit_byte ptr 72)
+    (if (eq op_id 18) (call emit_byte ptr 76)
+    (if (eq op_id 19) (call emit_byte ptr 74)
+    (if (eq op_id 20) (call emit_byte ptr 78)
+    (if (eq op_id 21) (call emit_byte ptr 113)
+    (if (eq op_id 22) (call emit_byte ptr 114)
+    (if (eq op_id 23) (call emit_byte ptr 69)
+    -1)))))))))))))))))))
+
+  ;; ===== Voidness classification (mirrors wasm.rs's is_void_expr, fixed
+  ;; version - both branches of an if must be void for the if itself to be
+  ;; void; a call is void iff the target function's return type is void) =====
+
+  (fn is_void_op [op_id:i32] -> bool
+    (or (eq op_id 12) (or (eq op_id 13) (eq op_id 14))))
+
+  (fn last_child [group:i32] -> i32
+    (let cur:i32 (call node_a group))
+    (let done:bool false)
+    (while (not done)
+      (let nxt:i32 (call node_next cur))
+      (if (eq nxt 0)
+          (block (set! done true) 0)
+          (block (set! cur nxt) 0)))
+    cur)
+
+  (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
+    (let head:i32 (call node_a group))
+    (if (neq (call node_kind head) 6)
+        -1
+        (call classify_keyword src_ptr (call node_a head) (call node_b head))))
+
+  (fn is_void_call [src_ptr:i32 node:i32 func_table_base:i32 func_count:i32] -> bool
+    (let fname:i32 (call nth_child node 1))
+    (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
+    (if (eq fidx -1)
+        false
+        (eq (mem.load32 (+ (call func_entry_ptr func_table_base fidx) 12)) 205)))
+
+  (fn is_void_node [src_ptr:i32 node:i32 func_table_base:i32 func_count:i32] -> bool
+    (if (neq (call node_kind node) 20)
+        false
+        (block
+          (let kw:i32 (call group_head_keyword src_ptr node))
+          (if (eq kw 100) true
+          (if (eq kw 101) true
+          (if (eq kw 103) true
+          (if (eq kw 104) true
+          (if (eq kw 106)
+              (call is_void_node src_ptr (call last_child node) func_table_base func_count)
+              (if (eq kw 102)
+                  (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count)
+                       (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))
+                  (if (eq kw 105)
+                      (call is_void_call src_ptr node func_table_base func_count)
+                      (if (gte kw 0)
+                          (call is_void_op kw)
+                          false)))))))))))
+
+
+  ;; ===== Compile error signaling =====
+  ;; No exception mechanism exists, so an unsupported construct sets a flag
+  ;; at a fixed memory cell rather than propagating a Result through every
+  ;; call site; the top-level entry point checks it once at the end. Bytes
+  ;; still get emitted at the error site so byte-offset bookkeeping stays
+  ;; consistent, but the caller must discard the whole output once the flag
+  ;; is set - it is never a valid program.
+  (fn set_compile_error [] -> i32
+    (mem.store32 40600 1)
+    0)
+
+  (fn has_compile_error [] -> bool
+    (neq (mem.load32 40600) 0))
+
+  ;; ===== Expression / statement codegen =====
+
+  (fn compile_expr [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let kind:i32 (call node_kind node))
+    (if (eq kind 7) (call emit_i32_const out_ptr (call node_a node))
+    (if (eq kind 8) (call emit_i32_const out_ptr (call node_a node))
+    (if (eq kind 9) (call emit_i32_const out_ptr 0)
+    (if (eq kind 6)
+        (block
+          (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
+          (if (eq idx -1)
+              (block (let _e:i32 (call set_compile_error)) (call emit_i32_const out_ptr 0))
+              (call emit_local_get out_ptr idx)))
+        (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))
+
+  (fn compile_group [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let kw:i32 (call group_head_keyword src_ptr node))
+    (if (eq kw 100) (call compile_let src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 101) (call compile_set src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 102) (call compile_if src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 103) (call compile_loop src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 104) (call compile_while src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 105) (call compile_call src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (eq kw 106) (call compile_block src_ptr node out_ptr locals_base locals_count func_table_base func_count)
+    (if (gte kw 0)
+        (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count)
+        (block (let _e:i32 (call set_compile_error)) (call emit_i32_const out_ptr 0)))))))))))
+
+
+(fn compile_op [src_ptr:i32 op_id:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (if (eq op_id 9) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (+ n1 (call emit_memop (+ out_ptr n1) 45 0))) (if (eq op_id 10) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (+ n1 (call emit_memop (+ out_ptr n1) 40 2))) (if (eq op_id 11) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (+ n1 (call emit_memop (+ out_ptr n1) 41 3))) (if (eq op_id 12) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr n1) locals_base locals_count func_table_base func_count)) (+ (+ n1 n2) (call emit_memop (+ out_ptr (+ n1 n2)) 58 0))) (if (eq op_id 13) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr n1) locals_base locals_count func_table_base func_count)) (+ (+ n1 n2) (call emit_memop (+ out_ptr (+ n1 n2)) 54 2))) (if (eq op_id 14) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr n1) locals_base locals_count func_table_base func_count)) (+ (+ n1 n2) (call emit_memop (+ out_ptr (+ n1 n2)) 55 3))) (if (eq op_id 23) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (+ n1 (call emit_binop (+ out_ptr n1) 23))) (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr n1) locals_base locals_count func_table_base func_count)) (+ (+ n1 n2) (call emit_binop (+ out_ptr (+ n1 n2)) op_id)))))))))))
+
+(fn compile_let [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:i32 (call nth_child node 1)) (let val_node:i32 (call nth_child node 4)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+
+(fn compile_set [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:i32 (call nth_child node 1)) (let val_node:i32 (call nth_child node 2)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+
+(fn compile_call [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fname_node:i32 (call nth_child node 1)) (let offset:i32 0) (let arg:i32 (call node_next (call node_next (call node_a node)))) (let done:bool false) (while (not done) (if (eq arg 0) (block (set! done true) 0) (block (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg)) 0))) (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname_node) (call node_b fname_node))) (if (eq fidx -1) (block (let _e:i32 (call set_compile_error)) offset) (+ offset (call emit_call (+ out_ptr offset) fidx))))
+
+(fn compile_stmt [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let n:i32 (call compile_expr src_ptr node out_ptr locals_base locals_count func_table_base func_count)) (if (call is_void_node src_ptr node func_table_base func_count) n (+ n (call emit_byte (+ out_ptr n) 26))))
+
+(fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (let done:bool false) (while (not done) (if (eq node 0) (block (set! done true) 0) (block (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt) 0))) offset)
+
+(fn compile_block [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (call compile_stmt_seq src_ptr (call node_next (call node_a node)) out_ptr locals_base locals_count func_table_base func_count))
+
+(fn compile_if [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let cond_node:i32 (call nth_child node 1)) (let then_node:i32 (call nth_child node 2)) (let else_node:i32 (call nth_child node 3)) (let off:i32 0) (set! off (+ off (call compile_expr src_ptr cond_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (let void_then:bool (call is_void_node src_ptr then_node func_table_base func_count)) (let block_ty:i32 127) (if void_then (set! block_ty 64) (set! block_ty 127)) (mem.store8 (+ out_ptr off) 4) (mem.store8 (+ out_ptr (+ off 1)) block_ty) (set! off (+ off 2)) (set! off (+ off (call compile_expr src_ptr then_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 5) (set! off (+ off 1)) (set! off (+ off (call compile_expr src_ptr else_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
+
+(fn compile_while [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let cond_node:i32 (call nth_child node 1)) (let body_first:i32 (call node_next (call node_next (call node_a node)))) (let off:i32 0) (mem.store8 (+ out_ptr off) 2) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (mem.store8 (+ out_ptr off) 3) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (set! off (+ off (call compile_expr src_ptr cond_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 69) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 13) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1))) (set! off (+ off (call compile_stmt_seq src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 12) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
+
+(fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let var_node:i32 (call nth_child node 1)) (let start_node:i32 (call nth_child node 2)) (let end_node:i32 (call nth_child node 3)) (let step_node:i32 (call nth_child node 4)) (let body_first:i32 (call nth_child node 5)) (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node))) (let off:i32 0) (set! off (+ off (call compile_expr src_ptr start_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 2) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (mem.store8 (+ out_ptr off) 3) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr end_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 74) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 13) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1))) (set! off (+ off (call compile_stmt_seq src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr step_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1)) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 12) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
+
+(fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (let done:bool false) (while (not done) (if (eq bchild 0) (block (set! done true) 0) (if (call is_contract_head src_ptr bchild) (block (set! bchild (call node_next bchild)) 0) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) 0) (set! bchild (call node_next bchild)) 0)))) off)
+
+  ;; ===== TEMPORARY test: compile the "add" function, wrap in a
+  ;; hand-written minimal module shell, write to a real file for external validation =====
+(fn test_compile_add [] -> i32 (let _kw:i32 (call init_keywords)) (mem.store32 40600 0) (let src:i32 500) (mem.store8 (+ src 0) 40) (mem.store8 (+ src 1) 109) (mem.store8 (+ src 2) 111) (mem.store8 (+ src 3) 100) (mem.store8 (+ src 4) 117) (mem.store8 (+ src 5) 108) (mem.store8 (+ src 6) 101) (mem.store8 (+ src 7) 32) (mem.store8 (+ src 8) 116) (mem.store8 (+ src 9) 32) (mem.store8 (+ src 10) 40) (mem.store8 (+ src 11) 102) (mem.store8 (+ src 12) 110) (mem.store8 (+ src 13) 32) (mem.store8 (+ src 14) 97) (mem.store8 (+ src 15) 100) (mem.store8 (+ src 16) 100) (mem.store8 (+ src 17) 32) (mem.store8 (+ src 18) 91) (mem.store8 (+ src 19) 97) (mem.store8 (+ src 20) 58) (mem.store8 (+ src 21) 105) (mem.store8 (+ src 22) 51) (mem.store8 (+ src 23) 50) (mem.store8 (+ src 24) 32) (mem.store8 (+ src 25) 98) (mem.store8 (+ src 26) 58) (mem.store8 (+ src 27) 105) (mem.store8 (+ src 28) 51) (mem.store8 (+ src 29) 50) (mem.store8 (+ src 30) 93) (mem.store8 (+ src 31) 32) (mem.store8 (+ src 32) 45) (mem.store8 (+ src 33) 62) (mem.store8 (+ src 34) 32) (mem.store8 (+ src 35) 105) (mem.store8 (+ src 36) 51) (mem.store8 (+ src 37) 50) (mem.store8 (+ src 38) 32) (mem.store8 (+ src 39) 40) (mem.store8 (+ src 40) 43) (mem.store8 (+ src 41) 32) (mem.store8 (+ src 42) 97) (mem.store8 (+ src 43) 32) (mem.store8 (+ src 44) 98) (mem.store8 (+ src 45) 41) (mem.store8 (+ src 46) 41) (mem.store8 (+ src 47) 41) (let src_len:i32 48) (let tok:i32 9000) (let ast:i32 12000) (let n:i32 (call compiler.tokenize src src_len tok)) (let root:i32 (call compiler.parse_ast tok n ast)) (let func_count:i32 (call collect_functions src root 30000)) (let e0:i32 (call func_entry_ptr 30000 0)) (let locals_count:i32 (call collect_locals_for_function src e0 41000)) (let body_scratch:i32 60000) (let body_len:i32 (call compile_function_body src e0 body_scratch 41000 locals_count 30000 func_count)) (let out:i32 70000) (let off:i32 (call compiler.emit_header out)) (mem.store8 (+ out off) 1) (mem.store8 (+ out (+ off 1)) 7) (mem.store8 (+ out (+ off 2)) 1) (mem.store8 (+ out (+ off 3)) 96) (mem.store8 (+ out (+ off 4)) 2) (mem.store8 (+ out (+ off 5)) 127) (mem.store8 (+ out (+ off 6)) 127) (mem.store8 (+ out (+ off 7)) 1) (mem.store8 (+ out (+ off 8)) 127) (set! off (+ off 9)) (mem.store8 (+ out off) 3) (mem.store8 (+ out (+ off 1)) 2) (mem.store8 (+ out (+ off 2)) 1) (mem.store8 (+ out (+ off 3)) 0) (set! off (+ off 4)) (mem.store8 (+ out off) 5) (mem.store8 (+ out (+ off 1)) 3) (mem.store8 (+ out (+ off 2)) 1) (mem.store8 (+ out (+ off 3)) 0) (mem.store8 (+ out (+ off 4)) 1) (set! off (+ off 5)) (mem.store8 (+ out off) 7) (mem.store8 (+ out (+ off 1)) 7) (mem.store8 (+ out (+ off 2)) 1) (mem.store8 (+ out (+ off 3)) 3) (mem.store8 (+ out (+ off 4)) 97) (mem.store8 (+ out (+ off 5)) 100) (mem.store8 (+ out (+ off 6)) 100) (mem.store8 (+ out (+ off 7)) 0) (mem.store8 (+ out (+ off 8)) 0) (set! off (+ off 9)) (let inner_len:i32 (+ 1 (+ body_len 1))) (mem.store8 (+ out off) 10) (set! off (+ off 1)) (let sec_len:i32 (+ 2 inner_len)) (let leb1:i32 (call compiler.encode_u32 (+ out off) sec_len)) (set! off (+ off leb1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (let leb2:i32 (call compiler.encode_u32 (+ out off) inner_len)) (set! off (+ off leb2)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (let i:i32 0) (while (lt i body_len) (mem.store8 (+ out off) (mem.load8 (+ body_scratch i))) (set! off (+ off 1)) (set! i (+ i 1))) (mem.store8 (+ out off) 11) (set! off (+ off 1)) (mem.store8 (+ 400 0) 97) (mem.store8 (+ 400 1) 105) (mem.store8 (+ 400 2) 112) (mem.store8 (+ 400 3) 108) (mem.store8 (+ 400 4) 95) (mem.store8 (+ 400 5) 115) (mem.store8 (+ 400 6) 114) (mem.store8 (+ 400 7) 99) (mem.store8 (+ 400 8) 47) (mem.store8 (+ 400 9) 95) (mem.store8 (+ 400 10) 99) (mem.store8 (+ 400 11) 111) (mem.store8 (+ 400 12) 100) (mem.store8 (+ 400 13) 101) (mem.store8 (+ 400 14) 103) (mem.store8 (+ 400 15) 101) (mem.store8 (+ 400 16) 110) (mem.store8 (+ 400 17) 95) (mem.store8 (+ 400 18) 111) (mem.store8 (+ 400 19) 117) (mem.store8 (+ 400 20) 116) (mem.store8 (+ 400 21) 46) (mem.store8 (+ 400 22) 119) (mem.store8 (+ 400 23) 97) (mem.store8 (+ 400 24) 115) (mem.store8 (+ 400 25) 109) (let path_len:i32 26) (let wfd:i32 (fs.open 400 path_len 1)) (let written:i32 (fs.write wfd out off)) (let _c:i32 (fs.close wfd)) (if (call has_compile_error) -1 off))
+
+
+(fn test_compile_compute [] -> i32 (let _kw:i32 (call init_keywords)) (mem.store32 40600 0) (let src:i32 500) (mem.store8 (+ src 0) 40) (mem.store8 (+ src 1) 109) (mem.store8 (+ src 2) 111) (mem.store8 (+ src 3) 100) (mem.store8 (+ src 4) 117) (mem.store8 (+ src 5) 108) (mem.store8 (+ src 6) 101) (mem.store8 (+ src 7) 32) (mem.store8 (+ src 8) 116) (mem.store8 (+ src 9) 32) (mem.store8 (+ src 10) 40) (mem.store8 (+ src 11) 102) (mem.store8 (+ src 12) 110) (mem.store8 (+ src 13) 32) (mem.store8 (+ src 14) 97) (mem.store8 (+ src 15) 100) (mem.store8 (+ src 16) 100) (mem.store8 (+ src 17) 32) (mem.store8 (+ src 18) 91) (mem.store8 (+ src 19) 97) (mem.store8 (+ src 20) 58) (mem.store8 (+ src 21) 105) (mem.store8 (+ src 22) 51) (mem.store8 (+ src 23) 50) (mem.store8 (+ src 24) 32) (mem.store8 (+ src 25) 98) (mem.store8 (+ src 26) 58) (mem.store8 (+ src 27) 105) (mem.store8 (+ src 28) 51) (mem.store8 (+ src 29) 50) (mem.store8 (+ src 30) 93) (mem.store8 (+ src 31) 32) (mem.store8 (+ src 32) 45) (mem.store8 (+ src 33) 62) (mem.store8 (+ src 34) 32) (mem.store8 (+ src 35) 105) (mem.store8 (+ src 36) 51) (mem.store8 (+ src 37) 50) (mem.store8 (+ src 38) 32) (mem.store8 (+ src 39) 40) (mem.store8 (+ src 40) 43) (mem.store8 (+ src 41) 32) (mem.store8 (+ src 42) 97) (mem.store8 (+ src 43) 32) (mem.store8 (+ src 44) 98) (mem.store8 (+ src 45) 41) (mem.store8 (+ src 46) 41) (mem.store8 (+ src 47) 32) (mem.store8 (+ src 48) 40) (mem.store8 (+ src 49) 102) (mem.store8 (+ src 50) 110) (mem.store8 (+ src 51) 32) (mem.store8 (+ src 52) 99) (mem.store8 (+ src 53) 111) (mem.store8 (+ src 54) 109) (mem.store8 (+ src 55) 112) (mem.store8 (+ src 56) 117) (mem.store8 (+ src 57) 116) (mem.store8 (+ src 58) 101) (mem.store8 (+ src 59) 32) (mem.store8 (+ src 60) 91) (mem.store8 (+ src 61) 120) (mem.store8 (+ src 62) 58) (mem.store8 (+ src 63) 105) (mem.store8 (+ src 64) 51) (mem.store8 (+ src 65) 50) (mem.store8 (+ src 66) 93) (mem.store8 (+ src 67) 32) (mem.store8 (+ src 68) 45) (mem.store8 (+ src 69) 62) (mem.store8 (+ src 70) 32) (mem.store8 (+ src 71) 105) (mem.store8 (+ src 72) 51) (mem.store8 (+ src 73) 50) (mem.store8 (+ src 74) 32) (mem.store8 (+ src 75) 40) (mem.store8 (+ src 76) 108) (mem.store8 (+ src 77) 101) (mem.store8 (+ src 78) 116) (mem.store8 (+ src 79) 32) (mem.store8 (+ src 80) 121) (mem.store8 (+ src 81) 58) (mem.store8 (+ src 82) 105) (mem.store8 (+ src 83) 51) (mem.store8 (+ src 84) 50) (mem.store8 (+ src 85) 32) (mem.store8 (+ src 86) 40) (mem.store8 (+ src 87) 99) (mem.store8 (+ src 88) 97) (mem.store8 (+ src 89) 108) (mem.store8 (+ src 90) 108) (mem.store8 (+ src 91) 32) (mem.store8 (+ src 92) 97) (mem.store8 (+ src 93) 100) (mem.store8 (+ src 94) 100) (mem.store8 (+ src 95) 32) (mem.store8 (+ src 96) 120) (mem.store8 (+ src 97) 32) (mem.store8 (+ src 98) 53) (mem.store8 (+ src 99) 41) (mem.store8 (+ src 100) 41) (mem.store8 (+ src 101) 32) (mem.store8 (+ src 102) 40) (mem.store8 (+ src 103) 108) (mem.store8 (+ src 104) 101) (mem.store8 (+ src 105) 116) (mem.store8 (+ src 106) 32) (mem.store8 (+ src 107) 122) (mem.store8 (+ src 108) 58) (mem.store8 (+ src 109) 105) (mem.store8 (+ src 110) 51) (mem.store8 (+ src 111) 50) (mem.store8 (+ src 112) 32) (mem.store8 (+ src 113) 48) (mem.store8 (+ src 114) 41) (mem.store8 (+ src 115) 32) (mem.store8 (+ src 116) 40) (mem.store8 (+ src 117) 108) (mem.store8 (+ src 118) 111) (mem.store8 (+ src 119) 111) (mem.store8 (+ src 120) 112) (mem.store8 (+ src 121) 32) (mem.store8 (+ src 122) 105) (mem.store8 (+ src 123) 32) (mem.store8 (+ src 124) 48) (mem.store8 (+ src 125) 32) (mem.store8 (+ src 126) 57) (mem.store8 (+ src 127) 32) (mem.store8 (+ src 128) 49) (mem.store8 (+ src 129) 32) (mem.store8 (+ src 130) 40) (mem.store8 (+ src 131) 115) (mem.store8 (+ src 132) 101) (mem.store8 (+ src 133) 116) (mem.store8 (+ src 134) 33) (mem.store8 (+ src 135) 32) (mem.store8 (+ src 136) 122) (mem.store8 (+ src 137) 32) (mem.store8 (+ src 138) 40) (mem.store8 (+ src 139) 43) (mem.store8 (+ src 140) 32) (mem.store8 (+ src 141) 122) (mem.store8 (+ src 142) 32) (mem.store8 (+ src 143) 105) (mem.store8 (+ src 144) 41) (mem.store8 (+ src 145) 41) (mem.store8 (+ src 146) 41) (mem.store8 (+ src 147) 32) (mem.store8 (+ src 148) 40) (mem.store8 (+ src 149) 43) (mem.store8 (+ src 150) 32) (mem.store8 (+ src 151) 121) (mem.store8 (+ src 152) 32) (mem.store8 (+ src 153) 122) (mem.store8 (+ src 154) 41) (mem.store8 (+ src 155) 41) (mem.store8 (+ src 156) 41) (let src_len:i32 157) (let tok:i32 9000) (let ast:i32 12000) (let n:i32 (call compiler.tokenize src src_len tok)) (let root:i32 (call compiler.parse_ast tok n ast)) (let func_count:i32 (call collect_functions src root 30000)) (let e0:i32 (call func_entry_ptr 30000 0)) (let lc0:i32 (call collect_locals_for_function src e0 41000)) (let body0_scratch:i32 60000) (let body0_len:i32 (call compile_function_body src e0 body0_scratch 41000 lc0 30000 func_count)) (let e1:i32 (call func_entry_ptr 30000 1)) (let lc1:i32 (call collect_locals_for_function src e1 42000)) (let body1_scratch:i32 61000) (let body1_len:i32 (call compile_function_body src e1 body1_scratch 42000 lc1 30000 func_count)) (let out:i32 70000) (let off:i32 (call compiler.emit_header out)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (let tp_leb:i32 (call compiler.encode_u32 (+ out off) 12)) (set! off (+ off tp_leb)) (mem.store8 (+ out off) 2) (set! off (+ off 1)) (mem.store8 (+ out off) 96) (set! off (+ off 1)) (mem.store8 (+ out off) 2) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 96) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 3) (set! off (+ off 1)) (mem.store8 (+ out off) 3) (set! off (+ off 1)) (mem.store8 (+ out off) 2) (set! off (+ off 1)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 5) (set! off (+ off 1)) (mem.store8 (+ out off) 3) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 7) (set! off (+ off 1)) (let exp_leb:i32 (call compiler.encode_u32 (+ out off) 17)) (set! off (+ off exp_leb)) (mem.store8 (+ out off) 2) (set! off (+ off 1)) (mem.store8 (+ out off) 3) (set! off (+ off 1)) (mem.store8 (+ out off) 97) (set! off (+ off 1)) (mem.store8 (+ out off) 100) (set! off (+ off 1)) (mem.store8 (+ out off) 100) (set! off (+ off 1)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (mem.store8 (+ out off) 7) (set! off (+ off 1)) (mem.store8 (+ out off) 99) (set! off (+ off 1)) (mem.store8 (+ out off) 111) (set! off (+ off 1)) (mem.store8 (+ out off) 109) (set! off (+ off 1)) (mem.store8 (+ out off) 112) (set! off (+ off 1)) (mem.store8 (+ out off) 117) (set! off (+ off 1)) (mem.store8 (+ out off) 116) (set! off (+ off 1)) (mem.store8 (+ out off) 101) (set! off (+ off 1)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 10) (set! off (+ off 1)) (let inner0:i32 (+ 2 body0_len)) (let inner1:i32 (+ 8 body1_len)) (let code_len:i32 (+ 1 (+ (+ 1 inner0) (+ 1 inner1)))) (let cl_leb:i32 (call compiler.encode_u32 (+ out off) code_len)) (set! off (+ off cl_leb)) (mem.store8 (+ out off) 2) (set! off (+ off 1)) (let b0leb:i32 (call compiler.encode_u32 (+ out off) inner0)) (set! off (+ off b0leb)) (mem.store8 (+ out off) 0) (set! off (+ off 1)) (let i0:i32 0) (while (lt i0 body0_len) (mem.store8 (+ out off) (mem.load8 (+ body0_scratch i0))) (set! off (+ off 1)) (set! i0 (+ i0 1))) (mem.store8 (+ out off) 11) (set! off (+ off 1)) (let b1leb:i32 (call compiler.encode_u32 (+ out off) inner1)) (set! off (+ off b1leb)) (mem.store8 (+ out off) 3) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (mem.store8 (+ out off) 1) (set! off (+ off 1)) (mem.store8 (+ out off) 127) (set! off (+ off 1)) (let i1:i32 0) (while (lt i1 body1_len) (mem.store8 (+ out off) (mem.load8 (+ body1_scratch i1))) (set! off (+ off 1)) (set! i1 (+ i1 1))) (mem.store8 (+ out off) 11) (set! off (+ off 1)) (mem.store8 (+ 400 0) 97) (mem.store8 (+ 400 1) 105) (mem.store8 (+ 400 2) 112) (mem.store8 (+ 400 3) 108) (mem.store8 (+ 400 4) 95) (mem.store8 (+ 400 5) 115) (mem.store8 (+ 400 6) 114) (mem.store8 (+ 400 7) 99) (mem.store8 (+ 400 8) 47) (mem.store8 (+ 400 9) 95) (mem.store8 (+ 400 10) 99) (mem.store8 (+ 400 11) 111) (mem.store8 (+ 400 12) 100) (mem.store8 (+ 400 13) 101) (mem.store8 (+ 400 14) 103) (mem.store8 (+ 400 15) 101) (mem.store8 (+ 400 16) 110) (mem.store8 (+ 400 17) 95) (mem.store8 (+ 400 18) 111) (mem.store8 (+ 400 19) 117) (mem.store8 (+ 400 20) 116) (mem.store8 (+ 400 21) 50) (mem.store8 (+ 400 22) 46) (mem.store8 (+ 400 23) 119) (mem.store8 (+ 400 24) 97) (mem.store8 (+ 400 25) 115) (mem.store8 (+ 400 26) 109) (let path_len:i32 27) (let wfd:i32 (fs.open 400 path_len 1)) (let written:i32 (fs.write wfd out off)) (let _c:i32 (fs.close wfd)) (if (call has_compile_error) -1 off))
+
+)

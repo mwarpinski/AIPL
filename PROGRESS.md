@@ -200,29 +200,58 @@ along.
   even turned on (`wasm.rs` hardcodes `shared: false`). Don't start this
   before `emit_wasm_binary` is real.
 
+## Codegen (new)
+
+`aipl_src/codegen.aipl` is a real, working code generator — pure AIPL, no
+Rust changes needed for the codegen logic itself (one real bug it *found*,
+in `wasm.rs`'s existing `loop` exit condition, was fixed separately, see
+`LANGUAGE_GAPS.md` §2). It imports `compiler` for `tokenize`/`parse_ast`, then:
+a keyword table + `classify_keyword` (turns a symbol's byte span into an
+operator/form/type id — the generic tree has no idea `"if"` means anything
+until this exists), a function-signature pass (`collect_functions`), a
+per-function local-variable pass (`collect_locals_for_function`, including
+loop induction variables), and the actual instruction emitter
+(`compile_expr`/`compile_stmt`/`compile_function_body` and friends) covering
+the same real subset `wasm.rs` supports: arithmetic/bitwise/comparison/
+logical ops, `mem.load/store` 8/32/64, `let`/`set!`/`if`/`call`/`block`/
+`while`/`loop`. Verified by compiling and running two real functions (`add`,
+and a `compute` exercising `let`+`call`+`loop`) through `wasmtime` and
+checking the actual returned numbers against hand-computed expected values,
+not just "did it produce plausible-looking bytes."
+
+**Hard-won lesson for whoever extends this next**: hand-typing deeply nested
+`(if ... (if ... (if ...)))` chains in AIPL is extremely easy to get
+paren-count wrong in a way that *doesn't* produce a parse error — a premature
+closing paren just ends the `(module ...)` early and silently drops every
+function defined after it, or leaves a function "open" so everything after it
+becomes nested (and mis-scoped) inside it. Either way `aipl verify` reports
+success because the *shorter/differently-nested* program is still valid on
+its own. If a function you just added reports "not found" when invoked, this
+is almost certainly why — check paren balance with a script, don't eyeball a
+1900-character line. **Building nested/generated AIPL code as a small
+S-expression builder in Python first (a form is a tuple, an atom is a string,
+render() recurses) and rendering it to text is dramatically more reliable
+than hand-typing once nesting gets more than 3-4 levels deep** — several
+functions in `codegen.aipl` were built this way after hand-typed versions had
+exactly this bug.
+
 ## Next steps, in order
 
-1. **`emit_wasm_binary`** (or a renamed equivalent) — walk the real
-   S-expression tree `parse_ast` now produces and actually emit WASM bytes
-   for it, replacing the current hardcoded-output stub. This is the next
-   concrete milestone. Note: `compile_to_target`/`emit_wasm_binary`/
-   `compile_aipl` currently read the AST using the *old* hardcoded 4-field
-   layout and will produce garbage against the *new* tree shape — this was
-   already broken before (never functionally correct), so it's not a
-   regression, but don't be confused by it silently producing different
-   wrong output than before.
-2. Somewhere in or alongside step 1, the generic tree needs a semantic pass:
-   given a "paren-group" node, dispatch on its first child's symbol text
-   (`if`, `let`, `set!`, `loop`, `while`, `call`, an operator, or a
-   user-defined function name) the way `src/parser.rs::parse_expr` does.
-   Decide whether this is a separate pass or fused into codegen
-   (syntax-directed translation, skipping a separate typed-AST
-   materialization step) — leaning toward fusing it, since the generic tree
-   plus head-symbol dispatch is enough, but not decided yet.
-3. Once codegen exists, rewrite `tests/test_v2.rs`'s self-hosting tests to
-   exercise varied, non-trivial input (they currently only check output
-   starts with the WASM magic bytes and is `>20` bytes — would pass on
-   garbage input).
+1. **General module assembly** — `codegen.aipl`'s verification hand-assembled
+   the type/function/memory/export sections for the specific 1-2-function
+   test cases. A real `emit_module`-style function that does this for *any*
+   number of functions with varying signatures (including grouping local
+   declarations by type, which the verification also hardcoded by hand) is
+   the concrete next piece.
+2. **Wire it up**: `compiler.aipl`'s public `compile_to_target`/`compile_aipl`
+   still point at the old hardcoded stub. Once module assembly (step 1)
+   exists, make those delegate to `codegen.aipl` (via `(import codegen)`) so
+   `aipl compile` and the self-hosted path are the same real path, not two
+   diverging ones.
+3. Rewrite `tests/test_v2.rs`'s self-hosting tests to exercise varied,
+   non-trivial input (they currently only check output starts with the WASM
+   magic bytes and is `>20` bytes — would pass on garbage input) — do this
+   once steps 1-2 land, matching what the real pipeline now produces.
 4. Then: WASI file I/O primitives, so `resolver.rs` can finally be deleted
    and rewritten as AIPL (see "the honest constraint" above).
 5. Longer-term backlog (not urgent, don't start yet): the `set!`-typing

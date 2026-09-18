@@ -43,7 +43,38 @@ tries to load the binary. `aipl_compiler.wasm` at the repo root is a live
 example right now — rebuild it from current `aipl_src/compiler.aipl` before
 trusting it for anything.
 
-## 2. Self-hosted compiler status: tokenizer and parser are real; codegen is not
+## 2. Self-hosted compiler status: tokenizer, parser, AND core codegen are real
+
+> **Update:** `aipl_src/codegen.aipl` (new file) now compiles real AIPL source
+> — tokenized and parsed by `compiler.aipl`, then walked and emitted as real
+> WASM instructions entirely in AIPL — for the same opcode/construct subset
+> `src/compiler/wasm.rs` genuinely supports: arithmetic/bitwise/comparison/
+> logical ops, `mem.load/store` at 8/32/64-bit, `let`/`set!`/`if`/`call`/
+> `block`/`while`/`loop`. Verified with two real, non-trivial programs
+> compiled end-to-end and independently checked with `wasmtime`: a 2-param
+> `add` function, and a `compute` function exercising `let`, a cross-function
+> `call`, and a `loop` — both produced valid WASM that returns the
+> mathematically correct result for multiple real inputs, not just a
+> structurally-plausible byte count. This is genuinely the hardest part of
+> self-hosting the compiler.
+>
+> Building this **found a real, independent bug in the existing Rust
+> `wasm.rs`** (not something introduced by the AIPL codegen mirroring it):
+> `loop`'s exit condition used `i32.ge_s` (exclusive of `end`), while `vm.rs`'s
+> interpreter runs `while curr <= end` (inclusive) — a WASM-compiled loop ran
+> one fewer iteration than the same source run through the VM, silently,
+> forever, until this AIPL implementation was checked against hand-computed
+> expected output and disagreed. Fixed in `wasm.rs` to `i32.gt_s` (exit only
+> once the counter exceeds `end`); the AIPL codegen was written to match.
+>
+> **Not yet done**: general module assembly for an arbitrary number of
+> functions (the verification above hand-assembled the type/function/export
+> sections for the specific 1-2-function test cases — `emit_module`-style
+> code that does this for any real program is the next piece), and wiring the
+> new codegen into `compiler.aipl`'s public `compile_to_target`/`compile_aipl`
+> entry points (right now `codegen.aipl` is a separate module you call
+> directly; those two still point at the old stub). Once both land, `aipl
+> compile` and the self-hosted compiler converge into one real path.
 
 This used to say the whole compiler was a stub that ignored its input. That's
 no longer accurate for two of its three stages:
