@@ -38,6 +38,12 @@
   (fn fs_close [fd:i32] -> i32
     (fs.close fd))
 
+  ;; Deletes the file at path_ptr/path_len. Returns 0 on success, -1 on error.
+  (fn fs_delete [path_ptr:i32 path_len:i32] -> i32
+    (req (gte path_ptr 0))
+    (req (gt path_len 0))
+    (fs.delete path_ptr path_len))
+
   ;; High-level: open (create/truncate), write len bytes from buf_ptr, close.
   ;; Returns bytes written, or -1 if the file couldn't be opened.
   (fn fs_write_file [path_ptr:i32 path_len:i32 buf_ptr:i32 len:i32] -> i32
@@ -69,11 +75,9 @@
           n)))
 
   ;; Master Disk I/O Self-Test: writes real bytes to a real file on disk,
-  ;; reads them back, and verifies an exact byte-for-byte match - this is a
-  ;; genuine round trip through the OS filesystem, not a self-fulfilling
-  ;; count-echo. The caller is responsible for deleting the file afterward
-  ;; (AIPL has no delete opcode yet); see tests/test_v2.rs for the Rust-side
-  ;; cleanup when this runs under `cargo test`.
+  ;; reads them back, verifies an exact byte-for-byte match, and deletes the
+  ;; file - a genuine round trip through the OS filesystem, not a
+  ;; self-fulfilling count-echo, and it cleans up after itself.
   (fn run_file_io_tests [] -> i32
     (mem.store8 (+ 400 0) 97) (mem.store8 (+ 400 1) 105) (mem.store8 (+ 400 2) 112)
     (mem.store8 (+ 400 3) 108) (mem.store8 (+ 400 4) 95) (mem.store8 (+ 400 5) 102)
@@ -102,6 +106,8 @@
       (if (neq (mem.load8 (+ 600 i)) (mem.load8 (+ 500 i)))
           (set! mismatch (+ mismatch 1))
           (set! mismatch mismatch)))
+
+    (let _d:i32 (call fs_delete 400 path_len))
 
     (if (and (eq written 17) (and (eq read_n 17) (eq mismatch 0)))
         1

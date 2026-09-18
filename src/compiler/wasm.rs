@@ -341,7 +341,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Eqz);
             }
-            OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite | OpCode::FsClose => {
+            OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite | OpCode::FsClose | OpCode::FsDelete => {
                 return Err(format!(
                     "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs WASI file I/O imports)",
                     op

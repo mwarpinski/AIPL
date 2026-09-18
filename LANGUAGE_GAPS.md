@@ -216,7 +216,16 @@ instead of silently no-op-ing if a local is still somehow missing).
   functions parse. This construct almost certainly doesn't parse today. (The
   new `thread.spawn` opcode works around this by naming its target function
   via a pointer+length into memory rather than a function value — a real,
-  usable pattern, but a workaround, not first-class functions.)
+  usable pattern, but a workaround, not first-class functions. **That
+  workaround doesn't survive the import system**: the resolver (§6, below)
+  only rewrites function names appearing as `(call ...)` syntax, so a
+  `thread.spawn` target name stored as runtime bytes in memory is invisible
+  to it. `aipl_src/thread_sync.aipl`'s own test works standalone but breaks
+  if imported into another module, because its worker function gets renamed
+  to `thread_sync.worker_increment` while the bytes it spawns still say
+  `worker_increment` — see `PROGRESS.md` for the reproduction. A real fix
+  needs either first-class function values or a name-resolution convention
+  that's aware of the caller's own qualified prefix.)
 - **No `break`/`continue`/early-return.** `loop`/`while` always run to
   completion of their bound or condition. `resolve_symbol_index` in
   `compiler.aipl` "finds" a match early but has no way to stop iterating.

@@ -1,0 +1,50 @@
+;; Master AIPL Test Suite
+;; The single terminal-facing entrypoint for running this project's tests:
+;;   aipl test aipl_src/test_suite.aipl
+;; All the "what counts as pass/fail" and reporting logic lives here, in
+;; AIPL, using sys.print - not in Rust. Rust's role (src/main.rs's `test`
+;; subcommand) is just: resolve imports, type-check, invoke run_all, and
+;; turn the returned failure count into a process exit code.
+;;
+;; This intentionally covers only the modules verified as genuinely real
+;; this session (compiler's tokenizer/parser, memory, file_io) - not every
+;; aipl_src file. Add an import + report line here as each new module gets a
+;; real, verified self-test; don't add one just to make the suite look
+;; bigger.
+;;
+;; thread_sync.aipl is deliberately NOT imported here. Its run_thread_tests
+;; uses thread.spawn, which finds its target function ("worker_increment")
+;; by reading a name out of linear memory at runtime - the import resolver
+;; (src/resolver.rs) only rewrites function names that appear as `(call ...)`
+;; syntax, so it has no way to see or rewrite that in-memory byte string.
+;; Once imported, the real function is renamed to `thread_sync.worker_increment`
+;; and the spawn fails with "unknown function 'worker_increment'". Run that
+;; module's test standalone instead:
+;;   aipl test aipl_src/thread_sync.aipl --func run_thread_tests
+;; Fixing this for real needs either a naming convention that survives
+;; import rewriting (e.g. thread.spawn always resolving relative to its own
+;; module's qualified prefix) or first-class function values - not a quick
+;; patch, tracked in LANGUAGE_GAPS.md.
+
+(module test_suite
+  (import compiler)
+  (import memory)
+  (import file_io)
+
+  ;; Prints a [PASS]/[FAIL] line for one module's test group and returns
+  ;; 0 (contributes no failures) or 1 (contributes one failure) for the
+  ;; caller to sum.
+  (fn report [label:str result:i32 expected:i32] -> i32
+    (if (eq result expected)
+        (block (sys.print (+ "[PASS] " label)) 0)
+        (block (sys.print (+ "[FAIL] " label)) 1)))
+
+  ;; Runs every verified-real module's self-test, prints one line each, and
+  ;; returns the total number of failing groups (0 = everything passed).
+  (fn run_all [] -> i32
+    (let failures:i32 0)
+    (set! failures (+ failures (call report "compiler: tokenizer (2 tests)" (call compiler.run_tokenizer_tests) 2)))
+    (set! failures (+ failures (call report "compiler: parser (2 tests)" (call compiler.run_parser_tests) 2)))
+    (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
+    (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
+    failures))

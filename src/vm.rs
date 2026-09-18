@@ -708,6 +708,25 @@ impl VM {
                     Ok(Value::Int(-1))
                 }
             }
+            OpCode::FsDelete => {
+                let path_ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.delete requires Int path_ptr".to_string()),
+                };
+                let path_len = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as usize,
+                    _ => return Err("fs.delete requires Int path_len".to_string()),
+                };
+                let path_bytes = self.read_bytes(path_ptr, path_len);
+                let path_str = match std::str::from_utf8(&path_bytes) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(Value::Int(-1)),
+                };
+                match std::fs::remove_file(path_str) {
+                    Ok(_) => Ok(Value::Int(0)),
+                    Err(_) => Ok(Value::Int(-1)),
+                }
+            }
             // Real OS thread spawn: the named function is looked up in the
             // SAME function table (Arc-shared, not copied) and run on a real
             // std::thread with a fresh child VM that shares `self.shared`

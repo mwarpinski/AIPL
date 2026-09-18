@@ -549,6 +549,7 @@ impl Parser {
                             "fs.read" => OpCode::FsRead,
                             "fs.write" => OpCode::FsWrite,
                             "fs.close" => OpCode::FsClose,
+                            "fs.delete" => OpCode::FsDelete,
                             "thread.spawn" => OpCode::ThreadSpawn,
                             "thread.join" => OpCode::ThreadJoin,
                             other => return Err(format!("Unknown op/keyword: {}", other)),

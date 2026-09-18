@@ -233,6 +233,15 @@ impl TypeChecker {
                     self.infer_expr_type(&args[0], env)?;
                     Ok(Type::I32)
                 }
+                OpCode::FsDelete => {
+                    if args.len() != 2 {
+                        return Err("fs.delete requires 2 arguments (path_ptr, path_len)".to_string());
+                    }
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     if args.len() != 3 {
                         return Err("thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)".to_string());

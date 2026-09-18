@@ -77,6 +77,7 @@ pub enum OpCode {
     FsRead,
     FsWrite,
     FsClose,
+    FsDelete,
     ThreadSpawn,
     ThreadJoin,
 }

@@ -31,6 +31,50 @@ was installed by default:
    newly compiled `.wasm` — this is how every wasm-side bug in this log was
    actually caught, not just theorized about.
 
+3. **`wsl bash -lc "...; echo $?"` does not reliably report a subprocess's
+   real exit code in this sandboxed shell** — verified with a bare
+   `std::process::exit(1)` reporting `0` through the Bash tool, then
+   confirmed as `1` through PowerShell (`wsl <binary>; $LASTEXITCODE`) for
+   the same binary. If you need to check an `aipl` exit code, use PowerShell,
+   not `wsl bash -lc`. Don't mistake this for an actual bug in `aipl test`'s
+   exit-code logic — the logic itself is correct.
+
+## Terminal-facing test runner (new)
+
+`aipl test <file> [--func run_all]` runs an AIPL entrypoint and turns its
+return value into the process exit code: the entrypoint must return an `i32`
+failure count (`0` = everything passed), and all pass/fail reporting happens
+in AIPL via `sys.print`, not in Rust — Rust's role is just parse, check,
+invoke, translate the result to an exit code. This is what "run the tests
+using AIPL from the terminal" means today, short of the full self-hosting
+goal (see "What `aipl test` is not" below).
+
+`aipl_src/test_suite.aipl` is the master suite: it `(import ...)`s every
+module with a genuinely verified self-test (currently `compiler`, `memory`,
+`file_io`) and aggregates their results. Run it with:
+```
+aipl test aipl_src/test_suite.aipl
+```
+Add a new module to it only once its own self-test has been verified for
+real (not just "returns 1") — see `LANGUAGE_GAPS.md`'s lesson on that.
+
+**`thread_sync.aipl` is deliberately excluded from the master suite** — a
+real bug, not an oversight. `thread.spawn` finds its target function by
+reading a name string out of *linear memory at runtime*; the import resolver
+only rewrites function names that appear as `(call ...)` *syntax*, so it has
+no way to see or rewrite that in-memory byte string. Once imported,
+`worker_increment` gets renamed to `thread_sync.worker_increment` and the
+spawn fails with "unknown function". Run that module's test standalone:
+`aipl test aipl_src/thread_sync.aipl --func run_thread_tests`. Fixing this
+for real needs either a naming convention that survives import rewriting or
+first-class function values — see `LANGUAGE_GAPS.md`.
+
+**What `aipl test` is not**: the `aipl` binary is still Rust hosting a VM
+(parse → check → interpret). "Run tests using AIPL, not Rust" is true of the
+test *logic* now, not of the interpreter itself — that's the much bigger,
+already-tracked self-hosting goal (real codegen, then a native/WASI runner),
+not a few-days task. Don't conflate the two when reporting status.
+
 ## Git state
 
 Branch: `features/wasm_runtime`. Two commits already made this session
