@@ -150,7 +150,7 @@ impl VM {
     pub fn eval_expr(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         match expr {
             Expr::Lit(lit) => match lit {
-                Literal::Int(i) => Ok(Value::Int(*i)),
+                Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
                 Literal::Float(f) => Ok(Value::Float(*f)),
                 Literal::Bool(b) => Ok(Value::Bool(*b)),
                 Literal::Str(s) => Ok(Value::Str(s.clone())),
@@ -278,7 +278,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{}{}", x, y))),
                     _ => Err("Invalid types for +".to_string()),
@@ -288,7 +288,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                     _ => Err("Invalid types for -".to_string()),
                 }
@@ -297,7 +297,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x ^ y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) ^ (y as i32)) as i64)),
                     _ => Err("Invalid types for ^".to_string()),
                 }
             }
@@ -305,7 +305,10 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x << y)),
+                    (Value::Int(x), Value::Int(y)) => {
+                        let shift = (y as u32) & 31;
+                        Ok(Value::Int((x as i32).wrapping_shl(shift) as i64))
+                    }
                     _ => Err("Invalid types for shl".to_string()),
                 }
             }
@@ -313,15 +316,29 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x >> y)),
+                    (Value::Int(x), Value::Int(y)) => {
+                        let shift = (y as u32) & 31;
+                        Ok(Value::Int((x as i32).wrapping_shr(shift) as i64))
+                    }
                     _ => Err("Invalid types for shr".to_string()),
+                }
+            }
+            OpCode::ShrU => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        let shift = (y as u32) & 31;
+                        Ok(Value::Int(((x as i32 as u32).wrapping_shr(shift) as i32) as i64))
+                    }
+                    _ => Err("Invalid types for shru".to_string()),
                 }
             }
             OpCode::BitAnd => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x & y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) & (y as i32)) as i64)),
                     _ => Err("Invalid types for bitand".to_string()),
                 }
             }
@@ -329,7 +346,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x | y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) | (y as i32)) as i64)),
                     _ => Err("Invalid types for bitor".to_string()),
                 }
             }
@@ -511,7 +528,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                     _ => Err("Invalid types for *".to_string()),
                 }
@@ -521,14 +538,34 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => {
-                        if y == 0 {
+                        let x32 = x as i32;
+                        let y32 = y as i32;
+                        if y32 == 0 {
                             Err("Division by zero".to_string())
+                        } else if x32 == i32::MIN && y32 == -1 {
+                            Err("Integer overflow".to_string())
                         } else {
-                            Ok(Value::Int(x / y))
+                            Ok(Value::Int((x32 / y32) as i64))
                         }
                     }
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
                     _ => Err("Invalid types for /".to_string()),
+                }
+            }
+            OpCode::DivU => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        let x32 = x as i32 as u32;
+                        let y32 = y as i32 as u32;
+                        if y32 == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int(((x32 / y32) as i32) as i64))
+                        }
+                    }
+                    _ => Err("Invalid types for divu".to_string()),
                 }
             }
             OpCode::Mod => {
@@ -536,13 +573,33 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => {
-                        if y == 0 {
+                        let x32 = x as i32;
+                        let y32 = y as i32;
+                        if y32 == 0 {
                             Err("Division by zero".to_string())
+                        } else if x32 == i32::MIN && y32 == -1 {
+                            Ok(Value::Int(0))
                         } else {
-                            Ok(Value::Int(x % y))
+                            Ok(Value::Int((x32 % y32) as i64))
                         }
                     }
                     _ => Err("Invalid types for %".to_string()),
+                }
+            }
+            OpCode::RemU => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        let x32 = x as i32 as u32;
+                        let y32 = y as i32 as u32;
+                        if y32 == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int(((x32 % y32) as i32) as i64))
+                        }
+                    }
+                    _ => Err("Invalid types for remu".to_string()),
                 }
             }
             OpCode::Eq => {
@@ -559,7 +616,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x < y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) < (y as i32))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
                     _ => Err("Invalid types for <".to_string()),
                 }
@@ -568,7 +625,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x <= y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) <= (y as i32))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x <= y)),
                     _ => Err("Invalid types for <=".to_string()),
                 }
@@ -577,7 +634,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x > y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) > (y as i32))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x > y)),
                     _ => Err("Invalid types for >".to_string()),
                 }
@@ -586,7 +643,7 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool(x >= y)),
+                    (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) >= (y as i32))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x >= y)),
                     _ => Err("Invalid types for >=".to_string()),
                 }

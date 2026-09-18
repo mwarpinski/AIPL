@@ -260,10 +260,20 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32DivS);
             }
+            OpCode::DivU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32DivU);
+            }
             OpCode::Mod => {
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32RemS);
+            }
+            OpCode::RemU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32RemU);
             }
             OpCode::BitXor => {
                 compile_expr(&args[0], ctx, func)?;
@@ -279,6 +289,11 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32ShrS);
+            }
+            OpCode::ShrU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32ShrU);
             }
             OpCode::BitAnd => {
                 compile_expr(&args[0], ctx, func)?;
@@ -486,10 +501,13 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Sub
                 | OpCode::Mul
                 | OpCode::Div
+                | OpCode::DivU
                 | OpCode::Mod
+                | OpCode::RemU
                 | OpCode::BitXor
                 | OpCode::Shl
                 | OpCode::Shr
+                | OpCode::ShrU
                 | OpCode::BitAnd
                 | OpCode::BitOr
                 | OpCode::MemLoad8

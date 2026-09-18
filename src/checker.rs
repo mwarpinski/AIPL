@@ -157,7 +157,7 @@ impl TypeChecker {
                 Ok(ret_type.clone())
             }
             Expr::Op { op, args } => match op {
-                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::BitAnd | OpCode::BitOr => {
+                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::DivU | OpCode::RemU | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
                         return Err(format!("Arithmetic/bitwise opcode {:?} requires 2 arguments", op));
                     }

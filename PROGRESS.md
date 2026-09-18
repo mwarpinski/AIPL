@@ -99,6 +99,13 @@ resolver's "temporary scaffolding" doc comment + gap-doc updates). Diff vs.
 - **Removed 7 unsupported OpCodes**: `VecDot`, `MatMul`, `DomElem`, `DomMount`, `DomAppend`, `DomOnEvent`, `WebAlert` removed from `ast.rs`, `parser.rs`, `checker.rs`, and `AIPL_SPEC.md`.
 - **Added `tests/test_opcode_conformance.rs`**: Conformance test powered by `wasmparser` verifying every remaining OpCode satisfies option (a) or option (b).
 
+### Establishing WASM as Reference Spec & 32-bit Wrapping Arithmetic (P3 Audit Task)
+- **Declared WASM Semantics as Spec**: Updated `AIPL_SPEC.md` specifying WASM as the reference specification.
+- **Enforced 32-bit Wrapping Integers in VM**: Updated `src/vm.rs` so all arithmetic (`+`, `-`, `*`), bitwise, and shift ops apply 32-bit wrapping (`as i32`) and shift masking (`& 31`), and fixed division/mod bounds and zero checks.
+- **Added Unsigned Opcodes**: Implemented `ShrU` (`shru`), `DivU` (`divu`), and `RemU` (`remu`) across `ast.rs`, `parser.rs`, `checker.rs`, `vm.rs`, `compiler/wasm.rs`, and `test_opcode_conformance.rs`.
+- **Rejected Unsupported `i64` Scalars**: Modified `parse_type` in `src/parser.rs` to explicitly reject `i64` scalar type (`Err("i64 type is unsupported")`).
+- **Added `tests/test_differential.rs`**: Created differential test runner comparing VM and Wasmtime execution across `examples/*.aipl`, `aipl_src/codegen.aipl`, and explicit edge cases (`+` overflow, arithmetic `shr`, `*` overflow, `/` truncating, `%` remainder, `shru`, `divu`, `remu`, `loop` end bound inclusive, and `while` with `set!`). All differential tests pass.
+
 
 ### Rust side (`src/`) — infrastructure fixes, not application logic
 - **`mem.load8` / `mem.store8`** — new opcodes, full stack (`ast.rs`,
