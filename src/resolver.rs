@@ -41,8 +41,9 @@ impl Resolver {
     /// of which need to know imports exist.
     pub fn resolve(entry_path: &Path) -> Result<Module, String> {
         let entry_src = fs::read_to_string(entry_path)
-            .map_err(|e| format!("Cannot read '{}': {}", entry_path.display(), e))?;
-        let entry_module = crate::parser::Parser::parse(&entry_src)?;
+            .map_err(|e| format!("{}: Cannot read: {}", entry_path.display(), e))?;
+        let entry_module = crate::parser::Parser::parse(&entry_src)
+            .map_err(|e| format!("{}: {}", entry_path.display(), e))?;
 
         // `included` tracks which resolved files have already had their
         // functions appended to `output`, so a module reachable both
@@ -82,23 +83,25 @@ impl Resolver {
         included: &mut HashSet<PathBuf>,
         in_progress: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
-        let file_path = Self::find_module_file(&import.name, importer_path)?;
+        let file_path = Self::find_module_file(&import.name, importer_path)
+            .map_err(|e| format!("{}: {}", importer_path.display(), e))?;
 
         if included.contains(&file_path) {
             return Ok(());
         }
         if in_progress.contains(&file_path) {
             return Err(format!(
-                "Circular import detected: '{}' is imported while already being resolved",
+                "{}: Circular import detected: '{}' is imported while already being resolved",
+                file_path.display(),
                 file_path.display()
             ));
         }
         in_progress.insert(file_path.clone());
 
         let src = fs::read_to_string(&file_path)
-            .map_err(|e| format!("Cannot read '{}': {}", file_path.display(), e))?;
+            .map_err(|e| format!("{}: Cannot read: {}", file_path.display(), e))?;
         let module = crate::parser::Parser::parse(&src)
-            .map_err(|e| format!("Parse error in '{}': {}", file_path.display(), e))?;
+            .map_err(|e| format!("{}: {}", file_path.display(), e))?;
 
         // Resolve this module's own imports first (its dependencies must be
         // fully qualified and emitted before we merge this module in).
@@ -169,16 +172,16 @@ fn walk_calls<F: FnMut(&mut String)>(body: &mut [Expr], f: &mut F) {
 
 fn walk_calls_expr<F: FnMut(&mut String)>(expr: &mut Expr, f: &mut F) {
     match expr {
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             f(func);
             for a in args {
                 walk_calls_expr(a, f);
             }
         }
-        Expr::Let { val, .. } | Expr::Set { val, .. } | Expr::Ok(val) | Expr::Err(val) => {
+        Expr::Let { val, .. } | Expr::Set { val, .. } | Expr::Ok(val, _) | Expr::Err(val, _) => {
             walk_calls_expr(val, f);
         }
-        Expr::If { cond, then_branch, else_branch } => {
+        Expr::If { cond, then_branch, else_branch, .. } => {
             walk_calls_expr(cond, f);
             walk_calls_expr(then_branch, f);
             walk_calls_expr(else_branch, f);
@@ -189,7 +192,7 @@ fn walk_calls_expr<F: FnMut(&mut String)>(expr: &mut Expr, f: &mut F) {
             walk_calls_expr(step, f);
             walk_calls(body, f);
         }
-        Expr::While { cond, body } => {
+        Expr::While { cond, body, .. } => {
             walk_calls_expr(cond, f);
             walk_calls(body, f);
         }
@@ -203,7 +206,7 @@ fn walk_calls_expr<F: FnMut(&mut String)>(expr: &mut Expr, f: &mut F) {
             walk_calls(ok_body, f);
             walk_calls(err_body, f);
         }
-        Expr::Block(body) => walk_calls(body, f),
+        Expr::Block(body, _) => walk_calls(body, f),
         _ => {}
     }
 }

@@ -246,6 +246,20 @@ than hand-typing once nesting gets more than 3-4 levels deep** — several
 functions in `codegen.aipl` were built this way after hand-typed versions had
 exactly this bug.
 
+## Task P4: Spanned AST & Diagnostic Reporting (Completed)
+
+- **Token Location Tracking**: `Token` converted to `struct Token { kind: TokenKind, line: u32, col: u32 }` tracking 1-based line/col positions during tokenization.
+- **AST Span Information**: Attached `span: (u32, u32)` to `FnDef` and every `Expr` variant in `src/ast.rs`, with `Expr::span(&self) -> (u32, u32)`.
+- **Unified Diagnostic Format**:
+  - All `Parser` errors formatted as `"<line>:<col>: <message>"`.
+  - All `TypeChecker` errors formatted as `"<line>:<col>: <message>"`.
+  - All `Resolver` errors prefixed with `<path>: <message>`.
+- **Lexical Rules & Edge Cases**:
+  - Unterminated string literals error with `"L:C: Unterminated string literal"`.
+  - Extra tokens after module end error with `"unexpected tokens after module end at L:C — check for an extra ')'"`.
+  - Float literals strictly require a digit and `.`. Tokens like `inf` or `nan` parse as symbols/ops instead of floats.
+- **Diagnostic Verification**: `tests/test_diagnostics.rs` asserts exact `L:C:` prefixes for missing `)`, unknown op, type mismatch in `let`, undefined variable, and extra `)` after module end.
+
 ## Next steps, in order
 
 1. **General module assembly** — `codegen.aipl`'s verification hand-assembled

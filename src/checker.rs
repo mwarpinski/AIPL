@@ -40,7 +40,11 @@ impl TypeChecker {
                 Contract::Requires(expr) | Contract::Invariant(expr) => {
                     let cond_ty = self.infer_expr_type(expr, &mut env)?;
                     if cond_ty != Type::Bool {
-                        return Err(format!("Contract expression in '{}' must evaluate to Bool, got {:?}", f.name, cond_ty));
+                        let (l, c_col) = expr.span();
+                        return Err(format!(
+                            "{}:{}: Contract expression in '{}' must evaluate to Bool, got {:?}",
+                            l, c_col, f.name, cond_ty
+                        ));
                     }
                 }
                 Contract::Ensures(expr) => {
@@ -48,7 +52,11 @@ impl TypeChecker {
                     ens_env.insert("res".to_string(), f.return_type.clone());
                     let cond_ty = self.infer_expr_type(expr, &mut ens_env)?;
                     if cond_ty != Type::Bool {
-                        return Err(format!("Ensures contract expression in '{}' must evaluate to Bool, got {:?}", f.name, cond_ty));
+                        let (l, c_col) = expr.span();
+                        return Err(format!(
+                            "{}:{}: Ensures contract expression in '{}' must evaluate to Bool, got {:?}",
+                            l, c_col, f.name, cond_ty
+                        ));
                     }
                 }
             }
@@ -62,8 +70,8 @@ impl TypeChecker {
 
         if f.return_type != Type::Void && last_ty != f.return_type {
             return Err(format!(
-                "Function '{}' expects return type {:?}, but body returned {:?}",
-                f.name, f.return_type, last_ty
+                "{}:{}: Function '{}' expects return type {:?}, but body returned {:?}",
+                f.span.0, f.span.1, f.name, f.return_type, last_ty
             ));
         }
 
@@ -71,57 +79,67 @@ impl TypeChecker {
     }
 
     fn infer_expr_type(&self, expr: &Expr, env: &mut HashMap<String, Type>) -> Result<Type, String> {
+        let (l, c) = expr.span();
         match expr {
-            Expr::Lit(lit) => match lit {
+            Expr::Lit(lit, _) => match lit {
                 Literal::Int(_) => Ok(Type::I32),
                 Literal::Float(_) => Ok(Type::F64),
                 Literal::Bool(_) => Ok(Type::Bool),
                 Literal::Str(_) => Ok(Type::Str),
             },
-            Expr::Var(name) => {
+            Expr::Var(name, _) => {
                 if let Some(ty) = env.get(name) {
                     Ok(ty.clone())
                 } else {
-                    Err(format!("Undefined variable '{}'", name))
+                    Err(format!("{}:{}: Undefined variable '{}'", l, c, name))
                 }
             }
-            Expr::Let { name, ty, val } => {
+            Expr::Let { name, ty, val, .. } => {
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != *ty {
-                    return Err(format!("Type mismatch in 'let': expected {:?}, got {:?}", ty, val_ty));
+                    return Err(format!(
+                        "{}:{}: Type mismatch in 'let': expected {:?}, got {:?}",
+                        l, c, ty, val_ty
+                    ));
                 }
                 env.insert(name.clone(), ty.clone());
                 Ok(ty.clone())
             }
-            Expr::Set { name, val } => {
+            Expr::Set { name, val, .. } => {
                 let var_ty = env
                     .get(name)
                     .cloned()
-                    .ok_or_else(|| format!("Undefined variable '{}' in set!", name))?;
+                    .ok_or_else(|| format!("{}:{}: Undefined variable '{}' in set!", l, c, name))?;
                 let val_ty = self.infer_expr_type(val, env)?;
                 if var_ty != val_ty {
-                    return Err(format!("Type mismatch in 'set!': variable is {:?}, value is {:?}", var_ty, val_ty));
+                    return Err(format!(
+                        "{}:{}: Type mismatch in 'set!': variable is {:?}, value is {:?}",
+                        l, c, var_ty, val_ty
+                    ));
                 }
                 Ok(var_ty)
             }
-            Expr::If { cond, then_branch, else_branch } => {
+            Expr::If { cond, then_branch, else_branch, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
-                    return Err(format!("If condition must be Bool, got {:?}", cond_ty));
+                    return Err(format!("{}:{}: If condition must be Bool, got {:?}", l, c, cond_ty));
                 }
                 let then_ty = self.infer_expr_type(then_branch, env)?;
                 let else_ty = self.infer_expr_type(else_branch, env)?;
                 if then_ty != else_ty {
-                    return Err(format!("If branch type mismatch: then is {:?}, else is {:?}", then_ty, else_ty));
+                    return Err(format!(
+                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}",
+                        l, c, then_ty, else_ty
+                    ));
                 }
                 Ok(then_ty)
             }
-            Expr::Loop { var, start, end, step, body } => {
+            Expr::Loop { var, start, end, step, body, .. } => {
                 let start_ty = self.infer_expr_type(start, env)?;
                 let end_ty = self.infer_expr_type(end, env)?;
                 let step_ty = self.infer_expr_type(step, env)?;
                 if start_ty != Type::I32 || end_ty != Type::I32 || step_ty != Type::I32 {
-                    return Err("Loop bounds and step must be i32".to_string());
+                    return Err(format!("{}:{}: Loop bounds and step must be i32", l, c));
                 }
                 let mut local_env = env.clone();
                 local_env.insert(var.clone(), Type::I32);
@@ -130,145 +148,151 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
-            Expr::While { cond, body } => {
+            Expr::While { cond, body, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
-                    return Err("While condition must be Bool".to_string());
+                    return Err(format!("{}:{}: While condition must be Bool", l, c));
                 }
                 for stmt in body {
                     self.infer_expr_type(stmt, env)?;
                 }
                 Ok(Type::Void)
             }
-            Expr::Call { func, args } => {
+            Expr::Call { func, args, .. } => {
                 let (param_types, ret_type) = self
                     .fn_signatures
                     .get(func)
-                    .ok_or_else(|| format!("Call to unknown function '{}'", func))?;
+                    .ok_or_else(|| format!("{}:{}: Call to unknown function '{}'", l, c, func))?;
                 if args.len() != param_types.len() {
-                    return Err(format!("Function '{}' expects {} arguments, got {}", func, param_types.len(), args.len()));
+                    return Err(format!(
+                        "{}:{}: Function '{}' expects {} arguments, got {}",
+                        l, c, func, param_types.len(), args.len()
+                    ));
                 }
                 for (i, arg) in args.iter().enumerate() {
                     let arg_ty = self.infer_expr_type(arg, env)?;
                     if arg_ty != param_types[i] {
-                        return Err(format!("Arg {} of '{}' expects {:?}, got {:?}", i, func, param_types[i], arg_ty));
+                        return Err(format!(
+                            "{}:{}: Arg {} of '{}' expects {:?}, got {:?}",
+                            l, c, i, func, param_types[i], arg_ty
+                        ));
                     }
                 }
                 Ok(ret_type.clone())
             }
-            Expr::Op { op, args } => match op {
-                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::BitAnd | OpCode::BitOr => {
+            Expr::Op { op, args, .. } => match op {
+                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::DivU | OpCode::RemU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
-                        return Err(format!("Arithmetic/bitwise opcode {:?} requires 2 arguments", op));
+                        return Err(format!("{}:{}: Arithmetic/bitwise opcode {:?} requires 2 arguments", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
-                        return Err(format!("Type mismatch in binary op: {:?} vs {:?}", t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
                     }
                     Ok(t1)
                 }
                 OpCode::MemLoad8 | OpCode::MemLoad32 => {
                     if args.len() != 1 {
-                        return Err(format!("{:?} requires 1 argument (ptr: i32)", op));
+                        return Err(format!("{}:{}: {:?} requires 1 argument (ptr: i32)", l, c, op));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{:?} requires i32 ptr, got {:?}", op, t));
+                        return Err(format!("{}:{}: {:?} requires i32 ptr, got {:?}", l, c, op, t));
                     }
                     Ok(Type::I32)
                 }
                 OpCode::MemLoad64 => {
                     if args.len() != 1 {
-                        return Err("mem.load64 requires 1 argument (ptr: i32)".to_string());
+                        return Err(format!("{}:{}: mem.load64 requires 1 argument (ptr: i32)", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("mem.load64 requires i32 ptr, got {:?}", t));
+                        return Err(format!("{}:{}: mem.load64 requires i32 ptr, got {:?}", l, c, t));
                     }
                     Ok(Type::I64)
                 }
                 OpCode::MemLoadF32 => {
                     if args.len() != 1 {
-                        return Err("mem.load_f32 requires 1 argument (ptr: i32)".to_string());
+                        return Err(format!("{}:{}: mem.load_f32 requires 1 argument (ptr: i32)", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("mem.load_f32 requires i32 ptr, got {:?}", t));
+                        return Err(format!("{}:{}: mem.load_f32 requires i32 ptr, got {:?}", l, c, t));
                     }
                     Ok(Type::F32)
                 }
                 OpCode::MemLoadF64 => {
                     if args.len() != 1 {
-                        return Err("mem.load_f64 requires 1 argument (ptr: i32)".to_string());
+                        return Err(format!("{}:{}: mem.load_f64 requires 1 argument (ptr: i32)", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("mem.load_f64 requires i32 ptr, got {:?}", t));
+                        return Err(format!("{}:{}: mem.load_f64 requires i32 ptr, got {:?}", l, c, t));
                     }
                     Ok(Type::F64)
                 }
                 OpCode::MemStore8 | OpCode::MemStore32 => {
                     if args.len() != 2 {
-                        return Err(format!("{:?} requires 2 arguments (ptr: i32, val: i32)", op));
+                        return Err(format!("{}:{}: {:?} requires 2 arguments (ptr: i32, val: i32)", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::I32 {
-                        return Err(format!("{:?} requires (i32, i32), got ({:?}, {:?})", op, t1, t2));
+                        return Err(format!("{}:{}: {:?} requires (i32, i32), got ({:?}, {:?})", l, c, op, t1, t2));
                     }
                     Ok(Type::Void)
                 }
                 OpCode::MemStore64 => {
                     if args.len() != 2 {
-                        return Err("mem.store64 requires 2 arguments (ptr: i32, val: i64)".to_string());
+                        return Err(format!("{}:{}: mem.store64 requires 2 arguments (ptr: i32, val: i64)", l, c));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::I64 {
-                        return Err(format!("mem.store64 requires (i32, i64), got ({:?}, {:?})", t1, t2));
+                        return Err(format!("{}:{}: mem.store64 requires (i32, i64), got ({:?}, {:?})", l, c, t1, t2));
                     }
                     Ok(Type::Void)
                 }
                 OpCode::MemStoreF32 => {
                     if args.len() != 2 {
-                        return Err("mem.store_f32 requires 2 arguments (ptr: i32, val: f32)".to_string());
+                        return Err(format!("{}:{}: mem.store_f32 requires 2 arguments (ptr: i32, val: f32)", l, c));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::F32 {
-                        return Err(format!("mem.store_f32 requires (i32, f32), got ({:?}, {:?})", t1, t2));
+                        return Err(format!("{}:{}: mem.store_f32 requires (i32, f32), got ({:?}, {:?})", l, c, t1, t2));
                     }
                     Ok(Type::Void)
                 }
                 OpCode::MemStoreF64 => {
                     if args.len() != 2 {
-                        return Err("mem.store_f64 requires 2 arguments (ptr: i32, val: f64)".to_string());
+                        return Err(format!("{}:{}: mem.store_f64 requires 2 arguments (ptr: i32, val: f64)", l, c));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::F64 {
-                        return Err(format!("mem.store_f64 requires (i32, f64), got ({:?}, {:?})", t1, t2));
+                        return Err(format!("{}:{}: mem.store_f64 requires (i32, f64), got ({:?}, {:?})", l, c, t1, t2));
                     }
                     Ok(Type::Void)
                 }
                 OpCode::MemAlloc => {
                     if args.len() != 1 {
-                        return Err("mem.alloc requires 1 argument (size: i32)".to_string());
+                        return Err(format!("{}:{}: mem.alloc requires 1 argument (size: i32)", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("mem.alloc requires i32 size, got {:?}", t));
+                        return Err(format!("{}:{}: mem.alloc requires i32 size, got {:?}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
                 OpCode::MemFree => {
                     if args.len() != 1 {
-                        return Err("mem.free requires 1 argument (ptr: i32)".to_string());
+                        return Err(format!("{}:{}: mem.free requires 1 argument (ptr: i32)", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("mem.free requires i32 ptr, got {:?}", t));
+                        return Err(format!("{}:{}: mem.free requires i32 ptr, got {:?}", l, c, t));
                     }
                     Ok(Type::Void)
                 }
@@ -277,12 +301,12 @@ impl TypeChecker {
                 OpCode::AtomicLock | OpCode::AtomicUnlock => Ok(Type::Void),
                 OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte => {
                     if args.len() != 2 {
-                        return Err(format!("Comparison opcode {:?} requires 2 arguments", op));
+                        return Err(format!("{}:{}: Comparison opcode {:?} requires 2 arguments", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
-                        return Err(format!("Type mismatch in comparison: {:?} vs {:?}", t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
                     }
                     Ok(Type::Bool)
                 }
@@ -290,24 +314,24 @@ impl TypeChecker {
                     for arg in args {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Bool {
-                            return Err(format!("Logical op expects Bool, got {:?}", t));
+                            return Err(format!("{}:{}: Logical op expects Bool, got {:?}", l, c, t));
                         }
                     }
                     Ok(Type::Bool)
                 }
                 OpCode::Not => {
                     if args.len() != 1 {
-                        return Err("Not op expects 1 argument".to_string());
+                        return Err(format!("{}:{}: Not op expects 1 argument", l, c));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::Bool {
-                        return Err(format!("Not op expects Bool, got {:?}", t));
+                        return Err(format!("{}:{}: Not op expects Bool, got {:?}", l, c, t));
                     }
                     Ok(Type::Bool)
                 }
                 OpCode::ArrGet => {
                     if args.len() != 2 {
-                        return Err("arr.get requires 2 arguments (arr, index)".to_string());
+                        return Err(format!("{}:{}: arr.get requires 2 arguments (arr, index)", l, c));
                     }
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -316,7 +340,7 @@ impl TypeChecker {
                 }
                 OpCode::ArrSet => {
                     if args.len() != 3 {
-                        return Err("arr.set requires 3 arguments (arr, index, val)".to_string());
+                        return Err(format!("{}:{}: arr.set requires 3 arguments (arr, index, val)", l, c));
                     }
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -328,7 +352,7 @@ impl TypeChecker {
                 OpCode::SysExit => Ok(Type::Void),
                 OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite => {
                     if args.len() != 3 {
-                        return Err(format!("{:?} requires 3 arguments", op));
+                        return Err(format!("{}:{}: {:?} requires 3 arguments", l, c, op));
                     }
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -337,14 +361,14 @@ impl TypeChecker {
                 }
                 OpCode::FsClose => {
                     if args.len() != 1 {
-                        return Err("fs.close requires 1 argument".to_string());
+                        return Err(format!("{}:{}: fs.close requires 1 argument", l, c));
                     }
                     self.infer_expr_type(&args[0], env)?;
                     Ok(Type::I32)
                 }
                 OpCode::FsDelete => {
                     if args.len() != 2 {
-                        return Err("fs.delete requires 2 arguments (path_ptr, path_len)".to_string());
+                        return Err(format!("{}:{}: fs.delete requires 2 arguments (path_ptr, path_len)", l, c));
                     }
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -353,7 +377,7 @@ impl TypeChecker {
                 }
                 OpCode::ThreadSpawn => {
                     if args.len() != 3 {
-                        return Err("thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)".to_string());
+                        return Err(format!("{}:{}: thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)", l, c));
                     }
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -362,21 +386,21 @@ impl TypeChecker {
                 }
                 OpCode::ThreadJoin => {
                     if args.len() != 1 {
-                        return Err("thread.join requires 1 argument (thread handle)".to_string());
+                        return Err(format!("{}:{}: thread.join requires 1 argument (thread handle)", l, c));
                     }
                     self.infer_expr_type(&args[0], env)?;
                     Ok(Type::I32)
                 }
             },
-            Expr::Ok(val) => {
+            Expr::Ok(val, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(Type::I32)))
             }
-            Expr::Err(err) => {
+            Expr::Err(err, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
                 Ok(Type::ResultType(Box::new(Type::I32), Box::new(err_ty)))
             }
-            Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body } => {
+            Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 let _res_ty = self.infer_expr_type(expr, env)?;
                 let mut ok_env = env.clone();
                 ok_env.insert(ok_var.clone(), Type::I32);
@@ -394,7 +418,7 @@ impl TypeChecker {
 
                 Ok(last_ok_ty)
             }
-            Expr::Block(exprs) => {
+            Expr::Block(exprs, _) => {
                 let mut last_ty = Type::Void;
                 for e in exprs {
                     last_ty = self.infer_expr_type(e, env)?;

@@ -119,14 +119,14 @@ struct Ctx<'a> {
 fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
     for expr in exprs {
         match expr {
-            Expr::Let { name, ty, val } => {
+            Expr::Let { name, ty, val, .. } => {
                 lets.push((name.clone(), ty.clone()));
                 collect_lets(&[*(val.clone())], lets);
             }
-            Expr::Set { name: _, val } => {
+            Expr::Set { name: _, val, .. } => {
                 collect_lets(&[*(val.clone())], lets);
             }
-            Expr::If { cond, then_branch, else_branch } => {
+            Expr::If { cond, then_branch, else_branch, .. } => {
                 collect_lets(&[*(cond.clone()), *(then_branch.clone()), *(else_branch.clone())], lets);
             }
             // The loop induction variable is never declared via `let` but still
@@ -136,7 +136,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 lets.push((var.clone(), Type::I32));
                 collect_lets(body, lets);
             }
-            Expr::While { body, .. } | Expr::Block(body) => {
+            Expr::While { body, .. } | Expr::Block(body, _) => {
                 collect_lets(body, lets);
             }
             Expr::Call { args, .. } => {
@@ -147,7 +147,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 collect_lets(ok_body, lets);
                 collect_lets(err_body, lets);
             }
-            Expr::Ok(inner) | Expr::Err(inner) => {
+            Expr::Ok(inner, _) | Expr::Err(inner, _) => {
                 collect_lets(&[*(inner.clone())], lets);
             }
             _ => {}
@@ -183,7 +183,7 @@ fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
 
 fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
     match expr {
-        Expr::Lit(lit) => match lit {
+        Expr::Lit(lit, _) => match lit {
             Literal::Int(i) => {
                 func.instruction(&Instruction::I32Const(*i as i32));
             }
@@ -197,26 +197,26 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::I32Const(0));
             }
         },
-        Expr::Var(name) => {
+        Expr::Var(name, _) => {
             if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalGet(idx));
             } else {
                 return Err(format!("Wasm Codegen: Unbound local variable '{}'", name));
             }
         }
-        Expr::Let { name, ty: _, val } => {
+        Expr::Let { name, val, .. } => {
             compile_expr(val, ctx, func)?;
             if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalSet(idx));
             }
         }
-        Expr::Set { name, val } => {
+        Expr::Set { name, val, .. } => {
             compile_expr(val, ctx, func)?;
             if let Some(&idx) = ctx.locals.get(name) {
                 func.instruction(&Instruction::LocalSet(idx));
             }
         }
-        Expr::If { cond, then_branch, else_branch } => {
+        Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
             let block_ty = if is_void_expr(then_branch, ctx) {
                 wasm_encoder::BlockType::Empty
@@ -229,7 +229,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             compile_expr(else_branch, ctx, func)?;
             func.instruction(&Instruction::End);
         }
-        Expr::Call { func: f_name, args } => {
+        Expr::Call { func: f_name, args, .. } => {
             for arg in args {
                 compile_expr(arg, ctx, func)?;
             }
@@ -239,7 +239,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 return Err(format!("Wasm Codegen: Call to unknown function '{}'", f_name));
             }
         }
-        Expr::Op { op, args } => match op {
+        Expr::Op { op, args, .. } => match op {
             OpCode::Add => {
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
@@ -279,6 +279,21 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32ShrS);
+            }
+            OpCode::ShrU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32ShrU);
+            }
+            OpCode::DivU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32DivU);
+            }
+            OpCode::RemU => {
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32RemU);
             }
             OpCode::BitAnd => {
                 compile_expr(&args[0], ctx, func)?;
@@ -399,7 +414,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 ));
             }
         },
-        Expr::Block(exprs) => {
+        Expr::Block(exprs, _) => {
             let len = exprs.len();
             for (i, e) in exprs.iter().enumerate() {
                 if i + 1 == len {
@@ -409,7 +424,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 }
             }
         }
-        Expr::While { cond, body } => {
+        Expr::While { cond, body, .. } => {
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
             compile_expr(cond, ctx, func)?;
@@ -422,7 +437,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Loop { var, start, end, step, body } => {
+        Expr::Loop { var, start, end, step, body, .. } => {
             let var_idx = *ctx
                 .locals
                 .get(var)
@@ -450,10 +465,10 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Ok(inner) => {
+        Expr::Ok(inner, _) => {
             compile_expr(inner, ctx, func)?;
         }
-        Expr::Err(inner) => {
+        Expr::Err(inner, _) => {
             compile_expr(inner, ctx, func)?;
         }
         Expr::MatchResult { .. } => {
@@ -471,7 +486,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } => true,
-        Expr::Block(exprs) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Block(exprs, _) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
         // stack unbalanced relative to this if's declared block type.
@@ -490,6 +505,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::BitXor
                 | OpCode::Shl
                 | OpCode::Shr
+                | OpCode::ShrU
+                | OpCode::DivU
+                | OpCode::RemU
                 | OpCode::BitAnd
                 | OpCode::BitOr
                 | OpCode::MemLoad8
