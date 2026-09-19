@@ -1,27 +1,30 @@
-;; Unified Dynamic Heap Memory & Scoped Arena Allocator Module
-;; Written 100% in canonical AIPL S-Expressions
-;; Provides collision-free dynamic bump heap allocation and fast O(1) scoped arena allocators.
+;; Heap & Scoped Arena Allocator Module
+;; Written 100% in canonical AIPL S-Expressions.
+;;
+;; There is exactly ONE allocator in AIPL: the `mem.alloc` primitive, whose
+;; cursor is the i32 at linear-memory address 0 (see AIPL_SPEC.md, "Memory
+;; layout"). The VM, compiled wasm, and this module all bump the same word, so
+;; a pointer handed out anywhere is never handed out again anywhere else.
+;; `aipl_heap_alloc` is kept as the AIPL-level name for it, with contracts.
+;; The arena below is a fast O(1) scoped allocator layered on top.
 
 (module memory
 
-  ;; Global Dynamic Bump Pointer Allocator
-  ;; Heap metadata pointer stored at offset 0, dynamic allocations start at offset 8192
+  ;; The heap begins at 1024; bytes 0-1023 are the runtime block.
+  (fn heap_start [] -> i32 1024)
+
+  ;; Thin wrapper over the `mem.alloc` primitive. Never returns an address
+  ;; inside the runtime block.
   (fn aipl_heap_alloc [size:i32] -> i32
     (req (gt size 0))
-    (ens (gte res 8192))
-    (let current_ptr:i32 (mem.load32 0))
-    (if (eq current_ptr 0)
-      (set! current_ptr 8192)
-      (set! current_ptr current_ptr))
-    (let allocated_ptr:i32 current_ptr)
-    (mem.store32 0 (+ current_ptr size))
-    allocated_ptr)
+    (ens (gte res 1024))
+    (mem.alloc size))
 
   ;; Scoped Arena Allocator Creation
-  ;; Creates an arena descriptor at allocated_ptr: [offset_0: current_offset, offset_4: capacity, offset_8: base_data_ptr]
+  ;; Creates an arena descriptor: [offset_0: current_offset, offset_4: capacity, offset_8: base_data_ptr]
   (fn arena_create [capacity:i32] -> i32
     (req (gt capacity 0))
-    (ens (gte res 8192))
+    (ens (gte res 1024))
     (let descriptor_ptr:i32 (call aipl_heap_alloc 12))
     (let data_ptr:i32 (call aipl_heap_alloc capacity))
     (mem.store32 (+ descriptor_ptr 0) 0)        ;; current offset
@@ -30,37 +33,52 @@
     descriptor_ptr)
 
   ;; Scoped Arena Allocator Fast Allocation
-  ;; Allocates size bytes within specified arena descriptor
+  ;; Allocates size bytes within the arena; returns -1 if the arena is full
+  ;; rather than silently handing out memory past its backing block.
   (fn arena_alloc [arena_ptr:i32 size:i32] -> i32
-    (req (gte arena_ptr 8192))
+    (req (gte arena_ptr 1024))
     (req (gt size 0))
-    (ens (gte res 8192))
     (let current_offset:i32 (mem.load32 (+ arena_ptr 0)))
+    (let capacity:i32 (mem.load32 (+ arena_ptr 4)))
     (let base_data_ptr:i32 (mem.load32 (+ arena_ptr 8)))
-    (let allocated_ptr:i32 (+ base_data_ptr current_offset))
-    (mem.store32 (+ arena_ptr 0) (+ current_offset size))
-    allocated_ptr)
+    (if (gt (+ current_offset size) capacity)
+        -1
+        (block
+          (mem.store32 (+ arena_ptr 0) (+ current_offset size))
+          (+ base_data_ptr current_offset))))
 
   ;; Scoped Arena Reset (Instant O(1) Bulk Deallocation)
   ;; Resets current offset back to 0 without freeing backing memory block
   (fn arena_reset [arena_ptr:i32] -> i32
-    (req (gte arena_ptr 8192))
+    (req (gte arena_ptr 1024))
     (ens (eq res 0))
     (mem.store32 (+ arena_ptr 0) 0)
     0)
 
-  ;; Master Memory Subsystem Self-Test Harness
-  ;; Verifies unique allocation offsets and arena reset functionality
+  ;; Master Memory Subsystem Self-Test Harness. Returns 1 on success, 0 on
+  ;; failure. Verifies: allocations are distinct and ascending, an allocation
+  ;; advances the shared cursor at address 0 by exactly its size, arena
+  ;; allocations live inside the arena's block, arena reset reuses memory,
+  ;; and an over-full arena is refused.
   (fn run_memory_tests [] -> i32
+    (let before:i32 (mem.load32 0))
     (let p1:i32 (call aipl_heap_alloc 64))
+    (let after:i32 (mem.load32 0))
     (let p2:i32 (call aipl_heap_alloc 128))
-    
+
     (let arena:i32 (call arena_create 1024))
     (let a1:i32 (call arena_alloc arena 32))
     (let a2:i32 (call arena_alloc arena 64))
     (let _reset:i32 (call arena_reset arena))
     (let a3:i32 (call arena_alloc arena 32))
+    (let too_big:i32 (call arena_alloc arena 1000))
 
-    (if (and (gt p2 p1) (and (gt a2 a1) (eq a3 a1)))
+    (if (and (eq p1 before)
+        (and (eq after (+ before 64))
+        (and (eq p2 (+ p1 64))
+        (and (gt a2 a1)
+        (and (eq a3 a1)
+        (and (gte a1 (mem.load32 (+ arena 8)))
+             (eq too_big -1)))))))
       1  ;; SUCCESS
       0)))

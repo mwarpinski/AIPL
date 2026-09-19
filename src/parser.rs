@@ -965,6 +965,7 @@ impl Parser {
                                 "mem.store_f64" => OpCode::MemStoreF64,
                                 "mem.alloc" => OpCode::MemAlloc,
                                 "mem.free" => OpCode::MemFree,
+                                "mem.grow" => OpCode::MemGrow,
                                 "atomic.add" => OpCode::AtomicAdd,
                                 "atomic.cas" => OpCode::AtomicCas,
                                 "atomic.lock" => OpCode::AtomicLock,

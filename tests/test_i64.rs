@@ -137,8 +137,9 @@ fn i64_memory_round_trip() {
     let src = r#"
     (module m
       (fn f [] -> i32
-        (mem.store64 0 4294967301i64)
-        (mem.load32 0)))
+        (let p:i32 (mem.alloc 8))
+        (mem.store64 p 4294967301i64)
+        (mem.load32 p)))
     "#;
     assert_eq!(run_both(src, "f"), Value::Int(5));
 }

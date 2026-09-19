@@ -53,7 +53,7 @@ arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "shru" | "bitand" | "bitor" ;
 memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | "mem.load_f64"
                  | "mem.store8" | "mem.store32" | "mem.store64" | "mem.store_f32" | "mem.store_f64"
-                 | "mem.alloc" | "mem.free" ;
+                 | "mem.alloc" | "mem.free" | "mem.grow" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;
 array_op       ::= "arr.get" | "arr.set" ;
@@ -104,7 +104,11 @@ Functions support formal pre-conditions and post-conditions evaluated statically
 ### A. Raw WebAssembly Linear Memory Loads & Stores
 - `(mem.load32 ptr)` -> Reads 4 bytes from linear memory offset `ptr` (`i32.load`).
 - `(mem.store32 ptr val)` -> Writes 4 bytes to linear memory offset `ptr` (`i32.store`).
-- `(mem.alloc size)` -> Dynamic heap allocation tracking.
+- `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size`. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
+- `(mem.grow pages)` -> Grows linear memory by `pages` × 64 KiB. Returns the previous size in pages, or `-1` if the 100-page maximum would be exceeded.
+- `(mem.free ptr)` -> Accepted and type-checked, but a no-op today.
+
+See "Memory layout" (section 7.9) for the reserved runtime block below address 1024.
 
 ### B. Atomic Swarm Synchronization
 - `(atomic.lock mutex_ptr)` -> Acquires thread-safe mutex lock.
@@ -164,12 +168,14 @@ source.aipl
 
 ### 6.2 What a compiled `.wasm` module looks like
 
-`WasmCompiler::compile` produces a core WebAssembly 1.0 module with exactly these sections, in this order: **type, function, memory, global, export, code**. There is no import section, no start function, and no data segments (string literals compile to `i32.const 0` and are meaningless in wasm today).
+`WasmCompiler::compile` produces a core WebAssembly 1.0 module with exactly these sections, in this order: **type, function, memory, export, code, data**. There is no import section, no start function, and no globals. String literals compile to `i32.const 0` and are meaningless in wasm today.
 
 | Item | Value |
 |---|---|
-| Memory | one linear memory, min 1 page (64 KiB), max 100 pages, exported as `"memory"` |
-| Global 0 | mutable `i32`, initialised to `1024`; this is the `mem.alloc` bump pointer |
+| Memory | one linear memory, min 16 pages (1 MiB, same as the VM), max 100 pages, exported as `"memory"` |
+| Data segment | one active segment writing the 4 bytes `00 04 00 00` at address 0: the heap cursor starts at 1024 |
+| Heap cursor | the `i32` at address 0; `mem.alloc` compiles to a load, an add, and a store on that word |
+| Store guard | every `mem.store*` is preceded by a 12-instruction check that traps (`unreachable`) if the address is in bytes 0-3 or 64-1023; each function gets one extra `i32` local for it |
 | Exports | **every** function in the flat module, exported under its AIPL name (`add`, `compiler.tokenize`, ...) |
 | Function types | params map `i32/bool/str/void -> i32`, `f32 -> f32`, `f64 -> f64`; a `void` return is an empty result list |
 | Locals | every `let` anywhere in the body (including nested in `if`/`while`/`loop`/`block`) plus every `loop` induction variable becomes one wasm local, allocated after the params |
@@ -188,7 +194,8 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `i64.extend_s i64.extend_u i32.wrap` | Yes | Yes | Yes |
 | `mem.load8/32/64`, `mem.store8/32/64` | Yes | Yes (1 MiB memory) | Yes |
 | `mem.load_f32/f64`, `mem.store_f32/f64` | Yes | Err | Err |
-| `mem.alloc` | Yes | Yes, bump from 1024, never frees | Yes, bump via global 0 |
+| `mem.alloc` | Yes | Yes, bumps the cursor at address 0 from 1024, never frees | Yes, same word, same start |
+| `mem.grow` | Yes | Yes, resizes by pages, returns old page count or -1 | Yes (`memory.grow`) |
 | `mem.free` | Yes | no-op, returns void | Err |
 | `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Err (needs shared memory) |
 | `arr.get / arr.set` | Yes | Err | Err |
@@ -326,7 +333,7 @@ Note the `if` here has branches of type `Result<i32,i32>` and `Result<i32,i32>`:
 
 ### 7.8 Memory
 
-Linear memory is byte-addressed. The VM has 1 MiB; wasm starts at 64 KiB and may grow to 100 pages. Nothing below address 1024 is handed out by `mem.alloc`, so the range `0..1024` is conventionally scratch space in examples and tests. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap.
+Linear memory is byte-addressed. Both backends start with 16 pages (1 MiB) and may grow to 100 pages with `mem.grow`. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap. Get memory from `mem.alloc`; never pick an address yourself (section 7.9).
 
 ```lisp
 (fn pack_two [] -> i32
@@ -335,6 +342,33 @@ Linear memory is byte-addressed. The VM has 1 MiB; wasm starts at 64 KiB and may
   (mem.store32 (+ p 4) 35)
   (+ (mem.load32 p) (mem.load32 (+ p 4))))   ;; 42
 ```
+
+### 7.9 Memory layout
+
+There is one layout and one allocator, shared by the VM, compiled wasm, and AIPL code such as `memory.aipl` and `codegen.aipl`. Bytes `0..1024` are the **runtime block**; the heap begins at `1024` and grows upward through `mem.alloc`.
+
+| Address | Width | Owner | Meaning |
+|---|---|---|---|
+| 0 | i32 | allocator | heap cursor: the next address `mem.alloc` will return. Initialised to `1024` by `VM::new` and by the wasm data segment. |
+| 4 | i32 | codegen | compile-error flag (`0` = none). `set_compile_error` writes `1`; `has_compile_error` reads it. |
+| 8, 12 | i32 | reserved | zero |
+| 16 | i32 | codegen | pointer to the keyword table (256 bytes, `mem.alloc`'d once by `codegen_init`) |
+| 20 | i32 | codegen | pointer to the function signature table (64 entries × 56 bytes) |
+| 24 | i32 | codegen | pointer to the default locals table (256 entries × 12 bytes) |
+| 28 | i32 | codegen | running locals count for the function being compiled |
+| 32..64 | | reserved | for future runtime state; zero |
+| 64..1024 | | reserved | not handed out by `mem.alloc`; do not use |
+| 1024.. | | heap | `mem.alloc` region |
+
+Rules that follow from this:
+
+- **Never write to a literal address.** Take memory from `mem.alloc` and pass pointers around. Every module in `aipl_src/` and every test does this; a `grep` for four-digit literals in `codegen.aipl` finds only allocation sizes.
+- **The checker enforces the block for literal addresses.** Any `mem.*` or `atomic.*` op whose address is a literal is rejected at check time if it stores to or locks bytes 0-3 (`... bytes 0-3 are the heap cursor owned by mem.alloc ...`), touches bytes 64-1023 (`... bytes 64-1023 are the reserved runtime block ...`), or names a misaligned cell in 4-63. Reading the cursor with `(mem.load32 0)` and using the aligned cells 4-60 is allowed; that is what `memory.aipl` and `codegen.aipl` do. Literal heap addresses (1024 and up) are allowed but discouraged.
+- **Both backends enforce the block for writes at runtime.** Every `mem.store*` and every `atomic.*` op checks its address before writing: bytes 0-3 and 64-1023 are refused however the address was computed. The VM fails with `mem.store32 at address 512: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead`; compiled wasm traps with `unreachable` on exactly the same addresses (the backend emits a 12-instruction check before each store, using one extra `i32` local per function). This is a shared semantic, not a VM-only guard, so the differential test treats it as agreement. The self-hosted compiler (`codegen.aipl`, `emit_store_guard`) emits the identical bytes, and `tests/test_selfhost.rs` checks that equality directly. Reads are not checked: the block is zero and reading it is harmless.
+- **The VM additionally enforces lock validity.** A lock word is only ever `0` (free) or `1` (held). `atomic.lock` on a word holding anything else fails immediately with `atomic.lock: word at ptr N holds V, which is not a lock state ...` instead of spinning forever, and `atomic.unlock` on a word that is not `1` fails with `... a held lock holds 1 ...`. This is what turns "I locked the heap cursor by accident" from a silent hang into an error, whichever way the address was produced.
+- **Fresh instances agree.** A fresh VM and a fresh wasm instance both return `1024` from the first `mem.alloc`, then `1024 + size`, and so on. This is why memory-heavy programs can be compared across backends (section 10.4).
+- **Threads share the block.** OS threads spawned by `thread.spawn` share the same linear memory, so they share the allocator; `mem.alloc` is not atomic, so allocate before spawning and hand pointers to workers as their argument (section 12.4).
+- **Codegen state is per instance.** `codegen_init` is idempotent: it allocates its tables only when cell 16 is zero and always clears cells 4 and 28.
 
 ---
 
@@ -425,6 +459,9 @@ Representative messages, exactly as produced:
 | wrong argument type | `4:5: Arg 1 of 'add' expects I32, got Bool` |
 | body/return mismatch | `2:3: Function 'f' expects return type I32, but body returned Bool` |
 | unsupported op in a backend | `Wasm Codegen: SysTime is not supported in the wasm backend` or `SysTime not supported in VM backend: system ops not implemented` |
+| store or lock at literal address 0 | `3:5: AtomicLock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
+| literal address in 64-1023 | `3:5: MemStore32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
+| locking a word that is not 0/1 (runtime, VM) | `atomic.lock: word at ptr 1024 holds 1024, which is not a lock state (0 = free, 1 = held); this address is data, not a mutex. Allocate a dedicated lock word with (mem.alloc 4)` |
 
 Type names in messages are the Rust `Debug` spelling: `I32`, `F64`, `Bool`, `Str`, `Void`, `ResultType(I32, I32)`.
 
@@ -651,27 +688,29 @@ The `.wasm` exports `gcd`, `main`, and `memory`. Note the `let t` inside the `wh
 
 ### 12.4 Real threads and atomics, VM only
 
-Function names for `thread.spawn` are written into memory byte by byte; there are no first-class functions yet (P10).
+Function names for `thread.spawn` are written into memory byte by byte; there are no first-class functions yet (P10). The single `i32` thread argument is the natural way to hand a worker its pointer.
 
 ```lisp
 (module counter_demo
-  (fn worker [arg:i32] -> i32
+  (fn worker [counter:i32] -> i32
     (loop i 1 1000 1
-      (atomic.add 512 1))       ;; shared counter lives at address 512
+      (atomic.add counter 1))
     0)
 
   (fn main [] -> i32
-    (mem.store32 512 0)
-    ;; write "worker" at address 600
-    (mem.store8 600 119) (mem.store8 601 111) (mem.store8 602 114)
-    (mem.store8 603 107) (mem.store8 604 101) (mem.store8 605 114)
-    (let t1:i32 (thread.spawn 600 6 0))
-    (let t2:i32 (thread.spawn 600 6 0))
+    (let counter:i32 (mem.alloc 4))
+    (let name:i32 (mem.alloc 8))
+    (mem.store32 counter 0)
+    ;; "worker"
+    (mem.store8 (+ name 0) 119) (mem.store8 (+ name 1) 111) (mem.store8 (+ name 2) 114)
+    (mem.store8 (+ name 3) 107) (mem.store8 (+ name 4) 101) (mem.store8 (+ name 5) 114)
+    (let t1:i32 (thread.spawn name 6 counter))
+    (let t2:i32 (thread.spawn name 6 counter))
     (let _a:i32 (thread.join t1))
     (let _b:i32 (thread.join t2))
-    (mem.load32 512)))            ;; => Int(2000), deterministically
+    (mem.load32 counter)))            ;; => Int(2000), deterministically
 ```
-`atomic.add` returns the previous value; the call above is in statement position so the value is dropped. Threads share linear memory and the function table but not locals.
+`atomic.add` returns the previous value; the call above is in statement position so the value is dropped. Threads share linear memory (and therefore the allocator) and the function table, but not locals. Allocate in the parent before spawning.
 
 ### 12.5 File round-trip, VM only
 
@@ -680,18 +719,21 @@ Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `
 ```lisp
 (module file_demo
   (fn main [] -> i32
-    ;; path "t.bin" at 700
-    (mem.store8 700 116) (mem.store8 701 46) (mem.store8 702 98)
-    (mem.store8 703 105) (mem.store8 704 110)
-    (mem.store32 800 3735928559)              ;; 0xDEADBEEF, wraps to -559038737
-    (let w:i32 (fs.open 700 5 1))
-    (let _n:i32 (fs.write w 800 4))
+    (let path:i32 (mem.alloc 8))
+    (let out:i32 (mem.alloc 4))
+    (let in:i32 (mem.alloc 4))
+    ;; "t.bin"
+    (mem.store8 (+ path 0) 116) (mem.store8 (+ path 1) 46) (mem.store8 (+ path 2) 98)
+    (mem.store8 (+ path 3) 105) (mem.store8 (+ path 4) 110)
+    (mem.store32 out 3735928559)              ;; 0xDEADBEEF, wraps to -559038737
+    (let w:i32 (fs.open path 5 1))
+    (let _n:i32 (fs.write w out 4))
     (let _c:i32 (fs.close w))
-    (let r:i32 (fs.open 700 5 0))
-    (let _m:i32 (fs.read r 900 4))
+    (let r:i32 (fs.open path 5 0))
+    (let _m:i32 (fs.read r in 4))
     (let _d:i32 (fs.close r))
-    (let _x:i32 (fs.delete 700 5))
-    (if (eq (mem.load32 900) (mem.load32 800)) 1 0)))   ;; => Int(1)
+    (let _x:i32 (fs.delete path 5))
+    (if (eq (mem.load32 in) (mem.load32 out)) 1 0)))   ;; => Int(1)
 ```
 
 ---
@@ -711,6 +753,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
 | using `(and a b)` for short-circuiting | both operands are always evaluated; guard with a nested `if` if the second has side effects |
 | `(ptr i32)`, `(fn (i32) -> i32)` in a type position | not parseable yet; pointers are plain `i32` addresses |
+| `(mem.store32 512 x)`, `(atomic.lock 0)`, any literal address below 1024 | rejected by the checker: address 0 is the heap cursor and 64-1023 is reserved. Take memory from `(mem.alloc n)` and pass the pointer. A computed address that lands on a non-lock word fails at runtime in the VM instead of hanging |
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
 | `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |

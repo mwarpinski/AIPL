@@ -181,7 +181,9 @@ impl TypeChecker {
                 }
                 Ok(ret_type.clone())
             }
-            Expr::Op { op, args, .. } => match op {
+            Expr::Op { op, args, .. } => {
+                check_literal_address(op, args, l, c)?;
+                match op {
                 OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::DivU | OpCode::RemU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: Arithmetic/bitwise opcode {:?} requires 2 arguments", l, c, op));
@@ -296,6 +298,16 @@ impl TypeChecker {
                         return Err(format!("{}:{}: mem.free requires i32 ptr, got {:?}", l, c, t));
                     }
                     Ok(Type::Void)
+                }
+                OpCode::MemGrow => {
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: mem.grow requires 1 argument (pages: i32)", l, c));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{}:{}: mem.grow requires i32 pages, got {:?}", l, c, t));
+                    }
+                    Ok(Type::I32)
                 }
                 OpCode::AtomicAdd => Ok(Type::I32),
                 OpCode::AtomicCas => Ok(Type::Bool),
@@ -412,7 +424,8 @@ impl TypeChecker {
                     }
                     Ok(Type::I32)
                 }
-            },
+                }
+            }
             Expr::Ok(val, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(Type::I32)))
@@ -448,4 +461,80 @@ impl TypeChecker {
             }
         }
     }
+}
+
+/// Ops whose first argument is a linear-memory address.
+fn is_address_op(op: &OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::MemLoad8
+            | OpCode::MemLoad32
+            | OpCode::MemLoad64
+            | OpCode::MemLoadF32
+            | OpCode::MemLoadF64
+            | OpCode::MemStore8
+            | OpCode::MemStore32
+            | OpCode::MemStore64
+            | OpCode::MemStoreF32
+            | OpCode::MemStoreF64
+            | OpCode::AtomicAdd
+            | OpCode::AtomicCas
+            | OpCode::AtomicLock
+            | OpCode::AtomicUnlock
+    )
+}
+
+/// Ops that modify (or lock) the word at their address argument.
+fn is_write_op(op: &OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::MemStore8
+            | OpCode::MemStore32
+            | OpCode::MemStore64
+            | OpCode::MemStoreF32
+            | OpCode::MemStoreF64
+            | OpCode::AtomicAdd
+            | OpCode::AtomicCas
+            | OpCode::AtomicLock
+            | OpCode::AtomicUnlock
+    )
+}
+
+/// Static enforcement of the memory layout (AIPL_SPEC.md, "Memory layout")
+/// for the one case that can be seen at check time: a literal address.
+/// Bytes 0-3 are the heap cursor (reading it is fine, writing or locking it
+/// is not), cells 4-63 are 4-byte-aligned runtime slots, bytes 64-1023 are
+/// reserved, and everything from 1024 up is heap that should come from
+/// `mem.alloc`. Computed addresses cannot be checked here; the VM catches the
+/// most common consequence (locking a non-lock word) at runtime instead.
+fn check_literal_address(op: &OpCode, args: &[Expr], l: u32, c: u32) -> Result<(), String> {
+    if !is_address_op(op) {
+        return Ok(());
+    }
+    let Some(Expr::Lit(Literal::Int(a), _)) = args.first() else {
+        return Ok(());
+    };
+    let a = *a;
+    if a < 0 {
+        return Err(format!("{}:{}: {:?} at negative literal address {}", l, c, op, a));
+    }
+    if a < 4 && is_write_op(op) {
+        return Err(format!(
+            "{}:{}: {:?} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead",
+            l, c, op, a
+        ));
+    }
+    if (4..64).contains(&a) && a % 4 != 0 {
+        return Err(format!(
+            "{}:{}: {:?} at address {}: runtime cells 4-63 are 4-byte-aligned i32 slots (4, 8, 12, ...)",
+            l, c, op, a
+        ));
+    }
+    if (64..1024).contains(&a) {
+        return Err(format!(
+            "{}:{}: {:?} at literal address {}: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead",
+            l, c, op, a
+        ));
+    }
+    Ok(())
 }

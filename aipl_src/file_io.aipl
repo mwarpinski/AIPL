@@ -79,35 +79,38 @@
   ;; file - a genuine round trip through the OS filesystem, not a
   ;; self-fulfilling count-echo, and it cleans up after itself.
   (fn run_file_io_tests [] -> i32
-    (mem.store8 (+ 400 0) 97) (mem.store8 (+ 400 1) 105) (mem.store8 (+ 400 2) 112)
-    (mem.store8 (+ 400 3) 108) (mem.store8 (+ 400 4) 95) (mem.store8 (+ 400 5) 102)
-    (mem.store8 (+ 400 6) 105) (mem.store8 (+ 400 7) 108) (mem.store8 (+ 400 8) 101)
-    (mem.store8 (+ 400 9) 105) (mem.store8 (+ 400 10) 111) (mem.store8 (+ 400 11) 95)
-    (mem.store8 (+ 400 12) 115) (mem.store8 (+ 400 13) 101) (mem.store8 (+ 400 14) 108)
-    (mem.store8 (+ 400 15) 102) (mem.store8 (+ 400 16) 116) (mem.store8 (+ 400 17) 101)
-    (mem.store8 (+ 400 18) 115) (mem.store8 (+ 400 19) 116) (mem.store8 (+ 400 20) 46)
-    (mem.store8 (+ 400 21) 116) (mem.store8 (+ 400 22) 109) (mem.store8 (+ 400 23) 112)
+    (let path:i32 (mem.alloc 32))
+    (let payload:i32 (mem.alloc 32))
+    (let readbuf:i32 (mem.alloc 64))
+    (mem.store8 (+ path 0) 97) (mem.store8 (+ path 1) 105) (mem.store8 (+ path 2) 112)
+    (mem.store8 (+ path 3) 108) (mem.store8 (+ path 4) 95) (mem.store8 (+ path 5) 102)
+    (mem.store8 (+ path 6) 105) (mem.store8 (+ path 7) 108) (mem.store8 (+ path 8) 101)
+    (mem.store8 (+ path 9) 105) (mem.store8 (+ path 10) 111) (mem.store8 (+ path 11) 95)
+    (mem.store8 (+ path 12) 115) (mem.store8 (+ path 13) 101) (mem.store8 (+ path 14) 108)
+    (mem.store8 (+ path 15) 102) (mem.store8 (+ path 16) 116) (mem.store8 (+ path 17) 101)
+    (mem.store8 (+ path 18) 115) (mem.store8 (+ path 19) 116) (mem.store8 (+ path 20) 46)
+    (mem.store8 (+ path 21) 116) (mem.store8 (+ path 22) 109) (mem.store8 (+ path 23) 112)
     (let path_len:i32 24)
 
-    (mem.store8 (+ 500 0) 82) (mem.store8 (+ 500 1) 69) (mem.store8 (+ 500 2) 65)
-    (mem.store8 (+ 500 3) 76) (mem.store8 (+ 500 4) 45) (mem.store8 (+ 500 5) 68)
-    (mem.store8 (+ 500 6) 73) (mem.store8 (+ 500 7) 83) (mem.store8 (+ 500 8) 75)
-    (mem.store8 (+ 500 9) 45) (mem.store8 (+ 500 10) 67) (mem.store8 (+ 500 11) 79)
-    (mem.store8 (+ 500 12) 78) (mem.store8 (+ 500 13) 84) (mem.store8 (+ 500 14) 69)
-    (mem.store8 (+ 500 15) 78) (mem.store8 (+ 500 16) 84)
+    (mem.store8 (+ payload 0) 82) (mem.store8 (+ payload 1) 69) (mem.store8 (+ payload 2) 65)
+    (mem.store8 (+ payload 3) 76) (mem.store8 (+ payload 4) 45) (mem.store8 (+ payload 5) 68)
+    (mem.store8 (+ payload 6) 73) (mem.store8 (+ payload 7) 83) (mem.store8 (+ payload 8) 75)
+    (mem.store8 (+ payload 9) 45) (mem.store8 (+ payload 10) 67) (mem.store8 (+ payload 11) 79)
+    (mem.store8 (+ payload 12) 78) (mem.store8 (+ payload 13) 84) (mem.store8 (+ payload 14) 69)
+    (mem.store8 (+ payload 15) 78) (mem.store8 (+ payload 16) 84)
     (let payload_len:i32 17)
 
-    (let written:i32 (call fs_write_file 400 path_len 500 payload_len))
-    (let read_n:i32 (call fs_read_file 400 path_len 600 64))
+    (let written:i32 (call fs_write_file path path_len payload payload_len))
+    (let read_n:i32 (call fs_read_file path path_len readbuf 64))
 
     (let i:i32 0)
     (let mismatch:i32 0)
     (loop i 0 16 1
-      (if (neq (mem.load8 (+ 600 i)) (mem.load8 (+ 500 i)))
+      (if (neq (mem.load8 (+ readbuf i)) (mem.load8 (+ payload i)))
           (set! mismatch (+ mismatch 1))
           (set! mismatch mismatch)))
 
-    (let _d:i32 (call fs_delete 400 path_len))
+    (let _d:i32 (call fs_delete path path_len))
 
     (if (and (eq written 17) (and (eq read_n 17) (eq mismatch 0)))
         1

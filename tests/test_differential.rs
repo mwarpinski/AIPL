@@ -430,7 +430,7 @@ fn every_example_agrees_between_vm_and_wasmtime() {
                 continue;
             }
             if f.params.is_empty() {
-                differential(&module, &wasm, &f.name, &[]);
+                let _ = differential(&module, &wasm, &f.name, &[]);
                 compared_here += 1;
                 continue;
             }
@@ -440,7 +440,7 @@ fn every_example_agrees_between_vm_and_wasmtime() {
             tuples.push((0..n).map(|i| SAMPLE_ARGS[(i * 2) % SAMPLE_ARGS.len()]).collect());
             tuples.push((0..n).map(|i| SAMPLE_ARGS[(i + 3) % SAMPLE_ARGS.len()]).collect());
             for args in tuples {
-                differential(&module, &wasm, &f.name, &args);
+                let _ = differential(&module, &wasm, &f.name, &args);
                 compared_here += 1;
             }
         }

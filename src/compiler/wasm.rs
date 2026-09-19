@@ -64,9 +64,15 @@ impl WasmCompiler {
                 }
             }
 
+            // One extra i32 local per function: scratch for the write-address
+            // check emitted before every store (see emit_write_address_check).
+            let addr_scratch = current_idx;
+            wasm_locals.push((1, ValType::I32));
+
             let mut func = Function::new(wasm_locals);
             let ctx = Ctx {
                 locals: &local_map,
+                addr_scratch,
                 local_types: &local_types,
                 fn_indices: &fn_indices,
                 fn_returns: &fn_returns,
@@ -91,8 +97,10 @@ impl WasmCompiler {
         }
 
         let mut memories = wasm_encoder::MemorySection::new();
+        // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
+        // same old size in both backends; 100 pages max, also matching the VM.
         memories.memory(wasm_encoder::MemoryType {
-            minimum: 1,
+            minimum: 16,
             maximum: Some(100),
             memory64: false,
             shared: false,
@@ -100,22 +108,17 @@ impl WasmCompiler {
         });
         exports.export("memory", ExportKind::Memory, 0);
 
-        let mut globals = wasm_encoder::GlobalSection::new();
-        globals.global(
-            wasm_encoder::GlobalType {
-                val_type: ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            &wasm_encoder::ConstExpr::i32_const(1024),
-        );
+        // Runtime block initialisation: the heap cursor at address 0 starts
+        // at 1024 (HEAP_START). Everything else in bytes 0..1024 is zero.
+        let mut data = wasm_encoder::DataSection::new();
+        data.active(0, &wasm_encoder::ConstExpr::i32_const(0), 1024u32.to_le_bytes());
 
         wasm_module.section(&types);
         wasm_module.section(&functions);
         wasm_module.section(&memories);
-        wasm_module.section(&globals);
         wasm_module.section(&exports);
         wasm_module.section(&codes);
+        wasm_module.section(&data);
 
         Ok(wasm_module.finish())
     }
@@ -125,6 +128,7 @@ impl WasmCompiler {
 /// as four separate parameters everywhere.
 struct Ctx<'a> {
     locals: &'a HashMap<String, u32>,
+    addr_scratch: u32,
     local_types: &'a HashMap<String, Type>,
     fn_indices: &'a HashMap<String, u32>,
     fn_returns: &'a HashMap<String, Type>,
@@ -194,6 +198,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             OpCode::MemLoad8
             | OpCode::MemLoad32
             | OpCode::MemAlloc
+            | OpCode::MemGrow
             | OpCode::AtomicAdd
             | OpCode::ArrGet
             | OpCode::I32Wrap
@@ -460,6 +465,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore8 => {
                 compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx.addr_scratch);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
             }
@@ -469,6 +475,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore32 => {
                 compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx.addr_scratch);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
             }
@@ -478,15 +485,28 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore64 => {
                 compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx.addr_scratch);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
             OpCode::MemAlloc => {
-                func.instruction(&Instruction::GlobalGet(0));
-                func.instruction(&Instruction::GlobalGet(0));
+                // Bump allocator whose cursor is the i32 at linear-memory
+                // address 0 (HEAP_PTR_ADDR) - the same word the VM uses, so
+                // both backends and self-hosted AIPL share one allocator.
+                // Stack: [old] [0] [old] [size] -> add -> [old] [0] [new] -> store -> [old]
+                let cursor = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Load(cursor));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Load(cursor));
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::GlobalSet(0));
+                func.instruction(&Instruction::I32Store(cursor));
+            }
+            OpCode::MemGrow => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::MemoryGrow(0));
             }
             OpCode::MemFree => {
                 // No-op for bump allocator
@@ -651,6 +671,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::MemLoad32
                 | OpCode::MemLoad64
                 | OpCode::MemAlloc
+                | OpCode::MemGrow
                 | OpCode::I64ExtendS
                 | OpCode::I64ExtendU
                 | OpCode::I32Wrap
@@ -666,4 +687,30 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Emits the runtime memory-layout check for a store whose address is on top
+/// of the stack: traps (`unreachable`) if the address is in bytes 0-3 (the
+/// heap cursor) or 64-1023 (reserved). Mirrors `vm::check_write_address`
+/// exactly so both backends fail on the same writes. The address stays on the
+/// stack for the store that follows.
+///
+///   [addr] local.tee s
+///   local.get s ; i32.const 4  ; i32.lt_u              -> addr < 4
+///   local.get s ; i32.const 64 ; i32.sub ; i32.const 960 ; i32.lt_u  -> 64 <= addr < 1024
+///   i32.or ; if unreachable end
+fn emit_write_address_check(func: &mut Function, scratch: u32) {
+    func.instruction(&Instruction::LocalTee(scratch));
+    func.instruction(&Instruction::LocalGet(scratch));
+    func.instruction(&Instruction::I32Const(4));
+    func.instruction(&Instruction::I32LtU);
+    func.instruction(&Instruction::LocalGet(scratch));
+    func.instruction(&Instruction::I32Const(64));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::I32Const(960));
+    func.instruction(&Instruction::I32LtU);
+    func.instruction(&Instruction::I32Or);
+    func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+    func.instruction(&Instruction::Unreachable);
+    func.instruction(&Instruction::End);
 }

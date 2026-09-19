@@ -27,8 +27,20 @@ pub enum Value {
 /// concurrency, instead of each thread getting its own disconnected copy.
 pub struct SharedMemory {
     pub bytes: Vec<u8>,
-    pub heap_ptr: usize,
 }
+
+/// One wasm page.
+pub const PAGE_SIZE: usize = 65536;
+/// Initial linear memory in pages (1 MiB). Matches the wasm backend's memory
+/// minimum so `mem.grow` returns the same old-size in both backends.
+pub const INITIAL_PAGES: usize = 16;
+/// Maximum linear memory in pages. Matches the wasm backend's memory maximum.
+pub const MAX_PAGES: usize = 100;
+/// Address of the heap cursor word read and written by `mem.alloc`.
+pub const HEAP_PTR_ADDR: usize = 0;
+/// First heap address handed out by `mem.alloc`. Bytes below it are the
+/// runtime block (see AIPL_SPEC.md, Memory layout).
+pub const HEAP_START: u32 = 1024;
 
 pub struct VM {
     functions: Arc<HashMap<String, FnDef>>,
@@ -46,8 +58,14 @@ impl VM {
             functions: Arc::new(HashMap::new()),
             globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
-                bytes: vec![0u8; 1024 * 1024], // 1MB linear Wasm memory
-                heap_ptr: 1024,
+                bytes: {
+                    // 16 pages, with the heap cursor at address 0 pre-set to
+                    // HEAP_START - exactly what the wasm backend's data
+                    // segment does, so both backends start from one layout.
+                    let mut bytes = vec![0u8; INITIAL_PAGES * PAGE_SIZE];
+                    bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&HEAP_START.to_le_bytes());
+                    bytes
+                },
             })),
             fd_table: HashMap::new(),
             next_fd: 3,
@@ -393,6 +411,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store8 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store8", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => (i & 0xFF) as u8,
                     _ => return Err("mem.store8 requires Int val".to_string()),
@@ -433,6 +452,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store32 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store32", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
@@ -449,6 +469,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store64 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store64", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int64(i) => i,
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
@@ -465,12 +486,33 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.alloc requires Int size".to_string()),
                 };
+                // The cursor lives IN linear memory at address 0 (not in a Rust
+                // field), so VM code, compiled wasm, and self-hosted AIPL all
+                // share one allocator state. No bounds check here: like wasm,
+                // a later load/store past the end is what fails.
                 let mut mem = self.shared.lock().unwrap();
-                let allocated_ptr = mem.heap_ptr;
-                mem.heap_ptr += size;
+                let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+                let allocated_ptr = i32::from_le_bytes(cur);
+                let next = allocated_ptr.wrapping_add(size as i32);
+                mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
                 Ok(Value::Int(allocated_ptr as i64))
             }
             OpCode::MemFree => Ok(Value::Void),
+            OpCode::MemGrow => {
+                let pages = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("mem.grow requires Int pages".to_string()),
+                };
+                let mut mem = self.shared.lock().unwrap();
+                let old_pages = mem.bytes.len() / PAGE_SIZE;
+                if pages < 0 || old_pages + pages as usize > MAX_PAGES {
+                    // wasm memory.grow reports failure as -1 rather than trapping.
+                    return Ok(Value::Int(-1));
+                }
+                let new_len = (old_pages + pages as usize) * PAGE_SIZE;
+                mem.bytes.resize(new_len, 0);
+                Ok(Value::Int(old_pages as i64))
+            }
             // Atomics: the whole read-modify-write happens while holding the
             // one lock on `shared`, so these are genuinely atomic across real
             // OS threads spawned by thread.spawn, not just single-threaded
@@ -480,6 +522,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.add requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.add", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
@@ -496,6 +539,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.cas requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.cas", ptr)?;
                 let expected = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int expected".to_string()),
@@ -524,6 +568,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.lock", ptr)?;
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
@@ -531,9 +576,22 @@ impl VM {
                             return Err(format!("atomic.lock out of bounds: ptr {}", ptr));
                         }
                         let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
-                        if i32::from_le_bytes(bytes) == 0 {
-                            mem.bytes[ptr..ptr + 4].copy_from_slice(&1i32.to_le_bytes());
-                            return Ok(Value::Void);
+                        match i32::from_le_bytes(bytes) {
+                            0 => {
+                                mem.bytes[ptr..ptr + 4].copy_from_slice(&1i32.to_le_bytes());
+                                return Ok(Value::Void);
+                            }
+                            1 => {} // held by someone else: spin
+                            other => {
+                                // A lock word is only ever 0 or 1. Anything else means
+                                // this address is data, not a mutex (the classic case:
+                                // address 0, the heap cursor). Spinning on it would
+                                // hang forever, so fail loudly instead.
+                                return Err(format!(
+                                    "atomic.lock: word at ptr {} holds {}, which is not a lock state (0 = free, 1 = held); this address is data, not a mutex. Allocate a dedicated lock word with (mem.alloc 4)",
+                                    ptr, other
+                                ));
+                            }
                         }
                     }
                     std::thread::yield_now();
@@ -544,9 +602,18 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 4 > mem.bytes.len() {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
+                }
+                let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
+                let word = i32::from_le_bytes(bytes);
+                if word != 1 {
+                    return Err(format!(
+                        "atomic.unlock: word at ptr {} holds {}, but a held lock holds 1; either this mutex was never locked or this address is data, not a mutex",
+                        ptr, word
+                    ));
                 }
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&0i32.to_le_bytes());
                 Ok(Value::Void)
@@ -936,4 +1003,25 @@ impl VM {
             }
         }
     }
+}
+
+/// Runtime enforcement of the memory layout for writes (AIPL_SPEC.md, "Memory
+/// layout"): bytes 0-3 are the heap cursor and bytes 64-1023 are reserved, so
+/// no store or atomic op may target them, however the address was computed.
+/// The wasm backend emits the identical check (trapping with `unreachable`),
+/// so this is a shared semantic, not a VM-only guard. Reads are not checked.
+pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
+    if ptr < 4 {
+        return Err(format!(
+            "{} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; take memory from (mem.alloc n) instead",
+            op, ptr
+        ));
+    }
+    if (64..1024).contains(&ptr) {
+        return Err(format!(
+            "{} at address {}: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead",
+            op, ptr
+        ));
+    }
+    Ok(())
 }
