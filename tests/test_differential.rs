@@ -17,7 +17,7 @@ use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::Path;
-use wasmtime::{Engine, Instance, Module as WasmModule, Store, Val, ValType};
+use wasmtime::{Engine, Module as WasmModule, Store, Val, ValType};
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -45,8 +45,17 @@ fn run_vm(module: &Module, fn_name: &str, args: &[i32]) -> Outcome {
 fn run_wasmtime(wasm: &[u8], fn_name: &str, args: &[i32]) -> Outcome {
     let engine = Engine::default();
     let module = WasmModule::new(&engine, wasm).map_err(|e| format!("wasmtime module: {e}"))?;
-    let mut store = Store::new(&engine, ());
-    let instance = Instance::new(&mut store, &module, &[]).map_err(|e| format!("wasmtime instantiate: {e}"))?;
+    // Link WASI so modules that print or touch files (which import from
+    // wasi_snapshot_preview1) instantiate too. No preopened directory: file
+    // I/O in a differential case would be a host-state dependency, not a
+    // semantics check. Modules without imports are unaffected.
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).map_err(|e| format!("wasi link: {e}"))?;
+    let ctx = wasmtime_wasi::WasiCtxBuilder::new().inherit_stdout().inherit_stderr().build_p1();
+    let mut store = Store::new(&engine, ctx);
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("wasmtime instantiate: {e}"))?;
     let func = instance
         .get_func(&mut store, fn_name)
         .ok_or_else(|| format!("wasmtime: export '{fn_name}' not found"))?;
@@ -420,6 +429,16 @@ fn every_example_agrees_between_vm_and_wasmtime() {
             }
             Err(e) => panic!("{name}: wasm compile failed: {e}"),
         };
+        // Examples that do I/O (they import from WASI) depend on host files
+        // and stdout; their VM-vs-wasm agreement is checked with a preopened
+        // directory and captured output in tests/test_wasi.rs instead.
+        let has_imports = wasmparser::Parser::new(0)
+            .parse_all(&wasm)
+            .any(|p| matches!(p, Ok(wasmparser::Payload::ImportSection(_))));
+        if has_imports {
+            eprintln!("SKIP {name}: does I/O (WASI imports); compared in tests/test_wasi.rs");
+            continue;
+        }
 
         let mut compared_here = 0;
         for f in &module.functions {
@@ -463,14 +482,16 @@ fn every_example_agrees_between_vm_and_wasmtime() {
     assert!(calls_compared >= 40, "expected at least 40 compared calls, got {calls_compared}");
 }
 
-/// `aipl_src/codegen.aipl` cannot be compared today: the module also contains
-/// `test_compile_add` / `test_compile_compute`, which call `fs.open`,
-/// `fs.write`, and `fs.close`, and the wasm backend rejects any module that
-/// uses `fs.*` (needs WASI, P6). This test pins that reason so it fails loudly
-/// the day it stops being true, at which point `test_signatures_and_locals`
-/// (zero-arg, returns i32) should be run through `differential` like the rest.
+/// `aipl_src/codegen.aipl` (the self-hosted compiler front end and code
+/// generator, plus the `compiler` module it imports) compiled to wasm and run
+/// under wasmtime versus the VM. Until P6 this was pinned as "not
+/// wasm-compilable" because two of its self-tests use `fs.*`; with WASI
+/// lowering in place the whole module compiles and `test_signatures_and_locals`
+/// (zero-arg, returns i32, no file I/O) is compared for real. The `Err` arm is
+/// kept so a regression in fs lowering is reported as such rather than as a
+/// silent skip.
 #[test]
-fn codegen_self_test_is_skipped_for_a_pinned_reason() {
+fn codegen_self_test_agrees_between_vm_and_wasmtime() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&path).expect("codegen.aipl must resolve");
     TypeChecker::new().check_module(&module).expect("codegen.aipl must type-check");

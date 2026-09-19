@@ -113,6 +113,35 @@ impl Parser {
                                 start_line, start_col
                             ));
                         }
+                        if c == '\\' {
+                            // Escape sequences: \n \t \r \0 \\ \"
+                            chars.next();
+                            col += 1;
+                            let escaped = match chars.peek() {
+                                Some('n') => '\n',
+                                Some('t') => '\t',
+                                Some('r') => '\r',
+                                Some('0') => '\0',
+                                Some('\\') => '\\',
+                                Some('"') => '"',
+                                Some(other) => {
+                                    return Err(format!(
+                                        "{}:{}: Unknown escape sequence \\{} in string literal",
+                                        line, col, other
+                                    ))
+                                }
+                                None => {
+                                    return Err(format!(
+                                        "{}:{}: Unterminated string literal",
+                                        start_line, start_col
+                                    ))
+                                }
+                            };
+                            s.push(escaped);
+                            chars.next();
+                            col += 1;
+                            continue;
+                        }
                         s.push(c);
                         chars.next();
                         col += 1;
@@ -966,6 +995,8 @@ impl Parser {
                                 "mem.alloc" => OpCode::MemAlloc,
                                 "mem.free" => OpCode::MemFree,
                                 "mem.grow" => OpCode::MemGrow,
+                                "str.len" => OpCode::StrLen,
+                                "str.ptr" => OpCode::StrPtr,
                                 "atomic.add" => OpCode::AtomicAdd,
                                 "atomic.cas" => OpCode::AtomicCas,
                                 "atomic.lock" => OpCode::AtomicLock,

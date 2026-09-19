@@ -65,6 +65,8 @@ fn get_minimal_program_for_op(op: &OpCode) -> &'static str {
         OpCode::I64ExtendS => "(module test_mod (fn test_op [] -> i64 (i64.extend_s -1)))",
         OpCode::I64ExtendU => "(module test_mod (fn test_op [] -> i64 (i64.extend_u -1)))",
         OpCode::I32Wrap => "(module test_mod (fn test_op [] -> i32 (i32.wrap 4294967297i64)))",
+        OpCode::StrLen => "(module test_mod (fn test_op [] -> i32 (str.len \"hello\")))",
+        OpCode::StrPtr => "(module test_mod (fn test_op [] -> i32 (mem.load8 (str.ptr \"hello\"))))",
     }
 }
 
@@ -123,6 +125,8 @@ const ALL_OPCODES: &[OpCode] = &[
     OpCode::I64ExtendS,
     OpCode::I64ExtendU,
     OpCode::I32Wrap,
+    OpCode::StrLen,
+    OpCode::StrPtr,
 ];
 
 #[test]

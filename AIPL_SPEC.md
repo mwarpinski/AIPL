@@ -47,7 +47,7 @@ expr           ::= literal
                  | "(" op expr* ")" ;
 
 op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op | array_op
-                 | sys_op | fs_op | thread_op ;
+                 | sys_op | fs_op | thread_op | str_op ;
 
 arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "shru" | "bitand" | "bitor" ;
@@ -60,12 +60,13 @@ array_op       ::= "arr.get" | "arr.set" ;
 sys_op         ::= "sys.print" | "sys.time" | "sys.exit" ;
 fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
+str_op         ::= "str.len" | "str.ptr" ;
 ```
 
 Notes on the grammar as implemented by `src/parser.rs`:
 - A module body is imports followed by function definitions only. `let` and `set!` are expressions that appear inside function bodies, not at module level.
 - Comments start with `;;` and run to end of line.
-- Integer literals are decimal, optionally negative (`-1` is one token) and are `i32`. An `i64` literal carries the suffix as part of the token: `42i64`, `-7i64`. Float literals must contain a `.` and at least one digit (`1.0`, not `1` or `inf`) and are `f64`. Strings are double-quoted. Booleans are `true` / `false`.
+- Integer literals are decimal, optionally negative (`-1` is one token) and are `i32`. An `i64` literal carries the suffix as part of the token: `42i64`, `-7i64`. Float literals must contain a `.` and at least one digit (`1.0`, not `1` or `inf`) and are `f64`. Strings are double-quoted and support the escapes `\n \t \r \0 \\ \"`; any other `\x` is an error. Booleans are `true` / `false`.
 - `(call f ...)` takes a bare function name, never an expression. Imported functions are called as `(call modname.fn ...)`.
 - `(ptr T)` and `(fn ...)` types exist in the AST but are not yet parseable. `i64` is fully supported (section 8.1).
 - Conversion ops (not in the op families above): `(i64.extend_s x)`, `(i64.extend_u x)`, `(i32.wrap x)`.
@@ -109,6 +110,26 @@ Functions support formal pre-conditions and post-conditions evaluated statically
 - `(mem.free ptr)` -> Accepted and type-checked, but a no-op today.
 
 See "Memory layout" (section 7.9) for the reserved runtime block below address 1024.
+
+### C. Strings
+
+A `str` is a pointer to immutable UTF-8 bytes preceded by a 4-byte little-endian length. String literals are interned once per module into the data area at addresses 512-1023 (a compile error names the overflow if a module's literals need more than 512 bytes). `(str.len s)` returns the byte length as `i32`; `(str.ptr s)` returns the address of the bytes as `i32`, which is how a string becomes the `(ptr, len)` pair that `fs.*` and other pointer-taking ops expect (identity in wasm; the VM copies the string into the heap first). Two literals with the same text share one address, so `(eq "a" "a")` is `true` and `(eq "a" "b")` is `false` in both backends. `(+ s t)` concatenation exists in the VM only. The VM represents a `str` as a Rust string rather than a pointer; the observable semantics above are the same.
+
+### D. Host I/O (WASI)
+
+Compiled modules import only the host functions they use from `wasi_snapshot_preview1`, so a module without I/O has no import section.
+
+| Op | VM | wasm lowering | Result |
+|---|---|---|---|
+| `(sys.print s ...)` | prints each argument on its own line | `fd_write` to fd 1 with a two-entry iovec (bytes, then `"\n"`); `str` arguments only | `void` |
+| `(fs.open ptr len flags)` | `std::fs` open; `0` = read-only, else create+truncate for writing | `path_open` on the preopened directory (fd 3): `oflags = CREAT|TRUNC` and rights `FD_READ|FD_WRITE` when `flags != 0`, else rights `FD_READ` | new fd, or `-1` |
+| `(fs.read fd buf max)` | | `fd_read` with one iovec | bytes read, or `-1` |
+| `(fs.write fd buf len)` | | `fd_write` with one iovec | bytes written, or `-1` |
+| `(fs.close fd)` | | `fd_close` | `0`, or `-1` |
+| `(fs.delete ptr len)` | | `path_unlink_file` on fd 3 | `0`, or `-1` |
+| `(sys.exit code)` | returns the error `sys.exit(N) requested` rather than killing the host process | `proc_exit` | never returns |
+
+Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s)` produce them from a string), relative to the process cwd in the VM and to the preopened directory under WASI. File descriptors 1 and 2 are stdout and stderr in both backends, so `(fs.write 1 buf n)` prints raw bytes; this is how AIPL code prints numbers today (see `print_uint` in `examples/word_count.aipl`). Every WASI errno collapses to `-1`, matching the VM. Argument expressions are evaluated left to right in both backends. `sys.time` and `thread.*` remain VM-only.
 
 ### B. Atomic Swarm Synchronization
 - `(atomic.lock mutex_ptr)` -> Acquires thread-safe mutex lock.
@@ -168,12 +189,15 @@ source.aipl
 
 ### 6.2 What a compiled `.wasm` module looks like
 
-`WasmCompiler::compile` produces a core WebAssembly 1.0 module with exactly these sections, in this order: **type, function, memory, export, code, data**. There is no import section, no start function, and no globals. String literals compile to `i32.const 0` and are meaningless in wasm today.
+`WasmCompiler::compile` produces a core WebAssembly 1.0 module with these sections, in this order: **type, import (only if the module does I/O), function, memory, export, code, data**. There is no start function and no globals.
 
 | Item | Value |
 |---|---|
+| Imports | from `wasi_snapshot_preview1`, only those used, in this order: `fd_write`, `fd_read`, `path_open`, `fd_close`, `proc_exit`, `path_unlink_file`. Their types come first in the type section, and every user function index is offset by the import count. A module with no `sys.print`/`sys.exit`/`fs.*` has no import section and instantiates with no imports. |
 | Memory | one linear memory, min 16 pages (1 MiB, same as the VM), max 100 pages, exported as `"memory"` |
-| Data segment | one active segment writing the 4 bytes `00 04 00 00` at address 0: the heap cursor starts at 1024 |
+| Data segments | one writing `00 04 00 00` at address 0 (heap cursor = 1024); if the module has string literals, a second at address 512 holding every distinct literal as `[len u32 LE][bytes]` |
+| String literal | `i32.const <address of its bytes>`; `str` values are pointers (section 4.C) |
+| I/O scratch | functions that do I/O get two extra `i32` locals; the WASI lowerings use runtime cells 64-87 for iovecs and out-parameters (section 7.9) |
 | Heap cursor | the `i32` at address 0; `mem.alloc` compiles to a load, an add, and a store on that word |
 | Store guard | every `mem.store*` is preceded by a 12-instruction check that traps (`unreachable`) if the address is in bytes 0-3 or 64-1023; each function gets one extra `i32` local for it |
 | Exports | **every** function in the flat module, exported under its AIPL name (`add`, `compiler.tokenize`, ...) |
@@ -199,15 +223,17 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `mem.free` | Yes | no-op, returns void | Err |
 | `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Err (needs shared memory) |
 | `arr.get / arr.set` | Yes | Err | Err |
-| `sys.print` | Yes | Yes (`println!`) | Err (needs WASI, P6) |
-| `sys.time / sys.exit` | Yes | Err | Err |
-| `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Err (needs WASI, P6) |
+| `sys.print` | Yes | Yes (`println!`, any value) | Yes via WASI `fd_write`; `str` arguments only |
+| `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` |
+| `sys.time` | Yes | Err | Err |
+| `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI `path_open`/`fd_read`/`fd_write`/`fd_close`/`path_unlink_file` |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread` | Err (needs wasi-threads) |
 | `ok / err` | Yes | Yes | compiles to the bare payload (no tag) |
 | `match_result` | Yes | Yes | Err (`Wasm Codegen: MatchResult is not supported in the wasm backend`) |
-| `str` literals and `(+ str str)` | Yes | Yes | compiles but yields `0`; **VM-only in practice** |
+| `str` literals, `str.len`, `str.ptr`, `eq`/`neq` on `str` | Yes | Yes | Yes (interned data segment, pointer identity) |
+| `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) |
 
-Rule of thumb for code generators: anything in the `sys.*`, `fs.*`, `thread.*`, `atomic.*`, or `arr.*` families, `match_result`, and anything touching `str`, is **VM-only** today. Pure integer/boolean code with `mem.load/store` and `mem.alloc` runs identically in both.
+Rule of thumb for code generators: `thread.*`, `atomic.*`, `arr.*`, `match_result`, `sys.time`, and string concatenation are **VM-only** today. Integer/boolean/float code, memory, string literals, printing, and file I/O run in both; compiled I/O needs a WASI host with a preopened directory (section 10.5).
 
 ---
 
@@ -272,6 +298,8 @@ Because `set!` has the variable's type rather than `void`, an `if` whose branche
       out))
 ```
 Prefer this over relying on the `if`'s own value when a branch has side effects. (P7 in `AIPL_Structural_Audit.md` will make `set!` and `let` void and void-`if` legal, which removes the need for this idiom.)
+
+The plain form `(if c (set! x v) 0)` is also accepted and compiles correctly: the wasm backend gives such an `if` a result type and, for the branch whose code leaves nothing on the stack, pushes the value the VM would produce (the variable just assigned, or `0` after a loop). In statement position that value is dropped; as an expression it equals what the VM returns.
 
 ### 7.5 Loops
 
@@ -357,8 +385,15 @@ There is one layout and one allocator, shared by the VM, compiled wasm, and AIPL
 | 24 | i32 | codegen | pointer to the default locals table (256 entries × 12 bytes) |
 | 28 | i32 | codegen | running locals count for the function being compiled |
 | 32..64 | | reserved | for future runtime state; zero |
-| 64..1024 | | reserved | not handed out by `mem.alloc`; do not use |
+| 64, 68 | i32, i32 | WASI runtime | iovec 0: buffer pointer, length (used by `sys.print`, `fs.read`, `fs.write`) |
+| 72, 76 | i32, i32 | WASI runtime | iovec 1: the interned `"\n"` and length 1 (`sys.print`) |
+| 80 | i32 | WASI runtime | `nwritten` / `nread` out-parameter |
+| 84 | i32 | WASI runtime | `path_open`'s opened-fd out-parameter |
+| 88..512 | | reserved | not handed out by `mem.alloc`; do not use |
+| 512..1024 | | string data | interned string literals, `[len u32 LE][bytes]` each; a `str` value points at the bytes. Compile error if a module needs more than 512 bytes |
 | 1024.. | | heap | `mem.alloc` region |
+
+The runtime's own writes into 64-87 are emitted directly and bypass the store guard described below; user code still cannot store anywhere in 64-1023.
 
 Rules that follow from this:
 
@@ -598,6 +633,14 @@ Coverage:
 
 Sample argument values are deliberately small. Example functions use parameters as loop bounds, and a tree-walking VM asked to iterate `i32::MAX` times is not a test, it is a hang. Wrap-around is covered by the explicit expression cases instead.
 
+### 10.5 I/O under WASI (`tests/test_wasi.rs`)
+
+Compiled modules that print or touch files import from `wasi_snapshot_preview1`, so they need a WASI host. The tests build one with `wasmtime-wasi`: a `WasiCtxBuilder` with stdout captured into a `MemoryOutputPipe`, stderr inherited, and a fresh temporary directory preopened as `.` with read-write permission, linked through `wasmtime_wasi::p1::add_to_linker_sync`. The VM side of each comparison runs with the process cwd switched to its own temporary directory (under a lock, since cwd is process-global) so both backends see an empty directory.
+
+Covered: `aipl_src/file_io.aipl`'s `run_file_io_tests` returns 1 in both backends and leaves no file behind; `sys.print` output is exactly one line per argument; interned string literals report their length and compare by identity; a module whose literals exceed the 512-byte data area fails to compile with a message naming the area; opening a missing file returns -1 in both; a write-then-read round trip agrees byte for byte and the wasm side's file is visible on the host in the preopened directory; `sys.exit 7` surfaces as `I32Exit(7)` from wasmtime and as `sys.exit(7) requested` from the VM; and a module with no I/O has no import section and still instantiates with no imports.
+
+To run compiled I/O outside the tests: `wasmtime run --dir=. module.wasm --invoke main`.
+
 ---
 
 ## 11. Imports and Multi-Module Programs
@@ -676,15 +719,15 @@ The `.wasm` exports `gcd`, `main`, and `memory`. Note the `let t` inside the `wh
     (+ (call stack_pop s) (call stack_pop s))))     ;; => Int(42)
 ```
 
-### 12.3 Printing and strings, VM only
+### 12.3 Printing and strings, both backends
 
 ```lisp
 (module hello
   (fn main [] -> i32
-    (sys.print (+ "hello, " "aipl"))
-    0))
+    (sys.print "hello, aipl")
+    (str.len "hello, aipl")))
 ```
-`aipl eval hello.aipl` prints `hello, aipl` then `[AIPL Result]: Int(0)`. `aipl compile hello.aipl` fails: `sys.print not supported in wasm backend: comes with WASI in P6`.
+`aipl eval hello.aipl` prints `hello, aipl` then `[AIPL Result]: Int(11)`. `aipl compile hello.aipl` produces a module importing `wasi_snapshot_preview1::fd_write`; run it with any WASI host (for example `wasmtime run hello.wasm --invoke main`) and it prints the same line. String concatenation `(+ "a" "b")` is the one string feature still VM-only: the wasm backend rejects it.
 
 ### 12.4 Real threads and atomics, VM only
 
@@ -712,9 +755,9 @@ Function names for `thread.spawn` are written into memory byte by byte; there ar
 ```
 `atomic.add` returns the previous value; the call above is in statement position so the value is dropped. Threads share linear memory (and therefore the allocator) and the function table, but not locals. Allocate in the parent before spawning.
 
-### 12.5 File round-trip, VM only
+### 12.5 File round-trip, both backends
 
-Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `fs.open` flags: `0` read-only, non-zero write/create/truncate. All `fs.*` return `-1` on failure rather than raising.
+Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `fs.open` flags: `0` read-only, non-zero write/create/truncate. All `fs.*` return `-1` on failure rather than raising. In the VM the path is relative to the process cwd; under WASI it is relative to the preopened directory (fd 3), so a host must preopen one, e.g. `wasmtime run --dir=. file_demo.wasm --invoke main`.
 
 ```lisp
 (module file_demo
@@ -738,6 +781,46 @@ Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `
 
 ---
 
+### 12.6 A complete I/O program, both backends
+
+[examples/word_count.aipl](examples/word_count.aipl) is the reference for "AIPL that does I/O": it opens `input.txt`, reads it into a `mem.alloc` buffer, counts lines and words, prints three lines, writes an error to stderr if the file is missing, and returns the line count. Everything is plain AIPL over the primitives above:
+
+```lisp
+(fn print_str [s:str] -> i32
+  (fs.write 1 (str.ptr s) (str.len s)))
+
+(fn print_uint [n:i32] -> i32          ;; digits formatted by hand into scratch
+  (req (gte n 0))
+  (let buf:i32 (mem.alloc 12))
+  (let pos:i32 12)
+  (let v:i32 n)
+  (if (eq v 0) (block (set! pos 11) (mem.store8 (+ buf 11) 48) 0) 0)
+  (while (gt v 0)
+    (set! pos (- pos 1))
+    (mem.store8 (+ buf pos) (+ 48 (% v 10)))
+    (set! v (/ v 10)))
+  (fs.write 1 (+ buf pos) (- 12 pos)))
+
+(fn main [] -> i32
+  (let path:str "input.txt")
+  (let fd:i32 (fs.open (str.ptr path) (str.len path) 0))
+  ...)
+```
+
+```
+$ cd examples && ../target/debug/aipl eval word_count.aipl
+lines: 4
+words: 15
+bytes: 81
+[AIPL Result]: Int(4)
+$ aipl compile examples/word_count.aipl -o word_count.wasm
+$ cd examples && wasmtime run --dir=. ../word_count.wasm --invoke main
+lines: 4
+words: 15
+bytes: 81
+```
+`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and return value.
+
 ## 13. Pitfalls for Code Generators
 
 Each of these is a real failure mode observed when LLMs write AIPL. The fix is in the second column.
@@ -757,8 +840,9 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
 | `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
-| `sys.print`, `fs.*`, `thread.*`, `atomic.*`, `str` in code meant for `aipl compile` | VM-only until WASI (P6) and shared memory land |
-| string comparisons `(eq "a" "b")` | works in the VM, but in wasm every `str` is `0`, so it is always `true`; compare bytes in memory for portable code |
+| `thread.*`, `atomic.*`, `match_result`, `(+ str str)` in code meant for `aipl compile` | VM-only; `sys.print`, `fs.*`, `sys.exit`, and string literals compile (they import WASI) |
+| `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; the VM prints any value. Format numbers yourself or keep numeric printing in VM-side tests |
+| passing a `str` literal where a `(ptr, len)` path or buffer is expected, e.g. `(fs.open "t.bin" 5 0)` | type error: `fs.*` take `i32` pointers. Write `(fs.open (str.ptr "t.bin") (str.len "t.bin") 0)` |
 | `return`, `break`, `continue`, `else if`, `cond` | do not exist (P11); restructure with `while` + a flag, or nested `if` |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected tokens after module end — check for an extra ')'` |
 | `inf`, `nan`, `1e9` as literals | not literals; `1e9` is a symbol and will be reported as an undefined variable |

@@ -890,6 +890,12 @@ impl VM {
                     _ => return Err("fs.write requires Int len".to_string()),
                 };
                 let data = self.read_bytes(buf_ptr, len);
+                // fds 1 and 2 are the process stdout/stderr, as under WASI, so AIPL
+                // code can print formatted bytes without a string value.
+                if fd == 1 || fd == 2 {
+                    let written = if fd == 1 { std::io::stdout().write(&data) } else { std::io::stderr().write(&data) };
+                    return Ok(Value::Int(written.map(|n| n as i64).unwrap_or(-1)));
+                }
                 let file = match self.fd_table.get_mut(&fd) {
                     Some(f) => f,
                     None => return Ok(Value::Int(-1)),
@@ -998,9 +1004,43 @@ impl VM {
             OpCode::ArrGet | OpCode::ArrSet => {
                 Err(format!("{:?} not supported in VM backend: array ops not implemented", op))
             }
-            OpCode::SysTime | OpCode::SysExit => {
+            OpCode::SysTime => {
                 Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
             }
+            // The VM deliberately does not terminate the host process (it may be a
+            // test runner or the agent server); the request surfaces as an error
+            // carrying the code. Compiled wasm calls WASI proc_exit for real.
+            OpCode::SysExit => {
+                let code = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("sys.exit requires Int code".to_string()),
+                };
+                Err(format!("sys.exit({}) requested", code))
+            }
+            OpCode::StrLen => match self.eval_expr(&args[0], scope)? {
+                Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                other => Err(format!("str.len requires Str, got {:?}", other)),
+            },
+            // Materialise the string into the heap in the same [len][bytes] shape
+            // the wasm data segment uses, and return the address of the bytes.
+            // Each evaluation allocates afresh (bump allocator, never freed).
+            OpCode::StrPtr => match self.eval_expr(&args[0], scope)? {
+                Value::Str(s) => {
+                    let bytes = s.as_bytes();
+                    let mut mem = self.shared.lock().unwrap();
+                    let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+                    let base = i32::from_le_bytes(cur) as usize;
+                    let end = base + 4 + bytes.len();
+                    if end > mem.bytes.len() {
+                        return Err(format!("str.ptr: out of memory materialising a {}-byte string", bytes.len()));
+                    }
+                    mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    mem.bytes[base + 4..end].copy_from_slice(bytes);
+                    mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
+                    Ok(Value::Int((base + 4) as i64))
+                }
+                other => Err(format!("str.ptr requires Str, got {:?}", other)),
+            },
         }
     }
 }

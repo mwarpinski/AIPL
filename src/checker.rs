@@ -360,15 +360,49 @@ impl TypeChecker {
                     }
                     Ok(Type::Void)
                 }
-                OpCode::SysPrint => Ok(Type::Void),
+                OpCode::SysPrint => {
+                    for arg in args {
+                        self.infer_expr_type(arg, env)?;
+                    }
+                    Ok(Type::Void)
+                }
                 OpCode::SysTime => Ok(Type::F64),
-                OpCode::SysExit => Ok(Type::Void),
+                OpCode::SysExit => {
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: sys.exit requires 1 argument (code: i32)", l, c));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{}:{}: sys.exit requires i32 code, got {:?}", l, c, t));
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::StrLen | OpCode::StrPtr => {
+                    let name = if *op == OpCode::StrLen { "str.len" } else { "str.ptr" };
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: {} requires 1 argument (s: str)", l, c, name));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::Str {
+                        return Err(format!("{}:{}: {} requires str, got {:?}", l, c, name, t));
+                    }
+                    Ok(Type::I32)
+                }
+                // fs.* take raw i32 pointers/lengths/fds, never a `str` (a str is a
+                // pointer in wasm but a Rust string in the VM, so letting one
+                // through here would work in one backend and fail in the other).
                 OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite => {
                     if args.len() != 3 {
                         return Err(format!("{}:{}: {:?} requires 3 arguments", l, c, op));
                     }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!(
+                                "{}:{}: {:?} argument {} must be i32 (pointer/length/fd), got {:?}",
+                                l, c, op, i, t
+                            ));
+                        }
                     }
                     Ok(Type::I32)
                 }
@@ -376,15 +410,24 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: fs.close requires 1 argument", l, c));
                     }
-                    self.infer_expr_type(&args[0], env)?;
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{}:{}: fs.close requires i32 fd, got {:?}", l, c, t));
+                    }
                     Ok(Type::I32)
                 }
                 OpCode::FsDelete => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: fs.delete requires 2 arguments (path_ptr, path_len)", l, c));
                     }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!(
+                                "{}:{}: fs.delete argument {} must be i32 (pointer/length), got {:?}",
+                                l, c, i, t
+                            ));
+                        }
                     }
                     Ok(Type::I32)
                 }

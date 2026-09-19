@@ -90,6 +90,15 @@ pub enum OpCode {
     I64ExtendU,
     /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
     I32Wrap,
+    /// `(str.len s)`: byte length of a string. In wasm a `str` is a pointer to
+    /// interned bytes preceded by a 4-byte little-endian length, so this is
+    /// `i32.load (s - 4)`; the VM reads the Rust string's length.
+    StrLen,
+    /// `(str.ptr s)`: the address of a string's bytes as an `i32`, for passing
+    /// to `fs.*` and other pointer-taking ops. Identity in wasm (a `str` already
+    /// is that pointer); the VM copies the string into the heap and returns
+    /// the copy's address. Pair with `(str.len s)` for the length.
+    StrPtr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

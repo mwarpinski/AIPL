@@ -1,8 +1,8 @@
 use crate::ast::*;
 use std::collections::HashMap;
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
-    Module as WasmModule, TypeSection, ValType,
+    BlockType, CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+    ImportSection, Instruction, MemArg, Module as WasmModule, TypeSection, ValType,
 };
 
 pub struct WasmCompiler;
@@ -15,11 +15,59 @@ impl WasmCompiler {
         let mut exports = ExportSection::new();
         let mut codes = CodeSection::new();
 
+        let mut imports = ImportSection::new();
         let mut fn_indices: HashMap<String, u32> = HashMap::new();
         let mut fn_returns: HashMap<String, Type> = HashMap::new();
 
-        // 1. Build type section and function index mapping
-        for (idx, f) in module.functions.iter().enumerate() {
+        // 0. WASI imports, only for the host functions this module actually
+        // uses, in a fixed order. A module with no I/O has no import section
+        // and instantiates with no imports, exactly as before.
+        let used_wasi = collect_wasi_imports(module);
+        let mut wasi_indices: HashMap<Wasi, u32> = HashMap::new();
+        for (idx, w) in used_wasi.iter().enumerate() {
+            let (params, results) = w.signature();
+            types.ty().function(params, results);
+            imports.import("wasi_snapshot_preview1", w.name(), EntityType::Function(idx as u32));
+            wasi_indices.insert(*w, idx as u32);
+        }
+        let import_count = used_wasi.len() as u32;
+
+        // String literals: interned once into a data segment at 512..1024 as
+        // [len: u32 LE][bytes]; a `str` value is the pointer to the bytes.
+        let mut string_blob: Vec<u8> = Vec::new();
+        let mut strings: HashMap<String, u32> = HashMap::new();
+        let intern = |s: &str, blob: &mut Vec<u8>, map: &mut HashMap<String, u32>| -> u32 {
+            if let Some(&a) = map.get(s) {
+                return a;
+            }
+            let addr = STRING_DATA_BASE + blob.len() as u32 + 4;
+            blob.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            blob.extend_from_slice(s.as_bytes());
+            map.insert(s.to_string(), addr);
+            addr
+        };
+        let mut newline_addr = 0u32;
+        if used_wasi.contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+            newline_addr = intern("\n", &mut string_blob, &mut strings);
+        }
+        walk_module(module, &mut |e| {
+            if let Expr::Lit(Literal::Str(s), _) = e {
+                intern(s, &mut string_blob, &mut strings);
+            }
+        });
+        if string_blob.len() > STRING_DATA_CAPACITY as usize {
+            return Err(format!(
+                "Wasm Codegen: string literals need {} bytes but the string data area (addresses {}..{}) holds {}",
+                string_blob.len(),
+                STRING_DATA_BASE,
+                STRING_DATA_BASE + STRING_DATA_CAPACITY,
+                STRING_DATA_CAPACITY
+            ));
+        }
+
+        // 1. Build type section and function index mapping (after the imports)
+        for (i, f) in module.functions.iter().enumerate() {
+            let idx = import_count + i as u32;
             let params: Vec<ValType> = f.params.iter().map(|(_, t)| self::aipl_to_wasm_type(t)).collect();
             let results: Vec<ValType> = if f.return_type == Type::Void {
                 vec![]
@@ -28,9 +76,9 @@ impl WasmCompiler {
             };
 
             types.ty().function(params, results);
-            functions.function(idx as u32);
-            exports.export(&f.name, ExportKind::Func, idx as u32);
-            fn_indices.insert(f.name.clone(), idx as u32);
+            functions.function(idx);
+            exports.export(&f.name, ExportKind::Func, idx);
+            fn_indices.insert(f.name.clone(), idx);
             fn_returns.insert(f.name.clone(), f.return_type.clone());
         }
 
@@ -68,14 +116,29 @@ impl WasmCompiler {
             // check emitted before every store (see emit_write_address_check).
             let addr_scratch = current_idx;
             wasm_locals.push((1, ValType::I32));
+            current_idx += 1;
+
+            // Two more i32 temps, only for functions that perform I/O: the
+            // WASI lowerings evaluate all their operands first (source order,
+            // nested I/O safe) and then unload them into these.
+            let io_locals = if fn_uses_io(&f.body) {
+                wasm_locals.push((2, ValType::I32));
+                Some((current_idx, current_idx + 1))
+            } else {
+                None
+            };
 
             let mut func = Function::new(wasm_locals);
             let ctx = Ctx {
                 locals: &local_map,
                 addr_scratch,
+                io_locals,
                 local_types: &local_types,
                 fn_indices: &fn_indices,
                 fn_returns: &fn_returns,
+                strings: &strings,
+                wasi: &wasi_indices,
+                newline_addr,
             };
 
             // Every statement but the last is executed purely for effect: drop
@@ -112,8 +175,14 @@ impl WasmCompiler {
         // at 1024 (HEAP_START). Everything else in bytes 0..1024 is zero.
         let mut data = wasm_encoder::DataSection::new();
         data.active(0, &wasm_encoder::ConstExpr::i32_const(0), 1024u32.to_le_bytes());
+        if !string_blob.is_empty() {
+            data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
+        }
 
         wasm_module.section(&types);
+        if import_count > 0 {
+            wasm_module.section(&imports);
+        }
         wasm_module.section(&functions);
         wasm_module.section(&memories);
         wasm_module.section(&exports);
@@ -129,9 +198,17 @@ impl WasmCompiler {
 struct Ctx<'a> {
     locals: &'a HashMap<String, u32>,
     addr_scratch: u32,
+    /// `(a, b)` scratch locals for WASI lowerings; `None` when the function does no I/O.
+    io_locals: Option<(u32, u32)>,
     local_types: &'a HashMap<String, Type>,
     fn_indices: &'a HashMap<String, u32>,
     fn_returns: &'a HashMap<String, Type>,
+    /// Interned string literal -> address of its bytes in the data segment.
+    strings: &'a HashMap<String, u32>,
+    /// WASI import -> function index.
+    wasi: &'a HashMap<Wasi, u32>,
+    /// Address of the interned "\n" used by sys.print (0 if unused).
+    newline_addr: u32,
 }
 
 /// Static AIPL type of an expression, as the checker would assign it. Codegen
@@ -208,7 +285,9 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::FsClose
             | OpCode::FsDelete
             | OpCode::ThreadSpawn
-            | OpCode::ThreadJoin => Type::I32,
+            | OpCode::ThreadJoin
+            | OpCode::StrLen
+            | OpCode::StrPtr => Type::I32,
         },
     }
 }
@@ -390,8 +469,12 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             Literal::Bool(b) => {
                 func.instruction(&Instruction::I32Const(if *b { 1 } else { 0 }));
             }
-            Literal::Str(_) => {
-                func.instruction(&Instruction::I32Const(0));
+            Literal::Str(s) => {
+                let addr = *ctx
+                    .strings
+                    .get(s)
+                    .ok_or_else(|| format!("Wasm Codegen: string literal {:?} was not interned", s))?;
+                func.instruction(&Instruction::I32Const(addr as i32));
             }
         },
         Expr::Var(name, _) => {
@@ -415,18 +498,35 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         }
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
-            // The checker guarantees both branches share one type; use it for
-            // the block result so i64/f64-valued ifs validate (not always I32).
-            let block_ty = if is_void_expr(then_branch, ctx) {
-                wasm_encoder::BlockType::Empty
+            let then_void = is_void_expr(then_branch, ctx);
+            let else_void = is_void_expr(else_branch, ctx);
+            if then_void && else_void {
+                func.instruction(&Instruction::If(BlockType::Empty));
+                compile_expr(then_branch, ctx, func)?;
+                func.instruction(&Instruction::Else);
+                compile_expr(else_branch, ctx, func)?;
+                func.instruction(&Instruction::End);
             } else {
-                wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(then_branch, ctx)))
-            };
-            func.instruction(&Instruction::If(block_ty));
-            compile_expr(then_branch, ctx, func)?;
-            func.instruction(&Instruction::Else);
-            compile_expr(else_branch, ctx, func)?;
-            func.instruction(&Instruction::End);
+                // The block yields one value of the branches' shared AIPL type
+                // (the checker guarantees they agree). A branch whose codegen
+                // leaves nothing - `set!`/`let` (which the checker types as the
+                // variable's type) or a loop - is topped up with the value the
+                // VM would produce, so `(if c (set! x v) 0)` is valid wasm and
+                // means the same thing in both backends. P7 will make set!/let
+                // void and retire this.
+                let ty = if then_void { expr_type(else_branch, ctx) } else { expr_type(then_branch, ctx) };
+                func.instruction(&Instruction::If(BlockType::Result(aipl_to_wasm_type(&ty))));
+                compile_expr(then_branch, ctx, func)?;
+                if then_void {
+                    emit_void_branch_value(then_branch, &ty, ctx, func)?;
+                }
+                func.instruction(&Instruction::Else);
+                compile_expr(else_branch, ctx, func)?;
+                if else_void {
+                    emit_void_branch_value(else_branch, &ty, ctx, func)?;
+                }
+                func.instruction(&Instruction::End);
+            }
         }
         Expr::Call { func: f_name, args, .. } => {
             for arg in args {
@@ -544,8 +644,66 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::I32WrapI64);
             }
             OpCode::SysPrint => {
-                return Err("sys.print not supported in wasm backend: comes with WASI in P6".to_string());
+                // Each argument is written to fd 1 followed by "\n", via a
+                // two-entry iovec in the runtime block (see RT_* cells).
+                let fd_write = wasi_index(ctx, Wasi::FdWrite)?;
+                for arg in args {
+                    let ty = expr_type(arg, ctx);
+                    if ty != Type::Str {
+                        return Err(format!(
+                            "Wasm Codegen: sys.print supports str arguments only in the wasm backend, got {:?}",
+                            ty
+                        ));
+                    }
+                    compile_expr(arg, ctx, func)?;
+                    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                    // iov0 = { ptr, len }
+                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                    func.instruction(&Instruction::I32Store(M4));
+                    func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                    func.instruction(&Instruction::I32Const(4));
+                    func.instruction(&Instruction::I32Sub);
+                    func.instruction(&Instruction::I32Load(M4));
+                    func.instruction(&Instruction::I32Store(M4));
+                    // iov1 = { "\n", 1 }
+                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    func.instruction(&Instruction::I32Const(ctx.newline_addr as i32));
+                    func.instruction(&Instruction::I32Store(M4));
+                    func.instruction(&Instruction::I32Const(RT_IOV1_LEN));
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::I32Store(M4));
+                    // One fd_write per iovec: WASI permits a short write and
+                    // wasmtime's implementation writes only the first iovec of
+                    // a call, so a single 2-iovec call would drop the newline.
+                    // fd_write(1, iovs=64, iovs_len=1, nwritten=80); errno dropped
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    func.instruction(&Instruction::Call(fd_write));
+                    func.instruction(&Instruction::Drop);
+                    // fd_write(1, iovs=72, iovs_len=1, nwritten=80)
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    func.instruction(&Instruction::Call(fd_write));
+                    func.instruction(&Instruction::Drop);
+                }
             }
+            OpCode::StrLen => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I32Const(4));
+                func.instruction(&Instruction::I32Sub);
+                func.instruction(&Instruction::I32Load(M4));
+            }
+            OpCode::StrPtr => {
+                // A str value already is the address of its bytes.
+                compile_expr(&args[0], ctx, func)?;
+            }
+
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
@@ -555,15 +713,95 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::ArrGet | OpCode::ArrSet => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
-            OpCode::SysTime | OpCode::SysExit => {
+            OpCode::SysTime => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
-            OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite | OpCode::FsClose | OpCode::FsDelete => {
-                return Err(format!(
-                    "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs WASI file I/O imports)",
-                    op
-                ));
+            OpCode::SysExit => {
+                let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::Call(proc_exit));
             }
+
+            OpCode::FsOpen => {
+                // (fs.open ptr len flags) -> path_open on the preopened dir (fd 3).
+                // flags == 0: read-only; otherwise create + truncate for writing.
+                // Returns the new fd, or -1 on any errno. Mirrors vm.rs FsOpen.
+                let path_open = wasi_index(ctx, Wasi::PathOpen)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_b)); // flags
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                func.instruction(&Instruction::I32Const(0)); // dirflags
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                // oflags: CREAT|TRUNC when flags != 0
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                func.instruction(&Instruction::I32Const(WASI_OFLAGS_CREAT | WASI_OFLAGS_TRUNC));
+                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::End);
+                // rights_base: FD_READ|FD_WRITE when writing, FD_READ otherwise
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+                func.instruction(&Instruction::I64Const(WASI_RIGHT_FD_READ | WASI_RIGHT_FD_WRITE));
+                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::I64Const(WASI_RIGHT_FD_READ));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::I64Const(0)); // rights_inheriting
+                func.instruction(&Instruction::I32Const(0)); // fdflags
+                func.instruction(&Instruction::I32Const(RT_OPENED_FD));
+                func.instruction(&Instruction::Call(path_open));
+                emit_errno_to_result(func, Some(RT_OPENED_FD));
+            }
+            OpCode::FsRead | OpCode::FsWrite => {
+                // (fs.read fd buf max) / (fs.write fd buf len) -> one iovec,
+                // returns bytes transferred or -1. Mirrors vm.rs.
+                let host = wasi_index(ctx, if *op == OpCode::FsRead { Wasi::FdRead } else { Wasi::FdWrite })?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_b)); // len
+                func.instruction(&Instruction::LocalSet(io_a)); // buf
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // fd
+                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::I32Store(M4));
+                func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::I32Store(M4));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32Const(RT_NBYTES));
+                func.instruction(&Instruction::Call(host));
+                emit_errno_to_result(func, Some(RT_NBYTES));
+            }
+            OpCode::FsClose => {
+                let fd_close = wasi_index(ctx, Wasi::FdClose)?;
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::Call(fd_close));
+                emit_errno_to_result(func, None);
+            }
+            OpCode::FsDelete => {
+                let unlink = wasi_index(ctx, Wasi::PathUnlinkFile)?;
+                let (io_a, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::Call(unlink));
+                emit_errno_to_result(func, None);
+            }
+
             OpCode::ThreadSpawn | OpCode::ThreadJoin => {
                 return Err(format!(
                     "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs shared memory + wasi-threads)",
@@ -672,6 +910,13 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::MemLoad64
                 | OpCode::MemAlloc
                 | OpCode::MemGrow
+                | OpCode::StrLen
+                | OpCode::StrPtr
+                | OpCode::FsOpen
+                | OpCode::FsRead
+                | OpCode::FsWrite
+                | OpCode::FsClose
+                | OpCode::FsDelete
                 | OpCode::I64ExtendS
                 | OpCode::I64ExtendU
                 | OpCode::I32Wrap
@@ -713,4 +958,244 @@ fn emit_write_address_check(func: &mut Function, scratch: u32) {
     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
     func.instruction(&Instruction::Unreachable);
     func.instruction(&Instruction::End);
+}
+
+// ---------------------------------------------------------------------------
+// WASI lowering support (AIPL_SPEC.md, sections 6.2 and 7.9)
+// ---------------------------------------------------------------------------
+
+const M4: MemArg = MemArg { offset: 0, align: 2, memory_index: 0 };
+
+/// Runtime-block cells used by the WASI lowerings (all below the heap, owned
+/// by the runtime, never handed out by mem.alloc):
+const RT_IOV0_BUF: i32 = 64;
+const RT_IOV0_LEN: i32 = 68;
+const RT_IOV1_BUF: i32 = 72;
+const RT_IOV1_LEN: i32 = 76;
+/// nwritten / nread out-parameter.
+const RT_NBYTES: i32 = 80;
+/// path_open's opened-fd out-parameter.
+const RT_OPENED_FD: i32 = 84;
+/// String literals are interned here, as [len u32 LE][bytes]; a `str` value is
+/// the address of the bytes.
+const STRING_DATA_BASE: u32 = 512;
+const STRING_DATA_CAPACITY: u32 = 512;
+
+/// The first preopened directory a WASI host hands to the module.
+const WASI_PREOPEN_FD: i32 = 3;
+const WASI_OFLAGS_CREAT: i32 = 1 << 0;
+const WASI_OFLAGS_TRUNC: i32 = 1 << 3;
+const WASI_RIGHT_FD_READ: i64 = 1 << 1;
+const WASI_RIGHT_FD_WRITE: i64 = 1 << 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Wasi {
+    FdWrite,
+    FdRead,
+    PathOpen,
+    FdClose,
+    ProcExit,
+    PathUnlinkFile,
+}
+
+impl Wasi {
+    fn name(self) -> &'static str {
+        match self {
+            Wasi::FdWrite => "fd_write",
+            Wasi::FdRead => "fd_read",
+            Wasi::PathOpen => "path_open",
+            Wasi::FdClose => "fd_close",
+            Wasi::ProcExit => "proc_exit",
+            Wasi::PathUnlinkFile => "path_unlink_file",
+        }
+    }
+
+    /// wasi_snapshot_preview1 signatures.
+    fn signature(self) -> (Vec<ValType>, Vec<ValType>) {
+        use ValType::*;
+        match self {
+            Wasi::FdWrite | Wasi::FdRead => (vec![I32, I32, I32, I32], vec![I32]),
+            Wasi::PathOpen => (vec![I32, I32, I32, I32, I32, I64, I64, I32, I32], vec![I32]),
+            Wasi::FdClose => (vec![I32], vec![I32]),
+            Wasi::ProcExit => (vec![I32], vec![]),
+            Wasi::PathUnlinkFile => (vec![I32, I32, I32], vec![I32]),
+        }
+    }
+
+    fn for_op(op: &OpCode) -> Option<Wasi> {
+        match op {
+            OpCode::SysPrint | OpCode::FsWrite => Some(Wasi::FdWrite),
+            OpCode::FsRead => Some(Wasi::FdRead),
+            OpCode::FsOpen => Some(Wasi::PathOpen),
+            OpCode::FsClose => Some(Wasi::FdClose),
+            OpCode::SysExit => Some(Wasi::ProcExit),
+            OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            _ => None,
+        }
+    }
+}
+
+/// Visits every expression node in the module, depth first.
+fn walk_module(module: &Module, visit: &mut dyn FnMut(&Expr)) {
+    for f in &module.functions {
+        for c in &f.contracts {
+            match c {
+                Contract::Requires(e) | Contract::Ensures(e) | Contract::Invariant(e) => walk_expr(e, visit),
+            }
+        }
+        for e in &f.body {
+            walk_expr(e, visit);
+        }
+    }
+}
+
+fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+    visit(expr);
+    match expr {
+        Expr::Lit(..) | Expr::Var(..) => {}
+        Expr::Let { val, .. } | Expr::Set { val, .. } => walk_expr(val, visit),
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            walk_expr(cond, visit);
+            walk_expr(then_branch, visit);
+            walk_expr(else_branch, visit);
+        }
+        Expr::Loop { start, end, step, body, .. } => {
+            walk_expr(start, visit);
+            walk_expr(end, visit);
+            walk_expr(step, visit);
+            for e in body {
+                walk_expr(e, visit);
+            }
+        }
+        Expr::While { cond, body, .. } => {
+            walk_expr(cond, visit);
+            for e in body {
+                walk_expr(e, visit);
+            }
+        }
+        Expr::Call { args, .. } | Expr::Op { args, .. } => {
+            for a in args {
+                walk_expr(a, visit);
+            }
+        }
+        Expr::Block(exprs, _) => {
+            for e in exprs {
+                walk_expr(e, visit);
+            }
+        }
+        Expr::Ok(inner, _) | Expr::Err(inner, _) => walk_expr(inner, visit),
+        Expr::MatchResult { expr, ok_body, err_body, .. } => {
+            walk_expr(expr, visit);
+            for e in ok_body {
+                walk_expr(e, visit);
+            }
+            for e in err_body {
+                walk_expr(e, visit);
+            }
+        }
+    }
+}
+
+fn module_uses_op(module: &Module, wanted: &OpCode) -> bool {
+    let mut found = false;
+    walk_module(module, &mut |e| {
+        if let Expr::Op { op, .. } = e {
+            if op == wanted {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+/// The WASI functions this module needs, in a fixed canonical order.
+fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
+    let mut set: Vec<Wasi> = Vec::new();
+    walk_module(module, &mut |e| {
+        if let Expr::Op { op, .. } = e {
+            if let Some(w) = Wasi::for_op(op) {
+                if !set.contains(&w) {
+                    set.push(w);
+                }
+            }
+        }
+    });
+    set.sort();
+    set
+}
+
+/// True if a function body contains any op lowered through WASI (and so needs
+/// the two extra I/O scratch locals).
+fn fn_uses_io(body: &[Expr]) -> bool {
+    let mut found = false;
+    for e in body {
+        walk_expr(e, &mut |x| {
+            if let Expr::Op { op, .. } = x {
+                if Wasi::for_op(op).is_some() {
+                    found = true;
+                }
+            }
+        });
+    }
+    found
+}
+
+fn wasi_index(ctx: &Ctx, w: Wasi) -> Result<u32, String> {
+    ctx.wasi
+        .get(&w)
+        .copied()
+        .ok_or_else(|| format!("Wasm Codegen: internal error, WASI import {} was not collected", w.name()))
+}
+
+fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
+    ctx.io_locals
+        .ok_or_else(|| "Wasm Codegen: internal error, I/O op in a function without I/O scratch locals".to_string())
+}
+
+/// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
+/// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
+/// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
+fn emit_errno_to_result(func: &mut Function, out_cell: Option<i32>) {
+    func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+    func.instruction(&Instruction::I32Const(-1));
+    func.instruction(&Instruction::Else);
+    match out_cell {
+        Some(cell) => {
+            func.instruction(&Instruction::I32Const(cell));
+            func.instruction(&Instruction::I32Load(M4));
+        }
+        None => {
+            func.instruction(&Instruction::I32Const(0));
+        }
+    }
+    func.instruction(&Instruction::End);
+}
+
+/// After compiling a branch that left nothing on the stack inside an `if`
+/// whose other branch produces a value: push what the VM would have yielded.
+/// `set!`/`let` (directly, or as the last statement of a block) yield the
+/// variable just assigned; anything else (loops) yields zero of the type.
+fn emit_void_branch_value(expr: &Expr, ty: &Type, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    let last = match expr {
+        Expr::Block(exprs, _) => exprs.last(),
+        other => Some(other),
+    };
+    match last {
+        Some(Expr::Set { name, .. }) | Some(Expr::Let { name, .. }) => {
+            let idx = *ctx
+                .locals
+                .get(name)
+                .ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?;
+            func.instruction(&Instruction::LocalGet(idx));
+        }
+        _ => {
+            match aipl_to_wasm_type(ty) {
+                ValType::I64 => func.instruction(&Instruction::I64Const(0)),
+                ValType::F64 => func.instruction(&Instruction::F64Const(0.0.into())),
+                ValType::F32 => func.instruction(&Instruction::F32Const(0.0_f32.into())),
+                _ => func.instruction(&Instruction::I32Const(0)),
+            };
+        }
+    }
+    Ok(())
 }
