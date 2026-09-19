@@ -47,17 +47,30 @@ impl WasmCompiler {
                 current_idx += 1;
             }
 
+            // Static AIPL type of every local, so codegen can pick i32 vs i64
+            // vs f64 instructions. First declaration wins, matching local_map.
+            let mut local_types: HashMap<String, Type> = HashMap::new();
+            for (p_name, p_ty) in &f.params {
+                local_types.insert(p_name.clone(), p_ty.clone());
+            }
+
             let mut wasm_locals = Vec::new();
             for (l_name, l_ty) in &extra_lets {
                 if !local_map.contains_key(l_name) {
                     local_map.insert(l_name.clone(), current_idx);
+                    local_types.insert(l_name.clone(), l_ty.clone());
                     wasm_locals.push((1, aipl_to_wasm_type(l_ty)));
                     current_idx += 1;
                 }
             }
 
             let mut func = Function::new(wasm_locals);
-            let ctx = Ctx { locals: &local_map, fn_indices: &fn_indices, fn_returns: &fn_returns };
+            let ctx = Ctx {
+                locals: &local_map,
+                local_types: &local_types,
+                fn_indices: &fn_indices,
+                fn_returns: &fn_returns,
+            };
 
             // Every statement but the last is executed purely for effect: drop
             // any value it leaves behind so it doesn't corrupt the wasm stack.
@@ -112,8 +125,184 @@ impl WasmCompiler {
 /// as four separate parameters everywhere.
 struct Ctx<'a> {
     locals: &'a HashMap<String, u32>,
+    local_types: &'a HashMap<String, Type>,
     fn_indices: &'a HashMap<String, u32>,
     fn_returns: &'a HashMap<String, Type>,
+}
+
+/// Static AIPL type of an expression, as the checker would assign it. Codegen
+/// uses this to select i32 / i64 / f32 / f64 instruction variants and `if`
+/// block result types. The checker has already rejected ill-typed programs,
+/// so the fallbacks here (`I32`) are only reached for constructs the checker
+/// treats as untyped (e.g. `arr.get`), never for well-typed numeric code.
+fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
+    match expr {
+        Expr::Lit(lit, _) => match lit {
+            Literal::Int(_) => Type::I32,
+            Literal::Int64(_) => Type::I64,
+            Literal::Float(_) => Type::F64,
+            Literal::Bool(_) => Type::Bool,
+            Literal::Str(_) => Type::Str,
+        },
+        Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::Let { ty, .. } => ty.clone(),
+        Expr::Set { name, .. } => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
+        Expr::Block(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::Loop { .. } | Expr::While { .. } => Type::Void,
+        Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
+        Expr::Ok(inner, _) | Expr::Err(inner, _) => expr_type(inner, ctx),
+        Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::Op { op, args, .. } => match op {
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::ShrU
+            | OpCode::DivU
+            | OpCode::RemU
+            | OpCode::BitAnd
+            | OpCode::BitOr => args.first().map_or(Type::I32, |a| expr_type(a, ctx)),
+            OpCode::Eq
+            | OpCode::Neq
+            | OpCode::Lt
+            | OpCode::Lte
+            | OpCode::Gt
+            | OpCode::Gte
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Not
+            | OpCode::AtomicCas => Type::Bool,
+            OpCode::MemLoad64 | OpCode::I64ExtendS | OpCode::I64ExtendU => Type::I64,
+            OpCode::MemLoadF32 => Type::F32,
+            OpCode::MemLoadF64 | OpCode::SysTime => Type::F64,
+            OpCode::MemStore8
+            | OpCode::MemStore32
+            | OpCode::MemStore64
+            | OpCode::MemStoreF32
+            | OpCode::MemStoreF64
+            | OpCode::MemFree
+            | OpCode::AtomicLock
+            | OpCode::AtomicUnlock
+            | OpCode::ArrSet
+            | OpCode::SysPrint
+            | OpCode::SysExit => Type::Void,
+            OpCode::MemLoad8
+            | OpCode::MemLoad32
+            | OpCode::MemAlloc
+            | OpCode::AtomicAdd
+            | OpCode::ArrGet
+            | OpCode::I32Wrap
+            | OpCode::FsOpen
+            | OpCode::FsRead
+            | OpCode::FsWrite
+            | OpCode::FsClose
+            | OpCode::FsDelete
+            | OpCode::ThreadSpawn
+            | OpCode::ThreadJoin => Type::I32,
+        },
+    }
+}
+
+/// Picks the wasm instruction for a binary arithmetic/bitwise op given the
+/// static operand type. Returns an error for combinations wasm has no single
+/// instruction for (e.g. `%` on floats) rather than silently emitting i32 code.
+fn arith_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, String> {
+    use Instruction::*;
+    let ins = match (op, ty) {
+        (OpCode::Add, Type::I32) => I32Add,
+        (OpCode::Sub, Type::I32) => I32Sub,
+        (OpCode::Mul, Type::I32) => I32Mul,
+        (OpCode::Div, Type::I32) => I32DivS,
+        (OpCode::Mod, Type::I32) => I32RemS,
+        (OpCode::DivU, Type::I32) => I32DivU,
+        (OpCode::RemU, Type::I32) => I32RemU,
+        (OpCode::BitXor, Type::I32) => I32Xor,
+        (OpCode::BitAnd, Type::I32) => I32And,
+        (OpCode::BitOr, Type::I32) => I32Or,
+        (OpCode::Shl, Type::I32) => I32Shl,
+        (OpCode::Shr, Type::I32) => I32ShrS,
+        (OpCode::ShrU, Type::I32) => I32ShrU,
+
+        (OpCode::Add, Type::I64) => I64Add,
+        (OpCode::Sub, Type::I64) => I64Sub,
+        (OpCode::Mul, Type::I64) => I64Mul,
+        (OpCode::Div, Type::I64) => I64DivS,
+        (OpCode::Mod, Type::I64) => I64RemS,
+        (OpCode::DivU, Type::I64) => I64DivU,
+        (OpCode::RemU, Type::I64) => I64RemU,
+        (OpCode::BitXor, Type::I64) => I64Xor,
+        (OpCode::BitAnd, Type::I64) => I64And,
+        (OpCode::BitOr, Type::I64) => I64Or,
+        (OpCode::Shl, Type::I64) => I64Shl,
+        (OpCode::Shr, Type::I64) => I64ShrS,
+        (OpCode::ShrU, Type::I64) => I64ShrU,
+
+        (OpCode::Add, Type::F64) => F64Add,
+        (OpCode::Sub, Type::F64) => F64Sub,
+        (OpCode::Mul, Type::F64) => F64Mul,
+        (OpCode::Div, Type::F64) => F64Div,
+        (OpCode::Add, Type::F32) => F32Add,
+        (OpCode::Sub, Type::F32) => F32Sub,
+        (OpCode::Mul, Type::F32) => F32Mul,
+        (OpCode::Div, Type::F32) => F32Div,
+
+        _ => {
+            return Err(format!(
+                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                op, ty
+            ))
+        }
+    };
+    Ok(ins)
+}
+
+/// Picks the wasm comparison instruction for the static operand type. All of
+/// these leave an i32 0/1 on the stack, which is how AIPL `bool` is represented.
+fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, String> {
+    use Instruction::*;
+    let ins = match (op, ty) {
+        // bool and str are i32 in wasm (str is a placeholder 0 today).
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str) => I32Ne,
+        (OpCode::Lt, Type::I32) => I32LtS,
+        (OpCode::Lte, Type::I32) => I32LeS,
+        (OpCode::Gt, Type::I32) => I32GtS,
+        (OpCode::Gte, Type::I32) => I32GeS,
+
+        (OpCode::Eq, Type::I64) => I64Eq,
+        (OpCode::Neq, Type::I64) => I64Ne,
+        (OpCode::Lt, Type::I64) => I64LtS,
+        (OpCode::Lte, Type::I64) => I64LeS,
+        (OpCode::Gt, Type::I64) => I64GtS,
+        (OpCode::Gte, Type::I64) => I64GeS,
+
+        (OpCode::Eq, Type::F64) => F64Eq,
+        (OpCode::Neq, Type::F64) => F64Ne,
+        (OpCode::Lt, Type::F64) => F64Lt,
+        (OpCode::Lte, Type::F64) => F64Le,
+        (OpCode::Gt, Type::F64) => F64Gt,
+        (OpCode::Gte, Type::F64) => F64Ge,
+
+        (OpCode::Eq, Type::F32) => F32Eq,
+        (OpCode::Neq, Type::F32) => F32Ne,
+        (OpCode::Lt, Type::F32) => F32Lt,
+        (OpCode::Lte, Type::F32) => F32Le,
+        (OpCode::Gt, Type::F32) => F32Gt,
+        (OpCode::Gte, Type::F32) => F32Ge,
+
+        _ => {
+            return Err(format!(
+                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                op, ty
+            ))
+        }
+    };
+    Ok(ins)
 }
 
 fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
@@ -187,6 +376,9 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             Literal::Int(i) => {
                 func.instruction(&Instruction::I32Const(*i as i32));
             }
+            Literal::Int64(i) => {
+                func.instruction(&Instruction::I64Const(*i));
+            }
             Literal::Float(f) => {
                 func.instruction(&Instruction::F64Const(*f));
             }
@@ -218,10 +410,12 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         }
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
+            // The checker guarantees both branches share one type; use it for
+            // the block result so i64/f64-valued ifs validate (not always I32).
             let block_ty = if is_void_expr(then_branch, ctx) {
                 wasm_encoder::BlockType::Empty
             } else {
-                wasm_encoder::BlockType::Result(wasm_encoder::ValType::I32)
+                wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(then_branch, ctx)))
             };
             func.instruction(&Instruction::If(block_ty));
             compile_expr(then_branch, ctx, func)?;
@@ -240,70 +434,25 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
         }
         Expr::Op { op, args, .. } => match op {
-            OpCode::Add => {
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::ShrU
+            | OpCode::DivU
+            | OpCode::RemU
+            | OpCode::BitAnd
+            | OpCode::BitOr => {
+                // The checker guarantees both operands share one type, so the
+                // first operand decides the instruction width (i32/i64/f32/f64).
+                let ty = expr_type(&args[0], ctx);
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Add);
-            }
-            OpCode::Sub => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Sub);
-            }
-            OpCode::Mul => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Mul);
-            }
-            OpCode::Div => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32DivS);
-            }
-            OpCode::Mod => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32RemS);
-            }
-            OpCode::BitXor => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Xor);
-            }
-            OpCode::Shl => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Shl);
-            }
-            OpCode::Shr => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32ShrS);
-            }
-            OpCode::ShrU => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32ShrU);
-            }
-            OpCode::DivU => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32DivU);
-            }
-            OpCode::RemU => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32RemU);
-            }
-            OpCode::BitAnd => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32And);
-            }
-            OpCode::BitOr => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Or);
+                func.instruction(&arith_instruction(op, &ty)?);
             }
             OpCode::MemLoad8 => {
                 compile_expr(&args[0], ctx, func)?;
@@ -342,35 +491,11 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::MemFree => {
                 // No-op for bump allocator
             }
-            OpCode::Eq => {
+            OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte => {
+                let ty = expr_type(&args[0], ctx);
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Eq);
-            }
-            OpCode::Neq => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Ne);
-            }
-            OpCode::Lt => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32LtS);
-            }
-            OpCode::Lte => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32LeS);
-            }
-            OpCode::Gt => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32GtS);
-            }
-            OpCode::Gte => {
-                compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32GeS);
+                func.instruction(&compare_instruction(op, &ty)?);
             }
             OpCode::And => {
                 compile_expr(&args[0], ctx, func)?;
@@ -385,6 +510,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::Not => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Eqz);
+            }
+            OpCode::I64ExtendS => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I64ExtendI32S);
+            }
+            OpCode::I64ExtendU => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I64ExtendI32U);
+            }
+            OpCode::I32Wrap => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I32WrapI64);
             }
             OpCode::SysPrint => {
                 return Err("sys.print not supported in wasm backend: comes with WASI in P6".to_string());
@@ -514,6 +651,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::MemLoad32
                 | OpCode::MemLoad64
                 | OpCode::MemAlloc
+                | OpCode::I64ExtendS
+                | OpCode::I64ExtendU
+                | OpCode::I32Wrap
                 | OpCode::Eq
                 | OpCode::Neq
                 | OpCode::Lt

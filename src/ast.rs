@@ -18,7 +18,11 @@ pub enum Type {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
+    /// A 32-bit integer literal (`42`, `-7`). Stored as i64 for convenience but
+    /// always truncated to i32 by every backend.
     Int(i64),
+    /// A 64-bit integer literal written with an explicit suffix: `42i64`.
+    Int64(i64),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -76,6 +80,12 @@ pub enum OpCode {
     FsDelete,
     ThreadSpawn,
     ThreadJoin,
+    /// `(i64.extend_s x)`: i32 -> i64, sign-extending (wasm `i64.extend_i32_s`).
+    I64ExtendS,
+    /// `(i64.extend_u x)`: i32 -> i64, zero-extending (wasm `i64.extend_i32_u`).
+    I64ExtendU,
+    /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
+    I32Wrap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

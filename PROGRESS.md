@@ -308,3 +308,14 @@ print('run_parser_tests ->', exports['run_parser_tests'](store))
 "
 # delete aipl_src/compiler_check.wasm afterward - it's a scratch verification artifact, not a repo deliverable
 ```
+
+## Task: `i64` as a first-class type (Completed 2026-09-18)
+
+P3 left `i64` rejected in `parse_type` ("document that i64 is unsupported"). It is now a real type in all four stages, with wasm as the semantic reference:
+
+- **Literals**: `42i64` / `-7i64` (suffix is part of the token) -> `TokenKind::Int64Lit` -> `Literal::Int64` -> `Type::I64`. Plain `42` stays `i32`; there is no implicit widening.
+- **Conversions**: three new opcodes, `i64.extend_s`, `i64.extend_u`, `i32.wrap`, mapping to `i64.extend_i32_s`, `i64.extend_i32_u`, `i32.wrap_i64`. Checker enforces `i32 -> i64` / `i64 -> i32` argument types.
+- **VM**: new `Value::Int64(i64)`. Every arithmetic, bitwise, shift, division, and comparison op has an `(Int64, Int64)` arm with 64-bit wrapping (shift counts masked to 6 bits, `/` errors on zero and `MIN/-1`, `%` of `MIN/-1` is 0). `mem.load64` returns `Int64`; `mem.store64` requires it.
+- **Wasm**: `Ctx` now carries `local_types`; a new `expr_type` computes the static type of any expression, and `arith_instruction` / `compare_instruction` select `i32.*` / `i64.*` / `f32.*` / `f64.*` variants. `if` block result types come from the branch type instead of being hard-coded `I32` (this was the "`if` with `i64`/`f64` branches gets `BlockType::Result(I32)` — invalid" bug from the audit's section 2). As a side effect **`f64` arithmetic and comparisons now compile to valid wasm**; previously `(+ 1.0 2.0)` emitted `i32.add` and failed validation.
+- **Tests**: `tests/test_i64.rs` (12 tests) runs every case in the VM and validates the wasm with `wasmparser`: literals, 64-bit wrap points, div/rem/shift edge cases, comparisons, `if` with `i64` branches, all three conversions, `mem.store64`/`mem.load64` round trip, `i64` params and calls, an `i64` accumulator over an `i32` loop, checker rejections for mixed widths, and the `f64` regression. `tests/test_opcode_conformance.rs` covers the three new opcodes, and its `mem.load64`/`mem.store64` programs (which declare `-> i64`) now actually execute instead of being skipped at parse time.
+- **Not changed**: loop bounds, addresses, sizes, fds, and thread handles stay `i32`. `codegen.aipl` (the self-hosted backend) does not know about `i64` yet. `f32` literals still do not exist (float literals are `f64`).

@@ -83,6 +83,7 @@ impl TypeChecker {
         match expr {
             Expr::Lit(lit, _) => match lit {
                 Literal::Int(_) => Ok(Type::I32),
+                Literal::Int64(_) => Ok(Type::I64),
                 Literal::Float(_) => Ok(Type::F64),
                 Literal::Bool(_) => Ok(Type::Bool),
                 Literal::Str(_) => Ok(Type::Str),
@@ -389,6 +390,26 @@ impl TypeChecker {
                         return Err(format!("{}:{}: thread.join requires 1 argument (thread handle)", l, c));
                     }
                     self.infer_expr_type(&args[0], env)?;
+                    Ok(Type::I32)
+                }
+                OpCode::I64ExtendS | OpCode::I64ExtendU => {
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: {:?} requires 1 argument (x: i32)", l, c, op));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{}:{}: {:?} requires i32, got {:?}", l, c, op, t));
+                    }
+                    Ok(Type::I64)
+                }
+                OpCode::I32Wrap => {
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: i32.wrap requires 1 argument (x: i64)", l, c));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I64 {
+                        return Err(format!("{}:{}: i32.wrap requires i64, got {:?}", l, c, t));
+                    }
                     Ok(Type::I32)
                 }
             },

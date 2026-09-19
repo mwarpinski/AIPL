@@ -57,6 +57,9 @@ fn get_minimal_program_for_op(op: &OpCode) -> &'static str {
         OpCode::FsDelete => "(module test_mod (fn test_op [] -> i32 (fs.delete 0 4)))",
         OpCode::ThreadSpawn => "(module test_mod (fn helper [a:i32] -> i32 a) (fn test_op [] -> i32 (thread.spawn 0 6 42)))",
         OpCode::ThreadJoin => "(module test_mod (fn test_op [] -> i32 (thread.join 1)))",
+        OpCode::I64ExtendS => "(module test_mod (fn test_op [] -> i64 (i64.extend_s -1)))",
+        OpCode::I64ExtendU => "(module test_mod (fn test_op [] -> i64 (i64.extend_u -1)))",
+        OpCode::I32Wrap => "(module test_mod (fn test_op [] -> i32 (i32.wrap 4294967297i64)))",
     }
 }
 
@@ -111,6 +114,9 @@ const ALL_OPCODES: &[OpCode] = &[
     OpCode::FsDelete,
     OpCode::ThreadSpawn,
     OpCode::ThreadJoin,
+    OpCode::I64ExtendS,
+    OpCode::I64ExtendU,
+    OpCode::I32Wrap,
 ];
 
 #[test]

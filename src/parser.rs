@@ -10,6 +10,7 @@ pub enum TokenKind {
     Arrow,
     Symbol(String),
     IntLit(i64),
+    Int64Lit(i64),
     FloatLit(f64),
     StringLit(String),
     BoolLit(bool),
@@ -179,6 +180,17 @@ impl Parser {
                     } else if let Ok(i) = symbol.parse::<i64>() {
                         tokens.push(Token {
                             kind: TokenKind::IntLit(i),
+                            line: start_line,
+                            col: start_col,
+                        });
+                    } else if let Some(i) = symbol
+                        .strip_suffix("i64")
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| s.parse::<i64>().ok())
+                    {
+                        // `42i64` / `-7i64`: an explicit 64-bit integer literal.
+                        tokens.push(Token {
+                            kind: TokenKind::Int64Lit(i),
                             line: start_line,
                             col: start_col,
                         });
@@ -534,7 +546,7 @@ impl Parser {
                 col,
             }) => match s.as_str() {
                 "i32" => Ok(Type::I32),
-                "i64" => Err(format!("{}:{}: i64 type is unsupported", line, col)),
+                "i64" => Ok(Type::I64),
                 "f32" => Ok(Type::F32),
                 "f64" => Ok(Type::F64),
                 "bool" => Ok(Type::Bool),
@@ -614,6 +626,10 @@ impl Parser {
                 TokenKind::IntLit(val) => {
                     self.next();
                     Ok(Expr::Lit(Literal::Int(val), (tok.line, tok.col)))
+                }
+                TokenKind::Int64Lit(val) => {
+                    self.next();
+                    Ok(Expr::Lit(Literal::Int64(val), (tok.line, tok.col)))
                 }
                 TokenKind::FloatLit(val) => {
                     self.next();
@@ -976,6 +992,9 @@ impl Parser {
                                 "thread.join" => OpCode::ThreadJoin,
                                 "divu" => OpCode::DivU,
                                 "remu" => OpCode::RemU,
+                                "i64.extend_s" => OpCode::I64ExtendS,
+                                "i64.extend_u" => OpCode::I64ExtendU,
+                                "i32.wrap" => OpCode::I32Wrap,
                                 other => {
                                     return Err(format!(
                                         "{}:{}: Unknown op/keyword: {}",

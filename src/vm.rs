@@ -7,7 +7,11 @@ use std::thread::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// An `i32`. Stored in an i64 but every operation truncates both operands
+    /// to i32 first, so no value wider than 32 bits is ever observable.
     Int(i64),
+    /// An `i64`. Operations wrap at 64 bits, matching wasm `i64.*`.
+    Int64(i64),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -151,6 +155,7 @@ impl VM {
         match expr {
             Expr::Lit(lit, _) => match lit {
                 Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
+                Literal::Int64(i) => Ok(Value::Int64(*i)),
                 Literal::Float(f) => Ok(Value::Float(*f)),
                 Literal::Bool(b) => Ok(Value::Bool(*b)),
                 Literal::Str(s) => Ok(Value::Str(s.clone())),
@@ -280,6 +285,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{}{}", x, y))),
                     _ => Err("Invalid types for +".to_string()),
@@ -290,6 +296,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_sub(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                     _ => Err("Invalid types for -".to_string()),
                 }
@@ -299,6 +306,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) ^ (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x ^ y)),
                     _ => Err("Invalid types for ^".to_string()),
                 }
             }
@@ -309,6 +317,10 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int((x as i32).wrapping_shl(shift) as i64))
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64(x.wrapping_shl(shift)))
                     }
                     _ => Err("Invalid types for shl".to_string()),
                 }
@@ -321,6 +333,10 @@ impl VM {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int((x as i32).wrapping_shr(shift) as i64))
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64(x.wrapping_shr(shift)))
+                    }
                     _ => Err("Invalid types for shr".to_string()),
                 }
             }
@@ -332,6 +348,10 @@ impl VM {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int(((x as i32 as u32).wrapping_shr(shift) as i32) as i64))
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64((x as u64).wrapping_shr(shift) as i64))
+                    }
                     _ => Err("Invalid types for shru".to_string()),
                 }
             }
@@ -340,6 +360,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) & (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x & y)),
                     _ => Err("Invalid types for bitand".to_string()),
                 }
             }
@@ -348,6 +369,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) | (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x | y)),
                     _ => Err("Invalid types for bitor".to_string()),
                 }
             }
@@ -400,7 +422,7 @@ impl VM {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
                 let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
-                Ok(Value::Int(i64::from_le_bytes(bytes)))
+                Ok(Value::Int64(i64::from_le_bytes(bytes)))
             }
             OpCode::MemStore32 => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
@@ -424,8 +446,8 @@ impl VM {
                     _ => return Err("mem.store64 requires Int ptr".to_string()),
                 };
                 let val = match self.eval_expr(&args[1], scope)? {
-                    Value::Int(i) => i,
-                    _ => return Err("mem.store64 requires Int val".to_string()),
+                    Value::Int64(i) => i,
+                    _ => return Err("mem.store64 requires Int64 val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 8 > mem.bytes.len() {
@@ -530,6 +552,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_mul(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                     _ => Err("Invalid types for *".to_string()),
                 }
@@ -549,6 +572,15 @@ impl VM {
                             Ok(Value::Int((x32 / y32) as i64))
                         }
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else if x == i64::MIN && y == -1 {
+                            Err("Integer overflow".to_string())
+                        } else {
+                            Ok(Value::Int64(x / y))
+                        }
+                    }
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
                     _ => Err("Invalid types for /".to_string()),
                 }
@@ -564,6 +596,13 @@ impl VM {
                             Err("Division by zero".to_string())
                         } else {
                             Ok(Value::Int(((x32 / y32) as i32) as i64))
+                        }
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int64(((x as u64) / (y as u64)) as i64))
                         }
                     }
                     _ => Err("Invalid types for divu".to_string()),
@@ -584,6 +623,15 @@ impl VM {
                             Ok(Value::Int((x32 % y32) as i64))
                         }
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else if x == i64::MIN && y == -1 {
+                            Ok(Value::Int64(0))
+                        } else {
+                            Ok(Value::Int64(x % y))
+                        }
+                    }
                     _ => Err("Invalid types for %".to_string()),
                 }
             }
@@ -598,6 +646,13 @@ impl VM {
                             Err("Division by zero".to_string())
                         } else {
                             Ok(Value::Int(((x32 % y32) as i32) as i64))
+                        }
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int64(((x as u64) % (y as u64)) as i64))
                         }
                     }
                     _ => Err("Invalid types for remu".to_string()),
@@ -618,6 +673,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) < (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x < y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
                     _ => Err("Invalid types for <".to_string()),
                 }
@@ -627,6 +683,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) <= (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x <= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x <= y)),
                     _ => Err("Invalid types for <=".to_string()),
                 }
@@ -636,6 +693,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) > (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x > y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x > y)),
                     _ => Err("Invalid types for >".to_string()),
                 }
@@ -645,6 +703,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) >= (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x >= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x >= y)),
                     _ => Err("Invalid types for >=".to_string()),
                 }
@@ -850,6 +909,18 @@ impl VM {
                     Err(_) => Err("Spawned thread panicked".to_string()),
                 }
             }
+            OpCode::I64ExtendS => match self.eval_expr(&args[0], scope)? {
+                Value::Int(x) => Ok(Value::Int64((x as i32) as i64)),
+                _ => Err("i64.extend_s requires Int".to_string()),
+            },
+            OpCode::I64ExtendU => match self.eval_expr(&args[0], scope)? {
+                Value::Int(x) => Ok(Value::Int64((x as i32 as u32) as i64)),
+                _ => Err("i64.extend_u requires Int".to_string()),
+            },
+            OpCode::I32Wrap => match self.eval_expr(&args[0], scope)? {
+                Value::Int64(x) => Ok(Value::Int((x as i32) as i64)),
+                _ => Err("i32.wrap requires Int64".to_string()),
+            },
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }
