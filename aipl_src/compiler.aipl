@@ -292,8 +292,8 @@
 
   (fn test_tokenize_signature [] -> i32
     (ens (eq res 1))
-    (let src1:i32 8000)
-    (let tok1:i32 9000)
+    (let src1:i32 (mem.alloc 256))
+    (let tok1:i32 (mem.alloc 2048))
     (mem.store8 (+ src1 0) 40) ;; '('
     (mem.store8 (+ src1 1) 102) ;; 'f'
     (mem.store8 (+ src1 2) 110) ;; 'n'
@@ -345,8 +345,8 @@
 
   (fn test_tokenize_literals [] -> i32
     (ens (eq res 1))
-    (let src2:i32 8100)
-    (let tok2:i32 9100)
+    (let src2:i32 (mem.alloc 256))
+    (let tok2:i32 (mem.alloc 2048))
     (mem.store8 (+ src2 0) 52) ;; '4'
     (mem.store8 (+ src2 1) 50) ;; '2'
     (mem.store8 (+ src2 2) 32) ;; ' '
@@ -415,9 +415,9 @@
 
   (fn test_parse_simple_call [] -> i32
     (ens (eq res 1))
-    (let src:i32 8200)
-    (let tok:i32 9200)
-    (let ast:i32 9500)
+    (let src:i32 (mem.alloc 256))
+    (let tok:i32 (mem.alloc 2048))
+    (let ast:i32 (mem.alloc 4096))
     (mem.store8 (+ src 0) 40) ;; '('
     (mem.store8 (+ src 1) 43) ;; '+'
     (mem.store8 (+ src 2) 32) ;; ' '
@@ -448,9 +448,9 @@
 
   (fn test_parse_nested [] -> i32
     (ens (eq res 1))
-    (let src:i32 8300)
-    (let tok:i32 9600)
-    (let ast:i32 9900)
+    (let src:i32 (mem.alloc 256))
+    (let tok:i32 (mem.alloc 2048))
+    (let ast:i32 (mem.alloc 4096))
     (mem.store8 (+ src 0) 40) ;; '('
     (mem.store8 (+ src 1) 102) ;; 'f'
     (mem.store8 (+ src 2) 110) ;; 'n'

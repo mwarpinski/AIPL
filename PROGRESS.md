@@ -253,6 +253,20 @@ than hand-typing once nesting gets more than 3-4 levels deep** — several
 functions in `codegen.aipl` were built this way after hand-typed versions had
 exactly this bug.
 
+## Task P4: Spanned AST & Diagnostic Reporting (Completed)
+
+- **Token Location Tracking**: `Token` converted to `struct Token { kind: TokenKind, line: u32, col: u32 }` tracking 1-based line/col positions during tokenization.
+- **AST Span Information**: Attached `span: (u32, u32)` to `FnDef` and every `Expr` variant in `src/ast.rs`, with `Expr::span(&self) -> (u32, u32)`.
+- **Unified Diagnostic Format**:
+  - All `Parser` errors formatted as `"<line>:<col>: <message>"`.
+  - All `TypeChecker` errors formatted as `"<line>:<col>: <message>"`.
+  - All `Resolver` errors prefixed with `<path>: <message>`.
+- **Lexical Rules & Edge Cases**:
+  - Unterminated string literals error with `"L:C: Unterminated string literal"`.
+  - Extra tokens after module end error with `"unexpected tokens after module end at L:C — check for an extra ')'"`.
+  - Float literals strictly require a digit and `.`. Tokens like `inf` or `nan` parse as symbols/ops instead of floats.
+- **Diagnostic Verification**: `tests/test_diagnostics.rs` asserts exact `L:C:` prefixes for missing `)`, unknown op, type mismatch in `let`, undefined variable, and extra `)` after module end.
+
 ## Next steps, in order
 
 1. **General module assembly** — `codegen.aipl`'s verification hand-assembled
@@ -301,3 +315,85 @@ print('run_parser_tests ->', exports['run_parser_tests'](store))
 "
 # delete aipl_src/compiler_check.wasm afterward - it's a scratch verification artifact, not a repo deliverable
 ```
+
+## Task: `i64` as a first-class type (Completed 2026-09-18)
+
+P3 left `i64` rejected in `parse_type` ("document that i64 is unsupported"). It is now a real type in all four stages, with wasm as the semantic reference:
+
+- **Literals**: `42i64` / `-7i64` (suffix is part of the token) -> `TokenKind::Int64Lit` -> `Literal::Int64` -> `Type::I64`. Plain `42` stays `i32`; there is no implicit widening.
+- **Conversions**: three new opcodes, `i64.extend_s`, `i64.extend_u`, `i32.wrap`, mapping to `i64.extend_i32_s`, `i64.extend_i32_u`, `i32.wrap_i64`. Checker enforces `i32 -> i64` / `i64 -> i32` argument types.
+- **VM**: new `Value::Int64(i64)`. Every arithmetic, bitwise, shift, division, and comparison op has an `(Int64, Int64)` arm with 64-bit wrapping (shift counts masked to 6 bits, `/` errors on zero and `MIN/-1`, `%` of `MIN/-1` is 0). `mem.load64` returns `Int64`; `mem.store64` requires it.
+- **Wasm**: `Ctx` now carries `local_types`; a new `expr_type` computes the static type of any expression, and `arith_instruction` / `compare_instruction` select `i32.*` / `i64.*` / `f32.*` / `f64.*` variants. `if` block result types come from the branch type instead of being hard-coded `I32` (this was the "`if` with `i64`/`f64` branches gets `BlockType::Result(I32)` — invalid" bug from the audit's section 2). As a side effect **`f64` arithmetic and comparisons now compile to valid wasm**; previously `(+ 1.0 2.0)` emitted `i32.add` and failed validation.
+- **Tests**: `tests/test_i64.rs` (12 tests) runs every case in the VM and validates the wasm with `wasmparser`: literals, 64-bit wrap points, div/rem/shift edge cases, comparisons, `if` with `i64` branches, all three conversions, `mem.store64`/`mem.load64` round trip, `i64` params and calls, an `i64` accumulator over an `i32` loop, checker rejections for mixed widths, and the `f64` regression. `tests/test_opcode_conformance.rs` covers the three new opcodes, and its `mem.load64`/`mem.store64` programs (which declare `-> i64`) now actually execute instead of being skipped at parse time.
+- **Not changed**: loop bounds, addresses, sizes, fds, and thread handles stay `i32`. `codegen.aipl` (the self-hosted backend) does not know about `i64` yet. `f32` literals still do not exist (float literals are `f64`).
+
+## Task P3 (testing half): VM-vs-wasm differential testing (Completed 2026-09-18)
+
+- **`wasmtime` dev-dependency** added (48.x). Tests compile AIPL to wasm with `WasmCompiler`, instantiate the bytes in wasmtime, and call the export directly. No imports are needed because the backend emits none.
+- **`tests/test_differential.rs`**: a `differential(module, wasm, fn, args)` helper runs the same function in `VM` and wasmtime and asserts identical results, or that both fail. `bool` results are normalised to `Int(0|1)` (their wasm shape). A VM contract failure (`req`/`ens`) is the one accepted asymmetry, because the wasm backend does not emit contracts.
+  - Explicit i32 cases: `(+ 2147483647 1)`, `(- -2147483648 1)`, `(shr -8 1)`, `(shru -8 1)`, `(* 65536 65536)`, `(/ -7 2)`, `(% -7 2)`, `(divu -1 2)`, `(remu -1 2)`, `(shl 1 33)`, `(shr -2147483648 32)`, `(% -2147483648 -1)`; division by zero and `MIN / -1` fail in both.
+  - Control flow: inclusive `loop` end bound (0..5 sums to 15), `loop` with step 3 and negative start, `while` mutating a `let` via `set!`, nested `if`/`block` values, recursion (`fib 20`), `mem.alloc`/`mem.store*`/`mem.load*` round trip including bump-allocator spacing.
+  - i64 cases: wrap at 2^63, no wrap at 2^31, `i32.wrap`/`i64.extend_s`/`i64.extend_u`, 6-bit shift mask, unsigned div/rem, division edge cases, `if` with i64 branches, `mem.store64`/`mem.load64` mixed with `mem.load32`.
+  - f64: `(/ (+ 1.5 2.25) 0.5)` and a float comparison (regression for the old `i32.add`-on-floats codegen bug).
+  - **Whole programs**: every `examples/*.aipl` is resolved, checked, compiled, and every function with an `i32`/`i64`/`bool` return and all-`i32` params is run in both backends over a fixed set of argument tuples (`0, 1, 7, 50, 100, -1, i32::MAX` in every position plus two mixed tuples). Files the wasm backend rejects are skipped with a printed reason; `hello_browser.aipl` is pinned as known-stale (uses removed `dom.*`/`web.alert` ops) and the test fails if it ever starts parsing without being removed from that list. The test asserts at least 4 files and 40 calls were actually compared so it cannot go vacuous.
+  - **`aipl_src/codegen.aipl`**: `test_signatures_and_locals` is zero-arg `i32`, but the module also contains `test_compile_add`/`test_compile_compute`, which use `fs.open`/`fs.write`/`fs.close`, so the wasm backend rejects the whole module. The test pins that exact reason and automatically switches to a real comparison the day the module compiles.
+- **Divergence fixed in the VM**: `Expr::Loop` had an overflow guard (`if st_val > 0 && curr < s_val { break; }`) that wasm does not have. Removed; a loop whose counter wraps past `i32::MAX` now never terminates in either backend, matching the reference.
+- **Spec**: "wasm semantics are the spec" recorded directly under the title of `AIPL_SPEC.md`.
+
+## Task P5: One memory layout, one allocator, no hardcoded table addresses (Completed 2026-09-18)
+
+- **Fixed layout** (AIPL_SPEC.md, "Memory layout"): bytes 0-1023 are the runtime block, the heap begins at 1024. Cell 0 is the heap cursor, cell 4 the compile-error flag, cells 16/20/24/28 belong to codegen (keyword table ptr, function table ptr, default locals table ptr, running locals count). Everything else below 1024 is reserved and must not be written by programs.
+- **One allocator.** `SharedMemory.heap_ptr` is gone from `src/vm.rs`; `mem.alloc` reads and writes the i32 at address 0, which `VM::new` initialises to 1024. The wasm backend does the same with `i32.load`/`i32.store` at address 0 and initialises the word through an active **data segment** (the mutable global is gone). Self-hosted AIPL (`memory.aipl`) was already keeping its cursor at address 0 but with a private start of 8192; it is now a thin wrapper over `mem.alloc`. Three cursors became one.
+- **Memory size.** Both backends start at 16 pages (1 MiB) and cap at 100. The wasm minimum was 1 page before; raising it to match the VM keeps `mem.grow` results identical across backends and removes the last asymmetry in memory limits.
+- **`mem.grow`** (`OpCode::MemGrow`): grows by N pages and returns the old size in pages, or -1 past the 100-page cap. VM resizes the `Vec`; wasm emits `memory.grow`. Covered by the conformance test. (The prompt named it `memory.grow`; `mem.grow` follows the `mem.*` family every other memory op uses.)
+- **`codegen.aipl`**: every table now comes from `(mem.alloc N)` in `codegen_init` (idempotent, called by `init_keywords`), reached via `kw`/`fn_table`/`locals_table` accessors over cells 16/20/24; the locals count lives in cell 28 and the error flag in cell 4. All 171 `(+ 20000 N)` keyword sites, the 43 `200xx` literal pointers in `classify_keyword`, and every test buffer (`500`, `9000`, `12000`, `30000`, `41000`, `42000`, `60000`, `61000`, `70000`, `400`) were replaced. `grep -o '\b[0-9]\{4,\}\b' aipl_src/codegen.aipl` now returns only allocation sizes (3072, 3584, 4096, 8192, 16384). A `run_codegen_tests` group runner (returns passes, 3 = all) is wired into `test_suite.aipl`.
+- **Other modules moved off literal addresses**: `compiler.aipl` self-test buffers (8000-9900), `thread_sync.aipl` (counter at 700 and name at 800; the worker now receives the counter pointer as its thread argument), `file_io.aipl` (path/payload/read buffers at 400/500/600), and the `tests/test_v2.rs` mutex test (96/100).
+- **A latent hang this exposed**: the conformance test's `(atomic.lock 0)` spun forever once address 0 held the cursor (1024, never zero). All memory/atomic conformance programs now operate on `(mem.alloc N)` words.
+- **New `tests/test_selfhost.rs`**: runs `test_compile_add` and `test_compile_compute` from `codegen.aipl` in the VM, validates the emitted bytes with wasmparser, executes them in wasmtime, and asserts `add(2,3)=5`, `add(MAX,1)=MIN`, `compute(1)=51`, `compute(10)=60`, `compute(-50)=0`. This is the executable form of the prompt's `aipl test aipl_src/codegen.aipl --func test_compile_compute` check (that subcommand treats a non-zero return as a failure count, and the self-test returns a byte length).
+
+## Follow-up: memory layout is enforced, not just documented (2026-09-18)
+
+P5 moved the heap cursor into address 0 and immediately exposed a hang: the conformance test's `(atomic.lock 0)` spun forever on a word that now holds 1024. Patching that one test was not a fix, so the layout is now enforced in two places:
+
+- **Checker (`src/checker.rs`, `check_literal_address`)**: every `mem.*` / `atomic.*` op whose address argument is an integer literal is checked against the layout. Stores or locks on bytes 0-3 (the cursor), any access to bytes 64-1023 (reserved), and misaligned cells in 4-63 are `L:C:`-prefixed errors before either backend runs. Reading the cursor and using aligned runtime cells stay legal (memory.aipl, codegen.aipl). Covered by five new tests in `tests/test_diagnostics.rs`.
+- **VM (`src/vm.rs`)**: `atomic.lock` now fails with `... not a lock state (0 = free, 1 = held) ...` when the word holds anything other than 0 or 1, instead of spinning; `atomic.unlock` fails when the word is not 1. A lock word is only ever 0/1 by construction, so this has no false positives and catches the computed-address case the checker cannot see. The wasm backend rejects atomics anyway, so no backend divergence is introduced.
+- **`tests/test_memory_layout.rs`** (7 tests): fresh VM and fresh wasm instance both have 1024 at address 0 (data segment verified by reading wasmtime memory) and both bump it identically; locking a word holding 1024 errors; locking address 0 through a computed `(- p p)` errors; unlocking a free word errors; a real lock round trip still works; `mem.grow` returns 16 then refuses past 100 pages.
+- Two existing tests that still used address 0 (`test_i64` store64/load32 case, conformance `atomic.unlock`) were moved to `mem.alloc` words; the unlock program now locks first, since unlocking a free word is an error.
+
+## Follow-up: computed writes into the reserved block are caught in both backends (2026-09-18)
+
+Closes the last enforcement gap from the memory-layout work. The checker only sees literal addresses; a store whose address is computed at runtime could still land in bytes 0-3 (heap cursor) or 64-1023 (reserved) unnoticed.
+
+- **VM** (`src/vm.rs`, `check_write_address`): every `mem.store8/32/64` and every `atomic.add/cas/lock/unlock` checks its address before writing and fails with `<op> at address N: bytes 0-3 are the heap cursor ...` or `... bytes 64-1023 are the reserved runtime block ...`.
+- **Wasm backend** (`src/compiler/wasm.rs`, `emit_write_address_check`): before every `i32.store8/i32.store/i64.store` the backend emits `local.tee s; (s <u 4) | ((s - 64) <u 960); if unreachable end`, using one extra `i32` local per function. Same addresses, same outcome (trap), so the differential test treats VM error + wasm trap as agreement and no VM-only semantics were introduced.
+- Reads are deliberately unchecked (the block is zero; reading it is harmless), and `mem.alloc`'s own update of the cursor bypasses the check since it is emitted directly.
+- **Tests** (`tests/test_memory_layout.rs`, now 13): computed store to 512 fails in the VM and traps in wasmtime; computed store to address 0 likewise; store64 at 1023 fails while 1024 succeeds in both; computed writes to runtime cell 16 and to heap words succeed in both; computed reads from the block succeed; all four atomics fail on a computed reserved address.
+- Known remaining asymmetry: the self-hosted `codegen.aipl` does not emit this check in the wasm it produces yet.
+
+## Follow-up: the self-hosted compiler emits the memory-layout store guard too (2026-09-18)
+
+Closes the codegen asymmetry left by the previous follow-up.
+
+- **`aipl_src/codegen.aipl`**: new `emit_store_guard [ptr scratch_idx]` writes the exact byte sequence the Rust backend's `emit_write_address_check` produces (`local.tee s; local.get s; i32.const 4; i32.lt_u; local.get s; i32.const 64; i32.sub; i32.const 960; i32.lt_u; i32.or; if; unreachable; end`). `compile_op` calls it between the address and the value for `mem.store8/32/64` (op ids 12/13/14). The scratch local's index is the function's total local count, so every function body now declares one extra `i32` local; the three hand-assembled test harnesses were updated (`add`: 0 -> 1 local, `compute`: 0/3 -> 1/4) with their code-section lengths adjusted, and their memory sections raised from 1 to 16 pages to match the Rust backend.
+- **New self-test `test_compile_store`** compiles `(fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a))` to `aipl_src/_codegen_out3.wasm`; `run_codegen_tests` now reports 4 and `test_suite.aipl` expects 4.
+- **`tests/test_selfhost.rs`** (now 4 tests): the self-hosted `add` traps in wasmtime for addresses 0, 3, 64, 512, 1023 and succeeds for 16, 1024, 65536; and its function body is **byte-for-byte identical** to the Rust backend's output for the same program (both bodies extracted with wasmparser and compared), so the two backends cannot drift apart on this silently. The helper that runs self-tests is serialised with a mutex because they write fixed output paths.
+
+## Task P6: WASI imports and data segments - compiled AIPL that does I/O (Completed 2026-09-18)
+
+- **Imports** (`src/compiler/wasm.rs`): an `ImportSection` from `wasi_snapshot_preview1` with `fd_write`, `fd_read`, `path_open`, `fd_close`, `proc_exit`, and `path_unlink_file` (the sixth is needed by `fs.delete`, which the prompt did not list). Only the functions a module actually uses are imported, in a fixed order, so a module without I/O has no import section and keeps instantiating with no imports; user function indices are offset by the import count and import types come first in the type section.
+- **Lowerings**: `sys.print` -> `fd_write` to fd 1 (one call per iovec: string bytes, then an interned `"\n"`; wasmtime honours only the first iovec of a call, which cost one debugging round). `fs.open` -> `path_open` on the preopened dir (fd 3) with `oflags = CREAT|TRUNC` and rights `FD_READ|FD_WRITE` when `flags != 0`, else rights `FD_READ`; `fs.read`/`fs.write` -> `fd_read`/`fd_write` with one iovec; `fs.close` -> `fd_close`; `fs.delete` -> `path_unlink_file`; `sys.exit` -> `proc_exit`. Every errno collapses to `-1`, matching the VM. Operands are evaluated left to right and unloaded into two per-function I/O scratch locals (added only to functions that do I/O), so nested I/O expressions are safe. Runtime cells 64-87 hold the iovecs and out-parameters (documented in AIPL_SPEC.md 7.9).
+- **Strings**: every `Literal::Str` is interned once into a data segment at 512-1023 as `[len u32 LE][bytes]`; the literal compiles to `i32.const <address of bytes>`; a compile error names the area if a module needs more than 512 bytes. New op `(str.len s)` (`OpCode::StrLen`, checker: `str -> i32`, VM: Rust length, wasm: `i32.load (s-4)`). `eq`/`neq` on `str` compare interned pointers, so equal literals compare equal in both backends. `(+ str str)` stays VM-only.
+- **Checker**: `fs.*` arguments must be `i32` (a `str` path would have worked in wasm and failed in the VM); `sys.exit` takes one `i32`; `sys.print` type-checks its arguments.
+- **VM**: `sys.exit` no longer reports "not supported"; it returns `sys.exit(N) requested` instead of terminating the host process.
+- **Mixed-void `if` fix** (surfaced by compiling `codegen.aipl`): `(if c (set! x v) 0)` type-checks (set! has the variable's type) but `set!` leaves nothing on the wasm stack, and the backend chose the block type from the `then` branch alone, producing invalid wasm. The backend now gives such an `if` a result type and tops up the value-less branch with the assigned variable (or 0), so both backends agree. P7 will make `set!`/`let` void and retire this.
+- **Tests**: `tests/test_wasi.rs` (8 tests, `wasmtime-wasi` dev-dependency): `file_io.aipl`'s `run_file_io_tests` returns 1 under WASI with a preopened temp dir and in the VM, leaving no file behind; `sys.print` output is exactly one line per argument; interned strings report lengths and compare by identity; data-area overflow is a compile error; opening a missing file returns -1 in both; a write-then-read round trip agrees byte for byte and the wasm file is visible on the host; `sys.exit 7` is `I32Exit(7)` from wasmtime and `sys.exit(7) requested` from the VM; I/O-free modules have no imports. The differential harness now links WASI, and the previously pinned codegen test became a real comparison: **the self-hosted compiler's `test_signatures_and_locals` (tokenizer + parser + signature and locals collection, ~80 functions) runs under wasmtime and returns the same result as the VM.** Conformance covers `str.len`. Total: 91 Rust tests, AIPL suite green.
+
+## Follow-up: an AIPL program that does I/O end to end (2026-09-18)
+
+P6 made the *toolchain* able to compile I/O; nothing in `.aipl` demonstrated it. Now it does, and two small language additions made the demonstration honest instead of a wall of `mem.store8`:
+
+- **`(str.ptr s)`** (`OpCode::StrPtr`, `str -> i32`): the address of a string's bytes, for the pointer-taking `fs.*` ops. Identity in wasm (a `str` already is that pointer); the VM materialises the string into the heap as `[len][bytes]` and returns the address of the bytes. With `str.len` this closes the "no str -> (ptr, len) conversion" gap.
+- **fds 1 and 2 are stdout/stderr in the VM**, as under WASI, so `(fs.write 1 buf n)` prints formatted bytes in both backends and AIPL code can print numbers without a built-in formatter.
+- **String escape sequences** in the tokenizer: `\n \t \r \0 \ \"`; an unknown escape is an `L:C:`-prefixed error.
+- **`examples/word_count.aipl`** reads `input.txt`, counts lines, words, and bytes, prints them (`print_uint` formats digits by hand into a `mem.alloc` buffer), writes its error to fd 2, and returns the line count. `examples/input.txt` is a sample (4 lines, 15 words, 81 bytes). Runs with `aipl eval` from `examples/` and with `wasmtime run --dir=.` after `aipl compile`.
+- **Tests** (`tests/test_wasi.rs`, now 13): the example gives `lines: 4 / words: 7 / bytes: 34` and returns 4 in both backends for a generated input, reports a missing file on stderr with -1 in both, reproduces the documented counts for the shipped sample, `str.ptr`/escapes/str variables agree across backends, and `fs.write` to fd 1 reaches stdout in both. The differential examples loop skips I/O examples (WASI imports) with a printed reason since they are compared under a preopened directory here instead. Conformance covers `str.ptr`. Total: 96 Rust tests.

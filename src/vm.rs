@@ -7,7 +7,11 @@ use std::thread::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// An `i32`. Stored in an i64 but every operation truncates both operands
+    /// to i32 first, so no value wider than 32 bits is ever observable.
     Int(i64),
+    /// An `i64`. Operations wrap at 64 bits, matching wasm `i64.*`.
+    Int64(i64),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -23,8 +27,20 @@ pub enum Value {
 /// concurrency, instead of each thread getting its own disconnected copy.
 pub struct SharedMemory {
     pub bytes: Vec<u8>,
-    pub heap_ptr: usize,
 }
+
+/// One wasm page.
+pub const PAGE_SIZE: usize = 65536;
+/// Initial linear memory in pages (1 MiB). Matches the wasm backend's memory
+/// minimum so `mem.grow` returns the same old-size in both backends.
+pub const INITIAL_PAGES: usize = 16;
+/// Maximum linear memory in pages. Matches the wasm backend's memory maximum.
+pub const MAX_PAGES: usize = 100;
+/// Address of the heap cursor word read and written by `mem.alloc`.
+pub const HEAP_PTR_ADDR: usize = 0;
+/// First heap address handed out by `mem.alloc`. Bytes below it are the
+/// runtime block (see AIPL_SPEC.md, Memory layout).
+pub const HEAP_START: u32 = 1024;
 
 pub struct VM {
     functions: Arc<HashMap<String, FnDef>>,
@@ -42,8 +58,14 @@ impl VM {
             functions: Arc::new(HashMap::new()),
             globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
-                bytes: vec![0u8; 1024 * 1024], // 1MB linear Wasm memory
-                heap_ptr: 1024,
+                bytes: {
+                    // 16 pages, with the heap cursor at address 0 pre-set to
+                    // HEAP_START - exactly what the wasm backend's data
+                    // segment does, so both backends start from one layout.
+                    let mut bytes = vec![0u8; INITIAL_PAGES * PAGE_SIZE];
+                    bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&HEAP_START.to_le_bytes());
+                    bytes
+                },
             })),
             fd_table: HashMap::new(),
             next_fd: 3,
@@ -149,13 +171,14 @@ impl VM {
 
     pub fn eval_expr(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         match expr {
-            Expr::Lit(lit) => match lit {
+            Expr::Lit(lit, _) => match lit {
                 Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
+                Literal::Int64(i) => Ok(Value::Int64(*i)),
                 Literal::Float(f) => Ok(Value::Float(*f)),
                 Literal::Bool(b) => Ok(Value::Bool(*b)),
                 Literal::Str(s) => Ok(Value::Str(s.clone())),
             },
-            Expr::Var(name) => {
+            Expr::Var(name, _) => {
                 if let Some(val) = scope.get(name) {
                     Ok(val.clone())
                 } else if let Some(val) = self.globals.get(name) {
@@ -164,12 +187,12 @@ impl VM {
                     Err(format!("VM: Variable '{}' not found in scope", name))
                 }
             }
-            Expr::Let { name, ty: _, val } => {
+            Expr::Let { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
                 scope.insert(name.clone(), v.clone());
                 Ok(v)
             }
-            Expr::Set { name, val } => {
+            Expr::Set { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
                 if scope.contains_key(name) {
                     scope.insert(name.clone(), v.clone());
@@ -178,7 +201,7 @@ impl VM {
                 }
                 Ok(v)
             }
-            Expr::If { cond, then_branch, else_branch } => {
+            Expr::If { cond, then_branch, else_branch, .. } => {
                 let c = self.eval_expr(cond, scope)?;
                 if let Value::Bool(b) = c {
                     if b {
@@ -190,31 +213,36 @@ impl VM {
                     Err("If condition must evaluate to boolean".to_string())
                 }
             }
-            Expr::Loop { var, start, end, step, body } => {
+            Expr::Loop { var, start, end, step, body, .. } => {
                 let s_val = match self.eval_expr(start, scope)? {
-                    Value::Int(i) => i,
+                    Value::Int(i) => i as i32,
                     _ => return Err("Loop start must be Int".to_string()),
                 };
                 let e_val = match self.eval_expr(end, scope)? {
-                    Value::Int(i) => i,
+                    Value::Int(i) => i as i32,
                     _ => return Err("Loop end must be Int".to_string()),
                 };
                 let st_val = match self.eval_expr(step, scope)? {
-                    Value::Int(i) => i,
+                    Value::Int(i) => i as i32,
                     _ => return Err("Loop step must be Int".to_string()),
                 };
 
+                // Mirrors the wasm lowering exactly (block/loop, exit when
+                // counter > end, counter += step with i32 wrapping). There is
+                // deliberately NO overflow guard: wasm has none, and wasm
+                // semantics are the spec. A loop whose counter wraps past
+                // i32::MAX never terminates in either backend.
                 let mut curr = s_val;
                 while curr <= e_val {
-                    scope.insert(var.clone(), Value::Int(curr));
+                    scope.insert(var.clone(), Value::Int(curr as i64));
                     for stmt in body {
                         self.eval_expr(stmt, scope)?;
                     }
-                    curr += st_val;
+                    curr = curr.wrapping_add(st_val);
                 }
                 Ok(Value::Void)
             }
-            Expr::While { cond, body } => {
+            Expr::While { cond, body, .. } => {
                 while let Value::Bool(true) = self.eval_expr(cond, scope)? {
                     for stmt in body {
                         self.eval_expr(stmt, scope)?;
@@ -222,23 +250,23 @@ impl VM {
                 }
                 Ok(Value::Void)
             }
-            Expr::Call { func, args } => {
+            Expr::Call { func, args, .. } => {
                 let mut evaluated_args = Vec::new();
                 for arg in args {
                     evaluated_args.push(self.eval_expr(arg, scope)?);
                 }
                 self.invoke(func, evaluated_args)
             }
-            Expr::Op { op, args } => self.eval_op(op, args, scope),
-            Expr::Ok(val) => {
+            Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
+            Expr::Ok(val, _) => {
                 let inner = self.eval_expr(val, scope)?;
                 Ok(Value::Ok(Box::new(inner)))
             }
-            Expr::Err(err) => {
+            Expr::Err(err, _) => {
                 let inner = self.eval_expr(err, scope)?;
                 Ok(Value::Err(Box::new(inner)))
             }
-            Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body } => {
+            Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 let res_val = self.eval_expr(expr, scope)?;
                 match res_val {
                     Value::Ok(inner) => {
@@ -262,7 +290,7 @@ impl VM {
                     other => Err(format!("Expected Result type in match_result, got {:?}", other)),
                 }
             }
-            Expr::Block(exprs) => {
+            Expr::Block(exprs, _) => {
                 let mut last = Value::Void;
                 for e in exprs {
                     last = self.eval_expr(e, scope)?;
@@ -279,6 +307,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{}{}", x, y))),
                     _ => Err("Invalid types for +".to_string()),
@@ -289,6 +318,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_sub(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                     _ => Err("Invalid types for -".to_string()),
                 }
@@ -298,6 +328,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) ^ (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x ^ y)),
                     _ => Err("Invalid types for ^".to_string()),
                 }
             }
@@ -308,6 +339,10 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int((x as i32).wrapping_shl(shift) as i64))
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64(x.wrapping_shl(shift)))
                     }
                     _ => Err("Invalid types for shl".to_string()),
                 }
@@ -320,6 +355,10 @@ impl VM {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int((x as i32).wrapping_shr(shift) as i64))
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64(x.wrapping_shr(shift)))
+                    }
                     _ => Err("Invalid types for shr".to_string()),
                 }
             }
@@ -331,6 +370,10 @@ impl VM {
                         let shift = (y as u32) & 31;
                         Ok(Value::Int(((x as i32 as u32).wrapping_shr(shift) as i32) as i64))
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let shift = (y as u32) & 63;
+                        Ok(Value::Int64((x as u64).wrapping_shr(shift) as i64))
+                    }
                     _ => Err("Invalid types for shru".to_string()),
                 }
             }
@@ -339,6 +382,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) & (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x & y)),
                     _ => Err("Invalid types for bitand".to_string()),
                 }
             }
@@ -347,6 +391,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int(((x as i32) | (y as i32)) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x | y)),
                     _ => Err("Invalid types for bitor".to_string()),
                 }
             }
@@ -366,6 +411,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store8 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store8", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => (i & 0xFF) as u8,
                     _ => return Err("mem.store8 requires Int val".to_string()),
@@ -399,13 +445,14 @@ impl VM {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
                 let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
-                Ok(Value::Int(i64::from_le_bytes(bytes)))
+                Ok(Value::Int64(i64::from_le_bytes(bytes)))
             }
             OpCode::MemStore32 => {
                 let ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store32 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store32", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
@@ -422,9 +469,10 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.store64 requires Int ptr".to_string()),
                 };
+                check_write_address("mem.store64", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
-                    Value::Int(i) => i,
-                    _ => return Err("mem.store64 requires Int val".to_string()),
+                    Value::Int64(i) => i,
+                    _ => return Err("mem.store64 requires Int64 val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 8 > mem.bytes.len() {
@@ -438,12 +486,33 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("mem.alloc requires Int size".to_string()),
                 };
+                // The cursor lives IN linear memory at address 0 (not in a Rust
+                // field), so VM code, compiled wasm, and self-hosted AIPL all
+                // share one allocator state. No bounds check here: like wasm,
+                // a later load/store past the end is what fails.
                 let mut mem = self.shared.lock().unwrap();
-                let allocated_ptr = mem.heap_ptr;
-                mem.heap_ptr += size;
+                let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+                let allocated_ptr = i32::from_le_bytes(cur);
+                let next = allocated_ptr.wrapping_add(size as i32);
+                mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
                 Ok(Value::Int(allocated_ptr as i64))
             }
             OpCode::MemFree => Ok(Value::Void),
+            OpCode::MemGrow => {
+                let pages = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("mem.grow requires Int pages".to_string()),
+                };
+                let mut mem = self.shared.lock().unwrap();
+                let old_pages = mem.bytes.len() / PAGE_SIZE;
+                if pages < 0 || old_pages + pages as usize > MAX_PAGES {
+                    // wasm memory.grow reports failure as -1 rather than trapping.
+                    return Ok(Value::Int(-1));
+                }
+                let new_len = (old_pages + pages as usize) * PAGE_SIZE;
+                mem.bytes.resize(new_len, 0);
+                Ok(Value::Int(old_pages as i64))
+            }
             // Atomics: the whole read-modify-write happens while holding the
             // one lock on `shared`, so these are genuinely atomic across real
             // OS threads spawned by thread.spawn, not just single-threaded
@@ -453,6 +522,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.add requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.add", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
@@ -469,6 +539,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.cas requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.cas", ptr)?;
                 let expected = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int expected".to_string()),
@@ -497,6 +568,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.lock", ptr)?;
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
@@ -504,9 +576,22 @@ impl VM {
                             return Err(format!("atomic.lock out of bounds: ptr {}", ptr));
                         }
                         let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
-                        if i32::from_le_bytes(bytes) == 0 {
-                            mem.bytes[ptr..ptr + 4].copy_from_slice(&1i32.to_le_bytes());
-                            return Ok(Value::Void);
+                        match i32::from_le_bytes(bytes) {
+                            0 => {
+                                mem.bytes[ptr..ptr + 4].copy_from_slice(&1i32.to_le_bytes());
+                                return Ok(Value::Void);
+                            }
+                            1 => {} // held by someone else: spin
+                            other => {
+                                // A lock word is only ever 0 or 1. Anything else means
+                                // this address is data, not a mutex (the classic case:
+                                // address 0, the heap cursor). Spinning on it would
+                                // hang forever, so fail loudly instead.
+                                return Err(format!(
+                                    "atomic.lock: word at ptr {} holds {}, which is not a lock state (0 = free, 1 = held); this address is data, not a mutex. Allocate a dedicated lock word with (mem.alloc 4)",
+                                    ptr, other
+                                ));
+                            }
                         }
                     }
                     std::thread::yield_now();
@@ -517,9 +602,18 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
+                check_write_address("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 4 > mem.bytes.len() {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
+                }
+                let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
+                let word = i32::from_le_bytes(bytes);
+                if word != 1 {
+                    return Err(format!(
+                        "atomic.unlock: word at ptr {} holds {}, but a held lock holds 1; either this mutex was never locked or this address is data, not a mutex",
+                        ptr, word
+                    ));
                 }
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&0i32.to_le_bytes());
                 Ok(Value::Void)
@@ -529,6 +623,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_mul(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                     _ => Err("Invalid types for *".to_string()),
                 }
@@ -548,6 +643,15 @@ impl VM {
                             Ok(Value::Int((x32 / y32) as i64))
                         }
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else if x == i64::MIN && y == -1 {
+                            Err("Integer overflow".to_string())
+                        } else {
+                            Ok(Value::Int64(x / y))
+                        }
+                    }
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
                     _ => Err("Invalid types for /".to_string()),
                 }
@@ -563,6 +667,13 @@ impl VM {
                             Err("Division by zero".to_string())
                         } else {
                             Ok(Value::Int(((x32 / y32) as i32) as i64))
+                        }
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int64(((x as u64) / (y as u64)) as i64))
                         }
                     }
                     _ => Err("Invalid types for divu".to_string()),
@@ -583,6 +694,15 @@ impl VM {
                             Ok(Value::Int((x32 % y32) as i64))
                         }
                     }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else if x == i64::MIN && y == -1 {
+                            Ok(Value::Int64(0))
+                        } else {
+                            Ok(Value::Int64(x % y))
+                        }
+                    }
                     _ => Err("Invalid types for %".to_string()),
                 }
             }
@@ -597,6 +717,13 @@ impl VM {
                             Err("Division by zero".to_string())
                         } else {
                             Ok(Value::Int(((x32 % y32) as i32) as i64))
+                        }
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        if y == 0 {
+                            Err("Division by zero".to_string())
+                        } else {
+                            Ok(Value::Int64(((x as u64) % (y as u64)) as i64))
                         }
                     }
                     _ => Err("Invalid types for remu".to_string()),
@@ -617,6 +744,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) < (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x < y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
                     _ => Err("Invalid types for <".to_string()),
                 }
@@ -626,6 +754,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) <= (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x <= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x <= y)),
                     _ => Err("Invalid types for <=".to_string()),
                 }
@@ -635,6 +764,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) > (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x > y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x > y)),
                     _ => Err("Invalid types for >".to_string()),
                 }
@@ -644,6 +774,7 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 match (a, b) {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) >= (y as i32))),
+                    (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x >= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x >= y)),
                     _ => Err("Invalid types for >=".to_string()),
                 }
@@ -759,6 +890,12 @@ impl VM {
                     _ => return Err("fs.write requires Int len".to_string()),
                 };
                 let data = self.read_bytes(buf_ptr, len);
+                // fds 1 and 2 are the process stdout/stderr, as under WASI, so AIPL
+                // code can print formatted bytes without a string value.
+                if fd == 1 || fd == 2 {
+                    let written = if fd == 1 { std::io::stdout().write(&data) } else { std::io::stderr().write(&data) };
+                    return Ok(Value::Int(written.map(|n| n as i64).unwrap_or(-1)));
+                }
                 let file = match self.fd_table.get_mut(&fd) {
                     Some(f) => f,
                     None => return Ok(Value::Int(-1)),
@@ -849,15 +986,82 @@ impl VM {
                     Err(_) => Err("Spawned thread panicked".to_string()),
                 }
             }
+            OpCode::I64ExtendS => match self.eval_expr(&args[0], scope)? {
+                Value::Int(x) => Ok(Value::Int64((x as i32) as i64)),
+                _ => Err("i64.extend_s requires Int".to_string()),
+            },
+            OpCode::I64ExtendU => match self.eval_expr(&args[0], scope)? {
+                Value::Int(x) => Ok(Value::Int64((x as i32 as u32) as i64)),
+                _ => Err("i64.extend_u requires Int".to_string()),
+            },
+            OpCode::I32Wrap => match self.eval_expr(&args[0], scope)? {
+                Value::Int64(x) => Ok(Value::Int((x as i32) as i64)),
+                _ => Err("i32.wrap requires Int64".to_string()),
+            },
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }
             OpCode::ArrGet | OpCode::ArrSet => {
                 Err(format!("{:?} not supported in VM backend: array ops not implemented", op))
             }
-            OpCode::SysTime | OpCode::SysExit => {
+            OpCode::SysTime => {
                 Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
             }
+            // The VM deliberately does not terminate the host process (it may be a
+            // test runner or the agent server); the request surfaces as an error
+            // carrying the code. Compiled wasm calls WASI proc_exit for real.
+            OpCode::SysExit => {
+                let code = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as i32,
+                    _ => return Err("sys.exit requires Int code".to_string()),
+                };
+                Err(format!("sys.exit({}) requested", code))
+            }
+            OpCode::StrLen => match self.eval_expr(&args[0], scope)? {
+                Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                other => Err(format!("str.len requires Str, got {:?}", other)),
+            },
+            // Materialise the string into the heap in the same [len][bytes] shape
+            // the wasm data segment uses, and return the address of the bytes.
+            // Each evaluation allocates afresh (bump allocator, never freed).
+            OpCode::StrPtr => match self.eval_expr(&args[0], scope)? {
+                Value::Str(s) => {
+                    let bytes = s.as_bytes();
+                    let mut mem = self.shared.lock().unwrap();
+                    let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+                    let base = i32::from_le_bytes(cur) as usize;
+                    let end = base + 4 + bytes.len();
+                    if end > mem.bytes.len() {
+                        return Err(format!("str.ptr: out of memory materialising a {}-byte string", bytes.len()));
+                    }
+                    mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    mem.bytes[base + 4..end].copy_from_slice(bytes);
+                    mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
+                    Ok(Value::Int((base + 4) as i64))
+                }
+                other => Err(format!("str.ptr requires Str, got {:?}", other)),
+            },
         }
     }
+}
+
+/// Runtime enforcement of the memory layout for writes (AIPL_SPEC.md, "Memory
+/// layout"): bytes 0-3 are the heap cursor and bytes 64-1023 are reserved, so
+/// no store or atomic op may target them, however the address was computed.
+/// The wasm backend emits the identical check (trapping with `unreachable`),
+/// so this is a shared semantic, not a VM-only guard. Reads are not checked.
+pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
+    if ptr < 4 {
+        return Err(format!(
+            "{} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; take memory from (mem.alloc n) instead",
+            op, ptr
+        ));
+    }
+    if (64..1024).contains(&ptr) {
+        return Err(format!(
+            "{} at address {}: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead",
+            op, ptr
+        ));
+    }
+    Ok(())
 }

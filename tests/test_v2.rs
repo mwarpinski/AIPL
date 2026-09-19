@@ -50,8 +50,8 @@ fn test_v2_atomic_concurrency() {
     let src = r#"
     (module test_atomics
       (fn test_mutex [] -> i32
-        (let mutex_ptr:i32 96)
-        (let data_ptr:i32 100)
+        (let mutex_ptr:i32 (mem.alloc 4))
+        (let data_ptr:i32 (mem.alloc 4))
         (atomic.lock mutex_ptr)
         (mem.store32 data_ptr 10)
         (atomic.add data_ptr 5)

@@ -1,0 +1,63 @@
+;; word_count: reads input.txt, counts lines, words, and bytes, prints them,
+;; and returns the line count (-1 if the file cannot be opened). Same result
+;; in the VM and as compiled wasm under WASI:
+;;   cd examples && ../target/debug/aipl eval word_count.aipl
+;;   aipl compile examples/word_count.aipl -o wc.wasm && cd examples && wasmtime run --dir=. ../wc.wasm --invoke main
+;; fds 1/2 are stdout/stderr; str.ptr/str.len turn a string into the (ptr, len)
+;; the fs ops take; print_uint formats digits by hand (no stdlib yet).
+(module word_count
+
+  (fn print_str [s:str] -> i32
+    (fs.write 1 (str.ptr s) (str.len s)))
+
+  (fn print_uint [n:i32] -> i32
+    (req (gte n 0))
+    (let buf:i32 (mem.alloc 12))
+    (let pos:i32 12)
+    (let v:i32 n)
+    (if (eq v 0) (block (set! pos 11) (mem.store8 (+ buf 11) 48) 0) 0)
+    (while (gt v 0)
+      (set! pos (- pos 1))
+      (mem.store8 (+ buf pos) (+ 48 (% v 10)))
+      (set! v (/ v 10)))
+    (fs.write 1 (+ buf pos) (- 12 pos)))
+
+  (fn print_line [label:str value:i32] -> i32
+    (call print_str label)
+    (call print_uint value)
+    (call print_str "\n"))
+
+  (fn is_space [c:i32] -> bool
+    (or (eq c 32) (or (eq c 10) (or (eq c 9) (eq c 13)))))
+
+  (fn count_words [buf:i32 n:i32] -> i32
+    (let words:i32 0)
+    (let in_word:bool false)
+    (loop i 0 (- n 1) 1
+      (if (call is_space (mem.load8 (+ buf i)))
+          (set! in_word false)
+          (if in_word
+              (set! in_word in_word)
+              (block (set! words (+ words 1)) (set! in_word true)))))
+    words)
+
+  (fn count_lines [buf:i32 n:i32] -> i32
+    (let lines:i32 0)
+    (loop i 0 (- n 1) 1
+      (if (eq (mem.load8 (+ buf i)) 10) (set! lines (+ lines 1)) (set! lines lines)))
+    (if (and (gt n 0) (neq (mem.load8 (+ buf (- n 1))) 10)) (+ lines 1) lines))
+
+  (fn main [] -> i32
+    (let path:str "input.txt")
+    (let fd:i32 (fs.open (str.ptr path) (str.len path) 0))
+    (if (lt fd 0)
+        (block (fs.write 2 (str.ptr "word_count: cannot open input.txt\n") (str.len "word_count: cannot open input.txt\n")) -1)
+        (block
+          (let buf:i32 (mem.alloc 65536))
+          (let n:i32 (fs.read fd buf 65536))
+          (fs.close fd)
+          (let lines:i32 (call count_lines buf n))
+          (call print_line "lines: " lines)
+          (call print_line "words: " (call count_words buf n))
+          (call print_line "bytes: " n)
+          lines))))
