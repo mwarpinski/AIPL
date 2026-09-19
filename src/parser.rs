@@ -575,7 +575,7 @@ impl Parser {
                 col,
             }) => match s.as_str() {
                 "i32" => Ok(Type::I32),
-                "i64" => Ok(Type::I64),
+                "i64" => Err("i64 type is unsupported".to_string()),
                 "f32" => Ok(Type::F32),
                 "f64" => Ok(Type::F64),
                 "bool" => Ok(Type::Bool),

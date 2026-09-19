@@ -35,6 +35,8 @@ pub enum OpCode {
     Mul,
     Div,
     Mod,
+    DivU,
+    RemU,
     BitXor,
     Shl,
     Shr,

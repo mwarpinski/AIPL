@@ -117,6 +117,13 @@ Additionally:
 - 7 unused OpCodes (`VecDot`, `MatMul`, `DomElem`, `DomMount`, `DomAppend`, `DomOnEvent`, `WebAlert`) removed from `ast.rs`, `parser.rs`, `checker.rs`, and `AIPL_SPEC.md`.
 - `tests/test_opcode_conformance.rs` added using `wasmparser` validation to enforce that every OpCode variant either (a) succeeds in VM + compiles/validates in WASM, or (b) returns an explicit `Err`.
 
+### WASM Reference Spec & 32-Bit Wrapping Arithmetic (P3 Audit Task)
+WebAssembly semantics are now officially established as the reference specification in `AIPL_SPEC.md`. Integer arithmetic in both VM and WASM backends is defined as wrapping 32-bit:
+- `src/vm.rs` enforced wrapping `as i32` for `Add`, `Sub`, `Mul`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr`, `ShrU`, `Div`, `DivU`, `Mod`, `RemU`. Shift amounts are masked with `& 31`.
+- Added `OpCode::ShrU` (`shru`), `OpCode::DivU` (`divu`), `OpCode::RemU` (`remu`) for unsigned operations across parser, checker, VM, WASM codegen, and conformance tests.
+- Scalar `i64` type is explicitly rejected during parsing (`Err("i64 type is unsupported")`).
+- Differential test suite `tests/test_differential.rs` added, comparing VM vs. Wasmtime execution for edge cases and example programs.
+
 
 
 ## 3. Byte-granularity memory ops — RESOLVED

@@ -2,6 +2,7 @@
 ## AI Programming Language: Machine-Native Formal Specification
 
 > **Integer semantics: wasm semantics are the spec.** `i32` and `i64` are wrapping two's-complement; the VM must match wasmtime bit-for-bit, and any divergence is a VM bug. Enforced by `tests/test_differential.rs`, which runs every case in both backends.
+> **Reference Implementation Decision:** WebAssembly semantics are the definitive specification for AIPL. The VM must match WebAssembly behavior in all edge cases, 32-bit wrapping arithmetic, shift masking, and control flow semantics.
 
 AIPL (AI Programming Language) is an ultra-dense, non-ambiguous, formally verifiable systems programming language, self-hosting compiler, and Intermediate Representation (IR) designed exclusively for AI agent consumption, high-performance WebAssembly compilation, linear memory manipulation, atomic swarm concurrency, and native vector embedding RAG database operations.
 
@@ -28,7 +29,7 @@ contract       ::= "(" ("req" | "ens" | "inv") expr ")" ;
 let_stmt       ::= "(" "let" identifier ":" type expr ")" ;
 set_stmt       ::= "(" "set!" identifier expr ")" ;
 
-type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
+type           ::= "i32" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "ptr" type ")"
                  | "(" "arr" type integer ")"
                  | "(" "vec" type integer ")"

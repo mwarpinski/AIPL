@@ -896,7 +896,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Sub
                 | OpCode::Mul
                 | OpCode::Div
+                | OpCode::DivU
                 | OpCode::Mod
+                | OpCode::RemU
                 | OpCode::BitXor
                 | OpCode::Shl
                 | OpCode::Shr
