@@ -1,6 +1,8 @@
 # AIPL Formal Specification (v2.0 Systems & Concurrency Edition)
 ## AI Programming Language: Machine-Native Formal Specification
 
+> **Integer semantics: wasm semantics are the spec.** `i32` and `i64` are wrapping two's-complement; the VM must match wasmtime bit-for-bit, and any divergence is a VM bug. Enforced by `tests/test_differential.rs`, which runs every case in both backends.
+
 AIPL (AI Programming Language) is an ultra-dense, non-ambiguous, formally verifiable systems programming language, self-hosting compiler, and Intermediate Representation (IR) designed exclusively for AI agent consumption, high-performance WebAssembly compilation, linear memory manipulation, atomic swarm concurrency, and native vector embedding RAG database operations.
 
 ---
@@ -390,7 +392,7 @@ Loop bounds, memory addresses, `mem.alloc` sizes, file descriptors, and thread h
 
 The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type F64`.
 
-**Status:** the wrapping rules above for both widths are implemented in `src/vm.rs` and covered by `tests/test_i64.rs` (VM result plus wasm validation for every case). The VM-versus-wasmtime differential test that proves the two backends *execute* identically (`tests/test_differential.rs`) does not exist yet. See P3 in `AIPL_Structural_Audit.md`. Until it lands, treat wasm as the reference when the two disagree.
+**Status:** the wrapping rules above for both widths are implemented in `src/vm.rs`, covered by `tests/test_i64.rs` (VM result plus wasm validation), and proven equal across backends by `tests/test_differential.rs`, which executes every case in this section in both the VM and wasmtime and asserts identical results. When the two disagree, wasm is right and the VM is fixed (section 10.4).
 
 ---
 
@@ -530,7 +532,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today: `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_opcode_conformance.rs` (below). Planned: `tests/test_differential.rs` (section 10.4).
+Files today: `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4).
 
 ### 10.3 Opcode conformance contract
 
@@ -541,9 +543,23 @@ Files today: `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, a
 
 An op that "succeeds" by returning a default value in one backend and a no-op in the other satisfies neither and fails the suite. New opcodes must be added to this file in the same commit that adds them to the AST.
 
-### 10.4 Differential testing (planned, P3)
+### 10.4 Differential testing (`tests/test_differential.rs`)
 
-The intended contract: for every zero-arg `i32` function in `examples/*.aipl` and for a fixed list of arithmetic edge cases (section 8), run it in the VM and in `wasmtime`, and assert identical results or identical failure. Divergences are fixed in the VM, never in the wasm backend. Until this exists, any claim that "the VM and wasm agree" is unverified.
+This is what makes "wasm semantics are the spec" enforceable. `wasmtime` is a dev-dependency; the harness compiles a module with `WasmCompiler`, instantiates the bytes in wasmtime (no imports are needed), and calls the export. `differential(module, wasm, fn_name, args)` runs the same call in a fresh `VM` and a fresh wasmtime instance and asserts one of:
+
+- both return the same value (`bool` is normalised to `Int(0|1)`, its wasm shape), or
+- both fail (VM `Err` and wasmtime trap, e.g. division by zero).
+
+A VM `req`/`ens` failure paired with a wasmtime success is **not** a divergence, because the wasm backend emits no contracts. Any other mismatch panics with `DIVERGENCE ... (fix src/vm.rs)`. The wasm side is never changed to match the interpreter.
+
+Coverage:
+
+- Every edge case in section 8 and 8.1 as a single-expression program.
+- Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
+- Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason. `hello_browser.aipl` is pinned as stale (removed `dom.*` ops) and the test fails if it ever parses again without being unpinned. The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous.
+- `aipl_src/codegen.aipl` is pinned as not wasm-compilable (`test_compile_*` use `fs.*`); the pin flips to a real comparison of `test_signatures_and_locals` the day the module compiles.
+
+Sample argument values are deliberately small. Example functions use parameters as loop bounds, and a tree-walking VM asked to iterate `i32::MAX` times is not a test, it is a hang. Wrap-around is covered by the explicit expression cases instead.
 
 ---
 

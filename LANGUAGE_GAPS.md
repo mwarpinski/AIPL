@@ -180,6 +180,10 @@ Type-level gaps in `src/parser.rs::parse_type` are unchanged: only
 `(ptr i32)` or `(fn (i32) -> i32)` in a type position still fails to parse
 with "Unknown compound type: ptr".
 
+### VM-vs-wasm agreement is now tested (2026-09-18)
+
+`tests/test_differential.rs` runs every integer edge case, control-flow shape, the i64/f64 cases, and every all-`i32`-parameter function in `examples/*.aipl` in both the VM and wasmtime (dev-dependency) and asserts identical results or identical failure. The only tolerated asymmetry is a VM contract failure, because the wasm backend emits no contracts. Two things still cannot be compared: `hello_browser.aipl` (uses removed `dom.*` ops; pinned as stale) and `aipl_src/codegen.aipl` (its `test_compile_*` functions use `fs.*`, so the module does not compile to wasm until P6 lands). The one divergence found, the VM `loop` overflow guard, was removed from the VM.
+
 ### `i64` status (2026-09-18)
 
 `i64` is now a real, declarable type end to end: `42i64` literals, `i64` params/locals/returns, 64-bit wrapping arithmetic and comparisons in the VM (`Value::Int64`), explicit `i64.extend_s` / `i64.extend_u` / `i32.wrap` conversions, and type-directed instruction selection in the wasm backend (`i32.*` vs `i64.*` vs `f64.*`, plus correct `if` block result types). Covered by `tests/test_i64.rs`. Remaining gaps: the self-hosted `codegen.aipl` has no `i64` support; there are no `f32` literals; no `i64` <-> `f64` conversions; loop bounds and addresses are `i32` only. The coverage matrix above predates P2 and this change and should be regenerated.

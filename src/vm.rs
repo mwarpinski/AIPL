@@ -209,6 +209,11 @@ impl VM {
                     _ => return Err("Loop step must be Int".to_string()),
                 };
 
+                // Mirrors the wasm lowering exactly (block/loop, exit when
+                // counter > end, counter += step with i32 wrapping). There is
+                // deliberately NO overflow guard: wasm has none, and wasm
+                // semantics are the spec. A loop whose counter wraps past
+                // i32::MAX never terminates in either backend.
                 let mut curr = s_val;
                 while curr <= e_val {
                     scope.insert(var.clone(), Value::Int(curr as i64));
@@ -216,7 +221,6 @@ impl VM {
                         self.eval_expr(stmt, scope)?;
                     }
                     curr = curr.wrapping_add(st_val);
-                    if st_val > 0 && curr < s_val { break; }
                 }
                 Ok(Value::Void)
             }
