@@ -225,14 +225,12 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             Literal::Bool(_) => Type::Bool,
             Literal::Str(_) => Type::Str,
         },
-        Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
-        Expr::Let { ty, .. } => ty.clone(),
-        Expr::Set { name, .. } => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::Let { .. } | Expr::Set { .. } => Type::Void,
         Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
         Expr::Block(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Loop { .. } | Expr::While { .. } => Type::Void,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
-        Expr::Ok(inner, _) | Expr::Err(inner, _) => expr_type(inner, ctx),
+        Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Op { op, args, .. } => match op {
             OpCode::Add
@@ -499,32 +497,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
             let then_void = is_void_expr(then_branch, ctx);
-            let else_void = is_void_expr(else_branch, ctx);
-            if then_void && else_void {
+            if then_void {
                 func.instruction(&Instruction::If(BlockType::Empty));
                 compile_expr(then_branch, ctx, func)?;
                 func.instruction(&Instruction::Else);
                 compile_expr(else_branch, ctx, func)?;
                 func.instruction(&Instruction::End);
             } else {
-                // The block yields one value of the branches' shared AIPL type
-                // (the checker guarantees they agree). A branch whose codegen
-                // leaves nothing - `set!`/`let` (which the checker types as the
-                // variable's type) or a loop - is topped up with the value the
-                // VM would produce, so `(if c (set! x v) 0)` is valid wasm and
-                // means the same thing in both backends. P7 will make set!/let
-                // void and retire this.
-                let ty = if then_void { expr_type(else_branch, ctx) } else { expr_type(then_branch, ctx) };
+                let ty = expr_type(then_branch, ctx);
                 func.instruction(&Instruction::If(BlockType::Result(aipl_to_wasm_type(&ty))));
                 compile_expr(then_branch, ctx, func)?;
-                if then_void {
-                    emit_void_branch_value(then_branch, &ty, ctx, func)?;
-                }
                 func.instruction(&Instruction::Else);
                 compile_expr(else_branch, ctx, func)?;
-                if else_void {
-                    emit_void_branch_value(else_branch, &ty, ctx, func)?;
-                }
                 func.instruction(&Instruction::End);
             }
         }
@@ -860,10 +844,10 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Ok(inner, _) => {
+        Expr::Ok(inner, ..) => {
             compile_expr(inner, ctx, func)?;
         }
-        Expr::Err(inner, _) => {
+        Expr::Err(inner, ..) => {
             compile_expr(inner, ctx, func)?;
         }
         Expr::MatchResult { .. } => {
@@ -1173,31 +1157,4 @@ fn emit_errno_to_result(func: &mut Function, out_cell: Option<i32>) {
     func.instruction(&Instruction::End);
 }
 
-/// After compiling a branch that left nothing on the stack inside an `if`
-/// whose other branch produces a value: push what the VM would have yielded.
-/// `set!`/`let` (directly, or as the last statement of a block) yield the
-/// variable just assigned; anything else (loops) yields zero of the type.
-fn emit_void_branch_value(expr: &Expr, ty: &Type, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
-    let last = match expr {
-        Expr::Block(exprs, _) => exprs.last(),
-        other => Some(other),
-    };
-    match last {
-        Some(Expr::Set { name, .. }) | Some(Expr::Let { name, .. }) => {
-            let idx = *ctx
-                .locals
-                .get(name)
-                .ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?;
-            func.instruction(&Instruction::LocalGet(idx));
-        }
-        _ => {
-            match aipl_to_wasm_type(ty) {
-                ValType::I64 => func.instruction(&Instruction::I64Const(0)),
-                ValType::F64 => func.instruction(&Instruction::F64Const(0.0.into())),
-                ValType::F32 => func.instruction(&Instruction::F32Const(0.0_f32.into())),
-                _ => func.instruction(&Instruction::I32Const(0)),
-            };
-        }
-    }
-    Ok(())
-}
+

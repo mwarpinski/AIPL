@@ -277,7 +277,7 @@
     (let done:bool false)
     (while (not done)
       (if (eq child 0)
-          (block (set! done true) 0)
+          (set! done true)
           (block
             (let fname_node:i32 (call nth_child child 1))
             (let params_node:i32 (call nth_child child 2))
@@ -293,18 +293,16 @@
             (let pdone:bool false)
             (while (not pdone)
               (if (eq pchild 0)
-                  (block (set! pdone true) 0)
+                  (set! pdone true)
                   (block
                     (let ptype_node:i32 (call node_next (call node_next pchild)))
                     (mem.store32 (+ entry (+ 24 (* pcount 4)))
                                  (call classify_keyword src_ptr (call node_a ptype_node) (call node_b ptype_node)))
                     (set! pcount (+ pcount 1))
-                    (set! pchild (call node_next ptype_node))
-                    0)))
+                    (set! pchild (call node_next ptype_node)))))
             (mem.store32 (+ entry 8) pcount)
             (set! count (+ count 1))
-            (set! child (call node_next child))
-            0)))
+            (set! child (call node_next child)))))
     count)
 
   ;; Looks up a function by name; returns its wasm_func_index, or -1.
@@ -385,11 +383,10 @@
           (let done:bool false)
           (while (not done)
             (if (eq child 0)
-                (block (set! done true) 0)
+                (set! done true)
                 (block
                   (let _w:i32 (call collect_locals_walk src_ptr base child))
-                  (set! child (call node_next child))
-                  0)))
+                  (set! child (call node_next child)))))
           0)))
 
   (fn is_contract_head [src_ptr:i32 group:i32] -> bool
@@ -411,24 +408,22 @@
     (let pdone:bool false)
     (while (not pdone)
       (if (eq pchild 0)
-          (block (set! pdone true) 0)
+          (set! pdone true)
           (block
             (let type_node:i32 (call node_next (call node_next pchild)))
             (let type_id:i32 (call classify_keyword src_ptr (call node_a type_node) (call node_b type_node)))
             (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id))
-            (set! pchild (call node_next type_node))
-            0)))
+            (set! pchild (call node_next type_node)))))
     (let bchild:i32 (call nth_child fndef_group 5))
     (let bdone:bool false)
     (while (not bdone)
       (if (eq bchild 0)
-          (block (set! bdone true) 0)
+          (set! bdone true)
           (block
             (if (call is_contract_head src_ptr bchild)
                 0
                 (call collect_locals_walk src_ptr base bchild))
-            (set! bchild (call node_next bchild))
-            0)))
+            (set! bchild (call node_next bchild)))))
     (mem.load32 28))
 
   ;; ===== TEMPORARY test harness (removed once verified) =====
@@ -741,8 +736,8 @@
     (while (not done)
       (let nxt:i32 (call node_next cur))
       (if (eq nxt 0)
-          (block (set! done true) 0)
-          (block (set! cur nxt) 0)))
+          (set! done true)
+          (set! cur nxt)))
     cur)
 
   (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
@@ -828,11 +823,11 @@
 
 (fn compile_set [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:i32 (call nth_child node 1)) (let val_node:i32 (call nth_child node 2)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
 
-(fn compile_call [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fname_node:i32 (call nth_child node 1)) (let offset:i32 0) (let arg:i32 (call node_next (call node_next (call node_a node)))) (let done:bool false) (while (not done) (if (eq arg 0) (block (set! done true) 0) (block (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg)) 0))) (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname_node) (call node_b fname_node))) (if (eq fidx -1) (block (let _e:i32 (call set_compile_error)) offset) (+ offset (call emit_call (+ out_ptr offset) fidx))))
+(fn compile_call [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fname_node:i32 (call nth_child node 1)) (let offset:i32 0) (let arg:i32 (call node_next (call node_next (call node_a node)))) (let done:bool false) (while (not done) (if (eq arg 0) (set! done true) (block (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg))))) (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname_node) (call node_b fname_node))) (if (eq fidx -1) (block (let _e:i32 (call set_compile_error)) offset) (+ offset (call emit_call (+ out_ptr offset) fidx))))
 
 (fn compile_stmt [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let n:i32 (call compile_expr src_ptr node out_ptr locals_base locals_count func_table_base func_count)) (if (call is_void_node src_ptr node func_table_base func_count) n (+ n (call emit_byte (+ out_ptr n) 26))))
 
-(fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (let done:bool false) (while (not done) (if (eq node 0) (block (set! done true) 0) (block (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt) 0))) offset)
+(fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (let done:bool false) (while (not done) (if (eq node 0) (set! done true) (block (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt)))) offset)
 
 (fn compile_block [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (call compile_stmt_seq src_ptr (call node_next (call node_a node)) out_ptr locals_base locals_count func_table_base func_count))
 
@@ -842,7 +837,7 @@
 
 (fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let var_node:i32 (call nth_child node 1)) (let start_node:i32 (call nth_child node 2)) (let end_node:i32 (call nth_child node 3)) (let step_node:i32 (call nth_child node 4)) (let body_first:i32 (call nth_child node 5)) (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node))) (let off:i32 0) (set! off (+ off (call compile_expr src_ptr start_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 2) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (mem.store8 (+ out_ptr off) 3) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr end_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 74) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 13) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1))) (set! off (+ off (call compile_stmt_seq src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr step_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1)) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 12) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
 
-(fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (let done:bool false) (while (not done) (if (eq bchild 0) (block (set! done true) 0) (if (call is_contract_head src_ptr bchild) (block (set! bchild (call node_next bchild)) 0) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) 0) (set! bchild (call node_next bchild)) 0)))) off)
+(fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (let done:bool false) (while (not done) (if (eq bchild 0) (set! done true) (if (call is_contract_head src_ptr bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (set! off off)) (set! bchild (call node_next bchild)))))) off)
 
   ;; ===== TEMPORARY test: compile the "add" function, wrap in a
   ;; hand-written minimal module shell, write to a real file for external validation =====

@@ -154,8 +154,8 @@ pub enum Expr {
         args: Vec<Expr>,
         span: (u32, u32),
     },
-    Ok(Box<Expr>, (u32, u32)),
-    Err(Box<Expr>, (u32, u32)),
+    Ok(Box<Expr>, Option<Type>, (u32, u32)),
+    Err(Box<Expr>, Option<Type>, (u32, u32)),
     MatchResult {
         expr: Box<Expr>,
         ok_var: String,
@@ -179,8 +179,8 @@ impl Expr {
             Expr::While { span, .. } => *span,
             Expr::Call { span, .. } => *span,
             Expr::Op { span, .. } => *span,
-            Expr::Ok(_, span) => *span,
-            Expr::Err(_, span) => *span,
+            Expr::Ok(_, _, span) => *span,
+            Expr::Err(_, _, span) => *span,
             Expr::MatchResult { span, .. } => *span,
             Expr::Block(_, span) => *span,
         }

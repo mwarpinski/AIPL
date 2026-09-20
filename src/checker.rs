@@ -96,6 +96,9 @@ impl TypeChecker {
                 }
             }
             Expr::Let { name, ty, val, .. } => {
+                if env.contains_key(name) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}'", l, c, name));
+                }
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != *ty {
                     return Err(format!(
@@ -104,7 +107,7 @@ impl TypeChecker {
                     ));
                 }
                 env.insert(name.clone(), ty.clone());
-                Ok(ty.clone())
+                Ok(Type::Void)
             }
             Expr::Set { name, val, .. } => {
                 let var_ty = env
@@ -118,22 +121,25 @@ impl TypeChecker {
                         l, c, var_ty, val_ty
                     ));
                 }
-                Ok(var_ty)
+                Ok(Type::Void)
             }
             Expr::If { cond, then_branch, else_branch, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
                     return Err(format!("{}:{}: If condition must be Bool, got {:?}", l, c, cond_ty));
                 }
-                let then_ty = self.infer_expr_type(then_branch, env)?;
-                let else_ty = self.infer_expr_type(else_branch, env)?;
-                if then_ty != else_ty {
-                    return Err(format!(
-                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}",
+                let then_ty = self.infer_expr_type(then_branch, &mut env.clone())?;
+                let else_ty = self.infer_expr_type(else_branch, &mut env.clone())?;
+                if then_ty == Type::Void && else_ty == Type::Void {
+                    Ok(Type::Void)
+                } else if then_ty != Type::Void && else_ty != Type::Void && then_ty == else_ty {
+                    Ok(then_ty)
+                } else {
+                    Err(format!(
+                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}. If mixing void and non-void, consider wrapping in (block ... value)",
                         l, c, then_ty, else_ty
-                    ));
+                    ))
                 }
-                Ok(then_ty)
             }
             Expr::Loop { var, start, end, step, body, .. } => {
                 let start_ty = self.infer_expr_type(start, env)?;
@@ -141,6 +147,9 @@ impl TypeChecker {
                 let step_ty = self.infer_expr_type(step, env)?;
                 if start_ty != Type::I32 || end_ty != Type::I32 || step_ty != Type::I32 {
                     return Err(format!("{}:{}: Loop bounds and step must be i32", l, c));
+                }
+                if env.contains_key(var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in loop", l, c, var));
                 }
                 let mut local_env = env.clone();
                 local_env.insert(var.clone(), Type::I32);
@@ -154,8 +163,9 @@ impl TypeChecker {
                 if cond_ty != Type::Bool {
                     return Err(format!("{}:{}: While condition must be Bool", l, c));
                 }
+                let mut local_env = env.clone();
                 for stmt in body {
-                    self.infer_expr_type(stmt, env)?;
+                    self.infer_expr_type(stmt, &mut local_env)?;
                 }
                 Ok(Type::Void)
             }
@@ -469,36 +479,59 @@ impl TypeChecker {
                 }
                 }
             }
-            Expr::Ok(val, _) => {
+            Expr::Ok(val, extra_ty, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
-                Ok(Type::ResultType(Box::new(inner_ty), Box::new(Type::I32)))
+                let err_ty = extra_ty.clone().unwrap_or(Type::I32);
+                Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
-            Expr::Err(err, _) => {
+            Expr::Err(err, extra_ty, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
-                Ok(Type::ResultType(Box::new(Type::I32), Box::new(err_ty)))
+                let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
+                Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
-                let _res_ty = self.infer_expr_type(expr, env)?;
+                let res_ty = self.infer_expr_type(expr, env)?;
+                let (ok_ty, err_ty) = match res_ty {
+                    Type::ResultType(ok_t, err_t) => (*ok_t, *err_t),
+                    other => return Err(format!("{}:{}: match_result expected ResultType, got {:?}", l, c, other)),
+                };
+
+                if env.contains_key(ok_var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result ok arm", l, c, ok_var));
+                }
                 let mut ok_env = env.clone();
-                ok_env.insert(ok_var.clone(), Type::I32);
+                ok_env.insert(ok_var.clone(), ok_ty);
                 let mut last_ok_ty = Type::Void;
                 for stmt in ok_body {
                     last_ok_ty = self.infer_expr_type(stmt, &mut ok_env)?;
                 }
 
+                if env.contains_key(err_var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result err arm", l, c, err_var));
+                }
                 let mut err_env = env.clone();
-                err_env.insert(err_var.clone(), Type::I32);
-                let mut _last_err_ty = Type::Void;
+                err_env.insert(err_var.clone(), err_ty);
+                let mut last_err_ty = Type::Void;
                 for stmt in err_body {
-                    _last_err_ty = self.infer_expr_type(stmt, &mut err_env)?;
+                    last_err_ty = self.infer_expr_type(stmt, &mut err_env)?;
                 }
 
-                Ok(last_ok_ty)
+                if last_ok_ty == Type::Void && last_err_ty == Type::Void {
+                    Ok(Type::Void)
+                } else if last_ok_ty != Type::Void && last_err_ty != Type::Void && last_ok_ty == last_err_ty {
+                    Ok(last_ok_ty)
+                } else {
+                    Err(format!(
+                        "{}:{}: match_result arm type mismatch: ok arm yields {:?}, err arm yields {:?}",
+                        l, c, last_ok_ty, last_err_ty
+                    ))
+                }
             }
             Expr::Block(exprs, _) => {
+                let mut local_env = env.clone();
                 let mut last_ty = Type::Void;
                 for e in exprs {
-                    last_ty = self.infer_expr_type(e, env)?;
+                    last_ty = self.infer_expr_type(e, &mut local_env)?;
                 }
                 Ok(last_ty)
             }

@@ -197,11 +197,27 @@ Repo: AIPL, src/compiler/wasm.rs. Add an ImportSection importing from "wasi_snap
 
 **Extras forced by this work:** the checker now requires `i32` for every `fs.*` argument (a `str` path would have worked in wasm and failed in the VM); the differential harness links WASI, which turned the pinned codegen test into a real comparison, and that surfaced a wasm backend bug: `(if c (set! x v) 0)` produced an invalid block (the `then` branch leaves no value, the `else` does). Fixed by giving mixed ifs a result type and topping up the value-less branch with the assigned variable; P7 retires this when `set!`/`let` become void. With that, **the self-hosted compiler's tokenizer, parser, and signature/locals pass run under wasmtime and agree with the VM.** 91 Rust tests pass; AIPL suite green. Follow-up the same day: `str.ptr`, string escapes, fds 1/2 as stdout/stderr in the VM, and `examples/word_count.aipl` as the end-to-end I/O program (96 tests). **Not part of P6 by design:** the self-hosted `codegen.aipl` does not yet emit imports, string data, or the WASI lowerings; the P9 prompt below was rewritten to deliver that at byte parity with the Rust backend, so the list stays in order.
 
-### P7 — Fix statement/expression typing and scoping in the spec and all three implementations
+### P7 — Fix statement/expression typing and scoping in the spec and all three implementations [DONE — 2026-09-19]
 
 ```
 Repo: AIPL. Decide and implement these rules identically in src/checker.rs, src/vm.rs, src/compiler/wasm.rs, and aipl_src/codegen.aipl: (1) `set!` has type void. (2) `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`. (3) `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void. (4) `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. (5) `set!` on an undeclared name is a type error and a VM runtime error (delete the globals fallback at vm.rs Expr::Set). (6) match_result arms bind ok_var/err_var to the actual Ok/Err payload types from the matched expression's ResultType; `ok`/`err` take an explicit result type via (ok:T v) or infer from an enclosing let/return type — pick one and implement it. Remove the `(block (set! done true) 0)` idiom from codegen.aipl and compiler.aipl now that void ifs are legal. Update AIPL_SPEC.md with these six rules verbatim. Extend tests/test_differential.rs with a case per rule.
 ```
+
+**Verification 2026-09-19.**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| (1) `set!` has type void | Done | `src/checker.rs` returns `Ok(Type::Void)`; `src/vm.rs` returns `Ok(Value::Void)`; `src/compiler/wasm.rs` types as `Type::Void`; `tests/test_differential.rs` asserts. |
+| (2) `if` branches void / matching non-void | Done | `src/checker.rs` requires matching non-void types or both void, returning error suggesting `(block ... value)` on mismatch; `src/compiler/wasm.rs` emits `If(Empty)` for void `if` or `If(Result(T))` for non-void `if`. |
+| (3) `let` has type void; body last expr must be value for non-void fn | Done | `src/checker.rs` returns `Ok(Type::Void)` for `Expr::Let`; function return check rejects `let` as final expr in non-void function. |
+| (4) `let` is block-scoped; shadowing is a type error | Done | `src/checker.rs` rejects shadowing in `Let`, `Loop`, `MatchResult`; `src/vm.rs` captures scope keys before entering blocks and restores outer scope via `scope.retain`. |
+| (5) `set!` on undeclared name is type error & VM runtime error | Done | `src/checker.rs` checks variable presence; `src/vm.rs` deleted `globals` fallback and returns runtime error. |
+| (6) `match_result` binds payload types; `ok`/`err` explicit or inferred | Done | `src/checker.rs` extracts `ok_ty` and `err_ty` from `ResultType` and binds arm variables to actual types; `src/parser.rs` parses `(ok:T v)` / `(err:T v)` and `(result T1 T2)`. |
+| Remove `(block (set! done true) 0)` idiom | Done | Replaced in `aipl_src/codegen.aipl` and `aipl_src/compiler.aipl` with clean void `set!` and void `if`. |
+| Update `AIPL_SPEC.md` with rules verbatim | Done | Section 7 updated with all 6 rules verbatim. |
+| Extend `tests/test_differential.rs` with a case per rule | Done | Added `p7_typing_and_scoping_rules` covering all rules. |
+
+**Extras forced by this work:** retired the `emit_void_branch_value` workaround in `src/compiler/wasm.rs` since mixed void/non-void `if` expressions are now caught and rejected at check time; cleaned up existing tests in `tests/test_v2.rs` to use `(set! res_val ...)` instead of `(let r ...)` in `match_result` branches.
 
 ### P8 — Structs and real arrays: kill manual offset arithmetic
 

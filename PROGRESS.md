@@ -107,6 +107,19 @@ resolver's "temporary scaffolding" doc comment + gap-doc updates). Diff vs.
 - **Added `tests/test_differential.rs`**: Created differential test runner comparing VM and Wasmtime execution across `examples/*.aipl`, `aipl_src/codegen.aipl`, and explicit edge cases (`+` overflow, arithmetic `shr`, `*` overflow, `/` truncating, `%` remainder, `shru`, `divu`, `remu`, `loop` end bound inclusive, and `while` with `set!`). All differential tests pass.
 
 
+### Statement & Expression Typing/Scoping Rules (P7 Audit Task)
+- **Implemented 6 Unified Typing & Scoping Rules**: Applied identically in `src/checker.rs`, `src/vm.rs`, `src/compiler/wasm.rs`, `aipl_src/codegen.aipl`, and `AIPL_SPEC.md`:
+  1. `set!` has type `void`.
+  2. `if` whose branches are both void yields `void`; otherwise both branches must match non-void type (mismatches yield type error suggesting `(block ... value)`).
+  3. `let` has type `void`; final expression of non-void function must be value expression.
+  4. `let` is block-scoped (`if`, `while`, `loop`, `block`, `match_result`); shadowing an outer name is a type error. Outer mutation via `set!` preserved.
+  5. `set!` on undeclared variable is a type error and VM runtime error (globals fallback removed from `vm.rs`).
+  6. `match_result` arms bind payload types from matched `ResultType`; `ok`/`err` take explicit `(ok:T v)` or infer context.
+- **Cleaned Up Compiler & Codegen AIPL Sources**: Replaced `(block (set! done true) 0)` and trailing `0` workaround idioms in `aipl_src/compiler.aipl` and `aipl_src/codegen.aipl` with clean void `set!` and void `if`.
+- **Retired Wasm Backend Workaround**: Deleted `emit_void_branch_value` from `src/compiler/wasm.rs` as mixed-void branch expressions are now caught at check time.
+- **Added `tests/test_differential.rs` P7 Coverage**: Extended differential tests with `p7_typing_and_scoping_rules` covering all six rules across VM and Wasmtime. All tests pass.
+
+
 ### Rust side (`src/`) — infrastructure fixes, not application logic
 - **`mem.load8` / `mem.store8`** — new opcodes, full stack (`ast.rs`,
   `parser.rs`, `checker.rs`, `vm.rs`, `compiler/wasm.rs`). Replaces the

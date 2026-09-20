@@ -178,7 +178,7 @@ fn walk_calls_expr<F: FnMut(&mut String)>(expr: &mut Expr, f: &mut F) {
                 walk_calls_expr(a, f);
             }
         }
-        Expr::Let { val, .. } | Expr::Set { val, .. } | Expr::Ok(val, _) | Expr::Err(val, _) => {
+        Expr::Let { val, .. } | Expr::Set { val, .. } | Expr::Ok(val, ..) | Expr::Err(val, ..) => {
             walk_calls_expr(val, f);
         }
         Expr::If { cond, then_branch, else_branch, .. } => {

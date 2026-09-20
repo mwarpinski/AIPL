@@ -75,8 +75,8 @@ fn test_v2_result_type_matching() {
       (fn safe_lookup [key:i32] -> i32
         (let res_val:i32 0)
         (if (gt key 0)
-            (let r:i32 (match_result (ok key) (ok val val) (err e 0)))
-            (let r:i32 (match_result (err -1) (ok val val) (err e -1))))
+            (set! res_val (match_result (ok key) (ok val val) (err e 0)))
+            (set! res_val (match_result (err -1) (ok val val) (err e -1))))
         res_val))
     "#;
     let module = Parser::parse(src).expect("Parse failed");

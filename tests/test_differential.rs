@@ -514,3 +514,70 @@ fn codegen_self_test_agrees_between_vm_and_wasmtime() {
         }
     }
 }
+
+#[test]
+fn p7_typing_and_scoping_rules() {
+    // Rule 1 & 2 & 3 & 4: void set!, void let, block scoping with outer mutation, void if
+    let src = r#"
+(module p7_test
+  (fn test_scoping_and_void [n:i32] -> i32
+    (let acc:i32 n)
+    (if (gt n 0)
+        (set! acc (+ acc 10))
+        (set! acc (- acc 10)))
+    (block
+      (let acc_local:i32 999)
+      (set! acc (+ acc acc_local)))
+    acc)
+  (fn test_result_matching [val:i32] -> i32
+    (let r:(result i32 str) (if (gt val 0) (ok:str val) (err:i32 "neg")))
+    (match_result r
+      (ok v (+ v 100))
+      (err e -1)))
+)
+"#;
+    let mut parser = Parser::new(src);
+    let module = parser.parse_module().expect("p7_test parses");
+    let mut checker = TypeChecker::new();
+    checker.check_module(&module).expect("p7_test type-checks");
+
+    let wasm = WasmCompiler::compile(&module).expect("p7_test compiles to WASM");
+
+    let out1 = differential(&module, &wasm, "test_scoping_and_void", &[5]);
+    assert_eq!(out1, Ok(Value::Int(1014))); // 5 + 10 + 999 = 1014
+
+    let out2 = differential(&module, &wasm, "test_scoping_and_void", &[-5]);
+    assert_eq!(out2, Ok(Value::Int(984))); // -5 - 10 + 999 = 984
+
+    let out3 = differential(&module, &wasm, "test_result_matching", &[10]);
+    assert_eq!(out3, Ok(Value::Int(110)));
+
+    let out4 = differential(&module, &wasm, "test_result_matching", &[-10]);
+    assert_eq!(out4, Ok(Value::Int(-1)));
+
+    // Test Rule 4 Shadowing Error
+    let shadow_src = r#"
+(module shadow_test
+  (fn bad_shadow [x:i32] -> i32
+    (let x:i32 10)
+    x)
+)
+"#;
+    let mut p = Parser::new(shadow_src);
+    let m = p.parse_module().expect("shadow_test parses");
+    let err = TypeChecker::new().check_module(&m).unwrap_err();
+    assert!(err.contains("Cannot shadow"), "expected shadowing error, got: {err}");
+
+    // Test Rule 5 Set on Undeclared Variable
+    let set_err_src = r#"
+(module set_test
+  (fn bad_set [] -> i32
+    (set! unassigned 5)
+    0)
+)
+"#;
+    let mut p2 = Parser::new(set_err_src);
+    let m2 = p2.parse_module().expect("set_test parses");
+    let err2 = TypeChecker::new().check_module(&m2).unwrap_err();
+    assert!(err2.contains("Undefined variable"), "expected undefined variable error, got: {err2}");
+}

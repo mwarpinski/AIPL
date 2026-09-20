@@ -189,21 +189,22 @@ impl VM {
             }
             Expr::Let { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
-                scope.insert(name.clone(), v.clone());
-                Ok(v)
+                scope.insert(name.clone(), v);
+                Ok(Value::Void)
             }
             Expr::Set { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
                 if scope.contains_key(name) {
-                    scope.insert(name.clone(), v.clone());
+                    scope.insert(name.clone(), v);
+                    Ok(Value::Void)
                 } else {
-                    self.globals.insert(name.clone(), v.clone());
+                    Err(format!("VM: Undefined variable '{}' in set!", name))
                 }
-                Ok(v)
             }
             Expr::If { cond, then_branch, else_branch, .. } => {
                 let c = self.eval_expr(cond, scope)?;
-                if let Value::Bool(b) = c {
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
+                let res = if let Value::Bool(b) = c {
                     if b {
                         self.eval_expr(then_branch, scope)
                     } else {
@@ -211,7 +212,9 @@ impl VM {
                     }
                 } else {
                     Err("If condition must evaluate to boolean".to_string())
-                }
+                };
+                scope.retain(|k, _| keys_before.contains(k));
+                res
             }
             Expr::Loop { var, start, end, step, body, .. } => {
                 let s_val = match self.eval_expr(start, scope)? {
@@ -227,27 +230,30 @@ impl VM {
                     _ => return Err("Loop step must be Int".to_string()),
                 };
 
-                // Mirrors the wasm lowering exactly (block/loop, exit when
-                // counter > end, counter += step with i32 wrapping). There is
-                // deliberately NO overflow guard: wasm has none, and wasm
-                // semantics are the spec. A loop whose counter wraps past
-                // i32::MAX never terminates in either backend.
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 let mut curr = s_val;
                 while curr <= e_val {
+                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
                     scope.insert(var.clone(), Value::Int(curr as i64));
                     for stmt in body {
                         self.eval_expr(stmt, scope)?;
                     }
+                    scope.retain(|k, _| iter_keys.contains(k));
                     curr = curr.wrapping_add(st_val);
                 }
+                scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
             }
             Expr::While { cond, body, .. } => {
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 while let Value::Bool(true) = self.eval_expr(cond, scope)? {
+                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
                     for stmt in body {
                         self.eval_expr(stmt, scope)?;
                     }
+                    scope.retain(|k, _| iter_keys.contains(k));
                 }
+                scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
             }
             Expr::Call { func, args, .. } => {
@@ -258,43 +264,46 @@ impl VM {
                 self.invoke(func, evaluated_args)
             }
             Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
-            Expr::Ok(val, _) => {
+            Expr::Ok(val, _, _) => {
                 let inner = self.eval_expr(val, scope)?;
                 Ok(Value::Ok(Box::new(inner)))
             }
-            Expr::Err(err, _) => {
+            Expr::Err(err, _, _) => {
                 let inner = self.eval_expr(err, scope)?;
                 Ok(Value::Err(Box::new(inner)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 let res_val = self.eval_expr(expr, scope)?;
-                match res_val {
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
+                let res = match res_val {
                     Value::Ok(inner) => {
-                        let mut local_scope = scope.clone();
-                        local_scope.insert(ok_var.clone(), *inner);
+                        scope.insert(ok_var.clone(), *inner);
                         let mut last = Value::Void;
                         for stmt in ok_body {
-                            last = self.eval_expr(stmt, &mut local_scope)?;
+                            last = self.eval_expr(stmt, scope)?;
                         }
                         Ok(last)
                     }
                     Value::Err(inner) => {
-                        let mut local_scope = scope.clone();
-                        local_scope.insert(err_var.clone(), *inner);
+                        scope.insert(err_var.clone(), *inner);
                         let mut last = Value::Void;
                         for stmt in err_body {
-                            last = self.eval_expr(stmt, &mut local_scope)?;
+                            last = self.eval_expr(stmt, scope)?;
                         }
                         Ok(last)
                     }
                     other => Err(format!("Expected Result type in match_result, got {:?}", other)),
-                }
+                };
+                scope.retain(|k, _| keys_before.contains(k));
+                res
             }
             Expr::Block(exprs, _) => {
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 let mut last = Value::Void;
                 for e in exprs {
                     last = self.eval_expr(e, scope)?;
                 }
+                scope.retain(|k, _| keys_before.contains(k));
                 Ok(last)
             }
         }

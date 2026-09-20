@@ -575,7 +575,7 @@ impl Parser {
                 col,
             }) => match s.as_str() {
                 "i32" => Ok(Type::I32),
-                "i64" => Err("i64 type is unsupported".to_string()),
+                "i64" => Ok(Type::I64),
                 "f32" => Ok(Type::F32),
                 "f64" => Ok(Type::F64),
                 "bool" => Ok(Type::Bool),
@@ -606,7 +606,12 @@ impl Parser {
                         ))
                     }
                 };
-                if kind == "arr" || kind == "vec" {
+                if kind == "result" {
+                    let ok_ty = self.parse_type()?;
+                    let err_ty = self.parse_type()?;
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
+                } else if kind == "arr" || kind == "vec" {
                     let elem_ty = self.parse_type()?;
                     let len = match self.next() {
                         Some(Token {
@@ -848,13 +853,23 @@ impl Parser {
                             }
                             Expr::Call { func, args, span }
                         }
-                        "ok" => {
+                        s if s == "ok" || s.starts_with("ok:") => {
+                            let explicit_ty = if s.starts_with("ok:") {
+                                Some(parse_scalar_type_str(&s[3..], span)?)
+                            } else {
+                                None
+                            };
                             let val = self.parse_expr()?;
-                            Expr::Ok(Box::new(val), span)
+                            Expr::Ok(Box::new(val), explicit_ty, span)
                         }
-                        "err" => {
+                        s if s == "err" || s.starts_with("err:") => {
+                            let explicit_ty = if s.starts_with("err:") {
+                                Some(parse_scalar_type_str(&s[4..], span)?)
+                            } else {
+                                None
+                            };
                             let val = self.parse_expr()?;
-                            Expr::Err(Box::new(val), span)
+                            Expr::Err(Box::new(val), explicit_ty, span)
                         }
                         "block" => {
                             let mut body = Vec::new();
@@ -1057,5 +1072,18 @@ impl Parser {
         } else {
             Err(format!("{}:{}: Unexpected EOF parsing expression", l, c))
         }
+    }
+}
+
+fn parse_scalar_type_str(s: &str, span: (u32, u32)) -> Result<Type, String> {
+    match s {
+        "i32" => Ok(Type::I32),
+        "i64" => Ok(Type::I64),
+        "f32" => Ok(Type::F32),
+        "f64" => Ok(Type::F64),
+        "bool" => Ok(Type::Bool),
+        "str" => Ok(Type::Str),
+        "void" => Ok(Type::Void),
+        _ => Err(format!("{}:{}: Unknown scalar type: {}", span.0, span.1, s)),
     }
 }

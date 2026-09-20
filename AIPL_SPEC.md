@@ -242,7 +242,16 @@ Rule of thumb for code generators: `thread.*`, `atomic.*`, `arr.*`, `match_resul
 
 The checker is `src/checker.rs`; the VM is `src/vm.rs`. Both agree on these rules.
 
-### 7.1 Every form has a type, including statements
+### 7.1 Typing and Scoping Rules (P7 Specification)
+
+The checker (`src/checker.rs`), VM (`src/vm.rs`), Rust WASM backend (`src/compiler/wasm.rs`), and self-hosted compiler (`aipl_src/codegen.aipl`) enforce these six rules identically:
+
+1. `set!` has type void.
+2. `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`.
+3. `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void.
+4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error.
+5. `set!` on an undeclared name is a type error and a VM runtime error (delete the globals fallback at vm.rs Expr::Set).
+6. `match_result` arms bind ok_var/err_var to the actual Ok/Err payload types from the matched expression's ResultType; ok/err take an explicit result type via (ok:T v) or infer from an enclosing let/return type.
 
 | Form | Type | Example |
 |---|---|---|
@@ -251,17 +260,17 @@ The checker is `src/checker.rs`; the VM is `src/vm.rs`. Both agree on these rule
 | float literal | `f64` (never `f32`) | `3.5` |
 | `true` / `false` | `bool` | |
 | `"text"` | `str` | |
-| `(let x:T v)` | `T` (the declared type; `v` must be exactly `T`) | `(let n:i32 (+ 1 2))` |
-| `(set! x v)` | type of `x` (`v` must match; `x` must already be declared) | |
-| `(if c a b)` | type of `a`, which must equal type of `b`; `c` must be `bool` | |
-| `(loop i s e st body*)` | `void`; `s e st` must be `i32`; `i` is visible only in the body | |
+| `(let x:T v)` | `void` (declares `x` as `T`; `v` must be `T`) | `(let n:i32 (+ 1 2))` |
+| `(set! x v)` | `void` (`v` must match `x`; `x` must be declared) | `(set! n 5)` |
+| `(if c a b)` | `void` if both `a`,`b` are `void`; else `T` where `typeof(a)==typeof(b)==T` | |
+| `(loop i s e st body*)` | `void`; `s e st` must be `i32`; `i` is block-scoped to the body | |
 | `(while c body*)` | `void` | |
-| `(block e1 ... en)` | type of `en` (or `void` if empty) | |
-| `(call f args)` | declared return type of `f`; arity and every arg type must match exactly | |
-| `(ok v)` | `Result<typeof v, i32>` | |
-| `(err e)` | `Result<i32, typeof e>` | |
-| `(match_result r (ok v body*) (err e body*))` | type of the last expr of the **ok** body; `v` and `e` are bound as `i32` | |
-| binary arithmetic / bitwise | type of the operands, which must be equal | `(+ 1 2)` is `i32`; `(+ 1.0 2.0)` is `f64`; `(+ 1 2.0)` is an error |
+| `(block e1 ... en)` | type of `en` (or `void` if empty); introduces a block scope | |
+| `(call f args)` | declared return type of `f`; arity and arg types must match | |
+| `(ok v)` / `(ok:T_err v)` | `ResultType<typeof v, T_err>` (default `T_err` = `i32`) | `(ok 42)` |
+| `(err e)` / `(err:T_ok e)` | `ResultType<T_ok, typeof e>` (default `T_ok` = `i32`) | `(err -1)` |
+| `(match_result r (ok v body*) (err e body*))` | type of the last expr of the bodies (which must agree); `v` bound as `T_ok`, `e` bound as `T_err` | |
+| binary arithmetic / bitwise | type of the operands, which must be equal | `(+ 1 2)` is `i32` |
 | comparisons | `bool`; operands must have equal type | |
 
 A function body is a sequence of expressions. The **last** expression's type must equal the declared return type unless the return type is `void`, in which case the last value is discarded.
@@ -281,26 +290,25 @@ A function body is a sequence of expressions. The **last** expression's type mus
 ```lisp
 (fn bad [n:i32] -> i32
   (if (lt n 0)
-      (set! n 0)      ;; type i32 (type of n)
-      (while false))  ;; type void
+      (set! n 0)      ;; type void
+      1)              ;; type i32
   n)
 ```
-Checker output: `3:5: If branch type mismatch: then is I32, else is Void` (position of the `(if`).
+Checker output: `3:5: If branch type mismatch: then is Void, else is I32. If mixing void and non-void, consider wrapping in (block ... value)`.
 
-### 7.4 The mutate-then-yield idiom
+### 7.4 Void statements and void `if`
 
-Because `set!` has the variable's type rather than `void`, an `if` whose branches only mutate state type-checks but is awkward to use as the final expression of an `i32` function. The established idiom is to wrap side effects in `block` and end with the value you mean:
+Since `set!` and `let` have type `void`, an `if` whose branches perform side effects is typed as `void`:
 
 ```lisp
 (fn clamp_to_100 [n:i32] -> i32
   (let out:i32 n)
   (if (gt n 100)
-      (block (set! out 100) out)
-      out))
+      (set! out 100)
+      (set! out n))
+  out)
 ```
-Prefer this over relying on the `if`'s own value when a branch has side effects. (P7 in `AIPL_Structural_Audit.md` will make `set!` and `let` void and void-`if` legal, which removes the need for this idiom.)
-
-The plain form `(if c (set! x v) 0)` is also accepted and compiles correctly: the wasm backend gives such an `if` a result type and, for the branch whose code leaves nothing on the stack, pushes the value the VM would produce (the variable just assigned, or `0` after a loop). In statement position that value is dropped; as an expression it equals what the VM returns.
+Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.5 Loops
 
