@@ -88,6 +88,10 @@ pub enum OpCode {
     I64ExtendU,
     /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
     I32Wrap,
+    F64ConvertI64S,
+    I64TruncF64S,
+    F64ReinterpretI64,
+    I64ReinterpretF64,
     /// `(str.len s)`: byte length of a string. In wasm a `str` is a pointer to
     /// interned bytes preceded by a 4-byte little-endian length, so this is
     /// `i32.load (s - 4)`; the VM reads the Rust string's length.

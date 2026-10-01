@@ -277,7 +277,12 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::Or
             | OpCode::Not
             | OpCode::AtomicCas => Type::Bool,
-            OpCode::MemLoad64 | OpCode::I64ExtendS | OpCode::I64ExtendU => Type::I64,
+            OpCode::MemLoad64
+            | OpCode::I64ExtendS
+            | OpCode::I64ExtendU
+            | OpCode::I64TruncF64S
+            | OpCode::I64ReinterpretF64 => Type::I64,
+            OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => Type::F64,
             OpCode::MemLoadF32 => Type::F32,
             OpCode::MemLoadF64 | OpCode::SysTime => Type::F64,
             OpCode::MemStore8
@@ -663,6 +668,22 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::I32Wrap => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32WrapI64);
+            }
+            OpCode::F64ConvertI64S => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::F64ConvertI64S);
+            }
+            OpCode::I64TruncF64S => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I64TruncF64S);
+            }
+            OpCode::F64ReinterpretI64 => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::F64ReinterpretI64);
+            }
+            OpCode::I64ReinterpretF64 => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::I64ReinterpretF64);
             }
             OpCode::SysPrint => {
                 // Each argument is written to fd 1 followed by "\n", via a
@@ -1263,6 +1284,10 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::FsClose
                 | OpCode::FsDelete
                 | OpCode::I64ExtendS
+                | OpCode::F64ConvertI64S
+                | OpCode::I64TruncF64S
+                | OpCode::F64ReinterpretI64
+                | OpCode::I64ReinterpretF64
                 | OpCode::I64ExtendU
                 | OpCode::I32Wrap
                 | OpCode::Eq

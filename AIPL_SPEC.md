@@ -63,7 +63,8 @@ memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | 
                  | "mem.alloc" | "mem.free" | "mem.grow" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;
-conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap" ;
+conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
+                 | "f64.convert_i64_s" | "i64.trunc_f64_s" | "f64.reinterpret_i64" | "i64.reinterpret_f64" ;
 sys_op         ::= "sys.print" | "sys.time" | "sys.exit" ;
 fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
@@ -266,45 +267,46 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 
 ### 6.3 Backend support matrix (as of 2026-10-01)
 
-"Yes" means the op runs. "Err" means the backend returns an explicit error naming the op; there are no silent defaults or no-ops in either backend. The self-hosted column is `aipl_src/codegen.aipl` (section 6.4).
+"Yes" means the op runs. "Err" means the backend returns an explicit error naming the op; apart from `mem.free` (documented as a no-op) there are no silent defaults or no-ops in any backend. The self-hosted column is `aipl_src/codegen.aipl` (section 6.4).
 
 | Ops | Checker | VM | Rust wasm backend | Self-hosted |
 |---|---|---|---|---|
 | `+ - * / % divu remu ^ shl shr shru bitand bitor` on `i32` | Yes | Yes, wrapping | Yes | Yes |
-| the same on `i64` | Yes | Yes, wrapping at 64 bits | Yes (`i64.*`) | **wrong bytes** (emits `i32.*`; `--self` reports the mismatch) |
-| `+ - * /`, comparisons on `f64` | Yes | Yes | Yes (`f64.*`); `%`, `divu`, `remu`, shifts, bitwise are Err | **no**: float literals are compile error 971 |
+| the same on `i64` | Yes | Yes, wrapping at 64 bits | Yes (`i64.*`) | Yes |
+| `+ - * /`, comparisons on `f32` / `f64` | Yes | Yes | Yes (`f32.*` / `f64.*`); `%`, `divu`, `remu`, shifts, bitwise are Err | Yes (same rejections, compile error 99) |
 | `eq neq lt lte gt gte` on `i32` / `bool` / `str`; `and or not` | Yes | Yes | Yes | Yes |
-| `i64` / `f64` literals | Yes | Yes | Yes | compile error 971 |
-| `i64.extend_s i64.extend_u i32.wrap` | Yes | Yes | Yes | Yes (but see the `i64` row) |
+| `i64` literals | Yes | Yes | Yes | Yes |
+| `f64` literals | Yes | Yes | Yes | Yes when the digits form an integer ≤ 2^53 with ≤ 22 after the point (section 6.4); otherwise compile error 973 |
+| `i64.extend_s i64.extend_u i32.wrap` | Yes | Yes | Yes | Yes |
+| `f64.convert_i64_s i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64` | Yes | Yes (`trunc` errors on NaN / out of range) | Yes (`trunc` traps) | Yes |
 | `mem.load8/32/64`, `mem.store8/32/64` | Yes | Yes | Yes | Yes |
-| `mem.load_f32/f64`, `mem.store_f32/f64` | Yes | Err | Err | not recognised |
+| `mem.load_f32/f64`, `mem.store_f32/f64` | Yes | Err | Err | compile error 987 |
 | `mem.alloc`, `mem.grow` | Yes | Yes | Yes | Yes |
-| `mem.free` | Yes | no-op, returns void | Err | not recognised |
-| `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Err (needs shared memory) | not recognised |
-| `struct`, `new`, `get`, `put`, `sizeof` | Yes | Yes | Yes | Yes for 32-bit fields; `i64`/`f32`/`f64` fields are compile error 95 |
-| `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, **not** bounds-checked | Yes for 32-bit elements; others are compile error 95 |
+| `mem.free` | Yes | no-op (argument not evaluated) | no-op (argument not evaluated) | compile error 987 |
+| `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Err (needs shared memory) | compile error 987 |
+| `struct`, `new`, `get`, `put`, `sizeof` | Yes | Yes | Yes | Yes |
+| `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, **not** bounds-checked | Yes |
 | `ok`, `err`, `match_result` | Yes | Yes | Yes (8-byte heap cell; 32-bit payloads only) | Yes |
 | `sys.print` | Yes | Yes (`println!`, any value) | Yes via WASI `fd_write`; `str` arguments only | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
-| `sys.time` | Yes | Err | Err | not recognised |
+| `sys.time` | Yes | Err | Err | compile error 987 |
 | `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI | Yes |
-| `thread.spawn / thread.join` | Yes | Yes, real `std::thread` | Err (needs wasi-threads) | not recognised |
+| `thread.spawn / thread.join` | Yes | Yes, real `std::thread` | Err (needs wasi-threads) | compile error 987 |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
-| `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) | no |
+| `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) | compile error 99 |
 | `(import ...)` | resolved before checking | | | **no**: `compile_module` takes one import-free module |
 
 Rule of thumb for code generators: `thread.*`, `atomic.*`, `sys.time`, and string concatenation are **VM-only** today. Integer/boolean/float code, memory, structs, arrays, results, string literals, printing, and file I/O run in both; compiled I/O needs a WASI host with a preopened directory (section 10.5). Array bounds checks and contracts exist only in the VM.
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
-`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4. For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 16 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file.
+`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 21 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
 
-It runs in the VM today (nothing wires it into the CLI as the default compiler). Limits that differ from the Rust backend:
+It infers each expression's static type the way `expr_type` in `src/compiler/wasm.rs` does (`node_type` / `group_type`) and selects `i32.*` / `i64.*` / `f32.*` / `f64.*` instructions, `if` and `match_result` block types, struct field and array element load/store widths, and alignment from it. It runs in the VM today; compiled to wasm it also compiles itself (section 10.6). Limits that differ from the Rust backend:
 
 - **One module, no imports.** A qualified call such as `(call util.f)` resolves only if a function with that exact name is defined in the same source.
-- **No type inference.** Every value-producing `if` gets an `i32` block type and every binop emits its `i32` instruction. `i64` arithmetic therefore produces wrong bytes. `aipl compile --self` and the parity tests catch this, but the compile itself reports success. Float and `i64` literals are compile error 971.
-- **32-bit memory layouts only** for struct fields and array elements (compile error 95).
-- Ops listed as "not recognised" in section 6.3 fall through to the generic binop path. Do not rely on the self-hosted backend for them.
+- **Float literals must be exact by construction.** `compile_module` computes an `f64` literal as `m / 10^k`, where `m` is the integer formed by all its digits and `k` is the number of digits after the point, using `f64.convert_i64_s` and one division. That equals Rust's correctly rounded `parse::<f64>` whenever `m ≤ 2^53` and `k ≤ 22`. Anything else (for example `9007199254740993.0`) is compile error 973 rather than a possibly different rounding. Exponent notation (`1.5e3`) and a leading `+` are not float literals in the self-hosted tokenizer (the Rust tokenizer accepts them), so they fail as unknown symbols (971).
+- Ops listed as compile error 987 in section 6.3 are not in its keyword table.
 
 Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (tokens + 2)`, and output, section scratch, and function scratch `4 * src_len + 64 KiB` each. Memory is grown with `mem.grow` as needed, so a compile works within the 100-page limit shared by both backends. Compiling codegen.aipl itself (139 KB) fits.
 
@@ -315,10 +317,14 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 92 | more than 256 functions, or a function with more than 16 parameters |
 | 93 | more than 256 locals in one function |
 | 94 | more than 31 structs, or a struct with more than 15 fields |
-| 95 | struct field or array element type is not `i32`/`bool`/`str` |
+| 95 | struct field or array element type is not a scalar (`i32 i64 f32 f64 bool str`) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
+| 97 | an `ok`/`err` payload that is not 32-bit |
+| 98 | a type the backend cannot lower (anything but the scalars and `(result T E)`) |
+| 99 | an operator applied to a type with no wasm instruction for it (e.g. `%` on `f64`, `+` on `str`) |
 | 768 | string literals exceed the 512-byte data area |
-| 971 | a symbol that is not a local or parameter (includes float and `i64` literals, which the self-hosted tokenizer reads as symbols) |
+| 971 | a symbol that is not a local or parameter |
+| 973 | a float literal outside the exact range above |
 | 987 | a form whose head is not a recognised keyword |
 | 999 | an empty expression where one is required |
 | 1452 | call to an undefined function; cells 44/48 hold the callee name's source offset and length |
@@ -542,6 +548,9 @@ Rules that follow from this:
 | `(i64.extend_s x)` | `i32 -> i64`, sign-extending | `i64.extend_i32_s` |
 | `(i64.extend_u x)` | `i32 -> i64`, zero-extending | `i64.extend_i32_u` |
 | `(i32.wrap x)` | `i64 -> i32`, low 32 bits | `i32.wrap_i64` |
+| `(f64.convert_i64_s x)` | `i64 -> f64`, rounded to nearest (ties to even) | `f64.convert_i64_s` |
+| `(i64.trunc_f64_s x)` | `f64 -> i64`, toward zero; NaN or out of range is a VM error / wasm trap | `i64.trunc_f64_s` |
+| `(f64.reinterpret_i64 x)` / `(i64.reinterpret_f64 x)` | same 64 bits, other type | `f64.reinterpret_i64` / `i64.reinterpret_f64` |
 | `(mem.load64 p)` | reads 8 little-endian bytes as `i64` | `i64.load` |
 | `(mem.store64 p v)` | `v` must be `i64` | `i64.store` |
 
@@ -715,7 +724,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (115 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7).
+Files today (120 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7).
 
 ### 10.3 Opcode conformance contract
 
@@ -756,9 +765,9 @@ To run compiled I/O outside the tests: `wasmtime run --dir=. module.wasm --invok
 
 ### 10.6 Self-hosted byte parity (`tests/test_selfhost.rs`)
 
-`self_host(src)` runs `codegen.compile_module` in a fresh VM, validates the output with `wasmparser`, and returns the bytes or the compile error code. `assert_self_hosted_matches_rust` asserts the whole module equals `WasmCompiler::compile` for the same source and prints the first differing function and byte if not. Coverage: minimal, `add`, `compute` (loop + call), structs with `bool`/`str` fields, arrays, `sys.print`, results (including `match_result` as a statement), file I/O, repeated string literals with a `str` let plus `mem.alloc`/`mem.grow`/`sys.exit`, a mixed program, void `if` with block-scoped `let`s and an empty `(block)` else, a store, arrays plus results, `aipl_src/memory.aipl`, `aipl_src/compiler.aipl`, and codegen.aipl compiling itself (about 80 s in a debug build). Behavioural checks run the self-hosted output in wasmtime: the store guard traps on bytes 0-3 and 64-1023 and nowhere else; arrays and results compute the same values as the VM and a negative `arr.new` traps; a file write plus `sys.print` under WASI produces the file and the exact stdout. Compile errors 95, 96, and 768 are asserted for 64-bit fields/elements, unknown structs, and string data over 512 bytes.
+`self_host(src)` runs `codegen.compile_module` in a fresh VM, validates the output with `wasmparser`, and returns the bytes or the compile error code. `assert_self_hosted_matches_rust` asserts the whole module equals `WasmCompiler::compile` for the same source and prints the first differing function and byte if not. Coverage: minimal, `add`, `i64` (literals at both extremes, unsigned ops, an `i64` struct field after a `bool`, `i64` arrays, `mem.load64`/`store64`), `f32`/`f64` parameters, arithmetic and struct fields, 200 pseudo-random float literals plus out-of-range ones (973), `(ok:T v)` with compound `T`, an escaped quote inside a string, `compute` (loop + call), structs with `bool`/`str` fields, arrays, `sys.print`, results (including `match_result` as a statement), file I/O, repeated string literals with a `str` let plus `mem.alloc`/`mem.grow`/`sys.exit`, a mixed program, void `if` with block-scoped `let`s and an empty `(block)` else, a store, arrays plus results, `aipl_src/memory.aipl`, `aipl_src/compiler.aipl`, and codegen.aipl compiling itself (about 80 s in a debug build). Behavioural checks run the self-hosted output in wasmtime: the store guard traps on bytes 0-3 and 64-1023 and nowhere else; arrays and results compute the same values as the VM and a negative `arr.new` traps; a file write plus `sys.print` under WASI produces the file and the exact stdout. Compile errors 95, 96, and 768 are asserted for 64-bit fields/elements, unknown structs, and string data over 512 bytes.
 
-**Bootstrap fixpoint.** `self_hosted_compiler_reproduces_itself_under_wasmtime` compiles the self-hosted compiler with the Rust backend (stage 1), runs that wasm module under wasmtime on its own source, and requires the output (stage 2) to be byte-identical to stage 1. The second compile involves neither the VM nor any Rust compiler code, and takes about 20 ms.
+**Bootstrap fixpoint.** `self_hosted_compiler_reproduces_itself_under_wasmtime` compiles the self-hosted compiler with the Rust backend (stage 1), runs that wasm module under wasmtime on its own source, and requires the output (stage 2) to be byte-identical to stage 1. The second compile involves neither the VM nor any Rust compiler code, and takes about 20 ms. Since P9, codegen.aipl itself uses `i64` and `f64` arithmetic (literal parsing, LEB128, float literal bits), so the fixpoint also covers those paths of the self-hosted compiler.
 
 ### 10.7 Documentation examples (`tests/test_doc_examples.rs`)
 

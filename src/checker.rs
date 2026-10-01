@@ -511,6 +511,20 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
+                OpCode::F64ConvertI64S | OpCode::I64TruncF64S | OpCode::F64ReinterpretI64 | OpCode::I64ReinterpretF64 => {
+                    let (from, to) = match op {
+                        OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => (Type::I64, Type::F64),
+                        _ => (Type::F64, Type::I64),
+                    };
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: {:?} requires 1 argument (x: {:?})", l, c, op, from));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != from {
+                        return Err(format!("{}:{}: {:?} requires {:?}, got {:?}", l, c, op, from, t));
+                    }
+                    Ok(to)
+                }
                 OpCode::I32Wrap => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: i32.wrap requires 1 argument (x: i64)", l, c));

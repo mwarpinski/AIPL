@@ -1334,6 +1334,26 @@ impl VM {
                 Value::Int64(x) => Ok(Value::Int((x as i32) as i64)),
                 _ => Err("i32.wrap requires Int64".to_string()),
             },
+            // i64 -> f64 rounds to nearest, ties to even, as Rust's `as` and wasm's f64.convert_i64_s do.
+            OpCode::F64ConvertI64S => match self.eval_expr(&args[0], scope)? {
+                Value::Int64(x) => Ok(Value::Float(x as f64)),
+                _ => Err("f64.convert_i64_s requires Int64".to_string()),
+            },
+            // Truncates toward zero; NaN or a result outside i64 is an error where wasm traps.
+            OpCode::I64TruncF64S => match self.eval_expr(&args[0], scope)? {
+                Value::Float(x) if x.is_nan() => Err("i64.trunc_f64_s: invalid conversion to integer (NaN)".to_string()),
+                Value::Float(x) if x >= -9223372036854775808.0 && x < 9223372036854775808.0 => Ok(Value::Int64(x.trunc() as i64)),
+                Value::Float(x) => Err(format!("i64.trunc_f64_s: integer overflow converting {}", x)),
+                _ => Err("i64.trunc_f64_s requires Float".to_string()),
+            },
+            OpCode::F64ReinterpretI64 => match self.eval_expr(&args[0], scope)? {
+                Value::Int64(x) => Ok(Value::Float(f64::from_bits(x as u64))),
+                _ => Err("f64.reinterpret_i64 requires Int64".to_string()),
+            },
+            OpCode::I64ReinterpretF64 => match self.eval_expr(&args[0], scope)? {
+                Value::Float(x) => Ok(Value::Int64(x.to_bits() as i64)),
+                _ => Err("i64.reinterpret_f64 requires Float".to_string()),
+            },
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }

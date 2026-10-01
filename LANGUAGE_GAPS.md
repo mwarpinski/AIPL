@@ -6,7 +6,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 1. Toolchain
 
-- **The self-hosted compiler is i32-only and import-free (P9 remainder).** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for everything in AIPL_SPEC.md 6.4's supported set, including itself. But it has no type inference: `i64` arithmetic compiles to `i32` instructions, `i64` and float literals are compile error 971, and 64-bit struct fields and array elements are compile error 95. It takes a single module with no `(import ...)`. `compile_to_target` in `compiler.aipl` still returns -1.
+- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` (P14), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and `compile_to_target` in `compiler.aipl` still returns -1 (it needs a driver module that imports both compiler and codegen).
 - **Import resolution is Rust (P14).** `src/resolver.rs` is bootstrap scaffolding. WASI file I/O now exists, so nothing blocks rewriting it in AIPL except P9 finishing first.
 - **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.
@@ -22,11 +22,11 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **No generics, no visibility.** Every function in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
 - **`and`/`or` do not short-circuit,** in either backend. Guard side-effecting or trapping operands with a nested `if`.
-- **Numeric gaps:** no `f32` literals, no `i64`↔`f64` or int↔float conversions, `mem.load_f32/f64` and `mem.store_f32/f64` are rejected by both backends, and loop bounds and addresses are `i32` only.
+- **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), `mem.load_f32/f64` and `mem.store_f32/f64` are rejected by both backends (use struct fields or arrays of `f64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 ## 3. Memory
 
-- **`mem.free` is a no-op** (the wasm backend rejects it). The allocator is bump-only, so long-running programs leak.
+- **`mem.free` is a no-op** in both backends (the argument is not even evaluated). The allocator is bump-only, so long-running programs leak.
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 100 pages (6.4 MiB)** in both backends.

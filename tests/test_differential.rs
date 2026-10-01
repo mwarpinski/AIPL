@@ -376,6 +376,24 @@ fn i64_memory_round_trip_agrees() {
 // f64 (type-directed codegen regression)
 // ---------------------------------------------------------------------------
 
+// i64 <-> f64 conversions. Bit patterns are compared as i64 so that -0.0 and
+// NaN payloads are checked exactly (f64 == would hide them).
+#[test]
+fn f64_i64_conversions_agree() {
+    assert_eq!(expr("f64", "(f64.convert_i64_s -7i64)").unwrap(), Value::Float(-7.0));
+    // 2^53 + 1 rounds to even
+    assert_eq!(expr("f64", "(f64.convert_i64_s 9007199254740993i64)").unwrap(), Value::Float(9007199254740992.0));
+    assert_i64("(i64.trunc_f64_s 2.75)", 2);
+    assert_i64("(i64.trunc_f64_s -2.75)", -2);
+    assert_i64("(i64.trunc_f64_s -9223372036854775808.0)", i64::MIN);
+    assert_both_fail("i64", "(i64.trunc_f64_s 9223372036854775808.0)");
+    assert_both_fail("i64", "(i64.trunc_f64_s (f64.reinterpret_i64 9221120237041090560i64))"); // NaN
+    assert_i64("(i64.reinterpret_f64 1.0)", 0x3FF0_0000_0000_0000);
+    assert_i64("(i64.reinterpret_f64 -0.0)", i64::MIN);
+    assert_i64("(i64.reinterpret_f64 (f64.reinterpret_i64 9221120237041090561i64))", 9221120237041090561);
+    assert_i64("(i64.reinterpret_f64 (/ (f64.convert_i64_s 1i64) (f64.convert_i64_s 10i64)))", 0.1f64.to_bits() as i64);
+}
+
 #[test]
 fn f64_arithmetic_agrees() {
     assert_eq!(expr("f64", "(/ (+ 1.5 2.25) 0.5)").unwrap(), Value::Float(7.5));

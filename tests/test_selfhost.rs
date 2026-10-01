@@ -335,6 +335,45 @@ fn self_hosted_bytes_match_typed_results_and_escapes() {
     assert_self_hosted_matches_rust("typed_results", src);
 }
 
+/// Float literals: f64.const bytes must equal what Rust's parse::<f64> gives.
+/// 200 pseudo-random literals (deterministic LCG) with up to 16 significant
+/// digits, random sign and decimal point position, all inside the exact range
+/// (mantissa <= 2^53, <= 22 fractional digits), compiled in one module. Literals
+/// outside that range must be compile error 973, never a different rounding.
+#[test]
+fn self_hosted_float_literals_match_rust() {
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = |n: u64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) % n
+    };
+    let mut src = String::from("(module floats\n");
+    let mut made = 0;
+    while made < 200 {
+        let ndigits = 1 + next(16) as usize;
+        let digits: String = (0..ndigits).map(|_| char::from(b'0' + next(10) as u8)).collect();
+        let m: u64 = digits.parse().unwrap();
+        let dot = next(ndigits as u64 + 1) as usize;
+        if m > 1 << 53 || ndigits - dot > 22 {
+            continue;
+        }
+        let sign = if next(2) == 0 { "" } else { "-" };
+        let lit = format!("{sign}{}.{}", &digits[..dot], &digits[dot..]);
+        if !lit.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        src.push_str(&format!("  (fn f{made} [] -> f64 {lit})\n"));
+        made += 1;
+    }
+    src.push(')');
+    assert_self_hosted_matches_rust("float_literals", &src);
+
+    for lit in ["9007199254740993.0", "0.00000000000000000000001", "1234567890123456789.0"] {
+        let err = self_host(&format!("(module m (fn f [] -> f64 {lit}))")).unwrap_err();
+        assert!(err.contains("compile error 973"), "{lit}: {err}");
+    }
+}
+
 #[test]
 fn self_hosted_bytes_match_file_io() {
     let src = r#"

@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 115 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 120 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- eval aipl_src/thread_sync.aipl --func run_thread_tests   # standalone; prints Int(1) (pass count), see below
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
@@ -44,7 +44,7 @@ Expected AIPL suite output:
 | P7 statement typing + block scoping | Done. |
 | P8 structs and arrays | **Done, after rework on 2026-10-01** (see below). |
 | P8b standard library | Not started. |
-| P9 self-hosted module assembly at byte parity | **Partial** (see below). |
+| P9 self-hosted module assembly at byte parity | **Done 2026-10-01** except imports, which belong to P14 (see below). |
 | P10–P14 | Not started. |
 
 ## P8 verification (2026-10-01)
@@ -89,13 +89,13 @@ Done:
 - `aipl compile --self` checks byte parity with the Rust backend. `memory.aipl`, `file_io.aipl`, and `examples/word_count.aipl` are identical.
 - `tests/test_selfhost.rs` asserts whole-module byte equality on 16 programs, including codegen.aipl compiling itself, and runs the output in wasmtime.
 - The hand-assembled harnesses are replaced by `compile_module` calls.
+- **Type-directed code generation (2026-10-01, branch `features/p9`):** `node_type`/`group_type` mirror `expr_type` in wasm.rs, so `i64`, `f32`, and `f64` arithmetic, comparisons, `if`/`match_result` block types, struct fields, and array elements all match the Rust backend byte for byte. `i64` literals emit `i64.const`. Float literals emit the exact `f64.const` bits Rust's parser produces whenever the literal's digits form an integer ≤ 2^53 with ≤ 22 after the point; anything else is compile error 973, never a different rounding. That needed four new language primitives, added to every backend with differential tests: `f64.convert_i64_s`, `i64.trunc_f64_s`, `f64.reinterpret_i64`, `i64.reinterpret_f64`. Also fixed along the way: `mem.load64`/`mem.store64` emitted `f32.load`/`f32.store`, unsupported binops returned -1 as a byte count, `(ok:T v)` was not understood, `\"` ended a string literal early, and later compile errors overwrote the first.
 - **Bootstrap fixpoint:** the self-hosted compiler, compiled to wasm and run under wasmtime on its own source, reproduces itself byte for byte in about 20 ms (`self_hosted_compiler_reproduces_itself_under_wasmtime`). The VM takes 14 s for the same compile in a release build, so the compiled compiler is roughly 700× faster. A `driver.aipl` that reads and writes files would make it a standalone tool.
 
 Not done (AIPL_SPEC.md 6.4 lists the details):
-- **No type inference.** `i64` arithmetic compiles to `i32` instructions. The bytes have the same length but are wrong; `--self` reports the mismatch, but `compile_module` itself does not. `i64` and float literals are error 971. The P9 prompt's "an i64 function" case fails.
-- **No import resolution.** `compile_module` takes one module.
-- **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it up needs a third driver module (the P9 prompt explains why).
-- **`--self` prints every differing byte index,** not a unified diff of the first divergence.
+- **No import resolution.** `compile_module` takes one module; the parity and fixpoint tests merge compiler.aipl into codegen.aipl by hand. This is P14's job (resolver in AIPL).
+- **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
+- Float literals outside the exact range (error 973) and exponent notation.
 
 ## Decisions already made (don't re-litigate without cause)
 
@@ -116,7 +116,7 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 ## Next steps, in order
 
 1. Commit the P8 rework (this branch).
-2. Finish P9: type inference for `if` block types and binops (`i64`, `f64`), `i64`/`f64` literals, then an `i64` parity test.
+2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
 3. P8b standard library (needs P11 per the audit's sequencing note), P10 function references (fixes `thread_sync` under imports), P11 `return`/`break`/`continue`/`cond`.
 4. P12–P14 per the audit.
 

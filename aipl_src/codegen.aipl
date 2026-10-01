@@ -191,6 +191,14 @@
     (set! o (call store_kw_str k 346 109 97 116 99 104 95 114 101 115 117 108 116 12)) ;; match_result (kw 112)
     (set! o (call store_kw_str k 358 115 116 114 117 99 116 0 0 0 0 0 0 6)) ;; struct (kw 113)
     (set! o (call store_kw_str k 364 114 101 115 117 108 116 0 0 0 0 0 0 6)) ;; result (type 207)
+    (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
+    (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
+    (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
+    (set! o (call store_kw_str k 399 52 95 115 0 0 0 0 0 0 0 0 0 3))
+    (set! o (call store_kw_str k 402 102 54 52 46 114 101 105 110 116 101 114 112 12)) ;; f64.reinterpret_i64 (op 59)
+    (set! o (call store_kw_str k 414 114 101 116 95 105 54 52 0 0 0 0 0 7))
+    (set! o (call store_kw_str k 421 105 54 52 46 114 101 105 110 116 101 114 112 12)) ;; i64.reinterpret_f64 (op 60)
+    (set! o (call store_kw_str k 433 114 101 116 95 102 54 52 0 0 0 0 0 7))
     0)
 
   ;; Unified keyword classifier (flat statements to prevent deep AST recursion)
@@ -263,6 +271,10 @@
     (if (call sym_eq src_ptr pos len (+ k 346) 12) (set! res 112) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 358) 6) (set! res 113) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 364) 6) (set! res 207) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 421) 19) (set! res 60) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 150) 3) (set! res 200) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 153) 3) (set! res 201) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 156) 3) (set! res 202) (set! res res))
@@ -521,6 +533,44 @@
       (set! n (+ n 1)))
     n)
 
+;; 10^n as i64, for 0 <= n <= 18.
+  (fn pow10_i64 [n:i32] -> i64
+    (let v:i64 1i64)
+    (loop i 1 n 1 (set! v (* v 10i64)))
+    v)
+
+  ;; f64.const for a decimal literal such as -2.5, with the bits Rust's
+  ;; parse::<f64> gives. The literal is m / 10^k; with m <= 2^53 and k <= 22
+  ;; both are exact doubles, so one IEEE division is correctly rounded.
+  ;; Literals outside that range are compile error 973.
+  (fn emit_f64_literal [ptr:i32 src_ptr:i32 pos:i32 len:i32] -> i32
+    (let neg:bool (eq (mem.load8 (+ src_ptr pos)) 45))
+    (let i:i32 (if neg 1 0))
+    (let m:i64 0i64)
+    (let sig:i32 0)
+    (let frac:i32 0)
+    (let seen_dot:bool false)
+    (while (lt i len)
+      (let c:i32 (mem.load8 (+ src_ptr (+ pos i))))
+      (if (eq c 46)
+          (set! seen_dot true)
+          (block
+            (set! m (+ (* m 10i64) (i64.extend_s (- c 48))))
+            (if (or (gt sig 0) (neq c 48)) (set! sig (+ sig 1)) (block))
+            (if seen_dot (set! frac (+ frac 1)) (block))))
+      (set! i (+ i 1)))
+    ;; sig <= 18 keeps m from overflowing i64; m <= 2^53 makes it an exact double
+    (if (or (gt sig 18) (or (gt m 9007199254740992i64) (gt frac 22))) (call set_compile_error 973) 0)
+    (let p:f64 (f64.convert_i64_s (call pow10_i64 (if (gt frac 18) 18 frac))))
+    (if (gt frac 18) (set! p (* p (f64.convert_i64_s (call pow10_i64 (- frac 18))))) (block))
+    (let v:f64 (/ (f64.convert_i64_s m) p))
+    (if neg (set! v (* v (f64.convert_i64_s -1i64))) (block))
+    (let bits:i64 (i64.reinterpret_f64 v))
+    (mem.store8 ptr 68)
+    (loop b 0 7 1
+      (mem.store8 (+ ptr (+ 1 b)) (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64))))
+    9)
+
   (fn emit_byte [ptr:i32 b:i32] -> i32
     (mem.store8 ptr b)
     1)
@@ -771,8 +821,9 @@
     (+ n (call emit_byte (+ ptr n) 71)))
 
   ;; ===== Compile error signaling =====
+  ;; Records the first error only: later errors are usually consequences of it.
   (fn set_compile_error [code:i32] -> i32
-    (mem.store32 4 code)
+    (if (eq (mem.load32 4) 0) (mem.store32 4 code) (block))
     0)
 
   (fn has_compile_error [] -> bool
@@ -1113,8 +1164,10 @@
         (block))
     ;; comparisons and logic
     (if (and (gte kw 15) (lte kw 23)) (set! res 204) (block))
-    ;; mem.load64, i64.extend_s, i64.extend_u
-    (if (or (eq kw 11) (or (eq kw 45) (eq kw 46))) (set! res 201) (block))
+    ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
+    (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
+    ;; f64.convert_i64_s, f64.reinterpret_i64
+    (if (or (eq kw 57) (eq kw 59)) (set! res 203) (block))
     res)
 
   ;; ===== Expression / statement codegen =====
@@ -1132,7 +1185,7 @@
                 (call emit_byte out_ptr 66)
                 (+ 1 (call encode_s64 (+ out_ptr 1) (call parse_i64_literal src_ptr (call node_a node) (call node_b node)))))
           (if (eq kind 11)
-              (block (call set_compile_error 972) 0)
+              (call emit_f64_literal out_ptr src_ptr (call node_a node) (call node_b node))
           (if (eq kind 9)
               (block
                 (let addr:i32 (call find_interned_string src_ptr (call node_a node) (call node_b node)))
@@ -1458,6 +1511,18 @@
         (set! res res))
     (if (eq op_id 47) ;; i32.wrap
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 167) (set! res (+ n1 1)))
+        (set! res res))
+    (if (eq op_id 57) ;; f64.convert_i64_s
+        (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 185))))
+        (set! res res))
+    (if (eq op_id 58) ;; i64.trunc_f64_s
+        (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 176))))
+        (set! res res))
+    (if (eq op_id 59) ;; f64.reinterpret_i64
+        (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 191))))
+        (set! res res))
+    (if (eq op_id 60) ;; i64.reinterpret_f64
+        (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 189))))
         (set! res res))
     (if (eq op_id 48) ;; ok
         (block

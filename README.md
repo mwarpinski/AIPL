@@ -53,7 +53,7 @@ cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test sui
 wasmtime run --dir=. out.wasm --invoke main               # run compiled I/O under any WASI host
 ```
 
-Run the full test suite with `cargo test` (115 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
+Run the full test suite with `cargo test` (120 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
 
 ## Repository layout
 
@@ -79,4 +79,4 @@ Run the full test suite with `cargo test` (115 tests; `test_selfhost` takes abou
 
 ## Roadmap in one paragraph
 
-Done: honest tests, no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays. In progress: the self-hosted compiler (type inference for `i64`/`f64`, imports). Next: a standard library, function references, `return`/`break`/`continue`, versioning, then rewriting the resolver in AIPL so the Rust bootstrap can shrink to primitives. Native speed is planned through wasm ahead-of-time compilation, not a hand-written native backend.
+Done: honest tests, no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays, and a self-hosted compiler that matches the Rust one byte for byte and reproduces itself when compiled to wasm. In progress: a driver so that compiled compiler runs as a standalone tool, and import resolution in AIPL. Next: a standard library, function references, `return`/`break`/`continue`, versioning, then rewriting the resolver in AIPL so the Rust bootstrap can shrink to primitives. Native speed is planned through wasm ahead-of-time compilation, not a hand-written native backend.

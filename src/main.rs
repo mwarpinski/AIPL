@@ -95,6 +95,65 @@ fn run_self_hosted_codegen(src: &str) -> Result<Vec<u8>, String> {
     Ok(vm.read_bytes(out_ptr, out_len as usize))
 }
 
+/// Locates the first differing byte of two wasm modules: which section (and,
+/// in the code section, which function body) it falls in, plus a hex window
+/// of each side around it.
+fn describe_divergence(rust: &[u8], selfh: &[u8]) -> String {
+    let first = (0..rust.len().max(selfh.len()))
+        .find(|&i| rust.get(i) != selfh.get(i))
+        .unwrap_or(0);
+    let leb = |b: &[u8], pos: &mut usize| -> usize {
+        let (mut v, mut shift) = (0usize, 0);
+        while *pos < b.len() {
+            let byte = b[*pos];
+            *pos += 1;
+            v |= ((byte & 0x7f) as usize) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        v
+    };
+    let names = ["custom", "type", "import", "function", "table", "memory", "global", "export", "start", "element", "code", "data"];
+    let mut location = String::from("module header");
+    let mut pos = 8;
+    while pos < rust.len() {
+        let id = rust[pos] as usize;
+        let start = pos;
+        pos += 1;
+        let size = leb(rust, &mut pos);
+        let body = pos;
+        let end = body + size;
+        if first < end {
+            location = format!("{} section (id {}) starting at byte {}", names.get(id).unwrap_or(&"unknown"), id, start);
+            if id == 10 {
+                let mut p = body;
+                let count = leb(rust, &mut p);
+                for f in 0..count {
+                    let fsize = leb(rust, &mut p);
+                    if first < p + fsize {
+                        location.push_str(&format!(", body of code-section function {} (byte {} of the body)", f, first.saturating_sub(p)));
+                        break;
+                    }
+                    p += fsize;
+                }
+            }
+            break;
+        }
+        pos = end;
+    }
+    let window = |b: &[u8]| {
+        let lo = first.saturating_sub(8);
+        let hi = (first + 16).min(b.len());
+        b.get(lo..hi).map(|w| w.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+    };
+    format!(
+        "Rust {} bytes, self-hosted {} bytes; first difference at byte {} in the {}\n  rust: {}\n  self: {}\n  (windows start at byte {})",
+        rust.len(), selfh.len(), first, location, window(rust), window(selfh), first.saturating_sub(8)
+    )
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -122,14 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let self_bytes = run_self_hosted_codegen(&src).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
-                    eprintln!("Rust bytes len: {}, Self-hosted len: {}", rust_bytes.len(), self_bytes.len());
-                    for i in 0..rust_bytes.len().max(self_bytes.len()) {
-                        let r = rust_bytes.get(i);
-                        let s = self_bytes.get(i);
-                        if r != s {
-                            eprintln!("  Mismatch at byte index {}: Rust={:?}, Self-hosted={:?}", i, r, s);
-                        }
-                    }
+                    eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));
                     return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());
                 }
                 println!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
