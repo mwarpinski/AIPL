@@ -30,6 +30,9 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
+        /// Compile using the self-hosted codegen.aipl backend and verify bit-for-bit parity with Rust compiler
+        #[arg(long = "self")]
+        self_flag: bool,
     },
     /// Type-check and formally verify an AIPL file without running it
     Verify { file: String },
@@ -58,6 +61,40 @@ enum Commands {
     },
 }
 
+fn run_self_hosted_codegen(src: &str) -> Result<Vec<u8>, String> {
+    let codegen_path = Path::new("aipl_src/codegen.aipl");
+    let module = Resolver::resolve(&codegen_path).map_err(|e| format!("resolve codegen.aipl: {}", e))?;
+    TypeChecker::new().check_module(&module).map_err(|e| format!("check codegen.aipl: {}", e))?;
+    let mut vm = VM::new();
+    vm.load_module(module);
+    
+    vm.invoke("init_keywords", vec![]).map_err(|e| format!("init_keywords: {}", e))?;
+    
+    let src_bytes = src.as_bytes();
+    let alloc_res = vm.invoke("alloc_src", vec![Value::Int((src_bytes.len() + 16) as i64)]).map_err(|e| format!("alloc_src: {}", e))?;
+    let src_ptr = match alloc_res {
+        Value::Int(p) => p as i32,
+        other => return Err(format!("expected Int from alloc_src, got {:?}", other)),
+    };
+    
+    vm.write_bytes(src_ptr as usize, src_bytes);
+    
+    let out_len_val = vm.invoke("compile_module", vec![Value::Int(src_ptr as i64), Value::Int(src_bytes.len() as i64)]).map_err(|e| format!("compile_module: {}", e))?;
+    let out_len = match out_len_val {
+        Value::Int(l) => l as i32,
+        other => return Err(format!("expected Int from compile_module, got {:?}", other)),
+    };
+    if out_len <= 0 {
+        // Cell 4 holds the compile error code (AIPL_SPEC.md 6.4).
+        let code = u32::from_le_bytes(vm.read_bytes(4, 4)[..4].try_into().unwrap());
+        return Err(format!("compile_module returned {} with compile error {} (see AIPL_SPEC.md 6.4)", out_len, code));
+    }
+    
+    let out_ptr_bytes = vm.read_bytes(60, 4);
+    let out_ptr = u32::from_le_bytes(out_ptr_bytes[..4].try_into().unwrap()) as usize;
+    Ok(vm.read_bytes(out_ptr, out_len as usize))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -73,13 +110,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let res = vm.invoke(&func, vec![])?;
             println!("[AIPL Result]: {:?}", res);
         }
-        Commands::Compile { file, output } => {
+        Commands::Compile { file, output, self_flag } => {
+            let src = fs::read_to_string(&file)?;
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
-            let wasm_bytes = WasmCompiler::compile(&module)?;
-            fs::write(&output, wasm_bytes)?;
+            let rust_bytes = WasmCompiler::compile(&module)?;
+            if self_flag {
+                println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
+                let self_bytes = run_self_hosted_codegen(&src).map_err(|e| format!("Self-host error: {}", e))?;
+                if rust_bytes != self_bytes {
+                    eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
+                    eprintln!("Rust bytes len: {}, Self-hosted len: {}", rust_bytes.len(), self_bytes.len());
+                    for i in 0..rust_bytes.len().max(self_bytes.len()) {
+                        let r = rust_bytes.get(i);
+                        let s = self_bytes.get(i);
+                        if r != s {
+                            eprintln!("  Mismatch at byte index {}: Rust={:?}, Self-hosted={:?}", i, r, s);
+                        }
+                    }
+                    return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());
+                }
+                println!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");
+                fs::write(&output, &self_bytes)?;
+            } else {
+                fs::write(&output, &rust_bytes)?;
+            }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
         }
         Commands::Verify { file } => {

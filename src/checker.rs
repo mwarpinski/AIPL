@@ -1,23 +1,81 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
+    match ty {
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) => Ok((4, 4)),
+        Type::I64 | Type::F64 => Ok((8, 8)),
+        _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
+    }
+}
+
+pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
+    let mut offset = 0;
+    for f in &def.fields {
+        let (s, a) = type_size_and_align(&f.ty)?;
+        offset = (offset + a - 1) & !(a - 1);
+        if f.name == field_name {
+            return Ok((offset, f.ty.clone()));
+        }
+        offset += s;
+    }
+    Err(format!("Struct '{}' has no field '{}'", def.name, field_name))
+}
+
+pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
+    let mut offset = 0;
+    let mut max_align = 1;
+    for f in &def.fields {
+        let (s, a) = type_size_and_align(&f.ty)?;
+        if a > max_align {
+            max_align = a;
+        }
+        offset = (offset + a - 1) & !(a - 1);
+        offset += s;
+    }
+    let total = (offset + max_align - 1) & !(max_align - 1);
+    Ok(total)
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
+    struct_defs: HashMap<String, StructDef>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
         TypeChecker {
             fn_signatures: HashMap::new(),
+            struct_defs: HashMap::new(),
         }
     }
 
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
+        // Register struct definitions
+        for s in &module.structs {
+            if self.struct_defs.contains_key(&s.name) {
+                return Err(format!(
+                    "{}:{}: Duplicate struct definition '{}'",
+                    s.span.0, s.span.1, s.name
+                ));
+            }
+            for f in &s.fields {
+                type_size_and_align(&f.ty).map_err(|e| {
+                    format!(
+                        "{}:{}: Field '{}' in struct '{}': {}",
+                        s.span.0, s.span.1, f.name, s.name, e
+                    )
+                })?;
+            }
+            self.struct_defs.insert(s.name.clone(), s.clone());
+        }
+
         // First pass: register function signatures
         for f in &module.functions {
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
-            self.fn_signatures.insert(f.name.clone(), (param_types, f.return_type.clone()));
+            self.fn_signatures
+                .insert(f.name.clone(), (param_types, f.return_type.clone()));
         }
 
         // Second pass: type check bodies and verify contracts
@@ -26,6 +84,10 @@ impl TypeChecker {
         }
 
         Ok(())
+    }
+
+    pub fn get_struct_def(&self, name: &str) -> Option<&StructDef> {
+        self.struct_defs.get(name)
     }
 
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
@@ -352,24 +414,6 @@ impl TypeChecker {
                     }
                     Ok(Type::Bool)
                 }
-                OpCode::ArrGet => {
-                    if args.len() != 2 {
-                        return Err(format!("{}:{}: arr.get requires 2 arguments (arr, index)", l, c));
-                    }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
-                    }
-                    Ok(Type::I32)
-                }
-                OpCode::ArrSet => {
-                    if args.len() != 3 {
-                        return Err(format!("{}:{}: arr.set requires 3 arguments (arr, index, val)", l, c));
-                    }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
-                    }
-                    Ok(Type::Void)
-                }
                 OpCode::SysPrint => {
                     for arg in args {
                         self.infer_expr_type(arg, env)?;
@@ -534,6 +578,133 @@ impl TypeChecker {
                     last_ty = self.infer_expr_type(e, &mut local_env)?;
                 }
                 Ok(last_ty)
+            }
+            Expr::NewStruct { struct_name, span } => {
+                if !self.struct_defs.contains_key(struct_name) {
+                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+                }
+                Ok(Type::I32)
+            }
+            Expr::GetField {
+                struct_name,
+                field_name,
+                ptr,
+                span,
+            } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
+                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
+                })?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: Expected i32 pointer for struct get, got {:?}",
+                        span.0, span.1, ptr_ty
+                    ));
+                }
+                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                    format!("{}:{}: {}", span.0, span.1, e)
+                })?;
+                Ok(field_ty)
+            }
+            Expr::PutField {
+                struct_name,
+                field_name,
+                ptr,
+                val,
+                span,
+            } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
+                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
+                })?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: Expected i32 pointer for struct put, got {:?}",
+                        span.0, span.1, ptr_ty
+                    ));
+                }
+                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                    format!("{}:{}: {}", span.0, span.1, e)
+                })?;
+                let val_ty = self.infer_expr_type(val, env)?;
+                if val_ty != field_ty {
+                    return Err(format!(
+                        "{}:{}: Type mismatch writing to field '{}.{}': expected {:?}, got {:?}",
+                        span.0, span.1, struct_name, field_name, field_ty, val_ty
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            Expr::Sizeof { struct_name, span } => {
+                if !self.struct_defs.contains_key(struct_name) {
+                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+                }
+                Ok(Type::I32)
+            }
+            Expr::ArrNew { elem_ty, size, span } => {
+                type_size_and_align(elem_ty).map_err(|e| format!("{}:{}: {}", span.0, span.1, e))?;
+                let sz_ty = self.infer_expr_type(size, env)?;
+                if sz_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.new size must be i32, got {:?}",
+                        span.0, span.1, sz_ty
+                    ));
+                }
+                Ok(Type::I32)
+            }
+            Expr::ArrGet {
+                elem_ty,
+                ptr,
+                index,
+                span,
+            } => {
+                type_size_and_align(elem_ty).map_err(|e| format!("{}:{}: {}", span.0, span.1, e))?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.get ptr must be i32, got {:?}",
+                        span.0, span.1, ptr_ty
+                    ));
+                }
+                let idx_ty = self.infer_expr_type(index, env)?;
+                if idx_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.get index must be i32, got {:?}",
+                        span.0, span.1, idx_ty
+                    ));
+                }
+                Ok(elem_ty.clone())
+            }
+            Expr::ArrSet {
+                elem_ty,
+                ptr,
+                index,
+                val,
+                span,
+            } => {
+                type_size_and_align(elem_ty).map_err(|e| format!("{}:{}: {}", span.0, span.1, e))?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.set ptr must be i32, got {:?}",
+                        span.0, span.1, ptr_ty
+                    ));
+                }
+                let idx_ty = self.infer_expr_type(index, env)?;
+                if idx_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.set index must be i32, got {:?}",
+                        span.0, span.1, idx_ty
+                    ));
+                }
+                let val_ty = self.infer_expr_type(val, env)?;
+                if val_ty != *elem_ty {
+                    return Err(format!(
+                        "{}:{}: arr.set value mismatch: expected {:?}, got {:?}",
+                        span.0, span.1, elem_ty, val_ty
+                    ));
+                }
+                Ok(Type::Void)
             }
         }
     }

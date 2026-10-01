@@ -50,11 +50,12 @@ impl Resolver {
         // directly and transitively (a diamond dependency) is only emitted
         // once. `in_progress` is the separate cycle-detection stack.
         let mut output: Vec<FnDef> = Vec::new();
+        let mut output_structs: Vec<StructDef> = entry_module.structs;
         let mut included: HashSet<PathBuf> = HashSet::new();
         let mut in_progress: HashSet<PathBuf> = HashSet::new();
 
         for import in &entry_module.imports {
-            Self::resolve_import(import, entry_path, &mut output, &mut included, &mut in_progress)?;
+            Self::resolve_import(import, entry_path, &mut output, &mut output_structs, &mut included, &mut in_progress)?;
         }
 
         let alias_map = build_alias_map(&entry_module.imports);
@@ -73,13 +74,19 @@ impl Resolver {
         }
         output.extend(own_functions);
 
-        Ok(Module { name: entry_module.name, imports: vec![], functions: output })
+        Ok(Module {
+            name: entry_module.name,
+            imports: vec![],
+            structs: output_structs,
+            functions: output,
+        })
     }
 
     fn resolve_import(
         import: &Import,
         importer_path: &Path,
         output: &mut Vec<FnDef>,
+        output_structs: &mut Vec<StructDef>,
         included: &mut HashSet<PathBuf>,
         in_progress: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
@@ -106,11 +113,12 @@ impl Resolver {
         // Resolve this module's own imports first (its dependencies must be
         // fully qualified and emitted before we merge this module in).
         for sub_import in &module.imports {
-            Self::resolve_import(sub_import, &file_path, output, included, in_progress)?;
+            Self::resolve_import(sub_import, &file_path, output, output_structs, included, in_progress)?;
         }
 
         let own_alias_map = build_alias_map(&module.imports);
         let own_names: HashSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+        output_structs.extend(module.structs);
         let mut own_fns = module.functions;
         for f in &mut own_fns {
             walk_calls(&mut f.body, &mut |func| {

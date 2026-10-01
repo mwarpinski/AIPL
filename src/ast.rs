@@ -41,8 +41,6 @@ pub enum OpCode {
     Shl,
     Shr,
     ShrU,
-    DivU,
-    RemU,
     BitAnd,
     BitOr,
     MemLoad8,
@@ -74,8 +72,6 @@ pub enum OpCode {
     And,
     Or,
     Not,
-    ArrGet,
-    ArrSet,
     SysPrint,
     SysTime,
     SysExit,
@@ -165,6 +161,45 @@ pub enum Expr {
         span: (u32, u32),
     },
     Block(Vec<Expr>, (u32, u32)),
+    NewStruct {
+        struct_name: String,
+        span: (u32, u32),
+    },
+    GetField {
+        struct_name: String,
+        field_name: String,
+        ptr: Box<Expr>,
+        span: (u32, u32),
+    },
+    PutField {
+        struct_name: String,
+        field_name: String,
+        ptr: Box<Expr>,
+        val: Box<Expr>,
+        span: (u32, u32),
+    },
+    Sizeof {
+        struct_name: String,
+        span: (u32, u32),
+    },
+    ArrNew {
+        elem_ty: Type,
+        size: Box<Expr>,
+        span: (u32, u32),
+    },
+    ArrGet {
+        elem_ty: Type,
+        ptr: Box<Expr>,
+        index: Box<Expr>,
+        span: (u32, u32),
+    },
+    ArrSet {
+        elem_ty: Type,
+        ptr: Box<Expr>,
+        index: Box<Expr>,
+        val: Box<Expr>,
+        span: (u32, u32),
+    },
 }
 
 impl Expr {
@@ -183,8 +218,28 @@ impl Expr {
             Expr::Err(_, _, span) => *span,
             Expr::MatchResult { span, .. } => *span,
             Expr::Block(_, span) => *span,
+            Expr::NewStruct { span, .. } => *span,
+            Expr::GetField { span, .. } => *span,
+            Expr::PutField { span, .. } => *span,
+            Expr::Sizeof { span, .. } => *span,
+            Expr::ArrNew { span, .. } => *span,
+            Expr::ArrGet { span, .. } => *span,
+            Expr::ArrSet { span, .. } => *span,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructField {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<StructField>,
+    pub span: (u32, u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,5 +262,6 @@ pub struct Import {
 pub struct Module {
     pub name: String,
     pub imports: Vec<Import>,
+    pub structs: Vec<StructDef>,
     pub functions: Vec<FnDef>,
 }

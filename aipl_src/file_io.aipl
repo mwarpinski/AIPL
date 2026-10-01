@@ -103,7 +103,6 @@
     (let written:i32 (call fs_write_file path path_len payload payload_len))
     (let read_n:i32 (call fs_read_file path path_len readbuf 64))
 
-    (let i:i32 0)
     (let mismatch:i32 0)
     (loop i 0 16 1
       (if (neq (mem.load8 (+ readbuf i)) (mem.load8 (+ payload i)))

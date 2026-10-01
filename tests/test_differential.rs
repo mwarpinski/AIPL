@@ -87,6 +87,13 @@ fn is_contract_failure(e: &str) -> bool {
     e.starts_with("Pre-condition") || e.starts_with("Post-condition")
 }
 
+/// The VM bounds-checks `arr.get`/`arr.set` against the length header; the
+/// wasm backend does not (AIPL_SPEC.md 4.E). Like contracts, this is a check
+/// the VM adds on top of wasm semantics, so VM-error/wasm-success is accepted.
+fn is_vm_bounds_check(e: &str) -> bool {
+    e.starts_with("Array index out of bounds")
+}
+
 /// Runs `fn_name` with `args` in both backends and asserts agreement. Returns
 /// the agreed outcome so callers can additionally assert the concrete value.
 fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Outcome {
@@ -98,7 +105,7 @@ fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Ou
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM={a:?} wasmtime={b:?} (fix src/vm.rs)"
         ),
         (Err(_), Err(_)) => {}
-        (Err(e), Ok(_)) if is_contract_failure(e) => {}
+        (Err(e), Ok(_)) if is_contract_failure(e) || is_vm_bounds_check(e) => {}
         (Err(e), Ok(b)) => panic!(
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM errored ({e}) but wasmtime returned {b:?} (fix src/vm.rs)"
         ),
@@ -536,8 +543,7 @@ fn p7_typing_and_scoping_rules() {
       (err e -1)))
 )
 "#;
-    let mut parser = Parser::new(src);
-    let module = parser.parse_module().expect("p7_test parses");
+    let module = Parser::parse(src).expect("p7_test parses");
     let mut checker = TypeChecker::new();
     checker.check_module(&module).expect("p7_test type-checks");
 
@@ -563,8 +569,7 @@ fn p7_typing_and_scoping_rules() {
     x)
 )
 "#;
-    let mut p = Parser::new(shadow_src);
-    let m = p.parse_module().expect("shadow_test parses");
+    let m = Parser::parse(shadow_src).expect("shadow_test parses");
     let err = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(err.contains("Cannot shadow"), "expected shadowing error, got: {err}");
 
@@ -576,8 +581,168 @@ fn p7_typing_and_scoping_rules() {
     0)
 )
 "#;
-    let mut p2 = Parser::new(set_err_src);
-    let m2 = p2.parse_module().expect("set_test parses");
+    let m2 = Parser::parse(set_err_src).expect("set_test parses");
     let err2 = TypeChecker::new().check_module(&m2).unwrap_err();
     assert!(err2.contains("Undefined variable"), "expected undefined variable error, got: {err2}");
+}
+
+#[test]
+fn p8_structs_and_arrays() {
+    let src = r#"
+(module p8_test
+  (struct Point [x:i32 y:i32])
+  (struct Mixed [flag:bool val:i64 tag:i32])
+  (struct Floats [a:f32 b:f64])
+  (struct Named [id:i32 name:str])
+
+  (fn test_point_ops [x:i32 y:i32] -> i32
+    (let p:i32 (new Point))
+    (put p Point.x x)
+    (put p Point.y y)
+    (+ (get p Point.x) (get p Point.y)))
+
+  (fn test_sizeof [] -> i32
+    (+ (sizeof Point) (+ (sizeof Mixed) (sizeof Floats))))
+
+  ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
+  (fn test_mixed [n:i32] -> i32
+    (let m:i32 (new Mixed))
+    (put m Mixed.flag true)
+    (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
+    (put m Mixed.tag 7)
+    (if (get m Mixed.flag)
+        (+ (i32.wrap (shr (get m Mixed.val) 32i64)) (+ (get m Mixed.tag) (mem.load32 (+ m 16))))
+        -1))
+
+  (fn test_floats [] -> i32
+    (let f:i32 (new Floats))
+    (put f Floats.b 2.5)
+    (if (gt (get f Floats.b) 2.0) 1 0))
+
+  (fn test_array_ops [n:i32] -> i32
+    (let arr:i32 (arr.new i32 n))
+    (loop i 0 (- n 1) 1
+      (arr.set i32 arr i (* (+ i 1) 10)))
+    (let sum:i32 0)
+    (loop i 0 (- n 1) 1
+      (set! sum (+ sum (arr.get i32 arr i))))
+    sum)
+
+  ;; header holds the count; the bump cursor advances by 4 + n * 8
+  (fn test_i64_array [n:i32] -> i32
+    (let a:i32 (arr.new i64 n))
+    (arr.set i64 a (- n 1) 5i64)
+    (let next:i32 (mem.alloc 4))
+    (+ (mem.load32 (- a 4)) (+ (- next a) (i32.wrap (arr.get i64 a (- n 1))))))
+
+  (fn test_index_oob [i:i32] -> i32
+    (let a:i32 (arr.new i32 3))
+    (arr.get i32 a i))
+
+  (fn alloc_four [] -> i32
+    (let _p:i32 (mem.alloc 4))
+    2)
+
+  ;; the size expression allocates; the array must not overlap that block
+  (fn test_size_allocates [] -> i32
+    (let a:i32 (arr.new i32 (call alloc_four)))
+    (- a (mem.load32 0)))
+
+  ;; ok/err take 8 heap bytes in both backends, before the payload runs
+  (fn test_result_heap [] -> i32
+    (let r:(result i32 i32) (ok 5))
+    (let e:(result i32 i32) (err 6))
+    (mem.alloc 4))
+
+  (fn test_result_payload_allocates [] -> i32
+    (match_result (ok (arr.new i32 2))
+      (ok v v)
+      (err e 0)))
+
+  ;; AIPL_SPEC.md 4.E example
+  (fn test_points [] -> i32
+    (let ps:i32 (arr.new i32 3))
+    (loop i 0 2 1
+      (let p:i32 (new Point))
+      (put p Point.x i)
+      (put p Point.y (* i 10))
+      (arr.set i32 ps i p))
+    (let sum:i32 0)
+    (loop i 0 2 1
+      (let p:i32 (arr.get i32 ps i))
+      (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
+    sum)
+
+  ;; a bool word holding 2 (written raw) reads as true in both backends
+  (fn test_bool_word [] -> i32
+    (let p:i32 (new Mixed))
+    (mem.store32 p 2)
+    (let a:i32 (arr.new bool 1))
+    (mem.store32 a 7)
+    (if (and (eq (get p Mixed.flag) true) (and (arr.get bool a 0) true)) 1 0))
+
+  ;; str fields and elements hold the address of the bytes; the VM copies the
+  ;; string into the heap, wasm points at the interned literal
+  (fn test_str_field [] -> i32
+    (let n:i32 (new Named))
+    (put n Named.name "abc")
+    (let a:i32 (arr.new str 2))
+    (arr.set str a 1 (get n Named.name))
+    (+ (str.len (arr.get str a 1)) (if (eq (get n Named.name) "abc") 10 0)))
+
+  (fn test_put_reserved [] -> i32
+    (put (- 600 88) Point.x 1)
+    0)
+
+  (fn test_arr_set_reserved [] -> i32
+    (arr.set i32 (- 600 88) 0 1)
+    0)
+)
+"#;
+    let module = Parser::parse(src).expect("p8_test parses");
+    TypeChecker::new().check_module(&module).expect("p8_test type-checks");
+    let wasm = WasmCompiler::compile(&module).expect("p8_test compiles to WASM");
+
+    assert_eq!(differential(&module, &wasm, "test_point_ops", &[15, 27]), Ok(Value::Int(42)));
+    // Point 8; Mixed 24 (bool 4 + pad 4 + i64 8 + i32 4 + pad 4); Floats 16 (f32 4 + pad 4 + f64 8)
+    assert_eq!(differential(&module, &wasm, "test_sizeof", &[]), Ok(Value::Int(48)));
+    // high word of n << 32 is n; tag read via get and via raw offset 16
+    assert_eq!(differential(&module, &wasm, "test_mixed", &[3]), Ok(Value::Int(3 + 7 + 7)));
+    assert_eq!(differential(&module, &wasm, "test_floats", &[]), Ok(Value::Int(1)));
+    assert_eq!(differential(&module, &wasm, "test_array_ops", &[5]), Ok(Value::Int(150)));
+    assert_eq!(differential(&module, &wasm, "test_points", &[]), Ok(Value::Int(33)));
+    assert_eq!(differential(&module, &wasm, "test_bool_word", &[]), Ok(Value::Int(1)));
+    assert_eq!(differential(&module, &wasm, "test_str_field", &[]), Ok(Value::Int(13)));
+    // count 3 + (3 * 8 bytes from the array pointer to the next block) + element 5
+    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 24 + 5)));
+    // 4-byte block at 1024, header at 1028, array at 1032, cursor 1032 + 8
+    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
+    // two 8-byte result cells at 1024 and 1032, then the 4-byte block
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1040)));
+    // result cell at 1024, array header at 1032, array at 1036
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1036)));
+
+    // Negative array size: VM error, wasm trap.
+    assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
+    // put / arr.set into the reserved block: VM error, wasm trap.
+    let e = differential(&module, &wasm, "test_put_reserved", &[]).unwrap_err();
+    assert!(e.contains("reserved runtime block"), "got {e}");
+    // (the VM's bounds check sees no length header there and fires first)
+    assert!(differential(&module, &wasm, "test_arr_set_reserved", &[]).is_err());
+
+    // In-bounds index agrees; out-of-bounds index is a VM error (wasm reads past the array).
+    assert_eq!(differential(&module, &wasm, "test_index_oob", &[2]), Ok(Value::Int(0)));
+    for i in [3, -1] {
+        let e = differential(&module, &wasm, "test_index_oob", &[i]).unwrap_err();
+        assert_eq!(e, format!("Array index out of bounds: index {i} for array of length 3"));
+    }
+}
+
+#[test]
+fn p8_wasm_rejects_non_32_bit_result_payloads() {
+    let src = "(module m (fn f [] -> (result i64 i32) (ok 1i64)))";
+    let module = Parser::parse(src).expect("parses");
+    TypeChecker::new().check_module(&module).expect("checks");
+    let err = WasmCompiler::compile(&module).unwrap_err();
+    assert!(err.contains("result payloads must be 32-bit"), "got {err}");
 }

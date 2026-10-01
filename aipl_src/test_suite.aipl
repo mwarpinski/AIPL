@@ -20,7 +20,7 @@
 ;; Once imported, the real function is renamed to `thread_sync.worker_increment`
 ;; and the spawn fails with "unknown function 'worker_increment'". Run that
 ;; module's test standalone instead:
-;;   aipl test aipl_src/thread_sync.aipl --func run_thread_tests
+;;   aipl eval aipl_src/thread_sync.aipl --func run_thread_tests   (prints Int(1))
 ;; Fixing this for real needs either a naming convention that survives
 ;; import rewriting (e.g. thread.spawn always resolving relative to its own
 ;; module's qualified prefix) or first-class function values - not a quick

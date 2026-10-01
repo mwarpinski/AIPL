@@ -44,6 +44,7 @@ pub const HEAP_START: u32 = 1024;
 
 pub struct VM {
     functions: Arc<HashMap<String, FnDef>>,
+    structs: Arc<HashMap<String, StructDef>>,
     globals: HashMap<String, Value>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
@@ -56,6 +57,7 @@ impl VM {
     pub fn new() -> Self {
         VM {
             functions: Arc::new(HashMap::new()),
+            structs: Arc::new(HashMap::new()),
             globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
                 bytes: {
@@ -82,6 +84,7 @@ impl VM {
     fn spawn_child(&self) -> VM {
         VM {
             functions: Arc::clone(&self.functions),
+            structs: Arc::clone(&self.structs),
             globals: HashMap::new(),
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
@@ -104,11 +107,17 @@ impl VM {
     }
 
     pub fn load_module(&mut self, module: Module) {
-        let mut map = (*self.functions).clone();
+        let mut f_map = (*self.functions).clone();
         for f in module.functions {
-            map.insert(f.name.clone(), f);
+            f_map.insert(f.name.clone(), f);
         }
-        self.functions = Arc::new(map);
+        self.functions = Arc::new(f_map);
+
+        let mut s_map = (*self.structs).clone();
+        for s in module.structs {
+            s_map.insert(s.name.clone(), s);
+        }
+        self.structs = Arc::new(s_map);
     }
 
     pub fn invoke(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -264,12 +273,15 @@ impl VM {
                 self.invoke(func, evaluated_args)
             }
             Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
+            // A result occupies 8 heap bytes [tag:i32 payload:i32] (tag 0 = ok,
+            // 1 = err), allocated before the payload is evaluated, exactly as the
+            // wasm backend lays it out, so both backends leave the same heap.
             Expr::Ok(val, _, _) => {
-                let inner = self.eval_expr(val, scope)?;
+                let inner = self.eval_result_cell(0, val, scope)?;
                 Ok(Value::Ok(Box::new(inner)))
             }
             Expr::Err(err, _, _) => {
-                let inner = self.eval_expr(err, scope)?;
+                let inner = self.eval_result_cell(1, err, scope)?;
                 Ok(Value::Err(Box::new(inner)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
@@ -306,6 +318,297 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 Ok(last)
             }
+            Expr::NewStruct { struct_name, .. } => {
+                let def = self
+                    .structs
+                    .get(struct_name)
+                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
+                    .clone();
+                let size = crate::checker::get_struct_size(&def)?;
+                let ptr = self.alloc_bytes(size);
+                Ok(Value::Int(ptr as i64))
+            }
+            Expr::GetField { struct_name, field_name, ptr, .. } => {
+                let def = self
+                    .structs
+                    .get(struct_name)
+                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
+                    .clone();
+                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name)?;
+                let ptr_val = match self.eval_expr(ptr, scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    other => return Err(format!("VM: Expected Int pointer for get, got {:?}", other)),
+                };
+                let addr = ptr_val + offset;
+                self.load_val_at(addr, &field_ty)
+            }
+            Expr::PutField { struct_name, field_name, ptr, val, .. } => {
+                let def = self
+                    .structs
+                    .get(struct_name)
+                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
+                    .clone();
+                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name)?;
+                let ptr_val = match self.eval_expr(ptr, scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
+                };
+                let addr = ptr_val + offset;
+                check_write_address("put", addr)?;
+                let val_v = self.eval_expr(val, scope)?;
+                self.store_val_at(addr, &field_ty, val_v)?;
+                Ok(Value::Void)
+            }
+            Expr::Sizeof { struct_name, .. } => {
+                let def = self
+                    .structs
+                    .get(struct_name)
+                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
+                    .clone();
+                let size = crate::checker::get_struct_size(&def)?;
+                Ok(Value::Int(size as i64))
+            }
+            Expr::ArrNew { elem_ty, size, .. } => {
+                let count = match self.eval_expr(size, scope)? {
+                    Value::Int(i) if i >= 0 => i as usize,
+                    Value::Int(i) => return Err(format!("Array index out of bounds: invalid array size {}", i)),
+                    other => return Err(format!("VM: Expected Int size for arr.new, got {:?}", other)),
+                };
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+                let total_size = 4 + count * elem_size;
+                let raw_ptr = self.alloc_bytes(total_size);
+                // Store element count in the 4 bytes before the base pointer
+                self.store_val_at(raw_ptr as u32 as usize, &Type::I32, Value::Int(count as i64))?;
+                let base_ptr = raw_ptr + 4;
+                Ok(Value::Int(base_ptr as i64))
+            }
+            Expr::ArrGet { elem_ty, ptr, index, .. } => {
+                let ptr_val = match self.eval_expr(ptr, scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    other => return Err(format!("VM: Expected Int pointer for arr.get, got {:?}", other)),
+                };
+                let idx_val = match self.eval_expr(index, scope)? {
+                    Value::Int(i) => i,
+                    other => return Err(format!("VM: Expected Int index for arr.get, got {:?}", other)),
+                };
+                if ptr_val < 4 {
+                    return Err(format!("VM: Invalid array pointer {}", ptr_val));
+                }
+                let count = self.array_len_at(ptr_val)?;
+                if idx_val < 0 || idx_val >= count {
+                    return Err(format!(
+                        "Array index out of bounds: index {} for array of length {}",
+                        idx_val, count
+                    ));
+                }
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+                let addr = ptr_val + (idx_val as usize) * elem_size;
+                self.load_val_at(addr, elem_ty)
+            }
+            Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
+                let ptr_val = match self.eval_expr(ptr, scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    other => return Err(format!("VM: Expected Int pointer for arr.set, got {:?}", other)),
+                };
+                let idx_val = match self.eval_expr(index, scope)? {
+                    Value::Int(i) => i,
+                    other => return Err(format!("VM: Expected Int index for arr.set, got {:?}", other)),
+                };
+                let val_v = self.eval_expr(val, scope)?;
+                if ptr_val < 4 {
+                    return Err(format!("VM: Invalid array pointer {}", ptr_val));
+                }
+                let count = self.array_len_at(ptr_val)?;
+                if idx_val < 0 || idx_val >= count {
+                    return Err(format!(
+                        "Array index out of bounds: index {} for array of length {}",
+                        idx_val, count
+                    ));
+                }
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+                let addr = ptr_val + (idx_val as usize) * elem_size;
+                check_write_address("arr.set", addr)?;
+                self.store_val_at(addr, elem_ty, val_v)?;
+                Ok(Value::Void)
+            }
+        }
+    }
+
+    fn eval_result_cell(&mut self, tag: i32, payload: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+        let cell = self.alloc_bytes(8) as u32 as usize;
+        self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
+        let inner = self.eval_expr(payload, scope)?;
+        if let Value::Int(_) | Value::Bool(_) = inner {
+            self.store_val_at(cell + 4, &Type::I32, inner.clone())?;
+        }
+        Ok(inner)
+    }
+
+    /// Copies `s` into the heap as `[len u32 LE][bytes]` (the shape of the wasm
+    /// string data segment) and returns the address of the bytes. Each call
+    /// allocates afresh; the wasm backend instead points at the interned literal.
+    fn materialize_str(&self, op: &str, s: &str) -> Result<usize, String> {
+        let bytes = s.as_bytes();
+        let mut mem = self.shared.lock().unwrap();
+        let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+        let base = i32::from_le_bytes(cur) as usize;
+        let end = base + 4 + bytes.len();
+        if end > mem.bytes.len() {
+            return Err(format!("{}: out of memory materialising a {}-byte string", op, bytes.len()));
+        }
+        mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        mem.bytes[base + 4..end].copy_from_slice(bytes);
+        mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
+        Ok(base + 4)
+    }
+
+    /// Element count stored in the 4 bytes before an `arr.new` pointer.
+    fn array_len_at(&self, ptr: usize) -> Result<i64, String> {
+        let mem = self.shared.lock().unwrap();
+        if ptr > mem.bytes.len() {
+            return Err(format!("Memory load out of bounds: array pointer {}", ptr));
+        }
+        let bytes: [u8; 4] = mem.bytes[ptr - 4..ptr].try_into().unwrap();
+        Ok(i32::from_le_bytes(bytes) as i64)
+    }
+
+    fn alloc_bytes(&self, size: usize) -> i32 {
+        let mut mem = self.shared.lock().unwrap();
+        let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
+        let allocated_ptr = i32::from_le_bytes(cur);
+        let next = allocated_ptr.wrapping_add(size as i32);
+        mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
+        allocated_ptr
+    }
+
+    fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
+        let mem = self.shared.lock().unwrap();
+        match ty {
+            Type::I32 | Type::Ptr(_) => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
+                let v = i32::from_le_bytes(bytes);
+                Ok(Value::Int(v as i64))
+            }
+            Type::Bool => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
+                let v = i32::from_le_bytes(bytes);
+                Ok(Value::Bool(v != 0))
+            }
+            Type::Str => {
+                // The word is the address of the bytes; the length is in the 4 bytes before them.
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let p = u32::from_le_bytes(mem.bytes[addr..addr + 4].try_into().unwrap()) as usize;
+                if p < 4 || p > mem.bytes.len() {
+                    return Err(format!("VM: str field at address {} holds invalid string pointer {}", addr, p));
+                }
+                let len = u32::from_le_bytes(mem.bytes[p - 4..p].try_into().unwrap()) as usize;
+                if p + len > mem.bytes.len() {
+                    return Err(format!("VM: str at {} with length {} runs past memory", p, len));
+                }
+                Ok(Value::Str(String::from_utf8_lossy(&mem.bytes[p..p + len]).into_owned()))
+            }
+            Type::I64 => {
+                if addr + 8 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
+                let v = i64::from_le_bytes(bytes);
+                Ok(Value::Int64(v))
+            }
+            Type::F32 => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
+                let v = f32::from_le_bytes(bytes);
+                Ok(Value::Float(v as f64))
+            }
+            Type::F64 => {
+                if addr + 8 > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
+                let v = f64::from_le_bytes(bytes);
+                Ok(Value::Float(v))
+            }
+            _ => Err(format!("Unsupported type for memory load: {:?}", ty)),
+        }
+    }
+
+    fn store_val_at(&self, addr: usize, ty: &Type, val: Value) -> Result<(), String> {
+        let val = match (ty, val) {
+            (Type::Str, Value::Str(s)) => Value::Int(self.materialize_str("str store", &s)? as i64),
+            (_, v) => v,
+        };
+        let mut mem = self.shared.lock().unwrap();
+        match ty {
+            Type::I32 | Type::Ptr(_) | Type::Str => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v = match val {
+                    Value::Int(i) => i as i32,
+                    Value::Bool(b) => if b { 1 } else { 0 },
+                    other => return Err(format!("Expected Int/Bool value for 32-bit store, got {:?}", other)),
+                };
+                mem.bytes[addr..addr + 4].copy_from_slice(&v.to_le_bytes());
+                Ok(())
+            }
+            Type::Bool => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v: i32 = match val {
+                    Value::Bool(b) => if b { 1 } else { 0 },
+                    Value::Int(i) => if i != 0 { 1 } else { 0 },
+                    other => return Err(format!("Expected Bool/Int value for bool store, got {:?}", other)),
+                };
+                mem.bytes[addr..addr + 4].copy_from_slice(&v.to_le_bytes());
+                Ok(())
+            }
+            Type::I64 => {
+                if addr + 8 > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v = match val {
+                    Value::Int64(i) => i,
+                    Value::Int(i) => i,
+                    other => return Err(format!("Expected Int64 value for 64-bit store, got {:?}", other)),
+                };
+                mem.bytes[addr..addr + 8].copy_from_slice(&v.to_le_bytes());
+                Ok(())
+            }
+            Type::F32 => {
+                if addr + 4 > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v = match val {
+                    Value::Float(f) => f as f32,
+                    other => return Err(format!("Expected Float value for f32 store, got {:?}", other)),
+                };
+                mem.bytes[addr..addr + 4].copy_from_slice(&v.to_le_bytes());
+                Ok(())
+            }
+            Type::F64 => {
+                if addr + 8 > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v = match val {
+                    Value::Float(f) => f,
+                    other => return Err(format!("Expected Float value for f64 store, got {:?}", other)),
+                };
+                mem.bytes[addr..addr + 8].copy_from_slice(&v.to_le_bytes());
+                Ok(())
+            }
+            _ => Err(format!("Unsupported type for memory store: {:?}", ty)),
         }
     }
 
@@ -405,10 +708,14 @@ impl VM {
                 }
             }
             OpCode::MemLoad8 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
                     _ => return Err("mem.load8 requires Int ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory load out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
                 if ptr >= mem.bytes.len() {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
@@ -416,10 +723,14 @@ impl VM {
                 Ok(Value::Int(mem.bytes[ptr] as i64))
             }
             OpCode::MemStore8 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
                     _ => return Err("mem.store8 requires Int ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory store out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 check_write_address("mem.store8", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => (i & 0xFF) as u8,
@@ -433,59 +744,75 @@ impl VM {
                 Ok(Value::Void)
             }
             OpCode::MemLoad32 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
                     _ => return Err("mem.load32 requires Int ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory load out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr + 4 > mem.bytes.len() {
-                    return Err(format!("Memory load out of bounds: ptr {}", ptr));
+                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                    return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
                 Ok(Value::Int(i32::from_le_bytes(bytes) as i64))
             }
             OpCode::MemLoad64 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
                     _ => return Err("mem.load64 requires Int ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory load out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr + 8 > mem.bytes.len() {
-                    return Err(format!("Memory load out of bounds: ptr {}", ptr));
+                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                    return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
                 Ok(Value::Int64(i64::from_le_bytes(bytes)))
             }
             OpCode::MemStore32 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
                     _ => return Err("mem.store32 requires Int ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory store out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 check_write_address("mem.store32", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr + 4 > mem.bytes.len() {
-                    return Err(format!("Memory store out of bounds: ptr {}", ptr));
+                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                    return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&val.to_le_bytes());
                 Ok(Value::Void)
             }
             OpCode::MemStore64 => {
-                let ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
-                    _ => return Err("mem.store64 requires Int ptr".to_string()),
+                let i_val = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i,
+                    _ => return Err("mem.store64 requires Int64 ptr".to_string()),
                 };
+                if i_val < 0 {
+                    return Err(format!("Memory store out of bounds: ptr {}", i_val));
+                }
+                let ptr = i_val as usize;
                 check_write_address("mem.store64", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int64(i) => i,
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr + 8 > mem.bytes.len() {
-                    return Err(format!("Memory store out of bounds: ptr {}", ptr));
+                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                    return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 8].copy_from_slice(&val.to_le_bytes());
                 Ok(Value::Void)
@@ -1010,9 +1337,6 @@ impl VM {
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }
-            OpCode::ArrGet | OpCode::ArrSet => {
-                Err(format!("{:?} not supported in VM backend: array ops not implemented", op))
-            }
             OpCode::SysTime => {
                 Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
             }
@@ -1034,20 +1358,7 @@ impl VM {
             // the wasm data segment uses, and return the address of the bytes.
             // Each evaluation allocates afresh (bump allocator, never freed).
             OpCode::StrPtr => match self.eval_expr(&args[0], scope)? {
-                Value::Str(s) => {
-                    let bytes = s.as_bytes();
-                    let mut mem = self.shared.lock().unwrap();
-                    let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
-                    let base = i32::from_le_bytes(cur) as usize;
-                    let end = base + 4 + bytes.len();
-                    if end > mem.bytes.len() {
-                        return Err(format!("str.ptr: out of memory materialising a {}-byte string", bytes.len()));
-                    }
-                    mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
-                    mem.bytes[base + 4..end].copy_from_slice(bytes);
-                    mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
-                    Ok(Value::Int((base + 4) as i64))
-                }
+                Value::Str(s) => Ok(Value::Int(self.materialize_str("str.ptr", &s)? as i64)),
                 other => Err(format!("str.ptr requires Str, got {:?}", other)),
             },
         }

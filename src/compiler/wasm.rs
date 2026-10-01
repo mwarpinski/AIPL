@@ -65,6 +65,11 @@ impl WasmCompiler {
             ));
         }
 
+        let mut structs: HashMap<String, StructDef> = HashMap::new();
+        for s in &module.structs {
+            structs.insert(s.name.clone(), s.clone());
+        }
+
         // 1. Build type section and function index mapping (after the imports)
         for (i, f) in module.functions.iter().enumerate() {
             let idx = import_count + i as u32;
@@ -112,8 +117,7 @@ impl WasmCompiler {
                 }
             }
 
-            // One extra i32 local per function: scratch for the write-address
-            // check emitted before every store (see emit_write_address_check).
+            // One extra i32 local per function: scratch for write-address checks and allocation
             let addr_scratch = current_idx;
             wasm_locals.push((1, ValType::I32));
             current_idx += 1;
@@ -139,6 +143,7 @@ impl WasmCompiler {
                 strings: &strings,
                 wasi: &wasi_indices,
                 newline_addr,
+                structs: &structs,
             };
 
             // Every statement but the last is executed purely for effect: drop
@@ -209,6 +214,7 @@ struct Ctx<'a> {
     wasi: &'a HashMap<Wasi, u32>,
     /// Address of the interned "\n" used by sys.print (0 if unused).
     newline_addr: u32,
+    structs: &'a HashMap<String, StructDef>,
 }
 
 /// Static AIPL type of an expression, as the checker would assign it. Codegen
@@ -225,6 +231,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             Literal::Bool(_) => Type::Bool,
             Literal::Str(_) => Type::Str,
         },
+        Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Let { .. } | Expr::Set { .. } => Type::Void,
         Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
         Expr::Block(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
@@ -232,6 +239,20 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
         Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::NewStruct { .. } => Type::I32,
+        Expr::GetField { struct_name, field_name, .. } => {
+            if let Some(def) = ctx.structs.get(struct_name) {
+                if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name) {
+                    return field_ty;
+                }
+            }
+            Type::I32
+        }
+        Expr::PutField { .. } => Type::Void,
+        Expr::Sizeof { .. } => Type::I32,
+        Expr::ArrNew { .. } => Type::I32,
+        Expr::ArrGet { elem_ty, .. } => elem_ty.clone(),
+        Expr::ArrSet { .. } => Type::Void,
         Expr::Op { op, args, .. } => match op {
             OpCode::Add
             | OpCode::Sub
@@ -267,7 +288,6 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::MemFree
             | OpCode::AtomicLock
             | OpCode::AtomicUnlock
-            | OpCode::ArrSet
             | OpCode::SysPrint
             | OpCode::SysExit => Type::Void,
             OpCode::MemLoad8
@@ -275,7 +295,6 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::MemAlloc
             | OpCode::MemGrow
             | OpCode::AtomicAdd
-            | OpCode::ArrGet
             | OpCode::I32Wrap
             | OpCode::FsOpen
             | OpCode::FsRead
@@ -413,13 +432,31 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
             Expr::Call { args, .. } => {
                 collect_lets(args, lets);
             }
-            Expr::MatchResult { expr, ok_body, err_body, .. } => {
+            Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 collect_lets(&[*(expr.clone())], lets);
+                lets.push((ok_var.clone(), Type::I32));
+                lets.push((err_var.clone(), Type::I32));
                 collect_lets(ok_body, lets);
                 collect_lets(err_body, lets);
             }
-            Expr::Ok(inner, _) | Expr::Err(inner, _) => {
+            Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => {
                 collect_lets(&[*(inner.clone())], lets);
+            }
+            Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } => {
+                collect_lets(&[*(ptr.clone())], lets);
+            }
+            Expr::PutField { ptr, val, .. } => {
+                collect_lets(&[*(ptr.clone())], lets);
+                collect_lets(&[*(val.clone())], lets);
+            }
+            Expr::ArrGet { ptr, index, .. } => {
+                collect_lets(&[*(ptr.clone())], lets);
+                collect_lets(&[*(index.clone())], lets);
+            }
+            Expr::ArrSet { ptr, index, val, .. } => {
+                collect_lets(&[*(ptr.clone())], lets);
+                collect_lets(&[*(index.clone())], lets);
+                collect_lets(&[*(val.clone())], lets);
             }
             _ => {}
         }
@@ -694,9 +731,6 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::AtomicAdd | OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend (needs shared memory + atomics)", op));
             }
-            OpCode::ArrGet | OpCode::ArrSet => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
-            }
             OpCode::SysTime => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
@@ -844,27 +878,354 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Ok(inner, ..) => {
-            compile_expr(inner, ctx, func)?;
+        Expr::Ok(inner, ..) => compile_result_cell(0, inner, ctx, func)?,
+        Expr::Err(inner, ..) => compile_result_cell(1, inner, ctx, func)?,
+        Expr::MatchResult {
+            expr,
+            ok_var,
+            ok_body,
+            err_var,
+            err_body,
+            ..
+        } => {
+            compile_expr(expr, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::I32Eqz);
+
+            let last_ok = ok_body.last();
+            let block_ty = if last_ok.map_or(true, |e| is_void_expr(e, ctx)) {
+                wasm_encoder::BlockType::Empty
+            } else {
+                let ty = expr_type(last_ok.unwrap(), ctx);
+                wasm_encoder::BlockType::Result(aipl_to_wasm_type(&ty))
+            };
+
+            func.instruction(&Instruction::If(block_ty));
+
+            if let Some(&ok_idx) = ctx.locals.get(ok_var) {
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 4,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                func.instruction(&Instruction::LocalSet(ok_idx));
+            }
+            for (i, stmt) in ok_body.iter().enumerate() {
+                if i == ok_body.len() - 1 && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
+                    compile_expr(stmt, ctx, func)?;
+                } else {
+                    compile_stmt(stmt, ctx, func)?;
+                }
+            }
+
+            func.instruction(&Instruction::Else);
+
+            if let Some(&err_idx) = ctx.locals.get(err_var) {
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 4,
+                    align: 2,
+                    memory_index: 0,
+                }));
+                func.instruction(&Instruction::LocalSet(err_idx));
+            }
+            for (i, stmt) in err_body.iter().enumerate() {
+                if i == err_body.len() - 1 && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
+                    compile_expr(stmt, ctx, func)?;
+                } else {
+                    compile_stmt(stmt, ctx, func)?;
+                }
+            }
+
+            func.instruction(&Instruction::End);
         }
-        Expr::Err(inner, ..) => {
-            compile_expr(inner, ctx, func)?;
+        Expr::NewStruct { struct_name, .. } => {
+            let def = ctx
+                .structs
+                .get(struct_name)
+                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+            let size = crate::checker::get_struct_size(def)?;
+            let cursor = wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            };
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(cursor));
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(cursor));
+            func.instruction(&Instruction::I32Const(size as i32));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Store(cursor));
         }
-        Expr::MatchResult { .. } => {
-            return Err("Wasm Codegen: MatchResult is not supported in the wasm backend".to_string());
+        Expr::GetField {
+            struct_name,
+            field_name,
+            ptr,
+            ..
+        } => {
+            let def = ctx
+                .structs
+                .get(struct_name)
+                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
+            compile_expr(ptr, ctx, func)?;
+            match field_ty {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                    func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    if field_ty == Type::Bool {
+                        normalize_bool(func);
+                    }
+                }
+                Type::I64 => {
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F32 => {
+                    func.instruction(&Instruction::F32Load(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F64 => {
+                    func.instruction(&Instruction::F64Load(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                _ => return Err(format!("Unsupported field type for struct get: {:?}", field_ty)),
+            }
+        }
+        Expr::PutField {
+            struct_name,
+            field_name,
+            ptr,
+            val,
+            ..
+        } => {
+            let def = ctx
+                .structs
+                .get(struct_name)
+                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
+            compile_expr(ptr, ctx, func)?;
+            emit_write_address_check(func, ctx.addr_scratch);
+            compile_expr(val, ctx, func)?;
+            match field_ty {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                    func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
+                Type::I64 => {
+                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F32 => {
+                    func.instruction(&Instruction::F32Store(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F64 => {
+                    func.instruction(&Instruction::F64Store(wasm_encoder::MemArg {
+                        offset: offset as u64,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                _ => return Err(format!("Unsupported field type for struct put: {:?}", field_ty)),
+            }
+        }
+        Expr::Sizeof { struct_name, .. } => {
+            let def = ctx
+                .structs
+                .get(struct_name)
+                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+            let size = crate::checker::get_struct_size(def)?;
+            func.instruction(&Instruction::I32Const(size as i32));
+        }
+        Expr::ArrNew { elem_ty, size, .. } => {
+            // Same order as the VM: evaluate n, trap if n < 0, then allocate
+            // [n:i32][n elements] and return the address just past the header.
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+            compile_expr(size, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32LtS);
+            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+            func.instruction(&Instruction::Unreachable);
+            func.instruction(&Instruction::End);
+            // mem[cursor] = n
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(M4));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            func.instruction(&Instruction::I32Store(M4));
+            // result: cursor + 4
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(M4));
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Add);
+            // cursor = cursor + 4 + n * elem_size
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(M4));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            func.instruction(&Instruction::I32Const(elem_size as i32));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Store(M4));
+        }
+        Expr::ArrGet { elem_ty, ptr, index, .. } => {
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+            compile_expr(ptr, ctx, func)?;
+            compile_expr(index, ctx, func)?;
+            func.instruction(&Instruction::I32Const(elem_size as i32));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Add);
+            match elem_ty {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                    func.instruction(&Instruction::I32Load(M4));
+                    if *elem_ty == Type::Bool {
+                        normalize_bool(func);
+                    }
+                }
+                Type::I64 => {
+                    func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F32 => {
+                    func.instruction(&Instruction::F32Load(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F64 => {
+                    func.instruction(&Instruction::F64Load(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                _ => return Err(format!("Unsupported elem type for arr.get: {:?}", elem_ty)),
+            }
+        }
+        Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+            compile_expr(ptr, ctx, func)?;
+            compile_expr(index, ctx, func)?;
+            func.instruction(&Instruction::I32Const(elem_size as i32));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Add);
+            emit_write_address_check(func, ctx.addr_scratch);
+            compile_expr(val, ctx, func)?;
+            match elem_ty {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                    func.instruction(&Instruction::I32Store(M4));
+                }
+                Type::I64 => {
+                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F32 => {
+                    func.instruction(&Instruction::F32Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
+                Type::F64 => {
+                    func.instruction(&Instruction::F64Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                _ => return Err(format!("Unsupported elem type for arr.set: {:?}", elem_ty)),
+            }
         }
     }
     Ok(())
 }
 
-/// True if `expr`, as actually compiled by `compile_expr` above, leaves
-/// nothing on the wasm value stack - used to decide `if` block result types
-/// and whether a statement-position value needs an explicit `drop`. This must
-/// track the real codegen above, not the AIPL-level type system: e.g. `set!`
-/// has a non-void AIPL type but its codegen never leaves a value.
+/// A `bool` read from memory is true iff its word is nonzero, as in the VM.
+/// Normalising to 0/1 keeps `and`/`or` (bitwise in wasm) and `eq` correct
+/// when the word was written by something other than `put`/`arr.set`.
+fn normalize_bool(func: &mut Function) {
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Ne);
+}
+
+/// `ok`/`err`: allocate an 8-byte cell `[tag:i32 payload:i32]` (tag 0 = ok,
+/// 1 = err) from the heap cursor before evaluating the payload, and leave the
+/// cell pointer on the stack. The pointer is pushed twice before the payload is
+/// compiled, so a payload that itself uses the scratch local cannot clobber it.
+/// The VM allocates the same cell in the same order.
+fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    let payload_ty = expr_type(inner, ctx);
+    if aipl_to_wasm_type(&payload_ty) != ValType::I32 {
+        return Err(format!(
+            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {:?}",
+            payload_ty
+        ));
+    }
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Load(M4));
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    func.instruction(&Instruction::I32Const(8));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&Instruction::I32Store(M4));
+
+    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    func.instruction(&Instruction::I32Const(tag));
+    func.instruction(&Instruction::I32Store(M4));
+
+    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    compile_expr(inner, ctx, func)?;
+    func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
+    Ok(())
+}
+
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
-        Expr::Set { .. } | Expr::Let { .. } => true,
+        Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
         Expr::Block(exprs, _) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
@@ -887,8 +1248,6 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Shl
                 | OpCode::Shr
                 | OpCode::ShrU
-                | OpCode::DivU
-                | OpCode::RemU
                 | OpCode::BitAnd
                 | OpCode::BitOr
                 | OpCode::MemLoad8
@@ -916,7 +1275,17 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Or
                 | OpCode::Not
         ),
-        _ => false,
+        // Same rule as the block type compile_expr gives a match_result.
+        Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Lit(..)
+        | Expr::Var(..)
+        | Expr::Ok(..)
+        | Expr::Err(..)
+        | Expr::NewStruct { .. }
+        | Expr::GetField { .. }
+        | Expr::Sizeof { .. }
+        | Expr::ArrNew { .. }
+        | Expr::ArrGet { .. } => false,
     }
 }
 
@@ -1069,7 +1438,7 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::Ok(inner, _) | Expr::Err(inner, _) => walk_expr(inner, visit),
+        Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => walk_expr(inner, visit),
         Expr::MatchResult { expr, ok_body, err_body, .. } => {
             walk_expr(expr, visit);
             for e in ok_body {
@@ -1078,6 +1447,21 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             for e in err_body {
                 walk_expr(e, visit);
             }
+        }
+        Expr::NewStruct { .. } | Expr::Sizeof { .. } => {}
+        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } => walk_expr(ptr, visit),
+        Expr::PutField { ptr, val, .. } => {
+            walk_expr(ptr, visit);
+            walk_expr(val, visit);
+        }
+        Expr::ArrGet { ptr, index, .. } => {
+            walk_expr(ptr, visit);
+            walk_expr(index, visit);
+        }
+        Expr::ArrSet { ptr, index, val, .. } => {
+            walk_expr(ptr, visit);
+            walk_expr(index, visit);
+            walk_expr(val, visit);
         }
     }
 }
