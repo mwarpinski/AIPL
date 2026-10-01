@@ -9,10 +9,13 @@ pub enum Type {
     Bool,
     Str,
     Void,
+    /// `(ptr S)`: pointer to a struct; the inner type is always `Struct`.
     Ptr(Box<Type>),
+    /// A struct named in `(ptr S)`. Never a value type on its own.
+    Struct(String),
     ResultType(Box<Type>, Box<Type>),
-    Array(Box<Type>, usize),
-    Vector(Box<Type>, usize),
+    /// `(arr T)`: an `arr.new` array of `T`, whose length sits in the 4 bytes before it.
+    Array(Box<Type>),
     Fn(Vec<Type>, Box<Type>),
 }
 
@@ -41,8 +44,6 @@ pub enum OpCode {
     Shl,
     Shr,
     ShrU,
-    DivU,
-    RemU,
     BitAnd,
     BitOr,
     MemLoad8,
@@ -74,8 +75,6 @@ pub enum OpCode {
     And,
     Or,
     Not,
-    ArrGet,
-    ArrSet,
     SysPrint,
     SysTime,
     SysExit,
@@ -92,6 +91,10 @@ pub enum OpCode {
     I64ExtendU,
     /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
     I32Wrap,
+    F64ConvertI64S,
+    I64TruncF64S,
+    F64ReinterpretI64,
+    I64ReinterpretF64,
     /// `(str.len s)`: byte length of a string. In wasm a `str` is a pointer to
     /// interned bytes preceded by a 4-byte little-endian length, so this is
     /// `i32.load (s - 4)`; the VM reads the Rust string's length.
@@ -154,8 +157,8 @@ pub enum Expr {
         args: Vec<Expr>,
         span: (u32, u32),
     },
-    Ok(Box<Expr>, (u32, u32)),
-    Err(Box<Expr>, (u32, u32)),
+    Ok(Box<Expr>, Option<Type>, (u32, u32)),
+    Err(Box<Expr>, Option<Type>, (u32, u32)),
     MatchResult {
         expr: Box<Expr>,
         ok_var: String,
@@ -165,6 +168,81 @@ pub enum Expr {
         span: (u32, u32),
     },
     Block(Vec<Expr>, (u32, u32)),
+    NewStruct {
+        struct_name: String,
+        span: (u32, u32),
+    },
+    GetField {
+        struct_name: String,
+        field_name: String,
+        ptr: Box<Expr>,
+        span: (u32, u32),
+    },
+    PutField {
+        struct_name: String,
+        field_name: String,
+        ptr: Box<Expr>,
+        val: Box<Expr>,
+        span: (u32, u32),
+    },
+    Sizeof {
+        struct_name: String,
+        span: (u32, u32),
+    },
+    ArrNew {
+        elem_ty: Type,
+        size: Box<Expr>,
+        span: (u32, u32),
+    },
+    ArrGet {
+        elem_ty: Type,
+        ptr: Box<Expr>,
+        index: Box<Expr>,
+        span: (u32, u32),
+    },
+    ArrSet {
+        elem_ty: Type,
+        ptr: Box<Expr>,
+        index: Box<Expr>,
+        val: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(arr.len a)`: the element count stored before the array.
+    ArrLen {
+        arr: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(ptr.null S)` / `(arr.null T)`: `ty` is the resulting `(ptr S)` / `(arr T)`.
+    Null {
+        ty: Type,
+        span: (u32, u32),
+    },
+    /// `(ptr.cast S addr)` / `(arr.cast T addr)`: an `i32` address as `ty`.
+    Cast {
+        ty: Type,
+        addr: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(ref f)`: a reference to function `f`, of type `(fn [params] -> ret)`.
+    Ref {
+        name: String,
+        span: (u32, u32),
+    },
+    /// `(call_ref (fn [params] -> ret) f args...)`: an indirect call; `sig`
+    /// must equal `f`'s type.
+    CallRef {
+        sig: Type,
+        func: Box<Expr>,
+        args: Vec<Expr>,
+        span: (u32, u32),
+    },
+    /// `(ptr.addr p)` / `(arr.addr a)`: the `i32` address of a pointer or array.
+    /// `array` records which spelling was used, so the checker can require it.
+    Addr {
+        val: Box<Expr>,
+        array: bool,
+        span: (u32, u32),
+    },
 }
 
 impl Expr {
@@ -179,12 +257,38 @@ impl Expr {
             Expr::While { span, .. } => *span,
             Expr::Call { span, .. } => *span,
             Expr::Op { span, .. } => *span,
-            Expr::Ok(_, span) => *span,
-            Expr::Err(_, span) => *span,
+            Expr::Ok(_, _, span) => *span,
+            Expr::Err(_, _, span) => *span,
             Expr::MatchResult { span, .. } => *span,
             Expr::Block(_, span) => *span,
+            Expr::NewStruct { span, .. } => *span,
+            Expr::GetField { span, .. } => *span,
+            Expr::PutField { span, .. } => *span,
+            Expr::Sizeof { span, .. } => *span,
+            Expr::ArrNew { span, .. } => *span,
+            Expr::ArrGet { span, .. } => *span,
+            Expr::ArrSet { span, .. } => *span,
+            Expr::ArrLen { span, .. } => *span,
+            Expr::Null { span, .. } => *span,
+            Expr::Cast { span, .. } => *span,
+            Expr::Addr { span, .. } => *span,
+            Expr::Ref { span, .. } => *span,
+            Expr::CallRef { span, .. } => *span,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructField {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<StructField>,
+    pub span: (u32, u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,5 +311,6 @@ pub struct Import {
 pub struct Module {
     pub name: String,
     pub imports: Vec<Import>,
+    pub structs: Vec<StructDef>,
     pub functions: Vec<FnDef>,
 }

@@ -50,40 +50,55 @@ impl Resolver {
         // directly and transitively (a diamond dependency) is only emitted
         // once. `in_progress` is the separate cycle-detection stack.
         let mut output: Vec<FnDef> = Vec::new();
+        let mut output_structs: Vec<StructDef> = Vec::new();
         let mut included: HashSet<PathBuf> = HashSet::new();
         let mut in_progress: HashSet<PathBuf> = HashSet::new();
 
         for import in &entry_module.imports {
-            Self::resolve_import(import, entry_path, &mut output, &mut included, &mut in_progress)?;
+            Self::resolve_import(import, entry_path, entry_path, &mut output, &mut output_structs, &mut included, &mut in_progress)?;
         }
 
+        // The entry file's own functions and structs keep bare names; only
+        // names that go through an import alias are rewritten.
         let alias_map = build_alias_map(&entry_module.imports);
+        let mut rewrite = |_: NameKind, name: &mut String| {
+            if let Some((prefix, rest)) = name.split_once('.') {
+                if let Some(canonical) = alias_map.get(prefix) {
+                    *name = format!("{}.{}", canonical, rest);
+                }
+            }
+        };
+        let mut own_structs = entry_module.structs;
+        for st in &mut own_structs {
+            for field in &mut st.fields {
+                walk_type_names(&mut field.ty, &mut rewrite);
+            }
+        }
+        output_structs.extend(own_structs);
         let mut own_functions = entry_module.functions;
         for f in &mut own_functions {
-            // Entry file's own functions keep bare names; only rewrite calls
-            // that go through an import alias. Calls to its own sibling
-            // functions are already correct as written.
-            walk_calls(&mut f.body, &mut |func| {
-                if let Some((prefix, rest)) = func.split_once('.') {
-                    if let Some(canonical) = alias_map.get(prefix) {
-                        *func = format!("{}.{}", canonical, rest);
-                    }
-                }
-            });
+            walk_fn_names(f, &mut rewrite);
         }
         output.extend(own_functions);
 
-        Ok(Module { name: entry_module.name, imports: vec![], functions: output })
+        Ok(Module {
+            name: entry_module.name,
+            imports: vec![],
+            structs: output_structs,
+            functions: output,
+        })
     }
 
     fn resolve_import(
         import: &Import,
         importer_path: &Path,
+        entry_path: &Path,
         output: &mut Vec<FnDef>,
+        output_structs: &mut Vec<StructDef>,
         included: &mut HashSet<PathBuf>,
         in_progress: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
-        let file_path = Self::find_module_file(&import.name, importer_path)
+        let file_path = Self::find_module_file(&import.name, importer_path, entry_path)
             .map_err(|e| format!("{}: {}", importer_path.display(), e))?;
 
         if included.contains(&file_path) {
@@ -106,24 +121,41 @@ impl Resolver {
         // Resolve this module's own imports first (its dependencies must be
         // fully qualified and emitted before we merge this module in).
         for sub_import in &module.imports {
-            Self::resolve_import(sub_import, &file_path, output, included, in_progress)?;
+            Self::resolve_import(sub_import, &file_path, entry_path, output, output_structs, included, in_progress)?;
         }
 
+        // Qualify this module's own functions and structs as `<module>.<name>`,
+        // rewrite its references to them, and rewrite its alias-qualified
+        // references to the canonical module name.
         let own_alias_map = build_alias_map(&module.imports);
-        let own_names: HashSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+        let own_fns_names: HashSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+        let own_struct_names: HashSet<String> = module.structs.iter().map(|s| s.name.clone()).collect();
+        let mut rewrite = |kind: NameKind, name: &mut String| {
+            if let Some((prefix, rest)) = name.split_once('.') {
+                if let Some(canonical) = own_alias_map.get(prefix) {
+                    *name = format!("{}.{}", canonical, rest);
+                    return;
+                }
+            }
+            let own = match kind {
+                NameKind::Function => &own_fns_names,
+                NameKind::Struct => &own_struct_names,
+            };
+            if own.contains(name.as_str()) {
+                *name = format!("{}.{}", import.name, name);
+            }
+        };
+        let mut own_structs = module.structs;
+        for st in &mut own_structs {
+            for field in &mut st.fields {
+                walk_type_names(&mut field.ty, &mut rewrite);
+            }
+            st.name = format!("{}.{}", import.name, st.name);
+        }
+        output_structs.extend(own_structs);
         let mut own_fns = module.functions;
         for f in &mut own_fns {
-            walk_calls(&mut f.body, &mut |func| {
-                if let Some((prefix, rest)) = func.split_once('.') {
-                    if let Some(canonical) = own_alias_map.get(prefix) {
-                        *func = format!("{}.{}", canonical, rest);
-                        return;
-                    }
-                }
-                if own_names.contains(func.as_str()) {
-                    *func = format!("{}.{}", import.name, func);
-                }
-            });
+            walk_fn_names(f, &mut rewrite);
             f.name = format!("{}.{}", import.name, f.name);
         }
         output.extend(own_fns);
@@ -133,14 +165,27 @@ impl Resolver {
         Ok(())
     }
 
-    fn find_module_file(name: &str, importer_path: &Path) -> Result<PathBuf, String> {
+    /// Search order for `(import name)` (AIPL_SPEC.md section 11): the
+    /// importing file's directory, the entry file's directory, the standard
+    /// library (`aipl_src/std/` in this repository), then each directory of
+    /// the colon-separated `AIPL_PATH` environment variable. First match wins.
+    fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Result<PathBuf, String> {
         let filename = format!("{}.aipl", name);
         let mut candidates = Vec::new();
-        if let Some(dir) = importer_path.parent() {
-            candidates.push(dir.join(&filename));
-            candidates.push(dir.join("aipl_modules").join(&filename));
+        for p in [importer_path, entry_path] {
+            if let Some(dir) = p.parent() {
+                let c = dir.join(&filename);
+                if !candidates.contains(&c) {
+                    candidates.push(c);
+                }
+            }
         }
-        candidates.push(PathBuf::from("aipl_modules").join(&filename));
+        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/std").join(&filename));
+        if let Ok(path) = std::env::var("AIPL_PATH") {
+            for dir in path.split(':').filter(|d| !d.is_empty()) {
+                candidates.push(PathBuf::from(dir).join(&filename));
+            }
+        }
 
         for c in &candidates {
             if c.exists() {
@@ -162,51 +207,131 @@ fn build_alias_map(imports: &[Import]) -> HashMap<String, String> {
     imports.iter().filter_map(|i| i.alias.as_ref().map(|a| (a.clone(), i.name.clone()))).collect()
 }
 
-/// Recursively visits every `Expr::Call` target name in a function body,
-/// letting the callback rewrite it in place.
-fn walk_calls<F: FnMut(&mut String)>(body: &mut [Expr], f: &mut F) {
-    for expr in body {
-        walk_calls_expr(expr, f);
+/// Which namespace a visited name lives in: functions (`call` targets) or
+/// structs (`new`/`get`/`put`/`sizeof` and every `(ptr S)` inside a type).
+#[derive(Clone, Copy, PartialEq)]
+enum NameKind {
+    Function,
+    Struct,
+}
+
+/// Visits every function and struct name in a function (signature, body,
+/// and contracts) and lets the callback rewrite it in place.
+fn walk_fn_names(f: &mut FnDef, visit: &mut dyn FnMut(NameKind, &mut String)) {
+    for (_, ty) in &mut f.params {
+        walk_type_names(ty, visit);
+    }
+    walk_type_names(&mut f.return_type, visit);
+    for c in &mut f.contracts {
+        match c {
+            Contract::Requires(e) | Contract::Ensures(e) | Contract::Invariant(e) => walk_names_expr(e, visit),
+        }
+    }
+    for e in &mut f.body {
+        walk_names_expr(e, visit);
     }
 }
 
-fn walk_calls_expr<F: FnMut(&mut String)>(expr: &mut Expr, f: &mut F) {
-    match expr {
-        Expr::Call { func, args, .. } => {
-            f(func);
-            for a in args {
-                walk_calls_expr(a, f);
-            }
+fn walk_type_names(ty: &mut Type, visit: &mut dyn FnMut(NameKind, &mut String)) {
+    match ty {
+        Type::Struct(name) => visit(NameKind::Struct, name),
+        Type::Ptr(inner) | Type::Array(inner) => walk_type_names(inner, visit),
+        Type::ResultType(a, b) => {
+            walk_type_names(a, visit);
+            walk_type_names(b, visit);
         }
-        Expr::Let { val, .. } | Expr::Set { val, .. } | Expr::Ok(val, _) | Expr::Err(val, _) => {
-            walk_calls_expr(val, f);
+        Type::Fn(params, ret) => {
+            for p in params {
+                walk_type_names(p, visit);
+            }
+            walk_type_names(ret, visit);
+        }
+        Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::Void => {}
+    }
+}
+
+fn walk_names_expr(expr: &mut Expr, visit: &mut dyn FnMut(NameKind, &mut String)) {
+    let each = |es: &mut [Expr], visit: &mut dyn FnMut(NameKind, &mut String)| {
+        for e in es {
+            walk_names_expr(e, visit);
+        }
+    };
+    match expr {
+        Expr::Lit(..) | Expr::Var(..) => {}
+        Expr::Call { func, args, .. } => {
+            visit(NameKind::Function, func);
+            each(args, visit);
+        }
+        Expr::Let { ty, val, .. } => {
+            walk_type_names(ty, visit);
+            walk_names_expr(val, visit);
+        }
+        Expr::Set { val, .. } => walk_names_expr(val, visit),
+        Expr::Ok(val, ty, _) | Expr::Err(val, ty, _) => {
+            if let Some(t) = ty {
+                walk_type_names(t, visit);
+            }
+            walk_names_expr(val, visit);
         }
         Expr::If { cond, then_branch, else_branch, .. } => {
-            walk_calls_expr(cond, f);
-            walk_calls_expr(then_branch, f);
-            walk_calls_expr(else_branch, f);
+            walk_names_expr(cond, visit);
+            walk_names_expr(then_branch, visit);
+            walk_names_expr(else_branch, visit);
         }
         Expr::Loop { start, end, step, body, .. } => {
-            walk_calls_expr(start, f);
-            walk_calls_expr(end, f);
-            walk_calls_expr(step, f);
-            walk_calls(body, f);
+            walk_names_expr(start, visit);
+            walk_names_expr(end, visit);
+            walk_names_expr(step, visit);
+            each(body, visit);
         }
         Expr::While { cond, body, .. } => {
-            walk_calls_expr(cond, f);
-            walk_calls(body, f);
+            walk_names_expr(cond, visit);
+            each(body, visit);
         }
-        Expr::Op { args, .. } => {
-            for a in args {
-                walk_calls_expr(a, f);
-            }
-        }
+        Expr::Op { args, .. } => each(args, visit),
         Expr::MatchResult { expr, ok_body, err_body, .. } => {
-            walk_calls_expr(expr, f);
-            walk_calls(ok_body, f);
-            walk_calls(err_body, f);
+            walk_names_expr(expr, visit);
+            each(ok_body, visit);
+            each(err_body, visit);
         }
-        Expr::Block(body, _) => walk_calls(body, f),
-        _ => {}
+        Expr::Block(body, _) => each(body, visit),
+        Expr::NewStruct { struct_name, .. } | Expr::Sizeof { struct_name, .. } => visit(NameKind::Struct, struct_name),
+        Expr::GetField { struct_name, ptr, .. } => {
+            visit(NameKind::Struct, struct_name);
+            walk_names_expr(ptr, visit);
+        }
+        Expr::PutField { struct_name, ptr, val, .. } => {
+            visit(NameKind::Struct, struct_name);
+            walk_names_expr(ptr, visit);
+            walk_names_expr(val, visit);
+        }
+        Expr::ArrNew { elem_ty, size, .. } => {
+            walk_type_names(elem_ty, visit);
+            walk_names_expr(size, visit);
+        }
+        Expr::ArrGet { elem_ty, ptr, index, .. } => {
+            walk_type_names(elem_ty, visit);
+            walk_names_expr(ptr, visit);
+            walk_names_expr(index, visit);
+        }
+        Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
+            walk_type_names(elem_ty, visit);
+            walk_names_expr(ptr, visit);
+            walk_names_expr(index, visit);
+            walk_names_expr(val, visit);
+        }
+        Expr::ArrLen { arr, .. } => walk_names_expr(arr, visit),
+        Expr::Null { ty, .. } => walk_type_names(ty, visit),
+        Expr::Cast { ty, addr, .. } => {
+            walk_type_names(ty, visit);
+            walk_names_expr(addr, visit);
+        }
+        Expr::Addr { val, .. } => walk_names_expr(val, visit),
+        Expr::Ref { name, .. } => visit(NameKind::Function, name),
+        Expr::CallRef { sig, func, args, .. } => {
+            walk_type_names(sig, visit);
+            walk_names_expr(func, visit);
+            each(args, visit);
+        }
     }
 }

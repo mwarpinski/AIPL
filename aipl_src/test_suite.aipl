@@ -6,31 +6,21 @@
 ;; subcommand) is just: resolve imports, type-check, invoke run_all, and
 ;; turn the returned failure count into a process exit code.
 ;;
-;; This intentionally covers only the modules verified as genuinely real
-;; this session (compiler's tokenizer/parser, memory, file_io) - not every
-;; aipl_src file. Add an import + report line here as each new module gets a
-;; real, verified self-test; don't add one just to make the suite look
-;; bigger.
-;;
-;; thread_sync.aipl is deliberately NOT imported here. Its run_thread_tests
-;; uses thread.spawn, which finds its target function ("worker_increment")
-;; by reading a name out of linear memory at runtime - the import resolver
-;; (src/resolver.rs) only rewrites function names that appear as `(call ...)`
-;; syntax, so it has no way to see or rewrite that in-memory byte string.
-;; Once imported, the real function is renamed to `thread_sync.worker_increment`
-;; and the spawn fails with "unknown function 'worker_increment'". Run that
-;; module's test standalone instead:
-;;   aipl test aipl_src/thread_sync.aipl --func run_thread_tests
-;; Fixing this for real needs either a naming convention that survives
-;; import rewriting (e.g. thread.spawn always resolving relative to its own
-;; module's qualified prefix) or first-class function values - not a quick
-;; patch, tracked in LANGUAGE_GAPS.md.
+;; It covers every module whose self-test has been verified to do real work
+;; (and to fail when the code under test is broken). Add an import + report
+;; line here as each new module gets such a test; don't add one just to make
+;; the suite look bigger.
+
 
 (module test_suite
   (import compiler)
   (import codegen)
   (import memory)
   (import file_io)
+  (import str)
+  (import fmt)
+  (import io)
+  (import thread_sync)
 
   ;; Prints a [PASS]/[FAIL] line for one module's test group and returns
   ;; 0 (contributes no failures) or 1 (contributes one failure) for the
@@ -49,4 +39,8 @@
     (set! failures (+ failures (call report "codegen: signatures + 3 real wasm modules (4 tests)" (call codegen.run_codegen_tests) 4)))
     (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
     (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
+    (set! failures (+ failures (call report "std/str: byte slices (6 tests)" (call str.run_str_tests) 6)))
+    (set! failures (+ failures (call report "std/fmt: number formatting (6 tests)" (call fmt.run_fmt_tests) 6)))
+    (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
+    (set! failures (+ failures (call report "thread_sync: 4 threads x 1000 atomic adds = 4000" (call thread_sync.run_thread_tests) 1)))
     failures))

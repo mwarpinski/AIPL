@@ -1,23 +1,88 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
+    match ty {
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => Ok((4, 4)),
+        Type::I64 | Type::F64 => Ok((8, 8)),
+        _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
+    }
+}
+
+pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
+    let mut offset = 0;
+    for f in &def.fields {
+        let (s, a) = type_size_and_align(&f.ty)?;
+        offset = (offset + a - 1) & !(a - 1);
+        if f.name == field_name {
+            return Ok((offset, f.ty.clone()));
+        }
+        offset += s;
+    }
+    Err(format!("Struct '{}' has no field '{}'", def.name, field_name))
+}
+
+pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
+    let mut offset = 0;
+    let mut max_align = 1;
+    for f in &def.fields {
+        let (s, a) = type_size_and_align(&f.ty)?;
+        if a > max_align {
+            max_align = a;
+        }
+        offset = (offset + a - 1) & !(a - 1);
+        offset += s;
+    }
+    let total = (offset + max_align - 1) & !(max_align - 1);
+    Ok(total)
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
+    struct_defs: HashMap<String, StructDef>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
         TypeChecker {
             fn_signatures: HashMap::new(),
+            struct_defs: HashMap::new(),
         }
     }
 
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
+        // Register struct definitions
+        for s in &module.structs {
+            if self.struct_defs.contains_key(&s.name) {
+                return Err(format!(
+                    "{}:{}: Duplicate struct definition '{}'",
+                    s.span.0, s.span.1, s.name
+                ));
+            }
+            for f in &s.fields {
+                type_size_and_align(&f.ty).map_err(|e| {
+                    format!(
+                        "{}:{}: Field '{}' in struct '{}': {}",
+                        s.span.0, s.span.1, f.name, s.name, e
+                    )
+                })?;
+            }
+            self.struct_defs.insert(s.name.clone(), s.clone());
+        }
+
+        // Field types may name structs defined later in the module.
+        for s in &module.structs {
+            for f in &s.fields {
+                self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, s.name))?;
+            }
+        }
+
         // First pass: register function signatures
         for f in &module.functions {
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
-            self.fn_signatures.insert(f.name.clone(), (param_types, f.return_type.clone()));
+            self.fn_signatures
+                .insert(f.name.clone(), (param_types, f.return_type.clone()));
         }
 
         // Second pass: type check bodies and verify contracts
@@ -28,11 +93,53 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// Every type written in source must be well formed: `(ptr S)` names a
+    /// known struct, `(arr T)` holds something with a memory layout, and a
+    /// struct is never used by value.
+    fn validate_type(&self, ty: &Type, span: (u32, u32)) -> Result<(), String> {
+        match ty {
+            Type::Ptr(inner) => match inner.as_ref() {
+                Type::Struct(name) if self.struct_defs.contains_key(name) => Ok(()),
+                Type::Struct(name) => Err(format!("{}:{}: Unknown struct '{}' in (ptr {})", span.0, span.1, name, name)),
+                other => Err(format!("{}:{}: ptr must point to a struct, got {:?}", span.0, span.1, other)),
+            },
+            Type::Struct(name) => Err(format!(
+                "{}:{}: struct '{}' cannot be used by value; use (ptr {})",
+                span.0, span.1, name, name
+            )),
+            Type::Array(elem) => {
+                self.validate_type(elem, span)?;
+                type_size_and_align(elem)
+                    .map(|_| ())
+                    .map_err(|_| format!("{}:{}: (arr T) element must be a scalar, (ptr S), or (arr T), got {:?}", span.0, span.1, elem))
+            }
+            Type::ResultType(a, b) => {
+                self.validate_type(a, span)?;
+                self.validate_type(b, span)
+            }
+            Type::Fn(params, ret) => {
+                for p in params {
+                    self.validate_type(p, span)?;
+                }
+                self.validate_type(ret, span)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn get_struct_def(&self, name: &str) -> Option<&StructDef> {
+        self.struct_defs.get(name)
+    }
+
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
         let mut env = HashMap::new();
         for (param_name, param_ty) in &f.params {
+            self.validate_type(param_ty, f.span)
+                .map_err(|e| format!("{} (parameter '{}' of '{}')", e, param_name, f.name))?;
             env.insert(param_name.clone(), param_ty.clone());
         }
+        self.validate_type(&f.return_type, f.span)
+            .map_err(|e| format!("{} (return type of '{}')", e, f.name))?;
 
         // Check contracts
         for c in &f.contracts {
@@ -96,6 +203,10 @@ impl TypeChecker {
                 }
             }
             Expr::Let { name, ty, val, .. } => {
+                if env.contains_key(name) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}'", l, c, name));
+                }
+                self.validate_type(ty, (l, c))?;
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != *ty {
                     return Err(format!(
@@ -104,7 +215,7 @@ impl TypeChecker {
                     ));
                 }
                 env.insert(name.clone(), ty.clone());
-                Ok(ty.clone())
+                Ok(Type::Void)
             }
             Expr::Set { name, val, .. } => {
                 let var_ty = env
@@ -118,22 +229,25 @@ impl TypeChecker {
                         l, c, var_ty, val_ty
                     ));
                 }
-                Ok(var_ty)
+                Ok(Type::Void)
             }
             Expr::If { cond, then_branch, else_branch, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
                     return Err(format!("{}:{}: If condition must be Bool, got {:?}", l, c, cond_ty));
                 }
-                let then_ty = self.infer_expr_type(then_branch, env)?;
-                let else_ty = self.infer_expr_type(else_branch, env)?;
-                if then_ty != else_ty {
-                    return Err(format!(
-                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}",
+                let then_ty = self.infer_expr_type(then_branch, &mut env.clone())?;
+                let else_ty = self.infer_expr_type(else_branch, &mut env.clone())?;
+                if then_ty == Type::Void && else_ty == Type::Void {
+                    Ok(Type::Void)
+                } else if then_ty != Type::Void && else_ty != Type::Void && then_ty == else_ty {
+                    Ok(then_ty)
+                } else {
+                    Err(format!(
+                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}. If mixing void and non-void, consider wrapping in (block ... value)",
                         l, c, then_ty, else_ty
-                    ));
+                    ))
                 }
-                Ok(then_ty)
             }
             Expr::Loop { var, start, end, step, body, .. } => {
                 let start_ty = self.infer_expr_type(start, env)?;
@@ -141,6 +255,9 @@ impl TypeChecker {
                 let step_ty = self.infer_expr_type(step, env)?;
                 if start_ty != Type::I32 || end_ty != Type::I32 || step_ty != Type::I32 {
                     return Err(format!("{}:{}: Loop bounds and step must be i32", l, c));
+                }
+                if env.contains_key(var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in loop", l, c, var));
                 }
                 let mut local_env = env.clone();
                 local_env.insert(var.clone(), Type::I32);
@@ -154,8 +271,9 @@ impl TypeChecker {
                 if cond_ty != Type::Bool {
                     return Err(format!("{}:{}: While condition must be Bool", l, c));
                 }
+                let mut local_env = env.clone();
                 for stmt in body {
-                    self.infer_expr_type(stmt, env)?;
+                    self.infer_expr_type(stmt, &mut local_env)?;
                 }
                 Ok(Type::Void)
             }
@@ -192,6 +310,12 @@ impl TypeChecker {
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
+                    }
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
+                        return Err(format!(
+                            "{}:{}: {:?} on {:?}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
+                            l, c, op, t1
+                        ));
                     }
                     Ok(t1)
                 }
@@ -321,6 +445,9 @@ impl TypeChecker {
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
                     }
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                        return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, and function refs compare only with eq/neq", l, c, op, t1));
+                    }
                     Ok(Type::Bool)
                 }
                 OpCode::And | OpCode::Or => {
@@ -341,24 +468,6 @@ impl TypeChecker {
                         return Err(format!("{}:{}: Not op expects Bool, got {:?}", l, c, t));
                     }
                     Ok(Type::Bool)
-                }
-                OpCode::ArrGet => {
-                    if args.len() != 2 {
-                        return Err(format!("{}:{}: arr.get requires 2 arguments (arr, index)", l, c));
-                    }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
-                    }
-                    Ok(Type::I32)
-                }
-                OpCode::ArrSet => {
-                    if args.len() != 3 {
-                        return Err(format!("{}:{}: arr.set requires 3 arguments (arr, index, val)", l, c));
-                    }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
-                    }
-                    Ok(Type::Void)
                 }
                 OpCode::SysPrint => {
                     for arg in args {
@@ -432,11 +541,18 @@ impl TypeChecker {
                     Ok(Type::I32)
                 }
                 OpCode::ThreadSpawn => {
-                    if args.len() != 3 {
-                        return Err(format!("{}:{}: thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)", l, c));
+                    // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: thread.spawn requires 2 arguments (worker: (fn [i32] -> i32), arg: i32)", l, c));
                     }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
+                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32));
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != worker {
+                        return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {:?}", l, c, t));
+                    }
+                    let a = self.infer_expr_type(&args[1], env)?;
+                    if a != Type::I32 {
+                        return Err(format!("{}:{}: thread.spawn argument must be i32, got {:?}", l, c, a));
                     }
                     Ok(Type::I32)
                 }
@@ -457,6 +573,20 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
+                OpCode::F64ConvertI64S | OpCode::I64TruncF64S | OpCode::F64ReinterpretI64 | OpCode::I64ReinterpretF64 => {
+                    let (from, to) = match op {
+                        OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => (Type::I64, Type::F64),
+                        _ => (Type::F64, Type::I64),
+                    };
+                    if args.len() != 1 {
+                        return Err(format!("{}:{}: {:?} requires 1 argument (x: {:?})", l, c, op, from));
+                    }
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != from {
+                        return Err(format!("{}:{}: {:?} requires {:?}, got {:?}", l, c, op, from, t));
+                    }
+                    Ok(to)
+                }
                 OpCode::I32Wrap => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: i32.wrap requires 1 argument (x: i64)", l, c));
@@ -469,38 +599,241 @@ impl TypeChecker {
                 }
                 }
             }
-            Expr::Ok(val, _) => {
+            Expr::Ok(val, extra_ty, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
-                Ok(Type::ResultType(Box::new(inner_ty), Box::new(Type::I32)))
+                let err_ty = extra_ty.clone().unwrap_or(Type::I32);
+                self.validate_type(&err_ty, (l, c))?;
+                Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
-            Expr::Err(err, _) => {
+            Expr::Err(err, extra_ty, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
-                Ok(Type::ResultType(Box::new(Type::I32), Box::new(err_ty)))
+                let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
+                self.validate_type(&ok_ty, (l, c))?;
+                Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
-                let _res_ty = self.infer_expr_type(expr, env)?;
+                let res_ty = self.infer_expr_type(expr, env)?;
+                let (ok_ty, err_ty) = match res_ty {
+                    Type::ResultType(ok_t, err_t) => (*ok_t, *err_t),
+                    other => return Err(format!("{}:{}: match_result expected ResultType, got {:?}", l, c, other)),
+                };
+
+                if env.contains_key(ok_var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result ok arm", l, c, ok_var));
+                }
                 let mut ok_env = env.clone();
-                ok_env.insert(ok_var.clone(), Type::I32);
+                ok_env.insert(ok_var.clone(), ok_ty);
                 let mut last_ok_ty = Type::Void;
                 for stmt in ok_body {
                     last_ok_ty = self.infer_expr_type(stmt, &mut ok_env)?;
                 }
 
+                if env.contains_key(err_var) {
+                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result err arm", l, c, err_var));
+                }
                 let mut err_env = env.clone();
-                err_env.insert(err_var.clone(), Type::I32);
-                let mut _last_err_ty = Type::Void;
+                err_env.insert(err_var.clone(), err_ty);
+                let mut last_err_ty = Type::Void;
                 for stmt in err_body {
-                    _last_err_ty = self.infer_expr_type(stmt, &mut err_env)?;
+                    last_err_ty = self.infer_expr_type(stmt, &mut err_env)?;
                 }
 
-                Ok(last_ok_ty)
+                if last_ok_ty == Type::Void && last_err_ty == Type::Void {
+                    Ok(Type::Void)
+                } else if last_ok_ty != Type::Void && last_err_ty != Type::Void && last_ok_ty == last_err_ty {
+                    Ok(last_ok_ty)
+                } else {
+                    Err(format!(
+                        "{}:{}: match_result arm type mismatch: ok arm yields {:?}, err arm yields {:?}",
+                        l, c, last_ok_ty, last_err_ty
+                    ))
+                }
             }
             Expr::Block(exprs, _) => {
+                let mut local_env = env.clone();
                 let mut last_ty = Type::Void;
                 for e in exprs {
-                    last_ty = self.infer_expr_type(e, env)?;
+                    last_ty = self.infer_expr_type(e, &mut local_env)?;
                 }
                 Ok(last_ty)
+            }
+            Expr::NewStruct { struct_name, span } => {
+                if !self.struct_defs.contains_key(struct_name) {
+                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+                }
+                Ok(Type::Ptr(Box::new(Type::Struct(struct_name.clone()))))
+            }
+            Expr::GetField {
+                struct_name,
+                field_name,
+                ptr,
+                span,
+            } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
+                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
+                })?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
+                    return Err(format!(
+                        "{}:{}: get {}.{} needs a (ptr {}), got {:?}",
+                        span.0, span.1, struct_name, field_name, struct_name, ptr_ty
+                    ));
+                }
+                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                    format!("{}:{}: {}", span.0, span.1, e)
+                })?;
+                Ok(field_ty)
+            }
+            Expr::PutField {
+                struct_name,
+                field_name,
+                ptr,
+                val,
+                span,
+            } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
+                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
+                })?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
+                    return Err(format!(
+                        "{}:{}: put {}.{} needs a (ptr {}), got {:?}",
+                        span.0, span.1, struct_name, field_name, struct_name, ptr_ty
+                    ));
+                }
+                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                    format!("{}:{}: {}", span.0, span.1, e)
+                })?;
+                let val_ty = self.infer_expr_type(val, env)?;
+                if val_ty != field_ty {
+                    return Err(format!(
+                        "{}:{}: Type mismatch writing to field '{}.{}': expected {:?}, got {:?}",
+                        span.0, span.1, struct_name, field_name, field_ty, val_ty
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            Expr::Sizeof { struct_name, span } => {
+                if !self.struct_defs.contains_key(struct_name) {
+                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+                }
+                Ok(Type::I32)
+            }
+            Expr::ArrNew { elem_ty, size, span } => {
+                self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
+                let sz_ty = self.infer_expr_type(size, env)?;
+                if sz_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.new size must be i32, got {:?}",
+                        span.0, span.1, sz_ty
+                    ));
+                }
+                Ok(Type::Array(Box::new(elem_ty.clone())))
+            }
+            Expr::ArrGet {
+                elem_ty,
+                ptr,
+                index,
+                span,
+            } => {
+                self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::Array(Box::new(elem_ty.clone())) {
+                    return Err(format!(
+                        "{}:{}: arr.get {:?} needs an (arr {:?}), got {:?}",
+                        span.0, span.1, elem_ty, elem_ty, ptr_ty
+                    ));
+                }
+                let idx_ty = self.infer_expr_type(index, env)?;
+                if idx_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.get index must be i32, got {:?}",
+                        span.0, span.1, idx_ty
+                    ));
+                }
+                Ok(elem_ty.clone())
+            }
+            Expr::ArrSet {
+                elem_ty,
+                ptr,
+                index,
+                val,
+                span,
+            } => {
+                self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
+                let ptr_ty = self.infer_expr_type(ptr, env)?;
+                if ptr_ty != Type::Array(Box::new(elem_ty.clone())) {
+                    return Err(format!(
+                        "{}:{}: arr.set {:?} needs an (arr {:?}), got {:?}",
+                        span.0, span.1, elem_ty, elem_ty, ptr_ty
+                    ));
+                }
+                let idx_ty = self.infer_expr_type(index, env)?;
+                if idx_ty != Type::I32 {
+                    return Err(format!(
+                        "{}:{}: arr.set index must be i32, got {:?}",
+                        span.0, span.1, idx_ty
+                    ));
+                }
+                let val_ty = self.infer_expr_type(val, env)?;
+                if val_ty != *elem_ty {
+                    return Err(format!(
+                        "{}:{}: arr.set value mismatch: expected {:?}, got {:?}",
+                        span.0, span.1, elem_ty, val_ty
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            Expr::ArrLen { arr, span } => match self.infer_expr_type(arr, env)? {
+                Type::Array(_) => Ok(Type::I32),
+                other => Err(format!("{}:{}: arr.len needs an (arr T), got {:?}", span.0, span.1, other)),
+            },
+            Expr::Null { ty, span } => {
+                self.validate_type(ty, *span)?;
+                Ok(ty.clone())
+            }
+            Expr::Cast { ty, addr, span } => {
+                self.validate_type(ty, *span)?;
+                let t = self.infer_expr_type(addr, env)?;
+                if t != Type::I32 {
+                    return Err(format!("{}:{}: cast needs an i32 address, got {:?}", span.0, span.1, t));
+                }
+                Ok(ty.clone())
+            }
+            Expr::Ref { name, span } => match self.fn_signatures.get(name) {
+                Some((params, ret)) => Ok(Type::Fn(params.clone(), Box::new(ret.clone()))),
+                None => Err(format!("{}:{}: Undefined function '{}' in ref", span.0, span.1, name)),
+            },
+            Expr::CallRef { sig, func, args, span } => {
+                self.validate_type(sig, *span)?;
+                let (params, ret) = match sig {
+                    Type::Fn(p, r) => (p.clone(), *r.clone()),
+                    other => {
+                        return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {:?}", span.0, span.1, other))
+                    }
+                };
+                let ft = self.infer_expr_type(func, env)?;
+                if ft != *sig {
+                    return Err(format!("{}:{}: call_ref signature {:?} does not match the function's type {:?}", span.0, span.1, sig, ft));
+                }
+                if args.len() != params.len() {
+                    return Err(format!("{}:{}: call_ref expects {} arguments, got {}", span.0, span.1, params.len(), args.len()));
+                }
+                for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
+                    let at = self.infer_expr_type(a, env)?;
+                    if at != *p {
+                        return Err(format!("{}:{}: call_ref argument {} expects {:?}, got {:?}", span.0, span.1, i + 1, p, at));
+                    }
+                }
+                Ok(ret)
+            }
+            Expr::Addr { val, array, span } => {
+                let t = self.infer_expr_type(val, env)?;
+                match (array, &t) {
+                    (false, Type::Ptr(_)) | (true, Type::Array(_)) => Ok(Type::I32),
+                    (false, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {:?}", span.0, span.1, t)),
+                    (true, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {:?}", span.0, span.1, t)),
+                }
             }
         }
     }

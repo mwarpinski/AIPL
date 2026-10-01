@@ -1,28 +1,36 @@
-# PROMPT GUIDE FOR AI AGENTS: Generating and Executing AIPL Code
+# PROMPT GUIDE FOR AI AGENTS: Generating AIPL
 
-This document provides system prompt instructions, syntax rules, and zero-shot examples for LLMs (Gemini, Claude, GPT) to generate valid **AIPL (AI Programming Language)** code.
+A system-prompt module and verified examples for LLMs writing **AIPL**. Every example below type-checks, runs in the VM, and compiles to wasm with the same result. The full language reference is [AIPL_SPEC.md](AIPL_SPEC.md); its section 13 lists the mistakes LLMs actually make.
 
 ---
 
-## SYSTEM PROMPT MODULE (Include in Agent Context)
+## SYSTEM PROMPT MODULE (include in agent context)
 
 ```sysprompt
-You are an AI agent capable of writing, compiling, and executing AIPL (AI Programming Language).
-AIPL is a strict, token-efficient S-Expression language designed for formal verification and WebAssembly execution.
+You write AIPL, a statically typed S-expression language that compiles to WebAssembly.
 
-RULES FOR GENERATING AIPL:
-1. Wrap all code inside a top-level (module <name> ...).
-2. Every function must be declared with (fn <name> [<param:type> ...] -> <RetType> (body...)).
-3. All operations are prefix S-expressions: (+ a b), (if cond then else), (let x:i32 10).
-4. Use formal contracts (req (<cond>)) and (ens (<cond>)) whenever input domain constraints exist.
-5. Do NOT use human syntax sugar like curlies {}, semicolons ;, or indentation sensitivity.
+RULES:
+1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), and (fn ...) forms.
+2. Functions: (fn name [p:type ...] -> RetType (req ...)* (ens ...)* body...). The last body expression is the return value; `res` names it in (ens ...).
+3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E) (ptr S) (arr T). (ptr S) points at a struct S; (arr T) is an array of T. Neither is an integer: no arithmetic, compare only with eq/neq.
+4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
+5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error.
+6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence.
+7. Loops: (while cond body...) or (loop i start end step body...), where end is INCLUSIVE. There is no return, break, or continue.
+8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), "s" is str. Never mix i32 and i64 without (i64.extend_s x) / (i32.wrap x).
+9. Memory: (new S) gives a (ptr S); (arr.new T n) gives an (arr T); (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024.
+10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
+11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
+12. Code meant for `aipl compile` must not use thread.*, atomic.*, sys.time, or (+ str str); sys.print takes str only.
+13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file; (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes.
 ```
 
 ---
 
-## Zero-Shot Syntax Examples
+## Examples
 
-### Example 1: Pure Mathematical Computation (Factorial with Invariants)
+### 1. Recursion with contracts
 ```lisp
 (module math_demo
   (fn factorial [n:i32] -> i32
@@ -32,52 +40,128 @@ RULES FOR GENERATING AIPL:
         1
         (* n (call factorial (- n 1))))))
 ```
+`(call factorial 10)` is `3628800`.
 
-### Example 2: Vector Matrix Multiplication (SIMD Optimized)
+### 2. Binary search over a heap array
 ```lisp
-(module tensor_ops
-  (fn dot_product [a:(vec f64 4) b:(vec f64 4)] -> f64
-    (vec.dot a b))
-
-  (fn matrix_mult_2x2 [a:(arr f64 4) b:(arr f64 4)] -> (arr f64 4)
-    (matmul a b)))
-```
-
-### Example 3: Formally Verified Binary Search
-```lisp
-(module verified_algo
-  (fn binary_search [arr:(arr i32 100) target:i32] -> i32
+(module search
+  ;; returns the index of target in the sorted array a, or -1
+  (fn binary_search [a:(arr i32) target:i32] -> i32
     (let low:i32 0)
-    (let high:i32 99)
-    (let result:i32 -1)
-    (while (and (lte low high) (eq result -1))
+    (let high:i32 (- (arr.len a) 1))
+    (let found:i32 -1)
+    (while (and (lte low high) (eq found -1))
       (let mid:i32 (/ (+ low high) 2))
-      (let val:i32 (arr.get arr mid))
-      (if (eq val target)
-          (set! result mid)
-          (if (lt val target)
+      (let v:i32 (arr.get i32 a mid))
+      (if (eq v target)
+          (set! found mid)
+          (if (lt v target)
               (set! low (+ mid 1))
               (set! high (- mid 1)))))
-    result))
-```
+    found)
 
-### Example 4: Web Application DOM Rendering (Interactive Browser UI)
-```lisp
-(module web_app
-  (fn render_app [] -> void
-    (let root:i32 (web.create_element "div" "container" "AIPL Native Browser App"))
-    (let btn:i32 (web.create_element "button" "btn-primary" "Click Me (AIPL)"))
-    (web.append_child root btn)
-    (web.mount "#app" root)
-    (web.on_event btn "click" (fn [e:i32] -> void
-      (web.alert "Executed from compiled WebAssembly in browser!")))))
+  (fn main [] -> i32
+    (let a:(arr i32) (arr.new i32 8))
+    (loop i 0 7 1
+      (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
+    (+ (* 10 (call binary_search a 15)) (call binary_search a 4))))
 ```
+`main` returns `49`: 15 is found at index 5, and 4 is not found, giving `50 + -1`.
+
+### 3. A struct-based linked list
+```lisp
+(module list_demo
+  (struct Node [val:i32 next:(ptr Node)])
+
+  (fn push [head:(ptr Node) v:i32] -> (ptr Node)
+    (let n:(ptr Node) (new Node))
+    (put n Node.val v)
+    (put n Node.next head)
+    n)
+
+  (fn sum [head:(ptr Node)] -> i32
+    (let total:i32 0)
+    (let cur:(ptr Node) head)
+    (while (neq cur (ptr.null Node))
+      (set! total (+ total (get cur Node.val)))
+      (set! cur (get cur Node.next)))
+    total)
+
+  (fn main [] -> i32
+    (let h:(ptr Node) (ptr.null Node))
+    (loop i 1 10 1
+      (set! h (call push h i)))
+    (call sum h)))
+```
+`main` returns `55`.
+
+### 4. Fallible parsing with results
+```lisp
+(module parse_demo
+  (fn digit [c:i32] -> (result i32 i32)
+    (if (and (gte c 48) (lte c 57))
+        (ok (- c 48))
+        (err c)))
+
+  ;; parses the decimal digits of s; -1 on the first non-digit
+  (fn parse_uint [s:str] -> i32
+    (let p:i32 (str.ptr s))
+    (let n:i32 0)
+    (let bad:bool false)
+    (loop i 0 (- (str.len s) 1) 1
+      (match_result (call digit (mem.load8 (+ p i)))
+        (ok d (set! n (+ (* n 10) d)))
+        (err e (set! bad true))))
+    (if bad -1 n))
+
+  (fn main [] -> i32
+    (+ (call parse_uint "1234") (call parse_uint "12x"))))
+```
+`main` returns `1233`, which is `1234 + -1`.
+
+### 5. Printing and files (compiled with WASI)
+```lisp
+(module io_demo
+  (fn main [] -> i32
+    (let path:str "note.txt")
+    (let msg:str "hello from AIPL")
+    (let fd:i32 (fs.open (str.ptr path) (str.len path) 1))
+    (if (lt fd 0)
+        (block (sys.print "open failed") -1)
+        (block
+          (let n:i32 (fs.write fd (str.ptr msg) (str.len msg)))
+          (fs.close fd)
+          (sys.print "wrote note.txt")
+          n))))
+```
+Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && wasmtime run --dir=. io.wasm --invoke main`.
+
+### 6. The standard library
+```lisp
+(module std_demo
+  (import io)
+  (import str)
+  (fn main [] -> i32
+    (let b:(ptr str.Bytes) (call str.from_str "one two\nthree\n"))
+    (call io.println_int "words: " (call str.count_words b))
+    (call io.println_int "lines: " (call str.count_lines b))
+    (+ (* 10 (call str.count_words b)) (call str.count_lines b))))
+```
+Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.txt")` gives the same `(ptr str.Bytes)` for a file (see `examples/word_count.aipl`).
 
 ---
 
-## Diagnostic Checklist for AI Agents
-Before returning AIPL code, verify:
-- [ ] Balanced parentheses `(` and `)` across all sub-expressions.
-- [ ] Top-level construct is `(module ...)`.
-- [ ] Type signatures match returned values (`-> i32`, `-> f64`, `-> void`).
-- [ ] Contracts specify `req` (pre-condition) and `ens` (post-condition) correctly.
+## Checklist before returning AIPL
+
+- [ ] Parentheses balance, and nothing follows the module's closing `)`.
+- [ ] Every `let`, parameter, return, and struct field has a type.
+- [ ] Each function body ends in a value of its return type (not a `let`, `set!`, or loop), unless the return type is `void`.
+- [ ] Both `if` branches are void, or both are the same type.
+- [ ] No name is `let` twice in nested scopes.
+- [ ] `loop` end bounds are inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
+- [ ] No mixed `i32`/`i64` operands; conversions are explicit.
+- [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
+- [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
+- [ ] Code meant to compile avoids VM-only ops (AIPL_SPEC.md 6.3).
+
+Validate with `aipl verify file.aipl`. Every error starts with `line:col:`.

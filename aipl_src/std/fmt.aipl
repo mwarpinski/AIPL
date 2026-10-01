@@ -1,0 +1,64 @@
+;; std/fmt: numbers to text. Each function writes ASCII bytes at `out` (which
+;; must have room: 10 bytes for uint/hex, 11 for int) and returns the count.
+(module fmt
+  ;; Decimal digits of n read as unsigned, so -1 is 4294967295.
+  (fn uint_to_bytes [n:i32 out:i32] -> i32
+    (ens (and (gte res 1) (lte res 10)))
+    (let count:i32 1)
+    (let v:i32 (divu n 10))
+    (while (neq v 0)
+      (set! count (+ count 1))
+      (set! v (divu v 10)))
+    (set! v n)
+    (loop i 1 count 1
+      (mem.store8 (+ out (- count i)) (+ 48 (remu v 10)))
+      (set! v (divu v 10)))
+    count)
+
+  ;; Decimal digits of n, with a leading '-' when negative.
+  (fn int_to_bytes [n:i32 out:i32] -> i32
+    (ens (and (gte res 1) (lte res 11)))
+    (if (lt n 0)
+        (block
+          (mem.store8 out 45)
+          (+ 1 (call uint_to_bytes (- 0 n) (+ out 1))))
+        (call uint_to_bytes n out)))
+
+  (fn hex_digit [d:i32] -> i32
+    (if (lt d 10) (+ 48 d) (+ 87 d)))
+
+  ;; Lowercase hex digits of n read as unsigned, no prefix, no leading zeros.
+  (fn hex_to_bytes [n:i32 out:i32] -> i32
+    (ens (and (gte res 1) (lte res 8)))
+    (let count:i32 1)
+    (let v:i32 (shru n 4))
+    (while (neq v 0)
+      (set! count (+ count 1))
+      (set! v (shru v 4)))
+    (set! v n)
+    (loop i 1 count 1
+      (mem.store8 (+ out (- count i)) (call hex_digit (bitand v 15)))
+      (set! v (shru v 4)))
+    count)
+
+  ;; True if the n bytes at out spell s.
+  (fn spells [out:i32 n:i32 s:str] -> bool
+    (let same:bool (eq n (str.len s)))
+    (let p:i32 (str.ptr s))
+    (let i:i32 0)
+    (while (and same (lt i n))
+      (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (set! same false) (block))
+      (set! i (+ i 1)))
+    same)
+
+  ;; Pass count; test_suite.aipl expects 6.
+  (fn run_fmt_tests [] -> i32
+    (let b:i32 (mem.alloc 12))
+    (let p:i32 0)
+    (if (call spells b (call uint_to_bytes 0 b) "0") (set! p (+ p 1)) (block))
+    (if (call spells b (call uint_to_bytes -1 b) "4294967295") (set! p (+ p 1)) (block))
+    (if (call spells b (call int_to_bytes -2147483648 b) "-2147483648") (set! p (+ p 1)) (block))
+    (if (call spells b (call int_to_bytes 907 b) "907") (set! p (+ p 1)) (block))
+    (if (call spells b (call hex_to_bytes 255 b) "ff") (set! p (+ p 1)) (block))
+    (if (call spells b (call hex_to_bytes -1 b) "ffffffff") (set! p (+ p 1)) (block))
+    p))

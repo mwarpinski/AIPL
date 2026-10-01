@@ -337,10 +337,13 @@ impl Parser {
         };
 
         let mut imports = Vec::new();
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
         while let Some(TokenKind::LParen) = self.peek_kind() {
             if self.is_import_ahead() {
                 imports.push(self.parse_import()?);
+            } else if self.is_struct_ahead() {
+                structs.push(self.parse_struct_def()?);
             } else {
                 functions.push(self.parse_fn_def()?);
             }
@@ -358,6 +361,7 @@ impl Parser {
         Ok(Module {
             name,
             imports,
+            structs,
             functions,
         })
     }
@@ -369,6 +373,87 @@ impl Parser {
             }
         }
         false
+    }
+
+    fn is_struct_ahead(&self) -> bool {
+        if self.pos + 1 < self.tokens.len() {
+            if let TokenKind::Symbol(s) = &self.tokens[self.pos + 1].kind {
+                return s == "struct";
+            }
+        }
+        false
+    }
+
+    fn parse_struct_def(&mut self) -> Result<StructDef, String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let span = (tok.line, tok.col);
+        match self.next() {
+            Some(Token {
+                kind: TokenKind::Symbol(s),
+                ..
+            }) if s == "struct" => {}
+            Some(tok) => {
+                return Err(format!(
+                    "{}:{}: Expected 'struct', got {:?}",
+                    tok.line, tok.col, tok.kind
+                ))
+            }
+            None => return Err(format!("{}:{}: Expected 'struct', got EOF", span.0, span.1)),
+        }
+
+        let name = match self.next() {
+            Some(Token {
+                kind: TokenKind::Symbol(s),
+                ..
+            }) => s,
+            Some(tok) => {
+                return Err(format!(
+                    "{}:{}: Expected struct name, got {:?}",
+                    tok.line, tok.col, tok.kind
+                ))
+            }
+            None => return Err(format!("{}:{}: Expected struct name, got EOF", span.0, span.1)),
+        };
+
+        self.expect_kind(TokenKind::LBracket)?;
+        let mut fields = Vec::new();
+        while let Some(kind) = self.peek_kind() {
+            if *kind == TokenKind::RBracket {
+                break;
+            }
+            let field_name = match self.next() {
+                Some(Token {
+                    kind: TokenKind::Symbol(s),
+                    ..
+                }) => s,
+                Some(tok) => {
+                    return Err(format!(
+                        "{}:{}: Expected field name, got {:?}",
+                        tok.line, tok.col, tok.kind
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "{}:{}: Expected field name, got EOF",
+                        span.0, span.1
+                    ))
+                }
+            };
+            self.expect_kind(TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            fields.push(StructField {
+                name: field_name,
+                ty,
+            });
+        }
+        self.expect_kind(TokenKind::RBracket)?;
+        self.expect_kind(TokenKind::RParen)?;
+
+        Ok(StructDef {
+            name,
+            fields,
+            span,
+        })
     }
 
     fn parse_import(&mut self) -> Result<Import, String> {
@@ -566,6 +651,15 @@ impl Parser {
         }
     }
 
+    /// Next token as a symbol, or an error naming what was expected.
+    fn expect_symbol(&mut self, what: &str, span: (u32, u32)) -> Result<String, String> {
+        match self.next() {
+            Some(Token { kind: TokenKind::Symbol(s), .. }) => Ok(s),
+            Some(tok) => Err(format!("{}:{}: Expected {}, got {:?}", tok.line, tok.col, what, tok.kind)),
+            None => Err(format!("{}:{}: Expected {}, got EOF", span.0, span.1, what)),
+        }
+    }
+
     fn parse_type(&mut self) -> Result<Type, String> {
         let (l, c) = self.cur_pos();
         match self.next() {
@@ -575,7 +669,7 @@ impl Parser {
                 col,
             }) => match s.as_str() {
                 "i32" => Ok(Type::I32),
-                "i64" => Err("i64 type is unsupported".to_string()),
+                "i64" => Ok(Type::I64),
                 "f32" => Ok(Type::F32),
                 "f64" => Ok(Type::F64),
                 "bool" => Ok(Type::Bool),
@@ -606,33 +700,46 @@ impl Parser {
                         ))
                     }
                 };
-                if kind == "arr" || kind == "vec" {
-                    let elem_ty = self.parse_type()?;
-                    let len = match self.next() {
-                        Some(Token {
-                            kind: TokenKind::IntLit(i),
-                            ..
-                        }) => i as usize,
-                        Some(tok) => {
-                            return Err(format!(
-                                "{}:{}: Expected length integer, got {:?}",
-                                tok.line, tok.col, tok.kind
-                            ))
-                        }
-                        None => {
-                            return Err(format!(
-                                "{}:{}: Expected length integer, got EOF",
-                                line, col
-                            ))
-                        }
-                    };
+                if kind == "result" {
+                    let ok_ty = self.parse_type()?;
+                    let err_ty = self.parse_type()?;
                     self.expect_kind(TokenKind::RParen)?;
-                    if kind == "arr" {
-                        Ok(Type::Array(Box::new(elem_ty), len))
-                    } else {
-                        Ok(Type::Vector(Box::new(elem_ty), len))
+                    Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
+                } else if kind == "arr" {
+                    let elem_ty = self.parse_type()?;
+                    if let Some(TokenKind::IntLit(_)) = self.peek_kind() {
+                        return Err(format!(
+                            "{}:{}: (arr T) takes no length; an array's length is set by (arr.new T n)",
+                            line, col
+                        ));
                     }
-                } else {
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Array(Box::new(elem_ty)))
+                } else if kind == "fn" {
+                    // (fn [t1 t2] -> r)
+                    self.expect_kind(TokenKind::LBracket)?;
+                    let mut params = Vec::new();
+                    while let Some(k) = self.peek_kind() {
+                        if *k == TokenKind::RBracket {
+                            break;
+                        }
+                        params.push(self.parse_type()?);
+                    }
+                    self.expect_kind(TokenKind::RBracket)?;
+                    self.expect_kind(TokenKind::Arrow)?;
+                    let ret = self.parse_type()?;
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Fn(params, Box::new(ret)))
+                } else if kind == "ptr" {
+                    let name = self.expect_symbol("struct name in (ptr S)", (line, col))?;
+                    if parse_scalar_type_str(&name, (line, col)).is_ok() {
+                        return Err(format!(
+                            "{}:{}: (ptr {}) is not a type: ptr points to a struct; for a sequence of {} use (arr {})",
+                            line, col, name, name, name
+                        ));
+                    }
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Ptr(Box::new(Type::Struct(name))))                } else {
                     Err(format!(
                         "{}:{}: Unknown compound type: {}",
                         line, col, kind
@@ -848,13 +955,29 @@ impl Parser {
                             }
                             Expr::Call { func, args, span }
                         }
-                        "ok" => {
+                        s if s == "ok" || s.starts_with("ok:") => {
+                            let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
+                                self.next();
+                                Some(self.parse_type()?)
+                            } else if s.starts_with("ok:") {
+                                Some(parse_scalar_type_str(&s[3..], span)?)
+                            } else {
+                                None
+                            };
                             let val = self.parse_expr()?;
-                            Expr::Ok(Box::new(val), span)
+                            Expr::Ok(Box::new(val), explicit_ty, span)
                         }
-                        "err" => {
+                        s if s == "err" || s.starts_with("err:") => {
+                            let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
+                                self.next();
+                                Some(self.parse_type()?)
+                            } else if s.starts_with("err:") {
+                                Some(parse_scalar_type_str(&s[4..], span)?)
+                            } else {
+                                None
+                            };
                             let val = self.parse_expr()?;
-                            Expr::Err(Box::new(val), span)
+                            Expr::Err(Box::new(val), explicit_ty, span)
                         }
                         "block" => {
                             let mut body = Vec::new();
@@ -969,6 +1092,199 @@ impl Parser {
                                 span,
                             }
                         }
+                        "new" => {
+                            let struct_name = match self.next() {
+                                Some(Token {
+                                    kind: TokenKind::Symbol(s),
+                                    ..
+                                }) => s,
+                                Some(tok) => {
+                                    return Err(format!(
+                                        "{}:{}: Expected struct name in new, got {:?}",
+                                        tok.line, tok.col, tok.kind
+                                    ))
+                                }
+                                None => {
+                                    return Err(format!(
+                                        "{}:{}: Expected struct name in new, got EOF",
+                                        span.0, span.1
+                                    ))
+                                }
+                            };
+                            Expr::NewStruct { struct_name, span }
+                        }
+                        "get" => {
+                            let ptr = self.parse_expr()?;
+                            let field_tok = match self.next() {
+                                Some(Token {
+                                    kind: TokenKind::Symbol(s),
+                                    ..
+                                }) => s,
+                                Some(tok) => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in get, got {:?}",
+                                        tok.line, tok.col, tok.kind
+                                    ))
+                                }
+                                None => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in get, got EOF",
+                                        span.0, span.1
+                                    ))
+                                }
+                            };
+                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
+                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
+                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
+                                _ => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
+                                        span.0, span.1, field_tok
+                                    ))
+                                }
+                            };
+                            Expr::GetField {
+                                struct_name: parts[0].to_string(),
+                                field_name: parts[1].to_string(),
+                                ptr: Box::new(ptr),
+                                span,
+                            }
+                        }
+                        "put" => {
+                            let ptr = self.parse_expr()?;
+                            let field_tok = match self.next() {
+                                Some(Token {
+                                    kind: TokenKind::Symbol(s),
+                                    ..
+                                }) => s,
+                                Some(tok) => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in put, got {:?}",
+                                        tok.line, tok.col, tok.kind
+                                    ))
+                                }
+                                None => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in put, got EOF",
+                                        span.0, span.1
+                                    ))
+                                }
+                            };
+                            let val = self.parse_expr()?;
+                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
+                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
+                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
+                                _ => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
+                                        span.0, span.1, field_tok
+                                    ))
+                                }
+                            };
+                            Expr::PutField {
+                                struct_name: parts[0].to_string(),
+                                field_name: parts[1].to_string(),
+                                ptr: Box::new(ptr),
+                                val: Box::new(val),
+                                span,
+                            }
+                        }
+                        "sizeof" => {
+                            let struct_name = match self.next() {
+                                Some(Token {
+                                    kind: TokenKind::Symbol(s),
+                                    ..
+                                }) => s,
+                                Some(tok) => {
+                                    return Err(format!(
+                                        "{}:{}: Expected struct name in sizeof, got {:?}",
+                                        tok.line, tok.col, tok.kind
+                                    ))
+                                }
+                                None => {
+                                    return Err(format!(
+                                        "{}:{}: Expected struct name in sizeof, got EOF",
+                                        span.0, span.1
+                                    ))
+                                }
+                            };
+                            Expr::Sizeof { struct_name, span }
+                        }
+                        "ref" => {
+                            let name = self.expect_symbol("function name in ref", span)?;
+                            Expr::Ref { name, span }
+                        }
+                        "call_ref" => {
+                            let sig = self.parse_type()?;
+                            let func = self.parse_expr()?;
+                            let mut args = Vec::new();
+                            while let Some(kind) = self.peek_kind() {
+                                if *kind == TokenKind::RParen {
+                                    break;
+                                }
+                                args.push(self.parse_expr()?);
+                            }
+                            Expr::CallRef { sig, func: Box::new(func), args, span }
+                        }
+                        "arr.len" => {
+                            let arr = self.parse_expr()?;
+                            Expr::ArrLen { arr: Box::new(arr), span }
+                        }
+                        "ptr.null" => {
+                            let name = self.expect_symbol("struct name in ptr.null", span)?;
+                            Expr::Null { ty: Type::Ptr(Box::new(Type::Struct(name))), span }
+                        }
+                        "arr.null" => {
+                            let elem = self.parse_type()?;
+                            Expr::Null { ty: Type::Array(Box::new(elem)), span }
+                        }
+                        "ptr.cast" => {
+                            let name = self.expect_symbol("struct name in ptr.cast", span)?;
+                            let addr = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Ptr(Box::new(Type::Struct(name))), addr: Box::new(addr), span }
+                        }
+                        "arr.cast" => {
+                            let elem = self.parse_type()?;
+                            let addr = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), span }
+                        }
+                        "ptr.addr" | "arr.addr" => {
+                            let val = self.parse_expr()?;
+                            Expr::Addr { val: Box::new(val), array: head == "arr.addr", span }
+                        }
+                        "arr.new" => {
+                            let elem_ty = self.parse_type()?;
+                            let size = self.parse_expr()?;
+                            Expr::ArrNew {
+                                elem_ty,
+                                size: Box::new(size),
+                                span,
+                            }
+                        }
+                        "arr.get" => {
+                            let elem_ty = self.parse_type()?;
+                            let ptr = self.parse_expr()?;
+                            let index = self.parse_expr()?;
+                            Expr::ArrGet {
+                                elem_ty,
+                                ptr: Box::new(ptr),
+                                index: Box::new(index),
+                                span,
+                            }
+                        }
+                        "arr.set" => {
+                            let elem_ty = self.parse_type()?;
+                            let ptr = self.parse_expr()?;
+                            let index = self.parse_expr()?;
+                            let val = self.parse_expr()?;
+                            Expr::ArrSet {
+                                elem_ty,
+                                ptr: Box::new(ptr),
+                                index: Box::new(index),
+                                val: Box::new(val),
+                                span,
+                            }
+                        }
                         op_str => {
                             let op = match op_str {
                                 "+" => OpCode::Add,
@@ -1010,8 +1326,6 @@ impl Parser {
                                 "and" => OpCode::And,
                                 "or" => OpCode::Or,
                                 "not" => OpCode::Not,
-                                "arr.get" => OpCode::ArrGet,
-                                "arr.set" => OpCode::ArrSet,
                                 "sys.print" => OpCode::SysPrint,
                                 "sys.time" => OpCode::SysTime,
                                 "sys.exit" => OpCode::SysExit,
@@ -1025,6 +1339,10 @@ impl Parser {
                                 "divu" => OpCode::DivU,
                                 "remu" => OpCode::RemU,
                                 "i64.extend_s" => OpCode::I64ExtendS,
+                                "f64.convert_i64_s" => OpCode::F64ConvertI64S,
+                                "i64.trunc_f64_s" => OpCode::I64TruncF64S,
+                                "f64.reinterpret_i64" => OpCode::F64ReinterpretI64,
+                                "i64.reinterpret_f64" => OpCode::I64ReinterpretF64,
                                 "i64.extend_u" => OpCode::I64ExtendU,
                                 "i32.wrap" => OpCode::I32Wrap,
                                 other => {
@@ -1057,5 +1375,18 @@ impl Parser {
         } else {
             Err(format!("{}:{}: Unexpected EOF parsing expression", l, c))
         }
+    }
+}
+
+fn parse_scalar_type_str(s: &str, span: (u32, u32)) -> Result<Type, String> {
+    match s {
+        "i32" => Ok(Type::I32),
+        "i64" => Ok(Type::I64),
+        "f32" => Ok(Type::F32),
+        "f64" => Ok(Type::F64),
+        "bool" => Ok(Type::Bool),
+        "str" => Ok(Type::Str),
+        "void" => Ok(Type::Void),
+        _ => Err(format!("{}:{}: Unknown scalar type: {}", span.0, span.1, s)),
     }
 }

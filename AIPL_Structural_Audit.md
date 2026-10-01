@@ -4,6 +4,36 @@ Audit date: 2026-09-17. Tree at commit `c97a10c`. Every claim below is anchored 
 
 Companion documents: [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not yet do), [PROGRESS.md](PROGRESS.md) (what has been built and verified). This document is the execution roadmap: what is structurally sound, what is debt, what will break at scale, and the ordered list of tasks (with ready-to-run agent prompts) to fix it.
 
+## Status of the findings below (2026-10-01)
+
+Sections 1–3 are the audit as written on 2026-09-17, and their line references point at that tree. Current state of each finding:
+
+| Finding | Status |
+|---|---|
+| B1 silent catch-alls | Fixed (P2) |
+| B2 integer semantics diverge | Fixed (P3, i64 task) |
+| B3 type-system holes | Mostly fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types, pointers and arrays are strictly typed `(ptr S)` / `(arr T)` (2026-10-01). `Fn` types are still unparseable (P10) |
+| B4 scoping undefined | Fixed (P7) |
+| B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Open |
+| B6 two allocators | Fixed (P5) |
+| B7 fabrications in tree | Fixed (P1) |
+| B8 duplicated code | Partly: `wasm_emitter.aipl` still duplicates `encode_u32`/`emit_header` with the LEB128 bug |
+| B9 byte emission via `mem.store32` | Open in `compiler.aipl`'s `encode_u32`/`emit_header` and `wasm_emitter.aipl` |
+| B10 ELF backend | Quarantined in `attic/` (P1); P13 retires it |
+| B11 no positions | Fixed (P4) |
+| B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
+| B13 interpreter clones the body on every call | Open (codegen.aipl compiling itself takes about 80 s in the VM) |
+| B14 binary AST is serde layout | Open (P12) |
+| B15 threads by name | Fixed (P10: `thread.spawn` takes a function reference) |
+| U1 no aggregate types | Fixed (P8) |
+| U2 fixed-address global state | Fixed (P5) |
+| U3 three semantics | Addressed: differential tests compare the VM and wasm, and self-hosted output must be byte-identical to the Rust backend |
+| U4 compiled code cannot do I/O | Fixed (P6) |
+| U5 control flow too poor | Open (P11) |
+| U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
+| U7 memory has no growth or bounds contract | Partly: `mem.grow` exists and bounds are enforced in both backends; `mem.free` is still a no-op |
+| U8 nothing versioned | Open (P12) |
+
 ---
 
 ## 1. THE GOOD
@@ -190,26 +220,54 @@ Repo: AIPL, src/compiler/wasm.rs. Add an ImportSection importing from "wasi_snap
 | `sys.print` via `fd_write` to fd 1 with an iovec at 64 | Done | iovec 0 at 64/68, iovec 1 (`"\n"`) at 72/76, nwritten at 80; one `fd_write` per iovec because wasmtime writes only the first iovec of a call. `str` args only (the VM prints any value). |
 | `fs.open` -> `path_open` on fd 3 with oflags/rights from flags, `-1` on error | Done | `CREAT|TRUNC` + `FD_READ|FD_WRITE` when `flags != 0`, else `FD_READ`; opened fd read from cell 84. |
 | `fs.read`/`fs.write` -> `fd_read`/`fd_write` with one iovec; `fs.close` -> `fd_close`; `sys.exit` -> `proc_exit` | Done | All errnos collapse to `-1` like the VM; `fs.delete` -> `path_unlink_file`. Operands evaluated left to right into two per-function I/O scratch locals. |
-| DataSection interning every `Literal::Str` at 512+, error over 512 bytes; literal -> `i32.const addr`; `(str.len s)` op | Done | `[len u32 LE][bytes]` layout; `str.len` = `i32.load (s-4)`; overflow error tested; `Type::Str` lowers to `i32` and AIPL_SPEC.md 4.C documents it. |
+| DataSection interning every `Literal::Str` at 512+, error over 512 bytes; literal -> `i32.const addr`; `(str.len s)` op | Done | `[len u32 LE][bytes]` layout; `str.len` = `i32.load (s-4)`; overflow error tested; `Type::Str` lowers to `i32` and AIPL_SPEC.md 4.B (then 4.C) documents it. |
 | Remove "not yet supported" for `Fs*` | Done | All five lowered. |
 | `tests/test_wasi.rs` compiling `file_io.aipl`'s `run_file_io_tests` under wasmtime + WASI ctx + preopened temp dir, same result as VM | Done | Returns 1 in both, no file left behind; 7 further cases (print, strings, overflow, missing file, byte-for-byte round trip, `sys.exit`, import-free modules). |
 | `thread.*` untouched | Done | Still rejected by the wasm backend. |
 
 **Extras forced by this work:** the checker now requires `i32` for every `fs.*` argument (a `str` path would have worked in wasm and failed in the VM); the differential harness links WASI, which turned the pinned codegen test into a real comparison, and that surfaced a wasm backend bug: `(if c (set! x v) 0)` produced an invalid block (the `then` branch leaves no value, the `else` does). Fixed by giving mixed ifs a result type and topping up the value-less branch with the assigned variable; P7 retires this when `set!`/`let` become void. With that, **the self-hosted compiler's tokenizer, parser, and signature/locals pass run under wasmtime and agree with the VM.** 91 Rust tests pass; AIPL suite green. Follow-up the same day: `str.ptr`, string escapes, fds 1/2 as stdout/stderr in the VM, and `examples/word_count.aipl` as the end-to-end I/O program (96 tests). **Not part of P6 by design:** the self-hosted `codegen.aipl` does not yet emit imports, string data, or the WASI lowerings; the P9 prompt below was rewritten to deliver that at byte parity with the Rust backend, so the list stays in order.
 
-### P7 — Fix statement/expression typing and scoping in the spec and all three implementations
+### P7 — Fix statement/expression typing and scoping in the spec and all three implementations [DONE — 2026-09-19]
 
 ```
 Repo: AIPL. Decide and implement these rules identically in src/checker.rs, src/vm.rs, src/compiler/wasm.rs, and aipl_src/codegen.aipl: (1) `set!` has type void. (2) `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`. (3) `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void. (4) `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. (5) `set!` on an undeclared name is a type error and a VM runtime error (delete the globals fallback at vm.rs Expr::Set). (6) match_result arms bind ok_var/err_var to the actual Ok/Err payload types from the matched expression's ResultType; `ok`/`err` take an explicit result type via (ok:T v) or infer from an enclosing let/return type — pick one and implement it. Remove the `(block (set! done true) 0)` idiom from codegen.aipl and compiler.aipl now that void ifs are legal. Update AIPL_SPEC.md with these six rules verbatim. Extend tests/test_differential.rs with a case per rule.
 ```
 
-### P8 — Structs and real arrays: kill manual offset arithmetic
+**Verification 2026-09-19.**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| (1) `set!` has type void | Done | `src/checker.rs` returns `Ok(Type::Void)`; `src/vm.rs` returns `Ok(Value::Void)`; `src/compiler/wasm.rs` types as `Type::Void`; `tests/test_differential.rs` asserts. |
+| (2) `if` branches void / matching non-void | Done | `src/checker.rs` requires matching non-void types or both void, returning error suggesting `(block ... value)` on mismatch; `src/compiler/wasm.rs` emits `If(Empty)` for void `if` or `If(Result(T))` for non-void `if`. |
+| (3) `let` has type void; body last expr must be value for non-void fn | Done | `src/checker.rs` returns `Ok(Type::Void)` for `Expr::Let`; function return check rejects `let` as final expr in non-void function. |
+| (4) `let` is block-scoped; shadowing is a type error | Done | `src/checker.rs` rejects shadowing in `Let`, `Loop`, `MatchResult`; `src/vm.rs` captures scope keys before entering blocks and restores outer scope via `scope.retain`. |
+| (5) `set!` on undeclared name is type error & VM runtime error | Done | `src/checker.rs` checks variable presence; `src/vm.rs` deleted `globals` fallback and returns runtime error. |
+| (6) `match_result` binds payload types; `ok`/`err` explicit or inferred | Done | `src/checker.rs` extracts `ok_ty` and `err_ty` from `ResultType` and binds arm variables to actual types; `src/parser.rs` parses `(ok:T v)` / `(err:T v)` and `(result T1 T2)`. |
+| Remove `(block (set! done true) 0)` idiom | Done | Replaced in `aipl_src/codegen.aipl` and `aipl_src/compiler.aipl` with clean void `set!` and void `if`. |
+| Update `AIPL_SPEC.md` with rules verbatim | Done | Section 7 updated with all 6 rules verbatim. |
+| Extend `tests/test_differential.rs` with a case per rule | Done | Added `p7_typing_and_scoping_rules` covering all rules. |
+
+**Extras forced by this work:** retired the `emit_void_branch_value` workaround in `src/compiler/wasm.rs` since mixed void/non-void `if` expressions are now caught and rejected at check time; cleaned up existing tests in `tests/test_v2.rs` to use `(set! res_val ...)` instead of `(let r ...)` in `match_result` branches.
+
+### P8 — Structs and real arrays: kill manual offset arithmetic [DONE — 2026-09-20]
 
 ```
 Repo: AIPL. Add aggregate types. Grammar: module-level `(struct Name [f1:type f2:type ...])`; expressions `(new Name)` -> i32 pointer via mem.alloc of the struct size; `(get p Name.f)` and `(put p Name.f v)` which lower to i32.load/i32.store (or load8/store8/load64 by field type) at compile-time offset; `(sizeof Name)`. Arrays: `(arr.new type n)` -> pointer; `(arr.get type p i)` / `(arr.set type p i v)` lowering to base + i*sizeof(type) with a VM bounds check against the allocation length stored in the 4 bytes before the base. Implement in parser.rs (new Module field structs: Vec<StructDef>), checker.rs (field lookup and type of get/put), vm.rs (same layout as wasm — pointers are ints, fields at the same offsets), wasm.rs. Then port aipl_src/compiler.aipl's token record ([kind,a,b] 12 bytes) and AST node ([kind,a,b,next] 16 bytes) to `(struct Token ...)`/`(struct Node ...)` and replace every `(mem.load32 (+ ptr (+ (* idx 16) (* field 4))))` with get/put. All existing compiler.aipl tests must still pass via `aipl test aipl_src/test_suite.aipl`. Document the struct layout rule (fields in declaration order, natural alignment, no padding beyond alignment) in AIPL_SPEC.md.
 ```
 
-### P8b — A standard library in AIPL: io, fmt, str
+**Verification 2026-10-01 (supersedes the 2026-09-20 claim).** The first "done" report said everything passed. On re-verification the AIPL suite's codegen group failed, `tests/test_memory_layout.rs` failed, and `tests/test_selfhost.rs` aborted with a stack overflow. The defects below were fixed in the same change; PROGRESS.md has the full list.
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Module-level `(struct Name [f1:type ...])` | Done | `parse_struct_def` in `src/parser.rs`; `Module.structs`; structs are carried through `src/resolver.rs` unqualified (a duplicate name is a checker error) |
+| `(new Name)`, `(get p Name.f)`, `(put p Name.f v)`, `(sizeof Name)` | Done | Layout functions in `src/checker.rs` are shared by the VM and wasm backend; typed loads and stores per field type |
+| `(arr.new type n)`, `(arr.get type p i)`, `(arr.set type p i v)` with a VM bounds check against the length at `p - 4` | Done | VM error `Array index out of bounds: ...`; the wasm backend does not bounds-check (accepted asymmetry, AIPL_SPEC.md 4.E/10.4) |
+| VM and wasm use the same layout | Done, after fixes | The VM had stopped matching wasm: memory grew silently, `put`/`arr.set` skipped the reserved-block guard, and `ok`/`err` heap cells existed only in wasm. Wasm `arr.new` read the cursor before evaluating its size, wasm `ok`/`err` could clobber their own pointer, `bool` loads were not normalised, and `str` fields failed in the VM. All fixed, with differential cases for each in `p8_structs_and_arrays` |
+| Port `compiler.aipl` Token/Node to structs; no manual `(* idx 16)` offset math left | Done | `struct Token`, `struct Node`; the remaining `mem.store32` calls are byte emission (B9) and parser state cells |
+| `aipl test aipl_src/test_suite.aipl` passes | Done, after fixes | It failed because of two typos in Gemini's codegen self-test harnesses |
+| Struct layout documented in AIPL_SPEC.md | Done | Section 4.E (layout, ops, write guard, VM-only bounds check, import naming) and 4.F (result cells) |
+
+### P8b — A standard library in AIPL: io, fmt, str [DONE — 2026-10-01]
 
 *Added 2026-09-18. Motivation: `examples/word_count.aipl` needs 49 lines where Python needs 4, and about half of that gap is the absence of a library, not the language (see LANGUAGE_GAPS.md, "Compiled I/O via WASI"). Every other task on this list is toolchain or language shape; nothing creates a library. Runs after P8 (structs/arrays) so a byte slice can be a real type, and after P7/P11 so the library itself is not written in the padded idioms those tasks remove.*
 
@@ -217,7 +275,25 @@ Repo: AIPL. Add aggregate types. Grammar: module-level `(struct Name [f1:type f2
 Repo: AIPL. Create a standard library in AIPL under aipl_src/std/: io.aipl, fmt.aipl, str.aipl. First extend src/resolver.rs so `(import io)` resolves in this order: next to the importing file, next to the entry file, then aipl_src/std/ (and any directories in an AIPL_PATH environment variable, colon-separated); document the search order in AIPL_SPEC.md section 11. Every function must behave identically in the VM and compiled under WASI - write each one once in AIPL over the existing primitives (fs.*, mem.*, str.len, str.ptr), never as a new Rust opcode. Contents: io.aipl - `println [s:str] -> void`, `eprintln [s:str] -> void`, `print_int [n:i32] -> void` (decimal, negative allowed), `println_int [label:str n:i32] -> void`, `read_file [path:str] -> (struct bytes)` returning a P8 struct {ptr:i32 len:i32} with len -1 on failure, `write_file [path:str b:(struct bytes)] -> i32`. fmt.aipl - `uint_to_bytes [n:i32 out:i32] -> i32` (digits written at out, returns count), `int_to_bytes`, `hex_to_bytes`. str.aipl - `bytes_eq [a:(struct bytes) b:(struct bytes)] -> bool`, `find_byte [b:(struct bytes) c:i32] -> i32`, `count_byte [b:(struct bytes) c:i32] -> i32`, `count_lines [b:(struct bytes)] -> i32` (newlines plus an unterminated final line), `count_words [b:(struct bytes)] -> i32` (ASCII whitespace transitions), `is_space [c:i32] -> bool`. Each module ends with `run_<module>_tests [] -> i32` returning its pass count, wired into aipl_src/test_suite.aipl. Acceptance: (1) rewrite examples/word_count.aipl on top of the library to at most 12 code lines (import io, import str; main reads, prints three lines with println_int, returns the line count) and keep every case in tests/test_wasi.rs passing with the same stdout; (2) add tests/test_std.rs that compiles each std module with the Rust backend and, for every zero-arg i32 function and every function with all-i32 params, runs the VM-vs-wasmtime differential from tests/test_differential.rs; for io.aipl run under a preopened dir as in tests/test_wasi.rs; (3) once P9 has landed, `aipl compile --self` must report byte parity for all three std modules. Update PROGRESS.md, LANGUAGE_GAPS.md (retire "no built-in integer-to-string routine" and "no str -> bytes" items), and AIPL_SPEC.md: a new section 12.7 showing the rewritten word_count, and reword the introduction so it claims unambiguity and verifiability rather than brevity - after this task the example is within about 2x of Python, which is the floor for this syntax, and the spec should not promise more.
 ```
 
-### P9 — Finish module assembly in codegen.aipl, at byte parity with the Rust backend
+**Verification 2026-10-01 (branch `features/p8b`).** Done after typed pointers, ahead of P11, at the user's request, so loops use `while` plus a flag rather than `break`.
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Resolver search order: importer dir, entry dir, `aipl_src/std/`, `AIPL_PATH`; documented in spec section 11 | Done | `find_module_file` in `src/resolver.rs`; the undocumented `aipl_modules/` lookup was removed (nothing used it) |
+| `io`, `fmt`, `str` with the listed functions, written in AIPL only | Done, with adaptations | The byte slice is `(struct Bytes [addr:i32 len:i32])` in `std/str`, passed as `(ptr str.Bytes)` (typed pointers postdate the prompt; the field is `addr` because `ptr` is now a type keyword). Additions: `str.bytes`, `str.from_str`, `str.byte_at`, `fmt.hex_digit`, `io.alloc` (grows memory) |
+| `run_<module>_tests` wired into `test_suite.aipl` | Done | str 6, fmt 6, io 2; one deliberately broken function per module was confirmed to lower its pass count |
+| (1) `word_count.aipl` in at most 12 code lines, `tests/test_wasi.rs` unchanged and passing | Done | 12 code lines (was 49); identical stdout in both backends |
+| (2) `tests/test_std.rs`: VM-vs-wasmtime on every eligible function, io under a preopened dir | Done | Every function with an i32/bool result and all-i32 parameters over fixed argument tuples, plus byte-exact stdout for the printing functions |
+| (3) `aipl compile --self` byte parity for all three std modules | Done | `--self` now resolves imports in Rust and prints the flat module (`src/printer.rs`) for the self-hosted compiler; `self_hosted_bytes_match_std_library` checks str, fmt, io, and word_count |
+| Docs: PROGRESS, LANGUAGE_GAPS, spec section 12.7, intro reworded | Done | Spec sections 12.6 (library reference) and 12.7 (word_count), intro claims one obvious spelling and early diagnostics, not brevity |
+
+Also found: `aipl_src/wasm_emitter.aipl` no longer parsed and was a buggy duplicate; moved to `attic/`.
+
+### P9 — Finish module assembly in codegen.aipl, at byte parity with the Rust backend [DONE — 2026-10-01, imports deferred to P14]
+
+**Completion 2026-10-01 (branch `features/p9`).** Type-directed codegen (`i64`/`f32`/`f64` instructions, block types, typed struct and array layouts), `i64` literals, exact `f64` literals via four new conversion primitives, `(ok:T v)`, and a `--self` report that locates the first divergence. Parity tests now cover 21 programs, including 200 random float literals and an `i64` program, and the bootstrap fixpoint holds with codegen.aipl using `i64`/`f64` itself. Remaining: imports (P14) and `compile_to_target` wiring (needs a driver module).
+
+**Earlier status 2026-10-01.** `compile_module`, `aipl compile --self`, and whole-module parity tests exist and pass: 16 programs including codegen.aipl compiling itself, plus wasmtime execution of the output. The three acceptance files are byte-identical. Not done: `i64`/`f64` (no type inference, so `i64` arithmetic emits `i32` ops, and `i64`/float literals are error 971), imports, and the `compile_to_target` wiring. AIPL_SPEC.md 6.4 and PROGRESS.md have the details. The mixed-void `if` top-up requirement is obsolete: P7 made mixed-void `if` a type error.
 
 *Rewritten 2026-09-18 after P5/P6. The Rust backend (`src/compiler/wasm.rs`) is the reference for every byte; "done" means the self-hosted output is identical to it, not merely valid. This is also where the self-hosted compiler catches up on WASI imports and string data segments, which P6 delivered only in Rust (see LANGUAGE_GAPS.md, "Compiled I/O via WASI").*
 
@@ -231,11 +307,22 @@ String literals (token kind 9): add a pre-pass that interns every distinct liter
 Tests: extend tests/test_selfhost.rs with a `self_hosted_module_bytes_match_rust_backend(src)` helper that runs codegen.compile_module in the VM (write the source into the VM with a mem.alloc'd buffer obtained via an exported `alloc [n:i32] -> i32`), reads the module back from cell 60, validates it with wasmparser, and asserts the WHOLE module is byte-for-byte equal to WasmCompiler::compile(src). Cover: add; compute (loop + call); a store program (guard bytes); (sys.print "x") with two literals, one repeated; a program with a str let and str.len/str.ptr; fs.open/read/write/close/delete round trip; sys.exit; mem.alloc + mem.grow; an i64 function; a mixed-void if. Then run the self-hosted output of the fs round-trip program under wasmtime with a preopened dir as in tests/test_wasi.rs. Replace the three hand-assembled harnesses (test_compile_add/compute/store) with calls to compile_module, keep run_codegen_tests returning the pass count for test_suite.aipl. Add `aipl compile --self <file>`: compile with both backends, assert byte equality, and print a unified diff of the first divergence if any; run it on aipl_src/memory.aipl, aipl_src/file_io.aipl, and examples/word_count.aipl - all three must be identical. Update AIPL_SPEC.md 6.2 to state that both backends emit the same bytes and that tests enforce it, PROGRESS.md, and LANGUAGE_GAPS.md (remove the "codegen.aipl knows nothing about strings, imports, or WASI" gap). Wiring compile_to_target in compiler.aipl stays out of scope until the import cycle is resolved by moving the CLI entry into a third module (e.g. aipl_src/driver.aipl that imports both).
 ```
 
-### P10 — First-class function references; fix thread.spawn under imports
+### P10 — First-class function references; fix thread.spawn under imports [DONE — 2026-10-01]
 
 ```
 Repo: AIPL. Add a function-reference type and indirect calls. Grammar: type `(fn [t1 t2] -> r)`; expression `(ref name)` yields an i32 table index; `(call_ref f args...)` invokes it. wasm.rs: emit a TableSection + ElementSection listing every function, and lower call_ref to call_indirect with the function's type index. vm.rs: represent refs as Value::Int(index) into a Vec<FnDef> built at load_module; call_ref looks up by index. resolver.rs: rewrite `(ref name)` targets exactly like Call targets (add Expr::Ref to walk_calls_expr). Change thread.spawn's signature to (thread.spawn fref:i32 arg:i32) -> i32 taking a function index, delete the read-name-from-memory path in vm.rs ThreadSpawn, update aipl_src/thread_sync.aipl accordingly, and add `(import thread_sync)` plus a report line to aipl_src/test_suite.aipl. Delete the explanatory comment block in test_suite.aipl about thread_sync exclusion. Run `aipl test aipl_src/test_suite.aipl`; the thread group must pass with 4000 as before.
 ```
+
+**Verification 2026-10-01 (branch `features/p10`).**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Type `(fn [t1 t2] -> r)`, `(ref name)`, `(call_ref f args...)` | Done, stricter than written | `(ref f)` is typed `(fn [..] -> r)`, not `i32`, and the call is `(call_ref (fn [..] -> r) f args...)`: the signature is written at the call and checked against `f`'s type (consistent with the strict pointer types and with `arr.get` naming its element type) |
+| wasm: table + element section of every function; `call_ref` -> `call_indirect` | Done | Emitted only when the module uses refs, so other programs' bytes are unchanged; one extra type per distinct signature after the function types |
+| VM: refs are indices into the function order | Done | `fn_order` in `src/vm.rs`; out-of-range index errors (wasm traps) |
+| Resolver rewrites `(ref name)` like calls | Done | `walk_names_expr` |
+| `(thread.spawn fref arg)`, name-in-memory path deleted, `thread_sync.aipl` updated and imported in `test_suite.aipl`, exclusion comment deleted | Done | The suite prints `[PASS] thread_sync: 4 threads x 1000 atomic adds = 4000` |
+| Beyond the prompt | Done | Self-hosted compiler support at byte parity; `tests/test_refs.rs`; `--self` reports the first differing function body |
 
 ### P11 — Add `return`, `break`, `continue`, and `cond`
 
