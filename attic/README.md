@@ -1,3 +1,5 @@
 # Attic: Quarantined Fabricated Modules
 
 The modules in this directory have been quarantined because they return hardcoded constants or rely on stubbed shortcut logic instead of performing actual work. For instance, `sovereign_toolchain.aipl`'s `fs_open` returns 10/11, `fs_read` returns count, `thread_spawn_sync` returns 101, and `tokenize` counts parens only; `pipeline.aipl`'s `pipeline_tokenize` returns 4 on zero tokens; and `compiler.aipl`'s `emit_wasm_binary` reads opcode from the next_sibling field at `ast_ptr+12`. These modules exist purely as historical artifacts and must not be used in production or active toolchain tests.
+
+`wasm_emitter.aipl` (moved here 2026-10-01) is a different case: not a fabrication but a stale duplicate of `compiler.aipl`'s `encode_u32`/`emit_header`. Its LEB128 encoder never sets the continuation bit (it declares `byte_out` and then stores `byte_val`), it writes bytes with `mem.store32`, it no longer parses (tokens after the module's closing paren), and nothing imported it. The real encoders live in `aipl_src/compiler.aipl` and `aipl_src/codegen.aipl`.

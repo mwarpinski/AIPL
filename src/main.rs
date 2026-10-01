@@ -62,7 +62,8 @@ enum Commands {
 }
 
 fn run_self_hosted_codegen(src: &str) -> Result<Vec<u8>, String> {
-    let codegen_path = Path::new("aipl_src/codegen.aipl");
+    let codegen_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/codegen.aipl");
+    let codegen_path = codegen_path.as_path();
     let module = Resolver::resolve(&codegen_path).map_err(|e| format!("resolve codegen.aipl: {}", e))?;
     TypeChecker::new().check_module(&module).map_err(|e| format!("check codegen.aipl: {}", e))?;
     let mut vm = VM::new();
@@ -170,7 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[AIPL Result]: {:?}", res);
         }
         Commands::Compile { file, output, self_flag } => {
-            let src = fs::read_to_string(&file)?;
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
@@ -178,7 +178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let rust_bytes = WasmCompiler::compile(&module)?;
             if self_flag {
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
-                let self_bytes = run_self_hosted_codegen(&src).map_err(|e| format!("Self-host error: {}", e))?;
+                // The self-hosted compiler takes one import-free module, so it is
+                // given the resolved program printed back as source.
+                let flat_src = aipl_core::printer::print_module(&module);
+                let self_bytes = run_self_hosted_codegen(&flat_src).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
                     eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));

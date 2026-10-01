@@ -6,7 +6,7 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
+use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::Path;
 use wasmtime::{Engine, Linker, Module as WasmModule, Store, TypedFunc};
@@ -21,6 +21,7 @@ const EXPECTED: &[(&str, i32)] = &[
     ("list_demo", 55),
     ("parse_demo", 1233),
     ("io_demo", 15),
+    ("std_demo", 32),
 ];
 
 fn lisp_blocks(doc: &str) -> Vec<String> {
@@ -52,7 +53,10 @@ fn doc_examples_run_in_both_backends() {
     let mut seen = Vec::new();
     for doc in ["PROMPT_GUIDE_FOR_AIS.md", "README.md"] {
         for src in lisp_blocks(doc) {
-            let module = Parser::parse(&src).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
+            // Resolved from a file, so examples may import the standard library.
+            let file = scratch.join("example.aipl");
+            std::fs::write(&file, &src).unwrap();
+            let module = Resolver::resolve(&file).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
             TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
             let wasm = WasmCompiler::compile(&module).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
             let Some(&(_, want)) = EXPECTED.iter().find(|(n, _)| *n == module.name) else {

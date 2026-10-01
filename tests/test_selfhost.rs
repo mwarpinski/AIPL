@@ -424,6 +424,18 @@ fn self_hosted_bytes_match_pointers() {
 "#);
 }
 
+/// The standard library and the example built on it, through imports: each
+/// file is resolved and printed (as `aipl compile --self` does), then both
+/// compilers must emit the same bytes.
+#[test]
+fn self_hosted_bytes_match_std_library() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (name, rel) in [("std_str", "aipl_src/std/str.aipl"), ("std_fmt", "aipl_src/std/fmt.aipl"), ("std_io", "aipl_src/std/io.aipl"), ("word_count", "examples/word_count.aipl")] {
+        let module = Resolver::resolve(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
+        assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
+    }
+}
+
 #[test]
 fn self_hosted_bytes_match_file_io() {
     let src = r#"
@@ -632,39 +644,14 @@ fn self_hosted_bytes_match_compiler() {
 }
 
 /// codegen.aipl as one import-free module, which is what `compile_module`
-/// accepts: codegen.aipl without its `(import compiler)`, plus compiler.aipl's
-/// structs and functions renamed to `compiler.<name>` (with their internal
-/// references rewritten), i.e. what the resolver would produce.
+/// accepts: the resolver's output (compiler.aipl merged in, names qualified)
+/// printed back as source, exactly what `aipl compile --self` does.
 fn codegen_combined_source() -> String {
-    let compiler_src = fs::read_to_string("aipl_src/compiler.aipl").unwrap();
-    let codegen_src = fs::read_to_string("aipl_src/codegen.aipl").unwrap();
-
-    let body_start = compiler_src.find("(struct Token").unwrap();
-    let body_end = compiler_src.rfind(')').unwrap();
-    let mut body = compiler_src[body_start..body_end].to_string();
-    let names: Vec<String> = body
-        .match_indices("(fn ")
-        .map(|(i, _)| body[i + 4..].split_whitespace().next().unwrap().to_string())
-        .collect();
-    for name in &names {
-        for (prefix, sep) in [("(fn ", " "), ("(call ", " "), ("(call ", ")")] {
-            body = body.replace(
-                &format!("{prefix}{name}{sep}"),
-                &format!("{prefix}compiler.{name}{sep}"),
-            );
-        }
-    }
-
-    // Structs are qualified too, as the resolver does: Node -> compiler.Node.
-    for st in ["Token", "Node"] {
-        for (prefix, sep) in [("(struct ", " "), (" ", "."), ("(sizeof ", ")"), ("(ptr ", ")"), ("(new ", ")"), ("(ptr.cast ", " "), ("(ptr.null ", ")")] {
-            body = body.replace(&format!("{prefix}{st}{sep}"), &format!("{prefix}compiler.{st}{sep}"));
-        }
-    }
-
-    let combined_src = codegen_src.replacen("(import compiler)", &body, 1);
-    assert!(!combined_src.contains("(import"), "combined module must be import-free");
-    combined_src
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let module = Resolver::resolve(&root.join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
+    let src = aipl_core::printer::print_module(&module);
+    assert!(!src.contains("(import"), "combined module must be import-free");
+    src
 }
 
 /// The self-hosted compiler, run in the VM, compiles itself to the same bytes

@@ -31,6 +31,9 @@
   (import codegen)
   (import memory)
   (import file_io)
+  (import str)
+  (import fmt)
+  (import io)
 
   ;; Prints a [PASS]/[FAIL] line for one module's test group and returns
   ;; 0 (contributes no failures) or 1 (contributes one failure) for the
@@ -49,4 +52,7 @@
     (set! failures (+ failures (call report "codegen: signatures + 3 real wasm modules (4 tests)" (call codegen.run_codegen_tests) 4)))
     (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
     (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
+    (set! failures (+ failures (call report "std/str: byte slices (6 tests)" (call str.run_str_tests) 6)))
+    (set! failures (+ failures (call report "std/fmt: number formatting (6 tests)" (call fmt.run_fmt_tests) 6)))
+    (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
     failures))

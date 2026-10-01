@@ -267,13 +267,27 @@ Repo: AIPL. Add aggregate types. Grammar: module-level `(struct Name [f1:type f2
 | `aipl test aipl_src/test_suite.aipl` passes | Done, after fixes | It failed because of two typos in Gemini's codegen self-test harnesses |
 | Struct layout documented in AIPL_SPEC.md | Done | Section 4.E (layout, ops, write guard, VM-only bounds check, import naming) and 4.F (result cells) |
 
-### P8b — A standard library in AIPL: io, fmt, str
+### P8b — A standard library in AIPL: io, fmt, str [DONE — 2026-10-01]
 
 *Added 2026-09-18. Motivation: `examples/word_count.aipl` needs 49 lines where Python needs 4, and about half of that gap is the absence of a library, not the language (see LANGUAGE_GAPS.md, "Compiled I/O via WASI"). Every other task on this list is toolchain or language shape; nothing creates a library. Runs after P8 (structs/arrays) so a byte slice can be a real type, and after P7/P11 so the library itself is not written in the padded idioms those tasks remove.*
 
 ```
 Repo: AIPL. Create a standard library in AIPL under aipl_src/std/: io.aipl, fmt.aipl, str.aipl. First extend src/resolver.rs so `(import io)` resolves in this order: next to the importing file, next to the entry file, then aipl_src/std/ (and any directories in an AIPL_PATH environment variable, colon-separated); document the search order in AIPL_SPEC.md section 11. Every function must behave identically in the VM and compiled under WASI - write each one once in AIPL over the existing primitives (fs.*, mem.*, str.len, str.ptr), never as a new Rust opcode. Contents: io.aipl - `println [s:str] -> void`, `eprintln [s:str] -> void`, `print_int [n:i32] -> void` (decimal, negative allowed), `println_int [label:str n:i32] -> void`, `read_file [path:str] -> (struct bytes)` returning a P8 struct {ptr:i32 len:i32} with len -1 on failure, `write_file [path:str b:(struct bytes)] -> i32`. fmt.aipl - `uint_to_bytes [n:i32 out:i32] -> i32` (digits written at out, returns count), `int_to_bytes`, `hex_to_bytes`. str.aipl - `bytes_eq [a:(struct bytes) b:(struct bytes)] -> bool`, `find_byte [b:(struct bytes) c:i32] -> i32`, `count_byte [b:(struct bytes) c:i32] -> i32`, `count_lines [b:(struct bytes)] -> i32` (newlines plus an unterminated final line), `count_words [b:(struct bytes)] -> i32` (ASCII whitespace transitions), `is_space [c:i32] -> bool`. Each module ends with `run_<module>_tests [] -> i32` returning its pass count, wired into aipl_src/test_suite.aipl. Acceptance: (1) rewrite examples/word_count.aipl on top of the library to at most 12 code lines (import io, import str; main reads, prints three lines with println_int, returns the line count) and keep every case in tests/test_wasi.rs passing with the same stdout; (2) add tests/test_std.rs that compiles each std module with the Rust backend and, for every zero-arg i32 function and every function with all-i32 params, runs the VM-vs-wasmtime differential from tests/test_differential.rs; for io.aipl run under a preopened dir as in tests/test_wasi.rs; (3) once P9 has landed, `aipl compile --self` must report byte parity for all three std modules. Update PROGRESS.md, LANGUAGE_GAPS.md (retire "no built-in integer-to-string routine" and "no str -> bytes" items), and AIPL_SPEC.md: a new section 12.7 showing the rewritten word_count, and reword the introduction so it claims unambiguity and verifiability rather than brevity - after this task the example is within about 2x of Python, which is the floor for this syntax, and the spec should not promise more.
 ```
+
+**Verification 2026-10-01 (branch `features/p8b`).** Done after typed pointers, ahead of P11, at the user's request, so loops use `while` plus a flag rather than `break`.
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Resolver search order: importer dir, entry dir, `aipl_src/std/`, `AIPL_PATH`; documented in spec section 11 | Done | `find_module_file` in `src/resolver.rs`; the undocumented `aipl_modules/` lookup was removed (nothing used it) |
+| `io`, `fmt`, `str` with the listed functions, written in AIPL only | Done, with adaptations | The byte slice is `(struct Bytes [addr:i32 len:i32])` in `std/str`, passed as `(ptr str.Bytes)` (typed pointers postdate the prompt; the field is `addr` because `ptr` is now a type keyword). Additions: `str.bytes`, `str.from_str`, `str.byte_at`, `fmt.hex_digit`, `io.alloc` (grows memory) |
+| `run_<module>_tests` wired into `test_suite.aipl` | Done | str 6, fmt 6, io 2; one deliberately broken function per module was confirmed to lower its pass count |
+| (1) `word_count.aipl` in at most 12 code lines, `tests/test_wasi.rs` unchanged and passing | Done | 12 code lines (was 49); identical stdout in both backends |
+| (2) `tests/test_std.rs`: VM-vs-wasmtime on every eligible function, io under a preopened dir | Done | Every function with an i32/bool result and all-i32 parameters over fixed argument tuples, plus byte-exact stdout for the printing functions |
+| (3) `aipl compile --self` byte parity for all three std modules | Done | `--self` now resolves imports in Rust and prints the flat module (`src/printer.rs`) for the self-hosted compiler; `self_hosted_bytes_match_std_library` checks str, fmt, io, and word_count |
+| Docs: PROGRESS, LANGUAGE_GAPS, spec section 12.7, intro reworded | Done | Spec sections 12.6 (library reference) and 12.7 (word_count), intro claims one obvious spelling and early diagnostics, not brevity |
+
+Also found: `aipl_src/wasm_emitter.aipl` no longer parsed and was a buggy duplicate; moved to `attic/`.
 
 ### P9 — Finish module assembly in codegen.aipl, at byte parity with the Rust backend [DONE — 2026-10-01, imports deferred to P14]
 

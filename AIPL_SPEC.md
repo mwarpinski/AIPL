@@ -4,7 +4,9 @@
 > **Integer semantics: wasm semantics are the spec.** `i32` and `i64` are wrapping two's-complement; the VM must match wasmtime bit-for-bit, and any divergence is a VM bug. Enforced by `tests/test_differential.rs`, which runs every case in both backends.
 > **Reference Implementation Decision:** WebAssembly semantics are the definitive specification for AIPL. The VM must match WebAssembly behavior in all edge cases, 32-bit wrapping arithmetic, shift masking, and control flow semantics.
 
-AIPL (AI Programming Language) is an unambiguous, statically typed S-expression systems language with runtime-checked contracts, designed for AI agents to generate. It compiles to WebAssembly (with WASI for I/O), runs in a reference VM, and has a partially self-hosted compiler written in AIPL itself (section 6.4).
+AIPL (AI Programming Language) is an unambiguous, statically typed S-expression systems language with runtime-checked contracts, designed for AI agents to generate. It compiles to WebAssembly (with WASI for I/O), runs in a reference VM, and has a self-hosted compiler written in AIPL itself (section 6.4).
+
+What AIPL optimises for is that a program has one obvious spelling and that mistakes are caught early with a `line:col` diagnostic, not brevity. With the standard library (section 12.6), a small I/O program is about twice the length of the Python equivalent (section 12.7), which is roughly the floor for a fully parenthesised, fully annotated syntax.
 
 ---
 
@@ -143,7 +145,7 @@ Compiled modules import only the host functions they use from `wasi_snapshot_pre
 | `(fs.delete ptr len)` | | `path_unlink_file` on fd 3 | `0`, or `-1` |
 | `(sys.exit code)` | returns the error `sys.exit(N) requested` rather than killing the host process | `proc_exit` | never returns |
 
-Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s)` produce them from a string), relative to the process cwd in the VM and to the preopened directory under WASI. File descriptors 1 and 2 are stdout and stderr in both backends, so `(fs.write 1 buf n)` prints raw bytes; this is how AIPL code prints numbers today (see `print_uint` in `examples/word_count.aipl`). Every WASI errno collapses to `-1`, matching the VM. Argument expressions are evaluated left to right in both backends. `sys.time` and `thread.*` remain VM-only.
+Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s)` produce them from a string), relative to the process cwd in the VM and to the preopened directory under WASI. File descriptors 1 and 2 are stdout and stderr in both backends, so `(fs.write 1 buf n)` prints raw bytes. The standard library builds printing of numbers and whole-file reads on exactly these primitives (section 12.6). Every WASI errno collapses to `-1`, matching the VM. Argument expressions are evaluated left to right in both backends. `sys.time` and `thread.*` remain VM-only.
 
 ### D. Atomics (VM only)
 - `(atomic.lock mutex_ptr)` -> Acquires thread-safe mutex lock.
@@ -314,11 +316,11 @@ Rule of thumb for code generators: `thread.*`, `atomic.*`, `sys.time`, and strin
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
-`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 24 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
+`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 28 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
 
 It infers each expression's static type the way `expr_type` in `src/compiler/wasm.rs` does (`node_type` / `group_type`) and selects `i32.*` / `i64.*` / `f32.*` / `f64.*` instructions, `if` and `match_result` block types, struct field and array element load/store widths, and alignment from it. It runs in the VM today; compiled to wasm it also compiles itself (section 10.6). Limits that differ from the Rust backend:
 
-- **One module, no imports.** A qualified call such as `(call util.f)` resolves only if a function with that exact name is defined in the same source.
+- **One module, no imports.** `compile_module` itself takes a single import-free source. `aipl compile --self` and the self-hosting tests therefore resolve imports with the Rust resolver and print the resulting flat module back as source (`src/printer.rs`); `tests/test_printer.rs` checks that every program in the repository survives that round trip and compiles to the same bytes. A qualified call such as `(call util.f)` resolves only if a function with that exact name is defined in the source given.
 - **Float literals must be exact by construction.** `compile_module` computes an `f64` literal as `m / 10^k`, where `m` is the integer formed by all its digits and `k` is the number of digits after the point, using `f64.convert_i64_s` and one division. That equals Rust's correctly rounded `parse::<f64>` whenever `m ≤ 2^53` and `k ≤ 22`. Anything else (for example `9007199254740993.0`) is compile error 973 rather than a possibly different rounding. Exponent notation (`1.5e3`) and a leading `+` are not float literals in the self-hosted tokenizer (the Rust tokenizer accepts them), so they fail as unknown symbols (971).
 - Ops listed as compile error 987 in section 6.3 are not in its keyword table.
 
@@ -744,7 +746,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (132 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports).
+Files today (139 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program).
 
 ### 10.3 Opcode conformance contract
 
@@ -808,7 +810,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md` and `README.md` must 
   (fn main [] -> i32 (call util.double 21)))      ;; => Int(42)
 ```
 
-- `(import name)` finds `name.aipl` next to the importing file (the resolver also tries the entry file's directory), parses it, and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
+- `(import name)` finds `name.aipl` by searching, in order: the importing file's directory, the entry file's directory, the standard library (`aipl_src/std/`), then each directory listed in the colon-separated `AIPL_PATH` environment variable. The first match wins, so a local `io.aipl` shadows the standard one. The resolver parses it and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
 - Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
@@ -934,32 +936,36 @@ Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `
 
 ---
 
-### 12.6 A complete I/O program, both backends
+### 12.6 The standard library (`aipl_src/std/`)
 
-[examples/word_count.aipl](examples/word_count.aipl) is the reference for "AIPL that does I/O": it opens `input.txt`, reads it into a `mem.alloc` buffer, counts lines and words, prints three lines, writes an error to stderr if the file is missing, and returns the line count. Everything is plain AIPL over the primitives above:
+Three modules, written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes), so each function behaves identically in the VM and compiled under WASI. Import them by name: `(import io)`, `(import str)`, `(import fmt)`.
+
+| Module | Contents |
+|---|---|
+| `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)`, `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes) |
+| `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix): each writes ASCII at `out` and returns the count (at most 10, 11, and 8 bytes) |
+| `io` | `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), `alloc [n] -> i32` (`mem.alloc` that also grows memory) |
+
+From outside, the slice type is `str.Bytes`: `(ptr str.Bytes)`, `(get b str.Bytes.len)`. Every module ends in a `run_<module>_tests` runner wired into `aipl_src/test_suite.aipl`. `print_int` takes 11 bytes of heap per call and `read_file` allocates a buffer per file; with a bump allocator (`mem.free` is a no-op) that memory is not reclaimed.
+
+### 12.7 A complete I/O program with the standard library, both backends
+
+[examples/word_count.aipl](examples/word_count.aipl) reads `input.txt`, prints its line, word, and byte counts, writes an error to stderr if the file cannot be read, and returns the line count. Twelve code lines, against 49 before the library existed:
 
 ```lisp
-(fn print_str [s:str] -> i32
-  (fs.write 1 (str.ptr s) (str.len s)))
-
-(fn print_uint [n:i32] -> i32          ;; digits formatted by hand into scratch
-  (req (gte n 0))
-  (let buf:i32 (mem.alloc 12))
-  (let pos:i32 12)
-  (let v:i32 n)
-  (if (eq v 0) (block (set! pos 11) (mem.store8 (+ buf 11) 48) 0) 0)
-  (while (gt v 0)
-    (set! pos (- pos 1))
-    (mem.store8 (+ buf pos) (+ 48 (% v 10)))
-    (set! v (/ v 10)))
-  (fs.write 1 (+ buf pos) (- 12 pos)))
-
-(fn main [] -> i32
-  (let path:str "input.txt")
-  (let fd:i32 (fs.open (str.ptr path) (str.len path) 0))
-  ...)
+(module word_count
+  (import io)
+  (import str)
+  (fn main [] -> i32
+    (let b:(ptr str.Bytes) (call io.read_file "input.txt"))
+    (if (lt (get b str.Bytes.len) 0)
+        (block (call io.eprintln "word_count: cannot open input.txt") -1)
+        (block
+          (call io.println_int "lines: " (call str.count_lines b))
+          (call io.println_int "words: " (call str.count_words b))
+          (call io.println_int "bytes: " (get b str.Bytes.len))
+          (call str.count_lines b)))))
 ```
-
 ```
 $ cd examples && ../target/debug/aipl eval word_count.aipl
 lines: 4
@@ -972,7 +978,7 @@ lines: 4
 words: 15
 bytes: 81
 ```
-`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and return value.
+`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and return value; `aipl compile --self` reports byte parity for it and for each `std` module.
 
 ## 13. Pitfalls for Code Generators
 
@@ -1003,7 +1009,8 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (arr.len a))` yourself where it matters |
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
-| `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; the VM prints any value. Format numbers yourself or keep numeric printing in VM-side tests |
+| `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |
+| hand-writing digit formatting, file-reading loops, or byte counting | `(import io)`, `(import str)`, `(import fmt)` (section 12.6) |
 | passing a `str` literal where a `(ptr, len)` path or buffer is expected, e.g. `(fs.open "t.bin" 5 0)` | type error: `fs.*` take `i32` pointers. Write `(fs.open (str.ptr "t.bin") (str.len "t.bin") 0)` |
 | `return`, `break`, `continue`, `else if`, `cond` | do not exist (P11); restructure with `while` + a flag, or nested `if` |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected tokens after module end — check for an extra ')'` |

@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 132 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 139 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- eval aipl_src/thread_sync.aipl --func run_thread_tests   # standalone; prints Int(1) (pass count), see below
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
@@ -26,6 +26,9 @@ Expected AIPL suite output:
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 [PASS] memory: allocator + arena
 [PASS] file_io: real disk round-trip
+[PASS] std/str: byte slices (6 tests)
+[PASS] std/fmt: number formatting (6 tests)
+[PASS] std/io: file round trip (2 tests)
 [AIPL Test] All groups passed.
 ```
 
@@ -43,7 +46,7 @@ Expected AIPL suite output:
 | P6 WASI I/O + strings | Done. |
 | P7 statement typing + block scoping | Done. |
 | P8 structs and arrays | **Done, after rework on 2026-10-01** (see below). |
-| P8b standard library | Not started. |
+| P8b standard library | **Done 2026-10-01** (branch `features/p8b`, see below). |
 | P9 self-hosted module assembly at byte parity | **Done 2026-10-01** except imports, which belong to P14 (see below). |
 | Typed pointers + struct namespacing | **Done 2026-10-01** (branch `features/pointers`, see below). Not a numbered audit task; done before P8b so the standard library is written against typed pointers. |
 | P10–P14 | Not started. |
@@ -98,6 +101,16 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 - **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
 - Float literals outside the exact range (error 973) and exponent notation.
 
+## P8b: the standard library (2026-10-01)
+
+- **`aipl_src/std/`**: `str` (the `Bytes` slice type and byte counting), `fmt` (decimal/unsigned/hex formatting), `io` (`println`, `eprintln`, `print_int`, `println_int`, `read_file`, `write_file`). Plain AIPL over `fs.*`/`mem.*`/`str.*`, so identical in both backends; AIPL_SPEC.md 12.6 lists every function.
+- **Import search order**: importer dir, entry dir, `aipl_src/std/`, then `AIPL_PATH`. `(import io)` works from anywhere.
+- **`examples/word_count.aipl`** is now 12 code lines (was 49) with byte-identical output.
+- **`src/printer.rs`** prints a resolved module back as source. `aipl compile --self` uses it to feed programs with imports to the self-hosted compiler, and the self-hosting tests use it instead of splicing compiler.aipl into codegen.aipl by text. `tests/test_printer.rs` round-trips every program in the repository.
+- **Tests**: `tests/test_std.rs` (every eligible std function in both backends under WASI, exact stdout), std parity in `tests/test_selfhost.rs`, std groups in the AIPL suite. Each std self-test was confirmed to fail when its function is broken.
+- **`aipl_src/wasm_emitter.aipl` moved to `attic/`**: it no longer parsed and duplicated compiler.aipl with a LEB128 bug.
+- Not yet: string building/concatenation in wasm, number parsing, collections. `print_int` and `read_file` allocate per call and nothing is freed.
+
 ## Typed pointers and struct namespacing (2026-10-01)
 
 Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIPL) would otherwise be written against untyped `i32` pointers and need a second migration.
@@ -128,7 +141,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P11 `return`/`break`/`continue`/`cond`, then P8b standard library (written against typed pointers), P10 function references (fixes `thread_sync` under imports).
+3. P11 `return`/`break`/`continue`/`cond` (then simplify the `while` + flag loops in `aipl_src/std/` and the compilers), P10 function references (fixes `thread_sync` under imports).
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)

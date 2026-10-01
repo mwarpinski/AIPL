@@ -6,7 +6,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 1. Toolchain
 
-- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` (P14), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and `compile_to_target` in `compiler.aipl` still returns -1 (it needs a driver module that imports both compiler and codegen).
+- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` itself: `aipl compile --self` resolves in Rust and prints the flat module back as source for it (P14 moves resolution into AIPL), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and `compile_to_target` in `compiler.aipl` still returns -1 (it needs a driver module that imports both compiler and codegen).
 - **Import resolution is Rust (P14).** `src/resolver.rs` is bootstrap scaffolding. WASI file I/O now exists, so nothing blocks rewriting it in AIPL except P9 finishing first.
 - **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.
@@ -34,7 +34,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 4. Strings and I/O
 
 - **No string concatenation in wasm.** `(+ str str)` is VM-only.
-- **`sys.print` takes only `str` in wasm,** and there is no integer formatting routine; `examples/word_count.aipl` formats digits by hand. The standard library (P8b: `io`, `fmt`, `str`) is the planned fix.
+- **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library is small: no string building or concatenation in wasm, no parsing of numbers from text, no collections.
 - **VM `str` values are Rust strings, not pointers.** `str.ptr` and `str` struct fields copy the string into the heap each time, so heap addresses after those operations differ from wasm, where a `str` is the interned literal's address.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code. **`sys.time` is unimplemented** in both backends.
 - **String literals share a 512-byte area per module** (addresses 512–1023).
@@ -46,7 +46,6 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 6. Stale files still in the tree
 
 - `examples/hello_browser.aipl` uses the removed `dom.*` ops and no longer parses. `tests/test_differential.rs` pins it as stale.
-- `aipl_src/wasm_emitter.aipl` duplicates `encode_u32`/`emit_header` from `compiler.aipl`. Its LEB128 encoder never sets the continuation bit (it declares `byte_out` and then stores `byte_val`), and it writes bytes with `mem.store32`. Nothing imports it.
 - `src/stdlib/web.rs` is a hard-coded JavaScript bridge string, left over from the removed `dom.*` ops.
 - `README.md` describes the pre-P1 tree (since corrected; check it before trusting it).
 
@@ -55,7 +54,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 Still true from the original analysis, updated for what has landed:
 
 1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
-2. **Duplication is still easy.** `wasm_emitter.aipl` is a live example. Imports make reuse possible, not the default; discoverability and lint tooling are missing.
+2. **Duplication is still easy.** `wasm_emitter.aipl` (now in `attic/`) was a live example. Imports make reuse possible, not the default; discoverability and lint tooling are missing.
 3. **No versioning or dependency resolution.** Imports resolve by bare filename next to the importing file (P12 adds a language version; nothing handles package versions).
 4. **No privacy.** Every helper is public.
 

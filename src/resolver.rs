@@ -55,7 +55,7 @@ impl Resolver {
         let mut in_progress: HashSet<PathBuf> = HashSet::new();
 
         for import in &entry_module.imports {
-            Self::resolve_import(import, entry_path, &mut output, &mut output_structs, &mut included, &mut in_progress)?;
+            Self::resolve_import(import, entry_path, entry_path, &mut output, &mut output_structs, &mut included, &mut in_progress)?;
         }
 
         // The entry file's own functions and structs keep bare names; only
@@ -92,12 +92,13 @@ impl Resolver {
     fn resolve_import(
         import: &Import,
         importer_path: &Path,
+        entry_path: &Path,
         output: &mut Vec<FnDef>,
         output_structs: &mut Vec<StructDef>,
         included: &mut HashSet<PathBuf>,
         in_progress: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
-        let file_path = Self::find_module_file(&import.name, importer_path)
+        let file_path = Self::find_module_file(&import.name, importer_path, entry_path)
             .map_err(|e| format!("{}: {}", importer_path.display(), e))?;
 
         if included.contains(&file_path) {
@@ -120,7 +121,7 @@ impl Resolver {
         // Resolve this module's own imports first (its dependencies must be
         // fully qualified and emitted before we merge this module in).
         for sub_import in &module.imports {
-            Self::resolve_import(sub_import, &file_path, output, output_structs, included, in_progress)?;
+            Self::resolve_import(sub_import, &file_path, entry_path, output, output_structs, included, in_progress)?;
         }
 
         // Qualify this module's own functions and structs as `<module>.<name>`,
@@ -164,14 +165,27 @@ impl Resolver {
         Ok(())
     }
 
-    fn find_module_file(name: &str, importer_path: &Path) -> Result<PathBuf, String> {
+    /// Search order for `(import name)` (AIPL_SPEC.md section 11): the
+    /// importing file's directory, the entry file's directory, the standard
+    /// library (`aipl_src/std/` in this repository), then each directory of
+    /// the colon-separated `AIPL_PATH` environment variable. First match wins.
+    fn find_module_file(name: &str, importer_path: &Path, entry_path: &Path) -> Result<PathBuf, String> {
         let filename = format!("{}.aipl", name);
         let mut candidates = Vec::new();
-        if let Some(dir) = importer_path.parent() {
-            candidates.push(dir.join(&filename));
-            candidates.push(dir.join("aipl_modules").join(&filename));
+        for p in [importer_path, entry_path] {
+            if let Some(dir) = p.parent() {
+                let c = dir.join(&filename);
+                if !candidates.contains(&c) {
+                    candidates.push(c);
+                }
+            }
         }
-        candidates.push(PathBuf::from("aipl_modules").join(&filename));
+        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/std").join(&filename));
+        if let Ok(path) = std::env::var("AIPL_PATH") {
+            for dir in path.split(':').filter(|d| !d.is_empty()) {
+                candidates.push(PathBuf::from(dir).join(&filename));
+            }
+        }
 
         for c in &candidates {
             if c.exists() {

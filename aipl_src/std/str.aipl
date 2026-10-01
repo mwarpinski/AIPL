@@ -1,0 +1,77 @@
+;; std/str: byte slices and byte-level text functions. Every function is plain
+;; AIPL over mem.* and str.*, so it behaves the same in the VM and compiled.
+(module str
+  ;; `len` bytes starting at address `addr`. A failed read has len -1.
+  (struct Bytes [addr:i32 len:i32])
+
+  (fn bytes [addr:i32 len:i32] -> (ptr Bytes)
+    (let b:(ptr Bytes) (new Bytes))
+    (put b Bytes.addr addr)
+    (put b Bytes.len len)
+    b)
+
+  ;; The bytes of a string (the VM copies them into the heap; wasm does not).
+  (fn from_str [s:str] -> (ptr Bytes)
+    (call bytes (str.ptr s) (str.len s)))
+
+  (fn byte_at [b:(ptr Bytes) i:i32] -> i32
+    (req (and (gte i 0) (lt i (get b Bytes.len))))
+    (mem.load8 (+ (get b Bytes.addr) i)))
+
+  ;; ASCII whitespace: space, \t \n \v \f \r.
+  (fn is_space [c:i32] -> bool
+    (or (eq c 32) (and (gte c 9) (lte c 13))))
+
+  (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool
+    (let n:i32 (get a Bytes.len))
+    (let same:bool (eq n (get b Bytes.len)))
+    (let i:i32 0)
+    (while (and same (lt i n))
+      (if (neq (call byte_at a i) (call byte_at b i)) (set! same false) (block))
+      (set! i (+ i 1)))
+    same)
+
+  ;; Index of the first byte equal to c, or -1.
+  (fn find_byte [b:(ptr Bytes) c:i32] -> i32
+    (let found:i32 -1)
+    (let i:i32 0)
+    (while (and (eq found -1) (lt i (get b Bytes.len)))
+      (if (eq (call byte_at b i) c) (set! found i) (block))
+      (set! i (+ i 1)))
+    found)
+
+  (fn count_byte [b:(ptr Bytes) c:i32] -> i32
+    (let n:i32 0)
+    (loop i 0 (- (get b Bytes.len) 1) 1
+      (if (eq (call byte_at b i) c) (set! n (+ n 1)) (block)))
+    n)
+
+  ;; Newlines, plus one for a final line without a newline.
+  (fn count_lines [b:(ptr Bytes)] -> i32
+    (let len:i32 (get b Bytes.len))
+    (let n:i32 (call count_byte b 10))
+    (if (and (gt len 0) (neq (mem.load8 (+ (get b Bytes.addr) (- len 1))) 10)) (+ n 1) n))
+
+  ;; Runs of non-whitespace bytes.
+  (fn count_words [b:(ptr Bytes)] -> i32
+    (let words:i32 0)
+    (let in_word:bool false)
+    (loop i 0 (- (get b Bytes.len) 1) 1
+      (if (call is_space (call byte_at b i))
+          (set! in_word false)
+          (if in_word
+              (block)
+              (block (set! words (+ words 1)) (set! in_word true)))))
+    words)
+
+  ;; Pass count; test_suite.aipl expects 6.
+  (fn run_str_tests [] -> i32
+    (let ab:(ptr Bytes) (call from_str "a b\nc"))
+    (let p:i32 0)
+    (if (and (call is_space 9) (and (call is_space 32) (not (call is_space 97)))) (set! p (+ p 1)) (block))
+    (if (and (call bytes_eq ab (call from_str "a b\nc")) (not (call bytes_eq ab (call from_str "a b")))) (set! p (+ p 1)) (block))
+    (if (and (eq (call find_byte ab 10) 3) (eq (call find_byte ab 122) -1)) (set! p (+ p 1)) (block))
+    (if (eq (call count_byte ab 32) 1) (set! p (+ p 1)) (block))
+    (if (and (eq (call count_lines ab) 2) (and (eq (call count_lines (call from_str "x\n")) 1) (eq (call count_lines (call from_str "")) 0))) (set! p (+ p 1)) (block))
+    (if (and (eq (call count_words ab) 3) (eq (call count_words (call from_str " \t\n")) 0)) (set! p (+ p 1)) (block))
+    p))
