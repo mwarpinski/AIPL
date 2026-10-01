@@ -114,6 +114,31 @@
             (set! i (+ i 1)))
           all_digits)))
 
+  ;; `42i64`, `-7i64`: an int literal followed by the suffix i64 (token kind 10).
+  (fn is_i64_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+    (if (lt len 4)
+        false
+        (and (call is_int_literal src_ptr pos (- len 3))
+             (and (eq (mem.load8 (+ src_ptr (+ pos (- len 3)))) 105)
+                  (and (eq (mem.load8 (+ src_ptr (+ pos (- len 2)))) 54)
+                       (eq (mem.load8 (+ src_ptr (+ pos (- len 1)))) 52))))))
+
+  ;; `1.5`, `-0.25`: optional sign, digits with exactly one '.', at least one
+  ;; digit (token kind 11). Mirrors the Rust tokenizer's float rule.
+  (fn is_float_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+    (let i:i32 0)
+    (if (eq (mem.load8 (+ src_ptr pos)) 45) (set! i 1) (block))
+    (let dots:i32 0)
+    (let digits:i32 0)
+    (let other:i32 0)
+    (while (lt i len)
+      (let c:i32 (mem.load8 (+ src_ptr (+ pos i))))
+      (if (eq c 46)
+          (set! dots (+ dots 1))
+          (if (call is_digit c) (set! digits (+ digits 1)) (set! other (+ other 1))))
+      (set! i (+ i 1)))
+    (and (eq dots 1) (and (gt digits 0) (eq other 0))))
+
   (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
     (req (gte pos 0))
     (req (gt len 0))
@@ -160,8 +185,9 @@
                                       (block
                                         (set! i (+ i 1))
                                         (let str_start:i32 i)
+                                        ;; a backslash escapes the next byte, so \" does not end the string
                                         (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 34))
-                                          (set! i (+ i 1)))
+                                          (if (eq (mem.load8 (+ input_ptr i)) 92) (set! i (+ i 2)) (set! i (+ i 1))))
                                         (let str_len:i32 (- i str_start))
                                         (set! count (call write_token token_out_ptr count 9 str_start str_len))
                                         (if (lt i input_len) (set! i (+ i 1)) (set! i i)))
@@ -178,7 +204,11 @@
                                                     (set! count (call write_token token_out_ptr count 8 0 0))
                                                     (if (call is_int_literal input_ptr sym_start sym_len)
                                                         (set! count (call write_token token_out_ptr count 7 (call parse_int_literal input_ptr sym_start sym_len) 0))
-                                                        (set! count (call write_token token_out_ptr count 6 sym_start sym_len))))))))))))))))
+                                                        (if (call is_i64_literal input_ptr sym_start sym_len)
+                                                            (set! count (call write_token token_out_ptr count 10 sym_start sym_len))
+                                                            (if (call is_float_literal input_ptr sym_start sym_len)
+                                                                (set! count (call write_token token_out_ptr count 11 sym_start sym_len))
+                                                                (set! count (call write_token token_out_ptr count 6 sym_start sym_len))))))))))))))))))
     count)
 
   ;; Symbol Table Lookup Pass: maps variable names to local register/stack indices (0, 1, 2, 3...)
@@ -202,6 +232,7 @@
   ;; Node record: 16 bytes at (ast_buf + 8 + offset) = [kind:i32, a:i32, b:i32, next_sibling:i32]
   ;;   Atom kinds match token kinds: 6=Symbol(a=src offset,b=len) 7=IntLit(a=value)
   ;;                                 8=BoolLit(a=0/1) 9=StringLit(a=src offset,b=len)
+  ;;                                 10=I64Lit, 11=FloatLit (a=src offset,b=len; text incl. suffix)
   ;;   Group kinds: 20=Paren-group "(...)"  21=Bracket-group "[...]"
   ;;     For groups: a=pointer to first child node (0 if empty), b=child count
   ;;   next_sibling: pointer to the next node in the same parent list, 0=end of list

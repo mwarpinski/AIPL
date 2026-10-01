@@ -272,6 +272,69 @@ fn self_hosted_bytes_match_strings_alloc_grow_exit() {
     assert_self_hosted_matches_rust("strings_alloc_grow_exit", src);
 }
 
+/// P9: i64 code (literals at both extremes, arithmetic, unsigned ops, shifts,
+/// comparisons, if blocks typed i64, conversions, an i64 struct field after a
+/// bool, i64 arrays, mem.load64/store64).
+#[test]
+fn self_hosted_bytes_match_i64() {
+    let src = r#"
+(module i64demo
+  (struct Acc [flag:bool total:i64 n:i32])
+  (fn add [a:i64 b:i64] -> i64 (+ a b))
+  (fn mix [x:i32] -> i64
+    (let big:i64 9223372036854775807i64)
+    (let neg:i64 -9223372036854775808i64)
+    (let a:i64 (i64.extend_s x))
+    (if (gt a 100i64)
+        (bitand (shl a 3i64) big)
+        (- (divu a 7i64) (remu neg 3i64))))
+  (fn cmp [a:i64 b:i64] -> i32
+    (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
+  (fn acc [n:i32] -> i64
+    (let s:i32 (new Acc))
+    (put s Acc.total 0i64)
+    (loop i 1 n 1
+      (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
+    (let arr:i32 (arr.new i64 4))
+    (arr.set i64 arr 3 (get s Acc.total))
+    (+ (arr.get i64 arr 3) (mem.load64 (+ s 8)))))
+"#;
+    assert_self_hosted_matches_rust("i64", src);
+    assert_self_hosted_matches_rust(
+        "i64_mem",
+        "(module s64 (fn f [p:i32 v:i64] -> i64 (mem.store64 p v) (mem.load64 p)))",
+    );
+}
+
+/// f64 / f32 parameters, arithmetic, comparisons, if blocks typed f64, and
+/// struct fields with 8-byte alignment.
+#[test]
+fn self_hosted_bytes_match_floats() {
+    let src = r#"
+(module f64demo
+  (struct P [x:f64 y:f32 z:f64])
+  (fn lerp [a:f64 b:f64 t:f64] -> f64 (+ a (* (- b a) t)))
+  (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
+  (fn eq32 [a:f32 b:f32] -> bool (eq a b))
+  (fn sz [] -> i32 (sizeof P))
+  (fn st [p:i32 v:f64] -> f64 (put p P.z v) (get p P.z)))
+"#;
+    assert_self_hosted_matches_rust("floats", src);
+}
+
+/// (ok:T v) / (err:T e) with scalar and compound T, and a \" escape inside a
+/// string literal (the tokenizer must not end the string there).
+#[test]
+fn self_hosted_bytes_match_typed_results_and_escapes() {
+    let src = r#"
+(module okt
+  (fn f [] -> (result i32 bool) (ok:bool 1))
+  (fn g [] -> (result (result i32 i32) i32) (err:(result i32 i32) 3))
+  (fn h [] -> i32 (str.len "a\"b")))
+"#;
+    assert_self_hosted_matches_rust("typed_results", src);
+}
+
 #[test]
 fn self_hosted_bytes_match_file_io() {
     let src = r#"
@@ -448,13 +511,13 @@ fn self_hosted_arrays_and_results_execute() {
 }
 
 /// Inputs the self-hosted backend cannot compile are compile errors, never a
-/// miscompile: 64-bit struct fields / array elements (95), unknown structs (96),
-/// and string data beyond the 512-byte area (768).
+/// miscompile: non-scalar struct fields / array elements (95), unknown structs
+/// (96), and string data beyond the 512-byte area (768).
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
     for src in [
-        "(module m (struct S [a:i32 b:i64]) (fn f [] -> i32 (sizeof S)))",
-        "(module m (fn f [] -> i32 (arr.new f64 3)))",
+        "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))",
+        "(module m (fn f [] -> i32 (arr.new (result i32 i32) 3)))",
     ] {
         let err = self_host(src).unwrap_err();
         assert!(err.contains("compile error 95"), "{src}: {err}");
