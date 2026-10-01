@@ -12,14 +12,14 @@ You write AIPL, a statically typed S-expression language that compiles to WebAss
 RULES:
 1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), and (fn ...) forms.
 2. Functions: (fn name [p:type ...] -> RetType (req ...)* (ens ...)* body...). The last body expression is the return value; `res` names it in (ens ...).
-3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E). Pointers, struct references, and array references are i32.
+3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E) (ptr S) (arr T). (ptr S) points at a struct S; (arr T) is an array of T. Neither is an integer: no arithmetic, compare only with eq/neq.
 4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
 5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error.
 6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence.
 7. Loops: (while cond body...) or (loop i start end step body...), where end is INCLUSIVE. There is no return, break, or continue.
 8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), "s" is str. Never mix i32 and i64 without (i64.extend_s x) / (i32.wrap x).
-9. Memory: get it from (mem.alloc n) or (new S) or (arr.new T n); never store to a literal address below 1024.
-10. Structs: (get p S.f), (put p S.f v), (sizeof S). Arrays: (arr.get T p i), (arr.set T p i v); the element count is at p - 4.
+9. Memory: (new S) gives a (ptr S); (arr.new T n) gives an (arr T); (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024.
+10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
 11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
 12. Code meant for `aipl compile` must not use thread.*, atomic.*, sys.time, or (+ str str); sys.print takes str only.
 ```
@@ -44,9 +44,9 @@ RULES:
 ```lisp
 (module search
   ;; returns the index of target in the sorted array a, or -1
-  (fn binary_search [a:i32 target:i32] -> i32
+  (fn binary_search [a:(arr i32) target:i32] -> i32
     (let low:i32 0)
-    (let high:i32 (- (mem.load32 (- a 4)) 1))   ;; element count lives at a - 4
+    (let high:i32 (- (arr.len a) 1))
     (let found:i32 -1)
     (while (and (lte low high) (eq found -1))
       (let mid:i32 (/ (+ low high) 2))
@@ -59,7 +59,7 @@ RULES:
     found)
 
   (fn main [] -> i32
-    (let a:i32 (arr.new i32 8))
+    (let a:(arr i32) (arr.new i32 8))
     (loop i 0 7 1
       (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
     (+ (* 10 (call binary_search a 15)) (call binary_search a 4))))
@@ -69,24 +69,24 @@ RULES:
 ### 3. A struct-based linked list
 ```lisp
 (module list_demo
-  (struct Node [val:i32 next:i32])
+  (struct Node [val:i32 next:(ptr Node)])
 
-  (fn push [head:i32 v:i32] -> i32
-    (let n:i32 (new Node))
+  (fn push [head:(ptr Node) v:i32] -> (ptr Node)
+    (let n:(ptr Node) (new Node))
     (put n Node.val v)
     (put n Node.next head)
     n)
 
-  (fn sum [head:i32] -> i32
+  (fn sum [head:(ptr Node)] -> i32
     (let total:i32 0)
-    (let cur:i32 head)
-    (while (neq cur 0)
+    (let cur:(ptr Node) head)
+    (while (neq cur (ptr.null Node))
       (set! total (+ total (get cur Node.val)))
       (set! cur (get cur Node.next)))
     total)
 
   (fn main [] -> i32
-    (let h:i32 0)
+    (let h:(ptr Node) (ptr.null Node))
     (loop i 1 10 1
       (set! h (call push h i)))
     (call sum h)))
@@ -145,6 +145,7 @@ Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && wasmt
 - [ ] No name is `let` twice in nested scopes.
 - [ ] `loop` end bounds are inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
+- [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
 - [ ] Code meant to compile avoids VM-only ops (AIPL_SPEC.md 6.3).
 

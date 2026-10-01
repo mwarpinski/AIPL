@@ -30,8 +30,9 @@ contract       ::= "(" ("req" | "ens" | "inv") expr ")" ;
 
 type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "result" type type ")"
-                 | "(" "arr" type integer ")"
-                 | "(" "vec" type integer ")" ;
+                 | "(" "ptr" struct_name ")"
+                 | "(" "arr" type ")" ;
+struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 
 expr           ::= literal
                  | identifier
@@ -51,6 +52,10 @@ expr           ::= literal
                  | "(" "arr.new" type expr ")"
                  | "(" "arr.get" type expr expr ")"
                  | "(" "arr.set" type expr expr expr ")"
+                 | "(" "arr.len" expr ")"
+                 | "(" "ptr.null" struct_name ")" | "(" "arr.null" type ")"
+                 | "(" "ptr.cast" struct_name expr ")" | "(" "arr.cast" type expr ")"
+                 | "(" "ptr.addr" expr ")" | "(" "arr.addr" expr ")"
                  | "(" op expr* ")" ;
 
 op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op
@@ -76,9 +81,9 @@ Notes on the grammar as implemented by `src/parser.rs`:
 - Comments start with `;;` and run to end of line.
 - Integer literals are decimal, optionally negative (`-1` is one token) and are `i32`. An `i64` literal carries the suffix as part of the token: `42i64`, `-7i64`. Float literals must contain a `.` and at least one digit (`1.0`, not `1` or `inf`) and are `f64`. Strings are double-quoted and support the escapes `\n \t \r \0 \\ \"`; any other `\x` is an error. Booleans are `true` / `false`.
 - `(call f ...)` takes a bare function name, never an expression. Imported functions are called as `(call modname.fn ...)`.
-- `(ptr T)` and `(fn ...)` types exist in the AST but are not yet parseable; pointers are plain `i32`. `i64` is fully supported (section 8.1).
-- `(arr T N)` and `(vec T N)` parse as types but no operation produces or consumes them. Heap arrays are `arr.new` pointers typed `i32` (section 4.E).
-- In `(get p S.f)` / `(put p S.f v)` the field reference is one symbol, `StructName.fieldName`, with exactly one `.`.
+- `(fn ...)` types exist in the AST but are not yet parseable (P10). `i64` is fully supported (section 8.1).
+- `(ptr i32)` is rejected (`ptr points to a struct; for a sequence of i32 use (arr i32)`), and so is the old `(arr T N)` form (`(arr T) takes no length`).
+- In `(get p S.f)` / `(put p S.f v)` the field reference is one symbol, `StructName.fieldName`, split at its last `.`, so `(get p compiler.Node.next)` names field `next` of struct `compiler.Node`.
 
 ---
 
@@ -94,8 +99,8 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 
 ### Compound Types
 - `(result T_ok T_err)`: the type of `ok`/`err` values, consumed by `match_result` (section 4.F).
-- Structs (`(struct Name [...])`) and heap arrays (`arr.new`) are accessed through `i32` pointers; the struct or element type is named at each access (section 4.E).
-- `(ptr T)` and `(fn ...)` exist in the AST but cannot be written in source yet.
+- `(ptr S)`: a pointer to a struct `S`. `(arr T)`: a heap array of `T` made by `arr.new`. Both are checked strictly, are never interchangeable with `i32` or with each other, and lower to `i32` in wasm (section 4.E).
+- `(fn ...)` exists in the AST but cannot be written in source yet.
 
 ### Formal Verification Contracts
 Functions support formal pre-conditions and post-conditions evaluated statically by the AIPL verifier before compilation:
@@ -145,46 +150,55 @@ Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s
 - `(atomic.unlock mutex_ptr)` -> Releases mutex lock.
 - `(atomic.add ptr val)` -> Atomic memory addition.
 
-### E. Structs and Arrays
+### E. Structs, Pointers, and Arrays
 
 ```lisp
 (struct Point [x:i32 y:i32])
 (struct Mixed [flag:bool val:i64 tag:i32])
+(struct Node [val:i32 next:(ptr Node)])
 ```
 
 Struct definitions are module-level. Layout rules, identical in the checker, VM, and wasm backend (`type_size_and_align`, `get_field_offset`, `get_struct_size` in `src/checker.rs`):
 
-- `i32`, `f32`, `bool`, `str`: 4 bytes, align 4. `i64`, `f64`: 8 bytes, align 8. A `bool` field is a full 4-byte word.
+- `i32`, `f32`, `bool`, `str`, `(ptr S)`, `(arr T)`: 4 bytes, align 4. `i64`, `f64`: 8 bytes, align 8. A `bool` field is a full 4-byte word.
 - Fields are laid out in declaration order; each offset is rounded up to the field's alignment.
 - The total size is rounded up to the largest field alignment. `(sizeof Point)` is 8, `(sizeof Mixed)` is 24 (`flag` 0, padding, `val` 8, `tag` 16, padding).
 
+**Pointer and array types are strict.** `(ptr S)` and `(arr T)` are distinct from `i32` and from each other: a `(ptr Node)` cannot be passed where a `(ptr Point)` is expected, an `i32` is never accepted as either, and `arr.get` on an `(arr i32)` must say `i32`. Pointers and arrays have no arithmetic and compare only with `eq`/`neq`. The only conversions are the explicit casts below, which are the unchecked points in a program and easy to find. A struct is never a value on its own, only behind `(ptr S)`. Arrays are their own type rather than a `(ptr T)` because `arr.get`, `arr.set`, and `arr.len` read the length header that only `arr.new` writes, so the type guarantees the header exists. None of this exists at run time: every pointer and array is an `i32` address in both backends, and the compiled bytes are the same as for untyped code.
+
 | Form | Type | Semantics |
 |---|---|---|
-| `(new S)` | `i32` | `mem.alloc (sizeof S)`; the memory is not zeroed beyond what the heap already holds |
-| `(get p S.f)` | type of `f` | load at `p + offset(f)` with the instruction for `f`'s type (`i32.load`, `i64.load`, `f32.load`, `f64.load`) |
-| `(put p S.f v)` | `void` | store at `p + offset(f)`; `v` must have `f`'s type |
+| `(new S)` | `(ptr S)` | `mem.alloc (sizeof S)`; the memory is not zeroed beyond what the heap already holds |
+| `(get p S.f)` | type of `f` | `p` must be a `(ptr S)`; load at `p + offset(f)` with the instruction for `f`'s type |
+| `(put p S.f v)` | `void` | `p` must be a `(ptr S)`; store at `p + offset(f)`; `v` must have `f`'s type |
 | `(sizeof S)` | `i32` | compile-time constant |
-| `(arr.new T n)` | `i32` | evaluates `n` first; `n < 0` is a VM error and a wasm trap; then allocates `4 + n * sizeof(T)` bytes, writes `n` into the first 4, returns the address after them |
-| `(arr.get T p i)` | `T` | load at `p + i * sizeof(T)` |
-| `(arr.set T p i v)` | `void` | store at `p + i * sizeof(T)` |
+| `(arr.new T n)` | `(arr T)` | evaluates `n` first; `n < 0` is a VM error and a wasm trap; then allocates `4 + n * sizeof(T)` bytes, writes `n` into the first 4, returns the address after them |
+| `(arr.get T a i)` | `T` | `a` must be an `(arr T)`; load at `a + i * sizeof(T)` |
+| `(arr.set T a i v)` | `void` | `a` must be an `(arr T)`; store at `a + i * sizeof(T)` |
+| `(arr.len a)` | `i32` | the element count stored in the 4 bytes before `a` |
+| `(ptr.null S)` / `(arr.null T)` | `(ptr S)` / `(arr T)` | address 0 |
+| `(ptr.cast S x)` / `(arr.cast T x)` | `(ptr S)` / `(arr T)` | `x` must be `i32`; reinterprets the address (unchecked) |
+| `(ptr.addr p)` / `(arr.addr a)` | `i32` | the address, e.g. for `mem.*` or arithmetic |
 
-Element and field types are the scalar types above; structs do not nest. A `bool` read by `get`/`arr.get` is `true` iff its word is nonzero (wasm emits `i32.const 0; i32.ne` after the load), so a word written raw with `mem.store32` behaves the same in both backends. A `str` field or element holds the address of the string's bytes, as a `str` value does in wasm. When storing one, the VM copies the string into the heap the way `str.ptr` does, so heap addresses after a `str` store differ between the backends while lengths, contents, and `eq` agree. `put` and `arr.set` go through the same reserved-block write guard as `mem.store*` in both backends (section 7.9). An unknown struct or field is a checker error (section 9). Struct names are not qualified by the import system: a struct defined in an imported module is used by its bare name, and two modules defining the same struct name fail with `Duplicate struct definition`.
+Field and element types are the scalars, `(ptr S)`, and `(arr T)`, so arrays of pointers (`(arr (ptr Point))`) and of arrays (`(arr (arr i32))`) work; structs do not nest by value. A `bool` read by `get`/`arr.get` is `true` iff its word is nonzero (wasm emits `i32.const 0; i32.ne` after the load), so a word written raw with `mem.store32` behaves the same in both backends. A `str` field or element holds the address of the string's bytes, as a `str` value does in wasm. When storing one, the VM copies the string into the heap the way `str.ptr` does, so heap addresses after a `str` store differ between the backends while lengths, contents, and `eq` agree. `put` and `arr.set` go through the same reserved-block write guard as `mem.store*` in both backends (section 7.9).
 
-**Bounds checks are VM-only.** The VM checks `0 <= i < n` against the header at `p - 4` and fails with `Array index out of bounds: index I for array of length N`. The wasm backend does not check (it would need a second scratch local per function), so an out-of-range index reads or writes neighbouring heap memory. This is the second accepted VM-only check alongside contracts (section 10.4).
+**Struct names are namespaced like functions** (section 11): inside the module that defines it, a struct is `Node`; an importer writes `compiler.Node` (or `c.Node` after `(import compiler as c)`), in `new`, `sizeof`, `(ptr ...)`, and field references such as `(get p compiler.Node.next)`. Two imported modules may each define a `Node`.
+
+**Bounds checks are VM-only.** The VM checks `0 <= i < n` against the header at `a - 4` and fails with `Array index out of bounds: index I for array of length N`. The wasm backend does not check (it would need a second scratch local per function), so an out-of-range index reads or writes neighbouring heap memory. This is the second accepted VM-only check alongside contracts (section 10.4).
 
 ```lisp
 (module points
   (struct Point [x:i32 y:i32])
   (fn main [] -> i32
-    (let ps:i32 (arr.new i32 3))          ;; array of Point pointers
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
     (loop i 0 2 1
-      (let p:i32 (new Point))
+      (let p:(ptr Point) (new Point))
       (put p Point.x i)
       (put p Point.y (* i 10))
-      (arr.set i32 ps i p))
+      (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
-    (loop i 0 2 1
-      (let p:i32 (arr.get i32 ps i))
+    (loop i 0 (- (arr.len ps) 1) 1
+      (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
     sum))                                 ;; => Int(33) in both backends
 ```
@@ -300,7 +314,7 @@ Rule of thumb for code generators: `thread.*`, `atomic.*`, `sys.time`, and strin
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
-`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 21 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
+`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 24 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
 
 It infers each expression's static type the way `expr_type` in `src/compiler/wasm.rs` does (`node_type` / `group_type`) and selects `i32.*` / `i64.*` / `f32.*` / `f64.*` instructions, `if` and `match_result` block types, struct field and array element load/store widths, and alignment from it. It runs in the VM today; compiled to wasm it also compiles itself (section 10.6). Limits that differ from the Rust backend:
 
@@ -363,9 +377,10 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(ok v)` / `(ok:T_err v)` | `ResultType<typeof v, T_err>` (default `T_err` = `i32`) | `(ok 42)` |
 | `(err e)` / `(err:T_ok e)` | `ResultType<T_ok, typeof e>` (default `T_ok` = `i32`) | `(err -1)` |
 | `(match_result r (ok v body*) (err e body*))` | type of the last expr of the bodies (which must agree); `v` bound as `T_ok`, `e` bound as `T_err` | |
-| `(new S)`, `(sizeof S)`, `(arr.new T n)` | `i32` | |
-| `(get p S.f)` / `(arr.get T p i)` | the field's type / `T` | `p`, `i` must be `i32` |
-| `(put p S.f v)` / `(arr.set T p i v)` | `void` | `v` must match the field / `T` |
+| `(new S)` / `(arr.new T n)` | `(ptr S)` / `(arr T)` | |
+| `(sizeof S)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
+| `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
+| `(put p S.f v)` / `(arr.set T a i v)` | `void` | as above; `v` must match the field / `T` |
 | binary arithmetic / bitwise | type of the operands, which must be equal | `(+ 1 2)` is `i32` |
 | comparisons | `bool`; operands must have equal type | |
 
@@ -605,7 +620,12 @@ Representative messages, exactly as produced:
 | unknown struct | `3:5: Unknown struct 'P'` |
 | unknown field | `3:5: Struct 'P' has no field 'z'` |
 | wrong `put` value type | `3:5: Type mismatch writing to field 'P.x': expected I32, got Bool` |
-| struct defined twice (including across imports) | `1:30: Duplicate struct definition 'P'` |
+| struct defined twice in one module | `1:30: Duplicate struct definition 'P'` |
+| `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got Ptr(Struct("Node"))` |
+| an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got I32` |
+| arithmetic on a pointer | `3:5: Add on Ptr(Struct("Point")): pointers and arrays have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
+| `arr.get` with the wrong element type | `4:5: arr.get I64 needs an (arr I64), got Array(I32)` |
+| `(ptr i32)` | `1:20: (ptr i32) is not a type: ptr points to a struct; for a sequence of i32 use (arr i32)` |
 | array index out of range (runtime, VM) | `Array index out of bounds: index 3 for array of length 3` |
 | 64-bit result payload in the wasm backend | `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got I64` |
 | non-bool `if` condition | `3:5: If condition must be Bool, got I32` |
@@ -724,7 +744,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (120 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7).
+Files today (132 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports).
 
 ### 10.3 Opcode conformance contract
 
@@ -791,6 +811,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md` and `README.md` must 
 - `(import name)` finds `name.aipl` next to the importing file (the resolver also tries the entry file's directory), parses it, and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
+- Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
 - **Caveat:** `thread.spawn` names its target by a byte string in linear memory, which the resolver cannot see. A module that spawns `worker` will fail with `thread.spawn: unknown function 'worker'` once imported, because the real function is now `mod.worker`. Run such modules as the entry file.
 
 ---
@@ -967,14 +988,19 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
 | using `(and a b)` for short-circuiting | both operands are always evaluated; guard with a nested `if` if the second has side effects |
-| `(ptr i32)`, `(fn (i32) -> i32)` in a type position | not parseable yet; pointers are plain `i32` addresses |
+| `(fn (i32) -> i32)` in a type position | not parseable yet (P10) |
+| `(let p:i32 (new Point))`, or an `i32` parameter that holds a pointer | use `(ptr Point)`; arrays are `(arr T)`. `new` and `arr.new` never return `i32` |
+| `(ptr i32)` for a sequence of numbers | `(arr i32)`, made by `(arr.new i32 n)` |
+| `(eq p 0)` to test for null | `(eq p (ptr.null Point))` |
+| `(+ p 4)` or `(mem.load32 p)` on a pointer | read fields with `get`; for raw memory, `(ptr.addr p)` first |
+| a struct from an imported module written bare | qualify it: `(ptr geo.Point)`, `(get p geo.Point.x)` |
 | `(mem.store32 512 x)`, `(atomic.lock 0)`, any literal address below 1024 | rejected by the checker: address 0 is the heap cursor and 64-1023 is reserved. Take memory from `(mem.alloc n)` and pass the pointer. A computed address that lands on a non-lock word fails at runtime in the VM instead of hanging |
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
 | `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
 | `thread.*`, `atomic.*`, `sys.time`, `(+ str str)` in code meant for `aipl compile` | VM-only; `match_result`, structs, arrays, `sys.print`, `fs.*`, `sys.exit`, and string literals compile |
 | `(get p x)` or `(get p Point x)` | the field is one symbol: `(get p Point.x)`; arrays name the element type every time: `(arr.get i32 a i)` |
-| relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (mem.load32 (- a 4)))` yourself where it matters |
+| relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (arr.len a))` yourself where it matters |
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
 | `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; the VM prints any value. Format numbers yourself or keep numeric printing in VM-side tests |

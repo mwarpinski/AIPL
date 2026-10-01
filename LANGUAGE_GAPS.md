@@ -17,8 +17,8 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 2. Language
 
 - **No `return`, `break`, `continue`, or `cond` (P11).** Loops exit only through their bound or a `while` flag.
-- **No first-class functions (P10).** `thread.spawn` names its target with bytes in linear memory. The resolver cannot rewrite those bytes, so a module that spawns threads breaks once imported (`thread_sync.aipl` is run standalone for this reason). `(fn ...)` and `(ptr T)` exist in the AST but cannot be written in source.
-- **Structs are flat and global.** No nested structs, no struct-typed parameters (pointers are `i32`), no enums or general pattern matching (`match_result` is the only match). Struct names are not qualified by the import system, so two modules cannot each define a `Node`.
+- **No first-class functions (P10).** `thread.spawn` names its target with bytes in linear memory. The resolver cannot rewrite those bytes, so a module that spawns threads breaks once imported (`thread_sync.aipl` is run standalone for this reason). `(fn ...)` types exist in the AST but cannot be written in source.
+- **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No generics, no visibility.** Every function in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
 - **`and`/`or` do not short-circuit,** in either backend. Guard side-effecting or trapping operands with a nested `if`.
@@ -54,7 +54,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 Still true from the original analysis, updated for what has landed:
 
-1. **Shared data layouts now have a type (structs, P8), but not a namespace.** Two modules that both define `Node` collide. Qualified struct names, or struct definitions that can be imported, are needed before independent authors can share types.
+1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
 2. **Duplication is still easy.** `wasm_emitter.aipl` is a live example. Imports make reuse possible, not the default; discoverability and lint tooling are missing.
 3. **No versioning or dependency resolution.** Imports resolve by bare filename next to the importing file (P12 adds a language version; nothing handles package versions).
 4. **No privacy.** Every helper is public.

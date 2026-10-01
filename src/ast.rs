@@ -9,10 +9,13 @@ pub enum Type {
     Bool,
     Str,
     Void,
+    /// `(ptr S)`: pointer to a struct; the inner type is always `Struct`.
     Ptr(Box<Type>),
+    /// A struct named in `(ptr S)`. Never a value type on its own.
+    Struct(String),
     ResultType(Box<Type>, Box<Type>),
-    Array(Box<Type>, usize),
-    Vector(Box<Type>, usize),
+    /// `(arr T)`: an `arr.new` array of `T`, whose length sits in the 4 bytes before it.
+    Array(Box<Type>),
     Fn(Vec<Type>, Box<Type>),
 }
 
@@ -204,6 +207,29 @@ pub enum Expr {
         val: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(arr.len a)`: the element count stored before the array.
+    ArrLen {
+        arr: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(ptr.null S)` / `(arr.null T)`: `ty` is the resulting `(ptr S)` / `(arr T)`.
+    Null {
+        ty: Type,
+        span: (u32, u32),
+    },
+    /// `(ptr.cast S addr)` / `(arr.cast T addr)`: an `i32` address as `ty`.
+    Cast {
+        ty: Type,
+        addr: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(ptr.addr p)` / `(arr.addr a)`: the `i32` address of a pointer or array.
+    /// `array` records which spelling was used, so the checker can require it.
+    Addr {
+        val: Box<Expr>,
+        array: bool,
+        span: (u32, u32),
+    },
 }
 
 impl Expr {
@@ -229,6 +255,10 @@ impl Expr {
             Expr::ArrNew { span, .. } => *span,
             Expr::ArrGet { span, .. } => *span,
             Expr::ArrSet { span, .. } => *span,
+            Expr::ArrLen { span, .. } => *span,
+            Expr::Null { span, .. } => *span,
+            Expr::Cast { span, .. } => *span,
+            Expr::Addr { span, .. } => *span,
         }
     }
 }

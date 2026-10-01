@@ -13,7 +13,7 @@
 ## What it is
 
 - **One syntax form per construct.** Prefix S-expressions with no operator precedence, no indentation rules, and `(call f ...)` kept distinct from built-in ops. A missing or extra paren is reported with a `line:col` position.
-- **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, plus structs and heap arrays.
+- **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, and heap arrays `(arr T)`. A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
 - **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call.
 - **Wasm semantics are the spec.** A tree-walking VM and a WebAssembly backend must agree; `tests/test_differential.rs` runs the same programs in both, the VM against wasmtime, and fails on any divergence.
 - **Real I/O when compiled.** `sys.print`, `fs.*`, and `sys.exit` lower to WASI preview1 imports.
@@ -35,7 +35,7 @@
     x)
 
   (fn main [] -> i32
-    (let p:i32 (new Point))
+    (let p:(ptr Point) (new Point))
     (put p Point.x 1071)
     (put p Point.y 462)
     (call gcd (get p Point.x) (get p Point.y))))   ;; => 21
@@ -53,7 +53,7 @@ cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test sui
 wasmtime run --dir=. out.wasm --invoke main               # run compiled I/O under any WASI host
 ```
 
-Run the full test suite with `cargo test` (120 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
+Run the full test suite with `cargo test` (132 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
 
 ## Repository layout
 

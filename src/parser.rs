@@ -651,6 +651,15 @@ impl Parser {
         }
     }
 
+    /// Next token as a symbol, or an error naming what was expected.
+    fn expect_symbol(&mut self, what: &str, span: (u32, u32)) -> Result<String, String> {
+        match self.next() {
+            Some(Token { kind: TokenKind::Symbol(s), .. }) => Ok(s),
+            Some(tok) => Err(format!("{}:{}: Expected {}, got {:?}", tok.line, tok.col, what, tok.kind)),
+            None => Err(format!("{}:{}: Expected {}, got EOF", span.0, span.1, what)),
+        }
+    }
+
     fn parse_type(&mut self) -> Result<Type, String> {
         let (l, c) = self.cur_pos();
         match self.next() {
@@ -696,33 +705,26 @@ impl Parser {
                     let err_ty = self.parse_type()?;
                     self.expect_kind(TokenKind::RParen)?;
                     Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
-                } else if kind == "arr" || kind == "vec" {
+                } else if kind == "arr" {
                     let elem_ty = self.parse_type()?;
-                    let len = match self.next() {
-                        Some(Token {
-                            kind: TokenKind::IntLit(i),
-                            ..
-                        }) => i as usize,
-                        Some(tok) => {
-                            return Err(format!(
-                                "{}:{}: Expected length integer, got {:?}",
-                                tok.line, tok.col, tok.kind
-                            ))
-                        }
-                        None => {
-                            return Err(format!(
-                                "{}:{}: Expected length integer, got EOF",
-                                line, col
-                            ))
-                        }
-                    };
-                    self.expect_kind(TokenKind::RParen)?;
-                    if kind == "arr" {
-                        Ok(Type::Array(Box::new(elem_ty), len))
-                    } else {
-                        Ok(Type::Vector(Box::new(elem_ty), len))
+                    if let Some(TokenKind::IntLit(_)) = self.peek_kind() {
+                        return Err(format!(
+                            "{}:{}: (arr T) takes no length; an array's length is set by (arr.new T n)",
+                            line, col
+                        ));
                     }
-                } else {
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Array(Box::new(elem_ty)))
+                } else if kind == "ptr" {
+                    let name = self.expect_symbol("struct name in (ptr S)", (line, col))?;
+                    if parse_scalar_type_str(&name, (line, col)).is_ok() {
+                        return Err(format!(
+                            "{}:{}: (ptr {}) is not a type: ptr points to a struct; for a sequence of {} use (arr {})",
+                            line, col, name, name, name
+                        ));
+                    }
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Ptr(Box::new(Type::Struct(name))))                } else {
                     Err(format!(
                         "{}:{}: Unknown compound type: {}",
                         line, col, kind
@@ -1116,13 +1118,16 @@ impl Parser {
                                     ))
                                 }
                             };
-                            let parts: Vec<&str> = field_tok.split('.').collect();
-                            if parts.len() != 2 {
-                                return Err(format!(
-                                    "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
-                                    span.0, span.1, field_tok
-                                ));
-                            }
+                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
+                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
+                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
+                                _ => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
+                                        span.0, span.1, field_tok
+                                    ))
+                                }
+                            };
                             Expr::GetField {
                                 struct_name: parts[0].to_string(),
                                 field_name: parts[1].to_string(),
@@ -1151,13 +1156,16 @@ impl Parser {
                                 }
                             };
                             let val = self.parse_expr()?;
-                            let parts: Vec<&str> = field_tok.split('.').collect();
-                            if parts.len() != 2 {
-                                return Err(format!(
-                                    "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
-                                    span.0, span.1, field_tok
-                                ));
-                            }
+                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
+                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
+                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
+                                _ => {
+                                    return Err(format!(
+                                        "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
+                                        span.0, span.1, field_tok
+                                    ))
+                                }
+                            };
                             Expr::PutField {
                                 struct_name: parts[0].to_string(),
                                 field_name: parts[1].to_string(),
@@ -1186,6 +1194,32 @@ impl Parser {
                                 }
                             };
                             Expr::Sizeof { struct_name, span }
+                        }
+                        "arr.len" => {
+                            let arr = self.parse_expr()?;
+                            Expr::ArrLen { arr: Box::new(arr), span }
+                        }
+                        "ptr.null" => {
+                            let name = self.expect_symbol("struct name in ptr.null", span)?;
+                            Expr::Null { ty: Type::Ptr(Box::new(Type::Struct(name))), span }
+                        }
+                        "arr.null" => {
+                            let elem = self.parse_type()?;
+                            Expr::Null { ty: Type::Array(Box::new(elem)), span }
+                        }
+                        "ptr.cast" => {
+                            let name = self.expect_symbol("struct name in ptr.cast", span)?;
+                            let addr = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Ptr(Box::new(Type::Struct(name))), addr: Box::new(addr), span }
+                        }
+                        "arr.cast" => {
+                            let elem = self.parse_type()?;
+                            let addr = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), span }
+                        }
+                        "ptr.addr" | "arr.addr" => {
+                            let val = self.parse_expr()?;
+                            Expr::Addr { val: Box::new(val), array: head == "arr.addr", span }
                         }
                         "arr.new" => {
                             let elem_ty = self.parse_type()?;

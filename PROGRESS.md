@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 120 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 132 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- eval aipl_src/thread_sync.aipl --func run_thread_tests   # standalone; prints Int(1) (pass count), see below
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
@@ -45,6 +45,7 @@ Expected AIPL suite output:
 | P8 structs and arrays | **Done, after rework on 2026-10-01** (see below). |
 | P8b standard library | Not started. |
 | P9 self-hosted module assembly at byte parity | **Done 2026-10-01** except imports, which belong to P14 (see below). |
+| Typed pointers + struct namespacing | **Done 2026-10-01** (branch `features/pointers`, see below). Not a numbered audit task; done before P8b so the standard library is written against typed pointers. |
 | P10–P14 | Not started. |
 
 ## P8 verification (2026-10-01)
@@ -97,6 +98,16 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 - **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
 - Float literals outside the exact range (error 973) and exponent notation.
 
+## Typed pointers and struct namespacing (2026-10-01)
+
+Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIPL) would otherwise be written against untyped `i32` pointers and need a second migration.
+
+- **`(ptr S)` and `(arr T)` are strict types** (AIPL_SPEC.md 4.E). `new` returns `(ptr S)`, `arr.new` returns `(arr T)`. `get`/`put` require the matching `(ptr S)` and `arr.get`/`arr.set`/`arr.len` the matching `(arr T)`. Pointers have no arithmetic and compare only with `eq`/`neq`. The only conversions are `ptr.cast`/`arr.cast` (from `i32`) and `ptr.addr`/`arr.addr` (to `i32`). `ptr.null`/`arr.null` are typed nulls. Arrays are a separate type because `arr.*` read a length header that only `arr.new` writes. `(arr T N)` and the unused `(vec T N)` are gone.
+- **Zero run-time cost.** All of it lowers to `i32`; the self-hosted compiler accepts the new syntax and stays byte-identical.
+- **Struct names are qualified by imports** like functions: `compiler.Node` outside `compiler`, aliases included; field references split at the last `.` (`compiler.Node.next`).
+- **Resolver bug fixed:** its call walker had a `_ => {}` arm, so a `call` nested inside `put`, `arr.set`, `new`, etc. in an imported module was never renamed. The new walker visits every function and struct name (including those inside types and contracts) with no wildcard.
+- **Migration:** `compiler.aipl` uses a `token_at` helper for its packed token records and `ptr.cast` for its union field `Node.a`; `Node.next` is `(ptr Node)`; `parse_ast` returns `(ptr Node)`. Tests and doc examples were updated; `tests/test_pointers.rs` covers the rules, VM/wasm agreement, and namespacing.
+
 ## Decisions already made (don't re-litigate without cause)
 
 - **Imports are qualified by default:** `(import name)` / `(import name as alias)`, called as `name.fn`. The goal is code from many uncoordinated AI authors composing without silent name collisions. Struct names are *not* qualified yet, so two modules defining the same struct name fail with `Duplicate struct definition`.
@@ -117,7 +128,7 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P8b standard library (needs P11 per the audit's sequencing note), P10 function references (fixes `thread_sync` under imports), P11 `return`/`break`/`continue`/`cond`.
+3. P11 `return`/`break`/`continue`/`cond`, then P8b standard library (written against typed pointers), P10 function references (fixes `thread_sync` under imports).
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)

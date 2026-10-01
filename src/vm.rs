@@ -405,6 +405,19 @@ impl VM {
                 let addr = ptr_val + (idx_val as usize) * elem_size;
                 self.load_val_at(addr, elem_ty)
             }
+            // Pointers and arrays are i32 addresses at run time.
+            Expr::Null { .. } => Ok(Value::Int(0)),
+            Expr::Cast { addr: inner, .. } | Expr::Addr { val: inner, .. } => self.eval_expr(inner, scope),
+            Expr::ArrLen { arr, .. } => {
+                let p = match self.eval_expr(arr, scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    other => return Err(format!("VM: Expected Int array for arr.len, got {:?}", other)),
+                };
+                if p < 4 {
+                    return Err(format!("VM: Invalid array pointer {}", p));
+                }
+                Ok(Value::Int(self.array_len_at(p)?))
+            }
             Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
                 let ptr_val = match self.eval_expr(ptr, scope)? {
                     Value::Int(i) => i as u32 as usize,
@@ -484,7 +497,7 @@ impl VM {
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
         let mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -550,7 +563,7 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Str => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }

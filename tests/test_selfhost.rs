@@ -194,15 +194,15 @@ fn self_hosted_bytes_match_struct() {
   (struct Point [x:i32 y:i32])
   (struct Flags [on:bool name:str])
   (fn make_point [x:i32 y:i32] -> i32
-    (let p:i32 (new Point))
+    (let p:(ptr Point) (new Point))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
   (fn flags [] -> bool
-    (let f:i32 (new Flags))
+    (let f:(ptr Flags) (new Flags))
     (put f Flags.on true)
     (put f Flags.name "n")
-    (let a:i32 (arr.new bool 2))
+    (let a:(arr bool) (arr.new bool 2))
     (arr.set bool a 1 (get f Flags.on))
     (and (arr.get bool a 1) (eq (str.len (get f Flags.name)) 1))))
 "#;
@@ -214,7 +214,7 @@ fn self_hosted_bytes_match_array() {
     let src = r#"
 (module test_array
   (fn sum_arr [n:i32] -> i32
-    (let a:i32 (arr.new i32 n))
+    (let a:(arr i32) (arr.new i32 n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -291,13 +291,13 @@ fn self_hosted_bytes_match_i64() {
   (fn cmp [a:i64 b:i64] -> i32
     (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
   (fn acc [n:i32] -> i64
-    (let s:i32 (new Acc))
+    (let s:(ptr Acc) (new Acc))
     (put s Acc.total 0i64)
     (loop i 1 n 1
       (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
-    (let arr:i32 (arr.new i64 4))
+    (let arr:(arr i64) (arr.new i64 4))
     (arr.set i64 arr 3 (get s Acc.total))
-    (+ (arr.get i64 arr 3) (mem.load64 (+ s 8)))))
+    (+ (arr.get i64 arr 3) (mem.load64 (+ (ptr.addr s) 8)))))
 "#;
     assert_self_hosted_matches_rust("i64", src);
     assert_self_hosted_matches_rust(
@@ -317,7 +317,7 @@ fn self_hosted_bytes_match_floats() {
   (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
   (fn eq32 [a:f32 b:f32] -> bool (eq a b))
   (fn sz [] -> i32 (sizeof P))
-  (fn st [p:i32 v:f64] -> f64 (put p P.z v) (get p P.z)))
+  (fn st [p:(ptr P) v:f64] -> f64 (put p P.z v) (get p P.z)))
 "#;
     assert_self_hosted_matches_rust("floats", src);
 }
@@ -374,6 +374,56 @@ fn self_hosted_float_literals_match_rust() {
     }
 }
 
+/// Typed pointers and arrays (the programs from tests/test_pointers.rs): a
+/// linked list through (ptr Node), arrays of pointers and of arrays, arr.len,
+/// casts, and typed nulls.
+#[test]
+fn self_hosted_bytes_match_pointers() {
+    assert_self_hosted_matches_rust("pointers_0", r#"
+(module list
+  (struct Node [val:i32 next:(ptr Node)])
+  (fn push [head:(ptr Node) v:i32] -> (ptr Node)
+    (let n:(ptr Node) (new Node))
+    (put n Node.val v)
+    (put n Node.next head)
+    n)
+  (fn sum [] -> i32
+    (let h:(ptr Node) (ptr.null Node))
+    (loop i 1 10 1 (set! h (call push h i)))
+    (let total:i32 0)
+    (while (neq h (ptr.null Node))
+      (set! total (+ total (get h Node.val)))
+      (set! h (get h Node.next)))
+    total))
+"#);
+    assert_self_hosted_matches_rust("pointers_1", r#"
+(module arrs
+  (struct P [x:i32])
+  (fn f [] -> i32
+    (let ps:(arr (ptr P)) (arr.new (ptr P) 4))
+    (loop i 0 3 1
+      (let p:(ptr P) (new P))
+      (put p P.x (* i i))
+      (arr.set (ptr P) ps i p))
+    (let total:i32 0)
+    (loop i 0 (- (arr.len ps) 1) 1
+      (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
+    ;; round trip through an address: same pointer, same field
+    (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
+    (let nested:(arr (arr i32)) (arr.new (arr i32) 1))
+    (arr.set (arr i32) nested 0 (arr.new i32 7))
+    (+ (* 100 (arr.len (arr.get (arr i32) nested 0))) (+ total (get back P.x)))))
+"#);
+    assert_self_hosted_matches_rust("pointers_2", r#"
+(module nulls
+  (struct S [v:i32])
+  (fn f [] -> bool
+    (let a:(ptr S) (ptr.null S))
+    (let b:(arr i32) (arr.null i32))
+    (and (eq a (ptr.null S)) (and (eq (ptr.addr a) 0) (eq (arr.addr b) 0)))))
+"#);
+}
+
 #[test]
 fn self_hosted_bytes_match_file_io() {
     let src = r#"
@@ -394,11 +444,11 @@ fn self_hosted_bytes_match_file_io() {
 fn self_hosted_bytes_match_complex() {
     let src = r#"
 (module complex
-  (struct Node [val:i32 next:i32])
+  (struct Node [val:i32 next:(ptr Node)])
   (fn process [n:i32] -> (result i32 i32)
-    (let head:i32 (new Node))
+    (let head:(ptr Node) (new Node))
     (put head Node.val n)
-    (put head Node.next 0)
+    (put head Node.next (ptr.null Node))
     (if (gt (get head Node.val) 10)
         (ok (get head Node.val))
         (err -1))))
@@ -505,7 +555,7 @@ fn self_hosted_arrays_and_results_execute() {
     let src = r#"
 (module ar
   (fn sum_arr [n:i32] -> i32
-    (let a:i32 (arr.new i32 n))
+    (let a:(arr i32) (arr.new i32 n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -583,8 +633,8 @@ fn self_hosted_bytes_match_compiler() {
 
 /// codegen.aipl as one import-free module, which is what `compile_module`
 /// accepts: codegen.aipl without its `(import compiler)`, plus compiler.aipl's
-/// structs and functions renamed to `compiler.<fn>` (with their internal calls
-/// rewritten), i.e. what the resolver would produce.
+/// structs and functions renamed to `compiler.<name>` (with their internal
+/// references rewritten), i.e. what the resolver would produce.
 fn codegen_combined_source() -> String {
     let compiler_src = fs::read_to_string("aipl_src/compiler.aipl").unwrap();
     let codegen_src = fs::read_to_string("aipl_src/codegen.aipl").unwrap();
@@ -602,6 +652,13 @@ fn codegen_combined_source() -> String {
                 &format!("{prefix}{name}{sep}"),
                 &format!("{prefix}compiler.{name}{sep}"),
             );
+        }
+    }
+
+    // Structs are qualified too, as the resolver does: Node -> compiler.Node.
+    for st in ["Token", "Node"] {
+        for (prefix, sep) in [("(struct ", " "), (" ", "."), ("(sizeof ", ")"), ("(ptr ", ")"), ("(new ", ")"), ("(ptr.cast ", " "), ("(ptr.null ", ")")] {
+            body = body.replace(&format!("{prefix}{st}{sep}"), &format!("{prefix}compiler.{st}{sep}"));
         }
     }
 

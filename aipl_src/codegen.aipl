@@ -191,6 +191,15 @@
     (set! o (call store_kw_str k 346 109 97 116 99 104 95 114 101 115 117 108 116 12)) ;; match_result (kw 112)
     (set! o (call store_kw_str k 358 115 116 114 117 99 116 0 0 0 0 0 0 6)) ;; struct (kw 113)
     (set! o (call store_kw_str k 364 114 101 115 117 108 116 0 0 0 0 0 0 6)) ;; result (type 207)
+    (set! o (call store_kw_str k 440 112 116 114 0 0 0 0 0 0 0 0 0 3)) ;; ptr (type 208)
+    (set! o (call store_kw_str k 443 97 114 114 0 0 0 0 0 0 0 0 0 3)) ;; arr (type 209)
+    (set! o (call store_kw_str k 446 112 116 114 46 110 117 108 108 0 0 0 0 8)) ;; ptr.null (op 61)
+    (set! o (call store_kw_str k 454 112 116 114 46 99 97 115 116 0 0 0 0 8)) ;; ptr.cast (op 62)
+    (set! o (call store_kw_str k 462 112 116 114 46 97 100 100 114 0 0 0 0 8)) ;; ptr.addr (op 63)
+    (set! o (call store_kw_str k 470 97 114 114 46 110 117 108 108 0 0 0 0 8)) ;; arr.null (op 64)
+    (set! o (call store_kw_str k 478 97 114 114 46 99 97 115 116 0 0 0 0 8)) ;; arr.cast (op 65)
+    (set! o (call store_kw_str k 486 97 114 114 46 97 100 100 114 0 0 0 0 8)) ;; arr.addr (op 66)
+    (set! o (call store_kw_str k 494 97 114 114 46 108 101 110 0 0 0 0 0 7)) ;; arr.len (op 67)
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -271,6 +280,15 @@
     (if (call sym_eq src_ptr pos len (+ k 346) 12) (set! res 112) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 358) 6) (set! res 113) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 364) 6) (set! res 207) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 440) 3) (set! res 208) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 443) 3) (set! res 209) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 446) 8) (set! res 61) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 454) 8) (set! res 62) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 462) 8) (set! res 63) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 470) 8) (set! res 64) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 478) 8) (set! res 65) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 486) 8) (set! res 66) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 494) 7) (set! res 67) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (set! res res))
@@ -286,7 +304,8 @@
 
 ;; ===== Types =====
   ;; Type ids: 200 i32, 201 i64, 202 f32, 203 f64, 204 bool, 205 void, 206 str,
-  ;; 207 (result T E). bool, str, and results are i32 in wasm.
+  ;; 207 (result T E), 208 (ptr S), 209 (arr T). bool, str, results, pointers,
+  ;; and arrays are i32 in wasm.
 
   ;; Type id of a type node: a scalar symbol or a (result T E) group.
   ;; Anything else is compile error 98.
@@ -294,10 +313,12 @@
     (let id:i32 -1)
     (if (eq (call node_kind node) 6)
         (set! id (call classify_keyword src_ptr (call node_a node) (call node_b node)))
-        (if (and (eq (call node_kind node) 20) (eq (call group_head_keyword src_ptr node) 207))
-            (set! id 207)
+        (if (eq (call node_kind node) 20)
+            (block
+              (let head:i32 (call group_head_keyword src_ptr node))
+              (if (or (eq head 207) (or (eq head 208) (eq head 209))) (set! id head) (block)))
             (block)))
-    (if (and (gte id 200) (lte id 207))
+    (if (and (gte id 200) (lte id 209))
         id
         (block (call set_compile_error 98) 200)))
 
@@ -305,7 +326,7 @@
     (if (eq type_id 201) 126
     (if (eq type_id 202) 125
     (if (eq type_id 203) 124
-    (if (or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (eq type_id 207)))) 127
+    (if (or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (eq type_id 209)))))) 127
     (block (call set_compile_error 98) 127))))))
 
   ;; Block type byte for a value of this type: 0x40 (empty) for void.
@@ -314,7 +335,8 @@
 
   ;; Scalars that can live in a struct field or array element.
   (fn is_memory_type [type_id:i32] -> bool
-    (and (gte type_id 200) (and (lte type_id 206) (neq type_id 205))))
+    (or (and (gte type_id 200) (and (lte type_id 206) (neq type_id 205)))
+        (or (eq type_id 208) (eq type_id 209))))
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
   (fn elem_type_id [src_ptr:i32 node:i32] -> i32
     (let t:i32 (call type_node_id src_ptr node))
@@ -623,7 +645,7 @@
     (if (eq t 201) (if (eq op_id 0) 124 (if (eq op_id 1) 125 (if (eq op_id 2) 126 (if (eq op_id 3) 127 (if (eq op_id 4) 133 (if (eq op_id 5) 134 (if (eq op_id 6) 135 (if (eq op_id 7) 131 (if (eq op_id 8) 132 (if (eq op_id 15) 81 (if (eq op_id 16) 82 (if (eq op_id 17) 83 (if (eq op_id 18) 87 (if (eq op_id 19) 85 (if (eq op_id 20) 89 (if (eq op_id 39) 129 (if (eq op_id 40) 128 (if (eq op_id 41) 130 (if (eq op_id 42) 136 -1)))))))))))))))))))
     (if (eq t 202) (if (eq op_id 0) 146 (if (eq op_id 1) 147 (if (eq op_id 2) 148 (if (eq op_id 3) 149 (if (eq op_id 15) 91 (if (eq op_id 16) 92 (if (eq op_id 17) 93 (if (eq op_id 18) 95 (if (eq op_id 19) 94 (if (eq op_id 20) 96 -1))))))))))
     (if (eq t 203) (if (eq op_id 0) 160 (if (eq op_id 1) 161 (if (eq op_id 2) 162 (if (eq op_id 3) 163 (if (eq op_id 15) 97 (if (eq op_id 16) 98 (if (eq op_id 17) 99 (if (eq op_id 18) 101 (if (eq op_id 19) 100 (if (eq op_id 20) 102 -1))))))))))
-    (if (or (eq t 204) (eq t 206)) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1))
+    (if (or (eq t 204) (or (eq t 206) (or (eq t 208) (eq t 209)))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1))
     -1))))))
 
   ;; and / or are i32.and / i32.or whatever the operands; others go through
@@ -694,14 +716,11 @@
           res)))
 
   ;; ===== Struct table & resolution =====
-  (fn find_symbol_char [src_ptr:i32 pos:i32 len:i32 target:i32] -> i32
-    (let i:i32 0)
+  ;; Index of the last `target` byte in the span, or -1.
+  (fn find_last_char [src_ptr:i32 pos:i32 len:i32 target:i32] -> i32
     (let found:i32 -1)
-    (while (and (lt i len) (eq found -1))
-      (if (eq (mem.load8 (+ src_ptr (+ pos i))) target)
-          (set! found i)
-          (set! found -1))
-      (set! i (+ i 1)))
+    (loop i 0 (- len 1) 1
+      (if (eq (mem.load8 (+ src_ptr (+ pos i))) target) (set! found i) (block)))
     found)
 
   (fn collect_structs [src_ptr:i32 root:i32] -> i32
@@ -1153,7 +1172,7 @@
           (let sf_node:i32 (call nth_child node 2))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
-          (let dot_idx:i32 (call find_symbol_char src_ptr sf_pos sf_len 46))
+          (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
           (let ft:i32 (call get_field_type src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (if (neq ft -1) (set! res ft) (block)))
         (block))
@@ -1166,6 +1185,9 @@
     (if (and (gte kw 15) (lte kw 23)) (set! res 204) (block))
     ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
     (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
+    ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
+    (if (or (eq kw 50) (or (eq kw 61) (eq kw 62))) (set! res 208) (block))
+    (if (or (eq kw 54) (or (eq kw 64) (eq kw 65))) (set! res 209) (block))
     ;; f64.convert_i64_s, f64.reinterpret_i64
     (if (or (eq kw 57) (eq kw 59)) (set! res 203) (block))
     res)
@@ -1524,6 +1546,22 @@
     (if (eq op_id 60) ;; i64.reinterpret_f64
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 189))))
         (set! res res))
+    (if (or (eq op_id 61) (eq op_id 64)) ;; ptr.null / arr.null -> i32.const 0
+        (set! res (call emit_i32_const out_ptr 0))
+        (set! res res))
+    (if (or (eq op_id 62) (eq op_id 65)) ;; ptr.cast / arr.cast: the address itself
+        (set! res (call compile_expr src_ptr (call nth_child node 2) out_ptr locals_base locals_count func_table_base func_count))
+        (set! res res))
+    (if (or (eq op_id 63) (eq op_id 66)) ;; ptr.addr / arr.addr: the pointer itself
+        (set! res (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+        (set! res res))
+    (if (eq op_id 67) ;; arr.len -> i32.const 4, i32.sub, i32.load (like str.len)
+        (block
+          (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+          (let n2:i32 (call emit_i32_const (+ out_ptr n1) 4))
+          (mem.store8 (+ out_ptr (+ n1 n2)) 107)
+          (set! res (+ (+ n1 (+ n2 1)) (call emit_memop (+ out_ptr (+ n1 (+ n2 1))) 40 2))))
+        (set! res res))
     (if (eq op_id 48) ;; ok
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
@@ -1591,7 +1629,7 @@
           (let sf_node:i32 (call nth_child node 2))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
-          (let dot_idx:i32 (call find_symbol_char src_ptr sf_pos sf_len 46))
+          (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
           (let f_offset:i32 (call get_field_offset src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let ftype:i32 (call get_field_type src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let off:i32 (call compile_expr src_ptr ptr_node out_ptr locals_base locals_count func_table_base func_count))
@@ -1608,7 +1646,7 @@
           (let val_node:i32 (call nth_child node 3))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
-          (let dot_idx:i32 (call find_symbol_char src_ptr sf_pos sf_len 46))
+          (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
           (let f_offset:i32 (call get_field_offset src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let ftype:i32 (call get_field_type src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let off:i32 (call compile_expr src_ptr ptr_node out_ptr locals_base locals_count func_table_base func_count))
@@ -1772,7 +1810,7 @@
     (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) 12)))
     (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) 16)))
-    (let root:i32 (call compiler.parse_ast tok_buf tok_cnt ast_buf))
+    (let root:i32 (ptr.addr (call compiler.parse_ast tok_buf tok_cnt ast_buf)))
     
     (let _p:i32 (call walk_module_prepass src_ptr root))
     ;; String data lives at 512..1023, as in wasm.rs STRING_DATA_CAPACITY.
@@ -2119,7 +2157,7 @@
     (let tok:i32 (mem.alloc 4096))
     (let ast:i32 (mem.alloc 16384))
     (let n:i32 (call compiler.tokenize src 164 tok))
-    (let root:i32 (call compiler.parse_ast tok n ast))
+    (let root:i32 (ptr.addr (call compiler.parse_ast tok n ast)))
     (let func_count:i32 (call collect_functions src root (call fn_table)))
     (let e0:i32 (call func_entry_ptr (call fn_table) 0))
     (let e0_pcount:i32 (mem.load32 (+ e0 8)))

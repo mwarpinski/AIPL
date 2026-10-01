@@ -239,7 +239,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
         Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
-        Expr::NewStruct { .. } => Type::I32,
+        Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::GetField { struct_name, field_name, .. } => {
             if let Some(def) = ctx.structs.get(struct_name) {
                 if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name) {
@@ -250,7 +250,9 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         }
         Expr::PutField { .. } => Type::Void,
         Expr::Sizeof { .. } => Type::I32,
-        Expr::ArrNew { .. } => Type::I32,
+        Expr::ArrNew { elem_ty, .. } => Type::Array(Box::new(elem_ty.clone())),
+        Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
+        Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
         Expr::ArrGet { elem_ty, .. } => elem_ty.clone(),
         Expr::ArrSet { .. } => Type::Void,
         Expr::Op { op, args, .. } => match op {
@@ -373,8 +375,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_)) => I32Ne,
         (OpCode::Lt, Type::I32) => I32LtS,
         (OpCode::Lte, Type::I32) => I32LeS,
         (OpCode::Gt, Type::I32) => I32GtS,
@@ -447,7 +449,11 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
             Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => {
                 collect_lets(&[*(inner.clone())], lets);
             }
-            Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } => {
+            Expr::GetField { ptr, .. }
+            | Expr::ArrNew { size: ptr, .. }
+            | Expr::ArrLen { arr: ptr, .. }
+            | Expr::Cast { addr: ptr, .. }
+            | Expr::Addr { val: ptr, .. } => {
                 collect_lets(&[*(ptr.clone())], lets);
             }
             Expr::PutField { ptr, val, .. } => {
@@ -474,11 +480,8 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         Type::I64 => ValType::I64,
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
-        Type::Ptr(_)
-        | Type::ResultType(_, _)
-        | Type::Array(_, _)
-        | Type::Vector(_, _)
-        | Type::Fn(_, _) => ValType::I32,
+        // Pointers, arrays, results, and function refs are i32 addresses/indices.
+        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) => ValType::I32,
     }
 }
 
@@ -1000,7 +1003,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1050,7 +1053,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx.addr_scratch);
             compile_expr(val, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1123,6 +1126,19 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Store(M4));
         }
+        // Pointers and arrays are i32 addresses: casts and addr are free.
+        Expr::Null { .. } => {
+            func.instruction(&Instruction::I32Const(0));
+        }
+        Expr::Cast { addr: inner, .. } | Expr::Addr { val: inner, .. } => {
+            compile_expr(inner, ctx, func)?;
+        }
+        Expr::ArrLen { arr, .. } => {
+            compile_expr(arr, ctx, func)?;
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Sub);
+            func.instruction(&Instruction::I32Load(M4));
+        }
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
             compile_expr(ptr, ctx, func)?;
@@ -1131,7 +1147,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -1171,7 +1187,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx.addr_scratch);
             compile_expr(val, ctx, func)?;
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 => {
@@ -1310,7 +1326,11 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::GetField { .. }
         | Expr::Sizeof { .. }
         | Expr::ArrNew { .. }
-        | Expr::ArrGet { .. } => false,
+        | Expr::ArrGet { .. }
+        | Expr::ArrLen { .. }
+        | Expr::Null { .. }
+        | Expr::Cast { .. }
+        | Expr::Addr { .. } => false,
     }
 }
 
@@ -1473,8 +1493,12 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::NewStruct { .. } | Expr::Sizeof { .. } => {}
-        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } => walk_expr(ptr, visit),
+        Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } => {}
+        Expr::GetField { ptr, .. }
+        | Expr::ArrNew { size: ptr, .. }
+        | Expr::ArrLen { arr: ptr, .. }
+        | Expr::Cast { addr: ptr, .. }
+        | Expr::Addr { val: ptr, .. } => walk_expr(ptr, visit),
         Expr::PutField { ptr, val, .. } => {
             walk_expr(ptr, visit);
             walk_expr(val, visit);

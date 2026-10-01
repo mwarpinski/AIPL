@@ -12,7 +12,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 |---|---|
 | B1 silent catch-alls | Fixed (P2) |
 | B2 integer semantics diverge | Fixed (P3, i64 task) |
-| B3 type-system holes | Mostly fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types. `Ptr`/`Fn` types are still unparseable |
+| B3 type-system holes | Mostly fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types, pointers and arrays are strictly typed `(ptr S)` / `(arr T)` (2026-10-01). `Fn` types are still unparseable (P10) |
 | B4 scoping undefined | Fixed (P7) |
 | B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Open |
 | B6 two allocators | Fixed (P5) |

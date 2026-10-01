@@ -614,7 +614,7 @@ fn p8_structs_and_arrays() {
   (struct Named [id:i32 name:str])
 
   (fn test_point_ops [x:i32 y:i32] -> i32
-    (let p:i32 (new Point))
+    (let p:(ptr Point) (new Point))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
@@ -624,21 +624,21 @@ fn p8_structs_and_arrays() {
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32
-    (let m:i32 (new Mixed))
+    (let m:(ptr Mixed) (new Mixed))
     (put m Mixed.flag true)
     (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
     (put m Mixed.tag 7)
     (if (get m Mixed.flag)
-        (+ (i32.wrap (shr (get m Mixed.val) 32i64)) (+ (get m Mixed.tag) (mem.load32 (+ m 16))))
+        (+ (i32.wrap (shr (get m Mixed.val) 32i64)) (+ (get m Mixed.tag) (mem.load32 (+ (ptr.addr m) 16))))
         -1))
 
   (fn test_floats [] -> i32
-    (let f:i32 (new Floats))
+    (let f:(ptr Floats) (new Floats))
     (put f Floats.b 2.5)
     (if (gt (get f Floats.b) 2.0) 1 0))
 
   (fn test_array_ops [n:i32] -> i32
-    (let arr:i32 (arr.new i32 n))
+    (let arr:(arr i32) (arr.new i32 n))
     (loop i 0 (- n 1) 1
       (arr.set i32 arr i (* (+ i 1) 10)))
     (let sum:i32 0)
@@ -648,13 +648,13 @@ fn p8_structs_and_arrays() {
 
   ;; header holds the count; the bump cursor advances by 4 + n * 8
   (fn test_i64_array [n:i32] -> i32
-    (let a:i32 (arr.new i64 n))
+    (let a:(arr i64) (arr.new i64 n))
     (arr.set i64 a (- n 1) 5i64)
     (let next:i32 (mem.alloc 4))
-    (+ (mem.load32 (- a 4)) (+ (- next a) (i32.wrap (arr.get i64 a (- n 1))))))
+    (+ (arr.len a) (+ (- next (arr.addr a)) (i32.wrap (arr.get i64 a (- n 1))))))
 
   (fn test_index_oob [i:i32] -> i32
-    (let a:i32 (arr.new i32 3))
+    (let a:(arr i32) (arr.new i32 3))
     (arr.get i32 a i))
 
   (fn alloc_four [] -> i32
@@ -663,8 +663,8 @@ fn p8_structs_and_arrays() {
 
   ;; the size expression allocates; the array must not overlap that block
   (fn test_size_allocates [] -> i32
-    (let a:i32 (arr.new i32 (call alloc_four)))
-    (- a (mem.load32 0)))
+    (let a:(arr i32) (arr.new i32 (call alloc_four)))
+    (- (arr.addr a) (mem.load32 0)))
 
   ;; ok/err take 8 heap bytes in both backends, before the payload runs
   (fn test_result_heap [] -> i32
@@ -674,46 +674,46 @@ fn p8_structs_and_arrays() {
 
   (fn test_result_payload_allocates [] -> i32
     (match_result (ok (arr.new i32 2))
-      (ok v v)
+      (ok v (arr.addr v))
       (err e 0)))
 
   ;; AIPL_SPEC.md 4.E example
   (fn test_points [] -> i32
-    (let ps:i32 (arr.new i32 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
     (loop i 0 2 1
-      (let p:i32 (new Point))
+      (let p:(ptr Point) (new Point))
       (put p Point.x i)
       (put p Point.y (* i 10))
-      (arr.set i32 ps i p))
+      (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
     (loop i 0 2 1
-      (let p:i32 (arr.get i32 ps i))
+      (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
     sum)
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
   (fn test_bool_word [] -> i32
-    (let p:i32 (new Mixed))
-    (mem.store32 p 2)
-    (let a:i32 (arr.new bool 1))
-    (mem.store32 a 7)
+    (let p:(ptr Mixed) (new Mixed))
+    (mem.store32 (ptr.addr p) 2)
+    (let a:(arr bool) (arr.new bool 1))
+    (mem.store32 (arr.addr a) 7)
     (if (and (eq (get p Mixed.flag) true) (and (arr.get bool a 0) true)) 1 0))
 
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
   (fn test_str_field [] -> i32
-    (let n:i32 (new Named))
+    (let n:(ptr Named) (new Named))
     (put n Named.name "abc")
-    (let a:i32 (arr.new str 2))
+    (let a:(arr str) (arr.new str 2))
     (arr.set str a 1 (get n Named.name))
     (+ (str.len (arr.get str a 1)) (if (eq (get n Named.name) "abc") 10 0)))
 
   (fn test_put_reserved [] -> i32
-    (put (- 600 88) Point.x 1)
+    (put (ptr.cast Point (- 600 88)) Point.x 1)
     0)
 
   (fn test_arr_set_reserved [] -> i32
-    (arr.set i32 (- 600 88) 0 1)
+    (arr.set i32 (arr.cast i32 (- 600 88)) 0 1)
     0)
 )
 "#;
