@@ -53,7 +53,7 @@ cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test sui
 wasmtime run --dir=. out.wasm --invoke main               # run compiled I/O under any WASI host
 ```
 
-Run the full test suite with `cargo test` (114 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
+Run the full test suite with `cargo test` (115 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
 
 ## Repository layout
 

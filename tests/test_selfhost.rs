@@ -479,13 +479,11 @@ fn self_hosted_bytes_match_compiler() {
     assert_self_hosted_matches_rust("compiler", &src);
 }
 
-/// The self-hosted compiler compiles itself. `compile_module` takes one
-/// import-free module, so this builds what the resolver would: codegen.aipl
-/// without its `(import compiler)`, plus compiler.aipl's structs and functions
-/// renamed to `compiler.<fn>` (with their internal calls rewritten). Both
-/// backends then compile exactly the same source.
-#[test]
-fn self_hosted_bytes_match_codegen() {
+/// codegen.aipl as one import-free module, which is what `compile_module`
+/// accepts: codegen.aipl without its `(import compiler)`, plus compiler.aipl's
+/// structs and functions renamed to `compiler.<fn>` (with their internal calls
+/// rewritten), i.e. what the resolver would produce.
+fn codegen_combined_source() -> String {
     let compiler_src = fs::read_to_string("aipl_src/compiler.aipl").unwrap();
     let codegen_src = fs::read_to_string("aipl_src/codegen.aipl").unwrap();
 
@@ -507,5 +505,55 @@ fn self_hosted_bytes_match_codegen() {
 
     let combined_src = codegen_src.replacen("(import compiler)", &body, 1);
     assert!(!combined_src.contains("(import"), "combined module must be import-free");
-    assert_self_hosted_matches_rust("codegen", &combined_src);
+    combined_src
+}
+
+/// The self-hosted compiler, run in the VM, compiles itself to the same bytes
+/// as the Rust backend.
+#[test]
+fn self_hosted_bytes_match_codegen() {
+    assert_self_hosted_matches_rust("codegen", &codegen_combined_source());
+}
+
+/// Bootstrap fixpoint: compile the self-hosted compiler with the Rust backend,
+/// run that wasm module under wasmtime on its own source, and require the
+/// output to be byte-identical to the module that produced it. No VM and no
+/// Rust compiler logic is involved in the second compile.
+#[test]
+fn self_hosted_compiler_reproduces_itself_under_wasmtime() {
+    use wasmtime::Val;
+    use wasmtime_wasi::p1::WasiP1Ctx;
+
+    let src = codegen_combined_source();
+    let module_ast = aipl_core::parser::Parser::parse(&src).unwrap();
+    TypeChecker::new().check_module(&module_ast).unwrap();
+    let stage1 = WasmCompiler::compile(&module_ast).unwrap();
+
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &stage1).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let call = |store: &mut Store<WasiP1Ctx>, name: &str, args: &[i32]| -> i32 {
+        let f = instance.get_func(&mut *store, name).unwrap();
+        let args: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
+        let mut out = [Val::I32(0)];
+        f.call(&mut *store, &args, &mut out).unwrap();
+        out[0].unwrap_i32()
+    };
+
+    call(&mut store, "init_keywords", &[]);
+    let src_ptr = call(&mut store, "alloc_src", &[src.len() as i32 + 16]);
+    memory.write(&mut store, src_ptr as usize, src.as_bytes()).unwrap();
+    let len = call(&mut store, "compile_module", &[src_ptr, src.len() as i32]);
+    let mut word = [0u8; 4];
+    memory.read(&store, 4, &mut word).unwrap();
+    assert!(len > 0, "compile_module returned {len} with compile error {}", u32::from_le_bytes(word));
+
+    memory.read(&store, 60, &mut word).unwrap();
+    let mut stage2 = vec![0u8; len as usize];
+    memory.read(&store, u32::from_le_bytes(word) as usize, &mut stage2).unwrap();
+    assert!(stage2 == stage1, "stage 2 ({} bytes) differs from stage 1 ({} bytes)", stage2.len(), stage1.len());
 }
