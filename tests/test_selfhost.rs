@@ -436,6 +436,32 @@ fn self_hosted_bytes_match_std_library() {
     }
 }
 
+/// Function references (P10): ref, call_ref through params, arrays, and struct
+/// fields, an i64 signature, and ref equality; the funcref table, element
+/// section, and call_indirect types must match the Rust backend.
+#[test]
+fn self_hosted_bytes_match_function_refs() {
+    assert_self_hosted_matches_rust("refs", r#"
+(module refs
+  (struct Op [apply:(fn [i32 i32] -> i32) name:str])
+  (fn add [a:i32 b:i32] -> i32 (+ a b))
+  (fn mul [a:i32 b:i32] -> i32 (* a b))
+  (fn neg [a:i64] -> i64 (- 0i64 a))
+  (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
+    (call_ref (fn [i32 i32] -> i32) f x x))
+  (fn main [] -> i32
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) 2))
+    (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
+    (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
+    (let o:(ptr Op) (new Op))
+    (put o Op.apply (ref mul))
+    (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
+    (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
+       (+ (call_ref (fn [i32 i32] -> i32) (get o Op.apply) 3 4)
+          (+ (i32.wrap n) (if (and (eq (ref add) (ref add)) (neq (ref add) (ref mul))) 1 0))))))
+"#);
+}
+
 #[test]
 fn self_hosted_bytes_match_file_io() {
     let src = r#"

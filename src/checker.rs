@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     match ty {
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => Ok((4, 4)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
     }
@@ -116,6 +116,12 @@ impl TypeChecker {
             Type::ResultType(a, b) => {
                 self.validate_type(a, span)?;
                 self.validate_type(b, span)
+            }
+            Type::Fn(params, ret) => {
+                for p in params {
+                    self.validate_type(p, span)?;
+                }
+                self.validate_type(ret, span)
             }
             _ => Ok(()),
         }
@@ -305,9 +311,9 @@ impl TypeChecker {
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_)) {
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
                         return Err(format!(
-                            "{}:{}: {:?} on {:?}: pointers and arrays have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
+                            "{}:{}: {:?} on {:?}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
                         ));
                     }
@@ -439,8 +445,8 @@ impl TypeChecker {
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
-                        return Err(format!("{}:{}: {:?} on {:?}: pointers and arrays compare only with eq/neq", l, c, op, t1));
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                        return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, and function refs compare only with eq/neq", l, c, op, t1));
                     }
                     Ok(Type::Bool)
                 }
@@ -535,11 +541,18 @@ impl TypeChecker {
                     Ok(Type::I32)
                 }
                 OpCode::ThreadSpawn => {
-                    if args.len() != 3 {
-                        return Err(format!("{}:{}: thread.spawn requires 3 arguments (fn_name_ptr, fn_name_len, arg)", l, c));
+                    // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: thread.spawn requires 2 arguments (worker: (fn [i32] -> i32), arg: i32)", l, c));
                     }
-                    for arg in args {
-                        self.infer_expr_type(arg, env)?;
+                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32));
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != worker {
+                        return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {:?}", l, c, t));
+                    }
+                    let a = self.infer_expr_type(&args[1], env)?;
+                    if a != Type::I32 {
+                        return Err(format!("{}:{}: thread.spawn argument must be i32, got {:?}", l, c, a));
                     }
                     Ok(Type::I32)
                 }
@@ -786,6 +799,33 @@ impl TypeChecker {
                     return Err(format!("{}:{}: cast needs an i32 address, got {:?}", span.0, span.1, t));
                 }
                 Ok(ty.clone())
+            }
+            Expr::Ref { name, span } => match self.fn_signatures.get(name) {
+                Some((params, ret)) => Ok(Type::Fn(params.clone(), Box::new(ret.clone()))),
+                None => Err(format!("{}:{}: Undefined function '{}' in ref", span.0, span.1, name)),
+            },
+            Expr::CallRef { sig, func, args, span } => {
+                self.validate_type(sig, *span)?;
+                let (params, ret) = match sig {
+                    Type::Fn(p, r) => (p.clone(), *r.clone()),
+                    other => {
+                        return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {:?}", span.0, span.1, other))
+                    }
+                };
+                let ft = self.infer_expr_type(func, env)?;
+                if ft != *sig {
+                    return Err(format!("{}:{}: call_ref signature {:?} does not match the function's type {:?}", span.0, span.1, sig, ft));
+                }
+                if args.len() != params.len() {
+                    return Err(format!("{}:{}: call_ref expects {} arguments, got {}", span.0, span.1, params.len(), args.len()));
+                }
+                for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
+                    let at = self.infer_expr_type(a, env)?;
+                    if at != *p {
+                        return Err(format!("{}:{}: call_ref argument {} expects {:?}, got {:?}", span.0, span.1, i + 1, p, at));
+                    }
+                }
+                Ok(ret)
             }
             Expr::Addr { val, array, span } => {
                 let t = self.infer_expr_type(val, env)?;

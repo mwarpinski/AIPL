@@ -44,6 +44,9 @@ pub const HEAP_START: u32 = 1024;
 
 pub struct VM {
     functions: Arc<HashMap<String, FnDef>>,
+    /// Function names in load order: `(ref f)` is f's position here, which is
+    /// also its slot in the wasm backend's function table.
+    fn_order: Arc<Vec<String>>,
     structs: Arc<HashMap<String, StructDef>>,
     globals: HashMap<String, Value>,
     pub shared: Arc<Mutex<SharedMemory>>,
@@ -57,6 +60,7 @@ impl VM {
     pub fn new() -> Self {
         VM {
             functions: Arc::new(HashMap::new()),
+            fn_order: Arc::new(Vec::new()),
             structs: Arc::new(HashMap::new()),
             globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
@@ -84,6 +88,7 @@ impl VM {
     fn spawn_child(&self) -> VM {
         VM {
             functions: Arc::clone(&self.functions),
+            fn_order: Arc::clone(&self.fn_order),
             structs: Arc::clone(&self.structs),
             globals: HashMap::new(),
             shared: Arc::clone(&self.shared),
@@ -108,9 +113,14 @@ impl VM {
 
     pub fn load_module(&mut self, module: Module) {
         let mut f_map = (*self.functions).clone();
+        let mut order = (*self.fn_order).clone();
         for f in module.functions {
+            if !f_map.contains_key(&f.name) {
+                order.push(f.name.clone());
+            }
             f_map.insert(f.name.clone(), f);
         }
+        self.fn_order = Arc::new(order);
         self.functions = Arc::new(f_map);
 
         let mut s_map = (*self.structs).clone();
@@ -273,6 +283,19 @@ impl VM {
                 self.invoke(func, evaluated_args)
             }
             Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
+            Expr::Ref { name, .. } => match self.fn_order.iter().position(|n| n == name) {
+                Some(i) => Ok(Value::Int(i as i64)),
+                None => Err(format!("ref: unknown function '{}'", name)),
+            },
+            // Arguments first, then the function value, as call_indirect evaluates them.
+            Expr::CallRef { func, args, .. } => {
+                let mut evaluated_args = Vec::new();
+                for arg in args {
+                    evaluated_args.push(self.eval_expr(arg, scope)?);
+                }
+                let name = self.fn_ref_name(func, scope, "call_ref")?;
+                self.invoke(&name, evaluated_args)
+            }
             // A result occupies 8 heap bytes [tag:i32 payload:i32] (tag 0 = ok,
             // 1 = err), allocated before the payload is evaluated, exactly as the
             // wasm backend lays it out, so both backends leave the same heap.
@@ -475,6 +498,19 @@ impl VM {
         Ok(base + 4)
     }
 
+    /// The function a `(fn ...)` value refers to: its index into `fn_order`.
+    /// An index outside the table is an error, as it traps in wasm.
+    fn fn_ref_name(&mut self, func: &Expr, scope: &mut HashMap<String, Value>, op: &str) -> Result<String, String> {
+        let idx = match self.eval_expr(func, scope)? {
+            Value::Int(i) => i,
+            other => return Err(format!("{}: expected a function reference, got {:?}", op, other)),
+        };
+        usize::try_from(idx)
+            .ok()
+            .and_then(|i| self.fn_order.get(i).cloned())
+            .ok_or_else(|| format!("{}: function reference {} is out of range", op, idx))
+    }
+
     /// Element count stored in the 4 bytes before an `arr.new` pointer.
     fn array_len_at(&self, ptr: usize) -> Result<i64, String> {
         let mem = self.shared.lock().unwrap();
@@ -497,7 +533,7 @@ impl VM {
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
         let mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -563,7 +599,7 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Str => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
@@ -1284,34 +1320,17 @@ impl VM {
                     Err(_) => Ok(Value::Int(-1)),
                 }
             }
-            // Real OS thread spawn: the named function is looked up in the
-            // SAME function table (Arc-shared, not copied) and run on a real
-            // std::thread with a fresh child VM that shares `self.shared`
-            // linear memory. AIPL has no first-class function values yet, so
-            // the target function is named by (ptr,len) into linear memory -
-            // matching the fs.* pointer/length convention above - rather than
-            // passed as a function pointer.
+            // Real OS thread spawn: the worker is a function reference (its
+            // index into the shared function order), run on a real std::thread
+            // with a fresh child VM that shares `self.shared` linear memory.
+            // References survive the import resolver's renaming, so this works
+            // from an imported module.
             OpCode::ThreadSpawn => {
-                let name_ptr = match self.eval_expr(&args[0], scope)? {
-                    Value::Int(i) => i as usize,
-                    _ => return Err("thread.spawn requires Int fn_name_ptr".to_string()),
-                };
-                let name_len = match self.eval_expr(&args[1], scope)? {
-                    Value::Int(i) => i as usize,
-                    _ => return Err("thread.spawn requires Int fn_name_len".to_string()),
-                };
-                let arg = match self.eval_expr(&args[2], scope)? {
+                let fn_name = self.fn_ref_name(&args[0], scope, "thread.spawn")?;
+                let arg = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i,
                     _ => return Err("thread.spawn requires Int arg".to_string()),
                 };
-                let name_bytes = self.read_bytes(name_ptr, name_len);
-                let fn_name = match String::from_utf8(name_bytes) {
-                    Ok(s) => s,
-                    Err(_) => return Err("thread.spawn: function name is not valid UTF-8".to_string()),
-                };
-                if !self.functions.contains_key(&fn_name) {
-                    return Err(format!("thread.spawn: unknown function '{}'", fn_name));
-                }
                 let mut child = self.spawn_child();
                 let handle = std::thread::spawn(move || child.invoke(&fn_name, vec![Value::Int(arg)]));
                 let tid = self.next_thread_id;

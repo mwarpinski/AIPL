@@ -13,9 +13,8 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 139 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 146 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
-cargo run --bin aipl -- eval aipl_src/thread_sync.aipl --func run_thread_tests   # standalone; prints Int(1) (pass count), see below
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
 
@@ -29,10 +28,11 @@ Expected AIPL suite output:
 [PASS] std/str: byte slices (6 tests)
 [PASS] std/fmt: number formatting (6 tests)
 [PASS] std/io: file round trip (2 tests)
+[PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.
 ```
 
-`thread_sync.aipl` is excluded from the master suite on purpose. `thread.spawn` finds its target by a name string stored in linear memory, which the import resolver cannot rewrite. Once imported, `worker_increment` becomes `thread_sync.worker_increment` and the spawn fails. P10 (function references) fixes this.
+`thread_sync.aipl` (real OS threads and atomics, VM only) is part of the master suite since P10: `thread.spawn` takes a function reference, which the import resolver renames correctly.
 
 ## Task status
 
@@ -49,7 +49,8 @@ Expected AIPL suite output:
 | P8b standard library | **Done 2026-10-01** (branch `features/p8b`, see below). |
 | P9 self-hosted module assembly at byte parity | **Done 2026-10-01** except imports, which belong to P14 (see below). |
 | Typed pointers + struct namespacing | **Done 2026-10-01** (branch `features/pointers`, see below). Not a numbered audit task; done before P8b so the standard library is written against typed pointers. |
-| P10–P14 | Not started. |
+| P10 function references | **Done 2026-10-01** (branch `features/p10`, see below). |
+| P11–P14 | Not started. |
 
 ## P8 verification (2026-10-01)
 
@@ -101,6 +102,14 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 - **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
 - Float literals outside the exact range (error 973) and exponent notation.
 
+## P10: function references (2026-10-01)
+
+- **`(ref f)`** has the strict type `(fn [params] -> ret)`; **`(call_ref (fn [...] -> r) g args...)`** names the signature it calls through (checked against `g`'s type), the way `arr.get` names its element type. References are not integers: no arithmetic, `eq`/`neq` only, no cast. They work as parameters, results, struct fields, and array elements (AIPL_SPEC.md 4.G).
+- **Run time**: a reference is the function's position. The wasm backend adds a funcref table of every function, an element segment, and one extra type per distinct `call_ref` signature, only for modules that use references; `call_ref` is `call_indirect`. The VM keeps the function load order. The self-hosted compiler matches byte for byte.
+- **`(thread.spawn (ref worker) arg)`** replaces the name-in-memory form, so `thread_sync.aipl` is now imported by `test_suite.aipl` and its 4 x 1000 atomic increments run there.
+- **`aipl compile --self`** now names the first differing function body (a length change no longer shows up only as a section-size byte) and writes both outputs on a mismatch.
+- Tests: `tests/test_refs.rs`, a parity program in `tests/test_selfhost.rs`, conformance for the new `thread.spawn`.
+
 ## P8b: the standard library (2026-10-01)
 
 - **`aipl_src/std/`**: `str` (the `Bytes` slice type and byte counting), `fmt` (decimal/unsigned/hex formatting), `io` (`println`, `eprintln`, `print_int`, `println_int`, `read_file`, `write_file`). Plain AIPL over `fs.*`/`mem.*`/`str.*`, so identical in both backends; AIPL_SPEC.md 12.6 lists every function.
@@ -141,7 +150,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P11 `return`/`break`/`continue`/`cond` (then simplify the `while` + flag loops in `aipl_src/std/` and the compilers), P10 function references (fixes `thread_sync` under imports).
+3. P11 `return`/`break`/`continue`/`cond` (then simplify the `while` + flag loops in `aipl_src/std/` and the compilers), then P12–P14.
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)

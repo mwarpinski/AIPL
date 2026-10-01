@@ -87,6 +87,35 @@ impl WasmCompiler {
             fn_returns.insert(f.name.clone(), f.return_type.clone());
         }
 
+        // Function references: `(ref f)` is f's position among the module's
+        // functions, which is its slot in a funcref table holding every
+        // function. `call_ref` lowers to call_indirect with a type index from
+        // one extra type per distinct signature (wasm-level, first-use order),
+        // appended after the function types. Table and element section are
+        // emitted only when the module uses ref or call_ref.
+        let mut fn_types: HashMap<String, Type> = HashMap::new();
+        for f in &module.functions {
+            let params = f.params.iter().map(|(_, t)| t.clone()).collect();
+            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone())));
+        }
+        let mut uses_refs = false;
+        let mut ref_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = Vec::new();
+        walk_module(module, &mut |e| match e {
+            Expr::Ref { .. } => uses_refs = true,
+            Expr::CallRef { sig, .. } => {
+                uses_refs = true;
+                let key = wasm_signature(sig);
+                if !ref_sigs.contains(&key) {
+                    ref_sigs.push(key);
+                }
+            }
+            _ => {}
+        });
+        let ref_type_base = import_count + module.functions.len() as u32;
+        for (params, results) in &ref_sigs {
+            types.ty().function(params.clone(), results.clone());
+        }
+
         // 2. Build code section (body compilation)
         for f in &module.functions {
             let mut extra_lets = Vec::new();
@@ -144,6 +173,10 @@ impl WasmCompiler {
                 wasi: &wasi_indices,
                 newline_addr,
                 structs: &structs,
+                fn_types: &fn_types,
+                import_count,
+                ref_sigs: &ref_sigs,
+                ref_type_base,
             };
 
             // Every statement but the last is executed purely for effect: drop
@@ -189,8 +222,30 @@ impl WasmCompiler {
             wasm_module.section(&imports);
         }
         wasm_module.section(&functions);
+        let n_fns = module.functions.len() as u32;
+        if uses_refs {
+            let mut tables = wasm_encoder::TableSection::new();
+            tables.table(wasm_encoder::TableType {
+                element_type: wasm_encoder::RefType::FUNCREF,
+                table64: false,
+                minimum: n_fns as u64,
+                maximum: Some(n_fns as u64),
+                shared: false,
+            });
+            wasm_module.section(&tables);
+        }
         wasm_module.section(&memories);
         wasm_module.section(&exports);
+        if uses_refs {
+            let indices: Vec<u32> = (0..n_fns).map(|i| import_count + i).collect();
+            let mut elems = wasm_encoder::ElementSection::new();
+            elems.active(
+                None,
+                &wasm_encoder::ConstExpr::i32_const(0),
+                wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices)),
+            );
+            wasm_module.section(&elems);
+        }
         wasm_module.section(&codes);
         wasm_module.section(&data);
 
@@ -215,6 +270,23 @@ struct Ctx<'a> {
     /// Address of the interned "\n" used by sys.print (0 if unused).
     newline_addr: u32,
     structs: &'a HashMap<String, StructDef>,
+    /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
+    fn_types: &'a HashMap<String, Type>,
+    import_count: u32,
+    /// Distinct call_ref signatures; signature i has type index ref_type_base + i.
+    ref_sigs: &'a [(Vec<ValType>, Vec<ValType>)],
+    ref_type_base: u32,
+}
+
+/// The wasm params/results of a `(fn [...] -> r)` type.
+fn wasm_signature(sig: &Type) -> (Vec<ValType>, Vec<ValType>) {
+    match sig {
+        Type::Fn(params, ret) => (
+            params.iter().map(aipl_to_wasm_type).collect(),
+            if **ret == Type::Void { vec![] } else { vec![aipl_to_wasm_type(ret)] },
+        ),
+        _ => (vec![], vec![]),
+    }
 }
 
 /// Static AIPL type of an expression, as the checker would assign it. Codegen
@@ -253,6 +325,11 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::ArrNew { elem_ty, .. } => Type::Array(Box::new(elem_ty.clone())),
         Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
         Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
+        Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::CallRef { sig, .. } => match sig {
+            Type::Fn(_, ret) => (**ret).clone(),
+            _ => Type::I32,
+        },
         Expr::ArrGet { elem_ty, .. } => elem_ty.clone(),
         Expr::ArrSet { .. } => Type::Void,
         Expr::Op { op, args, .. } => match op {
@@ -375,8 +452,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) => I32Ne,
         (OpCode::Lt, Type::I32) => I32LtS,
         (OpCode::Lte, Type::I32) => I32LeS,
         (OpCode::Gt, Type::I32) => I32GtS,
@@ -437,6 +514,10 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 collect_lets(body, lets);
             }
             Expr::Call { args, .. } => {
+                collect_lets(args, lets);
+            }
+            Expr::CallRef { func, args, .. } => {
+                collect_lets(&[*(func.clone())], lets);
                 collect_lets(args, lets);
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
@@ -1003,7 +1084,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1053,7 +1134,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx.addr_scratch);
             compile_expr(val, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1126,6 +1207,22 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Store(M4));
         }
+        Expr::Ref { name, .. } => {
+            let idx = ctx
+                .fn_indices
+                .get(name)
+                .ok_or_else(|| format!("Wasm Codegen: ref to unknown function '{}'", name))?;
+            func.instruction(&Instruction::I32Const((idx - ctx.import_count) as i32));
+        }
+        Expr::CallRef { sig, func: target, args, .. } => {
+            for a in args {
+                compile_expr(a, ctx, func)?;
+            }
+            compile_expr(target, ctx, func)?;
+            let key = wasm_signature(sig);
+            let pos = ctx.ref_sigs.iter().position(|k| *k == key).ok_or("Wasm Codegen: call_ref signature not collected")?;
+            func.instruction(&Instruction::CallIndirect { type_index: ctx.ref_type_base + pos as u32, table_index: 0 });
+        }
         // Pointers and arrays are i32 addresses: casts and addr are free.
         Expr::Null { .. } => {
             func.instruction(&Instruction::I32Const(0));
@@ -1147,7 +1244,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -1187,7 +1284,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx.addr_scratch);
             compile_expr(val, ctx, func)?;
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 => {
@@ -1330,7 +1427,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::ArrLen { .. }
         | Expr::Null { .. }
         | Expr::Cast { .. }
-        | Expr::Addr { .. } => false,
+        | Expr::Addr { .. }
+        | Expr::Ref { .. } => false,
+        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
     }
 }
 
@@ -1493,7 +1592,14 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } => {}
+        Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        // Source order (function, then arguments), as the self-hosted compiler walks it.
+        Expr::CallRef { func, args, .. } => {
+            walk_expr(func, visit);
+            for a in args {
+                walk_expr(a, visit);
+            }
+        }
         Expr::GetField { ptr, .. }
         | Expr::ArrNew { size: ptr, .. }
         | Expr::ArrLen { arr: ptr, .. }

@@ -24,7 +24,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
 | B13 interpreter clones the body on every call | Open (codegen.aipl compiling itself takes about 80 s in the VM) |
 | B14 binary AST is serde layout | Open (P12) |
-| B15 threads by name | Open (P10) |
+| B15 threads by name | Fixed (P10: `thread.spawn` takes a function reference) |
 | U1 no aggregate types | Fixed (P8) |
 | U2 fixed-address global state | Fixed (P5) |
 | U3 three semantics | Addressed: differential tests compare the VM and wasm, and self-hosted output must be byte-identical to the Rust backend |
@@ -307,11 +307,22 @@ String literals (token kind 9): add a pre-pass that interns every distinct liter
 Tests: extend tests/test_selfhost.rs with a `self_hosted_module_bytes_match_rust_backend(src)` helper that runs codegen.compile_module in the VM (write the source into the VM with a mem.alloc'd buffer obtained via an exported `alloc [n:i32] -> i32`), reads the module back from cell 60, validates it with wasmparser, and asserts the WHOLE module is byte-for-byte equal to WasmCompiler::compile(src). Cover: add; compute (loop + call); a store program (guard bytes); (sys.print "x") with two literals, one repeated; a program with a str let and str.len/str.ptr; fs.open/read/write/close/delete round trip; sys.exit; mem.alloc + mem.grow; an i64 function; a mixed-void if. Then run the self-hosted output of the fs round-trip program under wasmtime with a preopened dir as in tests/test_wasi.rs. Replace the three hand-assembled harnesses (test_compile_add/compute/store) with calls to compile_module, keep run_codegen_tests returning the pass count for test_suite.aipl. Add `aipl compile --self <file>`: compile with both backends, assert byte equality, and print a unified diff of the first divergence if any; run it on aipl_src/memory.aipl, aipl_src/file_io.aipl, and examples/word_count.aipl - all three must be identical. Update AIPL_SPEC.md 6.2 to state that both backends emit the same bytes and that tests enforce it, PROGRESS.md, and LANGUAGE_GAPS.md (remove the "codegen.aipl knows nothing about strings, imports, or WASI" gap). Wiring compile_to_target in compiler.aipl stays out of scope until the import cycle is resolved by moving the CLI entry into a third module (e.g. aipl_src/driver.aipl that imports both).
 ```
 
-### P10 — First-class function references; fix thread.spawn under imports
+### P10 — First-class function references; fix thread.spawn under imports [DONE — 2026-10-01]
 
 ```
 Repo: AIPL. Add a function-reference type and indirect calls. Grammar: type `(fn [t1 t2] -> r)`; expression `(ref name)` yields an i32 table index; `(call_ref f args...)` invokes it. wasm.rs: emit a TableSection + ElementSection listing every function, and lower call_ref to call_indirect with the function's type index. vm.rs: represent refs as Value::Int(index) into a Vec<FnDef> built at load_module; call_ref looks up by index. resolver.rs: rewrite `(ref name)` targets exactly like Call targets (add Expr::Ref to walk_calls_expr). Change thread.spawn's signature to (thread.spawn fref:i32 arg:i32) -> i32 taking a function index, delete the read-name-from-memory path in vm.rs ThreadSpawn, update aipl_src/thread_sync.aipl accordingly, and add `(import thread_sync)` plus a report line to aipl_src/test_suite.aipl. Delete the explanatory comment block in test_suite.aipl about thread_sync exclusion. Run `aipl test aipl_src/test_suite.aipl`; the thread group must pass with 4000 as before.
 ```
+
+**Verification 2026-10-01 (branch `features/p10`).**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| Type `(fn [t1 t2] -> r)`, `(ref name)`, `(call_ref f args...)` | Done, stricter than written | `(ref f)` is typed `(fn [..] -> r)`, not `i32`, and the call is `(call_ref (fn [..] -> r) f args...)`: the signature is written at the call and checked against `f`'s type (consistent with the strict pointer types and with `arr.get` naming its element type) |
+| wasm: table + element section of every function; `call_ref` -> `call_indirect` | Done | Emitted only when the module uses refs, so other programs' bytes are unchanged; one extra type per distinct signature after the function types |
+| VM: refs are indices into the function order | Done | `fn_order` in `src/vm.rs`; out-of-range index errors (wasm traps) |
+| Resolver rewrites `(ref name)` like calls | Done | `walk_names_expr` |
+| `(thread.spawn fref arg)`, name-in-memory path deleted, `thread_sync.aipl` updated and imported in `test_suite.aipl`, exclusion comment deleted | Done | The suite prints `[PASS] thread_sync: 4 threads x 1000 atomic adds = 4000` |
+| Beyond the prompt | Done | Self-hosted compiler support at byte parity; `tests/test_refs.rs`; `--self` reports the first differing function body |
 
 ### P11 — Add `return`, `break`, `continue`, and `cond`
 

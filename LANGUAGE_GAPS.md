@@ -17,7 +17,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 2. Language
 
 - **No `return`, `break`, `continue`, or `cond` (P11).** Loops exit only through their bound or a `while` flag.
-- **No first-class functions (P10).** `thread.spawn` names its target with bytes in linear memory. The resolver cannot rewrite those bytes, so a module that spawns threads breaks once imported (`thread_sync.aipl` is run standalone for this reason). `(fn ...)` types exist in the AST but cannot be written in source.
+- **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No generics, no visibility.** Every function in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).

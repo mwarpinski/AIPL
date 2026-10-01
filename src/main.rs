@@ -99,7 +99,62 @@ fn run_self_hosted_codegen(src: &str) -> Result<Vec<u8>, String> {
 /// Locates the first differing byte of two wasm modules: which section (and,
 /// in the code section, which function body) it falls in, plus a hex window
 /// of each side around it.
+fn rust_out_path(output: &str) -> String {
+    format!("{}.rust.wasm", output)
+}
+
+/// Function bodies of a module's code section, as byte slices.
+fn code_bodies(b: &[u8]) -> Vec<&[u8]> {
+    let leb = |pos: &mut usize| -> usize {
+        let (mut v, mut shift) = (0usize, 0);
+        while *pos < b.len() {
+            let byte = b[*pos];
+            *pos += 1;
+            v |= ((byte & 0x7f) as usize) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        v
+    };
+    let mut pos = 8;
+    while pos < b.len() {
+        let id = b[pos];
+        pos += 1;
+        let size = leb(&mut pos);
+        if id == 10 {
+            let mut p = pos;
+            let n = leb(&mut p);
+            let mut out = Vec::new();
+            for _ in 0..n {
+                let fsize = leb(&mut p);
+                out.push(&b[p.min(b.len())..(p + fsize).min(b.len())]);
+                p += fsize;
+            }
+            return out;
+        }
+        pos += size;
+    }
+    Vec::new()
+}
+
 fn describe_divergence(rust: &[u8], selfh: &[u8]) -> String {
+    // A body that differs in length shifts every later byte, so name the first
+    // differing function body directly.
+    let (rb, sb) = (code_bodies(rust), code_bodies(selfh));
+    if let Some(f) = (0..rb.len().min(sb.len())).find(|&i| rb[i] != sb[i]) {
+        let at = (0..rb[f].len().max(sb[f].len())).find(|&i| rb[f].get(i) != sb[f].get(i)).unwrap_or(0);
+        let w = |b: &[u8]| b[at.saturating_sub(8)..(at + 16).min(b.len())].iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join(" ");
+        return format!(
+            "first differing function body: code-section function {} ({} vs {} bytes), first difference at body byte {}\n  rust: {}\n  self: {}",
+            f, rb[f].len(), sb[f].len(), at, w(rb[f]), w(sb[f])
+        );
+    }
+    describe_byte_divergence(rust, selfh)
+}
+
+fn describe_byte_divergence(rust: &[u8], selfh: &[u8]) -> String {
     let first = (0..rust.len().max(selfh.len()))
         .find(|&i| rust.get(i) != selfh.get(i))
         .unwrap_or(0);
@@ -185,6 +240,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
                     eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));
+                    let self_out = format!("{}.self.wasm", output);
+                    fs::write(&rust_out_path(&output), &rust_bytes)?;
+                    fs::write(&self_out, &self_bytes)?;
+                    eprintln!("  wrote both outputs: {} and {}", rust_out_path(&output), self_out);
                     return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());
                 }
                 println!("[AIPL Self-Host] SUCCESS: Self-hosted codegen produced 100% BIT-FOR-BIT IDENTICAL WebAssembly!");

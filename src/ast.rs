@@ -223,6 +223,19 @@ pub enum Expr {
         addr: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(ref f)`: a reference to function `f`, of type `(fn [params] -> ret)`.
+    Ref {
+        name: String,
+        span: (u32, u32),
+    },
+    /// `(call_ref (fn [params] -> ret) f args...)`: an indirect call; `sig`
+    /// must equal `f`'s type.
+    CallRef {
+        sig: Type,
+        func: Box<Expr>,
+        args: Vec<Expr>,
+        span: (u32, u32),
+    },
     /// `(ptr.addr p)` / `(arr.addr a)`: the `i32` address of a pointer or array.
     /// `array` records which spelling was used, so the checker can require it.
     Addr {
@@ -259,6 +272,8 @@ impl Expr {
             Expr::Null { span, .. } => *span,
             Expr::Cast { span, .. } => *span,
             Expr::Addr { span, .. } => *span,
+            Expr::Ref { span, .. } => *span,
+            Expr::CallRef { span, .. } => *span,
         }
     }
 }

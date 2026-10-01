@@ -37,10 +37,9 @@
   ;; linear memory - AIPL has no first-class function values yet, so a
   ;; pointer to a symbol table entry isn't an option either) with a single
   ;; i32 argument. Returns a thread handle for thread_join.
-  (fn thread_spawn [fn_name_ptr:i32 fn_name_len:i32 arg:i32] -> i32
-    (req (gte fn_name_ptr 0))
-    (req (gt fn_name_len 0))
-    (thread.spawn fn_name_ptr fn_name_len arg))
+  ;; Runs worker(arg) on a new OS thread; returns a handle for thread_join.
+  (fn thread_spawn [worker:(fn [i32] -> i32) arg:i32] -> i32
+    (thread.spawn worker arg))
 
   ;; Blocks until the given thread finishes; returns its function's result.
   (fn thread_join [handle:i32] -> i32
@@ -63,30 +62,13 @@
   ;; the total would come out wrong.
   (fn run_thread_tests [] -> i32
     (let counter:i32 (mem.alloc 4))
-    (let name:i32 (mem.alloc 16))
     (mem.store32 counter 0)
-    (mem.store8 (+ name 0) 119) ;; 'w'
-    (mem.store8 (+ name 1) 111) ;; 'o'
-    (mem.store8 (+ name 2) 114) ;; 'r'
-    (mem.store8 (+ name 3) 107) ;; 'k'
-    (mem.store8 (+ name 4) 101) ;; 'e'
-    (mem.store8 (+ name 5) 114) ;; 'r'
-    (mem.store8 (+ name 6) 95)  ;; '_'
-    (mem.store8 (+ name 7) 105) ;; 'i'
-    (mem.store8 (+ name 8) 110) ;; 'n'
-    (mem.store8 (+ name 9) 99)  ;; 'c'
-    (mem.store8 (+ name 10) 114) ;; 'r'
-    (mem.store8 (+ name 11) 101) ;; 'e'
-    (mem.store8 (+ name 12) 109) ;; 'm'
-    (mem.store8 (+ name 13) 101) ;; 'e'
-    (mem.store8 (+ name 14) 110) ;; 'n'
-    (mem.store8 (+ name 15) 116) ;; 't'
-    (let name_len:i32 16)
+    (let worker:(fn [i32] -> i32) (ref worker_increment))
 
-    (let t1:i32 (call thread_spawn name name_len counter))
-    (let t2:i32 (call thread_spawn name name_len counter))
-    (let t3:i32 (call thread_spawn name name_len counter))
-    (let t4:i32 (call thread_spawn name name_len counter))
+    (let t1:i32 (call thread_spawn worker counter))
+    (let t2:i32 (call thread_spawn worker counter))
+    (let t3:i32 (call thread_spawn worker counter))
+    (let t4:i32 (call thread_spawn worker counter))
     (let _j1:i32 (call thread_join t1))
     (let _j2:i32 (call thread_join t2))
     (let _j3:i32 (call thread_join t3))

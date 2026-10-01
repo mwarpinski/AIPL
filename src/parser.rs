@@ -715,6 +715,21 @@ impl Parser {
                     }
                     self.expect_kind(TokenKind::RParen)?;
                     Ok(Type::Array(Box::new(elem_ty)))
+                } else if kind == "fn" {
+                    // (fn [t1 t2] -> r)
+                    self.expect_kind(TokenKind::LBracket)?;
+                    let mut params = Vec::new();
+                    while let Some(k) = self.peek_kind() {
+                        if *k == TokenKind::RBracket {
+                            break;
+                        }
+                        params.push(self.parse_type()?);
+                    }
+                    self.expect_kind(TokenKind::RBracket)?;
+                    self.expect_kind(TokenKind::Arrow)?;
+                    let ret = self.parse_type()?;
+                    self.expect_kind(TokenKind::RParen)?;
+                    Ok(Type::Fn(params, Box::new(ret)))
                 } else if kind == "ptr" {
                     let name = self.expect_symbol("struct name in (ptr S)", (line, col))?;
                     if parse_scalar_type_str(&name, (line, col)).is_ok() {
@@ -1194,6 +1209,22 @@ impl Parser {
                                 }
                             };
                             Expr::Sizeof { struct_name, span }
+                        }
+                        "ref" => {
+                            let name = self.expect_symbol("function name in ref", span)?;
+                            Expr::Ref { name, span }
+                        }
+                        "call_ref" => {
+                            let sig = self.parse_type()?;
+                            let func = self.parse_expr()?;
+                            let mut args = Vec::new();
+                            while let Some(kind) = self.peek_kind() {
+                                if *kind == TokenKind::RParen {
+                                    break;
+                                }
+                                args.push(self.parse_expr()?);
+                            }
+                            Expr::CallRef { sig, func: Box::new(func), args, span }
                         }
                         "arr.len" => {
                             let arr = self.parse_expr()?;

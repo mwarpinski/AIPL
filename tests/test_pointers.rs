@@ -63,7 +63,7 @@ fn an_i32_is_not_a_pointer() {
 #[test]
 fn pointers_have_no_arithmetic_or_ordering() {
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point)] -> (ptr Point)\n    (+ p p)))"));
-    assert!(err.starts_with("3:5:") && err.contains("pointers and arrays have no arithmetic"), "{err}");
+    assert!(err.starts_with("3:5:") && err.contains("pointers, arrays, and function refs have no arithmetic"), "{err}");
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point) q:(ptr Point)] -> bool\n    (lt p q)))"));
     assert!(err.contains("compare only with eq/neq"), "{err}");
 }

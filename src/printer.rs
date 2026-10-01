@@ -235,6 +235,10 @@ pub fn expr_str(e: &Expr) -> String {
             Type::Array(_) => format!("(arr.cast {} {})", elem(ty), expr_str(addr)),
             _ => format!("(ptr.cast {} {})", struct_name(ty), expr_str(addr)),
         },
+        Expr::Ref { name, .. } => format!("(ref {})", name),
+        Expr::CallRef { sig, func, args, .. } => {
+            with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
+        }
         Expr::Addr { val, array, .. } => {
             format!("({} {})", if *array { "arr.addr" } else { "ptr.addr" }, expr_str(val))
         }

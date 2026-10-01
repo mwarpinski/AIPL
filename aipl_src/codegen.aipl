@@ -40,7 +40,7 @@
   ;;   mem[8]  = struct table pointer       (31 structs x 256 bytes: up to 15 fields)
   ;;   mem[12] = string state block pointer (4096 bytes: blob len, count,
   ;;             newline addr, blob buffer ptr, then 12-byte entries)
-  ;;   mem[16] = keyword table pointer      (512 bytes)
+  ;;   mem[16] = keyword table pointer      (1024 bytes)
   ;;   mem[20] = function table pointer     (256 entries x 88 bytes: up to 16 params)
   ;;   mem[24] = locals table pointer       (256 entries x 12 bytes)
   ;;   mem[28] = running locals count for the function being compiled
@@ -51,6 +51,10 @@
   (fn str_table_ptr [] -> i32 (mem.load32 12))
   (fn struct_table [] -> i32 (mem.load32 8))
   (fn get_struct_count [] -> i32 (mem.load32 (+ (call struct_table) 0)))
+  ;; Function-ref state, 1024 bytes, pointer kept at struct_table + 4:
+  ;; [uses_refs][sig_count][32 signatures x 20 bytes: nparams, params..., nresults, result]
+  (fn ref_state [] -> i32 (mem.load32 (+ (call struct_table) 4)))
+  (fn ref_sig_ptr [i:i32] -> i32 (+ (+ (call ref_state) 8) (* i 20)))
   (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
   (fn fn_table [] -> i32 (mem.load32 20))
@@ -70,15 +74,18 @@
         (block
           (mem.store32 8 (mem.alloc 8192))
           (mem.store32 12 (mem.alloc 4096))
-          (mem.store32 16 (mem.alloc 512))
+          (mem.store32 16 (mem.alloc 1024))
           (mem.store32 20 (mem.alloc 22528))
           (mem.store32 24 (mem.alloc 12288))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 16384))
+          (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           0)
         0)
 
     (mem.store32 4 0)
     (call set_struct_count 0)
+    (mem.store32 (call ref_state) 0)
+    (mem.store32 (+ (call ref_state) 4) 0)
     (mem.store32 28 0)
     (mem.store32 32 0)
     (call set_str_blob_len 0)
@@ -200,6 +207,8 @@
     (set! o (call store_kw_str k 478 97 114 114 46 99 97 115 116 0 0 0 0 8)) ;; arr.cast (op 65)
     (set! o (call store_kw_str k 486 97 114 114 46 97 100 100 114 0 0 0 0 8)) ;; arr.addr (op 66)
     (set! o (call store_kw_str k 494 97 114 114 46 108 101 110 0 0 0 0 0 7)) ;; arr.len (op 67)
+    (set! o (call store_kw_str k 501 114 101 102 0 0 0 0 0 0 0 0 0 3)) ;; ref (op 68)
+    (set! o (call store_kw_str k 504 99 97 108 108 95 114 101 102 0 0 0 0 8)) ;; call_ref (op 69)
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -289,6 +298,8 @@
     (if (call sym_eq src_ptr pos len (+ k 478) 8) (set! res 65) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 486) 8) (set! res 66) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 494) 7) (set! res 67) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 501) 3) (set! res 68) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 504) 8) (set! res 69) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (set! res res))
     (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (set! res res))
@@ -304,8 +315,8 @@
 
 ;; ===== Types =====
   ;; Type ids: 200 i32, 201 i64, 202 f32, 203 f64, 204 bool, 205 void, 206 str,
-  ;; 207 (result T E), 208 (ptr S), 209 (arr T). bool, str, results, pointers,
-  ;; and arrays are i32 in wasm.
+  ;; 207 (result T E), 208 (ptr S), 209 (arr T), 210 (fn [..] -> r). bool, str,
+  ;; results, pointers, arrays, and function refs are i32 in wasm.
 
   ;; Type id of a type node: a scalar symbol or a (result T E) group.
   ;; Anything else is compile error 98.
@@ -316,9 +327,10 @@
         (if (eq (call node_kind node) 20)
             (block
               (let head:i32 (call group_head_keyword src_ptr node))
-              (if (or (eq head 207) (or (eq head 208) (eq head 209))) (set! id head) (block)))
+              (if (or (eq head 207) (or (eq head 208) (eq head 209))) (set! id head) (block))
+              (if (eq head 111) (set! id 210) (block)))
             (block)))
-    (if (and (gte id 200) (lte id 209))
+    (if (and (gte id 200) (lte id 210))
         id
         (block (call set_compile_error 98) 200)))
 
@@ -326,7 +338,7 @@
     (if (eq type_id 201) 126
     (if (eq type_id 202) 125
     (if (eq type_id 203) 124
-    (if (or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (eq type_id 209)))))) 127
+    (if (or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210))))))) 127
     (block (call set_compile_error 98) 127))))))
 
   ;; Block type byte for a value of this type: 0x40 (empty) for void.
@@ -336,7 +348,7 @@
   ;; Scalars that can live in a struct field or array element.
   (fn is_memory_type [type_id:i32] -> bool
     (or (and (gte type_id 200) (and (lte type_id 206) (neq type_id 205)))
-        (or (eq type_id 208) (eq type_id 209))))
+        (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210)))))
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
   (fn elem_type_id [src_ptr:i32 node:i32] -> i32
     (let t:i32 (call type_node_id src_ptr node))
@@ -645,7 +657,7 @@
     (if (eq t 201) (if (eq op_id 0) 124 (if (eq op_id 1) 125 (if (eq op_id 2) 126 (if (eq op_id 3) 127 (if (eq op_id 4) 133 (if (eq op_id 5) 134 (if (eq op_id 6) 135 (if (eq op_id 7) 131 (if (eq op_id 8) 132 (if (eq op_id 15) 81 (if (eq op_id 16) 82 (if (eq op_id 17) 83 (if (eq op_id 18) 87 (if (eq op_id 19) 85 (if (eq op_id 20) 89 (if (eq op_id 39) 129 (if (eq op_id 40) 128 (if (eq op_id 41) 130 (if (eq op_id 42) 136 -1)))))))))))))))))))
     (if (eq t 202) (if (eq op_id 0) 146 (if (eq op_id 1) 147 (if (eq op_id 2) 148 (if (eq op_id 3) 149 (if (eq op_id 15) 91 (if (eq op_id 16) 92 (if (eq op_id 17) 93 (if (eq op_id 18) 95 (if (eq op_id 19) 94 (if (eq op_id 20) 96 -1))))))))))
     (if (eq t 203) (if (eq op_id 0) 160 (if (eq op_id 1) 161 (if (eq op_id 2) 162 (if (eq op_id 3) 163 (if (eq op_id 15) 97 (if (eq op_id 16) 98 (if (eq op_id 17) 99 (if (eq op_id 18) 101 (if (eq op_id 19) 100 (if (eq op_id 20) 102 -1))))))))))
-    (if (or (eq t 204) (or (eq t 206) (or (eq t 208) (eq t 209)))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1))
+    (if (or (eq t 204) (or (eq t 206) (or (eq t 208) (or (eq t 209) (eq t 210))))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1))
     -1))))))
 
   ;; and / or are i32.and / i32.or whatever the operands; others go through
@@ -713,6 +725,8 @@
           (if (eq kw 102) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (set! res res))
           (if (eq kw 105) (set! res (call is_void_call src_ptr node func_table_base func_count)) (set! res res))
           (if (and (gte kw 0) (lt kw 100)) (set! res (call is_void_op kw)) (set! res res))
+          ;; call_ref is void when its signature returns void (after the generic op rule)
+          (if (eq kw 69) (set! res (eq (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3)) 205)) (set! res res))
           res)))
 
   ;; ===== Struct table & resolution =====
@@ -1021,6 +1035,61 @@
               0)
             0)))
 
+  ;; Encodes a (fn [..] -> r) type node as [nparams, valtypes..., nresults, result]
+  ;; at out (wasm-level, so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
+  (fn encode_sig [src_ptr:i32 sig:i32 out:i32] -> i32
+    (let n:i32 0)
+    (let p:i32 (call node_a (call nth_child sig 1)))
+    (while (neq p 0)
+      (if (lt n 16) (mem.store8 (+ out (+ 1 n)) (call type_id_to_valtype (call type_node_id src_ptr p))) (block (call set_compile_error 92) (block)))
+      (set! n (+ n 1))
+      (set! p (call node_next p)))
+    (mem.store8 out n)
+    (let ret:i32 (call type_node_id src_ptr (call nth_child sig 3)))
+    (if (eq ret 205)
+        (mem.store8 (+ out (+ 1 n)) 0)
+        (block
+          (mem.store8 (+ out (+ 1 n)) 1)
+          (mem.store8 (+ out (+ 2 n)) (call type_id_to_valtype ret))))
+    0)
+
+  ;; Index of the signature of a call_ref's type node, adding it if new.
+  (fn sig_index [src_ptr:i32 sig:i32] -> i32
+    (let tmp:i32 (call ref_sig_ptr 32))
+    (call encode_sig src_ptr sig tmp)
+    (let count:i32 (mem.load32 (+ (call ref_state) 4)))
+    (let found:i32 -1)
+    (let i:i32 0)
+    (while (and (eq found -1) (lt i count))
+      (let same:bool true)
+      (loop b 0 19 1
+        (if (neq (mem.load8 (+ (call ref_sig_ptr i) b)) (mem.load8 (+ tmp b))) (set! same false) (block)))
+      (if same (set! found i) (block))
+      (set! i (+ i 1)))
+    (if (eq found -1)
+        (block
+          (if (gte count 31) (call set_compile_error 94) 0)
+          (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
+          (mem.store32 (+ (call ref_state) 4) (+ count 1))
+          (set! found count))
+        (block))
+    found)
+
+  ;; Marks the module as using function refs and collects call_ref signatures
+  ;; in source order, as wasm.rs walk_module does.
+  (fn walk_ast_for_refs [src_ptr:i32 node:i32] -> i32
+    (if (eq (call node_kind node) 20)
+        (block
+          (let kw:i32 (call group_head_keyword src_ptr node))
+          (if (or (eq kw 68) (eq kw 69)) (mem.store32 (call ref_state) 1) (block))
+          (if (eq kw 69) (call sig_index src_ptr (call nth_child node 1)) 0)
+          (let child:i32 (call node_a node))
+          (while (neq child 0)
+            (call walk_ast_for_refs src_ptr child)
+            (set! child (call node_next child)))
+          0)
+        0))
+
   (fn walk_module_prepass [src_ptr:i32 root:i32] -> i32
     ;; Pass 1: WASI detection
     (let child:i32 (call node_next (call node_next (call node_a root))))
@@ -1065,6 +1134,7 @@
                         (set! bdone true)
                         (block
                           (call walk_ast_for_strings src_ptr bchild)
+                          (call walk_ast_for_refs src_ptr bchild)
                           (set! bchild (call node_next bchild))))))
                 (set! done done))
             (set! child (call node_next child)))))
@@ -1185,6 +1255,8 @@
     (if (and (gte kw 15) (lte kw 23)) (set! res 204) (block))
     ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
     (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
+    (if (eq kw 68) (set! res 210) (block))
+    (if (eq kw 69) (set! res (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3))) (block))
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
     (if (or (eq kw 50) (or (eq kw 61) (eq kw 62))) (set! res 208) (block))
     (if (or (eq kw 54) (or (eq kw 64) (eq kw 65))) (set! res 209) (block))
@@ -1562,6 +1634,27 @@
           (mem.store8 (+ out_ptr (+ n1 n2)) 107)
           (set! res (+ (+ n1 (+ n2 1)) (call emit_memop (+ out_ptr (+ n1 (+ n2 1))) 40 2))))
         (set! res res))
+    (if (eq op_id 68) ;; ref f -> i32.const (f's position, its table slot)
+        (block
+          (let fname:i32 (call nth_child node 1))
+          (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
+          (if (eq fidx -1) (call set_compile_error 1452) 0)
+          (set! res (call emit_i32_const out_ptr fidx)))
+        (set! res res))
+    (if (eq op_id 69) ;; call_ref sig f args... -> args, f, call_indirect
+        (block
+          (let off:i32 0)
+          (let arg:i32 (call nth_child node 3))
+          (while (neq arg 0)
+            (set! off (+ off (call compile_expr src_ptr arg (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+            (set! arg (call node_next arg)))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 17)))
+          (let tidx:i32 (+ (mem.load32 32) (+ func_count (call sig_index src_ptr (call nth_child node 1)))))
+          (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) tidx)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
+          (set! res off))
+        (set! res res))
     (if (eq op_id 48) ;; ok
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
@@ -1829,7 +1922,9 @@
 
     ;; 1. Type Section (Section ID 1)
     (let sc_off:i32 0)
-    (let total_types:i32 (+ import_count func_count))
+    (let sig_count:i32 (mem.load32 (+ (call ref_state) 4)))
+    (let uses_refs:bool (neq (mem.load32 (call ref_state)) 0))
+    (let total_types:i32 (+ import_count (+ func_count sig_count)))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) total_types)))
     
     ;; WASI import types (fixed order)
@@ -1894,6 +1989,20 @@
             (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
             (mem.store8 (+ scratch sc_off) (call type_id_to_valtype ret_ty)) (set! sc_off (+ sc_off 1))))
       (set! f (+ f 1)))
+
+    ;; call_ref signature types, after the function types (wasm.rs ref_sigs)
+    (loop si 0 (- sig_count 1) 1
+      (let sp:i32 (call ref_sig_ptr si))
+      (let np:i32 (mem.load8 sp))
+      (mem.store8 (+ scratch sc_off) 96) (set! sc_off (+ sc_off 1))
+      (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) np)))
+      (loop pi 1 np 1
+        (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp pi))) (set! sc_off (+ sc_off 1)))
+      (let nr:i32 (mem.load8 (+ sp (+ 1 np))))
+      (mem.store8 (+ scratch sc_off) nr) (set! sc_off (+ sc_off 1))
+      (if (eq nr 1)
+          (block (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp (+ 2 np)))) (set! sc_off (+ sc_off 1)))
+          (block)))
 
     (mem.store8 (+ out off) 1) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -1988,6 +2097,23 @@
       (set! off (+ off 1))
       (set! i (+ i 1)))
 
+    ;; Table Section (Section ID 4), only with function refs: one funcref
+    ;; table holding every function, min = max = function count
+    (if uses_refs
+        (block
+          (set! sc_off 0)
+          (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+          (mem.store8 (+ scratch sc_off) 112) (set! sc_off (+ sc_off 1))
+          (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) func_count)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) func_count)))
+          (mem.store8 (+ out off) 4) (set! off (+ off 1))
+          (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
+          (loop k 0 (- sc_off 1) 1
+            (mem.store8 (+ out off) (mem.load8 (+ scratch k)))
+            (set! off (+ off 1))))
+        (block))
+
     ;; 4. Memory Section (Section ID 5)
     (set! sc_off 0)
     (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; 1 memory
@@ -2035,6 +2161,25 @@
       (mem.store8 (+ out off) (mem.load8 (+ scratch i)))
       (set! off (+ off 1))
       (set! i (+ i 1)))
+
+    ;; Element Section (Section ID 9), only with function refs: one active
+    ;; segment at table offset 0 listing every function in order
+    (if uses_refs
+        (block
+          (set! sc_off 0)
+          (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+          (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
+          (set! sc_off (+ sc_off (call emit_i32_const (+ scratch sc_off) 0)))
+          (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) func_count)))
+          (loop fi 0 (- func_count 1) 1
+            (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count fi)))))
+          (mem.store8 (+ out off) 9) (set! off (+ off 1))
+          (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
+          (loop k 0 (- sc_off 1) 1
+            (mem.store8 (+ out off) (mem.load8 (+ scratch k)))
+            (set! off (+ off 1))))
+        (block))
 
     ;; 6. Code Section (Section ID 10)
     (set! sc_off 0)

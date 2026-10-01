@@ -251,7 +251,7 @@ fn walk_type_names(ty: &mut Type, visit: &mut dyn FnMut(NameKind, &mut String)) 
 }
 
 fn walk_names_expr(expr: &mut Expr, visit: &mut dyn FnMut(NameKind, &mut String)) {
-    let mut each = |es: &mut [Expr], visit: &mut dyn FnMut(NameKind, &mut String)| {
+    let each = |es: &mut [Expr], visit: &mut dyn FnMut(NameKind, &mut String)| {
         for e in es {
             walk_names_expr(e, visit);
         }
@@ -327,5 +327,11 @@ fn walk_names_expr(expr: &mut Expr, visit: &mut dyn FnMut(NameKind, &mut String)
             walk_names_expr(addr, visit);
         }
         Expr::Addr { val, .. } => walk_names_expr(val, visit),
+        Expr::Ref { name, .. } => visit(NameKind::Function, name),
+        Expr::CallRef { sig, func, args, .. } => {
+            walk_type_names(sig, visit);
+            walk_names_expr(func, visit);
+            each(args, visit);
+        }
     }
 }
