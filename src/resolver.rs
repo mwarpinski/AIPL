@@ -66,6 +66,19 @@ impl Resolver {
     /// request bodies): imports are searched as if the text were at
     /// `entry_path`, which need not exist.
     pub fn resolve_source(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
+        // Reading, renaming, expansion, and parsing all recurse once per
+        // nesting level; large programs need more than a default thread's
+        // stack, so the work always runs on its own large-stack thread.
+        let (src, path) = (entry_src.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || Self::resolve_on_this_thread(&src, &path))
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
+    fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
         let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], functions: vec![] };

@@ -27,8 +27,8 @@
       (if (and (gte c 65) (lte c 90)) (mem.store8 p (+ c 32)) (block))))
 
   ;; Word -> count. Keys are slices of `text`, which must outlive the map.
-  (fn count_words [text:(ptr str.Bytes)] -> (ptr strmap.StrMap)
-    (let counts:(ptr strmap.StrMap) (call strmap.make 64))
+  (fn count_words [text:(ptr str.Bytes)] -> (ptr (strmap.StrMap i32))
+    (let counts:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 64))
     (let n:i32 (get text str.Bytes.len))
     (let start:i32 -1)
     ;; i runs one past the end so a final word is closed too
@@ -38,7 +38,7 @@
         ((and inside (lt start 0)) (set! start i))
         ((and (not inside) (gte start 0))
          (let w:(ptr str.Bytes) (call str.bytes (+ (get text str.Bytes.addr) start) (- i start)))
-         (call strmap.put counts w (+ (call strmap.get counts w 0) 1))
+         (call (strmap.set i32) counts w (+ (call (strmap.get_or i32) counts w 0) 1))
          (set! start -1))
         (else (block))))
     counts)
@@ -52,35 +52,31 @@
       (if (neq d 0) (return d) (block)))
     (- la lb))
 
-  ;; vec.sort_by comparator over Entry addresses: higher count first, then
-  ;; byte order. Entries go into the i32 vec with ptr.addr and come back with
-  ;; ptr.cast (no generics yet).
-  (fn by_count_then_word [x:i32 y:i32] -> i32
-    (let a:(ptr Entry) (ptr.cast Entry x))
-    (let b:(ptr Entry) (ptr.cast Entry y))
+  ;; The sort order: higher count first, then byte order.
+  (fn by_count_then_word [a:(ptr Entry) b:(ptr Entry)] -> i32
     (if (neq (get a Entry.count) (get b Entry.count))
         (- (get b Entry.count) (get a Entry.count))
         (call compare_bytes (get a Entry.word) (get b Entry.word))))
 
-  (fn ranked [counts:(ptr strmap.StrMap)] -> (ptr vec.Vec)
-    (let entries:(ptr vec.Vec) (call vec.make (call strmap.count counts)))
-    (loop i 0 (- (call strmap.capacity counts) 1) 1
-      (if (call strmap.slot_used counts i)
+  (fn ranked [counts:(ptr (strmap.StrMap i32))] -> (ptr (vec.Vec (ptr Entry)))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call (strmap.count i32) counts)))
+    (loop i 0 (- (call (strmap.capacity i32) counts) 1) 1
+      (if (call (strmap.slot_used i32) counts i)
           (block
             (let e:(ptr Entry) (new Entry))
-            (put e Entry.word (call strmap.slot_key counts i))
-            (put e Entry.count (call strmap.slot_val counts i))
-            (call vec.push entries (ptr.addr e)))
+            (put e Entry.word (call (strmap.slot_key i32) counts i))
+            (put e Entry.count (call (strmap.slot_val i32) counts i))
+            (call (vec.push (ptr Entry)) entries e))
           (block)))
-    (call vec.sort_by entries (ref by_count_then_word))
+    (call (vec.sort_by (ptr Entry)) entries (ref by_count_then_word))
     entries)
 
   ;; Prints up to `limit` entries as "word count" lines, in one write.
-  (fn print_top [entries:(ptr vec.Vec) limit:i32] -> void
+  (fn print_top [entries:(ptr (vec.Vec (ptr Entry))) limit:i32] -> void
     (let out:(ptr buf.Buf) (call buf.make 256))
-    (let n:i32 (if (lt (call vec.len entries) limit) (call vec.len entries) limit))
+    (let n:i32 (if (lt (call (vec.len (ptr Entry)) entries) limit) (call (vec.len (ptr Entry)) entries) limit))
     (loop i 0 (- n 1) 1
-      (let e:(ptr Entry) (ptr.cast Entry (call vec.get entries i)))
+      (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))
       (call buf.push_bytes out (get e Entry.word))
       (call buf.push_byte out 32)
       (call buf.push_int out (get e Entry.count))
@@ -95,6 +91,6 @@
         (block (call io.eprintln "word_freq: cannot read the input file") (return -1))
         (block))
     (call lowercase text)
-    (let entries:(ptr vec.Vec) (call ranked (call count_words text)))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call ranked (call count_words text)))
     (call print_top entries 5)
-    (call vec.len entries)))
+    (call (vec.len (ptr Entry)) entries)))

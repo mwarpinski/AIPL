@@ -31,13 +31,13 @@
   ;; templates holds the module's own generic templates; known, shared with
   ;; the State, the canonical names of every resolved module's templates.
   (struct Mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool
-               fns:(ptr strmap.StrMap) structs:(ptr strmap.StrMap) aliases:(ptr strmap.StrMap)
-               templates:(ptr strmap.StrMap) known:(ptr strmap.StrMap)])
+               fns:(ptr (strmap.StrMap i32)) structs:(ptr (strmap.StrMap i32)) aliases:(ptr (strmap.StrMap (ptr str.Bytes)))
+               templates:(ptr (strmap.StrMap i32)) known:(ptr (strmap.StrMap i32))])
 
   (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
-                 done:(ptr strmap.StrMap) active:(ptr strmap.StrMap)
+                 done:(ptr (strmap.StrMap i32)) active:(ptr (strmap.StrMap i32))
                  structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)
-                 known:(ptr strmap.StrMap)])
+                 known:(ptr (strmap.StrMap i32))])
 
   ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
   (struct Out [ok:i32 addr:i32 len:i32])
@@ -125,13 +125,13 @@
         (block
           ;; alias.rest -> canonical.rest; any other qualified name is left alone
           (let alias:(ptr str.Bytes) (call slice t 0 dot))
-          (if (call strmap.has (get m Mod.aliases) alias)
-              (return (call concat (ptr.cast str.Bytes (call strmap.get (get m Mod.aliases) alias 0))
+          (if (call (strmap.has (ptr str.Bytes)) (get m Mod.aliases) alias)
+              (return (call concat (call (strmap.get_or (ptr str.Bytes)) (get m Mod.aliases) alias (call str.bytes 0 -1))
                                    (call slice t dot (- len dot))))
               (return t)))
         (block))
-    (let own:(ptr strmap.StrMap) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
-    (if (and (get m Mod.imported) (call strmap.has own t))
+    (let own:(ptr (strmap.StrMap i32)) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
+    (if (and (get m Mod.imported) (call (strmap.has i32) own t))
         (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
         t))
 
@@ -171,17 +171,17 @@
   ;; of this module's own, or another module's through an alias or by its
   ;; canonical name (resolver.rs template_ref). len -1 if h is not a template.
   (fn template_ref [m:(ptr Mod) h:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (if (call strmap.has (get m Mod.templates) h)
+    (if (call (strmap.has i32) (get m Mod.templates) h)
         (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h))
         (block))
     (let dot:i32 (call str.find_byte h 46))
-    (if (and (gte dot 0) (call strmap.has (get m Mod.aliases) (call slice h 0 dot)))
+    (if (and (gte dot 0) (call (strmap.has (ptr str.Bytes)) (get m Mod.aliases) (call slice h 0 dot)))
         (block
-          (let c:(ptr str.Bytes) (call concat (ptr.cast str.Bytes (call strmap.get (get m Mod.aliases) (call slice h 0 dot) 0))
+          (let c:(ptr str.Bytes) (call concat (call (strmap.get_or (ptr str.Bytes)) (get m Mod.aliases) (call slice h 0 dot) (call str.bytes 0 -1))
                                               (call slice h dot (- (get h str.Bytes.len) dot))))
-          (if (call strmap.has (get m Mod.known) c) (return c) (block)))
+          (if (call (strmap.has i32) (get m Mod.known) c) (return c) (block)))
         (block))
-    (if (call strmap.has (get m Mod.known) h) h (call str.bytes 0 -1)))
+    (if (call (strmap.has i32) (get m Mod.known) h) h (call str.bytes 0 -1)))
 
   ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
   ;; group whose head names a generic template prints its canonical name,
@@ -214,15 +214,15 @@
   (fn first_item [src:(ptr Src)] -> (ptr compiler.Node)
     (call nth (get src Src.root) 2))
 
-  (fn make_mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool known:(ptr strmap.StrMap)] -> (ptr Mod)
+  (fn make_mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool known:(ptr (strmap.StrMap i32))] -> (ptr Mod)
     (let m:(ptr Mod) (new Mod))
     (put m Mod.src src)
     (put m Mod.prefix prefix)
     (put m Mod.imported imported)
-    (put m Mod.fns (call strmap.make 64))
-    (put m Mod.structs (call strmap.make 8))
-    (put m Mod.aliases (call strmap.make 8))
-    (put m Mod.templates (call strmap.make 8))
+    (put m Mod.fns (call (strmap.make i32) 64))
+    (put m Mod.structs (call (strmap.make i32) 8))
+    (put m Mod.aliases (call (strmap.make (ptr str.Bytes)) 8))
+    (put m Mod.templates (call (strmap.make i32) 8))
     (put m Mod.known known)
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
@@ -234,20 +234,20 @@
             (let tname:(ptr compiler.Node) (call first_child name))
             (if (and (call is_symbol tname) (or (call eq_lit h "fn") (call eq_lit h "struct")))
                 (block
-                  (call strmap.put (get m Mod.templates) (call text src tname) 1)
+                  (call (strmap.set i32) (get m Mod.templates) (call text src tname) 1)
                   (set! name tname))
                 (block)))
           (block))
       (cond
         ((and (call eq_lit h "fn") (call is_symbol name))
-         (call strmap.put (get m Mod.fns) (call text src name) 1))
+         (call (strmap.set i32) (get m Mod.fns) (call text src name) 1))
         ((and (call eq_lit h "struct") (call is_symbol name))
-         (call strmap.put (get m Mod.structs) (call text src name) 1))
+         (call (strmap.set i32) (get m Mod.structs) (call text src name) 1))
         ((call eq_lit h "import")
          ;; (import name as alias)
          (let alias:(ptr compiler.Node) (call nth item 3))
          (if (call is_symbol alias)
-             (call strmap.put (get m Mod.aliases) (call text src alias) (ptr.addr (call text src name)))
+             (call (strmap.set (ptr str.Bytes)) (get m Mod.aliases) (call text src alias) (call text src name))
              (block)))
         (else (block)))
       (set! item (get item compiler.Node.next)))
@@ -271,11 +271,11 @@
         (else (block)))
       (set! item (get item compiler.Node.next)))
     ;; record this module's templates under their canonical names
-    (let t:(ptr strmap.StrMap) (get m Mod.templates))
-    (loop i 0 (- (call strmap.capacity t) 1) 1
-      (if (call strmap.slot_used t i)
-          (call strmap.put (get st State.known)
-                (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call strmap.slot_key t i)) (call strmap.slot_key t i))
+    (let t:(ptr (strmap.StrMap i32)) (get m Mod.templates))
+    (loop i 0 (- (call (strmap.capacity i32) t) 1) 1
+      (if (call (strmap.slot_used i32) t i)
+          (call (strmap.set i32) (get st State.known)
+                (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call (strmap.slot_key i32) t i)) (call (strmap.slot_key i32) t i))
                 1)
           (block))))
 
@@ -298,8 +298,8 @@
     (call concat (call concat dir name) (call str.from_str ".aipl")))
 
   (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> bool
-    (if (call strmap.has (get st State.done) name) (return true) (block))
-    (if (call strmap.has (get st State.active) name) (return (call fail st "circular import: " name)) (block))
+    (if (call (strmap.has i32) (get st State.done) name) (return true) (block))
+    (if (call (strmap.has i32) (get st State.active) name) (return (call fail st "circular import: " name)) (block))
     ;; search: importer's directory, entry's directory, standard library
     (let path:(ptr str.Bytes) (call with_ext dir name))
     (let src:(ptr Src) (call load path))
@@ -324,11 +324,11 @@
             (set! start (+ i 1)))
           (block)))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " name)) (block))
-    (call strmap.put (get st State.active) name 1)
+    (call (strmap.set i32) (get st State.active) name 1)
     (if (call resolve_imports st src (call dirname path)) (block) (return false))
     (call emit_module st (call make_mod src name true (get st State.known)))
-    (call strmap.remove (get st State.active) name)
-    (call strmap.put (get st State.done) name 1)
+    (call (strmap.remove i32) (get st State.active) name)
+    (call (strmap.set i32) (get st State.done) name 1)
     true)
 
   ;; The library directories to search, colon-separated: std_dir, then AIPL_PATH.
@@ -347,12 +347,12 @@
     (let st:(ptr State) (new State))
     (put st State.entry_dir (call dirname entry))
     (put st State.lib_dirs (call library_dirs std_dir))
-    (put st State.done (call strmap.make 16))
-    (put st State.active (call strmap.make 16))
+    (put st State.done (call (strmap.make i32) 16))
+    (put st State.active (call (strmap.make i32) 16))
     (put st State.structs_out (call buf.make 1024))
     (put st State.fns_out (call buf.make 65536))
     (put st State.err err)
-    (put st State.known (call strmap.make 16))
+    (put st State.known (call (strmap.make i32) 16))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
     (if (call resolve_imports st src (call dirname entry)) (block) (return false))
     (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))

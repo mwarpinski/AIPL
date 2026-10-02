@@ -89,10 +89,18 @@ fn regroup(name: String, work: Vec<(Item, Kind)>) -> FlatProgram {
     FlatProgram { name, structs: s.into_iter().chain(si).collect(), fns: f.into_iter().chain(fi).collect() }
 }
 
+/// Built-in forms and types: a template with one of these names would be
+/// indistinguishable from the form itself, e.g. `(get p (Vec i32) len)`.
+const BUILT_IN: &[&str] = &["module", "import", "fn", "struct", "let", "set!", "if", "while", "loop", "block", "call", "ref", "call_ref", "new", "get", "put", "sizeof", "ptr", "arr", "result", "ok", "err", "match_result", "return", "break", "continue", "cond", "else", "req", "ens", "inv", "+", "-", "*", "/", "%", "^", "eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not", "shl", "shr", "shru", "bitand", "bitor", "divu", "remu", "i32", "i64", "f32", "f64", "bool", "str", "void"];
+
 /// `Some((name, params))` for a template item.
 fn generic_header(item: &Item) -> Result<Option<(String, Vec<String>)>, String> {
     let Some((name, true)) = item_name(&item.sx) else { return Ok(None) };
     let head = &item.sx.items()[1];
+    let base = name.rsplit('.').next().unwrap_or(name);
+    if BUILT_IN.contains(&base) {
+        return Err(at(&item.file, head, &format!("generic name '{}' is a built-in form; choose another name", base)));
+    }
     let mut params = Vec::new();
     for p in &head.items()[1..] {
         match p.symbol() {

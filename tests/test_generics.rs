@@ -140,6 +140,8 @@ fn malformed_generics_are_errors() {
     assert!(e.contains("a generic struct field is written (get p (Name T...) field)"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> i32 (call (f (ptr T)) x)) (fn g [] -> i32 (call (f i32) 1)))");
     assert!(e.contains("generic instance name longer than 1024 characters"), "{e}");
+    let e = resolve_err("(module m (fn (get T) [x:T] -> T x))");
+    assert!(e.contains("generic name 'get' is a built-in form"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> T x) (fn (f T) [x:T] -> T x))");
     assert!(e.contains("generic 'f' is defined twice"), "{e}");
     // a type error inside an instance points at the template's source line
