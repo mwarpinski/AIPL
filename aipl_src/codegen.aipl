@@ -103,7 +103,7 @@
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
-          (mem.store32 (+ (mem.load32 8) 12) (mem.alloc 40))
+          (mem.store32 (+ (mem.load32 8) 12) (mem.alloc 44))
           0)
         0)
 
@@ -118,7 +118,7 @@
     (call set_str_count 0)
     (call set_newline_addr 0)
     (let i:i32 0)
-    (while (lt i 10)
+    (while (lt i 11)
       (mem.store32 (call wasi_cell i) -1)
       (set! i (+ i 1)))
     0)
@@ -244,6 +244,13 @@
     (set! o (call store_kw_str k 549 97 114 103 115 46 103 101 116 0 0 0 0 8)) ;; args.get (op 74)
     (set! o (call store_kw_str k 557 101 110 118 46 115 105 122 101 115 0 0 0 9)) ;; env.sizes (op 75)
     (set! o (call store_kw_str k 566 101 110 118 46 103 101 116 0 0 0 0 0 7)) ;; env.get (op 76)
+    (set! o (call store_kw_str k 573 116 104 114 101 97 100 46 115 112 97 119 110 12)) ;; thread.spawn (op 77)
+    (set! o (call store_kw_str k 585 116 104 114 101 97 100 46 106 111 105 110 0 11)) ;; thread.join (op 78)
+    (set! o (call store_kw_str k 596 97 116 111 109 105 99 46 97 100 100 0 0 10)) ;; atomic.add (op 79)
+    (set! o (call store_kw_str k 606 97 116 111 109 105 99 46 99 97 115 0 0 10)) ;; atomic.cas (op 80)
+    (set! o (call store_kw_str k 616 97 116 111 109 105 99 46 108 111 99 107 0 11)) ;; atomic.lock (op 81)
+    (set! o (call store_kw_str k 627 97 116 111 109 105 99 46 117 110 108 111 99 12)) ;; atomic.unlock (op 82)
+    (set! o (call store_kw_str k 639 107 0 0 0 0 0 0 0 0 0 0 0 1))
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -344,6 +351,12 @@
     (if (call sym_eq src_ptr pos len (+ k 549) 8) (set! res 74) (block))
     (if (call sym_eq src_ptr pos len (+ k 557) 9) (set! res 75) (block))
     (if (call sym_eq src_ptr pos len (+ k 566) 7) (set! res 76) (block))
+    (if (call sym_eq src_ptr pos len (+ k 573) 12) (set! res 77) (block))
+    (if (call sym_eq src_ptr pos len (+ k 585) 11) (set! res 78) (block))
+    (if (call sym_eq src_ptr pos len (+ k 596) 10) (set! res 79) (block))
+    (if (call sym_eq src_ptr pos len (+ k 606) 10) (set! res 80) (block))
+    (if (call sym_eq src_ptr pos len (+ k 616) 11) (set! res 81) (block))
+    (if (call sym_eq src_ptr pos len (+ k 627) 13) (set! res 82) (block))
     (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (block))
     (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (block))
     (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (block))
@@ -610,7 +623,23 @@
 
   ;; After the heap cursor is bumped: grow memory to cover it if needed, with
   ;; no locals and no net stack effect (wasm.rs emit_grow_to_cursor).
-  ;; i32.atomic.rmw.add with align 2, offset 0: [addr] [n] -> [old]. Every
+;; A 0xFE-prefixed atomic instruction with align 2, offset 0.
+  (fn emit_atomic [ptr:i32 op:i32] -> i32
+    (mem.store8 ptr 254)
+    (let n:i32 (call compiler.encode_u32 (+ ptr 1) op))
+    (mem.store8 (+ ptr (+ 1 n)) 2)
+    (mem.store8 (+ ptr (+ 2 n)) 0)
+    (+ 3 n))
+
+  ;; With a condition on the stack: if it holds, unreachable.
+  (fn emit_trap_if [ptr:i32] -> i32
+    (mem.store8 ptr 4)
+    (mem.store8 (+ ptr 1) 64)
+    (mem.store8 (+ ptr 2) 0)
+    (mem.store8 (+ ptr 3) 11)
+    4)
+
+    ;; i32.atomic.rmw.add with align 2, offset 0: [addr] [n] -> [old]. Every
   ;; allocation claims its block with one of these on the cursor at address 0.
   (fn emit_rmw_add [ptr:i32] -> i32
     (mem.store8 ptr 254)
@@ -788,8 +817,9 @@
 
   ;; ===== Voidness classification =====
   (fn is_void_op [op_id:i32] -> bool
+    (or (or (eq op_id 81) (eq op_id 82))
     (or (and (gte op_id 70) (lte op_id 72))
-    (or (eq op_id 12) (or (eq op_id 13) (or (eq op_id 14) (or (eq op_id 32) (or (eq op_id 33) (or (eq op_id 52) (eq op_id 56)))))))))
+    (or (eq op_id 12) (or (eq op_id 13) (or (eq op_id 14) (or (eq op_id 32) (or (eq op_id 33) (or (eq op_id 52) (eq op_id 56))))))))))
 
   (fn last_child [group:i32] -> i32
     (let cur:i32 (call node_a group))
@@ -1051,11 +1081,11 @@
           addr)))
 
   ;; ===== WASI Import Detection =====
-  ;; WASI import table, 10 words at struct_table + 12, in the fixed import
+  ;; WASI import table, 11 words at struct_table + 12, in the fixed import
   ;; order (wasm.rs enum Wasi): fd_write, fd_read, path_open, fd_close,
   ;; proc_exit, path_unlink_file, args_sizes_get, args_get,
-  ;; environ_sizes_get, environ_get. 1 while marking used, then the
-  ;; function index, or -1 if unused.
+  ;; environ_sizes_get, environ_get, and wasi-threads' thread-spawn (10).
+  ;; 1 while marking used, then the function index, or -1 if unused.
   (fn wasi_cell [wasi_id:i32] -> i32
     (+ (mem.load32 (+ (call struct_table) 12)) (* wasi_id 4)))
 
@@ -1066,7 +1096,7 @@
   (fn finalize_wasi_indices [] -> i32
     (let count:i32 0)
     (let i:i32 0)
-    (while (lt i 10)
+    (while (lt i 11)
       (let cell_idx:i32 (call wasi_cell i))
       (if (eq (mem.load32 cell_idx) 1)
           (block
@@ -1083,6 +1113,10 @@
   (fn get_wasi_index [wasi_id:i32] -> i32
     (mem.load32 (call wasi_cell wasi_id)))
 
+  ;; A module that uses thread.spawn is threaded (wasm.rs `threaded`).
+  (fn threaded [] -> bool
+    (neq (call get_wasi_index 10) -1))
+
   ;; ===== AST Walker for WASI & Strings =====
   (fn walk_ast_for_wasi [src_ptr:i32 node:i32] -> i32
     (let kind:i32 (call node_kind node))
@@ -1098,6 +1132,7 @@
             ((eq kw 37) (call mark_wasi_used 3) 0)
             ((eq kw 38) (call mark_wasi_used 5) 0)
             ((and (gte kw 73) (lte kw 76)) (call mark_wasi_used (- kw 67)) 0)
+            ((eq kw 77) (call mark_wasi_used 10) 0)
             (else 0))
           (let child:i32 (call node_a node))
           (while (neq child 0) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
@@ -1136,7 +1171,15 @@
   ;; Index of the signature of a call_ref's type node, adding it if new.
   (fn sig_index [src_ptr:i32 sig:i32] -> i32
     (let tmp:i32 (call ref_sig_ptr 32))
+    ;; clear the 20-byte buffer: a shorter signature must not keep the tail of
+    ;; a longer earlier one, or identical signatures would not compare equal
+    (loop b 0 19 1 (mem.store8 (+ tmp b) 0))
     (call encode_sig src_ptr sig tmp)
+    (call add_sig_from_tmp))
+
+  ;; Index of the signature in the scratch buffer, adding it if new.
+  (fn add_sig_from_tmp [] -> i32
+    (let tmp:i32 (call ref_sig_ptr 32))
     (let count:i32 (mem.load32 (+ (call ref_state) 4)))
     (loop i 0 (- count 1) 1
       (let same:bool true)
@@ -1148,6 +1191,17 @@
     (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
     (mem.store32 (+ (call ref_state) 4) (+ count 1))
     count)
+
+  ;; Threaded modules call workers through the table as (fn [i32] -> i32);
+  ;; registered after the walk, as wasm.rs appends it. Returns its index.
+  (fn worker_sig_index [] -> i32
+    (let tmp:i32 (call ref_sig_ptr 32))
+    (loop b 0 19 1 (mem.store8 (+ tmp b) 0))
+    (mem.store8 tmp 1)
+    (mem.store8 (+ tmp 1) 127)
+    (mem.store8 (+ tmp 2) 1)
+    (mem.store8 (+ tmp 3) 127)
+    (call add_sig_from_tmp))
 
   ;; Marks the module as using function refs and collects call_ref signatures
   ;; in source order, as wasm.rs walk_module does.
@@ -1222,7 +1276,9 @@
         (block
           (let kw:i32 (call group_head_keyword src_ptr node))
                     ;; WASI ops and arr.new (54) get the two extra scratch locals, as in wasm.rs fn_uses_io
-          (let is_io:bool (or (or (and (gte kw 32) (lte kw 38)) (and (gte kw 73) (lte kw 76))) (eq kw 54)))
+          ;; and thread.spawn (77), atomic.cas/lock/unlock (80-82)
+          (let is_io:bool (or (or (and (gte kw 32) (lte kw 38)) (and (gte kw 73) (lte kw 77)))
+                              (or (eq kw 54) (and (gte kw 80) (lte kw 82)))))
           (if is_io
               true
               (block
@@ -1319,6 +1375,9 @@
     ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
     (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
     (if (eq kw 68) (set! res 210) (block))
+    ;; atomic.cas -> bool; atomic.lock / unlock are statements
+    (if (eq kw 80) (set! res 204) (block))
+    (if (or (eq kw 81) (eq kw 82)) (set! res 205) (block))
     (if (eq kw 69) (set! res (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3))) (block))
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
     (if (or (eq kw 50) (or (eq kw 61) (eq kw 62))) (set! res 208) (block))
@@ -1415,6 +1474,22 @@
     off)
 
   ;; Emit errno to result helper
+  ;; The address of runtime cell `cell` (64..88), as wasm.rs emit_rt: the fixed
+  ;; cell, or in a threaded module global 0 (this thread's scratch block) plus
+  ;; the cell's offset.
+  (fn emit_rt [ptr:i32 cell:i32] -> i32
+    (if (call threaded)
+        (block
+          (let off:i32 (call emit_byte ptr 35)) ;; global.get 0
+          (set! off (+ off (call emit_byte (+ ptr off) 0)))
+          (if (neq cell 64)
+              (block
+                (set! off (+ off (call emit_i32_const (+ ptr off) (- cell 64))))
+                (set! off (+ off (call emit_byte (+ ptr off) 106))))
+              (block))
+          off)
+        (call emit_i32_const ptr cell)))
+
   (fn emit_errno_to_result [out_ptr:i32 out_cell:i32] -> i32
     (let off:i32 0)
     (mem.store8 (+ out_ptr off) 4)
@@ -1425,7 +1500,7 @@
     (set! off (+ off 1))
     (if (gte out_cell 0)
         (block
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) out_cell)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) out_cell)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2))))
         (set! off (+ off (call emit_i32_const (+ out_ptr off) 0))))
     (mem.store8 (+ out_ptr off) 11)
@@ -1480,10 +1555,10 @@
             (set! off (+ off (call compile_expr src_ptr arg (+ out_ptr off) locals_base locals_count func_table_base func_count)))
             (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
             ;; iov0 = { ptr, len }
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
             (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 68)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
             (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
             (mem.store8 (+ out_ptr off) 107) (set! off (+ off 1)) ;; sub
@@ -1491,24 +1566,24 @@
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
             ;; iov1 = { "\n", 1 }
             (let nl_addr:i32 (call get_newline_addr))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 72)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 72)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) nl_addr)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 76)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 76)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
             ;; Call fd_write (1, iovs=64, iovs_len=1, nwritten=80)
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 80)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
             (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
             (set! off (+ off (call emit_byte (+ out_ptr off) 26))) ;; drop
             ;; Call fd_write (1, iovs=72, iovs_len=1, nwritten=80)
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 72)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 72)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_i32_const (+ out_ptr off) 80)))
+            (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
             (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
             (set! off (+ off (call emit_byte (+ out_ptr off) 26))) ;; drop
             
@@ -1557,7 +1632,7 @@
           ;; fdflags = 0
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           ;; out_fd cell RT_OPENED_FD = 84
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 84)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 84)))
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 2))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 84)))
           (set! res off))
@@ -1572,18 +1647,18 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
           ;; iov0: RT_IOV0_BUF = 64
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; iov0: RT_IOV0_LEN = 68
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 68)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; call fd_read(fd, iovs=64, iovs_len=1, nread=80)
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 1))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
@@ -1598,18 +1673,18 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
           ;; iov0: RT_IOV0_BUF = 64
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; iov0: RT_IOV0_LEN = 68
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 68)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; call fd_write(fd, iovs=64, iovs_len=1, nwritten=80)
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
@@ -1892,6 +1967,144 @@
           (set! res off))
         (block))
 
+    (if (eq op_id 79) ;; atomic.add ptr v -> previous value (wasm.rs AtomicAdd)
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_store_guard (+ out_ptr off) locals_count)))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 30)))
+          (set! res off))
+        (block))
+    (if (eq op_id 80) ;; atomic.cas ptr expected new -> bool
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_store_guard (+ out_ptr off) locals_count)))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 3) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 72)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 70)))
+          (set! res off))
+        (block))
+    (if (eq op_id 81) ;; atomic.lock ptr: cmpxchg 0 -> 1, sleep while held, trap on a non-lock word
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_store_guard (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 72)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 34)))
+          (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 69)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 71)))
+          (set! off (+ off (call emit_trap_if (+ out_ptr off))))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 66)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 127)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 26)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+          (set! res off))
+        (block))
+    (if (eq op_id 82) ;; atomic.unlock ptr: xchg 1 -> 0 (trap otherwise), wake all waiters
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_store_guard (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 34)))
+          (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 65)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 71)))
+          (set! off (+ off (call emit_trap_if (+ out_ptr off))))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) -1)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 26)))
+          (set! res off))
+        (block))
+    (if (eq op_id 77) ;; thread.spawn worker arg -> handle: a 16-byte record [done result fn arg] passed to thread-spawn
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 16)))
+          (set! off (+ off (call emit_rmw_add (+ out_ptr off))))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 0)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 4)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
+          (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 8)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
+          (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 12)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 10))))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 72)))
+          (set! off (+ off (call emit_trap_if (+ out_ptr off))))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! res off))
+        (block))
+    (if (eq op_id 78) ;; thread.join handle -> result: sleep until done, read the result
+        (block
+          (let off:i32 0)
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 16)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 66)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 127)))
+          (set! off (+ off (call emit_atomic (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 26)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_memop_offset (+ out_ptr off) 40 2 4)))
+          (set! res off))
+        (block))
+
     ;; and / or short-circuit, as wasm.rs: (and a b) = a; if (result i32) b else
     ;; i32.const 0 end; (or a b) = a; if (result i32) i32.const 1 else b end.
     (if (or (eq op_id 21) (eq op_id 22))
@@ -2069,6 +2282,13 @@
     (let root:i32 (ptr.addr (call compiler.parse_ast tok_buf tok_cnt ast_buf)))
     
     (let _p:i32 (call walk_module_prepass src_ptr root))
+    ;; threaded modules call workers through the table (wasm.rs worker_sig)
+    (let worker_type:i32 0)
+    (if (call threaded)
+        (block
+          (mem.store32 (call ref_state) 1)
+          (set! worker_type (call worker_sig_index)))
+        (block))
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
     (if (gt (call heap_start) 1048576) (call set_compile_error 768) 0)
     (let _s:i32 (call collect_structs src_ptr root))
@@ -2088,11 +2308,12 @@
     (let sig_count:i32 (mem.load32 (+ (call ref_state) 4)))
     (let uses_refs:bool (neq (mem.load32 (call ref_state)) 0))
     (let total_types:i32 (+ import_count (+ func_count sig_count)))
+    (if (call threaded) (set! total_types (+ total_types 2)) (block))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) total_types)))
     
     ;; WASI import types (fixed order)
     (let w:i32 0)
-    (while (lt w 10)
+    (while (lt w 11)
       (let w_idx:i32 (call get_wasi_index w))
       (if (neq w_idx -1)
           (block
@@ -2118,6 +2339,9 @@
               ((eq w 5) (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (set! sc_off (+ sc_off 3))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
+              ;; thread-spawn: [i32] -> [i32]
+              ((eq w 10) (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+                  (mem.store8 (+ scratch (+ sc_off 2)) 1) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4)) 0)
               ;; args/environ sizes and get: [i32 i32] -> [i32]
               ((gte w 6) (mem.store8 (+ scratch sc_off) 2) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2))
@@ -2159,6 +2383,14 @@
       (if (eq nr 1)
           (block (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp (+ 2 np)))) (set! sc_off (+ sc_off 1)))
           (block)))
+    ;; threaded: the start function [] -> [] and wasi_thread_start [i32 i32] -> []
+    (if (call threaded)
+        (block
+          (mem.store8 (+ scratch sc_off) 96) (mem.store8 (+ scratch (+ sc_off 1)) 0) (mem.store8 (+ scratch (+ sc_off 2)) 0)
+          (mem.store8 (+ scratch (+ sc_off 3)) 96) (mem.store8 (+ scratch (+ sc_off 4)) 2) (mem.store8 (+ scratch (+ sc_off 5)) 127)
+          (mem.store8 (+ scratch (+ sc_off 6)) 127) (mem.store8 (+ scratch (+ sc_off 7)) 0)
+          (set! sc_off (+ sc_off 8)))
+        (block))
 
     (mem.store8 (+ out off) 1) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -2169,22 +2401,28 @@
       (set! i (+ i 1)))
 
     ;; 2. Import Section (Section ID 2, only if import_count > 0)
-    (if (gt import_count 0)
+    (if (or (gt import_count 0) (call threaded))
         (block
           (set! sc_off 0)
-          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) import_count)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded) (+ import_count 1) import_count))))
           (let curr_imp:i32 0)
           (set! w 0)
-          (while (lt w 10)
+          (while (lt w 11)
             (let w_idx:i32 (call get_wasi_index w))
             (if (neq w_idx -1)
                 (block
-                  ;; module name "wasi_snapshot_preview1" (22 bytes)
-                  (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 22)))
-                  (let m_str:i32 (+ scratch sc_off))
-                  (call store_kw_str m_str 0 119 97 115 105 95 115 110 97 112 115 104 111 12)
-                  (call store_kw_str m_str 12 116 95 112 114 101 118 105 101 119 49 0 0 10)
-                  (set! sc_off (+ sc_off 22))
+                  ;; module name: "wasi" for thread-spawn, else "wasi_snapshot_preview1"
+                  (if (eq w 10)
+                      (block
+                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 4)))
+                        (call store_kw_str (+ scratch sc_off) 0 119 97 115 105 0 0 0 0 0 0 0 0 4)
+                        (set! sc_off (+ sc_off 4)))
+                      (block
+                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 22)))
+                        (let m_str:i32 (+ scratch sc_off))
+                        (call store_kw_str m_str 0 119 97 115 105 95 115 110 97 112 115 104 111 12)
+                        (call store_kw_str m_str 12 116 95 112 114 101 118 105 101 119 49 0 0 10)
+                        (set! sc_off (+ sc_off 22))))
                   ;; field name
                   (cond
                     ((eq w 0) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
@@ -2225,6 +2463,9 @@
                         (let p_str:i32 (+ scratch sc_off))
                         (call store_kw_str p_str 0 101 110 118 105 114 111 110 95 103 101 116 0 11)
                         (set! sc_off (+ sc_off 11)) 0)
+                    ((eq w 10) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 12)))
+                        (call store_kw_str (+ scratch sc_off) 0 116 104 114 101 97 100 45 115 112 97 119 110 12)
+                        (set! sc_off (+ sc_off 12)) 0)
                     (else 0))
                   ;; Entity type 0 (Func) + type index
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
@@ -2233,6 +2474,19 @@
                   0)
                 0)
             (set! w (+ w 1)))
+          ;; threaded: the shared memory, "env" "memory", min 16 max 1024 (flags 3: max + shared)
+          (if (call threaded)
+              (block
+                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 3)))
+                (call store_kw_str (+ scratch sc_off) 0 101 110 118 0 0 0 0 0 0 0 0 0 3)
+                (set! sc_off (+ sc_off 3))
+                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 6)))
+                (call store_kw_str (+ scratch sc_off) 0 109 101 109 111 114 121 0 0 0 0 0 0 6)
+                (set! sc_off (+ sc_off 6))
+                (mem.store8 (+ scratch sc_off) 2) (mem.store8 (+ scratch (+ sc_off 1)) 3) (set! sc_off (+ sc_off 2))
+                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16)))
+                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 1024))))
+              (block))
           
           (mem.store8 (+ out off) 2) (set! off (+ off 1))
           (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -2244,13 +2498,21 @@
           0)
         0)
 
-    ;; 3. Function Section (Section ID 3)
+    ;; 3. Function Section (Section ID 3); a threaded module adds its start
+    ;; function and wasi_thread_start, whose types follow the call_ref types
     (set! sc_off 0)
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) func_count)))
+    (let n_fns:i32 (if (call threaded) (+ func_count 2) func_count))
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) n_fns)))
     (set! f 0)
     (while (lt f func_count)
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count f))))
       (set! f (+ f 1)))
+    (if (call threaded)
+        (block
+          (let tbase:i32 (+ import_count (+ func_count sig_count)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) tbase)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ tbase 1)))))
+        (block))
 
     (mem.store8 (+ out off) 3) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -2277,24 +2539,33 @@
             (set! off (+ off 1))))
         (block))
 
-    ;; 4. Memory Section (Section ID 5)
-    (set! sc_off 0)
-    (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; 1 memory
-    (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; flags: has max
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16))) ;; min 16
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 1024))) ;; max 1024 pages (vm.rs MAX_PAGES)
+    ;; 4. Memory Section (Section ID 5); a threaded module imports its memory
+    ;; and has a Global Section (ID 6) instead: global 0, the runtime scratch
+    ;; pointer, mutable i32 = 64
+    (if (call threaded)
+        (block
+          (mem.store8 (+ out off) 6) (mem.store8 (+ out (+ off 1)) 7) (mem.store8 (+ out (+ off 2)) 1)
+          (mem.store8 (+ out (+ off 3)) 127) (mem.store8 (+ out (+ off 4)) 1)
+          (set! off (+ off 5))
+          (set! off (+ off (call emit_i32_const (+ out off) 64)))
+          (mem.store8 (+ out off) 11) (set! off (+ off 1)))
+        (block
+      (set! sc_off 0)
+      (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; 1 memory
+      (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; flags: has max
+      (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16))) ;; min 16
+      (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 1024))) ;; max 1024 pages (vm.rs MAX_PAGES)
 
-    (mem.store8 (+ out off) 5) (set! off (+ off 1))
-    (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
-    (set! i 0)
-    (while (lt i sc_off)
-      (mem.store8 (+ out off) (mem.load8 (+ scratch i)))
-      (set! off (+ off 1))
-      (set! i (+ i 1)))
-
+      (mem.store8 (+ out off) 5) (set! off (+ off 1))
+      (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
+      (set! i 0)
+      (while (lt i sc_off)
+        (mem.store8 (+ out off) (mem.load8 (+ scratch i)))
+        (set! off (+ off 1))
+        (set! i (+ i 1)))))
     ;; 5. Export Section (Section ID 7)
     (set! sc_off 0)
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ func_count 1))))
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded) (+ func_count 2) (+ func_count 1)))))
     (set! f 0)
     (while (lt f func_count)
       (let entry:i32 (call func_entry_ptr (call fn_table) f))
@@ -2316,6 +2587,15 @@
     (set! sc_off (+ sc_off 6))
     (mem.store8 (+ scratch sc_off) 2) (set! sc_off (+ sc_off 1)) ;; ExportKind: Memory
     (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; Index 0
+    (if (call threaded)
+        (block
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 17)))
+          (call store_kw_str (+ scratch sc_off) 0 119 97 115 105 95 116 104 114 101 97 100 95 12)
+          (call store_kw_str (+ scratch sc_off) 12 115 116 97 114 116 0 0 0 0 0 0 0 5)
+          (set! sc_off (+ sc_off 17))
+          (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count 1))))))
+        (block))
 
     (mem.store8 (+ out off) 7) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -2325,6 +2605,14 @@
       (set! off (+ off 1))
       (set! i (+ i 1)))
 
+    ;; Start Section (Section ID 8), threaded only: the one-time init function
+    (if (call threaded)
+        (block
+          (mem.store8 (+ out off) 8) (set! off (+ off 1))
+          (let n:i32 (call compiler.encode_u32 (+ scratch 0) (+ import_count func_count)))
+          (set! off (+ off (call compiler.encode_u32 (+ out off) n)))
+          (set! off (+ off (call compiler.encode_u32 (+ out off) (+ import_count func_count)))))
+        (block))
     ;; Element Section (Section ID 9), only with function refs: one active
     ;; segment at table offset 0 listing every function in order
     (if uses_refs
@@ -2344,9 +2632,16 @@
             (set! off (+ off 1))))
         (block))
 
+    ;; Data Count Section (Section ID 12), threaded only (memory.init needs it)
+    (let n_segments:i32 (if (gt (call get_str_blob_len) 0) 2 1))
+    (if (call threaded)
+        (block
+          (mem.store8 (+ out off) 12) (mem.store8 (+ out (+ off 1)) 1) (mem.store8 (+ out (+ off 2)) n_segments)
+          (set! off (+ off 3)))
+        (block))
     ;; 6. Code Section (Section ID 10)
     (set! sc_off 0)
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) func_count)))
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) n_fns)))
     
     (let fcode_scratch:i32 (call cg_alloc cap))
     (set! f 0)
@@ -2404,6 +2699,17 @@
         (set! i (+ i 1)))
       (set! f (+ f 1)))
 
+    (if (call threaded)
+        (block
+          (let b1:i32 (call threaded_init_body fcode_scratch (call get_str_blob_len)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b1)))
+          (loop k 0 (- b1 1) 1 (mem.store8 (+ scratch (+ sc_off k)) (mem.load8 (+ fcode_scratch k))))
+          (set! sc_off (+ sc_off b1))
+          (let b2:i32 (call thread_start_body fcode_scratch (+ import_count (+ func_count worker_type))))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b2)))
+          (loop k 0 (- b2 1) 1 (mem.store8 (+ scratch (+ sc_off k)) (mem.load8 (+ fcode_scratch k))))
+          (set! sc_off (+ sc_off b2)))
+        (block))
     (mem.store8 (+ out off) 10) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
     (set! i 0)
@@ -2420,11 +2726,15 @@
     (if has_strings (set! seg_cnt 2) (set! seg_cnt 1))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) seg_cnt)))
     
-    ;; Segment 0: heap cursor = heap_start at address 0
-    (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; active segment 0
-    (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
-    (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 0)))
-    (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)) ;; end
+    ;; Segment 0: heap cursor = heap_start at address 0 (passive when
+    ;; threaded: the start function copies it once)
+    (if (call threaded)
+        (block (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)))
+        (block
+          (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; active segment 0
+          (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
+          (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 0)))
+          (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)))) ;; end
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 4))) ;; 4 bytes
     (mem.store32 (+ scratch sc_off) (call heap_start))
     (set! sc_off (+ sc_off 4))
@@ -2432,10 +2742,13 @@
     ;; Segment 1: string blob at address 1024
     (if has_strings
         (block
-          (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
-          (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
-          (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 1024)))
-          (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)) ;; end
+          (if (call threaded)
+              (block (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)))
+              (block
+                (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
+                (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
+                (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 1024)))
+                (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)))) ;; end
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) string_blob_len)))
           (set! i 0)
           (while (lt i string_blob_len)
@@ -2457,7 +2770,72 @@
     (mem.store32 60 out)
     (if (call has_compile_error) -1 off))
 
-  ;; ===== Harnesses =====
+;; ===== Threaded modules: generated functions (wasm.rs threaded_init_function, thread_start_function) =====
+
+  ;; The start function body (no locals): the first instance copies the heap
+  ;; cursor and the string literals into the shared memory, guarded by the
+  ;; flag at 88. Returns the byte count.
+  (fn threaded_init_body [p:i32 blob_len:i32] -> i32
+    (let off:i32 (call emit_byte p 0))
+    (set! off (+ off (call emit_i32_const (+ p off) 88)))
+    (set! off (+ off (call emit_i32_const (+ p off) 0)))
+    (set! off (+ off (call emit_i32_const (+ p off) 1)))
+    (set! off (+ off (call emit_atomic (+ p off) 72)))
+    (set! off (+ off (call emit_byte (+ p off) 69)))
+    (set! off (+ off (call emit_byte (+ p off) 4)))
+    (set! off (+ off (call emit_byte (+ p off) 64)))
+    (set! off (+ off (call emit_i32_const (+ p off) 0)))
+    (set! off (+ off (call emit_i32_const (+ p off) 0)))
+    (set! off (+ off (call emit_i32_const (+ p off) 4)))
+    (set! off (+ off (call emit_memory_init (+ p off) 0)))
+    (if (gt blob_len 0)
+        (block
+          (set! off (+ off (call emit_i32_const (+ p off) 1024)))
+          (set! off (+ off (call emit_i32_const (+ p off) 0)))
+          (set! off (+ off (call emit_i32_const (+ p off) blob_len)))
+          (set! off (+ off (call emit_memory_init (+ p off) 1))))
+        (block))
+    (set! off (+ off (call emit_byte (+ p off) 11)))
+    (+ off (call emit_byte (+ p off) 11)))
+
+  ;; memory.init data_index, memory 0
+  (fn emit_memory_init [p:i32 data_index:i32] -> i32
+    (mem.store8 p 252)
+    (mem.store8 (+ p 1) 8)
+    (let n:i32 (call compiler.encode_u32 (+ p 2) data_index))
+    (mem.store8 (+ p (+ 2 n)) 0)
+    (+ 3 n))
+
+  ;; wasi_thread_start(tid, rec) body (no locals): allocate this thread's
+  ;; 24-byte runtime scratch block, run rec.fn(rec.arg) through the table,
+  ;; store the result, set done, and wake joiners.
+  (fn thread_start_body [p:i32 worker_type:i32] -> i32
+    (let off:i32 (call emit_byte p 0))
+    (set! off (+ off (call emit_i32_const (+ p off) 0)))
+    (set! off (+ off (call emit_i32_const (+ p off) 24)))
+    (set! off (+ off (call emit_rmw_add (+ p off))))
+    (set! off (+ off (call emit_byte (+ p off) 36))) ;; global.set 0
+    (set! off (+ off (call emit_byte (+ p off) 0)))
+    (set! off (+ off (call emit_grow_to_cursor (+ p off))))
+    (set! off (+ off (call emit_local_get (+ p off) 1)))
+    (set! off (+ off (call emit_local_get (+ p off) 1)))
+    (set! off (+ off (call emit_memop_offset (+ p off) 40 2 12)))
+    (set! off (+ off (call emit_local_get (+ p off) 1)))
+    (set! off (+ off (call emit_memop_offset (+ p off) 40 2 8)))
+    (set! off (+ off (call emit_byte (+ p off) 17))) ;; call_indirect
+    (set! off (+ off (call compiler.encode_u32 (+ p off) worker_type)))
+    (set! off (+ off (call emit_byte (+ p off) 0)))
+    (set! off (+ off (call emit_memop_offset (+ p off) 54 2 4)))
+    (set! off (+ off (call emit_local_get (+ p off) 1)))
+    (set! off (+ off (call emit_i32_const (+ p off) 1)))
+    (set! off (+ off (call emit_atomic (+ p off) 23))) ;; i32.atomic.store
+    (set! off (+ off (call emit_local_get (+ p off) 1)))
+    (set! off (+ off (call emit_i32_const (+ p off) -1)))
+    (set! off (+ off (call emit_atomic (+ p off) 0))) ;; memory.atomic.notify
+    (set! off (+ off (call emit_byte (+ p off) 26)))
+    (+ off (call emit_byte (+ p off) 11)))
+
+    ;; ===== Harnesses =====
   (fn test_signatures_and_locals [] -> i32
     (let _kw_init:i32 (call init_keywords))
     (let text:str "(module test_mod (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (loop i 0 9 1 (set! z (+ z i))) (+ y z)))")

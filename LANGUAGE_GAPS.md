@@ -38,7 +38,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 5. Concurrency
 
-`thread.spawn`/`thread.join` and `atomic.*` are real in the VM (OS threads sharing linear memory) and rejected by the wasm backend, which would need shared memory and wasi-threads. `mem.alloc` is not atomic, so allocate before spawning.
+Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled threads need a host that provides wasi-threads' `thread-spawn`, which wasmtime removed in v47, so they run under AIPL's own runner rather than the stock `wasmtime` CLI or a browser (the standards successor, shared-everything threads, is not implemented anywhere yet); each thread has its own file-descriptor table; concurrent `sys.print` lines can interleave; there are no condition variables, channels, or thread-local storage, only atomics and locks over shared memory.
 
 ## 6. Self-hosted compiler capacities
 

@@ -67,7 +67,6 @@ pub struct VM {
     fd_table: HashMap<i32, File>,
     next_fd: i32,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
-    next_thread_id: i32,
     /// String literal -> address of its interned bytes, laid out exactly as
     /// the wasm backend's data segment (wasm::string_layout).
     strings: Arc<HashMap<String, u32>>,
@@ -101,7 +100,6 @@ impl VM {
             fd_table: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
-            next_thread_id: 1,
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
             args: Arc::new(Vec::new()),
@@ -124,7 +122,6 @@ impl VM {
             fd_table: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
-            next_thread_id: 1,
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
             args: Arc::clone(&self.args),
@@ -1487,20 +1484,36 @@ impl VM {
             // Real OS thread spawn: the worker is a function reference (its
             // index into the shared function order), run on a real std::thread
             // with a fresh child VM that shares `self.shared` linear memory.
-            // References survive the import resolver's renaming, so this works
-            // from an imported module.
+            // The handle is the address of a 16-byte thread record
+            // [done:i32 result:i32 fn:i32 arg:i32], laid out and allocated
+            // exactly as compiled code does (AIPL_SPEC.md 4.D), so heap
+            // addresses and handles agree between the backends.
             OpCode::ThreadSpawn => {
                 let fn_name = self.fn_ref_name(&args[0], scope, "thread.spawn")?;
                 let arg = match self.eval_expr(&args[1], scope)? {
-                    Value::Int(i) => i,
+                    Value::Int(i) => i as i32,
                     _ => return Err("thread.spawn requires Int arg".to_string()),
                 };
+                let fn_index = self.fn_order.iter().position(|n| *n == fn_name).unwrap_or(0) as i32;
+                let rec = self.alloc_bytes(16) as u32 as usize;
+                let mut fields = Vec::with_capacity(16);
+                for w in [0, 0, fn_index, arg] {
+                    fields.extend_from_slice(&w.to_le_bytes());
+                }
+                self.write_bytes(rec, &fields);
                 let mut child = self.spawn_child();
-                let handle = std::thread::spawn(move || child.invoke(&fn_name, vec![Value::Int(arg)]));
-                let tid = self.next_thread_id;
-                self.next_thread_id += 1;
-                self.thread_handles.insert(tid, handle);
-                Ok(Value::Int(tid as i64))
+                let handle = std::thread::spawn(move || {
+                    // a compiled thread allocates its runtime scratch block first
+                    child.alloc_bytes(24);
+                    let r = child.invoke(&fn_name, vec![Value::Int(arg as i64)]);
+                    if let Ok(Value::Int(v)) = &r {
+                        child.write_bytes(rec + 4, &(*v as i32).to_le_bytes());
+                    }
+                    child.write_bytes(rec, &1i32.to_le_bytes());
+                    r
+                });
+                self.thread_handles.insert(rec as i32, handle);
+                Ok(Value::Int(rec as i64))
             }
             OpCode::ThreadJoin => {
                 let tid = match self.eval_expr(&args[0], scope)? {
@@ -1509,7 +1522,7 @@ impl VM {
                 };
                 let handle = match self.thread_handles.remove(&tid) {
                     Some(h) => h,
-                    None => return Err(format!("thread.join: unknown thread handle {}", tid)),
+                    None => return Err(format!("thread.join: {} is not a handle from thread.spawn in this thread (or was already joined)", tid)),
                 };
                 match handle.join() {
                     Ok(Ok(Value::Int(i))) => Ok(Value::Int(i)),

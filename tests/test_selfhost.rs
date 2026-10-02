@@ -472,6 +472,21 @@ fn self_hosted_bytes_match_short_circuit() {
     assert_self_hosted_matches_rust("sc", &src[start..start + end]);
 }
 
+/// Threads and atomics (AIPL_SPEC.md 4.G): the threaded module layout
+/// (imported shared memory, global, start function, passive data,
+/// wasi_thread_start) and the atomic lowerings, at byte parity.
+#[test]
+fn self_hosted_bytes_match_threads_and_atomics() {
+    let src = include_str!("test_threads.rs");
+    for name in ["(module threads", "(module atomics"] {
+        let start = src.find(name).unwrap();
+        let end = src[start..].find("\"#;").unwrap();
+        assert_self_hosted_matches_rust(name, &src[start..start + end]);
+    }
+    let sync = std::fs::read_to_string("aipl_src/thread_sync.aipl").unwrap();
+    assert_self_hosted_matches_rust("thread_sync", &sync);
+}
+
 /// Past the old capacities (256 functions, 31 structs): the toolchain itself
 /// is about 250 functions, so the old limit was close to breaking self-compile.
 #[test]

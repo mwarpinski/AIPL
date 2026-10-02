@@ -27,10 +27,14 @@ impl WasmCompiler {
         for (idx, w) in used_wasi.iter().enumerate() {
             let (params, results) = w.signature();
             types.ty().function(params, results);
-            imports.import("wasi_snapshot_preview1", w.name(), EntityType::Function(idx as u32));
+            imports.import(w.module(), w.name(), EntityType::Function(idx as u32));
             wasi_indices.insert(*w, idx as u32);
         }
         let import_count = used_wasi.len() as u32;
+        // A module that spawns threads is "threaded" (AIPL_SPEC.md 4.D): it
+        // imports a shared memory, initialises it once, and gives each
+        // spawned thread its own runtime scratch block.
+        let threaded = module_uses_op(module, &OpCode::ThreadSpawn);
 
         let StringLayout { blob: string_blob, addrs: strings, newline_addr, heap_start } = string_layout(module)?;
 
@@ -80,10 +84,31 @@ impl WasmCompiler {
             }
             _ => {}
         });
+        // wasi_thread_start calls the worker through the table as (fn [i32] -> i32)
+        let worker_sig = (vec![ValType::I32], vec![ValType::I32]);
+        if threaded {
+            uses_refs = true;
+            if !ref_sigs.contains(&worker_sig) {
+                ref_sigs.push(worker_sig.clone());
+            }
+        }
         let ref_type_base = import_count + module.functions.len() as u32;
         for (params, results) in &ref_sigs {
             types.ty().function(params.clone(), results.clone());
         }
+        // Threaded modules end with two compiler-made functions: the start
+        // function (one-time memory init) and the exported wasi_thread_start.
+        let n_user = module.functions.len() as u32;
+        let init_fn = import_count + n_user;
+        let thread_start_fn = init_fn + 1;
+        if threaded {
+            let base = ref_type_base + ref_sigs.len() as u32;
+            types.ty().function(vec![], vec![]);
+            types.ty().function(vec![ValType::I32, ValType::I32], vec![]);
+            functions.function(base);
+            functions.function(base + 1);
+        }
+        let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
 
         // 2. Build code section (body compilation)
         for f in &module.functions {
@@ -142,6 +167,7 @@ impl WasmCompiler {
                 wasi: &wasi_indices,
                 newline_addr,
                 heap_start,
+                threaded,
                 structs: &structs,
                 fn_types: &fn_types,
                 import_count,
@@ -168,29 +194,51 @@ impl WasmCompiler {
             codes.function(&func);
         }
 
-        let mut memories = wasm_encoder::MemorySection::new();
         // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
-        // same old size in both backends; 1024 pages max (64 MiB), also matching the VM.
-        memories.memory(wasm_encoder::MemoryType {
+        // same old size in both backends; 1024 pages max (64 MiB), also matching
+        // the VM. A threaded module imports it shared ("env" "memory") so every
+        // thread's instance uses the same memory.
+        let memory_type = wasm_encoder::MemoryType {
             minimum: 16,
             maximum: Some(crate::vm::MAX_PAGES as u64),
             memory64: false,
-            shared: false,
+            shared: threaded,
             page_size_log2: None,
-        });
+        };
+        let mut memories = wasm_encoder::MemorySection::new();
+        if threaded {
+            imports.import("env", "memory", EntityType::Memory(memory_type));
+        } else {
+            memories.memory(memory_type);
+        }
         exports.export("memory", ExportKind::Memory, 0);
+        if threaded {
+            exports.export("wasi_thread_start", ExportKind::Func, thread_start_fn);
+        }
 
         // Runtime block initialisation: the heap cursor at address 0 starts
         // at heap_start, just past the string literals. Everything else in
-        // bytes 0..1024 is zero.
+        // bytes 0..1024 is zero. A threaded module's segments are passive and
+        // copied once by its start function (each thread instantiates the
+        // module again, and active segments would reset the cursor).
         let mut data = wasm_encoder::DataSection::new();
-        data.active(0, &wasm_encoder::ConstExpr::i32_const(0), heap_start.to_le_bytes());
-        if !string_blob.is_empty() {
-            data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
+        let n_segments = if string_blob.is_empty() { 1 } else { 2 };
+        if threaded {
+            data.passive(heap_start.to_le_bytes());
+            if !string_blob.is_empty() {
+                data.passive(string_blob.iter().copied());
+            }
+            codes.function(&threaded_init_function(string_blob.len() as u32));
+            codes.function(&thread_start_function(worker_type));
+        } else {
+            data.active(0, &wasm_encoder::ConstExpr::i32_const(0), heap_start.to_le_bytes());
+            if !string_blob.is_empty() {
+                data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
+            }
         }
 
         wasm_module.section(&types);
-        if import_count > 0 {
+        if import_count > 0 || threaded {
             wasm_module.section(&imports);
         }
         wasm_module.section(&functions);
@@ -206,8 +254,21 @@ impl WasmCompiler {
             });
             wasm_module.section(&tables);
         }
-        wasm_module.section(&memories);
-        wasm_module.section(&exports);
+        if threaded {
+            // per-instance pointer to the runtime scratch cells (64 in the
+            // main thread, a private block in each spawned thread)
+            let mut globals = wasm_encoder::GlobalSection::new();
+            globals.global(
+                wasm_encoder::GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                &wasm_encoder::ConstExpr::i32_const(RT_IOV0_BUF),
+            );
+            wasm_module.section(&globals);
+            wasm_module.section(&exports);
+            wasm_module.section(&wasm_encoder::StartSection { function_index: init_fn });
+        } else {
+            wasm_module.section(&memories);
+            wasm_module.section(&exports);
+        }
         if uses_refs {
             let indices: Vec<u32> = (0..n_fns).map(|i| import_count + i).collect();
             let mut elems = wasm_encoder::ElementSection::new();
@@ -217,6 +278,9 @@ impl WasmCompiler {
                 wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices)),
             );
             wasm_module.section(&elems);
+        }
+        if threaded {
+            wasm_module.section(&wasm_encoder::DataCountSection { count: n_segments });
         }
         wasm_module.section(&codes);
         wasm_module.section(&data);
@@ -243,6 +307,8 @@ struct Ctx<'a> {
     newline_addr: u32,
     /// First heap address: 1024 plus the string literals, 8-aligned.
     heap_start: u32,
+    /// The module spawns threads: runtime scratch cells are per thread.
+    threaded: bool,
     structs: &'a HashMap<String, StructDef>,
     /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
     fn_types: &'a HashMap<String, Type>,
@@ -809,20 +875,20 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     compile_expr(arg, ctx, func)?;
                     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
                     // iov0 = { ptr, len }
-                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    emit_rt(func, ctx, RT_IOV0_BUF);
                     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                     func.instruction(&Instruction::I32Store(M4));
-                    func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                    emit_rt(func, ctx, RT_IOV0_LEN);
                     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                     func.instruction(&Instruction::I32Const(4));
                     func.instruction(&Instruction::I32Sub);
                     func.instruction(&Instruction::I32Load(M4));
                     func.instruction(&Instruction::I32Store(M4));
                     // iov1 = { "\n", 1 }
-                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    emit_rt(func, ctx, RT_IOV1_BUF);
                     func.instruction(&Instruction::I32Const(ctx.newline_addr as i32));
                     func.instruction(&Instruction::I32Store(M4));
-                    func.instruction(&Instruction::I32Const(RT_IOV1_LEN));
+                    emit_rt(func, ctx, RT_IOV1_LEN);
                     func.instruction(&Instruction::I32Const(1));
                     func.instruction(&Instruction::I32Store(M4));
                     // One fd_write per iovec: WASI permits a short write and
@@ -830,16 +896,16 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     // a call, so a single 2-iovec call would drop the newline.
                     // fd_write(1, iovs=64, iovs_len=1, nwritten=80); errno dropped
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    emit_rt(func, ctx, RT_IOV0_BUF);
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    emit_rt(func, ctx, RT_NBYTES);
                     func.instruction(&Instruction::Call(fd_write));
                     func.instruction(&Instruction::Drop);
                     // fd_write(1, iovs=72, iovs_len=1, nwritten=80)
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    emit_rt(func, ctx, RT_IOV1_BUF);
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    emit_rt(func, ctx, RT_NBYTES);
                     func.instruction(&Instruction::Call(fd_write));
                     func.instruction(&Instruction::Drop);
                 }
@@ -858,8 +924,80 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
-            OpCode::AtomicAdd | OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend (needs shared memory + atomics)", op));
+            // Atomics (AIPL_SPEC.md 4.D). Each address passes the store guard
+            // first, as in the VM. Operands are evaluated left to right and
+            // only then unloaded into the scratch locals, so nesting is safe.
+            OpCode::AtomicAdd => {
+                // returns the previous value
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+            }
+            OpCode::AtomicCas => {
+                // true if the word held `expected` and now holds `new`
+                let (expected, new) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(new));
+                func.instruction(&Instruction::LocalSet(expected));
+                func.instruction(&Instruction::LocalGet(expected));
+                func.instruction(&Instruction::LocalGet(new));
+                func.instruction(&Instruction::I32AtomicRmwCmpxchg(M4));
+                func.instruction(&Instruction::LocalGet(expected));
+                func.instruction(&Instruction::I32Eq);
+            }
+            OpCode::AtomicLock => {
+                // Swap 0 -> 1; while the word is 1, sleep until notified. Any
+                // other value is not a lock (the VM errors; this traps).
+                let (lock, old) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                func.instruction(&Instruction::LocalSet(lock));
+                func.instruction(&Instruction::Block(BlockType::Empty));
+                func.instruction(&Instruction::Loop(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32AtomicRmwCmpxchg(M4));
+                func.instruction(&Instruction::LocalTee(old));
+                func.instruction(&Instruction::I32Eqz);
+                func.instruction(&Instruction::BrIf(1));
+                func.instruction(&Instruction::LocalGet(old));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I64Const(-1));
+                func.instruction(&Instruction::MemoryAtomicWait32(M4));
+                func.instruction(&Instruction::Drop);
+                func.instruction(&Instruction::Br(0));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::End);
+            }
+            OpCode::AtomicUnlock => {
+                // Swap 1 -> 0 (anything else traps, as the VM errors), then
+                // wake every waiter.
+                let (lock, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                func.instruction(&Instruction::LocalTee(lock));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32AtomicRmwXchg(M4));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(-1));
+                func.instruction(&Instruction::MemoryAtomicNotify(M4));
+                func.instruction(&Instruction::Drop);
             }
             OpCode::SysTime => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
@@ -902,9 +1040,9 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::I64Const(0)); // rights_inheriting
                 func.instruction(&Instruction::I32Const(0)); // fdflags
-                func.instruction(&Instruction::I32Const(RT_OPENED_FD));
+                emit_rt(func, ctx, RT_OPENED_FD);
                 func.instruction(&Instruction::Call(path_open));
-                emit_errno_to_result(func, Some(RT_OPENED_FD));
+                emit_errno_to_result(func, ctx, Some(RT_OPENED_FD));
             }
             OpCode::FsRead | OpCode::FsWrite => {
                 // (fs.read fd buf max) / (fs.write fd buf len) -> one iovec,
@@ -917,24 +1055,24 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::LocalSet(io_b)); // len
                 func.instruction(&Instruction::LocalSet(io_a)); // buf
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // fd
-                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                emit_rt(func, ctx, RT_IOV0_BUF);
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::I32Store(M4));
-                func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                emit_rt(func, ctx, RT_IOV0_LEN);
                 func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::I32Store(M4));
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                emit_rt(func, ctx, RT_IOV0_BUF);
                 func.instruction(&Instruction::I32Const(1));
-                func.instruction(&Instruction::I32Const(RT_NBYTES));
+                emit_rt(func, ctx, RT_NBYTES);
                 func.instruction(&Instruction::Call(host));
-                emit_errno_to_result(func, Some(RT_NBYTES));
+                emit_errno_to_result(func, ctx, Some(RT_NBYTES));
             }
             OpCode::FsClose => {
                 let fd_close = wasi_index(ctx, Wasi::FdClose)?;
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::Call(fd_close));
-                emit_errno_to_result(func, None);
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
                 // the two addresses go straight to the host call
@@ -942,7 +1080,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::Call(host));
-                emit_errno_to_result(func, None);
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::FsDelete => {
                 let unlink = wasi_index(ctx, Wasi::PathUnlinkFile)?;
@@ -955,14 +1093,60 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::Call(unlink));
-                emit_errno_to_result(func, None);
+                emit_errno_to_result(func, ctx, None);
             }
 
-            OpCode::ThreadSpawn | OpCode::ThreadJoin => {
-                return Err(format!(
-                    "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs shared memory + wasi-threads)",
-                    op
-                ));
+            OpCode::ThreadSpawn => {
+                // rec = 16 bytes [done=0 result=0 fn arg]; thread-spawn(rec);
+                // a negative thread id traps (the VM errors). The handle is rec.
+                let spawn = wasi_index(ctx, Wasi::ThreadSpawn)?;
+                let (worker, arg) = io_locals(ctx)?;
+                let at = |offset: u64| MemArg { offset, align: 2, memory_index: 0 };
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(arg));
+                func.instruction(&Instruction::LocalSet(worker));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Const(16));
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                emit_grow_to_cursor(func);
+                for (offset, value) in [(0u64, None), (4, None), (8, Some(worker)), (12, Some(arg))] {
+                    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                    match value {
+                        Some(l) => func.instruction(&Instruction::LocalGet(l)),
+                        None => func.instruction(&Instruction::I32Const(0)),
+                    };
+                    func.instruction(&Instruction::I32Store(at(offset)));
+                }
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::Call(spawn));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32LtS);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            }
+            OpCode::ThreadJoin => {
+                // sleep until the record's done flag is set, then read the result
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                func.instruction(&Instruction::Block(BlockType::Empty));
+                func.instruction(&Instruction::Loop(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32AtomicLoad(M4));
+                func.instruction(&Instruction::BrIf(1));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I64Const(-1));
+                func.instruction(&Instruction::MemoryAtomicWait32(M4));
+                func.instruction(&Instruction::Drop);
+                func.instruction(&Instruction::Br(0));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
             }
         },
         Expr::Block(exprs, _) => {
@@ -1621,6 +1805,84 @@ fn heap_start_after(blob_len: usize) -> u32 {
     (STRING_DATA_BASE + blob_len as u32 + 7) & !7
 }
 
+/// The address of runtime cell `cell` (64..88): the fixed cell, or in a
+/// threaded module the same offset in this thread's scratch block, whose
+/// address is global 0 (64 in the main thread, so its addresses are unchanged).
+fn emit_rt(func: &mut Function, ctx: &Ctx, cell: i32) {
+    if ctx.threaded {
+        func.instruction(&Instruction::GlobalGet(0));
+        if cell != RT_IOV0_BUF {
+            func.instruction(&Instruction::I32Const(cell - RT_IOV0_BUF));
+            func.instruction(&Instruction::I32Add);
+        }
+    } else {
+        func.instruction(&Instruction::I32Const(cell));
+    }
+}
+
+/// Bytes of runtime scratch cells (64..88) each spawned thread allocates.
+const RT_SCRATCH_SIZE: i32 = 24;
+/// Threaded modules: 1 once the shared memory has been initialised.
+const RT_INIT_FLAG: i32 = 88;
+
+/// A threaded module's start function: the first instance to run it copies
+/// the heap cursor and the string literals into the (zeroed) shared memory;
+/// later instances (spawned threads) see the flag and skip it.
+fn threaded_init_function(blob_len: u32) -> Function {
+    use Instruction::*;
+    let mut f = Function::new(vec![]);
+    f.instruction(&I32Const(RT_INIT_FLAG));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(1));
+    f.instruction(&I32AtomicRmwCmpxchg(M4));
+    f.instruction(&I32Eqz);
+    f.instruction(&If(BlockType::Empty));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(4));
+    f.instruction(&MemoryInit { mem: 0, data_index: 0 });
+    if blob_len > 0 {
+        f.instruction(&I32Const(STRING_DATA_BASE as i32));
+        f.instruction(&I32Const(0));
+        f.instruction(&I32Const(blob_len as i32));
+        f.instruction(&MemoryInit { mem: 0, data_index: 1 });
+    }
+    f.instruction(&End);
+    f.instruction(&End);
+    f
+}
+
+/// `wasi_thread_start(tid, rec)`, called by the host on a new thread with the
+/// thread record `rec` = [done result fn arg] made by thread.spawn: allocate
+/// this thread's runtime scratch block, run fn(arg) through the table, store
+/// the result, then set done and wake any thread.join waiting on it.
+fn thread_start_function(worker_type: u32) -> Function {
+    use Instruction::*;
+    let mut f = Function::new(vec![]);
+    let at = |offset: u64| MemArg { offset, align: 2, memory_index: 0 };
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(RT_SCRATCH_SIZE));
+    f.instruction(&I32AtomicRmwAdd(M4));
+    f.instruction(&GlobalSet(0));
+    emit_grow_to_cursor(&mut f);
+    f.instruction(&LocalGet(1));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Load(at(12)));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Load(at(8)));
+    f.instruction(&CallIndirect { type_index: worker_type, table_index: 0 });
+    f.instruction(&I32Store(at(4)));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Const(1));
+    f.instruction(&I32AtomicStore(M4));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Const(-1));
+    f.instruction(&MemoryAtomicNotify(M4));
+    f.instruction(&Drop);
+    f.instruction(&End);
+    f
+}
+
 /// The first preopened directory a WASI host hands to the module.
 const WASI_PREOPEN_FD: i32 = 3;
 const WASI_OFLAGS_CREAT: i32 = 1 << 0;
@@ -1640,9 +1902,21 @@ enum Wasi {
     ArgsGet,
     EnvironSizesGet,
     EnvironGet,
+    /// `thread-spawn` from the wasi-threads ABI (module "wasi"): starts an OS
+    /// thread that instantiates this module on the shared memory and calls
+    /// its exported `wasi_thread_start(tid, start_arg)`. Wasmtime dropped
+    /// wasi-threads in v47, so AIPL's own host (the runner) provides it; the
+    /// names match the old ABI so any wasi-threads host also works.
+    ThreadSpawn,
 }
 
 impl Wasi {
+    /// The import module: wasi-threads' spawn lives in "wasi", the rest in
+    /// "wasi_snapshot_preview1".
+    fn module(self) -> &'static str {
+        if self == Wasi::ThreadSpawn { "wasi" } else { "wasi_snapshot_preview1" }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Wasi::FdWrite => "fd_write",
@@ -1655,6 +1929,7 @@ impl Wasi {
             Wasi::ArgsGet => "args_get",
             Wasi::EnvironSizesGet => "environ_sizes_get",
             Wasi::EnvironGet => "environ_get",
+            Wasi::ThreadSpawn => "thread-spawn",
         }
     }
 
@@ -1668,6 +1943,7 @@ impl Wasi {
             Wasi::ProcExit => (vec![I32], vec![]),
             Wasi::PathUnlinkFile => (vec![I32, I32, I32], vec![I32]),
             Wasi::ArgsSizesGet | Wasi::ArgsGet | Wasi::EnvironSizesGet | Wasi::EnvironGet => (vec![I32, I32], vec![I32]),
+            Wasi::ThreadSpawn => (vec![I32], vec![I32]),
         }
     }
 
@@ -1683,6 +1959,7 @@ impl Wasi {
             OpCode::ArgsGet => Some(Wasi::ArgsGet),
             OpCode::EnvSizes => Some(Wasi::EnvironSizesGet),
             OpCode::EnvGet => Some(Wasi::EnvironGet),
+            OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
             _ => None,
         }
     }
@@ -1810,12 +2087,14 @@ fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
 }
 
 /// True if a function body needs the two extra scratch locals: an op lowered
-/// through WASI, or `arr.new` (which keeps its block address in one).
+/// through WASI, `arr.new` (which keeps its block address in one), or an
+/// atomic op that needs its address or operands twice.
 fn fn_uses_io(body: &[Expr]) -> bool {
     let mut found = false;
     for e in body {
         walk_expr(e, &mut |x| match x {
             Expr::Op { op, .. } if Wasi::for_op(op).is_some() => found = true,
+            Expr::Op { op: OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock, .. } => found = true,
             Expr::ArrNew { .. } => found = true,
             _ => {}
         });
@@ -1838,13 +2117,13 @@ fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
 /// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
 /// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
 /// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
-fn emit_errno_to_result(func: &mut Function, out_cell: Option<i32>) {
+fn emit_errno_to_result(func: &mut Function, ctx: &Ctx, out_cell: Option<i32>) {
     func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
     func.instruction(&Instruction::I32Const(-1));
     func.instruction(&Instruction::Else);
     match out_cell {
         Some(cell) => {
-            func.instruction(&Instruction::I32Const(cell));
+            emit_rt(func, ctx, cell);
             func.instruction(&Instruction::I32Load(M4));
         }
         None => {

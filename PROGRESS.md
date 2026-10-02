@@ -192,6 +192,12 @@ Every finding in AIPL_Structural_Audit.md was re-checked against the code; its s
 - **Browser demo and agent server** (N7): the runner now provides WASI imports instead of invented `env.dom_*` ones, and the server resolves imports. Dead `src/stdlib/` removed.
 - **codegen.aipl self-tests** (N9): string literals instead of hand-encoded bytes, and they check the output instead of "returned a positive length".
 
+## Pre-native work (2026-10-02, branch `features/p15`)
+
+- **Short-circuit `and`/`or`** (audit N1), exactly two operands. Testing it found a VM divergence: a `return`/`break` inside an expression operand let later operands (and their side effects) run; the VM now stops evaluating while a jump is pending, as wasm does.
+- **Allocation is one atomic add** (`i32.atomic.rmw.add` on the cursor, after the size is evaluated). This fixed a real bug: compiled code read the cursor before evaluating the size, so `(mem.alloc (call f))` where `f` allocates handed out `f`'s block again.
+- **Threads compile.** Wasmtime removed wasi-threads in v47, so (by decision) compiled programs still use the wasi-threads ABI (`wasi.thread-spawn`, exported `wasi_thread_start`), provided by AIPL's own host rather than the stock CLI. A module using `thread.spawn` is a threaded module: imported shared memory, one-time initialisation guarded by an atomic flag (cell 88), per-thread runtime scratch cells (a global), and passive data. Atomics compile in any module. Join waits on a 16-byte thread record the VM now allocates identically, so handles and heap layouts agree. `tests/test_threads.rs` runs a counter, joins, a mutex, concurrent allocation, and concurrent printing under a wasmtime host, all against the VM; codegen.aipl matches byte for byte. Also fixed: codegen's `call_ref` signature buffer was never cleared, so identical signatures could fail to deduplicate.
+
 ## Direction (agreed 2026-10-02)
 
 These are the project owner's goals. They decide the order below and the answer to most design questions.
