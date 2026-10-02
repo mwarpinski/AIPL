@@ -327,6 +327,8 @@ source.aipl
 | `aipl verify FILE` | 1, 2, 3 | `[AIPL Verifier] OK: module 'NAME' type-checks. Contracts are type-checked, not proven; ...` (nothing is proved: `req`/`ens` run in the VM, section 3) |
 | `aipl eval FILE [--func NAME] [-- ARGS...]` | 1, 2, 3, 4a | `[AIPL Result]: Int(42)` (Rust `Debug` of the returned `Value`; default `--func main`). The program's argv is `FILE ARGS...` (`std/os`) |
 | `aipl compile FILE [-o out.wasm]` | 1, 2, 3, 4b | `[AIPL Compiler] Successfully compiled 'FILE' -> 'out.wasm' (N bytes)` |
+| `aipl compile --exe [--sandbox] FILE -o prog` | 1, 2, 3, 4b | a standalone executable `prog` (section 6.5) |
+| `aipl run [--sandbox] prog.wasm [-- ARGS...]` | the `aipl-run` launcher | runs a compiled module natively (section 6.5); exits with its status |
 | `aipl compile --self FILE [-o out.wasm]` | 1, 2, 3, 4b, then `resolver.resolve_file` and `codegen.compile_module` in the VM | compiles with the Rust toolchain and with the self-hosted one (AIPL resolver and AIPL codegen) and fails unless the bytes are identical (section 6.4) |
 | `aipl test FILE [--func run_all]` | 1, 2, 3, 4a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
 | `aipl serve [--addr 127.0.0.1:8080]` | on request | agent RPC server |
@@ -423,6 +425,15 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 987 | a form whose head is not a recognised keyword |
 | 999 | an empty expression where one is required |
 | 1452 | call to an undefined function; cells 44/48 hold the callee name's source offset and length |
+
+### 6.5 Standalone executables and the `aipl-run` launcher
+
+A compiled module runs natively under `aipl-run` (`src/bin/aipl_run.rs`), the toolchain's only native component: wasm cannot start itself, so a small Rust program embeds wasmtime, loads the module (compiled by Cranelift at start-up, about 10 ms for a small program), and connects it to the operating system. It contains no compiler logic.
+
+- **Entry point.** A module with a zero-argument `main` and no `_start` of its own gets an exported `_start` that calls `main` and discards its result, so the module is a WASI command. The exit status is 0 when `_start` returns, or the value given to `sys.exit`; a trap prints the error and exits with 134. (`main`'s return value is not the exit status: many programs return data.)
+- **What the program sees.** The real stdin, stdout, and stderr; the command line (argv[0] is the program); the environment; the working directory as preopened fd 3 and `/` as fd 4, so relative and absolute paths both work (section 4.C); and, for a threaded module, the wasi-threads `thread-spawn` import (section 4.D). `--sandbox` grants only the working directory.
+- **`aipl compile --exe FILE -o prog`** writes the launcher followed by the module and a 16-byte trailer: flags (`u32` LE, bit 0 = sandbox), the module's length (`u32` LE), and the magic `AIPLEXE1`. The launcher finds a module appended to its own file and runs it; without one it runs a `.wasm` named on its command line (`aipl-run [--sandbox] prog.wasm ARGS...`). The result is one file with no other dependency, about 18 MB in a release build (the size is wasmtime), built for the host's OS and CPU. The `.wasm` remains the portable form.
+- The launcher is found as `aipl-run` next to the `aipl` binary, or at `$AIPL_RUNNER`. Writing the bundle is done by the Rust CLI only because WASI cannot set a file's executable bit; the format is plain bytes.
 
 ---
 

@@ -109,6 +109,18 @@ impl WasmCompiler {
             functions.function(base + 1);
         }
         let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
+        // A module with a zero-argument `main` and no `_start` of its own gets
+        // a WASI command entry point: `_start` calls `main` and discards its
+        // result (exit status 0 unless the program calls sys.exit). It comes
+        // after every other function, with its own [] -> [] type.
+        let main_fn = module.functions.iter().position(|f| f.name == "main" && f.params.is_empty());
+        let auto_start = main_fn.is_some() && !module.functions.iter().any(|f| f.name == "_start");
+        let start_fn = import_count + n_user + if threaded { 2 } else { 0 };
+        if auto_start {
+            let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 };
+            types.ty().function(vec![], vec![]);
+            functions.function(base);
+        }
 
         // 2. Build code section (body compilation)
         for f in &module.functions {
@@ -215,6 +227,9 @@ impl WasmCompiler {
         if threaded {
             exports.export("wasi_thread_start", ExportKind::Func, thread_start_fn);
         }
+        if auto_start {
+            exports.export("_start", ExportKind::Func, start_fn);
+        }
 
         // Runtime block initialisation: the heap cursor at address 0 starts
         // at heap_start, just past the string literals. Everything else in
@@ -235,6 +250,15 @@ impl WasmCompiler {
             if !string_blob.is_empty() {
                 data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
             }
+        }
+        if let (true, Some(m)) = (auto_start, main_fn) {
+            let mut f = Function::new(vec![]);
+            f.instruction(&Instruction::Call(import_count + m as u32));
+            if module.functions[m].return_type != Type::Void {
+                f.instruction(&Instruction::Drop);
+            }
+            f.instruction(&Instruction::End);
+            codes.function(&f);
         }
 
         wasm_module.section(&types);

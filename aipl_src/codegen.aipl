@@ -2374,6 +2374,13 @@
     (let uses_refs:bool (neq (mem.load32 (call ref_state)) 0))
     (let total_types:i32 (+ import_count (+ func_count sig_count)))
     (if (call threaded) (set! total_types (+ total_types 2)) (block))
+    ;; a zero-argument main and no _start: an automatic _start (wasm.rs auto_start)
+    (let main_idx:i32 (call find_function src_ptr (call fn_table) func_count (- (str.ptr "main") src_ptr) 4))
+    (let auto_start:bool (and (gte main_idx 0)
+                              (and (eq (mem.load32 (+ (call func_entry_ptr (call fn_table) main_idx) 8)) 0)
+                                   (lt (call find_function src_ptr (call fn_table) func_count (- (str.ptr "_start") src_ptr) 6) 0))))
+    (if auto_start (set! total_types (+ total_types 1)) (block))
+    (let extra_fns:i32 (if (call threaded) 2 0))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) total_types)))
     
     ;; WASI import types (fixed order)
@@ -2463,6 +2470,12 @@
           (mem.store8 (+ scratch (+ sc_off 3)) 96) (mem.store8 (+ scratch (+ sc_off 4)) 2) (mem.store8 (+ scratch (+ sc_off 5)) 127)
           (mem.store8 (+ scratch (+ sc_off 6)) 127) (mem.store8 (+ scratch (+ sc_off 7)) 0)
           (set! sc_off (+ sc_off 8)))
+        (block))
+    ;; _start: [] -> []
+    (if auto_start
+        (block
+          (mem.store8 (+ scratch sc_off) 96) (mem.store8 (+ scratch (+ sc_off 1)) 0) (mem.store8 (+ scratch (+ sc_off 2)) 0)
+          (set! sc_off (+ sc_off 3)))
         (block))
 
     (mem.store8 (+ out off) 1) (set! off (+ off 1))
@@ -2581,7 +2594,7 @@
     ;; 3. Function Section (Section ID 3); a threaded module adds its start
     ;; function and wasi_thread_start, whose types follow the call_ref types
     (set! sc_off 0)
-    (let n_fns:i32 (if (call threaded) (+ func_count 2) func_count))
+    (let n_fns:i32 (+ func_count (+ extra_fns (if auto_start 1 0))))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) n_fns)))
     (set! f 0)
     (while (lt f func_count)
@@ -2592,6 +2605,9 @@
           (let tbase:i32 (+ import_count (+ func_count sig_count)))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) tbase)))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ tbase 1)))))
+        (block))
+    (if auto_start
+        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count (+ sig_count extra_fns))))))
         (block))
 
     (mem.store8 (+ out off) 3) (set! off (+ off 1))
@@ -2645,7 +2661,7 @@
         (set! i (+ i 1)))))
     ;; 5. Export Section (Section ID 7)
     (set! sc_off 0)
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded) (+ func_count 2) (+ func_count 1)))))
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ func_count (+ 1 (+ (if (call threaded) 1 0) (if auto_start 1 0)))))))
     (set! f 0)
     (while (lt f func_count)
       (let entry:i32 (call func_entry_ptr (call fn_table) f))
@@ -2675,6 +2691,14 @@
           (set! sc_off (+ sc_off 17))
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count 1))))))
+        (block))
+    (if auto_start
+        (block
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 6)))
+          (call store_kw_str (+ scratch sc_off) 0 95 115 116 97 114 116 0 0 0 0 0 0 6)
+          (set! sc_off (+ sc_off 6))
+          (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count extra_fns))))))
         (block))
 
     (mem.store8 (+ out off) 7) (set! off (+ off 1))
@@ -2789,6 +2813,19 @@
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b2)))
           (loop k 0 (- b2 1) 1 (mem.store8 (+ scratch (+ sc_off k)) (mem.load8 (+ fcode_scratch k))))
           (set! sc_off (+ sc_off b2)))
+        (block))
+    (if auto_start
+        (block
+          ;; no locals; call main; drop a non-void result; end
+          (let b:i32 (call emit_byte fcode_scratch 0))
+          (set! b (+ b (call emit_call (+ fcode_scratch b) (+ import_count main_idx))))
+          (if (neq (mem.load32 (+ (call func_entry_ptr (call fn_table) main_idx) 12)) 205)
+              (set! b (+ b (call emit_byte (+ fcode_scratch b) 26)))
+              (block))
+          (set! b (+ b (call emit_byte (+ fcode_scratch b) 11)))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b)))
+          (loop k 0 (- b 1) 1 (mem.store8 (+ scratch (+ sc_off k)) (mem.load8 (+ fcode_scratch k))))
+          (set! sc_off (+ sc_off b)))
         (block))
     (mem.store8 (+ out off) 10) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))

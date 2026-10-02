@@ -27,7 +27,7 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Compile an AIPL source file directly into a WebAssembly (.wasm) binary module
+    /// Compile an AIPL program to a WebAssembly module, or with --exe to a standalone executable
     Compile {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
@@ -35,6 +35,20 @@ enum Commands {
         /// Compile using the self-hosted codegen.aipl backend and verify bit-for-bit parity with Rust compiler
         #[arg(long = "self")]
         self_flag: bool,
+        /// Write a standalone executable: the aipl-run launcher with the module appended
+        #[arg(long)]
+        exe: bool,
+        /// With --exe: the program may only access the working directory, not absolute paths
+        #[arg(long, requires = "exe")]
+        sandbox: bool,
+    },
+    /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
+    Run {
+        file: String,
+        #[arg(long)]
+        sandbox: bool,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Type-check and formally verify an AIPL file without running it
     Verify { file: String },
@@ -216,6 +230,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     result.map_err(|e| e.into())
 }
 
+/// The aipl-run launcher: $AIPL_RUNNER, else `aipl-run` next to this binary.
+fn runner_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("AIPL_RUNNER") {
+        return Ok(p.into());
+    }
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let p = me.with_file_name(if cfg!(windows) { "aipl-run.exe" } else { "aipl-run" });
+    if p.exists() {
+        Ok(p)
+    } else {
+        Err(format!("cannot find the aipl-run launcher at {} (build it with cargo build, or set AIPL_RUNNER)", p.display()))
+    }
+}
+
+/// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
+/// then a 16-byte trailer [flags u32 LE][module length u32 LE]["AIPLEXE1"].
+/// Rust only because WASI cannot set the executable bit; the format is plain.
+fn write_executable(output: &str, wasm: &[u8], sandbox: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = fs::read(runner_path()?)?;
+    if bytes.ends_with(b"AIPLEXE1") {
+        return Err("the aipl-run launcher already has a program appended".into());
+    }
+    bytes.extend_from_slice(wasm);
+    bytes.extend_from_slice(&(sandbox as u32).to_le_bytes());
+    bytes.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"AIPLEXE1");
+    fs::write(output, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(output, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -232,7 +281,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let res = vm.invoke(&func, vec![])?;
             println!("[AIPL Result]: {:?}", res);
         }
-        Commands::Compile { file, output, self_flag } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
@@ -259,7 +308,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 fs::write(&output, &rust_bytes)?;
             }
+            if exe {
+                // `output` holds the module; replace it with launcher + module + trailer
+                let wasm = fs::read(&output)?;
+                write_executable(&output, &wasm, sandbox)?;
+            }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+        }
+        Commands::Run { file, sandbox, args } => {
+            let mut cmd = std::process::Command::new(runner_path()?);
+            if sandbox {
+                cmd.arg("--sandbox");
+            }
+            let status = cmd.arg(&file).args(&args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
         }
         Commands::Verify { file } => {
             let module = Resolver::resolve(Path::new(&file))?;

@@ -16,7 +16,7 @@
 - **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, and heap arrays `(arr T)`. A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
 - **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call.
 - **Wasm semantics are the spec.** A tree-walking VM and a WebAssembly backend must agree; `tests/test_differential.rs` runs the same programs in both, the VM against wasmtime, and fails on any divergence.
-- **Real I/O when compiled.** `sys.print`, `fs.*`, `sys.exit`, the command line, and the environment lower to WASI preview1 imports.
+- **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone native executable (the module plus a small wasmtime launcher).
 - **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language except VM-only ops. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that rebuilds itself to the same bytes, with no Rust involved. Type checking is still Rust-only.
 
 ```lisp
@@ -50,11 +50,13 @@ cargo run --bin aipl -- eval    file.aipl [--func main] [-- args...]   # run in 
 cargo run --bin aipl -- compile file.aipl -o out.wasm     # compile to wasm (+ WASI imports if it does I/O)
 cargo run --bin aipl -- compile --self file.aipl -o out.wasm   # also compile with codegen.aipl and require identical bytes
 cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test suite; exit code = failing groups
-wasmtime run --dir=. --invoke main out.wasm              # run compiled I/O under any WASI host
+cargo run --bin aipl -- run out.wasm -- ARGS             # run a compiled module natively (aipl-run launcher)
+cargo run --bin aipl -- compile --exe file.aipl -o prog  # a standalone executable: ./prog ARGS
 
-# the self-hosted compiler as a standalone WASI command
-cargo run --bin aipl -- compile aipl_src/driver.aipl -o aiplc.wasm
-wasmtime run --dir=. aiplc.wasm examples/word_count.aipl wc.wasm
+# the self-hosted compiler as a standalone executable
+cargo build --release
+./target/release/aipl compile --exe aipl_src/driver.aipl -o aiplc
+./aiplc examples/word_count.aipl wc.wasm
 ```
 
 Run the full test suite with `cargo test` (175 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM).

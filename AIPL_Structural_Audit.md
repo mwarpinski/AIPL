@@ -162,7 +162,7 @@ Found during P8–P14 and the 2026-10-01 re-check.
 
 **N9. Weak and hand-encoded self-tests in codegen.aipl. [Fixed 2026-10-01]** Three tests passed if the compiler returned any positive length, and all four built their input with hundreds of hand-written byte codes, the pattern PROGRESS.md warns about. They now use string literals and check the wasm header, and breaking the header writer makes them fail.
 
-**N10. The VM is the slow path. [Open]** The self-hosted toolchain takes seconds in the VM and milliseconds compiled. `aipl compile --self`, `aipl eval`, and `aipl test` all use the VM. An `aipl run FILE.wasm` that executes compiled output in-process (wasmtime is currently only a dev-dependency) would let the toolchain and tests run compiled.
+**N10. The VM is the slow path. [Partly fixed 2026-10-02: `aipl-run` and `aipl run` execute compiled modules natively; `eval`, `test`, and `compile --self` still use the VM]** The self-hosted toolchain takes seconds in the VM and milliseconds compiled. `aipl compile --self`, `aipl eval`, and `aipl test` all use the VM. An `aipl run FILE.wasm` that executes compiled output in-process (wasmtime is currently only a dev-dependency) would let the toolchain and tests run compiled.
 
 ---
 
