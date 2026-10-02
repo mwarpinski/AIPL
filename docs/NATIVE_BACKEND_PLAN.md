@@ -39,7 +39,7 @@ If the compiler ever emits an instruction outside this list, the native backend 
 
 - **An ELF64 file** for x86-64 Linux, statically linked, no libc: a header, a code segment (read + execute), and a data segment (read + write). Entry point: compiled `_start`.
 - **System calls directly** (`syscall` instruction), as Go does on Linux: `read`, `write`, `openat`, `close`, `unlinkat`, `exit_group`, `mmap`, `clock_gettime`, `getrandom`, `clone`, `futex`.
-- **Linear memory** reserved with `mmap` at start-up: 64 MiB (the 1024-page cap) reserved up front, so it never moves; a base register points at it. Out-of-range accesses must trap like wasm. Decide in M3 between explicit bounds checks (simple) and a guard region with a signal handler (faster); start explicit.
+- **Linear memory** reserved with `mmap` at start-up: 64 MiB (the 1024-page cap) reserved up front, so it never moves; a base register points at it. Out-of-range accesses must trap like wasm. Decide in NE8 between explicit bounds checks (simple) and a guard region with a signal handler (faster); start explicit.
 - **Traps** (unreachable, divide by zero, out-of-range memory, bad conversions) print a message to stderr and exit with status 134, as `aipl-run` does.
 - **Program start-up:** argc/argv/envp read from the initial stack (for the `args_*`/`environ_*` imports), preopened directory 3 = the working directory and 4 = `/`, then run the module's start function (threaded modules) and `_start`.
 
@@ -76,7 +76,7 @@ The driver gains a native target; `aipl compile --exe` uses it on Linux x86-64 a
 
 ## Tasks (NE1-NE18)
 
-Like the audit's P-tasks: each is small enough for one session, lives on its own branch `features/native_elf/pN` (cut from `development`, merged back when done), and ends with a check that must actually pass. "Done when" is the bar: a task that returns a number without the check passing is not done (PROGRESS.md, "Lessons"). Every task updates PROGRESS.md with what landed and any surprise, and adds its test programs to the shared native test list (NE5) so earlier tasks stay covered.
+Like the audit's P-tasks: each is small enough for one session, lives on its own branch `features/native_elf/neN` (e.g. `features/native_elf/ne1`) (cut from `development`, merged back when done), and ends with a check that must actually pass. "Done when" is the bar: a task that returns a number without the check passing is not done (PROGRESS.md, "Lessons"). Every task updates PROGRESS.md with what landed and any surprise, and adds its test programs to the shared native test list (NE5) so earlier tasks stay covered.
 
 Order: NE1 → NE2 → NE3 → NE4 → NE5, then NE6-NE9 in order, then NE10-NE14 (NE12-NE14 can go in any order), then NE15 → NE16 → NE17 → NE18.
 

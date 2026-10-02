@@ -232,7 +232,7 @@ Before the native backend, the language and runtime surface are completed so the
    - Both compilers add `_start` to any module with a `main`.
    - A ~150-line Rust runner embeds wasmtime and runs the program appended to its own file, with WASI stdio, args, env, files, and the exit code.
    - AIPL does the bundling.
-6. **Linux x86-64 native backend** (plan and tasks NE1-NE18: `docs/NATIVE_BACKEND_PLAN.md`; branches `features/native_elf/pN`) (ELF executables, wasm → x86-64 in AIPL, direct system calls). A baseline compiler first. Native builds enforce the same file-access rules as wasm (decided 2026-10-02): by default the working directory and `/`, with `--sandbox` only the working directory, so the native code checks each path before opening it. Threads need their own creation (Linux `clone`) with the semantics `tests/test_threads.rs` already pins down.
+6. **Linux x86-64 native backend** (plan and tasks NE1-NE18: `docs/NATIVE_BACKEND_PLAN.md`; branches `features/native_elf/neN`) (ELF executables, wasm → x86-64 in AIPL, direct system calls). A baseline compiler first. Native builds enforce the same file-access rules as wasm (decided 2026-10-02): by default the working directory and `/`, with `--sandbox` only the working directory, so the native code checks each path before opening it. Threads need their own creation (Linux `clone`) with the semantics `tests/test_threads.rs` already pins down.
 7. **The type checker in AIPL**, then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
 8. **Stage-0 seed and retiring the Rust compiler code.**
 
