@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 158 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 160 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -105,6 +105,13 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 - **No standalone self-hosted CLI yet.** The entry point is `codegen.compile_module`; a `driver.aipl` that reads a file, calls it, and writes the result would make the compiled self-hosted compiler a standalone tool under any WASI host. (The dead `compile_to_target`/`compile_aipl` stubs in `compiler.aipl` were removed in P13.)
 - Float literals outside the exact range (error 973) and exponent notation.
 
+## Collections and growing allocation (2026-10-01, branch `features/collections`)
+
+- **Standard library collections** (AIPL_SPEC.md 12.6): `vec` (growable `i32` list, `sort`, stable `sort_by` with a comparator reference), `map` (`i32 -> i32` open-addressing hash map with tombstones, resize at 75% load, slot iteration), `strmap` (the same keyed by byte strings, FNV-1a), `buf` (string builder), and `str.parse_int`. No generics, so containers hold `i32`; struct pointers go in with `ptr.addr` and come out with `ptr.cast`. Self-tests in the suite were confirmed to fail when each module is broken (two surviving mutations, tombstone reuse and hash quality, change speed, not results). Byte parity with the self-hosted compiler holds for every module.
+- **Allocation grows memory.** `mem.alloc`, `new`, `arr.new`, and `ok`/`err` cells now grow memory when the cursor passes its end (VM, Rust backend, and self-hosted compiler identically; differential test checks the final page count). Before, any program past 1 MiB had to call `mem.grow` itself, and library code that allocated with `new` failed in a large program. `arr.new` now bumps the cursor before writing its length header.
+- **AISQL moved to `attic/aisql/`**: its docs described operations that never existed and its code returned constants.
+- Language gap this exposed: generics (`(vec T)`, `(map K V)`) would turn the container casts into checked types.
+
 ## P11: return, break, continue, cond (2026-10-01)
 
 - **Forms** (AIPL_SPEC.md 7.10): `(return v)`/`(return)`, `(break)`, `(continue)` are void statements; `(cond (test body...) ... (else body...))` is parser sugar for nested `if`s with a required `else`. The checker rejects `break`/`continue` outside a loop body and `return` in contracts or with the wrong type; a body may end in `(return v)`.
@@ -163,7 +170,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P14 (resolver in AIPL), then a `driver.aipl` so the compiled self-hosted compiler runs standalone. Language versioning is deferred until packages exist.
+3. P14 (resolver in AIPL), then a `driver.aipl` so the compiled self-hosted compiler runs standalone. Worth considering: generics for the collections. Language versioning is deferred until packages exist.
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)

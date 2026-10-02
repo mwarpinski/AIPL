@@ -31,7 +31,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U4 compiled code cannot do I/O | Fixed (P6) |
 | U5 control flow too poor | Fixed (P11) |
 | U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
-| U7 memory has no growth or bounds contract | Partly: `mem.grow` exists and bounds are enforced in both backends; `mem.free` is still a no-op |
+| U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically (2026-10-01) up to 100 pages and bounds are enforced in both backends; `mem.free` is still a no-op |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
 ---

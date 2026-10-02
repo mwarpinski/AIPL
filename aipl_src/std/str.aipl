@@ -58,7 +58,22 @@
               (block (set! words (+ words 1)) (set! in_word true)))))
     words)
 
-  ;; Pass count; test_suite.aipl expects 6.
+  ;; Decimal integer with an optional leading '-': (ok n), or (err i) where i
+  ;; is the index of the first byte that is not part of a number (0 for an
+  ;; empty input or a lone '-'). Values outside i32 wrap.
+  (fn parse_int [b:(ptr Bytes)] -> (result i32 i32)
+    (let len:i32 (get b Bytes.len))
+    (let neg:bool (and (gt len 0) (eq (mem.load8 (get b Bytes.addr)) 45)))
+    (let start:i32 (if neg 1 0))
+    (if (lte len start) (return (err 0)) (block))
+    (let n:i32 0)
+    (loop i start (- len 1) 1
+      (let c:i32 (call byte_at b i))
+      (if (or (lt c 48) (gt c 57)) (return (err i)) (block))
+      (set! n (- (* n 10) (- c 48))))
+    (ok (if neg n (- 0 n))))
+
+  ;; Pass count; test_suite.aipl expects 7.
   (fn run_str_tests [] -> i32
     (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
@@ -68,4 +83,8 @@
     (if (eq (call count_byte ab 32) 1) (set! p (+ p 1)) (block))
     (if (and (eq (call count_lines ab) 2) (and (eq (call count_lines (call from_str "x\n")) 1) (eq (call count_lines (call from_str "")) 0))) (set! p (+ p 1)) (block))
     (if (and (eq (call count_words ab) 3) (eq (call count_words (call from_str " \t\n")) 0)) (set! p (+ p 1)) (block))
+    (let good:i32 (match_result (call parse_int (call from_str "-305")) (ok n n) (err e 9999)))
+    (let bad:i32 (match_result (call parse_int (call from_str "12x4")) (ok n -1) (err e e)))
+    (let empty:i32 (match_result (call parse_int (call from_str "-")) (ok n -1) (err e e)))
+    (if (and (eq good -305) (and (eq bad 2) (eq empty 0))) (set! p (+ p 1)) (block))
     p))

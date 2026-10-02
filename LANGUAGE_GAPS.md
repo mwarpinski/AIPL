@@ -16,6 +16,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 2. Language
 
 - **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
+- **No generics.** Containers (`std/vec`, `std/map`, `std/strmap`) hold `i32` words; a list of structs stores addresses with `ptr.addr` and reads them back with `ptr.cast`, an unchecked cast at every use. Generic types (`(vec T)`, `(map K V)`) would make these checked, and are the language feature the collections most need.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No generics, no visibility.** Every function in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
@@ -27,12 +28,12 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **`mem.free` is a no-op** in both backends (the argument is not even evaluated). The allocator is bump-only, so long-running programs leak.
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
-- **Memory caps at 100 pages (6.4 MiB)** in both backends.
+- **Memory caps at 100 pages (6.4 MiB)** in both backends. Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 
 ## 4. Strings and I/O
 
 - **No string concatenation in wasm.** `(+ str str)` is VM-only.
-- **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library is small: no string building or concatenation in wasm, no parsing of numbers from text, no collections.
+- **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, number formatting and parsing (`str.parse_int`), a string builder (`buf`), and `i32` collections (`vec`, `map`, `strmap`); still missing are floats in text, sets, and anything generic.
 - **VM `str` values are Rust strings, not pointers.** `str.ptr` and `str` struct fields copy the string into the heap each time, so heap addresses after those operations differ from wasm, where a `str` is the interned literal's address.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code. **`sys.time` is unimplemented** in both backends.
 - **String literals share a 512-byte area per module** (addresses 512–1023).

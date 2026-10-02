@@ -441,7 +441,16 @@ fn self_hosted_bytes_match_pointers() {
 #[test]
 fn self_hosted_bytes_match_std_library() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (name, rel) in [("std_str", "aipl_src/std/str.aipl"), ("std_fmt", "aipl_src/std/fmt.aipl"), ("std_io", "aipl_src/std/io.aipl"), ("word_count", "examples/word_count.aipl")] {
+    for (name, rel) in [
+        ("std_str", "aipl_src/std/str.aipl"),
+        ("std_fmt", "aipl_src/std/fmt.aipl"),
+        ("std_io", "aipl_src/std/io.aipl"),
+        ("std_vec", "aipl_src/std/vec.aipl"),
+        ("std_map", "aipl_src/std/map.aipl"),
+        ("std_strmap", "aipl_src/std/strmap.aipl"),
+        ("std_buf", "aipl_src/std/buf.aipl"),
+        ("word_count", "examples/word_count.aipl"),
+    ] {
         let module = Resolver::resolve(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }

@@ -764,3 +764,35 @@ fn p8_wasm_rejects_non_32_bit_result_payloads() {
     let err = WasmCompiler::compile(&module).unwrap_err();
     assert!(err.contains("result payloads must be 32-bit"), "got {err}");
 }
+
+// Allocation grows memory: new, arr.new, ok/err cells, and mem.alloc past the
+// initial 1 MiB need no explicit mem.grow, and both backends end with the same
+// number of pages.
+#[test]
+fn allocation_grows_memory_identically() {
+    let src = r#"
+(module grow
+  (struct P [x:i32 y:i64])
+  (fn main [] -> i32
+    (let total:i32 0)
+    (loop i 1 3000 1
+      (let p:(ptr P) (new P))
+      (put p P.x i)
+      (let a:(arr i32) (arr.new i32 100))
+      (arr.set i32 a 99 i)
+      (let r:(result i32 i32) (ok i))
+      (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
+    (let big:i32 (mem.alloc 2000000))
+    (mem.store32 (+ big 1999996) 7)
+    (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
+  ;; past the 100-page cap allocation stops growing and the store fails in both
+  (fn too_big [] -> i32
+    (let p:i32 (mem.alloc 7000000))
+    (mem.store32 (+ p 6999996) 1)
+    0))
+"#;
+    let (module, wasm) = compile_checked(src);
+    // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
+    assert!(differential(&module, &wasm, "too_big", &[]).is_err());
+}

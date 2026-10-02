@@ -124,7 +124,7 @@ Functions support formal pre-conditions and post-conditions evaluated statically
 ### A. Raw WebAssembly Linear Memory Loads & Stores
 - `(mem.load32 ptr)` -> Reads 4 bytes from linear memory offset `ptr` (`i32.load`).
 - `(mem.store32 ptr val)` -> Writes 4 bytes to linear memory offset `ptr` (`i32.store`).
-- `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size`. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
+- `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size`. If the new cursor is past the end of memory, memory grows by the pages needed to cover it (up to the 100-page cap; beyond it nothing grows and the first access past the end fails). `new`, `arr.new`, and `ok`/`err` cells allocate the same way. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
 - `(mem.grow pages)` -> Grows linear memory by `pages` × 64 KiB. Returns the previous size in pages, or `-1` if the 100-page maximum would be exceeded.
 - `(mem.free ptr)` -> Accepted and type-checked, but a no-op today.
 
@@ -294,7 +294,7 @@ source.aipl
 | Data segments | one writing `00 04 00 00` at address 0 (heap cursor = 1024); if the module has string literals, a second at address 512 holding every distinct literal as `[len u32 LE][bytes]` |
 | String literal | `i32.const <address of its bytes>`; `str` values are pointers (section 4.B) |
 | I/O scratch | functions that do I/O get two extra `i32` locals; the WASI lowerings use runtime cells 64-87 for iovecs and out-parameters (section 7.9) |
-| Heap cursor | the `i32` at address 0; `mem.alloc` compiles to a load, an add, and a store on that word |
+| Heap cursor | the `i32` at address 0; `mem.alloc` compiles to a load, an add, and a store on that word, followed (as for `new`, `arr.new`, and result cells) by a check that grows memory with `memory.grow` when the cursor passes `memory.size` (no locals used) |
 | Loops | `block { loop { ... } }`; a `loop` (counted) also wraps its body in a block so `continue` falls into the step (section 7.10) |
 | Store guard | every `mem.store*`, `put`, and `arr.set` is preceded by a 12-instruction check that traps (`unreachable`) if the address is in bytes 0-3 or 64-1023; each function gets one extra `i32` scratch local for it, which `ok`/`err`, `match_result`, and `arr.new` also use |
 | Function refs | only when the module uses `ref`/`call_ref`: one extra type per distinct `call_ref` signature after the function types, a funcref table (section id 4) of every function, and an element section (id 9) filling it; `call_ref` is `call_indirect` (section 4.G) |
@@ -509,7 +509,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.8 Memory
 
-Linear memory is byte-addressed. Both backends start with 16 pages (1 MiB) and may grow to 100 pages with `mem.grow`. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap. Get memory from `mem.alloc`; never pick an address yourself (section 7.9).
+Linear memory is byte-addressed. Both backends start with 16 pages (1 MiB) and grow up to 100 pages (6.4 MiB): automatically when an allocation needs it (section 4.A), or explicitly with `mem.grow`. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap. Get memory from `mem.alloc`; never pick an address yourself (section 7.9).
 
 ```lisp
 (fn pack_two [] -> i32
@@ -804,7 +804,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (158 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond in both backends, checker rejections).
+Files today (160 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond in both backends, checker rejections). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -992,15 +992,21 @@ Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `
 
 ### 12.6 The standard library (`aipl_src/std/`)
 
-Three modules, written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes), so each function behaves identically in the VM and compiled under WASI. Import them by name: `(import io)`, `(import str)`, `(import fmt)`.
+Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes), so each function behaves identically in the VM and compiled under WASI. Import modules by name: `(import io)`, `(import vec)`, and so on.
 
 | Module | Contents |
 |---|---|
-| `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)`, `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes) |
+| `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)`, `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`) |
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix): each writes ASCII at `out` and returns the count (at most 10, 11, and 8 bytes) |
-| `io` | `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), `alloc [n] -> i32` (`mem.alloc` that also grows memory) |
+| `io` | `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1) |
+| `vec` | growable list of `i32`: `make [capacity] -> (ptr vec.Vec)`, `push`, `pop`, `get [v i]`, `set [v i x]`, `len`, `clear`, `index_of`, `sort` (ascending), `sort_by [v cmp:(fn [i32 i32] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), `cmp_i32` |
+| `map` | hash map `i32 -> i32`: `make [capacity] -> (ptr map.Map)`, `put [m k v]`, `get [m k default]`, `has`, `remove -> bool`, `count`; iterate with `(loop i 0 (- (call map.capacity m) 1) 1 (if (call map.slot_used m i) ... (block)))` reading `slot_key` / `slot_val` |
+| `strmap` | hash map from byte strings to `i32` (symbol tables, word counts): the same API as `map` with keys of type `(ptr str.Bytes)`; the map keeps the key pointer, so a key's bytes must not change while it is stored |
+| `buf` | string builder: `make [capacity] -> (ptr buf.Buf)`, `push_byte`, `push_str [b s:str]`, `push_bytes [b (ptr str.Bytes)]`, `push_int`, `len`, `clear`, `bytes [b] -> (ptr str.Bytes)` (a view of the contents; take it after building) |
 
-From outside, the slice type is `str.Bytes`: `(ptr str.Bytes)`, `(get b str.Bytes.len)`. Every module ends in a `run_<module>_tests` runner wired into `aipl_src/test_suite.aipl`. `print_int` takes 11 bytes of heap per call and `read_file` allocates a buffer per file; with a bump allocator (`mem.free` is a no-op) that memory is not reclaimed.
+AIPL has no generics, so containers hold `i32` words. Store struct pointers as addresses and cast them back: `(call vec.push v (ptr.addr p))`, `(ptr.cast Point (call vec.get v i))`.
+
+From outside, the slice type is `str.Bytes`: `(ptr str.Bytes)`, `(get b str.Bytes.len)`. Every module ends in a `run_<module>_tests` runner wired into `aipl_src/test_suite.aipl`. Allocation grows memory as needed (section 4.A), but nothing is freed (`mem.free` is a no-op): `print_int` allocates 11 bytes per call, `read_file` a buffer per file, and growing a `vec`, `map`, or `buf` abandons the old storage. Long-running programs should reuse containers (`clear`) rather than make new ones.
 
 ### 12.7 A complete I/O program with the standard library, both backends
 
@@ -1066,7 +1072,9 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
 | `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |
-| hand-writing digit formatting, file-reading loops, or byte counting | `(import io)`, `(import str)`, `(import fmt)` (section 12.6) |
+| hand-writing digit formatting, file-reading loops, byte counting, growable arrays, hash tables, or string building | the standard library (section 12.6): `io`, `str`, `fmt`, `vec`, `map`, `strmap`, `buf` |
+| storing a struct in a `vec`/`map` as `p` | containers hold `i32`: push `(ptr.addr p)`, read back `(ptr.cast S (call vec.get v i))` |
+| calling `mem.grow` before allocating | not needed: allocation grows memory itself (up to 100 pages) |
 | passing a `str` literal where a `(ptr, len)` path or buffer is expected, e.g. `(fs.open "t.bin" 5 0)` | type error: `fs.*` take `i32` pointers. Write `(fs.open (str.ptr "t.bin") (str.len "t.bin") 0)` |
 | `(if (lt i 0) (return -1) i)` | `return` is a statement (void): `(if (lt i 0) (return -1) (block))`, then the value |
 | `(cond ((lt n 0) -1) ((eq n 0) 0))` without `else` | `cond` needs a final `(else ...)` clause; use `(else (block))` when the clauses are statements |

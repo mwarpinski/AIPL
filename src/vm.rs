@@ -526,16 +526,14 @@ impl VM {
     /// allocates afresh; the wasm backend instead points at the interned literal.
     fn materialize_str(&self, op: &str, s: &str) -> Result<usize, String> {
         let bytes = s.as_bytes();
-        let mut mem = self.shared.lock().unwrap();
-        let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
-        let base = i32::from_le_bytes(cur) as usize;
+        let base = self.alloc_bytes(4 + bytes.len()) as u32 as usize;
         let end = base + 4 + bytes.len();
+        let mut mem = self.shared.lock().unwrap();
         if end > mem.bytes.len() {
             return Err(format!("{}: out of memory materialising a {}-byte string", op, bytes.len()));
         }
         mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
         mem.bytes[base + 4..end].copy_from_slice(bytes);
-        mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
         Ok(base + 4)
     }
 
@@ -574,12 +572,24 @@ impl VM {
         Ok(i32::from_le_bytes(bytes) as i64)
     }
 
+    /// Bumps the heap cursor by `size` and returns the old cursor. If the new
+    /// cursor is past the end of memory, memory grows by the pages needed to
+    /// cover it (the wasm lowering does the same with memory.grow); past the
+    /// 100-page cap nothing grows and the first access beyond the end fails.
     fn alloc_bytes(&self, size: usize) -> i32 {
         let mut mem = self.shared.lock().unwrap();
         let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
         let allocated_ptr = i32::from_le_bytes(cur);
         let next = allocated_ptr.wrapping_add(size as i32);
         mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
+        let have = mem.bytes.len() as u32;
+        if next as u32 > have {
+            let pages = ((next as u32).wrapping_sub(have).wrapping_add(65535) >> 16) as usize;
+            let old_pages = mem.bytes.len() / PAGE_SIZE;
+            if old_pages + pages <= MAX_PAGES {
+                mem.bytes.resize((old_pages + pages) * PAGE_SIZE, 0);
+            }
+        }
         allocated_ptr
     }
 
@@ -926,14 +936,8 @@ impl VM {
                 };
                 // The cursor lives IN linear memory at address 0 (not in a Rust
                 // field), so VM code, compiled wasm, and self-hosted AIPL all
-                // share one allocator state. No bounds check here: like wasm,
-                // a later load/store past the end is what fails.
-                let mut mem = self.shared.lock().unwrap();
-                let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
-                let allocated_ptr = i32::from_le_bytes(cur);
-                let next = allocated_ptr.wrapping_add(size as i32);
-                mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
-                Ok(Value::Int(allocated_ptr as i64))
+                // share one allocator state.
+                Ok(Value::Int(self.alloc_bytes(size) as i64))
             }
             OpCode::MemFree => Ok(Value::Void),
             OpCode::MemGrow => {

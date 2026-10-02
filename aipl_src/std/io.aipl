@@ -4,16 +4,6 @@
   (import str)
   (import fmt)
 
-  ;; mem.alloc that also grows linear memory to cover the block (mem.alloc
-  ;; only moves the cursor). Past the 100-page cap the first store traps.
-  (fn alloc [n:i32] -> i32
-    (let p:i32 (mem.alloc n))
-    (let have:i32 (* (mem.grow 0) 65536))
-    (if (gt (mem.load32 0) have)
-        (mem.grow (+ (/ (- (mem.load32 0) have) 65536) 1))
-        0)
-    p)
-
   (fn write_str [fd:i32 s:str] -> void
     (fs.write fd (str.ptr s) (str.len s)))
 
@@ -25,9 +15,9 @@
     (call write_str 2 s)
     (call write_str 2 "\n"))
 
-  ;; Decimal, with '-' when negative. Each call takes 11 bytes of heap.
+  ;; Decimal, with '-' when negative. Each call allocates 11 bytes (never freed).
   (fn print_int [n:i32] -> void
-    (let buf:i32 (call alloc 11))
+    (let buf:i32 (mem.alloc 11))
     (fs.write 1 buf (call fmt.int_to_bytes n buf)))
 
   ;; label, then n, then a newline: (call io.println_int "lines: " 4) prints "lines: 4".
@@ -40,13 +30,13 @@
   (fn read_file [path:str] -> (ptr str.Bytes)
     (let fd:i32 (fs.open (str.ptr path) (str.len path) 0))
     (let cap:i32 4096)
-    (let buf:i32 (call alloc cap))
+    (let buf:i32 (mem.alloc cap))
     (let len:i32 0)
     (let failed:bool (lt fd 0))
     (while (not failed)
       (if (eq len cap)
           (block
-            (let bigger:i32 (call alloc (* cap 2)))
+            (let bigger:i32 (mem.alloc (* cap 2)))
             (loop i 0 (- len 1) 1
               (mem.store8 (+ bigger i) (mem.load8 (+ buf i))))
             (set! buf bigger)

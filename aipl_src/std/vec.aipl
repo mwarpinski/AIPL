@@ -1,0 +1,142 @@
+;; std/vec: a growable list of i32 words (storage doubles when full). AIPL has no generics, so a list of
+;; structs stores their addresses: (call vec.push v (ptr.addr p)), read back
+;; with (ptr.cast S (call vec.get v i)).
+(module vec
+
+  (struct Vec [items:(arr i32) len:i32])
+
+  (fn make [capacity:i32] -> (ptr Vec)
+    (req (gte capacity 0))
+    (let cap:i32 (if (lt capacity 4) 4 capacity))
+    (let v:(ptr Vec) (new Vec))
+    (put v Vec.items (arr.new i32 cap))
+    (put v Vec.len 0)
+    v)
+
+  (fn len [v:(ptr Vec)] -> i32
+    (get v Vec.len))
+
+  (fn get [v:(ptr Vec) i:i32] -> i32
+    (req (and (gte i 0) (lt i (get v Vec.len))))
+    (arr.get i32 (get v Vec.items) i))
+
+  (fn set [v:(ptr Vec) i:i32 x:i32] -> void
+    (req (and (gte i 0) (lt i (get v Vec.len))))
+    (arr.set i32 (get v Vec.items) i x))
+
+  ;; Appends x, doubling the storage when full.
+  (fn push [v:(ptr Vec) x:i32] -> void
+    (let n:i32 (get v Vec.len))
+    (let items:(arr i32) (get v Vec.items))
+    (if (eq n (arr.len items))
+        (block
+          (let bigger:(arr i32) (arr.new i32 (* 2 n)))
+          (loop i 0 (- n 1) 1
+            (arr.set i32 bigger i (arr.get i32 items i)))
+          (put v Vec.items bigger))
+        (block))
+    (arr.set i32 (get v Vec.items) n x)
+    (put v Vec.len (+ n 1)))
+
+  (fn pop [v:(ptr Vec)] -> i32
+    (req (gt (get v Vec.len) 0))
+    (let n:i32 (- (get v Vec.len) 1))
+    (put v Vec.len n)
+    (arr.get i32 (get v Vec.items) n))
+
+  (fn clear [v:(ptr Vec)] -> void
+    (put v Vec.len 0))
+
+  ;; Index of the first element equal to x, or -1.
+  (fn index_of [v:(ptr Vec) x:i32] -> i32
+    (loop i 0 (- (get v Vec.len) 1) 1
+      (if (eq (arr.get i32 (get v Vec.items) i) x) (return i) (block)))
+    -1)
+
+  (fn min_i32 [a:i32 b:i32] -> i32 (if (lt a b) a b))
+
+  ;; -1, 0, 1 as a < b, a = b, a > b (no subtraction, so no overflow).
+  (fn cmp_i32 [a:i32 b:i32] -> i32
+    (cond ((lt a b) -1) ((gt a b) 1) (else 0)))
+
+  ;; Stable sort by cmp: a negative result puts a before b, positive puts b
+  ;; before a, zero keeps their order. Bottom-up merge sort, O(n log n).
+  (fn sort_by [v:(ptr Vec) cmp:(fn [i32 i32] -> i32)] -> void
+    (let n:i32 (get v Vec.len))
+    (if (lt n 2) (return) (block))
+    (let src:(arr i32) (get v Vec.items))
+    (let dst:(arr i32) (arr.new i32 n))
+    (let width:i32 1)
+    (while (lt width n)
+      (let lo:i32 0)
+      (while (lt lo n)
+        (let mid:i32 (call min_i32 (+ lo width) n))
+        (let hi:i32 (call min_i32 (+ lo (* 2 width)) n))
+        (let i:i32 lo)
+        (let j:i32 mid)
+        (loop k lo (- hi 1) 1
+          (cond
+            ((gte i mid)
+             (arr.set i32 dst k (arr.get i32 src j))
+             (set! j (+ j 1)))
+            ((gte j hi)
+             (arr.set i32 dst k (arr.get i32 src i))
+             (set! i (+ i 1)))
+            ((lte (call_ref (fn [i32 i32] -> i32) cmp (arr.get i32 src i) (arr.get i32 src j)) 0)
+             (arr.set i32 dst k (arr.get i32 src i))
+             (set! i (+ i 1)))
+            (else
+             (arr.set i32 dst k (arr.get i32 src j))
+             (set! j (+ j 1)))))
+        (set! lo hi))
+      (let tmp:(arr i32) src)
+      (set! src dst)
+      (set! dst tmp)
+      (set! width (* width 2)))
+    ;; the sorted run is in src; copy it back if that is the scratch array
+    (if (neq (arr.addr src) (arr.addr (get v Vec.items)))
+        (loop i 0 (- n 1) 1
+          (arr.set i32 (get v Vec.items) i (arr.get i32 src i)))
+        (block)))
+
+  ;; Ascending.
+  (fn sort [v:(ptr Vec)] -> void
+    (call sort_by v (ref cmp_i32)))
+
+  ;; for the stability test: compares only the tens digit and up
+  (fn cmp_tens [a:i32 b:i32] -> i32
+    (call cmp_i32 (/ a 10) (/ b 10)))
+
+  ;; Pass count; test_suite.aipl expects 5.
+  (fn run_vec_tests [] -> i32
+    (let p:i32 0)
+    (let v:(ptr Vec) (call make 0))
+    (loop i 0 999 1 (call push v (* i 3)))
+    (if (and (eq (call len v) 1000) (and (eq (call get v 0) 0) (eq (call get v 999) 2997))) (set! p (+ p 1)) (block))
+    (call set v 5 -7)
+    (if (and (eq (call pop v) 2997) (and (eq (call len v) 999) (eq (call get v 5) -7))) (set! p (+ p 1)) (block))
+    (if (and (eq (call index_of v 30) 10) (eq (call index_of v 31) -1)) (set! p (+ p 1)) (block))
+    ;; sort 200 pseudo-random values; sorted and the same multiset (sum, count)
+    (let r:(ptr Vec) (call make 4))
+    (let x:i32 12345)
+    (let sum:i32 0)
+    (loop i 1 200 1
+      (set! x (+ (* x 1103515245) 12345))
+      (call push r (bitand (shru x 8) 1023))
+      (set! sum (+ sum (bitand (shru x 8) 1023))))
+    (call sort r)
+    (let ok:bool true)
+    (let sum2:i32 (call get r 0))
+    ;; (and a b) evaluates both sides, so start at 1 rather than guarding i > 0
+    (loop i 1 199 1
+      (set! sum2 (+ sum2 (call get r i)))
+      (if (gt (call get r (- i 1)) (call get r i)) (set! ok false) (block)))
+    (if (and ok (eq sum sum2)) (set! p (+ p 1)) (block))
+    ;; stability: equal keys keep their order
+    (let s:(ptr Vec) (call make 4))
+    (call push s 31) (call push s 12) (call push s 35) (call push s 10) (call push s 33)
+    (call sort_by s (ref cmp_tens))
+    (if (and (eq (call get s 0) 12) (and (eq (call get s 1) 10) (and (eq (call get s 2) 31) (and (eq (call get s 3) 35) (eq (call get s 4) 33)))))
+        (set! p (+ p 1))
+        (block))
+    p))

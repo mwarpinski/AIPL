@@ -752,6 +752,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Add);
                 func.instruction(&Instruction::I32Store(cursor));
+                emit_grow_to_cursor(func);
             }
             OpCode::MemGrow => {
                 compile_expr(&args[0], ctx, func)?;
@@ -1128,6 +1129,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Const(size as i32));
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Store(cursor));
+            emit_grow_to_cursor(func);
         }
         Expr::GetField {
             struct_name,
@@ -1243,17 +1245,12 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Unreachable);
             func.instruction(&Instruction::End);
-            // mem[cursor] = n
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Store(M4));
             // result: cursor + 4
             func.instruction(&Instruction::I32Const(0));
             func.instruction(&Instruction::I32Load(M4));
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
-            // cursor = cursor + 4 + n * elem_size
+            // cursor = cursor + 4 + n * elem_size, then grow memory to cover it
             func.instruction(&Instruction::I32Const(0));
             func.instruction(&Instruction::I32Const(0));
             func.instruction(&Instruction::I32Load(M4));
@@ -1263,6 +1260,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I32Store(M4));
+            emit_grow_to_cursor(func);
+            // header: mem[cursor - 4 - n * elem_size] = n
+            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I32Load(M4));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            func.instruction(&Instruction::I32Const(elem_size as i32));
+            func.instruction(&Instruction::I32Mul);
+            func.instruction(&Instruction::I32Sub);
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Sub);
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Store(M4));
         }
         Expr::Return { val, .. } => {
@@ -1393,6 +1402,36 @@ fn normalize_bool(func: &mut Function) {
     func.instruction(&Instruction::I32Ne);
 }
 
+/// After the heap cursor (address 0) has been bumped: if it is past the end of
+/// memory, grow memory by the pages needed to cover it. Uses no locals and has
+/// no net stack effect. memory.grow fails (-1, dropped) past the 100-page cap,
+/// and the first access beyond the end then traps. The VM's alloc_bytes does
+/// the same.
+fn emit_grow_to_cursor(func: &mut Function) {
+    use Instruction::*;
+    let size_bytes = |func: &mut Function| {
+        func.instruction(&MemorySize(0));
+        func.instruction(&I32Const(16));
+        func.instruction(&I32Shl);
+    };
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32GtU);
+    func.instruction(&If(wasm_encoder::BlockType::Empty));
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32Sub);
+    func.instruction(&I32Const(65535));
+    func.instruction(&I32Add);
+    func.instruction(&I32Const(16));
+    func.instruction(&I32ShrU);
+    func.instruction(&MemoryGrow(0));
+    func.instruction(&Drop);
+    func.instruction(&End);
+}
+
 /// `ok`/`err`: allocate an 8-byte cell `[tag:i32 payload:i32]` (tag 0 = ok,
 /// 1 = err) from the heap cursor before evaluating the payload, and leave the
 /// cell pointer on the stack. The pointer is pushed twice before the payload is
@@ -1415,6 +1454,7 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
     func.instruction(&Instruction::I32Const(8));
     func.instruction(&Instruction::I32Add);
     func.instruction(&Instruction::I32Store(M4));
+    emit_grow_to_cursor(func);
 
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::I32Const(tag));

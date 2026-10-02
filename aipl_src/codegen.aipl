@@ -596,6 +596,36 @@
       (mem.store8 (+ ptr (+ 1 b)) (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64))))
     9)
 
+  ;; After the heap cursor is bumped: grow memory to cover it if needed, with
+  ;; no locals and no net stack effect (wasm.rs emit_grow_to_cursor).
+  (fn emit_grow_to_cursor [ptr:i32] -> i32
+    (let off:i32 0)
+    (set! off (+ off (call emit_i32_const (+ ptr off) 0)))
+    (set! off (+ off (call emit_memop (+ ptr off) 40 2)))
+    (set! off (+ off (call emit_size_bytes (+ ptr off))))
+    (set! off (+ off (call emit_byte (+ ptr off) 75)))
+    (set! off (+ off (call emit_byte (+ ptr off) 4)))
+    (set! off (+ off (call emit_byte (+ ptr off) 64)))
+    (set! off (+ off (call emit_i32_const (+ ptr off) 0)))
+    (set! off (+ off (call emit_memop (+ ptr off) 40 2)))
+    (set! off (+ off (call emit_size_bytes (+ ptr off))))
+    (set! off (+ off (call emit_byte (+ ptr off) 107)))
+    (set! off (+ off (call emit_i32_const (+ ptr off) 65535)))
+    (set! off (+ off (call emit_byte (+ ptr off) 106)))
+    (set! off (+ off (call emit_i32_const (+ ptr off) 16)))
+    (set! off (+ off (call emit_byte (+ ptr off) 118)))
+    (set! off (+ off (call emit_byte (+ ptr off) 64)))
+    (set! off (+ off (call emit_byte (+ ptr off) 0)))
+    (set! off (+ off (call emit_byte (+ ptr off) 26)))
+    (+ off (call emit_byte (+ ptr off) 11)))
+
+  ;; memory.size; i32.const 16; i32.shl -> memory size in bytes
+  (fn emit_size_bytes [ptr:i32] -> i32
+    (call emit_byte ptr 63)
+    (call emit_byte (+ ptr 1) 0)
+    (let n:i32 (+ 2 (call emit_i32_const (+ ptr 2) 16)))
+    (+ n (call emit_byte (+ ptr n) 116)))
+
   (fn emit_byte [ptr:i32 b:i32] -> i32
     (mem.store8 ptr b)
     1)
@@ -1580,6 +1610,7 @@
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1)) ;; add
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
         (block))
     (if (eq op_id 44) ;; mem.grow (pages) -> memory.grow 0
@@ -1679,6 +1710,7 @@
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 8)))
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
@@ -1702,6 +1734,7 @@
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 8)))
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
@@ -1724,6 +1757,7 @@
           (set! off (+ off (call emit_i32_const (+ out_ptr off) size)))
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
         (block))
     (if (eq op_id 51) ;; get ptr Struct.field: load by field type at its offset
@@ -1778,17 +1812,12 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
-          ;; mem[cursor] = n
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
-          (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
-          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
-          (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; result: cursor + 4
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
-          ;; cursor = cursor + 4 + n * sizeof(type)
+          ;; cursor = cursor + 4 + n * sizeof(type), then grow memory to cover it
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
@@ -1798,6 +1827,18 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
+          (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
+          (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
+          ;; header: mem[cursor - 4 - n * sizeof(type)] = n
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
+          (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) (call type_size etype))))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 108)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 107)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 107)))
+          (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           (set! res off))
         (block))

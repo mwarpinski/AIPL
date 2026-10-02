@@ -23,7 +23,7 @@ RULES:
 11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
 12. Code meant for `aipl compile` must not use thread.*, atomic.*, sys.time, or (+ str str); sys.print takes str only.
 13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures.
-14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file; (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file; (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections: (import vec) list of i32 (vec.make, vec.push, vec.get, vec.len, vec.sort, vec.sort_by with a (fn [i32 i32] -> i32) comparator); (import map) i32->i32 hash map (map.make, map.put, map.get m k default, map.has, map.remove); (import strmap) the same keyed by (ptr str.Bytes); (import buf) string builder (buf.push_str, buf.push_int, buf.bytes). Containers hold i32: store struct pointers with (ptr.addr p) and read back with (ptr.cast S x). str.parse_int parses decimal text. Allocation grows memory by itself.
 ```
 
 ---

@@ -1,0 +1,130 @@
+;; std/strmap: hash map from byte strings to i32 values (symbol tables, word
+;; counts). Keys are (ptr str.Bytes); the map keeps the pointer, so a key's
+;; bytes must not change while it is in the map. Same design as std/map.
+(module strmap
+  (import str)
+
+  ;; keys holds (ptr str.Bytes) addresses; state per slot: 0 empty, 1 used, 2 deleted
+  (struct StrMap [keys:(arr i32) vals:(arr i32) states:(arr i32) count:i32 used:i32])
+
+  ;; FNV-1a over the bytes
+  (fn hash [b:(ptr str.Bytes)] -> i32
+    (let h:i32 -2128831035)
+    (loop i 0 (- (get b str.Bytes.len) 1) 1
+      (set! h (* (^ h (call str.byte_at b i)) 16777619)))
+    h)
+
+  (fn key_at [m:(ptr StrMap) i:i32] -> (ptr str.Bytes)
+    (ptr.cast str.Bytes (arr.get i32 (get m StrMap.keys) i)))
+
+  (fn alloc_slots [m:(ptr StrMap) cap:i32] -> void
+    (put m StrMap.keys (arr.new i32 cap))
+    (put m StrMap.vals (arr.new i32 cap))
+    (put m StrMap.states (arr.new i32 cap))
+    (put m StrMap.count 0)
+    (put m StrMap.used 0))
+
+  (fn make [capacity:i32] -> (ptr StrMap)
+    (let cap:i32 8)
+    (while (lt cap capacity) (set! cap (* cap 2)))
+    (let m:(ptr StrMap) (new StrMap))
+    (call alloc_slots m cap)
+    m)
+
+  (fn capacity [m:(ptr StrMap)] -> i32 (arr.len (get m StrMap.keys)))
+  (fn count [m:(ptr StrMap)] -> i32 (get m StrMap.count))
+
+  (fn slot_for [m:(ptr StrMap) k:(ptr str.Bytes)] -> i32
+    (let mask:i32 (- (call capacity m) 1))
+    (let i:i32 (bitand (call hash k) mask))
+    (let tomb:i32 -1)
+    (while true
+      (let st:i32 (arr.get i32 (get m StrMap.states) i))
+      (cond
+        ((eq st 0) (return (if (neq tomb -1) tomb i)))
+        ((eq st 1) (if (call str.bytes_eq (call key_at m i) k) (return i) (block)))
+        ((eq tomb -1) (set! tomb i))
+        (else (block)))
+      (set! i (bitand (+ i 1) mask)))
+    -1)
+
+  (fn grow [m:(ptr StrMap)] -> void
+    (let old_keys:(arr i32) (get m StrMap.keys))
+    (let old_vals:(arr i32) (get m StrMap.vals))
+    (let old_states:(arr i32) (get m StrMap.states))
+    (let old_cap:i32 (arr.len old_keys))
+    (call alloc_slots m (if (gt (* 2 (get m StrMap.count)) old_cap) (* 2 old_cap) old_cap))
+    (loop i 0 (- old_cap 1) 1
+      (if (eq (arr.get i32 old_states i) 1)
+          (call put m (ptr.cast str.Bytes (arr.get i32 old_keys i)) (arr.get i32 old_vals i))
+          (block))))
+
+  (fn put [m:(ptr StrMap) k:(ptr str.Bytes) v:i32] -> void
+    (if (gte (* 4 (+ (get m StrMap.used) 1)) (* 3 (call capacity m))) (call grow m) (block))
+    (let i:i32 (call slot_for m k))
+    (let st:i32 (arr.get i32 (get m StrMap.states) i))
+    (if (neq st 1)
+        (block
+          (if (eq st 0) (put m StrMap.used (+ (get m StrMap.used) 1)) (block))
+          (arr.set i32 (get m StrMap.states) i 1)
+          (arr.set i32 (get m StrMap.keys) i (ptr.addr k))
+          (put m StrMap.count (+ (get m StrMap.count) 1)))
+        (block))
+    (arr.set i32 (get m StrMap.vals) i v))
+
+  (fn get [m:(ptr StrMap) k:(ptr str.Bytes) default:i32] -> i32
+    (let i:i32 (call slot_for m k))
+    (if (eq (arr.get i32 (get m StrMap.states) i) 1) (arr.get i32 (get m StrMap.vals) i) default))
+
+  (fn has [m:(ptr StrMap) k:(ptr str.Bytes)] -> bool
+    (eq (arr.get i32 (get m StrMap.states) (call slot_for m k)) 1))
+
+  (fn remove [m:(ptr StrMap) k:(ptr str.Bytes)] -> bool
+    (let i:i32 (call slot_for m k))
+    (if (neq (arr.get i32 (get m StrMap.states) i) 1) (return false) (block))
+    (arr.set i32 (get m StrMap.states) i 2)
+    (put m StrMap.count (- (get m StrMap.count) 1))
+    true)
+
+  (fn slot_used [m:(ptr StrMap) i:i32] -> bool (eq (arr.get i32 (get m StrMap.states) i) 1))
+  (fn slot_key [m:(ptr StrMap) i:i32] -> (ptr str.Bytes) (call key_at m i))
+  (fn slot_val [m:(ptr StrMap) i:i32] -> i32 (arr.get i32 (get m StrMap.vals) i))
+
+  ;; Pass count; test_suite.aipl expects 3.
+  (fn run_strmap_tests [] -> i32
+    (let p:i32 0)
+    ;; word frequencies of a small text, splitting on spaces by hand
+    (let text:(ptr str.Bytes) (call str.from_str "the cat and the hat and the bat"))
+    (let m:(ptr StrMap) (call make 0))
+    (let start:i32 0)
+    (loop i 0 (get text str.Bytes.len) 1
+      (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (get text str.Bytes.addr) i)) 32))
+          (block
+            (let w:(ptr str.Bytes) (call str.bytes (+ (get text str.Bytes.addr) start) (- i start)))
+            (call put m w (+ (call get m w 0) 1))
+            (set! start (+ i 1)))
+          (block)))
+    (if (and (eq (call count m) 5)
+             (and (eq (call get m (call str.from_str "the") 0) 3)
+                  (and (eq (call get m (call str.from_str "and") 0) 2)
+                       (eq (call get m (call str.from_str "dog") -1) -1))))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call remove m (call str.from_str "cat")) (and (not (call has m (call str.from_str "cat"))) (eq (call count m) 4)))
+        (set! p (+ p 1))
+        (block))
+    ;; 300 distinct generated keys survive resizing
+    (let big:(ptr StrMap) (call make 0))
+    (loop i 0 299 1
+      (let k:i32 (mem.alloc 2))
+      (mem.store8 k (+ 65 (/ i 26)))
+      (mem.store8 (+ k 1) (+ 65 (% i 26)))
+      (call put big (call str.bytes k 2) i))
+    (let ok:bool (eq (call count big) 300))
+    (loop i 0 299 1
+      (let k:i32 (mem.alloc 2))
+      (mem.store8 k (+ 65 (/ i 26)))
+      (mem.store8 (+ k 1) (+ 65 (% i 26)))
+      (if (neq (call get big (call str.bytes k 2) -1) i) (set! ok false) (block)))
+    (if ok (set! p (+ p 1)) (block))
+    p))

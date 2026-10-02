@@ -53,7 +53,7 @@ cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test sui
 wasmtime run --dir=. out.wasm --invoke main               # run compiled I/O under any WASI host
 ```
 
-Run the full test suite with `cargo test` (158 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
+Run the full test suite with `cargo test` (160 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
 
 ## Repository layout
 
@@ -63,7 +63,7 @@ Run the full test suite with `cargo test` (158 tests; `test_selfhost` takes abou
 | `src/vm.rs` | Reference interpreter (contracts, real threads and atomics, `std::fs` I/O) |
 | `src/compiler/wasm.rs` | Rust wasm backend, the byte-for-byte reference for the self-hosted one |
 | `aipl_src/compiler.aipl`, `codegen.aipl` | Self-hosted tokenizer, parser, and wasm code generator |
-| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting), `fmt` (number formatting); found by `(import io)` from anywhere |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Example programs; `word_count.aipl` is the end-to-end I/O example |
