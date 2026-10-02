@@ -46,6 +46,8 @@ expr           ::= literal
                  | "(" "while" expr expr* ")"
                  | "(" "call" identifier expr* ")"
                  | "(" "block" expr* ")"
+                 | "(" "return" [ expr ] ")" | "(" "break" ")" | "(" "continue" ")"
+                 | "(" "cond" ( "(" expr expr+ ")" )+ "(" "else" expr+ ")" ")"
                  | "(" ("ok" | "err") [ ":" type ] expr ")"
                  | "(" "match_result" expr "(" "ok" identifier expr* ")" "(" "err" identifier expr* ")" ")"
                  | "(" "new" identifier ")"
@@ -297,6 +299,7 @@ source.aipl
 | String literal | `i32.const <address of its bytes>`; `str` values are pointers (section 4.B) |
 | I/O scratch | functions that do I/O get two extra `i32` locals; the WASI lowerings use runtime cells 64-87 for iovecs and out-parameters (section 7.9) |
 | Heap cursor | the `i32` at address 0; `mem.alloc` compiles to a load, an add, and a store on that word |
+| Loops | `block { loop { ... } }`; a `loop` (counted) also wraps its body in a block so `continue` falls into the step (section 7.10) |
 | Store guard | every `mem.store*`, `put`, and `arr.set` is preceded by a 12-instruction check that traps (`unreachable`) if the address is in bytes 0-3 or 64-1023; each function gets one extra `i32` scratch local for it, which `ok`/`err`, `match_result`, and `arr.new` also use |
 | Function refs | only when the module uses `ref`/`call_ref`: one extra type per distinct `call_ref` signature after the function types, a funcref table (section id 4) of every function, and an element section (id 9) filling it; `call_ref` is `call_indirect` (section 4.G) |
 | Results and arrays | `ok`/`err` allocate an 8-byte `[tag][payload]` cell; `match_result` tests the tag with `i32.eqz`; `arr.new` writes the count header and returns the address after it (sections 4.E, 4.F) |
@@ -333,6 +336,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `sys.time` | Yes | Err | Err | compile error 987 |
 | `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
+| `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Err (needs wasi-threads) | compile error 987 |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
 | `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) | compile error 99 |
@@ -342,7 +346,7 @@ Rule of thumb for code generators: `thread.*`, `atomic.*`, `sys.time`, and strin
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
-`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 29 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
+`codegen.compile_module [src_ptr:i32 src_len:i32] -> i32` tokenizes and parses AIPL source (via `compiler.tokenize` / `compiler.parse_ast`) and emits a complete wasm module. It stores the output pointer in cell 60 and returns the byte length, or `-1` with a nonzero compile error code in cell 4 (the first error encountered; later ones are usually consequences). For everything it accepts, the output is required to be **byte-identical** to `WasmCompiler::compile`. `tests/test_selfhost.rs` enforces this on 30 programs including `memory.aipl`, `compiler.aipl`, and codegen.aipl itself (`compiler.aipl` merged in by hand, since `compile_module` does not resolve imports). `aipl compile --self` checks the same thing for any file and, on a mismatch, reports the first differing byte, the section (and code-section function) it falls in, and a hex window of each side.
 
 It infers each expression's static type the way `expr_type` in `src/compiler/wasm.rs` does (`node_type` / `group_type`) and selects `i32.*` / `i64.*` / `f32.*` / `f64.*` instructions, `if` and `match_result` block types, struct field and array element load/store widths, and alignment from it. It runs in the VM today; compiled to wasm it also compiles itself (section 10.6). Limits that differ from the Rust backend:
 
@@ -460,7 +464,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
     (set! acc (+ acc i)))
   acc)          ;; => 55, because the bound is inclusive: 1+2+...+10
 ```
-`(loop i 0 9 1 ...)` runs 10 times. `(loop i 0 0 1 ...)` runs once. `while` is the only loop with an arbitrary exit condition; there is no `break`, `continue`, or `return` (P11).
+`(loop i 0 9 1 ...)` runs 10 times. `(loop i 0 0 1 ...)` runs once. `start` is evaluated once; `end` is evaluated before every iteration and `step` after every iteration, and the body may `set!` the loop variable, exactly as the compiled loop behaves (the VM matched this only from P11 on). Leave a loop early with `break`, or skip to the next iteration with `continue` (section 7.10).
 
 ```lisp
 (fn count_down [start:i32] -> i32
@@ -555,6 +559,33 @@ Rules that follow from this:
 - **Fresh instances agree.** A fresh VM and a fresh wasm instance both return `1024` from the first `mem.alloc`, then `1024 + size`, and so on. This is why memory-heavy programs can be compared across backends (section 10.4).
 - **Threads share the block.** OS threads spawned by `thread.spawn` share the same linear memory, so they share the allocator; `mem.alloc` is not atomic, so allocate before spawning and hand pointers to workers as their argument (section 12.4).
 - **Codegen state is per instance.** `codegen_init` is idempotent: it allocates its tables only when cell 16 is zero and always clears cells 4 and 28.
+
+
+### 7.10 Control flow: `return`, `break`, `continue`, `cond`
+
+| Form | Meaning |
+|---|---|
+| `(return v)` / `(return)` | leaves the function with `v` (which must have the function's return type), or with nothing from a `void` function; `ens` contracts still run on the returned value |
+| `(break)` | leaves the innermost `while` or `loop` |
+| `(continue)` | starts the next iteration of the innermost loop: a `while` re-tests its condition; a `loop` still applies its step first |
+| `(cond (c1 e...) (c2 e...) ... (else e...))` | the first clause whose test is true runs its body; `else` is required, like `if`'s else branch. The parser rewrites it to `(if c1 (block e...) (if c2 (block e...) ... (block e...)))`, so the `if` typing rules apply |
+
+`return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or a void `if`. An early exit is therefore written `(if (lt i 0) (return -1) (block))`, not `(if (lt i 0) (return -1) i)`, which mixes `void` and `i32`. A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
+
+```lisp
+(fn index_of [a:(arr i32) target:i32] -> i32
+  (loop i 0 (- (arr.len a) 1) 1
+    (if (eq (arr.get i32 a i) target) (return i) (block)))
+  -1)
+
+(fn classify [n:i32] -> str
+  (cond
+    ((lt n 0) "negative")
+    ((eq n 0) "zero")
+    (else "positive")))
+```
+
+Lowering (wasm and the self-hosted compiler): `return` is the `return` instruction. Loops are `block { loop { ... } }`; `break` branches to the outer block. A `while` body's `continue` branches to the loop header. A `loop` wraps its body in one more block, and `continue` branches to that block's end, which falls into the step. Branch depths count the enclosing `if`s and `match_result` arms.
 
 ---
 
@@ -659,6 +690,9 @@ Representative messages, exactly as produced:
 | array index out of range (runtime, VM) | `Array index out of bounds: index 3 for array of length 3` |
 | 64-bit result payload in the wasm backend | `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got I64` |
 | non-bool `if` condition | `3:5: If condition must be Bool, got I32` |
+| `break` outside a loop | `3:5: break is only allowed inside a while or loop body` |
+| `return` with the wrong type | `3:5: return value has type Bool, but the function returns I32` |
+| `cond` without `else` | `1:32: cond needs a final (else ...) clause, as if needs an else branch` |
 | wrong arity | `4:5: Function 'add' expects 2 arguments, got 1` |
 | wrong argument type | `4:5: Arg 1 of 'add' expects I32, got Bool` |
 | body/return mismatch | `2:3: Function 'f' expects return type I32, but body returned Bool` |
@@ -774,7 +808,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (146 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports).
+Files today (159 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond in both backends, checker rejections).
 
 ### 10.3 Opcode conformance contract
 
@@ -1038,7 +1072,11 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |
 | hand-writing digit formatting, file-reading loops, or byte counting | `(import io)`, `(import str)`, `(import fmt)` (section 12.6) |
 | passing a `str` literal where a `(ptr, len)` path or buffer is expected, e.g. `(fs.open "t.bin" 5 0)` | type error: `fs.*` take `i32` pointers. Write `(fs.open (str.ptr "t.bin") (str.len "t.bin") 0)` |
-| `return`, `break`, `continue`, `else if`, `cond` | do not exist (P11); restructure with `while` + a flag, or nested `if` |
+| `(if (lt i 0) (return -1) i)` | `return` is a statement (void): `(if (lt i 0) (return -1) (block))`, then the value |
+| `(cond ((lt n 0) -1) ((eq n 0) 0))` without `else` | `cond` needs a final `(else ...)` clause; use `(else (block))` when the clauses are statements |
+| `else if`, `elif`, `switch`, `case` | do not exist; use `cond` |
+| `(break)` in a `while` condition or outside any loop | only inside a `while` or `loop` body |
+| a `done`/`found` flag variable to stop a loop | `(break)`, or `(return v)` from the function |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected tokens after module end — check for an extra ')'` |
 | `inf`, `nan`, `1e9` as literals | not literals; `1e9` is a symbol and will be reported as an undefined variable |
 | `(req n > 0)` | contracts are S-expressions: `(req (gt n 0))` |

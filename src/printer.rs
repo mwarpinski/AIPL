@@ -236,6 +236,12 @@ pub fn expr_str(e: &Expr) -> String {
             _ => format!("(ptr.cast {} {})", struct_name(ty), expr_str(addr)),
         },
         Expr::Ref { name, .. } => format!("(ref {})", name),
+        Expr::Return { val, .. } => match val {
+            Some(v) => format!("(return {})", expr_str(v)),
+            None => "(return)".to_string(),
+        },
+        Expr::Break(_) => "(break)".to_string(),
+        Expr::Continue(_) => "(continue)".to_string(),
         Expr::CallRef { sig, func, args, .. } => {
             with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
         }

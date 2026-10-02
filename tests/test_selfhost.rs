@@ -13,6 +13,17 @@ fn run_self_hosted(src: &str) -> Vec<u8> {
 /// Runs `codegen.compile_module` over `src` in the VM. Returns the module bytes
 /// or the compile error code it reported (AIPL_SPEC.md 6.4).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
+    // The tree-walking VM recurses once per nested AIPL call; give the compile a big stack.
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || self_host_on_this_thread(&src))
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn self_host_on_this_thread(src: &str) -> Result<Vec<u8>, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
@@ -459,6 +470,114 @@ fn self_hosted_bytes_match_function_refs() {
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
        (+ (call_ref (fn [i32 i32] -> i32) (get o Op.apply) 3 4)
           (+ (i32.wrap n) (if (and (eq (ref add) (ref add)) (neq (ref add) (ref mul))) 1 0))))))
+"#);
+}
+
+/// P11 control flow, given as raw source so the self-hosted compiler sees
+/// `cond` itself (the Rust parser desugars it to nested ifs): early return in
+/// a loop and in a match_result arm, break/continue in while and loop (the
+/// loop's continue block), nested loops, cond as value and statement.
+#[test]
+fn self_hosted_bytes_match_control_flow() {
+    assert_self_hosted_matches_rust("control_flow", r#"
+(module flow
+  ;; early return inside a loop: index of the first multiple of 7 at or above n
+  (fn first_mult7 [n:i32] -> i32
+    (loop i n (+ n 100) 1
+      (if (eq (% i 7) 0) (return i) (block)))
+    -1)
+
+  ;; break inside a nested if: sum 1.. until the total passes n
+  (fn sum_until [n:i32] -> i32
+    (let total:i32 0)
+    (let i:i32 0)
+    (while true
+      (set! i (+ i 1))
+      (if (gt i 1000)
+          (break)
+          (if (gt total n) (break) (set! total (+ total i)))))
+    total)
+
+  ;; continue in a counted loop still applies the step: sum of odd i in 0..n
+  (fn sum_odd [n:i32] -> i32
+    (let total:i32 0)
+    (loop i 0 n 1
+      (if (eq (% i 2) 0) (continue) (block))
+      (set! total (+ total i)))
+    total)
+
+  ;; continue in a while loop goes back to the condition
+  (fn count_nonzero_digits [n:i32] -> i32
+    (let v:i32 n)
+    (let count:i32 0)
+    (while (gt v 0)
+      (let d:i32 (% v 10))
+      (set! v (/ v 10))
+      (if (eq d 0) (continue) (block))
+      (set! count (+ count 1)))
+    count)
+
+  ;; break and continue in nested loops target the innermost loop
+  (fn nested [n:i32] -> i32
+    (let hits:i32 0)
+    (loop i 1 n 1
+      (loop j 1 n 1
+        (if (gt j i) (break) (block))
+        (if (eq j 2) (continue) (block))
+        (set! hits (+ hits 1))))
+    hits)
+
+  ;; return from inside match_result inside a loop
+  (fn parse_digit [c:i32] -> (result i32 i32)
+    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+  (fn first_non_digit [n:i32] -> i32
+    (loop i 0 n 1
+      (match_result (call parse_digit (+ 46 i))
+        (ok d (block))
+        (err e (return e))))
+    0)
+
+  ;; cond with several clauses and multi-expression bodies, as a value
+  (fn classify [n:i32] -> i32
+    (cond
+      ((lt n 0) -1)
+      ((eq n 0) 0)
+      ((lt n 10) (let t:i32 (* n 2)) (+ t 1))
+      (else 100)))
+
+  ;; cond as a statement
+  (fn bucket_sum [n:i32] -> i32
+    (let small:i32 0)
+    (let big:i32 0)
+    (loop i 0 n 1
+      (cond
+        ((lt i 5) (set! small (+ small 1)))
+        (else (set! big (+ big 1)))))
+    (+ (* small 1000) big))
+
+  ;; a body may end in (return v); void functions use (return)
+  (fn ends_in_return [n:i32] -> i32
+    (let x:i32 (* n 3))
+    (return (+ x 1)))
+  (fn bump [p:i32] -> void
+    (if (lt p 0) (return) (block))
+    (mem.store32 p (+ (mem.load32 p) 1)))
+  (fn uses_void_return [n:i32] -> i32
+    (let p:i32 (mem.alloc 4))
+    (mem.store32 p n)
+    (call bump p)
+    (call bump -1)
+    (mem.load32 p))
+
+  ;; loop bound and step are evaluated every iteration, and the body may set! the variable
+  (fn moving_bounds [n:i32] -> i32
+    (let limit:i32 n)
+    (let count:i32 0)
+    (loop i 0 limit 1
+      (set! count (+ count 1))
+      (if (eq i 2) (set! limit (- limit 1)) (block))
+      (if (eq i 0) (set! i 1) (block)))
+    count))
 "#);
 }
 

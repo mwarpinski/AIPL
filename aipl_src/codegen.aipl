@@ -8,17 +8,10 @@
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [src_ptr:i32 pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
-    (if (neq len lit_len)
-        false
-        (block
-          (let i:i32 0)
-          (let eq_so_far:bool true)
-          (while (lt i len)
-            (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ lit_ptr i)))
-                (set! eq_so_far false)
-                (set! eq_so_far eq_so_far))
-            (set! i (+ i 1)))
-          eq_so_far)))
+    (if (neq len lit_len) (return false) (block))
+    (loop i 0 (- len 1) 1
+      (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ lit_ptr i))) (return false) (block)))
+    true)
 
   ;; ===== Node accessors (see compiler.aipl for the tree layout) =====
   (fn node_kind [node:i32] -> i32 (if (lte node 0) 0 (mem.load32 (+ node 0))))
@@ -55,6 +48,33 @@
   ;; [uses_refs][sig_count][32 signatures x 20 bytes: nparams, params..., nresults, result]
   (fn ref_state [] -> i32 (mem.load32 (+ (call struct_table) 4)))
   (fn ref_sig_ptr [i:i32] -> i32 (+ (+ (call ref_state) 8) (* i 20)))
+
+  ;; Label stack, 1024 bytes, pointer kept at struct_table + 8: [count][kinds...]
+  ;; for the structured instructions around user code, innermost last, so
+  ;; break/continue can compute their branch depth (wasm.rs Label).
+  ;; Kinds: 0 if/else, 1 loop exit block (break), 2 loop header (while
+  ;; continue), 3 block around a loop body (loop continue).
+  (fn label_stack [] -> i32 (mem.load32 (+ (call struct_table) 8)))
+  (fn label_push [kind:i32] -> i32
+    (let ls:i32 (call label_stack))
+    (let n:i32 (mem.load32 ls))
+    (if (gte n 255) (return (call set_compile_error 100)) (block))
+    (mem.store32 (+ ls (+ 4 (* n 4))) kind)
+    (mem.store32 ls (+ n 1))
+    0)
+  (fn label_pop [] -> i32
+    (let ls:i32 (call label_stack))
+    (mem.store32 ls (- (mem.load32 ls) 1))
+    0)
+  ;; Branch depth to the innermost label of kind a or b (compile error 101 if none).
+  (fn label_depth [a:i32 b:i32] -> i32
+    (let ls:i32 (call label_stack))
+    (let n:i32 (mem.load32 ls))
+    (loop d 0 (- n 1) 1
+      (let k:i32 (mem.load32 (+ ls (+ 4 (* (- (- n 1) d) 4)))))
+      (if (or (eq k a) (eq k b)) (return d) (block)))
+    (call set_compile_error 101)
+    0)
   (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
   (fn fn_table [] -> i32 (mem.load32 20))
@@ -79,12 +99,14 @@
           (mem.store32 24 (mem.alloc 12288))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 16384))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
+          (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
           0)
         0)
 
     (mem.store32 4 0)
     (call set_struct_count 0)
     (mem.store32 (call ref_state) 0)
+    (mem.store32 (call label_stack) 0)
     (mem.store32 (+ (call ref_state) 4) 0)
     (mem.store32 28 0)
     (mem.store32 32 0)
@@ -209,6 +231,11 @@
     (set! o (call store_kw_str k 494 97 114 114 46 108 101 110 0 0 0 0 0 7)) ;; arr.len (op 67)
     (set! o (call store_kw_str k 501 114 101 102 0 0 0 0 0 0 0 0 0 3)) ;; ref (op 68)
     (set! o (call store_kw_str k 504 99 97 108 108 95 114 101 102 0 0 0 0 8)) ;; call_ref (op 69)
+    (set! o (call store_kw_str k 512 114 101 116 117 114 110 0 0 0 0 0 0 6)) ;; return (op 70)
+    (set! o (call store_kw_str k 518 98 114 101 97 107 0 0 0 0 0 0 0 5)) ;; break (op 71)
+    (set! o (call store_kw_str k 523 99 111 110 116 105 110 117 101 0 0 0 0 8)) ;; continue (op 72)
+    (set! o (call store_kw_str k 531 99 111 110 100 0 0 0 0 0 0 0 0 4)) ;; cond (kw 114)
+    (set! o (call store_kw_str k 535 101 108 115 101 0 0 0 0 0 0 0 0 4)) ;; else (kw 115)
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -223,94 +250,99 @@
   (fn classify_keyword [src_ptr:i32 pos:i32 len:i32] -> i32
     (let k:i32 (call kw))
     (let res:i32 -1)
-    (if (call sym_eq src_ptr pos len (+ k 0) 1) (set! res 0) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 1) 1) (set! res 1) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 2) 1) (set! res 2) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 3) 1) (set! res 3) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 4) 1) (set! res 4) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 5) 3) (set! res 5) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 8) 3) (set! res 6) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 11) 6) (set! res 7) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 17) 5) (set! res 8) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 22) 9) (set! res 9) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 31) 10) (set! res 10) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 41) 10) (set! res 11) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 51) 10) (set! res 12) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 61) 11) (set! res 13) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 72) 11) (set! res 14) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 83) 2) (set! res 15) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 85) 3) (set! res 16) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 88) 2) (set! res 17) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 90) 3) (set! res 18) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 93) 2) (set! res 19) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 95) 3) (set! res 20) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 98) 3) (set! res 21) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 101) 2) (set! res 22) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 103) 3) (set! res 23) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 173) 7) (set! res 30) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 180) 7) (set! res 31) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 187) 9) (set! res 32) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 196) 8) (set! res 33) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 204) 7) (set! res 34) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 211) 7) (set! res 35) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 218) 8) (set! res 36) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 226) 8) (set! res 37) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 234) 9) (set! res 38) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 243) 1) (set! res 39) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 244) 4) (set! res 40) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 248) 4) (set! res 41) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 252) 4) (set! res 42) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 256) 9) (set! res 43) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 265) 8) (set! res 44) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 273) 12) (set! res 45) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 285) 12) (set! res 46) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 297) 8) (set! res 47) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 305) 2) (set! res 48) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 307) 3) (set! res 49) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 310) 3) (set! res 50) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 313) 3) (set! res 51) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 316) 3) (set! res 52) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 319) 6) (set! res 53) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 325) 7) (set! res 54) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 332) 7) (set! res 55) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 339) 7) (set! res 56) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 106) 3) (set! res 100) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 109) 4) (set! res 101) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 113) 2) (set! res 102) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 115) 4) (set! res 103) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 119) 5) (set! res 104) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 124) 4) (set! res 105) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 128) 5) (set! res 106) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 133) 3) (set! res 107) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 136) 3) (set! res 108) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 139) 3) (set! res 109) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 142) 6) (set! res 110) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 148) 2) (set! res 111) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 346) 12) (set! res 112) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 358) 6) (set! res 113) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 364) 6) (set! res 207) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 440) 3) (set! res 208) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 443) 3) (set! res 209) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 446) 8) (set! res 61) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 454) 8) (set! res 62) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 462) 8) (set! res 63) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 470) 8) (set! res 64) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 478) 8) (set! res 65) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 486) 8) (set! res 66) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 494) 7) (set! res 67) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 501) 3) (set! res 68) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 504) 8) (set! res 69) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 421) 19) (set! res 60) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 150) 3) (set! res 200) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 153) 3) (set! res 201) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 156) 3) (set! res 202) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 159) 3) (set! res 203) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 162) 4) (set! res 204) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 166) 4) (set! res 205) (set! res res))
-    (if (call sym_eq src_ptr pos len (+ k 170) 3) (set! res 206) (set! res res))
+    (if (call sym_eq src_ptr pos len (+ k 0) 1) (set! res 0) (block))
+    (if (call sym_eq src_ptr pos len (+ k 1) 1) (set! res 1) (block))
+    (if (call sym_eq src_ptr pos len (+ k 2) 1) (set! res 2) (block))
+    (if (call sym_eq src_ptr pos len (+ k 3) 1) (set! res 3) (block))
+    (if (call sym_eq src_ptr pos len (+ k 4) 1) (set! res 4) (block))
+    (if (call sym_eq src_ptr pos len (+ k 5) 3) (set! res 5) (block))
+    (if (call sym_eq src_ptr pos len (+ k 8) 3) (set! res 6) (block))
+    (if (call sym_eq src_ptr pos len (+ k 11) 6) (set! res 7) (block))
+    (if (call sym_eq src_ptr pos len (+ k 17) 5) (set! res 8) (block))
+    (if (call sym_eq src_ptr pos len (+ k 22) 9) (set! res 9) (block))
+    (if (call sym_eq src_ptr pos len (+ k 31) 10) (set! res 10) (block))
+    (if (call sym_eq src_ptr pos len (+ k 41) 10) (set! res 11) (block))
+    (if (call sym_eq src_ptr pos len (+ k 51) 10) (set! res 12) (block))
+    (if (call sym_eq src_ptr pos len (+ k 61) 11) (set! res 13) (block))
+    (if (call sym_eq src_ptr pos len (+ k 72) 11) (set! res 14) (block))
+    (if (call sym_eq src_ptr pos len (+ k 83) 2) (set! res 15) (block))
+    (if (call sym_eq src_ptr pos len (+ k 85) 3) (set! res 16) (block))
+    (if (call sym_eq src_ptr pos len (+ k 88) 2) (set! res 17) (block))
+    (if (call sym_eq src_ptr pos len (+ k 90) 3) (set! res 18) (block))
+    (if (call sym_eq src_ptr pos len (+ k 93) 2) (set! res 19) (block))
+    (if (call sym_eq src_ptr pos len (+ k 95) 3) (set! res 20) (block))
+    (if (call sym_eq src_ptr pos len (+ k 98) 3) (set! res 21) (block))
+    (if (call sym_eq src_ptr pos len (+ k 101) 2) (set! res 22) (block))
+    (if (call sym_eq src_ptr pos len (+ k 103) 3) (set! res 23) (block))
+    (if (call sym_eq src_ptr pos len (+ k 173) 7) (set! res 30) (block))
+    (if (call sym_eq src_ptr pos len (+ k 180) 7) (set! res 31) (block))
+    (if (call sym_eq src_ptr pos len (+ k 187) 9) (set! res 32) (block))
+    (if (call sym_eq src_ptr pos len (+ k 196) 8) (set! res 33) (block))
+    (if (call sym_eq src_ptr pos len (+ k 204) 7) (set! res 34) (block))
+    (if (call sym_eq src_ptr pos len (+ k 211) 7) (set! res 35) (block))
+    (if (call sym_eq src_ptr pos len (+ k 218) 8) (set! res 36) (block))
+    (if (call sym_eq src_ptr pos len (+ k 226) 8) (set! res 37) (block))
+    (if (call sym_eq src_ptr pos len (+ k 234) 9) (set! res 38) (block))
+    (if (call sym_eq src_ptr pos len (+ k 243) 1) (set! res 39) (block))
+    (if (call sym_eq src_ptr pos len (+ k 244) 4) (set! res 40) (block))
+    (if (call sym_eq src_ptr pos len (+ k 248) 4) (set! res 41) (block))
+    (if (call sym_eq src_ptr pos len (+ k 252) 4) (set! res 42) (block))
+    (if (call sym_eq src_ptr pos len (+ k 256) 9) (set! res 43) (block))
+    (if (call sym_eq src_ptr pos len (+ k 265) 8) (set! res 44) (block))
+    (if (call sym_eq src_ptr pos len (+ k 273) 12) (set! res 45) (block))
+    (if (call sym_eq src_ptr pos len (+ k 285) 12) (set! res 46) (block))
+    (if (call sym_eq src_ptr pos len (+ k 297) 8) (set! res 47) (block))
+    (if (call sym_eq src_ptr pos len (+ k 305) 2) (set! res 48) (block))
+    (if (call sym_eq src_ptr pos len (+ k 307) 3) (set! res 49) (block))
+    (if (call sym_eq src_ptr pos len (+ k 310) 3) (set! res 50) (block))
+    (if (call sym_eq src_ptr pos len (+ k 313) 3) (set! res 51) (block))
+    (if (call sym_eq src_ptr pos len (+ k 316) 3) (set! res 52) (block))
+    (if (call sym_eq src_ptr pos len (+ k 319) 6) (set! res 53) (block))
+    (if (call sym_eq src_ptr pos len (+ k 325) 7) (set! res 54) (block))
+    (if (call sym_eq src_ptr pos len (+ k 332) 7) (set! res 55) (block))
+    (if (call sym_eq src_ptr pos len (+ k 339) 7) (set! res 56) (block))
+    (if (call sym_eq src_ptr pos len (+ k 106) 3) (set! res 100) (block))
+    (if (call sym_eq src_ptr pos len (+ k 109) 4) (set! res 101) (block))
+    (if (call sym_eq src_ptr pos len (+ k 113) 2) (set! res 102) (block))
+    (if (call sym_eq src_ptr pos len (+ k 115) 4) (set! res 103) (block))
+    (if (call sym_eq src_ptr pos len (+ k 119) 5) (set! res 104) (block))
+    (if (call sym_eq src_ptr pos len (+ k 124) 4) (set! res 105) (block))
+    (if (call sym_eq src_ptr pos len (+ k 128) 5) (set! res 106) (block))
+    (if (call sym_eq src_ptr pos len (+ k 133) 3) (set! res 107) (block))
+    (if (call sym_eq src_ptr pos len (+ k 136) 3) (set! res 108) (block))
+    (if (call sym_eq src_ptr pos len (+ k 139) 3) (set! res 109) (block))
+    (if (call sym_eq src_ptr pos len (+ k 142) 6) (set! res 110) (block))
+    (if (call sym_eq src_ptr pos len (+ k 148) 2) (set! res 111) (block))
+    (if (call sym_eq src_ptr pos len (+ k 346) 12) (set! res 112) (block))
+    (if (call sym_eq src_ptr pos len (+ k 358) 6) (set! res 113) (block))
+    (if (call sym_eq src_ptr pos len (+ k 364) 6) (set! res 207) (block))
+    (if (call sym_eq src_ptr pos len (+ k 440) 3) (set! res 208) (block))
+    (if (call sym_eq src_ptr pos len (+ k 443) 3) (set! res 209) (block))
+    (if (call sym_eq src_ptr pos len (+ k 446) 8) (set! res 61) (block))
+    (if (call sym_eq src_ptr pos len (+ k 454) 8) (set! res 62) (block))
+    (if (call sym_eq src_ptr pos len (+ k 462) 8) (set! res 63) (block))
+    (if (call sym_eq src_ptr pos len (+ k 470) 8) (set! res 64) (block))
+    (if (call sym_eq src_ptr pos len (+ k 478) 8) (set! res 65) (block))
+    (if (call sym_eq src_ptr pos len (+ k 486) 8) (set! res 66) (block))
+    (if (call sym_eq src_ptr pos len (+ k 494) 7) (set! res 67) (block))
+    (if (call sym_eq src_ptr pos len (+ k 501) 3) (set! res 68) (block))
+    (if (call sym_eq src_ptr pos len (+ k 504) 8) (set! res 69) (block))
+    (if (call sym_eq src_ptr pos len (+ k 512) 6) (set! res 70) (block))
+    (if (call sym_eq src_ptr pos len (+ k 518) 5) (set! res 71) (block))
+    (if (call sym_eq src_ptr pos len (+ k 523) 8) (set! res 72) (block))
+    (if (call sym_eq src_ptr pos len (+ k 531) 4) (set! res 114) (block))
+    (if (call sym_eq src_ptr pos len (+ k 535) 4) (set! res 115) (block))
+    (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (block))
+    (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (block))
+    (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (block))
+    (if (call sym_eq src_ptr pos len (+ k 421) 19) (set! res 60) (block))
+    (if (call sym_eq src_ptr pos len (+ k 150) 3) (set! res 200) (block))
+    (if (call sym_eq src_ptr pos len (+ k 153) 3) (set! res 201) (block))
+    (if (call sym_eq src_ptr pos len (+ k 156) 3) (set! res 202) (block))
+    (if (call sym_eq src_ptr pos len (+ k 159) 3) (set! res 203) (block))
+    (if (call sym_eq src_ptr pos len (+ k 162) 4) (set! res 204) (block))
+    (if (call sym_eq src_ptr pos len (+ k 166) 4) (set! res 205) (block))
+    (if (call sym_eq src_ptr pos len (+ k 170) 3) (set! res 206) (block))
     res)
 
 ;; ===== Types =====
@@ -335,11 +367,12 @@
         (block (call set_compile_error 98) 200)))
 
   (fn type_id_to_valtype [type_id:i32] -> i32
-    (if (eq type_id 201) 126
-    (if (eq type_id 202) 125
-    (if (eq type_id 203) 124
-    (if (or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210))))))) 127
-    (block (call set_compile_error 98) 127))))))
+    (cond
+      ((eq type_id 201) 126)
+      ((eq type_id 202) 125)
+      ((eq type_id 203) 124)
+      ((or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210))))))) 127)
+      (else (call set_compile_error 98) 127)))
 
   ;; Block type byte for a value of this type: 0x40 (empty) for void.
   (fn block_type_byte [type_id:i32] -> i32
@@ -355,8 +388,16 @@
     (if (call is_memory_type t) t (block (call set_compile_error 95) 200)))
   (fn type_size [type_id:i32] -> i32 (if (or (eq type_id 201) (eq type_id 203)) 8 4))
   (fn mem_align [type_id:i32] -> i32 (if (eq (call type_size type_id) 8) 3 2))
-  (fn load_opcode [type_id:i32] -> i32 (if (eq type_id 201) 41 (if (eq type_id 202) 42 (if (eq type_id 203) 43 40))))
-  (fn store_opcode [type_id:i32] -> i32 (if (eq type_id 201) 55 (if (eq type_id 202) 56 (if (eq type_id 203) 57 54))))
+  (fn load_opcode [type_id:i32] -> i32 (cond
+                                         ((eq type_id 201) 41)
+                                         ((eq type_id 202) 42)
+                                         ((eq type_id 203) 43)
+                                         (else 40)))
+  (fn store_opcode [type_id:i32] -> i32 (cond
+                                          ((eq type_id 201) 55)
+                                          ((eq type_id 202) 56)
+                                          ((eq type_id 203) 57)
+                                          (else 54)))
 
   ;; ===== Function table =====
   (fn func_entry_ptr [func_table_base:i32 idx:i32] -> i32
@@ -365,12 +406,7 @@
   (fn collect_functions [src_ptr:i32 root:i32 func_table_base:i32] -> i32
     (let count:i32 0)
     (let child:i32 (call node_next (call node_next (call node_a root))))
-    (let done:bool false)
-    (while (not done)
-      (if (eq child 0)
-          (set! done true)
-          (block
-            (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
+    (while (neq child 0) (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
                 (block
                   (let fname_node:i32 (call nth_child child 1))
                   (let params_node:i32 (call nth_child child 2))
@@ -384,54 +420,34 @@
                   (mem.store32 (+ entry 20) child)
                   (let pcount:i32 0)
                   (let pchild:i32 (call node_a params_node))
-                  (let pdone:bool false)
-                  (while (not pdone)
-                    (if (eq pchild 0)
-                        (set! pdone true)
-                        (block
-                          (let ptype_node:i32 (call node_next (call node_next pchild)))
-                          (if (gte pcount 16) (call set_compile_error 92) 0)
-                          (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
-                                       (call type_node_id src_ptr ptype_node))
-                          (set! pcount (+ pcount 1))
-                          (set! pchild (call node_next ptype_node)))))
+                  (while (neq pchild 0) (let ptype_node:i32 (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error 92) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
+                                       (call type_node_id src_ptr ptype_node)) (set! pcount (+ pcount 1)) (set! pchild (call node_next ptype_node)))
                   (mem.store32 (+ entry 8) pcount)
                   (set! count (+ count 1))
                   0)
-                0)
-            (set! child (call node_next child)))))
+                0) (set! child (call node_next child)))
     count)
 
   ;; Exact name match, as in the checker: `a.f` never resolves to a bare `f`.
   (fn find_function [src_ptr:i32 func_table_base:i32 func_count:i32 name_ptr:i32 name_len:i32] -> i32
-    (let i:i32 0)
-    (let found:i32 -1)
-    (while (lt i func_count)
+    (loop i 0 (- func_count 1) 1
       (let entry:i32 (call func_entry_ptr func_table_base i))
-      (let e_name_ptr:i32 (mem.load32 (+ entry 0)))
-      (let e_name_len:i32 (mem.load32 (+ entry 4)))
-      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr e_name_ptr) e_name_len)
-          (set! found i)
-          (set! found found))
-      (set! i (+ i 1)))
-    found)
+      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr (mem.load32 (+ entry 0))) (mem.load32 (+ entry 4)))
+          (return i)
+          (block)))
+    -1)
 
   ;; ===== Local variable table =====
   (fn locals_entry_ptr [base:i32 idx:i32] -> i32
     (+ base (* idx 12)))
 
   (fn find_local [base:i32 count:i32 src_ptr:i32 name_ptr:i32 name_len:i32] -> i32
-    (let i:i32 0)
-    (let found:i32 -1)
-    (while (lt i count)
+    (loop i 0 (- count 1) 1
       (let e:i32 (call locals_entry_ptr base i))
-      (let e_name_ptr:i32 (mem.load32 (+ e 0)))
-      (let e_name_len:i32 (mem.load32 (+ e 4)))
-      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr e_name_ptr) e_name_len)
-          (set! found i)
-          (set! found found))
-      (set! i (+ i 1)))
-    found)
+      (if (call sym_eq src_ptr name_ptr name_len (+ src_ptr (mem.load32 (+ e 0))) (mem.load32 (+ e 4)))
+          (return i)
+          (block)))
+    -1)
 
   (fn add_local_if_new [src_ptr:i32 base:i32 name_ptr:i32 name_len:i32 type_id:i32] -> i32
     (let count:i32 (mem.load32 28))
@@ -456,33 +472,22 @@
           (if (eq (call node_kind head) 6)
               (set! kw (call classify_keyword src_ptr (call node_a head) (call node_b head)))
               (set! kw -1))
-          (if (eq kw 100)
-              (block
-                (let name_node:i32 (call nth_child node 1))
+          (cond
+            ((eq kw 100) (let name_node:i32 (call nth_child node 1))
                 (let type_node:i32 (call nth_child node 3))
                 (let type_id:i32 (call type_node_id src_ptr type_node))
                 (call add_local_if_new src_ptr base (call node_a name_node) (call node_b name_node) type_id))
-              (if (eq kw 103)
-                  (block
-                    (let var_node:i32 (call nth_child node 1))
+            ((eq kw 103) (let var_node:i32 (call nth_child node 1))
                     (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200))
-                  (if (eq kw 112)
-                      (block
-                        (let ok_group:i32 (call nth_child node 2))
+            ((eq kw 112) (let ok_group:i32 (call nth_child node 2))
                         (let err_group:i32 (call nth_child node 3))
                         (let ok_var:i32 (call nth_child ok_group 1))
                         (let err_var:i32 (call nth_child err_group 1))
                         (call add_local_if_new src_ptr base (call node_a ok_var) (call node_b ok_var) 200)
                         (call add_local_if_new src_ptr base (call node_a err_var) (call node_b err_var) 200))
-                      0)))
+            (else 0))
           (let child:i32 (call node_a node))
-          (let done:bool false)
-          (while (not done)
-            (if (eq child 0)
-                (set! done true)
-                (block
-                  (let _w:i32 (call collect_locals_walk src_ptr base child))
-                  (set! child (call node_next child)))))
+          (while (neq child 0) (let _w:i32 (call collect_locals_walk src_ptr base child)) (set! child (call node_next child)))
           0)))
 
   (fn is_contract_head [src_ptr:i32 group:i32] -> bool
@@ -498,25 +503,11 @@
     (let fndef_group:i32 (mem.load32 (+ entry 20)))
     (let params_node:i32 (call nth_child fndef_group 2))
     (let pchild:i32 (call node_a params_node))
-    (let pdone:bool false)
-    (while (not pdone)
-      (if (eq pchild 0)
-          (set! pdone true)
-          (block
-            (let type_node:i32 (call node_next (call node_next pchild)))
-            (let type_id:i32 (call type_node_id src_ptr type_node))
-            (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id))
-            (set! pchild (call node_next type_node)))))
+    (while (neq pchild 0) (let type_node:i32 (call node_next (call node_next pchild))) (let type_id:i32 (call type_node_id src_ptr type_node)) (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id)) (set! pchild (call node_next type_node)))
     (let bchild:i32 (call nth_child fndef_group 5))
-    (let bdone:bool false)
-    (while (not bdone)
-      (if (eq bchild 0)
-          (set! bdone true)
-          (block
-            (if (call is_contract_head src_ptr bchild)
+    (while (neq bchild 0) (if (call is_contract_head src_ptr bchild)
                 0
-                (call collect_locals_walk src_ptr base bchild))
-            (set! bchild (call node_next bchild)))))
+                (call collect_locals_walk src_ptr base bchild)) (set! bchild (call node_next bchild)))
     (mem.load32 28))
 
   ;; ===== Low-level WASM instruction emitters =====
@@ -653,12 +644,75 @@
   ;; Opcode for a binary arithmetic/comparison op on operands of type t, as
   ;; arith_instruction / compare_instruction in wasm.rs; -1 if unsupported.
   (fn binop_opcode [op_id:i32 t:i32] -> i32
-    (if (eq t 200) (if (eq op_id 0) 106 (if (eq op_id 1) 107 (if (eq op_id 2) 108 (if (eq op_id 3) 109 (if (eq op_id 4) 115 (if (eq op_id 5) 116 (if (eq op_id 6) 117 (if (eq op_id 7) 113 (if (eq op_id 8) 114 (if (eq op_id 15) 70 (if (eq op_id 16) 71 (if (eq op_id 17) 72 (if (eq op_id 18) 76 (if (eq op_id 19) 74 (if (eq op_id 20) 78 (if (eq op_id 39) 111 (if (eq op_id 40) 110 (if (eq op_id 41) 112 (if (eq op_id 42) 118 -1)))))))))))))))))))
-    (if (eq t 201) (if (eq op_id 0) 124 (if (eq op_id 1) 125 (if (eq op_id 2) 126 (if (eq op_id 3) 127 (if (eq op_id 4) 133 (if (eq op_id 5) 134 (if (eq op_id 6) 135 (if (eq op_id 7) 131 (if (eq op_id 8) 132 (if (eq op_id 15) 81 (if (eq op_id 16) 82 (if (eq op_id 17) 83 (if (eq op_id 18) 87 (if (eq op_id 19) 85 (if (eq op_id 20) 89 (if (eq op_id 39) 129 (if (eq op_id 40) 128 (if (eq op_id 41) 130 (if (eq op_id 42) 136 -1)))))))))))))))))))
-    (if (eq t 202) (if (eq op_id 0) 146 (if (eq op_id 1) 147 (if (eq op_id 2) 148 (if (eq op_id 3) 149 (if (eq op_id 15) 91 (if (eq op_id 16) 92 (if (eq op_id 17) 93 (if (eq op_id 18) 95 (if (eq op_id 19) 94 (if (eq op_id 20) 96 -1))))))))))
-    (if (eq t 203) (if (eq op_id 0) 160 (if (eq op_id 1) 161 (if (eq op_id 2) 162 (if (eq op_id 3) 163 (if (eq op_id 15) 97 (if (eq op_id 16) 98 (if (eq op_id 17) 99 (if (eq op_id 18) 101 (if (eq op_id 19) 100 (if (eq op_id 20) 102 -1))))))))))
-    (if (or (eq t 204) (or (eq t 206) (or (eq t 208) (or (eq t 209) (eq t 210))))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1))
-    -1))))))
+    (cond
+      ((eq t 200) (cond
+                    ((eq op_id 0) 106)
+                    ((eq op_id 1) 107)
+                    ((eq op_id 2) 108)
+                    ((eq op_id 3) 109)
+                    ((eq op_id 4) 115)
+                    ((eq op_id 5) 116)
+                    ((eq op_id 6) 117)
+                    ((eq op_id 7) 113)
+                    ((eq op_id 8) 114)
+                    ((eq op_id 15) 70)
+                    ((eq op_id 16) 71)
+                    ((eq op_id 17) 72)
+                    ((eq op_id 18) 76)
+                    ((eq op_id 19) 74)
+                    ((eq op_id 20) 78)
+                    ((eq op_id 39) 111)
+                    ((eq op_id 40) 110)
+                    ((eq op_id 41) 112)
+                    ((eq op_id 42) 118)
+                    (else -1)))
+      ((eq t 201) (cond
+                    ((eq op_id 0) 124)
+                    ((eq op_id 1) 125)
+                    ((eq op_id 2) 126)
+                    ((eq op_id 3) 127)
+                    ((eq op_id 4) 133)
+                    ((eq op_id 5) 134)
+                    ((eq op_id 6) 135)
+                    ((eq op_id 7) 131)
+                    ((eq op_id 8) 132)
+                    ((eq op_id 15) 81)
+                    ((eq op_id 16) 82)
+                    ((eq op_id 17) 83)
+                    ((eq op_id 18) 87)
+                    ((eq op_id 19) 85)
+                    ((eq op_id 20) 89)
+                    ((eq op_id 39) 129)
+                    ((eq op_id 40) 128)
+                    ((eq op_id 41) 130)
+                    ((eq op_id 42) 136)
+                    (else -1)))
+      ((eq t 202) (cond
+                    ((eq op_id 0) 146)
+                    ((eq op_id 1) 147)
+                    ((eq op_id 2) 148)
+                    ((eq op_id 3) 149)
+                    ((eq op_id 15) 91)
+                    ((eq op_id 16) 92)
+                    ((eq op_id 17) 93)
+                    ((eq op_id 18) 95)
+                    ((eq op_id 19) 94)
+                    ((eq op_id 20) 96)
+                    (else -1)))
+      ((eq t 203) (cond
+                    ((eq op_id 0) 160)
+                    ((eq op_id 1) 161)
+                    ((eq op_id 2) 162)
+                    ((eq op_id 3) 163)
+                    ((eq op_id 15) 97)
+                    ((eq op_id 16) 98)
+                    ((eq op_id 17) 99)
+                    ((eq op_id 18) 101)
+                    ((eq op_id 19) 100)
+                    ((eq op_id 20) 102)
+                    (else -1)))
+      ((or (eq t 204) (or (eq t 206) (or (eq t 208) (or (eq t 209) (eq t 210))))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1)))
+      (else -1)))
 
   ;; and / or are i32.and / i32.or whatever the operands; others go through
   ;; binop_opcode with the first operand's type. Unsupported: compile error 99.
@@ -683,16 +737,13 @@
 
   ;; ===== Voidness classification =====
   (fn is_void_op [op_id:i32] -> bool
-    (or (eq op_id 12) (or (eq op_id 13) (or (eq op_id 14) (or (eq op_id 32) (or (eq op_id 33) (or (eq op_id 52) (eq op_id 56))))))))
+    (or (and (gte op_id 70) (lte op_id 72))
+    (or (eq op_id 12) (or (eq op_id 13) (or (eq op_id 14) (or (eq op_id 32) (or (eq op_id 33) (or (eq op_id 52) (eq op_id 56)))))))))
 
   (fn last_child [group:i32] -> i32
     (let cur:i32 (call node_a group))
-    (let done:bool false)
-    (while (not done)
-      (let nxt:i32 (call node_next cur))
-      (if (eq nxt 0)
-          (set! done true)
-          (set! cur nxt)))
+    (while (neq (call node_next cur) 0)
+      (set! cur (call node_next cur)))
     cur)
 
   (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
@@ -714,19 +765,28 @@
         (block
           (let kw:i32 (call group_head_keyword src_ptr node))
           (let res:bool false)
-          (if (eq kw 100) (set! res true) (set! res res))
-          (if (eq kw 101) (set! res true) (set! res res))
-          (if (eq kw 103) (set! res true) (set! res res))
-          (if (eq kw 104) (set! res true) (set! res res))
-          (if (eq kw 113) (set! res true) (set! res res))
-          (if (eq kw 112) (set! res (call is_void_node src_ptr (call last_child (call nth_child node 2)) func_table_base func_count)) (set! res res))
+          (if (eq kw 100) (set! res true) (block))
+          (if (eq kw 101) (set! res true) (block))
+          (if (eq kw 103) (set! res true) (block))
+          (if (eq kw 104) (set! res true) (block))
+          (if (eq kw 113) (set! res true) (block))
+          (if (eq kw 112) (set! res (call is_void_node src_ptr (call last_child (call nth_child node 2)) func_table_base func_count)) (block))
           ;; an empty (block) is void, like Expr::Block([]) in wasm.rs
-          (if (eq kw 106) (set! res (or (eq (call node_next (call node_a node)) 0) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (set! res res))
-          (if (eq kw 102) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (set! res res))
-          (if (eq kw 105) (set! res (call is_void_call src_ptr node func_table_base func_count)) (set! res res))
-          (if (and (gte kw 0) (lt kw 100)) (set! res (call is_void_op kw)) (set! res res))
+          (if (eq kw 106) (set! res (or (eq (call node_next (call node_a node)) 0) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (block))
+          (if (eq kw 102) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (block))
+          (if (eq kw 105) (set! res (call is_void_call src_ptr node func_table_base func_count)) (block))
+          (if (and (gte kw 0) (lt kw 100)) (set! res (call is_void_op kw)) (block))
+          (if (eq kw 114)
+              (block
+                (let all_void:bool true)
+                (let clause:i32 (call nth_child node 1))
+                (while (neq clause 0)
+                  (if (call is_void_node src_ptr (call last_child clause) func_table_base func_count) (block) (set! all_void false))
+                  (set! clause (call node_next clause)))
+                (set! res all_void))
+              (block))
           ;; call_ref is void when its signature returns void (after the generic op rule)
-          (if (eq kw 69) (set! res (eq (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3)) 205)) (set! res res))
+          (if (eq kw 69) (set! res (eq (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3)) 205)) (block))
           res)))
 
   ;; ===== Struct table & resolution =====
@@ -786,67 +846,38 @@
     (call set_struct_count scount)
     scount)
 
+  ;; Struct table entry for a struct name, or 0.
+  (fn find_struct [src_ptr:i32 s_pos:i32 s_len:i32] -> i32
+    (loop i 0 (- (call get_struct_count) 1) 1
+      (let sentry:i32 (+ (+ (call struct_table) 16) (* i 256)))
+      (if (call sym_eq src_ptr s_pos s_len (+ src_ptr (mem.load32 (+ sentry 0))) (mem.load32 (+ sentry 4)))
+          (return sentry)
+          (block)))
+    0)
+
+  ;; Field entry of S.f (the first field of that name, as in checker.rs), or 0.
+  (fn find_field [src_ptr:i32 s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
+    (let sentry:i32 (call find_struct src_ptr s_pos s_len))
+    (if (eq sentry 0) (return 0) (block))
+    (loop fj 0 (- (mem.load32 (+ sentry 12)) 1) 1
+      (let fentry:i32 (+ (+ sentry 16) (* fj 16)))
+      (if (call sym_eq src_ptr f_pos f_len (+ src_ptr (mem.load32 (+ fentry 0))) (mem.load32 (+ fentry 4)))
+          (return fentry)
+          (block)))
+    0)
+
   (fn get_struct_size [src_ptr:i32 s_pos:i32 s_len:i32] -> i32
-    (let st_base:i32 (call struct_table))
-    (let scount:i32 (call get_struct_count))
-    (let i:i32 0)
-    (let res:i32 -1)
-    (while (lt i scount)
-      (let sentry:i32 (+ (+ st_base 16) (* i 256)))
-      (let name_pos:i32 (mem.load32 (+ sentry 0)))
-      (let name_len:i32 (mem.load32 (+ sentry 4)))
-      (if (call sym_eq src_ptr s_pos s_len (+ src_ptr name_pos) name_len)
-          (set! res (mem.load32 (+ sentry 8)))
-          (set! res res))
-      (set! i (+ i 1)))
-    (if (eq res -1) (block (call set_compile_error 96) 0) res))
+    (let sentry:i32 (call find_struct src_ptr s_pos s_len))
+    (if (eq sentry 0) (block (call set_compile_error 96) 0) (mem.load32 (+ sentry 8))))
 
   (fn get_field_offset [src_ptr:i32 s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
-    (let st_base:i32 (call struct_table))
-    (let scount:i32 (call get_struct_count))
-    (let i:i32 0)
-    (let res_off:i32 -1)
-    (while (lt i scount)
-      (let sentry:i32 (+ (+ st_base 16) (* i 256)))
-      (let name_pos:i32 (mem.load32 (+ sentry 0)))
-      (let name_len:i32 (mem.load32 (+ sentry 4)))
-      (if (call sym_eq src_ptr s_pos s_len (+ src_ptr name_pos) name_len)
-          (block
-            (let fcount:i32 (mem.load32 (+ sentry 12)))
-            (let fj:i32 0)
-            (while (lt fj fcount)
-              (let fentry:i32 (+ (+ sentry 16) (* fj 16)))
-              (let fn_pos:i32 (mem.load32 (+ fentry 0)))
-              (let fn_len:i32 (mem.load32 (+ fentry 4)))
-              (if (call sym_eq src_ptr f_pos f_len (+ src_ptr fn_pos) fn_len)
-                  (set! res_off (mem.load32 (+ fentry 8)))
-                  (set! res_off res_off))
-              (set! fj (+ fj 1)))
-            0)
-          0)
-      (set! i (+ i 1)))
-    (if (eq res_off -1) (block (call set_compile_error 96) 0) res_off))
+    (let fentry:i32 (call find_field src_ptr s_pos s_len f_pos f_len))
+    (if (eq fentry 0) (block (call set_compile_error 96) 0) (mem.load32 (+ fentry 8))))
 
   ;; Type id of S.f (200 i32, 204 bool, 206 str), or -1 if unknown.
   (fn get_field_type [src_ptr:i32 s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
-    (let st_base:i32 (call struct_table))
-    (let scount:i32 (call get_struct_count))
-    (let res:i32 -1)
-    (let i:i32 0)
-    (while (lt i scount)
-      (let sentry:i32 (+ (+ st_base 16) (* i 256)))
-      (if (call sym_eq src_ptr s_pos s_len (+ src_ptr (mem.load32 (+ sentry 0))) (mem.load32 (+ sentry 4)))
-          (block
-            (let fj:i32 0)
-            (while (lt fj (mem.load32 (+ sentry 12)))
-              (let fentry:i32 (+ (+ sentry 16) (* fj 16)))
-              (if (call sym_eq src_ptr f_pos f_len (+ src_ptr (mem.load32 (+ fentry 0))) (mem.load32 (+ fentry 4)))
-                  (set! res (mem.load32 (+ fentry 12)))
-                  (block))
-              (set! fj (+ fj 1))))
-          (block))
-      (set! i (+ i 1)))
-    res)
+    (let fentry:i32 (call find_field src_ptr s_pos s_len f_pos f_len))
+    (if (eq fentry 0) -1 (mem.load32 (+ fentry 12))))
 
   ;; A bool read from memory is normalised to 0/1 (i32.const 0; i32.ne), as in wasm.rs normalize_bool.
   (fn emit_normalize_bool [ptr:i32] -> i32
@@ -881,19 +912,13 @@
 
   ;; ===== String Interning =====
   (fn find_interned_string [src_ptr:i32 pos:i32 len:i32] -> i32
-    (let scount:i32 (call get_str_count))
-    (let i:i32 0)
-    (let found:i32 -1)
-    (while (lt i scount)
+    (loop i 0 (- (call get_str_count) 1) 1
       (let entry:i32 (call str_entry_ptr i))
       (let e_pos:i32 (mem.load32 (+ entry 0)))
-      (let e_len:i32 (mem.load32 (+ entry 4)))
-      (let e_addr:i32 (mem.load32 (+ entry 8)))
-      (if (and (neq e_pos -1) (call sym_eq src_ptr pos len (+ src_ptr e_pos) e_len))
-          (set! found e_addr)
-          (set! found found))
-      (set! i (+ i 1)))
-    found)
+      (if (and (neq e_pos -1) (call sym_eq src_ptr pos len (+ src_ptr e_pos) (mem.load32 (+ entry 4))))
+          (return (mem.load32 (+ entry 8)))
+          (block)))
+    -1)
 
   (fn intern_string [src_ptr:i32 pos:i32 len:i32] -> i32
     (let existing:i32 (call find_interned_string src_ptr pos len))
@@ -912,13 +937,14 @@
                 (block
                   (let nb:i32 (mem.load8 (+ src_ptr (+ pos (+ i 1)))))
                   (let esc:i32 nb)
-                  (if (eq nb 110) (set! esc 10)
-                  (if (eq nb 116) (set! esc 9)
-                  (if (eq nb 114) (set! esc 13)
-                  (if (eq nb 48) (set! esc 0)
-                  (if (eq nb 92) (set! esc 92)
-                  (if (eq nb 34) (set! esc 34)
-                  (set! esc nb)))))))
+                  (cond
+                    ((eq nb 110) (set! esc 10))
+                    ((eq nb 116) (set! esc 9))
+                    ((eq nb 114) (set! esc 13))
+                    ((eq nb 48) (set! esc 0))
+                    ((eq nb 92) (set! esc 92))
+                    ((eq nb 34) (set! esc 34))
+                    (else (set! esc nb)))
                   (mem.store8 (+ write_ptr decoded_len) esc)
                   (set! decoded_len (+ decoded_len 1))
                   (set! i (+ i 2)))
@@ -999,22 +1025,17 @@
     (if (eq kind 20)
         (block
           (let kw:i32 (call group_head_keyword src_ptr node))
-          (if (eq kw 32) (block (call mark_wasi_used 0) 0) ;; sys.print -> fd_write
-          (if (eq kw 33) (block (call mark_wasi_used 4) 0) ;; sys.exit -> proc_exit
-          (if (eq kw 34) (block (call mark_wasi_used 2) 0) ;; fs.open -> path_open
-          (if (eq kw 35) (block (call mark_wasi_used 1) 0) ;; fs.read -> fd_read
-          (if (eq kw 36) (block (call mark_wasi_used 0) 0) ;; fs.write -> fd_write
-          (if (eq kw 37) (block (call mark_wasi_used 3) 0) ;; fs.close -> fd_close
-          (if (eq kw 38) (block (call mark_wasi_used 5) 0) ;; fs.delete -> path_unlink_file
-          0)))))))
+          (cond
+            ((eq kw 32) (call mark_wasi_used 0) 0)
+            ((eq kw 33) (call mark_wasi_used 4) 0)
+            ((eq kw 34) (call mark_wasi_used 2) 0)
+            ((eq kw 35) (call mark_wasi_used 1) 0)
+            ((eq kw 36) (call mark_wasi_used 0) 0)
+            ((eq kw 37) (call mark_wasi_used 3) 0)
+            ((eq kw 38) (call mark_wasi_used 5) 0)
+            (else 0))
           (let child:i32 (call node_a node))
-          (let done:bool false)
-          (while (not done)
-            (if (eq child 0)
-                (set! done true)
-                (block
-                  (call walk_ast_for_wasi src_ptr child)
-                  (set! child (call node_next child)))))
+          (while (neq child 0) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
           0)
         0))
 
@@ -1025,13 +1046,7 @@
         (if (eq kind 20)
             (block
               (let child:i32 (call node_a node))
-              (let done:bool false)
-              (while (not done)
-                (if (eq child 0)
-                    (set! done true)
-                    (block
-                      (call walk_ast_for_strings src_ptr child)
-                      (set! child (call node_next child)))))
+              (while (neq child 0) (call walk_ast_for_strings src_ptr child) (set! child (call node_next child)))
               0)
             0)))
 
@@ -1058,22 +1073,15 @@
     (let tmp:i32 (call ref_sig_ptr 32))
     (call encode_sig src_ptr sig tmp)
     (let count:i32 (mem.load32 (+ (call ref_state) 4)))
-    (let found:i32 -1)
-    (let i:i32 0)
-    (while (and (eq found -1) (lt i count))
+    (loop i 0 (- count 1) 1
       (let same:bool true)
       (loop b 0 19 1
         (if (neq (mem.load8 (+ (call ref_sig_ptr i) b)) (mem.load8 (+ tmp b))) (set! same false) (block)))
-      (if same (set! found i) (block))
-      (set! i (+ i 1)))
-    (if (eq found -1)
-        (block
-          (if (gte count 31) (call set_compile_error 94) 0)
-          (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
-          (mem.store32 (+ (call ref_state) 4) (+ count 1))
-          (set! found count))
-        (block))
-    found)
+      (if same (return i) (block)))
+    (if (gte count 31) (call set_compile_error 94) 0)
+    (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
+    (mem.store32 (+ (call ref_state) 4) (+ count 1))
+    count)
 
   ;; Marks the module as using function refs and collects call_ref signatures
   ;; in source order, as wasm.rs walk_module does.
@@ -1093,23 +1101,15 @@
   (fn walk_module_prepass [src_ptr:i32 root:i32] -> i32
     ;; Pass 1: WASI detection
     (let child:i32 (call node_next (call node_next (call node_a root))))
-    (let done:bool false)
-    (while (not done)
-      (if (eq child 0)
-          (set! done true)
+    (while (neq child 0)
+      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
           (block
-            (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
-                (block
-                  (let bchild:i32 (call nth_child child 5))
-                  (let bdone:bool false)
-                  (while (not bdone)
-                    (if (eq bchild 0)
-                        (set! bdone true)
-                        (block
-                          (call walk_ast_for_wasi src_ptr bchild)
-                          (set! bchild (call node_next bchild))))))
-                (set! done done))
-            (set! child (call node_next child)))))
+            (let bchild:i32 (call nth_child child 5))
+            (while (neq bchild 0)
+              (call walk_ast_for_wasi src_ptr bchild)
+              (set! bchild (call node_next bchild))))
+          (block))
+      (set! child (call node_next child)))
 
     (call finalize_wasi_indices)
 
@@ -1120,24 +1120,16 @@
 
     ;; Pass 3: Intern string literals
     (set! child (call node_next (call node_next (call node_a root))))
-    (set! done false)
-    (while (not done)
-      (if (eq child 0)
-          (set! done true)
+    (while (neq child 0)
+      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
           (block
-            (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
-                (block
-                  (let bchild:i32 (call nth_child child 5))
-                  (let bdone:bool false)
-                  (while (not bdone)
-                    (if (eq bchild 0)
-                        (set! bdone true)
-                        (block
-                          (call walk_ast_for_strings src_ptr bchild)
-                          (call walk_ast_for_refs src_ptr bchild)
-                          (set! bchild (call node_next bchild))))))
-                (set! done done))
-            (set! child (call node_next child)))))
+            (let bchild:i32 (call nth_child child 5))
+            (while (neq bchild 0)
+              (call walk_ast_for_strings src_ptr bchild)
+              (call walk_ast_for_refs src_ptr bchild)
+              (set! bchild (call node_next bchild))))
+          (block))
+      (set! child (call node_next child)))
     0)
 
   (fn ast_uses_sys_print [src_ptr:i32 node:i32] -> bool
@@ -1153,7 +1145,7 @@
                 (while (neq child 0)
                   (if (call ast_uses_sys_print src_ptr child)
                       (set! found true)
-                      (set! found found))
+                      (block))
                   (set! child (call node_next child)))
                 found)))))
 
@@ -1172,7 +1164,7 @@
                 (while (neq child 0)
                   (if (call ast_uses_io src_ptr child)
                       (set! found true)
-                      (set! found found))
+                      (block))
                   (set! child (call node_next child)))
                 found)))))
 
@@ -1182,7 +1174,7 @@
     (while (neq bchild 0)
       (if (call ast_uses_io src_ptr bchild)
           (set! found true)
-          (set! found found))
+          (block))
       (set! bchild (call node_next bchild)))
     found)
 
@@ -1224,6 +1216,10 @@
     (if (or (eq kw 100) (or (eq kw 101) (or (eq kw 103) (or (eq kw 104) (or (eq kw 52) (eq kw 56))))))
         (set! res 205) (block))
     (if (or (eq kw 12) (or (eq kw 13) (or (eq kw 14) (or (eq kw 32) (eq kw 33))))) (set! res 205) (block))
+    ;; return, break, continue are statements
+    (if (and (gte kw 70) (lte kw 72)) (set! res 205) (block))
+    ;; cond: the type of its first clause's body (the desugared if's then branch)
+    (if (eq kw 114) (set! res (call body_type src_ptr (call node_next (call node_a (call nth_child node 1))) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw 102) (set! res (call node_type src_ptr (call nth_child node 2) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw 106) (set! res (call body_type src_ptr (call node_next (call node_a node)) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw 112)
@@ -1272,44 +1268,38 @@
           0)
         (block
           (let kind:i32 (call node_kind node))
-          (if (eq kind 7) (call emit_i32_const out_ptr (call node_a node))
-          (if (eq kind 8) (call emit_i32_const out_ptr (call node_a node))
-          (if (eq kind 10)
-              (block
-                (call emit_byte out_ptr 66)
+          (cond
+            ((eq kind 7) (call emit_i32_const out_ptr (call node_a node)))
+            ((eq kind 8) (call emit_i32_const out_ptr (call node_a node)))
+            ((eq kind 10) (call emit_byte out_ptr 66)
                 (+ 1 (call encode_s64 (+ out_ptr 1) (call parse_i64_literal src_ptr (call node_a node) (call node_b node)))))
-          (if (eq kind 11)
-              (call emit_f64_literal out_ptr src_ptr (call node_a node) (call node_b node))
-          (if (eq kind 9)
-              (block
-                (let addr:i32 (call find_interned_string src_ptr (call node_a node) (call node_b node)))
+            ((eq kind 11) (call emit_f64_literal out_ptr src_ptr (call node_a node) (call node_b node)))
+            ((eq kind 9) (let addr:i32 (call find_interned_string src_ptr (call node_a node) (call node_b node)))
                 (call emit_i32_const out_ptr addr))
-          (if (eq kind 6)
-              (block
-                (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
+            ((eq kind 6) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
                 (if (eq idx -1)
                     (block
                       (let _e:i32 (call set_compile_error 971))
                       (call emit_i32_const out_ptr 0))
                     (call emit_local_get out_ptr idx)))
-              (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))))))
+            (else (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))
 
   (fn compile_group [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let kw:i32 (call group_head_keyword src_ptr node))
     (let head_node:i32 (call node_a node))
-    (if (eq kw 100) (call compile_let src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 101) (call compile_set src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 102) (call compile_if src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 103) (call compile_loop src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 104) (call compile_while src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 105) (call compile_call src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 106) (call compile_block src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (eq kw 112) (call compile_match_result src_ptr node out_ptr locals_base locals_count func_table_base func_count)
-    (if (gte kw 0)
-        (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count)
-        (block
-          (let _e:i32 (call set_compile_error 987))
-          (call emit_i32_const out_ptr 0))))))))))))
+    (cond
+      ((eq kw 100) (call compile_let src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 101) (call compile_set src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 102) (call compile_if src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 103) (call compile_loop src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 104) (call compile_while src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 105) (call compile_call src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 106) (call compile_block src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 112) (call compile_match_result src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw 114) (call compile_cond_from src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+      ((gte kw 0) (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count))
+      (else (let _e:i32 (call set_compile_error 987))
+          (call emit_i32_const out_ptr 0))))
 
   (fn compile_match_result [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let expr_node:i32 (call nth_child node 1))
@@ -1329,6 +1319,7 @@
     (mem.store8 (+ out_ptr off) 4)
     (mem.store8 (+ out_ptr (+ off 1)) block_ty)
     (set! off (+ off 2))
+    (call label_push 0)
     (let ok_var_node:i32 (call nth_child ok_group 1))
     (let ok_var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a ok_var_node) (call node_b ok_var_node)))
     (if (neq ok_var_idx -1)
@@ -1352,6 +1343,7 @@
         0)
     (let err_body_first:i32 (call node_next (call node_next (call node_a err_group))))
     (set! off (+ off (call compile_stmt_seq src_ptr err_body_first (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (call label_pop)
     (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1))
     off)
 
@@ -1381,25 +1373,25 @@
 
     (if (eq op_id 9)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 45 0))))
-        (set! res res))
+        (block))
     (if (eq op_id 10)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 40 2))))
-        (set! res res))
+        (block))
     (if (eq op_id 11)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 41 3))))
-        (set! res res))
+        (block))
     (if (eq op_id 12)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 58 0))))
-        (set! res res))
+        (block))
     (if (eq op_id 13)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 54 2))))
-        (set! res res))
+        (block))
     (if (eq op_id 14)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 55 3))))
-        (set! res res))
+        (block))
     (if (eq op_id 23)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 69))))
-        (set! res res))
+        (block))
     (if (eq op_id 30) ;; str.len -> i32.const 4, i32.sub, i32.load
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
@@ -1409,10 +1401,10 @@
           (set! off (+ off 1))
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 31) ;; str.ptr -> identity
         (set! res (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
-        (set! res res))
+        (block))
     (if (eq op_id 32) ;; sys.print
         (block
           (let off:i32 0)
@@ -1455,12 +1447,12 @@
             
             (set! arg (call node_next arg)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 33) ;; sys.exit
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (set! res (+ n1 (call emit_call (+ out_ptr n1) (call get_wasi_index 4)))))
-        (set! res res))
+        (block))
     (if (eq op_id 34) ;; fs.open (path_ptr, path_len, flags)
         (block
           (let off:i32 0)
@@ -1502,7 +1494,7 @@
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 2))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 84)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 35) ;; fs.read (fd, buf_ptr, max_len)
         (block
           (let off:i32 0)
@@ -1528,7 +1520,7 @@
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 1))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 36) ;; fs.write (fd, buf_ptr, len)
         (block
           (let off:i32 0)
@@ -1554,7 +1546,7 @@
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 37) ;; fs.close (fd)
         (block
           (let off:i32 0)
@@ -1562,7 +1554,7 @@
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 3))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 38) ;; fs.delete (path_ptr, path_len)
         (block
           (let off:i32 0)
@@ -1576,7 +1568,7 @@
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 5))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 43) ;; mem.alloc (size) -> load/add/store on address 0
         (block
           (let off:i32 0)
@@ -1589,58 +1581,58 @@
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1)) ;; add
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 44) ;; mem.grow (pages) -> memory.grow 0
         (block
           (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (mem.store8 (+ out_ptr off) 64) ;; memory.grow
           (mem.store8 (+ out_ptr (+ off 1)) 0)
           (set! res (+ off 2)))
-        (set! res res))
+        (block))
     (if (eq op_id 45) ;; i64.extend_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 172) (set! res (+ n1 1)))
-        (set! res res))
+        (block))
     (if (eq op_id 46) ;; i64.extend_u
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 173) (set! res (+ n1 1)))
-        (set! res res))
+        (block))
     (if (eq op_id 47) ;; i32.wrap
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 167) (set! res (+ n1 1)))
-        (set! res res))
+        (block))
     (if (eq op_id 57) ;; f64.convert_i64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 185))))
-        (set! res res))
+        (block))
     (if (eq op_id 58) ;; i64.trunc_f64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 176))))
-        (set! res res))
+        (block))
     (if (eq op_id 59) ;; f64.reinterpret_i64
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 191))))
-        (set! res res))
+        (block))
     (if (eq op_id 60) ;; i64.reinterpret_f64
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 189))))
-        (set! res res))
+        (block))
     (if (or (eq op_id 61) (eq op_id 64)) ;; ptr.null / arr.null -> i32.const 0
         (set! res (call emit_i32_const out_ptr 0))
-        (set! res res))
+        (block))
     (if (or (eq op_id 62) (eq op_id 65)) ;; ptr.cast / arr.cast: the address itself
         (set! res (call compile_expr src_ptr (call nth_child node 2) out_ptr locals_base locals_count func_table_base func_count))
-        (set! res res))
+        (block))
     (if (or (eq op_id 63) (eq op_id 66)) ;; ptr.addr / arr.addr: the pointer itself
         (set! res (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
-        (set! res res))
+        (block))
     (if (eq op_id 67) ;; arr.len -> i32.const 4, i32.sub, i32.load (like str.len)
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (let n2:i32 (call emit_i32_const (+ out_ptr n1) 4))
           (mem.store8 (+ out_ptr (+ n1 n2)) 107)
           (set! res (+ (+ n1 (+ n2 1)) (call emit_memop (+ out_ptr (+ n1 (+ n2 1))) 40 2))))
-        (set! res res))
+        (block))
     (if (eq op_id 68) ;; ref f -> i32.const (f's position, its table slot)
         (block
           (let fname:i32 (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
           (if (eq fidx -1) (call set_compile_error 1452) 0)
           (set! res (call emit_i32_const out_ptr fidx)))
-        (set! res res))
+        (block))
     (if (eq op_id 69) ;; call_ref sig f args... -> args, f, call_indirect
         (block
           (let off:i32 0)
@@ -1654,7 +1646,25 @@
           (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) tidx)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
           (set! res off))
-        (set! res res))
+        (block))
+    (if (eq op_id 70) ;; return [v] -> v; return
+        (block
+          (let off:i32 0)
+          (if (neq (call nth_child node 1) 0)
+              (set! off (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+              (block))
+          (set! res (+ off (call emit_byte (+ out_ptr off) 15))))
+        (block))
+    (if (eq op_id 71) ;; break -> br to the innermost loop exit block
+        (block
+          (let n:i32 (call emit_byte out_ptr 12))
+          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 1 1)))))
+        (block))
+    (if (eq op_id 72) ;; continue -> br to the innermost loop header or loop-body block
+        (block
+          (let n:i32 (call emit_byte out_ptr 12))
+          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 2 3)))))
+        (block))
     (if (eq op_id 48) ;; ok
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
@@ -1677,7 +1687,7 @@
           (set! off (+ off (call compile_expr src_ptr (call result_payload node) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 4)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 49) ;; err
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
@@ -1700,7 +1710,7 @@
           (set! off (+ off (call compile_expr src_ptr (call result_payload node) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 4)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 50) ;; new Struct
         (block
           (let snode:i32 (call nth_child node 1))
@@ -1715,7 +1725,7 @@
           (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 51) ;; get ptr Struct.field: load by field type at its offset
         (block
           (let ptr_node:i32 (call nth_child node 1))
@@ -1731,7 +1741,7 @@
               (set! off (+ off (call emit_normalize_bool (+ out_ptr off))))
               (block))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 52) ;; put ptr Struct.field val: store by field type at its offset
         (block
           (let ptr_node:i32 (call nth_child node 1))
@@ -1747,13 +1757,13 @@
           (set! off (+ off (call compile_expr src_ptr val_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) (call store_opcode ftype) (call mem_align ftype) f_offset)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 53) ;; sizeof Struct
         (block
           (let snode:i32 (call nth_child node 1))
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
           (set! res (call emit_i32_const out_ptr size)))
-        (set! res res))
+        (block))
     (if (eq op_id 54) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
@@ -1790,7 +1800,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 55) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
@@ -1806,7 +1816,7 @@
               (set! off (+ off (call emit_normalize_bool (+ out_ptr off))))
               (block))
           (set! res off))
-        (set! res res))
+        (block))
     (if (eq op_id 56) ;; arr.set type ptr index val
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
@@ -1822,7 +1832,7 @@
           (set! off (+ off (call compile_expr src_ptr val_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_memop (+ out_ptr off) (call store_opcode etype) (call mem_align etype))))
           (set! res off))
-        (set! res res))
+        (block))
 
     (if (eq res -1)
         (block
@@ -1830,7 +1840,7 @@
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr n1) locals_base locals_count func_table_base func_count))
           (set! res (+ (+ n1 n2) (call emit_typed_binop (+ out_ptr (+ n1 n2)) op_id t))))
-        (set! res res))
+        (block))
 
     res)
 
@@ -1842,14 +1852,7 @@
     (let fname_node:i32 (call nth_child node 1))
     (let offset:i32 0)
     (let arg:i32 (call node_next (call node_next (call node_a node))))
-    (let done:bool false)
-    (while (not done)
-      (if (eq arg 0)
-          (set! done true)
-          (block
-            (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count))
-            (set! offset (+ offset n))
-            (set! arg (call node_next arg)))))
+    (while (neq arg 0) (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg)))
     (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname_node) (call node_b fname_node)))
     (if (eq fidx -1)
         (block
@@ -1863,9 +1866,9 @@
 
   (fn compile_stmt [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let n:i32 (call compile_expr src_ptr node out_ptr locals_base locals_count func_table_base func_count)) (if (call is_void_node src_ptr node func_table_base func_count) n (+ n (call emit_byte (+ out_ptr n) 26))))
 
-  (fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (let done:bool false) (while (not done) (if (eq node 0) (set! done true) (block (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt)))) offset)
+  (fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (while (neq node 0) (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt)) offset)
 
-  (fn compile_all_stmts [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (let done:bool false) (while (not done) (if (eq node 0) (set! done true) (block (let nxt:i32 (call node_next node)) (let n:i32 (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! node nxt)))) offset)
+  (fn compile_all_stmts [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (while (neq node 0) (let nxt:i32 (call node_next node)) (let n:i32 (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! node nxt)) offset)
 
   (fn compile_block [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (call compile_stmt_seq src_ptr (call node_next (call node_a node)) out_ptr locals_base locals_count func_table_base func_count))
 
@@ -1881,19 +1884,101 @@
     (mem.store8 (+ out_ptr off) 4)
     (mem.store8 (+ out_ptr (+ off 1)) block_ty)
     (set! off (+ off 2))
+    (call label_push 0)
     (set! off (+ off (call compile_expr src_ptr then_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
     (mem.store8 (+ out_ptr off) 5)
     (set! off (+ off 1))
     (set! off (+ off (call compile_expr src_ptr else_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (call label_pop)
     (mem.store8 (+ out_ptr off) 11)
     (set! off (+ off 1))
     off)
 
-  (fn compile_while [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let cond_node:i32 (call nth_child node 1)) (let body_first:i32 (call node_next (call node_next (call node_a node)))) (let off:i32 0) (mem.store8 (+ out_ptr off) 2) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (mem.store8 (+ out_ptr off) 3) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (set! off (+ off (call compile_expr src_ptr cond_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 69) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 13) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1))) (set! off (+ off (call compile_all_stmts src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 12) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
+  ;; block { loop { cond; eqz; br_if 1; body; br 0 } }: break = br to the block,
+  ;; continue = br to the loop header (wasm.rs Expr::While).
+  (fn compile_while [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let off:i32 0)
+    (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+    (call label_push 1)
+    (call label_push 2)
+    (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 69)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
+    (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1)))
+    (set! off (+ off (call compile_all_stmts src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (call label_pop)
+    (call label_pop)
+    (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
+    (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+    (+ off (call emit_byte (+ out_ptr off) 11)))
 
-  (fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let var_node:i32 (call nth_child node 1)) (let start_node:i32 (call nth_child node 2)) (let end_node:i32 (call nth_child node 3)) (let step_node:i32 (call nth_child node 4)) (let body_first:i32 (call nth_child node 5)) (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node))) (let off:i32 0) (set! off (+ off (call compile_expr src_ptr start_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 2) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (mem.store8 (+ out_ptr off) 3) (mem.store8 (+ out_ptr (+ off 1)) 64) (set! off (+ off 2)) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr end_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 74) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 13) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1))) (set! off (+ off (call compile_all_stmts src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count))) (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx))) (set! off (+ off (call compile_expr src_ptr step_node (+ out_ptr off) locals_base locals_count func_table_base func_count))) (mem.store8 (+ out_ptr off) 106) (set! off (+ off 1)) (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx))) (mem.store8 (+ out_ptr off) 12) (set! off (+ off 1)) (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0))) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1)) off)
+  ;; var = start; block { loop { var > end -> br_if 1; block { body }; var += step; br 0 } }:
+  ;; break = br to the outer block, continue = br to the end of the body block,
+  ;; which falls into the step (wasm.rs Expr::Loop).
+  (fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let var_node:i32 (call nth_child node 1))
+    (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node)))
+    (let off:i32 (call compile_expr src_ptr (call nth_child node 2) out_ptr locals_base locals_count func_table_base func_count))
+    (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+    (call label_push 1)
+    (call label_push 2)
+    (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
+    (set! off (+ off (call compile_expr src_ptr (call nth_child node 3) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 74)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
+    (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
+    (call label_push 3)
+    (set! off (+ off (call compile_all_stmts src_ptr (call nth_child node 5) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (call label_pop)
+    (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+    (call label_pop)
+    (call label_pop)
+    (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
+    (set! off (+ off (call compile_expr src_ptr (call nth_child node 4) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
+    (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
+    (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
+    (+ off (call emit_byte (+ out_ptr off) 11)))
 
-  (fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (let done:bool false) (while (not done) (if (eq bchild 0) (set! done true) (if (call is_contract_head src_ptr bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (set! off off)) (set! bchild (call node_next bchild)))))) off)
+  (fn is_else_clause [src_ptr:i32 clause:i32] -> bool
+    (let head:i32 (call node_a clause))
+    (and (eq (call node_kind head) 6) (eq (call classify_keyword src_ptr (call node_a head) (call node_b head)) 115)))
+
+  ;; (cond (c1 e...) ... (else e...)) as the nested ifs the Rust parser builds:
+  ;; (if c1 (block e...) (if c2 (block e...) ... (block else...))).
+  (fn compile_cond_from [src_ptr:i32 clause:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let head:i32 (call node_a clause))
+    (if (call is_else_clause src_ptr clause)
+        (return (call compile_stmt_seq src_ptr (call node_next head) out_ptr locals_base locals_count func_table_base func_count))
+        (block))
+    (let body_first:i32 (call node_next head))
+    (let off:i32 (call compile_expr src_ptr head out_ptr locals_base locals_count func_table_base func_count))
+    (let bt:i32 64)
+    (if (call is_void_node src_ptr (call last_child clause) func_table_base func_count)
+        (block)
+        (set! bt (call block_type_byte (call body_type src_ptr body_first locals_base locals_count func_table_base func_count))))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 4)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) bt)))
+    (call label_push 0)
+    (set! off (+ off (call compile_stmt_seq src_ptr body_first (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
+    (set! off (+ off (call compile_cond_from src_ptr (call node_next clause) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (call label_pop)
+    (+ off (call emit_byte (+ out_ptr off) 11)))
+
+  (fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (while (neq bchild 0) (if (call is_contract_head src_ptr bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
 
   ;; ===== Master WASM Module Generator =====
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
@@ -1934,39 +2019,28 @@
       (if (neq w_idx -1)
           (block
             (mem.store8 (+ scratch sc_off) 96) (set! sc_off (+ sc_off 1))
-            (if (eq w 0) ;; fd_write (i32, i32, i32, i32) -> i32
-                (block
-                  (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
+            (cond
+              ((eq w 0) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-            (if (eq w 1) ;; fd_read (i32, i32, i32, i32) -> i32
-                (block
-                  (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
+              ((eq w 1) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-            (if (eq w 2) ;; path_open (i32, i32, i32, i32, i32, i64, i64, i32, i32) -> i32
-                (block
-                  (mem.store8 (+ scratch sc_off) 9) (set! sc_off (+ sc_off 1))
+              ((eq w 2) (mem.store8 (+ scratch sc_off) 9) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (mem.store8 (+ scratch (+ sc_off 4)) 127) (set! sc_off (+ sc_off 5))
                   (mem.store8 (+ scratch sc_off) 126) (mem.store8 (+ scratch (+ sc_off 1)) 126) (set! sc_off (+ sc_off 2))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-            (if (eq w 3) ;; fd_close (i32) -> i32
-                (block
-                  (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+              ((eq w 3) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-            (if (eq w 4) ;; proc_exit (i32) -> ()
-                (block
-                  (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+              ((eq w 4) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) 0)
-            (if (eq w 5) ;; path_unlink_file (i32, i32, i32) -> i32
-                (block
-                  (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
+              ((eq w 5) (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (set! sc_off (+ sc_off 3))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-                0)))))))
+              (else 0)))
           0)
       (set! w (+ w 1)))
 
@@ -2030,39 +2104,28 @@
                   (call store_kw_str m_str 12 116 95 112 114 101 118 105 101 119 49 0 0 10)
                   (set! sc_off (+ sc_off 22))
                   ;; field name
-                  (if (eq w 0) ;; "fd_write" (8 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
+                  (cond
+                    ((eq w 0) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
                         (call store_kw_str (+ scratch sc_off) 0 102 100 95 119 114 105 116 101 0 0 0 0 8)
                         (set! sc_off (+ sc_off 8)) 0)
-                  (if (eq w 1) ;; "fd_read" (7 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 7)))
+                    ((eq w 1) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 7)))
                         (call store_kw_str (+ scratch sc_off) 0 102 100 95 114 101 97 100 0 0 0 0 0 7)
                         (set! sc_off (+ sc_off 7)) 0)
-                  (if (eq w 2) ;; "path_open" (9 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
+                    ((eq w 2) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
                         (call store_kw_str (+ scratch sc_off) 0 112 97 116 104 95 111 112 101 110 0 0 0 9)
                         (set! sc_off (+ sc_off 9)) 0)
-                  (if (eq w 3) ;; "fd_close" (8 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
+                    ((eq w 3) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
                         (call store_kw_str (+ scratch sc_off) 0 102 100 95 99 108 111 115 101 0 0 0 0 8)
                         (set! sc_off (+ sc_off 8)) 0)
-                  (if (eq w 4) ;; "proc_exit" (9 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
+                    ((eq w 4) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
                         (call store_kw_str (+ scratch sc_off) 0 112 114 111 99 95 101 120 105 116 0 0 0 9)
                         (set! sc_off (+ sc_off 9)) 0)
-                  (if (eq w 5) ;; "path_unlink_file" (16 bytes)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16)))
+                    ((eq w 5) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16)))
                         (let p_str:i32 (+ scratch sc_off))
                         (call store_kw_str p_str 0 112 97 116 104 95 117 110 108 105 110 107 95 12)
                         (call store_kw_str p_str 12 102 105 108 101 0 0 0 0 0 0 0 0 4)
                         (set! sc_off (+ sc_off 16)) 0)
-                      0))))))
+                    (else 0))
                   ;; Entity type 0 (Func) + type index
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
                   (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) curr_imp)))
@@ -2201,7 +2264,7 @@
       ;; Locals header count
       (let num_local_entries:i32 extra_local_cnt)
       (set! num_local_entries (+ num_local_entries 1)) ;; +1 for store guard scratch
-      (if fn_uses_io_flag (set! num_local_entries (+ num_local_entries 1)) (set! num_local_entries num_local_entries))
+      (if fn_uses_io_flag (set! num_local_entries (+ num_local_entries 1)) (block))
       
       (set! fcode_off (+ fcode_off (call compiler.encode_u32 (+ fcode_scratch fcode_off) num_local_entries)))
       
@@ -2415,9 +2478,9 @@
   ;; Group runner for `aipl test` / test_suite.aipl
   (fn run_codegen_tests [] -> i32
     (let passed:i32 0)
-    (if (eq (call test_signatures_and_locals) 1) (set! passed (+ passed 1)) (set! passed passed))
-    (if (gt (call test_compile_add) 0) (set! passed (+ passed 1)) (set! passed passed))
-    (if (gt (call test_compile_compute) 0) (set! passed (+ passed 1)) (set! passed passed))
-    (if (gt (call test_compile_store) 0) (set! passed (+ passed 1)) (set! passed passed))
+    (if (eq (call test_signatures_and_locals) 1) (set! passed (+ passed 1)) (block))
+    (if (gt (call test_compile_add) 0) (set! passed (+ passed 1)) (block))
+    (if (gt (call test_compile_compute) 0) (set! passed (+ passed 1)) (block))
+    (if (gt (call test_compile_store) 0) (set! passed (+ passed 1)) (block))
     passed)
 )

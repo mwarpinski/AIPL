@@ -29,7 +29,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U2 fixed-address global state | Fixed (P5) |
 | U3 three semantics | Addressed: differential tests compare the VM and wasm, and self-hosted output must be byte-identical to the Rust backend |
 | U4 compiled code cannot do I/O | Fixed (P6) |
-| U5 control flow too poor | Open (P11) |
+| U5 control flow too poor | Fixed (P11) |
 | U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
 | U7 memory has no growth or bounds contract | Partly: `mem.grow` exists and bounds are enforced in both backends; `mem.free` is still a no-op |
 | U8 nothing versioned | Open (P12) |
@@ -324,11 +324,23 @@ Repo: AIPL. Add a function-reference type and indirect calls. Grammar: type `(fn
 | `(thread.spawn fref arg)`, name-in-memory path deleted, `thread_sync.aipl` updated and imported in `test_suite.aipl`, exclusion comment deleted | Done | The suite prints `[PASS] thread_sync: 4 threads x 1000 atomic adds = 4000` |
 | Beyond the prompt | Done | Self-hosted compiler support at byte parity; `tests/test_refs.rs`; `--self` reports the first differing function body |
 
-### P11 — Add `return`, `break`, `continue`, and `cond`
+### P11 — Add `return`, `break`, `continue`, and `cond` [DONE — 2026-10-01]
 
 ```
 Repo: AIPL. Add four control-flow forms in parser.rs, checker.rs, vm.rs, wasm.rs, and codegen.aipl: `(return v)` / `(return)` for void; `(break)` and `(continue)` valid only inside while/loop (checker error otherwise); `(cond (c1 e1) (c2 e2) ... (else e))` as sugar desugared in the parser to nested if. wasm lowering: wrap each function body in a block with the function's result type so `return` is `br` to it (or use the `return` instruction); loops become block{loop{...}} where break = br 1 and continue = br 0 (for `loop`, continue must still execute the increment — restructure the increment to sit at the top of the loop guarded by a first-iteration flag or emit the increment in a nested block so continue targets it). VM: implement via a ControlFlow enum returned from eval_expr (Normal(Value) | Break | Continue | Return(Value)) instead of panicking or using errors. Then rewrite the `(let done:bool false) (while (not done) ...)` loops in aipl_src/compiler.aipl and aipl_src/codegen.aipl to use break, and the 3+-deep nested ifs to cond. Update AIPL_SPEC.md and PROMPT_GUIDE_FOR_AIS.md. All existing tests must pass, plus differential cases for early return inside loop, break inside nested if, continue in `loop`.
 ```
+
+**Verification 2026-10-01 (branch `features/p11`).**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| `(return v)`/`(return)`, `(break)`, `(continue)` (loop bodies only), `cond` desugared to nested `if` | Done | `cond` requires `else` (as `if` does) and takes multi-expression clauses; the three statements are typed `void` |
+| wasm: return, block/loop with break = br to block, continue = br to header; `loop` continue still runs the increment | Done | `return` instruction; the `loop` body is wrapped in a block that `continue` targets, falling into the step; label depths tracked |
+| VM via a ControlFlow enum from eval_expr | Done differently | A pending-flow field checked by statement sequences, loops, and `invoke`; equivalent under the void typing, far smaller change |
+| Rewrite done-flag loops to break, 3+-deep ifs to cond in compiler.aipl and codegen.aipl | Done | Also `std/*`; search loops became early returns |
+| Update AIPL_SPEC.md and PROMPT_GUIDE_FOR_AIS.md | Done | Spec 7.10, grammar, tables, diagnostics, pitfalls; prompt guide rule 7 and the binary-search example |
+| All tests pass + differential cases: early return in loop, break in nested if, continue in loop | Done | `tests/test_control_flow.rs`, plus self-hosted parity on raw `cond` |
+| Found on the way | Fixed | VM `loop` evaluated end/step once and ignored `set!` of the variable (wasm re-evaluates); duplicate struct fields were accepted |
 
 ### P12 — Version everything and spec the binary AST or delete it
 

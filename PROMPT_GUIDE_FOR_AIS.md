@@ -16,7 +16,7 @@ RULES:
 4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
 5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error.
 6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence.
-7. Loops: (while cond body...) or (loop i start end step body...), where end is INCLUSIVE. There is no return, break, or continue.
+7. Loops: (while cond body...) or (loop i start end step body...), where end is INCLUSIVE. (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These are statements: write (if c (return v) (block)), never (if c (return v) x). For 3+ branches use (cond (test body...) ... (else body...)); else is required.
 8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), "s" is str. Never mix i32 and i64 without (i64.extend_s x) / (i32.wrap x).
 9. Memory: (new S) gives a (ptr S); (arr.new T n) gives an (arr T); (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024.
 10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
@@ -49,16 +49,14 @@ RULES:
   (fn binary_search [a:(arr i32) target:i32] -> i32
     (let low:i32 0)
     (let high:i32 (- (arr.len a) 1))
-    (let found:i32 -1)
-    (while (and (lte low high) (eq found -1))
+    (while (lte low high)
       (let mid:i32 (/ (+ low high) 2))
       (let v:i32 (arr.get i32 a mid))
-      (if (eq v target)
-          (set! found mid)
-          (if (lt v target)
-              (set! low (+ mid 1))
-              (set! high (- mid 1)))))
-    found)
+      (cond
+        ((eq v target) (return mid))
+        ((lt v target) (set! low (+ mid 1)))
+        (else (set! high (- mid 1)))))
+    -1)
 
   (fn main [] -> i32
     (let a:(arr i32) (arr.new i32 8))
@@ -159,6 +157,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 - [ ] Both `if` branches are void, or both are the same type.
 - [ ] No name is `let` twice in nested scopes.
 - [ ] `loop` end bounds are inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
+- [ ] `return`/`break`/`continue` sit in statement positions (`(if c (return v) (block))`), and every `cond` ends with `(else ...)`.
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
 - [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.

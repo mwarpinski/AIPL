@@ -43,8 +43,7 @@
     (let buf:i32 (call alloc cap))
     (let len:i32 0)
     (let failed:bool (lt fd 0))
-    (let done:bool failed)
-    (while (not done)
+    (while (not failed)
       (if (eq len cap)
           (block
             (let bigger:i32 (call alloc (* cap 2)))
@@ -54,8 +53,10 @@
             (set! cap (* cap 2)))
           (block))
       (let n:i32 (fs.read fd (+ buf len) (- cap len)))
-      (if (lt n 0) (set! failed true) (set! len (+ len n)))
-      (if (lte n 0) (set! done true) (block)))
+      (cond
+        ((lt n 0) (set! failed true))
+        ((eq n 0) (break))
+        (else (set! len (+ len n)))))
     (if (gte fd 0) (fs.close fd) 0)
     (if failed (call str.bytes 0 -1) (call str.bytes buf len)))
 

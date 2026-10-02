@@ -177,6 +177,7 @@ impl WasmCompiler {
                 import_count,
                 ref_sigs: &ref_sigs,
                 ref_type_base,
+                labels: std::cell::RefCell::new(Vec::new()),
             };
 
             // Every statement but the last is executed purely for effect: drop
@@ -276,6 +277,42 @@ struct Ctx<'a> {
     /// Distinct call_ref signatures; signature i has type index ref_type_base + i.
     ref_sigs: &'a [(Vec<ValType>, Vec<ValType>)],
     ref_type_base: u32,
+    /// Enclosing structured instructions that can contain user code,
+    /// innermost last, so break/continue can compute their branch depth.
+    labels: std::cell::RefCell<Vec<Label>>,
+}
+
+/// What a wasm label is for. Blocks emitted around compiler-generated code
+/// only (store guards, traps) never contain break/continue and are not tracked.
+#[derive(Clone, Copy, PartialEq)]
+enum Label {
+    /// an if / else
+    Plain,
+    /// the block around a while/loop: break target
+    Break,
+    /// the loop header: continue target of a while
+    LoopTop,
+    /// the block around a loop's body: continue target (falls into the step)
+    Continue,
+}
+
+/// Branch depth from the innermost label to the innermost label of a kind in `kinds`.
+fn label_depth(ctx: &Ctx, kinds: &[Label]) -> Result<u32, String> {
+    let labels = ctx.labels.borrow();
+    labels
+        .iter()
+        .rev()
+        .position(|l| kinds.contains(l))
+        .map(|d| d as u32)
+        .ok_or_else(|| "Wasm Codegen: break/continue outside a loop".to_string())
+}
+
+/// Compiles `body` with `label` pushed on the label stack.
+fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    ctx.labels.borrow_mut().push(label);
+    let r = body();
+    ctx.labels.borrow_mut().pop();
+    r
 }
 
 /// The wasm params/results of a `(fn [...] -> r)` type.
@@ -326,6 +363,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
         Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => Type::Void,
         Expr::CallRef { sig, .. } => match sig {
             Type::Fn(_, ret) => (**ret).clone(),
             _ => Type::I32,
@@ -520,6 +558,9 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 collect_lets(&[*(func.clone())], lets);
                 collect_lets(args, lets);
             }
+            Expr::Return { val: Some(v), .. } => {
+                collect_lets(&[*(v.clone())], lets);
+            }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 collect_lets(&[*(expr.clone())], lets);
                 lets.push((ok_var.clone(), Type::I32));
@@ -623,20 +664,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
             let then_void = is_void_expr(then_branch, ctx);
-            if then_void {
-                func.instruction(&Instruction::If(BlockType::Empty));
-                compile_expr(then_branch, ctx, func)?;
-                func.instruction(&Instruction::Else);
-                compile_expr(else_branch, ctx, func)?;
-                func.instruction(&Instruction::End);
+            let block_ty = if then_void {
+                BlockType::Empty
             } else {
-                let ty = expr_type(then_branch, ctx);
-                func.instruction(&Instruction::If(BlockType::Result(aipl_to_wasm_type(&ty))));
+                BlockType::Result(aipl_to_wasm_type(&expr_type(then_branch, ctx)))
+            };
+            func.instruction(&Instruction::If(block_ty));
+            with_label(ctx, Label::Plain, || {
                 compile_expr(then_branch, ctx, func)?;
                 func.instruction(&Instruction::Else);
-                compile_expr(else_branch, ctx, func)?;
-                func.instruction(&Instruction::End);
-            }
+                compile_expr(else_branch, ctx, func)
+            })?;
+            func.instruction(&Instruction::End);
         }
         Expr::Call { func: f_name, args, .. } => {
             for arg in args {
@@ -943,14 +982,21 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
         }
         Expr::While { cond, body, .. } => {
+            // block { loop { cond; eqz; br_if 1; body; br 0 } }:
+            // break = br to the block, continue = br to the loop header.
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-            compile_expr(cond, ctx, func)?;
-            func.instruction(&Instruction::I32Eqz);
-            func.instruction(&Instruction::BrIf(1));
-            for e in body {
-                compile_stmt(e, ctx, func)?;
-            }
+            with_label(ctx, Label::Break, || {
+                with_label(ctx, Label::LoopTop, || {
+                    compile_expr(cond, ctx, func)?;
+                    func.instruction(&Instruction::I32Eqz);
+                    func.instruction(&Instruction::BrIf(1));
+                    for e in body {
+                        compile_stmt(e, ctx, func)?;
+                    }
+                    Ok(())
+                })
+            })?;
             func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
@@ -962,19 +1008,29 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .ok_or_else(|| format!("Wasm Codegen: loop variable '{}' has no local slot", var))?;
             compile_expr(start, ctx, func)?;
             func.instruction(&Instruction::LocalSet(var_idx));
+            // block { loop { var > end -> br_if 1; block { body } ; var += step; br 0 } }:
+            // break = br to the outer block, continue = br to the end of the
+            // inner block, which falls into the step.
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-            func.instruction(&Instruction::LocalGet(var_idx));
-            compile_expr(end, ctx, func)?;
-            // VM semantics (vm.rs) run the loop `while curr <= end` - inclusive
-            // of the end bound. This must use I32GtS (exit only once the
-            // counter exceeds end), not I32GeS, or a wasm-compiled loop runs
-            // one fewer iteration than the same source does in the VM.
-            func.instruction(&Instruction::I32GtS);
-            func.instruction(&Instruction::BrIf(1));
-            for e in body {
-                compile_stmt(e, ctx, func)?;
-            }
+            with_label(ctx, Label::Break, || {
+                with_label(ctx, Label::LoopTop, || {
+                    func.instruction(&Instruction::LocalGet(var_idx));
+                    compile_expr(end, ctx, func)?;
+                    // Inclusive end bound: exit only once var exceeds end.
+                    func.instruction(&Instruction::I32GtS);
+                    func.instruction(&Instruction::BrIf(1));
+                    func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
+                    with_label(ctx, Label::Continue, || {
+                        for e in body {
+                            compile_stmt(e, ctx, func)?;
+                        }
+                        Ok(())
+                    })?;
+                    func.instruction(&Instruction::End);
+                    Ok(())
+                })
+            })?;
             func.instruction(&Instruction::LocalGet(var_idx));
             compile_expr(step, ctx, func)?;
             func.instruction(&Instruction::I32Add);
@@ -1012,6 +1068,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             };
 
             func.instruction(&Instruction::If(block_ty));
+            ctx.labels.borrow_mut().push(Label::Plain);
 
             if let Some(&ok_idx) = ctx.locals.get(ok_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -1049,6 +1106,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 }
             }
 
+            ctx.labels.borrow_mut().pop();
             func.instruction(&Instruction::End);
         }
         Expr::NewStruct { struct_name, .. } => {
@@ -1206,6 +1264,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Store(M4));
+        }
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                compile_expr(v, ctx, func)?;
+            }
+            func.instruction(&Instruction::Return);
+        }
+        Expr::Break(_) => {
+            func.instruction(&Instruction::Br(label_depth(ctx, &[Label::Break])?));
+        }
+        Expr::Continue(_) => {
+            func.instruction(&Instruction::Br(label_depth(ctx, &[Label::LoopTop, Label::Continue])?));
         }
         Expr::Ref { name, .. } => {
             let idx = ctx
@@ -1429,6 +1499,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Cast { .. }
         | Expr::Addr { .. }
         | Expr::Ref { .. } => false,
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
         Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
     }
 }
@@ -1593,6 +1664,12 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Break(_) | Expr::Continue(_) => {}
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                walk_expr(v, visit);
+            }
+        }
         // Source order (function, then arguments), as the self-hosted compiler walks it.
         Expr::CallRef { func, args, .. } => {
             walk_expr(func, visit);

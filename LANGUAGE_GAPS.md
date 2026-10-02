@@ -16,7 +16,6 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 2. Language
 
-- **No `return`, `break`, `continue`, or `cond` (P11).** Loops exit only through their bound or a `while` flag.
 - **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No generics, no visibility.** Every function in every module is addressable by its qualified name.
@@ -60,4 +59,4 @@ Still true from the original analysis, updated for what has landed:
 
 ## 8. On the longer-term ambition (browser / PDF viewer in pure AIPL)
 
-A PDF reader or rasteriser is a realistic first "real systems program" once the standard library (P8b), control flow (P11), and a faster interpreter or compiled self-host exist. It needs binary parsing, vector rasterisation into a memory buffer, and file I/O, all of which compile to wasm today. A browser additionally needs a windowing/graphics host, which wasm alone cannot provide, plus HTML/CSS/layout/font/image/network stacks. Neither is near-term; the path runs through sections 1–4 above.
+A PDF reader or rasteriser is a realistic first "real systems program" now that the standard library (P8b) and control flow (P11) exist, once a faster interpreter or compiled self-host exist. It needs binary parsing, vector rasterisation into a memory buffer, and file I/O, all of which compile to wasm today. A browser additionally needs a windowing/graphics host, which wasm alone cannot provide, plus HTML/CSS/layout/font/image/network stacks. Neither is near-term; the path runs through sections 1–4 above.

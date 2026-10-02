@@ -328,6 +328,12 @@ fn walk_names_expr(expr: &mut Expr, visit: &mut dyn FnMut(NameKind, &mut String)
         }
         Expr::Addr { val, .. } => walk_names_expr(val, visit),
         Expr::Ref { name, .. } => visit(NameKind::Function, name),
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                walk_names_expr(v, visit);
+            }
+        }
+        Expr::Break(_) | Expr::Continue(_) => {}
         Expr::CallRef { sig, func, args, .. } => {
             walk_type_names(sig, visit);
             walk_names_expr(func, visit);

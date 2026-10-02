@@ -23,22 +23,16 @@
     (or (eq c 32) (and (gte c 9) (lte c 13))))
 
   (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool
-    (let n:i32 (get a Bytes.len))
-    (let same:bool (eq n (get b Bytes.len)))
-    (let i:i32 0)
-    (while (and same (lt i n))
-      (if (neq (call byte_at a i) (call byte_at b i)) (set! same false) (block))
-      (set! i (+ i 1)))
-    same)
+    (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
+    (loop i 0 (- (get a Bytes.len) 1) 1
+      (if (neq (call byte_at a i) (call byte_at b i)) (return false) (block)))
+    true)
 
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:(ptr Bytes) c:i32] -> i32
-    (let found:i32 -1)
-    (let i:i32 0)
-    (while (and (eq found -1) (lt i (get b Bytes.len)))
-      (if (eq (call byte_at b i) c) (set! found i) (block))
-      (set! i (+ i 1)))
-    found)
+    (loop i 0 (- (get b Bytes.len) 1) 1
+      (if (eq (call byte_at b i) c) (return i) (block)))
+    -1)
 
   (fn count_byte [b:(ptr Bytes) c:i32] -> i32
     (let n:i32 0)

@@ -223,6 +223,16 @@ pub enum Expr {
         addr: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(return v)` / `(return)`: leaves the function. Type void.
+    Return {
+        val: Option<Box<Expr>>,
+        span: (u32, u32),
+    },
+    /// `(break)`: leaves the innermost while/loop. Type void.
+    Break((u32, u32)),
+    /// `(continue)`: next iteration of the innermost while/loop (a `loop`
+    /// still applies its step). Type void.
+    Continue((u32, u32)),
     /// `(ref f)`: a reference to function `f`, of type `(fn [params] -> ret)`.
     Ref {
         name: String,
@@ -273,6 +283,8 @@ impl Expr {
             Expr::Cast { span, .. } => *span,
             Expr::Addr { span, .. } => *span,
             Expr::Ref { span, .. } => *span,
+            Expr::Return { span, .. } => *span,
+            Expr::Break(span) | Expr::Continue(span) => *span,
             Expr::CallRef { span, .. } => *span,
         }
     }

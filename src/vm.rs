@@ -42,12 +42,25 @@ pub const HEAP_PTR_ADDR: usize = 0;
 /// runtime block (see AIPL_SPEC.md, Memory layout).
 pub const HEAP_START: u32 = 1024;
 
+/// A `return`, `break`, or `continue` that is unwinding. eval_expr sets it and
+/// returns Value::Void; statement sequences stop when it is set, loops consume
+/// Break/Continue, and invoke consumes Return. The checker makes these
+/// statements (type void), so they only ever occur where a sequence, loop, or
+/// if branch is evaluating them.
+#[derive(Debug, Clone, PartialEq)]
+enum Flow {
+    Break,
+    Continue,
+    Return(Value),
+}
+
 pub struct VM {
     functions: Arc<HashMap<String, FnDef>>,
     /// Function names in load order: `(ref f)` is f's position here, which is
     /// also its slot in the wasm backend's function table.
     fn_order: Arc<Vec<String>>,
     structs: Arc<HashMap<String, StructDef>>,
+    flow: Option<Flow>,
     globals: HashMap<String, Value>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
@@ -62,6 +75,7 @@ impl VM {
             functions: Arc::new(HashMap::new()),
             fn_order: Arc::new(Vec::new()),
             structs: Arc::new(HashMap::new()),
+            flow: None,
             globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
                 bytes: {
@@ -90,6 +104,7 @@ impl VM {
             functions: Arc::clone(&self.functions),
             fn_order: Arc::clone(&self.fn_order),
             structs: Arc::clone(&self.structs),
+            flow: None,
             globals: HashMap::new(),
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
@@ -164,10 +179,16 @@ impl VM {
             }
         }
 
-        // Execute function body
+        // Execute function body; a pending return ends it with its value.
         let mut last_val = Value::Void;
         for expr in &f.body {
             last_val = self.eval_expr(expr, &mut scope)?;
+            if let Some(flow) = self.flow.take() {
+                if let Flow::Return(v) = flow {
+                    last_val = v;
+                }
+                break;
+            }
         }
 
         // Evaluate Post-Condition Contracts (ens ...)
@@ -235,30 +256,38 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 res
             }
+            // Same order as the wasm lowering: start once; then each iteration
+            // evaluates end, exits if var > end, runs the body, evaluates step,
+            // and adds it to var (which the body may have set!).
             Expr::Loop { var, start, end, step, body, .. } => {
-                let s_val = match self.eval_expr(start, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop start must be Int".to_string()),
+                let as_i32 = |v: Value, what: &str| match v {
+                    Value::Int(i) => Ok(i as i32),
+                    _ => Err(format!("Loop {} must be Int", what)),
                 };
-                let e_val = match self.eval_expr(end, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop end must be Int".to_string()),
-                };
-                let st_val = match self.eval_expr(step, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop step must be Int".to_string()),
-                };
-
+                let s_val = as_i32(self.eval_expr(start, scope)?, "start")?;
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                let mut curr = s_val;
-                while curr <= e_val {
-                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                    scope.insert(var.clone(), Value::Int(curr as i64));
-                    for stmt in body {
-                        self.eval_expr(stmt, scope)?;
+                scope.insert(var.clone(), Value::Int(s_val as i64));
+                loop {
+                    let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
+                    let e_val = as_i32(self.eval_expr(end, scope)?, "end")?;
+                    if curr > e_val {
+                        break;
                     }
+                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
+                    self.eval_seq(body, scope)?;
                     scope.retain(|k, _| iter_keys.contains(k));
-                    curr = curr.wrapping_add(st_val);
+                    match self.flow {
+                        Some(Flow::Break) => {
+                            self.flow = None;
+                            break;
+                        }
+                        Some(Flow::Continue) => self.flow = None,
+                        Some(Flow::Return(_)) => break,
+                        None => {}
+                    }
+                    let st_val = as_i32(self.eval_expr(step, scope)?, "step")?;
+                    let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
+                    scope.insert(var.clone(), Value::Int(curr.wrapping_add(st_val) as i64));
                 }
                 scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
@@ -267,10 +296,17 @@ impl VM {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 while let Value::Bool(true) = self.eval_expr(cond, scope)? {
                     let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                    for stmt in body {
-                        self.eval_expr(stmt, scope)?;
-                    }
+                    self.eval_seq(body, scope)?;
                     scope.retain(|k, _| iter_keys.contains(k));
+                    match self.flow {
+                        Some(Flow::Break) => {
+                            self.flow = None;
+                            break;
+                        }
+                        Some(Flow::Continue) => self.flow = None,
+                        Some(Flow::Return(_)) => break,
+                        None => {}
+                    }
                 }
                 scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
@@ -283,6 +319,22 @@ impl VM {
                 self.invoke(func, evaluated_args)
             }
             Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
+            Expr::Return { val, .. } => {
+                let v = match val {
+                    Some(e) => self.eval_expr(e, scope)?,
+                    None => Value::Void,
+                };
+                self.flow = Some(Flow::Return(v));
+                Ok(Value::Void)
+            }
+            Expr::Break(_) => {
+                self.flow = Some(Flow::Break);
+                Ok(Value::Void)
+            }
+            Expr::Continue(_) => {
+                self.flow = Some(Flow::Continue);
+                Ok(Value::Void)
+            }
             Expr::Ref { name, .. } => match self.fn_order.iter().position(|n| n == name) {
                 Some(i) => Ok(Value::Int(i as i64)),
                 None => Err(format!("ref: unknown function '{}'", name)),
@@ -313,19 +365,11 @@ impl VM {
                 let res = match res_val {
                     Value::Ok(inner) => {
                         scope.insert(ok_var.clone(), *inner);
-                        let mut last = Value::Void;
-                        for stmt in ok_body {
-                            last = self.eval_expr(stmt, scope)?;
-                        }
-                        Ok(last)
+                        self.eval_seq(ok_body, scope)
                     }
                     Value::Err(inner) => {
                         scope.insert(err_var.clone(), *inner);
-                        let mut last = Value::Void;
-                        for stmt in err_body {
-                            last = self.eval_expr(stmt, scope)?;
-                        }
-                        Ok(last)
+                        self.eval_seq(err_body, scope)
                     }
                     other => Err(format!("Expected Result type in match_result, got {:?}", other)),
                 };
@@ -334,12 +378,9 @@ impl VM {
             }
             Expr::Block(exprs, _) => {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                let mut last = Value::Void;
-                for e in exprs {
-                    last = self.eval_expr(e, scope)?;
-                }
+                let last = self.eval_seq(exprs, scope);
                 scope.retain(|k, _| keys_before.contains(k));
-                Ok(last)
+                last
             }
             Expr::NewStruct { struct_name, .. } => {
                 let def = self
@@ -496,6 +537,18 @@ impl VM {
         mem.bytes[base + 4..end].copy_from_slice(bytes);
         mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
         Ok(base + 4)
+    }
+
+    /// Evaluates a statement sequence, stopping at a pending return/break/continue.
+    fn eval_seq(&mut self, exprs: &[Expr], scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+        let mut last = Value::Void;
+        for e in exprs {
+            last = self.eval_expr(e, scope)?;
+            if self.flow.is_some() {
+                break;
+            }
+        }
+        Ok(last)
     }
 
     /// The function a `(fn ...)` value refers to: its index into `fn_order`.

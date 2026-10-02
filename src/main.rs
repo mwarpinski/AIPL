@@ -210,7 +210,19 @@ fn describe_byte_divergence(rust: &[u8], selfh: &[u8]) -> String {
     )
 }
 
+/// The VM is a tree-walking interpreter that recurses once per nested AIPL
+/// call, so commands run on a thread with a large stack (reserved, not
+/// committed up front) rather than the default 8 MiB main stack.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| run().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "aipl: command thread panicked")?;
+    result.map_err(|e| e.into())
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {

@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 146 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 159 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -50,7 +50,8 @@ Expected AIPL suite output:
 | P9 self-hosted module assembly at byte parity | **Done 2026-10-01** except imports, which belong to P14 (see below). |
 | Typed pointers + struct namespacing | **Done 2026-10-01** (branch `features/pointers`, see below). Not a numbered audit task; done before P8b so the standard library is written against typed pointers. |
 | P10 function references | **Done 2026-10-01** (branch `features/p10`, see below). |
-| P11–P14 | Not started. |
+| P11 return/break/continue/cond | **Done 2026-10-01** (branch `features/p11`, see below). |
+| P12–P14 | Not started. |
 
 ## P8 verification (2026-10-01)
 
@@ -102,6 +103,16 @@ Not done (AIPL_SPEC.md 6.4 lists the details):
 - **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
 - Float literals outside the exact range (error 973) and exponent notation.
 
+## P11: return, break, continue, cond (2026-10-01)
+
+- **Forms** (AIPL_SPEC.md 7.10): `(return v)`/`(return)`, `(break)`, `(continue)` are void statements; `(cond (test body...) ... (else body...))` is parser sugar for nested `if`s with a required `else`. The checker rejects `break`/`continue` outside a loop body and `return` in contracts or with the wrong type; a body may end in `(return v)`.
+- **Lowering**: `return` instruction; `br` to the loop's block (break) or header (while continue); a `loop` body sits in an extra block so `continue` falls into the step. Both compilers track enclosing labels to compute branch depths and agree byte for byte (including raw `cond` in the self-hosted compiler).
+- **VM**: a pending-flow field (Break/Continue/Return) instead of threading a `ControlFlow` enum through every `eval_expr` call: statement sequences stop when it is set, loops consume Break/Continue, `invoke` consumes Return (so `ens` sees the returned value). Equivalent because the checker only allows these forms in statement positions.
+- **Divergence fixed**: the VM evaluated a `loop`'s end bound and step once and ignored `set!` of the loop variable; compiled wasm re-evaluates them each iteration. The VM now matches.
+- **Dogfooding**: every `done`/`found` flag loop in `compiler.aipl`, `codegen.aipl`, and `std/*` became a `while` condition, `break`, or `return`; 17 `if` chains of depth 3+ became `cond`; the P7-era `(set! x x)` no-op branches became `(block)`. Done with span-preserving rewrites, then confirmed by the parity tests and the self-compile fixpoint. `sym_eq` and the table lookups now stop at the first match.
+- **Also**: the checker rejects duplicate struct field names; the CLI and the self-host test helper run on large-stack threads (the tree-walking VM recurses per AIPL call).
+- Tests: `tests/test_control_flow.rs` (12), a raw-source parity test with `cond`.
+
 ## P10: function references (2026-10-01)
 
 - **`(ref f)`** has the strict type `(fn [params] -> ret)`; **`(call_ref (fn [...] -> r) g args...)`** names the signature it calls through (checked against `g`'s type), the way `arr.get` names its element type. References are not integers: no arithmetic, `eq`/`neq` only, no cast. They work as parameters, results, struct fields, and array elements (AIPL_SPEC.md 4.G).
@@ -150,7 +161,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P11 `return`/`break`/`continue`/`cond` (then simplify the `while` + flag loops in `aipl_src/std/` and the compilers), then P12–P14.
+3. P12 (versioning; spec or delete the binary AST), P13 (retire the ELF claims; `build-native` via wasm AOT), P14 (resolver in AIPL).
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)
