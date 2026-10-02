@@ -6,4 +6,6 @@ pub mod parser;
 pub mod printer;
 pub mod resolver;
 pub mod selfhost;
+pub mod sexpr;
+pub mod generics;
 pub mod vm;

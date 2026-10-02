@@ -247,7 +247,12 @@ impl Parser {
     }
 
     pub fn parse(input: &str) -> Result<Module, String> {
-        let tokens = Self::tokenize(input)?;
+        Self::parse_tokens(Self::tokenize(input)?)
+    }
+
+    /// Parses an already-tokenized `(module ...)`. The resolver uses it to
+    /// parse each item of a flattened program with its original positions.
+    pub fn parse_tokens(tokens: Vec<Token>) -> Result<Module, String> {
         let mut parser = Parser {
             tokens,
             pos: 0,
