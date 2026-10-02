@@ -59,7 +59,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (175 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM).
+Run the full test suite with `cargo test` (196 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM).
 
 ## Repository layout
 
