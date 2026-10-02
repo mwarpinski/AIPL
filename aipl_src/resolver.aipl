@@ -20,6 +20,7 @@
   (import buf)
   (import strmap)
   (import os)
+  (import generics)
 
   ;; A parsed file: its text and its (module ...) tree.
   (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node)])
@@ -27,12 +28,16 @@
   ;; One module being emitted. prefix is the import name; imported is false
   ;; for the entry module, whose names stay bare. aliases maps an alias to the
   ;; address of the canonical module name (ptr str.Bytes).
+  ;; templates holds the module's own generic templates; known, shared with
+  ;; the State, the canonical names of every resolved module's templates.
   (struct Mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool
-               fns:(ptr strmap.StrMap) structs:(ptr strmap.StrMap) aliases:(ptr strmap.StrMap)])
+               fns:(ptr strmap.StrMap) structs:(ptr strmap.StrMap) aliases:(ptr strmap.StrMap)
+               templates:(ptr strmap.StrMap) known:(ptr strmap.StrMap)])
 
   (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
                  done:(ptr strmap.StrMap) active:(ptr strmap.StrMap)
-                 structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)])
+                 structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)
+                 known:(ptr strmap.StrMap)])
 
   ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
   (struct Out [ok:i32 addr:i32 len:i32])
@@ -162,17 +167,42 @@
       ((eq k 5) (call buf.push_str out "->"))
       (else (block))))
 
-  ;; Children separated by spaces, except none around ':' (x:i32, ok:T).
+  ;; The canonical name of a group head that names a generic template: one
+  ;; of this module's own, or another module's through an alias or by its
+  ;; canonical name (resolver.rs template_ref). len -1 if h is not a template.
+  (fn template_ref [m:(ptr Mod) h:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (if (call strmap.has (get m Mod.templates) h)
+        (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h))
+        (block))
+    (let dot:i32 (call str.find_byte h 46))
+    (if (and (gte dot 0) (call strmap.has (get m Mod.aliases) (call slice h 0 dot)))
+        (block
+          (let c:(ptr str.Bytes) (call concat (ptr.cast str.Bytes (call strmap.get (get m Mod.aliases) (call slice h 0 dot) 0))
+                                              (call slice h dot (- (get h str.Bytes.len) dot))))
+          (if (call strmap.has (get m Mod.known) c) (return c) (block)))
+        (block))
+    (if (call strmap.has (get m Mod.known) h) h (call str.bytes 0 -1)))
+
+  ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
+  ;; group whose head names a generic template prints its canonical name,
+  ;; and its type arguments are not renamed by position.
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) 21))
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
+    (let tmpl:(ptr str.Bytes) (call str.bytes 0 -1))
+    (if (and (not square) (call is_symbol c))
+        (set! tmpl (call template_ref m (call text (get m Mod.src) c)))
+        (block))
     (let i:i32 0)
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) 4))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
-      (call emit m c (call child_role m g i) out)
+      (cond
+        ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call buf.push_bytes out tmpl))
+        ((gte (get tmpl str.Bytes.len) 0) (call emit m c 0 out))
+        (else (call emit m c (call child_role m g i) out)))
       (set! prev_colon colon)
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
@@ -184,7 +214,7 @@
   (fn first_item [src:(ptr Src)] -> (ptr compiler.Node)
     (call nth (get src Src.root) 2))
 
-  (fn make_mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool] -> (ptr Mod)
+  (fn make_mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool known:(ptr strmap.StrMap)] -> (ptr Mod)
     (let m:(ptr Mod) (new Mod))
     (put m Mod.src src)
     (put m Mod.prefix prefix)
@@ -192,10 +222,22 @@
     (put m Mod.fns (call strmap.make 64))
     (put m Mod.structs (call strmap.make 8))
     (put m Mod.aliases (call strmap.make 8))
+    (put m Mod.templates (call strmap.make 8))
+    (put m Mod.known known)
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
       (let name:(ptr compiler.Node) (call nth item 1))
+      ;; a template (fn (NAME T...) ...): its name is the header's head
+      (if (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) 20))
+          (block
+            (let tname:(ptr compiler.Node) (call first_child name))
+            (if (and (call is_symbol tname) (or (call eq_lit h "fn") (call eq_lit h "struct")))
+                (block
+                  (call strmap.put (get m Mod.templates) (call text src tname) 1)
+                  (set! name tname))
+                (block)))
+          (block))
       (cond
         ((and (call eq_lit h "fn") (call is_symbol name))
          (call strmap.put (get m Mod.fns) (call text src name) 1))
@@ -227,7 +269,15 @@
          (call emit m item 0 (get st State.fns_out))
          (call buf.push_byte (get st State.fns_out) 10))
         (else (block)))
-      (set! item (get item compiler.Node.next))))
+      (set! item (get item compiler.Node.next)))
+    ;; record this module's templates under their canonical names
+    (let t:(ptr strmap.StrMap) (get m Mod.templates))
+    (loop i 0 (- (call strmap.capacity t) 1) 1
+      (if (call strmap.slot_used t i)
+          (call strmap.put (get st State.known)
+                (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call strmap.slot_key t i)) (call strmap.slot_key t i))
+                1)
+          (block))))
 
   (fn fail [st:(ptr State) msg:str name:(ptr str.Bytes)] -> bool
     (call buf.push_str (get st State.err) msg)
@@ -276,7 +326,7 @@
     (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " name)) (block))
     (call strmap.put (get st State.active) name 1)
     (if (call resolve_imports st src (call dirname path)) (block) (return false))
-    (call emit_module st (call make_mod src name true))
+    (call emit_module st (call make_mod src name true (get st State.known)))
     (call strmap.remove (get st State.active) name)
     (call strmap.put (get st State.done) name 1)
     true)
@@ -302,17 +352,20 @@
     (put st State.structs_out (call buf.make 1024))
     (put st State.fns_out (call buf.make 65536))
     (put st State.err err)
+    (put st State.known (call strmap.make 16))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
     (if (call resolve_imports st src (call dirname entry)) (block) (return false))
-    (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false))
+    (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))
     (call emit_module st entry_mod)
-    (call buf.push_str out "(module ")
-    (call buf.push_bytes out (call text src (call nth (get src Src.root) 1)))
-    (call buf.push_byte out 10)
-    (call buf.push_bytes out (call buf.bytes (get st State.structs_out)))
-    (call buf.push_bytes out (call buf.bytes (get st State.fns_out)))
-    (call buf.push_byte out 41)
-    true)
+    (let flat:(ptr buf.Buf) (call buf.make 65536))
+    (call buf.push_str flat "(module ")
+    (call buf.push_bytes flat (call text src (call nth (get src Src.root) 1)))
+    (call buf.push_byte flat 10)
+    (call buf.push_bytes flat (call buf.bytes (get st State.structs_out)))
+    (call buf.push_bytes flat (call buf.bytes (get st State.fns_out)))
+    (call buf.push_byte flat 41)
+    ;; expand generic templates into concrete items (generics.aipl)
+    (call generics.expand (call buf.bytes flat) out err))
 
   ;; ===== Host interface =====
 

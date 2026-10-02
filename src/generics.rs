@@ -23,9 +23,12 @@ use crate::resolver::{item_name, FlatProgram, Item};
 use crate::sexpr::Sx;
 use std::collections::{HashMap, HashSet};
 
-/// More distinct instantiations than this means unbounded recursion, such
-/// as `(fn (f T) ... (call (f (ptr T)) ...))`.
+/// More distinct instantiations than this, or an instance name longer than
+/// MAX_NAME, means unbounded recursion such as
+/// `(fn (f T) ... (call (f (ptr T)) ...))`, which nests deeper each time.
 const MAX_INSTANCES: usize = 4096;
+const MAX_NAME: usize = 1024;
+const RUNAWAY: &str = "a generic probably instantiates itself with ever larger types";
 
 struct Template {
     params: Vec<String>,
@@ -70,7 +73,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         work[i].0.sx = sx;
         work.extend(created);
         if made.len() > MAX_INSTANCES {
-            return Err(format!("more than {} generic instances: a generic probably instantiates itself with ever larger types", MAX_INSTANCES));
+            return Err(format!("more than {} generic instances: {}", MAX_INSTANCES, RUNAWAY));
         }
         i += 1;
     }
@@ -152,6 +155,9 @@ fn rewrite(
         ));
     }
     let name = format!("{}<{}>", h, args.iter().map(type_name).collect::<Result<Vec<_>, _>>()?.join(","));
+    if name.len() > MAX_NAME {
+        return Err(at(file, sx, &format!("generic instance name longer than {} characters: {}", MAX_NAME, RUNAWAY)));
+    }
     if made.insert(name.clone()) {
         let mut inst = t.item.sx.clone();
         let subst: HashMap<&str, &Sx> = t.params.iter().map(|p| p.as_str()).zip(args.iter()).collect();
