@@ -10,11 +10,9 @@ What AIPL optimises for is that a program has one obvious spelling and that mist
 
 ---
 
-## 1. Syntax Architecture: Dual Representation
+## 1. Syntax: One Canonical Text Form
 
-AIPL has two canonical forms:
-1. **S-Expression Canonical Text Representation (`.aipl`)**: Context-free, parenthesis-delimited AST. Eliminates human syntactic ambiguities (no operator precedence rules, no indentation semantics, no semicolon requirements).
-2. **Compact Binary AST Payload (`.baipl`)**: 1-byte opcode encoded MessagePack binary representation used for instant zero-parse serialization between AI swarms over HTTP, gRPC, or IPC.
+AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression syntax with no operator precedence, no indentation rules, and no statement separators. It is also the interchange format between agents. `src/printer.rs` prints any resolved program back as canonical flat text, which both compilers accept. (A MessagePack "binary AST" (`.baipl`) existed until P12; it was a dump of the compiler's internal Rust data structures with no stable format, nothing used it, and it was removed.)
 
 ---
 
@@ -281,8 +279,6 @@ source.aipl
 | `aipl compile FILE [-o out.wasm]` | 1, 2, 3, 4b | `[AIPL Compiler] Successfully compiled 'FILE' -> 'out.wasm' (N bytes)` |
 | `aipl compile --self FILE [-o out.wasm]` | 1, 2, 3, 4b, then `codegen.compile_module` in the VM | compiles with both backends and fails unless the bytes are identical (section 6.4); run from the repo root |
 | `aipl test FILE [--func run_all]` | 1, 2, 3, 4a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
-| `aipl binary-encode FILE [-o out.baipl]` | 2 only | MessagePack encoding of the AST |
-| `aipl binary-decode FILE` | none | lists function names in a `.baipl` |
 | `aipl serve [--addr 127.0.0.1:8080]` | on request | agent RPC server |
 
 `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
@@ -808,7 +804,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print not supported in wasm backend"));
 ```
 
-Files today (159 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond in both backends, checker rejections).
+Files today (158 tests): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond in both backends, checker rejections).
 
 ### 10.3 Opcode conformance contract
 

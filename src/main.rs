@@ -1,8 +1,6 @@
 use aipl_core::agent_api::server::AgentServer;
 use aipl_core::checker::TypeChecker;
-use aipl_core::compiler::binary_ast::BinaryAstCompiler;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use clap::{Parser as ClapParser, Subcommand};
@@ -46,14 +44,6 @@ enum Commands {
         #[arg(short, long, default_value = "run_all")]
         func: String,
     },
-    /// Encode AIPL text S-expression into a compact Binary AST payload (.baipl)
-    BinaryEncode {
-        file: String,
-        #[arg(short, long, default_value = "out.baipl")]
-        output: String,
-    },
-    /// Decode a compact Binary AST payload (.baipl) back to S-expression text
-    BinaryDecode { file: String },
     /// Launch the Agent Swarm RPC server for inter-agent remote execution
     Serve {
         #[arg(short, long, default_value = "127.0.0.1:8080")]
@@ -298,21 +288,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("\n[AIPL Test] Error: {}", e);
                     std::process::exit(1);
                 }
-            }
-        }
-        Commands::BinaryEncode { file, output } => {
-            let src = fs::read_to_string(&file)?;
-            let module = Parser::parse(&src)?;
-            let bytes = BinaryAstCompiler::encode(&module)?;
-            fs::write(&output, bytes)?;
-            println!("[AIPL Binary Encoder] Encoded '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
-        }
-        Commands::BinaryDecode { file } => {
-            let bytes = fs::read(&file)?;
-            let module = BinaryAstCompiler::decode(&bytes)?;
-            println!("[AIPL Binary Decoder] Decoded module '{}' with {} functions:", module.name, module.functions.len());
-            for f in &module.functions {
-                println!("  - (fn {} ...)", f.name);
             }
         }
         Commands::Serve { addr } => {

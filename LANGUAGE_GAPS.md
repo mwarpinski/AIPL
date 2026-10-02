@@ -10,8 +10,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **Import resolution is Rust (P14).** `src/resolver.rs` is bootstrap scaffolding. WASI file I/O now exists, so nothing blocks rewriting it in AIPL except P9 finishing first.
 - **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.
-- **The binary AST (`.baipl`) is Rust's serde layout, unversioned (P12).** Reordering an enum in `src/ast.rs` breaks every encoded file.
-- **No language or ABI versioning (P12).**
+- **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
 - **VM runtime errors have no source position.** A contract failure prints the contract as a Rust `Debug` dump, not source text.
 
 ## 2. Language
@@ -54,7 +53,7 @@ Still true from the original analysis, updated for what has landed:
 
 1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
 2. **Duplication is still easy.** `wasm_emitter.aipl` (now in `attic/`) was a live example. Imports make reuse possible, not the default; discoverability and lint tooling are missing.
-3. **No versioning or dependency resolution.** Imports resolve by bare filename next to the importing file (P12 adds a language version; nothing handles package versions).
+3. **No versioning or dependency resolution.** Imports resolve by filename through the search path (AIPL_SPEC.md 11); there is no language version (deferred) and nothing handles package versions.
 4. **No privacy.** Every helper is public.
 
 ## 8. On the longer-term ambition (browser / PDF viewer in pure AIPL)

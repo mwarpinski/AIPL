@@ -13,7 +13,7 @@ Last updated 2026-10-01, on branch `features/p8`.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 159 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 158 tests; test_selfhost takes ~90 s (codegen compiles itself)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -51,7 +51,8 @@ Expected AIPL suite output:
 | Typed pointers + struct namespacing | **Done 2026-10-01** (branch `features/pointers`, see below). Not a numbered audit task; done before P8b so the standard library is written against typed pointers. |
 | P10 function references | **Done 2026-10-01** (branch `features/p10`, see below). |
 | P11 return/break/continue/cond | **Done 2026-10-01** (branch `features/p11`, see below). |
-| P12–P14 | Not started. |
+| P12 versioning + binary AST | **Binary AST deleted; versioning deferred** (2026-10-01, see the audit's P12 note). |
+| P13–P14 | Not started. |
 
 ## P8 verification (2026-10-01)
 
@@ -161,7 +162,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P12 (versioning; spec or delete the binary AST), P13 (retire the ELF claims; `build-native` via wasm AOT), P14 (resolver in AIPL).
+3. P13 (retire the ELF claims; `build-native` via wasm AOT), P14 (resolver in AIPL). Language versioning is deferred until packages exist.
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)

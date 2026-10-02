@@ -1,4 +1,3 @@
-pub mod binary_ast;
 pub mod wasm;
 
 use crate::ast::Module;

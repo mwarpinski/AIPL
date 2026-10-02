@@ -23,7 +23,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | B11 no positions | Fixed (P4) |
 | B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
 | B13 interpreter clones the body on every call | Open (codegen.aipl compiling itself takes about 80 s in the VM) |
-| B14 binary AST is serde layout | Open (P12) |
+| B14 binary AST is serde layout | Fixed (P12: deleted) |
 | B15 threads by name | Fixed (P10: `thread.spawn` takes a function reference) |
 | U1 no aggregate types | Fixed (P8) |
 | U2 fixed-address global state | Fixed (P5) |
@@ -32,7 +32,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U5 control flow too poor | Fixed (P11) |
 | U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
 | U7 memory has no growth or bounds contract | Partly: `mem.grow` exists and bounds are enforced in both backends; `mem.free` is still a no-op |
-| U8 nothing versioned | Open (P12) |
+| U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
 ---
 
@@ -342,11 +342,16 @@ Repo: AIPL. Add four control-flow forms in parser.rs, checker.rs, vm.rs, wasm.rs
 | All tests pass + differential cases: early return in loop, break in nested if, continue in loop | Done | `tests/test_control_flow.rs`, plus self-hosted parity on raw `cond` |
 | Found on the way | Fixed | VM `loop` evaluated end/step once and ignored `set!` of the variable (wasm re-evaluates); duplicate struct fields were accepted |
 
-### P12 — Version everything and spec the binary AST or delete it
+### P12 — Version everything and spec the binary AST or delete it [BINARY AST DELETED; VERSIONING DEFERRED — 2026-10-01]
 
 ```
 Repo: AIPL. Add a language version: `(module name :version 1)` (parser accepts optional `:version N` after the name; missing = error "module must declare :version"). Store it in Module and reject any version the toolchain does not support. Emit a wasm custom section "aipl.version" containing the version and the toolchain git SHA. For src/compiler/binary_ast.rs: either (a) replace rmp_serde with a hand-written tag-based encoder/decoder with a 4-byte magic "BAPL", a u16 format version, and explicit numeric tags per Expr/OpCode variant defined in a table in ast.rs (so enum reordering cannot break files), with a roundtrip test over every example file; or (b) delete binary_ast.rs, the binary-encode/decode CLI subcommands, and the `.baipl` mentions in README/AIPL_SPEC. Choose (b) unless PROMPT_GUIDE_FOR_AIS.md gives a concrete token-savings measurement justifying (a); if you choose (a), include that measurement in the PR description.
 ```
+
+**Status 2026-10-01 (branch `features/p12`).**
+
+- **Binary AST: option (b), deleted.** `src/compiler/binary_ast.rs`, the `binary-encode`/`binary-decode` subcommands, the `rmp-serde` dependency, its round-trip test, and the benchmark's payload line are gone, and the spec's "dual representation" section is rewritten. The format was the serde layout of `src/ast.rs` (any enum reorder broke every file), no measurement of token savings existed (the prompt's condition for keeping it), and nothing depended on it. Text is the interchange format; `src/printer.rs` gives a canonical flat form of any resolved program.
+- **Language versioning: deferred by decision.** A mandatory `:version` would touch every `.aipl` file and hundreds of inline test programs for a language with one implementation, one repository, and no external users; the git SHA in a wasm custom section would also break byte parity with the self-hosted compiler (which cannot know the SHA) and make builds non-reproducible. Revisit when there are packages from different authors or a second toolchain. A cheap step then: an optional `:version N` (missing = current), unknown versions rejected, no SHA.
 
 ### P13 — Retire the toy ELF backend; state the native strategy
 
