@@ -23,8 +23,9 @@ RULES:
 11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
 12. Code meant for `aipl compile` must not use (+ str str); sys.print takes str only. (sys.time) and (sys.monotonic) are i64 nanoseconds; (sys.random ptr len) fills bytes. Threads: (thread.spawn (ref worker) arg) with worker of type (fn [i32] -> i32), (thread.join h) gives its result; atomic.add / atomic.cas / atomic.lock / atomic.unlock on 4-byte words from mem.alloc. Allocation is thread-safe.
 13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures.
-14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file, and io.read_path / io.write_path for a path held as (ptr str.Bytes); (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections: (import vec) list of i32 (vec.make, vec.push, vec.get, vec.len, vec.sort, vec.sort_by with a (fn [i32 i32] -> i32) comparator); (import map) i32->i32 hash map (map.make, map.put, map.get m k default, map.has, map.remove); (import strmap) the same keyed by (ptr str.Bytes); (import buf) string builder (buf.push_str, buf.push_int, buf.bytes). Containers hold i32: store struct pointers with (ptr.addr p) and read back with (ptr.cast S x). str.parse_int parses decimal text. (import os) gives os.arg_count, os.arg i (0 is the program; len -1 past the end), os.env "NAME" (len -1 if unset), and os.random_i32. io.read_stdin reads all of stdin. Allocation grows memory by itself.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file, and io.read_path / io.write_path for a path held as (ptr str.Bytes); (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections are generic (rule 16): (import vec) gives (vec.Vec T) with (call (vec.make T) cap), (call (vec.push T) v x), (call (vec.at T) v i), vec.len, vec.pop, vec.set, vec.sort_by with a (fn [T T] -> i32) comparator; (import map) gives (map.Map V) keyed by i32 and (import strmap) gives (strmap.StrMap V) keyed by (ptr str.Bytes), both with make, set m k v, get_or m k default, has, remove, count; (import buf) string builder (buf.push_str, buf.push_int, buf.bytes). str.parse_int parses decimal text. (import os) gives os.arg_count, os.arg i (0 is the program; len -1 past the end), os.env "NAME" (len -1 if unset), and os.random_i32. io.read_stdin reads all of stdin. Allocation grows memory by itself.
 15. (and a b) and (or a b) short-circuit and take exactly two operands; nest for more: (and a (and b c)). (and (lt i n) (eq (arr.get i32 a i) x)) is a safe bounds guard.
+16. Generics: (struct (Box T) [value:T]) and (fn (make T) [v:T] -> (ptr (Box T)) ...) are templates. Every use names the types: (ptr (Box i32)), (new (Box i32)), (get b (Box i32) value), (put b (Box i32) value 5), (call (make i32) 5), (ref (make i32)). Type parameters start with an uppercase letter; generic names may not be built-in forms like get or put.
 ```
 
 ---
@@ -147,6 +148,36 @@ Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && wasmt
     (+ (* 10 (call str.count_words b)) (call str.count_lines b))))
 ```
 Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.txt")` gives the same `(ptr str.Bytes)` for a file (see `examples/word_count.aipl`).
+
+### 7. Generics: a typed list of structs
+```lisp
+(module generics_demo
+  (import vec)
+  (struct Point [x:i32 y:i32])
+  (struct (Pair A B) [first:A second:B])
+
+  (fn (swap A B) [p:(ptr (Pair A B))] -> (ptr (Pair B A))
+    (let q:(ptr (Pair B A)) (new (Pair B A)))
+    (put q (Pair B A) first (get p (Pair A B) second))
+    (put q (Pair B A) second (get p (Pair A B) first))
+    q)
+
+  (fn by_x [a:(ptr Point) b:(ptr Point)] -> i32 (- (get a Point.x) (get b Point.x)))
+
+  (fn main [] -> i32
+    (let pts:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) 0))
+    (loop i 1 3 1
+      (let p:(ptr Point) (new Point))
+      (put p Point.x (* i 10))
+      (call (vec.push (ptr Point)) pts p))
+    (call (vec.sort_by (ptr Point)) pts (ref by_x))
+    (let pair:(ptr (Pair i32 bool)) (new (Pair i32 bool)))
+    (put pair (Pair i32 bool) first 7)
+    (put pair (Pair i32 bool) second true)
+    (let flipped:(ptr (Pair bool i32)) (call (swap i32 bool) pair))
+    (+ (get (call (vec.at (ptr Point)) pts 0) Point.x) (get flipped (Pair bool i32) second))))
+```
+`main` returns `17`: the smallest `x` is `10`, and the swapped pair's `second` is `7`. Every instantiation (`vec.Vec<ptr<Point>>`, `Pair<i32,bool>`, `swap<i32,bool>`, ...) is an ordinary concrete struct or function after expansion.
 
 ---
 

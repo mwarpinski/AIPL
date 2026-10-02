@@ -34,7 +34,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically up to 1024 pages and bounds are enforced in both backends. Still open: `mem.free` is a no-op (N6) |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
-The order of upcoming work is in PROGRESS.md ("Next steps"), not section 4 below, which is the completed P1–P14 history. **Still open, in order of risk:** N2 (no generics), N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
+The order of upcoming work is in PROGRESS.md ("Next steps"), not section 4 below, which is the completed P1–P14 history. **Still open, in order of risk:** N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
 
 ---
 
@@ -146,7 +146,7 @@ Found during P8–P14 and the 2026-10-01 re-check.
 
 **N1. `and`/`or` did not short-circuit. [Fixed 2026-10-02]** They now short-circuit in the VM, wasm.rs, and codegen.aipl (lowered to `if`), take exactly two operands (a third was silently ignored), and a jump inside any operand stops the VM from evaluating later operands, as wasm does (that VM divergence surfaced while testing this). Before: It has caused two real bugs in the self-hosted toolchain: `codegen.is_else_clause` read source text at a node address because its kind check did not guard the lookup (harmless garbage until memory grew, then a trap), and the resolver's directory scan read one byte past a string. The language exists to remove exactly this kind of trap for code generators, and every mainstream language short-circuits, so LLMs write the guard pattern by default. Making `and`/`or` short-circuit is cheap now (lower to `if` in the VM, wasm.rs, and codegen.aipl; differential and parity tests cover it) and gets more expensive as code depends on the current behaviour. Until then, LANGUAGE_GAPS.md, the spec's pitfalls table, and the prompt guide warn about it.
 
-**N2. No generics. [Open; next task]** `vec`, `map`, and `strmap` hold `i32`, so a list of structs is `ptr.addr` going in and an unchecked `ptr.cast` at every read (`examples/word_freq.aipl` shows the pattern). This undoes the strict pointer typing exactly where data structures are built.
+**N2. No generics. [Fixed 2026-10-02: explicit templates expanded before type checking, AIPL_SPEC.md 4.H; std collections are generic]** `vec`, `map`, and `strmap` hold `i32`, so a list of structs is `ptr.addr` going in and an unchecked `ptr.cast` at every read (`examples/word_freq.aipl` shows the pattern). This undoes the strict pointer typing exactly where data structures are built.
 
 **N3. The checker exists only in Rust. [Open]** The self-hosted toolchain compiles whatever it is given; an ill-typed program can miscompile instead of failing. It is also why `src/resolver.rs` stays alongside `resolver.aipl`: the Rust checker consumes the Rust resolver's `Module`.
 
