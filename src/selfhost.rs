@@ -6,18 +6,10 @@ use crate::resolver::Resolver;
 use crate::vm::{Value, VM};
 use std::path::Path;
 
-/// The directories the AIPL resolver searches after the importer's and the
-/// entry's: the standard library, then each `AIPL_PATH` entry, colon-separated
-/// (the same order as `Resolver`; AIPL_SPEC.md 11).
-pub fn library_dirs() -> String {
-    let mut dirs = format!("{}/aipl_src/std/", env!("CARGO_MANIFEST_DIR"));
-    if let Ok(path) = std::env::var("AIPL_PATH") {
-        for d in path.split(':').filter(|d| !d.is_empty()) {
-            dirs.push(':');
-            dirs.push_str(d);
-        }
-    }
-    dirs
+/// The standard library directory, as `Resolver` uses it. The AIPL resolver
+/// reads AIPL_PATH itself (the VM sees the process environment).
+pub fn std_dir() -> String {
+    format!("{}/aipl_src/std/", env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Resolves the program whose entry file is `path` with `resolver.resolve_file`
@@ -48,7 +40,7 @@ fn resolve_on_this_thread(path: &str) -> Result<String, String> {
         vm.write_bytes(addr as usize, s.as_bytes());
         Ok(addr)
     };
-    let dirs = library_dirs();
+    let dirs = std_dir();
     let p = put(&mut vm, path)?;
     let d = put(&mut vm, &dirs)?;
     let args = [p, path.len() as i32, d, dirs.len() as i32].map(|v| Value::Int(v as i64)).to_vec();

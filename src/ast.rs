@@ -83,6 +83,18 @@ pub enum OpCode {
     FsWrite,
     FsClose,
     FsDelete,
+    /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
+    /// argument count and the total bytes of the NUL-terminated arguments;
+    /// returns 0, or -1 on failure. std/os wraps the four args/env ops.
+    ArgsSizes,
+    /// `(args.get argv_ptr buf_ptr)`: WASI `args_get`. Writes one u32 pointer
+    /// per argument at argv_ptr and the NUL-terminated arguments at buf_ptr.
+    ArgsGet,
+    /// `(env.sizes count_ptr size_ptr)`: WASI `environ_sizes_get`, as args.sizes
+    /// for the `KEY=VALUE` environment entries.
+    EnvSizes,
+    /// `(env.get env_ptr buf_ptr)`: WASI `environ_get`, as args.get.
+    EnvGet,
     ThreadSpawn,
     ThreadJoin,
     /// `(i64.extend_s x)`: i32 -> i64, sign-extending (wasm `i64.extend_i32_s`).

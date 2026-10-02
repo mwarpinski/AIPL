@@ -187,3 +187,66 @@ fn wasm_toolchain_compiles_itself() {
         wasm_driver::Outcome::CompileError(c) => panic!("compile error {c}"),
     }
 }
+
+/// Runs the compiled driver as a WASI command (`_start`) with `args` and `env`
+/// and the repository root preopened as "."; returns the exit status.
+fn run_driver_command(driver: &[u8], args: &[&str], env: &[(&str, &str)]) -> i32 {
+    use wasmtime::{Engine, Linker, Module as WasmModule, Store};
+    use wasmtime_wasi::p1::WasiP1Ctx;
+    use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, driver).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut b = WasiCtxBuilder::new();
+    b.inherit_stdout().inherit_stderr().args(args);
+    for (k, v) in env {
+        b.env(k, v);
+    }
+    b.preopened_dir(root(), ".", FsPerms::ReadWrite).unwrap();
+    let mut store = Store::new(&engine, b.build_p1());
+    let inst = linker.instantiate(&mut store, &module).unwrap();
+    let start = inst.get_typed_func::<(), ()>(&mut store, "_start").unwrap();
+    match start.call(&mut store, ()) {
+        Ok(()) => 0,
+        Err(e) => e.downcast::<wasmtime_wasi::I32Exit>().expect("exit, not a trap").0,
+    }
+}
+
+/// The driver as a command: `driver ENTRY OUT` writes the module, finds a
+/// library through AIPL_PATH, and reports usage and resolve errors with
+/// nonzero exit codes.
+#[test]
+fn wasm_driver_is_a_wasi_command() {
+    let driver = driver_wasm();
+    let work = root().join("target/p14_command");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(work.join("lib")).unwrap();
+    std::fs::create_dir_all(work.join("app")).unwrap();
+    std::fs::write(work.join("lib/extra.aipl"), "(module extra (fn seven [] -> i32 7))").unwrap();
+    std::fs::write(work.join("app/main.aipl"), "(module app (import extra) (import str)\n  (fn main [] -> i32 (+ (call extra.seven) (get (call str.from_str \"abc\") str.Bytes.len))))").unwrap();
+
+    // word_count, with the standard library at its default location
+    let status = run_driver_command(&driver, &["aiplc", "examples/word_count.aipl", "target/p14_command/wc.wasm"], &[]);
+    assert_eq!(status, 0);
+    let written = std::fs::read(work.join("wc.wasm")).unwrap();
+    assert!(written == rust_bytes(&root().join("examples/word_count.aipl")), "command output differs from Rust");
+
+    // a library found only through AIPL_PATH; the result runs
+    let env = [("AIPL_PATH", "target/p14_command/lib")];
+    let status = run_driver_command(&driver, &["aiplc", "target/p14_command/app/main.aipl", "target/p14_command/app.wasm"], &env);
+    assert_eq!(status, 0);
+    let engine = wasmtime::Engine::default();
+    let m = wasmtime::Module::new(&engine, std::fs::read(work.join("app.wasm")).unwrap()).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let inst = wasmtime::Instance::new(&mut store, &m, &[]).unwrap();
+    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    assert_eq!(main.call(&mut store, ()).unwrap(), 10);
+
+    // without AIPL_PATH the import is not found; bad usage is status 2
+    let status = run_driver_command(&driver, &["aiplc", "target/p14_command/app/main.aipl", "target/p14_command/app2.wasm"], &[]);
+    assert_eq!(status, 1);
+    assert!(!work.join("app2.wasm").exists());
+    assert_eq!(run_driver_command(&driver, &["aiplc"], &[]), 2);
+    std::fs::remove_dir_all(&work).unwrap();
+}

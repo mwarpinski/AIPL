@@ -26,6 +26,7 @@
   (import buf)
   (import thread_sync)
   (import resolver)
+  (import os)
 
   ;; Prints a [PASS]/[FAIL] line for one module's test group and returns
   ;; 0 (contributes no failures) or 1 (contributes one failure) for the
@@ -47,6 +48,7 @@
     (set! failures (+ failures (call report "std/str: byte slices + parse_int (7 tests)" (call str.run_str_tests) 7)))
     (set! failures (+ failures (call report "std/fmt: number formatting (6 tests)" (call fmt.run_fmt_tests) 6)))
     (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
+    (set! failures (+ failures (call report "std/os: arguments + environment (2 tests)" (call os.run_os_tests) 2)))
     (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
     (set! failures (+ failures (call report "std/vec: growable list + stable sort (5 tests)" (call vec.run_vec_tests) 5)))
     (set! failures (+ failures (call report "std/map: i32 hash map (4 tests)" (call map.run_map_tests) 4)))

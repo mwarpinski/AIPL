@@ -168,7 +168,8 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 - **`aipl_src/resolver.aipl`** reproduces `src/resolver.rs`: the same search order (importer's directory, entry's directory, then the library directories the host passes: standard library, then `AIPL_PATH`), depth-first resolution, one copy per module, cycle errors, `m.name` renaming of functions and structs, alias rewriting, struct-qualified field references. It emits flat source text, which is what `codegen.compile_module` takes. `std/io` gained `read_path`/`write_path` for paths built at run time.
 - **`tests/test_resolver_aipl.rs`** compiles the AIPL resolver's output and the Rust resolver's module and requires identical bytes for word_count, every std module, codegen, the resolver, and the AIPL test suite, plus a diamond with aliases and struct names, a cycle, and a missing module.
 - **`aipl compile --self`** is now self-hosted end to end: the AIPL resolver and AIPL codegen run in the VM (via `aipl_core::selfhost`) and must match the Rust toolchain byte for byte.
-- **`aipl_src/driver.aipl`** chains the two. Compiled to wasm and run under wasmtime with only WASI, it compiles word_count to the Rust toolchain's bytes, and it compiles its own sources (driver, resolver, codegen, compiler, std: about 216 KB) back to exactly itself in about half a second. That is the whole toolchain at a fixpoint with no Rust in the second compile.
+- **Command line and environment** (added to P14): four ops mirroring WASI (`args.sizes`, `args.get`, `env.sizes`, `env.get`) in the VM, the wasm backend, and codegen.aipl at byte parity, wrapped by `std/os` (`arg_count`, `arg`, `env`). `aipl eval FILE -- ARGS` passes a command line to the VM. The resolver reads `AIPL_PATH` itself. codegen.aipl's WASI import table moved from runtime cells 36–56 (six slots) to an allocated ten-entry table. WASI needs 4-aligned out-parameters, so `std/os` aligns its buffers and the VM rejects misaligned ones as wasmtime does.
+- **`aipl_src/driver.aipl`** chains the two, and has `main`/`_start`, so compiled to wasm it is a WASI command: `wasmtime run --dir . aiplc.wasm IN.aipl OUT.wasm` (tested through `_start`, with a library found via `AIPL_PATH`). Compiled to wasm and run under wasmtime with only WASI, it compiles word_count to the Rust toolchain's bytes, and it compiles its own sources (driver, resolver, codegen, compiler, std: about 216 KB) back to exactly itself in about half a second. That is the whole toolchain at a fixpoint with no Rust in the second compile.
 
 Found and fixed on the way:
 - **String literals were capped at 512 bytes per program** (a fixed area at 512–1023), which the resolver alone exceeded. Literals now start at 1024 and the heap starts after them (8-aligned) in the VM, the wasm backend, and codegen.aipl, sharing one layout function (`wasm::string_layout`). The VM used to copy each literal onto the heap at every use; it now uses the interned address, as wasm does. Literals are read-only in both backends: the store guard covers them.
@@ -180,8 +181,7 @@ Found and fixed on the way:
 
 1. Generics, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`.
 2. The checker in AIPL, after which `src/resolver.rs` and the Rust checker can retire and the Rust side shrinks to the VM, the wasm backend as an oracle, and primitives.
-3. A way for programs to read their arguments (WASI `args_get`), so the wasm driver can be a command instead of a library a host calls.
-4. Language versioning, once packages exist.
+3. Language versioning, once packages exist.
 
 ## Completed work log (condensed)
 

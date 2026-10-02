@@ -574,6 +574,19 @@ impl TypeChecker {
                     }
                     Ok(Type::I32)
                 }
+                // args.*/env.* take two i32 addresses the host writes through.
+                OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: {:?} requires 2 arguments (two i32 addresses)", l, c, op));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: {:?} argument {} must be an i32 address, got {:?}", l, c, op, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::FsDelete => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: fs.delete requires 2 arguments (path_ptr, path_len)", l, c));

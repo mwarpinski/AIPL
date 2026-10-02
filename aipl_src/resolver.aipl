@@ -10,15 +10,16 @@
 ;;     canonical (util.f); the entry module keeps bare names;
 ;;   - output order: every struct, then every function, imported modules
 ;;     first in resolution order, then the entry module.
-;; Comments are not carried over. The host passes the library directories to
-;; search after those two, colon-separated: the standard library, then each
-;; AIPL_PATH entry (the resolver cannot read the environment).
+;; Comments are not carried over. After those two directories it searches the
+;; standard library directory the host passes, then each entry of the
+;; colon-separated AIPL_PATH environment variable (read with std/os).
 (module resolver
   (import compiler)
   (import str)
   (import io)
   (import buf)
   (import strmap)
+  (import os)
 
   ;; A parsed file: its text and its (module ...) tree.
   (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node)])
@@ -280,15 +281,22 @@
     (call strmap.put (get st State.done) name 1)
     true)
 
+  ;; The library directories to search, colon-separated: std_dir, then AIPL_PATH.
+  (fn library_dirs [std_dir:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let path:(ptr str.Bytes) (call os.env "AIPL_PATH"))
+    (if (gt (get path str.Bytes.len) 0)
+        (call concat (call concat std_dir (call str.from_str ":")) path)
+        std_dir))
+
   ;; Resolves the program whose entry file is `entry`, searching the
-  ;; colon-separated `lib_dirs` after the importer's and the entry's
-  ;; directories. Writes the flat source to `out`, or an error message to
-  ;; `err` and returns false.
-  (fn resolve [entry:(ptr str.Bytes) lib_dirs:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+  ;; standard library directory `std_dir` and then AIPL_PATH after the
+  ;; importer's and the entry's directories. Writes the flat source to `out`,
+  ;; or an error message to `err` and returns false.
+  (fn resolve [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
     (let src:(ptr Src) (call load entry))
     (let st:(ptr State) (new State))
     (put st State.entry_dir (call dirname entry))
-    (put st State.lib_dirs lib_dirs)
+    (put st State.lib_dirs (call library_dirs std_dir))
     (put st State.done (call strmap.make 16))
     (put st State.active (call strmap.make 16))
     (put st State.structs_out (call buf.make 1024))
@@ -310,13 +318,13 @@
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
-  ;; Resolves the file at (path_addr, path_len), with the colon-separated
-  ;; library directories at (dirs_addr, dirs_len). The Out holds the flat
-  ;; source (ok 1) or the error (ok 0).
-  (fn resolve_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
+  ;; Resolves the file at (path_addr, path_len), with the standard library
+  ;; directory at (std_addr, std_len). The Out holds the flat source (ok 1)
+  ;; or the error (ok 0).
+  (fn resolve_file [path_addr:i32 path_len:i32 std_addr:i32 std_len:i32] -> (ptr Out)
     (let out:(ptr buf.Buf) (call buf.make 65536))
     (let err:(ptr buf.Buf) (call buf.make 256))
-    (let ok:bool (call resolve (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) out err))
+    (let ok:bool (call resolve (call str.bytes path_addr path_len) (call str.bytes std_addr std_len) out err))
     (let res:(ptr Out) (new Out))
     (let b:(ptr str.Bytes) (call buf.bytes (if ok out err)))
     (put res Out.ok (if ok 1 0))

@@ -449,11 +449,32 @@ fn self_hosted_bytes_match_std_library() {
         ("std_map", "aipl_src/std/map.aipl"),
         ("std_strmap", "aipl_src/std/strmap.aipl"),
         ("std_buf", "aipl_src/std/buf.aipl"),
+        ("std_os", "aipl_src/std/os.aipl"),
         ("word_count", "examples/word_count.aipl"),
     ] {
         let module = Resolver::resolve(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }
+}
+
+/// args.* and env.* (P14): all ten WASI imports in their fixed order, mixed
+/// with file and print ops, and the args/env types and lowerings.
+#[test]
+fn self_hosted_bytes_match_args_and_env() {
+    assert_self_hosted_matches_rust("argsenv", r#"
+(module argsenv
+  (fn only_env [p:i32] -> i32 (env.sizes p (+ p 4)))
+  (fn all [p:i32] -> i32
+    (sys.print "x")
+    (let a:i32 (args.sizes p (+ p 4)))
+    (let b:i32 (args.get (+ p 8) (+ p 64)))
+    (let c:i32 (env.get (+ p 8) (+ p 64)))
+    (let fd:i32 (fs.open p 1 0))
+    (fs.close fd)
+    (fs.delete p 1)
+    (if (lt a 0) (sys.exit 1) (block))
+    (+ a (+ b (+ c (+ (fs.read fd p 1) (fs.write fd p 1)))))))"#);
+    assert_self_hosted_matches_rust("envonly", "(module envonly (fn f [p:i32] -> i32 (env.get p (+ p 4))))");
 }
 
 /// Function references (P10): ref, call_ref through params, arrays, and struct

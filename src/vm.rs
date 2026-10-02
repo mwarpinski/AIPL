@@ -72,6 +72,12 @@ pub struct VM {
     strings: Arc<HashMap<String, u32>>,
     /// First heap address; bytes 1024..heap_start hold the literals.
     heap_start: u32,
+    /// What `args.*` report: the program's command line, argv[0] first.
+    /// Empty unless the host sets it (`set_args`).
+    args: Arc<Vec<String>>,
+    /// What `env.*` report: `KEY=VALUE` entries. The process environment
+    /// unless the host replaces it (`set_env`).
+    env: Arc<Vec<String>>,
 }
 
 impl VM {
@@ -98,6 +104,8 @@ impl VM {
             next_thread_id: 1,
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
+            args: Arc::new(Vec::new()),
+            env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
         }
     }
 
@@ -120,7 +128,47 @@ impl VM {
             next_thread_id: 1,
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
+            args: Arc::clone(&self.args),
+            env: Arc::clone(&self.env),
         }
+    }
+
+    /// The command line `args.*` report, argv[0] first.
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.args = Arc::new(args);
+    }
+
+    /// The environment `env.*` report, as (key, value) pairs.
+    pub fn set_env(&mut self, env: Vec<(String, String)>) {
+        self.env = Arc::new(env.into_iter().map(|(k, v)| format!("{k}={v}")).collect());
+    }
+
+    /// args.sizes / env.sizes (`sizes`) and args.get / env.get: the WASI
+    /// preview1 layout, so std/os reads both backends the same way. Like
+    /// fs.read, the host writes without the store guard; an address outside
+    /// memory is a failure (-1), as WASI reports a fault.
+    fn wasi_strings(&self, items: &[String], sizes: bool, a: usize, b: usize) -> Value {
+        let total: usize = items.iter().map(|s| s.len() + 1).sum();
+        let mem_len = self.shared.lock().unwrap().bytes.len();
+        if sizes {
+            if a + 4 > mem_len || b + 4 > mem_len {
+                return Value::Int(-1);
+            }
+            self.write_bytes(a, &(items.len() as u32).to_le_bytes());
+            self.write_bytes(b, &(total as u32).to_le_bytes());
+        } else {
+            if a + 4 * items.len() > mem_len || b + total > mem_len {
+                return Value::Int(-1);
+            }
+            let mut at = b;
+            for (i, s) in items.iter().enumerate() {
+                self.write_bytes(a + 4 * i, &(at as u32).to_le_bytes());
+                self.write_bytes(at, s.as_bytes());
+                self.write_bytes(at + s.len(), &[0]);
+                at += s.len() + 1;
+            }
+        }
+        Value::Int(0)
     }
 
     fn heap_cursor(&self) -> u32 {
@@ -1391,6 +1439,24 @@ impl VM {
                 } else {
                     Ok(Value::Int(-1))
                 }
+            }
+            OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                let mut addr = [0usize; 2];
+                for (i, a) in args.iter().enumerate().take(2) {
+                    addr[i] = match self.eval_expr(a, scope)? {
+                        Value::Int(v) => v as u32 as usize,
+                        other => return Err(format!("{:?} requires Int addresses, got {:?}", op, other)),
+                    };
+                }
+                // WASI hosts reject (trap on) misaligned out-parameters: the
+                // count and size words, and the pointer table.
+                let aligned = if matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes) { [addr[0], addr[1]].to_vec() } else { vec![addr[0]] };
+                if let Some(a) = aligned.iter().find(|a| *a % 4 != 0) {
+                    return Err(format!("{:?}: address {} is not 4-aligned, which WASI requires", op, a));
+                }
+                let items = if matches!(op, OpCode::ArgsSizes | OpCode::ArgsGet) { Arc::clone(&self.args) } else { Arc::clone(&self.env) };
+                let sizes = matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes);
+                Ok(self.wasi_strings(&items, sizes, addr[0], addr[1]))
             }
             OpCode::FsDelete => {
                 let path_ptr = match self.eval_expr(&args[0], scope)? {

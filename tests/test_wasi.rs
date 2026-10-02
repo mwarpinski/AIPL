@@ -366,3 +366,84 @@ fn fs_write_to_fd_1_is_stdout_in_both_backends() {
     assert_eq!(String::from_utf8(w.stdout.contents().to_vec()).unwrap(), "OK\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// args.* and env.* (through std/os) report the same command line and
+/// environment in the VM (set_args / set_env) and under wasmtime (WASI ctx).
+#[test]
+fn command_line_and_environment_agree_in_both_backends() {
+    let dir = scratch_dir("os");
+    let src_path = dir.join("os_probe.aipl");
+    std::fs::write(
+        &src_path,
+        r#"(module os_probe
+  (import os)
+  (import str)
+  (fn argc [] -> i32 (call os.arg_count))
+  ;; lengths of argv[1] and argv[2] as 100 * len1 + len2
+  (fn arg_lens [] -> i32 (+ (* 100 (get (call os.arg 1) str.Bytes.len)) (get (call os.arg 2) str.Bytes.len)))
+  ;; the second byte of argv[2] (a multi-byte argument with a space)
+  (fn arg2_byte1 [] -> i32 (call str.byte_at (call os.arg 2) 1))
+  (fn missing_arg [] -> i32 (get (call os.arg 9) str.Bytes.len))
+  (fn env_value [] -> i32
+    (match_result (call str.parse_int (call os.env "AIPL_PROBE")) (ok v v) (err e -1000)))
+  ;; a variable whose name is a prefix of another is not confused with it
+  (fn env_prefix [] -> i32 (get (call os.env "AIPL_PRO") str.Bytes.len))
+  (fn env_empty [] -> i32 (get (call os.env "AIPL_EMPTY") str.Bytes.len))
+  (fn env_unset [] -> i32 (get (call os.env "AIPL_UNSET") str.Bytes.len)))"#,
+    )
+    .unwrap();
+    let module = Resolver::resolve(&src_path).expect("resolve");
+    TypeChecker::new().check_module(&module).expect("check");
+    let wasm = WasmCompiler::compile(&module).expect("compile");
+    wasmparser::Validator::new().validate_all(&wasm).expect("validate");
+
+    let args = ["prog.wasm", "hello", "a b"];
+    let env = [("AIPL_PROBE", "-42"), ("AIPL_PROBE_LONGER", "1"), ("AIPL_EMPTY", "")];
+
+    let engine = Engine::default();
+    let wm = WasmModule::new(&engine, &wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut b = WasiCtxBuilder::new();
+    b.args(&args);
+    for (k, v) in env {
+        b.env(k, v);
+    }
+    let mut store = Store::new(&engine, b.build_p1());
+    let instance = linker.instantiate(&mut store, &wm).unwrap();
+    let mut w = Wasi { store, instance, stdout: MemoryOutputPipe::new(16) };
+
+    let mut vm = VM::new();
+    vm.set_args(args.iter().map(|s| s.to_string()).collect());
+    vm.set_env(env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    vm.load_module(module);
+
+    for (f, expected) in [
+        ("argc", 3),
+        ("arg_lens", 503),
+        ("arg2_byte1", b' ' as i32),
+        ("missing_arg", -1),
+        ("env_value", -42),
+        ("env_prefix", -1),
+        ("env_empty", 0),
+        ("env_unset", -1),
+    ] {
+        assert_eq!(call_i32(&mut w, f).unwrap(), expected, "wasm {f}");
+        assert_eq!(vm.invoke(f, vec![]).unwrap(), Value::Int(expected as i64), "VM {f}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The raw ops need 4-aligned out-parameters: wasmtime traps on a misaligned
+/// one and the VM fails with an error, rather than either silently working.
+#[test]
+fn misaligned_args_out_parameters_fail_in_both_backends() {
+    let src = "(module m (fn f [] -> i32 (let p:i32 (mem.alloc 16)) (args.sizes (+ p 1) (+ p 8))))";
+    let (module, wasm) = compile(src);
+    let mut w = instantiate(&wasm, &std::env::temp_dir());
+    assert!(call_i32(&mut w, "f").is_err());
+    let mut vm = VM::new();
+    vm.load_module(module);
+    let err = vm.invoke("f", vec![]).unwrap_err();
+    assert!(err.contains("not 4-aligned"), "{err}");
+}

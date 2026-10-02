@@ -22,6 +22,10 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "main")]
         func: String,
+        /// Command-line arguments for the program (after `--`); with FILE as
+        /// argv[0] they are what std/os.arg reports.
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Compile an AIPL source file directly into a WebAssembly (.wasm) binary module
     Compile {
@@ -216,12 +220,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func } => {
+        Commands::Eval { file, func, args } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
             let mut vm = VM::new();
+            vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             let res = vm.invoke(&func, vec![])?;

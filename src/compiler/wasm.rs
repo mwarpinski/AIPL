@@ -396,6 +396,10 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::FsWrite
             | OpCode::FsClose
             | OpCode::FsDelete
+            | OpCode::ArgsSizes
+            | OpCode::ArgsGet
+            | OpCode::EnvSizes
+            | OpCode::EnvGet
             | OpCode::ThreadSpawn
             | OpCode::ThreadJoin
             | OpCode::StrLen
@@ -922,6 +926,14 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 let fd_close = wasi_index(ctx, Wasi::FdClose)?;
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::Call(fd_close));
+                emit_errno_to_result(func, None);
+            }
+            OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                // the two addresses go straight to the host call
+                let host = wasi_index(ctx, Wasi::for_op(op).unwrap())?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, None);
             }
             OpCode::FsDelete => {
@@ -1479,6 +1491,10 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::FsWrite
                 | OpCode::FsClose
                 | OpCode::FsDelete
+                | OpCode::ArgsSizes
+                | OpCode::ArgsGet
+                | OpCode::EnvSizes
+                | OpCode::EnvGet
                 | OpCode::I64ExtendS
                 | OpCode::F64ConvertI64S
                 | OpCode::I64TruncF64S
@@ -1637,6 +1653,10 @@ enum Wasi {
     FdClose,
     ProcExit,
     PathUnlinkFile,
+    ArgsSizesGet,
+    ArgsGet,
+    EnvironSizesGet,
+    EnvironGet,
 }
 
 impl Wasi {
@@ -1648,6 +1668,10 @@ impl Wasi {
             Wasi::FdClose => "fd_close",
             Wasi::ProcExit => "proc_exit",
             Wasi::PathUnlinkFile => "path_unlink_file",
+            Wasi::ArgsSizesGet => "args_sizes_get",
+            Wasi::ArgsGet => "args_get",
+            Wasi::EnvironSizesGet => "environ_sizes_get",
+            Wasi::EnvironGet => "environ_get",
         }
     }
 
@@ -1660,6 +1684,7 @@ impl Wasi {
             Wasi::FdClose => (vec![I32], vec![I32]),
             Wasi::ProcExit => (vec![I32], vec![]),
             Wasi::PathUnlinkFile => (vec![I32, I32, I32], vec![I32]),
+            Wasi::ArgsSizesGet | Wasi::ArgsGet | Wasi::EnvironSizesGet | Wasi::EnvironGet => (vec![I32, I32], vec![I32]),
         }
     }
 
@@ -1671,6 +1696,10 @@ impl Wasi {
             OpCode::FsClose => Some(Wasi::FdClose),
             OpCode::SysExit => Some(Wasi::ProcExit),
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            OpCode::ArgsSizes => Some(Wasi::ArgsSizesGet),
+            OpCode::ArgsGet => Some(Wasi::ArgsGet),
+            OpCode::EnvSizes => Some(Wasi::EnvironSizesGet),
+            OpCode::EnvGet => Some(Wasi::EnvironGet),
             _ => None,
         }
     }
