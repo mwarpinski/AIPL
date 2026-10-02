@@ -1,0 +1,352 @@
+;; Import resolution in AIPL (P14). Turns a program spread over several files
+;; into one flat, import-free source text: the input codegen.compile_module
+;; takes. Mirrors src/resolver.rs, which stays as the reference:
+;;   - (import m) searches the importing file's directory, the entry file's
+;;     directory, then the standard library directory (AIPL_SPEC.md 11);
+;;   - imports resolve depth-first, each module once (diamonds), and a module
+;;     that imports itself through a chain is an error (cycles);
+;;   - inside an imported module m, its own functions and structs become
+;;     m.name, and alias-qualified names (u.f for (import util as u)) become
+;;     canonical (util.f); the entry module keeps bare names;
+;;   - output order: every struct, then every function, imported modules
+;;     first in resolution order, then the entry module.
+;; Comments are not carried over. The host passes the library directories to
+;; search after those two, colon-separated: the standard library, then each
+;; AIPL_PATH entry (the resolver cannot read the environment).
+(module resolver
+  (import compiler)
+  (import str)
+  (import io)
+  (import buf)
+  (import strmap)
+
+  ;; A parsed file: its text and its (module ...) tree.
+  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node)])
+
+  ;; One module being emitted. prefix is the import name; imported is false
+  ;; for the entry module, whose names stay bare. aliases maps an alias to the
+  ;; address of the canonical module name (ptr str.Bytes).
+  (struct Mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool
+               fns:(ptr strmap.StrMap) structs:(ptr strmap.StrMap) aliases:(ptr strmap.StrMap)])
+
+  (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
+                 done:(ptr strmap.StrMap) active:(ptr strmap.StrMap)
+                 structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)])
+
+  ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
+  (struct Out [ok:i32 addr:i32 len:i32])
+
+  ;; ===== Byte-string helpers =====
+
+  (fn slice [t:(ptr str.Bytes) start:i32 len:i32] -> (ptr str.Bytes)
+    (call str.bytes (+ (get t str.Bytes.addr) start) len))
+
+  (fn concat [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let out:(ptr buf.Buf) (call buf.make (+ (get a str.Bytes.len) (get b str.Bytes.len))))
+    (call buf.push_bytes out a)
+    (call buf.push_bytes out b)
+    (call buf.bytes out))
+
+  (fn last_index [t:(ptr str.Bytes) c:i32] -> i32
+    (let found:i32 -1)
+    (loop i 0 (- (get t str.Bytes.len) 1) 1
+      (if (eq (call str.byte_at t i) c) (set! found i) (block)))
+    found)
+
+  (fn eq_lit [t:(ptr str.Bytes) lit:str] -> bool
+    (call str.bytes_eq t (call str.from_str lit)))
+
+  ;; The directory part of a path, with its trailing '/', or "" for a bare name.
+  (fn dirname [path:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (call slice path 0 (+ (call last_index path 47) 1)))
+
+  ;; d with a trailing '/', so a file name can be appended.
+  (fn as_dir [d:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (if (eq (call str.byte_at d (- (get d str.Bytes.len) 1)) 47) d (call concat d (call str.from_str "/"))))
+
+  ;; ===== Parsed trees =====
+
+  (fn load [path:(ptr str.Bytes)] -> (ptr Src)
+    (let text:(ptr str.Bytes) (call io.read_path path))
+    (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
+    (let n:i32 (get text str.Bytes.len))
+    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let count:i32 (call compiler.tokenize (get text str.Bytes.addr) n tok))
+    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let src:(ptr Src) (new Src))
+    (put src Src.text text)
+    (put src Src.root (call compiler.parse_ast tok count ast))
+    src)
+
+  (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (ptr.cast compiler.Node (get g compiler.Node.a)))
+
+  (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (loop k 1 i 1
+      (if (eq c (ptr.null compiler.Node)) (return c) (block))
+      (set! c (get c compiler.Node.next)))
+    c)
+
+  ;; Source text of a symbol-like atom (symbol, i64 or float literal, string body).
+  (fn text [src:(ptr Src) n:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (call slice (get src Src.text) (get n compiler.Node.a) (get n compiler.Node.b)))
+
+  (fn is_symbol [n:(ptr compiler.Node)] -> bool
+    (if (eq n (ptr.null compiler.Node)) false (eq (get n compiler.Node.kind) 6)))
+
+  ;; The head symbol of a (...) group, or "" when it has none.
+  (fn head [src:(ptr Src) g:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (if (neq (get g compiler.Node.kind) 20) (return (call str.from_str "")) (block))
+    (let h:(ptr compiler.Node) (call first_child g))
+    (if (call is_symbol h) (call text src h) (call str.from_str "")))
+
+  ;; ===== Renaming =====
+  ;; Roles: 0 none, 1 function name, 2 struct name, 3 field reference S.f.
+
+  (fn rename [m:(ptr Mod) t:(ptr str.Bytes) role:i32] -> (ptr str.Bytes)
+    (if (eq role 0) (return t) (block))
+    (let len:i32 (get t str.Bytes.len))
+    (if (eq role 3)
+        (block
+          ;; S.f: rename the struct part, up to the last '.'
+          (let dot:i32 (call last_index t 46))
+          (if (lt dot 0) (return t) (block))
+          (return (call concat (call rename m (call slice t 0 dot) 2) (call slice t dot (- len dot)))))
+        (block))
+    (let dot:i32 (call str.find_byte t 46))
+    (if (gte dot 0)
+        (block
+          ;; alias.rest -> canonical.rest; any other qualified name is left alone
+          (let alias:(ptr str.Bytes) (call slice t 0 dot))
+          (if (call strmap.has (get m Mod.aliases) alias)
+              (return (call concat (ptr.cast str.Bytes (call strmap.get (get m Mod.aliases) alias 0))
+                                   (call slice t dot (- len dot))))
+              (return t)))
+        (block))
+    (let own:(ptr strmap.StrMap) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
+    (if (and (get m Mod.imported) (call strmap.has own t))
+        (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
+        t))
+
+  ;; Which role child i of group g plays, from the group's head symbol.
+  (fn child_role [m:(ptr Mod) g:(ptr compiler.Node) i:i32] -> i32
+    (let h:(ptr str.Bytes) (call head (get m Mod.src) g))
+    (cond
+      ((eq i 1)
+       (cond
+         ((or (call eq_lit h "fn") (or (call eq_lit h "call") (call eq_lit h "ref"))) 1)
+         ((or (call eq_lit h "struct") (or (call eq_lit h "new") (or (call eq_lit h "sizeof")
+            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (call eq_lit h "ptr.cast")))))) 2)
+         (else 0)))
+      ((eq i 2) (if (or (call eq_lit h "get") (call eq_lit h "put")) 3 0))
+      (else 0)))
+
+  ;; ===== Printing =====
+
+  (fn emit [m:(ptr Mod) n:(ptr compiler.Node) role:i32 out:(ptr buf.Buf)] -> void
+    (let k:i32 (get n compiler.Node.kind))
+    (let src:(ptr Src) (get m Mod.src))
+    (cond
+      ((or (eq k 20) (eq k 21)) (call emit_group m n out))
+      ((eq k 6) (call buf.push_bytes out (call rename m (call text src n) role)))
+      ((or (eq k 10) (eq k 11)) (call buf.push_bytes out (call text src n)))
+      ((eq k 7) (call buf.push_int out (get n compiler.Node.a)))
+      ((eq k 8) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
+      ((eq k 9)
+       (call buf.push_byte out 34)
+       (call buf.push_bytes out (call text src n))
+       (call buf.push_byte out 34))
+      ((eq k 4) (call buf.push_byte out 58))
+      ((eq k 5) (call buf.push_str out "->"))
+      (else (block))))
+
+  ;; Children separated by spaces, except none around ':' (x:i32, ok:T).
+  (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let square:bool (eq (get g compiler.Node.kind) 21))
+    (call buf.push_byte out (if square 91 40))
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
+    (let prev_colon:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (let colon:bool (eq (get c compiler.Node.kind) 4))
+      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (call emit m c (call child_role m g i) out)
+      (set! prev_colon colon)
+      (set! i (+ i 1))
+      (set! c (get c compiler.Node.next)))
+    (call buf.push_byte out (if square 93 41)))
+
+  ;; ===== Modules =====
+
+  ;; The first item of a (module name items...) tree.
+  (fn first_item [src:(ptr Src)] -> (ptr compiler.Node)
+    (call nth (get src Src.root) 2))
+
+  (fn make_mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool] -> (ptr Mod)
+    (let m:(ptr Mod) (new Mod))
+    (put m Mod.src src)
+    (put m Mod.prefix prefix)
+    (put m Mod.imported imported)
+    (put m Mod.fns (call strmap.make 64))
+    (put m Mod.structs (call strmap.make 8))
+    (put m Mod.aliases (call strmap.make 8))
+    (let item:(ptr compiler.Node) (call first_item src))
+    (while (neq item (ptr.null compiler.Node))
+      (let h:(ptr str.Bytes) (call head src item))
+      (let name:(ptr compiler.Node) (call nth item 1))
+      (cond
+        ((and (call eq_lit h "fn") (call is_symbol name))
+         (call strmap.put (get m Mod.fns) (call text src name) 1))
+        ((and (call eq_lit h "struct") (call is_symbol name))
+         (call strmap.put (get m Mod.structs) (call text src name) 1))
+        ((call eq_lit h "import")
+         ;; (import name as alias)
+         (let alias:(ptr compiler.Node) (call nth item 3))
+         (if (call is_symbol alias)
+             (call strmap.put (get m Mod.aliases) (call text src alias) (ptr.addr (call text src name)))
+             (block)))
+        (else (block)))
+      (set! item (get item compiler.Node.next)))
+    m)
+
+  ;; Appends the module's structs and functions to the state's outputs.
+  (fn emit_module [st:(ptr State) m:(ptr Mod)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (let item:(ptr compiler.Node) (call first_item src))
+    (while (neq item (ptr.null compiler.Node))
+      (let h:(ptr str.Bytes) (call head src item))
+      (cond
+        ((call eq_lit h "struct")
+         (call buf.push_str (get st State.structs_out) "  ")
+         (call emit m item 0 (get st State.structs_out))
+         (call buf.push_byte (get st State.structs_out) 10))
+        ((call eq_lit h "fn")
+         (call buf.push_str (get st State.fns_out) "  ")
+         (call emit m item 0 (get st State.fns_out))
+         (call buf.push_byte (get st State.fns_out) 10))
+        (else (block)))
+      (set! item (get item compiler.Node.next))))
+
+  (fn fail [st:(ptr State) msg:str name:(ptr str.Bytes)] -> bool
+    (call buf.push_str (get st State.err) msg)
+    (call buf.push_bytes (get st State.err) name)
+    false)
+
+  ;; Resolves every (import ...) of src, found relative to dir.
+  (fn resolve_imports [st:(ptr State) src:(ptr Src) dir:(ptr str.Bytes)] -> bool
+    (let item:(ptr compiler.Node) (call first_item src))
+    (while (neq item (ptr.null compiler.Node))
+      (if (call eq_lit (call head src item) "import")
+          (if (call resolve_module st dir (call text src (call nth item 1))) (block) (return false))
+          (block))
+      (set! item (get item compiler.Node.next)))
+    true)
+
+  (fn with_ext [dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (call concat (call concat dir name) (call str.from_str ".aipl")))
+
+  (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> bool
+    (if (call strmap.has (get st State.done) name) (return true) (block))
+    (if (call strmap.has (get st State.active) name) (return (call fail st "circular import: " name)) (block))
+    ;; search: importer's directory, entry's directory, standard library
+    (let path:(ptr str.Bytes) (call with_ext dir name))
+    (let src:(ptr Src) (call load path))
+    (if (eq src (ptr.null Src))
+        (block
+          (set! path (call with_ext (get st State.entry_dir) name))
+          (set! src (call load path)))
+        (block))
+    ;; then each library directory, in order
+    (let dirs:(ptr str.Bytes) (get st State.lib_dirs))
+    (let start:i32 0)
+    (loop i 0 (get dirs str.Bytes.len) 1
+      (if (eq src (ptr.null Src)) (block) (break))
+      ;; a ':' or the end closes an entry (or does not short-circuit, hence the if)
+      (if (if (eq i (get dirs str.Bytes.len)) true (eq (call str.byte_at dirs i) 58))
+          (block
+            (if (gt i start)
+                (block
+                  (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) name))
+                  (set! src (call load path)))
+                (block))
+            (set! start (+ i 1)))
+          (block)))
+    (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " name)) (block))
+    (call strmap.put (get st State.active) name 1)
+    (if (call resolve_imports st src (call dirname path)) (block) (return false))
+    (call emit_module st (call make_mod src name true))
+    (call strmap.remove (get st State.active) name)
+    (call strmap.put (get st State.done) name 1)
+    true)
+
+  ;; Resolves the program whose entry file is `entry`, searching the
+  ;; colon-separated `lib_dirs` after the importer's and the entry's
+  ;; directories. Writes the flat source to `out`, or an error message to
+  ;; `err` and returns false.
+  (fn resolve [entry:(ptr str.Bytes) lib_dirs:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+    (let src:(ptr Src) (call load entry))
+    (let st:(ptr State) (new State))
+    (put st State.entry_dir (call dirname entry))
+    (put st State.lib_dirs lib_dirs)
+    (put st State.done (call strmap.make 16))
+    (put st State.active (call strmap.make 16))
+    (put st State.structs_out (call buf.make 1024))
+    (put st State.fns_out (call buf.make 65536))
+    (put st State.err err)
+    (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
+    (if (call resolve_imports st src (call dirname entry)) (block) (return false))
+    (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false))
+    (call emit_module st entry_mod)
+    (call buf.push_str out "(module ")
+    (call buf.push_bytes out (call text src (call nth (get src Src.root) 1)))
+    (call buf.push_byte out 10)
+    (call buf.push_bytes out (call buf.bytes (get st State.structs_out)))
+    (call buf.push_bytes out (call buf.bytes (get st State.fns_out)))
+    (call buf.push_byte out 41)
+    true)
+
+  ;; ===== Host interface =====
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  ;; Resolves the file at (path_addr, path_len), with the colon-separated
+  ;; library directories at (dirs_addr, dirs_len). The Out holds the flat
+  ;; source (ok 1) or the error (ok 0).
+  (fn resolve_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
+    (let out:(ptr buf.Buf) (call buf.make 65536))
+    (let err:(ptr buf.Buf) (call buf.make 256))
+    (let ok:bool (call resolve (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) out err))
+    (let res:(ptr Out) (new Out))
+    (let b:(ptr str.Bytes) (call buf.bytes (if ok out err)))
+    (put res Out.ok (if ok 1 0))
+    (put res Out.addr (get b str.Bytes.addr))
+    (put res Out.len (get b str.Bytes.len))
+    res)
+
+  ;; Pass count; test_suite.aipl expects 3. Paths are relative to the
+  ;; repository root, where the suite runs.
+  (fn run_resolver_tests [] -> i32
+    (let p:i32 0)
+    (let out:(ptr buf.Buf) (call buf.make 1024))
+    (let err:(ptr buf.Buf) (call buf.make 64))
+    (let ok:bool (call resolve (call str.from_str "examples/word_count.aipl") (call str.from_str "aipl_src/std/") out err))
+    (let flat:(ptr str.Bytes) (call buf.bytes out))
+    ;; word_count imports io (which imports str and fmt) and str: each once
+    (let fns:i32 0)
+    (let marker:(ptr str.Bytes) (call str.from_str "(fn str.count_lines "))
+    (loop i 0 (- (get flat str.Bytes.len) (get marker str.Bytes.len)) 1
+      (if (call str.bytes_eq (call slice flat i (get marker str.Bytes.len)) marker) (set! fns (+ fns 1)) (block)))
+    (if (and ok (eq fns 1)) (set! p (+ p 1)) (block))
+    ;; the entry keeps bare names and calls through qualified ones
+    (let has_main:bool false)
+    (let main_marker:(ptr str.Bytes) (call str.from_str "(fn main [] -> i32"))
+    (loop i 0 (- (get flat str.Bytes.len) (get main_marker str.Bytes.len)) 1
+      (if (call str.bytes_eq (call slice flat i (get main_marker str.Bytes.len)) main_marker) (set! has_main true) (block)))
+    (if has_main (set! p (+ p 1)) (block))
+    ;; a missing module is an error, not an empty program
+    (let err2:(ptr buf.Buf) (call buf.make 64))
+    (if (call resolve (call str.from_str "examples/no_such_file.aipl") (call str.from_str "aipl_src/std/") (call buf.make 64) err2)
+        (block)
+        (if (gt (call buf.len err2) 0) (set! p (+ p 1)) (block)))
+    p))

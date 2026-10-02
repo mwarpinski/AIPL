@@ -28,7 +28,11 @@
 
   ;; The whole file in a fresh buffer, or len -1 if it cannot be opened or read.
   (fn read_file [path:str] -> (ptr str.Bytes)
-    (let fd:i32 (fs.open (str.ptr path) (str.len path) 0))
+    (call read_path (call str.from_str path)))
+
+  ;; read_file for a path held as bytes (e.g. one built at run time).
+  (fn read_path [path:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 0))
     (let cap:i32 4096)
     (let buf:i32 (mem.alloc cap))
     (let len:i32 0)
@@ -52,7 +56,11 @@
 
   ;; Creates or truncates the file; returns bytes written, or -1.
   (fn write_file [path:str b:(ptr str.Bytes)] -> i32
-    (let fd:i32 (fs.open (str.ptr path) (str.len path) 1))
+    (call write_path (call str.from_str path) b))
+
+  ;; write_file for a path held as bytes.
+  (fn write_path [path:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32
+    (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 1))
     (if (lt fd 0)
         -1
         (block

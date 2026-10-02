@@ -35,7 +35,7 @@ pub const PAGE_SIZE: usize = 65536;
 /// minimum so `mem.grow` returns the same old-size in both backends.
 pub const INITIAL_PAGES: usize = 16;
 /// Maximum linear memory in pages. Matches the wasm backend's memory maximum.
-pub const MAX_PAGES: usize = 100;
+pub const MAX_PAGES: usize = 1024;
 /// Address of the heap cursor word read and written by `mem.alloc`.
 pub const HEAP_PTR_ADDR: usize = 0;
 /// First heap address handed out by `mem.alloc`. Bytes below it are the
@@ -67,6 +67,11 @@ pub struct VM {
     next_fd: i32,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     next_thread_id: i32,
+    /// String literal -> address of its interned bytes, laid out exactly as
+    /// the wasm backend's data segment (wasm::string_layout).
+    strings: Arc<HashMap<String, u32>>,
+    /// First heap address; bytes 1024..heap_start hold the literals.
+    heap_start: u32,
 }
 
 impl VM {
@@ -91,6 +96,8 @@ impl VM {
             next_fd: 3,
             thread_handles: HashMap::new(),
             next_thread_id: 1,
+            strings: Arc::new(HashMap::new()),
+            heap_start: HEAP_START,
         }
     }
 
@@ -111,7 +118,19 @@ impl VM {
             next_fd: 3,
             thread_handles: HashMap::new(),
             next_thread_id: 1,
+            strings: Arc::clone(&self.strings),
+            heap_start: self.heap_start,
         }
+    }
+
+    fn heap_cursor(&self) -> u32 {
+        u32::from_le_bytes(self.read_bytes(HEAP_PTR_ADDR, 4).try_into().unwrap())
+    }
+
+    /// Rejects stores below the heap other than to cells 4..64 (see
+    /// check_write_address); `heap_start` covers this module's literals.
+    fn check_write(&self, op: &str, ptr: usize) -> Result<(), String> {
+        check_write_address(op, ptr, self.heap_start as usize)
     }
 
     /// Convenience accessor for host code (CLI, agent server, tests) that
@@ -127,6 +146,19 @@ impl VM {
     }
 
     pub fn load_module(&mut self, module: Module) {
+        // The first module loaded into a fresh VM gets the wasm backend's
+        // string layout: literals at 1024, the heap after them. Literals of
+        // later modules are copied onto the heap when used (materialize_str).
+        if self.strings.is_empty() && self.heap_cursor() == HEAP_START {
+            if let Ok(layout) = crate::compiler::wasm::string_layout(&module) {
+                if !layout.blob.is_empty() {
+                    self.write_bytes(HEAP_START as usize, &layout.blob);
+                    self.write_bytes(HEAP_PTR_ADDR, &layout.heap_start.to_le_bytes());
+                    self.heap_start = layout.heap_start;
+                    self.strings = Arc::new(layout.addrs);
+                }
+            }
+        }
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -418,7 +450,7 @@ impl VM {
                     other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
                 };
                 let addr = ptr_val + offset;
-                check_write_address("put", addr)?;
+                self.check_write("put", addr)?;
                 let val_v = self.eval_expr(val, scope)?;
                 self.store_val_at(addr, &field_ty, val_v)?;
                 Ok(Value::Void)
@@ -504,7 +536,7 @@ impl VM {
                 }
                 let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
                 let addr = ptr_val + (idx_val as usize) * elem_size;
-                check_write_address("arr.set", addr)?;
+                self.check_write("arr.set", addr)?;
                 self.store_val_at(addr, elem_ty, val_v)?;
                 Ok(Value::Void)
             }
@@ -521,10 +553,12 @@ impl VM {
         Ok(inner)
     }
 
-    /// Copies `s` into the heap as `[len u32 LE][bytes]` (the shape of the wasm
-    /// string data segment) and returns the address of the bytes. Each call
-    /// allocates afresh; the wasm backend instead points at the interned literal.
+    /// The address of `s`'s bytes: its interned literal (the same address as
+    /// in wasm), or else a fresh heap copy as `[len u32 LE][bytes]`.
     fn materialize_str(&self, op: &str, s: &str) -> Result<usize, String> {
+        if let Some(&addr) = self.strings.get(s) {
+            return Ok(addr as usize);
+        }
         let bytes = s.as_bytes();
         let base = self.alloc_bytes(4 + bytes.len()) as u32 as usize;
         let end = base + 4 + bytes.len();
@@ -843,7 +877,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store8", ptr)?;
+                self.check_write("mem.store8", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => (i & 0xFF) as u8,
                     _ => return Err("mem.store8 requires Int val".to_string()),
@@ -896,7 +930,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store32", ptr)?;
+                self.check_write("mem.store32", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
@@ -917,7 +951,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store64", ptr)?;
+                self.check_write("mem.store64", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int64(i) => i,
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
@@ -964,7 +998,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.add requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.add", ptr)?;
+                self.check_write("atomic.add", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
@@ -981,7 +1015,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.cas requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.cas", ptr)?;
+                self.check_write("atomic.cas", ptr)?;
                 let expected = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int expected".to_string()),
@@ -1010,7 +1044,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.lock", ptr)?;
+                self.check_write("atomic.lock", ptr)?;
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
@@ -1044,7 +1078,7 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.unlock", ptr)?;
+                self.check_write("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 4 > mem.bytes.len() {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
@@ -1475,11 +1509,12 @@ impl VM {
 }
 
 /// Runtime enforcement of the memory layout for writes (AIPL_SPEC.md, "Memory
-/// layout"): bytes 0-3 are the heap cursor and bytes 64-1023 are reserved, so
-/// no store or atomic op may target them, however the address was computed.
-/// The wasm backend emits the identical check (trapping with `unreachable`),
-/// so this is a shared semantic, not a VM-only guard. Reads are not checked.
-pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
+/// layout"): bytes 0-3 are the heap cursor, bytes 64-1023 are reserved, and
+/// bytes 1024..heap_start are the module's string literals, so no store or
+/// atomic op may target them, however the address was computed. The wasm
+/// backend emits the identical check (trapping with `unreachable`), so this is
+/// a shared semantic, not a VM-only guard. Reads are not checked.
+pub fn check_write_address(op: &str, ptr: usize, heap_start: usize) -> Result<(), String> {
     if ptr < 4 {
         return Err(format!(
             "{} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; take memory from (mem.alloc n) instead",
@@ -1490,6 +1525,12 @@ pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
         return Err(format!(
             "{} at address {}: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead",
             op, ptr
+        ));
+    }
+    if (1024..heap_start).contains(&ptr) {
+        return Err(format!(
+            "{} at address {}: bytes 1024-{} are the program's string literals, which are read-only; take memory from (mem.alloc n) instead",
+            op, ptr, heap_start - 1
         ));
     }
     Ok(())

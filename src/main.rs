@@ -235,9 +235,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let rust_bytes = WasmCompiler::compile(&module)?;
             if self_flag {
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
-                // The self-hosted compiler takes one import-free module, so it is
-                // given the resolved program printed back as source.
-                let flat_src = aipl_core::printer::print_module(&module);
+                // Self-hosted end to end: resolver.aipl flattens the imports into
+                // one module, which codegen.aipl compiles.
+                let flat_src = aipl_core::selfhost::resolve_with_aipl(Path::new(&file))
+                    .map_err(|e| format!("Self-hosted resolver error: {}", e))?;
                 let self_bytes = run_self_hosted_codegen(&flat_src).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");

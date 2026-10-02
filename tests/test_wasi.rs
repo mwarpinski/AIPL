@@ -164,14 +164,26 @@ fn string_literals_are_interned_with_lengths_and_compare_by_identity() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Literals are no longer squeezed into a fixed area: 600 bytes compile and
+/// run in both backends. Past the 1 MiB limit the compile fails with a message
+/// rather than truncating.
 #[test]
-fn string_data_area_overflow_is_a_compile_error_not_a_silent_truncation() {
+fn large_string_literals_compile_and_the_limit_is_a_compile_error() {
     let big = "x".repeat(600);
     let src = format!("(module m (fn f [] -> i32 (str.len \"{big}\")))");
+    let (module, wasm) = compile(&src);
+    let mut w = instantiate(&wasm, &std::env::temp_dir());
+    assert_eq!(call_i32(&mut w, "f").unwrap(), 600);
+    let mut vm = VM::new();
+    vm.load_module(module);
+    assert_eq!(vm.invoke("f", vec![]).unwrap(), Value::Int(600));
+
+    let huge = "x".repeat(1 << 20);
+    let src = format!("(module m (fn f [] -> i32 (str.len \"{huge}\")))");
     let module = Parser::parse(&src).unwrap();
     TypeChecker::new().check_module(&module).unwrap();
     let err = WasmCompiler::compile(&module).unwrap_err();
-    assert!(err.contains("string data area"), "got {err}");
+    assert!(err.contains("string literals need") && err.contains("fit before the heap"), "got {err}");
 }
 
 #[test]

@@ -767,7 +767,7 @@ fn self_hosted_arrays_and_results_execute() {
 
 /// Inputs the self-hosted backend cannot compile are compile errors, never a
 /// miscompile: non-scalar struct fields / array elements (95), unknown structs
-/// (96), and string data beyond the 512-byte area (768).
+/// (96), and string literals beyond its 64 KiB literal buffer (768).
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
     for src in [
@@ -779,10 +779,44 @@ fn self_hosted_rejects_what_it_cannot_compile() {
     }
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();
     assert!(err.contains("compile error 96"), "{err}");
-    // 600 bytes of string data overflow the 512-byte area, as in the Rust backend.
-    let long = "x".repeat(600);
+    // The self-hosted literal buffer holds 64 KiB (the Rust backend allows up to 1 MiB).
+    let long = "x".repeat(70_000);
     let err = self_host(&format!("(module m (fn f [] -> i32 (str.len \"{long}\")))")).unwrap_err();
     assert!(err.contains("compile error 768"), "{err}");
+}
+
+/// String literals sit at 1024 with the heap after them, so a program is not
+/// limited to a fixed literal area; stores into a literal trap in both
+/// backends, like stores into the runtime block.
+#[test]
+fn self_hosted_string_literals_past_the_old_area_are_read_only() {
+    let a = "a".repeat(400);
+    let b = "b".repeat(400);
+    let src = format!(
+        "(module lits\n  (fn lens [] -> i32 (+ (str.len \"{a}\") (str.len \"{b}\")))\n  (fn first_free [] -> i32 (mem.alloc 0))\n  (fn poke [] -> i32 (mem.store8 (str.ptr \"{b}\") 0) 1))"
+    );
+    assert_self_hosted_matches_rust("lits", &src);
+    let bytes = run_self_hosted(&src);
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &bytes).unwrap();
+    let call = |name: &str| -> Result<i32, wasmtime::Error> {
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[]).unwrap();
+        let f: TypedFunc<(), i32> = instance.get_typed_func(&mut store, name).unwrap();
+        f.call(&mut store, ())
+    };
+    assert_eq!(call("lens").unwrap(), 800);
+    // two [len][bytes] literals: 1024 + 808, 8-aligned
+    assert_eq!(call("first_free").unwrap(), 1832);
+    let trap = call("poke").unwrap_err().downcast::<wasmtime::Trap>().unwrap();
+    assert_eq!(trap, wasmtime::Trap::UnreachableCodeReached);
+    // the VM places the literals identically and rejects the same store
+    let m = aipl_core::parser::Parser::parse(&src).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("first_free", vec![]).unwrap(), Value::Int(1832));
+    let err = vm.invoke("poke", vec![]).unwrap_err();
+    assert!(err.contains("string literals, which are read-only"), "{err}");
 }
 
 #[test]

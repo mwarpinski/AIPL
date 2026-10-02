@@ -42,7 +42,7 @@ Expected AIPL suite output:
 | P2 no silent catch-alls | Done. Every opcode either works or returns an explicit `Err`; `tests/test_opcode_conformance.rs` enforces this. |
 | P3 integer semantics + differential testing | Done. Wasm semantics are the spec; `tests/test_differential.rs` compares the VM against wasmtime. |
 | P4 source positions | Done. Every parser and checker error starts `L:C:`. |
-| P5 one memory layout | Done. Runtime block 0–1023, heap cursor at address 0, store guard in all three code generators. |
+| P5 one memory layout | Done. Runtime block 0–1023, string literals from 1024, then the heap; heap cursor at address 0, store guard in all three code generators. |
 | P6 WASI I/O + strings | Done. |
 | P7 statement typing + block scoping | Done. |
 | P8 structs and arrays | **Done, after rework on 2026-10-01** (see below). |
@@ -53,7 +53,7 @@ Expected AIPL suite output:
 | P11 return/break/continue/cond | **Done 2026-10-01** (branch `features/p11`, see below). |
 | P12 versioning + binary AST | **Binary AST deleted; versioning deferred** (2026-10-01, see the audit's P12 note). |
 | P13 retire ELF / native strategy | **Done 2026-10-01** (branch `features/p13`): ELF and "machine-native" claims removed, dead dual-target stubs deleted, strategy in `docs/NATIVE_TARGET.md`; no `build-native` command (see the audit's P13 note). |
-| P14 | Not started. |
+| P14 resolver in AIPL | **Done 2026-10-01** (branch `features/p14`, see below). `src/resolver.rs` stays as the reference and for the non-`--self` commands. |
 
 ## P8 verification (2026-10-01)
 
@@ -100,10 +100,7 @@ Done:
 - **Type-directed code generation (2026-10-01, branch `features/p9`):** `node_type`/`group_type` mirror `expr_type` in wasm.rs, so `i64`, `f32`, and `f64` arithmetic, comparisons, `if`/`match_result` block types, struct fields, and array elements all match the Rust backend byte for byte. `i64` literals emit `i64.const`. Float literals emit the exact `f64.const` bits Rust's parser produces whenever the literal's digits form an integer ≤ 2^53 with ≤ 22 after the point; anything else is compile error 973, never a different rounding. That needed four new language primitives, added to every backend with differential tests: `f64.convert_i64_s`, `i64.trunc_f64_s`, `f64.reinterpret_i64`, `i64.reinterpret_f64`. Also fixed along the way: `mem.load64`/`mem.store64` emitted `f32.load`/`f32.store`, unsupported binops returned -1 as a byte count, `(ok:T v)` was not understood, `\"` ended a string literal early, and later compile errors overwrote the first.
 - **Bootstrap fixpoint:** the self-hosted compiler, compiled to wasm and run under wasmtime on its own source, reproduces itself byte for byte in about 20 ms (`self_hosted_compiler_reproduces_itself_under_wasmtime`). The VM takes 14 s for the same compile in a release build, so the compiled compiler is roughly 700× faster. A `driver.aipl` that reads and writes files would make it a standalone tool.
 
-Not done (AIPL_SPEC.md 6.4 lists the details):
-- **No import resolution.** `compile_module` takes one module; the parity and fixpoint tests merge compiler.aipl into codegen.aipl by hand. This is P14's job (resolver in AIPL).
-- **No standalone self-hosted CLI yet.** The entry point is `codegen.compile_module`; a `driver.aipl` that reads a file, calls it, and writes the result would make the compiled self-hosted compiler a standalone tool under any WASI host. (The dead `compile_to_target`/`compile_aipl` stubs in `compiler.aipl` were removed in P13.)
-- Float literals outside the exact range (error 973) and exponent notation.
+Not done (AIPL_SPEC.md 6.4 lists the details): float literals outside the exact range (error 973) and exponent notation. Imports and the driver came with P14 (below).
 
 ## Collections and growing allocation (2026-10-01, branch `features/collections`)
 
@@ -166,12 +163,25 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 - **"Returns a number" is not a passing test.** Assert the value. Each new self-test should be checked by breaking an assertion on purpose and confirming it fails.
 - **Re-run everything before believing a "done" claim.** Including `cargo test --no-fail-fast`: a test binary that aborts with a stack overflow hides the rest of its results.
 
+## P14: the resolver in AIPL (2026-10-01, branch `features/p14`)
+
+- **`aipl_src/resolver.aipl`** reproduces `src/resolver.rs`: the same search order (importer's directory, entry's directory, then the library directories the host passes: standard library, then `AIPL_PATH`), depth-first resolution, one copy per module, cycle errors, `m.name` renaming of functions and structs, alias rewriting, struct-qualified field references. It emits flat source text, which is what `codegen.compile_module` takes. `std/io` gained `read_path`/`write_path` for paths built at run time.
+- **`tests/test_resolver_aipl.rs`** compiles the AIPL resolver's output and the Rust resolver's module and requires identical bytes for word_count, every std module, codegen, the resolver, and the AIPL test suite, plus a diamond with aliases and struct names, a cycle, and a missing module.
+- **`aipl compile --self`** is now self-hosted end to end: the AIPL resolver and AIPL codegen run in the VM (via `aipl_core::selfhost`) and must match the Rust toolchain byte for byte.
+- **`aipl_src/driver.aipl`** chains the two. Compiled to wasm and run under wasmtime with only WASI, it compiles word_count to the Rust toolchain's bytes, and it compiles its own sources (driver, resolver, codegen, compiler, std: about 216 KB) back to exactly itself in about half a second. That is the whole toolchain at a fixpoint with no Rust in the second compile.
+
+Found and fixed on the way:
+- **String literals were capped at 512 bytes per program** (a fixed area at 512–1023), which the resolver alone exceeded. Literals now start at 1024 and the heap starts after them (8-aligned) in the VM, the wasm backend, and codegen.aipl, sharing one layout function (`wasm::string_layout`). The VM used to copy each literal onto the heap at every use; it now uses the interned address, as wasm does. Literals are read-only in both backends: the store guard covers them.
+- **The self-hosted literal tables overflowed silently** past 16 KiB or 340 literals. They now hold 64 KiB / 1364 literals and report error 768 beyond that.
+- **The memory cap was 100 pages (6.4 MiB),** too small for the toolchain compiling itself. It is now 1024 pages (64 MiB) in every backend.
+- **`codegen.is_else_clause` read source text at a node address** when a `cond` clause's head was a group: `and` does not short-circuit, so its kind check did not guard the keyword lookup. It read garbage harmlessly until memory grew large enough to trap. `group_head_keyword` now checks its own input, and `is_else_clause` uses it.
+
 ## Next steps, in order
 
-1. Commit the P8 rework (this branch).
-2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P14 (resolver in AIPL), then a `driver.aipl` so the compiled self-hosted compiler runs standalone. Worth considering: generics for the collections. Language versioning is deferred until packages exist.
-4. P12–P14 per the audit.
+1. Generics, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`.
+2. The checker in AIPL, after which `src/resolver.rs` and the Rust checker can retire and the Rust side shrinks to the VM, the wasm backend as an oracle, and primitives.
+3. A way for programs to read their arguments (WASI `args_get`), so the wasm driver can be a command instead of a library a host calls.
+4. Language versioning, once packages exist.
 
 ## Completed work log (condensed)
 

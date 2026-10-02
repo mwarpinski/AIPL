@@ -1,0 +1,37 @@
+;; The self-hosted toolchain as one program: resolver.aipl flattens a
+;; multi-file program, codegen.aipl compiles it. Compiled to wasm, it compiles
+;; AIPL under any WASI host with no Rust involved (tests/test_resolver_aipl.rs
+;; runs it under wasmtime). The host writes the paths into memory taken from
+;; host_alloc and calls compile_file.
+(module driver
+  (import resolver)
+  (import codegen)
+
+  ;; status 0: the wasm module is at (addr, len)
+  ;; status 1: import resolution failed; the message is at (addr, len)
+  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  (struct Out [status:i32 addr:i32 len:i32])
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  ;; Compiles the program whose entry file is (path_addr, path_len), searching
+  ;; the colon-separated library directories at (dirs_addr, dirs_len).
+  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
+    (let res:(ptr Out) (new Out))
+    (let flat:(ptr resolver.Out) (call resolver.resolve_file path_addr path_len dirs_addr dirs_len))
+    (put res Out.addr (get flat resolver.Out.addr))
+    (put res Out.len (get flat resolver.Out.len))
+    (if (eq (get flat resolver.Out.ok) 0)
+        (block (put res Out.status 1) (return res))
+        (block))
+    (let n:i32 (call codegen.compile_module (get flat resolver.Out.addr) (get flat resolver.Out.len)))
+    (if (gt n 0)
+        (block
+          (put res Out.status 0)
+          (put res Out.addr (mem.load32 60))
+          (put res Out.len n))
+        (block
+          (put res Out.status 2)
+          (put res Out.addr 0)
+          (put res Out.len (mem.load32 4))))
+    res))

@@ -32,38 +32,7 @@ impl WasmCompiler {
         }
         let import_count = used_wasi.len() as u32;
 
-        // String literals: interned once into a data segment at 512..1024 as
-        // [len: u32 LE][bytes]; a `str` value is the pointer to the bytes.
-        let mut string_blob: Vec<u8> = Vec::new();
-        let mut strings: HashMap<String, u32> = HashMap::new();
-        let intern = |s: &str, blob: &mut Vec<u8>, map: &mut HashMap<String, u32>| -> u32 {
-            if let Some(&a) = map.get(s) {
-                return a;
-            }
-            let addr = STRING_DATA_BASE + blob.len() as u32 + 4;
-            blob.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            blob.extend_from_slice(s.as_bytes());
-            map.insert(s.to_string(), addr);
-            addr
-        };
-        let mut newline_addr = 0u32;
-        if used_wasi.contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
-            newline_addr = intern("\n", &mut string_blob, &mut strings);
-        }
-        walk_module(module, &mut |e| {
-            if let Expr::Lit(Literal::Str(s), _) = e {
-                intern(s, &mut string_blob, &mut strings);
-            }
-        });
-        if string_blob.len() > STRING_DATA_CAPACITY as usize {
-            return Err(format!(
-                "Wasm Codegen: string literals need {} bytes but the string data area (addresses {}..{}) holds {}",
-                string_blob.len(),
-                STRING_DATA_BASE,
-                STRING_DATA_BASE + STRING_DATA_CAPACITY,
-                STRING_DATA_CAPACITY
-            ));
-        }
+        let StringLayout { blob: string_blob, addrs: strings, newline_addr, heap_start } = string_layout(module)?;
 
         let mut structs: HashMap<String, StructDef> = HashMap::new();
         for s in &module.structs {
@@ -172,6 +141,7 @@ impl WasmCompiler {
                 strings: &strings,
                 wasi: &wasi_indices,
                 newline_addr,
+                heap_start,
                 structs: &structs,
                 fn_types: &fn_types,
                 import_count,
@@ -200,10 +170,10 @@ impl WasmCompiler {
 
         let mut memories = wasm_encoder::MemorySection::new();
         // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
-        // same old size in both backends; 100 pages max, also matching the VM.
+        // same old size in both backends; 1024 pages max (64 MiB), also matching the VM.
         memories.memory(wasm_encoder::MemoryType {
             minimum: 16,
-            maximum: Some(100),
+            maximum: Some(crate::vm::MAX_PAGES as u64),
             memory64: false,
             shared: false,
             page_size_log2: None,
@@ -211,9 +181,10 @@ impl WasmCompiler {
         exports.export("memory", ExportKind::Memory, 0);
 
         // Runtime block initialisation: the heap cursor at address 0 starts
-        // at 1024 (HEAP_START). Everything else in bytes 0..1024 is zero.
+        // at heap_start, just past the string literals. Everything else in
+        // bytes 0..1024 is zero.
         let mut data = wasm_encoder::DataSection::new();
-        data.active(0, &wasm_encoder::ConstExpr::i32_const(0), 1024u32.to_le_bytes());
+        data.active(0, &wasm_encoder::ConstExpr::i32_const(0), heap_start.to_le_bytes());
         if !string_blob.is_empty() {
             data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
         }
@@ -270,6 +241,8 @@ struct Ctx<'a> {
     wasi: &'a HashMap<Wasi, u32>,
     /// Address of the interned "\n" used by sys.print (0 if unused).
     newline_addr: u32,
+    /// First heap address: 1024 plus the string literals, 8-aligned.
+    heap_start: u32,
     structs: &'a HashMap<String, StructDef>,
     /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
     fn_types: &'a HashMap<String, Type>,
@@ -714,7 +687,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore8 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
             }
@@ -724,7 +697,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore32 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
             }
@@ -734,7 +707,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore64 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
@@ -1191,7 +1164,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
-            emit_write_address_check(func, ctx.addr_scratch);
+            emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match field_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
@@ -1360,7 +1333,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Const(elem_size as i32));
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
-            emit_write_address_check(func, ctx.addr_scratch);
+            emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match elem_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
@@ -1546,15 +1519,17 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
 
 /// Emits the runtime memory-layout check for a store whose address is on top
 /// of the stack: traps (`unreachable`) if the address is in bytes 0-3 (the
-/// heap cursor) or 64-1023 (reserved). Mirrors `vm::check_write_address`
-/// exactly so both backends fail on the same writes. The address stays on the
-/// stack for the store that follows.
+/// heap cursor) or 64..heap_start (the reserved runtime block and the string
+/// literals). Mirrors `vm::check_write_address`, whose reserved range is
+/// 64-1023 because the VM copies literals onto the heap instead. The address
+/// stays on the stack for the store that follows.
 ///
 ///   [addr] local.tee s
 ///   local.get s ; i32.const 4  ; i32.lt_u              -> addr < 4
-///   local.get s ; i32.const 64 ; i32.sub ; i32.const 960 ; i32.lt_u  -> 64 <= addr < 1024
+///   local.get s ; i32.const 64 ; i32.sub ; i32.const (heap_start - 64) ; i32.lt_u
 ///   i32.or ; if unreachable end
-fn emit_write_address_check(func: &mut Function, scratch: u32) {
+fn emit_write_address_check(func: &mut Function, ctx: &Ctx) {
+    let scratch = ctx.addr_scratch;
     func.instruction(&Instruction::LocalTee(scratch));
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(4));
@@ -1562,7 +1537,7 @@ fn emit_write_address_check(func: &mut Function, scratch: u32) {
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(64));
     func.instruction(&Instruction::I32Sub);
-    func.instruction(&Instruction::I32Const(960));
+    func.instruction(&Instruction::I32Const(ctx.heap_start as i32 - 64));
     func.instruction(&Instruction::I32LtU);
     func.instruction(&Instruction::I32Or);
     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
@@ -1588,8 +1563,64 @@ const RT_NBYTES: i32 = 80;
 const RT_OPENED_FD: i32 = 84;
 /// String literals are interned here, as [len u32 LE][bytes]; a `str` value is
 /// the address of the bytes.
-const STRING_DATA_BASE: u32 = 512;
-const STRING_DATA_CAPACITY: u32 = 512;
+const STRING_DATA_BASE: u32 = 1024;
+/// The literals and the heap start must fit in the initial 16 pages.
+const STRING_DATA_LIMIT: u32 = 16 * 65536;
+
+/// Where a module's string literals live. Both backends use it, so a literal
+/// has the same address in the VM and in wasm.
+pub struct StringLayout {
+    /// The data segment placed at 1024: each literal once, as [len u32 LE][bytes].
+    pub blob: Vec<u8>,
+    /// Literal -> address of its bytes; a `str` value is that address.
+    pub addrs: HashMap<String, u32>,
+    /// Address of the interned "\n" used by sys.print under WASI (0 if unused).
+    pub newline_addr: u32,
+    /// First heap address: just past the literals, 8-aligned. Stores below it
+    /// (other than to the cells 4..64) trap, so literals are read-only.
+    pub heap_start: u32,
+}
+
+/// Interns `module`'s string literals in first-use order (the "\n" for
+/// sys.print first, when the module prints under WASI).
+pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
+    let mut blob: Vec<u8> = Vec::new();
+    let mut addrs: HashMap<String, u32> = HashMap::new();
+    let intern = |s: &str, blob: &mut Vec<u8>, map: &mut HashMap<String, u32>| -> u32 {
+        if let Some(&a) = map.get(s) {
+            return a;
+        }
+        let addr = STRING_DATA_BASE + blob.len() as u32 + 4;
+        blob.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        blob.extend_from_slice(s.as_bytes());
+        map.insert(s.to_string(), addr);
+        addr
+    };
+    let mut newline_addr = 0u32;
+    if collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+        newline_addr = intern("\n", &mut blob, &mut addrs);
+    }
+    walk_module(module, &mut |e| {
+        if let Expr::Lit(Literal::Str(s), _) = e {
+            intern(s, &mut blob, &mut addrs);
+        }
+    });
+    let heap_start = heap_start_after(blob.len());
+    if heap_start > STRING_DATA_LIMIT {
+        return Err(format!(
+            "Wasm Codegen: string literals need {} bytes but at most {} fit before the heap",
+            blob.len(),
+            STRING_DATA_LIMIT - STRING_DATA_BASE
+        ));
+    }
+    Ok(StringLayout { blob, addrs, newline_addr, heap_start })
+}
+
+/// The heap cursor's initial value for a module with `blob_len` bytes of
+/// string literals: the first 8-aligned address after them.
+fn heap_start_after(blob_len: usize) -> u32 {
+    (STRING_DATA_BASE + blob_len as u32 + 7) & !7
+}
 
 /// The first preopened directory a WASI host hands to the module.
 const WASI_PREOPEN_FD: i32 = 3;

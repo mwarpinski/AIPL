@@ -31,8 +31,9 @@
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
   ;;   mem[4]  = compile error code (0 = none; codes in AIPL_SPEC.md 6.4)
   ;;   mem[8]  = struct table pointer       (31 structs x 256 bytes: up to 15 fields)
-  ;;   mem[12] = string state block pointer (4096 bytes: blob len, count,
-  ;;             newline addr, blob buffer ptr, then 12-byte entries)
+  ;;   mem[12] = string state block pointer (16384 bytes: blob len, count,
+  ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
+  ;;             the blob buffer holds 65536 bytes)
   ;;   mem[16] = keyword table pointer      (1024 bytes)
   ;;   mem[20] = function table pointer     (256 entries x 88 bytes: up to 16 params)
   ;;   mem[24] = locals table pointer       (256 entries x 12 bytes)
@@ -87,17 +88,20 @@
   (fn set_newline_addr [addr:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 8) addr) 0)
   (fn str_blob_buf [] -> i32 (mem.load32 (+ (call str_table_ptr) 12)))
   (fn str_entry_ptr [idx:i32] -> i32 (+ (+ (call str_table_ptr) 16) (* idx 12)))
+  ;; String literals are placed at 1024; the heap starts at the first 8-aligned
+  ;; address after them (wasm.rs heap_start_after), and stores below it trap.
+  (fn heap_start [] -> i32 (bitand (+ 1031 (call get_str_blob_len)) -8))
 
   ;; Idempotent: allocates the tables on first call, and clears error flags.
   (fn codegen_init [] -> i32
     (if (eq (mem.load32 16) 0)
         (block
           (mem.store32 8 (mem.alloc 8192))
-          (mem.store32 12 (mem.alloc 4096))
+          (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (mem.alloc 1024))
           (mem.store32 20 (mem.alloc 22528))
           (mem.store32 24 (mem.alloc 12288))
-          (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 16384))
+          (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
           0)
@@ -662,7 +666,7 @@
     (set! off (+ off (call emit_local_get (+ ptr off) scratch_idx)))
     (set! off (+ off (call emit_i32_const (+ ptr off) 64)))
     (set! off (+ off (call emit_byte (+ ptr off) 107)))                 ;; i32.sub
-    (set! off (+ off (call emit_i32_const (+ ptr off) 960)))
+    (set! off (+ off (call emit_i32_const (+ ptr off) (- (call heap_start) 64))))
     (set! off (+ off (call emit_byte (+ ptr off) 73)))                  ;; i32.lt_u
     (set! off (+ off (call emit_byte (+ ptr off) 114)))                 ;; i32.or
     (set! off (+ off (call emit_byte (+ ptr off) 4)))                   ;; if
@@ -776,7 +780,11 @@
       (set! cur (call node_next cur)))
     cur)
 
+  ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds
+  ;; itself: `and` does not short-circuit, so callers' guards do not protect
+  ;; it, and an atom's a field is a value, not a node address.
   (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
+    (if (neq (call node_kind group) 20) (return -1) (block))
     (let head:i32 (call node_a group))
     (if (neq (call node_kind head) 6)
         -1
@@ -925,7 +933,7 @@
 
   ;; mem.alloc that grows linear memory to cover the new block. mem.alloc only
   ;; moves the cursor; without this a large compile walks off the end of
-  ;; memory. Sets compile error 90 if the 100-page cap would be exceeded.
+  ;; memory. Sets compile error 90 if the 1024-page cap would be exceeded.
   (fn cg_alloc [n:i32] -> i32
     (let p:i32 (mem.alloc n))
     (let end:i32 (mem.load32 0))
@@ -952,60 +960,62 @@
 
   (fn intern_string [src_ptr:i32 pos:i32 len:i32] -> i32
     (let existing:i32 (call find_interned_string src_ptr pos len))
-    (if (neq existing -1)
-        existing
-        (block
-          (let blob_len:i32 (call get_str_blob_len))
-          (let addr:i32 (+ 516 blob_len))
-          ;; Decode escapes while writing bytes into str_blob_buf heap memory
-          (let write_ptr:i32 (+ (call str_blob_buf) (+ blob_len 4)))
-          (let decoded_len:i32 0)
-          (let i:i32 0)
-          (while (lt i len)
-            (let b:i32 (mem.load8 (+ src_ptr (+ pos i))))
-            (if (and (eq b 92) (lt (+ i 1) len))
-                (block
-                  (let nb:i32 (mem.load8 (+ src_ptr (+ pos (+ i 1)))))
-                  (let esc:i32 nb)
-                  (cond
-                    ((eq nb 110) (set! esc 10))
-                    ((eq nb 116) (set! esc 9))
-                    ((eq nb 114) (set! esc 13))
-                    ((eq nb 48) (set! esc 0))
-                    ((eq nb 92) (set! esc 92))
-                    ((eq nb 34) (set! esc 34))
-                    (else (set! esc nb)))
-                  (mem.store8 (+ write_ptr decoded_len) esc)
-                  (set! decoded_len (+ decoded_len 1))
-                  (set! i (+ i 2)))
-                (block
-                  (mem.store8 (+ write_ptr decoded_len) b)
-                  (set! decoded_len (+ decoded_len 1))
-                  (set! i (+ i 1)))))
-          ;; Store length as 4 LE bytes at blob_ptr in heap memory
-          (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
-          (mem.store8 (+ blob_ptr 0) (bitand decoded_len 255))
-          (mem.store8 (+ blob_ptr 1) (bitand (shr decoded_len 8) 255))
-          (mem.store8 (+ blob_ptr 2) (bitand (shr decoded_len 16) 255))
-          (mem.store8 (+ blob_ptr 3) (bitand (shr decoded_len 24) 255))
-          
-          (let new_blob_len:i32 (+ blob_len (+ 4 decoded_len)))
-          (call set_str_blob_len new_blob_len)
-          
-          (let scount:i32 (call get_str_count))
-          (let entry:i32 (call str_entry_ptr scount))
-          (mem.store32 (+ entry 0) pos)
-          (mem.store32 (+ entry 4) len)
-          (mem.store32 (+ entry 8) addr)
-          (call set_str_count (+ scount 1))
-          addr)))
+    (if (neq existing -1) (return existing) (block))
+    ;; the blob buffer and entry table are full: compile error 768
+    (if (or (gt (+ (call get_str_blob_len) (+ 4 len)) 65536) (gte (call get_str_count) 1364))
+        (block (call set_compile_error 768) (return 1028))
+        (block))
+    (let blob_len:i32 (call get_str_blob_len))
+    (let addr:i32 (+ 1028 blob_len))
+    ;; Decode escapes while writing bytes into str_blob_buf heap memory
+    (let write_ptr:i32 (+ (call str_blob_buf) (+ blob_len 4)))
+    (let decoded_len:i32 0)
+    (let i:i32 0)
+    (while (lt i len)
+      (let b:i32 (mem.load8 (+ src_ptr (+ pos i))))
+      (if (and (eq b 92) (lt (+ i 1) len))
+          (block
+            (let nb:i32 (mem.load8 (+ src_ptr (+ pos (+ i 1)))))
+            (let esc:i32 nb)
+            (cond
+              ((eq nb 110) (set! esc 10))
+              ((eq nb 116) (set! esc 9))
+              ((eq nb 114) (set! esc 13))
+              ((eq nb 48) (set! esc 0))
+              ((eq nb 92) (set! esc 92))
+              ((eq nb 34) (set! esc 34))
+              (else (set! esc nb)))
+            (mem.store8 (+ write_ptr decoded_len) esc)
+            (set! decoded_len (+ decoded_len 1))
+            (set! i (+ i 2)))
+          (block
+            (mem.store8 (+ write_ptr decoded_len) b)
+            (set! decoded_len (+ decoded_len 1))
+            (set! i (+ i 1)))))
+    ;; Store length as 4 LE bytes at blob_ptr in heap memory
+    (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
+    (mem.store8 (+ blob_ptr 0) (bitand decoded_len 255))
+    (mem.store8 (+ blob_ptr 1) (bitand (shr decoded_len 8) 255))
+    (mem.store8 (+ blob_ptr 2) (bitand (shr decoded_len 16) 255))
+    (mem.store8 (+ blob_ptr 3) (bitand (shr decoded_len 24) 255))
+
+    (let new_blob_len:i32 (+ blob_len (+ 4 decoded_len)))
+    (call set_str_blob_len new_blob_len)
+
+    (let scount:i32 (call get_str_count))
+    (let entry:i32 (call str_entry_ptr scount))
+    (mem.store32 (+ entry 0) pos)
+    (mem.store32 (+ entry 4) len)
+    (mem.store32 (+ entry 8) addr)
+    (call set_str_count (+ scount 1))
+    addr)
 
   (fn intern_newline [] -> i32
     (if (neq (call get_newline_addr) 0)
         (call get_newline_addr)
         (block
           (let blob_len:i32 (call get_str_blob_len))
-          (let addr:i32 (+ 516 blob_len))
+          (let addr:i32 (+ 1028 blob_len))
           (let write_ptr:i32 (+ (call str_blob_buf) (+ blob_len 4)))
           (mem.store8 write_ptr 10)
           (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
@@ -1994,8 +2004,7 @@
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
   (fn is_else_clause [src_ptr:i32 clause:i32] -> bool
-    (let head:i32 (call node_a clause))
-    (and (eq (call node_kind head) 6) (eq (call classify_keyword src_ptr (call node_a head) (call node_b head)) 115)))
+    (eq (call group_head_keyword src_ptr clause) 115))
 
   ;; (cond (c1 e...) ... (else e...)) as the nested ifs the Rust parser builds:
   ;; (if c1 (block e...) (if c2 (block e...) ... (block else...))).
@@ -2032,8 +2041,8 @@
     (let root:i32 (ptr.addr (call compiler.parse_ast tok_buf tok_cnt ast_buf)))
     
     (let _p:i32 (call walk_module_prepass src_ptr root))
-    ;; String data lives at 512..1023, as in wasm.rs STRING_DATA_CAPACITY.
-    (if (gt (call get_str_blob_len) 512) (call set_compile_error 768) 0)
+    ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
+    (if (gt (call heap_start) 1048576) (call set_compile_error 768) 0)
     (let _s:i32 (call collect_structs src_ptr root))
     (let import_count:i32 (mem.load32 32))
     (let func_count:i32 (call collect_functions src_ptr root (call fn_table)))
@@ -2223,7 +2232,7 @@
     (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; 1 memory
     (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)) ;; flags: has max
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16))) ;; min 16
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 100))) ;; max 100
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 1024))) ;; max 1024 pages (vm.rs MAX_PAGES)
 
     (mem.store8 (+ out off) 5) (set! off (+ off 1))
     (set! off (+ off (call compiler.encode_u32 (+ out off) sc_off)))
@@ -2361,21 +2370,21 @@
     (if has_strings (set! seg_cnt 2) (set! seg_cnt 1))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) seg_cnt)))
     
-    ;; Segment 0: heap cursor = 1024 at address 0
+    ;; Segment 0: heap cursor = heap_start at address 0
     (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; active segment 0
     (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
     (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 0)))
     (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)) ;; end
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 4))) ;; 4 bytes
-    (mem.store8 (+ scratch sc_off) 0) (mem.store8 (+ scratch (+ sc_off 1)) 4) (mem.store8 (+ scratch (+ sc_off 2)) 0) (mem.store8 (+ scratch (+ sc_off 3)) 0)
+    (mem.store32 (+ scratch sc_off) (call heap_start))
     (set! sc_off (+ sc_off 4))
 
-    ;; Segment 1: string blob at address 512
+    ;; Segment 1: string blob at address 1024
     (if has_strings
         (block
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
           (mem.store8 (+ scratch sc_off) 65) (set! sc_off (+ sc_off 1)) ;; i32.const
-          (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 512)))
+          (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 1024)))
           (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)) ;; end
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) string_blob_len)))
           (set! i 0)

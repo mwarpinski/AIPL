@@ -6,8 +6,8 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 1. Toolchain
 
-- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` itself: `aipl compile --self` resolves in Rust and prints the flat module back as source for it (P14 moves resolution into AIPL), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and there is no standalone self-hosted command yet (a `driver.aipl` around `codegen.compile_module`).
-- **Import resolution is Rust (P14).** `src/resolver.rs` is bootstrap scaffolding. WASI file I/O now exists, so nothing blocks rewriting it in AIPL except P9 finishing first.
+- **The self-hosted toolchain has no type checker and no command of its own.** `aipl_src/driver.aipl` (resolver + codegen) compiles multi-file programs to the same bytes as the Rust toolchain, itself included, but it trusts its input: only the Rust checker type-checks. A host must call `driver.compile_file` with the paths, because AIPL programs cannot read their command line or environment (see section 4). Float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973 (AIPL_SPEC.md 6.4).
+- **Two import resolvers.** `src/resolver.rs` serves `verify`, `eval`, `compile`, and `test`; `aipl_src/resolver.aipl` serves `compile --self` and the wasm toolchain. Tests hold them equal (AIPL_SPEC.md 11). The Rust one can go once the checker is also in AIPL, since the Rust checker consumes the Rust resolver's parsed module.
 - **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
@@ -28,15 +28,15 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **`mem.free` is a no-op** in both backends (the argument is not even evaluated). The allocator is bump-only, so long-running programs leak.
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
-- **Memory caps at 100 pages (6.4 MiB)** in both backends. Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
+- **Memory caps at 1024 pages (64 MiB)** in both backends. Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 
 ## 4. Strings and I/O
 
 - **No string concatenation in wasm.** `(+ str str)` is VM-only.
 - **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, number formatting and parsing (`str.parse_int`), a string builder (`buf`), and `i32` collections (`vec`, `map`, `strmap`); still missing are floats in text, sets, and anything generic.
-- **VM `str` values are Rust strings, not pointers.** `str.ptr` and `str` struct fields copy the string into the heap each time, so heap addresses after those operations differ from wasm, where a `str` is the interned literal's address.
+- **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code. **`sys.time` is unimplemented** in both backends.
-- **String literals share a 512-byte area per module** (addresses 512–1023).
+- **No program arguments or environment variables.** There is no op to read the command line or the environment, in either backend, so a host passes such values in memory (as the self-hosted resolver's library directories are).
 
 ## 5. Concurrency
 

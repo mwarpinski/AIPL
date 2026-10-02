@@ -733,12 +733,14 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_str_field", &[]), Ok(Value::Int(13)));
     // count 3 + (3 * 8 bytes from the array pointer to the next block) + element 5
     assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 24 + 5)));
-    // 4-byte block at 1024, header at 1028, array at 1032, cursor 1032 + 8
+    // relative to the heap start H: 4-byte block at H, header at H+4, array at H+8, cursor H+8 + 8
     assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
-    // two 8-byte result cells at 1024 and 1032, then the 4-byte block
-    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1040)));
-    // result cell at 1024, array header at 1032, array at 1036
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1036)));
+    // The module's string literal occupies 1024..1032, so the heap starts at
+    // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
+    // the 4-byte block.
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
+    // result cell at 1032, array header at 1040, array at 1044
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1044)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -787,8 +789,8 @@ fn allocation_grows_memory_identically() {
     (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
   ;; past the 100-page cap allocation stops growing and the store fails in both
   (fn too_big [] -> i32
-    (let p:i32 (mem.alloc 7000000))
-    (mem.store32 (+ p 6999996) 1)
+    (let p:i32 (mem.alloc 68000000))
+    (mem.store32 (+ p 67999996) 1)
     0))
 "#;
     let (module, wasm) = compile_checked(src);

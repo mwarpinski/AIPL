@@ -31,7 +31,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U4 compiled code cannot do I/O | Fixed (P6) |
 | U5 control flow too poor | Fixed (P11) |
 | U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
-| U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically (2026-10-01) up to 100 pages and bounds are enforced in both backends; `mem.free` is still a no-op |
+| U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically (2026-10-01) up to 1024 pages and bounds are enforced in both backends; `mem.free` is still a no-op |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
 ---
@@ -368,7 +368,11 @@ Repo: AIPL. The x86_64 ELF emitter cannot compile control flow, function calls, 
 | (3) Remove "bare-metal", "dual-target", "ELF64" claims from README, spec, prompt guide, CLI `about` | Done | Also the spec subtitle, the web page title, two module headers, and compiler.aipl's dead `compile_to_target`/`compile_aipl` stubs (they returned -1 and advertised an ELF target). Remaining mentions are in `attic/` and this audit's history |
 | No x86 encoding code written | Done | |
 
-### P14 — Resolver in AIPL (unblocked by P6, P8, P9)
+### P14 — Resolver in AIPL (unblocked by P6, P8, P9) [DONE — 2026-10-01, `src/resolver.rs` kept]
+
+**Completion 2026-10-01 (branch `features/p14`).** `aipl_src/resolver.aipl` matches `src/resolver.rs` (tested by compiled-byte equality over every multi-module program in the repository, aliases, diamonds, struct names, cycles, missing modules), `aipl compile --self` uses it, and `aipl_src/driver.aipl` (resolver + codegen) compiled to wasm reproduces itself under wasmtime. Deviations from the prompt below, each deliberate: the output is flat source text, not a merged AST, because that is what `codegen.compile_module` consumes; the search path is the spec's (importer, entry, then library directories passed by the host), not `aipl_modules/`; and `src/resolver.rs` is **not** deleted, because `verify`/`eval`/`compile`/`test` hand the Rust checker a Rust `Module`, which an AIPL resolver cannot produce until the checker is in AIPL too. It stays as the oracle the tests compare against. Needed along the way: string literals moved out of the 512-byte area (literals at 1024, heap after them), the memory cap raised to 1024 pages, and a non-short-circuit `and` bug in codegen.aipl fixed (PROGRESS.md has the details).
+
+Original prompt:
 
 ```
 Repo: AIPL. Rewrite src/resolver.rs as aipl_src/resolver.aipl using fs.open/fs.read (WASI-backed after P6) and the struct types from P8. Behavior must match resolver.rs exactly: locate `<name>.aipl` in the importer's directory then aipl_modules/; parse with compiler.parse_ast; detect cycles (in_progress set) and diamonds (included set); rename every fn in an imported module to `<import>.<fn>`, rewrite its internal `(call f)` and `(ref f)` targets and its alias-qualified calls to canonical names; the entry module's functions keep bare names. Output is a merged AST in memory that codegen.emit_module consumes. Add tests mirroring tests/test_v2.rs::test_v2_multi_module_linkage and the circular-import error. Once `aipl compile --self` passes on test_suite.aipl using resolver.aipl, delete src/resolver.rs and route main.rs through the VM-hosted resolver.aipl. Update the TEMPORARY header's promise in PROGRESS.md as fulfilled.
