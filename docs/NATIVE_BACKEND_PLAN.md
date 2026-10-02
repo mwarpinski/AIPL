@@ -18,7 +18,7 @@ so new language features only ever change AIPL → wasm, and the native backend 
 
 **A baseline compiler.** One pass per function, like V8's Liftoff or wasmtime's Winch: walk the wasm instructions in order and emit machine code for each, keeping the wasm value stack on the machine stack, with values loaded into a few scratch registers per instruction. No register allocator and no optimisation at first. Expected speed: perhaps 2-5x slower than wasmtime's optimising Cranelift output, which is still fast; output is a few KB to a few hundred KB instead of 18 MB. Optimisation can come later without changing anything around it.
 
-**Correctness by comparison.** Every existing test program has a known-good wasm build and runs under `aipl-run`. Each native milestone is tested by compiling the same programs natively and requiring identical stdout and exit status. This is the same discipline that kept the VM, the Rust backend, and the self-hosted compiler in agreement.
+**Correctness by comparison.** Every existing test program has a known-good wasm build and runs under `aipl-run`. Each native task is tested by compiling the same programs natively and requiring identical stdout and exit status. This is the same discipline that kept the VM, the Rust backend, and the self-hosted compiler in agreement.
 
 ## Input: what the backend must translate
 
@@ -61,7 +61,7 @@ Each import becomes a small routine emitted into every executable that uses it, 
 
 ## Where the code goes
 
-All new code is AIPL, in `aipl_src/native/` (created milestone by milestone, never as empty stubs):
+All new code is AIPL, in `aipl_src/native/` (each file created by the task that fills it, never as an empty stub):
 
 | File | Job |
 |---|---|
@@ -74,25 +74,101 @@ All new code is AIPL, in `aipl_src/native/` (created milestone by milestone, nev
 
 The driver gains a native target; `aipl compile --exe` uses it on Linux x86-64 and the launcher everywhere else. The only Rust involved is the CLI flag, until the CLI itself moves to AIPL.
 
-## Milestones
+## Tasks (NE1-NE18)
 
-Each one is a separate session or two, ends with tests passing, and leaves the tree usable.
+Like the audit's P-tasks: each is small enough for one session, lives on its own branch `features/native_elf/pN` (cut from `development`, merged back when done), and ends with a check that must actually pass. "Done when" is the bar: a task that returns a number without the check passing is not done (PROGRESS.md, "Lessons"). Every task updates PROGRESS.md with what landed and any surprise, and adds its test programs to the shared native test list (NE5) so earlier tasks stay covered.
 
-| # | Milestone | Done when |
-|---|---|---|
-| M0 | `wasm_reader.aipl`: decode our modules | it decodes every repository program's wasm and reports matching section, function, and instruction counts (checked against `wasmparser` in a Rust test) |
-| M1 | `elf.aipl` + `x64.aipl` basics: a hand-built "hello" ELF | an AIPL-written executable prints a line via `write` and exits with a chosen status |
-| M2 | integer core: locals, i32 arithmetic and comparisons, control flow, direct calls, traps | `examples/math_core.aipl` functions give the same results natively as under wasmtime |
-| M3 | linear memory: reservation, loads/stores, store guard, allocation, `memory.grow/size`, data segments | `quicksort`, `accounts`, and the struct/array differential programs agree |
-| M4 | the WASI layer with the file-access rules | `word_count`, `word_freq`, the `test_wasi` and `test_runner` programs agree, including `--sandbox` refusing absolute paths |
-| M5 | i64, f64, conversions, `call_indirect` | `matrix_mult`, the i64/float differential tests, function references agree |
-| M6 | threads: `clone`, futex, atomics | every `tests/test_threads.rs` program agrees |
-| M7 | self-hosting | the AIPL compiler (`driver.aipl`) built natively compiles itself to identical wasm, and its native build is reproducible |
-| M8 | CLI and docs | `aipl compile --exe` is native by default on Linux x86-64; spec and PROGRESS updated |
+Order: NE1 → NE2 → NE3 → NE4 → NE5, then NE6-NE9 in order, then NE10-NE14 (NE12-NE14 can go in any order), then NE15 → NE16 → NE17 → NE18.
+
+### Group A: reading wasm
+
+**NE1: wasm_reader, module structure.** Depends on: nothing.
+Create `aipl_src/native/wasm_reader.aipl`: decode a wasm module (bytes as `(ptr str.Bytes)`) into typed records: header check, type section (function signatures), imports (module, name, kind, type index; memory imports with limits and the shared flag), function section, table, memory, global (type, mutability, init), exports, start, element (active, function indices), data count, and data segments (active with offset, or passive). Code bodies are kept as byte ranges for NE2. Use generic `std/vec` collections. Unknown sections or encodings our compiler never emits are a clear error naming them.
+Done when: a Rust test decodes the wasm of every repository program plus the thread and generics test programs and checks each section's counts and contents against `wasmparser`.
+
+**NE2: wasm_reader, function bodies.** Depends on: NE1.
+Decode each body: local declarations, then the instruction stream into a vec of instruction records (opcode, immediates: indices, block types, memargs, constants including LEB128 i32/i64 and f64 bits), including the `0xFC` (`memory.init`) and `0xFE` (atomics) prefixes. Exactly the list in "Input" above; anything else is an error naming the opcode.
+Done when: the same Rust test also compares every function's instruction count and opcode sequence with `wasmparser`'s operator reader.
+
+### Group B: writing machine code
+
+**NE3: x64 encoder.** Depends on: nothing (can run alongside NE1-NE2).
+Create `aipl_src/native/x64.aipl`: an append-only code buffer and one function per instruction form the lowering needs: register-to-register and immediate `mov`/`add`/`sub`/`and`/`or`/`xor`/`cmp`/`test`, shifts, `imul`, `div`/`idiv` with `cdq`/`cqo`, `movzx`/`movsx`, loads and stores with base + displacement (and base + index), `push`/`pop`, `lea`, `setcc`, `jmp`/`jcc`/`call` with 32-bit relative displacements and a fix-up helper for forward jumps, `call` through a register, `ret`, `syscall`, `ud2`, and the `lock` prefix; 32- and 64-bit operand sizes, with REX handling for r8-r15. SSE2 forms are added in NE13.
+Done when: a byte-level test (an AIPL self-test, wired into `test_suite.aipl`) checks each form against known encodings, including every register in both halves of the register file. Test vectors come from the Intel manual or `objdump` output pasted into the test, not from the encoder itself.
+
+**NE4: ELF writer and a first executable.** Depends on: NE3.
+Create `aipl_src/native/elf.aipl` (an ELF64 executable header and program headers for a read+execute code segment and a read+write data segment, entry point, page-aligned layout) and a tiny `runtime.aipl` start-up stub. Build, from AIPL, an executable that writes "hello from native AIPL" with the `write` system call and exits with status 7 through `exit_group`.
+Done when: a Rust test runs the generated file and checks stdout and exit status 7, and `readelf -h` (if installed, not required by the test) shows a valid header.
+
+**NE5: lowering skeleton and the native test harness.** Depends on: NE2, NE4.
+Create `aipl_src/native/lower.aipl` and `native.aipl` (wasm bytes in, executable bytes out). Baseline design: each function gets a frame (`rbp`-based) with its locals; the wasm value stack lives on the machine stack. Implement `i32.const`, `local.get/set/tee`, `drop`, `call` (direct), `return`, `end`, and the start-up path: `_start` calls the module's `_start` export and exits 0. Add a Rust helper `assert_native_matches(program)` that builds the program as wasm (run under `aipl-run`) and natively, and requires identical stdout, stderr, and exit status; it keeps one shared list of programs that later tasks extend.
+Done when: programs whose `main` only moves constants between locals and calls functions match, and the harness exists with that list.
+
+### Group C: the integer core
+
+**NE6: i32 arithmetic and traps.** Depends on: NE5.
+All `i32` arithmetic, bitwise, shift (count masked to 5 bits, as wasm), and comparison instructions, `eqz`, `i32.wrap_i64`. Division and remainder trap on zero and `INT_MIN / -1` exactly where wasm does (rem of `INT_MIN % -1` is 0, not a trap). The trap path: write `"wasm trap: <reason>"` to stderr and exit 134, matching `aipl-run`.
+Done when: the i32 cases of `tests/test_differential.rs` (wrapping, shifts, division) pass through the native harness, including trap cases.
+
+**NE7: control flow.** Depends on: NE6.
+`block`, `loop`, `if`/`else`, `br`, `br_if`, `unreachable`, with a label stack and branch fix-ups; block results; branches that leave values in the right place.
+Done when: `examples/math_core.aipl` and the `tests/test_control_flow.rs` programs (break, continue, return in loops, short-circuit `and`/`or`) match natively.
+
+**NE8: linear memory.** Depends on: NE7.
+At start-up `mmap` the 64 MiB maximum (reserve, then make the first 16 pages usable), keep its base in a dedicated register, and copy active data segments in. Loads and stores for every width with explicit bounds checks that trap like wasm; `memory.size`; `memory.grow` (up to 1024 pages, -1 beyond).
+Done when: the memory-layout and struct/array programs (`tests/test_memory_layout.rs`, `p8_structs_and_arrays` in `test_differential.rs`) match natively, including traps on out-of-range access.
+
+**NE9: single-threaded atomics.** Depends on: NE8.
+`i32.atomic.load/store`, `rmw.add/xchg/cmpxchg` as `lock` instructions; alignment traps as wasm. This is what every allocation uses.
+Done when: `examples/quicksort.aipl`, `examples/accounts.aipl`, and the atomics program in `tests/test_threads.rs` (`atomics_agree_without_threads`) match natively.
+
+### Group D: the runtime surface
+
+**NE10: WASI part 1.** Depends on: NE9.
+Start-up captures argc, argv, and envp from the initial stack. Implement `fd_write`, `fd_read`, `fd_close`, `proc_exit`, `args_sizes_get`, `args_get`, `environ_sizes_get`, `environ_get`, `clock_time_get`, `random_get` as routines in `runtime.aipl`, in the WASI layout and errno convention.
+Done when: the args/env, stdin, clock, and random programs from `tests/test_wasi.rs` and `tests/test_runner.rs` match natively (clock and random checked by property, as those tests do).
+
+**NE11: WASI part 2, files and the access rules.** Depends on: NE10.
+`path_open` and `path_unlink_file` through `openat`/`unlinkat`, with fd 3 = working directory and fd 4 = `/`, and the decided file-access rules: absolute paths allowed by default and refused with `--sandbox`; no path escapes its directory with `..`. The sandbox flag reaches the executable from the compiler (a byte in the data segment).
+Done when: `word_count`, `word_freq`, the file programs in `test_wasi.rs`, and the `--sandbox` cases in `test_runner.rs` match natively.
+
+### Group E: the rest of the instruction set
+
+**NE12: i64.** Depends on: NE9.
+All `i64` arithmetic, comparisons, `i64.extend_i32_s/u`, i64 loads and stores, with the same trap rules as NE6.
+Done when: `tests/test_i64.rs` programs match natively.
+
+**NE13: floats.** Depends on: NE9.
+SSE2 encoder forms in `x64.aipl`, then `f32`/`f64` constants, arithmetic, comparisons (NaN compares false, as wasm), loads/stores, `f64.convert_i64_s`, `i64.trunc_f64_s` (traps on NaN and out of range, exactly at wasm's bounds), and the reinterprets.
+Done when: the float programs in `test_differential.rs`, `examples/matrix_mult.aipl`, and the float-literal cases match natively.
+
+**NE14: function references.** Depends on: NE9.
+The function table, element section, and `call_indirect` with its type check (trap on mismatch, as wasm).
+Done when: `tests/test_refs.rs` programs and `vec.sort_by` users (`word_freq`, `std/vec` tests) match natively.
+
+### Group F: threads
+
+**NE15: thread creation.** Depends on: NE11, NE14.
+Threaded modules: shared memory, passive data plus the start function's `memory.init`, the per-thread global, and `thread-spawn` as `clone` with an `mmap`ed stack that runs `wasi_thread_start(tid, record)`. A thread that traps or exits ends the process, as under `aipl-run`.
+Done when: `join_returns_the_worker_result` and `concurrent_allocations_never_overlap` from `test_threads.rs` match natively.
+
+**NE16: waiting and locks.** Depends on: NE15.
+`memory.atomic.wait32` and `notify` as `futex` wait/wake; the lock and join paths built on them.
+Done when: every `tests/test_threads.rs` program matches natively, repeatedly (run each 20 times to shake out races).
+
+### Group G: finishing
+
+**NE17: the compiler, natively.** Depends on: NE16 and NE12-NE13.
+Build `aipl_src/driver.aipl` natively.
+Done when: the native `aiplc` compiles every repository program to the same wasm as the Rust toolchain, compiles itself to identical wasm, and building it natively twice gives identical executables (reproducible). Record its size and speed against the launcher build in PROGRESS.md.
+
+**NE18: make it the default.** Depends on: NE17.
+`aipl compile --exe` produces a native executable on Linux x86-64 (and the launcher bundle elsewhere, or with `--target wasm`); `--sandbox` works for both. Update AIPL_SPEC.md (a native backend section beside 6.5), README, PROGRESS, LANGUAGE_GAPS, and the audit.
+Done when: the full test suite passes, `test_runner.rs` covers both kinds of executable, and the docs describe the native path.
 
 ## Testing
 
-- A Rust test helper compiles a program three ways (wasm under `aipl-run`, native, and where useful the VM) and requires identical stdout, stderr, and exit status. Every milestone adds its programs to one list, so earlier milestones stay covered.
+- A Rust test helper (NE5) compiles a program as wasm under `aipl-run` and natively, and requires identical stdout, stderr, and exit status. Every task adds its programs to one list, so earlier tasks stay covered.
 - During development, `objdump -d` (if installed) is a useful aid for checking encodings, but tests must not depend on it.
 - Instruction encodings get small unit tests of their own (known instruction → known bytes), since one wrong byte in an encoder is otherwise hard to find.
 
@@ -100,5 +176,5 @@ Each one is a separate session or two, ends with tests passing, and leaves the t
 
 - **Encoding mistakes** are the most likely bug class: covered by the per-instruction byte tests and by whole-program comparison.
 - **Floating-point corner cases** (NaN, the trapping `i64.trunc_f64_s` range): follow the wasm spec exactly; the existing float differential tests cover them.
-- **Threads** are the hardest part; they come last (M6), when everything else is solid.
-- **Scope:** this is several thousand lines of AIPL. The milestones are ordered so each is useful and testable on its own; stopping after any of them leaves a working toolchain.
+- **Threads** are the hardest part; they come last (NE15-NE16), when everything else is solid.
+- **Scope:** this is several thousand lines of AIPL. The tasks are ordered so each is useful and testable on its own; stopping after any of them leaves a working toolchain.
