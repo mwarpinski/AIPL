@@ -6,7 +6,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 ## 1. Toolchain
 
-- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` itself: `aipl compile --self` resolves in Rust and prints the flat module back as source for it (P14 moves resolution into AIPL), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and `compile_to_target` in `compiler.aipl` still returns -1 (it needs a driver module that imports both compiler and codegen).
+- **The self-hosted compiler takes one import-free module.** `aipl_src/codegen.aipl` produces bytes identical to the Rust backend for the whole language except VM-only ops, including itself (AIPL_SPEC.md 6.4). It does not resolve `(import ...)` itself: `aipl compile --self` resolves in Rust and prints the flat module back as source for it (P14 moves resolution into AIPL), float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973, and there is no standalone self-hosted command yet (a `driver.aipl` around `codegen.compile_module`).
 - **Import resolution is Rust (P14).** `src/resolver.rs` is bootstrap scaffolding. WASI file I/O now exists, so nothing blocks rewriting it in AIPL except P9 finishing first.
 - **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.

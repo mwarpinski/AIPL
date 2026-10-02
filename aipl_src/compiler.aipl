@@ -1,6 +1,7 @@
-;; AIPL Dual-Target Sovereign Compiler Engine
-;; Written 100% in canonical AIPL S-Expressions
-;; Supports dynamic S-expression parsing, symbol table resolution, and dual-target Wasm & ELF64 native code generation
+;; Self-hosted compiler front end, written in AIPL: the tokenizer and the
+;; parser that turns AIPL source into a generic S-expression tree in memory.
+;; aipl_src/codegen.aipl imports this module and turns the tree into wasm
+;; (codegen.compile_module is the self-hosted compiler's entry point).
 
 (module aipl_compiler
 
@@ -303,15 +304,6 @@
     (mem.store32 (+ ast_out_ptr 0) 0)
     (mem.store32 (+ ast_out_ptr 4) 0)
     (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
-
-  ;; DUAL-TARGET COMPILER ENTRY POINT (target_flag: 0 = Wasm, 1 = Native ELF64)
-  ;; not yet wired to codegen.aipl
-  (fn compile_to_target [source_ptr:i32 source_len:i32 out_ptr:i32 target_flag:i32] -> i32
-    -1)
-
-  ;; Backward-compatible compile_aipl entry point (defaults to Wasm)
-  (fn compile_aipl [source_ptr:i32 source_len:i32 wasm_out_ptr:i32] -> i32
-    (call compile_to_target source_ptr source_len wasm_out_ptr 0))
 
 
   ;; ===== Tokenizer self-tests (content assertions, not just shape checks) =====

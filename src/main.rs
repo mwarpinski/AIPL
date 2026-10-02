@@ -9,7 +9,7 @@ use std::path::Path;
 
 #[derive(ClapParser)]
 #[command(name = "aipl")]
-#[command(about = "AI Programming Language (AIPL) - Machine-native, token-efficient, formally verifiable programming language and self-hosting Wasm compiler.")]
+#[command(about = "AIPL: an unambiguous, statically typed S-expression language for AI agents. Runs in a reference VM and compiles to WebAssembly + WASI, with a self-hosted compiler written in AIPL.")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

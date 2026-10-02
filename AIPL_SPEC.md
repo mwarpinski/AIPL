@@ -1,5 +1,5 @@
 # AIPL Formal Specification (v2.0 Systems & Concurrency Edition)
-## AI Programming Language: Machine-Native Formal Specification
+## AI Programming Language: Formal Specification
 
 > **Integer semantics: wasm semantics are the spec.** `i32` and `i64` are wrapping two's-complement; the VM must match wasmtime bit-for-bit, and any divergence is a VM bug. Enforced by `tests/test_differential.rs`, which runs every case in both backends.
 > **Reference Implementation Decision:** WebAssembly semantics are the definitive specification for AIPL. The VM must match WebAssembly behavior in all edge cases, 32-bit wrapping arithmetic, shift masking, and control flow semantics.

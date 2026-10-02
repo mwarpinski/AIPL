@@ -19,7 +19,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | B7 fabrications in tree | Fixed (P1) |
 | B8 duplicated code | Partly: `wasm_emitter.aipl` still duplicates `encode_u32`/`emit_header` with the LEB128 bug |
 | B9 byte emission via `mem.store32` | Open in `compiler.aipl`'s `encode_u32`/`emit_header` and `wasm_emitter.aipl` |
-| B10 ELF backend | Quarantined in `attic/` (P1); P13 retires it |
+| B10 ELF backend | Retired (P1 quarantine, P13 strategy in `docs/NATIVE_TARGET.md`) |
 | B11 no positions | Fixed (P4) |
 | B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
 | B13 interpreter clones the body on every call | Open (codegen.aipl compiling itself takes about 80 s in the VM) |
@@ -353,11 +353,20 @@ Repo: AIPL. Add a language version: `(module name :version 1)` (parser accepts o
 - **Binary AST: option (b), deleted.** `src/compiler/binary_ast.rs`, the `binary-encode`/`binary-decode` subcommands, the `rmp-serde` dependency, its round-trip test, and the benchmark's payload line are gone, and the spec's "dual representation" section is rewritten. The format was the serde layout of `src/ast.rs` (any enum reorder broke every file), no measurement of token savings existed (the prompt's condition for keeping it), and nothing depended on it. Text is the interchange format; `src/printer.rs` gives a canonical flat form of any resolved program.
 - **Language versioning: deferred by decision.** A mandatory `:version` would touch every `.aipl` file and hundreds of inline test programs for a language with one implementation, one repository, and no external users; the git SHA in a wasm custom section would also break byte parity with the self-hosted compiler (which cannot know the SHA) and make builds non-reproducible. Revisit when there are packages from different authors or a second toolchain. A cheap step then: an optional `:version N` (missing = current), unknown versions rejected, no SHA.
 
-### P13 — Retire the toy ELF backend; state the native strategy
+### P13 — Retire the toy ELF backend; state the native strategy [DONE — 2026-10-01]
 
 ```
 Repo: AIPL. The x86_64 ELF emitter cannot compile control flow, function calls, or memory access (attic/elf_emitter.aipl has no labels, relocations, stack frames, or jumps, hardcodes p_filesz=256, and encodes 32-bit cmpxchg as 0f b0). Do not extend it. Instead: (1) add `aipl build-native <file.aipl> -o <exe>` to src/main.rs that compiles to wasm via the existing backend, then shells out to `wasmtime compile` (or wasm2c + cc if wasmtime is absent) and errors clearly if neither tool is installed; (2) write docs/NATIVE_TARGET.md stating: native = wasm AOT for now; a true native backend will be built as a wasm->x86_64 lowering in AIPL only after codegen.aipl self-compiles byte-identically (P9's --self check), because wasm is the single semantic reference (P3); (3) remove every "bare-metal", "dual-target", and "ELF64" claim from README.md, AIPL_SPEC.md, PROMPT_GUIDE_FOR_AIS.md, and the clap `about` string in src/main.rs. Do not write any x86 encoding code.
 ```
+
+**Verification 2026-10-01 (branch `features/p13`).**
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| (1) `aipl build-native` shelling out to `wasmtime compile` or wasm2c + cc | Not done, by decision | `wasmtime compile` yields a `.cwasm` that still runs inside wasmtime, not an executable; wasm2c needs a C toolchain plus a WASI runtime library; neither tool is installed here, so the command could not be tested. Both paths need nothing from AIPL beyond the `.wasm`, so `docs/NATIVE_TARGET.md` documents the commands instead |
+| (2) `docs/NATIVE_TARGET.md`: native = wasm AOT; any future native backend is a wasm-to-native lowering in AIPL after self-hosting | Done | Includes measured numbers (fib(27) ~1 ms under wasmtime vs ~460 ms in the VM) |
+| (3) Remove "bare-metal", "dual-target", "ELF64" claims from README, spec, prompt guide, CLI `about` | Done | Also the spec subtitle, the web page title, two module headers, and compiler.aipl's dead `compile_to_target`/`compile_aipl` stubs (they returned -1 and advertised an ELF target). Remaining mentions are in `attic/` and this audit's history |
+| No x86 encoding code written | Done | |
 
 ### P14 — Resolver in AIPL (unblocked by P6, P8, P9)
 

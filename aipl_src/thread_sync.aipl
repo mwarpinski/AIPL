@@ -1,4 +1,4 @@
-;; Native Stage 0 Multithreading & Atomic Synchronization Module
+;; Threads and atomics (VM only: the wasm backend rejects thread.* and atomic.*)
 ;; Thin AIPL wrappers over real thread.spawn/thread.join/atomic.* opcodes.
 ;; thread.spawn launches a genuine OS thread (std::thread in the VM, see
 ;; src/vm.rs) sharing this program's real linear memory; atomic.lock/unlock

@@ -52,7 +52,8 @@ Expected AIPL suite output:
 | P10 function references | **Done 2026-10-01** (branch `features/p10`, see below). |
 | P11 return/break/continue/cond | **Done 2026-10-01** (branch `features/p11`, see below). |
 | P12 versioning + binary AST | **Binary AST deleted; versioning deferred** (2026-10-01, see the audit's P12 note). |
-| P13–P14 | Not started. |
+| P13 retire ELF / native strategy | **Done 2026-10-01** (branch `features/p13`): ELF and "machine-native" claims removed, dead dual-target stubs deleted, strategy in `docs/NATIVE_TARGET.md`; no `build-native` command (see the audit's P13 note). |
+| P14 | Not started. |
 
 ## P8 verification (2026-10-01)
 
@@ -101,7 +102,7 @@ Done:
 
 Not done (AIPL_SPEC.md 6.4 lists the details):
 - **No import resolution.** `compile_module` takes one module; the parity and fixpoint tests merge compiler.aipl into codegen.aipl by hand. This is P14's job (resolver in AIPL).
-- **`compile_to_target` in `compiler.aipl` still returns -1.** Wiring it needs a third driver module (the P9 prompt explains why). A `driver.aipl` that reads a file, calls `compile_module`, and writes the result would also make the compiled self-hosted compiler a standalone command-line tool.
+- **No standalone self-hosted CLI yet.** The entry point is `codegen.compile_module`; a `driver.aipl` that reads a file, calls it, and writes the result would make the compiled self-hosted compiler a standalone tool under any WASI host. (The dead `compile_to_target`/`compile_aipl` stubs in `compiler.aipl` were removed in P13.)
 - Float literals outside the exact range (error 973) and exponent notation.
 
 ## P11: return, break, continue, cond (2026-10-01)
@@ -146,7 +147,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 - **Imports are qualified by default:** `(import name)` / `(import name as alias)`, called as `name.fn`. The goal is code from many uncoordinated AI authors composing without silent name collisions. Struct names are *not* qualified yet, so two modules defining the same struct name fail with `Duplicate struct definition`.
 - **The compile target is wasm + WASI.** It is the only vendor-neutral ABI with real I/O.
-- **Native speed comes from wasm plus an external AOT compiler** (Cranelift via wasmtime), not a hand-written ELF backend. `attic/elf_emitter.aipl` stays in the attic (P13).
+- **Native speed comes from wasm plus the runtime's compiler** (Cranelift via wasmtime, optionally ahead of time with `wasmtime compile`), not a native backend. `docs/NATIVE_TARGET.md` has the reasoning and measurements; `attic/elf_emitter.aipl` stays in the attic.
 - **Rust is for primitives and infrastructure, not compiler logic.** New opcodes and bootstrap bug fixes are fine. Parsing, resolution, and codegen policy belong in AIPL. Ask "is this a primitive or logic?" before reaching for Rust.
 - **Wasm semantics are the spec.** When the VM and wasm disagree, fix the VM. The only VM-only behaviours allowed are contracts and array bounds checks.
 - **Native multithreading** (shared memory + wasi-threads) is reachable but ranks behind finishing self-hosting. Atomics and threads are real in the VM and rejected by the wasm backend.
@@ -162,7 +163,7 @@ Done early on purpose: the next tasks (P8b standard library, P14 resolver in AIP
 
 1. Commit the P8 rework (this branch).
 2. A `driver.aipl` so the compiled self-hosted compiler runs as a standalone tool under any WASI host.
-3. P13 (retire the ELF claims; `build-native` via wasm AOT), P14 (resolver in AIPL). Language versioning is deferred until packages exist.
+3. P14 (resolver in AIPL), then a `driver.aipl` so the compiled self-hosted compiler runs standalone. Language versioning is deferred until packages exist.
 4. P12–P14 per the audit.
 
 ## Completed work log (condensed)
