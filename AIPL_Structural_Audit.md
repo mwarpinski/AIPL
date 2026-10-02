@@ -34,7 +34,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically up to 1024 pages and bounds are enforced in both backends. Still open: `mem.free` is a no-op (N6) |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
-**Still open, in order of risk:** N1 (`and`/`or` evaluate both operands), N2 (no generics), N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
+The order of upcoming work is in PROGRESS.md ("Next steps"), not section 4 below, which is the completed P1–P14 history. **Still open, in order of risk:** N1 (`and`/`or` evaluate both operands), N2 (no generics), N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
 
 ---
 

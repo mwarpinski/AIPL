@@ -2,7 +2,7 @@
 
 Read this before picking the work back up. It covers what is real, what is partial, how to verify it, and what comes next. Companion documents: [AIPL_SPEC.md](AIPL_SPEC.md) (the language as implemented), [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) (the ordered task list P1–P14 with agent prompts), [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not do yet).
 
-Last updated 2026-10-01, on branch `features/p8`.
+Last updated 2026-10-02. P1–P14 are done and merged to `development`; the direction and the next steps are at the end of this file.
 
 ## Environment
 
@@ -192,14 +192,36 @@ Every finding in AIPL_Structural_Audit.md was re-checked against the code; its s
 - **Browser demo and agent server** (N7): the runner now provides WASI imports instead of invented `env.dom_*` ones, and the server resolves imports. Dead `src/stdlib/` removed.
 - **codegen.aipl self-tests** (N9): string literals instead of hand-encoded bytes, and they check the output instead of "returned a positive length".
 
+## Direction (agreed 2026-10-02)
+
+These are the project owner's goals. They decide the order below and the answer to most design questions.
+
+- **AIPL programs ship as standalone executables.** `aipl compile --exe prog.aipl -o prog` gives one file you copy anywhere and run.
+- **Portability is required.** A program behaves identically on every platform. Wasm semantics are the definition (as they already are for the VM).
+- **Native where a backend exists, wasm everywhere else:**
+  - On a platform with a native backend, AIPL writes the executable itself, with no Rust and no runtime.
+  - Elsewhere, the executable is a small prebuilt shim (Rust, embedding wasmtime) plus the program's wasm, bundled into one file by AIPL.
+  - A plain `.wasm` stays available for any WASI host or a browser.
+- **Native backends translate wasm, not AIPL:** AIPL → wasm (codegen.aipl) → machine code, written in AIPL. New language features then only touch AIPL → wasm, and every native backend is tested by matching wasmtime's output on the same tests.
+- **Platforms:** Linux x86-64 first. Later, by anyone: Linux ARM64, macOS on Apple Silicon, Windows 10/11 on x86-64 and ARM64. Each is a self-contained backend.
+- **Migrate off Rust.** Rust was the bootstrap language. Before writing anything new in Rust, state why it cannot be AIPL. The irreducible native code is the shim that boots wasmtime on platforms without a native backend; it contains no decisions (flags, permissions policy, and bundling live in AIPL). The end state has no Rust in the compiler: `aipl` is either a native binary built by itself or the shim plus the AIPL compiler as wasm, rebuilt from a pinned stage-0 `aiplc.wasm` like Go and Rust bootstrap from a previous release.
+- **Language design:** whatever is more correct and less error-prone for AI agents (strict types, explicit forms); human ergonomics are secondary. Make structural changes early.
+
 ## Next steps, in order
 
-1. Decide N1: make `and`/`or` short-circuit (recommended; small now, two real bugs so far), or keep the current rule.
-2. Generics, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`.
-3. Decide N4: bounds-check compiled `arr.get`/`arr.set` (one load and compare), or keep the documented divergence.
-4. The checker in AIPL, after which `src/resolver.rs` and the Rust checker can retire and the Rust side shrinks to the VM, the wasm backend as an oracle, and primitives.
-5. `aipl run FILE.wasm` (N10), so tools and tests can use the compiled toolchain instead of the VM.
-6. Language versioning, once packages exist.
+1. **Short-circuit `and`/`or`** (audit N1). Small now; two real bugs so far. The VM, wasm.rs, and codegen.aipl lower them to `if`; the differential and parity tests cover it.
+2. **Automatic `_start`, the shim, and `aipl compile --exe`.**
+   - Both compilers add `_start` (calling `main` and exiting with its result) to any module with a `main`.
+   - A ~150-line Rust runner embeds wasmtime, finds the program appended to its own file, and runs it with WASI: stdio, args, env, the current directory, and the exit code.
+   - AIPL does the bundling.
+   - Check stdin reads and absolute paths (`fs.open` resolves against the first preopened directory only).
+3. **The type checker in AIPL.** After it, source → wasm is AIPL end to end. The Rust parser, resolver, checker, and wasm backend become test oracles, then retire.
+4. **Contracts compiled into wasm** (audit B5), so programs keep their checks outside the VM and the VM can retire. Also decide N4 here (bounds-check compiled `arr.get`/`arr.set`).
+5. **Generics**, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`. Likely as monomorphization in the AIPL front end, so no backend changes.
+6. **Linux x86-64 native backend:** wasm → x86-64 + ELF, in AIPL, with direct system calls. A baseline (non-optimizing) compiler first. Decide whether native builds enforce the same file-access rules as the wasm sandbox (recommended: yes, so behaviour matches).
+7. **Stage-0 seed and retiring the Rust compiler code:** commit a pinned `aiplc.wasm`, move the Rust integration tests to `aipl test`, and keep only the shim.
+
+Later: language versioning (once packages exist); `inv` contracts; a freeing allocator (N6).
 
 ## Completed work log (condensed)
 
