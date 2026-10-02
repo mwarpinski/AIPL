@@ -231,3 +231,65 @@ fn malformed_cond_is_rejected() {
     let err = Parser::parse("(module m (fn f [n:i32] -> i32 (cond ((lt n 0)) (else 1))))").unwrap_err();
     assert!(err.contains("cond clause needs a body"), "{err}");
 }
+
+/// `and`/`or` short-circuit (audit N1): the second operand runs only when it
+/// decides the result, in both backends.
+pub const SHORT_CIRCUIT: &str = r#"
+(module sc
+  ;; a zero divisor would trap if the second operand ran
+  (fn safe_ratio_is_two [d:i32] -> bool (and (neq d 0) (eq (/ 10 d) 2)))
+  (fn zero_or_divides [d:i32] -> bool (or (eq d 0) (eq (% 10 d) 0)))
+
+  ;; side effects: count how often each second operand runs
+  (fn bump [p:i32] -> bool (mem.store32 p (+ (mem.load32 p) 1)) true)
+  (fn side_effects [n:i32] -> i32
+    (let p:i32 (mem.alloc 4))
+    (loop i 0 (- n 1) 1
+      (let a:bool (and (lt i 3) (call bump p)))
+      (let b:bool (or (lt i 3) (call bump p))))
+    (mem.load32 p))
+
+  ;; break inside the second operand: the and's own if is one more label
+  ;; the first i in 0..n above 3, found by breaking out of the loop from
+  ;; inside the and's second operand
+  (fn first_index_over [n:i32] -> i32
+    (let found:i32 -1)
+    (loop i 0 n 1
+      (if (and (gt i 3) (block (set! found i) (break) true)) (block) (block)))
+    found)
+
+  ;; break and return inside arithmetic operands: later operands must not run
+  (fn jump_in_operand [n:i32] -> i32
+    (let p:i32 (mem.alloc 4))
+    (loop i 0 n 1
+      (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
+    (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
+
+  ;; nested, as the checker requires for more than two operands
+  (fn in_range [x:i32] -> bool (and (gte x 0) (and (lt x 10) (neq x 5)))))
+"#;
+
+#[test]
+fn and_or_short_circuit_in_both_backends() {
+    assert_eq!(run_both(SHORT_CIRCUIT, "safe_ratio_is_two", 0), 0);
+    assert_eq!(run_both(SHORT_CIRCUIT, "safe_ratio_is_two", 5), 1);
+    assert_eq!(run_both(SHORT_CIRCUIT, "zero_or_divides", 0), 1);
+    assert_eq!(run_both(SHORT_CIRCUIT, "zero_or_divides", 3), 0);
+    // 10 iterations: `and` runs bump for i < 3 (3 times), `or` for i >= 3 (7 times)
+    assert_eq!(run_both(SHORT_CIRCUIT, "side_effects", 10), 10);
+    assert_eq!(run_both(SHORT_CIRCUIT, "first_index_over", 2), -1);
+    assert_eq!(run_both(SHORT_CIRCUIT, "first_index_over", 9), 4);
+    // i = 0, 1 run the second operand; i = 2 breaks before it
+    assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 9), 201);
+    assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 60), -7);
+    assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 5), 0);
+    assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 7), 1);
+}
+
+#[test]
+fn and_or_take_exactly_two_operands() {
+    let err = check_err("(module m (fn f [] -> bool (and true true false)))");
+    assert!(err.contains("and takes exactly 2 operands, got 3"), "{err}");
+    let err = check_err("(module m (fn f [] -> bool (or true)))");
+    assert!(err.contains("or takes exactly 2 operands, got 1"), "{err}");
+}

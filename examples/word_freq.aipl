@@ -33,7 +33,7 @@
     (let start:i32 -1)
     ;; i runs one past the end so a final word is closed too
     (loop i 0 n 1
-      (let inside:bool (if (lt i n) (call is_word_byte (call str.byte_at text i)) false))
+      (let inside:bool (and (lt i n) (call is_word_byte (call str.byte_at text i))))
       (cond
         ((and inside (lt start 0)) (set! start i))
         ((and (not inside) (gte start 0))

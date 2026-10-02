@@ -744,15 +744,28 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&compare_instruction(op, &ty)?);
             }
+            // Short-circuit: the second operand runs only when it decides the
+            // result. (and a b) = if a then b else 0; (or a b) = if a then 1 else b.
             OpCode::And => {
                 compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32And);
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                with_label(ctx, Label::Plain, || {
+                    compile_expr(&args[1], ctx, func)?;
+                    func.instruction(&Instruction::Else);
+                    func.instruction(&Instruction::I32Const(0));
+                    Ok(())
+                })?;
+                func.instruction(&Instruction::End);
             }
             OpCode::Or => {
                 compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Or);
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                with_label(ctx, Label::Plain, || {
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::Else);
+                    compile_expr(&args[1], ctx, func)
+                })?;
+                func.instruction(&Instruction::End);
             }
             OpCode::Not => {
                 compile_expr(&args[0], ctx, func)?;

@@ -209,17 +209,21 @@ These are the project owner's goals. They decide the order below and the answer 
 
 ## Next steps, in order
 
-1. **Short-circuit `and`/`or`** (audit N1). Small now; two real bugs so far. The VM, wasm.rs, and codegen.aipl lower them to `if`; the differential and parity tests cover it.
-2. **Automatic `_start`, the shim, and `aipl compile --exe`.**
-   - Both compilers add `_start` (calling `main` and exiting with its result) to any module with a `main`.
-   - A ~150-line Rust runner embeds wasmtime, finds the program appended to its own file, and runs it with WASI: stdio, args, env, the current directory, and the exit code.
+Before the native backend, the language and runtime surface are completed so the backend is designed once (2026-10-02). The native backend translates wasm, so only features that change the emitted wasm or the runtime services can force it to be reworked; those come first.
+
+1. **Short-circuit `and`/`or`** (audit N1).
+2. **Threads in compiled code.** The VM has real threads; the wasm backend rejects `thread.*`/`atomic.*`. Needed: shared memory, wasm atomic instructions, `thread.spawn` through `wasi-threads`, and a thread-safe `mem.alloc`.
+3. **Complete the WASI surface the native backend must provide:** stdin, absolute file paths, the clock (`sys.time`), random numbers. Stay on WASI preview1, not the component model.
+4. **Generics**, so the collections are type-checked and the native backend (several thousand lines of AIPL) is not written with `ptr.cast` everywhere.
+5. **Automatic `_start`, the shim, and `aipl compile --exe`:**
+   - Both compilers add `_start` to any module with a `main`.
+   - A ~150-line Rust runner embeds wasmtime and runs the program appended to its own file, with WASI stdio, args, env, files, and the exit code.
    - AIPL does the bundling.
-   - Check stdin reads and absolute paths (`fs.open` resolves against the first preopened directory only).
-3. **The type checker in AIPL.** After it, source → wasm is AIPL end to end. The Rust parser, resolver, checker, and wasm backend become test oracles, then retire.
-4. **Contracts compiled into wasm** (audit B5), so programs keep their checks outside the VM and the VM can retire. Also decide N4 here (bounds-check compiled `arr.get`/`arr.set`).
-5. **Generics**, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`. Likely as monomorphization in the AIPL front end, so no backend changes.
-6. **Linux x86-64 native backend:** wasm → x86-64 + ELF, in AIPL, with direct system calls. A baseline (non-optimizing) compiler first. Decide whether native builds enforce the same file-access rules as the wasm sandbox (recommended: yes, so behaviour matches).
-7. **Stage-0 seed and retiring the Rust compiler code:** commit a pinned `aiplc.wasm`, move the Rust integration tests to `aipl test`, and keep only the shim.
+6. **Linux x86-64 native backend** (ELF executables, wasm → x86-64 in AIPL, direct system calls). A baseline compiler first. Decide whether native builds enforce the same file-access rules as the wasm sandbox (recommended: yes).
+7. **The type checker in AIPL**, then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
+8. **Stage-0 seed and retiring the Rust compiler code.**
+
+Explicitly not now, each additive later rather than a rewrite: SIMD, 64-bit memory, exceptions (results cover errors).
 
 Later: language versioning (once packages exist); `inv` contracts; a freeing allocator (N6).
 

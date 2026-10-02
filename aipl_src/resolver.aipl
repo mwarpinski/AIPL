@@ -263,8 +263,8 @@
     (let start:i32 0)
     (loop i 0 (get dirs str.Bytes.len) 1
       (if (eq src (ptr.null Src)) (block) (break))
-      ;; a ':' or the end closes an entry (or does not short-circuit, hence the if)
-      (if (if (eq i (get dirs str.Bytes.len)) true (eq (call str.byte_at dirs i) 58))
+      ;; a ':' or the end closes an entry
+      (if (or (eq i (get dirs str.Bytes.len)) (eq (call str.byte_at dirs i) 58))
           (block
             (if (gt i start)
                 (block

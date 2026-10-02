@@ -788,9 +788,8 @@
       (set! cur (call node_next cur)))
     cur)
 
-  ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds
-  ;; itself: `and` does not short-circuit, so callers' guards do not protect
-  ;; it, and an atom's a field is a value, not a node address.
+  ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds itself
+  ;; so any caller is safe: an atom's a field is a value, not a node address.
   (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
     (if (neq (call node_kind group) 20) (return -1) (block))
     (let head:i32 (call node_a group))
@@ -1910,6 +1909,27 @@
           (set! off (+ off (call compile_expr src_ptr val_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_memop (+ out_ptr off) (call store_opcode etype) (call mem_align etype))))
           (set! res off))
+        (block))
+
+    ;; and / or short-circuit, as wasm.rs: (and a b) = a; if (result i32) b else
+    ;; i32.const 0 end; (or a b) = a; if (result i32) i32.const 1 else b end.
+    (if (or (eq op_id 21) (eq op_id 22))
+        (block
+          (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 4)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 127)))
+          (call label_push 0)
+          (if (eq op_id 21)
+              (block
+                (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+                (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
+                (set! off (+ off (call emit_i32_const (+ out_ptr off) 0))))
+              (block
+                (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
+                (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
+                (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))))
+          (call label_pop)
+          (set! res (+ off (call emit_byte (+ out_ptr off) 11))))
         (block))
 
     (if (eq res -1)

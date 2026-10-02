@@ -500,6 +500,14 @@ impl TypeChecker {
                     Ok(Type::Bool)
                 }
                 OpCode::And | OpCode::Or => {
+                    if args.len() != 2 {
+                        return Err(format!(
+                            "{}:{}: {} takes exactly 2 operands, got {}; nest them: ({} a ({} b c))",
+                            l, c, if matches!(op, OpCode::And) { "and" } else { "or" }, args.len(),
+                            if matches!(op, OpCode::And) { "and" } else { "or" },
+                            if matches!(op, OpCode::And) { "and" } else { "or" }
+                        ));
+                    }
                     for arg in args {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Bool {

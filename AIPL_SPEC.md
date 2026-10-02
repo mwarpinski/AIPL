@@ -570,6 +570,7 @@ Rules that follow from this:
 | `(return v)` / `(return)` | leaves the function with `v` (which must have the function's return type), or with nothing from a `void` function; `ens` contracts still run on the returned value |
 | `(break)` | leaves the innermost `while` or `loop` |
 | `(continue)` | starts the next iteration of the innermost loop: a `while` re-tests its condition; a `loop` still applies its step first |
+| `(and a b)` / `(or a b)` | short-circuit: `b` runs only if `a` is `true` (for `and`) or `false` (for `or`). Exactly two `bool` operands; nest for more: `(and a (and b c))`. So `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(cond (c1 e...) (c2 e...) ... (else e...))` | the first clause whose test is true runs its body; `else` is required, like `if`'s else branch. The parser rewrites it to `(if c1 (block e...) (if c2 (block e...) ... (block e...)))`, so the `if` typing rules apply |
 
 `return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or a void `if`. An early exit is therefore written `(if (lt i 0) (return -1) (block))`, not `(if (lt i 0) (return -1) i)`, which mixes `void` and `i32`. A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
@@ -587,7 +588,9 @@ Rules that follow from this:
     (else "positive")))
 ```
 
-Lowering (wasm and the self-hosted compiler): `return` is the `return` instruction. Loops are `block { loop { ... } }`; `break` branches to the outer block. A `while` body's `continue` branches to the loop header. A `loop` wraps its body in one more block, and `continue` branches to that block's end, which falls into the step. Branch depths count the enclosing `if`s and `match_result` arms.
+Lowering (wasm and the self-hosted compiler): `return` is the `return` instruction. Loops are `block { loop { ... } }`; `break` branches to the outer block. A `while` body's `continue` branches to the loop header. A `loop` wraps its body in one more block, and `continue` branches to that block's end, which falls into the step. `(and a b)` is `a; if (result i32) b else i32.const 0 end` and `(or a b)` is `a; if (result i32) i32.const 1 else b end`. Branch depths count the enclosing `if`s (including those of `and`/`or`) and `match_result` arms.
+
+A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal because a `block` may end in a value) leaves the whole expression at once in both backends: operands after it are not evaluated.
 
 ---
 
@@ -1061,7 +1064,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
-| using `(and a b)` for short-circuiting | both operands are always evaluated; guard with a nested `if` whenever the second operand indexes, dereferences, or has side effects: `(if (lt i n) (eq (arr.get i32 a i) x) false)` |
+| `(and a b c)` with three operands | `and`/`or` take exactly two: `(and a (and b c))`. They short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |
 | `(thread.spawn name len arg)` with a name in memory | `(thread.spawn (ref worker) arg)`, `worker` of type `(fn [i32] -> i32)` |

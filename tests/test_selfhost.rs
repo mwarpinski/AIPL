@@ -462,6 +462,16 @@ fn self_hosted_bytes_match_std_library() {
     }
 }
 
+/// Short-circuit and/or (audit N1), including a break inside the second
+/// operand, at byte parity.
+#[test]
+fn self_hosted_bytes_match_short_circuit() {
+    let src = include_str!("test_control_flow.rs");
+    let start = src.find("(module sc").unwrap();
+    let end = src[start..].find("\"#;").unwrap();
+    assert_self_hosted_matches_rust("sc", &src[start..start + end]);
+}
+
 /// Past the old capacities (256 functions, 31 structs): the toolchain itself
 /// is about 250 functions, so the old limit was close to breaking self-compile.
 #[test]

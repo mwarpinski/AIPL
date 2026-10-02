@@ -56,11 +56,10 @@
     (let t:(ptr Table) (call fetch true))
     (loop i 0 (- (get t Table.count) 1) 1
       (let e:(ptr str.Bytes) (call entry t i))
-      (if (gt (get e str.Bytes.len) klen)
-          (if (and (eq (call str.byte_at e klen) 61)
-                   (call str.bytes_eq (call str.bytes (get e str.Bytes.addr) klen) key))
-              (return (call str.bytes (+ (get e str.Bytes.addr) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
-              (block))
+      (if (and (gt (get e str.Bytes.len) klen)
+               (and (eq (call str.byte_at e klen) 61)
+                    (call str.bytes_eq (call str.bytes (get e str.Bytes.addr) klen) key)))
+          (return (call str.bytes (+ (get e str.Bytes.addr) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
           (block)))
     (call str.bytes 0 -1))
 

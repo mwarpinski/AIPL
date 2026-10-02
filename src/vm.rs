@@ -282,7 +282,24 @@ impl VM {
         Ok(last_val)
     }
 
+    /// Evaluates `expr`. While a `return`/`break`/`continue` is unwinding
+    /// (`flow` is set), nothing more is evaluated: an operand that jumped
+    /// (`(+ 1 (block (break) 2))`) stops its enclosing expression, so later
+    /// operands and their side effects never run, as in wasm, where `br`
+    /// leaves the expression immediately. The enclosing op may then see a
+    /// `Void` operand and fail; that failure is discarded because the jump
+    /// supersedes it.
     pub fn eval_expr(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+        if self.flow.is_some() {
+            return Ok(Value::Void);
+        }
+        match self.eval_expr_inner(expr, scope) {
+            Err(_) if self.flow.is_some() => Ok(Value::Void),
+            r => r,
+        }
+    }
+
+    fn eval_expr_inner(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         match expr {
             Expr::Lit(lit, _) => match lit {
                 Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
@@ -1294,20 +1311,19 @@ impl VM {
                     _ => Err("Invalid types for >=".to_string()),
                 }
             }
-            OpCode::And => {
-                let a = self.eval_expr(&args[0], scope)?;
-                let b = self.eval_expr(&args[1], scope)?;
-                match (a, b) {
-                    (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x && y)),
-                    _ => Err("Invalid types for and".to_string()),
+            // Short-circuit: the second operand is evaluated only when the
+            // first does not decide the result.
+            OpCode::And | OpCode::Or => {
+                let a = match self.eval_expr(&args[0], scope)? {
+                    Value::Bool(x) => x,
+                    _ => return Err(format!("Invalid types for {:?}", op)),
+                };
+                if a == matches!(op, OpCode::Or) {
+                    return Ok(Value::Bool(a));
                 }
-            }
-            OpCode::Or => {
-                let a = self.eval_expr(&args[0], scope)?;
-                let b = self.eval_expr(&args[1], scope)?;
-                match (a, b) {
-                    (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x || y)),
-                    _ => Err("Invalid types for or".to_string()),
+                match self.eval_expr(&args[1], scope)? {
+                    Value::Bool(y) => Ok(Value::Bool(y)),
+                    _ => Err(format!("Invalid types for {:?}", op)),
                 }
             }
             OpCode::Not => {
