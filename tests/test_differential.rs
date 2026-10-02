@@ -784,7 +784,7 @@ fn allocation_grows_memory_identically() {
     (let big:i32 (mem.alloc 2000000))
     (mem.store32 (+ big 1999996) 7)
     (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
-  ;; past the 100-page cap allocation stops growing and the store fails in both
+  ;; past the 1024-page cap allocation stops growing and the store fails in both
   (fn too_big [] -> i32
     (let p:i32 (mem.alloc 68000000))
     (mem.store32 (+ p 67999996) 1)
@@ -794,4 +794,32 @@ fn allocation_grows_memory_identically() {
     // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
     assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
     assert!(differential(&module, &wasm, "too_big", &[]).is_err());
+}
+
+/// An allocation whose size expression itself allocates: the inner block must
+/// not be handed out again. Compiled code used to read the cursor before
+/// evaluating the size, so both allocations started at the same address in
+/// wasm (the VM was right). Allocation is now one atomic read-and-add after
+/// the size is known.
+#[test]
+fn nested_allocations_do_not_overlap() {
+    let src = r#"
+(module nest
+  (fn inner_size [] -> i32
+    (let p:i32 (mem.alloc 8))
+    (mem.store32 p 99)
+    8)
+  (fn main [] -> i32
+    (let q:i32 (mem.alloc (call inner_size)))
+    (mem.store32 q 7)
+    (mem.load32 (- q 8)))
+  ;; the same through arr.new's length and a struct inside a result payload
+  (fn arr_len_allocates [] -> i32
+    (let a:(arr i32) (arr.new i32 (call inner_size)))
+    (arr.set i32 a 0 5)
+    (mem.load32 (- (arr.addr a) 12))))
+"#;
+    let (module, wasm) = compile_checked(src);
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(99)));
+    assert_eq!(differential(&module, &wasm, "arr_len_allocates", &[]), Ok(Value::Int(99)));
 }

@@ -719,16 +719,11 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 // Bump allocator whose cursor is the i32 at linear-memory
                 // address 0 (HEAP_PTR_ADDR) - the same word the VM uses, so
                 // both backends and self-hosted AIPL share one allocator.
-                // Stack: [old] [0] [old] [size] -> add -> [old] [0] [new] -> store -> [old]
-                let cursor = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                // The size is evaluated first (it may allocate itself), then
+                // one atomic add claims the block: [0] [size] -> rmw.add -> [old].
                 func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Load(cursor));
-                func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Load(cursor));
                 compile_expr(&args[0], ctx, func)?;
-                func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::I32Store(cursor));
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
                 emit_grow_to_cursor(func);
             }
             OpCode::MemGrow => {
@@ -1114,19 +1109,9 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let size = crate::checker::get_struct_size(def)?;
-            let cursor = wasm_encoder::MemArg {
-                offset: 0,
-                align: 2,
-                memory_index: 0,
-            };
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(cursor));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(cursor));
             func.instruction(&Instruction::I32Const(size as i32));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I32Store(cursor));
+            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             emit_grow_to_cursor(func);
         }
         Expr::GetField {
@@ -1243,34 +1228,24 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Unreachable);
             func.instruction(&Instruction::End);
-            // result: cursor + 4
+            // claim 4 + n * elem_size bytes atomically; the block starts at `old`
+            let (block, _) = io_locals(ctx)?;
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::I32Const(4));
-            func.instruction(&Instruction::I32Add);
-            // cursor = cursor + 4 + n * elem_size, then grow memory to cover it
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Const(elem_size as i32));
             func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I32Store(M4));
+            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+            func.instruction(&Instruction::LocalSet(block));
             emit_grow_to_cursor(func);
-            // header: mem[cursor - 4 - n * elem_size] = n
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Const(elem_size as i32));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Sub);
-            func.instruction(&Instruction::I32Const(4));
-            func.instruction(&Instruction::I32Sub);
+            // header mem[old] = n; the array is old + 4
+            func.instruction(&Instruction::LocalGet(block));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Store(M4));
+            func.instruction(&Instruction::LocalGet(block));
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Add);
         }
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -1444,14 +1419,9 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
         ));
     }
     func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Load(M4));
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::I32Const(8));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&Instruction::I32Store(M4));
+    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
     emit_grow_to_cursor(func);
 
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -1839,17 +1809,15 @@ fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
     set
 }
 
-/// True if a function body contains any op lowered through WASI (and so needs
-/// the two extra I/O scratch locals).
+/// True if a function body needs the two extra scratch locals: an op lowered
+/// through WASI, or `arr.new` (which keeps its block address in one).
 fn fn_uses_io(body: &[Expr]) -> bool {
     let mut found = false;
     for e in body {
-        walk_expr(e, &mut |x| {
-            if let Expr::Op { op, .. } = x {
-                if Wasi::for_op(op).is_some() {
-                    found = true;
-                }
-            }
+        walk_expr(e, &mut |x| match x {
+            Expr::Op { op, .. } if Wasi::for_op(op).is_some() => found = true,
+            Expr::ArrNew { .. } => found = true,
+            _ => {}
         });
     }
     found
