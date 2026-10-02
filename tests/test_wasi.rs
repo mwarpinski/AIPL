@@ -447,3 +447,27 @@ fn misaligned_args_out_parameters_fail_in_both_backends() {
     let err = vm.invoke("f", vec![]).unwrap_err();
     assert!(err.contains("not 4-aligned"), "{err}");
 }
+
+/// examples/word_freq.aipl (collections, a sort comparator, std/os) prints
+/// the same ranking in both backends.
+#[test]
+fn word_freq_example_agrees_in_both_backends() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let module = Resolver::resolve(&root.join("examples/word_freq.aipl")).unwrap();
+    TypeChecker::new().check_module(&module).unwrap();
+    let wasm = WasmCompiler::compile(&module).unwrap();
+    let input = "b a c b, A! c b\nd";
+    let expected = "b 3\na 2\nc 2\nd 1\n";
+
+    let dir = scratch_dir("freq_wasi");
+    std::fs::write(dir.join("input.txt"), input).unwrap();
+    let mut w = instantiate(&wasm, &dir);
+    assert_eq!(call_i32(&mut w, "main").unwrap(), 4);
+    assert_eq!(String::from_utf8(w.stdout.contents().to_vec()).unwrap(), expected);
+
+    let vm_dir = scratch_dir("freq_vm");
+    std::fs::write(vm_dir.join("input.txt"), input).unwrap();
+    assert_eq!(vm_run_in(&module, "main", &vm_dir).unwrap(), Value::Int(4));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&vm_dir);
+}

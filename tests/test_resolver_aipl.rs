@@ -34,6 +34,7 @@ fn assert_resolves_like_rust(rel: &str) {
 #[test]
 fn word_count_resolves_like_rust() {
     assert_resolves_like_rust("examples/word_count.aipl");
+    assert_resolves_like_rust("examples/word_freq.aipl");
 }
 
 #[test]

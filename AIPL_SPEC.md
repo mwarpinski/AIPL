@@ -1,4 +1,4 @@
-# AIPL Formal Specification (v2.0 Systems & Concurrency Edition)
+# AIPL Specification
 ## AI Programming Language: Formal Specification
 
 > **Integer semantics: wasm semantics are the spec.** `i32` and `i64` are wrapping two's-complement; the VM must match wasmtime bit-for-bit, and any divergence is a VM bug. Enforced by `tests/test_differential.rs`, which runs every case in both backends.
@@ -93,7 +93,7 @@ Notes on the grammar as implemented by `src/parser.rs`:
 
 ---
 
-## 3. Type System & Formal Contracts
+## 3. Type System & Contracts
 
 AIPL is strongly and statically typed. Every parameter, return type, `let`, and struct field carries an explicit type annotation; the checker infers only the types of expressions.
 
@@ -108,8 +108,8 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(ptr S)`: a pointer to a struct `S`. `(arr T)`: a heap array of `T` made by `arr.new`. Both are checked strictly, are never interchangeable with `i32` or with each other, and lower to `i32` in wasm (section 4.E).
 - `(fn [t1 ...] -> r)`: a reference to a function with that signature, made by `(ref f)` and called with `call_ref` (section 4.G).
 
-### Formal Verification Contracts
-Functions support formal pre-conditions and post-conditions evaluated statically by the AIPL verifier before compilation:
+### Contracts
+`(req e)` (precondition) and `(ens e)` (postcondition) are `bool` expressions placed before the body; inside `ens`, `res` is the return value. The checker type-checks them; nothing is proven statically. The VM evaluates every `req` before the body and every `ens` after it (including after an early `return`) and fails the call with `Pre-condition failed in 'f' at L:C: (req ...) with x = ...` (or `Post-condition`, which also shows `res`). Compiled wasm omits contracts. `(inv e)` is parsed and type-checked but never evaluated (audit B5).
 ```lisp
 (fn db_read_slot [ptr:i32 offset:i32] -> i32
   (req (gt ptr 0))
@@ -279,7 +279,7 @@ source.aipl
 
 | Command | Stages run | Success output |
 |---|---|---|
-| `aipl verify FILE` | 1, 2, 3 | `[AIPL Verifier] SUCCESS: Module 'NAME' is 100% type-safe and contracts verified!` |
+| `aipl verify FILE` | 1, 2, 3 | `[AIPL Verifier] OK: module 'NAME' type-checks. Contracts are type-checked, not proven; ...` (nothing is proved: `req`/`ens` run in the VM, section 3) |
 | `aipl eval FILE [--func NAME] [-- ARGS...]` | 1, 2, 3, 4a | `[AIPL Result]: Int(42)` (Rust `Debug` of the returned `Value`; default `--func main`). The program's argv is `FILE ARGS...` (`std/os`) |
 | `aipl compile FILE [-o out.wasm]` | 1, 2, 3, 4b | `[AIPL Compiler] Successfully compiled 'FILE' -> 'out.wasm' (N bytes)` |
 | `aipl compile --self FILE [-o out.wasm]` | 1, 2, 3, 4b, then `resolver.resolve_file` and `codegen.compile_module` in the VM | compiles with the Rust toolchain and with the self-hosted one (AIPL resolver and AIPL codegen) and fails unless the bytes are identical (section 6.4) |
@@ -362,9 +362,9 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 |---|---|
 | 90 | `mem.grow` refused: the compile needs more than 1024 pages |
 | 91 | output or a function body exceeded `4 * src_len + 64 KiB` |
-| 92 | more than 256 functions, or a function with more than 16 parameters |
-| 93 | more than 256 locals in one function |
-| 94 | more than 31 structs, or a struct with more than 15 fields |
+| 92 | more than 2048 functions, or a function with more than 16 parameters |
+| 93 | more than 1024 locals in one function |
+| 94 | more than 255 structs, a struct with more than 15 fields, or more than 31 distinct `call_ref` signatures |
 | 95 | struct field or array element type is not a scalar (`i32 i64 f32 f64 bool str`) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
 | 97 | an `ok`/`err` payload that is not 32-bit |
@@ -496,7 +496,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
   (fn main [] -> i32
     (call safe_div 10 0)))
 ```
-`aipl eval contracts_demo.aipl` fails with `Pre-condition (req <expr>) failed in function 'safe_div'`, where `<expr>` is currently the Rust `Debug` dump of the contract AST (`Op { op: Neq, args: [...] }`), not source text. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
+`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
 
 ### 7.7 Results
 
@@ -660,7 +660,7 @@ Every parser and checker error is a single line of the form
 <line>:<col>: <message>
 ```
 
-with 1-based line and column of the offending token or the opening `(` of the offending form. The resolver prefixes the file path: `aipl_src/memory.aipl: 12:5: Undefined variable 'foo'`. VM runtime errors (contract failures, division by zero, out-of-bounds memory, unknown thread handle) currently have **no** position.
+with 1-based line and column of the offending token or the opening `(` of the offending form. The resolver prefixes the file path: `aipl_src/memory.aipl: 12:5: Undefined variable 'foo'`. Contract failures carry the contract's position (section 7). Other VM runtime errors (division by zero, out-of-bounds memory, unknown thread handle) currently have **no** position.
 
 Representative messages, exactly as produced:
 
@@ -836,7 +836,7 @@ Coverage:
 - Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
 - Typing and scoping (P7): one case per rule.
 - Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in the VM only; and the section 4.E example.
-- Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason. `hello_browser.aipl` is pinned as stale (removed `dom.*` ops) and the test fails if it ever parses again without being unpinned. The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous.
+- Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason, and files that do I/O (`word_count`, `word_freq`) are compared with captured output in `tests/test_wasi.rs` instead. Every example must parse (the stale-file list is empty). The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous; today it compares `accounts`, `math_core`, `matrix_mult`, and `quicksort` over 116 calls. Every example is also compiled by the self-hosted compiler at byte parity (`tests/test_selfhost.rs`).
 - `aipl_src/codegen.aipl`'s `test_signatures_and_locals` is compared under WASI (the module uses `fs.*` and so imports WASI).
 
 Sample argument values are deliberately small. Example functions use parameters as loop bounds, and a tree-walking VM asked to iterate `i32::MAX` times is not a test, it is a hang. Wrap-around is covered by the explicit expression cases instead.
@@ -1061,7 +1061,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
-| using `(and a b)` for short-circuiting | both operands are always evaluated; guard with a nested `if` if the second has side effects |
+| using `(and a b)` for short-circuiting | both operands are always evaluated; guard with a nested `if` whenever the second operand indexes, dereferences, or has side effects: `(if (lt i n) (eq (arr.get i32 a i) x) false)` |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |
 | `(thread.spawn name len arg)` with a name in memory | `(thread.spawn (ref worker) arg)`, `worker` of type `(fn [i32] -> i32)` |

@@ -230,13 +230,15 @@
                 <span>AIPL Source (S-Expression IR)</span>
                 <span style="font-size: 0.8rem; color: var(--text-muted);">Zero Syntactic Ambiguity</span>
             </div>
-            <textarea id="aipl-source" class="code-editor" spellcheck="false">(module hello_browser
-  (fn calculate_factorial [n:i32] -> i32
+            <textarea id="aipl-source" class="code-editor" spellcheck="false">(module hello
+  (import io)
+  (fn factorial [n:i32] -> i32
     (req (gte n 0))
-    (ens (gt res 0))
-    (if (lte n 1)
-        1
-        (* n (call calculate_factorial (- n 1))))))</textarea>
+    (if (lte n 1) 1 (* n (call factorial (- n 1)))))
+  (fn main [] -> i32
+    (call io.println "hello from AIPL")
+    (call io.println_int "10! = " (call factorial 10))
+    0))</textarea>
             <div class="btn-group">
                 <button class="btn" onclick="executeAipl()">Compile & Run Wasm</button>
                 <button class="btn btn-secondary" onclick="verifyContracts()">Verify Contracts</button>
@@ -333,9 +335,12 @@ Requires: cargo run --bin aipl -- serve (listens on 127.0.0.1:8080)</div>
 
             let instance;
             try {
-                const wasmBytes = base64ToBytes(data.wasm_base64);
-                const result = await WebAssembly.instantiate(wasmBytes, window.AIPLRunner.getImports());
-                instance = result.instance;
+                window.AIPLRunner.onOutput = (fd, text) => {
+                    const term = document.getElementById("output-terminal");
+                    term.textContent += text;
+                    term.scrollTop = term.scrollHeight;
+                };
+                instance = await window.AIPLRunner.instantiate(base64ToBytes(data.wasm_base64));
             } catch (e) {
                 log("[AIPL Error] WebAssembly instantiation failed: " + e.message);
                 setStatus("Wasm error", "#f87171");
@@ -345,11 +350,19 @@ Requires: cargo run --bin aipl -- serve (listens on 127.0.0.1:8080)</div>
             const exportNames = Object.keys(instance.exports).filter(n => typeof instance.exports[n] === "function");
             log("[AIPL Wasm] Instantiated. Exported functions: " + exportNames.join(", "));
 
-            if (typeof instance.exports.calculate_factorial === "function") {
-                const result = instance.exports.calculate_factorial(5);
-                log("[AIPL VM Result]: Function 'calculate_factorial(5)' -> " + result);
+            // Runs a zero-argument `main` if there is one; output from sys.print
+            // and std/io goes to this terminal through the WASI shims.
+            if (typeof instance.exports.main === "function" && instance.exports.main.length === 0) {
+                log("[AIPL Wasm] Running main():");
+                try {
+                    const result = instance.exports.main();
+                    log("[AIPL Wasm] main() -> " + result);
+                } catch (e) {
+                    if (e instanceof window.AIPLExit) log("[AIPL Wasm] exited with status " + e.code);
+                    else log("[AIPL Error] trap: " + e.message);
+                }
             } else {
-                log("[AIPL Notice] No 'calculate_factorial' export found - showing exports only. Call one from the DevTools console via the returned instance.");
+                log("[AIPL Notice] No zero-argument 'main' export; call an export from the DevTools console.");
             }
 
             app.textContent = "Wasm module compiled and instantiated. See the terminal for real output.";

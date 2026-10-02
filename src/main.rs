@@ -265,7 +265,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
-            println!("[AIPL Verifier] SUCCESS: Module '{}' is 100% type-safe and contracts verified!", module.name);
+            println!("[AIPL Verifier] OK: module '{}' type-checks. Contracts are type-checked, not proven; the VM evaluates req/ens on every call.", module.name);
         }
         Commands::Test { file, func } => {
             let module = Resolver::resolve(Path::new(&file))?;

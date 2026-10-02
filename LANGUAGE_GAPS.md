@@ -8,19 +8,19 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 - **The self-hosted toolchain has no type checker.** `aipl_src/driver.aipl` (resolver + codegen, a WASI command when compiled) compiles multi-file programs to the same bytes as the Rust toolchain, itself included, but it trusts its input: only the Rust checker type-checks. Float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973 (AIPL_SPEC.md 6.4).
 - **Two import resolvers.** `src/resolver.rs` serves `verify`, `eval`, `compile`, and `test`; `aipl_src/resolver.aipl` serves `compile --self` and the wasm toolchain. Tests hold them equal (AIPL_SPEC.md 11). The Rust one can go once the checker is also in AIPL, since the Rust checker consumes the Rust resolver's parsed module.
-- **The VM is slow (audit B13).** `invoke` clones the whole function body on every call. codegen.aipl compiling itself takes about 80 s in a debug build.
-- **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts. `aipl verify` prints "contracts verified" after type-checking them, not proving them.
+- **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
+- **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts, and nothing is proven statically (`aipl verify` says so).
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
-- **VM runtime errors have no source position.** A contract failure prints the contract as a Rust `Debug` dump, not source text.
+- **Most VM runtime errors have no source position.** Contract failures do (`Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`); an out-of-bounds index, a bad memory access, or a store into the reserved block names the op and address but not the line.
 
 ## 2. Language
 
 - **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
 - **No generics.** Containers (`std/vec`, `std/map`, `std/strmap`) hold `i32` words; a list of structs stores addresses with `ptr.addr` and reads them back with `ptr.cast`, an unchecked cast at every use. Generic types (`(vec T)`, `(map K V)`) would make these checked, and are the language feature the collections most need.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
-- **No generics, no visibility.** Every function in every module is addressable by its qualified name.
+- **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
-- **`and`/`or` do not short-circuit,** in either backend. Guard side-effecting or trapping operands with a nested `if`.
+- **`and`/`or` do not short-circuit,** in either backend. Guard side-effecting or trapping operands with a nested `if`. This has caused two real bugs in the self-hosted toolchain (a codegen read through a node address, a resolver read past a string's end); see the audit's N1.
 - **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), `mem.load_f32/f64` and `mem.store_f32/f64` are rejected by both backends (use struct fields or arrays of `f64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 ## 3. Memory
@@ -41,18 +41,16 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 
 `thread.spawn`/`thread.join` and `atomic.*` are real in the VM (OS threads sharing linear memory) and rejected by the wasm backend, which would need shared memory and wasi-threads. `mem.alloc` is not atomic, so allocate before spawning.
 
-## 6. Stale files still in the tree
+## 6. Self-hosted compiler capacities
 
-- `examples/hello_browser.aipl` uses the removed `dom.*` ops and no longer parses. `tests/test_differential.rs` pins it as stale.
-- `src/stdlib/web.rs` is a hard-coded JavaScript bridge string, left over from the removed `dom.*` ops.
-- `README.md` describes the pre-P1 tree (since corrected; check it before trusting it).
+`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 15 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
 
 ## 7. Before "many modules from many authors" is safe
 
 Still true from the original analysis, updated for what has landed:
 
 1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
-2. **Duplication is still easy.** `wasm_emitter.aipl` (now in `attic/`) was a live example. Imports make reuse possible, not the default; discoverability and lint tooling are missing.
+2. **Duplication is still easy.** Imports make reuse possible, not the default; discoverability and lint tooling are missing.
 3. **No versioning or dependency resolution.** Imports resolve by filename through the search path (AIPL_SPEC.md 11); there is no language version (deferred) and nothing handles package versions.
 4. **No privacy.** Every helper is public.
 

@@ -8,12 +8,12 @@ Last updated 2026-10-01, on branch `features/p8`.
 
 - Linux, Rust via `cargo`. Everything builds and tests with plain `cargo build` / `cargo test` from the repo root.
 - No external wasm runtime is required. The tests embed `wasmtime` and `wasmtime-wasi` as dev-dependencies and run compiled modules in-process. The `wasmtime` CLI is **not** installed on this machine. Any test that shells out to it would be vacuous, so none do.
-- `aipl compile --self` loads `aipl_src/codegen.aipl` by relative path, so run it from the repo root.
+- `aipl compile --self` finds `aipl_src/` through the crate directory, so it works from anywhere. The examples that read `input.txt` resolve it against the working directory.
 
 ## How to verify everything
 
 ```bash
-cargo test                                   # 160 tests; test_selfhost takes ~90 s (codegen compiles itself)
+cargo test                                   # 175 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -25,9 +25,15 @@ Expected AIPL suite output:
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 [PASS] memory: allocator + arena
 [PASS] file_io: real disk round-trip
-[PASS] std/str: byte slices (6 tests)
+[PASS] std/str: byte slices + parse_int (7 tests)
 [PASS] std/fmt: number formatting (6 tests)
+[PASS] resolver: imports in AIPL (3 tests)
+[PASS] std/os: arguments + environment (2 tests)
 [PASS] std/io: file round trip (2 tests)
+[PASS] std/vec: growable list + stable sort (5 tests)
+[PASS] std/map: i32 hash map (4 tests)
+[PASS] std/strmap: byte-string hash map (3 tests)
+[PASS] std/buf: string builder (3 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.
 ```
@@ -177,11 +183,23 @@ Found and fixed on the way:
 - **The memory cap was 100 pages (6.4 MiB),** too small for the toolchain compiling itself. It is now 1024 pages (64 MiB) in every backend.
 - **`codegen.is_else_clause` read source text at a node address** when a `cond` clause's head was a group: `and` does not short-circuit, so its kind check did not guard the keyword lookup. It read garbage harmlessly until memory grew large enough to trap. `group_head_keyword` now checks its own input, and `is_else_clause` uses it.
 
+## Re-audit (2026-10-01)
+
+Every finding in AIPL_Structural_Audit.md was re-checked against the code; its status table is current and its new section 3b lists what the original missed. Fixed in the same pass:
+- **Self-hosted capacities** (audit N5): the toolchain was 249 functions against a 256-function table, so a few more functions would have broken self-compilation. Now 2048 functions, 1024 locals, 255 structs, with a parity test past the old limits.
+- **B9:** `compiler.aipl` no longer writes bytes with 32-bit stores. **B13:** the VM shares function bodies instead of copying them per call (about 20% faster). **B5 (half):** `aipl verify` no longer claims contracts are verified, and contract failures print source, position, and arguments.
+- **Examples** (N8): placeholders replaced with real, tested programs (`math_core`, `quicksort`, `matrix_mult`, `accounts`, `word_count`, `word_freq`); `hello_browser`, `compound_test`, and `system_policy` removed. Writing them found two problems a reviewer would miss: a Lomuto quicksort that went quadratic on equal keys (replaced by Hoare partitioning: 22.8 s to 1.5 s in the VM), and an `isqrt` postcondition that overflowed `i32` at the largest input.
+- **Browser demo and agent server** (N7): the runner now provides WASI imports instead of invented `env.dom_*` ones, and the server resolves imports. Dead `src/stdlib/` removed.
+- **codegen.aipl self-tests** (N9): string literals instead of hand-encoded bytes, and they check the output instead of "returned a positive length".
+
 ## Next steps, in order
 
-1. Generics, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`.
-2. The checker in AIPL, after which `src/resolver.rs` and the Rust checker can retire and the Rust side shrinks to the VM, the wasm backend as an oracle, and primitives.
-3. Language versioning, once packages exist.
+1. Decide N1: make `and`/`or` short-circuit (recommended; small now, two real bugs so far), or keep the current rule.
+2. Generics, so the collections (`vec`, `map`, `strmap`) are type-checked instead of storing struct addresses as `i32`.
+3. Decide N4: bounds-check compiled `arr.get`/`arr.set` (one load and compare), or keep the documented divergence.
+4. The checker in AIPL, after which `src/resolver.rs` and the Rust checker can retire and the Rust side shrinks to the VM, the wasm backend as an oracle, and primitives.
+5. `aipl run FILE.wasm` (N10), so tools and tests can use the compiled toolchain instead of the VM.
+6. Language versioning, once packages exist.
 
 ## Completed work log (condensed)
 

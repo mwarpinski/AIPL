@@ -407,17 +407,14 @@ fn f64_arithmetic_agrees() {
 /// Argument values tried for every function whose parameters are all i32.
 /// Contract failures skip a tuple; everything else must agree. Values are kept
 /// small on purpose: example functions use their arguments as loop bounds
-/// (`matrix_mult.aipl` loops `iterations` times), and a tree-walking VM at
+/// and sizes (`matrix_mult.aipl` multiplies n x n matrices), and a tree-walking VM at
 /// `i32::MAX` iterations is a multi-hour run, not a test. Wrap-around edge
 /// cases are covered by the explicit single-expression tests above.
 const SAMPLE_ARGS: &[i32] = &[0, 1, 3, 7, 50, -1, -9];
 
 /// Examples that are known not to parse against the current language and are
 /// tracked elsewhere. Anything not on this list must parse, check, and compile.
-const KNOWN_STALE_EXAMPLES: &[(&str, &str)] = &[(
-    "hello_browser.aipl",
-    "uses dom.* / web.alert, which P2 removed from the language; needs rewriting or moving to attic/",
-)];
+const KNOWN_STALE_EXAMPLES: &[(&str, &str)] = &[];
 
 #[test]
 fn every_example_agrees_between_vm_and_wasmtime() {

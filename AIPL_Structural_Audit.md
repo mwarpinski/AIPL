@@ -4,39 +4,51 @@ Audit date: 2026-09-17. Tree at commit `c97a10c`. Every claim below is anchored 
 
 Companion documents: [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not yet do), [PROGRESS.md](PROGRESS.md) (what has been built and verified). This document is the execution roadmap: what is structurally sound, what is debt, what will break at scale, and the ordered list of tasks (with ready-to-run agent prompts) to fix it.
 
-## Status of the findings below (2026-10-01)
+## Status of the findings below (re-checked 2026-10-01)
 
-Sections 1–3 are the audit as written on 2026-09-17, and their line references point at that tree. Current state of each finding:
+Sections 1–3 are the audit as written on 2026-09-17, and their line references point at that tree. Every finding was re-checked against the code on 2026-10-01 (after P14); the table gives its current state. Findings the original audit did not cover are in section 3b.
 
 | Finding | Status |
 |---|---|
-| B1 silent catch-alls | Fixed (P2) |
+| B1 silent catch-alls | Fixed (P2). `tests/test_opcode_conformance.rs` covers every opcode |
 | B2 integer semantics diverge | Fixed (P3, i64 task) |
-| B3 type-system holes | Mostly fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types, pointers and arrays are strictly typed `(ptr S)` / `(arr T)` (2026-10-01). `Fn` types are still unparseable (P10) |
+| B3 type-system holes | Fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types, pointers and arrays are strictly typed `(ptr S)` / `(arr T)`, and `(fn [..] -> r)` types parse (P10) |
 | B4 scoping undefined | Fixed (P7) |
-| B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Open |
+| B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Partly fixed (2026-10-01): `aipl verify` now says contracts are type-checked, not proven, and a contract failure prints the contract as source with its position and the arguments. Still open: `inv` is never evaluated and compiled wasm has no contracts |
 | B6 two allocators | Fixed (P5) |
 | B7 fabrications in tree | Fixed (P1) |
-| B8 duplicated code | Partly: `wasm_emitter.aipl` still duplicates `encode_u32`/`emit_header` with the LEB128 bug |
-| B9 byte emission via `mem.store32` | Open in `compiler.aipl`'s `encode_u32`/`emit_header` and `wasm_emitter.aipl` |
+| B8 duplicated code | Fixed: `wasm_emitter.aipl` is in `attic/`; `compiler.aipl` holds the only `encode_u32`/`emit_header` |
+| B9 byte emission via `mem.store32` | Fixed (2026-10-01): `encode_u32` writes bytes with `mem.store8`; `emit_header` writes two aligned words |
 | B10 ELF backend | Retired (P1 quarantine, P13 strategy in `docs/NATIVE_TARGET.md`) |
-| B11 no positions | Fixed (P4) |
+| B11 no positions | Fixed (P4) for parse and check errors; most VM runtime errors still have none (LANGUAGE_GAPS.md 1) |
 | B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
-| B13 interpreter clones the body on every call | Open (codegen.aipl compiling itself takes about 80 s in the VM) |
+| B13 interpreter clones the body on every call | Fixed (2026-10-01): function bodies are shared (`Arc<FnDef>`), about 20% faster on the self-hosted toolchain. The VM is still a tree-walker with string-keyed scopes and is far slower than the compiled toolchain (N10) |
 | B14 binary AST is serde layout | Fixed (P12: deleted) |
-| B15 threads by name | Fixed (P10: `thread.spawn` takes a function reference) |
+| B15 threads by name | Fixed (P10: `thread.spawn` takes a function reference). The VM's per-thread `globals` map was never written and has been removed |
 | U1 no aggregate types | Fixed (P8) |
 | U2 fixed-address global state | Fixed (P5) |
-| U3 three semantics | Addressed: differential tests compare the VM and wasm, and self-hosted output must be byte-identical to the Rust backend |
-| U4 compiled code cannot do I/O | Fixed (P6) |
+| U3 three semantics | Addressed: wasm semantics are the spec, differential tests compare the VM against wasmtime, and the self-hosted output must equal the Rust backend's byte for byte, which is the diverse double-compilation check the audit asked for. The toolchain also reproduces itself under wasm (P14) |
+| U4 compiled code cannot do I/O | Fixed (P6; command line and environment in P14) |
 | U5 control flow too poor | Fixed (P11) |
-| U6 tests certify fabrications | Fixed (P1); the same failure recurred in P8 and was caught on re-verification |
-| U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically (2026-10-01) up to 1024 pages and bounds are enforced in both backends; `mem.free` is still a no-op |
+| U6 tests certify fabrications | Fixed (P1); recurred in P8 and was caught on re-verification. Self-tests that only checked "returned a number" in codegen.aipl now check their output (N9) |
+| U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically up to 1024 pages and bounds are enforced in both backends. Still open: `mem.free` is a no-op (N6) |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
+
+**Still open, in order of risk:** N1 (`and`/`or` evaluate both operands), N2 (no generics), N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
 
 ---
 
 ## 1. THE GOOD
+
+**As of 2026-10-01**, the strengths that matter most are ones the original audit could only hope for:
+
+- **Wasm semantics are the specification, and that is tested.** `tests/test_differential.rs` runs the same programs in the VM and in wasmtime, including every example and every standard-library module, and fails on any disagreement.
+- **Three code paths, one output.** The Rust backend, the self-hosted backend run in the VM, and the self-hosted backend compiled to wasm all emit identical bytes, and the whole self-hosted toolchain (driver, resolver, codegen, compiler, std) compiled to wasm recompiles itself to exactly itself in about half a second.
+- **The type system catches the mistakes LLMs make.** Strict `(ptr S)` / `(arr T)` types with explicit casts, namespaced structs, mandatory annotations, positioned diagnostics, and a checker that rejects misplaced `return`/`break`.
+- **Tests are checked for teeth.** New self-tests are confirmed to fail when the code under test is broken on purpose (PROGRESS.md records the mutations).
+
+The original section follows.
+
 
 **The grammar is the asset.** One S-expression form per construct, `(call f …)` syntactically distinct from `(op …)`, contracts as positional prefix forms. The Rust parser is 575 lines with zero lookahead beyond one token ([parser.rs:159-166](src/parser.rs#L159-L166)), and the same grammar has already been re-implemented in AIPL itself (`tokenize`/`parse_node` in [compiler.aipl:131-277](aipl_src/compiler.aipl#L131-L277)) and validated against real inputs. That is the self-hosting bet paying off early.
 
@@ -125,6 +137,32 @@ Consequences today: `%` parses ([parser.rs:505](src/parser.rs#L505)), type-check
 **U7. Memory has no growth, no free, no bounds contract.** 1MB hard cap; wasm max 100 pages; `mem.free` no-op; bump-only. A compiler that allocates 16 bytes per AST node and 12 per token exhausts this on a ~30KB source file. Nothing in the language can express "grow memory" (`memory.grow` is not an op).
 
 **U8. Nothing is versioned.** No language version in `(module …)`, no ABI version in the wasm output, `.baipl` is serde layout, `AIPL_SPEC.md` is prose. There is no way to say "this file is valid AIPL 0.3" or to reject a stale binary.
+
+---
+
+## 3b. Findings not covered by the original audit (2026-10-01)
+
+Found during P8–P14 and the 2026-10-01 re-check.
+
+**N1. `and`/`or` do not short-circuit. [Open; recommended next language change]** Both operands always run, in both backends. It has caused two real bugs in the self-hosted toolchain: `codegen.is_else_clause` read source text at a node address because its kind check did not guard the lookup (harmless garbage until memory grew, then a trap), and the resolver's directory scan read one byte past a string. The language exists to remove exactly this kind of trap for code generators, and every mainstream language short-circuits, so LLMs write the guard pattern by default. Making `and`/`or` short-circuit is cheap now (lower to `if` in the VM, wasm.rs, and codegen.aipl; differential and parity tests cover it) and gets more expensive as code depends on the current behaviour. Until then, LANGUAGE_GAPS.md, the spec's pitfalls table, and the prompt guide warn about it.
+
+**N2. No generics. [Open; next task]** `vec`, `map`, and `strmap` hold `i32`, so a list of structs is `ptr.addr` going in and an unchecked `ptr.cast` at every read (`examples/word_freq.aipl` shows the pattern). This undoes the strict pointer typing exactly where data structures are built.
+
+**N3. The checker exists only in Rust. [Open]** The self-hosted toolchain compiles whatever it is given; an ill-typed program can miscompile instead of failing. It is also why `src/resolver.rs` stays alongside `resolver.aipl`: the Rust checker consumes the Rust resolver's `Module`.
+
+**N4. Compiled array indexing is unchecked. [Open]** The VM bounds-checks `arr.get`/`arr.set`; wasm does not, so an off-by-one in compiled code silently reads or overwrites the neighbouring heap block. The differential test accepts this one divergence explicitly. The length is in the array header, so a check is one load, compare, and branch; the alternative is to keep the divergence documented.
+
+**N5. Self-hosted compiler capacities were nearly exhausted. [Fixed 2026-10-01]** codegen.aipl's tables held 256 functions and 31 structs; the toolchain itself had reached 249 functions, so a few more would have broken self-compilation with error 92. Now 2048 functions, 1024 locals per function, and 255 structs, with a parity test past the old limits. The remaining fixed limits are listed in LANGUAGE_GAPS.md 6.
+
+**N6. The allocator never frees. [Open]** `mem.free` is a no-op and allocation is bump-only (U7's remainder). Fine for compilers and batch tools, which is everything in the repository; not for long-running programs.
+
+**N7. The browser demo and agent server were stale. [Fixed 2026-10-01]** `web/aipl-web-runner.js` supplied invented `env.dom_*` imports that the compiler never emits, so any program that printed failed to instantiate in a browser, and the server's `/compile`, `/eval`, and `/verify` could not resolve imports. The runner now supplies the `wasi_snapshot_preview1` functions (output to the page, no filesystem), the page runs `main`, and the server resolves imports (`Resolver::resolve_source`). `src/stdlib/` (an unused "DOM / Canvas bindings" stub) was deleted.
+
+**N8. The examples were placeholders. [Fixed 2026-10-01]** `quicksort.aipl` compared three numbers, `matrix_mult.aipl` summed a constant, `hello_browser.aipl` used removed ops and did not parse, and two files duplicated `math_core.aipl`. They are rewritten as real programs (an O(n log n) quicksort with a Hoare partition, f64 matrix multiplication over a struct, accounts with results, word frequencies with collections and a sort comparator) and all are tested in both backends and at self-hosted byte parity.
+
+**N9. Weak and hand-encoded self-tests in codegen.aipl. [Fixed 2026-10-01]** Three tests passed if the compiler returned any positive length, and all four built their input with hundreds of hand-written byte codes, the pattern PROGRESS.md warns about. They now use string literals and check the wasm header, and breaking the header writer makes them fail.
+
+**N10. The VM is the slow path. [Open]** The self-hosted toolchain takes seconds in the VM and milliseconds compiled. `aipl compile --self`, `aipl eval`, and `aipl test` all use the VM. An `aipl run FILE.wasm` that executes compiled output in-process (wasmtime is currently only a dev-dependency) would let the toolchain and tests run compiled.
 
 ---
 

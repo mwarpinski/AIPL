@@ -10,39 +10,26 @@
   ;; address of its first child, which is read back with (ptr.cast Node ...).
   (struct Node [kind:i32 a:i32 b:i32 next:(ptr Node)])
 
-  ;; LEB128 Unsigned 32-bit Integer Encoder
+;; Unsigned LEB128 of val at ptr (val read as unsigned); returns the byte count.
   (fn encode_u32 [ptr:i32 val:i32] -> i32
     (req (gte ptr 0))
     (ens (gt res 0))
-    (let bytes_written:i32 0)
-    (let temp:i32 val)
-    (let keep_looping:bool true)
-    (while keep_looping
-      (let byte_val:i32 (bitand temp 127))
-      (set! temp (shru temp 7))
-      (let byte_out:i32 byte_val)
-      (if (neq temp 0)
-        (set! byte_out (bitor byte_val 128))
-        (set! byte_out byte_val))
-      (mem.store32 (+ ptr bytes_written) byte_out)
-      (set! bytes_written (+ bytes_written 1))
-      (if (eq temp 0)
-        (set! keep_looping false)
-        (set! keep_looping true)))
-    bytes_written)
+    (let n:i32 0)
+    (let rest:i32 val)
+    (while true
+      (let low:i32 (bitand rest 127))
+      (set! rest (shru rest 7))
+      (if (eq rest 0)
+          (block (mem.store8 (+ ptr n) low) (set! n (+ n 1)) (break))
+          (block (mem.store8 (+ ptr n) (bitor low 128)) (set! n (+ n 1)))))
+    n)
 
-  ;; Wasm Header Emitter (\0asm version 1)
+  ;; Wasm header: magic "\0asm" then version 1, as two little-endian words.
   (fn emit_header [ptr:i32] -> i32
     (req (gte ptr 0))
     (ens (eq res 8))
-    (mem.store32 (+ ptr 0) 0)   ;; \0
-    (mem.store32 (+ ptr 1) 97)  ;; a
-    (mem.store32 (+ ptr 2) 115) ;; s
-    (mem.store32 (+ ptr 3) 109) ;; m
-    (mem.store32 (+ ptr 4) 1)   ;; v1
-    (mem.store32 (+ ptr 5) 0)
-    (mem.store32 (+ ptr 6) 0)
-    (mem.store32 (+ ptr 7) 0)
+    (mem.store32 ptr 1836278016)
+    (mem.store32 (+ ptr 4) 1)
     8)
 
   ;; ===== Real Tokenizer =====

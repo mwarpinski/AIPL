@@ -55,13 +55,14 @@ enum Flow {
 }
 
 pub struct VM {
-    functions: Arc<HashMap<String, FnDef>>,
+    /// Shared bodies: a call takes a reference-counted handle, not a deep copy
+    /// of the function's AST (audit B13).
+    functions: Arc<HashMap<String, Arc<FnDef>>>,
     /// Function names in load order: `(ref f)` is f's position here, which is
     /// also its slot in the wasm backend's function table.
     fn_order: Arc<Vec<String>>,
     structs: Arc<HashMap<String, StructDef>>,
     flow: Option<Flow>,
-    globals: HashMap<String, Value>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
     next_fd: i32,
@@ -87,7 +88,6 @@ impl VM {
             fn_order: Arc::new(Vec::new()),
             structs: Arc::new(HashMap::new()),
             flow: None,
-            globals: HashMap::new(),
             shared: Arc::new(Mutex::new(SharedMemory {
                 bytes: {
                     // 16 pages, with the heap cursor at address 0 pre-set to
@@ -120,7 +120,6 @@ impl VM {
             fn_order: Arc::clone(&self.fn_order),
             structs: Arc::clone(&self.structs),
             flow: None,
-            globals: HashMap::new(),
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
             next_fd: 3,
@@ -213,7 +212,7 @@ impl VM {
             if !f_map.contains_key(&f.name) {
                 order.push(f.name.clone());
             }
-            f_map.insert(f.name.clone(), f);
+            f_map.insert(f.name.clone(), Arc::new(f));
         }
         self.fn_order = Arc::new(order);
         self.functions = Arc::new(f_map);
@@ -251,10 +250,7 @@ impl VM {
             if let Contract::Requires(expr) = contract {
                 let res = self.eval_expr(expr, &mut scope)?;
                 if res != Value::Bool(true) {
-                    return Err(format!(
-                        "Pre-condition (req {:?}) failed in function '{}'",
-                        expr, fn_name
-                    ));
+                    return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None));
                 }
             }
         }
@@ -278,10 +274,7 @@ impl VM {
                 contract_scope.insert("res".to_string(), last_val.clone());
                 let res = self.eval_expr(expr, &mut contract_scope)?;
                 if res != Value::Bool(true) {
-                    return Err(format!(
-                        "Post-condition (ens {:?}) failed in function '{}'",
-                        expr, fn_name
-                    ));
+                    return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some(&last_val)));
                 }
             }
         }
@@ -300,8 +293,6 @@ impl VM {
             },
             Expr::Var(name, _) => {
                 if let Some(val) = scope.get(name) {
-                    Ok(val.clone())
-                } else if let Some(val) = self.globals.get(name) {
                     Ok(val.clone())
                 } else {
                     Err(format!("VM: Variable '{}' not found in scope", name))
@@ -1600,4 +1591,45 @@ pub fn check_write_address(op: &str, ptr: usize, heap_start: usize) -> Result<()
         ));
     }
     Ok(())
+}
+
+/// A contract failure as source text with the call's arguments, e.g.
+/// `Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`.
+fn contract_failure(
+    kind: &str,
+    form: &str,
+    expr: &Expr,
+    fn_name: &str,
+    params: &[(String, Type)],
+    scope: &HashMap<String, Value>,
+    result: Option<&Value>,
+) -> String {
+    let (line, col) = expr.span();
+    let mut bound: Vec<String> = params
+        .iter()
+        .filter_map(|(name, _)| scope.get(name).map(|v| format!("{} = {}", name, value_str(v))))
+        .collect();
+    if let Some(r) = result {
+        bound.push(format!("res = {}", value_str(r)));
+    }
+    let with = if bound.is_empty() { String::new() } else { format!(" with {}", bound.join(", ")) };
+    format!(
+        "{} failed in '{}' at {}:{}: ({} {}){}",
+        kind, fn_name, line, col, form, crate::printer::expr_str(expr), with
+    )
+}
+
+/// A value as AIPL source would write it (pointers and arrays as their address).
+fn value_str(v: &Value) -> String {
+    match v {
+        Value::Int(i) => i.to_string(),
+        Value::Int64(i) => format!("{i}i64"),
+        Value::Float(x) => format!("{x:?}"),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => format!("{s:?}"),
+        Value::Ok(x) => format!("(ok {})", value_str(x)),
+        Value::Err(x) => format!("(err {})", value_str(x)),
+        Value::Void => "void".to_string(),
+        other => format!("{other:?}"),
+    }
 }

@@ -23,7 +23,8 @@ RULES:
 11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
 12. Code meant for `aipl compile` must not use thread.*, atomic.*, sys.time, or (+ str str); sys.print takes str only.
 13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures.
-14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file; (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections: (import vec) list of i32 (vec.make, vec.push, vec.get, vec.len, vec.sort, vec.sort_by with a (fn [i32 i32] -> i32) comparator); (import map) i32->i32 hash map (map.make, map.put, map.get m k default, map.has, map.remove); (import strmap) the same keyed by (ptr str.Bytes); (import buf) string builder (buf.push_str, buf.push_int, buf.bytes). Containers hold i32: store struct pointers with (ptr.addr p) and read back with (ptr.cast S x). str.parse_int parses decimal text. Allocation grows memory by itself.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file, and io.read_path / io.write_path for a path held as (ptr str.Bytes); (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections: (import vec) list of i32 (vec.make, vec.push, vec.get, vec.len, vec.sort, vec.sort_by with a (fn [i32 i32] -> i32) comparator); (import map) i32->i32 hash map (map.make, map.put, map.get m k default, map.has, map.remove); (import strmap) the same keyed by (ptr str.Bytes); (import buf) string builder (buf.push_str, buf.push_int, buf.bytes). Containers hold i32: store struct pointers with (ptr.addr p) and read back with (ptr.cast S x). str.parse_int parses decimal text. (import os) gives os.arg_count, os.arg i (0 is the program; len -1 past the end), and os.env "NAME" (len -1 if unset). Allocation grows memory by itself.
+15. (and a b) and (or a b) evaluate BOTH operands. Never write (and (lt i n) (… index i …)) to guard an access: use (if (lt i n) (… index i …) false).
 ```
 
 ---
@@ -159,6 +160,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 - [ ] `loop` end bounds are inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
 - [ ] `return`/`break`/`continue` sit in statement positions (`(if c (return v) (block))`), and every `cond` ends with `(else ...)`.
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
+- [ ] No `and`/`or` used as a guard: both operands always run, so an out-of-range index or null pointer in the second one is still evaluated.
 - [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
 - [ ] Code meant to compile avoids VM-only ops (AIPL_SPEC.md 6.3).

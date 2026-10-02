@@ -1,18 +1,22 @@
-;; word_count: reads input.txt, prints its line, word, and byte counts, and
-;; returns the line count (-1 if the file cannot be read). Same output in the
-;; VM and as compiled wasm under WASI; the counting and printing come from the
-;; standard library in aipl_src/std/ (io, str).
-;;   cd examples && ../target/debug/aipl eval word_count.aipl
-;;   aipl compile examples/word_count.aipl -o wc.wasm && cd examples && wasmtime run --dir=. ../wc.wasm --invoke main
+;; word_count: reads a file (the first command-line argument, else input.txt),
+;; prints its line, word, and byte counts, and returns the line count (-1 if
+;; the file cannot be read). Same output in the VM and as compiled wasm under
+;; WASI; the counting and printing come from the standard library.
+;;   cd examples && ../target/debug/aipl eval word_count.aipl -- input.txt
+;;   aipl compile examples/word_count.aipl -o wc.wasm
+;;   cd examples && wasmtime run --dir=. --invoke main ../wc.wasm
 (module word_count
   (import io)
   (import str)
+  (import os)
   (fn main [] -> i32
-    (let b:(ptr str.Bytes) (call io.read_file "input.txt"))
+    (let path:(ptr str.Bytes) (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
+    (let b:(ptr str.Bytes) (call io.read_path path))
     (if (lt (get b str.Bytes.len) 0)
-        (block (call io.eprintln "word_count: cannot open input.txt") -1)
-        (block
-          (call io.println_int "lines: " (call str.count_lines b))
-          (call io.println_int "words: " (call str.count_words b))
-          (call io.println_int "bytes: " (get b str.Bytes.len))
-          (call str.count_lines b)))))
+        (block (call io.eprintln "word_count: cannot read the input file") (return -1))
+        (block))
+    (let lines:i32 (call str.count_lines b))
+    (call io.println_int "lines: " lines)
+    (call io.println_int "words: " (call str.count_words b))
+    (call io.println_int "bytes: " (get b str.Bytes.len))
+    lines))

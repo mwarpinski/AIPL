@@ -1,0 +1,73 @@
+;; Bank accounts: structs, results for recoverable errors, and contracts for
+;; programming errors. A failed operation returns (err code) and changes
+;; nothing; callers branch with match_result.
+(module accounts
+  ;; balance in cents
+  (struct Account [id:i32 balance:i32 frozen:bool])
+
+  ;; error codes
+  (fn err_amount [] -> i32 1)
+  (fn err_funds [] -> i32 2)
+  (fn err_frozen [] -> i32 3)
+
+  (fn open [id:i32 initial:i32] -> (ptr Account)
+    (req (gte initial 0))
+    (let a:(ptr Account) (new Account))
+    (put a Account.id id)
+    (put a Account.balance initial)
+    (put a Account.frozen false)
+    a)
+
+  ;; The new balance, or the reason nothing happened.
+  (fn deposit [a:(ptr Account) amount:i32] -> (result i32 i32)
+    (cond
+      ((lte amount 0) (err (call err_amount)))
+      ((get a Account.frozen) (err (call err_frozen)))
+      (else
+       (put a Account.balance (+ (get a Account.balance) amount))
+       (ok (get a Account.balance)))))
+
+  (fn withdraw [a:(ptr Account) amount:i32] -> (result i32 i32)
+    (cond
+      ((lte amount 0) (err (call err_amount)))
+      ((get a Account.frozen) (err (call err_frozen)))
+      ((gt amount (get a Account.balance)) (err (call err_funds)))
+      (else
+       (put a Account.balance (- (get a Account.balance) amount))
+       (ok (get a Account.balance)))))
+
+  ;; Moves amount from one account to the other, or neither changes. Checks
+  ;; the destination first so a failed deposit never needs undoing.
+  (fn transfer [from:(ptr Account) to:(ptr Account) amount:i32] -> (result i32 i32)
+    (if (get to Account.frozen) (return (err (call err_frozen))) (block))
+    (match_result (call withdraw from amount)
+      (ok left (block (call deposit to amount) (ok left)))
+      (err code (err code))))
+
+  ;; Opens two accounts with `start` cents each, then transfers `amount`
+  ;; `times` times: the final balance of the source, or -code for the first
+  ;; failure.
+  (fn simulate [start:i32 amount:i32 times:i32] -> i32
+    (req (gte start 0))
+    (let a:(ptr Account) (call open 1 start))
+    (let b:(ptr Account) (call open 2 start))
+    (loop i 1 times 1
+      (match_result (call transfer a b amount)
+        (ok left (block))
+        (err code (return (- 0 code)))))
+    (get a Account.balance))
+
+  ;; A frozen destination refuses the transfer and leaves the source alone.
+  (fn frozen_is_atomic [] -> bool
+    (let a:(ptr Account) (call open 1 500))
+    (let b:(ptr Account) (call open 2 0))
+    (put b Account.frozen true)
+    (match_result (call transfer a b 100)
+      (ok left false)
+      (err code (and (eq code (call err_frozen)) (eq (get a Account.balance) 500)))))
+
+  ;; 10000 - 3 * 2500 = 2500; a fourth and fifth transfer run out of funds (-2).
+  (fn main [] -> i32
+    (if (call frozen_is_atomic)
+        (+ (call simulate 10000 2500 3) (call simulate 10000 2500 5))
+        -1000)))

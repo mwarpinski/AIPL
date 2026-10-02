@@ -451,10 +451,31 @@ fn self_hosted_bytes_match_std_library() {
         ("std_buf", "aipl_src/std/buf.aipl"),
         ("std_os", "aipl_src/std/os.aipl"),
         ("word_count", "examples/word_count.aipl"),
+        ("word_freq", "examples/word_freq.aipl"),
+        ("quicksort", "examples/quicksort.aipl"),
+        ("matrix_mult", "examples/matrix_mult.aipl"),
+        ("accounts", "examples/accounts.aipl"),
+        ("math_core", "examples/math_core.aipl"),
     ] {
         let module = Resolver::resolve(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }
+}
+
+/// Past the old capacities (256 functions, 31 structs): the toolchain itself
+/// is about 250 functions, so the old limit was close to breaking self-compile.
+#[test]
+fn self_hosted_bytes_match_past_the_old_table_limits() {
+    let mut src = String::from("(module big\n");
+    for i in 0..40 {
+        src.push_str(&format!("  (struct S{i} [a:i32 b:i64])\n"));
+    }
+    for i in 0..300 {
+        let prev = if i == 0 { "0".to_string() } else { format!("(call f{} x)", i - 1) };
+        src.push_str(&format!("  (fn f{i} [x:i32] -> i32 (+ x {prev}))\n"));
+    }
+    src.push_str("  (fn sz [] -> i32 (sizeof S39)))");
+    assert_self_hosted_matches_rust("big", &src);
 }
 
 /// args.* and env.* (P14): all ten WASI imports in their fixed order, mixed

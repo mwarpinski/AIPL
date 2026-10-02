@@ -42,7 +42,14 @@ impl Resolver {
     pub fn resolve(entry_path: &Path) -> Result<Module, String> {
         let entry_src = fs::read_to_string(entry_path)
             .map_err(|e| format!("{}: Cannot read: {}", entry_path.display(), e))?;
-        let entry_module = crate::parser::Parser::parse(&entry_src)
+        Self::resolve_source(&entry_src, entry_path)
+    }
+
+    /// `resolve` for source text that is not in a file (the agent server's
+    /// request bodies): imports are searched as if the text were at
+    /// `entry_path`, which need not exist.
+    pub fn resolve_source(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
+        let entry_module = crate::parser::Parser::parse(entry_src)
             .map_err(|e| format!("{}: {}", entry_path.display(), e))?;
 
         // `included` tracks which resolved files have already had their
