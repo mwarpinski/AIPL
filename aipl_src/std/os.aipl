@@ -11,21 +11,16 @@
   ;; A fetched table: count entries, entry i's address at argv + 4i.
   (struct Table [count:i32 argv:i32])
 
-  ;; n bytes at a 4-aligned address: WASI requires it for the count, size,
-  ;; and pointer-table out-parameters.
-  (fn alloc_aligned [n:i32] -> i32
-    (bitand (+ (mem.alloc (+ n 3)) 3) -4))
-
   ;; is_env false: the arguments; true: the KEY=VALUE environment entries.
   (fn fetch [is_env:bool] -> (ptr Table)
-    (let sizes:i32 (call alloc_aligned 8))
+    (let sizes:i32 (mem.alloc 8))
     (let ok:i32 (if is_env (env.sizes sizes (+ sizes 4)) (args.sizes sizes (+ sizes 4))))
     (let t:(ptr Table) (new Table))
     (put t Table.count 0)
     (put t Table.argv 0)
     (if (neq ok 0) (return t) (block))
     (let count:i32 (mem.load32 sizes))
-    (let argv:i32 (call alloc_aligned (* 4 count)))
+    (let argv:i32 (mem.alloc (* 4 count)))
     (let buf:i32 (mem.alloc (mem.load32 (+ sizes 4))))
     (if (neq (if is_env (env.get argv buf) (args.get argv buf)) 0) (return t) (block))
     (put t Table.count count)
@@ -62,6 +57,12 @@
           (return (call str.bytes (+ (get e str.Bytes.addr) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
           (block)))
     (call str.bytes 0 -1))
+
+  ;; A random i32 from the operating system's generator (sys.random).
+  (fn random_i32 [] -> i32
+    (let p:i32 (mem.alloc 4))
+    (if (neq (sys.random p 4) 0) (sys.exit 70) (block))
+    (mem.load32 p))
 
   ;; Pass count; expects 2. A variable that is surely unset, and an argument
   ;; index past the end.

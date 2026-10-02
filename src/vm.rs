@@ -78,6 +78,9 @@ pub struct VM {
     /// What `env.*` report: `KEY=VALUE` entries. The process environment
     /// unless the host replaces it (`set_env`).
     env: Arc<Vec<String>>,
+    /// Bytes `fs.read` on fd 0 returns, if the host set them (`set_stdin`);
+    /// otherwise fd 0 is the process's stdin.
+    stdin: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl VM {
@@ -104,6 +107,7 @@ impl VM {
             heap_start: HEAP_START,
             args: Arc::new(Vec::new()),
             env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
+            stdin: None,
         }
     }
 
@@ -126,12 +130,18 @@ impl VM {
             heap_start: self.heap_start,
             args: Arc::clone(&self.args),
             env: Arc::clone(&self.env),
+            stdin: self.stdin.clone(),
         }
     }
 
     /// The command line `args.*` report, argv[0] first.
     pub fn set_args(&mut self, args: Vec<String>) {
         self.args = Arc::new(args);
+    }
+
+    /// What `fs.read` on fd 0 returns, instead of the process's stdin.
+    pub fn set_stdin(&mut self, bytes: Vec<u8>) {
+        self.stdin = Some(Arc::new(Mutex::new(bytes)));
     }
 
     /// The environment `env.*` report, as (key, value) pairs.
@@ -663,7 +673,10 @@ impl VM {
     /// cursor is past the end of memory, memory grows by the pages needed to
     /// cover it (the wasm lowering does the same with memory.grow); past the
     /// 100-page cap nothing grows and the first access beyond the end fails.
+    /// Claims `size` bytes rounded up to a multiple of 8, so every block is
+    /// 8-aligned (the heap start is), as in compiled code.
     fn alloc_bytes(&self, size: usize) -> i32 {
+        let size = (size as i32).wrapping_add(7) & -8;
         let mut mem = self.shared.lock().unwrap();
         let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
         let allocated_ptr = i32::from_le_bytes(cur);
@@ -1052,6 +1065,7 @@ impl VM {
                     _ => return Err("atomic.add requires Int ptr".to_string()),
                 };
                 self.check_write("atomic.add", ptr)?;
+                check_atomic_alignment("atomic.add", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
@@ -1069,6 +1083,7 @@ impl VM {
                     _ => return Err("atomic.cas requires Int ptr".to_string()),
                 };
                 self.check_write("atomic.cas", ptr)?;
+                check_atomic_alignment("atomic.cas", ptr)?;
                 let expected = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int expected".to_string()),
@@ -1098,6 +1113,7 @@ impl VM {
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
                 self.check_write("atomic.lock", ptr)?;
+                check_atomic_alignment("atomic.lock", ptr)?;
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
@@ -1132,6 +1148,7 @@ impl VM {
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
                 self.check_write("atomic.unlock", ptr)?;
+                check_atomic_alignment("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 4 > mem.bytes.len() {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
@@ -1383,6 +1400,35 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("fs.read requires Int fd".to_string()),
                 };
+                if fd == 0 {
+                    // stdin: the host-provided bytes (set_stdin), else the real stdin
+                    let buf_ptr = match self.eval_expr(&args[1], scope)? {
+                        Value::Int(i) => i as u32 as usize,
+                        _ => return Err("fs.read requires Int buf_ptr".to_string()),
+                    };
+                    let max_len = match self.eval_expr(&args[2], scope)? {
+                        Value::Int(i) => i.max(0) as usize,
+                        _ => return Err("fs.read requires Int max_len".to_string()),
+                    };
+                    let mut buf = vec![0u8; max_len];
+                    let n = match &self.stdin {
+                        Some(src) => {
+                            let mut src = src.lock().unwrap();
+                            let n = max_len.min(src.len());
+                            buf[..n].copy_from_slice(&src[..n]);
+                            src.drain(..n);
+                            Ok(n)
+                        }
+                        None => std::io::stdin().read(&mut buf),
+                    };
+                    return match n {
+                        Ok(n) => {
+                            self.write_bytes(buf_ptr, &buf[..n]);
+                            Ok(Value::Int(n as i64))
+                        }
+                        Err(_) => Ok(Value::Int(-1)),
+                    };
+                }
                 let buf_ptr = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as usize,
                     _ => return Err("fs.read requires Int buf_ptr".to_string()),
@@ -1567,7 +1613,32 @@ impl VM {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }
             OpCode::SysTime => {
-                Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
+                Ok(Value::Int64(now.as_nanos() as i64))
+            }
+            OpCode::SysMonotonic => {
+                static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                Ok(Value::Int64(START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as i64))
+            }
+            OpCode::SysRandom => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    _ => return Err("sys.random requires Int ptr".to_string()),
+                };
+                let len = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    _ => return Err("sys.random requires Int len".to_string()),
+                };
+                // Like fs.read, the host writes without the store guard; an
+                // address range outside memory is a failure, as in WASI.
+                let mut buf = vec![0u8; len];
+                let filled = File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
+                let mem_len = self.shared.lock().unwrap().bytes.len();
+                if !filled || ptr.checked_add(len).map_or(true, |end| end > mem_len) {
+                    return Ok(Value::Int(-1));
+                }
+                self.write_bytes(ptr, &buf);
+                Ok(Value::Int(0))
             }
             // The VM deliberately does not terminate the host process (it may be a
             // test runner or the agent server); the request surfaces as an error
@@ -1661,4 +1732,14 @@ fn value_str(v: &Value) -> String {
         Value::Void => "void".to_string(),
         other => format!("{other:?}"),
     }
+}
+
+/// Atomic instructions need a naturally aligned address; wasm traps on an
+/// unaligned one, so the VM fails the same way. Blocks from mem.alloc are
+/// always 8-aligned.
+fn check_atomic_alignment(op: &str, ptr: usize) -> Result<(), String> {
+    if ptr % 4 != 0 {
+        return Err(format!("{} at address {}: atomic operations need a 4-aligned address", op, ptr));
+    }
+    Ok(())
 }

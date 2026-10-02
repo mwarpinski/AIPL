@@ -75,7 +75,7 @@ atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock"
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;
 conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
                  | "f64.convert_i64_s" | "i64.trunc_f64_s" | "f64.reinterpret_i64" | "i64.reinterpret_f64" ;
-sys_op         ::= "sys.print" | "sys.time" | "sys.exit" ;
+sys_op         ::= "sys.print" | "sys.time" | "sys.monotonic" | "sys.random" | "sys.exit" ;
 fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete" ;
 proc_op        ::= "args.sizes" | "args.get" | "env.sizes" | "env.get" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
@@ -125,7 +125,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 ### A. Raw WebAssembly Linear Memory Loads & Stores
 - `(mem.load32 ptr)` -> Reads 4 bytes from linear memory offset `ptr` (`i32.load`).
 - `(mem.store32 ptr val)` -> Writes 4 bytes to linear memory offset `ptr` (`i32.store`).
-- `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size`. If the new cursor is past the end of memory, memory grows by the pages needed to cover it (up to the 100-page cap; beyond it nothing grows and the first access past the end fails). `new`, `arr.new`, and `ok`/`err` cells allocate the same way. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
+- `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size` rounded up to a multiple of 8, so every block is 8-aligned (the heap start is too): atomics, `i64`/`f64` values, and WASI out-parameters placed in any allocated block are aligned. The claim is one atomic add, so threads may allocate concurrently. If the new cursor is past the end of memory, memory grows by the pages needed to cover it (up to the 1024-page cap; beyond it nothing grows and the first access past the end fails). `new`, `arr.new`, and `ok`/`err` cells allocate the same way. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
 - `(mem.grow pages)` -> Grows linear memory by `pages` × 64 KiB. Returns the previous size in pages, or `-1` if the 100-page maximum would be exceeded.
 - `(mem.free ptr)` -> Accepted and type-checked, but a no-op today.
 
@@ -148,18 +148,21 @@ Compiled modules import only the host functions they use from `wasi_snapshot_pre
 | `(fs.close fd)` | | `fd_close` | `0`, or `-1` |
 | `(fs.delete ptr len)` | | `path_unlink_file` on fd 3 | `0`, or `-1` |
 | `(sys.exit code)` | returns the error `sys.exit(N) requested` rather than killing the host process | `proc_exit` | never returns |
+| `(sys.time)` | the system clock | `clock_time_get` (realtime) | `i64` nanoseconds since 1970-01-01 UTC |
+| `(sys.monotonic)` | a monotonic clock | `clock_time_get` (monotonic) | `i64` nanoseconds from an arbitrary fixed start; never decreases. Use for durations |
+| `(sys.random ptr len)` | `/dev/urandom` | `random_get` | `0`, or `-1`; fills `len` bytes at `ptr` from the OS's secure generator |
 | `(args.sizes count_ptr size_ptr)` | the host's argument list (`aipl eval FILE -- a b` gives `FILE a b`; empty unless set) | `args_sizes_get` | `0`, or `-1`; writes the argument count and the total bytes of the NUL-terminated arguments |
 | `(args.get argv_ptr buf_ptr)` | | `args_get` | `0`, or `-1`; writes one u32 address per argument at `argv_ptr` and the NUL-terminated arguments at `buf_ptr` |
 | `(env.sizes count_ptr size_ptr)` | the process environment (a host may replace it) | `environ_sizes_get` | as `args.sizes`, for `KEY=VALUE` entries |
 | `(env.get env_ptr buf_ptr)` | | `environ_get` | as `args.get` |
 
-Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s)` produce them from a string), relative to the process cwd in the VM and to the preopened directory under WASI. File descriptors 1 and 2 are stdout and stderr in both backends, so `(fs.write 1 buf n)` prints raw bytes. The standard library builds printing of numbers and whole-file reads on exactly these primitives (section 12.6). Every WASI errno collapses to `-1`, matching the VM. Argument expressions are evaluated left to right in both backends. The `args.*`/`env.*` out-parameters `count_ptr`, `size_ptr`, and the address tables must be 4-aligned: WASI hosts trap on a misaligned one and the VM fails with `... is not 4-aligned, which WASI requires`. Like `fs.read`, the host writes through these addresses without the store guard. Under WASI the host decides what the program sees (wasmtime forwards an environment variable only with `--env`). Use `std/os` rather than these ops directly. `sys.time` remains VM-only.
+Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s)` produce them from a string). In the VM they are ordinary paths. Under WASI a relative path resolves in the first preopened directory (fd 3, the working directory) and an absolute path (`/...`) in the second (fd 4), which a host grants as `/` when the program may use absolute paths: `wasmtime run --dir . --dir / prog.wasm`. Without that grant, opening an absolute path fails with `-1`. File descriptor 0 is stdin in both backends (`(fs.read 0 buf n)`; `io.read_stdin` reads all of it). A clock failure traps (it does not happen on supported hosts). File descriptors 1 and 2 are stdout and stderr in both backends, so `(fs.write 1 buf n)` prints raw bytes. The standard library builds printing of numbers and whole-file reads on exactly these primitives (section 12.6). Every WASI errno collapses to `-1`, matching the VM. Argument expressions are evaluated left to right in both backends. The `args.*`/`env.*` out-parameters `count_ptr`, `size_ptr`, and the address tables must be 4-aligned: WASI hosts trap on a misaligned one and the VM fails with `... is not 4-aligned, which WASI requires`. Like `fs.read`, the host writes through these addresses without the store guard. Under WASI the host decides what the program sees (wasmtime forwards an environment variable only with `--env`). Use `std/os` rather than these ops directly. `sys.time` remains VM-only.
 
 ### D. Atomics and threads
 
 | Form | Type | Semantics |
 |---|---|---|
-| `(atomic.add p v)` | `i32` | atomically adds `v` to the word at `p`; returns the previous value |
+| `(atomic.add p v)` | `i32` | atomically adds `v` to the word at `p`; returns the previous value. Every atomic address must be 4-aligned (any word in a `mem.alloc` block at a multiple-of-4 offset is); otherwise the VM fails and wasm traps |
 | `(atomic.cas p expected new)` | `bool` | if the word at `p` is `expected`, atomically replaces it with `new` and returns `true`; otherwise `false` |
 | `(atomic.lock p)` | `void` | acquires the lock word at `p` (0 free, 1 held), waiting while it is held. A word holding anything else is not a lock: the VM fails with an error and compiled code traps |
 | `(atomic.unlock p)` | `void` | releases the lock at `p` and wakes waiters; the word must be 1 (held), otherwise an error / trap |
@@ -300,7 +303,7 @@ source.aipl
 
 `WasmCompiler::compile` produces a WebAssembly module with these sections, in this order: **type, import (only if the module does I/O), function, memory, export, code, data**, plus a table and element section when it uses function references. Allocation uses the threads proposal's `i32.atomic.rmw.add`, which wasmtime and every major browser accept on ordinary memory.
 
-A **threaded module** (one that uses `thread.spawn`) differs: it imports its memory as shared (`"env" "memory"`, min 16, max 1024 pages) instead of defining it, adds a global (the address of this thread's runtime scratch cells, 64 in the main thread), a start function, a data-count section, and two compiler-generated functions after the user's: the start function, which copies the heap cursor and the string literals into memory once (guarded by an atomic flag at address 88, since every thread instantiates the module again), and the exported `wasi_thread_start(tid, record)`, which allocates the thread's 24-byte scratch block, calls the worker through the function table, stores its result, and wakes `thread.join`. Its data segments are passive.
+A **threaded module** (one that uses `thread.spawn`) differs: it imports its memory as shared (`"env" "memory"`, min 16, max 1024 pages) instead of defining it, adds a global (the address of this thread's runtime scratch cells, 64 in the main thread), a start function, a data-count section, and two compiler-generated functions after the user's: the start function, which copies the heap cursor and the string literals into memory once (guarded by an atomic flag at address 88, since every thread instantiates the module again), and the exported `wasi_thread_start(tid, record)`, which allocates the thread's 24-byte runtime scratch block, calls the worker through the function table, stores its result, and wakes `thread.join`. Its data segments are passive.
 
 | Item | Value |
 |---|---|
@@ -344,7 +347,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `ok`, `err`, `match_result` | Yes | Yes | Yes (8-byte heap cell; 32-bit payloads only) | Yes |
 | `sys.print` | Yes | Yes (`println!`, any value) | Yes via WASI `fd_write`; `str` arguments only | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
-| `sys.time` | Yes | Err | Err | compile error 987 |
+| `sys.time`, `sys.monotonic`, `sys.random` | Yes | Yes | Yes via WASI `clock_time_get` / `random_get` | Yes |
 | `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI | Yes |
 | `args.sizes/get`, `env.sizes/get` | Yes | Yes (host-set args, process environment) | Yes via WASI `args_*` / `environ_*` | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
@@ -354,7 +357,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) | compile error 99 |
 | `(import ...)` | resolved before checking | | | **no**: `compile_module` takes one import-free module |
 
-Rule of thumb for code generators: `sys.time` and string concatenation are **VM-only** today. Integer/boolean/float code, memory, structs, arrays, results, string literals, printing, and file I/O run in both; compiled I/O needs a WASI host with a preopened directory (section 10.5). Array bounds checks and contracts exist only in the VM.
+Rule of thumb for code generators: string concatenation is **VM-only** today. Integer/boolean/float code, memory, structs, arrays, results, string literals, printing, and file I/O run in both; compiled I/O needs a WASI host with a preopened directory (section 10.5). Array bounds checks and contracts exist only in the VM.
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
@@ -569,7 +572,7 @@ Rules that follow from this:
 - **The checker enforces the block for literal addresses.** Any `mem.*` or `atomic.*` op whose address is a literal is rejected at check time if it stores to or locks bytes 0-3 (`... bytes 0-3 are the heap cursor owned by mem.alloc ...`), touches bytes 64-1023 (`... bytes 64-1023 are the reserved runtime block ...`), or names a misaligned cell in 4-63. Reading the cursor with `(mem.load32 0)` and using the aligned cells 4-60 is allowed; that is what `memory.aipl` and `codegen.aipl` do. Literal heap addresses (1024 and up) are allowed but discouraged.
 - **Both backends enforce the block for writes at runtime.** Every `mem.store*`, `put`, `arr.set`, and `atomic.*` op checks its address before writing: bytes 0-3, 64-1023, and the string literals (1024 up to the heap start) are refused however the address was computed. A store into a literal fails in the VM with `... bytes 1024-N are the program's string literals, which are read-only ...`. The VM fails with `mem.store32 at address 512: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead`; compiled wasm traps with `unreachable` on exactly the same addresses (the backend emits a 12-instruction check before each store, using one extra `i32` local per function). This is a shared semantic, not a VM-only guard, so the differential test treats it as agreement. The self-hosted compiler (`codegen.aipl`, `emit_store_guard`) emits the identical bytes, and `tests/test_selfhost.rs` checks that equality directly. Reads are not checked: the block is zero and reading it is harmless.
 - **The VM additionally enforces lock validity.** A lock word is only ever `0` (free) or `1` (held). `atomic.lock` on a word holding anything else fails immediately with `atomic.lock: word at ptr N holds V, which is not a lock state ...` instead of spinning forever, and `atomic.unlock` on a word that is not `1` fails with `... a held lock holds 1 ...`. This is what turns "I locked the heap cursor by accident" from a silent hang into an error, whichever way the address was produced.
-- **Fresh instances agree.** A fresh VM and a fresh wasm instance both return the heap start from the first `mem.alloc` (1024 for a module without string literals), then that plus `size`, and so on: the VM lays out the first loaded module's literals exactly as the wasm backend does (`wasm::string_layout`). This is why memory-heavy programs can be compared across backends (section 10.4).
+- **Fresh instances agree.** A fresh VM and a fresh wasm instance both return the heap start from the first `mem.alloc` (1024 for a module without string literals), then that plus `size` rounded up to a multiple of 8, and so on: the VM lays out the first loaded module's literals exactly as the wasm backend does (`wasm::string_layout`). This is why memory-heavy programs can be compared across backends (section 10.4).
 - **Threads share the block.** OS threads spawned by `thread.spawn` share the same linear memory and allocator; allocation is atomic, so workers may allocate. In a threaded module, spawned threads use their own copy of cells 64-87 (section 6.2).
 - **Codegen state is per instance.** `codegen_init` is idempotent: it allocates its tables only when cell 16 is zero and always clears cells 4 and 28.
 
@@ -1019,11 +1022,11 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 |---|---|
 | `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)`, `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`) |
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix): each writes ASCII at `out` and returns the count (at most 10, 11, and 8 bytes) |
-| `io` | `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `(ptr str.Bytes)` |
+| `io` | `read_stdin [] -> (ptr str.Bytes)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `(ptr str.Bytes)` |
 | `vec` | growable list of `i32`: `make [capacity] -> (ptr vec.Vec)`, `push`, `pop`, `get [v i]`, `set [v i x]`, `len`, `clear`, `index_of`, `sort` (ascending), `sort_by [v cmp:(fn [i32 i32] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), `cmp_i32` |
 | `map` | hash map `i32 -> i32`: `make [capacity] -> (ptr map.Map)`, `put [m k v]`, `get [m k default]`, `has`, `remove -> bool`, `count`; iterate with `(loop i 0 (- (call map.capacity m) 1) 1 (if (call map.slot_used m i) ... (block)))` reading `slot_key` / `slot_val` |
 | `strmap` | hash map from byte strings to `i32` (symbol tables, word counts): the same API as `map` with keys of type `(ptr str.Bytes)`; the map keeps the key pointer, so a key's bytes must not change while it is stored |
-| `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (ptr str.Bytes)` (`len` -1 past the end), `env [name:str] -> (ptr str.Bytes)` (`len` -1 if unset). Each call fetches a fresh copy |
+| `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (ptr str.Bytes)` (`len` -1 past the end), `env [name:str] -> (ptr str.Bytes)` (`len` -1 if unset), each fetching a fresh copy; `random_i32 [] -> i32` from the OS generator |
 | `buf` | string builder: `make [capacity] -> (ptr buf.Buf)`, `push_byte`, `push_str [b s:str]`, `push_bytes [b (ptr str.Bytes)]`, `push_int`, `len`, `clear`, `bytes [b] -> (ptr str.Bytes)` (a view of the contents; take it after building) |
 
 AIPL has no generics, so containers hold `i32` words. Store struct pointers as addresses and cast them back: `(call vec.push v (ptr.addr p))`, `(ptr.cast Point (call vec.get v i))`.
@@ -1088,7 +1091,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
 | `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
-| `sys.time`, `(+ str str)` in code meant for `aipl compile` | VM-only. Threads and atomics compile; a program using `thread.spawn` needs AIPL's runner (or another wasi-threads host) to run |
+| `(+ str str)` in code meant for `aipl compile` | VM-only; build strings with `std/buf`. Threads and atomics compile; a program using `thread.spawn` needs AIPL's runner (or another wasi-threads host) to run |
 | `(get p x)` or `(get p Point x)` | the field is one symbol: `(get p Point.x)`; arrays name the element type every time: `(arr.get i32 a i)` |
 | relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (arr.len a))` yourself where it matters |
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |

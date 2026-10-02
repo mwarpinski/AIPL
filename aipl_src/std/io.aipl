@@ -33,11 +33,21 @@
   ;; read_file for a path held as bytes (e.g. one built at run time).
   (fn read_path [path:(ptr str.Bytes)] -> (ptr str.Bytes)
     (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 0))
+    (if (lt fd 0) (return (call str.bytes 0 -1)) (block))
+    (let b:(ptr str.Bytes) (call read_fd fd))
+    (fs.close fd)
+    b)
+
+  ;; Everything on standard input, until end of input (len -1 on a read error).
+  (fn read_stdin [] -> (ptr str.Bytes)
+    (call read_fd 0))
+
+  ;; Reads fd to its end into a fresh buffer that doubles as it fills.
+  (fn read_fd [fd:i32] -> (ptr str.Bytes)
     (let cap:i32 4096)
     (let buf:i32 (mem.alloc cap))
     (let len:i32 0)
-    (let failed:bool (lt fd 0))
-    (while (not failed)
+    (while true
       (if (eq len cap)
           (block
             (let bigger:i32 (mem.alloc (* cap 2)))
@@ -48,11 +58,10 @@
           (block))
       (let n:i32 (fs.read fd (+ buf len) (- cap len)))
       (cond
-        ((lt n 0) (set! failed true))
+        ((lt n 0) (return (call str.bytes 0 -1)))
         ((eq n 0) (break))
         (else (set! len (+ len n)))))
-    (if (gte fd 0) (fs.close fd) 0)
-    (if failed (call str.bytes 0 -1) (call str.bytes buf len)))
+    (call str.bytes buf len))
 
   ;; Creates or truncates the file; returns bytes written, or -1.
   (fn write_file [path:str b:(ptr str.Bytes)] -> i32

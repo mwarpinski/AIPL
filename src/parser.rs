@@ -1386,6 +1386,8 @@ impl Parser {
                                 "not" => OpCode::Not,
                                 "sys.print" => OpCode::SysPrint,
                                 "sys.time" => OpCode::SysTime,
+                                "sys.monotonic" => OpCode::SysMonotonic,
+                                "sys.random" => OpCode::SysRandom,
                                 "sys.exit" => OpCode::SysExit,
                                 "fs.open" => OpCode::FsOpen,
                                 "fs.read" => OpCode::FsRead,

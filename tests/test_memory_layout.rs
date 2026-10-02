@@ -27,8 +27,9 @@ fn fresh_vm_has_cursor_1024_at_address_0_and_alloc_advances_it() {
         "f",
     )
     .unwrap();
-    // a = 1024, b = 1040, cursor after = 1044 -> 1024*100000 + 1040*10 + 4
-    assert_eq!(v, Value::Int(102_400_000 + 10_400 + 4));
+    // a = 1024, b = 1040, cursor after = 1048 (every block is a multiple of
+    // 8 bytes) -> 1024*100000 + 1040*10 + 8
+    assert_eq!(v, Value::Int(102_400_000 + 10_400 + 8));
 }
 
 #[test]

@@ -440,7 +440,9 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::I64ReinterpretF64 => Type::I64,
             OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => Type::F64,
             OpCode::MemLoadF32 => Type::F32,
-            OpCode::MemLoadF64 | OpCode::SysTime => Type::F64,
+            OpCode::MemLoadF64 => Type::F64,
+            OpCode::SysTime | OpCode::SysMonotonic => Type::I64,
+            OpCode::SysRandom => Type::I32,
             OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
@@ -785,10 +787,12 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 // Bump allocator whose cursor is the i32 at linear-memory
                 // address 0 (HEAP_PTR_ADDR) - the same word the VM uses, so
                 // both backends and self-hosted AIPL share one allocator.
-                // The size is evaluated first (it may allocate itself), then
+                // The size is evaluated first (it may allocate itself), rounded
+                // up to a multiple of 8 so every block stays 8-aligned, then
                 // one atomic add claims the block: [0] [size] -> rmw.add -> [old].
                 func.instruction(&Instruction::I32Const(0));
                 compile_expr(&args[0], ctx, func)?;
+                emit_round8(func);
                 func.instruction(&Instruction::I32AtomicRmwAdd(M4));
                 emit_grow_to_cursor(func);
             }
@@ -999,8 +1003,26 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::MemoryAtomicNotify(M4));
                 func.instruction(&Instruction::Drop);
             }
-            OpCode::SysTime => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
+            OpCode::SysTime | OpCode::SysMonotonic => {
+                // clock_time_get(realtime 0 | monotonic 1, precision 1 ns,
+                // out = the 8-byte cell 80); a failing clock traps
+                let host = wasi_index(ctx, Wasi::ClockTimeGet)?;
+                func.instruction(&Instruction::I32Const(if *op == OpCode::SysTime { 0 } else { 1 }));
+                func.instruction(&Instruction::I64Const(1));
+                emit_rt(func, ctx, RT_NBYTES);
+                func.instruction(&Instruction::Call(host));
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                emit_rt(func, ctx, RT_NBYTES);
+                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            }
+            OpCode::SysRandom => {
+                let host = wasi_index(ctx, Wasi::RandomGet)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::Call(host));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
@@ -1020,7 +1042,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::LocalSet(io_b)); // flags
                 func.instruction(&Instruction::LocalSet(io_a)); // len
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
-                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                emit_path_dir(func, ctx.addr_scratch, io_a);
                 func.instruction(&Instruction::I32Const(0)); // dirflags
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&Instruction::LocalGet(io_a));
@@ -1089,7 +1111,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::LocalSet(io_a)); // len
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
-                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                emit_path_dir(func, ctx.addr_scratch, io_a);
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::Call(unlink));
@@ -1294,7 +1316,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let size = crate::checker::get_struct_size(def)?;
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(size as i32));
+            func.instruction(&Instruction::I32Const(round8(size as i32)));
             func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             emit_grow_to_cursor(func);
         }
@@ -1420,6 +1442,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
+            emit_round8(func);
             func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             func.instruction(&Instruction::LocalSet(block));
             emit_grow_to_cursor(func);
@@ -1820,8 +1843,23 @@ fn emit_rt(func: &mut Function, ctx: &Ctx, cell: i32) {
     }
 }
 
-/// Bytes of runtime scratch cells (64..88) each spawned thread allocates.
+/// Bytes each spawned thread allocates for its runtime scratch cells (64..88).
 const RT_SCRATCH_SIZE: i32 = 24;
+
+/// Every allocation is a multiple of 8 bytes, so with an 8-aligned heap start
+/// every block is 8-aligned: atomics (which trap when unaligned), i64/f64
+/// fields, and WASI out-parameters are always aligned.
+fn round8(n: i32) -> i32 {
+    (n + 7) & -8
+}
+
+/// Rounds the i32 on the stack up to a multiple of 8.
+fn emit_round8(func: &mut Function) {
+    func.instruction(&Instruction::I32Const(7));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&Instruction::I32Const(-8));
+    func.instruction(&Instruction::I32And);
+}
 /// Threaded modules: 1 once the shared memory has been initialised.
 const RT_INIT_FLAG: i32 = 88;
 
@@ -1883,8 +1921,35 @@ fn thread_start_function(worker_type: u32) -> Function {
     f
 }
 
-/// The first preopened directory a WASI host hands to the module.
+/// The preopened directories a host hands the module: fd 3 is the working
+/// directory, against which relative paths resolve; fd 4 is "/", against
+/// which absolute paths resolve, when the host grants it.
 const WASI_PREOPEN_FD: i32 = 3;
+const WASI_ROOT_FD: i32 = 4;
+
+/// Pushes the directory fd for the path in locals (ptr, len): an absolute
+/// path ("/...") resolves in fd 4 with the leading '/' dropped (ptr and len
+/// are adjusted); anything else in fd 3.
+fn emit_path_dir(func: &mut Function, ptr: u32, len: u32) {
+    use Instruction::*;
+    func.instruction(&LocalGet(ptr));
+    func.instruction(&I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&I32Const(47));
+    func.instruction(&I32Eq);
+    func.instruction(&If(BlockType::Result(ValType::I32)));
+    func.instruction(&LocalGet(ptr));
+    func.instruction(&I32Const(1));
+    func.instruction(&I32Add);
+    func.instruction(&LocalSet(ptr));
+    func.instruction(&LocalGet(len));
+    func.instruction(&I32Const(1));
+    func.instruction(&I32Sub);
+    func.instruction(&LocalSet(len));
+    func.instruction(&I32Const(WASI_ROOT_FD));
+    func.instruction(&Else);
+    func.instruction(&I32Const(WASI_PREOPEN_FD));
+    func.instruction(&End);
+}
 const WASI_OFLAGS_CREAT: i32 = 1 << 0;
 const WASI_OFLAGS_TRUNC: i32 = 1 << 3;
 const WASI_RIGHT_FD_READ: i64 = 1 << 1;
@@ -1908,6 +1973,8 @@ enum Wasi {
     /// wasi-threads in v47, so AIPL's own host (the runner) provides it; the
     /// names match the old ABI so any wasi-threads host also works.
     ThreadSpawn,
+    ClockTimeGet,
+    RandomGet,
 }
 
 impl Wasi {
@@ -1930,6 +1997,8 @@ impl Wasi {
             Wasi::EnvironSizesGet => "environ_sizes_get",
             Wasi::EnvironGet => "environ_get",
             Wasi::ThreadSpawn => "thread-spawn",
+            Wasi::ClockTimeGet => "clock_time_get",
+            Wasi::RandomGet => "random_get",
         }
     }
 
@@ -1944,6 +2013,8 @@ impl Wasi {
             Wasi::PathUnlinkFile => (vec![I32, I32, I32], vec![I32]),
             Wasi::ArgsSizesGet | Wasi::ArgsGet | Wasi::EnvironSizesGet | Wasi::EnvironGet => (vec![I32, I32], vec![I32]),
             Wasi::ThreadSpawn => (vec![I32], vec![I32]),
+            Wasi::ClockTimeGet => (vec![I32, I64, I32], vec![I32]),
+            Wasi::RandomGet => (vec![I32, I32], vec![I32]),
         }
     }
 
@@ -1960,6 +2031,8 @@ impl Wasi {
             OpCode::EnvSizes => Some(Wasi::EnvironSizesGet),
             OpCode::EnvGet => Some(Wasi::EnvironGet),
             OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
+            OpCode::SysTime | OpCode::SysMonotonic => Some(Wasi::ClockTimeGet),
+            OpCode::SysRandom => Some(Wasi::RandomGet),
             _ => None,
         }
     }

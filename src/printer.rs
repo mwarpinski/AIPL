@@ -158,6 +158,8 @@ pub fn op_name(op: &OpCode) -> &'static str {
         Not => "not",
         SysPrint => "sys.print",
         SysTime => "sys.time",
+        SysMonotonic => "sys.monotonic",
+        SysRandom => "sys.random",
         SysExit => "sys.exit",
         FsOpen => "fs.open",
         FsRead => "fs.read",

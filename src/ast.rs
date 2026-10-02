@@ -76,7 +76,14 @@ pub enum OpCode {
     Or,
     Not,
     SysPrint,
+    /// `(sys.time)`: i64 nanoseconds since the Unix epoch (WASI clock_time_get, realtime).
     SysTime,
+    /// `(sys.monotonic)`: i64 nanoseconds from an arbitrary fixed start, for
+    /// measuring durations (WASI clock_time_get, monotonic).
+    SysMonotonic,
+    /// `(sys.random ptr len)`: fills len bytes at ptr with OS randomness
+    /// (WASI random_get); 0, or -1 on failure.
+    SysRandom,
     SysExit,
     FsOpen,
     FsRead,

@@ -155,6 +155,9 @@ const THREADS: &str = r#"
       (if (eq n 1) (sys.print "one one one one one one") (sys.print "two two two two two two")))
     0)
   (fn concurrent_print [] -> i32
+    ;; leave the heap cursor unaligned: each thread's scratch block must still
+    ;; be aligned for WASI's out-parameters
+    (let _odd:i32 (mem.alloc 5))
     (let a:i32 (thread.spawn (ref print_worker) 1))
     (let b:i32 (thread.spawn (ref print_worker) 2))
     (+ (thread.join a) (thread.join b))))
@@ -223,6 +226,10 @@ const ATOMICS: &str = r#"
     (let held:i32 (mem.load32 l))
     (atomic.unlock l)
     (+ (* 10 held) (mem.load32 l)))
+  ;; an unaligned atomic address fails in both backends
+  (fn unaligned_add [] -> i32
+    (let p:i32 (mem.alloc 8))
+    (atomic.add (+ p 2) 1))
   ;; unlocking a word that is not a held lock fails in both backends
   (fn bad_unlock [] -> i32
     (let l:i32 (mem.alloc 4))
@@ -244,6 +251,9 @@ fn atomics_agree_without_threads() {
         assert_eq!(vm_run(&m, f).unwrap(), Value::Int(expected as i64), "VM {f}");
         assert_eq!(call(f).unwrap(), expected, "wasm {f}");
     }
+    // mem.alloc blocks are 8-aligned, even after an odd-sized allocation
+    assert!(vm_run(&m, "unaligned_add").unwrap_err().contains("4-aligned"));
+    assert!(call("unaligned_add").is_err());
     assert!(vm_run(&m, "bad_unlock").is_err());
     assert!(call("bad_unlock").is_err());
 }

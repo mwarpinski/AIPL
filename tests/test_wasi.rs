@@ -471,3 +471,77 @@ fn word_freq_example_agrees_in_both_backends() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&vm_dir);
 }
+
+/// stdin, the clocks, randomness, and absolute paths (AIPL_SPEC.md 4.C) in
+/// both backends. Absolute paths resolve in fd 4, which the host grants as
+/// "/" (`wasmtime run --dir . --dir /`).
+#[test]
+fn stdin_clocks_random_and_absolute_paths() {
+    let dir = scratch_dir("wasi_surface");
+    let abs_file = dir.join("abs.txt");
+    let src_path = dir.join("surface.aipl");
+    std::fs::write(
+        &src_path,
+        format!(
+            r#"(module surface
+  (import io)
+  (import str)
+  (import os)
+  (fn stdin_words [] -> i32 (call str.count_words (call io.read_stdin)))
+  (fn clocks [] -> i32
+    (let t0:i64 (sys.monotonic))
+    (let t1:i64 (sys.monotonic))
+    ;; after 2020-01-01 and monotonic never goes back
+    (+ (if (gt (sys.time) 1577836800000000000i64) 10 0) (if (gte t1 t0) 1 0)))
+  (fn random [] -> i32
+    (let p:i32 (mem.alloc 64))
+    (let ok:i32 (sys.random p 64))
+    ;; 64 random bytes are not all zero
+    (let nonzero:i32 0)
+    (loop i 0 63 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
+    (+ (* 10 ok) nonzero))
+  (fn absolute [] -> i32
+    (let path:(ptr str.Bytes) (call str.from_str "{abs}"))
+    (let wrote:i32 (call io.write_path path (call str.from_str "absolute ok")))
+    (let back:(ptr str.Bytes) (call io.read_path path))
+    (+ (* 100 wrote) (get back str.Bytes.len))))"#,
+            abs = abs_file.display()
+        ),
+    )
+    .unwrap();
+    let module = Resolver::resolve(&src_path).expect("resolve");
+    TypeChecker::new().check_module(&module).expect("check");
+    let wasm = WasmCompiler::compile(&module).expect("compile");
+    wasmparser::Validator::new().validate_all(&wasm).expect("validate");
+
+    let engine = Engine::default();
+    let wm = WasmModule::new(&engine, &wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let run = |f: &str| {
+        let ctx = WasiCtxBuilder::new()
+            .stdin(wasmtime_wasi::p2::pipe::MemoryInputPipe::new("one two\nthree four five\n"))
+            .preopened_dir(&dir, ".", FsPerms::ReadWrite)
+            .unwrap()
+            .preopened_dir("/", "/", FsPerms::ReadWrite)
+            .unwrap()
+            .build_p1();
+        let mut store = Store::new(&engine, ctx);
+        let inst = linker.instantiate(&mut store, &wm).unwrap();
+        let func: TypedFunc<(), i32> = inst.get_typed_func(&mut store, f).unwrap();
+        func.call(&mut store, ()).unwrap()
+    };
+    let vm = |f: &str| {
+        let mut vm = VM::new();
+        vm.set_stdin(b"one two\nthree four five\n".to_vec());
+        vm.load_module(module.clone());
+        vm.invoke(f, vec![]).unwrap()
+    };
+    for (f, expected) in [("stdin_words", 5), ("clocks", 11), ("random", 1), ("absolute", 1100 + 11)] {
+        assert_eq!(run(f), expected, "wasm {f}");
+        let _ = std::fs::remove_file(&abs_file);
+        assert_eq!(vm(f), Value::Int(expected as i64), "VM {f}");
+        let _ = std::fs::remove_file(&abs_file);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

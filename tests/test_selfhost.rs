@@ -472,6 +472,28 @@ fn self_hosted_bytes_match_short_circuit() {
     assert_self_hosted_matches_rust("sc", &src[start..start + end]);
 }
 
+/// The completed WASI surface: stdin through std/io, both clocks, randomness,
+/// and absolute paths in fs.open / fs.delete, at byte parity.
+#[test]
+fn self_hosted_bytes_match_clock_random_stdin_paths() {
+    let dir = std::env::temp_dir().join(format!("aipl_sh_surface_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("surface.aipl");
+    std::fs::write(&path, r#"(module surface
+  (import io)
+  (import os)
+  (fn main [] -> i64
+    (let b:(ptr str.Bytes) (call io.read_stdin))
+    (let p:i32 (mem.alloc 8))
+    (let ok:i32 (sys.random p 8))
+    (let fd:i32 (fs.open (str.ptr "/tmp/x") (str.len "/tmp/x") 0))
+    (let gone:i32 (fs.delete (str.ptr "rel.txt") (str.len "rel.txt")))
+    (+ (- (sys.time) (sys.monotonic)) (i64.extend_s (+ (call os.random_i32) (+ ok (+ fd gone)))))))"#).unwrap();
+    let module = Resolver::resolve(&path).unwrap();
+    assert_self_hosted_matches_rust("surface", &aipl_core::printer::print_module(&module));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Threads and atomics (AIPL_SPEC.md 4.G): the threaded module layout
 /// (imported shared memory, global, start function, passive data,
 /// wasi_thread_start) and the atomic lowerings, at byte parity.

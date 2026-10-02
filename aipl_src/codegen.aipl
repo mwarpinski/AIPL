@@ -103,7 +103,7 @@
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
-          (mem.store32 (+ (mem.load32 8) 12) (mem.alloc 44))
+          (mem.store32 (+ (mem.load32 8) 12) (mem.alloc 52))
           0)
         0)
 
@@ -118,7 +118,7 @@
     (call set_str_count 0)
     (call set_newline_addr 0)
     (let i:i32 0)
-    (while (lt i 11)
+    (while (lt i 13)
       (mem.store32 (call wasi_cell i) -1)
       (set! i (+ i 1)))
     0)
@@ -251,6 +251,10 @@
     (set! o (call store_kw_str k 616 97 116 111 109 105 99 46 108 111 99 107 0 11)) ;; atomic.lock (op 81)
     (set! o (call store_kw_str k 627 97 116 111 109 105 99 46 117 110 108 111 99 12)) ;; atomic.unlock (op 82)
     (set! o (call store_kw_str k 639 107 0 0 0 0 0 0 0 0 0 0 0 1))
+    (set! o (call store_kw_str k 640 115 121 115 46 116 105 109 101 0 0 0 0 8)) ;; sys.time (op 83)
+    (set! o (call store_kw_str k 648 115 121 115 46 109 111 110 111 116 111 110 105 12)) ;; sys.monotonic (op 84)
+    (set! o (call store_kw_str k 660 99 0 0 0 0 0 0 0 0 0 0 0 1))
+    (set! o (call store_kw_str k 661 115 121 115 46 114 97 110 100 111 109 0 0 10)) ;; sys.random (op 85)
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -357,6 +361,9 @@
     (if (call sym_eq src_ptr pos len (+ k 606) 10) (set! res 80) (block))
     (if (call sym_eq src_ptr pos len (+ k 616) 11) (set! res 81) (block))
     (if (call sym_eq src_ptr pos len (+ k 627) 13) (set! res 82) (block))
+    (if (call sym_eq src_ptr pos len (+ k 640) 8) (set! res 83) (block))
+    (if (call sym_eq src_ptr pos len (+ k 648) 13) (set! res 84) (block))
+    (if (call sym_eq src_ptr pos len (+ k 661) 10) (set! res 85) (block))
     (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (block))
     (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (block))
     (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (block))
@@ -638,6 +645,37 @@
     (mem.store8 (+ ptr 2) 0)
     (mem.store8 (+ ptr 3) 11)
     4)
+
+  ;; Rounds the i32 on the stack up to a multiple of 8 (wasm.rs emit_round8):
+  ;; every allocation size is, so every block is 8-aligned.
+  (fn emit_round8 [ptr:i32] -> i32
+    (let off:i32 (call emit_i32_const ptr 7))
+    (set! off (+ off (call emit_byte (+ ptr off) 106)))
+    (set! off (+ off (call emit_i32_const (+ ptr off) -8)))
+    (+ off (call emit_byte (+ ptr off) 113)))
+
+  ;; The directory fd for the path in locals (ptr, len), as wasm.rs
+  ;; emit_path_dir: "/..." resolves in fd 4 (the host's "/") with the slash
+  ;; dropped, anything else in fd 3 (the working directory).
+  (fn emit_path_dir [p:i32 ptr_l:i32 len_l:i32] -> i32
+    (let off:i32 (call emit_local_get p ptr_l))
+    (set! off (+ off (call emit_memop (+ p off) 45 0))) ;; i32.load8_u
+    (set! off (+ off (call emit_i32_const (+ p off) 47)))
+    (set! off (+ off (call emit_byte (+ p off) 70)))
+    (set! off (+ off (call emit_byte (+ p off) 4)))
+    (set! off (+ off (call emit_byte (+ p off) 127)))
+    (set! off (+ off (call emit_local_get (+ p off) ptr_l)))
+    (set! off (+ off (call emit_i32_const (+ p off) 1)))
+    (set! off (+ off (call emit_byte (+ p off) 106)))
+    (set! off (+ off (call emit_local_set (+ p off) ptr_l)))
+    (set! off (+ off (call emit_local_get (+ p off) len_l)))
+    (set! off (+ off (call emit_i32_const (+ p off) 1)))
+    (set! off (+ off (call emit_byte (+ p off) 107)))
+    (set! off (+ off (call emit_local_set (+ p off) len_l)))
+    (set! off (+ off (call emit_i32_const (+ p off) 4)))
+    (set! off (+ off (call emit_byte (+ p off) 5)))
+    (set! off (+ off (call emit_i32_const (+ p off) 3)))
+    (+ off (call emit_byte (+ p off) 11)))
 
     ;; i32.atomic.rmw.add with align 2, offset 0: [addr] [n] -> [old]. Every
   ;; allocation claims its block with one of these on the cursor at address 0.
@@ -1084,7 +1122,8 @@
   ;; WASI import table, 11 words at struct_table + 12, in the fixed import
   ;; order (wasm.rs enum Wasi): fd_write, fd_read, path_open, fd_close,
   ;; proc_exit, path_unlink_file, args_sizes_get, args_get,
-  ;; environ_sizes_get, environ_get, and wasi-threads' thread-spawn (10).
+  ;; environ_sizes_get, environ_get, wasi-threads' thread-spawn (10),
+  ;; clock_time_get (11), random_get (12).
   ;; 1 while marking used, then the function index, or -1 if unused.
   (fn wasi_cell [wasi_id:i32] -> i32
     (+ (mem.load32 (+ (call struct_table) 12)) (* wasi_id 4)))
@@ -1096,7 +1135,7 @@
   (fn finalize_wasi_indices [] -> i32
     (let count:i32 0)
     (let i:i32 0)
-    (while (lt i 11)
+    (while (lt i 13)
       (let cell_idx:i32 (call wasi_cell i))
       (if (eq (mem.load32 cell_idx) 1)
           (block
@@ -1133,6 +1172,8 @@
             ((eq kw 38) (call mark_wasi_used 5) 0)
             ((and (gte kw 73) (lte kw 76)) (call mark_wasi_used (- kw 67)) 0)
             ((eq kw 77) (call mark_wasi_used 10) 0)
+            ((or (eq kw 83) (eq kw 84)) (call mark_wasi_used 11) 0)
+            ((eq kw 85) (call mark_wasi_used 12) 0)
             (else 0))
           (let child:i32 (call node_a node))
           (while (neq child 0) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
@@ -1278,7 +1319,7 @@
                     ;; WASI ops and arr.new (54) get the two extra scratch locals, as in wasm.rs fn_uses_io
           ;; and thread.spawn (77), atomic.cas/lock/unlock (80-82)
           (let is_io:bool (or (or (and (gte kw 32) (lte kw 38)) (and (gte kw 73) (lte kw 77)))
-                              (or (eq kw 54) (and (gte kw 80) (lte kw 82)))))
+                              (or (eq kw 54) (and (gte kw 80) (lte kw 85)))))
           (if is_io
               true
               (block
@@ -1375,6 +1416,8 @@
     ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
     (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
     (if (eq kw 68) (set! res 210) (block))
+    ;; sys.time / sys.monotonic -> i64
+    (if (or (eq kw 83) (eq kw 84)) (set! res 201) (block))
     ;; atomic.cas -> bool; atomic.lock / unlock are statements
     (if (eq kw 80) (set! res 204) (block))
     (if (or (eq kw 81) (eq kw 82)) (set! res 205) (block))
@@ -1604,8 +1647,7 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
-          ;; WASI_PREOPEN_FD = 3
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 3)))
+          (set! off (+ off (call emit_path_dir (+ out_ptr off) locals_count io_a)))
           ;; dirflags = 0
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
@@ -1713,18 +1755,19 @@
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) 3)))
+          (set! off (+ off (call emit_path_dir (+ out_ptr off) locals_count io_a)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 5))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
         (block))
-    (if (eq op_id 43) ;; mem.alloc (size) -> i32.const 0, size, i32.atomic.rmw.add
+    (if (eq op_id 43) ;; mem.alloc (size) -> i32.const 0, size rounded to 8, i32.atomic.rmw.add
         (block
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_round8 (+ out_ptr off))))
           (set! off (+ off (call emit_rmw_add (+ out_ptr off))))
           (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
@@ -1858,7 +1901,7 @@
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
-          (set! off (+ off (call emit_i32_const (+ out_ptr off) size)))
+          (set! off (+ off (call emit_i32_const (+ out_ptr off) (bitand (+ size 7) -8))))
           (set! off (+ off (call emit_rmw_add (+ out_ptr off))))
           (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
@@ -1922,6 +1965,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 108)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
+          (set! off (+ off (call emit_round8 (+ out_ptr off))))
           (set! off (+ off (call emit_rmw_add (+ out_ptr off))))
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
@@ -2102,6 +2146,27 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 40 2 4)))
+          (set! res off))
+        (block))
+
+    (if (or (eq op_id 83) (eq op_id 84)) ;; sys.time / sys.monotonic -> clock_time_get into cell 80, i64.load
+        (block
+          (let off:i32 (call emit_i32_const out_ptr (if (eq op_id 83) 0 1)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 66)))
+          (set! off (+ off (call emit_byte (+ out_ptr off) 1)))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 11))))
+          (set! off (+ off (call emit_trap_if (+ out_ptr off))))
+          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_memop (+ out_ptr off) 41 3)))
+          (set! res off))
+        (block))
+    (if (eq op_id 85) ;; sys.random ptr len -> random_get, errno -> 0 / -1
+        (block
+          (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+          (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 12))))
+          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
         (block))
 
@@ -2313,7 +2378,7 @@
     
     ;; WASI import types (fixed order)
     (let w:i32 0)
-    (while (lt w 11)
+    (while (lt w 13)
       (let w_idx:i32 (call get_wasi_index w))
       (if (neq w_idx -1)
           (block
@@ -2339,6 +2404,14 @@
               ((eq w 5) (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (set! sc_off (+ sc_off 3))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
+              ;; clock_time_get: [i32 i64 i32] -> [i32]
+              ((eq w 11) (mem.store8 (+ scratch sc_off) 3) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+                  (mem.store8 (+ scratch (+ sc_off 2)) 126) (mem.store8 (+ scratch (+ sc_off 3)) 127)
+                  (mem.store8 (+ scratch (+ sc_off 4)) 1) (mem.store8 (+ scratch (+ sc_off 5)) 127) (set! sc_off (+ sc_off 6)) 0)
+              ;; random_get: [i32 i32] -> [i32]
+              ((eq w 12) (mem.store8 (+ scratch sc_off) 2) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+                  (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 1)
+                  (mem.store8 (+ scratch (+ sc_off 4)) 127) (set! sc_off (+ sc_off 5)) 0)
               ;; thread-spawn: [i32] -> [i32]
               ((eq w 10) (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127)
                   (mem.store8 (+ scratch (+ sc_off 2)) 1) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4)) 0)
@@ -2407,7 +2480,7 @@
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded) (+ import_count 1) import_count))))
           (let curr_imp:i32 0)
           (set! w 0)
-          (while (lt w 11)
+          (while (lt w 13)
             (let w_idx:i32 (call get_wasi_index w))
             (if (neq w_idx -1)
                 (block
@@ -2463,6 +2536,13 @@
                         (let p_str:i32 (+ scratch sc_off))
                         (call store_kw_str p_str 0 101 110 118 105 114 111 110 95 103 101 116 0 11)
                         (set! sc_off (+ sc_off 11)) 0)
+                    ((eq w 11) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 14)))
+                        (call store_kw_str (+ scratch sc_off) 0 99 108 111 99 107 95 116 105 109 101 95 103 12)
+                        (call store_kw_str (+ scratch sc_off) 12 101 116 0 0 0 0 0 0 0 0 0 0 2)
+                        (set! sc_off (+ sc_off 14)) 0)
+                    ((eq w 12) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 10)))
+                        (call store_kw_str (+ scratch sc_off) 0 114 97 110 100 111 109 95 103 101 116 0 0 10)
+                        (set! sc_off (+ sc_off 10)) 0)
                     ((eq w 10) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 12)))
                         (call store_kw_str (+ scratch sc_off) 0 116 104 114 101 97 100 45 115 112 97 119 110 12)
                         (set! sc_off (+ sc_off 12)) 0)

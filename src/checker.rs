@@ -532,7 +532,24 @@ impl TypeChecker {
                     }
                     Ok(Type::Void)
                 }
-                OpCode::SysTime => Ok(Type::F64),
+                OpCode::SysTime | OpCode::SysMonotonic => {
+                    if !args.is_empty() {
+                        return Err(format!("{}:{}: {:?} takes no arguments", l, c, op));
+                    }
+                    Ok(Type::I64)
+                }
+                OpCode::SysRandom => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: sys.random requires 2 arguments (ptr, len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: sys.random argument {} must be i32, got {:?}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::SysExit => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: sys.exit requires 1 argument (code: i32)", l, c));

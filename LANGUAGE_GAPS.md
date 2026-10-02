@@ -34,7 +34,8 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **No string concatenation in wasm.** `(+ str str)` is VM-only.
 - **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, number formatting and parsing (`str.parse_int`), a string builder (`buf`), and `i32` collections (`vec`, `map`, `strmap`); still missing are floats in text, sets, and anything generic.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
-- **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code. **`sys.time` is unimplemented** in both backends.
+- **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
+- **No dates or time zones, no sockets, no directory listing or file metadata.** The runtime surface is preopened files, stdio, args, environment, two clocks, and randomness (WASI preview1 has no listening sockets).
 
 ## 5. Concurrency
 

@@ -728,10 +728,13 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_points", &[]), Ok(Value::Int(33)));
     assert_eq!(differential(&module, &wasm, "test_bool_word", &[]), Ok(Value::Int(1)));
     assert_eq!(differential(&module, &wasm, "test_str_field", &[]), Ok(Value::Int(13)));
-    // count 3 + (3 * 8 bytes from the array pointer to the next block) + element 5
-    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 24 + 5)));
-    // relative to the heap start H: 4-byte block at H, header at H+4, array at H+8, cursor H+8 + 8
-    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
+    // count 3 + (array pointer to the next block: the 4 + 3 * 8 = 28-byte block
+    // rounded to 32, minus the 4-byte header) + element 5
+    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 28 + 5)));
+    // relative to the heap start H: alloc_four's block at H (4 bytes, rounded
+    // to 8), then the array block at H+8 (4 + 2 * 4 = 12 bytes, rounded to
+    // 16): array at H+12, cursor H+24, so array - cursor = -12
+    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-12)));
     // The module's string literal occupies 1024..1032, so the heap starts at
     // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
     // the 4-byte block.
