@@ -50,7 +50,7 @@
     (set! failures (+ failures (call report "std/fmt: number formatting (6 tests)" (call fmt.run_fmt_tests) 6)))
     (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
     (set! failures (+ failures (call report "std/os: arguments + environment (2 tests)" (call os.run_os_tests) 2)))
-    (set! failures (+ failures (call report "native/wasm_reader: module structure (4 tests)" (call wasm_reader.run_reader_tests) 4)))
+    (set! failures (+ failures (call report "native/wasm_reader: module structure and bodies (5 tests)" (call wasm_reader.run_reader_tests) 5)))
     (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
     (set! failures (+ failures (call report "std/vec: generic list + stable sort (6 tests)" (call vec.run_vec_tests) 6)))
     (set! failures (+ failures (call report "std/map: generic i32-keyed hash map (4 tests)" (call map.run_map_tests) 4)))

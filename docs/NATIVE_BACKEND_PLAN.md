@@ -27,7 +27,10 @@ Exactly what `src/compiler/wasm.rs` and `aipl_src/codegen.aipl` emit (they are b
 - **Sections:** type, import, function, table, memory (or an imported shared memory), global, export, start, element, data count, code, data (active, or passive in threaded modules).
 - **Control:** `block`, `loop`, `if`/`else`, `br`, `br_if`, `return`, `call`, `call_indirect`, `unreachable`, `end`, `drop`.
 - **Variables:** `local.get/set/tee`, `global.get/set` (one global, threaded modules only).
-- **Constants and arithmetic:** `i32.const`, `i64.const`, `f64.const`, and the integer and float arithmetic, bitwise, shift, and comparison families for `i32`/`i64`/`f32`/`f64` (chosen by type in `arith_instruction` / `compare_instruction`).
+- **Constants:** `i32.const`, `i64.const`, `f64.const` (no `f32.const`).
+- **Integer arithmetic** (`i32` and `i64`): `add sub mul div_s div_u rem_s rem_u and or xor shl shr_s shr_u`.
+- **Float arithmetic** (`f32` and `f64`): `add sub mul div`.
+- **Comparisons:** `i32`: `eqz eq ne lt_s lt_u gt_s gt_u le_s ge_s`; `i64`: `eq ne lt_s gt_s le_s ge_s`; `f32`/`f64`: `eq ne lt gt le ge`. (Chosen by type in `arith_instruction` / `compare_instruction`; `lt_u` comes from the write-address check, `gt_u` from heap growth.) `wasm_reader`'s `plain_kind` is this list in code, and `tests/test_native_reader.rs` checks that it accepts exactly these.
 - **Conversions:** `i32.wrap_i64`, `i64.extend_i32_s/u`, `f64.convert_i64_s`, `i64.trunc_f64_s` (trapping), `i64/f64.reinterpret`.
 - **Memory:** `i32/i64/f32/f64.load/store`, `i32.load8_u`, `i32.store8`, `memory.size`, `memory.grow`, `memory.init`.
 - **Atomics:** `i32.atomic.load/store`, `i32.atomic.rmw.add/xchg/cmpxchg`, `memory.atomic.wait32/notify`.
@@ -89,6 +92,7 @@ Done when: a Rust test decodes the wasm of every repository program plus the thr
 **NE2: wasm_reader, function bodies.** Depends on: NE1.
 Decode each body: local declarations, then the instruction stream into a vec of instruction records (opcode, immediates: indices, block types, memargs, constants including LEB128 i32/i64 and f64 bits), including the `0xFC` (`memory.init`) and `0xFE` (atomics) prefixes. Exactly the list in "Input" above; anything else is an error naming the opcode.
 Done when: the same Rust test also compares every function's instruction count and opcode sequence with `wasmparser`'s operator reader.
+**Done (2026-10-02).** Bodies decode to `Body [locals code]` with `Instr [op a b c offset]` records (prefixed opcodes as `0xFC00`/`0xFE00` + sub-opcode). The test compares every instruction's offset, opcode and immediates (not just the opcode sequence) on every program, on a hand-built body holding every accepted instruction, and checks that every other one-byte opcode and `0xFC`/`0xFE` sub-opcode is rejected with an error naming it.
 
 ### Group B: writing machine code
 

@@ -1620,7 +1620,7 @@ fn normalize_bool(func: &mut Function) {
 
 /// After the heap cursor (address 0) has been bumped: if it is past the end of
 /// memory, grow memory by the pages needed to cover it. Uses no locals and has
-/// no net stack effect. memory.grow fails (-1, dropped) past the 100-page cap,
+/// no net stack effect. memory.grow fails (-1, dropped) past the 1024-page cap,
 /// and the first access beyond the end then traps. The VM's alloc_bytes does
 /// the same.
 fn emit_grow_to_cursor(func: &mut Function) {
