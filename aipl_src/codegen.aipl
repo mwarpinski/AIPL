@@ -403,6 +403,7 @@
       ((eq type_id 201) 126)
       ((eq type_id 202) 125)
       ((eq type_id 203) 124)
+      ((or (eq type_id 211) (eq type_id 212)) 127) ;; a loop's hidden end / step
       ((or (eq type_id 200) (or (eq type_id 204) (or (eq type_id 206) (or (eq type_id 207) (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210))))))) 127)
       (else (call set_compile_error 98) 127)))
 
@@ -495,6 +496,30 @@
           0)
         0))
 
+;; A loop's hidden end / step local (wasm.rs `i#end` / `i#step`): an entry
+  ;; with the loop variable's name and type marker 211 (end) or 212 (step),
+  ;; added once per name like any local. Lookups by name find the variable
+  ;; itself, which is always added first.
+  (fn find_hidden [base:i32 count:i32 src_ptr:i32 name_ptr:i32 name_len:i32 marker:i32] -> i32
+    (loop i 0 (- count 1) 1
+      (let e:i32 (call locals_entry_ptr base i))
+      (if (and (eq (mem.load32 (+ e 8)) marker)
+               (call sym_eq src_ptr name_ptr name_len (+ src_ptr (mem.load32 (+ e 0))) (mem.load32 (+ e 4))))
+          (return i)
+          (block)))
+    -1)
+
+  (fn add_hidden_if_new [src_ptr:i32 base:i32 name_ptr:i32 name_len:i32 marker:i32] -> i32
+    (let count:i32 (mem.load32 28))
+    (if (gte (call find_hidden base count src_ptr name_ptr name_len marker) 0) (return 0) (block))
+    (if (gte count 1024) (call set_compile_error 93) 0)
+    (let e:i32 (call locals_entry_ptr base (if (gte count 1024) 1023 count)))
+    (mem.store32 (+ e 0) name_ptr)
+    (mem.store32 (+ e 4) name_len)
+    (mem.store32 (+ e 8) marker)
+    (mem.store32 28 (+ count 1))
+    0)
+
   (fn collect_locals_walk [src_ptr:i32 base:i32 node:i32] -> i32
     (if (neq (call node_kind node) 20)
         0
@@ -510,7 +535,9 @@
                 (let type_id:i32 (call type_node_id src_ptr type_node))
                 (call add_local_if_new src_ptr base (call node_a name_node) (call node_b name_node) type_id))
             ((eq kw 103) (let var_node:i32 (call nth_child node 1))
-                    (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200))
+                    (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200)
+                    (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 211)
+                    (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 212))
             ((eq kw 112) (let ok_group:i32 (call nth_child node 2))
                         (let err_group:i32 (call nth_child node 3))
                         (let ok_var:i32 (call nth_child ok_group 1))
@@ -2279,8 +2306,15 @@
   (fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let var_node:i32 (call nth_child node 1))
     (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node)))
+    (let end_idx:i32 (call find_hidden locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node) 211))
+    (let step_idx:i32 (call find_hidden locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node) 212))
+    ;; start, end, and step are each evaluated once, in that order
     (let off:i32 (call compile_expr src_ptr (call nth_child node 2) out_ptr locals_base locals_count func_table_base func_count))
     (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx)))
+    (set! off (+ off (call compile_expr src_ptr (call nth_child node 3) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_local_set (+ out_ptr off) end_idx)))
+    (set! off (+ off (call compile_expr src_ptr (call nth_child node 4) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_local_set (+ out_ptr off) step_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
@@ -2288,7 +2322,7 @@
     (call label_push 1)
     (call label_push 2)
     (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
-    (set! off (+ off (call compile_expr src_ptr (call nth_child node 3) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_local_get (+ out_ptr off) end_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 74)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
     (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1)))
@@ -2301,7 +2335,7 @@
     (call label_pop)
     (call label_pop)
     (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
-    (set! off (+ off (call compile_expr src_ptr (call nth_child node 4) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
+    (set! off (+ off (call emit_local_get (+ out_ptr off) step_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
     (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
@@ -2967,7 +3001,8 @@
     (let e0_ret:i32 (mem.load32 (+ e0 12)))
     (let e1:i32 (call func_entry_ptr (call fn_table) 1))
     (let local_count:i32 (call collect_locals_for_function src e1 (call locals_table)))
-    (if (and (eq func_count 2) (and (eq e0_pcount 2) (and (eq e0_ret 200) (eq local_count 4))))
+    ;; compute's locals: x, y, z, i, and the loop's hidden end and step
+    (if (and (eq func_count 2) (and (eq e0_pcount 2) (and (eq e0_ret 200) (eq local_count 6))))
         1
         0))
 

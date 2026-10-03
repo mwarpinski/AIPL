@@ -359,12 +359,19 @@ impl VM {
                     Value::Int(i) => Ok(i as i32),
                     _ => Err(format!("Loop {} must be Int", what)),
                 };
+                // start, then end and step, each evaluated once, in that order
+                // (as in wasm, where end and step go into two hidden locals)
                 let s_val = as_i32(self.eval_expr(start, scope)?, "start")?;
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 scope.insert(var.clone(), Value::Int(s_val as i64));
+                let e_val = as_i32(self.eval_expr(end, scope)?, "end")?;
+                let st_val = as_i32(self.eval_expr(step, scope)?, "step")?;
+                if self.flow.is_some() {
+                    scope.retain(|k, _| keys_before.contains(k));
+                    return Ok(Value::Void);
+                }
                 loop {
                     let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
-                    let e_val = as_i32(self.eval_expr(end, scope)?, "end")?;
                     if curr > e_val {
                         break;
                     }
@@ -380,7 +387,6 @@ impl VM {
                         Some(Flow::Return(_)) => break,
                         None => {}
                     }
-                    let st_val = as_i32(self.eval_expr(step, scope)?, "step")?;
                     let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
                     scope.insert(var.clone(), Value::Int(curr.wrapping_add(st_val) as i64));
                 }

@@ -125,7 +125,8 @@ pub const PROGRAM: &str = r#"
     (call bump -1)
     (mem.load32 p))
 
-  ;; loop bound and step are evaluated every iteration, and the body may set! the variable
+  ;; loop end and step are evaluated once, before the first pass; the body
+  ;; may still set! the variable
   (fn moving_bounds [n:i32] -> i32
     (let limit:i32 n)
     (let count:i32 0)
@@ -188,9 +189,10 @@ fn bodies_may_end_in_return_and_void_functions_return_early() {
 }
 
 #[test]
-fn loop_bounds_are_re_evaluated_and_the_variable_may_be_set() {
-    // i = 0 (set to 1), 2 (limit 5 -> 4), 3, 4: four iterations for n = 5
-    assert_eq!(run_both(PROGRAM, "moving_bounds", 5), 4);
+fn loop_bounds_are_evaluated_once_and_the_variable_may_be_set() {
+    // i = 0 (set to 1), 2, 3, 4, 5: five passes for n = 5; lowering `limit`
+    // inside the body does not change the bound already evaluated
+    assert_eq!(run_both(PROGRAM, "moving_bounds", 5), 5);
 }
 
 #[test]
@@ -292,4 +294,18 @@ fn and_or_take_exactly_two_operands() {
     assert!(err.contains("and takes exactly 2 operands, got 3"), "{err}");
     let err = check_err("(module m (fn f [] -> bool (or true)))");
     assert!(err.contains("or takes exactly 2 operands, got 1"), "{err}");
+}
+
+/// A call in the end bound runs once, not once per pass (it used to consume
+/// input on every pass: the NE1 wasm_reader bug).
+#[test]
+fn a_call_in_the_loop_bound_runs_once() {
+    let src = r#"(module m
+  (fn next_count [p:i32] -> i32 (mem.store32 p (+ (mem.load32 p) 1)) 3)
+  (fn f [n:i32] -> i32
+    (let p:i32 (mem.alloc 4))
+    (let passes:i32 0)
+    (loop i 1 (call next_count p) (+ 0 1) (set! passes (+ passes 1)))
+    (+ (* 10 (mem.load32 p)) passes)))"#;
+    assert_eq!(run_both(src, "f", 0), 13);
 }

@@ -251,3 +251,45 @@ fn wasm_driver_is_a_wasi_command() {
     assert_eq!(run_driver_command(&driver, &["aiplc"], &[]), 2);
     std::fs::remove_dir_all(&work).unwrap();
 }
+
+/// Imports from subdirectories: `(import lib/util)` is the module `util`;
+/// a module reached by two paths (from the entry and from a sibling) is one
+/// module; aliases work; both resolvers agree byte for byte.
+#[test]
+fn subdirectory_imports_resolve_like_rust() {
+    let dir = std::env::temp_dir().join(format!("aipl_p_subdir_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib/deep")).unwrap();
+    std::fs::write(dir.join("lib/deep/thing.aipl"), "(module thing (fn seven [] -> i32 7))").unwrap();
+    std::fs::write(dir.join("lib/util.aipl"), "(module util (import deep/thing) (fn eight [] -> i32 (+ 1 (call thing.seven))))").unwrap();
+    std::fs::write(
+        dir.join("main.aipl"),
+        "(module main (import lib/util) (import lib/deep/thing as t)\n  (fn main [] -> i32 (+ (call util.eight) (call t.seven))))",
+    )
+    .unwrap();
+    assert_resolves_like_rust(dir.join("main.aipl").to_str().unwrap());
+    let flat = aipl_resolve(&dir.join("main.aipl")).unwrap();
+    assert_eq!(flat.matches("(fn thing.seven ").count(), 1, "one module reached two ways:\n{flat}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn subdirectory_import_errors() {
+    let dir = std::env::temp_dir().join(format!("aipl_p_subdir_err_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("b")).unwrap();
+    std::fs::write(dir.join("a/x.aipl"), "(module x (fn f [] -> i32 1))").unwrap();
+    std::fs::write(dir.join("b/x.aipl"), "(module x (fn f [] -> i32 2))").unwrap();
+    std::fs::write(dir.join("clash.aipl"), "(module clash (import a/x) (import b/x) (fn main [] -> i32 0))").unwrap();
+    std::fs::write(dir.join("dots.aipl"), "(module dots (import ../x) (fn main [] -> i32 0))").unwrap();
+    let rust = Resolver::resolve(&dir.join("clash.aipl")).unwrap_err();
+    assert!(rust.contains("two different modules are named 'x'"), "{rust}");
+    let ours = aipl_resolve(&dir.join("clash.aipl")).unwrap_err();
+    assert_eq!(ours, "two different modules are named x");
+    let rust = Resolver::resolve(&dir.join("dots.aipl")).unwrap_err();
+    assert!(rust.contains("'../x' is not an import path"), "{rust}");
+    let ours = aipl_resolve(&dir.join("dots.aipl")).unwrap_err();
+    assert!(ours.starts_with("not an import path"), "{ours}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

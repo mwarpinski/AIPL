@@ -524,7 +524,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
     (set! acc (+ acc i)))
   acc)          ;; => 55, because the bound is inclusive: 1+2+...+10
 ```
-`(loop i 0 9 1 ...)` runs 10 times. `(loop i 0 0 1 ...)` runs once. `start` is evaluated once; `end` is evaluated before every iteration and `step` after every iteration, and the body may `set!` the loop variable, exactly as the compiled loop behaves (the VM matched this only from P11 on). Leave a loop early with `break`, or skip to the next iteration with `continue` (section 7.10).
+`(loop i 0 9 1 ...)` runs 10 times. `(loop i 0 0 1 ...)` runs once. `start`, `end`, and `step` are each evaluated **once**, in that order, before the first pass (like Python's `range`), so `(loop i 0 (- (call count r) 1) 1 ...)` calls `count` once. Changing a variable used in the bound inside the body does not change the bound. The body may still `set!` the loop variable itself. (Until 2026-10-02 the end and step were re-evaluated on every pass; a call there ran every time.) Leave a loop early with `break`, or skip to the next iteration with `continue` (section 7.10).
 
 ```lisp
 (fn count_down [start:i32] -> i32
@@ -937,6 +937,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md` and `README.md` must 
 ```
 
 - `(import name)` finds `name.aipl` by searching, in order: the importing file's directory, the entry file's directory, the standard library (`aipl_src/std/`), then each directory listed in the colon-separated `AIPL_PATH` environment variable. The first match wins, so a local `io.aipl` shadows the standard one. The resolver parses it and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
+- An import may name a file in a subdirectory: `(import native/wasm_reader)` finds `native/wasm_reader.aipl` in the same places, relative to each. The module is named by the last segment (`wasm_reader.decode`), so a sibling inside `native/` that writes `(import wasm_reader)` reaches the same module. Two different files with the same name in one program are an error (`two different modules are named 'x'`). An import path is names separated by `/`: no leading `/`, no `.` or `..`.
 - Resolution is implemented twice: `src/resolver.rs` (used by every `aipl` command) and `aipl_src/resolver.aipl` (used by `aipl compile --self` and by the self-hosted toolchain compiled to wasm). The AIPL resolver produces flat source text: every struct, then every function, imported modules first in resolution order, comments dropped. The host passes the standard library directory; the resolver reads `AIPL_PATH` itself with `std/os`. `tests/test_resolver_aipl.rs` requires both to produce the same compiled bytes for every program with imports in the repository, plus aliases, diamonds, cycles, and missing modules (`circular import: NAME`, `cannot find module: NAME`).
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
@@ -1123,7 +1124,6 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
-| `(loop i 1 (call next_count r) 1 ...)` | the end bound is evaluated on every iteration, so a call there runs (and consumes input) each time: read it once with `(let n:i32 (call next_count r))`, then `(loop i 1 n 1 ...)` |
 | `(and a b c)` with three operands | `and`/`or` take exactly two: `(and a (and b c))`. They short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |

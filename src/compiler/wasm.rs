@@ -613,8 +613,13 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
             // The loop induction variable is never declared via `let` but still
             // needs a wasm local slot - without this, codegen silently drops
             // the whole loop body (see Expr::Loop in compile_expr).
+            // ...and its end and step are evaluated once into two hidden
+            // locals, named after the variable (sequential loops over the same
+            // variable share them; nested loops cannot reuse a name).
             Expr::Loop { var, body, .. } => {
                 lets.push((var.clone(), Type::I32));
+                lets.push((format!("{}#end", var), Type::I32));
+                lets.push((format!("{}#step", var), Type::I32));
                 collect_lets(body, lets);
             }
             Expr::While { body, .. } | Expr::Block(body, _) => {
@@ -1230,8 +1235,15 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .locals
                 .get(var)
                 .ok_or_else(|| format!("Wasm Codegen: loop variable '{}' has no local slot", var))?;
+            let hidden = |suffix: &str| ctx.locals.get(&format!("{}{}", var, suffix)).copied().ok_or("Wasm Codegen: loop has no hidden locals");
+            let (end_idx, step_idx) = (hidden("#end")?, hidden("#step")?);
+            // start, end, and step are each evaluated once, in that order
             compile_expr(start, ctx, func)?;
             func.instruction(&Instruction::LocalSet(var_idx));
+            compile_expr(end, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(end_idx));
+            compile_expr(step, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(step_idx));
             // block { loop { var > end -> br_if 1; block { body } ; var += step; br 0 } }:
             // break = br to the outer block, continue = br to the end of the
             // inner block, which falls into the step.
@@ -1240,7 +1252,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             with_label(ctx, Label::Break, || {
                 with_label(ctx, Label::LoopTop, || {
                     func.instruction(&Instruction::LocalGet(var_idx));
-                    compile_expr(end, ctx, func)?;
+                    func.instruction(&Instruction::LocalGet(end_idx));
                     // Inclusive end bound: exit only once var exceeds end.
                     func.instruction(&Instruction::I32GtS);
                     func.instruction(&Instruction::BrIf(1));
@@ -1256,7 +1268,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 })
             })?;
             func.instruction(&Instruction::LocalGet(var_idx));
-            compile_expr(step, ctx, func)?;
+            func.instruction(&Instruction::LocalGet(step_idx));
             func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::LocalSet(var_idx));
             func.instruction(&Instruction::Br(0));

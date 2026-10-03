@@ -101,7 +101,7 @@ Create `aipl_src/native/elf.aipl` (an ELF64 executable header and program header
 Done when: a Rust test runs the generated file and checks stdout and exit status 7, and `readelf -h` (if installed, not required by the test) shows a valid header.
 
 **NE5: lowering skeleton and the native test harness.** Depends on: NE2, NE4.
-First decide (with the project owner) how a program imports a module in a subdirectory: today imports search only the importer's and entry's directories, `std/`, and `AIPL_PATH`, so `aipl_src/driver.aipl` cannot import `aipl_src/native/native.aipl` (found in NE1, where `test_suite.aipl` could not import the reader). Options: path-style imports such as `(import native/wasm_reader)` with the last segment as the module's name, or a search-path entry for `aipl_src/native/`.
+The driver reaches the backend with `(import native/native)` (subdirectory imports, AIPL_SPEC.md 11, added after NE1).
 Create `aipl_src/native/lower.aipl` and `native.aipl` (wasm bytes in, executable bytes out). Baseline design: each function gets a frame (`rbp`-based) with its locals; the wasm value stack lives on the machine stack. Implement `i32.const`, `local.get/set/tee`, `drop`, `call` (direct), `return`, `end`, and the start-up path: `_start` calls the module's `_start` export and exits 0. Add a Rust helper `assert_native_matches(program)` that builds the program as wasm (run under `aipl-run`) and natively, and requires identical stdout, stderr, and exit status; it keeps one shared list of programs that later tasks extend.
 Done when: programs whose `main` only moves constants between locals and calls functions match, and the harness exists with that list.
 

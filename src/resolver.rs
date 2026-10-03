@@ -44,6 +44,8 @@ struct State<'a> {
     fns: Vec<Item>,
     /// Canonical names of the generic templates of every resolved module.
     templates: HashSet<String>,
+    /// Module name -> its file: two different files may not share a name.
+    names: HashMap<String, PathBuf>,
 }
 
 /// A parsed `(module name items...)`.
@@ -100,6 +102,7 @@ impl Resolver {
             structs: Vec::new(),
             fns: Vec::new(),
             templates: HashSet::new(),
+            names: HashMap::new(),
         };
         for (name, _) in &entry.imports {
             resolve_import(&mut st, name, entry_path)?;
@@ -148,8 +151,39 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
     Ok(ModuleSx { name: name.to_string(), imports, items })
 }
 
+/// A module's name: the last segment of its import path
+/// (`(import native/wasm_reader)` is the module `wasm_reader`).
+pub fn module_name(import: &str) -> &str {
+    import.rsplit('/').next().unwrap_or(import)
+}
+
+/// An import path is names separated by '/': relative, without `..`.
+fn check_import_path(import: &str) -> Result<(), String> {
+    let ok = !import.is_empty()
+        && import.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("'{}' is not an import path: use names separated by '/', e.g. (import native/wasm_reader)", import))
+    }
+}
+
 fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<(), String> {
+    check_import_path(name).map_err(|e| format!("{}: {}", importer_path.display(), e))?;
     let file_path = find_module_file(name, importer_path, st.entry_path).map_err(|e| format!("{}: {}", importer_path.display(), e))?;
+    let short = module_name(name).to_string();
+    if let Some(other) = st.names.get(&short) {
+        if *other != file_path {
+            return Err(format!(
+                "{}: two different modules are named '{}': {} and {}",
+                importer_path.display(),
+                short,
+                other.display(),
+                file_path.display()
+            ));
+        }
+    }
+    st.names.insert(short, file_path.clone());
     if st.included.contains(&file_path) {
         return Ok(());
     }
@@ -166,7 +200,7 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
     for (sub, _) in &module.imports {
         resolve_import(st, sub, &file_path)?;
     }
-    emit_module(st, module, Some(name.to_string()), &file_path);
+    emit_module(st, module, Some(module_name(name).to_string()), &file_path);
     st.in_progress.remove(&file_path);
     st.included.insert(file_path);
     Ok(())
@@ -190,7 +224,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         fns: HashSet::new(),
         structs: HashSet::new(),
         own_templates: HashSet::new(),
-        aliases: module.imports.iter().filter_map(|(m, a)| a.clone().map(|a| (a, m.clone()))).collect(),
+        aliases: module.imports.iter().filter_map(|(m, a)| a.clone().map(|a| (a, module_name(m).to_string()))).collect(),
         known_templates: &st.templates,
     };
     for item in &module.items {

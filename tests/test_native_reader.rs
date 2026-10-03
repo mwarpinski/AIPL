@@ -195,8 +195,7 @@ fn the_reader_decodes_every_module_like_wasmparser() {
     assert!(threaded >= 2, "expected threaded modules among the programs");
 }
 
-/// The reader's own AIPL self-tests (run here because aipl_src/test_suite.aipl
-/// cannot import a module in a subdirectory yet; see PROGRESS.md, NE5).
+/// The reader's own AIPL self-tests (also in aipl_src/test_suite.aipl).
 #[test]
 fn the_reader_self_tests_pass() {
     let reader = Resolver::resolve(&root().join("aipl_src/native/wasm_reader.aipl")).unwrap();

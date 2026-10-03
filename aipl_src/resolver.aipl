@@ -37,7 +37,9 @@
   (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
                  done:(ptr (strmap.StrMap i32)) active:(ptr (strmap.StrMap i32))
                  structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)
-                 known:(ptr (strmap.StrMap i32))])
+                 known:(ptr (strmap.StrMap i32))
+                 paths:(ptr (strmap.StrMap (ptr str.Bytes)))
+                 found:(ptr (strmap.StrMap (ptr str.Bytes)))])
 
   ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
   (struct Out [ok:i32 addr:i32 len:i32])
@@ -247,7 +249,7 @@
          ;; (import name as alias)
          (let alias:(ptr compiler.Node) (call nth item 3))
          (if (call is_symbol alias)
-             (call (strmap.set (ptr str.Bytes)) (get m Mod.aliases) (call text src alias) (call text src name))
+             (call (strmap.set (ptr str.Bytes)) (get m Mod.aliases) (call text src alias) (call module_name (call text src name)))
              (block)))
         (else (block)))
       (set! item (get item compiler.Node.next)))
@@ -297,15 +299,51 @@
   (fn with_ext [dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> (ptr str.Bytes)
     (call concat (call concat dir name) (call str.from_str ".aipl")))
 
-  (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> bool
-    (if (call (strmap.has i32) (get st State.done) name) (return true) (block))
-    (if (call (strmap.has i32) (get st State.active) name) (return (call fail st "circular import: " name)) (block))
+;; Two different files may not share a module name; records name -> path.
+  (fn check_name [st:(ptr State) name:(ptr str.Bytes) path:(ptr str.Bytes)] -> bool
+    (let seen:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.paths) name (call str.bytes 0 -1)))
+    (if (and (gte (get seen str.Bytes.len) 0) (not (call str.bytes_eq seen path)))
+        (return (call fail st "two different modules are named " name))
+        (block))
+    (call (strmap.set (ptr str.Bytes)) (get st State.paths) name path)
+    true)
+
+  ;; A module's name: the last segment of its import path
+  ;; ((import native/wasm_reader) is the module wasm_reader), as resolver.rs.
+  (fn module_name [import:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let slash:i32 (call last_index import 47))
+    (call slice import (+ slash 1) (- (get import str.Bytes.len) (+ slash 1))))
+
+  ;; An import path is names separated by '/': relative, no '.' or '..'.
+  (fn valid_import_path [p:(ptr str.Bytes)] -> bool
+    (let n:i32 (get p str.Bytes.len))
+    (if (eq n 0) (return false) (block))
+    (let seg_len:i32 0)
+    (loop i 0 (- n 1) 1
+      (let c:i32 (call str.byte_at p i))
+      (cond
+        ((eq c 46) (return false))
+        ((eq c 47) (if (eq seg_len 0) (return false) (set! seg_len 0)))
+        (else (set! seg_len (+ seg_len 1)))))
+    (gt seg_len 0))
+
+  (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) import:(ptr str.Bytes)] -> bool
+    (if (not (call valid_import_path import))
+        (return (call fail st "not an import path (use names separated by '/'): " import))
+        (block))
+    (let name:(ptr str.Bytes) (call module_name import))
+    ;; an import from the same directory resolves to the same file: search once
+    (let key:(ptr str.Bytes) (call concat dir (call concat (call str.from_str "|") import)))
+    (let known_path:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.found) key (call str.bytes 0 -1)))
+    (if (and (gte (get known_path str.Bytes.len) 0) (call (strmap.has i32) (get st State.done) name))
+        (return (call check_name st name known_path))
+        (block))
     ;; search: importer's directory, entry's directory, standard library
-    (let path:(ptr str.Bytes) (call with_ext dir name))
+    (let path:(ptr str.Bytes) (call with_ext dir import))
     (let src:(ptr Src) (call load path))
     (if (eq src (ptr.null Src))
         (block
-          (set! path (call with_ext (get st State.entry_dir) name))
+          (set! path (call with_ext (get st State.entry_dir) import))
           (set! src (call load path)))
         (block))
     ;; then each library directory, in order
@@ -318,12 +356,16 @@
           (block
             (if (gt i start)
                 (block
-                  (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) name))
+                  (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) import))
                   (set! src (call load path)))
                 (block))
             (set! start (+ i 1)))
           (block)))
-    (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " name)) (block))
+    (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " import)) (block))
+    (call (strmap.set (ptr str.Bytes)) (get st State.found) key path)
+    (if (not (call check_name st name path)) (return false) (block))
+    (if (call (strmap.has i32) (get st State.done) name) (return true) (block))
+    (if (call (strmap.has i32) (get st State.active) name) (return (call fail st "circular import: " name)) (block))
     (call (strmap.set i32) (get st State.active) name 1)
     (if (call resolve_imports st src (call dirname path)) (block) (return false))
     (call emit_module st (call make_mod src name true (get st State.known)))
@@ -353,6 +395,8 @@
     (put st State.fns_out (call buf.make 65536))
     (put st State.err err)
     (put st State.known (call (strmap.make i32) 16))
+    (put st State.paths (call (strmap.make (ptr str.Bytes)) 16))
+    (put st State.found (call (strmap.make (ptr str.Bytes)) 32))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
     (if (call resolve_imports st src (call dirname entry)) (block) (return false))
     (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))
