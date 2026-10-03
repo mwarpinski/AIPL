@@ -678,7 +678,7 @@ impl VM {
     /// Bumps the heap cursor by `size` and returns the old cursor. If the new
     /// cursor is past the end of memory, memory grows by the pages needed to
     /// cover it (the wasm lowering does the same with memory.grow); past the
-    /// 100-page cap nothing grows and the first access beyond the end fails.
+    /// 1024-page cap nothing grows and the first access beyond the end fails.
     /// Claims `size` bytes rounded up to a multiple of 8, so every block is
     /// 8-aligned (the heap start is), as in compiled code.
     fn alloc_bytes(&self, size: usize) -> i32 {
