@@ -59,7 +59,7 @@ pub enum OpCode {
     MemAlloc,
     MemFree,
     /// `(mem.grow pages)`: grows linear memory by `pages` 64 KiB pages and
-    /// returns the previous size in pages, or -1 if the maximum (100 pages)
+    /// returns the previous size in pages, or -1 if the maximum (1024 pages)
     /// would be exceeded (wasm `memory.grow`).
     MemGrow,
     AtomicAdd,
@@ -76,13 +76,32 @@ pub enum OpCode {
     Or,
     Not,
     SysPrint,
+    /// `(sys.time)`: i64 nanoseconds since the Unix epoch (WASI clock_time_get, realtime).
     SysTime,
+    /// `(sys.monotonic)`: i64 nanoseconds from an arbitrary fixed start, for
+    /// measuring durations (WASI clock_time_get, monotonic).
+    SysMonotonic,
+    /// `(sys.random ptr len)`: fills len bytes at ptr with OS randomness
+    /// (WASI random_get); 0, or -1 on failure.
+    SysRandom,
     SysExit,
     FsOpen,
     FsRead,
     FsWrite,
     FsClose,
     FsDelete,
+    /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
+    /// argument count and the total bytes of the NUL-terminated arguments;
+    /// returns 0, or -1 on failure. std/os wraps the four args/env ops.
+    ArgsSizes,
+    /// `(args.get argv_ptr buf_ptr)`: WASI `args_get`. Writes one u32 pointer
+    /// per argument at argv_ptr and the NUL-terminated arguments at buf_ptr.
+    ArgsGet,
+    /// `(env.sizes count_ptr size_ptr)`: WASI `environ_sizes_get`, as args.sizes
+    /// for the `KEY=VALUE` environment entries.
+    EnvSizes,
+    /// `(env.get env_ptr buf_ptr)`: WASI `environ_get`, as args.get.
+    EnvGet,
     ThreadSpawn,
     ThreadJoin,
     /// `(i64.extend_s x)`: i32 -> i64, sign-extending (wasm `i64.extend_i32_s`).
@@ -223,6 +242,16 @@ pub enum Expr {
         addr: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(return v)` / `(return)`: leaves the function. Type void.
+    Return {
+        val: Option<Box<Expr>>,
+        span: (u32, u32),
+    },
+    /// `(break)`: leaves the innermost while/loop. Type void.
+    Break((u32, u32)),
+    /// `(continue)`: next iteration of the innermost while/loop (a `loop`
+    /// still applies its step). Type void.
+    Continue((u32, u32)),
     /// `(ref f)`: a reference to function `f`, of type `(fn [params] -> ret)`.
     Ref {
         name: String,
@@ -273,6 +302,8 @@ impl Expr {
             Expr::Cast { span, .. } => *span,
             Expr::Addr { span, .. } => *span,
             Expr::Ref { span, .. } => *span,
+            Expr::Return { span, .. } => *span,
+            Expr::Break(span) | Expr::Continue(span) => *span,
             Expr::CallRef { span, .. } => *span,
         }
     }

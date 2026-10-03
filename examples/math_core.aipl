@@ -1,20 +1,71 @@
+;; Integer math with contracts: each function states what it requires and
+;; guarantees, and the VM checks both on every call (the wasm build runs the
+;; same code without the checks). Every function here is compared between the
+;; VM and wasmtime by tests/test_differential.rs.
 (module math_core
+  (fn clamp [v:i32 lo:i32 hi:i32] -> i32
+    (req (lte lo hi))
+    (ens (and (gte res lo) (lte res hi)))
+    (cond
+      ((lt v lo) lo)
+      ((gt v hi) hi)
+      (else v)))
 
-  (fn clamp_min [val:i32 min_val:i32] -> i32
-    (req (gte val 0))
-    (req (gte min_val 0))
-    (ens (gte res min_val))
-    (if (lt val min_val)
-      min_val
-      val))
-
-  (fn weighted_average [a:i32 b:i32 weight_a:i32] -> i32
-    (req (gte a 0))
-    (req (gte b 0))
-    (req (and (gte weight_a 0) (lte weight_a 100)))
+  ;; (a * w + b * (100 - w)) / 100, for a weight w in percent.
+  (fn weighted_average [a:i32 b:i32 w:i32] -> i32
+    (req (and (gte a 0) (gte b 0)))
+    (req (and (gte w 0) (lte w 100)))
     (ens (gte res 0))
-    ;; Computes weighted blend: (a * weight_a + b * (100 - weight_a)) / 100
-    (let part_a:i32 (* a weight_a))
-    (let inverse_weight:i32 (- 100 weight_a))
-    (let part_b:i32 (* b inverse_weight))
-    (/ (+ part_a part_b) 100)))
+    (/ (+ (* a w) (* b (- 100 w))) 100))
+
+  ;; Greatest common divisor (Euclid).
+  (fn gcd [a:i32 b:i32] -> i32
+    (req (and (gte a 0) (gte b 0)))
+    (ens (gte res 0))
+    (let x:i32 a)
+    (let y:i32 b)
+    (while (neq y 0)
+      (let t:i32 (% x y))
+      (set! x y)
+      (set! y t))
+    x)
+
+  ;; Largest r with r * r <= n, by binary search (no overflow: r <= 46340).
+  (fn isqrt [n:i32] -> i32
+    (req (gte n 0))
+    ;; (res + 1)^2 overflows i32 at res = 46340, the largest possible answer
+    (ens (and (lte (* res res) n) (or (eq res 46340) (gt (* (+ res 1) (+ res 1)) n))))
+    (let lo:i32 0)
+    (let hi:i32 (if (lt n 46340) (+ n 1) 46341))
+    (while (gt (- hi lo) 1)
+      (let mid:i32 (+ lo (/ (- hi lo) 2)))
+      (if (lte (* mid mid) n) (set! lo mid) (set! hi mid)))
+    lo)
+
+  (fn is_prime [n:i32] -> bool
+    (if (lt n 2) (return false) (block))
+    (let d:i32 2)
+    (while (lte (* d d) n)
+      (if (eq (% n d) 0) (return false) (block))
+      (set! d (+ d 1)))
+    true)
+
+  ;; Number of primes up to n.
+  (fn count_primes [n:i32] -> i32
+    (req (lte n 100000))
+    (let count:i32 0)
+    (loop i 2 n 1
+      (if (call is_prime i) (set! count (+ count 1)) (block)))
+    count)
+
+  ;; System load policy: blend the current load with the historical peak,
+  ;; floor it at 10, and report 1 (throttle) above 75.
+  (fn should_throttle [load:i32 peak:i32 sensitivity:i32] -> bool
+    (req (and (gte load 0) (gte peak 0)))
+    (req (and (gte sensitivity 0) (lte sensitivity 100)))
+    (gt (call clamp (call weighted_average load peak sensitivity) 10 2147483647) 75))
+
+  (fn main [] -> i32
+    ;; 6 + 25 + 168 + 1 = 200
+    (+ (call gcd 48 18) (+ (call isqrt 625) (+ (call count_primes 1000)
+       (if (call should_throttle 90 80 50) 1 0))))))

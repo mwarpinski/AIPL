@@ -1,6 +1,7 @@
-;; AIPL Dual-Target Sovereign Compiler Engine
-;; Written 100% in canonical AIPL S-Expressions
-;; Supports dynamic S-expression parsing, symbol table resolution, and dual-target Wasm & ELF64 native code generation
+;; Self-hosted compiler front end, written in AIPL: the tokenizer and the
+;; parser that turns AIPL source into a generic S-expression tree in memory.
+;; aipl_src/codegen.aipl imports this module and turns the tree into wasm
+;; (codegen.compile_module is the self-hosted compiler's entry point).
 
 (module aipl_compiler
 
@@ -9,39 +10,26 @@
   ;; address of its first child, which is read back with (ptr.cast Node ...).
   (struct Node [kind:i32 a:i32 b:i32 next:(ptr Node)])
 
-  ;; LEB128 Unsigned 32-bit Integer Encoder
+;; Unsigned LEB128 of val at ptr (val read as unsigned); returns the byte count.
   (fn encode_u32 [ptr:i32 val:i32] -> i32
     (req (gte ptr 0))
     (ens (gt res 0))
-    (let bytes_written:i32 0)
-    (let temp:i32 val)
-    (let keep_looping:bool true)
-    (while keep_looping
-      (let byte_val:i32 (bitand temp 127))
-      (set! temp (shru temp 7))
-      (let byte_out:i32 byte_val)
-      (if (neq temp 0)
-        (set! byte_out (bitor byte_val 128))
-        (set! byte_out byte_val))
-      (mem.store32 (+ ptr bytes_written) byte_out)
-      (set! bytes_written (+ bytes_written 1))
-      (if (eq temp 0)
-        (set! keep_looping false)
-        (set! keep_looping true)))
-    bytes_written)
+    (let n:i32 0)
+    (let rest:i32 val)
+    (while true
+      (let low:i32 (bitand rest 127))
+      (set! rest (shru rest 7))
+      (if (eq rest 0)
+          (block (mem.store8 (+ ptr n) low) (set! n (+ n 1)) (break))
+          (block (mem.store8 (+ ptr n) (bitor low 128)) (set! n (+ n 1)))))
+    n)
 
-  ;; Wasm Header Emitter (\0asm version 1)
+  ;; Wasm header: magic "\0asm" then version 1, as two little-endian words.
   (fn emit_header [ptr:i32] -> i32
     (req (gte ptr 0))
     (ens (eq res 8))
-    (mem.store32 (+ ptr 0) 0)   ;; \0
-    (mem.store32 (+ ptr 1) 97)  ;; a
-    (mem.store32 (+ ptr 2) 115) ;; s
-    (mem.store32 (+ ptr 3) 109) ;; m
-    (mem.store32 (+ ptr 4) 1)   ;; v1
-    (mem.store32 (+ ptr 5) 0)
-    (mem.store32 (+ ptr 6) 0)
-    (mem.store32 (+ ptr 7) 0)
+    (mem.store32 ptr 1836278016)
+    (mem.store32 (+ ptr 4) 1)
     8)
 
   ;; ===== Real Tokenizer =====
@@ -107,8 +95,8 @@
     (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
     (let start:i32 pos)
     (let digit_len:i32 len)
-    (if has_sign (set! start (+ pos 1)) (set! start start))
-    (if has_sign (set! digit_len (- len 1)) (set! digit_len digit_len))
+    (if has_sign (set! start (+ pos 1)) (block))
+    (if has_sign (set! digit_len (- len 1)) (block))
     (if (eq digit_len 0)
         false
         (block
@@ -116,7 +104,7 @@
           (let i:i32 0)
           (while (lt i digit_len)
             (if (call is_digit (mem.load8 (+ src_ptr (+ start i))))
-                (set! all_digits all_digits)
+                (block)
                 (set! all_digits false))
             (set! i (+ i 1)))
           all_digits)))
@@ -152,8 +140,8 @@
     (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
     (let start:i32 pos)
     (let digit_len:i32 len)
-    (if has_sign (set! start (+ pos 1)) (set! start start))
-    (if has_sign (set! digit_len (- len 1)) (set! digit_len digit_len))
+    (if has_sign (set! start (+ pos 1)) (block))
+    (if has_sign (set! digit_len (- len 1)) (block))
     (let value:i32 0)
     (let i:i32 0)
     (while (lt i digit_len)
@@ -171,51 +159,36 @@
     (let count:i32 0)
     (while (lt i input_len)
       (let ch:i32 (mem.load8 (+ input_ptr i)))
-      (if (call is_whitespace ch)
-          (set! i (+ i 1))
-          (if (eq ch 59)
-              (block
-                (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 10))
+      (cond
+        ((call is_whitespace ch) (set! i (+ i 1)))
+        ((eq ch 59) (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 10))
                   (set! i (+ i 1)))
-                (if (lt i input_len) (set! i (+ i 1)) (set! i i)))
-              (if (eq ch 40)
-                  (block (set! count (call write_token token_out_ptr count 0 0 0)) (set! i (+ i 1)))
-                  (if (eq ch 41)
-                      (block (set! count (call write_token token_out_ptr count 1 0 0)) (set! i (+ i 1)))
-                      (if (eq ch 91)
-                          (block (set! count (call write_token token_out_ptr count 2 0 0)) (set! i (+ i 1)))
-                          (if (eq ch 93)
-                              (block (set! count (call write_token token_out_ptr count 3 0 0)) (set! i (+ i 1)))
-                              (if (eq ch 58)
-                                  (block (set! count (call write_token token_out_ptr count 4 0 0)) (set! i (+ i 1)))
-                                  (if (eq ch 34)
-                                      (block
-                                        (set! i (+ i 1))
+                (if (lt i input_len) (set! i (+ i 1)) (block)))
+        ((eq ch 40) (set! count (call write_token token_out_ptr count 0 0 0)) (set! i (+ i 1)))
+        ((eq ch 41) (set! count (call write_token token_out_ptr count 1 0 0)) (set! i (+ i 1)))
+        ((eq ch 91) (set! count (call write_token token_out_ptr count 2 0 0)) (set! i (+ i 1)))
+        ((eq ch 93) (set! count (call write_token token_out_ptr count 3 0 0)) (set! i (+ i 1)))
+        ((eq ch 58) (set! count (call write_token token_out_ptr count 4 0 0)) (set! i (+ i 1)))
+        ((eq ch 34) (set! i (+ i 1))
                                         (let str_start:i32 i)
                                         ;; a backslash escapes the next byte, so \" does not end the string
                                         (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 34))
                                           (if (eq (mem.load8 (+ input_ptr i)) 92) (set! i (+ i 2)) (set! i (+ i 1))))
                                         (let str_len:i32 (- i str_start))
                                         (set! count (call write_token token_out_ptr count 9 str_start str_len))
-                                        (if (lt i input_len) (set! i (+ i 1)) (set! i i)))
-                                      (block
-                                        (let sym_start:i32 i)
+                                        (if (lt i input_len) (set! i (+ i 1)) (block)))
+        (else (let sym_start:i32 i)
                                         (while (and (lt i input_len) (not (call is_delim (mem.load8 (+ input_ptr i)))))
                                           (set! i (+ i 1)))
                                         (let sym_len:i32 (- i sym_start))
-                                        (if (call is_arrow input_ptr sym_start sym_len)
-                                            (set! count (call write_token token_out_ptr count 5 0 0))
-                                            (if (call is_true_kw input_ptr sym_start sym_len)
-                                                (set! count (call write_token token_out_ptr count 8 1 0))
-                                                (if (call is_false_kw input_ptr sym_start sym_len)
-                                                    (set! count (call write_token token_out_ptr count 8 0 0))
-                                                    (if (call is_int_literal input_ptr sym_start sym_len)
-                                                        (set! count (call write_token token_out_ptr count 7 (call parse_int_literal input_ptr sym_start sym_len) 0))
-                                                        (if (call is_i64_literal input_ptr sym_start sym_len)
-                                                            (set! count (call write_token token_out_ptr count 10 sym_start sym_len))
-                                                            (if (call is_float_literal input_ptr sym_start sym_len)
-                                                                (set! count (call write_token token_out_ptr count 11 sym_start sym_len))
-                                                                (set! count (call write_token token_out_ptr count 6 sym_start sym_len))))))))))))))))))
+                                        (cond
+                                          ((call is_arrow input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 5 0 0)))
+                                          ((call is_true_kw input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 8 1 0)))
+                                          ((call is_false_kw input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 8 0 0)))
+                                          ((call is_int_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 7 (call parse_int_literal input_ptr sym_start sym_len) 0)))
+                                          ((call is_i64_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 10 sym_start sym_len)))
+                                          ((call is_float_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count 11 sym_start sym_len)))
+                                          (else (set! count (call write_token token_out_ptr count 6 sym_start sym_len)))))))
     count)
 
   ;; Symbol Table Lookup Pass: maps variable names to local register/stack indices (0, 1, 2, 3...)
@@ -289,18 +262,17 @@
           (let first_child:(ptr Node) (ptr.null Node))
           (let prev_child:(ptr Node) (ptr.null Node))
           (let count:i32 0)
-          (let done:bool false)
-          (while (not done)
+          (while true
             (let cur_idx:i32 (mem.load32 state_ptr))
             (if (or (gte cur_idx token_count) (eq (call tok_field tokens_ptr cur_idx 0) close_kind))
-                (set! done true)
-                (block
-                  (let child:(ptr Node) (call parse_node tokens_ptr token_count ast_buf state_ptr))
-                  (if (eq prev_child (ptr.null Node))
-                      (set! first_child child)
-                      (put prev_child Node.next child))
-                  (set! prev_child child)
-                  (set! count (+ count 1)))))
+                (break)
+                (block))
+            (let child:(ptr Node) (call parse_node tokens_ptr token_count ast_buf state_ptr))
+            (if (eq prev_child (ptr.null Node))
+                (set! first_child child)
+                (put prev_child Node.next child))
+            (set! prev_child child)
+            (set! count (+ count 1)))
           (let idx2:i32 (mem.load32 state_ptr))
           (if (lt idx2 token_count) (mem.store32 state_ptr (+ idx2 1)) (mem.store32 state_ptr idx2))
           (call ast_alloc_node ast_buf group_kind (ptr.addr first_child) count))
@@ -319,15 +291,6 @@
     (mem.store32 (+ ast_out_ptr 0) 0)
     (mem.store32 (+ ast_out_ptr 4) 0)
     (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
-
-  ;; DUAL-TARGET COMPILER ENTRY POINT (target_flag: 0 = Wasm, 1 = Native ELF64)
-  ;; not yet wired to codegen.aipl
-  (fn compile_to_target [source_ptr:i32 source_len:i32 out_ptr:i32 target_flag:i32] -> i32
-    -1)
-
-  ;; Backward-compatible compile_aipl entry point (defaults to Wasm)
-  (fn compile_aipl [source_ptr:i32 source_len:i32 wasm_out_ptr:i32] -> i32
-    (call compile_to_target source_ptr source_len wasm_out_ptr 0))
 
 
   ;; ===== Tokenizer self-tests (content assertions, not just shape checks) =====
@@ -458,9 +421,9 @@
     (ens (gte res 0))
     (let p:i32 0)
     (let r1:i32 (call test_tokenize_signature))
-    (if (eq r1 1) (set! p (+ p 1)) (set! p p))
+    (if (eq r1 1) (set! p (+ p 1)) (block))
     (let r2:i32 (call test_tokenize_literals))
-    (if (eq r2 1) (set! p (+ p 1)) (set! p p))
+    (if (eq r2 1) (set! p (+ p 1)) (block))
     p)
 
   ;; ===== Parser self-tests (content assertions on the real tree shape) =====
@@ -557,7 +520,7 @@
     (ens (gte res 0))
     (let p:i32 0)
     (let r1:i32 (call test_parse_simple_call))
-    (if (eq r1 1) (set! p (+ p 1)) (set! p p))
+    (if (eq r1 1) (set! p (+ p 1)) (block))
     (let r2:i32 (call test_parse_nested))
-    (if (eq r2 1) (set! p (+ p 1)) (set! p p))
+    (if (eq r2 1) (set! p (+ p 1)) (block))
     p))

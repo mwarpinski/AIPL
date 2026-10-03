@@ -5,5 +5,7 @@ pub mod compiler;
 pub mod parser;
 pub mod printer;
 pub mod resolver;
-pub mod stdlib;
+pub mod selfhost;
+pub mod sexpr;
+pub mod generics;
 pub mod vm;

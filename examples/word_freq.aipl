@@ -1,0 +1,96 @@
+;; word_freq: the most frequent words of a file (the first command-line
+;; argument, else input.txt), most frequent first, ties in byte order.
+;; Shows the collections and function references together: counting in a
+;; strmap, sorting records with vec.sort_by and a comparator. Words are runs
+;; of ASCII letters and digits, lowercased. Returns the number of distinct
+;; words, or -1 if the file cannot be read.
+;;   cd examples && ../target/debug/aipl eval word_freq.aipl -- input.txt
+(module word_freq
+  (import io)
+  (import str)
+  (import os)
+  (import buf)
+  (import vec)
+  (import strmap)
+
+  (struct Entry [word:(ptr str.Bytes) count:i32])
+
+  (fn is_word_byte [c:i32] -> bool
+    (or (and (gte c 97) (lte c 122))
+        (or (and (gte c 65) (lte c 90)) (and (gte c 48) (lte c 57)))))
+
+  ;; Lowercases ASCII letters in place.
+  (fn lowercase [b:(ptr str.Bytes)] -> void
+    (loop i 0 (- (get b str.Bytes.len) 1) 1
+      (let p:i32 (+ (get b str.Bytes.addr) i))
+      (let c:i32 (mem.load8 p))
+      (if (and (gte c 65) (lte c 90)) (mem.store8 p (+ c 32)) (block))))
+
+  ;; Word -> count. Keys are slices of `text`, which must outlive the map.
+  (fn count_words [text:(ptr str.Bytes)] -> (ptr (strmap.StrMap i32))
+    (let counts:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 64))
+    (let n:i32 (get text str.Bytes.len))
+    (let start:i32 -1)
+    ;; i runs one past the end so a final word is closed too
+    (loop i 0 n 1
+      (let inside:bool (and (lt i n) (call is_word_byte (call str.byte_at text i))))
+      (cond
+        ((and inside (lt start 0)) (set! start i))
+        ((and (not inside) (gte start 0))
+         (let w:(ptr str.Bytes) (call str.bytes (+ (get text str.Bytes.addr) start) (- i start)))
+         (call (strmap.set i32) counts w (+ (call (strmap.get_or i32) counts w 0) 1))
+         (set! start -1))
+        (else (block))))
+    counts)
+
+  ;; Byte-wise order of two words: negative, zero, or positive.
+  (fn compare_bytes [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32
+    (let la:i32 (get a str.Bytes.len))
+    (let lb:i32 (get b str.Bytes.len))
+    (loop i 0 (- (if (lt la lb) la lb) 1) 1
+      (let d:i32 (- (call str.byte_at a i) (call str.byte_at b i)))
+      (if (neq d 0) (return d) (block)))
+    (- la lb))
+
+  ;; The sort order: higher count first, then byte order.
+  (fn by_count_then_word [a:(ptr Entry) b:(ptr Entry)] -> i32
+    (if (neq (get a Entry.count) (get b Entry.count))
+        (- (get b Entry.count) (get a Entry.count))
+        (call compare_bytes (get a Entry.word) (get b Entry.word))))
+
+  (fn ranked [counts:(ptr (strmap.StrMap i32))] -> (ptr (vec.Vec (ptr Entry)))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call (strmap.count i32) counts)))
+    (loop i 0 (- (call (strmap.capacity i32) counts) 1) 1
+      (if (call (strmap.slot_used i32) counts i)
+          (block
+            (let e:(ptr Entry) (new Entry))
+            (put e Entry.word (call (strmap.slot_key i32) counts i))
+            (put e Entry.count (call (strmap.slot_val i32) counts i))
+            (call (vec.push (ptr Entry)) entries e))
+          (block)))
+    (call (vec.sort_by (ptr Entry)) entries (ref by_count_then_word))
+    entries)
+
+  ;; Prints up to `limit` entries as "word count" lines, in one write.
+  (fn print_top [entries:(ptr (vec.Vec (ptr Entry))) limit:i32] -> void
+    (let out:(ptr buf.Buf) (call buf.make 256))
+    (let n:i32 (if (lt (call (vec.len (ptr Entry)) entries) limit) (call (vec.len (ptr Entry)) entries) limit))
+    (loop i 0 (- n 1) 1
+      (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))
+      (call buf.push_bytes out (get e Entry.word))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (get e Entry.count))
+      (call buf.push_byte out 10))
+    (let b:(ptr str.Bytes) (call buf.bytes out))
+    (fs.write 1 (get b str.Bytes.addr) (get b str.Bytes.len)))
+
+  (fn main [] -> i32
+    (let path:(ptr str.Bytes) (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
+    (let text:(ptr str.Bytes) (call io.read_path path))
+    (if (lt (get text str.Bytes.len) 0)
+        (block (call io.eprintln "word_freq: cannot read the input file") (return -1))
+        (block))
+    (call lowercase text)
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call ranked (call count_words text)))
+    (call print_top entries 5)
+    (call (vec.len (ptr Entry)) entries)))

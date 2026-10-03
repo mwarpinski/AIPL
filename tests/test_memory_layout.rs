@@ -27,8 +27,9 @@ fn fresh_vm_has_cursor_1024_at_address_0_and_alloc_advances_it() {
         "f",
     )
     .unwrap();
-    // a = 1024, b = 1040, cursor after = 1044 -> 1024*100000 + 1040*10 + 4
-    assert_eq!(v, Value::Int(102_400_000 + 10_400 + 4));
+    // a = 1024, b = 1040, cursor after = 1048 (every block is a multiple of
+    // 8 bytes) -> 1024*100000 + 1040*10 + 8
+    assert_eq!(v, Value::Int(102_400_000 + 10_400 + 8));
 }
 
 #[test]
@@ -104,9 +105,9 @@ fn a_real_lock_round_trip_still_works() {
 fn mem_grow_agrees_on_old_size_and_refuses_past_the_cap() {
     let v = vm_run("(module m (fn f [] -> i32 (mem.grow 1)))", "f").unwrap();
     assert_eq!(v, Value::Int(16));
-    let v = vm_run("(module m (fn f [] -> i32 (mem.grow 85)))", "f").unwrap();
-    assert_eq!(v, Value::Int(-1), "16 + 85 > 100 pages");
-    let v = vm_run("(module m (fn f [] -> i32 (let a:i32 (mem.grow 84)) (mem.grow 1)))", "f").unwrap();
+    let v = vm_run("(module m (fn f [] -> i32 (mem.grow 1009)))", "f").unwrap();
+    assert_eq!(v, Value::Int(-1), "16 + 1009 > 1024 pages");
+    let v = vm_run("(module m (fn f [] -> i32 (let a:i32 (mem.grow 1008)) (mem.grow 1)))", "f").unwrap();
     assert_eq!(v, Value::Int(-1), "exactly at the cap, one more page is refused");
 }
 

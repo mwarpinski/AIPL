@@ -27,43 +27,16 @@ impl WasmCompiler {
         for (idx, w) in used_wasi.iter().enumerate() {
             let (params, results) = w.signature();
             types.ty().function(params, results);
-            imports.import("wasi_snapshot_preview1", w.name(), EntityType::Function(idx as u32));
+            imports.import(w.module(), w.name(), EntityType::Function(idx as u32));
             wasi_indices.insert(*w, idx as u32);
         }
         let import_count = used_wasi.len() as u32;
+        // A module that spawns threads is "threaded" (AIPL_SPEC.md 4.D): it
+        // imports a shared memory, initialises it once, and gives each
+        // spawned thread its own runtime scratch block.
+        let threaded = module_uses_op(module, &OpCode::ThreadSpawn);
 
-        // String literals: interned once into a data segment at 512..1024 as
-        // [len: u32 LE][bytes]; a `str` value is the pointer to the bytes.
-        let mut string_blob: Vec<u8> = Vec::new();
-        let mut strings: HashMap<String, u32> = HashMap::new();
-        let intern = |s: &str, blob: &mut Vec<u8>, map: &mut HashMap<String, u32>| -> u32 {
-            if let Some(&a) = map.get(s) {
-                return a;
-            }
-            let addr = STRING_DATA_BASE + blob.len() as u32 + 4;
-            blob.extend_from_slice(&(s.len() as u32).to_le_bytes());
-            blob.extend_from_slice(s.as_bytes());
-            map.insert(s.to_string(), addr);
-            addr
-        };
-        let mut newline_addr = 0u32;
-        if used_wasi.contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
-            newline_addr = intern("\n", &mut string_blob, &mut strings);
-        }
-        walk_module(module, &mut |e| {
-            if let Expr::Lit(Literal::Str(s), _) = e {
-                intern(s, &mut string_blob, &mut strings);
-            }
-        });
-        if string_blob.len() > STRING_DATA_CAPACITY as usize {
-            return Err(format!(
-                "Wasm Codegen: string literals need {} bytes but the string data area (addresses {}..{}) holds {}",
-                string_blob.len(),
-                STRING_DATA_BASE,
-                STRING_DATA_BASE + STRING_DATA_CAPACITY,
-                STRING_DATA_CAPACITY
-            ));
-        }
+        let StringLayout { blob: string_blob, addrs: strings, newline_addr, heap_start } = string_layout(module)?;
 
         let mut structs: HashMap<String, StructDef> = HashMap::new();
         for s in &module.structs {
@@ -111,9 +84,42 @@ impl WasmCompiler {
             }
             _ => {}
         });
+        // wasi_thread_start calls the worker through the table as (fn [i32] -> i32)
+        let worker_sig = (vec![ValType::I32], vec![ValType::I32]);
+        if threaded {
+            uses_refs = true;
+            if !ref_sigs.contains(&worker_sig) {
+                ref_sigs.push(worker_sig.clone());
+            }
+        }
         let ref_type_base = import_count + module.functions.len() as u32;
         for (params, results) in &ref_sigs {
             types.ty().function(params.clone(), results.clone());
+        }
+        // Threaded modules end with two compiler-made functions: the start
+        // function (one-time memory init) and the exported wasi_thread_start.
+        let n_user = module.functions.len() as u32;
+        let init_fn = import_count + n_user;
+        let thread_start_fn = init_fn + 1;
+        if threaded {
+            let base = ref_type_base + ref_sigs.len() as u32;
+            types.ty().function(vec![], vec![]);
+            types.ty().function(vec![ValType::I32, ValType::I32], vec![]);
+            functions.function(base);
+            functions.function(base + 1);
+        }
+        let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
+        // A module with a zero-argument `main` and no `_start` of its own gets
+        // a WASI command entry point: `_start` calls `main` and discards its
+        // result (exit status 0 unless the program calls sys.exit). It comes
+        // after every other function, with its own [] -> [] type.
+        let main_fn = module.functions.iter().position(|f| f.name == "main" && f.params.is_empty());
+        let auto_start = main_fn.is_some() && !module.functions.iter().any(|f| f.name == "_start");
+        let start_fn = import_count + n_user + if threaded { 2 } else { 0 };
+        if auto_start {
+            let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 };
+            types.ty().function(vec![], vec![]);
+            functions.function(base);
         }
 
         // 2. Build code section (body compilation)
@@ -172,11 +178,14 @@ impl WasmCompiler {
                 strings: &strings,
                 wasi: &wasi_indices,
                 newline_addr,
+                heap_start,
+                threaded,
                 structs: &structs,
                 fn_types: &fn_types,
                 import_count,
                 ref_sigs: &ref_sigs,
                 ref_type_base,
+                labels: std::cell::RefCell::new(Vec::new()),
             };
 
             // Every statement but the last is executed purely for effect: drop
@@ -197,28 +206,63 @@ impl WasmCompiler {
             codes.function(&func);
         }
 
-        let mut memories = wasm_encoder::MemorySection::new();
         // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
-        // same old size in both backends; 100 pages max, also matching the VM.
-        memories.memory(wasm_encoder::MemoryType {
+        // same old size in both backends; 1024 pages max (64 MiB), also matching
+        // the VM. A threaded module imports it shared ("env" "memory") so every
+        // thread's instance uses the same memory.
+        let memory_type = wasm_encoder::MemoryType {
             minimum: 16,
-            maximum: Some(100),
+            maximum: Some(crate::vm::MAX_PAGES as u64),
             memory64: false,
-            shared: false,
+            shared: threaded,
             page_size_log2: None,
-        });
+        };
+        let mut memories = wasm_encoder::MemorySection::new();
+        if threaded {
+            imports.import("env", "memory", EntityType::Memory(memory_type));
+        } else {
+            memories.memory(memory_type);
+        }
         exports.export("memory", ExportKind::Memory, 0);
+        if threaded {
+            exports.export("wasi_thread_start", ExportKind::Func, thread_start_fn);
+        }
+        if auto_start {
+            exports.export("_start", ExportKind::Func, start_fn);
+        }
 
         // Runtime block initialisation: the heap cursor at address 0 starts
-        // at 1024 (HEAP_START). Everything else in bytes 0..1024 is zero.
+        // at heap_start, just past the string literals. Everything else in
+        // bytes 0..1024 is zero. A threaded module's segments are passive and
+        // copied once by its start function (each thread instantiates the
+        // module again, and active segments would reset the cursor).
         let mut data = wasm_encoder::DataSection::new();
-        data.active(0, &wasm_encoder::ConstExpr::i32_const(0), 1024u32.to_le_bytes());
-        if !string_blob.is_empty() {
-            data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
+        let n_segments = if string_blob.is_empty() { 1 } else { 2 };
+        if threaded {
+            data.passive(heap_start.to_le_bytes());
+            if !string_blob.is_empty() {
+                data.passive(string_blob.iter().copied());
+            }
+            codes.function(&threaded_init_function(string_blob.len() as u32));
+            codes.function(&thread_start_function(worker_type));
+        } else {
+            data.active(0, &wasm_encoder::ConstExpr::i32_const(0), heap_start.to_le_bytes());
+            if !string_blob.is_empty() {
+                data.active(0, &wasm_encoder::ConstExpr::i32_const(STRING_DATA_BASE as i32), string_blob.iter().copied());
+            }
+        }
+        if let (true, Some(m)) = (auto_start, main_fn) {
+            let mut f = Function::new(vec![]);
+            f.instruction(&Instruction::Call(import_count + m as u32));
+            if module.functions[m].return_type != Type::Void {
+                f.instruction(&Instruction::Drop);
+            }
+            f.instruction(&Instruction::End);
+            codes.function(&f);
         }
 
         wasm_module.section(&types);
-        if import_count > 0 {
+        if import_count > 0 || threaded {
             wasm_module.section(&imports);
         }
         wasm_module.section(&functions);
@@ -234,8 +278,21 @@ impl WasmCompiler {
             });
             wasm_module.section(&tables);
         }
-        wasm_module.section(&memories);
-        wasm_module.section(&exports);
+        if threaded {
+            // per-instance pointer to the runtime scratch cells (64 in the
+            // main thread, a private block in each spawned thread)
+            let mut globals = wasm_encoder::GlobalSection::new();
+            globals.global(
+                wasm_encoder::GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                &wasm_encoder::ConstExpr::i32_const(RT_IOV0_BUF),
+            );
+            wasm_module.section(&globals);
+            wasm_module.section(&exports);
+            wasm_module.section(&wasm_encoder::StartSection { function_index: init_fn });
+        } else {
+            wasm_module.section(&memories);
+            wasm_module.section(&exports);
+        }
         if uses_refs {
             let indices: Vec<u32> = (0..n_fns).map(|i| import_count + i).collect();
             let mut elems = wasm_encoder::ElementSection::new();
@@ -245,6 +302,9 @@ impl WasmCompiler {
                 wasm_encoder::Elements::Functions(std::borrow::Cow::Owned(indices)),
             );
             wasm_module.section(&elems);
+        }
+        if threaded {
+            wasm_module.section(&wasm_encoder::DataCountSection { count: n_segments });
         }
         wasm_module.section(&codes);
         wasm_module.section(&data);
@@ -269,6 +329,10 @@ struct Ctx<'a> {
     wasi: &'a HashMap<Wasi, u32>,
     /// Address of the interned "\n" used by sys.print (0 if unused).
     newline_addr: u32,
+    /// First heap address: 1024 plus the string literals, 8-aligned.
+    heap_start: u32,
+    /// The module spawns threads: runtime scratch cells are per thread.
+    threaded: bool,
     structs: &'a HashMap<String, StructDef>,
     /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
     fn_types: &'a HashMap<String, Type>,
@@ -276,6 +340,42 @@ struct Ctx<'a> {
     /// Distinct call_ref signatures; signature i has type index ref_type_base + i.
     ref_sigs: &'a [(Vec<ValType>, Vec<ValType>)],
     ref_type_base: u32,
+    /// Enclosing structured instructions that can contain user code,
+    /// innermost last, so break/continue can compute their branch depth.
+    labels: std::cell::RefCell<Vec<Label>>,
+}
+
+/// What a wasm label is for. Blocks emitted around compiler-generated code
+/// only (store guards, traps) never contain break/continue and are not tracked.
+#[derive(Clone, Copy, PartialEq)]
+enum Label {
+    /// an if / else
+    Plain,
+    /// the block around a while/loop: break target
+    Break,
+    /// the loop header: continue target of a while
+    LoopTop,
+    /// the block around a loop's body: continue target (falls into the step)
+    Continue,
+}
+
+/// Branch depth from the innermost label to the innermost label of a kind in `kinds`.
+fn label_depth(ctx: &Ctx, kinds: &[Label]) -> Result<u32, String> {
+    let labels = ctx.labels.borrow();
+    labels
+        .iter()
+        .rev()
+        .position(|l| kinds.contains(l))
+        .map(|d| d as u32)
+        .ok_or_else(|| "Wasm Codegen: break/continue outside a loop".to_string())
+}
+
+/// Compiles `body` with `label` pushed on the label stack.
+fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    ctx.labels.borrow_mut().push(label);
+    let r = body();
+    ctx.labels.borrow_mut().pop();
+    r
 }
 
 /// The wasm params/results of a `(fn [...] -> r)` type.
@@ -326,6 +426,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
         Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => Type::Void,
         Expr::CallRef { sig, .. } => match sig {
             Type::Fn(_, ret) => (**ret).clone(),
             _ => Type::I32,
@@ -363,7 +464,9 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::I64ReinterpretF64 => Type::I64,
             OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => Type::F64,
             OpCode::MemLoadF32 => Type::F32,
-            OpCode::MemLoadF64 | OpCode::SysTime => Type::F64,
+            OpCode::MemLoadF64 => Type::F64,
+            OpCode::SysTime | OpCode::SysMonotonic => Type::I64,
+            OpCode::SysRandom => Type::I32,
             OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
@@ -385,6 +488,10 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::FsWrite
             | OpCode::FsClose
             | OpCode::FsDelete
+            | OpCode::ArgsSizes
+            | OpCode::ArgsGet
+            | OpCode::EnvSizes
+            | OpCode::EnvGet
             | OpCode::ThreadSpawn
             | OpCode::ThreadJoin
             | OpCode::StrLen
@@ -520,6 +627,9 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 collect_lets(&[*(func.clone())], lets);
                 collect_lets(args, lets);
             }
+            Expr::Return { val: Some(v), .. } => {
+                collect_lets(&[*(v.clone())], lets);
+            }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 collect_lets(&[*(expr.clone())], lets);
                 lets.push((ok_var.clone(), Type::I32));
@@ -623,20 +733,18 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
             let then_void = is_void_expr(then_branch, ctx);
-            if then_void {
-                func.instruction(&Instruction::If(BlockType::Empty));
-                compile_expr(then_branch, ctx, func)?;
-                func.instruction(&Instruction::Else);
-                compile_expr(else_branch, ctx, func)?;
-                func.instruction(&Instruction::End);
+            let block_ty = if then_void {
+                BlockType::Empty
             } else {
-                let ty = expr_type(then_branch, ctx);
-                func.instruction(&Instruction::If(BlockType::Result(aipl_to_wasm_type(&ty))));
+                BlockType::Result(aipl_to_wasm_type(&expr_type(then_branch, ctx)))
+            };
+            func.instruction(&Instruction::If(block_ty));
+            with_label(ctx, Label::Plain, || {
                 compile_expr(then_branch, ctx, func)?;
                 func.instruction(&Instruction::Else);
-                compile_expr(else_branch, ctx, func)?;
-                func.instruction(&Instruction::End);
-            }
+                compile_expr(else_branch, ctx, func)
+            })?;
+            func.instruction(&Instruction::End);
         }
         Expr::Call { func: f_name, args, .. } => {
             for arg in args {
@@ -675,7 +783,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore8 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
             }
@@ -685,7 +793,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore32 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
             }
@@ -695,7 +803,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
             OpCode::MemStore64 => {
                 compile_expr(&args[0], ctx, func)?;
-                emit_write_address_check(func, ctx.addr_scratch);
+                emit_write_address_check(func, ctx);
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
             }
@@ -703,16 +811,14 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 // Bump allocator whose cursor is the i32 at linear-memory
                 // address 0 (HEAP_PTR_ADDR) - the same word the VM uses, so
                 // both backends and self-hosted AIPL share one allocator.
-                // Stack: [old] [0] [old] [size] -> add -> [old] [0] [new] -> store -> [old]
-                let cursor = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                // The size is evaluated first (it may allocate itself), rounded
+                // up to a multiple of 8 so every block stays 8-aligned, then
+                // one atomic add claims the block: [0] [size] -> rmw.add -> [old].
                 func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Load(cursor));
-                func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Const(0));
-                func.instruction(&Instruction::I32Load(cursor));
                 compile_expr(&args[0], ctx, func)?;
-                func.instruction(&Instruction::I32Add);
-                func.instruction(&Instruction::I32Store(cursor));
+                emit_round8(func);
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+                emit_grow_to_cursor(func);
             }
             OpCode::MemGrow => {
                 compile_expr(&args[0], ctx, func)?;
@@ -727,15 +833,28 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&compare_instruction(op, &ty)?);
             }
+            // Short-circuit: the second operand runs only when it decides the
+            // result. (and a b) = if a then b else 0; (or a b) = if a then 1 else b.
             OpCode::And => {
                 compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32And);
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                with_label(ctx, Label::Plain, || {
+                    compile_expr(&args[1], ctx, func)?;
+                    func.instruction(&Instruction::Else);
+                    func.instruction(&Instruction::I32Const(0));
+                    Ok(())
+                })?;
+                func.instruction(&Instruction::End);
             }
             OpCode::Or => {
                 compile_expr(&args[0], ctx, func)?;
-                compile_expr(&args[1], ctx, func)?;
-                func.instruction(&Instruction::I32Or);
+                func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                with_label(ctx, Label::Plain, || {
+                    func.instruction(&Instruction::I32Const(1));
+                    func.instruction(&Instruction::Else);
+                    compile_expr(&args[1], ctx, func)
+                })?;
+                func.instruction(&Instruction::End);
             }
             OpCode::Not => {
                 compile_expr(&args[0], ctx, func)?;
@@ -784,20 +903,20 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     compile_expr(arg, ctx, func)?;
                     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
                     // iov0 = { ptr, len }
-                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    emit_rt(func, ctx, RT_IOV0_BUF);
                     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                     func.instruction(&Instruction::I32Store(M4));
-                    func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                    emit_rt(func, ctx, RT_IOV0_LEN);
                     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                     func.instruction(&Instruction::I32Const(4));
                     func.instruction(&Instruction::I32Sub);
                     func.instruction(&Instruction::I32Load(M4));
                     func.instruction(&Instruction::I32Store(M4));
                     // iov1 = { "\n", 1 }
-                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    emit_rt(func, ctx, RT_IOV1_BUF);
                     func.instruction(&Instruction::I32Const(ctx.newline_addr as i32));
                     func.instruction(&Instruction::I32Store(M4));
-                    func.instruction(&Instruction::I32Const(RT_IOV1_LEN));
+                    emit_rt(func, ctx, RT_IOV1_LEN);
                     func.instruction(&Instruction::I32Const(1));
                     func.instruction(&Instruction::I32Store(M4));
                     // One fd_write per iovec: WASI permits a short write and
@@ -805,16 +924,16 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     // a call, so a single 2-iovec call would drop the newline.
                     // fd_write(1, iovs=64, iovs_len=1, nwritten=80); errno dropped
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                    emit_rt(func, ctx, RT_IOV0_BUF);
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    emit_rt(func, ctx, RT_NBYTES);
                     func.instruction(&Instruction::Call(fd_write));
                     func.instruction(&Instruction::Drop);
                     // fd_write(1, iovs=72, iovs_len=1, nwritten=80)
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_IOV1_BUF));
+                    emit_rt(func, ctx, RT_IOV1_BUF);
                     func.instruction(&Instruction::I32Const(1));
-                    func.instruction(&Instruction::I32Const(RT_NBYTES));
+                    emit_rt(func, ctx, RT_NBYTES);
                     func.instruction(&Instruction::Call(fd_write));
                     func.instruction(&Instruction::Drop);
                 }
@@ -833,11 +952,101 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
                 return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
             }
-            OpCode::AtomicAdd | OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend (needs shared memory + atomics)", op));
+            // Atomics (AIPL_SPEC.md 4.D). Each address passes the store guard
+            // first, as in the VM. Operands are evaluated left to right and
+            // only then unloaded into the scratch locals, so nesting is safe.
+            OpCode::AtomicAdd => {
+                // returns the previous value
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             }
-            OpCode::SysTime => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
+            OpCode::AtomicCas => {
+                // true if the word held `expected` and now holds `new`
+                let (expected, new) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(new));
+                func.instruction(&Instruction::LocalSet(expected));
+                func.instruction(&Instruction::LocalGet(expected));
+                func.instruction(&Instruction::LocalGet(new));
+                func.instruction(&Instruction::I32AtomicRmwCmpxchg(M4));
+                func.instruction(&Instruction::LocalGet(expected));
+                func.instruction(&Instruction::I32Eq);
+            }
+            OpCode::AtomicLock => {
+                // Swap 0 -> 1; while the word is 1, sleep until notified. Any
+                // other value is not a lock (the VM errors; this traps).
+                let (lock, old) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                func.instruction(&Instruction::LocalSet(lock));
+                func.instruction(&Instruction::Block(BlockType::Empty));
+                func.instruction(&Instruction::Loop(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32AtomicRmwCmpxchg(M4));
+                func.instruction(&Instruction::LocalTee(old));
+                func.instruction(&Instruction::I32Eqz);
+                func.instruction(&Instruction::BrIf(1));
+                func.instruction(&Instruction::LocalGet(old));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I64Const(-1));
+                func.instruction(&Instruction::MemoryAtomicWait32(M4));
+                func.instruction(&Instruction::Drop);
+                func.instruction(&Instruction::Br(0));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::End);
+            }
+            OpCode::AtomicUnlock => {
+                // Swap 1 -> 0 (anything else traps, as the VM errors), then
+                // wake every waiter.
+                let (lock, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                func.instruction(&Instruction::LocalTee(lock));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32AtomicRmwXchg(M4));
+                func.instruction(&Instruction::I32Const(1));
+                func.instruction(&Instruction::I32Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(lock));
+                func.instruction(&Instruction::I32Const(-1));
+                func.instruction(&Instruction::MemoryAtomicNotify(M4));
+                func.instruction(&Instruction::Drop);
+            }
+            OpCode::SysTime | OpCode::SysMonotonic => {
+                // clock_time_get(realtime 0 | monotonic 1, precision 1 ns,
+                // out = the 8-byte cell 80); a failing clock traps
+                let host = wasi_index(ctx, Wasi::ClockTimeGet)?;
+                func.instruction(&Instruction::I32Const(if *op == OpCode::SysTime { 0 } else { 1 }));
+                func.instruction(&Instruction::I64Const(1));
+                emit_rt(func, ctx, RT_NBYTES);
+                func.instruction(&Instruction::Call(host));
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                emit_rt(func, ctx, RT_NBYTES);
+                func.instruction(&Instruction::I64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            }
+            OpCode::SysRandom => {
+                let host = wasi_index(ctx, Wasi::RandomGet)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::Call(host));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
@@ -857,7 +1066,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::LocalSet(io_b)); // flags
                 func.instruction(&Instruction::LocalSet(io_a)); // len
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
-                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                emit_path_dir(func, ctx.addr_scratch, io_a);
                 func.instruction(&Instruction::I32Const(0)); // dirflags
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&Instruction::LocalGet(io_a));
@@ -877,9 +1086,9 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::I64Const(0)); // rights_inheriting
                 func.instruction(&Instruction::I32Const(0)); // fdflags
-                func.instruction(&Instruction::I32Const(RT_OPENED_FD));
+                emit_rt(func, ctx, RT_OPENED_FD);
                 func.instruction(&Instruction::Call(path_open));
-                emit_errno_to_result(func, Some(RT_OPENED_FD));
+                emit_errno_to_result(func, ctx, Some(RT_OPENED_FD));
             }
             OpCode::FsRead | OpCode::FsWrite => {
                 // (fs.read fd buf max) / (fs.write fd buf len) -> one iovec,
@@ -892,24 +1101,32 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 func.instruction(&Instruction::LocalSet(io_b)); // len
                 func.instruction(&Instruction::LocalSet(io_a)); // buf
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // fd
-                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                emit_rt(func, ctx, RT_IOV0_BUF);
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::I32Store(M4));
-                func.instruction(&Instruction::I32Const(RT_IOV0_LEN));
+                emit_rt(func, ctx, RT_IOV0_LEN);
                 func.instruction(&Instruction::LocalGet(io_b));
                 func.instruction(&Instruction::I32Store(M4));
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&Instruction::I32Const(RT_IOV0_BUF));
+                emit_rt(func, ctx, RT_IOV0_BUF);
                 func.instruction(&Instruction::I32Const(1));
-                func.instruction(&Instruction::I32Const(RT_NBYTES));
+                emit_rt(func, ctx, RT_NBYTES);
                 func.instruction(&Instruction::Call(host));
-                emit_errno_to_result(func, Some(RT_NBYTES));
+                emit_errno_to_result(func, ctx, Some(RT_NBYTES));
             }
             OpCode::FsClose => {
                 let fd_close = wasi_index(ctx, Wasi::FdClose)?;
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::Call(fd_close));
-                emit_errno_to_result(func, None);
+                emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                // the two addresses go straight to the host call
+                let host = wasi_index(ctx, Wasi::for_op(op).unwrap())?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::Call(host));
+                emit_errno_to_result(func, ctx, None);
             }
             OpCode::FsDelete => {
                 let unlink = wasi_index(ctx, Wasi::PathUnlinkFile)?;
@@ -918,18 +1135,64 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::LocalSet(io_a)); // len
                 func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
-                func.instruction(&Instruction::I32Const(WASI_PREOPEN_FD));
+                emit_path_dir(func, ctx.addr_scratch, io_a);
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&Instruction::LocalGet(io_a));
                 func.instruction(&Instruction::Call(unlink));
-                emit_errno_to_result(func, None);
+                emit_errno_to_result(func, ctx, None);
             }
 
-            OpCode::ThreadSpawn | OpCode::ThreadJoin => {
-                return Err(format!(
-                    "Wasm Codegen: {:?} is not yet supported in the wasm backend (needs shared memory + wasi-threads)",
-                    op
-                ));
+            OpCode::ThreadSpawn => {
+                // rec = 16 bytes [done=0 result=0 fn arg]; thread-spawn(rec);
+                // a negative thread id traps (the VM errors). The handle is rec.
+                let spawn = wasi_index(ctx, Wasi::ThreadSpawn)?;
+                let (worker, arg) = io_locals(ctx)?;
+                let at = |offset: u64| MemArg { offset, align: 2, memory_index: 0 };
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(arg));
+                func.instruction(&Instruction::LocalSet(worker));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32Const(16));
+                func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                emit_grow_to_cursor(func);
+                for (offset, value) in [(0u64, None), (4, None), (8, Some(worker)), (12, Some(arg))] {
+                    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                    match value {
+                        Some(l) => func.instruction(&Instruction::LocalGet(l)),
+                        None => func.instruction(&Instruction::I32Const(0)),
+                    };
+                    func.instruction(&Instruction::I32Store(at(offset)));
+                }
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::Call(spawn));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I32LtS);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::Unreachable);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+            }
+            OpCode::ThreadJoin => {
+                // sleep until the record's done flag is set, then read the result
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                func.instruction(&Instruction::Block(BlockType::Empty));
+                func.instruction(&Instruction::Loop(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32AtomicLoad(M4));
+                func.instruction(&Instruction::BrIf(1));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::I64Const(-1));
+                func.instruction(&Instruction::MemoryAtomicWait32(M4));
+                func.instruction(&Instruction::Drop);
+                func.instruction(&Instruction::Br(0));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
             }
         },
         Expr::Block(exprs, _) => {
@@ -943,14 +1206,21 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             }
         }
         Expr::While { cond, body, .. } => {
+            // block { loop { cond; eqz; br_if 1; body; br 0 } }:
+            // break = br to the block, continue = br to the loop header.
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-            compile_expr(cond, ctx, func)?;
-            func.instruction(&Instruction::I32Eqz);
-            func.instruction(&Instruction::BrIf(1));
-            for e in body {
-                compile_stmt(e, ctx, func)?;
-            }
+            with_label(ctx, Label::Break, || {
+                with_label(ctx, Label::LoopTop, || {
+                    compile_expr(cond, ctx, func)?;
+                    func.instruction(&Instruction::I32Eqz);
+                    func.instruction(&Instruction::BrIf(1));
+                    for e in body {
+                        compile_stmt(e, ctx, func)?;
+                    }
+                    Ok(())
+                })
+            })?;
             func.instruction(&Instruction::Br(0));
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
@@ -962,19 +1232,29 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .ok_or_else(|| format!("Wasm Codegen: loop variable '{}' has no local slot", var))?;
             compile_expr(start, ctx, func)?;
             func.instruction(&Instruction::LocalSet(var_idx));
+            // block { loop { var > end -> br_if 1; block { body } ; var += step; br 0 } }:
+            // break = br to the outer block, continue = br to the end of the
+            // inner block, which falls into the step.
             func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty));
-            func.instruction(&Instruction::LocalGet(var_idx));
-            compile_expr(end, ctx, func)?;
-            // VM semantics (vm.rs) run the loop `while curr <= end` - inclusive
-            // of the end bound. This must use I32GtS (exit only once the
-            // counter exceeds end), not I32GeS, or a wasm-compiled loop runs
-            // one fewer iteration than the same source does in the VM.
-            func.instruction(&Instruction::I32GtS);
-            func.instruction(&Instruction::BrIf(1));
-            for e in body {
-                compile_stmt(e, ctx, func)?;
-            }
+            with_label(ctx, Label::Break, || {
+                with_label(ctx, Label::LoopTop, || {
+                    func.instruction(&Instruction::LocalGet(var_idx));
+                    compile_expr(end, ctx, func)?;
+                    // Inclusive end bound: exit only once var exceeds end.
+                    func.instruction(&Instruction::I32GtS);
+                    func.instruction(&Instruction::BrIf(1));
+                    func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty));
+                    with_label(ctx, Label::Continue, || {
+                        for e in body {
+                            compile_stmt(e, ctx, func)?;
+                        }
+                        Ok(())
+                    })?;
+                    func.instruction(&Instruction::End);
+                    Ok(())
+                })
+            })?;
             func.instruction(&Instruction::LocalGet(var_idx));
             compile_expr(step, ctx, func)?;
             func.instruction(&Instruction::I32Add);
@@ -1012,6 +1292,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             };
 
             func.instruction(&Instruction::If(block_ty));
+            ctx.labels.borrow_mut().push(Label::Plain);
 
             if let Some(&ok_idx) = ctx.locals.get(ok_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -1049,6 +1330,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 }
             }
 
+            ctx.labels.borrow_mut().pop();
             func.instruction(&Instruction::End);
         }
         Expr::NewStruct { struct_name, .. } => {
@@ -1057,19 +1339,10 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let size = crate::checker::get_struct_size(def)?;
-            let cursor = wasm_encoder::MemArg {
-                offset: 0,
-                align: 2,
-                memory_index: 0,
-            };
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(cursor));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(cursor));
-            func.instruction(&Instruction::I32Const(size as i32));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I32Store(cursor));
+            func.instruction(&Instruction::I32Const(round8(size as i32)));
+            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+            emit_grow_to_cursor(func);
         }
         Expr::GetField {
             struct_name,
@@ -1131,7 +1404,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
-            emit_write_address_check(func, ctx.addr_scratch);
+            emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match field_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
@@ -1185,27 +1458,37 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Unreachable);
             func.instruction(&Instruction::End);
-            // mem[cursor] = n
+            // claim 4 + n * elem_size bytes atomically; the block starts at `old`
+            let (block, _) = io_locals(ctx)?;
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Store(M4));
-            // result: cursor + 4
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::I32Const(4));
-            func.instruction(&Instruction::I32Add);
-            // cursor = cursor + 4 + n * elem_size
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Load(M4));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Const(elem_size as i32));
             func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Add);
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Add);
+            emit_round8(func);
+            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+            func.instruction(&Instruction::LocalSet(block));
+            emit_grow_to_cursor(func);
+            // header mem[old] = n; the array is old + 4
+            func.instruction(&Instruction::LocalGet(block));
+            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Store(M4));
+            func.instruction(&Instruction::LocalGet(block));
+            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Add);
+        }
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                compile_expr(v, ctx, func)?;
+            }
+            func.instruction(&Instruction::Return);
+        }
+        Expr::Break(_) => {
+            func.instruction(&Instruction::Br(label_depth(ctx, &[Label::Break])?));
+        }
+        Expr::Continue(_) => {
+            func.instruction(&Instruction::Br(label_depth(ctx, &[Label::LoopTop, Label::Continue])?));
         }
         Expr::Ref { name, .. } => {
             let idx = ctx
@@ -1281,7 +1564,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Const(elem_size as i32));
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
-            emit_write_address_check(func, ctx.addr_scratch);
+            emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match elem_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
@@ -1323,6 +1606,36 @@ fn normalize_bool(func: &mut Function) {
     func.instruction(&Instruction::I32Ne);
 }
 
+/// After the heap cursor (address 0) has been bumped: if it is past the end of
+/// memory, grow memory by the pages needed to cover it. Uses no locals and has
+/// no net stack effect. memory.grow fails (-1, dropped) past the 100-page cap,
+/// and the first access beyond the end then traps. The VM's alloc_bytes does
+/// the same.
+fn emit_grow_to_cursor(func: &mut Function) {
+    use Instruction::*;
+    let size_bytes = |func: &mut Function| {
+        func.instruction(&MemorySize(0));
+        func.instruction(&I32Const(16));
+        func.instruction(&I32Shl);
+    };
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32GtU);
+    func.instruction(&If(wasm_encoder::BlockType::Empty));
+    func.instruction(&I32Const(0));
+    func.instruction(&I32Load(M4));
+    size_bytes(func);
+    func.instruction(&I32Sub);
+    func.instruction(&I32Const(65535));
+    func.instruction(&I32Add);
+    func.instruction(&I32Const(16));
+    func.instruction(&I32ShrU);
+    func.instruction(&MemoryGrow(0));
+    func.instruction(&Drop);
+    func.instruction(&End);
+}
+
 /// `ok`/`err`: allocate an 8-byte cell `[tag:i32 payload:i32]` (tag 0 = ok,
 /// 1 = err) from the heap cursor before evaluating the payload, and leave the
 /// cell pointer on the stack. The pointer is pushed twice before the payload is
@@ -1337,14 +1650,10 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
         ));
     }
     func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Load(M4));
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::I32Const(8));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&Instruction::I32Store(M4));
+    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+    emit_grow_to_cursor(func);
 
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::I32Const(tag));
@@ -1396,6 +1705,10 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::FsWrite
                 | OpCode::FsClose
                 | OpCode::FsDelete
+                | OpCode::ArgsSizes
+                | OpCode::ArgsGet
+                | OpCode::EnvSizes
+                | OpCode::EnvGet
                 | OpCode::I64ExtendS
                 | OpCode::F64ConvertI64S
                 | OpCode::I64TruncF64S
@@ -1429,21 +1742,24 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Cast { .. }
         | Expr::Addr { .. }
         | Expr::Ref { .. } => false,
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
         Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
     }
 }
 
 /// Emits the runtime memory-layout check for a store whose address is on top
 /// of the stack: traps (`unreachable`) if the address is in bytes 0-3 (the
-/// heap cursor) or 64-1023 (reserved). Mirrors `vm::check_write_address`
-/// exactly so both backends fail on the same writes. The address stays on the
-/// stack for the store that follows.
+/// heap cursor) or 64..heap_start (the reserved runtime block and the string
+/// literals). Mirrors `vm::check_write_address`, whose reserved range is
+/// 64-1023 because the VM copies literals onto the heap instead. The address
+/// stays on the stack for the store that follows.
 ///
 ///   [addr] local.tee s
 ///   local.get s ; i32.const 4  ; i32.lt_u              -> addr < 4
-///   local.get s ; i32.const 64 ; i32.sub ; i32.const 960 ; i32.lt_u  -> 64 <= addr < 1024
+///   local.get s ; i32.const 64 ; i32.sub ; i32.const (heap_start - 64) ; i32.lt_u
 ///   i32.or ; if unreachable end
-fn emit_write_address_check(func: &mut Function, scratch: u32) {
+fn emit_write_address_check(func: &mut Function, ctx: &Ctx) {
+    let scratch = ctx.addr_scratch;
     func.instruction(&Instruction::LocalTee(scratch));
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(4));
@@ -1451,7 +1767,7 @@ fn emit_write_address_check(func: &mut Function, scratch: u32) {
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(64));
     func.instruction(&Instruction::I32Sub);
-    func.instruction(&Instruction::I32Const(960));
+    func.instruction(&Instruction::I32Const(ctx.heap_start as i32 - 64));
     func.instruction(&Instruction::I32LtU);
     func.instruction(&Instruction::I32Or);
     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
@@ -1477,11 +1793,187 @@ const RT_NBYTES: i32 = 80;
 const RT_OPENED_FD: i32 = 84;
 /// String literals are interned here, as [len u32 LE][bytes]; a `str` value is
 /// the address of the bytes.
-const STRING_DATA_BASE: u32 = 512;
-const STRING_DATA_CAPACITY: u32 = 512;
+const STRING_DATA_BASE: u32 = 1024;
+/// The literals and the heap start must fit in the initial 16 pages.
+const STRING_DATA_LIMIT: u32 = 16 * 65536;
 
-/// The first preopened directory a WASI host hands to the module.
+/// Where a module's string literals live. Both backends use it, so a literal
+/// has the same address in the VM and in wasm.
+pub struct StringLayout {
+    /// The data segment placed at 1024: each literal once, as [len u32 LE][bytes].
+    pub blob: Vec<u8>,
+    /// Literal -> address of its bytes; a `str` value is that address.
+    pub addrs: HashMap<String, u32>,
+    /// Address of the interned "\n" used by sys.print under WASI (0 if unused).
+    pub newline_addr: u32,
+    /// First heap address: just past the literals, 8-aligned. Stores below it
+    /// (other than to the cells 4..64) trap, so literals are read-only.
+    pub heap_start: u32,
+}
+
+/// Interns `module`'s string literals in first-use order (the "\n" for
+/// sys.print first, when the module prints under WASI).
+pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
+    let mut blob: Vec<u8> = Vec::new();
+    let mut addrs: HashMap<String, u32> = HashMap::new();
+    let intern = |s: &str, blob: &mut Vec<u8>, map: &mut HashMap<String, u32>| -> u32 {
+        if let Some(&a) = map.get(s) {
+            return a;
+        }
+        let addr = STRING_DATA_BASE + blob.len() as u32 + 4;
+        blob.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        blob.extend_from_slice(s.as_bytes());
+        map.insert(s.to_string(), addr);
+        addr
+    };
+    let mut newline_addr = 0u32;
+    if collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+        newline_addr = intern("\n", &mut blob, &mut addrs);
+    }
+    walk_module(module, &mut |e| {
+        if let Expr::Lit(Literal::Str(s), _) = e {
+            intern(s, &mut blob, &mut addrs);
+        }
+    });
+    let heap_start = heap_start_after(blob.len());
+    if heap_start > STRING_DATA_LIMIT {
+        return Err(format!(
+            "Wasm Codegen: string literals need {} bytes but at most {} fit before the heap",
+            blob.len(),
+            STRING_DATA_LIMIT - STRING_DATA_BASE
+        ));
+    }
+    Ok(StringLayout { blob, addrs, newline_addr, heap_start })
+}
+
+/// The heap cursor's initial value for a module with `blob_len` bytes of
+/// string literals: the first 8-aligned address after them.
+fn heap_start_after(blob_len: usize) -> u32 {
+    (STRING_DATA_BASE + blob_len as u32 + 7) & !7
+}
+
+/// The address of runtime cell `cell` (64..88): the fixed cell, or in a
+/// threaded module the same offset in this thread's scratch block, whose
+/// address is global 0 (64 in the main thread, so its addresses are unchanged).
+fn emit_rt(func: &mut Function, ctx: &Ctx, cell: i32) {
+    if ctx.threaded {
+        func.instruction(&Instruction::GlobalGet(0));
+        if cell != RT_IOV0_BUF {
+            func.instruction(&Instruction::I32Const(cell - RT_IOV0_BUF));
+            func.instruction(&Instruction::I32Add);
+        }
+    } else {
+        func.instruction(&Instruction::I32Const(cell));
+    }
+}
+
+/// Bytes each spawned thread allocates for its runtime scratch cells (64..88).
+const RT_SCRATCH_SIZE: i32 = 24;
+
+/// Every allocation is a multiple of 8 bytes, so with an 8-aligned heap start
+/// every block is 8-aligned: atomics (which trap when unaligned), i64/f64
+/// fields, and WASI out-parameters are always aligned.
+fn round8(n: i32) -> i32 {
+    (n + 7) & -8
+}
+
+/// Rounds the i32 on the stack up to a multiple of 8.
+fn emit_round8(func: &mut Function) {
+    func.instruction(&Instruction::I32Const(7));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&Instruction::I32Const(-8));
+    func.instruction(&Instruction::I32And);
+}
+/// Threaded modules: 1 once the shared memory has been initialised.
+const RT_INIT_FLAG: i32 = 88;
+
+/// A threaded module's start function: the first instance to run it copies
+/// the heap cursor and the string literals into the (zeroed) shared memory;
+/// later instances (spawned threads) see the flag and skip it.
+fn threaded_init_function(blob_len: u32) -> Function {
+    use Instruction::*;
+    let mut f = Function::new(vec![]);
+    f.instruction(&I32Const(RT_INIT_FLAG));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(1));
+    f.instruction(&I32AtomicRmwCmpxchg(M4));
+    f.instruction(&I32Eqz);
+    f.instruction(&If(BlockType::Empty));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(4));
+    f.instruction(&MemoryInit { mem: 0, data_index: 0 });
+    if blob_len > 0 {
+        f.instruction(&I32Const(STRING_DATA_BASE as i32));
+        f.instruction(&I32Const(0));
+        f.instruction(&I32Const(blob_len as i32));
+        f.instruction(&MemoryInit { mem: 0, data_index: 1 });
+    }
+    f.instruction(&End);
+    f.instruction(&End);
+    f
+}
+
+/// `wasi_thread_start(tid, rec)`, called by the host on a new thread with the
+/// thread record `rec` = [done result fn arg] made by thread.spawn: allocate
+/// this thread's runtime scratch block, run fn(arg) through the table, store
+/// the result, then set done and wake any thread.join waiting on it.
+fn thread_start_function(worker_type: u32) -> Function {
+    use Instruction::*;
+    let mut f = Function::new(vec![]);
+    let at = |offset: u64| MemArg { offset, align: 2, memory_index: 0 };
+    f.instruction(&I32Const(0));
+    f.instruction(&I32Const(RT_SCRATCH_SIZE));
+    f.instruction(&I32AtomicRmwAdd(M4));
+    f.instruction(&GlobalSet(0));
+    emit_grow_to_cursor(&mut f);
+    f.instruction(&LocalGet(1));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Load(at(12)));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Load(at(8)));
+    f.instruction(&CallIndirect { type_index: worker_type, table_index: 0 });
+    f.instruction(&I32Store(at(4)));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Const(1));
+    f.instruction(&I32AtomicStore(M4));
+    f.instruction(&LocalGet(1));
+    f.instruction(&I32Const(-1));
+    f.instruction(&MemoryAtomicNotify(M4));
+    f.instruction(&Drop);
+    f.instruction(&End);
+    f
+}
+
+/// The preopened directories a host hands the module: fd 3 is the working
+/// directory, against which relative paths resolve; fd 4 is "/", against
+/// which absolute paths resolve, when the host grants it.
 const WASI_PREOPEN_FD: i32 = 3;
+const WASI_ROOT_FD: i32 = 4;
+
+/// Pushes the directory fd for the path in locals (ptr, len): an absolute
+/// path ("/...") resolves in fd 4 with the leading '/' dropped (ptr and len
+/// are adjusted); anything else in fd 3.
+fn emit_path_dir(func: &mut Function, ptr: u32, len: u32) {
+    use Instruction::*;
+    func.instruction(&LocalGet(ptr));
+    func.instruction(&I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&I32Const(47));
+    func.instruction(&I32Eq);
+    func.instruction(&If(BlockType::Result(ValType::I32)));
+    func.instruction(&LocalGet(ptr));
+    func.instruction(&I32Const(1));
+    func.instruction(&I32Add);
+    func.instruction(&LocalSet(ptr));
+    func.instruction(&LocalGet(len));
+    func.instruction(&I32Const(1));
+    func.instruction(&I32Sub);
+    func.instruction(&LocalSet(len));
+    func.instruction(&I32Const(WASI_ROOT_FD));
+    func.instruction(&Else);
+    func.instruction(&I32Const(WASI_PREOPEN_FD));
+    func.instruction(&End);
+}
 const WASI_OFLAGS_CREAT: i32 = 1 << 0;
 const WASI_OFLAGS_TRUNC: i32 = 1 << 3;
 const WASI_RIGHT_FD_READ: i64 = 1 << 1;
@@ -1495,9 +1987,27 @@ enum Wasi {
     FdClose,
     ProcExit,
     PathUnlinkFile,
+    ArgsSizesGet,
+    ArgsGet,
+    EnvironSizesGet,
+    EnvironGet,
+    /// `thread-spawn` from the wasi-threads ABI (module "wasi"): starts an OS
+    /// thread that instantiates this module on the shared memory and calls
+    /// its exported `wasi_thread_start(tid, start_arg)`. Wasmtime dropped
+    /// wasi-threads in v47, so AIPL's own host (the runner) provides it; the
+    /// names match the old ABI so any wasi-threads host also works.
+    ThreadSpawn,
+    ClockTimeGet,
+    RandomGet,
 }
 
 impl Wasi {
+    /// The import module: wasi-threads' spawn lives in "wasi", the rest in
+    /// "wasi_snapshot_preview1".
+    fn module(self) -> &'static str {
+        if self == Wasi::ThreadSpawn { "wasi" } else { "wasi_snapshot_preview1" }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Wasi::FdWrite => "fd_write",
@@ -1506,6 +2016,13 @@ impl Wasi {
             Wasi::FdClose => "fd_close",
             Wasi::ProcExit => "proc_exit",
             Wasi::PathUnlinkFile => "path_unlink_file",
+            Wasi::ArgsSizesGet => "args_sizes_get",
+            Wasi::ArgsGet => "args_get",
+            Wasi::EnvironSizesGet => "environ_sizes_get",
+            Wasi::EnvironGet => "environ_get",
+            Wasi::ThreadSpawn => "thread-spawn",
+            Wasi::ClockTimeGet => "clock_time_get",
+            Wasi::RandomGet => "random_get",
         }
     }
 
@@ -1518,6 +2035,10 @@ impl Wasi {
             Wasi::FdClose => (vec![I32], vec![I32]),
             Wasi::ProcExit => (vec![I32], vec![]),
             Wasi::PathUnlinkFile => (vec![I32, I32, I32], vec![I32]),
+            Wasi::ArgsSizesGet | Wasi::ArgsGet | Wasi::EnvironSizesGet | Wasi::EnvironGet => (vec![I32, I32], vec![I32]),
+            Wasi::ThreadSpawn => (vec![I32], vec![I32]),
+            Wasi::ClockTimeGet => (vec![I32, I64, I32], vec![I32]),
+            Wasi::RandomGet => (vec![I32, I32], vec![I32]),
         }
     }
 
@@ -1529,6 +2050,13 @@ impl Wasi {
             OpCode::FsClose => Some(Wasi::FdClose),
             OpCode::SysExit => Some(Wasi::ProcExit),
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            OpCode::ArgsSizes => Some(Wasi::ArgsSizesGet),
+            OpCode::ArgsGet => Some(Wasi::ArgsGet),
+            OpCode::EnvSizes => Some(Wasi::EnvironSizesGet),
+            OpCode::EnvGet => Some(Wasi::EnvironGet),
+            OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
+            OpCode::SysTime | OpCode::SysMonotonic => Some(Wasi::ClockTimeGet),
+            OpCode::SysRandom => Some(Wasi::RandomGet),
             _ => None,
         }
     }
@@ -1593,6 +2121,12 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Break(_) | Expr::Continue(_) => {}
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                walk_expr(v, visit);
+            }
+        }
         // Source order (function, then arguments), as the self-hosted compiler walks it.
         Expr::CallRef { func, args, .. } => {
             walk_expr(func, visit);
@@ -1649,17 +2183,17 @@ fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
     set
 }
 
-/// True if a function body contains any op lowered through WASI (and so needs
-/// the two extra I/O scratch locals).
+/// True if a function body needs the two extra scratch locals: an op lowered
+/// through WASI, `arr.new` (which keeps its block address in one), or an
+/// atomic op that needs its address or operands twice.
 fn fn_uses_io(body: &[Expr]) -> bool {
     let mut found = false;
     for e in body {
-        walk_expr(e, &mut |x| {
-            if let Expr::Op { op, .. } = x {
-                if Wasi::for_op(op).is_some() {
-                    found = true;
-                }
-            }
+        walk_expr(e, &mut |x| match x {
+            Expr::Op { op, .. } if Wasi::for_op(op).is_some() => found = true,
+            Expr::Op { op: OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock, .. } => found = true,
+            Expr::ArrNew { .. } => found = true,
+            _ => {}
         });
     }
     found
@@ -1680,13 +2214,13 @@ fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
 /// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
 /// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
 /// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
-fn emit_errno_to_result(func: &mut Function, out_cell: Option<i32>) {
+fn emit_errno_to_result(func: &mut Function, ctx: &Ctx, out_cell: Option<i32>) {
     func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
     func.instruction(&Instruction::I32Const(-1));
     func.instruction(&Instruction::Else);
     match out_cell {
         Some(cell) => {
-            func.instruction(&Instruction::I32Const(cell));
+            emit_rt(func, ctx, cell);
             func.instruction(&Instruction::I32Load(M4));
         }
         None => {

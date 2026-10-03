@@ -1,12 +1,82 @@
-;; Formally Verified Quicksort Partition Step written in AIPL
-(module sorting_algo
-  (fn partition_step [pivot:i32 val1:i32 val2:i32] -> i32
-    (req (gte pivot 0))
-    (ens (gte res 0))
-    (if (lt val1 pivot)
-        val1
-        val2))
+;; In-place quicksort over (arr i32): Hoare partition around a median-of-three
+;; pivot, so sorted input and runs of equal values both stay O(n log n), and
+;; recursion only into the smaller side, so the call depth stays O(log n).
+(module quicksort
+  (fn swap [a:(arr i32) i:i32 j:i32] -> void
+    (let t:i32 (arr.get i32 a i))
+    (arr.set i32 a i (arr.get i32 a j))
+    (arr.set i32 a j t))
 
-  (fn sort_trio [a:i32 b:i32 c:i32] -> i32
-    (let p:i32 (call partition_step b a c))
-    p))
+  (fn median3 [x:i32 y:i32 z:i32] -> i32
+    (cond
+      ((lt x y) (cond ((lt y z) y) ((lt x z) z) (else x)))
+      ((lt x z) x)
+      ((lt y z) z)
+      (else y)))
+
+  ;; Hoare partition of a[lo..hi]: returns p with every a[lo..p] <= every
+  ;; a[p+1..hi], and lo <= p < hi.
+  (fn partition [a:(arr i32) lo:i32 hi:i32] -> i32
+    (req (lt lo hi))
+    (ens (and (gte res lo) (lt res hi)))
+    (let pivot:i32 (call median3 (arr.get i32 a lo) (arr.get i32 a (+ lo (/ (- hi lo) 2))) (arr.get i32 a hi)))
+    (let i:i32 (- lo 1))
+    (let j:i32 (+ hi 1))
+    (while true
+      (set! i (+ i 1))
+      (while (lt (arr.get i32 a i) pivot) (set! i (+ i 1)))
+      (set! j (- j 1))
+      (while (gt (arr.get i32 a j) pivot) (set! j (- j 1)))
+      (if (gte i j) (return j) (block))
+      (call swap a i j))
+    j)
+
+  (fn sort_range [a:(arr i32) lo:i32 hi:i32] -> void
+    (let l:i32 lo)
+    (let h:i32 hi)
+    (while (lt l h)
+      (let p:i32 (call partition a l h))
+      (if (lt (- p l) (- h p))
+          (block (call sort_range a l p) (set! l (+ p 1)))
+          (block (call sort_range a (+ p 1) h) (set! h p)))))
+
+  (fn sort [a:(arr i32)] -> void
+    (call sort_range a 0 (- (arr.len a) 1)))
+
+  (fn is_sorted [a:(arr i32)] -> bool
+    (loop i 1 (- (arr.len a) 1) 1
+      (if (lt (arr.get i32 a i) (arr.get i32 a (- i 1))) (return false) (block)))
+    true)
+
+  ;; n pseudo-random values in 0..999 from a linear congruential generator
+  ;; (i32 wrap-around is the same in the VM and wasm).
+  (fn random_array [n:i32 seed:i32] -> (arr i32)
+    (let a:(arr i32) (arr.new i32 n))
+    (let x:i32 seed)
+    (loop i 0 (- n 1) 1
+      (set! x (+ (* x 1103515245) 12345))
+      (arr.set i32 a i (% (shru x 16) 1000)))
+    a)
+
+  ;; Sorts n random values: the middle element afterwards, or -1 if the
+  ;; result is not sorted.
+  (fn sorted_median [n:i32 seed:i32] -> i32
+    (req (and (gt n 0) (lte n 100000)))
+    (let a:(arr i32) (call random_array n seed))
+    (call sort a)
+    (if (call is_sorted a) (arr.get i32 a (/ n 2)) -1))
+
+  ;; Already-sorted and all-equal input stay fast and correct.
+  (fn handles_sorted_and_equal [n:i32] -> bool
+    (req (and (gt n 0) (lte n 100000)))
+    (let up:(arr i32) (arr.new i32 n))
+    (let same:(arr i32) (arr.new i32 n))
+    (loop i 0 (- n 1) 1
+      (arr.set i32 up i i)
+      (arr.set i32 same i 7))
+    (call sort up)
+    (call sort same)
+    (and (call is_sorted up) (call is_sorted same)))
+
+  (fn main [] -> i32
+    (if (call handles_sorted_and_equal 2000) (call sorted_median 5000 42) -1)))

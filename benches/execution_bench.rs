@@ -1,4 +1,3 @@
-use aipl_core::compiler::binary_ast::BinaryAstCompiler;
 use aipl_core::parser::Parser;
 use aipl_core::vm::{Value, VM};
 use std::time::Instant;
@@ -51,8 +50,5 @@ if __name__ == "__main__":
     println!("    Execution Result : {:?}", res);
     println!("    VM Latency       : {:.4} ms", duration.as_secs_f64() * 1000.0);
 
-    println!("\n[3] Inter-Agent Binary AST Payload Serialization:");
-    let bytes = BinaryAstCompiler::encode(&module).unwrap_or_default();
-    println!("    Binary AST Payload Size: {} bytes (Instant zero-parse transfer)", bytes.len());
     println!("============================================================");
 }

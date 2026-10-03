@@ -35,25 +35,52 @@ pub const PAGE_SIZE: usize = 65536;
 /// minimum so `mem.grow` returns the same old-size in both backends.
 pub const INITIAL_PAGES: usize = 16;
 /// Maximum linear memory in pages. Matches the wasm backend's memory maximum.
-pub const MAX_PAGES: usize = 100;
+pub const MAX_PAGES: usize = 1024;
 /// Address of the heap cursor word read and written by `mem.alloc`.
 pub const HEAP_PTR_ADDR: usize = 0;
 /// First heap address handed out by `mem.alloc`. Bytes below it are the
 /// runtime block (see AIPL_SPEC.md, Memory layout).
 pub const HEAP_START: u32 = 1024;
 
+/// A `return`, `break`, or `continue` that is unwinding. eval_expr sets it and
+/// returns Value::Void; statement sequences stop when it is set, loops consume
+/// Break/Continue, and invoke consumes Return. The checker makes these
+/// statements (type void), so they only ever occur where a sequence, loop, or
+/// if branch is evaluating them.
+#[derive(Debug, Clone, PartialEq)]
+enum Flow {
+    Break,
+    Continue,
+    Return(Value),
+}
+
 pub struct VM {
-    functions: Arc<HashMap<String, FnDef>>,
+    /// Shared bodies: a call takes a reference-counted handle, not a deep copy
+    /// of the function's AST (audit B13).
+    functions: Arc<HashMap<String, Arc<FnDef>>>,
     /// Function names in load order: `(ref f)` is f's position here, which is
     /// also its slot in the wasm backend's function table.
     fn_order: Arc<Vec<String>>,
     structs: Arc<HashMap<String, StructDef>>,
-    globals: HashMap<String, Value>,
+    flow: Option<Flow>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
     next_fd: i32,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
-    next_thread_id: i32,
+    /// String literal -> address of its interned bytes, laid out exactly as
+    /// the wasm backend's data segment (wasm::string_layout).
+    strings: Arc<HashMap<String, u32>>,
+    /// First heap address; bytes 1024..heap_start hold the literals.
+    heap_start: u32,
+    /// What `args.*` report: the program's command line, argv[0] first.
+    /// Empty unless the host sets it (`set_args`).
+    args: Arc<Vec<String>>,
+    /// What `env.*` report: `KEY=VALUE` entries. The process environment
+    /// unless the host replaces it (`set_env`).
+    env: Arc<Vec<String>>,
+    /// Bytes `fs.read` on fd 0 returns, if the host set them (`set_stdin`);
+    /// otherwise fd 0 is the process's stdin.
+    stdin: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 impl VM {
@@ -62,7 +89,7 @@ impl VM {
             functions: Arc::new(HashMap::new()),
             fn_order: Arc::new(Vec::new()),
             structs: Arc::new(HashMap::new()),
-            globals: HashMap::new(),
+            flow: None,
             shared: Arc::new(Mutex::new(SharedMemory {
                 bytes: {
                     // 16 pages, with the heap cursor at address 0 pre-set to
@@ -76,7 +103,11 @@ impl VM {
             fd_table: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
-            next_thread_id: 1,
+            strings: Arc::new(HashMap::new()),
+            heap_start: HEAP_START,
+            args: Arc::new(Vec::new()),
+            env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
+            stdin: None,
         }
     }
 
@@ -90,13 +121,70 @@ impl VM {
             functions: Arc::clone(&self.functions),
             fn_order: Arc::clone(&self.fn_order),
             structs: Arc::clone(&self.structs),
-            globals: HashMap::new(),
+            flow: None,
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
-            next_thread_id: 1,
+            strings: Arc::clone(&self.strings),
+            heap_start: self.heap_start,
+            args: Arc::clone(&self.args),
+            env: Arc::clone(&self.env),
+            stdin: self.stdin.clone(),
         }
+    }
+
+    /// The command line `args.*` report, argv[0] first.
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.args = Arc::new(args);
+    }
+
+    /// What `fs.read` on fd 0 returns, instead of the process's stdin.
+    pub fn set_stdin(&mut self, bytes: Vec<u8>) {
+        self.stdin = Some(Arc::new(Mutex::new(bytes)));
+    }
+
+    /// The environment `env.*` report, as (key, value) pairs.
+    pub fn set_env(&mut self, env: Vec<(String, String)>) {
+        self.env = Arc::new(env.into_iter().map(|(k, v)| format!("{k}={v}")).collect());
+    }
+
+    /// args.sizes / env.sizes (`sizes`) and args.get / env.get: the WASI
+    /// preview1 layout, so std/os reads both backends the same way. Like
+    /// fs.read, the host writes without the store guard; an address outside
+    /// memory is a failure (-1), as WASI reports a fault.
+    fn wasi_strings(&self, items: &[String], sizes: bool, a: usize, b: usize) -> Value {
+        let total: usize = items.iter().map(|s| s.len() + 1).sum();
+        let mem_len = self.shared.lock().unwrap().bytes.len();
+        if sizes {
+            if a + 4 > mem_len || b + 4 > mem_len {
+                return Value::Int(-1);
+            }
+            self.write_bytes(a, &(items.len() as u32).to_le_bytes());
+            self.write_bytes(b, &(total as u32).to_le_bytes());
+        } else {
+            if a + 4 * items.len() > mem_len || b + total > mem_len {
+                return Value::Int(-1);
+            }
+            let mut at = b;
+            for (i, s) in items.iter().enumerate() {
+                self.write_bytes(a + 4 * i, &(at as u32).to_le_bytes());
+                self.write_bytes(at, s.as_bytes());
+                self.write_bytes(at + s.len(), &[0]);
+                at += s.len() + 1;
+            }
+        }
+        Value::Int(0)
+    }
+
+    fn heap_cursor(&self) -> u32 {
+        u32::from_le_bytes(self.read_bytes(HEAP_PTR_ADDR, 4).try_into().unwrap())
+    }
+
+    /// Rejects stores below the heap other than to cells 4..64 (see
+    /// check_write_address); `heap_start` covers this module's literals.
+    fn check_write(&self, op: &str, ptr: usize) -> Result<(), String> {
+        check_write_address(op, ptr, self.heap_start as usize)
     }
 
     /// Convenience accessor for host code (CLI, agent server, tests) that
@@ -112,13 +200,26 @@ impl VM {
     }
 
     pub fn load_module(&mut self, module: Module) {
+        // The first module loaded into a fresh VM gets the wasm backend's
+        // string layout: literals at 1024, the heap after them. Literals of
+        // later modules are copied onto the heap when used (materialize_str).
+        if self.strings.is_empty() && self.heap_cursor() == HEAP_START {
+            if let Ok(layout) = crate::compiler::wasm::string_layout(&module) {
+                if !layout.blob.is_empty() {
+                    self.write_bytes(HEAP_START as usize, &layout.blob);
+                    self.write_bytes(HEAP_PTR_ADDR, &layout.heap_start.to_le_bytes());
+                    self.heap_start = layout.heap_start;
+                    self.strings = Arc::new(layout.addrs);
+                }
+            }
+        }
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
             if !f_map.contains_key(&f.name) {
                 order.push(f.name.clone());
             }
-            f_map.insert(f.name.clone(), f);
+            f_map.insert(f.name.clone(), Arc::new(f));
         }
         self.fn_order = Arc::new(order);
         self.functions = Arc::new(f_map);
@@ -156,18 +257,21 @@ impl VM {
             if let Contract::Requires(expr) = contract {
                 let res = self.eval_expr(expr, &mut scope)?;
                 if res != Value::Bool(true) {
-                    return Err(format!(
-                        "Pre-condition (req {:?}) failed in function '{}'",
-                        expr, fn_name
-                    ));
+                    return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None));
                 }
             }
         }
 
-        // Execute function body
+        // Execute function body; a pending return ends it with its value.
         let mut last_val = Value::Void;
         for expr in &f.body {
             last_val = self.eval_expr(expr, &mut scope)?;
+            if let Some(flow) = self.flow.take() {
+                if let Flow::Return(v) = flow {
+                    last_val = v;
+                }
+                break;
+            }
         }
 
         // Evaluate Post-Condition Contracts (ens ...)
@@ -177,10 +281,7 @@ impl VM {
                 contract_scope.insert("res".to_string(), last_val.clone());
                 let res = self.eval_expr(expr, &mut contract_scope)?;
                 if res != Value::Bool(true) {
-                    return Err(format!(
-                        "Post-condition (ens {:?}) failed in function '{}'",
-                        expr, fn_name
-                    ));
+                    return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some(&last_val)));
                 }
             }
         }
@@ -188,7 +289,24 @@ impl VM {
         Ok(last_val)
     }
 
+    /// Evaluates `expr`. While a `return`/`break`/`continue` is unwinding
+    /// (`flow` is set), nothing more is evaluated: an operand that jumped
+    /// (`(+ 1 (block (break) 2))`) stops its enclosing expression, so later
+    /// operands and their side effects never run, as in wasm, where `br`
+    /// leaves the expression immediately. The enclosing op may then see a
+    /// `Void` operand and fail; that failure is discarded because the jump
+    /// supersedes it.
     pub fn eval_expr(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+        if self.flow.is_some() {
+            return Ok(Value::Void);
+        }
+        match self.eval_expr_inner(expr, scope) {
+            Err(_) if self.flow.is_some() => Ok(Value::Void),
+            r => r,
+        }
+    }
+
+    fn eval_expr_inner(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         match expr {
             Expr::Lit(lit, _) => match lit {
                 Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
@@ -199,8 +317,6 @@ impl VM {
             },
             Expr::Var(name, _) => {
                 if let Some(val) = scope.get(name) {
-                    Ok(val.clone())
-                } else if let Some(val) = self.globals.get(name) {
                     Ok(val.clone())
                 } else {
                     Err(format!("VM: Variable '{}' not found in scope", name))
@@ -235,30 +351,38 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 res
             }
+            // Same order as the wasm lowering: start once; then each iteration
+            // evaluates end, exits if var > end, runs the body, evaluates step,
+            // and adds it to var (which the body may have set!).
             Expr::Loop { var, start, end, step, body, .. } => {
-                let s_val = match self.eval_expr(start, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop start must be Int".to_string()),
+                let as_i32 = |v: Value, what: &str| match v {
+                    Value::Int(i) => Ok(i as i32),
+                    _ => Err(format!("Loop {} must be Int", what)),
                 };
-                let e_val = match self.eval_expr(end, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop end must be Int".to_string()),
-                };
-                let st_val = match self.eval_expr(step, scope)? {
-                    Value::Int(i) => i as i32,
-                    _ => return Err("Loop step must be Int".to_string()),
-                };
-
+                let s_val = as_i32(self.eval_expr(start, scope)?, "start")?;
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                let mut curr = s_val;
-                while curr <= e_val {
-                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                    scope.insert(var.clone(), Value::Int(curr as i64));
-                    for stmt in body {
-                        self.eval_expr(stmt, scope)?;
+                scope.insert(var.clone(), Value::Int(s_val as i64));
+                loop {
+                    let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
+                    let e_val = as_i32(self.eval_expr(end, scope)?, "end")?;
+                    if curr > e_val {
+                        break;
                     }
+                    let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
+                    self.eval_seq(body, scope)?;
                     scope.retain(|k, _| iter_keys.contains(k));
-                    curr = curr.wrapping_add(st_val);
+                    match self.flow {
+                        Some(Flow::Break) => {
+                            self.flow = None;
+                            break;
+                        }
+                        Some(Flow::Continue) => self.flow = None,
+                        Some(Flow::Return(_)) => break,
+                        None => {}
+                    }
+                    let st_val = as_i32(self.eval_expr(step, scope)?, "step")?;
+                    let curr = as_i32(scope.get(var).cloned().unwrap_or(Value::Int(0)), "variable")?;
+                    scope.insert(var.clone(), Value::Int(curr.wrapping_add(st_val) as i64));
                 }
                 scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
@@ -267,10 +391,17 @@ impl VM {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 while let Value::Bool(true) = self.eval_expr(cond, scope)? {
                     let iter_keys: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                    for stmt in body {
-                        self.eval_expr(stmt, scope)?;
-                    }
+                    self.eval_seq(body, scope)?;
                     scope.retain(|k, _| iter_keys.contains(k));
+                    match self.flow {
+                        Some(Flow::Break) => {
+                            self.flow = None;
+                            break;
+                        }
+                        Some(Flow::Continue) => self.flow = None,
+                        Some(Flow::Return(_)) => break,
+                        None => {}
+                    }
                 }
                 scope.retain(|k, _| keys_before.contains(k));
                 Ok(Value::Void)
@@ -283,6 +414,22 @@ impl VM {
                 self.invoke(func, evaluated_args)
             }
             Expr::Op { op, args, .. } => self.eval_op(op, args, scope),
+            Expr::Return { val, .. } => {
+                let v = match val {
+                    Some(e) => self.eval_expr(e, scope)?,
+                    None => Value::Void,
+                };
+                self.flow = Some(Flow::Return(v));
+                Ok(Value::Void)
+            }
+            Expr::Break(_) => {
+                self.flow = Some(Flow::Break);
+                Ok(Value::Void)
+            }
+            Expr::Continue(_) => {
+                self.flow = Some(Flow::Continue);
+                Ok(Value::Void)
+            }
             Expr::Ref { name, .. } => match self.fn_order.iter().position(|n| n == name) {
                 Some(i) => Ok(Value::Int(i as i64)),
                 None => Err(format!("ref: unknown function '{}'", name)),
@@ -313,19 +460,11 @@ impl VM {
                 let res = match res_val {
                     Value::Ok(inner) => {
                         scope.insert(ok_var.clone(), *inner);
-                        let mut last = Value::Void;
-                        for stmt in ok_body {
-                            last = self.eval_expr(stmt, scope)?;
-                        }
-                        Ok(last)
+                        self.eval_seq(ok_body, scope)
                     }
                     Value::Err(inner) => {
                         scope.insert(err_var.clone(), *inner);
-                        let mut last = Value::Void;
-                        for stmt in err_body {
-                            last = self.eval_expr(stmt, scope)?;
-                        }
-                        Ok(last)
+                        self.eval_seq(err_body, scope)
                     }
                     other => Err(format!("Expected Result type in match_result, got {:?}", other)),
                 };
@@ -334,12 +473,9 @@ impl VM {
             }
             Expr::Block(exprs, _) => {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
-                let mut last = Value::Void;
-                for e in exprs {
-                    last = self.eval_expr(e, scope)?;
-                }
+                let last = self.eval_seq(exprs, scope);
                 scope.retain(|k, _| keys_before.contains(k));
-                Ok(last)
+                last
             }
             Expr::NewStruct { struct_name, .. } => {
                 let def = self
@@ -377,7 +513,7 @@ impl VM {
                     other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
                 };
                 let addr = ptr_val + offset;
-                check_write_address("put", addr)?;
+                self.check_write("put", addr)?;
                 let val_v = self.eval_expr(val, scope)?;
                 self.store_val_at(addr, &field_ty, val_v)?;
                 Ok(Value::Void)
@@ -463,7 +599,7 @@ impl VM {
                 }
                 let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
                 let addr = ptr_val + (idx_val as usize) * elem_size;
-                check_write_address("arr.set", addr)?;
+                self.check_write("arr.set", addr)?;
                 self.store_val_at(addr, elem_ty, val_v)?;
                 Ok(Value::Void)
             }
@@ -480,22 +616,34 @@ impl VM {
         Ok(inner)
     }
 
-    /// Copies `s` into the heap as `[len u32 LE][bytes]` (the shape of the wasm
-    /// string data segment) and returns the address of the bytes. Each call
-    /// allocates afresh; the wasm backend instead points at the interned literal.
+    /// The address of `s`'s bytes: its interned literal (the same address as
+    /// in wasm), or else a fresh heap copy as `[len u32 LE][bytes]`.
     fn materialize_str(&self, op: &str, s: &str) -> Result<usize, String> {
+        if let Some(&addr) = self.strings.get(s) {
+            return Ok(addr as usize);
+        }
         let bytes = s.as_bytes();
-        let mut mem = self.shared.lock().unwrap();
-        let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
-        let base = i32::from_le_bytes(cur) as usize;
+        let base = self.alloc_bytes(4 + bytes.len()) as u32 as usize;
         let end = base + 4 + bytes.len();
+        let mut mem = self.shared.lock().unwrap();
         if end > mem.bytes.len() {
             return Err(format!("{}: out of memory materialising a {}-byte string", op, bytes.len()));
         }
         mem.bytes[base..base + 4].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
         mem.bytes[base + 4..end].copy_from_slice(bytes);
-        mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&(end as i32).to_le_bytes());
         Ok(base + 4)
+    }
+
+    /// Evaluates a statement sequence, stopping at a pending return/break/continue.
+    fn eval_seq(&mut self, exprs: &[Expr], scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+        let mut last = Value::Void;
+        for e in exprs {
+            last = self.eval_expr(e, scope)?;
+            if self.flow.is_some() {
+                break;
+            }
+        }
+        Ok(last)
     }
 
     /// The function a `(fn ...)` value refers to: its index into `fn_order`.
@@ -521,12 +669,27 @@ impl VM {
         Ok(i32::from_le_bytes(bytes) as i64)
     }
 
+    /// Bumps the heap cursor by `size` and returns the old cursor. If the new
+    /// cursor is past the end of memory, memory grows by the pages needed to
+    /// cover it (the wasm lowering does the same with memory.grow); past the
+    /// 100-page cap nothing grows and the first access beyond the end fails.
+    /// Claims `size` bytes rounded up to a multiple of 8, so every block is
+    /// 8-aligned (the heap start is), as in compiled code.
     fn alloc_bytes(&self, size: usize) -> i32 {
+        let size = (size as i32).wrapping_add(7) & -8;
         let mut mem = self.shared.lock().unwrap();
         let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
         let allocated_ptr = i32::from_le_bytes(cur);
         let next = allocated_ptr.wrapping_add(size as i32);
         mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
+        let have = mem.bytes.len() as u32;
+        if next as u32 > have {
+            let pages = ((next as u32).wrapping_sub(have).wrapping_add(65535) >> 16) as usize;
+            let old_pages = mem.bytes.len() / PAGE_SIZE;
+            if old_pages + pages <= MAX_PAGES {
+                mem.bytes.resize((old_pages + pages) * PAGE_SIZE, 0);
+            }
+        }
         allocated_ptr
     }
 
@@ -780,7 +943,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store8", ptr)?;
+                self.check_write("mem.store8", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => (i & 0xFF) as u8,
                     _ => return Err("mem.store8 requires Int val".to_string()),
@@ -833,7 +996,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store32", ptr)?;
+                self.check_write("mem.store32", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("mem.store32 requires Int val".to_string()),
@@ -854,7 +1017,7 @@ impl VM {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 let ptr = i_val as usize;
-                check_write_address("mem.store64", ptr)?;
+                self.check_write("mem.store64", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int64(i) => i,
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
@@ -873,14 +1036,8 @@ impl VM {
                 };
                 // The cursor lives IN linear memory at address 0 (not in a Rust
                 // field), so VM code, compiled wasm, and self-hosted AIPL all
-                // share one allocator state. No bounds check here: like wasm,
-                // a later load/store past the end is what fails.
-                let mut mem = self.shared.lock().unwrap();
-                let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
-                let allocated_ptr = i32::from_le_bytes(cur);
-                let next = allocated_ptr.wrapping_add(size as i32);
-                mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
-                Ok(Value::Int(allocated_ptr as i64))
+                // share one allocator state.
+                Ok(Value::Int(self.alloc_bytes(size) as i64))
             }
             OpCode::MemFree => Ok(Value::Void),
             OpCode::MemGrow => {
@@ -907,7 +1064,8 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.add requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.add", ptr)?;
+                self.check_write("atomic.add", ptr)?;
+                check_atomic_alignment("atomic.add", ptr)?;
                 let val = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.add requires Int val".to_string()),
@@ -924,7 +1082,8 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.cas requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.cas", ptr)?;
+                self.check_write("atomic.cas", ptr)?;
+                check_atomic_alignment("atomic.cas", ptr)?;
                 let expected = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as i32,
                     _ => return Err("atomic.cas requires Int expected".to_string()),
@@ -953,7 +1112,8 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.lock requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.lock", ptr)?;
+                self.check_write("atomic.lock", ptr)?;
+                check_atomic_alignment("atomic.lock", ptr)?;
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
@@ -987,7 +1147,8 @@ impl VM {
                     Value::Int(i) => i as usize,
                     _ => return Err("atomic.unlock requires Int ptr".to_string()),
                 };
-                check_write_address("atomic.unlock", ptr)?;
+                self.check_write("atomic.unlock", ptr)?;
+                check_atomic_alignment("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
                 if ptr + 4 > mem.bytes.len() {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
@@ -1164,20 +1325,19 @@ impl VM {
                     _ => Err("Invalid types for >=".to_string()),
                 }
             }
-            OpCode::And => {
-                let a = self.eval_expr(&args[0], scope)?;
-                let b = self.eval_expr(&args[1], scope)?;
-                match (a, b) {
-                    (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x && y)),
-                    _ => Err("Invalid types for and".to_string()),
+            // Short-circuit: the second operand is evaluated only when the
+            // first does not decide the result.
+            OpCode::And | OpCode::Or => {
+                let a = match self.eval_expr(&args[0], scope)? {
+                    Value::Bool(x) => x,
+                    _ => return Err(format!("Invalid types for {:?}", op)),
+                };
+                if a == matches!(op, OpCode::Or) {
+                    return Ok(Value::Bool(a));
                 }
-            }
-            OpCode::Or => {
-                let a = self.eval_expr(&args[0], scope)?;
-                let b = self.eval_expr(&args[1], scope)?;
-                match (a, b) {
-                    (Value::Bool(x), Value::Bool(y)) => Ok(Value::Bool(x || y)),
-                    _ => Err("Invalid types for or".to_string()),
+                match self.eval_expr(&args[1], scope)? {
+                    Value::Bool(y) => Ok(Value::Bool(y)),
+                    _ => Err(format!("Invalid types for {:?}", op)),
                 }
             }
             OpCode::Not => {
@@ -1240,6 +1400,35 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("fs.read requires Int fd".to_string()),
                 };
+                if fd == 0 {
+                    // stdin: the host-provided bytes (set_stdin), else the real stdin
+                    let buf_ptr = match self.eval_expr(&args[1], scope)? {
+                        Value::Int(i) => i as u32 as usize,
+                        _ => return Err("fs.read requires Int buf_ptr".to_string()),
+                    };
+                    let max_len = match self.eval_expr(&args[2], scope)? {
+                        Value::Int(i) => i.max(0) as usize,
+                        _ => return Err("fs.read requires Int max_len".to_string()),
+                    };
+                    let mut buf = vec![0u8; max_len];
+                    let n = match &self.stdin {
+                        Some(src) => {
+                            let mut src = src.lock().unwrap();
+                            let n = max_len.min(src.len());
+                            buf[..n].copy_from_slice(&src[..n]);
+                            src.drain(..n);
+                            Ok(n)
+                        }
+                        None => std::io::stdin().read(&mut buf),
+                    };
+                    return match n {
+                        Ok(n) => {
+                            self.write_bytes(buf_ptr, &buf[..n]);
+                            Ok(Value::Int(n as i64))
+                        }
+                        Err(_) => Ok(Value::Int(-1)),
+                    };
+                }
                 let buf_ptr = match self.eval_expr(&args[1], scope)? {
                     Value::Int(i) => i as usize,
                     _ => return Err("fs.read requires Int buf_ptr".to_string()),
@@ -1301,6 +1490,24 @@ impl VM {
                     Ok(Value::Int(-1))
                 }
             }
+            OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                let mut addr = [0usize; 2];
+                for (i, a) in args.iter().enumerate().take(2) {
+                    addr[i] = match self.eval_expr(a, scope)? {
+                        Value::Int(v) => v as u32 as usize,
+                        other => return Err(format!("{:?} requires Int addresses, got {:?}", op, other)),
+                    };
+                }
+                // WASI hosts reject (trap on) misaligned out-parameters: the
+                // count and size words, and the pointer table.
+                let aligned = if matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes) { [addr[0], addr[1]].to_vec() } else { vec![addr[0]] };
+                if let Some(a) = aligned.iter().find(|a| *a % 4 != 0) {
+                    return Err(format!("{:?}: address {} is not 4-aligned, which WASI requires", op, a));
+                }
+                let items = if matches!(op, OpCode::ArgsSizes | OpCode::ArgsGet) { Arc::clone(&self.args) } else { Arc::clone(&self.env) };
+                let sizes = matches!(op, OpCode::ArgsSizes | OpCode::EnvSizes);
+                Ok(self.wasi_strings(&items, sizes, addr[0], addr[1]))
+            }
             OpCode::FsDelete => {
                 let path_ptr = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as usize,
@@ -1323,20 +1530,36 @@ impl VM {
             // Real OS thread spawn: the worker is a function reference (its
             // index into the shared function order), run on a real std::thread
             // with a fresh child VM that shares `self.shared` linear memory.
-            // References survive the import resolver's renaming, so this works
-            // from an imported module.
+            // The handle is the address of a 16-byte thread record
+            // [done:i32 result:i32 fn:i32 arg:i32], laid out and allocated
+            // exactly as compiled code does (AIPL_SPEC.md 4.D), so heap
+            // addresses and handles agree between the backends.
             OpCode::ThreadSpawn => {
                 let fn_name = self.fn_ref_name(&args[0], scope, "thread.spawn")?;
                 let arg = match self.eval_expr(&args[1], scope)? {
-                    Value::Int(i) => i,
+                    Value::Int(i) => i as i32,
                     _ => return Err("thread.spawn requires Int arg".to_string()),
                 };
+                let fn_index = self.fn_order.iter().position(|n| *n == fn_name).unwrap_or(0) as i32;
+                let rec = self.alloc_bytes(16) as u32 as usize;
+                let mut fields = Vec::with_capacity(16);
+                for w in [0, 0, fn_index, arg] {
+                    fields.extend_from_slice(&w.to_le_bytes());
+                }
+                self.write_bytes(rec, &fields);
                 let mut child = self.spawn_child();
-                let handle = std::thread::spawn(move || child.invoke(&fn_name, vec![Value::Int(arg)]));
-                let tid = self.next_thread_id;
-                self.next_thread_id += 1;
-                self.thread_handles.insert(tid, handle);
-                Ok(Value::Int(tid as i64))
+                let handle = std::thread::spawn(move || {
+                    // a compiled thread allocates its runtime scratch block first
+                    child.alloc_bytes(24);
+                    let r = child.invoke(&fn_name, vec![Value::Int(arg as i64)]);
+                    if let Ok(Value::Int(v)) = &r {
+                        child.write_bytes(rec + 4, &(*v as i32).to_le_bytes());
+                    }
+                    child.write_bytes(rec, &1i32.to_le_bytes());
+                    r
+                });
+                self.thread_handles.insert(rec as i32, handle);
+                Ok(Value::Int(rec as i64))
             }
             OpCode::ThreadJoin => {
                 let tid = match self.eval_expr(&args[0], scope)? {
@@ -1345,7 +1568,7 @@ impl VM {
                 };
                 let handle = match self.thread_handles.remove(&tid) {
                     Some(h) => h,
-                    None => return Err(format!("thread.join: unknown thread handle {}", tid)),
+                    None => return Err(format!("thread.join: {} is not a handle from thread.spawn in this thread (or was already joined)", tid)),
                 };
                 match handle.join() {
                     Ok(Ok(Value::Int(i))) => Ok(Value::Int(i)),
@@ -1390,7 +1613,32 @@ impl VM {
                 Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
             }
             OpCode::SysTime => {
-                Err(format!("{:?} not supported in VM backend: system ops not implemented", op))
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
+                Ok(Value::Int64(now.as_nanos() as i64))
+            }
+            OpCode::SysMonotonic => {
+                static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                Ok(Value::Int64(START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as i64))
+            }
+            OpCode::SysRandom => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    _ => return Err("sys.random requires Int ptr".to_string()),
+                };
+                let len = match self.eval_expr(&args[1], scope)? {
+                    Value::Int(i) => i as u32 as usize,
+                    _ => return Err("sys.random requires Int len".to_string()),
+                };
+                // Like fs.read, the host writes without the store guard; an
+                // address range outside memory is a failure, as in WASI.
+                let mut buf = vec![0u8; len];
+                let filled = File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
+                let mem_len = self.shared.lock().unwrap().bytes.len();
+                if !filled || ptr.checked_add(len).map_or(true, |end| end > mem_len) {
+                    return Ok(Value::Int(-1));
+                }
+                self.write_bytes(ptr, &buf);
+                Ok(Value::Int(0))
             }
             // The VM deliberately does not terminate the host process (it may be a
             // test runner or the agent server); the request surfaces as an error
@@ -1418,11 +1666,12 @@ impl VM {
 }
 
 /// Runtime enforcement of the memory layout for writes (AIPL_SPEC.md, "Memory
-/// layout"): bytes 0-3 are the heap cursor and bytes 64-1023 are reserved, so
-/// no store or atomic op may target them, however the address was computed.
-/// The wasm backend emits the identical check (trapping with `unreachable`),
-/// so this is a shared semantic, not a VM-only guard. Reads are not checked.
-pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
+/// layout"): bytes 0-3 are the heap cursor, bytes 64-1023 are reserved, and
+/// bytes 1024..heap_start are the module's string literals, so no store or
+/// atomic op may target them, however the address was computed. The wasm
+/// backend emits the identical check (trapping with `unreachable`), so this is
+/// a shared semantic, not a VM-only guard. Reads are not checked.
+pub fn check_write_address(op: &str, ptr: usize, heap_start: usize) -> Result<(), String> {
     if ptr < 4 {
         return Err(format!(
             "{} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; take memory from (mem.alloc n) instead",
@@ -1434,6 +1683,63 @@ pub fn check_write_address(op: &str, ptr: usize) -> Result<(), String> {
             "{} at address {}: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead",
             op, ptr
         ));
+    }
+    if (1024..heap_start).contains(&ptr) {
+        return Err(format!(
+            "{} at address {}: bytes 1024-{} are the program's string literals, which are read-only; take memory from (mem.alloc n) instead",
+            op, ptr, heap_start - 1
+        ));
+    }
+    Ok(())
+}
+
+/// A contract failure as source text with the call's arguments, e.g.
+/// `Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`.
+fn contract_failure(
+    kind: &str,
+    form: &str,
+    expr: &Expr,
+    fn_name: &str,
+    params: &[(String, Type)],
+    scope: &HashMap<String, Value>,
+    result: Option<&Value>,
+) -> String {
+    let (line, col) = expr.span();
+    let mut bound: Vec<String> = params
+        .iter()
+        .filter_map(|(name, _)| scope.get(name).map(|v| format!("{} = {}", name, value_str(v))))
+        .collect();
+    if let Some(r) = result {
+        bound.push(format!("res = {}", value_str(r)));
+    }
+    let with = if bound.is_empty() { String::new() } else { format!(" with {}", bound.join(", ")) };
+    format!(
+        "{} failed in '{}' at {}:{}: ({} {}){}",
+        kind, fn_name, line, col, form, crate::printer::expr_str(expr), with
+    )
+}
+
+/// A value as AIPL source would write it (pointers and arrays as their address).
+fn value_str(v: &Value) -> String {
+    match v {
+        Value::Int(i) => i.to_string(),
+        Value::Int64(i) => format!("{i}i64"),
+        Value::Float(x) => format!("{x:?}"),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => format!("{s:?}"),
+        Value::Ok(x) => format!("(ok {})", value_str(x)),
+        Value::Err(x) => format!("(err {})", value_str(x)),
+        Value::Void => "void".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Atomic instructions need a naturally aligned address; wasm traps on an
+/// unaligned one, so the VM fails the same way. Blocks from mem.alloc are
+/// always 8-aligned.
+fn check_atomic_alignment(op: &str, ptr: usize) -> Result<(), String> {
+    if ptr % 4 != 0 {
+        return Err(format!("{} at address {}: atomic operations need a 4-aligned address", op, ptr));
     }
     Ok(())
 }

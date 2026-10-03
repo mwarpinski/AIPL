@@ -1,8 +1,6 @@
 use aipl_core::agent_api::server::AgentServer;
 use aipl_core::checker::TypeChecker;
-use aipl_core::compiler::binary_ast::BinaryAstCompiler;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use clap::{Parser as ClapParser, Subcommand};
@@ -11,7 +9,7 @@ use std::path::Path;
 
 #[derive(ClapParser)]
 #[command(name = "aipl")]
-#[command(about = "AI Programming Language (AIPL) - Machine-native, token-efficient, formally verifiable programming language and self-hosting Wasm compiler.")]
+#[command(about = "AIPL: an unambiguous, statically typed S-expression language for AI agents. Runs in a reference VM and compiles to WebAssembly + WASI, with a self-hosted compiler written in AIPL.")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -24,8 +22,12 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "main")]
         func: String,
+        /// Command-line arguments for the program (after `--`); with FILE as
+        /// argv[0] they are what std/os.arg reports.
+        #[arg(last = true)]
+        args: Vec<String>,
     },
-    /// Compile an AIPL source file directly into a WebAssembly (.wasm) binary module
+    /// Compile an AIPL program to a WebAssembly module, or with --exe to a standalone executable
     Compile {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
@@ -33,6 +35,20 @@ enum Commands {
         /// Compile using the self-hosted codegen.aipl backend and verify bit-for-bit parity with Rust compiler
         #[arg(long = "self")]
         self_flag: bool,
+        /// Write a standalone executable: the aipl-run launcher with the module appended
+        #[arg(long)]
+        exe: bool,
+        /// With --exe: the program may only access the working directory, not absolute paths
+        #[arg(long, requires = "exe")]
+        sandbox: bool,
+    },
+    /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
+    Run {
+        file: String,
+        #[arg(long)]
+        sandbox: bool,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Type-check and formally verify an AIPL file without running it
     Verify { file: String },
@@ -46,14 +62,6 @@ enum Commands {
         #[arg(short, long, default_value = "run_all")]
         func: String,
     },
-    /// Encode AIPL text S-expression into a compact Binary AST payload (.baipl)
-    BinaryEncode {
-        file: String,
-        #[arg(short, long, default_value = "out.baipl")]
-        output: String,
-    },
-    /// Decode a compact Binary AST payload (.baipl) back to S-expression text
-    BinaryDecode { file: String },
     /// Launch the Agent Swarm RPC server for inter-agent remote execution
     Serve {
         #[arg(short, long, default_value = "127.0.0.1:8080")]
@@ -210,22 +218,70 @@ fn describe_byte_divergence(rust: &[u8], selfh: &[u8]) -> String {
     )
 }
 
+/// The VM is a tree-walking interpreter that recurses once per nested AIPL
+/// call, so commands run on a thread with a large stack (reserved, not
+/// committed up front) rather than the default 8 MiB main stack.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| run().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "aipl: command thread panicked")?;
+    result.map_err(|e| e.into())
+}
+
+/// The aipl-run launcher: $AIPL_RUNNER, else `aipl-run` next to this binary.
+fn runner_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("AIPL_RUNNER") {
+        return Ok(p.into());
+    }
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let p = me.with_file_name(if cfg!(windows) { "aipl-run.exe" } else { "aipl-run" });
+    if p.exists() {
+        Ok(p)
+    } else {
+        Err(format!("cannot find the aipl-run launcher at {} (build it with cargo build, or set AIPL_RUNNER)", p.display()))
+    }
+}
+
+/// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
+/// then a 16-byte trailer [flags u32 LE][module length u32 LE]["AIPLEXE1"].
+/// Rust only because WASI cannot set the executable bit; the format is plain.
+fn write_executable(output: &str, wasm: &[u8], sandbox: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = fs::read(runner_path()?)?;
+    if bytes.ends_with(b"AIPLEXE1") {
+        return Err("the aipl-run launcher already has a program appended".into());
+    }
+    bytes.extend_from_slice(wasm);
+    bytes.extend_from_slice(&(sandbox as u32).to_le_bytes());
+    bytes.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"AIPLEXE1");
+    fs::write(output, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(output, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func } => {
+        Commands::Eval { file, func, args } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
             let mut vm = VM::new();
+            vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             let res = vm.invoke(&func, vec![])?;
             println!("[AIPL Result]: {:?}", res);
         }
-        Commands::Compile { file, output, self_flag } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
@@ -233,9 +289,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let rust_bytes = WasmCompiler::compile(&module)?;
             if self_flag {
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
-                // The self-hosted compiler takes one import-free module, so it is
-                // given the resolved program printed back as source.
-                let flat_src = aipl_core::printer::print_module(&module);
+                // Self-hosted end to end: resolver.aipl flattens the imports into
+                // one module, which codegen.aipl compiles.
+                let flat_src = aipl_core::selfhost::resolve_with_aipl(Path::new(&file))
+                    .map_err(|e| format!("Self-hosted resolver error: {}", e))?;
                 let self_bytes = run_self_hosted_codegen(&flat_src).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
@@ -251,13 +308,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 fs::write(&output, &rust_bytes)?;
             }
+            if exe {
+                // `output` holds the module; replace it with launcher + module + trailer
+                let wasm = fs::read(&output)?;
+                write_executable(&output, &wasm, sandbox)?;
+            }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+        }
+        Commands::Run { file, sandbox, args } => {
+            let mut cmd = std::process::Command::new(runner_path()?);
+            if sandbox {
+                cmd.arg("--sandbox");
+            }
+            let status = cmd.arg(&file).args(&args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
         }
         Commands::Verify { file } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
-            println!("[AIPL Verifier] SUCCESS: Module '{}' is 100% type-safe and contracts verified!", module.name);
+            println!("[AIPL Verifier] OK: module '{}' type-checks. Contracts are type-checked, not proven; the VM evaluates req/ens on every call.", module.name);
         }
         Commands::Test { file, func } => {
             let module = Resolver::resolve(Path::new(&file))?;
@@ -286,21 +356,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("\n[AIPL Test] Error: {}", e);
                     std::process::exit(1);
                 }
-            }
-        }
-        Commands::BinaryEncode { file, output } => {
-            let src = fs::read_to_string(&file)?;
-            let module = Parser::parse(&src)?;
-            let bytes = BinaryAstCompiler::encode(&module)?;
-            fs::write(&output, bytes)?;
-            println!("[AIPL Binary Encoder] Encoded '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
-        }
-        Commands::BinaryDecode { file } => {
-            let bytes = fs::read(&file)?;
-            let module = BinaryAstCompiler::decode(&bytes)?;
-            println!("[AIPL Binary Decoder] Decoded module '{}' with {} functions:", module.name, module.functions.len());
-            for f in &module.functions {
-                println!("  - (fn {} ...)", f.name);
             }
         }
         Commands::Serve { addr } => {

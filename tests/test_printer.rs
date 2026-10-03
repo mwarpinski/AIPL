@@ -14,7 +14,7 @@ use std::path::Path;
 fn every_repository_program_round_trips_through_the_printer() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    for dir in ["aipl_src", "aipl_src/std", "examples", "examples/aipl_database"] {
+    for dir in ["aipl_src", "aipl_src/std", "examples"] {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
         for e in entries {
             let p = e.unwrap().path();

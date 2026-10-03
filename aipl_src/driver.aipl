@@ -1,0 +1,84 @@
+;; The self-hosted toolchain as one program: resolver.aipl flattens a
+;; multi-file program, codegen.aipl compiles it. Compiled to wasm it is a WASI
+;; command that compiles AIPL with no Rust involved:
+;;   aipl compile aipl_src/driver.aipl -o aiplc.wasm
+;;   wasmtime run --dir . --env AIPL_PATH aiplc.wasm examples/word_count.aipl wc.wasm
+;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative to
+;; the working directory). In the VM: aipl eval aipl_src/driver.aipl -- IN OUT.
+;; A host can also call compile_file directly with paths in memory taken from
+;; host_alloc (tests/test_resolver_aipl.rs does both).
+(module driver
+  (import resolver)
+  (import codegen)
+  (import os)
+  (import io)
+  (import str)
+  (import fmt)
+
+  ;; status 0: the wasm module is at (addr, len)
+  ;; status 1: import resolution failed; the message is at (addr, len)
+  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  (struct Out [status:i32 addr:i32 len:i32])
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  ;; Compiles the program whose entry file is (path_addr, path_len), searching
+  ;; the colon-separated library directories at (dirs_addr, dirs_len).
+  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
+    (let res:(ptr Out) (new Out))
+    (let flat:(ptr resolver.Out) (call resolver.resolve_file path_addr path_len dirs_addr dirs_len))
+    (put res Out.addr (get flat resolver.Out.addr))
+    (put res Out.len (get flat resolver.Out.len))
+    (if (eq (get flat resolver.Out.ok) 0)
+        (block (put res Out.status 1) (return res))
+        (block))
+    (let n:i32 (call codegen.compile_module (get flat resolver.Out.addr) (get flat resolver.Out.len)))
+    (if (gt n 0)
+        (block
+          (put res Out.status 0)
+          (put res Out.addr (mem.load32 60))
+          (put res Out.len n))
+        (block
+          (put res Out.status 2)
+          (put res Out.addr 0)
+          (put res Out.len (mem.load32 4))))
+    res)
+
+  (fn write_err [b:(ptr str.Bytes)] -> void
+    (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+
+  ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, compile, or
+  ;; write error (reported on stderr), 2 on bad usage.
+  (fn main [] -> i32
+    (if (neq (call os.arg_count) 3)
+        (block (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
+        (block))
+    (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
+    (let entry:(ptr str.Bytes) (call os.arg 1))
+    (let out:(ptr str.Bytes) (call os.arg 2))
+    (let res:(ptr Out) (call compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
+                                          (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len)))
+    (let status:i32 (get res Out.status))
+    (cond
+      ((eq status 0)
+       (let wasm:(ptr str.Bytes) (call str.bytes (get res Out.addr) (get res Out.len)))
+       (if (eq (call io.write_path out wasm) (get res Out.len))
+           (block
+             (call io.println_int "compiled, bytes: " (get res Out.len))
+             0)
+           (block (call io.write_str 2 "cannot write ") (call write_err out) (call io.eprintln "") 1)))
+      ((eq status 1)
+       (call write_err (call str.bytes (get res Out.addr) (get res Out.len)))
+       (call io.eprintln "")
+       1)
+      (else
+       (let digits:i32 (mem.alloc 11))
+       (call io.write_str 2 "compile error ")
+       (fs.write 2 digits (call fmt.int_to_bytes (get res Out.len) digits))
+       (call io.eprintln " (AIPL_SPEC.md 6.4)")
+       1)))
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

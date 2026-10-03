@@ -1,0 +1,79 @@
+;; std/buf: a growable byte buffer for building text (a string builder).
+;; (call buf.bytes b) views the contents as a (ptr str.Bytes) without copying;
+;; later pushes may move the data, so take the view after building.
+(module buf
+  (import str)
+  (import fmt)
+
+  (struct Buf [data:i32 len:i32 cap:i32])
+
+  (fn make [capacity:i32] -> (ptr Buf)
+    (let cap:i32 (if (lt capacity 16) 16 capacity))
+    (let b:(ptr Buf) (new Buf))
+    (put b Buf.data (mem.alloc cap))
+    (put b Buf.len 0)
+    (put b Buf.cap cap)
+    b)
+
+  (fn len [b:(ptr Buf)] -> i32 (get b Buf.len))
+  (fn clear [b:(ptr Buf)] -> void (put b Buf.len 0))
+
+  ;; Makes room for `extra` more bytes, doubling the storage as needed.
+  (fn ensure [b:(ptr Buf) extra:i32] -> void
+    (let need:i32 (+ (get b Buf.len) extra))
+    (if (lte need (get b Buf.cap)) (return) (block))
+    (let cap:i32 (* 2 (get b Buf.cap)))
+    (while (lt cap need) (set! cap (* cap 2)))
+    (let data:i32 (mem.alloc cap))
+    (loop i 0 (- (get b Buf.len) 1) 1
+      (mem.store8 (+ data i) (mem.load8 (+ (get b Buf.data) i))))
+    (put b Buf.data data)
+    (put b Buf.cap cap))
+
+  (fn push_byte [b:(ptr Buf) c:i32] -> void
+    (call ensure b 1)
+    (mem.store8 (+ (get b Buf.data) (get b Buf.len)) c)
+    (put b Buf.len (+ (get b Buf.len) 1)))
+
+  (fn push_bytes [b:(ptr Buf) s:(ptr str.Bytes)] -> void
+    (let n:i32 (get s str.Bytes.len))
+    (call ensure b n)
+    (let at:i32 (+ (get b Buf.data) (get b Buf.len)))
+    (loop i 0 (- n 1) 1
+      (mem.store8 (+ at i) (call str.byte_at s i)))
+    (put b Buf.len (+ (get b Buf.len) n)))
+
+  (fn push_str [b:(ptr Buf) s:str] -> void
+    (call push_bytes b (call str.from_str s)))
+
+  ;; Decimal, with '-' when negative.
+  (fn push_int [b:(ptr Buf) n:i32] -> void
+    (call ensure b 11)
+    (let k:i32 (call fmt.int_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
+    (put b Buf.len (+ (get b Buf.len) k)))
+
+  (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes)
+    (call str.bytes (get b Buf.data) (get b Buf.len)))
+
+  ;; Pass count; test_suite.aipl expects 3.
+  (fn run_buf_tests [] -> i32
+    (let p:i32 0)
+    (let b:(ptr Buf) (call make 0))
+    (call push_str b "x=")
+    (call push_int b -42)
+    (call push_byte b 33)
+    (if (call str.bytes_eq (call bytes b) (call str.from_str "x=-42!")) (set! p (+ p 1)) (block))
+    ;; growth: 1000 pushes from a 16-byte start keep every byte
+    (call clear b)
+    (loop i 0 999 1 (call push_byte b (+ 97 (% i 26))))
+    (let ok:bool (eq (call len b) 1000))
+    (loop i 0 999 1
+      (if (neq (call str.byte_at (call bytes b) i) (+ 97 (% i 26))) (set! ok false) (block)))
+    (if ok (set! p (+ p 1)) (block))
+    ;; numbers round-trip through text
+    (let c:(ptr Buf) (call make 0))
+    (call push_int c -2147483648)
+    (match_result (call str.parse_int (call bytes c))
+      (ok n (if (eq n -2147483648) (set! p (+ p 1)) (block)))
+      (err e (block)))
+    p))

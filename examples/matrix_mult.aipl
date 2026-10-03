@@ -1,12 +1,58 @@
-;; Matrix Multiplication Benchmark written in AIPL
-(module matrix_math
-  (fn compute_dot [v1_1:f64 v1_2:f64 v2_1:f64 v2_2:f64] -> f64
-    (req (gt v1_1 0.0))
-    (ens (gt res 0.0))
-    (+ (* v1_1 v2_1) (* v1_2 v2_2)))
+;; Dense f64 matrices: a struct holding a row-major (arr f64), and the
+;; i-k-j multiplication order, which walks both inputs' rows sequentially.
+(module matrix_mult
+  (struct Matrix [rows:i32 cols:i32 data:(arr f64)])
 
-  (fn run_benchmark [iterations:i32] -> f64
-    (let total:f64 0.0)
-    (loop i 1 iterations 1
-      (set! total (+ total (call compute_dot 2.5 4.0 3.0 1.5))))
-    total))
+  (fn make [rows:i32 cols:i32] -> (ptr Matrix)
+    (req (and (gte rows 0) (gte cols 0)))
+    (let m:(ptr Matrix) (new Matrix))
+    (put m Matrix.rows rows)
+    (put m Matrix.cols cols)
+    (put m Matrix.data (arr.new f64 (* rows cols)))
+    m)
+
+  (fn at [m:(ptr Matrix) r:i32 c:i32] -> f64
+    (arr.get f64 (get m Matrix.data) (+ (* r (get m Matrix.cols)) c)))
+
+  (fn set_at [m:(ptr Matrix) r:i32 c:i32 v:f64] -> void
+    (arr.set f64 (get m Matrix.data) (+ (* r (get m Matrix.cols)) c) v))
+
+  ;; a (n x k) times b (k x m); arr.new zero-fills, so c starts at 0.
+  (fn mul [a:(ptr Matrix) b:(ptr Matrix)] -> (ptr Matrix)
+    (req (eq (get a Matrix.cols) (get b Matrix.rows)))
+    (let n:i32 (get a Matrix.rows))
+    (let k:i32 (get a Matrix.cols))
+    (let m:i32 (get b Matrix.cols))
+    (let c:(ptr Matrix) (call make n m))
+    (loop i 0 (- n 1) 1
+      (loop p 0 (- k 1) 1
+        (let aip:f64 (call at a i p))
+        (loop j 0 (- m 1) 1
+          (call set_at c i j (+ (call at c i j) (* aip (call at b p j)))))))
+    c)
+
+  (fn trace [m:(ptr Matrix)] -> f64
+    (let t:f64 0.0)
+    (loop i 0 (- (get m Matrix.rows) 1) 1
+      (set! t (+ t (call at m i i))))
+    t)
+
+  ;; A[i][j] = i + j and B[i][j] = i * j - 1 (n x n), multiplied; returns the
+  ;; trace of the product, truncated to an integer.
+  (fn trace_of_product [n:i32] -> i64
+    (req (and (gte n 0) (lte n 200)))
+    (let a:(ptr Matrix) (call make n n))
+    (let b:(ptr Matrix) (call make n n))
+    (loop i 0 (- n 1) 1
+      (loop j 0 (- n 1) 1
+        (call set_at a i j (f64.convert_i64_s (i64.extend_s (+ i j))))
+        (call set_at b i j (f64.convert_i64_s (i64.extend_s (- (* i j) 1))))))
+    (i64.trunc_f64_s (call trace (call mul a b))))
+
+  ;; 2x2 check: [[1 2] [3 4]] * [[5 6] [7 8]] = [[19 22] [43 50]], trace 69.
+  (fn main [] -> i64
+    (let a:(ptr Matrix) (call make 2 2))
+    (let b:(ptr Matrix) (call make 2 2))
+    (call set_at a 0 0 1.0) (call set_at a 0 1 2.0) (call set_at a 1 0 3.0) (call set_at a 1 1 4.0)
+    (call set_at b 0 0 5.0) (call set_at b 0 1 6.0) (call set_at b 1 0 7.0) (call set_at b 1 1 8.0)
+    (i64.trunc_f64_s (call trace (call mul a b)))))

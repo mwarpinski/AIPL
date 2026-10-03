@@ -13,6 +13,17 @@ fn run_self_hosted(src: &str) -> Vec<u8> {
 /// Runs `codegen.compile_module` over `src` in the VM. Returns the module bytes
 /// or the compile error code it reported (AIPL_SPEC.md 6.4).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
+    // The tree-walking VM recurses once per nested AIPL call; give the compile a big stack.
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || self_host_on_this_thread(&src))
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn self_host_on_this_thread(src: &str) -> Result<Vec<u8>, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
@@ -430,10 +441,109 @@ fn self_hosted_bytes_match_pointers() {
 #[test]
 fn self_hosted_bytes_match_std_library() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (name, rel) in [("std_str", "aipl_src/std/str.aipl"), ("std_fmt", "aipl_src/std/fmt.aipl"), ("std_io", "aipl_src/std/io.aipl"), ("word_count", "examples/word_count.aipl")] {
+    for (name, rel) in [
+        ("std_str", "aipl_src/std/str.aipl"),
+        ("std_fmt", "aipl_src/std/fmt.aipl"),
+        ("std_io", "aipl_src/std/io.aipl"),
+        ("std_vec", "aipl_src/std/vec.aipl"),
+        ("std_map", "aipl_src/std/map.aipl"),
+        ("std_strmap", "aipl_src/std/strmap.aipl"),
+        ("std_buf", "aipl_src/std/buf.aipl"),
+        ("std_os", "aipl_src/std/os.aipl"),
+        ("wasm_reader", "aipl_src/native/wasm_reader.aipl"),
+        ("word_count", "examples/word_count.aipl"),
+        ("word_freq", "examples/word_freq.aipl"),
+        ("quicksort", "examples/quicksort.aipl"),
+        ("matrix_mult", "examples/matrix_mult.aipl"),
+        ("accounts", "examples/accounts.aipl"),
+        ("math_core", "examples/math_core.aipl"),
+    ] {
         let module = Resolver::resolve(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }
+}
+
+/// Short-circuit and/or (audit N1), including a break inside the second
+/// operand, at byte parity.
+#[test]
+fn self_hosted_bytes_match_short_circuit() {
+    let src = include_str!("test_control_flow.rs");
+    let start = src.find("(module sc").unwrap();
+    let end = src[start..].find("\"#;").unwrap();
+    assert_self_hosted_matches_rust("sc", &src[start..start + end]);
+}
+
+/// The completed WASI surface: stdin through std/io, both clocks, randomness,
+/// and absolute paths in fs.open / fs.delete, at byte parity.
+#[test]
+fn self_hosted_bytes_match_clock_random_stdin_paths() {
+    let dir = std::env::temp_dir().join(format!("aipl_sh_surface_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("surface.aipl");
+    std::fs::write(&path, r#"(module surface
+  (import io)
+  (import os)
+  (fn main [] -> i64
+    (let b:(ptr str.Bytes) (call io.read_stdin))
+    (let p:i32 (mem.alloc 8))
+    (let ok:i32 (sys.random p 8))
+    (let fd:i32 (fs.open (str.ptr "/tmp/x") (str.len "/tmp/x") 0))
+    (let gone:i32 (fs.delete (str.ptr "rel.txt") (str.len "rel.txt")))
+    (+ (- (sys.time) (sys.monotonic)) (i64.extend_s (+ (call os.random_i32) (+ ok (+ fd gone)))))))"#).unwrap();
+    let module = Resolver::resolve(&path).unwrap();
+    assert_self_hosted_matches_rust("surface", &aipl_core::printer::print_module(&module));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Threads and atomics (AIPL_SPEC.md 4.G): the threaded module layout
+/// (imported shared memory, global, start function, passive data,
+/// wasi_thread_start) and the atomic lowerings, at byte parity.
+#[test]
+fn self_hosted_bytes_match_threads_and_atomics() {
+    let src = include_str!("test_threads.rs");
+    for name in ["(module threads", "(module atomics"] {
+        let start = src.find(name).unwrap();
+        let end = src[start..].find("\"#;").unwrap();
+        assert_self_hosted_matches_rust(name, &src[start..start + end]);
+    }
+    let sync = std::fs::read_to_string("aipl_src/thread_sync.aipl").unwrap();
+    assert_self_hosted_matches_rust("thread_sync", &sync);
+}
+
+/// Past the old capacities (256 functions, 31 structs): the toolchain itself
+/// is about 250 functions, so the old limit was close to breaking self-compile.
+#[test]
+fn self_hosted_bytes_match_past_the_old_table_limits() {
+    let mut src = String::from("(module big\n");
+    for i in 0..40 {
+        src.push_str(&format!("  (struct S{i} [a:i32 b:i64])\n"));
+    }
+    for i in 0..300 {
+        let prev = if i == 0 { "0".to_string() } else { format!("(call f{} x)", i - 1) };
+        src.push_str(&format!("  (fn f{i} [x:i32] -> i32 (+ x {prev}))\n"));
+    }
+    src.push_str("  (fn sz [] -> i32 (sizeof S39)))");
+    assert_self_hosted_matches_rust("big", &src);
+}
+
+/// args.* and env.* (P14): all ten WASI imports in their fixed order, mixed
+/// with file and print ops, and the args/env types and lowerings.
+#[test]
+fn self_hosted_bytes_match_args_and_env() {
+    assert_self_hosted_matches_rust("argsenv", r#"
+(module argsenv
+  (fn only_env [p:i32] -> i32 (env.sizes p (+ p 4)))
+  (fn all [p:i32] -> i32
+    (sys.print "x")
+    (let a:i32 (args.sizes p (+ p 4)))
+    (let b:i32 (args.get (+ p 8) (+ p 64)))
+    (let c:i32 (env.get (+ p 8) (+ p 64)))
+    (let fd:i32 (fs.open p 1 0))
+    (fs.close fd)
+    (fs.delete p 1)
+    (if (lt a 0) (sys.exit 1) (block))
+    (+ a (+ b (+ c (+ (fs.read fd p 1) (fs.write fd p 1)))))))"#);
+    assert_self_hosted_matches_rust("envonly", "(module envonly (fn f [p:i32] -> i32 (env.get p (+ p 4))))");
 }
 
 /// Function references (P10): ref, call_ref through params, arrays, and struct
@@ -459,6 +569,114 @@ fn self_hosted_bytes_match_function_refs() {
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
        (+ (call_ref (fn [i32 i32] -> i32) (get o Op.apply) 3 4)
           (+ (i32.wrap n) (if (and (eq (ref add) (ref add)) (neq (ref add) (ref mul))) 1 0))))))
+"#);
+}
+
+/// P11 control flow, given as raw source so the self-hosted compiler sees
+/// `cond` itself (the Rust parser desugars it to nested ifs): early return in
+/// a loop and in a match_result arm, break/continue in while and loop (the
+/// loop's continue block), nested loops, cond as value and statement.
+#[test]
+fn self_hosted_bytes_match_control_flow() {
+    assert_self_hosted_matches_rust("control_flow", r#"
+(module flow
+  ;; early return inside a loop: index of the first multiple of 7 at or above n
+  (fn first_mult7 [n:i32] -> i32
+    (loop i n (+ n 100) 1
+      (if (eq (% i 7) 0) (return i) (block)))
+    -1)
+
+  ;; break inside a nested if: sum 1.. until the total passes n
+  (fn sum_until [n:i32] -> i32
+    (let total:i32 0)
+    (let i:i32 0)
+    (while true
+      (set! i (+ i 1))
+      (if (gt i 1000)
+          (break)
+          (if (gt total n) (break) (set! total (+ total i)))))
+    total)
+
+  ;; continue in a counted loop still applies the step: sum of odd i in 0..n
+  (fn sum_odd [n:i32] -> i32
+    (let total:i32 0)
+    (loop i 0 n 1
+      (if (eq (% i 2) 0) (continue) (block))
+      (set! total (+ total i)))
+    total)
+
+  ;; continue in a while loop goes back to the condition
+  (fn count_nonzero_digits [n:i32] -> i32
+    (let v:i32 n)
+    (let count:i32 0)
+    (while (gt v 0)
+      (let d:i32 (% v 10))
+      (set! v (/ v 10))
+      (if (eq d 0) (continue) (block))
+      (set! count (+ count 1)))
+    count)
+
+  ;; break and continue in nested loops target the innermost loop
+  (fn nested [n:i32] -> i32
+    (let hits:i32 0)
+    (loop i 1 n 1
+      (loop j 1 n 1
+        (if (gt j i) (break) (block))
+        (if (eq j 2) (continue) (block))
+        (set! hits (+ hits 1))))
+    hits)
+
+  ;; return from inside match_result inside a loop
+  (fn parse_digit [c:i32] -> (result i32 i32)
+    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+  (fn first_non_digit [n:i32] -> i32
+    (loop i 0 n 1
+      (match_result (call parse_digit (+ 46 i))
+        (ok d (block))
+        (err e (return e))))
+    0)
+
+  ;; cond with several clauses and multi-expression bodies, as a value
+  (fn classify [n:i32] -> i32
+    (cond
+      ((lt n 0) -1)
+      ((eq n 0) 0)
+      ((lt n 10) (let t:i32 (* n 2)) (+ t 1))
+      (else 100)))
+
+  ;; cond as a statement
+  (fn bucket_sum [n:i32] -> i32
+    (let small:i32 0)
+    (let big:i32 0)
+    (loop i 0 n 1
+      (cond
+        ((lt i 5) (set! small (+ small 1)))
+        (else (set! big (+ big 1)))))
+    (+ (* small 1000) big))
+
+  ;; a body may end in (return v); void functions use (return)
+  (fn ends_in_return [n:i32] -> i32
+    (let x:i32 (* n 3))
+    (return (+ x 1)))
+  (fn bump [p:i32] -> void
+    (if (lt p 0) (return) (block))
+    (mem.store32 p (+ (mem.load32 p) 1)))
+  (fn uses_void_return [n:i32] -> i32
+    (let p:i32 (mem.alloc 4))
+    (mem.store32 p n)
+    (call bump p)
+    (call bump -1)
+    (mem.load32 p))
+
+  ;; loop bound and step are evaluated every iteration, and the body may set! the variable
+  (fn moving_bounds [n:i32] -> i32
+    (let limit:i32 n)
+    (let count:i32 0)
+    (loop i 0 limit 1
+      (set! count (+ count 1))
+      (if (eq i 2) (set! limit (- limit 1)) (block))
+      (if (eq i 0) (set! i 1) (block)))
+    count))
 "#);
 }
 
@@ -639,7 +857,7 @@ fn self_hosted_arrays_and_results_execute() {
 
 /// Inputs the self-hosted backend cannot compile are compile errors, never a
 /// miscompile: non-scalar struct fields / array elements (95), unknown structs
-/// (96), and string data beyond the 512-byte area (768).
+/// (96), and string literals beyond its 64 KiB literal buffer (768).
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
     for src in [
@@ -651,10 +869,44 @@ fn self_hosted_rejects_what_it_cannot_compile() {
     }
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();
     assert!(err.contains("compile error 96"), "{err}");
-    // 600 bytes of string data overflow the 512-byte area, as in the Rust backend.
-    let long = "x".repeat(600);
+    // The self-hosted literal buffer holds 64 KiB (the Rust backend allows up to 1 MiB).
+    let long = "x".repeat(70_000);
     let err = self_host(&format!("(module m (fn f [] -> i32 (str.len \"{long}\")))")).unwrap_err();
     assert!(err.contains("compile error 768"), "{err}");
+}
+
+/// String literals sit at 1024 with the heap after them, so a program is not
+/// limited to a fixed literal area; stores into a literal trap in both
+/// backends, like stores into the runtime block.
+#[test]
+fn self_hosted_string_literals_past_the_old_area_are_read_only() {
+    let a = "a".repeat(400);
+    let b = "b".repeat(400);
+    let src = format!(
+        "(module lits\n  (fn lens [] -> i32 (+ (str.len \"{a}\") (str.len \"{b}\")))\n  (fn first_free [] -> i32 (mem.alloc 0))\n  (fn poke [] -> i32 (mem.store8 (str.ptr \"{b}\") 0) 1))"
+    );
+    assert_self_hosted_matches_rust("lits", &src);
+    let bytes = run_self_hosted(&src);
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &bytes).unwrap();
+    let call = |name: &str| -> Result<i32, wasmtime::Error> {
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[]).unwrap();
+        let f: TypedFunc<(), i32> = instance.get_typed_func(&mut store, name).unwrap();
+        f.call(&mut store, ())
+    };
+    assert_eq!(call("lens").unwrap(), 800);
+    // two [len][bytes] literals: 1024 + 808, 8-aligned
+    assert_eq!(call("first_free").unwrap(), 1832);
+    let trap = call("poke").unwrap_err().downcast::<wasmtime::Trap>().unwrap();
+    assert_eq!(trap, wasmtime::Trap::UnreachableCodeReached);
+    // the VM places the literals identically and rejects the same store
+    let m = aipl_core::parser::Parser::parse(&src).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("first_free", vec![]).unwrap(), Value::Int(1832));
+    let err = vm.invoke("poke", vec![]).unwrap_err();
+    assert!(err.contains("string literals, which are read-only"), "{err}");
 }
 
 #[test]

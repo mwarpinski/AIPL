@@ -16,8 +16,8 @@
 - **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, and heap arrays `(arr T)`. A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
 - **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call.
 - **Wasm semantics are the spec.** A tree-walking VM and a WebAssembly backend must agree; `tests/test_differential.rs` runs the same programs in both, the VM against wasmtime, and fails on any divergence.
-- **Real I/O when compiled.** `sys.print`, `fs.*`, and `sys.exit` lower to WASI preview1 imports.
-- **A self-hosted compiler in progress.** `aipl_src/compiler.aipl` (tokenizer, parser) and `aipl_src/codegen.aipl` (wasm code generation) are written in AIPL. For the subset they support, their output is byte-identical to the Rust backend's, including when codegen.aipl compiles itself.
+- **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone native executable (the module plus a small wasmtime launcher).
+- **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language except VM-only ops. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that rebuilds itself to the same bytes, with no Rust involved. Type checking is still Rust-only.
 
 ```lisp
 (module demo
@@ -46,14 +46,20 @@
 ```bash
 cargo build
 cargo run --bin aipl -- verify  file.aipl                 # parse + type-check
-cargo run --bin aipl -- eval    file.aipl [--func main]   # run in the VM
+cargo run --bin aipl -- eval    file.aipl [--func main] [-- args...]   # run in the VM
 cargo run --bin aipl -- compile file.aipl -o out.wasm     # compile to wasm (+ WASI imports if it does I/O)
 cargo run --bin aipl -- compile --self file.aipl -o out.wasm   # also compile with codegen.aipl and require identical bytes
 cargo run --bin aipl -- test aipl_src/test_suite.aipl     # AIPL-native test suite; exit code = failing groups
-wasmtime run --dir=. out.wasm --invoke main               # run compiled I/O under any WASI host
+cargo run --bin aipl -- run out.wasm -- ARGS             # run a compiled module natively (aipl-run launcher)
+cargo run --bin aipl -- compile --exe file.aipl -o prog  # a standalone executable: ./prog ARGS
+
+# the self-hosted compiler as a standalone executable
+cargo build --release
+./target/release/aipl compile --exe aipl_src/driver.aipl -o aiplc
+./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (146 tests; `test_selfhost` takes about 90 s because it runs the self-hosted compiler on itself).
+Run the full test suite with `cargo test` (196 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM).
 
 ## Repository layout
 
@@ -62,11 +68,12 @@ Run the full test suite with `cargo test` (146 tests; `test_selfhost` takes abou
 | `src/parser.rs`, `checker.rs`, `resolver.rs` | Rust bootstrap front end: S-expressions → AST, type checker, import flattening |
 | `src/vm.rs` | Reference interpreter (contracts, real threads and atomics, `std::fs` I/O) |
 | `src/compiler/wasm.rs` | Rust wasm backend, the byte-for-byte reference for the self-hosted one |
-| `aipl_src/compiler.aipl`, `codegen.aipl` | Self-hosted tokenizer, parser, and wasm code generator |
-| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting), `fmt` (number formatting); found by `(import io)` from anywhere |
+| `aipl_src/resolver.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, tokenizer and parser, wasm code generator, and the command that chains them |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder), `os` (command line, environment); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
-| `examples/` | Example programs; `word_count.aipl` is the end-to-end I/O example |
+| `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
+| `web/` | Browser demo: sends source to `aipl serve`, runs the compiled module with WASI shims |
 | `tests/` | Rust integration, differential, WASI, and self-hosting tests |
 | `attic/` | Quarantined modules that returned constants instead of doing work (see `attic/README.md`); do not build on them |
 
@@ -80,4 +87,4 @@ Run the full test suite with `cargo test` (146 tests; `test_selfhost` takes abou
 
 ## Roadmap in one paragraph
 
-Done: a small standard library, honest tests, no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays, and a self-hosted compiler that matches the Rust one byte for byte and reproduces itself when compiled to wasm. Also done: function references (`ref`/`call_ref`). In progress: a driver so that compiled compiler runs as a standalone tool, and import resolution in AIPL. Next: a standard library, function references, `return`/`break`/`continue`, versioning, then rewriting the resolver in AIPL so the Rust bootstrap can shrink to primitives. Native speed is planned through wasm ahead-of-time compilation, not a hand-written native backend.
+Done (P1–P14): honest tests with no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays, strict pointer types, function references, `return`/`break`/`continue`/`cond`, a standard library with collections, and a self-hosted toolchain that matches the Rust one byte for byte and rebuilds itself when compiled to wasm. Next: standalone executables from `aipl compile --exe` (native on Linux x86-64, a wasm runtime shim elsewhere), the type checker in AIPL, generics, and a Linux x86-64 backend written in AIPL, with Rust reduced to that shim. PROGRESS.md has the direction and the order. Native speed comes from the wasm runtime's compiler (e.g. wasmtime), not a native backend; see [docs/NATIVE_TARGET.md](docs/NATIVE_TARGET.md).

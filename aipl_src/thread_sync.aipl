@@ -1,14 +1,8 @@
-;; Native Stage 0 Multithreading & Atomic Synchronization Module
-;; Thin AIPL wrappers over real thread.spawn/thread.join/atomic.* opcodes.
-;; thread.spawn launches a genuine OS thread (std::thread in the VM, see
-;; src/vm.rs) sharing this program's real linear memory; atomic.lock/unlock
-;; is a real spinlock backed by that shared memory, not a side-table that
-;; nothing ever waits on. The previous version of this file's thread_spawn
-;; took its arguments, did nothing with them, and returned the literal 101 -
-;; that has been replaced with the real opcode below.
-;; The wasm backend does not support thread.spawn/join yet (needs shared
-;; memory + wasi-threads); compiling a program that uses them to .wasm is a
-;; compile error, not a silent no-op - see src/compiler/wasm.rs.
+;; Threads and atomics (AIPL_SPEC.md 4.D): thin wrappers over thread.spawn,
+;; thread.join, and atomic.*, plus a self-test. In the VM thread.spawn starts
+;; a std::thread sharing the program's linear memory; compiled, the module is
+;; a threaded module (shared memory, wasi-threads' thread-spawn) and runs
+;; under AIPL's runner. atomic.lock waits on a real lock word in that memory.
 
 (module thread_sync
 
@@ -20,8 +14,7 @@
     (req (gte ptr 0))
     (atomic.cas ptr expected new_val))
 
-  ;; Real spinlock acquire: blocks (busy-waits) until the memory word at
-  ;; mutex_ptr is free. mutex_ptr must be an address dedicated to this lock,
+  ;; Acquires the lock word at mutex_ptr, waiting while another thread holds it. mutex_ptr must be an address dedicated to this lock,
   ;; distinct from any data it protects - the lock word IS that memory.
   (fn atomic_lock [mutex_ptr:i32] -> i32
     (req (gte mutex_ptr 0))
@@ -33,10 +26,6 @@
     (atomic.unlock mutex_ptr)
     0)
 
-  ;; Spawns a real OS thread running `fn_name` (named by pointer+length into
-  ;; linear memory - AIPL has no first-class function values yet, so a
-  ;; pointer to a symbol table entry isn't an option either) with a single
-  ;; i32 argument. Returns a thread handle for thread_join.
   ;; Runs worker(arg) on a new OS thread; returns a handle for thread_join.
   (fn thread_spawn [worker:(fn [i32] -> i32) arg:i32] -> i32
     (thread.spawn worker arg))

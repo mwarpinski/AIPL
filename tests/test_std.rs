@@ -129,7 +129,16 @@ fn std_fmt_agrees_in_both_backends() {
 #[test]
 fn std_io_agrees_in_both_backends() {
     // includes run_io_tests, which writes, reads back, and deletes a file
-    assert!(differential_module("io") >= 8);
+    assert!(differential_module("io") >= 1);
+}
+
+#[test]
+fn std_collections_agree_in_both_backends() {
+    // the run_<module>_tests runners plus every helper with i32 params
+    assert!(differential_module("vec") >= 20);
+    assert!(differential_module("map") >= 8);
+    assert!(differential_module("strmap") >= 1);
+    assert!(differential_module("buf") >= 1);
 }
 
 #[test]

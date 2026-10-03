@@ -41,6 +41,10 @@ pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
     struct_defs: HashMap<String, StructDef>,
+    /// Number of while/loop bodies enclosing the expression being checked.
+    loop_depth: std::cell::Cell<u32>,
+    /// Return type of the function body being checked; None inside contracts.
+    return_type: std::cell::RefCell<Option<Type>>,
 }
 
 impl TypeChecker {
@@ -48,6 +52,8 @@ impl TypeChecker {
         TypeChecker {
             fn_signatures: HashMap::new(),
             struct_defs: HashMap::new(),
+            loop_depth: std::cell::Cell::new(0),
+            return_type: std::cell::RefCell::new(None),
         }
     }
 
@@ -60,7 +66,10 @@ impl TypeChecker {
                     s.span.0, s.span.1, s.name
                 ));
             }
-            for f in &s.fields {
+            for (i, f) in s.fields.iter().enumerate() {
+                if s.fields[..i].iter().any(|g| g.name == f.name) {
+                    return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, s.name));
+                }
                 type_size_and_align(&f.ty).map_err(|e| {
                     format!(
                         "{}:{}: Field '{}' in struct '{}': {}",
@@ -127,6 +136,14 @@ impl TypeChecker {
         }
     }
 
+    /// Checks a while/loop body with break/continue allowed inside it.
+    fn check_loop_body(&self, body: &[Expr], env: &mut HashMap<String, Type>) -> Result<(), String> {
+        self.loop_depth.set(self.loop_depth.get() + 1);
+        let r = body.iter().try_for_each(|stmt| self.infer_expr_type(stmt, env).map(|_| ()));
+        self.loop_depth.set(self.loop_depth.get() - 1);
+        r
+    }
+
     pub fn get_struct_def(&self, name: &str) -> Option<&StructDef> {
         self.struct_defs.get(name)
     }
@@ -170,12 +187,25 @@ impl TypeChecker {
         }
 
         // Check function body expressions
+        *self.return_type.borrow_mut() = Some(f.return_type.clone());
+        self.loop_depth.set(0);
         let mut last_ty = Type::Void;
+        let mut result = Ok(());
         for expr in &f.body {
-            last_ty = self.infer_expr_type(expr, &mut env)?;
+            match self.infer_expr_type(expr, &mut env) {
+                Ok(t) => last_ty = t,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
         }
+        *self.return_type.borrow_mut() = None;
+        result?;
 
-        if f.return_type != Type::Void && last_ty != f.return_type {
+        // A body may end in (return v) instead of a bare value.
+        let ends_in_return = matches!(f.body.last(), Some(Expr::Return { .. }));
+        if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
             return Err(format!(
                 "{}:{}: Function '{}' expects return type {:?}, but body returned {:?}",
                 f.span.0, f.span.1, f.name, f.return_type, last_ty
@@ -261,9 +291,7 @@ impl TypeChecker {
                 }
                 let mut local_env = env.clone();
                 local_env.insert(var.clone(), Type::I32);
-                for stmt in body {
-                    self.infer_expr_type(stmt, &mut local_env)?;
-                }
+                self.check_loop_body(body, &mut local_env)?;
                 Ok(Type::Void)
             }
             Expr::While { cond, body, .. } => {
@@ -272,8 +300,29 @@ impl TypeChecker {
                     return Err(format!("{}:{}: While condition must be Bool", l, c));
                 }
                 let mut local_env = env.clone();
-                for stmt in body {
-                    self.infer_expr_type(stmt, &mut local_env)?;
+                self.check_loop_body(body, &mut local_env)?;
+                Ok(Type::Void)
+            }
+            Expr::Return { val, .. } => {
+                let expected = self.return_type.borrow().clone().ok_or_else(|| {
+                    format!("{}:{}: return is not allowed in a contract", l, c)
+                })?;
+                let got = match val {
+                    Some(v) => self.infer_expr_type(v, env)?,
+                    None => Type::Void,
+                };
+                if got != expected {
+                    return Err(format!(
+                        "{}:{}: return value has type {:?}, but the function returns {:?}",
+                        l, c, got, expected
+                    ));
+                }
+                Ok(Type::Void)
+            }
+            Expr::Break(_) | Expr::Continue(_) => {
+                if self.loop_depth.get() == 0 {
+                    let what = if matches!(expr, Expr::Break(_)) { "break" } else { "continue" };
+                    return Err(format!("{}:{}: {} is only allowed inside a while or loop body", l, c, what));
                 }
                 Ok(Type::Void)
             }
@@ -451,6 +500,14 @@ impl TypeChecker {
                     Ok(Type::Bool)
                 }
                 OpCode::And | OpCode::Or => {
+                    if args.len() != 2 {
+                        return Err(format!(
+                            "{}:{}: {} takes exactly 2 operands, got {}; nest them: ({} a ({} b c))",
+                            l, c, if matches!(op, OpCode::And) { "and" } else { "or" }, args.len(),
+                            if matches!(op, OpCode::And) { "and" } else { "or" },
+                            if matches!(op, OpCode::And) { "and" } else { "or" }
+                        ));
+                    }
                     for arg in args {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Bool {
@@ -475,7 +532,24 @@ impl TypeChecker {
                     }
                     Ok(Type::Void)
                 }
-                OpCode::SysTime => Ok(Type::F64),
+                OpCode::SysTime | OpCode::SysMonotonic => {
+                    if !args.is_empty() {
+                        return Err(format!("{}:{}: {:?} takes no arguments", l, c, op));
+                    }
+                    Ok(Type::I64)
+                }
+                OpCode::SysRandom => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: sys.random requires 2 arguments (ptr, len)", l, c));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: sys.random argument {} must be i32, got {:?}", l, c, i, t));
+                        }
+                    }
+                    Ok(Type::I32)
+                }
                 OpCode::SysExit => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: sys.exit requires 1 argument (code: i32)", l, c));
@@ -522,6 +596,19 @@ impl TypeChecker {
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
                         return Err(format!("{}:{}: fs.close requires i32 fd, got {:?}", l, c, t));
+                    }
+                    Ok(Type::I32)
+                }
+                // args.*/env.* take two i32 addresses the host writes through.
+                OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: {:?} requires 2 arguments (two i32 addresses)", l, c, op));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::I32 {
+                            return Err(format!("{}:{}: {:?} argument {} must be an i32 address, got {:?}", l, c, op, i, t));
+                        }
                     }
                     Ok(Type::I32)
                 }

@@ -1,0 +1,163 @@
+;; std/vec: a growable list of any element type (storage doubles when full).
+;; Generic (AIPL_SPEC.md 4.H): every use names the element type.
+;;   (let v:(ptr (vec.Vec i32)) (call (vec.make i32) 0))
+;;   (call (vec.push i32) v 7)
+;;   (call (vec.at i32) v 0)
+;;   (let ps:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) 0))
+(module vec
+
+  (struct (Vec T) [items:(arr T) len:i32])
+
+  (fn (make T) [capacity:i32] -> (ptr (Vec T))
+    (req (gte capacity 0))
+    (let cap:i32 (if (lt capacity 4) 4 capacity))
+    (let v:(ptr (Vec T)) (new (Vec T)))
+    (put v (Vec T) items (arr.new T cap))
+    (put v (Vec T) len 0)
+    v)
+
+  (fn (len T) [v:(ptr (Vec T))] -> i32
+    (get v (Vec T) len))
+
+  ;; Element i.
+  (fn (at T) [v:(ptr (Vec T)) i:i32] -> T
+    (req (and (gte i 0) (lt i (get v (Vec T) len))))
+    (arr.get T (get v (Vec T) items) i))
+
+  (fn (set T) [v:(ptr (Vec T)) i:i32 x:T] -> void
+    (req (and (gte i 0) (lt i (get v (Vec T) len))))
+    (arr.set T (get v (Vec T) items) i x))
+
+  ;; Appends x, doubling the storage when full.
+  (fn (push T) [v:(ptr (Vec T)) x:T] -> void
+    (let n:i32 (get v (Vec T) len))
+    (let items:(arr T) (get v (Vec T) items))
+    (if (eq n (arr.len items))
+        (block
+          (let bigger:(arr T) (arr.new T (* 2 n)))
+          (loop i 0 (- n 1) 1
+            (arr.set T bigger i (arr.get T items i)))
+          (put v (Vec T) items bigger))
+        (block))
+    (arr.set T (get v (Vec T) items) n x)
+    (put v (Vec T) len (+ n 1)))
+
+  ;; Removes and returns the last element.
+  (fn (pop T) [v:(ptr (Vec T))] -> T
+    (req (gt (get v (Vec T) len) 0))
+    (let n:i32 (- (get v (Vec T) len) 1))
+    (put v (Vec T) len n)
+    (arr.get T (get v (Vec T) items) n))
+
+  (fn (clear T) [v:(ptr (Vec T))] -> void
+    (put v (Vec T) len 0))
+
+  ;; Index of the first element equal to x (eq: same value, or same address
+  ;; for pointers), or -1.
+  (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32
+    (loop i 0 (- (get v (Vec T) len) 1) 1
+      (if (eq (arr.get T (get v (Vec T) items) i) x) (return i) (block)))
+    -1)
+
+  (fn min_i32 [a:i32 b:i32] -> i32 (if (lt a b) a b))
+
+  ;; -1, 0, 1 as a < b, a = b, a > b (no subtraction, so no overflow).
+  (fn cmp_i32 [a:i32 b:i32] -> i32
+    (cond ((lt a b) -1) ((gt a b) 1) (else 0)))
+
+  ;; Stable sort by cmp: a negative result puts a before b, positive puts b
+  ;; before a, zero keeps their order. Bottom-up merge sort, O(n log n).
+  (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32)] -> void
+    (let n:i32 (get v (Vec T) len))
+    (if (lt n 2) (return) (block))
+    (let src:(arr T) (get v (Vec T) items))
+    (let dst:(arr T) (arr.new T n))
+    (let width:i32 1)
+    (while (lt width n)
+      (let lo:i32 0)
+      (while (lt lo n)
+        (let mid:i32 (call min_i32 (+ lo width) n))
+        (let hi:i32 (call min_i32 (+ lo (* 2 width)) n))
+        (let i:i32 lo)
+        (let j:i32 mid)
+        (loop k lo (- hi 1) 1
+          (cond
+            ((gte i mid)
+             (arr.set T dst k (arr.get T src j))
+             (set! j (+ j 1)))
+            ((gte j hi)
+             (arr.set T dst k (arr.get T src i))
+             (set! i (+ i 1)))
+            ((lte (call_ref (fn [T T] -> i32) cmp (arr.get T src i) (arr.get T src j)) 0)
+             (arr.set T dst k (arr.get T src i))
+             (set! i (+ i 1)))
+            (else
+             (arr.set T dst k (arr.get T src j))
+             (set! j (+ j 1)))))
+        (set! lo hi))
+      (let tmp:(arr T) src)
+      (set! src dst)
+      (set! dst tmp)
+      (set! width (* width 2)))
+    ;; the sorted run is in src; copy it back if that is the scratch array
+    (if (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
+        (loop i 0 (- n 1) 1
+          (arr.set T (get v (Vec T) items) i (arr.get T src i)))
+        (block)))
+
+  ;; Ascending.
+  (fn sort_i32 [v:(ptr (Vec i32))] -> void
+    (call (sort_by i32) v (ref cmp_i32)))
+
+  ;; for the stability test: compares only the tens digit and up
+  (fn cmp_tens [a:i32 b:i32] -> i32
+    (call cmp_i32 (/ a 10) (/ b 10)))
+
+  ;; for the element-type test
+  (struct Point [x:i32 y:i32])
+  (fn by_x [a:(ptr Point) b:(ptr Point)] -> i32 (call cmp_i32 (get a Point.x) (get b Point.x)))
+
+  ;; Pass count; test_suite.aipl expects 6.
+  (fn run_vec_tests [] -> i32
+    (let p:i32 0)
+    (let v:(ptr (Vec i32)) (call (make i32) 0))
+    (loop i 0 999 1 (call (push i32) v (* i 3)))
+    (if (and (eq (call (len i32) v) 1000) (and (eq (call (at i32) v 0) 0) (eq (call (at i32) v 999) 2997))) (set! p (+ p 1)) (block))
+    (call (set i32) v 5 -7)
+    (if (and (eq (call (pop i32) v) 2997) (and (eq (call (len i32) v) 999) (eq (call (at i32) v 5) -7))) (set! p (+ p 1)) (block))
+    (if (and (eq (call (index_of i32) v 30) 10) (eq (call (index_of i32) v 31) -1)) (set! p (+ p 1)) (block))
+    ;; sort 200 pseudo-random values; sorted and the same multiset (sum, count)
+    (let r:(ptr (Vec i32)) (call (make i32) 4))
+    (let x:i32 12345)
+    (let sum:i32 0)
+    (loop i 1 200 1
+      (set! x (+ (* x 1103515245) 12345))
+      (call (push i32) r (bitand (shru x 8) 1023))
+      (set! sum (+ sum (bitand (shru x 8) 1023))))
+    (call sort_i32 r)
+    (let ok:bool true)
+    (let sum2:i32 0)
+    (loop i 0 199 1
+      (set! sum2 (+ sum2 (call (at i32) r i)))
+      (if (and (gt i 0) (gt (call (at i32) r (- i 1)) (call (at i32) r i))) (set! ok false) (block)))
+    (if (and ok (eq sum sum2)) (set! p (+ p 1)) (block))
+    ;; stability: equal keys keep their order
+    (let s:(ptr (Vec i32)) (call (make i32) 4))
+    (call (push i32) s 31) (call (push i32) s 12) (call (push i32) s 35) (call (push i32) s 10) (call (push i32) s 33)
+    (call (sort_by i32) s (ref cmp_tens))
+    (if (and (eq (call (at i32) s 0) 12) (and (eq (call (at i32) s 1) 10) (and (eq (call (at i32) s 2) 31) (and (eq (call (at i32) s 3) 35) (eq (call (at i32) s 4) 33)))))
+        (set! p (+ p 1))
+        (block))
+    ;; other element types: i64 values and struct pointers, sorted by a field
+    (let big:(ptr (Vec i64)) (call (make i64) 0))
+    (call (push i64) big 5000000000i64)
+    (let pts:(ptr (Vec (ptr Point))) (call (make (ptr Point)) 0))
+    (loop i 0 4 1
+      (let pt:(ptr Point) (new Point))
+      (put pt Point.x (- 10 i))
+      (call (push (ptr Point)) pts pt))
+    (call (sort_by (ptr Point)) pts (ref by_x))
+    (if (and (eq (call (at i64) big 0) 5000000000i64) (eq (get (call (at (ptr Point)) pts 0) Point.x) 6))
+        (set! p (+ p 1))
+        (block))
+    p))

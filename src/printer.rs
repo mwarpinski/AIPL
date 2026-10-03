@@ -158,12 +158,18 @@ pub fn op_name(op: &OpCode) -> &'static str {
         Not => "not",
         SysPrint => "sys.print",
         SysTime => "sys.time",
+        SysMonotonic => "sys.monotonic",
+        SysRandom => "sys.random",
         SysExit => "sys.exit",
         FsOpen => "fs.open",
         FsRead => "fs.read",
         FsWrite => "fs.write",
         FsClose => "fs.close",
         FsDelete => "fs.delete",
+        ArgsSizes => "args.sizes",
+        ArgsGet => "args.get",
+        EnvSizes => "env.sizes",
+        EnvGet => "env.get",
         ThreadSpawn => "thread.spawn",
         ThreadJoin => "thread.join",
         I64ExtendS => "i64.extend_s",
@@ -236,6 +242,12 @@ pub fn expr_str(e: &Expr) -> String {
             _ => format!("(ptr.cast {} {})", struct_name(ty), expr_str(addr)),
         },
         Expr::Ref { name, .. } => format!("(ref {})", name),
+        Expr::Return { val, .. } => match val {
+            Some(v) => format!("(return {})", expr_str(v)),
+            None => "(return)".to_string(),
+        },
+        Expr::Break(_) => "(break)".to_string(),
+        Expr::Continue(_) => "(continue)".to_string(),
         Expr::CallRef { sig, func, args, .. } => {
             with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
         }

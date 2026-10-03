@@ -407,17 +407,14 @@ fn f64_arithmetic_agrees() {
 /// Argument values tried for every function whose parameters are all i32.
 /// Contract failures skip a tuple; everything else must agree. Values are kept
 /// small on purpose: example functions use their arguments as loop bounds
-/// (`matrix_mult.aipl` loops `iterations` times), and a tree-walking VM at
+/// and sizes (`matrix_mult.aipl` multiplies n x n matrices), and a tree-walking VM at
 /// `i32::MAX` iterations is a multi-hour run, not a test. Wrap-around edge
 /// cases are covered by the explicit single-expression tests above.
 const SAMPLE_ARGS: &[i32] = &[0, 1, 3, 7, 50, -1, -9];
 
 /// Examples that are known not to parse against the current language and are
 /// tracked elsewhere. Anything not on this list must parse, check, and compile.
-const KNOWN_STALE_EXAMPLES: &[(&str, &str)] = &[(
-    "hello_browser.aipl",
-    "uses dom.* / web.alert, which P2 removed from the language; needs rewriting or moving to attic/",
-)];
+const KNOWN_STALE_EXAMPLES: &[(&str, &str)] = &[];
 
 #[test]
 fn every_example_agrees_between_vm_and_wasmtime() {
@@ -731,14 +728,19 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_points", &[]), Ok(Value::Int(33)));
     assert_eq!(differential(&module, &wasm, "test_bool_word", &[]), Ok(Value::Int(1)));
     assert_eq!(differential(&module, &wasm, "test_str_field", &[]), Ok(Value::Int(13)));
-    // count 3 + (3 * 8 bytes from the array pointer to the next block) + element 5
-    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 24 + 5)));
-    // 4-byte block at 1024, header at 1028, array at 1032, cursor 1032 + 8
-    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
-    // two 8-byte result cells at 1024 and 1032, then the 4-byte block
-    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1040)));
-    // result cell at 1024, array header at 1032, array at 1036
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1036)));
+    // count 3 + (array pointer to the next block: the 4 + 3 * 8 = 28-byte block
+    // rounded to 32, minus the 4-byte header) + element 5
+    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 28 + 5)));
+    // relative to the heap start H: alloc_four's block at H (4 bytes, rounded
+    // to 8), then the array block at H+8 (4 + 2 * 4 = 12 bytes, rounded to
+    // 16): array at H+12, cursor H+24, so array - cursor = -12
+    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-12)));
+    // The module's string literal occupies 1024..1032, so the heap starts at
+    // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
+    // the 4-byte block.
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
+    // result cell at 1032, array header at 1040, array at 1044
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1044)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -763,4 +765,64 @@ fn p8_wasm_rejects_non_32_bit_result_payloads() {
     TypeChecker::new().check_module(&module).expect("checks");
     let err = WasmCompiler::compile(&module).unwrap_err();
     assert!(err.contains("result payloads must be 32-bit"), "got {err}");
+}
+
+// Allocation grows memory: new, arr.new, ok/err cells, and mem.alloc past the
+// initial 1 MiB need no explicit mem.grow, and both backends end with the same
+// number of pages.
+#[test]
+fn allocation_grows_memory_identically() {
+    let src = r#"
+(module grow
+  (struct P [x:i32 y:i64])
+  (fn main [] -> i32
+    (let total:i32 0)
+    (loop i 1 3000 1
+      (let p:(ptr P) (new P))
+      (put p P.x i)
+      (let a:(arr i32) (arr.new i32 100))
+      (arr.set i32 a 99 i)
+      (let r:(result i32 i32) (ok i))
+      (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
+    (let big:i32 (mem.alloc 2000000))
+    (mem.store32 (+ big 1999996) 7)
+    (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
+  ;; past the 1024-page cap allocation stops growing and the store fails in both
+  (fn too_big [] -> i32
+    (let p:i32 (mem.alloc 68000000))
+    (mem.store32 (+ p 67999996) 1)
+    0))
+"#;
+    let (module, wasm) = compile_checked(src);
+    // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
+    assert!(differential(&module, &wasm, "too_big", &[]).is_err());
+}
+
+/// An allocation whose size expression itself allocates: the inner block must
+/// not be handed out again. Compiled code used to read the cursor before
+/// evaluating the size, so both allocations started at the same address in
+/// wasm (the VM was right). Allocation is now one atomic read-and-add after
+/// the size is known.
+#[test]
+fn nested_allocations_do_not_overlap() {
+    let src = r#"
+(module nest
+  (fn inner_size [] -> i32
+    (let p:i32 (mem.alloc 8))
+    (mem.store32 p 99)
+    8)
+  (fn main [] -> i32
+    (let q:i32 (mem.alloc (call inner_size)))
+    (mem.store32 q 7)
+    (mem.load32 (- q 8)))
+  ;; the same through arr.new's length and a struct inside a result payload
+  (fn arr_len_allocates [] -> i32
+    (let a:(arr i32) (arr.new i32 (call inner_size)))
+    (arr.set i32 a 0 5)
+    (mem.load32 (- (arr.addr a) 12))))
+"#;
+    let (module, wasm) = compile_checked(src);
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(99)));
+    assert_eq!(differential(&module, &wasm, "arr_len_allocates", &[]), Ok(Value::Int(99)));
 }
