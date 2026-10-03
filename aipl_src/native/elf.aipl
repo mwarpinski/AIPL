@@ -1,0 +1,141 @@
+;; elf: writes a Linux x86-64 executable (ELF64, statically linked, no libc)
+;; around machine code and data (native backend task NE4,
+;; docs/NATIVE_BACKEND_PLAN.md).
+;;
+;; Layout (all page-aligned, 4 KiB pages):
+;;   file 0x0000          ELF header + 3 program headers (not loaded)
+;;   file 0x1000          data, loaded read+write at data_vaddr (0x401000),
+;;                        followed in memory by `bss` zero bytes
+;;   file code_offset     code, loaded read+execute at code_vaddr
+;; The data comes first so its address is fixed before the code is
+;; generated: code refers to data by absolute address (it fits in 32 bits),
+;; and needs no relocation however long the code turns out.
+;;
+;;   (let exe:(ptr buf.Buf) (call elf.image code entry data bss))
+(module elf
+  (import str)
+  (import buf)
+
+  (struct Layout [data_vaddr:i32 data_offset:i32 code_vaddr:i32 code_offset:i32])
+
+  (fn page [] -> i32 4096)
+  (fn base_vaddr [] -> i32 4194304)   ;; 0x400000, the conventional start
+  (fn data_vaddr [] -> i32 4198400)   ;; 0x401000
+
+  (fn align_page [n:i32] -> i32
+    (req (gte n 0))
+    (bitand (+ n 4095) -4096))
+
+  ;; Where the segments land for `data_len` bytes of data and `bss` zero
+  ;; bytes after them. The code starts on the first page past both.
+  (fn layout [data_len:i32 bss:i32] -> (ptr Layout)
+    (req (and (gte data_len 0) (gte bss 0)))
+    (let l:(ptr Layout) (new Layout))
+    (put l Layout.data_vaddr (call data_vaddr))
+    (put l Layout.data_offset (call page))
+    (put l Layout.code_offset (call align_page (+ (call page) data_len)))
+    (put l Layout.code_vaddr (call align_page (+ (call data_vaddr) (+ data_len bss))))
+    l)
+
+  ;; ===== Little-endian fields =====
+
+  (fn u8 [b:(ptr buf.Buf) v:i32] -> void (call buf.push_byte b (bitand v 255)))
+  (fn u16 [b:(ptr buf.Buf) v:i32] -> void (call u8 b v) (call u8 b (shru v 8)))
+  (fn u32 [b:(ptr buf.Buf) v:i32] -> void (call u16 b v) (call u16 b (shru v 16)))
+  ;; a non-negative i32 as a u64
+  (fn u64 [b:(ptr buf.Buf) v:i32] -> void
+    (req (gte v 0))
+    (call u32 b v)
+    (call u32 b 0))
+
+  ;; One program header. flags: 4 read, 2 write, 1 execute.
+  (fn phdr [b:(ptr buf.Buf) type:i32 flags:i32 offset:i32 vaddr:i32 filesz:i32 memsz:i32 align:i32] -> void
+    (call u32 b type)
+    (call u32 b flags)
+    (call u64 b offset)
+    (call u64 b vaddr)
+    (call u64 b vaddr)    ;; physical address: unused, same as virtual by convention
+    (call u64 b filesz)
+    (call u64 b memsz)
+    (call u64 b align))
+
+  ;; The executable: `code` runs from byte `entry` of the code; `data` is
+  ;; loaded at data_vaddr with `bss` zero bytes after it.
+  (fn image [code:(ptr str.Bytes) entry:i32 data:(ptr str.Bytes) bss:i32] -> (ptr buf.Buf)
+    (req (and (gte entry 0) (lt entry (get code str.Bytes.len))))
+    (req (gt (+ (get data str.Bytes.len) bss) 0))
+    (let dlen:i32 (get data str.Bytes.len))
+    (let clen:i32 (get code str.Bytes.len))
+    (let l:(ptr Layout) (call layout dlen bss))
+    (let b:(ptr buf.Buf) (call buf.make (+ (get l Layout.code_offset) clen)))
+    ;; ELF header: identification (64-bit, little-endian, version 1, System V)
+    (call u8 b 127) (call buf.push_str b "ELF")
+    (call u8 b 2) (call u8 b 1) (call u8 b 1) (call u8 b 0)
+    (loop i 1 8 1 (call u8 b 0))
+    (call u16 b 2)                                     ;; e_type: executable
+    (call u16 b 62)                                    ;; e_machine: x86-64
+    (call u32 b 1)                                     ;; e_version
+    (call u64 b (+ (get l Layout.code_vaddr) entry))   ;; e_entry
+    (call u64 b 64)                                    ;; e_phoff: right after this header
+    (call u64 b 0)                                     ;; e_shoff: no section headers
+    (call u32 b 0)                                     ;; e_flags
+    (call u16 b 64)                                    ;; e_ehsize
+    (call u16 b 56)                                    ;; e_phentsize
+    (call u16 b 3)                                     ;; e_phnum
+    (call u16 b 64)                                    ;; e_shentsize
+    (call u16 b 0)                                     ;; e_shnum
+    (call u16 b 0)                                     ;; e_shstrndx
+    ;; data: read+write; code: read+execute; the stack: read+write, not executable
+    (call phdr b 1 6 (get l Layout.data_offset) (get l Layout.data_vaddr) dlen (+ dlen bss) (call page))
+    (call phdr b 1 5 (get l Layout.code_offset) (get l Layout.code_vaddr) clen clen (call page))
+    (call phdr b 1685382481 6 0 0 0 0 16)              ;; PT_GNU_STACK (0x6474e551)
+    (call pad_to b (get l Layout.data_offset))
+    (call buf.push_bytes b data)
+    (call pad_to b (get l Layout.code_offset))
+    (call buf.push_bytes b code)
+    b)
+
+  (fn pad_to [b:(ptr buf.Buf) n:i32] -> void
+    (req (lte (call buf.len b) n))
+    (while (lt (call buf.len b) n) (call u8 b 0)))
+
+  ;; ===== Self-tests =====
+
+  (fn at8 [b:(ptr buf.Buf) i:i32] -> i32 (mem.load8 (+ (get b buf.Buf.data) i)))
+  (fn at32 [b:(ptr buf.Buf) i:i32] -> i32
+    (bitor (call at8 b i) (bitor (shl (call at8 b (+ i 1)) 8) (bitor (shl (call at8 b (+ i 2)) 16) (shl (call at8 b (+ i 3)) 24)))))
+
+  ;; Pass count; test_suite.aipl expects 4.
+  (fn run_elf_tests [] -> i32
+    (let p:i32 0)
+    ;; layout: 10 bytes of data and 5000 of bss push the code two pages on
+    (let l:(ptr Layout) (call layout 10 5000))
+    (if (and (eq (get l Layout.code_offset) 8192) (eq (get l Layout.code_vaddr) (+ (call data_vaddr) 8192)))
+        (set! p (+ p 1))
+        (block))
+    ;; a whole page of data moves the code a further page in the file
+    (let l2:(ptr Layout) (call layout 4096 0))
+    (if (and (eq (get l2 Layout.code_offset) 8192) (eq (get l2 Layout.code_vaddr) (+ (call data_vaddr) 4096)))
+        (set! p (+ p 1))
+        (block))
+    ;; the header: magic, entry = code page + 2, the data and code at their offsets
+    (let code:(ptr buf.Buf) (call buf.make 4))
+    (call u8 code 144) (call u8 code 144) (call u8 code 195)  ;; nop nop ret
+    (let data:(ptr buf.Buf) (call buf.make 4))
+    (call buf.push_str data "hi")
+    (let b:(ptr buf.Buf) (call image (call buf.bytes code) 2 (call buf.bytes data) 0))
+    (if (and (eq (call at32 b 0) 1179403647)                       ;; 7f 'E' 'L' 'F'
+             (and (eq (call at32 b 24) (+ (call data_vaddr) 4098))
+                  (and (eq (call at8 b 4096) 104)
+                       (and (eq (call at8 b 8194) 195) (eq (call buf.len b) 8195)))))
+        (set! p (+ p 1))
+        (block))
+    ;; program headers (at 64, 56 bytes each): type and permissions; data
+    ;; read+write, code read+execute, stack read+write and never executable
+    (if (and (and (eq (call at32 b 64) 1) (eq (call at32 b 68) 6))
+             (and (and (eq (call at32 b 120) 1) (eq (call at32 b 124) 5))
+                  (and (eq (call at32 b 176) 1685382481) (eq (call at32 b 180) 6))))
+        (set! p (+ p 1))
+        (block))
+    p)
+)
