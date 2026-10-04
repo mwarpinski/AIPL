@@ -25,6 +25,7 @@
   (import elf)
   (import runtime)
   (import lower)
+  (import wasi)
 
   (struct Output [ok:bool error:(ptr str.Bytes) exe:(ptr str.Bytes)])
 
@@ -49,7 +50,7 @@
   ;; The code for imported function `imp`, called with the internal
   ;; convention (arguments on the stack above the return address).
   ;; Imports a task has not reached yet are an error naming them.
-  (fn import_stub [l:(ptr lower.L) imp:(ptr wasm_reader.Import)] -> void
+  (fn import_stub [l:(ptr lower.L) wr:(ptr wasi.W) imp:(ptr wasm_reader.Import)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let name:(ptr str.Bytes) (get imp wasm_reader.Import.name))
     (cond
@@ -64,6 +65,7 @@
        (call x64.mov_ri32 c 0 (call runtime.sys_exit_group))
        (call x64.syscall c)
        (call x64.ud2 c))
+      ((call wasi.emit_import l wr name) (block))
       (else
        (if (get l lower.L.failed) (return) (block))
        (put l lower.L.failed true)
@@ -139,7 +141,32 @@
             (call x64.rep_movsb c))
           (block))))
 
+  ;; The region trap routine's texts, as wasmtime words them.
+  (fn region_texts [l:(ptr lower.L)] -> (ptr runtime.RegionTexts)
+    (let t:(ptr runtime.RegionTexts) (new runtime.RegionTexts))
+    (let oob:str "Pointer out of bounds: Region { start: ")
+    (let al4:str "Pointer not aligned to 4: Region { start: ")
+    (let al8:str "Pointer not aligned to 8: Region { start: ")
+    (let mid:str ", len: ")
+    (let tail:str " }\n")
+    (put t runtime.RegionTexts.oob (call lower.data_text l oob))
+    (put t runtime.RegionTexts.oob_len (str.len oob))
+    (put t runtime.RegionTexts.al4 (call lower.data_text l al4))
+    (put t runtime.RegionTexts.al4_len (str.len al4))
+    (put t runtime.RegionTexts.al8 (call lower.data_text l al8))
+    (put t runtime.RegionTexts.al8_len (str.len al8))
+    (put t runtime.RegionTexts.mid (call lower.data_text l mid))
+    (put t runtime.RegionTexts.mid_len (str.len mid))
+    (put t runtime.RegionTexts.tail (call lower.data_text l tail))
+    (put t runtime.RegionTexts.tail_len (str.len tail))
+    t)
+
   (fn compile [wasm:(ptr str.Bytes)] -> (ptr Output)
+    (call compile_with wasm false))
+
+  ;; `sandbox`: the program may use only the working directory (no `/`
+  ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
+  (fn compile_with [wasm:(ptr str.Bytes) sandbox:bool] -> (ptr Output)
     (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (if (gte (get w wasm_reader.Wasm.start) 0)
@@ -166,20 +193,26 @@
         (block))
     (let sep:i32 (call lower.data_text l ": "))
     (let nl:i32 (call lower.data_text l "\n"))
+    (let wr:(ptr wasi.W) (call wasi.make l))
+    (let texts:(ptr runtime.RegionTexts) (call region_texts l))
     (put l lower.L.trap_routine (call buf.len c))
     (call runtime.emit_trap_routine c argv0_cell sep nl)
+    (put wr wasi.W.region_routine (call buf.len c))
+    (call runtime.emit_region_trap_routine c argv0_cell sep texts)
     ;; start-up: save argv[0] (the initial stack is argc, argv[0], ...), set
     ;; up linear memory, call _start, then exit 0
     (let entry:i32 (call buf.len c))
     (call x64.load c 64 0 (call x64.mem 4 8))
     (call x64.mov_ri32 c 1 argv0_cell)
     (call x64.store c 64 (call x64.mem 1 0) 0)
+    (call wasi.emit_capture_args l wr)
+    (call wasi.emit_preopens l wr sandbox)
     (if has_memory (call emit_memory_setup l w) (block))
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)
     (loop i 0 (- nimports 1) 1
       (call (vec.push i32) starts (call buf.len c))
-      (call import_stub l (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
+      (call import_stub l wr (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
     (loop i nimports (- nfuncs 1) 1
       (if (get l lower.L.failed) (break) (block))
       (call (vec.push i32) starts (call buf.len c))
@@ -199,6 +232,10 @@
   ;; Returns the Output's address.
   (fn compile_at [addr:i32 len:i32] -> (ptr Output)
     (call compile (call str.bytes addr len)))
+
+  ;; compile_at with sandbox (only the working directory).
+  (fn compile_sandboxed_at [addr:i32 len:i32] -> (ptr Output)
+    (call compile_with (call str.bytes addr len) true))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 )
