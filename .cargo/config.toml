@@ -1,0 +1,6 @@
+# The parser, checker, resolver, and wasm compiler recurse once per nesting
+# level of the program, and the toolchain's own sources are deep. The CLI runs
+# its work on a 1 GiB-stack thread (src/main.rs); test threads get the same
+# headroom here instead of the 2 MiB default.
+[env]
+RUST_MIN_STACK = "268435456"

@@ -22,6 +22,7 @@ const EXPECTED: &[(&str, i32)] = &[
     ("parse_demo", 1233),
     ("io_demo", 15),
     ("std_demo", 32),
+    ("generics_demo", 17),
 ];
 
 fn lisp_blocks(doc: &str) -> Vec<String> {

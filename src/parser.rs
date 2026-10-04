@@ -247,7 +247,12 @@ impl Parser {
     }
 
     pub fn parse(input: &str) -> Result<Module, String> {
-        let tokens = Self::tokenize(input)?;
+        Self::parse_tokens(Self::tokenize(input)?)
+    }
+
+    /// Parses an already-tokenized `(module ...)`. The resolver uses it to
+    /// parse each item of a flattened program with its original positions.
+    pub fn parse_tokens(tokens: Vec<Token>) -> Result<Module, String> {
         let mut parser = Parser {
             tokens,
             pos: 0,
@@ -1210,6 +1215,64 @@ impl Parser {
                             };
                             Expr::Sizeof { struct_name, span }
                         }
+                        "return" => {
+                            let val = if self.peek_kind() == Some(&TokenKind::RParen) {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expr()?))
+                            };
+                            Expr::Return { val, span }
+                        }
+                        "break" => Expr::Break(span),
+                        "continue" => Expr::Continue(span),
+                        // (cond (c1 e...) (c2 e...) ... (else e...)) is sugar for
+                        // (if c1 (block e...) (if c2 (block e...) ... (block e...))).
+                        "cond" => {
+                            let mut clauses: Vec<(Expr, Vec<Expr>, (u32, u32))> = Vec::new();
+                            let mut else_body: Option<(Vec<Expr>, (u32, u32))> = None;
+                            while self.peek_kind() == Some(&TokenKind::LParen) {
+                                let ctok = self.expect_kind(TokenKind::LParen)?;
+                                let cspan = (ctok.line, ctok.col);
+                                if else_body.is_some() {
+                                    return Err(format!("{}:{}: cond: the else clause must be last", cspan.0, cspan.1));
+                                }
+                                let is_else = matches!(self.peek_kind(), Some(TokenKind::Symbol(s)) if s == "else");
+                                let test = if is_else {
+                                    self.next();
+                                    None
+                                } else {
+                                    Some(self.parse_expr()?)
+                                };
+                                let mut body = Vec::new();
+                                while self.peek_kind() != Some(&TokenKind::RParen) && self.peek_kind().is_some() {
+                                    body.push(self.parse_expr()?);
+                                }
+                                self.expect_kind(TokenKind::RParen)?;
+                                if body.is_empty() {
+                                    return Err(format!("{}:{}: cond clause needs a body", cspan.0, cspan.1));
+                                }
+                                match test {
+                                    Some(t) => clauses.push((t, body, cspan)),
+                                    None => else_body = Some((body, cspan)),
+                                }
+                            }
+                            let (else_exprs, else_span) = else_body.ok_or_else(|| {
+                                format!("{}:{}: cond needs a final (else ...) clause, as if needs an else branch", span.0, span.1)
+                            })?;
+                            if clauses.is_empty() {
+                                return Err(format!("{}:{}: cond needs at least one (test body...) clause before else", span.0, span.1));
+                            }
+                            let mut acc = Expr::Block(else_exprs, else_span);
+                            for (test, body, cspan) in clauses.into_iter().rev() {
+                                acc = Expr::If {
+                                    cond: Box::new(test),
+                                    then_branch: Box::new(Expr::Block(body, cspan)),
+                                    else_branch: Box::new(acc),
+                                    span: cspan,
+                                };
+                            }
+                            acc
+                        }
                         "ref" => {
                             let name = self.expect_symbol("function name in ref", span)?;
                             Expr::Ref { name, span }
@@ -1328,12 +1391,18 @@ impl Parser {
                                 "not" => OpCode::Not,
                                 "sys.print" => OpCode::SysPrint,
                                 "sys.time" => OpCode::SysTime,
+                                "sys.monotonic" => OpCode::SysMonotonic,
+                                "sys.random" => OpCode::SysRandom,
                                 "sys.exit" => OpCode::SysExit,
                                 "fs.open" => OpCode::FsOpen,
                                 "fs.read" => OpCode::FsRead,
                                 "fs.write" => OpCode::FsWrite,
                                 "fs.close" => OpCode::FsClose,
                                 "fs.delete" => OpCode::FsDelete,
+                                "args.sizes" => OpCode::ArgsSizes,
+                                "args.get" => OpCode::ArgsGet,
+                                "env.sizes" => OpCode::EnvSizes,
+                                "env.get" => OpCode::EnvGet,
                                 "thread.spawn" => OpCode::ThreadSpawn,
                                 "thread.join" => OpCode::ThreadJoin,
                                 "divu" => OpCode::DivU,

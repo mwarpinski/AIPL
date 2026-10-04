@@ -1,0 +1,328 @@
+;; Generic expansion (AIPL_SPEC.md 4.H), the AIPL twin of src/generics.rs.
+;; Takes the flat program resolver.aipl produced (templates still in it) and
+;; writes it with every template application replaced by a concrete instance:
+;;   (struct (Name T...) [fields])  /  (fn (name T...) ...)   are templates;
+;;   (Name i32) in a type, (new (Name i32)), (call (name i32) ...), ...  use them;
+;;   each distinct use becomes an item named Name<arg,...>, and
+;;   (get p (Name i32) f) becomes (get p Name<i32>.f).
+;; The order must match generics.rs exactly (byte parity): concrete structs,
+;; concrete functions, then instances as they are created, each item walked
+;; depth-first with a node's children before the node; output is concrete
+;; structs, struct instances, concrete functions, function instances.
+(module generics
+  (import compiler)
+  (import str)
+  (import buf)
+  (import strmap)
+  (import vec)
+
+  (struct Tmpl [node:(ptr compiler.Node) is_struct:bool params:(ptr (vec.Vec (ptr str.Bytes)))])
+  ;; parallel lists: parameter names, the argument as code ("(ptr Point)"),
+  ;; and as part of an instance name ("ptr<Point>")
+  (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) printed:(ptr (vec.Vec (ptr str.Bytes))) mangled:(ptr (vec.Vec (ptr str.Bytes)))])
+  (struct Inst [tmpl:(ptr Tmpl) env:(ptr Env) name:(ptr str.Bytes)])
+  (struct St [text:(ptr str.Bytes) templates:(ptr (strmap.StrMap (ptr Tmpl))) made:(ptr (strmap.StrMap i32))
+              queue:(ptr (vec.Vec (ptr Inst))) err:(ptr buf.Buf) failed:bool])
+
+  ;; ===== Trees =====
+
+  (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (ptr.cast compiler.Node (get g compiler.Node.a)))
+
+  (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (loop k 1 i 1
+      (if (eq c (ptr.null compiler.Node)) (return c) (block))
+      (set! c (get c compiler.Node.next)))
+    c)
+
+  (fn count_children [g:(ptr compiler.Node)] -> i32
+    (let n:i32 0)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (while (neq c (ptr.null compiler.Node))
+      (set! n (+ n 1))
+      (set! c (get c compiler.Node.next)))
+    n)
+
+  (fn is_symbol [n:(ptr compiler.Node)] -> bool
+    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) 6)))
+
+  (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b)))
+
+  (fn lit [b:(ptr str.Bytes) s:str] -> bool
+    (call str.bytes_eq b (call str.from_str s)))
+
+  ;; The head symbol of a (...) group, or len -1.
+  (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (if (neq (get g compiler.Node.kind) 20) (return (call str.bytes 0 -1)) (block))
+    (let h:(ptr compiler.Node) (call first_child g))
+    (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
+
+  ;; A (...) group whose head names a template.
+  (fn is_app [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (if (neq (get n compiler.Node.kind) 20) (return false) (block))
+    (let h:(ptr str.Bytes) (call head st n))
+    (and (gte (get h str.Bytes.len) 0) (call (strmap.has (ptr Tmpl)) (get st St.templates) h)))
+
+  ;; Index of name in env, or -1.
+  (fn lookup [env:(ptr Env) name:(ptr str.Bytes)] -> i32
+    (if (eq env (ptr.null Env)) (return -1) (block))
+    (loop i 0 (- (call (vec.len (ptr str.Bytes)) (get env Env.names)) 1) 1
+      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) (get env Env.names) i) name) (return i) (block)))
+    -1)
+
+  (fn fail [st:(ptr St) msg:str name:(ptr str.Bytes)] -> void
+    (if (get st St.failed) (return) (block))
+    (put st St.failed true)
+    (call buf.push_str (get st St.err) msg)
+    (call buf.push_bytes (get st St.err) name))
+
+  (fn as_bytes [b:(ptr buf.Buf)] -> (ptr str.Bytes) (call buf.bytes b))
+
+  ;; ===== Instance names =====
+
+  ;; A type as part of an instance name: i32, ptr<Point>, fn<i32,i32->i32>, Vec<i32>.
+  (fn mangle [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> (ptr str.Bytes)
+    (if (call is_symbol n)
+        (block
+          (let t:(ptr str.Bytes) (call text st n))
+          (let k:i32 (call lookup env t))
+          (return (if (gte k 0) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) k) t)))
+        (block))
+    (if (neq (get n compiler.Node.kind) 20) (return (call text st n)) (block))
+    (if (call is_app st n) (return (call instance st n env)) (block))
+    (let out:(ptr buf.Buf) (call buf.make 32))
+    (let h:(ptr str.Bytes) (call head st n))
+    (call buf.push_bytes out h)
+    (call buf.push_byte out 60)
+    (if (and (call lit h "fn") (eq (call count_children n) 4))
+        (block
+          ;; (fn [a b] -> r) -> fn<a,b->r>
+          (let p:(ptr compiler.Node) (call first_child (call nth n 1)))
+          (let first:bool true)
+          (while (neq p (ptr.null compiler.Node))
+            (if first (block) (call buf.push_byte out 44))
+            (call buf.push_bytes out (call mangle st p env))
+            (set! first false)
+            (set! p (get p compiler.Node.next)))
+          (call buf.push_str out "->")
+          (call buf.push_bytes out (call mangle st (call nth n 3) env)))
+        (block
+          (let a:(ptr compiler.Node) (get (call first_child n) compiler.Node.next))
+          (let first:bool true)
+          (while (neq a (ptr.null compiler.Node))
+            (if first (block) (call buf.push_byte out 44))
+            (call buf.push_bytes out (call mangle st a env))
+            (set! first false)
+            (set! a (get a compiler.Node.next)))))
+    (call buf.push_byte out 62)
+    (call as_bytes out))
+
+  ;; The instance name of template application `app` (Name args...), creating
+  ;; the instance the first time: its arguments are named first (which may
+  ;; create instances of their own), then it is queued.
+  (fn instance [st:(ptr St) app:(ptr compiler.Node) env:(ptr Env)] -> (ptr str.Bytes)
+    (let h:(ptr str.Bytes) (call head st app))
+    (let t:(ptr Tmpl) (call (strmap.get_or (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)))
+    (let nargs:i32 (- (call count_children app) 1))
+    (if (neq nargs (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)))
+        (block (call fail st "wrong number of type arguments for generic " h) (return h))
+        (block))
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) 4))
+    (let out:(ptr buf.Buf) (call buf.make 32))
+    (call buf.push_bytes out h)
+    (call buf.push_byte out 60)
+    (let a:(ptr compiler.Node) (get (call first_child app) compiler.Node.next))
+    (let first:bool true)
+    (while (neq a (ptr.null compiler.Node))
+      (let m:(ptr str.Bytes) (call mangle st a env))
+      (call (vec.push (ptr str.Bytes)) names m)
+      (if first (block) (call buf.push_byte out 44))
+      (call buf.push_bytes out m)
+      (set! first false)
+      (set! a (get a compiler.Node.next)))
+    (call buf.push_byte out 62)
+    (let name:(ptr str.Bytes) (call as_bytes out))
+    (if (gt (get name str.Bytes.len) 1024)
+        (block (call fail st "generic instance name longer than 1024 characters: a generic probably instantiates itself with ever larger types: " h) (return h))
+        (block))
+    (if (call (strmap.has i32) (get st St.made) name) (return name) (block))
+    (call (strmap.set i32) (get st St.made) name 1)
+    (let e:(ptr Env) (new Env))
+    (put e Env.names (get t Tmpl.params))
+    (put e Env.mangled names)
+    (put e Env.printed (call (vec.make (ptr str.Bytes)) 4))
+    (set! a (get (call first_child app) compiler.Node.next))
+    (while (neq a (ptr.null compiler.Node))
+      (let pb:(ptr buf.Buf) (call buf.make 32))
+      (call print st a env pb)
+      (call (vec.push (ptr str.Bytes)) (get e Env.printed) (call as_bytes pb))
+      (set! a (get a compiler.Node.next)))
+    (let inst:(ptr Inst) (new Inst))
+    (put inst Inst.tmpl t)
+    (put inst Inst.env e)
+    (put inst Inst.name name)
+    (call (vec.push (ptr Inst)) (get st St.queue) inst)
+    name)
+
+  ;; ===== Printing =====
+
+  (fn print_atom [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
+    (let k:i32 (get n compiler.Node.kind))
+    (cond
+      ((eq k 6)
+       (let t:(ptr str.Bytes) (call text st n))
+       (let i:i32 (call lookup env t))
+       (call buf.push_bytes out (if (gte i 0) (call (vec.at (ptr str.Bytes)) (get env Env.printed) i) t)))
+      ((or (eq k 10) (eq k 11)) (call buf.push_bytes out (call text st n)))
+      ((eq k 7) (call buf.push_int out (get n compiler.Node.a)))
+      ((eq k 8) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
+      ((eq k 9)
+       (call buf.push_byte out 34)
+       (call buf.push_bytes out (call text st n))
+       (call buf.push_byte out 34))
+      ((eq k 4) (call buf.push_byte out 58))
+      ((eq k 5) (call buf.push_str out "->"))
+      (else (block))))
+
+  (fn print [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
+    (let k:i32 (get n compiler.Node.kind))
+    (if (and (neq k 20) (neq k 21)) (block (call print_atom st n env out) (return)) (block))
+    (if (call is_app st n) (block (call buf.push_bytes out (call instance st n env)) (return)) (block))
+    (call print_group st n env (call str.bytes 0 -1) out))
+
+  ;; Children separated by spaces, except none around ':'. A non-empty
+  ;; `rename` replaces child 1 (an instance's header). (get p (Name T) f) and
+  ;; (put p (Name T) f v) print as (get p Name<T>.f).
+  (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
+    (let square:bool (eq (get g compiler.Node.kind) 21))
+    (let h:(ptr str.Bytes) (call head st g))
+    (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
+                                 (and (or (call lit h "get") (call lit h "put"))
+                                      (call is_app st (call nth g 2)))))
+    (call buf.push_byte out (if square 91 40))
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
+    (let prev_colon:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (let colon:bool (eq (get c compiler.Node.kind) 4))
+      (cond
+        ;; the field name was printed with its instance
+        ((and generic_field (eq i 3)) (block))
+        (else
+         (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+         (cond
+           ((and (eq i 1) (gte (get rename str.Bytes.len) 0)) (call buf.push_bytes out rename))
+           ((and generic_field (eq i 2))
+            (call buf.push_bytes out (call instance st c env))
+            (let f:(ptr compiler.Node) (get c compiler.Node.next))
+            (if (and (call is_symbol f) (lt (call str.find_byte (call text st f) 46) 0))
+                (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st f)))
+                (call fail st "a generic struct field is written (get p (Name T...) field): " h)))
+           (else (call print st c env out)))))
+      (set! prev_colon colon)
+      (set! i (+ i 1))
+      (set! c (get c compiler.Node.next)))
+    (call buf.push_byte out (if square 93 41)))
+
+  (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
+    (call buf.push_str out "  ")
+    (call print_group st item env rename out)
+    (call buf.push_byte out 10))
+
+  ;; ===== Driver =====
+
+;; The part of a qualified name after its last '.'.
+  (fn last_part [n:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let dot:i32 -1)
+    (loop i 0 (- (get n str.Bytes.len) 1) 1
+      (if (eq (call str.byte_at n i) 46) (set! dot i) (block)))
+    (call str.bytes (+ (get n str.Bytes.addr) (+ dot 1)) (- (get n str.Bytes.len) (+ dot 1))))
+
+  ;; Built-in forms and types (generics.rs BUILT_IN): a template with one of
+  ;; these names would be indistinguishable from the form itself.
+  (fn built_in [base:(ptr str.Bytes)] -> bool
+    (or (call lit base "module") (or (call lit base "import") (or (call lit base "fn") (or (call lit base "struct") (or (call lit base "let") (or (call lit base "set!") (or (call lit base "if") (or (call lit base "while") (or (call lit base "loop") (or (call lit base "block") (or (call lit base "call") (or (call lit base "ref") (or (call lit base "call_ref") (or (call lit base "new") (or (call lit base "get") (or (call lit base "put") (or (call lit base "sizeof") (or (call lit base "ptr") (or (call lit base "arr") (or (call lit base "result") (or (call lit base "ok") (or (call lit base "err") (or (call lit base "match_result") (or (call lit base "return") (or (call lit base "break") (or (call lit base "continue") (or (call lit base "cond") (or (call lit base "else") (or (call lit base "req") (or (call lit base "ens") (or (call lit base "inv") (or (call lit base "+") (or (call lit base "-") (or (call lit base "*") (or (call lit base "/") (or (call lit base "%") (or (call lit base "^") (or (call lit base "eq") (or (call lit base "neq") (or (call lit base "lt") (or (call lit base "lte") (or (call lit base "gt") (or (call lit base "gte") (or (call lit base "and") (or (call lit base "or") (or (call lit base "not") (or (call lit base "shl") (or (call lit base "shr") (or (call lit base "shru") (or (call lit base "bitand") (or (call lit base "bitor") (or (call lit base "divu") (or (call lit base "remu") (or (call lit base "i32") (or (call lit base "i64") (or (call lit base "f32") (or (call lit base "f64") (or (call lit base "bool") (or (call lit base "str") (call lit base "void")))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+
+  ;; Collects a template from (fn (name T...) ...) / (struct (Name T...) ...);
+  ;; false if the item is not one.
+  (fn collect [st:(ptr St) item:(ptr compiler.Node)] -> bool
+    (let h:(ptr str.Bytes) (call head st item))
+    (if (lt (get h str.Bytes.len) 0) (return false) (block))
+    (if (not (or (call lit h "fn") (call lit h "struct"))) (return false) (block))
+    (let header:(ptr compiler.Node) (call nth item 1))
+    (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) 20)) (return false) (block))
+    (let name:(ptr str.Bytes) (call head st header))
+    (if (call built_in (call last_part name))
+        (call fail st "generic name is a built-in form; choose another name: " name)
+        (block))
+    (let t:(ptr Tmpl) (new Tmpl))
+    (put t Tmpl.node item)
+    (put t Tmpl.is_struct (call lit h "struct"))
+    (put t Tmpl.params (call (vec.make (ptr str.Bytes)) 4))
+    (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
+    (while (neq p (ptr.null compiler.Node))
+      (let pt:(ptr str.Bytes) (if (call is_symbol p) (call text st p) (call str.from_str "")))
+      (if (and (gt (get pt str.Bytes.len) 0) (and (gte (call str.byte_at pt 0) 65) (lte (call str.byte_at pt 0) 90)))
+          (call (vec.push (ptr str.Bytes)) (get t Tmpl.params) pt)
+          (call fail st "a type parameter is a name starting with an uppercase letter, in generic " name))
+      (set! p (get p compiler.Node.next)))
+    (if (call (strmap.has (ptr Tmpl)) (get st St.templates) name) (call fail st "generic defined twice: " name) (block))
+    (call (strmap.set (ptr Tmpl)) (get st St.templates) name t)
+    true)
+
+  ;; Expands the generics of flat program `flat` into `out`; false with a
+  ;; message in `err` on a malformed or unbounded use.
+  (fn expand [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+    (let n:i32 (get flat str.Bytes.len))
+    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
+    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
+    (let st:(ptr St) (new St))
+    (put st St.text flat)
+    (put st St.templates (call (strmap.make (ptr Tmpl)) 16))
+    (put st St.made (call (strmap.make i32) 64))
+    (put st St.queue (call (vec.make (ptr Inst)) 16))
+    (put st St.err err)
+    (put st St.failed false)
+    (let items:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) 64))
+    (let item:(ptr compiler.Node) (call nth root 2))
+    (while (neq item (ptr.null compiler.Node))
+      (if (call collect st item) (block) (call (vec.push (ptr compiler.Node)) items item))
+      (set! item (get item compiler.Node.next)))
+    (if (eq (call (strmap.count (ptr Tmpl)) (get st St.templates)) 0)
+        (block (call buf.push_bytes out flat) (return true))
+        (block))
+    (let so:(ptr buf.Buf) (call buf.make 1024))
+    (let si:(ptr buf.Buf) (call buf.make 1024))
+    (let fo:(ptr buf.Buf) (call buf.make 65536))
+    (let fi:(ptr buf.Buf) (call buf.make 4096))
+    (let none:(ptr str.Bytes) (call str.bytes 0 -1))
+    ;; concrete structs, then concrete functions
+    (loop pass 0 1 1
+      (loop i 0 (- (call (vec.len (ptr compiler.Node)) items) 1) 1
+        (let it:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) items i))
+        (let is_struct:bool (call lit (call head st it) "struct"))
+        (if (eq is_struct (eq pass 0))
+            (call print_item st it (ptr.null Env) none (if is_struct so fo))
+            (block))))
+    ;; then every instance, including those created while printing instances
+    (let q:i32 0)
+    (while (lt q (call (vec.len (ptr Inst)) (get st St.queue)))
+      (if (gt q 4096) (block (call fail st "more than 4096 generic instances: a generic instantiates itself with ever larger types" none) (break)) (block))
+      (let inst:(ptr Inst) (call (vec.at (ptr Inst)) (get st St.queue) q))
+      (let t:(ptr Tmpl) (get inst Inst.tmpl))
+      (call print_item st (get t Tmpl.node) (get inst Inst.env) (get inst Inst.name) (if (get t Tmpl.is_struct) si fi))
+      (set! q (+ q 1)))
+    (if (get st St.failed) (return false) (block))
+    (call buf.push_str out "(module ")
+    (call buf.push_bytes out (call text st (call nth root 1)))
+    (call buf.push_byte out 10)
+    (call buf.push_bytes out (call as_bytes so))
+    (call buf.push_bytes out (call as_bytes si))
+    (call buf.push_bytes out (call as_bytes fo))
+    (call buf.push_bytes out (call as_bytes fi))
+    (call buf.push_byte out 41)
+    true))

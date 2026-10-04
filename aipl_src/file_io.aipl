@@ -1,4 +1,4 @@
-;; Native Stage 0 File Disk I/O Module
+;; File I/O over fs.* (VM: std::fs; compiled: WASI)
 ;; Thin AIPL wrappers over the real fs.open/fs.read/fs.write/fs.close opcodes.
 ;; These opcodes perform genuine OS file I/O via Rust's std::fs in the VM
 ;; (see src/vm.rs) - real syscalls, not a simulation. The previous version of

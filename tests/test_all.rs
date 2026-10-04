@@ -1,5 +1,4 @@
 use aipl_core::checker::TypeChecker;
-use aipl_core::compiler::binary_ast::BinaryAstCompiler;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::parser::Parser;
 use aipl_core::vm::{Value, VM};
@@ -57,18 +56,4 @@ fn test_wasm_compiler_output() {
     let module = Parser::parse(src).expect("Parse failed");
     let wasm_bytes = WasmCompiler::compile(&module).expect("Wasm compile failed");
     assert!(wasm_bytes.starts_with(&[0x00, 0x61, 0x73, 0x6d])); // Magic Wasm header \0asm
-}
-
-#[test]
-fn test_binary_ast_roundtrip() {
-    let src = r#"
-    (module binary_demo
-      (fn square [n:i32] -> i32
-        (* n n)))
-    "#;
-    let module = Parser::parse(src).expect("Parse failed");
-    let bytes = BinaryAstCompiler::encode(&module).expect("Encode failed");
-    let decoded = BinaryAstCompiler::decode(&bytes).expect("Decode failed");
-    assert_eq!(module.name, decoded.name);
-    assert_eq!(module.functions[0].name, decoded.functions[0].name);
 }

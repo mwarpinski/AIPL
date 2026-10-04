@@ -1,0 +1,73 @@
+;; std/os: the program's command line and environment, over the args.* and
+;; env.* ops (WASI args_get / environ_get layout: a table of u32 pointers to
+;; NUL-terminated strings). The same in the VM, where `aipl eval FILE -- a b`
+;; supplies the arguments, and compiled, where the WASI host does
+;; (`wasmtime run --invoke main prog.wasm a b`; environment variables only
+;; when forwarded, e.g. `--env AIPL_PATH`). Each call reads a fresh copy
+;; (allocated, never freed); fetch once and keep the result in a loop.
+(module os
+  (import str)
+
+  ;; A fetched table: count entries, entry i's address at argv + 4i.
+  (struct Table [count:i32 argv:i32])
+
+  ;; is_env false: the arguments; true: the KEY=VALUE environment entries.
+  (fn fetch [is_env:bool] -> (ptr Table)
+    (let sizes:i32 (mem.alloc 8))
+    (let ok:i32 (if is_env (env.sizes sizes (+ sizes 4)) (args.sizes sizes (+ sizes 4))))
+    (let t:(ptr Table) (new Table))
+    (put t Table.count 0)
+    (put t Table.argv 0)
+    (if (neq ok 0) (return t) (block))
+    (let count:i32 (mem.load32 sizes))
+    (let argv:i32 (mem.alloc (* 4 count)))
+    (let buf:i32 (mem.alloc (mem.load32 (+ sizes 4))))
+    (if (neq (if is_env (env.get argv buf) (args.get argv buf)) 0) (return t) (block))
+    (put t Table.count count)
+    (put t Table.argv argv)
+    t)
+
+  ;; Entry i of a table, without its NUL.
+  (fn entry [t:(ptr Table) i:i32] -> (ptr str.Bytes)
+    (req (and (gte i 0) (lt i (get t Table.count))))
+    (let p:i32 (mem.load32 (+ (get t Table.argv) (* 4 i))))
+    (let n:i32 0)
+    (while (neq (mem.load8 (+ p n)) 0) (set! n (+ n 1)))
+    (call str.bytes p n))
+
+  ;; Number of command-line arguments, argv[0] (the program) included.
+  (fn arg_count [] -> i32
+    (get (call fetch false) Table.count))
+
+  ;; Argument i (0 is the program), or len -1 when there is no argument i.
+  (fn arg [i:i32] -> (ptr str.Bytes)
+    (let t:(ptr Table) (call fetch false))
+    (if (and (gte i 0) (lt i (get t Table.count))) (call entry t i) (call str.bytes 0 -1)))
+
+  ;; The value of environment variable `name`, or len -1 when it is not set.
+  (fn env [name:str] -> (ptr str.Bytes)
+    (let key:(ptr str.Bytes) (call str.from_str name))
+    (let klen:i32 (get key str.Bytes.len))
+    (let t:(ptr Table) (call fetch true))
+    (loop i 0 (- (get t Table.count) 1) 1
+      (let e:(ptr str.Bytes) (call entry t i))
+      (if (and (gt (get e str.Bytes.len) klen)
+               (and (eq (call str.byte_at e klen) 61)
+                    (call str.bytes_eq (call str.bytes (get e str.Bytes.addr) klen) key)))
+          (return (call str.bytes (+ (get e str.Bytes.addr) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
+          (block)))
+    (call str.bytes 0 -1))
+
+  ;; A random i32 from the operating system's generator (sys.random).
+  (fn random_i32 [] -> i32
+    (let p:i32 (mem.alloc 4))
+    (if (neq (sys.random p 4) 0) (sys.exit 70) (block))
+    (mem.load32 p))
+
+  ;; Pass count; expects 2. A variable that is surely unset, and an argument
+  ;; index past the end.
+  (fn run_os_tests [] -> i32
+    (let p:i32 0)
+    (if (eq (get (call env "AIPL_OS_TEST_SURELY_UNSET") str.Bytes.len) -1) (set! p (+ p 1)) (block))
+    (if (eq (get (call arg (call arg_count)) str.Bytes.len) -1) (set! p (+ p 1)) (block))
+    p))

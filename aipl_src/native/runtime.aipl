@@ -1,0 +1,50 @@
+;; runtime: the machine code every native executable carries around the
+;; program itself (native backend task NE4 onward, docs/NATIVE_BACKEND_PLAN.md).
+;; For now: Linux system calls and the first executable, which prints a
+;; line and exits. Later tasks add start-up (arguments, linear memory),
+;; traps, and the WASI functions on top of these system calls.
+;;
+;; Linux x86-64 system calls: number in rax, arguments in rdi rsi rdx r10
+;; r8 r9, result in rax (negative errno on failure); rcx and r11 are
+;; clobbered.
+(module runtime
+  (import str)
+  (import buf)
+  (import x64)
+  (import elf)
+
+  (fn sys_write [] -> i32 1)
+  (fn sys_exit_group [] -> i32 231)
+
+  ;; Register numbers (x64.aipl order) of the system-call arguments.
+  (fn rax [] -> i32 0)
+  (fn rdi [] -> i32 7)
+  (fn rsi [] -> i32 6)
+  (fn rdx [] -> i32 2)
+
+  ;; write(fd, addr, len) with constant arguments; the result stays in rax.
+  (fn emit_write [c:(ptr buf.Buf) fd:i32 addr:i32 len:i32] -> void
+    (call x64.mov_ri32 c (call rdi) fd)
+    (call x64.mov_ri32 c (call rsi) addr)
+    (call x64.mov_ri32 c (call rdx) len)
+    (call x64.mov_ri32 c (call rax) (call sys_write))
+    (call x64.syscall c))
+
+  ;; exit_group(status): ends every thread of the process; does not return.
+  (fn emit_exit [c:(ptr buf.Buf) status:i32] -> void
+    (call x64.mov_ri32 c (call rdi) status)
+    (call x64.mov_ri32 c (call rax) (call sys_exit_group))
+    (call x64.syscall c)
+    (call x64.ud2 c))
+
+  ;; The first native executable (NE4): writes "hello from native AIPL\n" to
+  ;; stdout and exits with status 7.
+  (fn hello_exe [] -> (ptr str.Bytes)
+    (let data:(ptr buf.Buf) (call buf.make 32))
+    (call buf.push_str data "hello from native AIPL")
+    (call buf.push_byte data 10)
+    (let c:(ptr buf.Buf) (call buf.make 64))
+    (call emit_write c 1 (call elf.data_vaddr) (call buf.len data))
+    (call emit_exit c 7)
+    (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0)))
+)

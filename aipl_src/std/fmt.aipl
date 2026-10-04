@@ -43,13 +43,11 @@
 
   ;; True if the n bytes at out spell s.
   (fn spells [out:i32 n:i32 s:str] -> bool
-    (let same:bool (eq n (str.len s)))
+    (if (neq n (str.len s)) (return false) (block))
     (let p:i32 (str.ptr s))
-    (let i:i32 0)
-    (while (and same (lt i n))
-      (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (set! same false) (block))
-      (set! i (+ i 1)))
-    same)
+    (loop i 0 (- n 1) 1
+      (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (return false) (block)))
+    true)
 
   ;; Pass count; test_suite.aipl expects 6.
   (fn run_fmt_tests [] -> i32

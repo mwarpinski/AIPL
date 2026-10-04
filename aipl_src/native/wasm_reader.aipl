@@ -1,0 +1,678 @@
+;; wasm_reader: decodes a WebAssembly module into typed records (native
+;; backend task NE1, docs/NATIVE_BACKEND_PLAN.md). It reads exactly the forms
+;; AIPL's compilers emit (src/compiler/wasm.rs, aipl_src/codegen.aipl); any
+;; other encoding is an error naming it and its byte offset, never skipped.
+;; Function bodies are decoded into locals and instruction records (NE2).
+;;
+;;   (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode bytes))
+;;   (if (get w wasm_reader.Wasm.ok) ... (get w wasm_reader.Wasm.error))
+(module wasm_reader
+  (import str)
+  (import buf)
+  (import vec)
+
+  ;; ===== Records =====
+
+  ;; value types are their wasm byte codes: 0x7f i32, 0x7e i64, 0x7d f32, 0x7c f64
+  (struct FuncType [params:(ptr (vec.Vec i32)) results:(ptr (vec.Vec i32))])
+  (struct Limits [min:i32 max:i32 has_max:bool shared:bool])
+  ;; kind 0 = function (type_index), 2 = memory (limits)
+  (struct Import [module:(ptr str.Bytes) name:(ptr str.Bytes) kind:i32 type_index:i32 limits:(ptr Limits)])
+  (struct Table [elem_type:i32 limits:(ptr Limits)])
+  ;; init: the value of the constant initializer (i32.const or i64.const)
+  (struct Global [valtype:i32 mutable:bool init:i64])
+  ;; kind 0 = function, 2 = memory
+  (struct Export [name:(ptr str.Bytes) kind:i32 index:i32])
+  ;; an active segment for table 0 at `offset`
+  (struct Elem [offset:i32 funcs:(ptr (vec.Vec i32))])
+  ;; the bytes are (addr, len) inside the module's own bytes
+  (struct Data [passive:bool offset:i32 addr:i32 len:i32])
+  (struct Range [addr:i32 len:i32])
+  ;; `count` locals of value type `type`
+  (struct Locals [count:i32 type:i32])
+  ;; One instruction. op is the opcode byte, or 0xFC00 / 0xFE00 plus the
+  ;; sub-opcode for the prefixed ones (memory.init = 0xFC08, atomics 0xFE..).
+  ;; Immediates by kind: a = branch depth, function, local, global, data, or
+  ;; type index, block type byte, or memarg align; b = memarg offset, table
+  ;; index, or memory index; c = a constant (i32/i64 value, f64 bits).
+  ;; offset = where the instruction starts within its body.
+  (struct Instr [op:i32 a:i32 b:i32 c:i64 offset:i32])
+  (struct Body [locals:(ptr (vec.Vec (ptr Locals))) code:(ptr (vec.Vec (ptr Instr)))])
+
+  (struct Wasm [ok:bool error:(ptr str.Bytes)
+                types:(ptr (vec.Vec (ptr FuncType)))
+                imports:(ptr (vec.Vec (ptr Import)))
+                funcs:(ptr (vec.Vec i32))
+                tables:(ptr (vec.Vec (ptr Table)))
+                memories:(ptr (vec.Vec (ptr Limits)))
+                globals:(ptr (vec.Vec (ptr Global)))
+                exports:(ptr (vec.Vec (ptr Export)))
+                start:i32
+                elems:(ptr (vec.Vec (ptr Elem)))
+                data_count:i32
+                datas:(ptr (vec.Vec (ptr Data)))
+                bodies:(ptr (vec.Vec (ptr Range)))
+                code:(ptr (vec.Vec (ptr Body)))])
+
+  ;; ===== Reading bytes =====
+
+  (struct R [b:(ptr str.Bytes) pos:i32 failed:bool msg:(ptr buf.Buf)])
+
+  ;; Records the first failure, with the offset where it happened.
+  (fn fail [r:(ptr R) msg:str] -> void
+    (if (get r R.failed) (return) (block))
+    (put r R.failed true)
+    (call buf.push_str (get r R.msg) msg)
+    (call buf.push_str (get r R.msg) " at byte ")
+    (call buf.push_int (get r R.msg) (get r R.pos)))
+
+;; "unsupported instruction <op>" (op as Instr.op encodes it), at the
+  ;; instruction's first byte.
+  (fn fail_op [r:(ptr R) op:i32 at:i32] -> void
+    (if (get r R.failed) (return) (block))
+    (put r R.failed true)
+    (call buf.push_str (get r R.msg) "unsupported instruction ")
+    (call buf.push_int (get r R.msg) op)
+    (call buf.push_str (get r R.msg) " at byte ")
+    (call buf.push_int (get r R.msg) at))
+
+  (fn byte [r:(ptr R)] -> i32
+    (if (or (get r R.failed) (gte (get r R.pos) (get (get r R.b) str.Bytes.len)))
+        (block (call fail r "unexpected end of module") (return 0))
+        (block))
+    (let c:i32 (call str.byte_at (get r R.b) (get r R.pos)))
+    (put r R.pos (+ (get r R.pos) 1))
+    c)
+
+  ;; Unsigned LEB128, at most 5 bytes.
+  (fn u32 [r:(ptr R)] -> i32
+    (let result:i32 0)
+    (let shift:i32 0)
+    (while true
+      (let c:i32 (call byte r))
+      (set! result (bitor result (shl (bitand c 127) shift)))
+      (if (eq (bitand c 128) 0) (break) (block))
+      (set! shift (+ shift 7))
+      (if (gt shift 28) (block (call fail r "LEB128 u32 longer than 5 bytes") (break)) (block)))
+    result)
+
+  ;; Signed LEB128 into an i32.
+  (fn s32 [r:(ptr R)] -> i32
+    (let result:i32 0)
+    (let shift:i32 0)
+    (let c:i32 0)
+    (while true
+      (set! c (call byte r))
+      (set! result (bitor result (shl (bitand c 127) shift)))
+      (set! shift (+ shift 7))
+      (if (eq (bitand c 128) 0) (break) (block))
+      (if (gt shift 28) (block (call fail r "LEB128 s32 longer than 5 bytes") (break)) (block)))
+    (if (and (lt shift 32) (neq (bitand c 64) 0))
+        (bitor result (shl -1 shift))
+        result))
+
+  ;; Signed LEB128 into an i64.
+  (fn s64 [r:(ptr R)] -> i64
+    (let result:i64 0i64)
+    (let shift:i64 0i64)
+    (let c:i32 0)
+    (while true
+      (set! c (call byte r))
+      (set! result (bitor result (shl (i64.extend_u (bitand c 127)) shift)))
+      (set! shift (+ shift 7i64))
+      (if (eq (bitand c 128) 0) (break) (block))
+      (if (gt shift 63i64) (block (call fail r "LEB128 s64 longer than 10 bytes") (break)) (block)))
+    (if (and (lt shift 64i64) (neq (bitand c 64) 0))
+        (bitor result (shl -1i64 shift))
+        result))
+
+  ;; A length-prefixed name, as a slice of the module.
+  (fn name [r:(ptr R)] -> (ptr str.Bytes)
+    (let n:i32 (call u32 r))
+    (let start:i32 (get r R.pos))
+    (if (gt (+ start n) (get (get r R.b) str.Bytes.len))
+        (block (call fail r "name runs past the end of the module") (return (call str.bytes 0 0)))
+        (block))
+    (put r R.pos (+ start n))
+    (call str.bytes (+ (get (get r R.b) str.Bytes.addr) start) n))
+
+  (fn valtype [r:(ptr R)] -> i32
+    (let t:i32 (call byte r))
+    (if (or (eq t 127) (or (eq t 126) (or (eq t 125) (eq t 124))))
+        t
+        (block (call fail r "unsupported value type") t)))
+
+  ;; flags 0: min; 1: min max; 3: min max shared
+  (fn limits [r:(ptr R)] -> (ptr Limits)
+    (let flags:i32 (call byte r))
+    (let l:(ptr Limits) (new Limits))
+    (put l Limits.min (call u32 r))
+    (put l Limits.has_max (neq (bitand flags 1) 0))
+    (put l Limits.max (if (get l Limits.has_max) (call u32 r) 0))
+    (put l Limits.shared (eq flags 3))
+    (if (or (eq flags 2) (gt flags 3)) (call fail r "unsupported limits flags") (block))
+    l)
+
+  ;; A constant expression: i32.const or i64.const, then end.
+  (fn const_expr [r:(ptr R)] -> i64
+    (let op:i32 (call byte r))
+    (let v:i64 (cond
+                 ((eq op 65) (i64.extend_s (call s32 r)))
+                 ((eq op 66) (call s64 r))
+                 (else (call fail r "unsupported constant expression") 0i64)))
+    (if (neq (call byte r) 11) (call fail r "constant expression without end") (block))
+    v)
+
+  ;; ===== Sections =====
+
+  (fn read_types [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (if (neq (call byte r) 96) (block (call fail r "type is not a function type") (return)) (block))
+      (let t:(ptr FuncType) (new FuncType))
+      (put t FuncType.params (call (vec.make i32) 4))
+      (put t FuncType.results (call (vec.make i32) 1))
+      (let np:i32 (call u32 r))
+      (loop k 1 np 1 (call (vec.push i32) (get t FuncType.params) (call valtype r)))
+      (let nr:i32 (call u32 r))
+      (loop k 1 nr 1 (call (vec.push i32) (get t FuncType.results) (call valtype r)))
+      (call (vec.push (ptr FuncType)) (get w Wasm.types) t)))
+
+  (fn read_imports [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let im:(ptr Import) (new Import))
+      (put im Import.module (call name r))
+      (put im Import.name (call name r))
+      (put im Import.kind (call byte r))
+      (put im Import.type_index -1)
+      (put im Import.limits (ptr.null Limits))
+      (cond
+        ((eq (get im Import.kind) 0) (put im Import.type_index (call u32 r)))
+        ((eq (get im Import.kind) 2) (put im Import.limits (call limits r)))
+        (else (call fail r "unsupported import kind (only functions and memories)")))
+      (call (vec.push (ptr Import)) (get w Wasm.imports) im)))
+
+  (fn read_functions [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (call (vec.push i32) (get w Wasm.funcs) (call u32 r))))
+
+  (fn read_tables [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let t:(ptr Table) (new Table))
+      (put t Table.elem_type (call byte r))
+      (if (neq (get t Table.elem_type) 112) (call fail r "unsupported table element type (only funcref)") (block))
+      (put t Table.limits (call limits r))
+      (call (vec.push (ptr Table)) (get w Wasm.tables) t)))
+
+  (fn read_memories [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (call (vec.push (ptr Limits)) (get w Wasm.memories) (call limits r))))
+
+  (fn read_globals [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let g:(ptr Global) (new Global))
+      (put g Global.valtype (call valtype r))
+      (let m:i32 (call byte r))
+      (if (gt m 1) (call fail r "unsupported global mutability") (block))
+      (put g Global.mutable (eq m 1))
+      (put g Global.init (call const_expr r))
+      (call (vec.push (ptr Global)) (get w Wasm.globals) g)))
+
+  (fn read_exports [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let e:(ptr Export) (new Export))
+      (put e Export.name (call name r))
+      (put e Export.kind (call byte r))
+      (if (and (neq (get e Export.kind) 0) (neq (get e Export.kind) 2))
+          (call fail r "unsupported export kind (only functions and memories)")
+          (block))
+      (put e Export.index (call u32 r))
+      (call (vec.push (ptr Export)) (get w Wasm.exports) e)))
+
+  ;; Only flag 0: an active segment for table 0 with an i32 offset and function indices.
+  (fn read_elems [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (if (neq (call u32 r) 0) (block (call fail r "unsupported element segment kind") (return)) (block))
+      (let e:(ptr Elem) (new Elem))
+      (put e Elem.offset (i32.wrap (call const_expr r)))
+      (put e Elem.funcs (call (vec.make i32) 16))
+      (let nf:i32 (call u32 r))
+      (loop k 1 nf 1 (call (vec.push i32) (get e Elem.funcs) (call u32 r)))
+      (call (vec.push (ptr Elem)) (get w Wasm.elems) e)))
+
+  ;; Function bodies stay as byte ranges for NE2.
+  (fn read_code [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let size:i32 (call u32 r))
+      (let body:(ptr Range) (new Range))
+      (put body Range.addr (+ (get (get r R.b) str.Bytes.addr) (get r R.pos)))
+      (put body Range.len size)
+      (if (gt (+ (get r R.pos) size) (get (get r R.b) str.Bytes.len))
+          (block (call fail r "function body runs past the end of the module") (return))
+          (block))
+      (put r R.pos (+ (get r R.pos) size))
+      (call (vec.push (ptr Range)) (get w Wasm.bodies) body)))
+
+  ;; flag 0: active for memory 0 with an i32 offset; flag 1: passive.
+  (fn read_datas [r:(ptr R) w:(ptr Wasm)] -> void
+    ;; read the count once: a loop's end bound is re-evaluated every iteration
+    (let count:i32 (call u32 r))
+    (loop i 1 count 1
+      (let d:(ptr Data) (new Data))
+      (let flag:i32 (call u32 r))
+      (put d Data.passive (eq flag 1))
+      (put d Data.offset 0)
+      (cond
+        ((eq flag 0) (put d Data.offset (i32.wrap (call const_expr r))))
+        ((eq flag 1) (block))
+        (else (call fail r "unsupported data segment kind")))
+      (let n:i32 (call u32 r))
+      (put d Data.addr (+ (get (get r R.b) str.Bytes.addr) (get r R.pos)))
+      (put d Data.len n)
+      (if (gt (+ (get r R.pos) n) (get (get r R.b) str.Bytes.len))
+          (block (call fail r "data segment runs past the end of the module") (return))
+          (block))
+      (put r R.pos (+ (get r R.pos) n))
+      (call (vec.push (ptr Data)) (get w Wasm.datas) d)))
+
+;; ===== Function bodies (NE2) =====
+
+  ;; Immediate kinds: 0 none, 1 one index (a), 2 block type (a), 3 memarg
+  ;; (a = align, b = offset), 4 call_indirect (a = type, b = table),
+  ;; 5 i32.const, 6 i64.const, 7 f64.const, 8 memory index byte (b),
+  ;; 9 memory.init (a = data, b = memory). -1: not an instruction AIPL emits.
+  (fn plain_kind [op:i32] -> i32
+    (cond
+      ((or (eq op 0) (or (eq op 5) (or (eq op 11) (or (eq op 15) (eq op 26))))) 0) ;; unreachable else end return drop
+      ((or (eq op 2) (or (eq op 3) (eq op 4))) 2)                                   ;; block loop if
+      ((or (eq op 12) (or (eq op 13) (eq op 16))) 1)                                ;; br br_if call
+      ((eq op 17) 4)                                                                ;; call_indirect
+      ((and (gte op 32) (lte op 36)) 1)                                             ;; local.get/set/tee, global.get/set
+      ((or (and (gte op 40) (lte op 43)) (eq op 45)) 3)                             ;; i32/i64/f32/f64.load, i32.load8_u
+      ((and (gte op 54) (lte op 58)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8
+      ((or (eq op 63) (eq op 64)) 8)                                                ;; memory.size memory.grow
+      ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7)                                  ;; i32/i64/f64.const
+      ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s ge_s
+      ((or (and (gte op 69) (lte op 76)) (eq op 78)) 0)
+      ;; i64: eq ne lt_s gt_s le_s ge_s
+      ((or (and (gte op 81) (lte op 83)) (or (eq op 85) (or (eq op 87) (eq op 89)))) 0)
+      ((and (gte op 91) (lte op 102)) 0)                                            ;; f32 and f64 comparisons
+      ((and (gte op 106) (lte op 118)) 0)                                           ;; i32 add .. shr_u
+      ((and (gte op 124) (lte op 136)) 0)                                           ;; i64 add .. shr_u
+      ((and (gte op 146) (lte op 149)) 0)                                           ;; f32 add sub mul div
+      ((and (gte op 160) (lte op 163)) 0)                                           ;; f64 add sub mul div
+      ;; i32.wrap_i64, i64.extend_i32_s/u, i64.trunc_f64_s, f64.convert_i64_s, the reinterprets
+      ((or (eq op 167) (or (eq op 172) (or (eq op 173) (or (eq op 176) (or (eq op 185) (or (eq op 189) (eq op 191)))))))
+       0)
+      (else -1)))
+
+  ;; 0xFE atomics AIPL emits: notify, wait32, load, store, rmw.add, xchg, cmpxchg
+  (fn atomic_ok [sub:i32] -> bool
+    (or (eq sub 0) (or (eq sub 1) (or (eq sub 16) (or (eq sub 23) (or (eq sub 30) (or (eq sub 65) (eq sub 72))))))))
+
+  (fn read_instr [r:(ptr R) start:i32] -> (ptr Instr)
+    (let ins:(ptr Instr) (new Instr))
+    (let at:i32 (get r R.pos))
+    (put ins Instr.offset (- at start))
+    (put ins Instr.a 0)
+    (put ins Instr.b 0)
+    (put ins Instr.c 0i64)
+    (let op:i32 (call byte r))
+    (let kind:i32 -1)
+    (cond
+      ((eq op 252)
+       (let sub:i32 (call u32 r))
+       (set! op (+ 64512 sub))
+       (if (eq sub 8) (set! kind 9) (block)))
+      ((eq op 254)
+       (let sub:i32 (call u32 r))
+       (set! op (+ 65024 sub))
+       (if (call atomic_ok sub) (set! kind 3) (block)))
+      (else (set! kind (call plain_kind op))))
+    (put ins Instr.op op)
+    (cond
+      ((eq kind 0) (block))
+      ((eq kind 1) (put ins Instr.a (call u32 r)))
+      ((eq kind 2)
+       ;; AIPL's blocks are empty (0x40) or produce one value type
+       (let bt:i32 (call byte r))
+       (if (or (eq bt 64) (or (eq bt 127) (or (eq bt 126) (or (eq bt 125) (eq bt 124)))))
+           (put ins Instr.a bt)
+           (call fail r "unsupported block type")))
+      ((eq kind 3) (put ins Instr.a (call u32 r)) (put ins Instr.b (call u32 r)))
+      ((eq kind 4) (put ins Instr.a (call u32 r)) (put ins Instr.b (call u32 r)))
+      ((eq kind 5) (put ins Instr.c (i64.extend_s (call s32 r))))
+      ((eq kind 6) (put ins Instr.c (call s64 r)))
+      ((eq kind 7)
+       ;; eight little-endian bytes: the f64's bits
+       (let bits:i64 0i64)
+       (loop k 0 7 1
+         (set! bits (bitor bits (shl (i64.extend_u (call byte r)) (i64.extend_s (* 8 k))))))
+       (put ins Instr.c bits))
+      ((eq kind 8) (put ins Instr.b (call byte r)))
+      ((eq kind 9) (put ins Instr.a (call u32 r)) (put ins Instr.b (call byte r)))
+      (else (call fail_op r op at)))
+    ins)
+
+  ;; Decodes the body at `range`: local declarations, then instructions up
+  ;; to the body's end.
+  (fn read_body [r:(ptr R) range:(ptr Range)] -> (ptr Body)
+    (let body:(ptr Body) (new Body))
+    (put body Body.locals (call (vec.make (ptr Locals)) 4))
+    (put body Body.code (call (vec.make (ptr Instr)) 64))
+    (let start:i32 (- (get range Range.addr) (get (get r R.b) str.Bytes.addr)))
+    (let end:i32 (+ start (get range Range.len)))
+    (put r R.pos start)
+    (let groups:i32 (call u32 r))
+    (loop i 1 groups 1
+      (let l:(ptr Locals) (new Locals))
+      (put l Locals.count (call u32 r))
+      (put l Locals.type (call valtype r))
+      (call (vec.push (ptr Locals)) (get body Body.locals) l))
+    (let code_start:i32 (get r R.pos))
+    (while (and (lt (get r R.pos) end) (not (get r R.failed)))
+      (call (vec.push (ptr Instr)) (get body Body.code) (call read_instr r code_start)))
+    (if (and (not (get r R.failed)) (neq (get r R.pos) end))
+        (call fail r "function body length does not match its instructions")
+        (block))
+    body)
+
+  (fn empty_module [] -> (ptr Wasm)
+    (let w:(ptr Wasm) (new Wasm))
+    (put w Wasm.ok false)
+    (put w Wasm.error (call str.bytes 0 0))
+    (put w Wasm.types (call (vec.make (ptr FuncType)) 16))
+    (put w Wasm.imports (call (vec.make (ptr Import)) 8))
+    (put w Wasm.funcs (call (vec.make i32) 64))
+    (put w Wasm.tables (call (vec.make (ptr Table)) 1))
+    (put w Wasm.memories (call (vec.make (ptr Limits)) 1))
+    (put w Wasm.globals (call (vec.make (ptr Global)) 1))
+    (put w Wasm.exports (call (vec.make (ptr Export)) 64))
+    (put w Wasm.start -1)
+    (put w Wasm.elems (call (vec.make (ptr Elem)) 1))
+    (put w Wasm.data_count -1)
+    (put w Wasm.datas (call (vec.make (ptr Data)) 2))
+    (put w Wasm.bodies (call (vec.make (ptr Range)) 64))
+    (put w Wasm.code (call (vec.make (ptr Body)) 64))
+    w)
+
+  ;; Decodes `bytes`. On failure, ok is false and error says what and where.
+  (fn decode [bytes:(ptr str.Bytes)] -> (ptr Wasm)
+    (let w:(ptr Wasm) (call empty_module))
+    (let r:(ptr R) (new R))
+    (put r R.b bytes)
+    (put r R.pos 0)
+    (put r R.failed false)
+    (put r R.msg (call buf.make 64))
+    ;; "\0asm", version 1
+    (if (or (neq (call byte r) 0) (or (neq (call byte r) 97) (or (neq (call byte r) 115) (neq (call byte r) 109))))
+        (call fail r "not a wasm module (bad magic)")
+        (block))
+    (if (or (neq (call byte r) 1) (or (neq (call byte r) 0) (or (neq (call byte r) 0) (neq (call byte r) 0))))
+        (call fail r "unsupported wasm version")
+        (block))
+    (let n:i32 (get bytes str.Bytes.len))
+    (while (and (lt (get r R.pos) n) (not (get r R.failed)))
+      (let id:i32 (call byte r))
+      (let size:i32 (call u32 r))
+      (let section_end:i32 (+ (get r R.pos) size))
+      (if (gt section_end n) (block (call fail r "section runs past the end of the module") (break)) (block))
+      (cond
+        ((eq id 0) (put r R.pos section_end)) ;; custom sections carry no meaning here
+        ((eq id 1) (call read_types r w))
+        ((eq id 2) (call read_imports r w))
+        ((eq id 3) (call read_functions r w))
+        ((eq id 4) (call read_tables r w))
+        ((eq id 5) (call read_memories r w))
+        ((eq id 6) (call read_globals r w))
+        ((eq id 7) (call read_exports r w))
+        ((eq id 8) (put w Wasm.start (call u32 r)))
+        ((eq id 9) (call read_elems r w))
+        ((eq id 10) (call read_code r w))
+        ((eq id 11) (call read_datas r w))
+        ((eq id 12) (put w Wasm.data_count (call u32 r)))
+        (else (call fail r "unsupported section")))
+      (if (and (not (get r R.failed)) (neq (get r R.pos) section_end))
+          (call fail r "section length does not match its contents")
+          (block)))
+    ;; then every function body
+    (let nb:i32 (call (vec.len (ptr Range)) (get w Wasm.bodies)))
+    (loop i 0 (- nb 1) 1
+      (if (get r R.failed) (break) (block))
+      (call (vec.push (ptr Body)) (get w Wasm.code) (call read_body r (call (vec.at (ptr Range)) (get w Wasm.bodies) i))))
+    (put w Wasm.ok (not (get r R.failed)))
+    (put w Wasm.error (call buf.bytes (get r R.msg)))
+    w)
+
+  ;; ===== A text summary (compared against wasmparser by tests/test_native_reader.rs) =====
+
+  (fn type_name [t:i32] -> str
+    (cond ((eq t 127) "i32") ((eq t 126) "i64") ((eq t 125) "f32") ((eq t 124) "f64") (else "?")))
+
+  (fn push_types [out:(ptr buf.Buf) ts:(ptr (vec.Vec i32))] -> void
+    (call buf.push_byte out 91)
+    (loop i 0 (- (call (vec.len i32) ts) 1) 1
+      (if (gt i 0) (call buf.push_byte out 32) (block))
+      (call buf.push_str out (call type_name (call (vec.at i32) ts i))))
+    (call buf.push_byte out 93))
+
+  (fn push_limits [out:(ptr buf.Buf) l:(ptr Limits)] -> void
+    (call buf.push_int out (get l Limits.min))
+    (call buf.push_byte out 32)
+    (if (get l Limits.has_max) (call buf.push_int out (get l Limits.max)) (call buf.push_str out "none"))
+    (if (get l Limits.shared) (call buf.push_str out " shared") (block)))
+
+  (fn kind_name [k:i32] -> str (if (eq k 0) "func" "memory"))
+
+  ;; "  locals 2 i32" lines, then "  @offset op a b c" per instruction.
+  (fn push_body [out:(ptr buf.Buf) body:(ptr Body)] -> void
+    (loop i 0 (- (call (vec.len (ptr Locals)) (get body Body.locals)) 1) 1
+      (let l:(ptr Locals) (call (vec.at (ptr Locals)) (get body Body.locals) i))
+      (call buf.push_str out "  locals ")
+      (call buf.push_int out (get l Locals.count))
+      (call buf.push_byte out 32)
+      (call buf.push_str out (call type_name (get l Locals.type)))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Instr)) (get body Body.code)) 1) 1
+      (let ins:(ptr Instr) (call (vec.at (ptr Instr)) (get body Body.code) i))
+      (call buf.push_str out "  @")
+      (call buf.push_int out (get ins Instr.offset))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (get ins Instr.op))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (get ins Instr.a))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (get ins Instr.b))
+      (call buf.push_byte out 32)
+      (call push_i64 out (get ins Instr.c))
+      (call buf.push_byte out 10)))
+
+  ;; An i64 in decimal (buf.push_int handles i32 only).
+  (fn push_i64 [out:(ptr buf.Buf) v:i64] -> void
+    (if (eq v 0i64) (block (call buf.push_byte out 48) (return)) (block))
+    (let digits:(ptr buf.Buf) (call buf.make 24))
+    (let neg:bool (lt v 0i64))
+    ;; work with negative values so the minimum i64 does not overflow
+    (let x:i64 (if neg v (- 0i64 v)))
+    (while (neq x 0i64)
+      (call buf.push_byte digits (+ 48 (i32.wrap (- 0i64 (% x 10i64)))))
+      (set! x (/ x 10i64)))
+    (if neg (call buf.push_byte out 45) (block))
+    (let d:(ptr str.Bytes) (call buf.bytes digits))
+    (loop k 0 (- (get d str.Bytes.len) 1) 1
+      (call buf.push_byte out (call str.byte_at d (- (- (get d str.Bytes.len) 1) k)))))
+
+  (fn summary [w:(ptr Wasm)] -> (ptr str.Bytes)
+    (let out:(ptr buf.Buf) (call buf.make 4096))
+    (if (not (get w Wasm.ok))
+        (block (call buf.push_str out "error: ") (call buf.push_bytes out (get w Wasm.error)) (return (call buf.bytes out)))
+        (block))
+    (loop i 0 (- (call (vec.len (ptr FuncType)) (get w Wasm.types)) 1) 1
+      (let t:(ptr FuncType) (call (vec.at (ptr FuncType)) (get w Wasm.types) i))
+      (call buf.push_str out "type ")
+      (call push_types out (get t FuncType.params))
+      (call buf.push_str out " -> ")
+      (call push_types out (get t FuncType.results))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Import)) (get w Wasm.imports)) 1) 1
+      (let im:(ptr Import) (call (vec.at (ptr Import)) (get w Wasm.imports) i))
+      (call buf.push_str out "import ")
+      (call buf.push_bytes out (get im Import.module))
+      (call buf.push_byte out 46)
+      (call buf.push_bytes out (get im Import.name))
+      (call buf.push_byte out 32)
+      (if (eq (get im Import.kind) 0)
+          (block (call buf.push_str out "func ") (call buf.push_int out (get im Import.type_index)))
+          (block (call buf.push_str out "memory ") (call push_limits out (get im Import.limits))))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len i32) (get w Wasm.funcs)) 1) 1
+      (call buf.push_str out "func type ")
+      (call buf.push_int out (call (vec.at i32) (get w Wasm.funcs) i))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Table)) (get w Wasm.tables)) 1) 1
+      (call buf.push_str out "table funcref ")
+      (call push_limits out (get (call (vec.at (ptr Table)) (get w Wasm.tables) i) Table.limits))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Limits)) (get w Wasm.memories)) 1) 1
+      (call buf.push_str out "memory ")
+      (call push_limits out (call (vec.at (ptr Limits)) (get w Wasm.memories) i))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Global)) (get w Wasm.globals)) 1) 1
+      (let g:(ptr Global) (call (vec.at (ptr Global)) (get w Wasm.globals) i))
+      (call buf.push_str out "global ")
+      (call buf.push_str out (call type_name (get g Global.valtype)))
+      (call buf.push_str out (if (get g Global.mutable) " mut " " const "))
+      (call buf.push_int out (i32.wrap (get g Global.init)))
+      (call buf.push_byte out 10))
+    (loop i 0 (- (call (vec.len (ptr Export)) (get w Wasm.exports)) 1) 1
+      (let e:(ptr Export) (call (vec.at (ptr Export)) (get w Wasm.exports) i))
+      (call buf.push_str out "export ")
+      (call buf.push_bytes out (get e Export.name))
+      (call buf.push_byte out 32)
+      (call buf.push_str out (call kind_name (get e Export.kind)))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (get e Export.index))
+      (call buf.push_byte out 10))
+    (if (gte (get w Wasm.start) 0)
+        (block (call buf.push_str out "start ") (call buf.push_int out (get w Wasm.start)) (call buf.push_byte out 10))
+        (block))
+    (loop i 0 (- (call (vec.len (ptr Elem)) (get w Wasm.elems)) 1) 1
+      (let e:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
+      (call buf.push_str out "elem offset ")
+      (call buf.push_int out (get e Elem.offset))
+      (call buf.push_str out " funcs")
+      (loop k 0 (- (call (vec.len i32) (get e Elem.funcs)) 1) 1
+        (call buf.push_byte out 32)
+        (call buf.push_int out (call (vec.at i32) (get e Elem.funcs) k)))
+      (call buf.push_byte out 10))
+    (if (gte (get w Wasm.data_count) 0)
+        (block (call buf.push_str out "datacount ") (call buf.push_int out (get w Wasm.data_count)) (call buf.push_byte out 10))
+        (block))
+    (loop i 0 (- (call (vec.len (ptr Range)) (get w Wasm.bodies)) 1) 1
+      (call buf.push_str out "code len ")
+      (call buf.push_int out (get (call (vec.at (ptr Range)) (get w Wasm.bodies) i) Range.len))
+      (call buf.push_byte out 10)
+      (call push_body out (call (vec.at (ptr Body)) (get w Wasm.code) i)))
+    (loop i 0 (- (call (vec.len (ptr Data)) (get w Wasm.datas)) 1) 1
+      (let d:(ptr Data) (call (vec.at (ptr Data)) (get w Wasm.datas) i))
+      (if (get d Data.passive)
+          (call buf.push_str out "data passive len ")
+          (block (call buf.push_str out "data active offset ") (call buf.push_int out (get d Data.offset)) (call buf.push_str out " len ")))
+      (call buf.push_int out (get d Data.len))
+      (call buf.push_byte out 10))
+    (call buf.bytes out))
+
+  ;; ===== Host interface =====
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+
+  ;; The summary of the module at (addr, len).
+  (fn summarize [addr:i32 len:i32] -> (ptr str.Bytes)
+    (call summary (call decode (call str.bytes addr len))))
+
+  ;; ===== Self-test =====
+
+  (fn bytes_of [b:(ptr buf.Buf)] -> (ptr str.Bytes) (call buf.bytes b))
+
+  ;; Pass count; test_suite.aipl expects 4.
+  (fn run_reader_tests [] -> i32
+    (let p:i32 0)
+    ;; header only: an empty, valid module
+    (let m:(ptr buf.Buf) (call buf.make 32))
+    (call buf.push_byte m 0) (call buf.push_str m "asm") (call buf.push_byte m 1) (call buf.push_byte m 0) (call buf.push_byte m 0) (call buf.push_byte m 0)
+    (let w:(ptr Wasm) (call decode (call bytes_of m)))
+    (if (and (get w Wasm.ok) (eq (call (vec.len (ptr FuncType)) (get w Wasm.types)) 0)) (set! p (+ p 1)) (block))
+    ;; a type section: (i32 i64) -> (f64), with an LEB-encoded size
+    (call buf.push_byte m 1) (call buf.push_byte m 7)
+    (call buf.push_byte m 1) (call buf.push_byte m 96) (call buf.push_byte m 2) (call buf.push_byte m 127) (call buf.push_byte m 126)
+    (call buf.push_byte m 1) (call buf.push_byte m 124)
+    (set! w (call decode (call bytes_of m)))
+    (let t:(ptr FuncType) (if (get w Wasm.ok) (call (vec.at (ptr FuncType)) (get w Wasm.types) 0) (ptr.null FuncType)))
+    (if (and (get w Wasm.ok)
+             (and (eq (call (vec.len i32) (get t FuncType.params)) 2)
+                  (eq (call (vec.at i32) (get t FuncType.results) 0) 124)))
+        (set! p (+ p 1))
+        (block))
+    ;; truncation is an error, not a short module
+    (let short:(ptr str.Bytes) (call str.bytes (get (call bytes_of m) str.Bytes.addr) 12))
+    (set! w (call decode short))
+    (if (and (not (get w Wasm.ok)) (gt (get (get w Wasm.error) str.Bytes.len) 0)) (set! p (+ p 1)) (block))
+    ;; signed LEB128: -1 in one byte, -129 in two, and an i64 near the minimum
+    (let lb:(ptr buf.Buf) (call buf.make 16))
+    (call buf.push_byte lb 127)
+    (call buf.push_byte lb 255) (call buf.push_byte lb 126)
+    (loop k 1 9 1 (call buf.push_byte lb 128))
+    (call buf.push_byte lb 127)
+    (let r:(ptr R) (new R))
+    (put r R.b (call bytes_of lb))
+    (put r R.pos 0)
+    (put r R.failed false)
+    (put r R.msg (call buf.make 16))
+    (if (and (eq (call s32 r) -1) (and (eq (call s32 r) -129) (eq (call s64 r) -9223372036854775808i64)))
+        (set! p (+ p 1))
+        (block))
+    ;; a body: one i32 local; i32.const -2, local.set 0, f64.const 1.0, drop, end
+    (let mb:(ptr buf.Buf) (call buf.make 64))
+    (call buf.push_byte mb 0) (call buf.push_str mb "asm") (call buf.push_byte mb 1) (call buf.push_byte mb 0) (call buf.push_byte mb 0) (call buf.push_byte mb 0)
+    (call buf.push_byte mb 1) (call buf.push_byte mb 4) (call buf.push_byte mb 1) (call buf.push_byte mb 96) (call buf.push_byte mb 0) (call buf.push_byte mb 0)
+    (call buf.push_byte mb 3) (call buf.push_byte mb 2) (call buf.push_byte mb 1) (call buf.push_byte mb 0)
+    (call buf.push_byte mb 10) (call buf.push_byte mb 20) (call buf.push_byte mb 1) (call buf.push_byte mb 18)
+    (call buf.push_byte mb 1) (call buf.push_byte mb 1) (call buf.push_byte mb 127)
+    (call buf.push_byte mb 65) (call buf.push_byte mb 126)
+    (call buf.push_byte mb 33) (call buf.push_byte mb 0)
+    (call buf.push_byte mb 68)
+    (loop k 1 6 1 (call buf.push_byte mb 0))
+    (call buf.push_byte mb 240) (call buf.push_byte mb 63)
+    (call buf.push_byte mb 26) (call buf.push_byte mb 11)
+    (set! w (call decode (call bytes_of mb)))
+    (if (get w Wasm.ok)
+        (block
+          (let body:(ptr Body) (call (vec.at (ptr Body)) (get w Wasm.code) 0))
+          (let code:(ptr (vec.Vec (ptr Instr))) (get body Body.code))
+          (let l:(ptr Locals) (call (vec.at (ptr Locals)) (get body Body.locals) 0))
+          (if (and (eq (call (vec.len (ptr Instr)) code) 5)
+                   (and (eq (get (call (vec.at (ptr Instr)) code 0) Instr.c) -2i64)
+                        (and (eq (get (call (vec.at (ptr Instr)) code 1) Instr.offset) 2)
+                             (and (eq (get (call (vec.at (ptr Instr)) code 2) Instr.c) 4607182418800017408i64)
+                                  (and (eq (get l Locals.count) 1) (eq (get l Locals.type) 127))))))
+              (set! p (+ p 1))
+              (block)))
+        (block))
+    p))

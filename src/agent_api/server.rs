@@ -1,6 +1,5 @@
 use crate::checker::TypeChecker;
 use crate::compiler::wasm::WasmCompiler;
-use crate::parser::Parser;
 use crate::vm::{Value, VM};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Response, Server as HttpServer};
@@ -87,13 +86,13 @@ impl AgentServer {
             }
         };
 
-        let module = match Parser::parse(&req.source) {
+        let module = match crate::resolver::Resolver::resolve_source(&req.source, std::path::Path::new("request.aipl")) {
             Ok(m) => m,
             Err(e) => {
                 return EvalResponse {
                     success: false,
                     result: None,
-                    error: Some(format!("Parse error: {}", e)),
+                    error: Some(format!("Parse or import error: {}", e)),
                 }
             }
         };
@@ -132,13 +131,13 @@ impl AgentServer {
     }
 
     fn handle_verify(body: &str) -> EvalResponse {
-        let module = match Parser::parse(body) {
+        let module = match crate::resolver::Resolver::resolve_source(body, std::path::Path::new("request.aipl")) {
             Ok(m) => m,
             Err(e) => {
                 return EvalResponse {
                     success: false,
                     result: None,
-                    error: Some(format!("Parse error: {}", e)),
+                    error: Some(format!("Parse or import error: {}", e)),
                 }
             }
         };
@@ -147,7 +146,7 @@ impl AgentServer {
         match checker.check_module(&module) {
             Ok(_) => EvalResponse {
                 success: true,
-                result: Some("Module type check and contract verification passed.".to_string()),
+                result: Some("Module type-checks. Contracts are type-checked, not proven; the VM evaluates req/ens on every call.".to_string()),
                 error: None,
             },
             Err(e) => EvalResponse {
@@ -162,13 +161,13 @@ impl AgentServer {
     /// WebAssembly module, returned base64-encoded so browser hosts (which cannot
     /// invoke the Rust toolchain directly) can `WebAssembly.instantiate` it.
     fn handle_compile(body: &str) -> CompileResponse {
-        let module = match Parser::parse(body) {
+        let module = match crate::resolver::Resolver::resolve_source(body, std::path::Path::new("request.aipl")) {
             Ok(m) => m,
             Err(e) => {
                 return CompileResponse {
                     success: false,
                     wasm_base64: None,
-                    error: Some(format!("Parse error: {}", e)),
+                    error: Some(format!("Parse or import error: {}", e)),
                 }
             }
         };
