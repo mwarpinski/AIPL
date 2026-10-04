@@ -1,0 +1,637 @@
+;; wasi: the WASI preview1 functions AIPL programs import, as native
+;; routines over Linux system calls (native backend, NE10-NE11,
+;; docs/NATIVE_BACKEND_PLAN.md). Each routine is called like any translated
+;; function (lower.aipl): arguments pushed in order, one 8-byte slot each,
+;; result in rax (a WASI errno: 0 for success). Routines may clobber every
+;; register except rbp, rsp, and r15 (the linear memory base).
+;;
+;; Behaviour follows wasmtime's, which aipl-run uses:
+;;   - A pointer the program passes is checked before use: out of bounds
+;;     traps with `Pointer out of bounds: Region { start: S, len: L }`, then a
+;;     misaligned out-parameter with `Pointer not aligned to N: ...` (the
+;;     region trap routine, runtime.emit_region_trap_routine).
+;;   - Linux errors become WASI errnos through a table (errno_table).
+;;   - WASI file descriptors are indices into fd_table, whose entries are
+;;     Linux descriptors (-1 when closed): 0-2 are stdio, 3 the working
+;;     directory, 4 `/` (not with --sandbox); path_open takes the lowest free
+;;     index, as wasmtime does. Closing 0-2 frees the index but keeps the
+;;     process's own stdio open (wasmtime's host keeps them too), so a trap
+;;     message still reaches stderr.
+;;   - File access (NE11): a path resolves beneath its directory descriptor
+;;     (openat2 with RESOLVE_BENEATH): the kernel refuses `..` escapes,
+;;     absolute paths, and symlinks leading out, as wasmtime's preopens do.
+(module wasi
+  (import str)
+  (import buf)
+  (import vec)
+  (import x64)
+  (import lower)
+
+  ;; Data addresses and code positions the routines need.
+  (struct W [region_routine:i32 fd_table:i32 errno_table:i32
+             argc_cell:i32 argv_cell:i32 envc_cell:i32 envp_cell:i32])
+
+  (fn fd_slots [] -> i32 64)
+
+  ;; Registers (x64.aipl numbering)
+  (fn rax [] -> i32 0) (fn rcx [] -> i32 1) (fn rdx [] -> i32 2) (fn rbx [] -> i32 3)
+  (fn rsp [] -> i32 4) (fn rsi [] -> i32 6) (fn rdi [] -> i32 7)
+  (fn r8 [] -> i32 8) (fn r9 [] -> i32 9) (fn r10 [] -> i32 10) (fn r11 [] -> i32 11)
+  (fn r12 [] -> i32 12) (fn r13 [] -> i32 13) (fn r14 [] -> i32 14) (fn r15 [] -> i32 15)
+
+  ;; ===== Data =====
+
+  ;; The data the routines use: the fd table (stdio open) and the errno table.
+  (fn make [l:(ptr lower.L)] -> (ptr W)
+    (let w:(ptr W) (new W))
+    (put w W.region_routine -1)
+    (let fds:(ptr buf.Buf) (call buf.make 256))
+    (loop i 0 (- (call fd_slots) 1) 1
+      (call push_u32 fds (if (lte i 2) i -1)))
+    (put w W.fd_table (call lower.data_bytes l (call buf.bytes fds)))
+    (put w W.errno_table (call lower.data_bytes l (call buf.bytes (call errno_bytes))))
+    (put w W.argc_cell (call cell l))
+    (put w W.argv_cell (call cell l))
+    (put w W.envc_cell (call cell l))
+    (put w W.envp_cell (call cell l))
+    w)
+
+  (fn cell [l:(ptr lower.L)] -> i32
+    (let b:(ptr buf.Buf) (call buf.make 8))
+    (loop k 1 8 1 (call buf.push_byte b 0))
+    (call lower.data_bytes l (call buf.bytes b)))
+
+  (fn push_u32 [b:(ptr buf.Buf) v:i32] -> void
+    (call buf.push_byte b (bitand v 255))
+    (call buf.push_byte b (bitand (shru v 8) 255))
+    (call buf.push_byte b (bitand (shru v 16) 255))
+    (call buf.push_byte b (bitand (shru v 24) 255)))
+
+  ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29).
+  (fn errno_bytes [] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make 64))
+    (loop e 0 63 1
+      (call buf.push_byte b
+        (cond ((eq e 0) 0)
+              ((eq e 1) 63)  ((eq e 2) 44)  ((eq e 4) 27)  ((eq e 5) 29)  ((eq e 9) 8)
+              ((eq e 11) 6)  ((eq e 12) 48) ((eq e 13) 2)  ((eq e 14) 21) ((eq e 16) 10)
+              ((eq e 17) 20) ((eq e 18) 75) ((eq e 20) 54) ((eq e 21) 31) ((eq e 22) 28)
+              ((eq e 24) 33) ((eq e 27) 22) ((eq e 28) 51) ((eq e 29) 70) ((eq e 30) 69)
+              ((eq e 32) 64) ((eq e 36) 37) ((eq e 39) 55) ((eq e 40) 32)
+              (else 29))))
+    b)
+
+  ;; ===== Building blocks =====
+
+  ;; reg = argument i (of n), 32 or 64 bits, at routine entry (rsp unchanged).
+  (fn arg [c:(ptr buf.Buf) sz:i32 n:i32 i:i32 reg:i32] -> void
+    (call x64.load c sz reg (call x64.mem (call rsp) (+ 8 (* 8 (- (- n 1) i))))))
+
+  ;; Checks the guest region [addr, addr + len) (registers holding
+  ;; zero-extended values; not rax rcx rdx rsi r10 r11): traps out of bounds,
+  ;; then, for align > 1, misaligned. Clobbers rcx r10 r11.
+  (fn emit_guest_check [l:(ptr lower.L) w:(ptr W) addr:i32 len:i32 align:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call r11) addr)
+    (call x64.alu_rr c 64 (call x64.op_add) (call r11) len)
+    (call lower.load_mem_size l (call r10))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call r10))
+    (let in_bounds:i32 (call x64.jcc c (call x64.cc_be)))
+    (call emit_region_trap l w addr len 0)
+    (call x64.patch_rel32 c in_bounds (call buf.len c))
+    (if (gt align 1)
+        (block
+          (call x64.test_ri c 32 addr (- align 1))
+          (let aligned:i32 (call x64.jcc c (call x64.cc_e)))
+          (call emit_region_trap l w addr len align)
+          (call x64.patch_rel32 c aligned (call buf.len c)))
+        (block)))
+
+  (fn emit_region_trap [l:(ptr lower.L) w:(ptr W) addr:i32 len:i32 kind:i32] -> void
+    (req (gte (get w W.region_routine) 0))
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 32 (call rsi) addr)
+    (call x64.mov_rr c 32 (call rdx) len)
+    (call x64.mov_ri32 c (call rax) kind)
+    (call x64.patch_rel32 c (call x64.jmp c) (get w W.region_routine)))
+
+  ;; With a Linux result (-errno) in rax: returns the WASI errno.
+  (fn emit_errno_return [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call rcx) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rax) (call rcx))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) 64)
+    (let unlisted:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.mov_ri32 c (call rcx) (get w W.errno_table))
+    (call x64.load8u c (call rax) (call x64.mem_index (call rcx) (call rax) 1 0))
+    (call x64.ret c)
+    (call x64.patch_rel32 c unlisted (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 29)
+    (call x64.ret c))
+
+  (fn emit_return_errno [c:(ptr buf.Buf) errno:i32] -> void
+    (call x64.mov_ri32 c (call rax) errno)
+    (call x64.ret c))
+
+  ;; out = the Linux descriptor for WASI descriptor `fd` (both registers,
+  ;; may be the same; not rcx). Jumps whose positions are added to `badf`
+  ;; go to the routine's EBADF return.
+  (fn emit_fd_lookup [l:(ptr lower.L) w:(ptr W) fd:i32 out:i32 badf:(ptr (vec.Vec i32))] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.alu_ri c 32 (call x64.op_cmp) fd (call fd_slots))
+    (call (vec.push i32) badf (call x64.jcc c (call x64.cc_ae)))
+    (call x64.mov_ri32 c (call rcx) (get w W.fd_table))
+    (call x64.load c 32 out (call x64.mem_index (call rcx) fd 4 0))
+    (call x64.test_rr c 32 out out)
+    (call (vec.push i32) badf (call x64.jcc c (call x64.cc_s))))
+
+  (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void
+    (loop k 0 (- (call (vec.len i32) at) 1) 1
+      (call x64.patch_rel32 c (call (vec.at i32) at k) (call buf.len c))))
+
+  ;; rdx = strlen of the NUL-terminated string at rsi (host address).
+  ;; Clobbers rax.
+  (fn emit_strlen [c:(ptr buf.Buf)] -> void
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (let top:i32 (call buf.len c))
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsi) (call rdx) 1 0))
+    (call x64.test_rr c 32 (call rax) (call rax))
+    (let done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rdx) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c)))
+
+  ;; ===== The routines =====
+
+  ;; fd_write / fd_read(fd, iovs, iovs_len, n_ptr) -> errno. Writes each
+  ;; iovec in full (retrying short writes); reads stop at end of input or
+  ;; the first short read. *n_ptr = bytes transferred. A read into a buffer
+  ;; outside memory behaves as wasmtime's, which reads first and copies
+  ;; after: nothing read is not an error; otherwise it traps with the bytes
+  ;; read as the region's length (read here into a stack buffer of up to
+  ;; 64 KiB, the most one pipe read returns).
+  (fn emit_fd_rw [l:(ptr lower.L) w:(ptr W) reading:bool] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 4))
+    (let errs:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (let done:(ptr (vec.Vec i32)) (call (vec.make i32) 4))
+    (call arg c 32 4 0 (call r12))
+    (call emit_fd_lookup l w (call r12) (call r12) badf)
+    (call arg c 32 4 1 (call r13))
+    (call arg c 32 4 2 (call r14))
+    (call x64.mov_rr c 64 (call r9) (call r14))
+    (call x64.shift_ri c 64 (call x64.sh_shl) (call r9) 3)
+    (call emit_guest_check l w (call r13) (call r9) 4)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rbx) (call rbx))
+    ;; each iovec: [buf:u32 len:u32]
+    (let next_iov:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r14) (call r14))
+    (call (vec.push i32) done (call x64.jcc c (call x64.cc_e)))
+    (call x64.load c 32 (call r8) (call x64.mem_index (call r15) (call r13) 1 0))
+    (call x64.load c 32 (call r9) (call x64.mem_index (call r15) (call r13) 1 4))
+    (if reading (call emit_read_outside_memory l w errs done) (call emit_guest_check l w (call r8) (call r9) 1))
+    (let more:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r9) (call r9))
+    (let iov_done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call r15) (call r8) 1 0))
+    (call x64.mov_rr c 64 (call rdx) (call r9))
+    (call x64.mov_ri32 c (call rax) (if reading 0 1))
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) errs (call x64.jcc c (call x64.cc_s)))
+    ;; nothing transferred: end of input, or a write that made no progress
+    (call (vec.push i32) done (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rbx) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r8) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call r9) (call rax))
+    (if reading
+        ;; a short read ends the call
+        (block
+          (call x64.test_rr c 64 (call r9) (call r9))
+          (call (vec.push i32) done (call x64.jcc c (call x64.cc_ne))))
+        (block))
+    (call x64.patch_rel32 c (call x64.jmp c) more)
+    (call x64.patch_rel32 c iov_done (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_add) (call r13) 8)
+    (call x64.alu_ri c 64 (call x64.op_sub) (call r14) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) next_iov)
+    (call patch_all c done)
+    (call arg c 32 4 3 (call r8))
+    (call x64.mov_ri32 c (call r9) 4)
+    (call emit_guest_check l w (call r8) (call r9) 4)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call rbx))
+    (call emit_return_errno c 0)
+    (call patch_all c errs)
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; For fd_read: if the buffer (r8, r9 bytes) is outside memory, reads into
+  ;; the stack instead (fd in r12): end of input jumps to `done`, an error
+  ;; to `errs`, anything read traps. In bounds, falls through.
+  (fn emit_read_outside_memory [l:(ptr lower.L) w:(ptr W) errs:(ptr (vec.Vec i32)) done:(ptr (vec.Vec i32))] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call r11) (call r8))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r11) (call r9))
+    (call lower.load_mem_size l (call r10))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call r10))
+    (let in_bounds:i32 (call x64.jcc c (call x64.cc_be)))
+    (call x64.mov_rr c 64 (call rdx) (call r9))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rdx) 65536)
+    (let small:i32 (call x64.jcc c (call x64.cc_be)))
+    (call x64.mov_ri32 c (call rdx) 65536)
+    (call x64.patch_rel32 c small (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 65536)
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 65536)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) errs (call x64.jcc c (call x64.cc_s)))
+    (call (vec.push i32) done (call x64.jcc c (call x64.cc_e)))
+    (call emit_region_trap l w (call r8) (call rax) 0)
+    (call x64.patch_rel32 c in_bounds (call buf.len c)))
+
+  ;; fd_close(fd) -> errno. WASI 0-2 only free their slot (see the header).
+  (fn emit_fd_close [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (call arg c 32 1 0 (call r12))
+    (call emit_fd_lookup l w (call r12) (call rdi) badf)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call r12) 2)
+    (let stdio:i32 (call x64.jcc c (call x64.cc_be)))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.patch_rel32 c stdio (call buf.len c))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_ri32 c (call rcx) (get w W.fd_table))
+    (call x64.mov_ri32 c (call rax) -1)
+    (call x64.store c 32 (call x64.mem_index (call rcx) (call r12) 4 0) (call rax))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; args_sizes_get / environ_sizes_get(count_ptr, size_ptr) -> errno. The
+  ;; size (every string with its NUL) is written before the count, as
+  ;; wasmtime does.
+  (fn emit_strings_sizes [l:(ptr lower.L) w:(ptr W) count_cell:i32 array_cell:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call load_list c count_cell array_cell)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r13) (call r13))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r14) (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r14) (call rbx))
+    (let done:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.load c 64 (call rsi) (call x64.mem_index (call r12) (call r14) 8 0))
+    (call emit_strlen c)
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call r13) (call rdx) 1 1))
+    (call x64.alu_ri c 64 (call x64.op_add) (call r14) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call x64.mov_ri32 c (call r9) 4)
+    (call arg c 32 2 1 (call r8))
+    (call emit_guest_check l w (call r8) (call r9) 4)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call r13))
+    (call arg c 32 2 0 (call r8))
+    (call emit_guest_check l w (call r8) (call r9) 4)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call rbx))
+    (call emit_return_errno c 0))
+
+  ;; rbx = the count, r12 = the host array of string pointers.
+  (fn load_list [c:(ptr buf.Buf) count_cell:i32 array_cell:i32] -> void
+    (call x64.mov_ri32 c (call rcx) count_cell)
+    (call x64.load c 64 (call rbx) (call x64.mem (call rcx) 0))
+    (call x64.mov_ri32 c (call rcx) array_cell)
+    (call x64.load c 64 (call r12) (call x64.mem (call rcx) 0)))
+
+  ;; args_get / environ_get(ptrs, buf) -> errno: each string with its NUL
+  ;; into buf, one after another, and its guest address into ptrs[i].
+  (fn emit_strings_get [l:(ptr lower.L) w:(ptr W) count_cell:i32 array_cell:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call load_list c count_cell array_cell)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r14) (call r14))
+    (call arg c 32 2 1 (call r13))
+    (let top:i32 (call buf.len c))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r14) (call rbx))
+    (let done:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.load c 64 (call rsi) (call x64.mem_index (call r12) (call r14) 8 0))
+    (call emit_strlen c)
+    (call x64.lea c 64 (call r9) (call x64.mem (call rdx) 1))
+    (call emit_guest_check l w (call r13) (call r9) 1)
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r13) 1 0))
+    (call x64.mov_rr c 64 (call rcx) (call r9))
+    (call x64.rep_movsb c)
+    (call arg c 32 2 0 (call r8))
+    (call x64.lea c 64 (call r8) (call x64.mem_index (call r8) (call r14) 4 0))
+    (call x64.mov_ri32 c (call r9) 4)
+    (call emit_guest_check l w (call r8) (call r9) 4)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call r13))
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call r13) (call rdx) 1 1))
+    (call x64.alu_ri c 64 (call x64.op_add) (call r14) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call emit_return_errno c 0))
+
+  ;; clock_time_get(id, precision:i64, time_ptr) -> errno: nanoseconds from
+  ;; clock_gettime (WASI's clock ids 0-3 are Linux's).
+  (fn emit_clock_time_get [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call arg c 32 3 0 (call rdi))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rdi) 3)
+    (let bad_id:i32 (call x64.jcc c (call x64.cc_a)))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 16)
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_ri32 c (call rax) 228)
+    (call x64.syscall c)
+    (call x64.load c 64 (call rbx) (call x64.mem (call rsp) 0))
+    (call x64.load c 64 (call rdx) (call x64.mem (call rsp) 8))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 16)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_ri64 c (call rcx) 1000000000i64)
+    (call x64.imul_rr c 64 (call rbx) (call rcx))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rbx) (call rdx))
+    (call arg c 32 3 2 (call r8))
+    (call x64.mov_ri32 c (call r9) 8)
+    (call emit_guest_check l w (call r8) (call r9) 8)
+    (call x64.store c 64 (call x64.mem_index (call r15) (call r8) 1 0) (call rbx))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call x64.patch_rel32 c bad_id (call buf.len c))
+    (call emit_return_errno c 28))
+
+  ;; random_get(buf, len) -> errno, from getrandom.
+  (fn emit_random_get [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call arg c 32 2 0 (call r8))
+    (call arg c 32 2 1 (call r9))
+    (call emit_guest_check l w (call r8) (call r9) 1)
+    (let top:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r9) (call r9))
+    (let done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r8) 1 0))
+    (call x64.mov_rr c 64 (call rsi) (call r9))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c (call rax) 318)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r8) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call r9) (call rax))
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w))
+
+  ;; Start-up: saves argc, argv, the environment and its count. Expects rsp
+  ;; as the kernel left it (argc, argv[0..argc], NULL, envp..., NULL).
+  (fn emit_capture_args [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) 0))
+    (call x64.mov_ri32 c (call rcx) (get w W.argc_cell))
+    (call x64.store c 64 (call x64.mem (call rcx) 0) (call rax))
+    (call x64.lea c 64 (call rdx) (call x64.mem (call rsp) 8))
+    (call x64.mov_ri32 c (call rcx) (get w W.argv_cell))
+    (call x64.store c 64 (call x64.mem (call rcx) 0) (call rdx))
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call rsp) (call rax) 8 16))
+    (call x64.mov_ri32 c (call rcx) (get w W.envp_cell))
+    (call x64.store c 64 (call x64.mem (call rcx) 0) (call rsi))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (let top:i32 (call buf.len c))
+    (call x64.load c 64 (call rax) (call x64.mem_index (call rsi) (call rdx) 8 0))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rdx) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call x64.mov_ri32 c (call rcx) (get w W.envc_cell))
+    (call x64.store c 64 (call x64.mem (call rcx) 0) (call rdx)))
+
+  ;; ===== Files (NE11) =====
+
+  ;; Copies the guest path (r13 = address, r14 = length, checked) to the
+  ;; stack as a NUL-terminated string; rsp then points at it. The caller
+  ;; must restore rsp from r12, where the old rsp is saved. Clobbers rcx rsi
+  ;; rdi.
+  (fn emit_path_to_stack [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call x64.mov_rr c 64 (call r12) (call rsp))
+    ;; room for the path, its NUL, and alignment: (len + 16) & ~15
+    (call x64.lea c 64 (call rcx) (call x64.mem (call r14) 16))
+    (call x64.alu_ri c 64 (call x64.op_and) (call rcx) -16)
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rsp) (call rcx))
+    (call x64.mov_rr c 64 (call rdi) (call rsp))
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call r15) (call r13) 1 0))
+    (call x64.mov_rr c 64 (call rcx) (call r14))
+    (call x64.rep_movsb c)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call x64.store8 c (call x64.mem (call rdi) 0) (call rcx)))
+
+  ;; openat2(rdi = dir fd, rsi = path, {flags, mode, resolve beneath}) with
+  ;; the open flags in rdx; mode 0o666 when creating (openat2 refuses a
+  ;; mode otherwise). Result in rax. Clobbers rcx r11 r10.
+  (fn emit_openat2 [c:(ptr buf.Buf)] -> void
+    ;; struct open_how { u64 flags; u64 mode; u64 resolve } on the stack;
+    ;; resolve = RESOLVE_BENEATH (8) | RESOLVE_NO_MAGICLINKS (2)
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 32)
+    (call x64.store c 64 (call x64.mem (call rsp) 0) (call rdx))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.test_ri c 32 (call rdx) 64)
+    (let no_create:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.mov_ri32 c (call rax) 438)
+    (call x64.patch_rel32 c no_create (call buf.len c))
+    (call x64.store c 64 (call x64.mem (call rsp) 8) (call rax))
+    (call x64.mov_ri32 c (call rax) 10)
+    (call x64.store c 64 (call x64.mem (call rsp) 16) (call rax))
+    (call x64.mov_rr c 64 (call rdx) (call rsp))
+    (call x64.mov_ri32 c (call r10) 24)
+    (call x64.mov_ri32 c (call rax) 437)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 32))
+
+  ;; path_open(dirfd, dirflags, path, path_len, oflags, rights_base:i64,
+  ;; rights_inheriting:i64, fdflags, fd_out) -> errno
+  (fn emit_path_open [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (call arg c 32 9 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 9 2 (call r13))
+    (call arg c 32 9 3 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    ;; Linux flags in r8: O_CLOEXEC; O_RDWR with the write right (1 << 6)
+    (call x64.mov_ri32 c (call r8) 524288)
+    (call arg c 64 9 5 (call rax))
+    (call x64.test_ri c 32 (call rax) 64)
+    (let read_only:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 32 (call x64.op_or) (call r8) 2)
+    (call x64.patch_rel32 c read_only (call buf.len c))
+    ;; oflags: CREAT 1 -> 0x40, DIRECTORY 2 -> 0x10000, EXCL 4 -> 0x80, TRUNC 8 -> 0x200
+    (call arg c 32 9 4 (call rax))
+    (call map_flag c (call rax) 1 64)
+    (call map_flag c (call rax) 2 65536)
+    (call map_flag c (call rax) 4 128)
+    (call map_flag c (call rax) 8 512)
+    ;; fdflags: APPEND 1 -> 0x400
+    (call arg c 32 9 7 (call rax))
+    (call map_flag c (call rax) 1 1024)
+    ;; dirflags without SYMLINK_FOLLOW (1): O_NOFOLLOW
+    (call arg c 32 9 1 (call rax))
+    (call x64.test_ri c 32 (call rax) 1)
+    (let follow:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.alu_ri c 32 (call x64.op_or) (call r8) 131072)
+    (call x64.patch_rel32 c follow (call buf.len c))
+    (call emit_path_to_stack l w)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call emit_openat2 c)
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    ;; the lowest free WASI descriptor
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_ri32 c (call rcx) (get w W.fd_table))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r14) (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call r14) (call fd_slots))
+    (let full:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.load c 32 (call rax) (call x64.mem_index (call rcx) (call r14) 4 0))
+    (call x64.test_rr c 32 (call rax) (call rax))
+    (let found:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.alu_ri c 32 (call x64.op_add) (call r14) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c found (call buf.len c))
+    (call x64.store c 32 (call x64.mem_index (call rcx) (call r14) 4 0) (call r13))
+    (call arg c 32 9 8 (call r8))
+    (call x64.mov_ri32 c (call r9) 4)
+    (call emit_guest_check l w (call r8) (call r9) 4)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r8) 1 0) (call r14))
+    (call emit_return_errno c 0)
+    ;; no free descriptor: close the file again, EMFILE
+    (call x64.patch_rel32 c full (call buf.len c))
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call emit_return_errno c 33)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; r8 |= linux if (reg & wasi) != 0
+  (fn map_flag [c:(ptr buf.Buf) reg:i32 wasi:i32 linux:i32] -> void
+    (call x64.test_ri c 32 reg wasi)
+    (let off:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 32 (call x64.op_or) (call r8) linux)
+    (call x64.patch_rel32 c off (call buf.len c)))
+
+  ;; path_unlink_file(dirfd, path, path_len) -> errno. unlinkat cannot
+  ;; resolve beneath a directory, so the parent directory is opened that
+  ;; way (O_PATH) and the last component removed inside it.
+  (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (call arg c 32 3 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 3 1 (call r13))
+    (call arg c 32 3 2 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    (call emit_path_to_stack l w)
+    ;; r9 = the last '/' in the copy, or none: parent ".", base = the path
+    (call x64.mov_rr c 64 (call r9) (call r14))
+    (let top:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r9) (call r9))
+    (let no_slash:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call r9) 1)
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r9) 1 0))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) 47)
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) top)
+    ;; parent = the copy cut at the slash, base after it
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store8 c (call x64.mem_index (call rsp) (call r9) 1 0) (call rax))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.lea c 64 (call r13) (call x64.mem_index (call rsp) (call r9) 1 1))
+    (let have_parent:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c no_slash (call buf.len c))
+    (call x64.mov_ri32 c (call rsi) (call lower.data_text l "."))
+    (call buf.push_byte (get l lower.L.data) 0)
+    (call x64.mov_rr c 64 (call r13) (call rsp))
+    (call x64.patch_rel32 c have_parent (call buf.len c))
+    ;; parent fd = openat2(dir, parent, O_PATH | O_DIRECTORY | O_CLOEXEC)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call emit_openat2 c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let no_parent:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rbx) (call rax))
+    ;; unlinkat(parent fd, base, 0), then close the parent
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call r13))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c (call rax) 263)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call rax) (call r13))
+    (call x64.patch_rel32 c no_parent (call buf.len c))
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; Start-up: opens the preopened directories, fd 3 = "." and fd 4 = "/"
+  ;; (skipped with sandbox), as O_PATH directory descriptors.
+  (fn emit_preopens [l:(ptr lower.L) w:(ptr W) sandbox:bool] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (call emit_preopen l w 3 ".")
+    (if sandbox (block) (call emit_preopen l w 4 "/")))
+
+  (fn emit_preopen [l:(ptr lower.L) w:(ptr W) fd:i32 path:str] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let at:i32 (call lower.data_text l path))
+    (call buf.push_byte (get l lower.L.data) 0)
+    ;; openat(AT_FDCWD, path, O_PATH | O_DIRECTORY | O_CLOEXEC)
+    (call x64.mov_ri32 c (call rdi) -100)
+    (call x64.mov_ri32 c (call rsi) at)
+    (call x64.mov_ri32 c (call rdx) 2752512)
+    (call x64.mov_ri32 c (call rax) 257)
+    (call x64.syscall c)
+    ;; a failure leaves the slot closed (-1); errors are negative anyway
+    (call x64.mov_ri32 c (call rcx) (+ (get w W.fd_table) (* 4 fd)))
+    (call x64.store c 32 (call x64.mem (call rcx) 0) (call rax)))
+
+  ;; Emits the routine for import `name`; false if it is not one of these.
+  (fn emit_import [l:(ptr lower.L) w:(ptr W) name:(ptr str.Bytes)] -> bool
+    (cond
+      ((call is name "fd_write") (call emit_fd_rw l w false) true)
+      ((call is name "fd_read") (call emit_fd_rw l w true) true)
+      ((call is name "fd_close") (call emit_fd_close l w) true)
+      ((call is name "args_sizes_get") (call emit_strings_sizes l w (get w W.argc_cell) (get w W.argv_cell)) true)
+      ((call is name "args_get") (call emit_strings_get l w (get w W.argc_cell) (get w W.argv_cell)) true)
+      ((call is name "environ_sizes_get") (call emit_strings_sizes l w (get w W.envc_cell) (get w W.envp_cell)) true)
+      ((call is name "environ_get") (call emit_strings_get l w (get w W.envc_cell) (get w W.envp_cell)) true)
+      ((call is name "clock_time_get") (call emit_clock_time_get l w) true)
+      ((call is name "random_get") (call emit_random_get l w) true)
+      ((call is name "path_open") (call emit_path_open l w) true)
+      ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
+      (else false)))
+
+  (fn is [name:(ptr str.Bytes) want:str] -> bool
+    (call str.bytes_eq name (call str.from_str want)))
+)

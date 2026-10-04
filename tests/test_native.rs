@@ -309,15 +309,24 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
     assert_native_matches(name, &program);
 }
 
-/// Calls exports with i32 arguments, in order, in one wasmtime instance;
-/// their i32 results (a bool as 0 or 1).
+/// Calls exports with i32 arguments, in order, in one wasmtime instance
+/// with aipl-run's preopens (a scratch working directory as fd 3, `/` as
+/// fd 4); their i32 results (a bool as 0 or 1).
 fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<i32> {
     use wasmtime::Val;
+    use wasmtime_wasi::FsPerms;
     let engine = Engine::default();
     let module = WasmModule::new(&engine, wasm).unwrap();
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
-    let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
+    let dir = scratch(&format!("exports_{}", calls.len()));
+    let ctx = WasiCtxBuilder::new()
+        .preopened_dir(&dir, ".", FsPerms::ReadWrite)
+        .unwrap()
+        .preopened_dir("/", "/", FsPerms::ReadWrite)
+        .unwrap()
+        .build_p1();
+    let mut store = Store::new(&engine, ctx);
     let inst = linker.instantiate(&mut store, &module).unwrap();
     calls
         .iter()
@@ -422,6 +431,268 @@ fn allocating_programs_match_natively() {
         &[],
         &[("main", &[]), ("frozen_is_atomic", &[]), ("simulate", &[100, 7, 20]), ("simulate", &[10, 5, 3])],
     );
+}
+
+/// NE10: the WASI functions other than files. Every program prints, so its
+/// whole output is compared; the environment is fixed for both runs.
+#[test]
+fn wasi_programs_match_natively() {
+    let env = |vars: &[(&str, &str)]| Some(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    let big_input: Vec<u8> = (0..20000).map(|i| format!("word{i} ")).collect::<String>().into_bytes();
+    let cases: Vec<(&str, String, Io)> = vec![
+        ("print_lines", "(module m (fn main [] -> i32 (sys.print \"hello\" \"native world\") 0))".into(), Io::default()),
+        (
+            "print_numbers",
+            "(module m (import io) (fn main [] -> i32 (call io.println_int \"n: \" -2147483648) (call io.println_int \"m: \" 42) (call io.print_int 7) (call io.println \"\") 0))".into(),
+            Io::default(),
+        ),
+        ("raw_write_to_fd_1", "(module m (fn main [] -> i32 (sys.exit (fs.write 1 (str.ptr \"raw\\n\") 4)) 0))".into(), Io::default()),
+        ("write_to_stderr", "(module m (fn main [] -> i32 (sys.exit (fs.write 2 (str.ptr \"err\\n\") 4)) 0))".into(), Io::default()),
+        ("write_to_a_bad_fd", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.write 9 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
+        ("write_to_a_huge_fd", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.write 70000 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
+        (
+            "close_stderr_then_write",
+            "(module m (fn main [] -> i32 (let r:i32 (fs.close 2)) (sys.exit (+ (* 10 (+ r 1)) (+ 2 (fs.write 2 (str.ptr \"x\") 1)))) 0))".into(),
+            Io::default(),
+        ),
+        (
+            "stdin_words",
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (call io.read_stdin))) 0))".into(),
+            Io { stdin: b"one two\nthree four five\n".to_vec(), ..Io::default() },
+        ),
+        (
+            "stdin_large",
+            "(module m (import io) (import str) (fn main [] -> i32 (let b:(ptr str.Bytes) (call io.read_stdin)) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
+            Io { stdin: big_input.clone(), ..Io::default() },
+        ),
+        (
+            "stdin_empty",
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (get (call io.read_stdin) str.Bytes.len)) 0))".into(),
+            Io::default(),
+        ),
+        (
+            "command_line_and_environment",
+            "(module m (import io) (import os) (import str)
+               (fn main [] -> i32
+                 (call io.println_int \"argc: \" (call os.arg_count))
+                 (loop i 0 (- (call os.arg_count) 1) 1 (call io.println_int \"len: \" (get (call os.arg i) str.Bytes.len)))
+                 (call io.println_int \"byte: \" (call str.byte_at (call os.arg 2) 1))
+                 (call io.println_int \"missing: \" (get (call os.arg 9) str.Bytes.len))
+                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call os.env \"AIPL_PROBE\")) (ok v v) (err e -1000)))
+                 (call io.println_int \"prefix: \" (get (call os.env \"AIPL_PRO\") str.Bytes.len))
+                 (call io.println_int \"empty: \" (get (call os.env \"AIPL_EMPTY\") str.Bytes.len))
+                 (call io.println_int \"unset: \" (get (call os.env \"AIPL_UNSET\") str.Bytes.len))
+                 0))".into(),
+            Io {
+                args: vec!["hello".into(), "a b".into(), "".into(), "three".into()],
+                env: env(&[("AIPL_PROBE", "-42"), ("AIPL_PROBE_LONGER", "1"), ("AIPL_EMPTY", "")]),
+                ..Io::default()
+            },
+        ),
+        (
+            "no_environment",
+            "(module m (import io) (import os) (import str) (fn main [] -> i32 (call io.println_int \"home: \" (get (call os.env \"HOME\") str.Bytes.len)) 0))".into(),
+            Io { env: env(&[]), ..Io::default() },
+        ),
+        (
+            "clocks",
+            // compared through their 32-bit halves (i64 comparisons are NE12):
+            // 2020-01-01 in nanoseconds has high word 367368757
+            "(module m (import io) (fn main [] -> i32
+               (let p:i32 (mem.alloc 32))
+               (mem.store64 p (sys.monotonic)) (mem.store64 (+ p 8) (sys.monotonic)) (mem.store64 (+ p 16) (sys.time))
+               (let hi0:i32 (mem.load32 (+ p 4))) (let hi1:i32 (mem.load32 (+ p 12)))
+               (call io.println_int \"after 2020: \" (if (gt (mem.load32 (+ p 20)) 367368757) 1 0))
+               (call io.println_int \"monotonic: \" (if (or (gt hi1 hi0) (and (eq hi1 hi0) (gte (- (mem.load32 (+ p 8)) (mem.load32 p)) 0))) 1 0))
+               0))".into(),
+            Io::default(),
+        ),
+        (
+            "random",
+            "(module m (import io) (import os) (fn main [] -> i32
+               (let p:i32 (mem.alloc 4096)) (let ok:i32 (sys.random p 4096))
+               (let nonzero:i32 0)
+               (loop i 0 4095 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1)) (block)))
+               (call io.println_int \"result: \" ok)
+               (call io.println_int \"mostly nonzero: \" (if (gt nonzero 3900) 1 0))
+               (call io.println_int \"differ: \" (if (neq (call os.random_i32) (call os.random_i32)) 1 0))
+               0))".into(),
+            Io::default(),
+        ),
+        // the raw counts and sizes (each string counts its NUL)
+        (
+            "raw_argument_and_environment_sizes",
+            "(module m (import io) (fn main [] -> i32 (let p:i32 (mem.alloc 16))
+               (let a:i32 (args.sizes p (+ p 4))) (call io.println_int \"argc: \" (mem.load32 p)) (call io.println_int \"argv bytes: \" (mem.load32 (+ p 4)))
+               (let e:i32 (env.sizes (+ p 8) (+ p 12))) (call io.println_int \"envc: \" (mem.load32 (+ p 8))) (call io.println_int \"env bytes: \" (mem.load32 (+ p 12)))
+               0))".into(),
+            Io { args: vec!["x".into(), "".into(), "yz".into()], env: env(&[("A", "1"), ("BB", "")]), ..Io::default() },
+        ),
+        // a buffer ending exactly at the end of memory is fine
+        ("random_up_to_the_end", "(module m (fn main [] -> i32 (sys.exit (+ 10 (sys.random (- (* 16 65536) 8) 8))) 0))".into(), Io::default()),
+        // bad pointers trap with wasmtime's words, start and length included
+        ("trap_random_out_of_bounds", "(module m (fn main [] -> i32 (sys.exit (sys.random 2000000000 8)) 0))".into(), Io::default()),
+        ("trap_random_straddles_the_end", "(module m (fn main [] -> i32 (sys.exit (sys.random (- (* 16 65536) 4) 8)) 0))".into(), Io::default()),
+        ("trap_write_buffer_out_of_bounds", "(module m (fn main [] -> i32 (sys.exit (fs.write 1 2000000000 4)) 0))".into(), Io::default()),
+        // wasmtime reads first: nothing read is no error; otherwise the region is what was read
+        ("read_outside_memory_with_no_input", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 4294967295 4))) 0))".into(), Io::default()),
+        (
+            "trap_read_outside_memory",
+            "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 4294967290 100))) 0))".into(),
+            Io { stdin: b"abcdefgh".to_vec(), ..Io::default() },
+        ),
+        (
+            "trap_read_straddling_the_end",
+            "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 (- (* 16 65536) 2) 100))) 0))".into(),
+            Io { stdin: b"abcdefgh".to_vec(), ..Io::default() },
+        ),
+        ("trap_args_misaligned", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes (+ p 1) (+ p 8))) 0))".into(), Io::default()),
+        ("trap_args_size_written_first", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes 2000000000 (+ p 2))) 0))".into(), Io::default()),
+        ("trap_env_bounds_before_alignment", "(module m (fn main [] -> i32 (sys.exit (env.sizes 8192 2000000001)) 0))".into(), Io::default()),
+    ];
+    for (name, src, io) in cases {
+        assert_wasm_native_matches_with(name, &to_wasm(&src), &io);
+    }
+}
+
+/// NE11: files, and the access rules: relative paths stay beneath the
+/// working directory (no `..` or symlink escapes), absolute paths work
+/// unless sandboxed. After each run every file under the run's parent
+/// directory is compared, so an escape would show.
+#[test]
+fn file_programs_match_natively() {
+    let input = include_bytes!("../examples/input.txt").to_vec();
+    let file = |name: &str, bytes: &[u8]| (name.to_string(), bytes.to_vec());
+    let with_input = |args: &[&str], sandbox: bool| Io {
+        args: args.iter().map(|a| a.to_string()).collect(),
+        files: vec![file("input.txt", &input)],
+        sandbox,
+        ..Io::default()
+    };
+    // the run directory both builds use (see assert_wasm_native_matches_with)
+    let run_dir = |name: &str| scratch_path(name).join("run").display().to_string();
+    let word_count = include_str!("../examples/word_count.aipl");
+    let probe = |body: &str| format!("(module m (import io) (import str) (fn main [] -> i32 {body} 0))");
+    let open_report = |path: &str, write: bool| {
+        format!(
+            "(call io.println_int \"{path}: \" (fs.open (str.ptr \"{path}\") {} {}))",
+            path.len(),
+            if write { 1 } else { 0 }
+        )
+    };
+    let abs_name = "absolute_paths";
+    let abs = format!("{}/abs.txt", run_dir(abs_name));
+    let abs_boxed_name = "absolute_paths_sandboxed";
+    let abs_boxed = format!("{}/abs.txt", run_dir(abs_boxed_name));
+    let write_read = |path: &str| {
+        probe(&format!(
+            "(call io.println_int \"wrote: \" (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")))
+             (call io.println_int \"read: \" (get (call io.read_path (call str.from_str \"{path}\")) str.Bytes.len))"
+        ))
+    };
+    let big: Vec<u8> = (0..30000).map(|i| format!("w{} ", i % 977)).collect::<String>().into_bytes();
+    let cases: Vec<(&str, String, Io)> = vec![
+        ("word_count", word_count.into(), with_input(&[], false)),
+        ("word_count_named_file", word_count.into(), with_input(&["input.txt"], false)),
+        ("word_count_missing_file", word_count.into(), with_input(&["nope.txt"], false)),
+        ("word_count_big_file", word_count.into(), Io { files: vec![file("input.txt", &big)], ..Io::default() }),
+        // (word_freq's hash map needs i64 comparisons: NE12)
+        ("word_count_sandboxed", word_count.into(), with_input(&["input.txt"], true)),
+        (
+            "write_then_read",
+            probe(
+                "(call io.println_int \"wrote: \" (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")))
+                 (call io.println_int \"lines: \" (call str.count_lines (call io.read_file \"out.txt\")))
+                 (call io.println_int \"again: \" (call io.write_file \"out.txt\" (call str.from_str \"short\")))",
+            ),
+            Io::default(),
+        ),
+        (
+            "open_missing_and_subdirectories",
+            probe(&[open_report("nope.txt", false), open_report("sub/inner.txt", false), open_report("./data.txt", false),
+                    open_report("sub/../data.txt", false), open_report("nodir/new.txt", true), open_report("", false)].concat()),
+            Io { files: vec![file("data.txt", b"d"), file("sub/inner.txt", b"i")], ..Io::default() },
+        ),
+        (
+            "escapes_are_refused",
+            probe(&[open_report("../escaped.txt", true), open_report("sub/../../escaped.txt", true), open_report("out/escaped.txt", true),
+                    open_report("out/run/data.txt", false), open_report("/etc/hostname", false)].concat()),
+            Io { files: vec![file("data.txt", b"d"), file("sub/x.txt", b"x")], symlinks: vec![("out".into(), "..".into())], ..Io::default() },
+        ),
+        (
+            "symlinks_inside",
+            probe(&[open_report("alias.txt", false), open_report("subalias/inner.txt", false)].concat()),
+            Io {
+                files: vec![file("data.txt", b"d"), file("sub/inner.txt", b"i")],
+                symlinks: vec![("alias.txt".into(), "data.txt".into()), ("subalias".into(), "sub".into())],
+                ..Io::default()
+            },
+        ),
+        (
+            "delete",
+            probe(
+                "(call io.println_int \"a: \" (fs.delete (str.ptr \"a.txt\") 5))
+                 (call io.println_int \"again: \" (fs.delete (str.ptr \"a.txt\") 5))
+                 (call io.println_int \"nested: \" (fs.delete (str.ptr \"sub/b.txt\") 9))
+                 (call io.println_int \"directory: \" (fs.delete (str.ptr \"sub\") 3))
+                 (call io.println_int \"escape: \" (fs.delete (str.ptr \"../run/c.txt\") 12))
+                 (call io.println_int \"symlink: \" (fs.delete (str.ptr \"out/run/c.txt\") 13))
+                 (call io.println_int \"link itself: \" (fs.delete (str.ptr \"alias.txt\") 9))",
+            ),
+            Io {
+                files: vec![file("a.txt", b"a"), file("sub/b.txt", b"b"), file("c.txt", b"c")],
+                symlinks: vec![("out".into(), "..".into()), ("alias.txt".into(), "c.txt".into())],
+                ..Io::default()
+            },
+        ),
+        (
+            "read_only_descriptor",
+            probe(
+                "(let fd:i32 (fs.open (str.ptr \"data.txt\") 8 0))
+                 (call io.println_int \"write: \" (fs.write fd (str.ptr \"x\") 1))
+                 (call io.println_int \"close: \" (fs.close fd))
+                 (call io.println_int \"closed: \" (fs.close fd))",
+            ),
+            Io { files: vec![file("data.txt", b"data")], ..Io::default() },
+        ),
+        (
+            "descriptor_numbers",
+            probe(
+                "(let a:i32 (fs.open (str.ptr \"a.txt\") 5 1)) (let b:i32 (fs.open (str.ptr \"b.txt\") 5 1))
+                 (call io.println_int \"a: \" a) (call io.println_int \"b: \" b)
+                 (call io.println_int \"close a: \" (fs.close a))
+                 (call io.println_int \"c: \" (fs.open (str.ptr \"c.txt\") 5 1))
+                 (call io.println_int \"close 0: \" (fs.close 0))
+                 (call io.println_int \"d: \" (fs.open (str.ptr \"d.txt\") 5 1))
+                 (call io.println_int \"close 3: \" (fs.close 3))
+                 (call io.println_int \"e: \" (fs.open (str.ptr \"e.txt\") 5 1))",
+            ),
+            Io::default(),
+        ),
+        (abs_name, write_read(&abs), Io::default()),
+        (abs_boxed_name, write_read(&abs_boxed), Io { sandbox: true, ..Io::default() }),
+    ];
+    for (name, src, io) in cases.iter() {
+        assert_wasm_native_matches_with(name, &to_wasm(src), io);
+    }
+    // aipl_src/file_io.aipl's self-test (a real file round trip)
+    assert_functions_match("file_io", include_str!("../aipl_src/file_io.aipl"), &[], &[("run_file_io_tests", &[])]);
+    // agreeing is not enough: every escape must actually be refused
+    let (_, src, io) = cases.iter().find(|(n, _, _)| *n == "escapes_are_refused").unwrap();
+    // (the last path, /etc/hostname, is absolute: allowed unless sandboxed)
+    for sandbox in [false, true] {
+        let io = Io { sandbox, ..io.clone() };
+        let root = scratch("escapes_checked");
+        let dir = prepare(&root, &io);
+        let out = run_native_with(&dir, &to_native_with(&to_wasm(src), sandbox).unwrap(), &io);
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        assert!(lines[..4].iter().all(|l| l.ends_with(": -1")), "an escape was allowed:\n{text}");
+        assert_eq!(lines[4].ends_with(": -1"), sandbox, "absolute path, sandbox {sandbox}:\n{text}");
+        assert!(!root.join("escaped.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// Edge values for the i32 operator programs.
@@ -550,15 +821,30 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
+fn scratch_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("aipl_native_{}_{}", std::process::id(), name))
+}
+
 fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("aipl_native_{}_{}", std::process::id(), name));
+    let d = scratch_path(name);
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
 }
 
+/// Compiles `src`; a program with imports (the standard library) is
+/// resolved from a scratch file.
 fn to_wasm(src: &str) -> Vec<u8> {
-    let m = Parser::parse(src).unwrap_or_else(|e| panic!("{e}"));
+    let m = if src.contains("(import") {
+        let dir = scratch(&format!("resolve_{:x}", src.len() * 31 + src.bytes().map(|b| b as usize).sum::<usize>()));
+        let path = dir.join("prog.aipl");
+        std::fs::write(&path, src).unwrap();
+        let m = Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        m
+    } else {
+        Parser::parse(src).unwrap_or_else(|e| panic!("{e}"))
+    };
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{e}"));
     WasmCompiler::compile(&m).unwrap_or_else(|e| panic!("{e}"))
 }
@@ -581,13 +867,19 @@ fn native_compiler() -> &'static (Engine, WasmModule) {
 
 /// native.compile over `wasm`: Ok(executable) or Err(message).
 fn to_native(wasm: &[u8]) -> Result<Vec<u8>, String> {
+    to_native_with(wasm, false)
+}
+
+fn to_native_with(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
     let (engine, module) = native_compiler();
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(engine, WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, module).unwrap();
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").unwrap();
-    let compile = inst.get_typed_func::<(i32, i32), i32>(&mut store, "compile_at").unwrap();
+    let compile = inst
+        .get_typed_func::<(i32, i32), i32>(&mut store, if sandbox { "compile_sandboxed_at" } else { "compile_at" })
+        .unwrap();
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let addr = alloc.call(&mut store, wasm.len() as i32 + 8).unwrap() as usize;
     mem.write(&mut store, addr, wasm).unwrap();
@@ -609,16 +901,57 @@ fn output_of(data: &[u8], out: usize) -> Result<Vec<u8>, String> {
 /// Both builds run as `<dir>/prog`, so argv[0], which a trap message
 /// starts with, is the same string in both.
 fn run_wasm(dir: &Path, wasm: &[u8]) -> Output {
-    let path = dir.join("prog");
-    std::fs::write(&path, wasm).unwrap();
-    run_fresh_executable(Command::new(RUNNER).arg(&path).current_dir(dir))
+    run_wasm_with(dir, wasm, &Io::default())
 }
 
 fn run_native(dir: &Path, exe: &[u8]) -> Output {
+    run_native_with(dir, exe, &Io::default())
+}
+
+/// What a program run gets besides its own file: arguments after argv[0],
+/// an environment (None: inherit the test's), and stdin.
+/// `files` and `symlinks` (name, target) are created in the run directory
+/// before each run; `sandbox` runs `aipl-run --sandbox` and builds the
+/// native program sandboxed (only the working directory).
+#[derive(Default, Clone)]
+struct Io {
+    args: Vec<String>,
+    env: Option<Vec<(String, String)>>,
+    stdin: Vec<u8>,
+    files: Vec<(String, Vec<u8>)>,
+    symlinks: Vec<(String, String)>,
+    sandbox: bool,
+}
+
+impl Io {
+    fn apply(&self, cmd: &mut Command) {
+        cmd.args(&self.args);
+        if let Some(env) = &self.env {
+            cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        }
+    }
+}
+
+fn run_wasm_with(dir: &Path, wasm: &[u8], io: &Io) -> Output {
+    let path = dir.join("prog");
+    std::fs::write(&path, wasm).unwrap();
+    let mut cmd = Command::new(RUNNER);
+    if io.sandbox {
+        cmd.arg("--sandbox");
+    }
+    cmd.arg(&path).current_dir(dir);
+    io.apply(&mut cmd);
+    run_fresh_executable(&mut cmd, &io.stdin)
+}
+
+fn run_native_with(dir: &Path, exe: &[u8], io: &Io) -> Output {
     let path = dir.join("prog");
     std::fs::write(&path, exe).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    run_fresh_executable(Command::new(&path).current_dir(dir))
+    let mut cmd = Command::new(&path);
+    cmd.current_dir(dir);
+    io.apply(&mut cmd);
+    run_fresh_executable(&mut cmd, &io.stdin)
 }
 
 /// How long a test program may run. A miscompiled branch can loop forever;
@@ -630,9 +963,9 @@ const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// file is still open for writing hands that child the open file until it
 /// execs, during which Linux refuses to run the file ("Text file busy").
 /// Starting is retried briefly then.
-fn run_fresh_executable(cmd: &mut Command) -> Output {
+fn run_fresh_executable(cmd: &mut Command, stdin: &[u8]) -> Output {
     use std::process::Stdio;
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = None;
     for _ in 0..100 {
         match cmd.spawn() {
@@ -643,8 +976,16 @@ fn run_fresh_executable(cmd: &mut Command) -> Output {
             }
         }
     }
-    let child = child.expect("the executable stayed busy for a second");
+    let mut child = child.expect("the executable stayed busy for a second");
     let pid = child.id();
+    let mut input = child.stdin.take().unwrap();
+    let stdin = stdin.to_vec();
+    // a separate thread, so a program that does not read its input cannot
+    // block the test on a full pipe
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let _ = input.write_all(&stdin);
+    });
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(child.wait_with_output());
@@ -664,11 +1005,62 @@ fn assert_native_matches(name: &str, src: &str) {
 }
 
 fn assert_wasm_native_matches(name: &str, wasm: &[u8]) {
+    assert_wasm_native_matches_with(name, wasm, &Io::default());
+}
+
+/// Clears `root`, then makes `root/run` with `io`'s files and symlinks.
+fn prepare(root: &Path, io: &Io) -> PathBuf {
+    let _ = std::fs::remove_dir_all(root);
+    let dir = root.join("run");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, bytes) in &io.files {
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    for (name, target) in &io.symlinks {
+        std::os::unix::fs::symlink(target, dir.join(name)).unwrap();
+    }
+    dir
+}
+
+/// Every file, directory, and symlink under `root` (but the program
+/// itself), with contents, sorted: what a run left behind.
+fn snapshot(root: &Path) -> Vec<String> {
+    fn walk(base: &Path, at: &Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(at).unwrap() {
+            let p = e.unwrap().path();
+            let rel = p.strip_prefix(base).unwrap().display().to_string();
+            let meta = std::fs::symlink_metadata(&p).unwrap();
+            if rel == "run/prog" {
+            } else if meta.file_type().is_symlink() {
+                out.push(format!("{rel} -> {}", std::fs::read_link(&p).unwrap().display()));
+            } else if meta.is_dir() {
+                out.push(format!("{rel}/"));
+                walk(base, &p, out);
+            } else {
+                out.push(format!("{rel}: {:?}", String::from_utf8_lossy(&std::fs::read(&p).unwrap())));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+fn assert_wasm_native_matches_with(name: &str, wasm: &[u8], io: &Io) {
     let wasm = wasm.to_vec();
-    let exe = to_native(&wasm).unwrap_or_else(|e| panic!("{name}: native compile failed: {e}"));
-    let dir = scratch(name);
-    let (want, got) = (run_wasm(&dir, &wasm), run_native(&dir, &exe));
-    let _ = std::fs::remove_dir_all(&dir);
+    let exe = to_native_with(&wasm, io.sandbox).unwrap_or_else(|e| panic!("{name}: native compile failed: {e}"));
+    let root = scratch(name);
+    let dir = prepare(&root, io);
+    let want = run_wasm_with(&dir, &wasm, io);
+    let want_files = snapshot(&root);
+    let dir = prepare(&root, io);
+    let got = run_native_with(&dir, &exe, io);
+    let got_files = snapshot(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(want_files, got_files, "{name}: the files left behind differ (aipl-run, then native)");
     let show = |o: &Output| {
         format!("status {:?}, stdout {:?}, stderr {:?}", o.status.code(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     };
@@ -772,7 +1164,10 @@ fn traps_print_one_line_and_exit_134() {
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
         ("(module m (fn main [] -> i32 (sys.exit (i32.wrap (* 3i64 4i64))) 0))", "not supported natively yet: i64.mul (opcode 126)"),
-        ("(module m (fn main [] -> i32 (sys.print \"hi\") 0))", "import not supported natively yet: wasi_snapshot_preview1.fd_write"),
+        (
+            "(module m (fn work [x:i32] -> i32 x) (fn main [] -> i32 (sys.exit (thread.join (thread.spawn (ref work) 3))) 0))",
+            "not supported natively yet: a start function (threaded modules)",
+        ),
         ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
     ] {
         assert_eq!(to_native(&to_wasm(src)), Err(expected.to_string()), "{src}");
