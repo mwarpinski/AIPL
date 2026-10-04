@@ -161,6 +161,7 @@ Done when: the float programs in `test_differential.rs`, `examples/matrix_mult.a
 **NE14: function references.** Depends on: NE9.
 The function table, element section, and `call_indirect` with its type check (trap on mismatch, as wasm).
 Done when: `tests/test_refs.rs` programs and `vec.sort_by` users (`word_freq`, `std/vec` tests) match natively.
+**Done (2026-10-04).** The table is a data array of 16-byte entries (code address, canonical type id, padding), type -1 for an empty slot, with addresses written in once the code layout is known. A function type's canonical id is the first structurally equal type's index, since wasm compares function types by structure. `call_indirect` zero-extends the index, then traps on an index past the table (`undefined element: out of bounds table access`), an empty slot (`uninitialized element`), and a type mismatch (`indirect call type mismatch`), in that order, before calling through the address. Running: `REFS_PROGRAM` (references through parameters, arrays, and struct fields; reference equality), the `std/vec` self-tests (`sort_by` with a comparator), `word_freq`, references to functions with i64 and f64 parameters, and hand-built tables: a call, a call through a structurally equal type, and the three traps (one with index -1). The function checker now parses through the resolver, so generic and importing programs are checked function by function too. Mutation-checked: 9 deliberate bugs, all caught after adding an index equal to the table size and an element segment starting past slot 0.
 
 ### Group F: threads
 
