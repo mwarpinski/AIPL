@@ -93,6 +93,26 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_divu_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (divu 7 z)) 0))"),
     ("trap_remu_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (remu 7 z)) 0))"),
     ("trap_min_div_minus_one", "(module m (fn main [] -> i32 (let z:i32 -1) (sys.exit (/ -2147483648 z)) 0))"),
+    // NE8: linear memory without allocation (allocation is atomic: NE9)
+    ("string_length_from_data", "(module m (fn main [] -> i32 (sys.exit (str.len \"hello\")) 0))"),
+    ("string_bytes_from_data", "(module m (fn main [] -> i32 (sys.exit (mem.load8 (+ (str.ptr \"AIPL\") 1))) 0))"),
+    ("heap_cursor_from_data", "(module m (fn main [] -> i32 (let a:i32 0) (sys.exit (- (mem.load32 a) 1000)) 0))"),
+    ("store_then_load", "(module m (fn main [] -> i32 (mem.store32 8192 77) (mem.store8 8193 1) (sys.exit (- (mem.load32 8192) 256)) 0))"),
+    (
+        "grow_to_the_cap",
+        "(module m (fn main [] -> i32
+           (let a:i32 (mem.grow 0)) (let b:i32 (mem.grow 1008)) (let c:i32 (mem.grow 0)) (let d:i32 (mem.grow 1))
+           (sys.exit (+ (+ a b) (+ (- c 1000) (* 50 (+ d 1))))) 0))",
+    ),
+    (
+        "top_of_grown_memory",
+        "(module m (fn main [] -> i32 (let _g:i32 (mem.grow 1008)) (let top:i32 (- (* 1024 65536) 4))
+           (mem.store32 top 9) (sys.exit (mem.load32 top)) 0))",
+    ),
+    ("last_word_of_initial_memory", "(module m (fn main [] -> i32 (let a:i32 (- (* 16 65536) 4)) (sys.exit (+ 3 (mem.load32 a))) 0))"),
+    ("trap_load_past_memory", "(module m (fn main [] -> i32 (let a:i32 (* 16 65536)) (sys.exit (mem.load32 a)) 0))"),
+    ("trap_store_past_memory", "(module m (fn main [] -> i32 (let a:i32 (- (* 16 65536) 2)) (mem.store32 a 1) 0))"),
+    ("trap_negative_address", "(module m (fn main [] -> i32 (let a:i32 -8) (sys.exit (mem.load8 a)) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
     ("exit_status_negative_is_an_error", "(module m (fn main [] -> i32 (sys.exit -1) 0))"),
 ];
@@ -101,7 +121,8 @@ const PROGRAMS: &[(&str, &str)] = &[
 /// local before writing it): `f` is called by `_start`, and its result is
 /// the exit status. Run both ways like `PROGRAMS`.
 fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
-    use wasm_encoder::{BlockType as B, Instruction as I, ValType as V};
+    use wasm_encoder::{BlockType as B, Instruction as I, MemArg, ValType as V};
+    let m = |align, offset| MemArg { offset, align, memory_index: 0 };
     vec![
         // wasm locals start at zero
         ("unwritten_locals_are_zero", exit_with(&[0, 3], &[I::LocalGet(2), I::End])),
@@ -152,6 +173,50 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
             I::I32Const(1), I::Block(B::Empty), I::Loop(B::Empty), I::I32Const(2), I::I32Const(19), I::Return, I::End, I::End, I::Drop, I::I32Const(0), I::End,
         ])),
         ("unreachable_traps", exit_with(&[], &[I::Unreachable, I::End])),
+        // NE8: memory (one page initially, at most four)
+        ("store_i64_load_bytes", exit_with(&[], &[
+            I::I32Const(100), I::I64Const(0x0102_0304_0506_0708), I::I64Store(m(3, 8)),
+            I::I32Const(108), I::I32Load8U(m(0, 0)), I::I32Const(100), I::I32Load8U(m(0, 15)), I::I32Const(10), I::I32Mul, I::I32Add, I::End,
+        ])),
+        ("store8_truncates", exit_with(&[], &[
+            I::I32Const(200), I::I32Const(0x150), I::I32Store8(m(0, 0)), I::I32Const(200), I::I32Load(m(2, 0)), I::End,
+        ])),
+        ("last_valid_word", exit_with(&[], &[I::I32Const(65532), I::I32Load(m(2, 0)), I::I32Const(3), I::I32Add, I::End])),
+        ("trap_straddling_the_end", exit_with(&[], &[I::I32Const(65533), I::I32Load(m(2, 0)), I::End])),
+        ("trap_offset_does_not_wrap", exit_with(&[], &[I::I32Const(-1), I::I32Load(m(2, 4)), I::End])),
+        ("trap_huge_offset", exit_with(&[], &[I::I32Const(0), I::I32Load(m(2, 0x8000_0000)), I::End])),
+        // the address alone is in bounds; with the offset it is not
+        ("trap_offset_past_the_end", exit_with(&[], &[I::I32Const(65528), I::I32Load(m(2, 8)), I::End])),
+        // a 4-byte store leaves the next 4 bytes alone
+        ("f32_store_writes_four_bytes", exit_with(&[], &[
+            I::I32Const(44), I::I32Const(9), I::I32Store(m(2, 0)),
+            I::I32Const(32), I::I32Const(0x4049_0FDB), I::I32Store(m(2, 0)),
+            I::I32Const(40), I::I32Const(32), I::F32Load(m(2, 0)), I::F32Store(m(2, 0)),
+            I::I32Const(44), I::I32Load(m(2, 0)), I::End,
+        ])),
+        // an i32 address made by wrapping an i64: the high half is not part of it
+        ("address_ignores_high_bits", exit_with(&[], &[
+            I::I32Const(16), I::I32Const(7), I::I32Store(m(2, 0)),
+            I::I64Const(0x1_0000_0010), I::I32WrapI64, I::I32Load(m(2, 0)), I::End,
+        ])),
+        ("grow_stops_at_the_maximum", exit_with(&[], &[
+            I::I32Const(3), I::MemoryGrow(0), I::I32Const(1), I::MemoryGrow(0), I::I32Add, I::MemorySize(0), I::I32Add, I::End,
+        ])),
+        ("grown_pages_are_zero_and_usable", exit_with(&[], &[
+            I::I32Const(1), I::MemoryGrow(0), I::Drop,
+            I::I32Const(65544), I::I32Const(5), I::I32Store(m(2, 0)),
+            I::I32Const(65540), I::I32Load(m(2, 0)), I::I32Const(65544), I::I32Load(m(2, 0)), I::I32Add, I::End,
+        ])),
+        ("trap_past_the_grown_size", exit_with(&[], &[
+            I::I32Const(1), I::MemoryGrow(0), I::Drop, I::I32Const(131072), I::I32Load8U(m(0, 0)), I::End,
+        ])),
+        // f32/f64 loads and stores move bits
+        ("float_bits_round_trip", exit_with(&[], &[
+            I::I32Const(64), I::F64Const(1.5f64.into()), I::F64Store(m(3, 0)), I::I32Const(68), I::I32Load(m(2, 0)), I::I32Const(0x3FF8_0000), I::I32Eq,
+            I::I32Const(32), I::I32Const(0x4049_0FDB), I::I32Store(m(2, 0)),
+            I::I32Const(40), I::I32Const(32), I::F32Load(m(2, 0)), I::F32Store(m(2, 0)),
+            I::I32Const(40), I::I32Load(m(2, 0)), I::I32Const(0x4049_0FDB), I::I32Eq, I::I32Const(2), I::I32Mul, I::I32Add, I::End,
+        ])),
         // a branch must leave the values below its label intact for what
         // follows: 50 + 42; with locals, 100 + 42 + local 5 - 100 (the frame's locals sit between
         // rbp and the value stack)
@@ -391,7 +456,7 @@ fn exit_with(locals: &[u32], body: &[wasm_encoder::Instruction]) -> Vec<u8> {
     funcs.function(1);
     funcs.function(2);
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: 1, maximum: Some(4), memory64: false, shared: false, page_size_log2: None });
     let mut exports = ExportSection::new();
     exports.export("_start", ExportKind::Func, 1);
     exports.export("memory", ExportKind::Memory, 0);
@@ -579,7 +644,12 @@ fn the_harness_tells_programs_apart() {
         ("tee_stores_the_value", 6), ("set_then_get", 12), ("br_carries_a_value", 42), ("br_if_taken_carries", 7),
         ("br_if_not_taken_falls_through", 5), ("loop_counts_to_ten", 10), ("br_out_of_nested_blocks", 9),
         ("if_without_else_skips", 7), ("if_without_else_runs", 1), ("if_else_values", 25), ("br_to_the_function", 8),
-        ("return_from_deep_inside", 19), ("unreachable_traps", 134), ("br_keeps_values_below_the_block", 92),
+        ("return_from_deep_inside", 19), ("unreachable_traps", 134),
+        ("store_i64_load_bytes", 18), ("store8_truncates", 80), ("last_valid_word", 3), ("trap_straddling_the_end", 134),
+        ("trap_offset_does_not_wrap", 134), ("trap_huge_offset", 134),
+        ("trap_offset_past_the_end", 134), ("f32_store_writes_four_bytes", 9), ("address_ignores_high_bits", 7),
+        ("grow_stops_at_the_maximum", 4), ("grown_pages_are_zero_and_usable", 5), ("trap_past_the_grown_size", 134),
+        ("float_bits_round_trip", 3), ("br_keeps_values_below_the_block", 92),
         ("br_keeps_values_below_with_locals", 47), ("br_after_an_if_value", 92), ("br_if_keeps_values_below", 39),
     ];
     let programs = wasm_programs();
@@ -606,6 +676,9 @@ fn traps_print_one_line_and_exit_134() {
         ("trap_remu_by_zero", "wasm trap: integer divide by zero"),
         ("trap_min_div_minus_one", "wasm trap: integer overflow"),
         ("exit_status_126_is_an_error", "exit with invalid exit status outside of [0..126)"),
+        ("trap_load_past_memory", "wasm trap: out of bounds memory access"),
+        ("trap_store_past_memory", "wasm trap: out of bounds memory access"),
+        ("trap_negative_address", "wasm trap: out of bounds memory access"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
@@ -619,7 +692,7 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (sys.exit (mem.load32 4096)) 0))", "not supported natively yet: i32.load (opcode 40)"),
+        ("(module m (fn main [] -> i32 (sys.exit (mem.alloc 8)) 0))", "not supported natively yet: i32.atomic.rmw.add (opcode 65054)"),
         ("(module m (fn main [] -> i32 (sys.print \"hi\") 0))", "import not supported natively yet: wasi_snapshot_preview1.fd_write"),
         ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
     ] {

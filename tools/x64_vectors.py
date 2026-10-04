@@ -79,13 +79,15 @@ def control():
     o+=[f"{{disp32}} j{CC[k]} start" for k in range(16)]
     o+=["{disp32} jmp start"]
     return o
+def strings():
+    return ["rep movsb"]
 def assemble(lines):
     d=tempfile.mkdtemp()
     open(f"{d}/a.s","w").write(".intel_syntax noprefix\n"+"\n".join(lines)+"\n")
     subprocess.run(["as",f"{d}/a.s","-o",f"{d}/a.o"],check=True)
     subprocess.run(["objcopy","-O","binary","-j",".text",f"{d}/a.o",f"{d}/a.bin"],check=True)
     return open(f"{d}/a.bin","rb").read().hex()
-GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control)]
+GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control), ("strings", strings)]
 
 if __name__ == "__main__":
     wanted = sys.argv[1:]

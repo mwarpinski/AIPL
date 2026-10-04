@@ -494,8 +494,19 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 6.
+  ;; Pass count; test_suite.aipl expects 7.
   (fn run_x64_tests [] -> i32
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (call test_control)))))))
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (call test_strings))))))))
   ;; X64_TESTS_END
+
+  ;; ===== Forms added after NE3 =====
+  ;; (Kept below the tests so the test vectors above stay where they are.)
+
+  ;; rep movsb: copies rcx bytes from [rsi] to [rdi] (NE8: data segments)
+  (fn rep_movsb [c:(ptr buf.Buf)] -> void (call byte c 243) (call byte c 164))
+
+  (fn test_strings [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make 16))
+    (call rep_movsb c)
+    (call check "strings" c "f3a4"))
 )
