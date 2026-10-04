@@ -30,6 +30,10 @@
 ;;   - Floats (NE13): a slot holds an f32's or f64's bits; arithmetic moves
 ;;     them through xmm0/xmm1 (SSE2), which compute what wasm specifies
 ;;     (IEEE 754, round to nearest), NaN results included.
+;;   - Function references (NE14): the wasm table is a data array of
+;;     16-byte entries [code address:u64][type:i32][pad], type -1 for an
+;;     empty slot; a type is its canonical id (the first structurally equal
+;;     type's index), so call_indirect's check compares one number.
 ;;   - Control flow (NE7): the translator tracks the value stack's depth (in
 ;;     slots) at every instruction and keeps a stack of open labels (the
 ;;     function body, block, loop, if). A branch resets rsp to its label's
@@ -73,6 +77,8 @@
              div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
              out_of_bounds:(ptr Reason) mem_cell:i32 mem_max:i32
              unaligned:(ptr Reason) wait_unshared:(ptr Reason) bad_conversion:(ptr Reason)
+             table_addr:i32 table_size:i32 canon_types:(ptr (vec.Vec i32))
+             table_oob:(ptr Reason) null_element:(ptr Reason) bad_signature:(ptr Reason)
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              failed:bool msg:(ptr buf.Buf)])
 
@@ -95,6 +101,12 @@
     (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
     (put l L.wait_unshared (call reason l "wasm trap: atomic wait on non-shared memory"))
     (put l L.bad_conversion (call reason l "wasm trap: invalid conversion to integer"))
+    (put l L.table_oob (call reason l "wasm trap: undefined element: out of bounds table access"))
+    (put l L.null_element (call reason l "wasm trap: uninitialized element"))
+    (put l L.bad_signature (call reason l "wasm trap: indirect call type mismatch"))
+    (put l L.table_addr 0)
+    (put l L.table_size 0)
+    (put l L.canon_types (call canonical_types w))
     (put l L.mem_cell -1)
     (put l L.mem_max 0)
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
@@ -156,6 +168,31 @@
     (put f Fixup.at (call x64.call_rel (get l L.code)))
     (put f Fixup.func func)
     (call (vec.push (ptr Fixup)) (get l L.fixups) f))
+
+  ;; For each type index, the first index with the same parameters and
+  ;; results (wasm compares function types structurally).
+  (fn canonical_types [w:(ptr wasm_reader.Wasm)] -> (ptr (vec.Vec i32))
+    (let types:(ptr (vec.Vec (ptr wasm_reader.FuncType))) (get w wasm_reader.Wasm.types))
+    (let n:i32 (call (vec.len (ptr wasm_reader.FuncType)) types))
+    (let out:(ptr (vec.Vec i32)) (call (vec.make i32) (+ n 1)))
+    (loop i 0 (- n 1) 1
+      (let first:i32 i)
+      (loop j 0 (- i 1) 1
+        (if (and (eq first i) (call same_type (call (vec.at (ptr wasm_reader.FuncType)) types i) (call (vec.at (ptr wasm_reader.FuncType)) types j)))
+            (set! first j)
+            (block)))
+      (call (vec.push i32) out first))
+    out)
+
+  (fn same_type [a:(ptr wasm_reader.FuncType) b:(ptr wasm_reader.FuncType)] -> bool
+    (and (call same_list (get a wasm_reader.FuncType.params) (get b wasm_reader.FuncType.params))
+         (call same_list (get a wasm_reader.FuncType.results) (get b wasm_reader.FuncType.results))))
+
+  (fn same_list [a:(ptr (vec.Vec i32)) b:(ptr (vec.Vec i32))] -> bool
+    (if (neq (call (vec.len i32) a) (call (vec.len i32) b)) (return false) (block))
+    (loop i 0 (- (call (vec.len i32) a) 1) 1
+      (if (neq (call (vec.at i32) a i) (call (vec.at i32) b i)) (return false) (block)))
+    true)
 
   (fn n_fimports [l:(ptr L)] -> i32 (call (vec.len (ptr wasm_reader.Import)) (get l L.fimports)))
 
@@ -255,6 +292,7 @@
            (block))
        (if (gt (call nresults t) 0) (call push_rax l) (block))
        true)
+      ((eq op 17) (call emit_call_indirect l w a) true)
       ((call i32_op l op) true)
       ((call i64_op l op) true)
       ((call float_op l op) true)
@@ -279,6 +317,9 @@
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (- (call nresults t) (call nparams t)))
+      ((eq op 17)
+       (let t:(ptr wasm_reader.FuncType) (call (vec.at (ptr wasm_reader.FuncType)) (get w wasm_reader.Wasm.types) a))
+       (- (- (call nresults t) (call nparams t)) 1))
       (else -1)))                                                    ;; i32 binary and compare
 
   (fn adjust [l:(ptr L) n:i32] -> void (put l L.depth (+ (get l L.depth) n)))
@@ -578,6 +619,35 @@
     (call x64.mov_ri32 c (call rax) -1)
     (call x64.patch_rel32 c done (call buf.len c))
     (call push_rax l))
+
+  ;; ===== Function references (NE14) =====
+
+  ;; call_indirect with type index `ti` (table 0): pops the table index,
+  ;; traps if it is out of range, the slot is empty, or the function's type
+  ;; differs (in that order, as wasm checks), then calls through the slot
+  ;; like a direct call.
+  (fn emit_call_indirect [l:(ptr L) w:(ptr wasm_reader.Wasm) ti:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let rdx:i32 2)
+    (let t:(ptr wasm_reader.FuncType) (call (vec.at (ptr wasm_reader.FuncType)) (get w wasm_reader.Wasm.types) ti))
+    (call pop_rax l)
+    (call x64.mov_rr c 32 (call rax) (call rax))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) (get l L.table_size))
+    (call emit_trap_if l (call x64.cc_ae) (get l L.table_oob))
+    (call x64.shift_ri c 64 (call x64.sh_shl) (call rax) 4)
+    (call x64.mov_ri32 c (call rcx) (get l L.table_addr))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rcx) (call rax))
+    (call x64.load c 32 rdx (call x64.mem (call rcx) 8))
+    (call x64.alu_ri c 32 (call x64.op_cmp) rdx -1)
+    (call emit_trap_if l (call x64.cc_e) (get l L.null_element))
+    (call x64.alu_ri c 32 (call x64.op_cmp) rdx (call (vec.at i32) (get l L.canon_types) ti))
+    (call emit_trap_if l (call x64.cc_ne) (get l L.bad_signature))
+    (call x64.load c 64 (call rax) (call x64.mem (call rcx) 0))
+    (call x64.call_r c (call rax))
+    (if (gt (call nparams t) 0)
+        (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
+        (block))
+    (if (gt (call nresults t) 0) (call push_rax l) (block)))
 
   ;; ===== Floats (NE13) =====
 

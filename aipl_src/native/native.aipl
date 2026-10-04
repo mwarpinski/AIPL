@@ -194,6 +194,8 @@
     (let sep:i32 (call lower.data_text l ": "))
     (let nl:i32 (call lower.data_text l "\n"))
     (let wr:(ptr wasi.W) (call wasi.make l))
+    (let table_problem:str (call reserve_table l w))
+    (if (gt (str.len table_problem) 0) (return (call failure (call str.from_str table_problem))) (block))
     (let texts:(ptr runtime.RegionTexts) (call region_texts l))
     (put l lower.L.trap_routine (call buf.len c))
     (call runtime.emit_trap_routine c argv0_cell sep nl)
@@ -222,11 +224,65 @@
     (loop i 0 (- (call (vec.len (ptr lower.Fixup)) (get l lower.L.fixups)) 1) 1
       (let f:(ptr lower.Fixup) (call (vec.at (ptr lower.Fixup)) (get l lower.L.fixups) i))
       (call x64.patch_rel32 c (get f lower.Fixup.at) (call (vec.at i32) starts (get f lower.Fixup.func))))
+    (call fill_table l w starts)
     (let o:(ptr Output) (new Output))
     (put o Output.ok true)
     (put o Output.error (call str.bytes 0 0))
     (put o Output.exe (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
     o)
+
+  ;; Reserves the table's entries in the data (empty: address 0, type -1);
+  ;; "" or the reason the table cannot be translated.
+  (fn reserve_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm)] -> str
+    (let tables:(ptr (vec.Vec (ptr wasm_reader.Table))) (get w wasm_reader.Wasm.tables))
+    (let n:i32 (call (vec.len (ptr wasm_reader.Table)) tables))
+    (if (eq n 0) (return "") (block))
+    (if (gt n 1) (return "more than one table") (block))
+    (let size:i32 (get (get (call (vec.at (ptr wasm_reader.Table)) tables 0) wasm_reader.Table.limits) wasm_reader.Limits.min))
+    (if (gt size 65536) (return "a table with more than 65536 entries") (block))
+    (let b:(ptr buf.Buf) (call buf.make (+ 16 (* 16 size))))
+    (loop i 1 size 1
+      (loop k 1 8 1 (call buf.push_byte b 0))
+      (loop k 1 4 1 (call buf.push_byte b 255))
+      (loop k 1 4 1 (call buf.push_byte b 0)))
+    ;; 16-aligned in the data, for tidy entries
+    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (while (neq (bitand (call buf.len data) 15) 0) (call buf.push_byte data 0))
+    (put l lower.L.table_addr (call lower.data_bytes l (call buf.bytes b)))
+    (put l lower.L.table_size size)
+    (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.Elem)) elems) 1) 1
+      (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
+      (if (gt (+ (get e wasm_reader.Elem.offset) (call (vec.len i32) (get e wasm_reader.Elem.funcs))) size)
+          (return "an element segment outside the table")
+          (block)))
+    "")
+
+  ;; Writes each element segment's functions into the table: code address
+  ;; (now that the layout is known) and canonical type.
+  (fn fill_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) starts:(ptr (vec.Vec i32))] -> void
+    (if (eq (get l lower.L.table_size) 0) (return) (block))
+    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
+    (let base:i32 (+ (get data buf.Buf.data) (- (get l lower.L.table_addr) (call elf.data_vaddr))))
+    (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.Elem)) elems) 1) 1
+      (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
+      (let funcs:(ptr (vec.Vec i32)) (get e wasm_reader.Elem.funcs))
+      (loop k 0 (- (call (vec.len i32) funcs) 1) 1
+        (let f:i32 (call (vec.at i32) funcs k))
+        (let entry:i32 (+ base (* 16 (+ (get e wasm_reader.Elem.offset) k))))
+        (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts f)))
+        (mem.store32 (+ entry 4) 0)
+        (let ti:i32 (call type_index_of l w f))
+        (mem.store32 (+ entry 8) (call (vec.at i32) (get l lower.L.canon_types) ti)))))
+
+  ;; The type index of function `f` (imports first).
+  (fn type_index_of [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) f:i32] -> i32
+    (let ni:i32 (call lower.n_fimports l))
+    (if (lt f ni)
+        (get (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) f) wasm_reader.Import.type_index)
+        (call (vec.at i32) (get w wasm_reader.Wasm.funcs) (- f ni))))
 
   ;; For hosts (tests, the driver): compile the `len` bytes at `addr`.
   ;; Returns the Output's address.

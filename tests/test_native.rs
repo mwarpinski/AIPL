@@ -11,7 +11,6 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::os::unix::fs::PermissionsExt;
@@ -287,7 +286,7 @@ fn program_from(file: &str, marker: &str) -> String {
 /// the expected values are right) and natively, as every program is.
 fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, &[i32])]) {
     use aipl_core::ast::Type;
-    let mut module = Parser::parse(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut module = parse_program(src);
     module.functions.retain(|f| !drop.contains(&f.name.as_str()));
     for f in module.functions.iter_mut().filter(|f| f.name == "main") {
         f.name = "orig_main".into();
@@ -611,7 +610,7 @@ fn file_programs_match_natively() {
         ("word_count_named_file", word_count.into(), with_input(&["input.txt"], false)),
         ("word_count_missing_file", word_count.into(), with_input(&["nope.txt"], false)),
         ("word_count_big_file", word_count.into(), Io { files: vec![file("input.txt", &big)], ..Io::default() }),
-        // (word_freq sorts with a comparator reference: NE14)
+        ("word_freq", include_str!("../examples/word_freq.aipl").into(), with_input(&[], false)),
         ("word_count_sandboxed", word_count.into(), with_input(&["input.txt"], true)),
         (
             "write_then_read",
@@ -708,6 +707,115 @@ fn file_programs_match_natively() {
         assert!(!root.join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// NE14: function references (the table and call_indirect).
+#[test]
+fn function_reference_programs_match_natively() {
+    assert_functions_match(
+        "refs",
+        &program_from(include_str!("test_refs.rs"), "const REFS_PROGRAM"),
+        &[],
+        &[("main", &[])],
+    );
+    // std/vec: sort_by with a comparator reference, among its self-tests
+    assert_functions_match("std_vec", include_str!("../aipl_src/std/vec.aipl"), &[], &[("run_vec_tests", &[])]);
+    assert_functions_match(
+        "refs_more",
+        "(module m
+           (fn a [] -> i32 0) (fn b [] -> i32 1)
+           (fn same [] -> bool (eq (ref b) (ref b)))
+           (fn differ [] -> bool (neq (ref a) (ref b)))
+           (fn sq [x:i32] -> i32 (* x x))
+           (fn neg [x:i32] -> i32 (- 0 x))
+           (fn apply [f:(fn [i32] -> i32) x:i32] -> i32 (call_ref (fn [i32] -> i32) f x))
+           (fn pick [k:i32] -> i32 (call apply (if (eq k 0) (ref sq) (ref neg)) 7))
+           (fn wide [x:i64 y:f64] -> f64 (+ (f64.convert_i64_s x) y))
+           (fn calls_wide [] -> f64 (call_ref (fn [i64 f64] -> f64) (ref wide) 3i64 0.5)))",
+        &[],
+        &[("same", &[]), ("differ", &[]), ("pick", &[0]), ("pick", &[1]), ("calls_wide", &[])],
+    );
+    for (name, wasm) in [
+        ("call_indirect_works", table_module(1, 0, 0)),
+        // a structurally equal type under another index is the same type
+        ("call_indirect_equal_type", table_module(1, 1, 0)),
+        ("trap_table_index_out_of_range", table_module(9, 0, 0)),
+        ("trap_empty_table_slot", table_module(2, 0, 0)),
+        ("trap_type_mismatch", table_module(1, 2, 0)),
+        ("trap_index_wraps_no_further", table_module(-1, 0, 0)),
+        ("trap_index_equal_to_the_size", table_module(3, 0, 0)),
+        // the element segment at slot 1: slot 0 is empty, slot 2 holds f
+        ("call_indirect_offset_segment", table_module(2, 0, 1)),
+        ("trap_slot_before_an_offset_segment", table_module(0, 0, 1)),
+    ] {
+        assert_wasm_native_matches(name, &wasm);
+        // and they do what their names say
+        let out = run_native(&scratch("table_checked"), &to_native(&wasm).unwrap());
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        let want = match name {
+            "trap_table_index_out_of_range" | "trap_index_wraps_no_further" | "trap_index_equal_to_the_size" => {
+                "out of bounds table access"
+            }
+            "trap_empty_table_slot" | "trap_slot_before_an_offset_segment" => "uninitialized element",
+            "trap_type_mismatch" => "indirect call type mismatch",
+            _ => "",
+        };
+        if want.is_empty() {
+            assert_eq!(out.status.code(), Some(42), "{name}: {err}");
+        } else {
+            assert_eq!(out.status.code(), Some(134), "{name}");
+            assert!(err.ends_with(&format!("{want}\n")), "{name}: {err}");
+        }
+    }
+}
+
+/// A module with a 3-slot table holding f (type 0: [i32] -> i32) in two
+/// slots from `elem_offset` (0: slots 0-1, slot 2 empty; 1: slots 1-2, slot
+/// 0 empty); `_start` exits with call_indirect(index) through `call_type`
+/// (0: [i32] -> i32; 1: the same type again; 2: [] -> i32).
+fn table_module(index: i32, call_type: u32, elem_offset: i32) -> Vec<u8> {
+    use wasm_encoder::{
+        CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+        ImportSection, Instruction as I, MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
+    };
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32], [ValType::I32]); // 0
+    types.ty().function([ValType::I32], [ValType::I32]); // 1, equal to 0
+    types.ty().function([], [ValType::I32]); // 2
+    types.ty().function([ValType::I32], []); // 3: proc_exit
+    types.ty().function([], []); // 4: _start
+    let mut imports = ImportSection::new();
+    imports.import("wasi_snapshot_preview1", "proc_exit", EntityType::Function(3));
+    let mut funcs = FunctionSection::new();
+    funcs.function(0); // 1: f(x) = x + 40
+    funcs.function(4); // 2: _start
+    let mut tables = TableSection::new();
+    tables.table(TableType { element_type: RefType::FUNCREF, minimum: 3, maximum: Some(3), table64: false, shared: false });
+    let mut memory = MemorySection::new();
+    memory.memory(MemoryType { minimum: 1, maximum: Some(1), memory64: false, shared: false, page_size_log2: None });
+    let mut exports = ExportSection::new();
+    exports.export("_start", ExportKind::Func, 2);
+    exports.export("memory", ExportKind::Memory, 0);
+    let mut elems = ElementSection::new();
+    elems.active(None, &ConstExpr::i32_const(elem_offset), Elements::Functions(std::borrow::Cow::Borrowed(&[1, 1])));
+    let mut code = CodeSection::new();
+    let mut f = Function::new([]);
+    f.instruction(&I::LocalGet(0)).instruction(&I::I32Const(40)).instruction(&I::I32Add).instruction(&I::End);
+    code.function(&f);
+    let mut start = Function::new([]);
+    if call_type == 2 {
+        start.instruction(&I::I32Const(index));
+    } else {
+        start.instruction(&I::I32Const(2)).instruction(&I::I32Const(index));
+    }
+    start
+        .instruction(&I::CallIndirect { type_index: call_type, table_index: 0 })
+        .instruction(&I::Call(0))
+        .instruction(&I::End);
+    code.function(&start);
+    let mut m = Module::new();
+    m.section(&types).section(&imports).section(&funcs).section(&tables).section(&memory).section(&exports).section(&elems).section(&code);
+    m.finish()
 }
 
 /// NE13: floats. f64 results are compared by their bits (NaN payloads and
@@ -1253,19 +1361,20 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-/// Compiles `src`; a program with imports (the standard library) is
-/// resolved from a scratch file.
+/// Parses `src` the way the toolchain does: through the resolver (imports
+/// from the standard library, generics expanded), from a scratch file.
+fn parse_program(src: &str) -> aipl_core::ast::Module {
+    let dir = scratch(&format!("resolve_{:x}", src.len() * 31 + src.bytes().map(|b| b as usize).sum::<usize>()));
+    let path = dir.join("prog.aipl");
+    std::fs::write(&path, src).unwrap();
+    let m = Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    m
+}
+
+/// Compiles `src` (see parse_program).
 fn to_wasm(src: &str) -> Vec<u8> {
-    let m = if src.contains("(import") {
-        let dir = scratch(&format!("resolve_{:x}", src.len() * 31 + src.bytes().map(|b| b as usize).sum::<usize>()));
-        let path = dir.join("prog.aipl");
-        std::fs::write(&path, src).unwrap();
-        let m = Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        m
-    } else {
-        Parser::parse(src).unwrap_or_else(|e| panic!("{e}"))
-    };
+    let m = parse_program(src);
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{e}"));
     WasmCompiler::compile(&m).unwrap_or_else(|e| panic!("{e}"))
 }
@@ -1584,7 +1693,6 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn f [] -> i32 7) (fn main [] -> i32 (sys.exit (call_ref (fn [] -> i32) (ref f))) 0))", "not supported natively yet: call_indirect (opcode 17)"),
         (
             "(module m (fn work [x:i32] -> i32 x) (fn main [] -> i32 (sys.exit (thread.join (thread.spawn (ref work) 3))) 0))",
             "not supported natively yet: a start function (threaded modules)",
