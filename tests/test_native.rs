@@ -113,6 +113,20 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_load_past_memory", "(module m (fn main [] -> i32 (let a:i32 (* 16 65536)) (sys.exit (mem.load32 a)) 0))"),
     ("trap_store_past_memory", "(module m (fn main [] -> i32 (let a:i32 (- (* 16 65536) 2)) (mem.store32 a 1) 0))"),
     ("trap_negative_address", "(module m (fn main [] -> i32 (let a:i32 -8) (sys.exit (mem.load8 a)) 0))"),
+    // NE9: allocation and atomics
+    ("heap_cursor_advances", "(module m (fn main [] -> i32 (let a:i32 (mem.alloc 16)) (let b:i32 (mem.alloc 4)) (sys.exit (- (mem.load32 0) a)) 0))"),
+    (
+        "lock_round_trip",
+        "(module m (fn main [] -> i32 (let m:i32 (mem.alloc 4)) (let d:i32 (mem.alloc 4)) (atomic.lock m) (mem.store32 d 41)
+           (let _o:i32 (atomic.add d 1)) (atomic.unlock m) (atomic.lock m) (atomic.unlock m) (sys.exit (mem.load32 d)) 0))",
+    ),
+    ("trap_unaligned_atomic", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 2) 1)) 0))"),
+    ("trap_unaligned_before_bounds", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000002) 1)) 0))"),
+    ("trap_atomic_past_memory", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000000) 1)) 0))"),
+    ("trap_unlock_a_free_lock", "(module m (fn main [] -> i32 (let l:i32 (mem.alloc 4)) (atomic.unlock l) 0))"),
+    ("trap_lock_twice_waits", "(module m (fn main [] -> i32 (let l:i32 (mem.alloc 4)) (atomic.lock l) (atomic.lock l) 0))"),
+    ("trap_lock_a_non_lock_word", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p) 0))"),
+    ("trap_store_into_reserved_block", "(module m (fn main [] -> i32 (let a:i32 (* 8 64)) (mem.store32 a 7) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
     ("exit_status_negative_is_an_error", "(module m (fn main [] -> i32 (sys.exit -1) 0))"),
 ];
@@ -187,6 +201,12 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
         ("trap_huge_offset", exit_with(&[], &[I::I32Const(0), I::I32Load(m(2, 0x8000_0000)), I::End])),
         // the address alone is in bounds; with the offset it is not
         ("trap_offset_past_the_end", exit_with(&[], &[I::I32Const(65528), I::I32Load(m(2, 8)), I::End])),
+        // NE9: an atomic store writes 4 bytes too
+        ("atomic_store_writes_four_bytes", exit_with(&[], &[
+            I::I32Const(44), I::I32Const(9), I::I32Store(m(2, 0)),
+            I::I32Const(40), I::I32Const(7), I::I32AtomicStore(m(2, 0)),
+            I::I32Const(44), I::I32Load(m(2, 0)), I::I32Const(40), I::I32AtomicLoad(m(2, 0)), I::I32Const(10), I::I32Mul, I::I32Add, I::End,
+        ])),
         // a 4-byte store leaves the next 4 bytes alone
         ("f32_store_writes_four_bytes", exit_with(&[], &[
             I::I32Const(44), I::I32Const(9), I::I32Store(m(2, 0)),
@@ -243,9 +263,10 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-/// A program from another test file: the raw string after `const NAME: &str = r#"`.
-fn program_from(file: &str, name: &str) -> String {
-    let start = file.find(&format!("const {name}: &str = r#\"")).unwrap_or_else(|| panic!("no {name}"));
+/// A program from another test file: the first raw string after `marker`
+/// (e.g. `const PROGRAM` or `fn p8_structs_and_arrays`).
+fn program_from(file: &str, marker: &str) -> String {
+    let start = file.find(marker).unwrap_or_else(|| panic!("no {marker}"));
     let body = &file[start..];
     let open = body.find("r#\"").unwrap() + 3;
     body[open..open + body[open..].find("\"#;").unwrap()].to_string()
@@ -266,11 +287,13 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
     }
     TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("{name}: {e}"));
     let wasm = WasmCompiler::compile(&module).unwrap();
+    // the calls run in order in one instance, as in the generated main, since
+    // results such as heap addresses depend on what ran before
+    let calls: Vec<(&str, &[i32])> = calls.iter().map(|(f, a)| (if *f == "main" { "orig_main" } else { *f }, *a)).collect();
+    let wants = call_exports(&wasm, &calls);
     let mut checks = String::new();
-    for (f, args) in calls {
-        let f = if *f == "main" { "orig_main" } else { f };
-        let def = module.functions.iter().find(|d| d.name == f).unwrap_or_else(|| panic!("{name}: no function {f}"));
-        let want = call_export(&wasm, f, args);
+    for ((f, args), want) in calls.iter().zip(wants) {
+        let def = module.functions.iter().find(|d| d.name == *f).unwrap_or_else(|| panic!("{name}: no function {f}"));
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let call = format!("(call {f} {})", args.join(" "));
         let value = if def.return_type == Type::Bool { format!("(if {call} 1 0)") } else { call };
@@ -286,8 +309,9 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
     assert_native_matches(name, &program);
 }
 
-/// Calls export `f` with i32 arguments under wasmtime; its i32 result.
-fn call_export(wasm: &[u8], f: &str, args: &[i32]) -> i32 {
+/// Calls exports with i32 arguments, in order, in one wasmtime instance;
+/// their i32 results (a bool as 0 or 1).
+fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<i32> {
     use wasmtime::Val;
     let engine = Engine::default();
     let module = WasmModule::new(&engine, wasm).unwrap();
@@ -295,24 +319,29 @@ fn call_export(wasm: &[u8], f: &str, args: &[i32]) -> i32 {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).unwrap();
-    let func = inst.get_func(&mut store, f).unwrap();
-    let params: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
-    let mut out = [Val::I32(0)];
-    func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
-    out[0].unwrap_i32()
+    calls
+        .iter()
+        .map(|(f, args)| {
+            let func = inst.get_func(&mut store, f).unwrap();
+            let params: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
+            let mut out = [Val::I32(0)];
+            func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
+            out[0].unwrap_i32()
+        })
+        .collect()
 }
 
 /// NE7: the control-flow programs of tests/test_control_flow.rs and
-/// examples/math_core.aipl. Functions that use memory (results, mem.*) wait
-/// for NE8.
+/// examples/math_core.aipl (the functions that allocate since NE9).
 #[test]
 fn control_flow_programs_match_natively() {
     let flow_file = include_str!("test_control_flow.rs");
     assert_functions_match(
         "flow",
-        &program_from(flow_file, "PROGRAM"),
-        &["parse_digit", "first_non_digit", "bump", "uses_void_return"],
+        &program_from(flow_file, "const PROGRAM"),
+        &[],
         &[
+            ("first_non_digit", &[5]), ("first_non_digit", &[-1]), ("uses_void_return", &[41]),
             ("first_mult7", &[15]), ("first_mult7", &[14]),
             ("sum_until", &[10]), ("sum_until", &[-5]),
             ("sum_odd", &[9]), ("sum_odd", &[0]),
@@ -326,9 +355,10 @@ fn control_flow_programs_match_natively() {
     );
     assert_functions_match(
         "short_circuit",
-        &program_from(flow_file, "SHORT_CIRCUIT"),
-        &["side_effects", "jump_in_operand", "bump"],
+        &program_from(flow_file, "const SHORT_CIRCUIT"),
+        &[],
         &[
+            ("side_effects", &[10]), ("jump_in_operand", &[9]), ("jump_in_operand", &[60]),
             ("safe_ratio_is_two", &[0]), ("safe_ratio_is_two", &[5]),
             ("zero_or_divides", &[0]), ("zero_or_divides", &[3]),
             ("first_index_over", &[2]), ("first_index_over", &[9]),
@@ -349,6 +379,48 @@ fn control_flow_programs_match_natively() {
             ("weighted_average", &[90, 80, 50]),
             ("should_throttle", &[90, 80, 50]), ("should_throttle", &[10, 10, 0]),
         ],
+    );
+}
+
+/// NE9: programs that allocate (every allocation is an atomic add on the
+/// heap cursor): the single-threaded atomics program, the struct and array
+/// cases, and the quicksort and accounts examples.
+#[test]
+fn allocating_programs_match_natively() {
+    assert_functions_match(
+        "atomics",
+        &program_from(include_str!("test_threads.rs"), "const ATOMICS"),
+        // these trap; they are PROGRAMS of their own
+        &["unaligned_add", "bad_unlock"],
+        &[("add_returns_previous", &[]), ("cas", &[]), ("lock_unlock", &[])],
+    );
+    assert_functions_match(
+        "structs_and_arrays",
+        &program_from(include_str!("test_differential.rs"), "fn p8_structs_and_arrays"),
+        // i64 arithmetic (NE12) and float comparison (NE13); the reserved-block
+        // stores trap and are PROGRAMS of their own
+        &["test_mixed", "test_floats", "test_put_reserved", "test_arr_set_reserved"],
+        &[
+            ("test_point_ops", &[3, 4]), ("test_sizeof", &[]), ("test_array_ops", &[5]), ("test_array_ops", &[0]),
+            ("test_i64_array", &[3]), ("test_index_oob", &[1]), ("test_index_oob", &[7]), ("test_size_allocates", &[]),
+            ("test_result_heap", &[]), ("test_result_payload_allocates", &[]), ("test_points", &[]),
+            ("test_bool_word", &[]), ("test_str_field", &[]),
+        ],
+    );
+    assert_functions_match(
+        "quicksort",
+        include_str!("../examples/quicksort.aipl"),
+        &[],
+        &[
+            ("main", &[]), ("median3", &[1, 5, 3]), ("median3", &[9, 2, 4]),
+            ("sorted_median", &[1000, 42]), ("sorted_median", &[1, 7]), ("handles_sorted_and_equal", &[500]),
+        ],
+    );
+    assert_functions_match(
+        "accounts",
+        include_str!("../examples/accounts.aipl"),
+        &[],
+        &[("main", &[]), ("frozen_is_atomic", &[]), ("simulate", &[100, 7, 20]), ("simulate", &[10, 5, 3])],
     );
 }
 
@@ -647,7 +719,7 @@ fn the_harness_tells_programs_apart() {
         ("return_from_deep_inside", 19), ("unreachable_traps", 134),
         ("store_i64_load_bytes", 18), ("store8_truncates", 80), ("last_valid_word", 3), ("trap_straddling_the_end", 134),
         ("trap_offset_does_not_wrap", 134), ("trap_huge_offset", 134),
-        ("trap_offset_past_the_end", 134), ("f32_store_writes_four_bytes", 9), ("address_ignores_high_bits", 7),
+        ("trap_offset_past_the_end", 134), ("atomic_store_writes_four_bytes", 79), ("f32_store_writes_four_bytes", 9), ("address_ignores_high_bits", 7),
         ("grow_stops_at_the_maximum", 4), ("grown_pages_are_zero_and_usable", 5), ("trap_past_the_grown_size", 134),
         ("float_bits_round_trip", 3), ("br_keeps_values_below_the_block", 92),
         ("br_keeps_values_below_with_locals", 47), ("br_after_an_if_value", 92), ("br_if_keeps_values_below", 39),
@@ -679,6 +751,13 @@ fn traps_print_one_line_and_exit_134() {
         ("trap_load_past_memory", "wasm trap: out of bounds memory access"),
         ("trap_store_past_memory", "wasm trap: out of bounds memory access"),
         ("trap_negative_address", "wasm trap: out of bounds memory access"),
+        ("trap_unaligned_atomic", "wasm trap: unaligned atomic"),
+        ("trap_unaligned_before_bounds", "wasm trap: unaligned atomic"),
+        ("trap_atomic_past_memory", "wasm trap: out of bounds memory access"),
+        ("trap_unlock_a_free_lock", "wasm trap: wasm `unreachable` instruction executed"),
+        ("trap_lock_twice_waits", "wasm trap: atomic wait on non-shared memory"),
+        ("trap_lock_a_non_lock_word", "wasm trap: wasm `unreachable` instruction executed"),
+        ("trap_store_into_reserved_block", "wasm trap: wasm `unreachable` instruction executed"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
@@ -692,7 +771,7 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (sys.exit (mem.alloc 8)) 0))", "not supported natively yet: i32.atomic.rmw.add (opcode 65054)"),
+        ("(module m (fn main [] -> i32 (sys.exit (i32.wrap (* 3i64 4i64))) 0))", "not supported natively yet: i64.mul (opcode 126)"),
         ("(module m (fn main [] -> i32 (sys.print \"hi\") 0))", "import not supported natively yet: wasi_snapshot_preview1.fd_write"),
         ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
     ] {
