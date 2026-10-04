@@ -53,7 +53,7 @@
     (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
     (set! failures (+ failures (call report "std/os: arguments + environment (2 tests)" (call os.run_os_tests) 2)))
     (set! failures (+ failures (call report "native/wasm_reader: module structure and bodies (5 tests)" (call wasm_reader.run_reader_tests) 5)))
-    (set! failures (+ failures (call report "native/x64: instruction encodings vs GNU as (7 tests)" (call x64.run_x64_tests) 7)))
+    (set! failures (+ failures (call report "native/x64: instruction encodings vs GNU as (8 tests)" (call x64.run_x64_tests) 8)))
     (set! failures (+ failures (call report "native/elf: executable layout and headers (4 tests)" (call elf.run_elf_tests) 4)))
     (set! failures (+ failures (call report "std/io: file round trip (2 tests)" (call io.run_io_tests) 2)))
     (set! failures (+ failures (call report "std/vec: generic list + stable sort (6 tests)" (call vec.run_vec_tests) 6)))

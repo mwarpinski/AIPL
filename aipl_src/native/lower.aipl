@@ -27,6 +27,9 @@
 ;;     need), add `lock xadd`, compare-exchange `lock cmpxchg`. Native code
 ;;     has no threads yet (NE15) and its memory is never shared, so, as in
 ;;     wasm, notify wakes nobody (returns 0) and wait traps.
+;;   - Floats (NE13): a slot holds an f32's or f64's bits; arithmetic moves
+;;     them through xmm0/xmm1 (SSE2), which compute what wasm specifies
+;;     (IEEE 754, round to nearest), NaN results included.
 ;;   - Control flow (NE7): the translator tracks the value stack's depth (in
 ;;     slots) at every instruction and keeps a stack of open labels (the
 ;;     function body, block, loop, if). A branch resets rsp to its label's
@@ -69,7 +72,7 @@
              data:(ptr buf.Buf) trap_routine:i32
              div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
              out_of_bounds:(ptr Reason) mem_cell:i32 mem_max:i32
-             unaligned:(ptr Reason) wait_unshared:(ptr Reason)
+             unaligned:(ptr Reason) wait_unshared:(ptr Reason) bad_conversion:(ptr Reason)
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              failed:bool msg:(ptr buf.Buf)])
 
@@ -91,6 +94,7 @@
     (put l L.out_of_bounds (call reason l "wasm trap: out of bounds memory access"))
     (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
     (put l L.wait_unshared (call reason l "wasm trap: atomic wait on non-shared memory"))
+    (put l L.bad_conversion (call reason l "wasm trap: invalid conversion to integer"))
     (put l L.mem_cell -1)
     (put l L.mem_max 0)
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
@@ -253,6 +257,7 @@
        true)
       ((call i32_op l op) true)
       ((call i64_op l op) true)
+      ((call float_op l op) true)
       ((call memory_op l op a (get ins wasm_reader.Instr.b)) true)
       ((call atomic_op l op (get ins wasm_reader.Instr.b)) true)
       (else false)))
@@ -264,6 +269,7 @@
       ((or (eq op 33) (eq op 26)) -1)                               ;; local.set, drop
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u
+      ((or (or (eq op 176) (eq op 185)) (or (eq op 189) (eq op 191))) 0) ;; trunc, convert, reinterprets
       ((or (and (gte op 40) (lte op 43)) (or (eq op 45) (eq op 64))) 0) ;; loads, memory.grow
       ((and (gte op 54) (lte op 58)) -2)                            ;; stores
       ((eq op 63) 1)                                                ;; memory.size
@@ -572,6 +578,93 @@
     (call x64.mov_ri32 c (call rax) -1)
     (call x64.patch_rel32 c done (call buf.len c))
     (call push_rax l))
+
+  ;; ===== Floats (NE13) =====
+
+  (fn xmm0 [] -> i32 0)
+  (fn xmm1 [] -> i32 1)
+
+  ;; f32/f64 arithmetic and comparisons, i64.trunc_f64_s, f64.convert_i64_s,
+  ;; and the reinterprets. Returns false for any other opcode.
+  (fn float_op [l:(ptr L) op:i32] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ;; f32 add sub mul div, f64 add sub mul div
+      ((or (and (gte op 146) (lte op 149)) (and (gte op 160) (lte op 163)))
+       (let sz:i32 (if (lt op 160) 32 64))
+       (let k:i32 (- op (if (lt op 160) 146 160)))
+       (call operands_to_xmm l sz)
+       (call x64.float_op c sz (cond ((eq k 0) (call x64.f_add)) ((eq k 1) (call x64.f_sub)) ((eq k 2) (call x64.f_mul)) (else (call x64.f_div)))
+             (call xmm0) (call xmm1))
+       (if (eq sz 64) (call x64.movq_rx c (call rax) (call xmm0)) (call x64.movd_rx c (call rax) (call xmm0)))
+       (call push_rax l)
+       true)
+      ;; f32 eq ne lt gt le ge (91-96), f64 the same (97-102)
+      ((and (gte op 91) (lte op 102))
+       (let sz:i32 (if (lt op 97) 32 64))
+       (let k:i32 (- op (if (lt op 97) 91 97)))
+       (call operands_to_xmm l sz)
+       (call float_compare l sz k)
+       (call push_rax l)
+       true)
+      ;; f64.convert_i64_s
+      ((eq op 185)
+       (call pop_rax l)
+       (call x64.cvtsi2sd c (call xmm0) (call rax))
+       (call x64.movq_rx c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
+      ;; i64.trunc_f64_s: traps on NaN, and outside [-2^63, 2^63) (after
+      ;; truncation, exactly wasm's range: -2^63 is the lowest double that fits)
+      ((eq op 176)
+       (call pop_rax l)
+       (call x64.movq_xr c (call xmm0) (call rax))
+       (call x64.ucomi c 64 (call xmm0) (call xmm0))
+       (call emit_trap_if l (call x64.cc_p) (get l L.bad_conversion))
+       (call x64.mov_ri64 c (call rcx) 4890909195324358656i64)          ;; 2^63
+       (call x64.movq_xr c (call xmm1) (call rcx))
+       (call x64.ucomi c 64 (call xmm0) (call xmm1))
+       (call emit_trap_if l (call x64.cc_ae) (get l L.overflow))
+       (call x64.mov_ri64 c (call rcx) -4332462841530417152i64)         ;; -2^63
+       (call x64.movq_xr c (call xmm1) (call rcx))
+       (call x64.ucomi c 64 (call xmm0) (call xmm1))
+       (call emit_trap_if l (call x64.cc_b) (get l L.overflow))
+       (call x64.cvttsd2si c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
+      ;; i64.reinterpret_f64, f64.reinterpret_i64: the slot already holds the bits
+      ((or (eq op 189) (eq op 191)) true)
+      (else false)))
+
+  ;; Pops b then a into xmm1 and xmm0 (via rcx and rax).
+  (fn operands_to_xmm [l:(ptr L) sz:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call pop_operands l)
+    (if (eq sz 64)
+        (block (call x64.movq_xr c (call xmm0) (call rax)) (call x64.movq_xr c (call xmm1) (call rcx)))
+        (block (call x64.movd_xr c (call xmm0) (call rax)) (call x64.movd_xr c (call xmm1) (call rcx)))))
+
+  ;; eax = 1 if (xmm0 cmp xmm1) else 0, for k = eq ne lt gt le ge. Any
+  ;; comparison with a NaN is false, except ne, which is true: ucomi sets
+  ;; ZF, PF, and CF when unordered, so eq needs ZF and not PF, ne ZF clear
+  ;; or PF, and the orderings use above / above-or-equal (CF and ZF clear),
+  ;; swapping the operands for lt and le.
+  (fn float_compare [l:(ptr L) sz:i32 k:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((or (eq k 0) (eq k 1))
+       (call x64.ucomi c sz (call xmm0) (call xmm1))
+       (call x64.setcc c (if (eq k 0) (call x64.cc_e) (call x64.cc_ne)) (call rax))
+       (call x64.setcc c (if (eq k 0) (call x64.cc_np) (call x64.cc_p)) (call rcx))
+       (call x64.movzx8 c (call rax) (call rax))
+       (call x64.movzx8 c (call rcx) (call rcx))
+       (call x64.alu_rr c 32 (if (eq k 0) (call x64.op_and) (call x64.op_or)) (call rax) (call rcx)))
+      (else
+       (if (or (eq k 2) (eq k 4))
+           (call x64.ucomi c sz (call xmm1) (call xmm0))
+           (call x64.ucomi c sz (call xmm0) (call xmm1)))
+       (call x64.setcc c (if (or (eq k 2) (eq k 3)) (call x64.cc_a) (call x64.cc_ae)) (call rax))
+       (call x64.movzx8 c (call rax) (call rax)))))
 
   ;; ===== i64 (NE12) =====
 

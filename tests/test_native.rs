@@ -710,6 +710,258 @@ fn file_programs_match_natively() {
     }
 }
 
+/// NE13: floats. f64 results are compared by their bits (NaN payloads and
+/// -0.0 included).
+#[test]
+fn float_programs_match_natively() {
+    assert_functions_match(
+        "f64_cases",
+        "(module m
+           (struct P [x:f64 y:f32 z:f64])
+           (fn convert_neg [] -> f64 (f64.convert_i64_s -7i64))
+           (fn convert_rounds_to_even [] -> f64 (f64.convert_i64_s 9007199254740993i64))
+           (fn convert_min [] -> f64 (f64.convert_i64_s -9223372036854775808i64))
+           (fn trunc_pos [] -> i64 (i64.trunc_f64_s 2.75))
+           (fn trunc_neg [] -> i64 (i64.trunc_f64_s -2.75))
+           (fn trunc_min [] -> i64 (i64.trunc_f64_s -9223372036854775808.0))
+           (fn trunc_just_below_max [] -> i64 (i64.trunc_f64_s 9223372036854774784.0))
+           (fn trunc_minus_point_nine [] -> i64 (i64.trunc_f64_s -0.9))
+           (fn bits_one [] -> i64 (i64.reinterpret_f64 1.0))
+           (fn bits_neg_zero [] -> i64 (i64.reinterpret_f64 -0.0))
+           (fn nan_payload [] -> i64 (i64.reinterpret_f64 (f64.reinterpret_i64 9221120237041090561i64)))
+           (fn tenth [] -> f64 (/ (f64.convert_i64_s 1i64) (f64.convert_i64_s 10i64)))
+           (fn arithmetic [] -> f64 (/ (+ 1.5 2.25) 0.5))
+           (fn lt_true [] -> bool (lt 1.5 2.25))
+           (fn zero [] -> f64 0.0)
+           (fn nan [] -> f64 (/ (call zero) (call zero)))
+           (fn neg_nan_sub [] -> f64 (- 0.0 (call nan)))
+           (fn inf [] -> f64 (/ 1.0 (call zero)))
+           (fn inf_minus_inf [] -> f64 (- (call inf) (call inf)))
+           (fn neg_zero_times [] -> f64 (* -0.0 5.0))
+           (fn zero_plus_neg_zero [] -> f64 (+ 0.0 -0.0))
+           (fn nan_eq [] -> bool (eq (call nan) (call nan)))
+           (fn nan_neq [] -> bool (neq (call nan) (call nan)))
+           (fn nan_lt [] -> bool (lt (call nan) 1.0))
+           (fn nan_gte [] -> bool (gte 1.0 (call nan)))
+           (fn zeros_equal [] -> bool (eq 0.0 -0.0))
+           (fn lerp [a:f64 b:f64 t:f64] -> f64 (+ a (* (- b a) t)))
+           (fn uses_lerp [] -> f64 (call lerp 1.0 3.0 0.25))
+           (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
+           (fn uses_pick [] -> f64 (+ (call pick 4.0 2.0) (call pick 2.0 4.0)))
+           (fn struct_field [] -> f64 (let p:(ptr P) (new P)) (put p P.z 6.5) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
+           (fn struct_size [] -> i32 (sizeof P)))",
+        &[],
+        &[
+            ("convert_neg", &[]), ("convert_rounds_to_even", &[]), ("convert_min", &[]), ("trunc_pos", &[]), ("trunc_neg", &[]),
+            ("trunc_min", &[]), ("trunc_just_below_max", &[]), ("trunc_minus_point_nine", &[]), ("bits_one", &[]),
+            ("bits_neg_zero", &[]), ("nan_payload", &[]), ("tenth", &[]), ("arithmetic", &[]), ("lt_true", &[]), ("nan", &[]),
+            ("neg_nan_sub", &[]), ("inf", &[]), ("inf_minus_inf", &[]), ("neg_zero_times", &[]), ("zero_plus_neg_zero", &[]),
+            ("nan_eq", &[]), ("nan_neq", &[]), ("nan_lt", &[]), ("nan_gte", &[]), ("zeros_equal", &[]), ("uses_lerp", &[]),
+            ("uses_pick", &[]), ("struct_field", &[]), ("struct_size", &[]),
+        ],
+    );
+    for (name, src) in [
+        ("trap_trunc_too_big", "(module m (fn main [] -> i32 (let t:i64 (i64.trunc_f64_s 9223372036854775808.0)) 0))"),
+        ("trap_trunc_too_small", "(module m (fn main [] -> i32 (let t:i64 (i64.trunc_f64_s -9223372036854777856.0)) 0))"),
+        ("trap_trunc_nan", "(module m (fn main [] -> i32 (let z:f64 0.0) (let t:i64 (i64.trunc_f64_s (/ z z))) 0))"),
+        ("trap_trunc_infinity", "(module m (fn main [] -> i32 (let z:f64 0.0) (let t:i64 (i64.trunc_f64_s (/ 1.0 z))) 0))"),
+    ] {
+        assert_wasm_native_matches(name, &to_wasm(src));
+    }
+    assert_functions_match(
+        "matrix_mult",
+        include_str!("../examples/matrix_mult.aipl"),
+        &[],
+        &[("main", &[]), ("trace_of_product", &[1]), ("trace_of_product", &[4]), ("trace_of_product", &[9])],
+    );
+    // the float literals of tests/test_selfhost.rs (same generator)
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = |n: u64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) % n
+    };
+    let mut src = String::from("(module floats\n");
+    let mut made = 0;
+    while made < 200 {
+        let ndigits = 1 + next(16) as usize;
+        let digits: String = (0..ndigits).map(|_| char::from(b'0' + next(10) as u8)).collect();
+        let m: u64 = digits.parse().unwrap();
+        let dot = next(ndigits as u64 + 1) as usize;
+        if m > 1 << 53 || ndigits - dot > 22 {
+            continue;
+        }
+        let sign = if next(2) == 0 { "" } else { "-" };
+        let lit = format!("{sign}{}.{}", &digits[..dot], &digits[dot..]);
+        if !lit.chars().any(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        src.push_str(&format!("  (fn f{made} [] -> f64 {lit})\n"));
+        made += 1;
+    }
+    src.push(')');
+    let names: Vec<String> = (0..200).map(|i| format!("f{i}")).collect();
+    let calls: Vec<(&str, &[i32])> = names.iter().map(|n| (n.as_str(), &[][..])).collect();
+    assert_functions_match("float_literals", &src, &[], &calls);
+    for (name, wasm) in float_operator_programs() {
+        let status = run_wasm(&scratch("float_expected"), &wasm).status.code().unwrap();
+        assert_eq!(status & 1, 0, "{name}: aipl-run disagrees with the expected values");
+        assert_wasm_native_matches(&name, &wasm);
+    }
+}
+
+/// f64 edge values: zeros, ones, fractions, extremes, subnormals, infinities, NaN.
+fn f64_edges() -> Vec<f64> {
+    vec![0.0, -0.0, 1.0, -1.5, 0.1, 3.0, 1e308, -1e-308, f64::MIN_POSITIVE, 5e-324, f64::MAX, f64::INFINITY, f64::NEG_INFINITY, f64::NAN]
+}
+
+fn f32_edges() -> Vec<f32> {
+    vec![0.0, -0.0, 1.0, -1.5, 0.1, 3.0, 1e38, -1e-38, f32::MIN_POSITIVE, 1e-45, f32::MAX, f32::INFINITY, f32::NEG_INFINITY, f32::NAN]
+}
+
+/// Like i32_operator_programs, for the f32 and f64 operators: every pair of
+/// edge values; results are checked against Rust's (a NaN only for being a
+/// NaN, since payloads are not specified), and hashed by their exact bits,
+/// so native and aipl-run must agree on every bit.
+fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
+    use std::hint::black_box as bb;
+    use wasm_encoder::{Instruction as I, MemArg, ValType as V};
+    let m = |align, offset| MemArg { offset, align, memory_index: 0 };
+    type F64Op = fn(f64, f64) -> f64;
+    type F64Cmp = fn(f64, f64) -> bool;
+    let arith64: Vec<(&str, I<'static>, F64Op)> = vec![
+        ("add", I::F64Add, |a, b| bb(a) + bb(b)),
+        ("sub", I::F64Sub, |a, b| bb(a) - bb(b)),
+        ("mul", I::F64Mul, |a, b| bb(a) * bb(b)),
+        ("div", I::F64Div, |a, b| bb(a) / bb(b)),
+    ];
+    let cmp64: Vec<(&str, I<'static>, F64Cmp)> = vec![
+        ("eq", I::F64Eq, |a, b| a == b), ("ne", I::F64Ne, |a, b| a != b), ("lt", I::F64Lt, |a, b| a < b),
+        ("gt", I::F64Gt, |a, b| a > b), ("le", I::F64Le, |a, b| a <= b), ("ge", I::F64Ge, |a, b| a >= b),
+    ];
+    // locals: 0-2 i32 (result, hash, differences), 3 i64 (bits), 4 f64, 5 f32
+    let locals = [(3, V::I32), (1, V::I64), (1, V::F64), (1, V::F32)];
+    let mut out = Vec::new();
+    for (name, op, f) in arith64 {
+        let mut body = Vec::new();
+        for a in f64_edges() {
+            for b in f64_edges() {
+                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend(check_result_f64(f(a, b)));
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("f64_{name}"), exit_with_typed(&locals, &body)));
+    }
+    for (name, op, f) in cmp64 {
+        let mut body = Vec::new();
+        for a in f64_edges() {
+            for b in f64_edges() {
+                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend(check_result(f(a, b) as i32));
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("f64_{name}"), exit_with_typed(&locals, &body)));
+    }
+    // f32: operands go through memory (AIPL emits no f32.const)
+    let f32_operands = |a: f32, b: f32| {
+        vec![
+            I::I32Const(64), I::I32Const(a.to_bits() as i32), I::I32Store(m(2, 0)),
+            I::I32Const(68), I::I32Const(b.to_bits() as i32), I::I32Store(m(2, 0)),
+            I::I32Const(64), I::F32Load(m(2, 0)), I::I32Const(68), I::F32Load(m(2, 0)),
+        ]
+    };
+    type F32Op = fn(f32, f32) -> f32;
+    type F32Cmp = fn(f32, f32) -> bool;
+    let arith32: Vec<(&str, I<'static>, F32Op)> = vec![
+        ("add", I::F32Add, |a, b| bb(a) + bb(b)),
+        ("sub", I::F32Sub, |a, b| bb(a) - bb(b)),
+        ("mul", I::F32Mul, |a, b| bb(a) * bb(b)),
+        ("div", I::F32Div, |a, b| bb(a) / bb(b)),
+    ];
+    let cmp32: Vec<(&str, I<'static>, F32Cmp)> = vec![
+        ("eq", I::F32Eq, |a, b| a == b), ("ne", I::F32Ne, |a, b| a != b), ("lt", I::F32Lt, |a, b| a < b),
+        ("gt", I::F32Gt, |a, b| a > b), ("le", I::F32Le, |a, b| a <= b), ("ge", I::F32Ge, |a, b| a >= b),
+    ];
+    for (name, op, f) in arith32 {
+        let mut body = Vec::new();
+        for a in f32_edges() {
+            for b in f32_edges() {
+                body.extend(f32_operands(a, b));
+                body.push(op.clone());
+                body.extend(check_result_f32(f(a, b)));
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("f32_{name}"), exit_with_typed(&locals, &body)));
+    }
+    for (name, op, f) in cmp32 {
+        let mut body = Vec::new();
+        for a in f32_edges() {
+            for b in f32_edges() {
+                body.extend(f32_operands(a, b));
+                body.push(op.clone());
+                body.extend(check_result(f(a, b) as i32));
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("f32_{name}"), exit_with_typed(&locals, &body)));
+    }
+    // conversions both ways over in-range edges
+    let mut conv = Vec::new();
+    for a in [0i64, 1, -7, i64::MAX, i64::MIN, 9007199254740993, -9007199254740993, 0x1234_5678_9ABC_DEF0] {
+        conv.extend([I::I64Const(a), I::F64ConvertI64S]);
+        conv.extend(check_result_f64(a as f64));
+    }
+    for a in [0.0f64, -0.0, 0.5, -0.5, 2.75, -2.75, 1e18, -9.2233720368547748e18, 9.2233720368547748e18, 5e-324] {
+        conv.extend([I::F64Const(a.into()), I::I64TruncF64S]);
+        conv.extend(check_result_i64(a as i64));
+    }
+    conv.extend(status_from_checks());
+    out.push(("f64_conversions".into(), exit_with_typed(&locals, &conv)));
+    out
+}
+
+/// check_result for an f64 result: hashed by its bits; a difference unless
+/// it equals `want` bit for bit, or both are NaN.
+fn check_result_f64(want: f64) -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::Instruction as I;
+    let mut v = vec![I::LocalTee(4), I::I64ReinterpretF64];
+    v.extend(check_bits_i64(if want.is_nan() { None } else { Some(want.to_bits() as i64) }));
+    if want.is_nan() {
+        // differs unless the result is a NaN (x != x)
+        v.extend([I::LocalGet(2), I::LocalGet(4), I::LocalGet(4), I::F64Ne, I::I32Eqz, I::I32Add, I::LocalSet(2)]);
+    }
+    v
+}
+
+/// The bits (an i64 on the stack) into local 3 and the hash; with `want`,
+/// counts a difference from it.
+fn check_bits_i64(want: Option<i64>) -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::Instruction as I;
+    let mut v = vec![
+        I::LocalSet(3),
+        I::LocalGet(1), I::I32Const(31), I::I32Mul, I::LocalGet(3), I::I32WrapI64, I::I32Add,
+        I::I32Const(31), I::I32Mul, I::LocalGet(3), I::I64Const(32), I::I64ShrU, I::I32WrapI64, I::I32Add, I::LocalSet(1),
+    ];
+    if let Some(w) = want {
+        v.extend([I::LocalGet(2), I::LocalGet(3), I::I64Const(w), I::I64Ne, I::I32Add, I::LocalSet(2)]);
+    }
+    v
+}
+
+/// check_result_f64 for an f32 result (its bits read back through memory).
+fn check_result_f32(want: f32) -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::{Instruction as I, MemArg};
+    let m = MemArg { offset: 0, align: 2, memory_index: 0 };
+    let mut v = vec![I::LocalSet(5), I::I32Const(72), I::LocalGet(5), I::F32Store(m), I::I32Const(72), I::I32Load(m), I::I64ExtendI32U];
+    v.extend(check_bits_i64(if want.is_nan() { None } else { Some(want.to_bits() as i64) }));
+    if want.is_nan() {
+        v.extend([I::LocalGet(2), I::LocalGet(5), I::LocalGet(5), I::F32Ne, I::I32Eqz, I::I32Add, I::LocalSet(2)]);
+    }
+    v
+}
+
 /// NE12: i64. The cases of tests/test_i64.rs, function by function.
 #[test]
 fn i64_programs_match_natively() {
@@ -1332,7 +1584,7 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (sys.exit (i32.wrap (i64.trunc_f64_s (+ 1.5 2.5)))) 0))", "not supported natively yet: f64.add (opcode 160)"),
+        ("(module m (fn f [] -> i32 7) (fn main [] -> i32 (sys.exit (call_ref (fn [] -> i32) (ref f))) 0))", "not supported natively yet: call_indirect (opcode 17)"),
         (
             "(module m (fn work [x:i32] -> i32 x) (fn main [] -> i32 (sys.exit (thread.join (thread.spawn (ref work) 3))) 0))",
             "not supported natively yet: a start function (threaded modules)",
