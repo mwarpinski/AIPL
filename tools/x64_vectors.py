@@ -81,13 +81,23 @@ def control():
     return o
 def strings():
     return ["rep movsb"]
+X=["xmm%d" % i for i in range(16)]
+def sse():
+    o=[]
+    for r in range(16):
+        p=P(r)
+        o+=[f"movq {X[r]}, {R64[p]}", f"movq {R64[p]}, {X[r]}", f"movd {X[r]}, {R32[p]}", f"movd {R32[p]}, {X[r]}"]
+        o+=[f"{op}sd {X[r]}, {X[p]}" for op in ["add","sub","mul","div"]]
+        o+=[f"{op}ss {X[r]}, {X[p]}" for op in ["add","sub","mul","div"]]
+        o+=[f"ucomisd {X[r]}, {X[p]}", f"ucomiss {X[r]}, {X[p]}", f"cvtsi2sd {X[r]}, {R64[p]}", f"cvttsd2si {R64[p]}, {X[r]}"]
+    return o
 def assemble(lines):
     d=tempfile.mkdtemp()
     open(f"{d}/a.s","w").write(".intel_syntax noprefix\n"+"\n".join(lines)+"\n")
     subprocess.run(["as",f"{d}/a.s","-o",f"{d}/a.o"],check=True)
     subprocess.run(["objcopy","-O","binary","-j",".text",f"{d}/a.o",f"{d}/a.bin"],check=True)
     return open(f"{d}/a.bin","rb").read().hex()
-GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control), ("strings", strings)]
+GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control), ("strings", strings), ("sse", sse)]
 
 if __name__ == "__main__":
     wanted = sys.argv[1:]

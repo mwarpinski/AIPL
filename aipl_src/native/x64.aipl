@@ -494,9 +494,9 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 7.
+  ;; Pass count; test_suite.aipl expects 8.
   (fn run_x64_tests [] -> i32
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (call test_strings))))))))
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (call test_sse)))))))))
   ;; X64_TESTS_END
 
   ;; ===== Forms added after NE3 =====
@@ -509,4 +509,69 @@
     (let c:(ptr buf.Buf) (call buf.make 16))
     (call rep_movsb c)
     (call check "strings" c "f3a4"))
+
+  ;; ===== SSE2 (NE13): floats in xmm registers 0-15 =====
+
+  ;; One SSE2 instruction, register to register: an optional mandatory
+  ;; prefix (0x66, 0xF2, 0xF3; 0 for none), then REX (W for 64-bit integer
+  ;; operands), 0x0F, op, and ModRM with `reg` and `rm`.
+  (fn sse [c:(ptr buf.Buf) prefix:i32 wide:bool op:i32 reg:i32 rm:i32] -> void
+    (req (and (call reg_ok reg) (call reg_ok rm)))
+    (if (neq prefix 0) (call byte c prefix) (block))
+    (call rex c wide reg 0 rm false)
+    (call byte c 15)
+    (call byte c op)
+    (call byte c (bitor 192 (bitor (shl (bitand reg 7) 3) (bitand rm 7)))))
+
+  ;; movq xmm, r64 / movq r64, xmm: a double's bits between the registers
+  (fn movq_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 102 true 110 xmm r))
+  (fn movq_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 102 true 126 xmm r))
+  ;; movd xmm, r32 / movd r32, xmm: a float's bits
+  (fn movd_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 102 false 110 xmm r))
+  (fn movd_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 102 false 126 xmm r))
+
+  ;; Arithmetic kinds for float_op: add, sub, mul, div (their opcodes)
+  (fn f_add [] -> i32 88)
+  (fn f_sub [] -> i32 92)
+  (fn f_mul [] -> i32 89)
+  (fn f_div [] -> i32 94)
+
+  ;; addsd/subsd/mulsd/divsd (sz 64) or the ss forms (sz 32): dst op= src
+  (fn float_op [c:(ptr buf.Buf) sz:i32 kind:i32 dst:i32 src:i32] -> void
+    (req (call size_ok sz))
+    (req (or (eq kind 88) (or (eq kind 92) (or (eq kind 89) (eq kind 94)))))
+    (call sse c (if (eq sz 64) 242 243) false kind dst src))
+
+  ;; ucomisd / ucomiss a, b: flags as an unsigned compare of a with b; an
+  ;; unordered result (a NaN) sets ZF, PF, and CF
+  (fn ucomi [c:(ptr buf.Buf) sz:i32 a:i32 b:i32] -> void
+    (req (call size_ok sz))
+    (call sse c (if (eq sz 64) 102 0) false 46 a b))
+
+  ;; cvtsi2sd xmm, r64 (signed integer to double)
+  (fn cvtsi2sd [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 242 true 42 xmm r))
+  ;; cvttsd2si r64, xmm (double to signed integer, truncating)
+  (fn cvttsd2si [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 242 true 44 r xmm))
+
+  ;; Every form over every register pair p(r) (vectors: tools/x64_vectors.py sse)
+  (fn test_sse [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make 2048))
+    (loop r 0 15 1
+      (call movq_xr c r (call p r))
+      (call movq_rx c (call p r) r)
+      (call movd_xr c r (call p r))
+      (call movd_rx c (call p r) r)
+      (call float_op c 64 (call f_add) r (call p r))
+      (call float_op c 64 (call f_sub) r (call p r))
+      (call float_op c 64 (call f_mul) r (call p r))
+      (call float_op c 64 (call f_div) r (call p r))
+      (call float_op c 32 (call f_add) r (call p r))
+      (call float_op c 32 (call f_sub) r (call p r))
+      (call float_op c 32 (call f_mul) r (call p r))
+      (call float_op c 32 (call f_div) r (call p r))
+      (call ucomi c 64 r (call p r))
+      (call ucomi c 32 r (call p r))
+      (call cvtsi2sd c r (call p r))
+      (call cvttsd2si c (call p r) r))
+    (call check "sse" c "66480f6ec366480f7ec3660f6ec3660f7ec3f20f58c3f20f5cc3f20f59c3f20f5ec3f30f58c3f30f5cc3f30f59c3f30f5ec3660f2ec30f2ec3f2480f2ac3f2480f2cd866490f6eca66490f7eca66410f6eca66410f7ecaf2410f58caf2410f5ccaf2410f59caf2410f5ecaf3410f58caf3410f5ccaf3410f59caf3410f5eca66410f2eca410f2ecaf2490f2acaf24c0f2cd166480f6ed166480f7ed1660f6ed1660f7ed1f20f58d1f20f5cd1f20f59d1f20f5ed1f30f58d1f30f5cd1f30f59d1f30f5ed1660f2ed10f2ed1f2480f2ad1f2480f2cca66490f6ed866490f7ed866410f6ed866410f7ed8f2410f58d8f2410f5cd8f2410f59d8f2410f5ed8f3410f58d8f3410f5cd8f3410f59d8f3410f5ed866410f2ed8410f2ed8f2490f2ad8f24c0f2cc366490f6ee766490f7ee766410f6ee766410f7ee7f2410f58e7f2410f5ce7f2410f59e7f2410f5ee7f3410f58e7f3410f5ce7f3410f59e7f3410f5ee766410f2ee7410f2ee7f2490f2ae7f24c0f2cfc66480f6eee66480f7eee660f6eee660f7eeef20f58eef20f5ceef20f59eef20f5eeef30f58eef30f5ceef30f59eef30f5eee660f2eee0f2eeef2480f2aeef2480f2cf566490f6ef566490f7ef566410f6ef566410f7ef5f2410f58f5f2410f5cf5f2410f59f5f2410f5ef5f3410f58f5f3410f5cf5f3410f59f5f3410f5ef566410f2ef5410f2ef5f2490f2af5f24c0f2cee66480f6efc66480f7efc660f6efc660f7efcf20f58fcf20f5cfcf20f59fcf20f5efcf30f58fcf30f5cfcf30f59fcf30f5efc660f2efc0f2efcf2480f2afcf2480f2ce7664d0f6ec3664d0f7ec366450f6ec366450f7ec3f2450f58c3f2450f5cc3f2450f59c3f2450f5ec3f3450f58c3f3450f5cc3f3450f59c3f3450f5ec366450f2ec3450f2ec3f24d0f2ac3f24d0f2cd8664c0f6eca664c0f7eca66440f6eca66440f7ecaf2440f58caf2440f5ccaf2440f59caf2440f5ecaf3440f58caf3440f5ccaf3440f59caf3440f5eca66440f2eca440f2ecaf24c0f2acaf2490f2cd1664d0f6ed1664d0f7ed166450f6ed166450f7ed1f2450f58d1f2450f5cd1f2450f59d1f2450f5ed1f3450f58d1f3450f5cd1f3450f59d1f3450f5ed166450f2ed1450f2ed1f24d0f2ad1f24d0f2cca664c0f6ed8664c0f7ed866440f6ed866440f7ed8f2440f58d8f2440f5cd8f2440f59d8f2440f5ed8f3440f58d8f3440f5cd8f3440f59d8f3440f5ed866440f2ed8440f2ed8f24c0f2ad8f2490f2cc3664c0f6ee7664c0f7ee766440f6ee766440f7ee7f2440f58e7f2440f5ce7f2440f59e7f2440f5ee7f3440f58e7f3440f5ce7f3440f59e7f3440f5ee766440f2ee7440f2ee7f24c0f2ae7f2490f2cfc664d0f6eee664d0f7eee66450f6eee66450f7eeef2450f58eef2450f5ceef2450f59eef2450f5eeef3450f58eef3450f5ceef3450f59eef3450f5eee66450f2eee450f2eeef24d0f2aeef24d0f2cf5664c0f6ef5664c0f7ef566440f6ef566440f7ef5f2440f58f5f2440f5cf5f2440f59f5f2440f5ef5f3440f58f5f3440f5cf5f3440f59f5f3440f5ef566440f2ef5440f2ef5f24c0f2af5f2490f2cee664d0f6efc664d0f7efc66450f6efc66450f7efcf2450f58fcf2450f5cfcf2450f59fcf2450f5efcf3450f58fcf3450f5cfcf3450f59fcf3450f5efc66450f2efc450f2efcf24d0f2afcf24d0f2ce7"))
 )
