@@ -178,6 +178,25 @@ fn self_hosted_bytes_match_minimal() {
     assert_self_hosted_matches_rust("min", "(module min (fn f [] -> i32 42))");
 }
 
+/// Body items that are atoms, not groups. codegen.is_contract_head once read
+/// a bare number's value as a node address: harmless garbage for small
+/// numbers, a crash for any number past the end of memory (found compiling
+/// aipl_src/native/elf.aipl, whose `base_vaddr` returns 4194304).
+#[test]
+fn self_hosted_bytes_match_atom_bodies() {
+    assert_self_hosted_matches_rust(
+        "atoms",
+        "(module atoms
+           (fn big [] -> i32 4194304)
+           (fn past_memory [] -> i32 70000000)
+           (fn negative [] -> i32 -4096)
+           (fn wide [] -> i64 4294967297i64)
+           (fn name [x:i32] -> i32 x)
+           (fn text [] -> str \"hi\")
+           (fn after_contract [x:i32] -> i32 (req (gt x 0)) 2000000000))",
+    );
+}
+
 #[test]
 fn self_hosted_bytes_match_add() {
     assert_self_hosted_matches_rust("add", "(module add (fn add [a:i32 b:i32] -> i32 (+ a b)))");

@@ -549,7 +549,10 @@
           (while (neq child 0) (let _w:i32 (call collect_locals_walk src_ptr base child)) (set! child (call node_next child)))
           0)))
 
+  ;; Any body item may be an atom (a bare number, name, or string): its
+  ;; Node.a is a value, not a child address, so check the kind first.
   (fn is_contract_head [src_ptr:i32 group:i32] -> bool
+    (if (neq (call node_kind group) 20) (return false) (block))
     (let head:i32 (call node_a group))
     (if (neq (call node_kind head) 6)
         false
