@@ -27,14 +27,17 @@
     (bitand (+ n 4095) -4096))
 
   ;; Where the segments land for `data_len` bytes of data and `bss` zero
-  ;; bytes after them. The code starts on the first page past both.
+  ;; bytes after them. The code starts on the first page past both (past
+  ;; data_vaddr's page when both are empty, so the segments never share an
+  ;; address; Linux maps nothing for an empty segment).
   (fn layout [data_len:i32 bss:i32] -> (ptr Layout)
     (req (and (gte data_len 0) (gte bss 0)))
     (let l:(ptr Layout) (new Layout))
     (put l Layout.data_vaddr (call data_vaddr))
     (put l Layout.data_offset (call page))
     (put l Layout.code_offset (call align_page (+ (call page) data_len)))
-    (put l Layout.code_vaddr (call align_page (+ (call data_vaddr) (+ data_len bss))))
+    (let total:i32 (+ data_len bss))
+    (put l Layout.code_vaddr (call align_page (+ (call data_vaddr) (if (eq total 0) 1 total))))
     l)
 
   ;; ===== Little-endian fields =====
@@ -63,7 +66,6 @@
   ;; loaded at data_vaddr with `bss` zero bytes after it.
   (fn image [code:(ptr str.Bytes) entry:i32 data:(ptr str.Bytes) bss:i32] -> (ptr buf.Buf)
     (req (and (gte entry 0) (lt entry (get code str.Bytes.len))))
-    (req (gt (+ (get data str.Bytes.len) bss) 0))
     (let dlen:i32 (get data str.Bytes.len))
     (let clen:i32 (get code str.Bytes.len))
     (let l:(ptr Layout) (call layout dlen bss))

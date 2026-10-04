@@ -1,0 +1,159 @@
+;; lower: translates one decoded wasm function into x86-64 machine code
+;; (native backend, docs/NATIVE_BACKEND_PLAN.md, from NE5). A baseline
+;; compiler: one pass over the instructions, no register allocation.
+;;
+;; Frame and calling convention (internal to native code; system calls and
+;; the start-up stub are the only other conventions):
+;;   - The caller pushes the arguments, first argument first, then `call`s.
+;;     The callee returns its result (if any) in rax; the caller then pops
+;;     the arguments and pushes rax.
+;;   - The callee runs `push rbp; mov rbp, rsp`, then pushes one zeroed
+;;     8-byte slot per declared local (wasm locals start at zero).
+;;     Parameter i of n is at [rbp + 16 + 8 * (n - 1 - i)]; declared local j
+;;     at [rbp - 8 * (j + 1)].
+;;   - The wasm value stack is the machine stack: every value is one 8-byte
+;;     slot (an i32 in its low half), pushed and popped around each
+;;     instruction through rax and rcx.
+;; Instructions a task has not reached yet are an error naming them.
+(module lower
+  (import str)
+  (import buf)
+  (import vec)
+  (import wasm_reader)
+  (import x64)
+
+  ;; A call whose 32-bit displacement (at `at`) must point at function `func`.
+  (struct Fixup [at:i32 func:i32])
+
+  ;; The translation state for a whole module: one code buffer, the call
+  ;; fix-ups, and the first error (code generation stops at it).
+  ;; fimports: the module's function imports, which are function indices
+  ;; 0 .. n-1 (a memory import takes no function index).
+  (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
+             fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
+             failed:bool msg:(ptr buf.Buf)])
+
+  (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
+    (let l:(ptr L) (new L))
+    (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) 16))
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
+      (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
+      (if (eq (get imp wasm_reader.Import.kind) 0)
+          (call (vec.push (ptr wasm_reader.Import)) (get l L.fimports) imp)
+          (block)))
+    (put l L.code (call buf.make 4096))
+    (put l L.fixups (call (vec.make (ptr Fixup)) 64))
+    (put l L.failed false)
+    (put l L.msg (call buf.make 64))
+    l)
+
+  (fn fail [l:(ptr L) msg:str] -> void
+    (if (get l L.failed) (return) (block))
+    (put l L.failed true)
+    (call buf.push_str (get l L.msg) msg))
+
+  ;; Registers (x64.aipl numbering)
+  (fn rax [] -> i32 0)
+  (fn rcx [] -> i32 1)
+  (fn rsp [] -> i32 4)
+  (fn rbp [] -> i32 5)
+
+  (fn push_rax [l:(ptr L)] -> void (call x64.push (get l L.code) (call rax)))
+  (fn pop_rax [l:(ptr L)] -> void (call x64.pop (get l L.code) (call rax)))
+
+  ;; `call` to function index `func`, patched once every function is placed.
+  (fn emit_call [l:(ptr L) func:i32] -> void
+    (let f:(ptr Fixup) (new Fixup))
+    (put f Fixup.at (call x64.call_rel (get l L.code)))
+    (put f Fixup.func func)
+    (call (vec.push (ptr Fixup)) (get l L.fixups) f))
+
+  (fn n_fimports [l:(ptr L)] -> i32 (call (vec.len (ptr wasm_reader.Import)) (get l L.fimports)))
+
+  ;; The type of function index `func`.
+  (fn func_type [l:(ptr L) w:(ptr wasm_reader.Wasm) func:i32] -> (ptr wasm_reader.FuncType)
+    (let nimports:i32 (call n_fimports l))
+    (let ti:i32 (if (lt func nimports)
+                    (get (call (vec.at (ptr wasm_reader.Import)) (get l L.fimports) func) wasm_reader.Import.type_index)
+                    (call (vec.at i32) (get w wasm_reader.Wasm.funcs) (- func nimports))))
+    (call (vec.at (ptr wasm_reader.FuncType)) (get w wasm_reader.Wasm.types) ti))
+
+  (fn nparams [t:(ptr wasm_reader.FuncType)] -> i32 (call (vec.len i32) (get t wasm_reader.FuncType.params)))
+  (fn nresults [t:(ptr wasm_reader.FuncType)] -> i32 (call (vec.len i32) (get t wasm_reader.FuncType.results)))
+
+  ;; The frame slot of local `i` (parameters first, as wasm numbers them).
+  (fn local_slot [n_params:i32 i:i32] -> (ptr x64.Mem)
+    (if (lt i n_params)
+        (call x64.mem (call rbp) (+ 16 (* 8 (- (- n_params 1) i))))
+        (call x64.mem (call rbp) (* -8 (+ (- i n_params) 1)))))
+
+  ;; Leaves the function: the result (if any) from the stack top into rax.
+  (fn emit_return [l:(ptr L) has_result:bool] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (if has_result (call pop_rax l) (block))
+    (call x64.mov_rr c 64 (call rsp) (call rbp))
+    (call x64.pop c (call rbp))
+    (call x64.ret c))
+
+  ;; Translates defined function `index` (in the function index space) with
+  ;; body `body` and type `t`.
+  (fn function [l:(ptr L) w:(ptr wasm_reader.Wasm) index:i32 body:(ptr wasm_reader.Body)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let t:(ptr wasm_reader.FuncType) (call func_type l w index))
+    (let np:i32 (call nparams t))
+    (let has_result:bool (gt (call nresults t) 0))
+    ;; prologue: frame, then zeroed locals
+    (call x64.push c (call rbp))
+    (call x64.mov_rr c 64 (call rbp) (call rsp))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+      (let n:i32 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count))
+      (loop k 1 n 1 (call push_rax l)))
+    (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
+      (if (get l L.failed) (break) (block))
+      (call instr l w np has_result (call (vec.at (ptr wasm_reader.Instr)) code i))))
+
+  (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let op:i32 (get ins wasm_reader.Instr.op))
+    (let a:i32 (get ins wasm_reader.Instr.a))
+    (cond
+      ;; end: NE5 has no blocks, so every end closes the function
+      ((eq op 11) (call emit_return l has_result))
+      ((eq op 15) (call emit_return l has_result))
+      ((eq op 26) (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 8))
+      ((eq op 32)
+       (call x64.load c 64 (call rax) (call local_slot np a))
+       (call push_rax l))
+      ((eq op 33)
+       (call pop_rax l)
+       (call x64.store c 64 (call local_slot np a) (call rax)))
+      ((eq op 34)
+       (call x64.load c 64 (call rax) (call x64.mem (call rsp) 0))
+       (call x64.store c 64 (call local_slot np a) (call rax)))
+      ((eq op 65)
+       (call x64.mov_ri32 c (call rax) (i32.wrap (get ins wasm_reader.Instr.c)))
+       (call push_rax l))
+      ((eq op 66)
+       (call x64.mov_ri64 c (call rax) (get ins wasm_reader.Instr.c))
+       (call push_rax l))
+      ((eq op 16)
+       (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
+       (call emit_call l a)
+       (if (gt (call nparams t) 0)
+           (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
+           (block))
+       (if (gt (call nresults t) 0) (call push_rax l) (block)))
+      (else (call unsupported l op))))
+
+  (fn unsupported [l:(ptr L) op:i32] -> void
+    (if (get l L.failed) (return) (block))
+    (put l L.failed true)
+    (let m:(ptr buf.Buf) (get l L.msg))
+    (call buf.push_str m "not supported natively yet: ")
+    (call buf.push_str m (call wasm_reader.op_name op))
+    (call buf.push_str m " (opcode ")
+    (call buf.push_int m op)
+    (call buf.push_str m ")"))
+)

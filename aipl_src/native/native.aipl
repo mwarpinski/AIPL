@@ -1,0 +1,120 @@
+;; native: wasm bytes in, a Linux x86-64 executable out (native backend,
+;; docs/NATIVE_BACKEND_PLAN.md, from NE5). The driver reaches it with
+;; `(import native/native)`.
+;;
+;;   (let out:(ptr native.Output) (call native.compile wasm_bytes))
+;;   (if (get out native.Output.ok) ... (get out native.Output.error))
+;;
+;; Code layout: the start-up stub at offset 0 (the ELF entry point), then one
+;; stub per imported function, then every defined function in index order.
+;; Data: the runtime's constant text (messages), loaded at elf.data_vaddr.
+;; The start-up stub calls the module's `_start` export and exits with
+;; status 0, as `aipl-run` does when `_start` returns.
+(module native
+  (import str)
+  (import buf)
+  (import vec)
+  (import wasm_reader)
+  (import x64)
+  (import elf)
+  (import runtime)
+  (import lower)
+
+  (struct Output [ok:bool error:(ptr str.Bytes) exe:(ptr str.Bytes)])
+
+  (fn failure [msg:(ptr str.Bytes)] -> (ptr Output)
+    (let o:(ptr Output) (new Output))
+    (put o Output.ok false)
+    (put o Output.error msg)
+    (put o Output.exe (call str.bytes 0 0))
+    o)
+
+  ;; The export named `name` of kind function, or -1.
+  (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32
+    (let want:(ptr str.Bytes) (call str.from_str name))
+    (let found:i32 -1)
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports)) 1) 1
+      (let e:(ptr wasm_reader.Export) (call (vec.at (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports) i))
+      (if (and (eq (get e wasm_reader.Export.kind) 0) (call str.bytes_eq (get e wasm_reader.Export.name) want))
+          (set! found (get e wasm_reader.Export.index))
+          (block)))
+    found)
+
+  ;; Appends `text` to the data and returns its address once loaded.
+  (fn data_text [data:(ptr buf.Buf) text:str] -> i32
+    (let at:i32 (+ (call elf.data_vaddr) (call buf.len data)))
+    (call buf.push_str data text)
+    at)
+
+  ;; The code for imported function `imp`, called with the internal
+  ;; convention (arguments on the stack above the return address).
+  ;; Imports a task has not reached yet are an error naming them.
+  (fn import_stub [l:(ptr lower.L) data:(ptr buf.Buf) imp:(ptr wasm_reader.Import)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let name:(ptr str.Bytes) (get imp wasm_reader.Import.name))
+    (cond
+      ;; proc_exit(code): exit_group with the argument, never returns. As
+      ;; under wasmtime, a status outside 0..125 (unsigned) is an error
+      ;; (shells reserve 126 and up), reported with exit status 134.
+      ((call str.bytes_eq name (call str.from_str "proc_exit"))
+       (let msg:str "exit with invalid exit status outside of [0..126)\n")
+       (let msg_at:i32 (call data_text data msg))
+       (call x64.load c 32 7 (call x64.mem 4 8))
+       (call x64.alu_ri c 32 (call x64.op_cmp) 7 126)
+       (let ok:i32 (call x64.jcc c (call x64.cc_b)))
+       (call runtime.emit_write c 2 msg_at (str.len msg))
+       (call runtime.emit_exit c 134)
+       (call x64.patch_rel32 c ok (call buf.len c))
+       (call x64.mov_ri32 c 0 (call runtime.sys_exit_group))
+       (call x64.syscall c)
+       (call x64.ud2 c))
+      (else
+       (if (get l lower.L.failed) (return) (block))
+       (put l lower.L.failed true)
+       (call buf.push_str (get l lower.L.msg) "import not supported natively yet: ")
+       (call buf.push_bytes (get l lower.L.msg) (get imp wasm_reader.Import.module))
+       (call buf.push_byte (get l lower.L.msg) 46)
+       (call buf.push_bytes (get l lower.L.msg) name))))
+
+  (fn compile [wasm:(ptr str.Bytes)] -> (ptr Output)
+    (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
+    (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
+    (if (gte (get w wasm_reader.Wasm.start) 0)
+        (return (call failure (call str.from_str "not supported natively yet: a start function (threaded modules)")))
+        (block))
+    (let entry_fn:i32 (call export_func w "_start"))
+    (if (lt entry_fn 0) (return (call failure (call str.from_str "the module has no _start export"))) (block))
+    (let l:(ptr lower.L) (call lower.make w))
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let nimports:i32 (call lower.n_fimports l))
+    (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
+    (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (+ nfuncs 1)))
+    (let data:(ptr buf.Buf) (call buf.make 256))
+    ;; start-up: call _start, then exit 0
+    (call lower.emit_call l entry_fn)
+    (call runtime.emit_exit c 0)
+    (loop i 0 (- nimports 1) 1
+      (call (vec.push i32) starts (call buf.len c))
+      (call import_stub l data (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
+    (loop i nimports (- nfuncs 1) 1
+      (if (get l lower.L.failed) (break) (block))
+      (call (vec.push i32) starts (call buf.len c))
+      (call lower.function l w i (call (vec.at (ptr wasm_reader.Body)) (get w wasm_reader.Wasm.code) (- i nimports))))
+    (if (get l lower.L.failed) (return (call failure (call buf.bytes (get l lower.L.msg)))) (block))
+    ;; every call now knows where its target starts
+    (loop i 0 (- (call (vec.len (ptr lower.Fixup)) (get l lower.L.fixups)) 1) 1
+      (let f:(ptr lower.Fixup) (call (vec.at (ptr lower.Fixup)) (get l lower.L.fixups) i))
+      (call x64.patch_rel32 c (get f lower.Fixup.at) (call (vec.at i32) starts (get f lower.Fixup.func))))
+    (let o:(ptr Output) (new Output))
+    (put o Output.ok true)
+    (put o Output.error (call str.bytes 0 0))
+    (put o Output.exe (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0)))
+    o)
+
+  ;; For hosts (tests, the driver): compile the `len` bytes at `addr`.
+  ;; Returns the Output's address.
+  (fn compile_at [addr:i32 len:i32] -> (ptr Output)
+    (call compile (call str.bytes addr len)))
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+)
