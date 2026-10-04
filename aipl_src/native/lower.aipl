@@ -22,6 +22,11 @@
 ;;     cell at mem_cell holds its current size in bytes (a cell, not a
 ;;     register, so threads will share it). Every load and store checks
 ;;     address + offset + width against that size and traps like wasm.
+;;   - Atomics (NE9): aligned x86 loads are atomic; store and exchange use
+;;     xchg (a full barrier, as wasm's sequentially consistent atomics
+;;     need), add `lock xadd`, compare-exchange `lock cmpxchg`. Native code
+;;     has no threads yet (NE15) and its memory is never shared, so, as in
+;;     wasm, notify wakes nobody (returns 0) and wait traps.
 ;;   - Control flow (NE7): the translator tracks the value stack's depth (in
 ;;     slots) at every instruction and keeps a stack of open labels (the
 ;;     function body, block, loop, if). A branch resets rsp to its label's
@@ -64,6 +69,7 @@
              data:(ptr buf.Buf) trap_routine:i32
              div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
              out_of_bounds:(ptr Reason) mem_cell:i32 mem_max:i32
+             unaligned:(ptr Reason) wait_unshared:(ptr Reason)
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              failed:bool msg:(ptr buf.Buf)])
 
@@ -83,6 +89,8 @@
     (put l L.unreachable (call reason l "wasm trap: wasm `unreachable` instruction executed"))
     (put l L.labels (call (vec.make (ptr Label)) 16))
     (put l L.out_of_bounds (call reason l "wasm trap: out of bounds memory access"))
+    (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
+    (put l L.wait_unshared (call reason l "wasm trap: atomic wait on non-shared memory"))
     (put l L.mem_cell -1)
     (put l L.mem_max 0)
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
@@ -245,6 +253,7 @@
        true)
       ((call i32_op l op) true)
       ((call memory_op l op a (get ins wasm_reader.Instr.b)) true)
+      ((call atomic_op l op (get ins wasm_reader.Instr.b)) true)
       (else false)))
 
   ;; How a non-control instruction changes the value stack's depth.
@@ -256,6 +265,9 @@
       ((or (and (gte op 40) (lte op 43)) (or (eq op 45) (eq op 64))) 0) ;; loads, memory.grow
       ((and (gte op 54) (lte op 58)) -2)                            ;; stores
       ((eq op 63) 1)                                                ;; memory.size
+      ((eq op 65040) 0)                                             ;; i32.atomic.load
+      ((or (eq op 65047) (or (eq op 65096) (eq op 65025))) -2)      ;; atomic.store, cmpxchg, wait32
+      ((or (eq op 65054) (or (eq op 65089) (eq op 65024))) -1)      ;; rmw.add, rmw.xchg, notify
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (- (call nresults t) (call nparams t)))
@@ -418,6 +430,79 @@
        true)
       ((eq op 64) (call emit_memory_grow l) true)
       (else false)))
+
+  ;; ===== Atomics (NE9) =====
+
+  (fn r10 [] -> i32 10)
+  (fn r11 [] -> i32 11)
+
+  ;; The i32 atomics, notify and wait32. Returns false for any other opcode.
+  (fn atomic_op [l:(ptr L) op:i32 offset:i32] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((eq op 65040)
+       (call pop_rax l)
+       (call x64.load c 32 (call rax) (call atomic_address l offset))
+       (call push_rax l)
+       true)
+      ((eq op 65047)
+       (call x64.pop c (call r8))
+       (call pop_rax l)
+       (call x64.xchg c 32 (call atomic_address l offset) (call r8))
+       true)
+      ;; rmw.add and rmw.xchg push the old value
+      ((or (eq op 65054) (eq op 65089))
+       (call x64.pop c (call r8))
+       (call pop_rax l)
+       (let at:(ptr x64.Mem) (call atomic_address l offset))
+       (if (eq op 65054)
+           (block (call x64.lock c) (call x64.xadd c 32 at (call r8)))
+           (call x64.xchg c 32 at (call r8)))
+       (call x64.push c (call r8))
+       true)
+      ;; rmw.cmpxchg: address, expected, replacement; pushes the old value
+      ;; (cmpxchg leaves it in eax whether or not it swapped)
+      ((eq op 65096)
+       (call x64.pop c (call r9))
+       (call x64.pop c (call r10))
+       (call pop_rax l)
+       (call x64.lea c 64 (call r11) (call atomic_address l offset))
+       (call x64.mov_rr c 32 (call rax) (call r10))
+       (call x64.lock c)
+       (call x64.cmpxchg c 32 (call x64.mem (call r11) 0) (call r9))
+       (call push_rax l)
+       true)
+      ;; notify(address, count): no thread can be waiting
+      ((eq op 65024)
+       (call x64.pop c (call r8))
+       (call pop_rax l)
+       (let _n:(ptr x64.Mem) (call atomic_address l offset))
+       (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+       (call push_rax l)
+       true)
+      ;; wait32(address, expected, timeout): traps on unshared memory, after
+      ;; the address checks, as wasmtime does
+      ((eq op 65025)
+       (call x64.pop c (call r8))
+       (call x64.pop c (call r9))
+       (call pop_rax l)
+       (let _w:(ptr x64.Mem) (call atomic_address l offset))
+       (call emit_trap l (get l L.wait_unshared))
+       (call push_rax l)
+       true)
+      (else false)))
+
+  ;; checked_address for an atomic 4-byte access: first traps unless
+  ;; address + offset is 4-aligned (before the bounds check, as wasmtime
+  ;; reports an access that is both as unaligned).
+  (fn atomic_address [l:(ptr L) offset:i32] -> (ptr x64.Mem)
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let rdx:i32 2)
+    (call x64.mov_rr c 32 (call rax) (call rax))
+    (call x64.lea c 64 rdx (call x64.mem (call rax) offset))
+    (call x64.test_ri c 32 rdx 3)
+    (call emit_trap_if l (call x64.cc_ne) (get l L.unaligned))
+    (call checked_address l offset 4))
 
   (fn access_width [op:i32] -> i32
     (cond ((or (eq op 45) (eq op 58)) 1)
