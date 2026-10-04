@@ -13,7 +13,11 @@
 ;;     at [rbp - 8 * (j + 1)].
 ;;   - The wasm value stack is the machine stack: every value is one 8-byte
 ;;     slot (an i32 in its low half), pushed and popped around each
-;;     instruction through rax and rcx.
+;;     instruction through rax and rcx. An i32 lives in a slot's low half;
+;;     the high half is unspecified, so every i32 operation uses 32-bit
+;;     instructions.
+;;   - A trap jumps to the runtime's trap routine with its reason (see
+;;     runtime.emit_trap_routine), which prints the line aipl-run prints.
 ;; Instructions a task has not reached yet are an error naming them.
 (module lower
   (import str)
@@ -21,16 +25,24 @@
   (import vec)
   (import wasm_reader)
   (import x64)
+  (import elf)
 
   ;; A call whose 32-bit displacement (at `at`) must point at function `func`.
   (struct Fixup [at:i32 func:i32])
+
+  ;; A trap reason's text in the data segment.
+  (struct Reason [addr:i32 len:i32])
 
   ;; The translation state for a whole module: one code buffer, the call
   ;; fix-ups, and the first error (code generation stops at it).
   ;; fimports: the module's function imports, which are function indices
   ;; 0 .. n-1 (a memory import takes no function index).
+  ;; data: the data segment being built (loaded at elf.data_vaddr).
+  ;; trap_routine: the code position of runtime.emit_trap_routine's code.
   (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
              fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
+             data:(ptr buf.Buf) trap_routine:i32
+             div_zero:(ptr Reason) overflow:(ptr Reason)
              failed:bool msg:(ptr buf.Buf)])
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
@@ -42,10 +54,42 @@
           (call (vec.push (ptr wasm_reader.Import)) (get l L.fimports) imp)
           (block)))
     (put l L.code (call buf.make 4096))
+    (put l L.data (call buf.make 256))
+    (put l L.trap_routine -1)
+    (put l L.div_zero (call reason l "wasm trap: integer divide by zero"))
+    (put l L.overflow (call reason l "wasm trap: integer overflow"))
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
     (put l L.failed false)
     (put l L.msg (call buf.make 64))
     l)
+
+  ;; Appends `text` to the data; returns its address once loaded.
+  (fn data_text [l:(ptr L) text:str] -> i32
+    (let at:i32 (+ (call elf.data_vaddr) (call buf.len (get l L.data))))
+    (call buf.push_str (get l L.data) text)
+    at)
+
+  (fn reason [l:(ptr L) text:str] -> (ptr Reason)
+    (let r:(ptr Reason) (new Reason))
+    (put r Reason.addr (call data_text l text))
+    (put r Reason.len (str.len text))
+    r)
+
+  ;; Traps with reason `r`: unconditionally, from here.
+  (fn emit_trap [l:(ptr L) r:(ptr Reason)] -> void
+    (req (gte (get l L.trap_routine) 0))
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call x64.mov_ri32 c 6 (get r Reason.addr))
+    (call x64.mov_ri32 c 2 (get r Reason.len))
+    (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine)))
+
+  ;; Traps with reason `r` when condition `cc` holds (after a compare).
+  (fn emit_trap_if [l:(ptr L) cc:i32 r:(ptr Reason)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    ;; jump over the trap on the opposite condition (cc xor 1)
+    (let skip:i32 (call x64.jcc c (^ cc 1)))
+    (call emit_trap l r)
+    (call x64.patch_rel32 c skip (call buf.len c)))
 
   (fn fail [l:(ptr L) msg:str] -> void
     (if (get l L.failed) (return) (block))
@@ -145,7 +189,110 @@
            (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
            (block))
        (if (gt (call nresults t) 0) (call push_rax l) (block)))
+      ((call i32_op l op) (block))
       (else (call unsupported l op))))
+
+  ;; The i32 instructions (NE6). Returns false for any other opcode.
+  ;; Binary operators pop b (rcx) then a (rax) and push the result.
+  (fn i32_op [l:(ptr L) op:i32] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let rdx:i32 2)
+    (cond
+      ;; eqz
+      ((eq op 69)
+       (call pop_rax l)
+       (call set_cc_from l (call x64.cc_e) true)
+       true)
+      ;; eq ne lt_s lt_u gt_s gt_u le_s ge_s: compare a with b, push 0 or 1
+      ((or (and (gte op 70) (lte op 76)) (eq op 78))
+       (call pop_operands l)
+       (call x64.alu_rr c 32 (call x64.op_cmp) (call rax) (call rcx))
+       (call set_cc_from l (call compare_cc op) false)
+       true)
+      ;; add sub and or xor
+      ((or (or (eq op 106) (eq op 107)) (and (gte op 113) (lte op 115)))
+       (call pop_operands l)
+       (call x64.alu_rr c 32 (call alu_of op) (call rax) (call rcx))
+       (call push_rax l)
+       true)
+      ((eq op 108)
+       (call pop_operands l)
+       (call x64.imul_rr c 32 (call rax) (call rcx))
+       (call push_rax l)
+       true)
+      ;; shl shr_s shr_u: x86 masks a 32-bit shift count to 5 bits, as wasm does
+      ((and (gte op 116) (lte op 118))
+       (call pop_operands l)
+       (call x64.shift_cl c 32 (cond ((eq op 116) (call x64.sh_shl)) ((eq op 117) (call x64.sh_sar)) (else (call x64.sh_shr))) (call rax))
+       (call push_rax l)
+       true)
+      ;; div_s: traps on b = 0, and on INT_MIN / -1 (the quotient overflows)
+      ((eq op 109)
+       (call pop_operands l)
+       (call x64.test_rr c 32 (call rcx) (call rcx))
+       (call emit_trap_if l (call x64.cc_e) (get l L.div_zero))
+       (call x64.alu_ri c 32 (call x64.op_cmp) (call rcx) -1)
+       (let not_minus_one:i32 (call x64.jcc c (call x64.cc_ne)))
+       (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) -2147483648)
+       (call emit_trap_if l (call x64.cc_e) (get l L.overflow))
+       (call x64.patch_rel32 c not_minus_one (call buf.len c))
+       (call x64.cdq c)
+       (call x64.idiv_r c 32 (call rcx))
+       (call push_rax l)
+       true)
+      ;; rem_s: traps on b = 0; a % -1 is 0 for every a (x86's idiv would
+      ;; fault on INT_MIN % -1, so -1 never reaches it)
+      ((eq op 111)
+       (call pop_operands l)
+       (call x64.test_rr c 32 (call rcx) (call rcx))
+       (call emit_trap_if l (call x64.cc_e) (get l L.div_zero))
+       (call x64.alu_rr c 32 (call x64.op_xor) rdx rdx)
+       (call x64.alu_ri c 32 (call x64.op_cmp) (call rcx) -1)
+       (let minus_one:i32 (call x64.jcc c (call x64.cc_e)))
+       (call x64.cdq c)
+       (call x64.idiv_r c 32 (call rcx))
+       (call x64.patch_rel32 c minus_one (call buf.len c))
+       (call x64.push c rdx)
+       true)
+      ;; div_u rem_u: trap on b = 0; edx:eax / ecx unsigned
+      ((or (eq op 110) (eq op 112))
+       (call pop_operands l)
+       (call x64.test_rr c 32 (call rcx) (call rcx))
+       (call emit_trap_if l (call x64.cc_e) (get l L.div_zero))
+       (call x64.alu_rr c 32 (call x64.op_xor) rdx rdx)
+       (call x64.div_r c 32 (call rcx))
+       (call x64.push c (if (eq op 110) (call rax) rdx))
+       true)
+      ;; i32.wrap_i64 emits nothing: the i32 is the slot's low half, and i32
+      ;; operations never read the high half. (Whatever widens an i32 to 64
+      ;; bits, i64.extend_i32_u/_s in NE12, must clear or set the high half.)
+      ((eq op 167) true)
+      (else false)))
+
+  ;; b into rcx, a into rax.
+  (fn pop_operands [l:(ptr L)] -> void
+    (call x64.pop (get l L.code) (call rcx))
+    (call pop_rax l))
+
+  ;; Pushes 1 if condition `cc` holds, else 0. With `test_rax`, the flags come
+  ;; from testing eax against itself first (for eqz).
+  (fn set_cc_from [l:(ptr L) cc:i32 test_rax:bool] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (if test_rax (call x64.test_rr c 32 (call rax) (call rax)) (block))
+    (call x64.setcc c cc (call rax))
+    (call x64.movzx8 c (call rax) (call rax))
+    (call push_rax l))
+
+  (fn compare_cc [op:i32] -> i32
+    (cond ((eq op 70) (call x64.cc_e)) ((eq op 71) (call x64.cc_ne))
+          ((eq op 72) (call x64.cc_l)) ((eq op 73) (call x64.cc_b))
+          ((eq op 74) (call x64.cc_g)) ((eq op 75) (call x64.cc_a))
+          ((eq op 76) (call x64.cc_le)) (else (call x64.cc_ge))))
+
+  (fn alu_of [op:i32] -> i32
+    (cond ((eq op 106) (call x64.op_add)) ((eq op 107) (call x64.op_sub))
+          ((eq op 113) (call x64.op_and)) ((eq op 114) (call x64.op_or))
+          (else (call x64.op_xor))))
 
   (fn unsupported [l:(ptr L) op:i32] -> void
     (if (get l L.failed) (return) (block))

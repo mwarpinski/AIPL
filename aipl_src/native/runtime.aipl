@@ -37,6 +37,44 @@
     (call x64.syscall c)
     (call x64.ud2 c))
 
+  ;; The trap routine (NE6): prints `<argv[0]>: <reason>` and a newline to
+  ;; stderr and exits with status 134, the line `aipl-run` prints. Jump to it
+  ;; with the reason's address in esi and its length in edx. `argv0_cell` is
+  ;; the data address where start-up saved argv[0] (0 if there was none, in
+  ;; which case only the reason is printed); `sep` is ": " and `nl` "\n" in
+  ;; the data. Never returns; clobbers everything.
+  (fn emit_trap_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32] -> void
+    (let rbx:i32 3) (let r12:i32 12) (let r13:i32 13)
+    (call x64.mov_rr c 32 r12 (call rsi))
+    (call x64.mov_rr c 32 r13 (call rdx))
+    (call x64.mov_ri32 c (call rax) argv0_cell)
+    (call x64.load c 64 rbx (call x64.mem (call rax) 0))
+    (call x64.test_rr c 64 rbx rbx)
+    (let no_name:i32 (call x64.jcc c (call x64.cc_e)))
+    ;; edx = strlen(argv[0])
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (let top:i32 (call buf.len c))
+    (call x64.load8u c (call rax) (call x64.mem_index rbx (call rdx) 1 0))
+    (call x64.test_rr c 32 (call rax) (call rax))
+    (let done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 32 (call x64.op_add) (call rdx) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call emit_write_regs c rbx (call rdx))
+    (call emit_write c 2 sep 2)
+    (call x64.patch_rel32 c no_name (call buf.len c))
+    (call emit_write_regs c r12 r13)
+    (call emit_write c 2 nl 1)
+    (call emit_exit c 134))
+
+  ;; write(2, addr, len) with the address and length in registers.
+  (fn emit_write_regs [c:(ptr buf.Buf) addr:i32 len:i32] -> void
+    (call x64.mov_rr c 64 (call rsi) addr)
+    (call x64.mov_rr c 64 (call rdx) len)
+    (call x64.mov_ri32 c (call rdi) 2)
+    (call x64.mov_ri32 c (call rax) (call sys_write))
+    (call x64.syscall c))
+
   ;; The first native executable (NE4): writes "hello from native AIPL\n" to
   ;; stdout and exits with status 7.
   (fn hello_exe [] -> (ptr str.Bytes)

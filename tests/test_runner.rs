@@ -76,7 +76,13 @@ fn a_trap_is_reported_with_a_failing_status() {
     compile(&dir.join("t.aipl"), &dir.join("t.wasm"), &[]);
     let o = run_in(&dir, &dir.join("t.wasm"), &[], "");
     assert_eq!(o.status.code(), Some(134));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("divide by zero"), "{}", String::from_utf8_lossy(&o.stderr));
+    // one line: the program as invoked, then the reason
+    let program = dir.join("t.wasm").display().to_string();
+    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{program}: wasm trap: integer divide by zero\n"));
+    // the full wasmtime report on request
+    let full = Command::new(RUNNER).arg(dir.join("t.wasm")).env("AIPL_BACKTRACE", "1").output().unwrap();
+    let full = String::from_utf8_lossy(&full.stderr);
+    assert!(full.contains("backtrace") && full.contains("wasm trap: integer divide by zero"), "{full}");
 }
 
 #[test]

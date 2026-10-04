@@ -5,9 +5,10 @@
 ;;   (let out:(ptr native.Output) (call native.compile wasm_bytes))
 ;;   (if (get out native.Output.ok) ... (get out native.Output.error))
 ;;
-;; Code layout: the start-up stub at offset 0 (the ELF entry point), then one
-;; stub per imported function, then every defined function in index order.
-;; Data: the runtime's constant text (messages), loaded at elf.data_vaddr.
+;; Code layout: the start-up stub at offset 0 (the ELF entry point), the trap
+;; routine, one stub per imported function, then every defined function in
+;; index order. Data (loaded at elf.data_vaddr): the argv[0] cell (8 bytes),
+;; then the runtime's constant text (trap reasons, separators).
 ;; The start-up stub calls the module's `_start` export and exits with
 ;; status 0, as `aipl-run` does when `_start` returns.
 (module native
@@ -40,16 +41,10 @@
           (block)))
     found)
 
-  ;; Appends `text` to the data and returns its address once loaded.
-  (fn data_text [data:(ptr buf.Buf) text:str] -> i32
-    (let at:i32 (+ (call elf.data_vaddr) (call buf.len data)))
-    (call buf.push_str data text)
-    at)
-
   ;; The code for imported function `imp`, called with the internal
   ;; convention (arguments on the stack above the return address).
   ;; Imports a task has not reached yet are an error naming them.
-  (fn import_stub [l:(ptr lower.L) data:(ptr buf.Buf) imp:(ptr wasm_reader.Import)] -> void
+  (fn import_stub [l:(ptr lower.L) imp:(ptr wasm_reader.Import)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let name:(ptr str.Bytes) (get imp wasm_reader.Import.name))
     (cond
@@ -57,14 +52,10 @@
       ;; under wasmtime, a status outside 0..125 (unsigned) is an error
       ;; (shells reserve 126 and up), reported with exit status 134.
       ((call str.bytes_eq name (call str.from_str "proc_exit"))
-       (let msg:str "exit with invalid exit status outside of [0..126)\n")
-       (let msg_at:i32 (call data_text data msg))
+       (let bad:(ptr lower.Reason) (call lower.reason l "exit with invalid exit status outside of [0..126)"))
        (call x64.load c 32 7 (call x64.mem 4 8))
        (call x64.alu_ri c 32 (call x64.op_cmp) 7 126)
-       (let ok:i32 (call x64.jcc c (call x64.cc_b)))
-       (call runtime.emit_write c 2 msg_at (str.len msg))
-       (call runtime.emit_exit c 134)
-       (call x64.patch_rel32 c ok (call buf.len c))
+       (call lower.emit_trap_if l (call x64.cc_ae) bad)
        (call x64.mov_ri32 c 0 (call runtime.sys_exit_group))
        (call x64.syscall c)
        (call x64.ud2 c))
@@ -89,13 +80,24 @@
     (let nimports:i32 (call lower.n_fimports l))
     (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (+ nfuncs 1)))
-    (let data:(ptr buf.Buf) (call buf.make 256))
-    ;; start-up: call _start, then exit 0
+    (let data:(ptr buf.Buf) (get l lower.L.data))
+    ;; data: the argv[0] cell, then the trap routine's separators
+    (let argv0_cell:i32 (call lower.data_text l ""))
+    (loop k 1 8 1 (call buf.push_byte data 0))
+    (let sep:i32 (call lower.data_text l ": "))
+    (let nl:i32 (call lower.data_text l "\n"))
+    ;; start-up: save argv[0] (the initial stack is argc, argv[0], ...), call
+    ;; _start, then exit 0
+    (call x64.load c 64 0 (call x64.mem 4 8))
+    (call x64.mov_ri32 c 1 argv0_cell)
+    (call x64.store c 64 (call x64.mem 1 0) 0)
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)
+    (put l lower.L.trap_routine (call buf.len c))
+    (call runtime.emit_trap_routine c argv0_cell sep nl)
     (loop i 0 (- nimports 1) 1
       (call (vec.push i32) starts (call buf.len c))
-      (call import_stub l data (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
+      (call import_stub l (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
     (loop i nimports (- nfuncs 1) 1
       (if (get l lower.L.failed) (break) (block))
       (call (vec.push i32) starts (call buf.len c))
