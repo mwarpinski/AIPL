@@ -413,7 +413,7 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 91 | output or a function body exceeded `4 * src_len + 64 KiB` |
 | 92 | more than 2048 functions, or a function with more than 16 parameters |
 | 93 | more than 1024 locals in one function |
-| 94 | more than 255 structs, a struct with more than 15 fields, or more than 31 distinct `call_ref` signatures |
+| 94 | more than 255 structs, a struct with more than 64 fields, or more than 31 distinct `call_ref` signatures |
 | 95 | struct field or array element type is not a scalar (`i32 i64 f32 f64 bool str`) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
 | 97 | an `ok`/`err` payload that is not 32-bit |
