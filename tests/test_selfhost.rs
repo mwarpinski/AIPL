@@ -190,6 +190,18 @@ fn self_hosted_bytes_match_strings_interned_by_content() {
     assert_self_hosted_matches_rust("repeat", "(module m (fn f [] -> i32 (+ (str.len \"ab\") (+ (str.len \"a\") (str.len \"ab\")))))");
 }
 
+/// Structs may have up to 64 fields in the self-hosted compiler (it was
+/// 15, which the native backend's translator state passed in NE8).
+#[test]
+fn self_hosted_bytes_match_a_wide_struct() {
+    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
+    let src = format!(
+        "(module wide (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W)) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
+        fields.join(" ")
+    );
+    assert_self_hosted_matches_rust("wide", &src);
+}
+
 /// Body items that are atoms, not groups. codegen.is_contract_head once read
 /// a bare number's value as a node address: harmless garbage for small
 /// numbers, a crash for any number past the end of memory (found compiling

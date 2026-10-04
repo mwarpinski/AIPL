@@ -45,7 +45,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ## 6. Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 15 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
 
 ## 7. Before "many modules from many authors" is safe
 
