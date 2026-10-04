@@ -18,6 +18,13 @@
 ;;     instructions.
 ;;   - A trap jumps to the runtime's trap routine with its reason (see
 ;;     runtime.emit_trap_routine), which prints the line aipl-run prints.
+;;   - Control flow (NE7): the translator tracks the value stack's depth (in
+;;     slots) at every instruction and keeps a stack of open labels (the
+;;     function body, block, loop, if). A branch resets rsp to its label's
+;;     entry depth, keeping its result if the label has one, then jumps:
+;;     back to a loop's start, or forward to a block's end (patched there).
+;;     After br, return, or unreachable the code is dead until a label that
+;;     something branches to (or falls into) ends; nothing is emitted there.
 ;; Instructions a task has not reached yet are an error naming them.
 (module lower
   (import str)
@@ -33,6 +40,15 @@
   ;; A trap reason's text in the data segment.
   (struct Reason [addr:i32 len:i32])
 
+  ;; An open label. kind: 0 block, 1 loop, 2 if, 3 the function body.
+  ;; arity: the label's result count (0 or 1). height: the value stack depth
+  ;; when it opened. start: a loop's first instruction. fixups: forward
+  ;; jumps to its end. else_at: an if's jump to its else (or end), -1 once
+  ;; patched or when there is none. entry_dead: opened in dead code.
+  ;; reached: something falls into or branches to its end.
+  (struct Label [kind:i32 arity:i32 height:i32 start:i32 fixups:(ptr (vec.Vec i32))
+                 else_at:i32 entry_dead:bool reached:bool])
+
   ;; The translation state for a whole module: one code buffer, the call
   ;; fix-ups, and the first error (code generation stops at it).
   ;; fimports: the module's function imports, which are function indices
@@ -42,7 +58,8 @@
   (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
              fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
              data:(ptr buf.Buf) trap_routine:i32
-             div_zero:(ptr Reason) overflow:(ptr Reason)
+             div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
+             labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              failed:bool msg:(ptr buf.Buf)])
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
@@ -58,6 +75,8 @@
     (put l L.trap_routine -1)
     (put l L.div_zero (call reason l "wasm trap: integer divide by zero"))
     (put l L.overflow (call reason l "wasm trap: integer overflow"))
+    (put l L.unreachable (call reason l "wasm trap: wasm `unreachable` instruction executed"))
+    (put l L.labels (call (vec.make (ptr Label)) 16))
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
     (put l L.failed false)
     (put l L.msg (call buf.make 64))
@@ -150,9 +169,16 @@
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (put l L.nlocals 0)
     (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
       (let n:i32 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count))
+      (put l L.nlocals (+ (get l L.nlocals) n))
       (loop k 1 n 1 (call push_rax l)))
+    ;; the body is the outermost label; its end returns
+    (put l L.depth 0)
+    (put l L.dead false)
+    (call (vec.clear (ptr Label)) (get l L.labels))
+    (call open_label l 3 (if has_result 1 0))
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
       (if (get l L.failed) (break) (block))
@@ -163,34 +189,175 @@
     (let op:i32 (get ins wasm_reader.Instr.op))
     (let a:i32 (get ins wasm_reader.Instr.a))
     (cond
-      ;; end: NE5 has no blocks, so every end closes the function
-      ((eq op 11) (call emit_return l has_result))
-      ((eq op 15) (call emit_return l has_result))
-      ((eq op 26) (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 8))
+      ((call control l op a has_result) (block))
+      ;; dead code: nothing to emit, nothing to track
+      ((get l L.dead) (block))
+      ((call plain l w np op a ins) (call adjust l (call stack_effect l w op a)))
+      (else (call unsupported l op))))
+
+  ;; The non-control instructions. Returns false for any other opcode.
+  (fn plain [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 op:i32 a:i32 ins:(ptr wasm_reader.Instr)] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((eq op 26) (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 8) true)
       ((eq op 32)
        (call x64.load c 64 (call rax) (call local_slot np a))
-       (call push_rax l))
+       (call push_rax l)
+       true)
       ((eq op 33)
        (call pop_rax l)
-       (call x64.store c 64 (call local_slot np a) (call rax)))
+       (call x64.store c 64 (call local_slot np a) (call rax))
+       true)
       ((eq op 34)
        (call x64.load c 64 (call rax) (call x64.mem (call rsp) 0))
-       (call x64.store c 64 (call local_slot np a) (call rax)))
+       (call x64.store c 64 (call local_slot np a) (call rax))
+       true)
       ((eq op 65)
        (call x64.mov_ri32 c (call rax) (i32.wrap (get ins wasm_reader.Instr.c)))
-       (call push_rax l))
+       (call push_rax l)
+       true)
       ((eq op 66)
        (call x64.mov_ri64 c (call rax) (get ins wasm_reader.Instr.c))
-       (call push_rax l))
+       (call push_rax l)
+       true)
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (call emit_call l a)
        (if (gt (call nparams t) 0)
            (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
            (block))
-       (if (gt (call nresults t) 0) (call push_rax l) (block)))
-      ((call i32_op l op) (block))
-      (else (call unsupported l op))))
+       (if (gt (call nresults t) 0) (call push_rax l) (block))
+       true)
+      ((call i32_op l op) true)
+      (else false)))
+
+  ;; How a non-control instruction changes the value stack's depth.
+  (fn stack_effect [l:(ptr L) w:(ptr wasm_reader.Wasm) op:i32 a:i32] -> i32
+    (cond
+      ((or (eq op 65) (or (eq op 66) (eq op 32))) 1)                ;; consts, local.get
+      ((or (eq op 33) (eq op 26)) -1)                               ;; local.set, drop
+      ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
+      ((eq op 16)
+       (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
+       (- (call nresults t) (call nparams t)))
+      (else -1)))                                                    ;; i32 binary and compare
+
+  (fn adjust [l:(ptr L) n:i32] -> void (put l L.depth (+ (get l L.depth) n)))
+
+  ;; ===== Control flow (NE7) =====
+
+  (fn open_label [l:(ptr L) kind:i32 arity:i32] -> (ptr Label)
+    (let lab:(ptr Label) (new Label))
+    (put lab Label.kind kind)
+    (put lab Label.arity arity)
+    (put lab Label.height (get l L.depth))
+    (put lab Label.start (call buf.len (get l L.code)))
+    (put lab Label.fixups (call (vec.make i32) 4))
+    (put lab Label.else_at -1)
+    (put lab Label.entry_dead (get l L.dead))
+    (put lab Label.reached false)
+    (call (vec.push (ptr Label)) (get l L.labels) lab)
+    lab)
+
+  ;; The label `depth` levels out (0 = innermost), as br numbers them.
+  (fn label_at [l:(ptr L) depth:i32] -> (ptr Label)
+    (let n:i32 (call (vec.len (ptr Label)) (get l L.labels)))
+    (call (vec.at (ptr Label)) (get l L.labels) (- (- n 1) depth)))
+
+  ;; A block type byte's result count: 0x40 none, a value type one.
+  (fn arity_of [bt:i32] -> i32 (if (eq bt 64) 0 1))
+
+  ;; Jumps to `lab` from the current depth: drops the values above the
+  ;; label's height, keeping its result (a loop's branch carries none).
+  (fn emit_branch [l:(ptr L) lab:(ptr Label)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let carried:i32 (if (eq (get lab Label.kind) 1) 0 (get lab Label.arity)))
+    (if (neq (get l L.depth) (+ (get lab Label.height) carried))
+        (block
+          (if (eq carried 1) (call pop_rax l) (block))
+          (call x64.lea c 64 (call rsp) (call x64.mem (call rbp) (* -8 (+ (get l L.nlocals) (get lab Label.height)))))
+          (if (eq carried 1) (call push_rax l) (block)))
+        (block))
+    (if (eq (get lab Label.kind) 1)
+        (call x64.patch_rel32 c (call x64.jmp c) (get lab Label.start))
+        (block
+          (call (vec.push i32) (get lab Label.fixups) (call x64.jmp c))
+          (put lab Label.reached true))))
+
+  ;; block loop if else end br br_if return unreachable. Returns false for
+  ;; any other opcode.
+  (fn control [l:(ptr L) op:i32 a:i32 has_result:bool] -> bool
+    (let c:(ptr buf.Buf) (get l L.code))
+    (let live:bool (not (get l L.dead)))
+    (cond
+      ((or (eq op 2) (eq op 3))
+       (let _b:(ptr Label) (call open_label l (if (eq op 2) 0 1) (call arity_of a)))
+       true)
+      ((eq op 4)
+       (if live
+           (block
+             (call pop_rax l)
+             (call adjust l -1)
+             (call x64.test_rr c 32 (call rax) (call rax))
+             (let at:i32 (call x64.jcc c (call x64.cc_e)))
+             (put (call open_label l 2 (call arity_of a)) Label.else_at at))
+           (let _d:(ptr Label) (call open_label l 2 (call arity_of a))))
+       true)
+      ((eq op 5)
+       (let lab:(ptr Label) (call label_at l 0))
+       ;; the then-branch falls through to the end
+       (if live
+           (block
+             (call (vec.push i32) (get lab Label.fixups) (call x64.jmp c))
+             (put lab Label.reached true))
+           (block))
+       (if (gte (get lab Label.else_at) 0)
+           (block
+             (call x64.patch_rel32 c (get lab Label.else_at) (call buf.len c))
+             (put lab Label.else_at -1))
+           (block))
+       (put l L.depth (get lab Label.height))
+       (put l L.dead (get lab Label.entry_dead))
+       true)
+      ((eq op 11)
+       (let lab:(ptr Label) (call label_at l 0))
+       (call (vec.pop (ptr Label)) (get l L.labels))
+       (if live (put lab Label.reached true) (block))
+       ;; an if without else: its false path goes straight to the end
+       (if (gte (get lab Label.else_at) 0)
+           (block
+             (call x64.patch_rel32 c (get lab Label.else_at) (call buf.len c))
+             (put lab Label.reached true))
+           (block))
+       (let fx:(ptr (vec.Vec i32)) (get lab Label.fixups))
+       (loop k 0 (- (call (vec.len i32) fx) 1) 1
+         (call x64.patch_rel32 c (call (vec.at i32) fx k) (call buf.len c)))
+       (put l L.depth (+ (get lab Label.height) (get lab Label.arity)))
+       (put l L.dead (not (get lab Label.reached)))
+       (if (and (eq (get lab Label.kind) 3) (get lab Label.reached)) (call emit_return l has_result) (block))
+       true)
+      ((not live) (or (eq op 12) (or (eq op 13) (or (eq op 15) (eq op 0)))))
+      ((eq op 12)
+       (call emit_branch l (call label_at l a))
+       (put l L.dead true)
+       true)
+      ((eq op 13)
+       (call x64.pop c (call rcx))
+       (call adjust l -1)
+       (call x64.test_rr c 32 (call rcx) (call rcx))
+       (let skip:i32 (call x64.jcc c (call x64.cc_e)))
+       (call emit_branch l (call label_at l a))
+       (call x64.patch_rel32 c skip (call buf.len c))
+       true)
+      ((eq op 15)
+       (call emit_return l has_result)
+       (put l L.dead true)
+       true)
+      ((eq op 0)
+       (call emit_trap l (get l L.unreachable))
+       (put l L.dead true)
+       true)
+      (else false)))
 
   ;; The i32 instructions (NE6). Returns false for any other opcode.
   ;; Binary operators pop b (rcx) then a (rax) and push the result.

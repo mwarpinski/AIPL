@@ -101,7 +101,7 @@ const PROGRAMS: &[(&str, &str)] = &[
 /// local before writing it): `f` is called by `_start`, and its result is
 /// the exit status. Run both ways like `PROGRAMS`.
 fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
-    use wasm_encoder::Instruction as I;
+    use wasm_encoder::{BlockType as B, Instruction as I, ValType as V};
     vec![
         // wasm locals start at zero
         ("unwritten_locals_are_zero", exit_with(&[0, 3], &[I::LocalGet(2), I::End])),
@@ -112,7 +112,179 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
         ("tee_stores_the_value", exit_with(&[1], &[I::I32Const(6), I::LocalTee(0), I::Drop, I::LocalGet(0), I::End])),
         // i64 constants take a full slot; i32.wrap is not needed to exit with the low half
         ("set_then_get", exit_with(&[2], &[I::I32Const(12), I::LocalSet(1), I::I32Const(13), I::LocalSet(0), I::LocalGet(1), I::End])),
+        // NE7: branches drop what is above their label and carry its result
+        ("br_carries_a_value", exit_with(&[], &[
+            I::Block(B::Result(V::I32)), I::I32Const(1), I::I32Const(2), I::I32Const(42), I::Br(0), I::End, I::End,
+        ])),
+        ("br_if_taken_carries", exit_with(&[], &[
+            I::Block(B::Result(V::I32)), I::I32Const(5), I::I32Const(7), I::I32Const(1), I::BrIf(0), I::Drop, I::End, I::End,
+        ])),
+        ("br_if_not_taken_falls_through", exit_with(&[], &[
+            I::Block(B::Result(V::I32)), I::I32Const(5), I::I32Const(7), I::I32Const(0), I::BrIf(0), I::Drop, I::End, I::End,
+        ])),
+        ("loop_counts_to_ten", exit_with(&[1], &[
+            I::Loop(B::Empty),
+            I::LocalGet(0), I::I32Const(1), I::I32Add, I::LocalTee(0), I::I32Const(10), I::I32LtS, I::BrIf(0),
+            I::End, I::LocalGet(0), I::End,
+        ])),
+        // out of two nested blocks, over junk in dead code
+        ("br_out_of_nested_blocks", exit_with(&[], &[
+            I::Block(B::Result(V::I32)), I::I32Const(1),
+            I::Block(B::Empty), I::Block(B::Empty), I::I32Const(3), I::I32Const(9), I::Br(2),
+            I::I32Add, I::Drop, I::Unreachable, I::End, I::I32Const(77), I::Drop, I::End,
+            I::Drop, I::I32Const(0), I::End, I::End,
+        ])),
+        ("if_without_else_skips", exit_with(&[1], &[
+            I::I32Const(7), I::LocalSet(0), I::I32Const(0), I::If(B::Empty), I::I32Const(1), I::LocalSet(0), I::End, I::LocalGet(0), I::End,
+        ])),
+        ("if_without_else_runs", exit_with(&[1], &[
+            I::I32Const(7), I::LocalSet(0), I::I32Const(1), I::If(B::Empty), I::I32Const(1), I::LocalSet(0), I::End, I::LocalGet(0), I::End,
+        ])),
+        ("if_else_values", exit_with(&[], &[
+            I::I32Const(0), I::If(B::Result(V::I32)), I::I32Const(11), I::Else, I::I32Const(22), I::End,
+            I::I32Const(1), I::If(B::Result(V::I32)), I::I32Const(3), I::Else, I::I32Const(4), I::End, I::I32Add, I::End,
+        ])),
+        // br to the function's own label is a return with its value
+        ("br_to_the_function", exit_with(&[], &[
+            I::Block(B::Empty), I::I32Const(4), I::I32Const(8), I::Br(1), I::End, I::I32Const(0), I::End,
+        ])),
+        ("return_from_deep_inside", exit_with(&[], &[
+            I::I32Const(1), I::Block(B::Empty), I::Loop(B::Empty), I::I32Const(2), I::I32Const(19), I::Return, I::End, I::End, I::Drop, I::I32Const(0), I::End,
+        ])),
+        ("unreachable_traps", exit_with(&[], &[I::Unreachable, I::End])),
+        // a branch must leave the values below its label intact for what
+        // follows: 50 + 42; with locals, 100 + 42 + local 5 - 100 (the frame's locals sit between
+        // rbp and the value stack)
+        ("br_keeps_values_below_the_block", exit_with(&[], &[
+            I::I32Const(50), I::Block(B::Result(V::I32)), I::I32Const(1), I::I32Const(2), I::I32Const(42), I::Br(0), I::End, I::I32Add, I::End,
+        ])),
+        ("br_keeps_values_below_with_locals", exit_with(&[2], &[
+            I::I32Const(5), I::LocalSet(1),
+            I::I32Const(100), I::Block(B::Result(V::I32)), I::I32Const(1), I::I32Const(2), I::I32Const(42), I::Br(0), I::End, I::I32Add,
+            I::LocalGet(1), I::I32Add, I::I32Const(100), I::I32Sub, I::End,
+        ])),
+        // after an if's value the depth is one higher: a branch from there
+        // must still drop the if's value (50 + 42, not 7 + 42)
+        ("br_after_an_if_value", exit_with(&[], &[
+            I::I32Const(50), I::Block(B::Result(V::I32)),
+            I::I32Const(1), I::If(B::Result(V::I32)), I::I32Const(7), I::Else, I::I32Const(8), I::End,
+            I::I32Const(42), I::Br(0), I::End, I::I32Add, I::End,
+        ])),
+        ("br_if_keeps_values_below", exit_with(&[1], &[
+            I::I32Const(9), I::LocalSet(0), I::I32Const(30),
+            I::Block(B::Empty), I::I32Const(1), I::I32Const(2), I::I32Const(1), I::BrIf(0), I::Drop, I::Drop, I::End,
+            I::LocalGet(0), I::I32Add, I::End,
+        ])),
     ]
+}
+
+/// A program from another test file: the raw string after `const NAME: &str = r#"`.
+fn program_from(file: &str, name: &str) -> String {
+    let start = file.find(&format!("const {name}: &str = r#\"")).unwrap_or_else(|| panic!("no {name}"));
+    let body = &file[start..];
+    let open = body.find("r#\"").unwrap() + 3;
+    body[open..open + body[open..].find("\"#;").unwrap()].to_string()
+}
+
+/// Functions called natively and checked against wasmtime. `src` minus the
+/// functions in `drop` (they need instructions a later task adds) gets a new
+/// `main` (any existing one becomes `orig_main`) that makes every call in
+/// `calls`, compares each result with wasmtime's for the same call, and
+/// exits with the number that differ. Run under aipl-run (which must exit 0:
+/// the expected values are right) and natively, as every program is.
+fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, &[i32])]) {
+    use aipl_core::ast::Type;
+    let mut module = Parser::parse(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+    module.functions.retain(|f| !drop.contains(&f.name.as_str()));
+    for f in module.functions.iter_mut().filter(|f| f.name == "main") {
+        f.name = "orig_main".into();
+    }
+    TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let wasm = WasmCompiler::compile(&module).unwrap();
+    let mut checks = String::new();
+    for (f, args) in calls {
+        let f = if *f == "main" { "orig_main" } else { f };
+        let def = module.functions.iter().find(|d| d.name == f).unwrap_or_else(|| panic!("{name}: no function {f}"));
+        let want = call_export(&wasm, f, args);
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let call = format!("(call {f} {})", args.join(" "));
+        let value = if def.return_type == Type::Bool { format!("(if {call} 1 0)") } else { call };
+        checks.push_str(&format!("(if (neq {value} {want}) (set! bad (+ bad 1)) (block))\n"));
+    }
+    let printed = aipl_core::printer::print_module(&module);
+    let end = printed.rfind(')').unwrap();
+    let program = format!("{}\n(fn main [] -> i32 (let bad:i32 0)\n{checks}(sys.exit bad) 0))", &printed[..end]);
+    let dir = scratch(&format!("{name}_expected"));
+    let status = run_wasm(&dir, &to_wasm(&program)).status.code();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(status, Some(0), "{name}: aipl-run disagrees with wasmtime's results");
+    assert_native_matches(name, &program);
+}
+
+/// Calls export `f` with i32 arguments under wasmtime; its i32 result.
+fn call_export(wasm: &[u8], f: &str, args: &[i32]) -> i32 {
+    use wasmtime::Val;
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &module).unwrap();
+    let func = inst.get_func(&mut store, f).unwrap();
+    let params: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
+    let mut out = [Val::I32(0)];
+    func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
+    out[0].unwrap_i32()
+}
+
+/// NE7: the control-flow programs of tests/test_control_flow.rs and
+/// examples/math_core.aipl. Functions that use memory (results, mem.*) wait
+/// for NE8.
+#[test]
+fn control_flow_programs_match_natively() {
+    let flow_file = include_str!("test_control_flow.rs");
+    assert_functions_match(
+        "flow",
+        &program_from(flow_file, "PROGRAM"),
+        &["parse_digit", "first_non_digit", "bump", "uses_void_return"],
+        &[
+            ("first_mult7", &[15]), ("first_mult7", &[14]),
+            ("sum_until", &[10]), ("sum_until", &[-5]),
+            ("sum_odd", &[9]), ("sum_odd", &[0]),
+            ("count_nonzero_digits", &[1020304]),
+            ("nested", &[4]), ("nested", &[7]),
+            ("classify", &[-3]), ("classify", &[0]), ("classify", &[4]), ("classify", &[50]),
+            ("bucket_sum", &[7]),
+            ("ends_in_return", &[5]),
+            ("moving_bounds", &[5]), ("moving_bounds", &[1]),
+        ],
+    );
+    assert_functions_match(
+        "short_circuit",
+        &program_from(flow_file, "SHORT_CIRCUIT"),
+        &["side_effects", "jump_in_operand", "bump"],
+        &[
+            ("safe_ratio_is_two", &[0]), ("safe_ratio_is_two", &[5]),
+            ("zero_or_divides", &[0]), ("zero_or_divides", &[3]),
+            ("first_index_over", &[2]), ("first_index_over", &[9]),
+            ("in_range", &[5]), ("in_range", &[7]), ("in_range", &[-1]),
+        ],
+    );
+    assert_functions_match(
+        "math_core",
+        include_str!("../examples/math_core.aipl"),
+        &[],
+        &[
+            ("main", &[]),
+            ("gcd", &[48, 18]), ("gcd", &[17, 5]),
+            ("isqrt", &[625]), ("isqrt", &[2147395600]), ("isqrt", &[0]),
+            ("count_primes", &[1000]),
+            ("is_prime", &[97]), ("is_prime", &[91]), ("is_prime", &[2]),
+            ("clamp", &[5, 0, 3]), ("clamp", &[-5, 0, 3]),
+            ("weighted_average", &[90, 80, 50]),
+            ("should_throttle", &[90, 80, 50]), ("should_throttle", &[10, 10, 0]),
+        ],
+    );
 }
 
 /// Edge values for the i32 operator programs.
@@ -302,7 +474,7 @@ fn output_of(data: &[u8], out: usize) -> Result<Vec<u8>, String> {
 fn run_wasm(dir: &Path, wasm: &[u8]) -> Output {
     let path = dir.join("prog");
     std::fs::write(&path, wasm).unwrap();
-    Command::new(RUNNER).arg(&path).current_dir(dir).output().unwrap()
+    run_fresh_executable(Command::new(RUNNER).arg(&path).current_dir(dir))
 }
 
 fn run_native(dir: &Path, exe: &[u8]) -> Output {
@@ -312,18 +484,41 @@ fn run_native(dir: &Path, exe: &[u8]) -> Output {
     run_fresh_executable(Command::new(&path).current_dir(dir))
 }
 
-/// Runs an executable this process just wrote. Tests run in parallel
-/// threads, and a thread that forks a child while the file is still open
-/// for writing hands that child the open file until it execs, during which
-/// Linux refuses to run the file ("Text file busy"). Retry briefly then.
+/// How long a test program may run. A miscompiled branch can loop forever;
+/// that must fail the test, not hang it.
+const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs an executable this process just wrote, killing it after TIME_LIMIT.
+/// Tests run in parallel threads, and a thread that forks a child while the
+/// file is still open for writing hands that child the open file until it
+/// execs, during which Linux refuses to run the file ("Text file busy").
+/// Starting is retried briefly then.
 fn run_fresh_executable(cmd: &mut Command) -> Output {
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = None;
     for _ in 0..100 {
-        match cmd.output() {
+        match cmd.spawn() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
-            r => return r.unwrap(),
+            r => {
+                child = Some(r.unwrap());
+                break;
+            }
         }
     }
-    panic!("the executable stayed busy for a second")
+    let child = child.expect("the executable stayed busy for a second");
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(TIME_LIMIT) {
+        Ok(out) => out.unwrap(),
+        Err(_) => {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            panic!("{cmd:?} ran for over {TIME_LIMIT:?} (an infinite loop?) and was killed");
+        }
+    }
 }
 
 /// Builds `src` both ways and requires identical stdout, stderr, and status.
@@ -378,10 +573,21 @@ fn the_harness_tells_programs_apart() {
     let statuses: Vec<Option<i32>> =
         PROGRAMS.iter().map(|(_, src)| run_native(&dir, &to_native(&to_wasm(src)).unwrap()).status.code()).collect();
     assert!(statuses.iter().filter(|s| **s != Some(0)).count() >= 5, "{statuses:?}");
-    // the hand-built programs exit with distinct, non-zero statuses
-    let hand: Vec<Option<i32>> =
-        wasm_programs().iter().map(|(_, w)| run_native(&dir, &to_native(w).unwrap()).status.code()).collect();
-    assert_eq!(hand, vec![Some(0), Some(7), Some(3), Some(6), Some(12)]);
+    // the hand-built programs exit with the statuses their comments promise
+    let want = [
+        ("unwritten_locals_are_zero", 0), ("result_is_the_stack_top", 7), ("tee_keeps_the_value", 3),
+        ("tee_stores_the_value", 6), ("set_then_get", 12), ("br_carries_a_value", 42), ("br_if_taken_carries", 7),
+        ("br_if_not_taken_falls_through", 5), ("loop_counts_to_ten", 10), ("br_out_of_nested_blocks", 9),
+        ("if_without_else_skips", 7), ("if_without_else_runs", 1), ("if_else_values", 25), ("br_to_the_function", 8),
+        ("return_from_deep_inside", 19), ("unreachable_traps", 134), ("br_keeps_values_below_the_block", 92),
+        ("br_keeps_values_below_with_locals", 47), ("br_after_an_if_value", 92), ("br_if_keeps_values_below", 39),
+    ];
+    let programs = wasm_programs();
+    assert_eq!(programs.len(), want.len());
+    for ((name, wasm), (want_name, status)) in programs.iter().zip(want) {
+        assert_eq!(*name, want_name);
+        assert_eq!(run_native(&dir, &to_native(wasm).unwrap()).status.code(), Some(status), "{name}");
+    }
     let three = to_native(&to_wasm("(module m (fn main [] -> i32 (sys.exit 3) 0))")).unwrap();
     let four = run_wasm(&dir, &to_wasm("(module m (fn main [] -> i32 (sys.exit 4) 0))"));
     assert_ne!(run_native(&dir, &three).status.code(), four.status.code());
@@ -413,7 +619,7 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (if (eq 1 2) (sys.exit 1) (sys.exit 2)) 0))", "not supported natively yet: if (opcode 4)"),
+        ("(module m (fn main [] -> i32 (sys.exit (mem.load32 4096)) 0))", "not supported natively yet: i32.load (opcode 40)"),
         ("(module m (fn main [] -> i32 (sys.print \"hi\") 0))", "import not supported natively yet: wasi_snapshot_preview1.fd_write"),
         ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
     ] {
