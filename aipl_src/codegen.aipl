@@ -1072,6 +1072,26 @@
           (block)))
     -1)
 
+;; The address of an interned string whose bytes equal the `n` bytes at
+  ;; `bytes`, or -1. Each blob string is a 4-byte length, then its bytes; an
+  ;; address is 1028 + the offset of its bytes in the blob.
+  (fn find_interned_content [bytes:i32 n:i32] -> i32
+    (let blob:i32 (call str_blob_buf))
+    (let off:i32 0)
+    (let end:i32 (call get_str_blob_len))
+    (while (lt off end)
+      (let k:i32 (mem.load32 (+ blob off)))
+      (if (and (eq k n) (call bytes_equal (+ blob (+ off 4)) bytes n))
+          (return (+ 1028 off))
+          (block))
+      (set! off (+ off (+ 4 k))))
+    -1)
+
+  (fn bytes_equal [a:i32 b:i32 n:i32] -> bool
+    (loop i 0 (- n 1) 1
+      (if (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false) (block)))
+    true)
+
   (fn intern_string [src_ptr:i32 pos:i32 len:i32] -> i32
     (let existing:i32 (call find_interned_string src_ptr pos len))
     (if (neq existing -1) (return existing) (block))
@@ -1106,6 +1126,20 @@
             (mem.store8 (+ write_ptr decoded_len) b)
             (set! decoded_len (+ decoded_len 1))
             (set! i (+ i 1)))))
+    ;; Literals are interned by content, as wasm.rs string_layout does: if
+    ;; these bytes are already in the blob (another spelling of the same
+    ;; text, or the newline sys.print reserves), this spelling points there.
+    (let same:i32 (call find_interned_content write_ptr decoded_len))
+    (if (neq same -1)
+        (block
+          (let sc:i32 (call get_str_count))
+          (let e:i32 (call str_entry_ptr sc))
+          (mem.store32 (+ e 0) pos)
+          (mem.store32 (+ e 4) len)
+          (mem.store32 (+ e 8) same)
+          (call set_str_count (+ sc 1))
+          (return same))
+        (block))
     ;; Store length as 4 LE bytes at blob_ptr in heap memory
     (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
     (mem.store8 (+ blob_ptr 0) (bitand decoded_len 255))
