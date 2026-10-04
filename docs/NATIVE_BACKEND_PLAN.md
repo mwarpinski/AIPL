@@ -150,7 +150,8 @@ Done when: `word_count`, `word_freq`, the file programs in `test_wasi.rs`, and t
 
 **NE12: i64.** Depends on: NE9.
 All `i64` arithmetic, comparisons, `i64.extend_i32_s/u`, i64 loads and stores, with the same trap rules as NE6.
-Done when: `tests/test_i64.rs` programs match natively. Also: `examples/word_freq.aipl` (moved from NE11), and the NE10 clock program can compare whole i64 times.
+Done when: `tests/test_i64.rs` programs match natively. Also: the NE10 clock program can compare whole i64 times. (`word_freq`, moved here from NE11, also needs `call_indirect` for its sort comparator, so it is NE14's.)
+**Done (2026-10-04).** The i32 instructions' 64-bit forms: `div_s` traps on zero and `INT64_MIN / -1`, `rem_s` by -1 gives 0 without reaching `idiv`, shifts use x86's 6-bit count masking (as wasm), comparisons push an i32; `extend_i32_s` sign-extends (`movsxd`) and `extend_i32_u` clears the high half, which matters because an i32 made by `i32.wrap_i64` keeps the i64's high half in its slot. The function checker compares i64 results (and, ready for NE13, floats by their bits). Running: the `test_i64.rs` cases, the struct case with an i64 field (`test_mixed`), the i64 traps, the clock program comparing whole i64 times, every i64 operator on all pairs of 16 edge values in hand-built wasm, and extending after wrapping. Mutation-checked: 9 deliberate bugs, all caught.
 
 **NE13: floats.** Depends on: NE9.
 SSE2 encoder forms in `x64.aipl`, then `f32`/`f64` constants, arithmetic, comparisons (NaN compares false, as wasm), loads/stores, `f64.convert_i64_s`, `i64.trunc_f64_s` (traps on NaN and out of range, exactly at wasm's bounds), and the reinterprets.

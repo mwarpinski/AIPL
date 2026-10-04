@@ -187,6 +187,13 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
             I::I32Const(1), I::Block(B::Empty), I::Loop(B::Empty), I::I32Const(2), I::I32Const(19), I::Return, I::End, I::End, I::Drop, I::I32Const(0), I::End,
         ])),
         ("unreachable_traps", exit_with(&[], &[I::Unreachable, I::End])),
+        // NE12: an i32 made by wrapping keeps the i64's high half in its slot;
+        // extending it must set that half from the i32 alone
+        ("extend_after_wrap", exit_with(&[], &[
+            I::I64Const(0x7FFF_FFFF_0000_0005u64 as i64), I::I32WrapI64, I::I64ExtendI32U, I::I64Const(5), I::I64Eq,
+            I::I64Const(-0x0000_0001_0000_0000), I::I32WrapI64, I::I64ExtendI32S, I::I64Const(0), I::I64Eq, I::I32Add,
+            I::I64Const(0x1234_5678_FFFF_FFF9u64 as i64), I::I32WrapI64, I::I64ExtendI32S, I::I64Const(-7), I::I64Eq, I::I32Add, I::End,
+        ])),
         // NE8: memory (one page initially, at most four)
         ("store_i64_load_bytes", exit_with(&[], &[
             I::I32Const(100), I::I64Const(0x0102_0304_0506_0708), I::I64Store(m(3, 8)),
@@ -296,7 +303,14 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
         let def = module.functions.iter().find(|d| d.name == *f).unwrap_or_else(|| panic!("{name}: no function {f}"));
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let call = format!("(call {f} {})", args.join(" "));
-        let value = if def.return_type == Type::Bool { format!("(if {call} 1 0)") } else { call };
+        // floats compare by their bits, so NaN and -0.0 are checked exactly
+        let (value, want) = match (&def.return_type, want) {
+            (Type::Bool, wasmtime::Val::I32(v)) => (format!("(if {call} 1 0)"), v.to_string()),
+            (_, wasmtime::Val::I32(v)) => (call, v.to_string()),
+            (_, wasmtime::Val::I64(v)) => (call, format!("{v}i64")),
+            (_, wasmtime::Val::F64(bits)) => (format!("(i64.reinterpret_f64 {call})"), format!("{}i64", bits as i64)),
+            (t, other) => panic!("{name}: {f} returns {t:?}, which the checker does not compare ({other:?})"),
+        };
         checks.push_str(&format!("(if (neq {value} {want}) (set! bad (+ bad 1)) (block))\n"));
     }
     let printed = aipl_core::printer::print_module(&module);
@@ -311,8 +325,8 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
 
 /// Calls exports with i32 arguments, in order, in one wasmtime instance
 /// with aipl-run's preopens (a scratch working directory as fd 3, `/` as
-/// fd 4); their i32 results (a bool as 0 or 1).
-fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<i32> {
+/// fd 4); their results (a bool as i32 0 or 1).
+fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<wasmtime::Val> {
     use wasmtime::Val;
     use wasmtime_wasi::FsPerms;
     let engine = Engine::default();
@@ -333,9 +347,10 @@ fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<i32> {
         .map(|(f, args)| {
             let func = inst.get_func(&mut store, f).unwrap();
             let params: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
-            let mut out = [Val::I32(0)];
+            let result = func.ty(&store).results().next().unwrap_or_else(|| panic!("{f} returns nothing"));
+            let mut out = [Val::default_for_ty(&result).unwrap()];
             func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
-            out[0].unwrap_i32()
+            out[0].clone()
         })
         .collect()
 }
@@ -408,9 +423,9 @@ fn allocating_programs_match_natively() {
         &program_from(include_str!("test_differential.rs"), "fn p8_structs_and_arrays"),
         // i64 arithmetic (NE12) and float comparison (NE13); the reserved-block
         // stores trap and are PROGRAMS of their own
-        &["test_mixed", "test_floats", "test_put_reserved", "test_arr_set_reserved"],
+        &["test_floats", "test_put_reserved", "test_arr_set_reserved"],
         &[
-            ("test_point_ops", &[3, 4]), ("test_sizeof", &[]), ("test_array_ops", &[5]), ("test_array_ops", &[0]),
+            ("test_point_ops", &[3, 4]), ("test_sizeof", &[]), ("test_mixed", &[3]), ("test_mixed", &[-2]), ("test_array_ops", &[5]), ("test_array_ops", &[0]),
             ("test_i64_array", &[3]), ("test_index_oob", &[1]), ("test_index_oob", &[7]), ("test_size_allocates", &[]),
             ("test_result_heap", &[]), ("test_result_payload_allocates", &[]), ("test_points", &[]),
             ("test_bool_word", &[]), ("test_str_field", &[]),
@@ -596,7 +611,7 @@ fn file_programs_match_natively() {
         ("word_count_named_file", word_count.into(), with_input(&["input.txt"], false)),
         ("word_count_missing_file", word_count.into(), with_input(&["nope.txt"], false)),
         ("word_count_big_file", word_count.into(), Io { files: vec![file("input.txt", &big)], ..Io::default() }),
-        // (word_freq's hash map needs i64 comparisons: NE12)
+        // (word_freq sorts with a comparator reference: NE14)
         ("word_count_sandboxed", word_count.into(), with_input(&["input.txt"], true)),
         (
             "write_then_read",
@@ -695,6 +710,154 @@ fn file_programs_match_natively() {
     }
 }
 
+/// NE12: i64. The cases of tests/test_i64.rs, function by function.
+#[test]
+fn i64_programs_match_natively() {
+    assert_functions_match(
+        "i64_cases",
+        "(module m
+           (fn mul_wraps [] -> i64 (* 4294967296i64 2147483648i64))
+           (fn add_overflows [] -> i64 (+ 9223372036854775807i64 1i64))
+           (fn past_32_bits [] -> i64 (+ 2147483647i64 1i64))
+           (fn div [] -> i64 (/ -7i64 2i64))
+           (fn rem [] -> i64 (% -7i64 2i64))
+           (fn divu [] -> i64 (divu -1i64 2i64))
+           (fn remu [] -> i64 (remu -1i64 2i64))
+           (fn shl_masked [] -> i64 (shl 1i64 65i64))
+           (fn shr_arith [] -> i64 (shr -8i64 1i64))
+           (fn shru_logical [] -> i64 (shru -8i64 1i64))
+           (fn lt_neg [] -> bool (lt -1i64 0i64))
+           (fn eq_five [] -> bool (eq 5i64 5i64))
+           (fn big_compare [] -> bool (gt 4294967296i64 4294967295i64))
+           (fn extend_s [] -> i64 (i64.extend_s -1))
+           (fn extend_u [] -> i64 (i64.extend_u -1))
+           (fn wrap [] -> i32 (i32.wrap 4294967301i64))
+           (fn wrap_sum [] -> i32 (i32.wrap (+ (i64.extend_s 2147483647) 1i64)))
+           (fn memory_round_trip [] -> i64 (let p:i32 (mem.alloc 8)) (mem.store64 p 1311768467294899696i64) (mem.load64 p))
+           (fn add64 [a:i64 b:i64] -> i64 (+ a b))
+           (fn calls [] -> i64 (call add64 4294967296i64 4294967296i64))
+           (fn accumulate [] -> i64 (let s:i64 0i64) (loop i 1 10 1 (set! s (+ s 1000000000i64))) s)
+           (fn if_branches [n:i32] -> i64 (if (gt n 0) 4294967296i64 -4294967296i64))
+           (fn param_order [a:i64 b:i64 c:i32] -> i64 (- (* a 3i64) (+ b (i64.extend_s c))))
+           (fn uses_param_order [] -> i64 (call param_order 5000000000i64 7i64 -3)))",
+        &[],
+        &[
+            ("mul_wraps", &[]), ("add_overflows", &[]), ("past_32_bits", &[]), ("div", &[]), ("rem", &[]), ("divu", &[]),
+            ("remu", &[]), ("shl_masked", &[]), ("shr_arith", &[]), ("shru_logical", &[]), ("lt_neg", &[]), ("eq_five", &[]),
+            ("big_compare", &[]), ("extend_s", &[]), ("extend_u", &[]), ("wrap", &[]), ("wrap_sum", &[]),
+            ("memory_round_trip", &[]), ("calls", &[]), ("accumulate", &[]), ("if_branches", &[1]), ("if_branches", &[-1]),
+            ("uses_param_order", &[]),
+        ],
+    );
+    for (name, src) in [
+        ("trap_i64_div_by_zero", "(module m (fn main [] -> i32 (let z:i64 0i64) (sys.exit (i32.wrap (/ 7i64 z))) 0))"),
+        ("trap_i64_rem_by_zero", "(module m (fn main [] -> i32 (let z:i64 0i64) (sys.exit (i32.wrap (% 7i64 z))) 0))"),
+        ("trap_i64_divu_by_zero", "(module m (fn main [] -> i32 (let z:i64 0i64) (sys.exit (i32.wrap (divu 7i64 z))) 0))"),
+        ("trap_i64_min_div_minus_one", "(module m (fn main [] -> i32 (let z:i64 -1i64) (sys.exit (i32.wrap (/ -9223372036854775808i64 z))) 0))"),
+        ("i64_min_rem_minus_one", "(module m (fn main [] -> i32 (let z:i64 -1i64) (sys.exit (i32.wrap (% -9223372036854775808i64 z))) 0))"),
+        // the NE10 clock check with whole i64 values
+        (
+            "clocks_compared_as_i64",
+            "(module m (import io) (fn main [] -> i32
+               (let t0:i64 (sys.monotonic)) (let t1:i64 (sys.monotonic))
+               (call io.println_int \"after 2020: \" (if (gt (sys.time) 1577836800000000000i64) 1 0))
+               (call io.println_int \"monotonic: \" (if (gte t1 t0) 1 0))
+               (call io.println_int \"microseconds apart, not seconds: \" (if (lt (- t1 t0) 1000000000i64) 1 0))
+               0))",
+        ),
+    ] {
+        assert_wasm_native_matches(name, &to_wasm(src));
+    }
+    for (name, wasm) in i64_operator_programs() {
+        let status = run_wasm(&scratch("i64_expected"), &wasm).status.code().unwrap();
+        assert_eq!(status & 1, 0, "{name}: aipl-run disagrees with the expected values");
+        assert_wasm_native_matches(&name, &wasm);
+    }
+}
+
+const EDGES64: [i64; 16] = [
+    0, 1, -1, 2, -7, 31, 32, 63, 64, 65, i64::MAX, i64::MIN, i64::MIN + 1, 4294967296, -4294967297, 0x1234_5678_9ABC_DEF0,
+];
+
+/// As i32_operator_programs, for the i64 operators: each applies one
+/// operator to every pair of EDGES64 and exits with a hash of the results
+/// and whether any differed from Rust's.
+fn i64_operator_programs() -> Vec<(String, Vec<u8>)> {
+    use wasm_encoder::{Instruction as I, ValType as V};
+    enum R {
+        Wide(fn(i64, i64) -> Option<i64>),
+        Bool(fn(i64, i64) -> bool),
+    }
+    let ops: Vec<(&str, I<'static>, R)> = vec![
+        ("add", I::I64Add, R::Wide(|a, b| Some(a.wrapping_add(b)))),
+        ("sub", I::I64Sub, R::Wide(|a, b| Some(a.wrapping_sub(b)))),
+        ("mul", I::I64Mul, R::Wide(|a, b| Some(a.wrapping_mul(b)))),
+        ("and", I::I64And, R::Wide(|a, b| Some(a & b))),
+        ("or", I::I64Or, R::Wide(|a, b| Some(a | b))),
+        ("xor", I::I64Xor, R::Wide(|a, b| Some(a ^ b))),
+        ("shl", I::I64Shl, R::Wide(|a, b| Some(a.wrapping_shl(b as u32)))),
+        ("shr_s", I::I64ShrS, R::Wide(|a, b| Some(a.wrapping_shr(b as u32)))),
+        ("shr_u", I::I64ShrU, R::Wide(|a, b| Some((a as u64).wrapping_shr(b as u32) as i64))),
+        ("div_s", I::I64DivS, R::Wide(|a, b| a.checked_div(b))),
+        ("div_u", I::I64DivU, R::Wide(|a, b| (a as u64).checked_div(b as u64).map(|v| v as i64))),
+        ("rem_s", I::I64RemS, R::Wide(|a, b| if b == 0 { None } else { Some(a.wrapping_rem(b)) })),
+        ("rem_u", I::I64RemU, R::Wide(|a, b| (a as u64).checked_rem(b as u64).map(|v| v as i64))),
+        ("eq", I::I64Eq, R::Bool(|a, b| a == b)),
+        ("ne", I::I64Ne, R::Bool(|a, b| a != b)),
+        ("lt_s", I::I64LtS, R::Bool(|a, b| a < b)),
+        ("gt_s", I::I64GtS, R::Bool(|a, b| a > b)),
+        ("le_s", I::I64LeS, R::Bool(|a, b| a <= b)),
+        ("ge_s", I::I64GeS, R::Bool(|a, b| a >= b)),
+    ];
+    let mut out = Vec::new();
+    for (name, op, expected) in ops {
+        let mut body = Vec::new();
+        for a in EDGES64 {
+            for b in EDGES64 {
+                match &expected {
+                    R::Wide(f) => {
+                        let Some(want) = f(a, b) else { continue };
+                        body.extend([I::I64Const(a), I::I64Const(b), op.clone()]);
+                        body.extend(check_result_i64(want));
+                    }
+                    R::Bool(f) => {
+                        body.extend([I::I64Const(a), I::I64Const(b), op.clone()]);
+                        body.extend(check_result(f(a, b) as i32));
+                    }
+                }
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("i64_{name}"), exit_with_typed(&[(3, V::I32), (1, V::I64)], &body)));
+    }
+    // extend_i32_s/u of i32 edges, checked as i64
+    for (name, op, f) in [
+        ("extend_s", I::I64ExtendI32S, (|a: i32| a as i64) as fn(i32) -> i64),
+        ("extend_u", I::I64ExtendI32U, |a: i32| a as u32 as i64),
+    ] {
+        let mut body = Vec::new();
+        for a in EDGES {
+            body.extend([I::I32Const(a), op.clone()]);
+            body.extend(check_result_i64(f(a)));
+        }
+        body.extend(status_from_checks());
+        out.push((format!("i64_{name}"), exit_with_typed(&[(3, V::I32), (1, V::I64)], &body)));
+    }
+    out
+}
+
+/// check_result for an i64 result, kept in local 3: the hash takes its low
+/// and high halves.
+fn check_result_i64(want: i64) -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::Instruction as I;
+    vec![
+        I::LocalSet(3),
+        I::LocalGet(1), I::I32Const(31), I::I32Mul, I::LocalGet(3), I::I32WrapI64, I::I32Add,
+        I::I32Const(31), I::I32Mul, I::LocalGet(3), I::I64Const(32), I::I64ShrU, I::I32WrapI64, I::I32Add, I::LocalSet(1),
+        I::LocalGet(2), I::LocalGet(3), I::I64Const(want), I::I64Ne, I::I32Add, I::LocalSet(2),
+    ]
+}
+
 /// Edge values for the i32 operator programs.
 const EDGES: [i32; 18] = [0, 1, -1, 2, -2, 5, -7, 31, 32, 33, 63, 64, 65536, i32::MAX, i32::MIN, i32::MIN + 1, 123456789, -987654321];
 
@@ -785,6 +948,12 @@ fn status_from_checks() -> Vec<wasm_encoder::Instruction<'static>> {
 /// A module whose `_start` exits with `f()`; `f` has `locals[i]` i32 locals
 /// per group and the given body.
 fn exit_with(locals: &[u32], body: &[wasm_encoder::Instruction]) -> Vec<u8> {
+    let typed: Vec<(u32, wasm_encoder::ValType)> = locals.iter().map(|n| (*n, wasm_encoder::ValType::I32)).collect();
+    exit_with_typed(&typed, body)
+}
+
+/// exit_with, with locals of any type: (count, type) groups.
+fn exit_with_typed(locals: &[(u32, wasm_encoder::ValType)], body: &[wasm_encoder::Instruction]) -> Vec<u8> {
     use wasm_encoder::{
         CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection, Instruction as I,
         MemorySection, MemoryType, Module, TypeSection, ValType,
@@ -807,7 +976,7 @@ fn exit_with(locals: &[u32], body: &[wasm_encoder::Instruction]) -> Vec<u8> {
     let mut start = Function::new([]);
     start.instruction(&I::Call(2)).instruction(&I::Call(0)).instruction(&I::End);
     code.function(&start);
-    let mut f = Function::new(locals.iter().map(|n| (*n, ValType::I32)));
+    let mut f = Function::new(locals.iter().copied());
     for ins in body {
         f.instruction(ins);
     }
@@ -1108,7 +1277,7 @@ fn the_harness_tells_programs_apart() {
         ("tee_stores_the_value", 6), ("set_then_get", 12), ("br_carries_a_value", 42), ("br_if_taken_carries", 7),
         ("br_if_not_taken_falls_through", 5), ("loop_counts_to_ten", 10), ("br_out_of_nested_blocks", 9),
         ("if_without_else_skips", 7), ("if_without_else_runs", 1), ("if_else_values", 25), ("br_to_the_function", 8),
-        ("return_from_deep_inside", 19), ("unreachable_traps", 134),
+        ("return_from_deep_inside", 19), ("unreachable_traps", 134), ("extend_after_wrap", 3),
         ("store_i64_load_bytes", 18), ("store8_truncates", 80), ("last_valid_word", 3), ("trap_straddling_the_end", 134),
         ("trap_offset_does_not_wrap", 134), ("trap_huge_offset", 134),
         ("trap_offset_past_the_end", 134), ("atomic_store_writes_four_bytes", 79), ("f32_store_writes_four_bytes", 9), ("address_ignores_high_bits", 7),
@@ -1163,7 +1332,7 @@ fn traps_print_one_line_and_exit_134() {
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (sys.exit (i32.wrap (* 3i64 4i64))) 0))", "not supported natively yet: i64.mul (opcode 126)"),
+        ("(module m (fn main [] -> i32 (sys.exit (i32.wrap (i64.trunc_f64_s (+ 1.5 2.5)))) 0))", "not supported natively yet: f64.add (opcode 160)"),
         (
             "(module m (fn work [x:i32] -> i32 x) (fn main [] -> i32 (sys.exit (thread.join (thread.spawn (ref work) 3))) 0))",
             "not supported natively yet: a start function (threaded modules)",
