@@ -76,6 +76,23 @@ const PROGRAMS: &[(&str, &str)] = &[
            (fn main [] -> i32 (sys.exit (call keep 77)) 0))",
     ),
     ("exit_status_125", "(module m (fn main [] -> i32 (sys.exit 125) 0))"),
+    // NE6: the i32 cases of tests/test_differential.rs, exit status = low 6 bits
+    ("add_wraps", "(module m (fn main [] -> i32 (let x:i32 (+ 2147483647 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
+    ("sub_wraps", "(module m (fn main [] -> i32 (let x:i32 (- -2147483648 1)) (sys.exit (bitand (shru x 26) 63)) 0))"),
+    ("shr_is_arithmetic", "(module m (fn main [] -> i32 (sys.exit (bitand (shr -8 1) 63)) 0))"),
+    ("shru_is_logical", "(module m (fn main [] -> i32 (sys.exit (shru (shru -8 1) 25)) 0))"),
+    ("mul_wraps_to_zero", "(module m (fn main [] -> i32 (sys.exit (* 65536 65536)) 0))"),
+    ("div_truncates", "(module m (fn main [] -> i32 (sys.exit (+ 10 (/ -7 2))) 0))"),
+    ("rem_follows_dividend", "(module m (fn main [] -> i32 (sys.exit (+ 10 (% -7 2))) 0))"),
+    ("divu_unsigned", "(module m (fn main [] -> i32 (sys.exit (shru (divu -1 2) 25)) 0))"),
+    ("remu_unsigned", "(module m (fn main [] -> i32 (sys.exit (remu -1 2)) 0))"),
+    ("shift_count_masked", "(module m (fn main [] -> i32 (sys.exit (+ (shl 1 33) (bitand (shr -2147483648 32) 1))) 0))"),
+    ("min_rem_minus_one", "(module m (fn main [] -> i32 (let z:i32 -1) (sys.exit (% -2147483648 z)) 0))"),
+    ("trap_div_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (/ 7 z)) 0))"),
+    ("trap_rem_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (% 7 z)) 0))"),
+    ("trap_divu_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (divu 7 z)) 0))"),
+    ("trap_remu_by_zero", "(module m (fn main [] -> i32 (let z:i32 0) (sys.exit (remu 7 z)) 0))"),
+    ("trap_min_div_minus_one", "(module m (fn main [] -> i32 (let z:i32 -1) (sys.exit (/ -2147483648 z)) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
     ("exit_status_negative_is_an_error", "(module m (fn main [] -> i32 (sys.exit -1) 0))"),
 ];
@@ -95,6 +112,93 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
         ("tee_stores_the_value", exit_with(&[1], &[I::I32Const(6), I::LocalTee(0), I::Drop, I::LocalGet(0), I::End])),
         // i64 constants take a full slot; i32.wrap is not needed to exit with the low half
         ("set_then_get", exit_with(&[2], &[I::I32Const(12), I::LocalSet(1), I::I32Const(13), I::LocalSet(0), I::LocalGet(1), I::End])),
+    ]
+}
+
+/// Edge values for the i32 operator programs.
+const EDGES: [i32; 18] = [0, 1, -1, 2, -2, 5, -7, 31, 32, 33, 63, 64, 65536, i32::MAX, i32::MIN, i32::MIN + 1, 123456789, -987654321];
+
+/// One program per i32 operator: it applies the operator to every pair of
+/// EDGES (skipping pairs that trap), checks each result against Rust's, and
+/// exits with 2 * (a hash of all results mod 32) + (1 if any result
+/// differed). Native and aipl-run must agree, and aipl-run must report no
+/// difference (which checks the expected values themselves).
+fn i32_operator_programs() -> Vec<(String, Vec<u8>)> {
+    use wasm_encoder::Instruction as I;
+    type Op = (&'static str, I<'static>, fn(i32, i32) -> Option<i32>);
+    let cmp = |b: bool| Some(b as i32);
+    let _ = cmp;
+    let ops: Vec<Op> = vec![
+        ("add", I::I32Add, |a, b| Some(a.wrapping_add(b))),
+        ("sub", I::I32Sub, |a, b| Some(a.wrapping_sub(b))),
+        ("mul", I::I32Mul, |a, b| Some(a.wrapping_mul(b))),
+        ("and", I::I32And, |a, b| Some(a & b)),
+        ("or", I::I32Or, |a, b| Some(a | b)),
+        ("xor", I::I32Xor, |a, b| Some(a ^ b)),
+        ("shl", I::I32Shl, |a, b| Some(a.wrapping_shl(b as u32))),
+        ("shr_s", I::I32ShrS, |a, b| Some(a.wrapping_shr(b as u32))),
+        ("shr_u", I::I32ShrU, |a, b| Some((a as u32).wrapping_shr(b as u32) as i32)),
+        ("div_s", I::I32DivS, |a, b| a.checked_div(b)),
+        ("div_u", I::I32DivU, |a, b| (a as u32).checked_div(b as u32).map(|v| v as i32)),
+        ("rem_s", I::I32RemS, |a, b| if b == 0 { None } else { Some(a.wrapping_rem(b)) }),
+        ("rem_u", I::I32RemU, |a, b| (a as u32).checked_rem(b as u32).map(|v| v as i32)),
+        ("eq", I::I32Eq, |a, b| Some((a == b) as i32)),
+        ("ne", I::I32Ne, |a, b| Some((a != b) as i32)),
+        ("lt_s", I::I32LtS, |a, b| Some((a < b) as i32)),
+        ("lt_u", I::I32LtU, |a, b| Some(((a as u32) < (b as u32)) as i32)),
+        ("gt_s", I::I32GtS, |a, b| Some((a > b) as i32)),
+        ("gt_u", I::I32GtU, |a, b| Some(((a as u32) > (b as u32)) as i32)),
+        ("le_s", I::I32LeS, |a, b| Some((a <= b) as i32)),
+        ("ge_s", I::I32GeS, |a, b| Some((a >= b) as i32)),
+    ];
+    let mut out = Vec::new();
+    for (name, op, expected) in ops {
+        let mut body = Vec::new();
+        for a in EDGES {
+            for b in EDGES {
+                let Some(want) = expected(a, b) else { continue };
+                body.extend([I::I32Const(a), I::I32Const(b), op.clone()]);
+                body.extend(check_result(want));
+            }
+        }
+        body.extend(status_from_checks());
+        out.push((format!("i32_{name}"), exit_with(&[3], &body)));
+    }
+    // the unary ones: eqz, and wrap_i64 of i64 edge values
+    let mut eqz = Vec::new();
+    for a in EDGES {
+        eqz.extend([I::I32Const(a), I::I32Eqz]);
+        eqz.extend(check_result((a == 0) as i32));
+    }
+    eqz.extend(status_from_checks());
+    out.push(("i32_eqz".into(), exit_with(&[3], &eqz)));
+    let mut wrap = Vec::new();
+    for a in [0i64, -1, 1 << 32, (1 << 32) + 5, i64::MAX, i64::MIN, 0x1234_5678_9abc_def0, -2] {
+        wrap.extend([I::I64Const(a), I::I32WrapI64]);
+        wrap.extend(check_result(a as i32));
+    }
+    wrap.extend(status_from_checks());
+    out.push(("i32_wrap_i64".into(), exit_with(&[3], &wrap)));
+    out
+}
+
+/// With the result on the stack: local 0 = result; local 1 (hash) =
+/// hash * 31 + result; local 2 (differences) += (result != want).
+fn check_result(want: i32) -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::Instruction as I;
+    vec![
+        I::LocalSet(0),
+        I::LocalGet(1), I::I32Const(31), I::I32Mul, I::LocalGet(0), I::I32Add, I::LocalSet(1),
+        I::LocalGet(2), I::LocalGet(0), I::I32Const(want), I::I32Ne, I::I32Add, I::LocalSet(2),
+    ]
+}
+
+/// 2 * (hash & 31) + (differences != 0), then the end of the function.
+fn status_from_checks() -> Vec<wasm_encoder::Instruction<'static>> {
+    use wasm_encoder::Instruction as I;
+    vec![
+        I::LocalGet(1), I::I32Const(31), I::I32And, I::I32Const(1), I::I32Shl,
+        I::LocalGet(2), I::I32Const(0), I::I32Ne, I::I32Or, I::End,
     ]
 }
 
@@ -193,8 +297,10 @@ fn output_of(data: &[u8], out: usize) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Both builds run as `<dir>/prog`, so argv[0], which a trap message
+/// starts with, is the same string in both.
 fn run_wasm(dir: &Path, wasm: &[u8]) -> Output {
-    let path = dir.join("prog.wasm");
+    let path = dir.join("prog");
     std::fs::write(&path, wasm).unwrap();
     Command::new(RUNNER).arg(&path).current_dir(dir).output().unwrap()
 }
@@ -203,7 +309,21 @@ fn run_native(dir: &Path, exe: &[u8]) -> Output {
     let path = dir.join("prog");
     std::fs::write(&path, exe).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    Command::new(&path).current_dir(dir).output().unwrap()
+    run_fresh_executable(Command::new(&path).current_dir(dir))
+}
+
+/// Runs an executable this process just wrote. Tests run in parallel
+/// threads, and a thread that forks a child while the file is still open
+/// for writing hands that child the open file until it execs, during which
+/// Linux refuses to run the file ("Text file busy"). Retry briefly then.
+fn run_fresh_executable(cmd: &mut Command) -> Output {
+    for _ in 0..100 {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
+            r => return r.unwrap(),
+        }
+    }
+    panic!("the executable stayed busy for a second")
 }
 
 /// Builds `src` both ways and requires identical stdout, stderr, and status.
@@ -217,19 +337,6 @@ fn assert_wasm_native_matches(name: &str, wasm: &[u8]) {
     let dir = scratch(name);
     let (want, got) = (run_wasm(&dir, &wasm), run_native(&dir, &exe));
     let _ = std::fs::remove_dir_all(&dir);
-    if want.status.code() == Some(134) && got.status.code() == Some(134) {
-        // A trap: aipl-run adds wasmtime's backtrace, which native code cannot
-        // reproduce. Each line the native program prints must appear in
-        // aipl-run's report. (Exact trap messages are NE6's design.)
-        let theirs = String::from_utf8_lossy(&want.stderr).to_string();
-        let ours = String::from_utf8_lossy(&got.stderr).to_string();
-        assert!(!ours.trim().is_empty(), "{name}: the native trap printed nothing");
-        for line in ours.lines() {
-            assert!(theirs.contains(line.trim()), "{name}: native trap line {line:?} not in aipl-run's report:\n{theirs}");
-        }
-        assert_eq!(want.stdout, got.stdout, "{name}: stdout before the trap differs");
-        return;
-    }
     let show = |o: &Output| {
         format!("status {:?}, stdout {:?}, stderr {:?}", o.status.code(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     };
@@ -251,6 +358,18 @@ fn every_program_matches_natively() {
     }
 }
 
+#[test]
+fn every_i32_operator_matches_natively() {
+    let dir = scratch("i32_expected");
+    for (name, wasm) in i32_operator_programs() {
+        // the expected values are right: aipl-run sees no difference
+        let status = run_wasm(&dir, &wasm).status.code().unwrap();
+        assert_eq!(status & 1, 0, "{name}: aipl-run disagrees with the expected values");
+        assert_wasm_native_matches(&name, &wasm);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Guards against a harness that passes vacuously: the programs must not all
 /// exit 0, and a deliberately different program must be told apart.
 #[test]
@@ -269,11 +388,32 @@ fn the_harness_tells_programs_apart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The trap programs really trap, natively, with exactly aipl-run's line.
+#[test]
+fn traps_print_one_line_and_exit_134() {
+    let dir = scratch("traps");
+    let prog = dir.join("prog").display().to_string();
+    for (name, reason) in [
+        ("trap_div_by_zero", "wasm trap: integer divide by zero"),
+        ("trap_rem_by_zero", "wasm trap: integer divide by zero"),
+        ("trap_divu_by_zero", "wasm trap: integer divide by zero"),
+        ("trap_remu_by_zero", "wasm trap: integer divide by zero"),
+        ("trap_min_div_minus_one", "wasm trap: integer overflow"),
+        ("exit_status_126_is_an_error", "exit with invalid exit status outside of [0..126)"),
+    ] {
+        let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
+        let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
+        assert_eq!(o.status.code(), Some(134), "{name}");
+        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{prog}: {reason}\n"), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Anything not translated yet is an error naming it, never a wrong program.
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
     for (src, expected) in [
-        ("(module m (fn main [] -> i32 (sys.exit (+ 1 2)) 0))", "not supported natively yet: i32.add (opcode 106)"),
+        ("(module m (fn main [] -> i32 (if (eq 1 2) (sys.exit 1) (sys.exit 2)) 0))", "not supported natively yet: if (opcode 4)"),
         ("(module m (fn main [] -> i32 (sys.print \"hi\") 0))", "import not supported natively yet: wasi_snapshot_preview1.fd_write"),
         ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
     ] {

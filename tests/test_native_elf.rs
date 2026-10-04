@@ -58,7 +58,14 @@ fn write_executable(name: &str, bytes: &[u8]) -> PathBuf {
 fn the_first_native_executable_prints_and_exits_7() {
     let exe = hello_from_vm();
     let path = write_executable("hello", &exe);
-    let out = Command::new(&path).output().unwrap();
+    // retry while another test thread's fork briefly holds the new file
+    // open for writing ("Text file busy"; see tests/test_native.rs)
+    let out = loop {
+        match Command::new(&path).output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
+            r => break r.unwrap(),
+        }
+    };
     std::fs::remove_file(&path).ok();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello from native AIPL\n");
     assert_eq!(out.stderr, b"");
