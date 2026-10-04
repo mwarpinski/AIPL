@@ -10,6 +10,9 @@ use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use wasmtime::{Engine, Linker, Module as WasmModule, Store};
+use wasmtime_wasi::p1::WasiP1Ctx;
+use wasmtime_wasi::WasiCtxBuilder;
 use wasmparser::{BlockType, DataKind, ElementItems, ElementKind, ExternalKind, Operator, Parser, Payload, TypeRef, ValType};
 
 fn root() -> PathBuf {
@@ -257,18 +260,48 @@ fn aipl_summary(vm: &mut VM, wasm: &[u8]) -> String {
     String::from_utf8(vm.read_bytes(word(out), word(out + 4))).unwrap()
 }
 
+/// The reader compiled to wasm, run under wasmtime: the same code as in the
+/// VM (the backends agree, tests/test_differential.rs), about 50x faster.
+struct CompiledReader {
+    engine: Engine,
+    module: WasmModule,
+}
+
+impl CompiledReader {
+    fn new() -> Self {
+        let reader = Resolver::resolve(&root().join("aipl_src/native/wasm_reader.aipl")).unwrap();
+        TypeChecker::new().check_module(&reader).unwrap();
+        let engine = Engine::default();
+        let module = WasmModule::new(&engine, WasmCompiler::compile(&reader).unwrap()).unwrap();
+        CompiledReader { engine, module }
+    }
+
+    /// wasm_reader.summarize over `wasm`, in a fresh instance.
+    fn summary(&self, wasm: &[u8]) -> String {
+        let mut linker: Linker<WasiP1Ctx> = Linker::new(&self.engine);
+        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+        let mut store = Store::new(&self.engine, WasiCtxBuilder::new().build_p1());
+        let inst = linker.instantiate(&mut store, &self.module).unwrap();
+        let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").unwrap();
+        let summarize = inst.get_typed_func::<(i32, i32), i32>(&mut store, "summarize").unwrap();
+        let mem = inst.get_memory(&mut store, "memory").unwrap();
+        let addr = alloc.call(&mut store, wasm.len() as i32 + 8).unwrap() as usize;
+        mem.write(&mut store, addr, wasm).unwrap();
+        let out = summarize.call(&mut store, (addr as i32, wasm.len() as i32)).unwrap() as usize;
+        let data = mem.data(&store);
+        let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        String::from_utf8(data[word(out)..word(out) + word(out + 4)].to_vec()).unwrap()
+    }
+}
+
 #[test]
 fn the_reader_decodes_every_module_like_wasmparser() {
-    let reader = Resolver::resolve(&root().join("aipl_src/native/wasm_reader.aipl")).unwrap();
-    TypeChecker::new().check_module(&reader).unwrap();
+    let reader = CompiledReader::new();
     let programs = programs();
     assert!(programs.len() >= 20, "expected the repository's programs, found {}", programs.len());
     let mut threaded = 0;
     for (name, wasm) in &programs {
-        // a fresh VM per module keeps the reader's heap small
-        let mut vm = VM::new();
-        vm.load_module(reader.clone());
-        let ours = aipl_summary(&mut vm, wasm);
+        let ours = reader.summary(wasm);
         let theirs = wasmparser_summary(wasm);
         assert_eq!(ours, theirs, "{name}: summaries differ");
         if theirs.contains("shared") {
@@ -276,6 +309,22 @@ fn the_reader_decodes_every_module_like_wasmparser() {
         }
     }
     assert!(threaded >= 2, "expected threaded modules among the programs");
+}
+
+/// The VM and the compiled reader agree on a whole program (the largest
+/// comparison above runs compiled only, for speed).
+#[test]
+fn the_vm_reader_matches_the_compiled_reader() {
+    let src = aipl_core::parser::Parser::parse(
+        "(module m (fn f [x:i64 y:f64] -> f64 (if (gt x 0i64) (+ y 1.5) (f64.convert_i64_s x))) (fn main [] -> i32 7))",
+    )
+    .unwrap();
+    let wasm = WasmCompiler::compile(&src).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(Resolver::resolve(&root().join("aipl_src/native/wasm_reader.aipl")).unwrap());
+    let vm_summary = aipl_summary(&mut vm, &wasm);
+    assert_eq!(vm_summary, CompiledReader::new().summary(&wasm));
+    assert_eq!(vm_summary, wasmparser_summary(&wasm));
 }
 
 /// The reader's own AIPL self-tests (also in aipl_src/test_suite.aipl).
