@@ -471,3 +471,33 @@ fn the_accepted_set_is_exactly_the_listed_instructions() {
     }
     assert!(accepted.len() > 100 && rejected > 200, "{} accepted, {rejected} rejected", accepted.len());
 }
+
+/// Every accepted instruction has a name for error messages
+/// (wasm_reader.op_name), matching wasmparser's operator name.
+#[test]
+fn every_accepted_instruction_has_its_name() {
+    let mut vm = VM::new();
+    vm.load_module(Resolver::resolve(&root().join("aipl_src/native/wasm_reader.aipl")).unwrap());
+    let all = every_instruction_module(&[]);
+    let mut seen = std::collections::BTreeSet::new();
+    for p in Parser::new(0).parse_all(&all) {
+        if let Payload::CodeSectionEntry(b) = p.unwrap() {
+            let mut ops = b.get_operators_reader().unwrap();
+            while !ops.eof() {
+                let (op, at) = ops.read_with_offset().unwrap();
+                let code = opcode(&all, at);
+                if !seen.insert(code) {
+                    continue;
+                }
+                let name = match vm.invoke("op_name", vec![Value::Int(code as i64)]).unwrap() {
+                    Value::Str(s) => s,
+                    other => panic!("{other:?}"),
+                };
+                // wasmparser: I32AtomicRmwCmpxchg -> i32atomicrmwcmpxchg
+                let theirs = format!("{op:?}").split([' ', '{']).next().unwrap().to_lowercase();
+                assert_eq!(name.replace(['.', '_'], ""), theirs, "opcode {code}");
+            }
+        }
+    }
+    assert!(seen.len() > 100);
+}
