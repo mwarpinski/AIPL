@@ -43,7 +43,13 @@
   ;; What every compile function needs, passed as one value: the source text,
   ;; the locals of the function being compiled, and the module's functions.
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
-  (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32])
+  (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
+              structs:(arr (ptr StructInfo)) nstructs:i32])
+
+  ;; A struct of the module and its layout (checker.rs get_field_offset):
+  ;; fields in declaration order, each aligned to its size.
+  (struct StructInfo [name_pos:i32 name_len:i32 size:i32 fields:(arr (ptr Field)) nfields:i32])
+  (struct Field [name_pos:i32 name_len:i32 offset:i32 ty:Ty])
 
   ;; A local of the function being compiled (parameters first): its name (a
   ;; span of the source) and type. A loop's hidden end and step locals carry
@@ -62,11 +68,13 @@
     (put cg Cg.nlocals 0)
     (put cg Cg.fns (arr.new (ptr FnInfo) 2048))
     (put cg Cg.nfns 0)
+    (put cg Cg.structs (arr.new (ptr StructInfo) 255))
+    (put cg Cg.nstructs 0)
     cg)
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
   ;;   mem[4]  = compile error code (0 = none; codes in AIPL_SPEC.md 6.4)
-  ;;   mem[8]  = struct table pointer       (16-byte header, then 255 structs x 1040 bytes: up to 64 fields)
+  ;;   mem[8]  = header pointer (16 bytes: +4 call_ref signatures, +8 label stack, +12 WASI import indices; the structs are Cg.structs)
   ;;   mem[12] = string state block pointer (16384 bytes: blob len, count,
   ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
   ;;             the blob buffer holds 65536 bytes)
@@ -78,7 +86,6 @@
   ;;   mem[60] = compiled module output pointer
   (fn str_table_ptr [] -> i32 (mem.load32 12))
   (fn struct_table [] -> i32 (mem.load32 8))
-  (fn get_struct_count [] -> i32 (mem.load32 (+ (call struct_table) 0)))
   ;; Function-ref state, 1024 bytes, pointer kept at struct_table + 4:
   ;; [uses_refs][sig_count][32 signatures x 20 bytes: nparams, params..., nresults, result]
   (fn ref_state [] -> i32 (mem.load32 (+ (call struct_table) 4)))
@@ -110,7 +117,6 @@
       (if (or (eq k a) (eq k b)) (return d) (block)))
     (call set_compile_error CgErr.jump_outside_loop)
     0)
-  (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
   (fn get_str_blob_len [] -> i32 (mem.load32 (+ (call str_table_ptr) 0)))
   (fn set_str_blob_len [len:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 0) len) 0)
@@ -128,7 +134,7 @@
   (fn codegen_init [] -> i32
     (if (eq (mem.load32 16) 0)
         (block
-          (mem.store32 8 (mem.alloc (+ 16 (* 255 1040))))
+          (mem.store32 8 (mem.alloc 16))
           (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (ptr.addr (call new_keywords)))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
@@ -139,7 +145,6 @@
         0)
 
     (mem.store32 4 0)
-    (call set_struct_count 0)
     (mem.store32 (call ref_state) 0)
     (mem.store32 (call label_stack) 0)
     (mem.store32 (+ (call ref_state) 4) 0)
@@ -917,87 +922,84 @@
       (if (eq (mem.load8 (+ (get cg Cg.src) (+ pos i))) target) (set! found i) (block)))
     found)
 
+  ;; Records every (struct ...) of the module with its layout; returns the
+  ;; count. Past 255 structs or 64 fields: compile error 94.
   (fn collect_structs [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
-    (call set_struct_count 0)
-    (let st_base:i32 (call struct_table))
     (let scount:i32 0)
     (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
     (while (neq child (ptr.null compiler.Node))
       (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.struct))
           (block
             (let sname_node:(ptr compiler.Node) (call nth_child child 1))
-            (let fields_bracket:(ptr compiler.Node) (call nth_child child 2))
             (if (gte scount 255) (call set_compile_error CgErr.table_full) 0)
-            (let sentry:i32 (+ (+ st_base 16) (* (if (gte scount 255) 254 scount) 1040)))
-            (mem.store32 (+ sentry 0) (call node_a sname_node))
-            (mem.store32 (+ sentry 4) (call node_b sname_node))
-            
+            (let si:(ptr StructInfo) (new StructInfo))
+            (put si StructInfo.name_pos (call node_a sname_node))
+            (put si StructInfo.name_len (call node_b sname_node))
+            (put si StructInfo.fields (arr.new (ptr Field) 64))
             (let cur_offset:i32 0)
             (let max_align:i32 1)
             (let fcount:i32 0)
-            (let fchild:(ptr compiler.Node) (call first_child fields_bracket))
+            (let fchild:(ptr compiler.Node) (call first_child (call nth_child child 2)))
             (while (neq fchild (ptr.null compiler.Node))
-              (let colon_node:(ptr compiler.Node) (call node_next fchild))
-              (let type_node:(ptr compiler.Node) (call node_next colon_node))
-              (let fpos:i32 (call node_a fchild))
-              (let flen:i32 (call node_b fchild))
+              (let type_node:(ptr compiler.Node) (call node_next (call node_next fchild)))
               (if (gte fcount 64) (call set_compile_error CgErr.table_full) 0)
               (let ftype:Ty (call type_node_id cg type_node))
               (if (call is_memory_type ftype) 0 (call set_compile_error CgErr.not_a_memory_type))
               (let fsize:i32 (call type_size ftype))
               (if (gt fsize max_align) (set! max_align fsize) (block))
               (set! cur_offset (bitand (+ cur_offset (- fsize 1)) (- 0 fsize)))
-              (let fentry:i32 (+ (+ sentry 16) (* (if (gte fcount 64) 63 fcount) 16)))
-              (mem.store32 (+ fentry 0) fpos)
-              (mem.store32 (+ fentry 4) flen)
-              (mem.store32 (+ fentry 8) cur_offset)
-              (mem.store32 (+ fentry 12) (enum.ord ftype))
+              (let f:(ptr Field) (new Field))
+              (put f Field.name_pos (call node_a fchild))
+              (put f Field.name_len (call node_b fchild))
+              (put f Field.offset cur_offset)
+              (put f Field.ty ftype)
+              (arr.set (ptr Field) (get si StructInfo.fields) (if (gte fcount 64) 63 fcount) f)
               (set! cur_offset (+ cur_offset fsize))
-              (set! fcount (+ fcount 1))
+              (if (lt fcount 64) (set! fcount (+ fcount 1)) (block))
               (if (neq type_node (ptr.null compiler.Node))
                   (set! fchild (call node_next type_node))
                   (set! fchild (ptr.null compiler.Node))))
-            (mem.store32 (+ sentry 8) (bitand (+ cur_offset (- max_align 1)) (- 0 max_align)))
-            (mem.store32 (+ sentry 12) fcount)
-            (set! scount (+ scount 1))
-            0)
-          0)
+            (put si StructInfo.size (bitand (+ cur_offset (- max_align 1)) (- 0 max_align)))
+            (put si StructInfo.nfields fcount)
+            (arr.set (ptr StructInfo) (get cg Cg.structs) (if (gte scount 255) 254 scount) si)
+            (if (lt scount 255) (set! scount (+ scount 1)) (block)))
+          (block))
       (set! child (call node_next child)))
-    (call set_struct_count scount)
+    (put cg Cg.nstructs scount)
     scount)
 
-  ;; Struct table entry for a struct name, or 0.
-  (fn find_struct [cg:(ptr Cg) s_pos:i32 s_len:i32] -> i32
-    (loop i 0 (- (call get_struct_count) 1) 1
-      (let sentry:i32 (+ (+ (call struct_table) 16) (* i 1040)))
-      (if (call sym_eq cg s_pos s_len (+ (get cg Cg.src) (mem.load32 (+ sentry 0))) (mem.load32 (+ sentry 4)))
-          (return sentry)
+  ;; The struct with this name, or null.
+  (fn find_struct [cg:(ptr Cg) s_pos:i32 s_len:i32] -> (ptr StructInfo)
+    (loop i 0 (- (get cg Cg.nstructs) 1) 1
+      (let si:(ptr StructInfo) (arr.get (ptr StructInfo) (get cg Cg.structs) i))
+      (if (call sym_eq cg s_pos s_len (+ (get cg Cg.src) (get si StructInfo.name_pos)) (get si StructInfo.name_len))
+          (return si)
           (block)))
-    0)
+    (ptr.null StructInfo))
 
-  ;; Field entry of S.f (the first field of that name, as in checker.rs), or 0.
-  (fn find_field [cg:(ptr Cg) s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
-    (let sentry:i32 (call find_struct cg s_pos s_len))
-    (if (eq sentry 0) (return 0) (block))
-    (loop fj 0 (- (mem.load32 (+ sentry 12)) 1) 1
-      (let fentry:i32 (+ (+ sentry 16) (* fj 16)))
-      (if (call sym_eq cg f_pos f_len (+ (get cg Cg.src) (mem.load32 (+ fentry 0))) (mem.load32 (+ fentry 4)))
-          (return fentry)
+  ;; Field S.f (the first field of that name, as in checker.rs), or null.
+  (fn find_field [cg:(ptr Cg) s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> (ptr Field)
+    (let si:(ptr StructInfo) (call find_struct cg s_pos s_len))
+    (if (eq si (ptr.null StructInfo)) (return (ptr.null Field)) (block))
+    (loop fj 0 (- (get si StructInfo.nfields) 1) 1
+      (let f:(ptr Field) (arr.get (ptr Field) (get si StructInfo.fields) fj))
+      (if (call sym_eq cg f_pos f_len (+ (get cg Cg.src) (get f Field.name_pos)) (get f Field.name_len))
+          (return f)
           (block)))
-    0)
+    (ptr.null Field))
 
   (fn get_struct_size [cg:(ptr Cg) s_pos:i32 s_len:i32] -> i32
-    (let sentry:i32 (call find_struct cg s_pos s_len))
-    (if (eq sentry 0) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (mem.load32 (+ sentry 8))))
+    (let si:(ptr StructInfo) (call find_struct cg s_pos s_len))
+    (if (eq si (ptr.null StructInfo)) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (get si StructInfo.size)))
 
   (fn get_field_offset [cg:(ptr Cg) s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
-    (let fentry:i32 (call find_field cg s_pos s_len f_pos f_len))
-    (if (eq fentry 0) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (mem.load32 (+ fentry 8))))
+    (let f:(ptr Field) (call find_field cg s_pos s_len f_pos f_len))
+    (if (eq f (ptr.null Field)) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (get f Field.offset)))
 
   ;; The type of field S.f, or Ty.none if unknown.
   (fn get_field_type [cg:(ptr Cg) s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> Ty
-    (let fentry:i32 (call find_field cg s_pos s_len f_pos f_len))
-    (if (eq fentry 0) Ty.none (enum.cast Ty (mem.load32 (+ fentry 12)))))
+    (let f:(ptr Field) (call find_field cg s_pos s_len f_pos f_len))
+    (if (eq f (ptr.null Field)) Ty.none (get f Field.ty)))
 
   ;; A bool read from memory is normalised to 0/1 (i32.const 0; i32.ne), as in wasm.rs normalize_bool.
   (fn emit_normalize_bool [ptr:i32] -> i32
