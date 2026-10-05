@@ -17,6 +17,10 @@ pub fn print_module(m: &Module) -> String {
             None => out.push_str(&format!("  (import {})\n", imp.name)),
         }
     }
+    for e in &m.enums {
+        let members: Vec<String> = e.members.iter().map(|(n, v)| format!("({} {})", n, v)).collect();
+        out.push_str(&format!("  (enum {} [{}])\n", e.name, members.join(" ")));
+    }
     for s in &m.structs {
         let fields: Vec<String> = s.fields.iter().map(|f| format!("{}:{}", f.name, type_str(&f.ty))).collect();
         out.push_str(&format!("  (struct {} [{}])\n", s.name, fields.join(" ")));
@@ -59,6 +63,7 @@ pub fn type_str(t: &Type) -> String {
             let ps: Vec<String> = params.iter().map(type_str).collect();
             format!("(fn [{}] -> {})", ps.join(" "), type_str(ret))
         }
+        Type::Enum(name) => name.clone(),
     }
 }
 
@@ -240,6 +245,7 @@ pub fn expr_str(e: &Expr) -> String {
         },
         Expr::Cast { ty, addr, .. } => match ty {
             Type::Array(_) => format!("(arr.cast {} {})", elem(ty), expr_str(addr)),
+            Type::Enum(name) => format!("(enum.cast {} {})", name, expr_str(addr)),
             _ => format!("(ptr.cast {} {})", struct_name(ty), expr_str(addr)),
         },
         Expr::Ref { name, .. } => format!("(ref {})", name),
@@ -252,8 +258,13 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::CallRef { sig, func, args, .. } => {
             with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
         }
-        Expr::Addr { val, array, .. } => {
-            format!("({} {})", if *array { "arr.addr" } else { "ptr.addr" }, expr_str(val))
+        Expr::Addr { val, kind, .. } => {
+            let head = match kind {
+                AddrKind::Ptr => "ptr.addr",
+                AddrKind::Arr => "arr.addr",
+                AddrKind::Enum => "enum.ord",
+            };
+            format!("({} {})", head, expr_str(val))
         }
     }
 }

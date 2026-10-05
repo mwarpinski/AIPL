@@ -838,3 +838,24 @@ fn nested_allocations_do_not_overlap() {
     assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(99)));
     assert_eq!(differential(&module, &wasm, "arr_len_allocates", &[]), Ok(Value::Int(99)));
 }
+
+/// Locals declared inside operands, loop bounds, and the matched expression
+/// of a match_result. The wasm backend used to skip operator operands when
+/// collecting locals, so `(+ 1 (match_result ...))` failed to compile with
+/// "Unbound local variable" while the VM ran it.
+const NESTED_LOCALS: &str = "(module nested
+  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok n) (err n)))
+  (fn main [] -> i32
+    (let total:i32 0)
+    (loop i 0 (block (let last:i32 3) last) 1
+      (set! total (+ total (match_result (call g i) (ok k (+ k 1)) (err e (- e 1))))))
+    (+ total
+       (+ (block (let x:i32 40) (+ x 2))
+          (match_result (block (let y:i32 5) (call g y)) (ok v (* v 100)) (err w 0))))))";
+
+#[test]
+fn locals_inside_operands_agree() {
+    let (module, wasm) = compile_checked(NESTED_LOCALS);
+    // -1 + 2 + 3 + 4, then 42, then 500
+    assert_eq!(differential(&module, &wasm, "main", &[]).unwrap(), Value::Int(550));
+}

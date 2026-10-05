@@ -14,7 +14,7 @@ Last updated 2026-10-04. P1–P14, the pre-native work, the Linux x86-64 native 
 ## How to verify everything
 
 ```bash
-cargo test                                   # 239 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 249 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -41,6 +41,7 @@ Expected AIPL suite output:
 [PASS] std/time: durations and the clock (7 tests)
 [PASS] std/arena: typed region allocator (5 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
+[PASS] consts: constants and enums erased for codegen (4 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.
 ```
@@ -241,7 +242,8 @@ Before the native backend, the language and runtime surface are completed so the
 8. **Re-audit and the next three tasks** (agreed 2026-10-04; AIPL_Structural_Audit.md has the findings):
    - A. **Documentation in line with the code.** **Done 2026-10-04** (branch `features/docs-sync`): every claim in the spec, README, prompt guide, and gaps list was checked against the code or by running it; the spec's own examples are now executed by `tests/test_doc_examples.rs`.
    - B. **Rewrite `codegen.aipl` (and `compiler.aipl`) on typed structs** instead of raw memory offsets and bare numbers (audit S2).
-   - C. **Language features:** named constants, enums, sum types with `match`, unsigned comparisons, and overflow-checked arithmetic (audit D4–D6, S3).
+   - C1. **Named constants and enums.** **Done 2026-10-04** (branch `features/consts-enums`), moved ahead of B so the rewrite can use them: `(const NAME:T literal)` and `(enum Name [a b (c 10)])` with `Name.member`, `enum.ord`, `enum.cast` (AIPL_SPEC.md 4.I). Enums are distinct types to the checker (no arithmetic, `eq`/`neq` only) and `i32` at run time. Expanded after generics by `src/consts.rs` in Rust and erased by `aipl_src/consts.aipl` at the start of `codegen.compile_module`, at byte parity; both resolvers qualify them across imports. `tests/test_consts_enums.rs` runs them in the VM, wasm, and natively and checks every rule's message. Found on the way: the wasm backend skipped operator operands when collecting locals, so `(+ 1 (match_result ...))` failed to compile (the VM ran it); `collect_lets` is now an exhaustive pre-order walk matching codegen.aipl. Also: a pointer or enum plus a number now gets the specific message rather than a type mismatch.
+   - C2. **Remaining language features:** sum types with `match`, unsigned comparisons, and overflow-checked arithmetic (audit D5–D6, S3).
 9. **The type checker in AIPL**, then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
 10. **Stage-0 seed and retiring the Rust compiler code.**
 

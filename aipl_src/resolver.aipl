@@ -30,8 +30,10 @@
   ;; address of the canonical module name (ptr str.Bytes).
   ;; templates holds the module's own generic templates; known, shared with
   ;; the State, the canonical names of every resolved module's templates.
+  ;; decls holds the module's constants and enums.
   (struct Mod [src:(ptr Src) prefix:(ptr str.Bytes) imported:bool
-               fns:(ptr (strmap.StrMap i32)) structs:(ptr (strmap.StrMap i32)) aliases:(ptr (strmap.StrMap (ptr str.Bytes)))
+               fns:(ptr (strmap.StrMap i32)) structs:(ptr (strmap.StrMap i32)) decls:(ptr (strmap.StrMap i32))
+               aliases:(ptr (strmap.StrMap (ptr str.Bytes)))
                templates:(ptr (strmap.StrMap i32)) known:(ptr (strmap.StrMap i32))])
 
   (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
@@ -113,7 +115,7 @@
   ;; Roles: 0 none, 1 function name, 2 struct name, 3 field reference S.f.
 
   (fn rename [m:(ptr Mod) t:(ptr str.Bytes) role:i32] -> (ptr str.Bytes)
-    (if (eq role 0) (return t) (block))
+    (if (eq role 0) (return (call rename_decl m t)) (block))
     (let len:i32 (get t str.Bytes.len))
     (if (eq role 3)
         (block
@@ -133,7 +135,26 @@
               (return t)))
         (block))
     (let own:(ptr (strmap.StrMap i32)) (if (eq role 1) (get m Mod.fns) (get m Mod.structs)))
-    (if (and (get m Mod.imported) (call (strmap.has i32) own t))
+    ;; a struct-name position may also hold an enum (a template's type argument)
+    (if (and (get m Mod.imported) (or (call (strmap.has i32) own t)
+                                      (and (eq role 2) (call (strmap.has i32) (get m Mod.decls) t))))
+        (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
+        t))
+
+  ;; A name in any position (resolver.rs rename_decl): one of this module's
+  ;; constants or enums (MAX, Color), an enum member (Color.red), or an
+  ;; alias-qualified name (c.MAX, c.Color.red). Anything else is unchanged.
+  (fn rename_decl [m:(ptr Mod) t:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let len:i32 (get t str.Bytes.len))
+    (let dot:i32 (call str.find_byte t 46))
+    (if (and (gte dot 0) (call (strmap.has (ptr str.Bytes)) (get m Mod.aliases) (call slice t 0 dot)))
+        (return (call concat (call (strmap.get_or (ptr str.Bytes)) (get m Mod.aliases) (call slice t 0 dot) (call str.bytes 0 -1))
+                             (call slice t dot (- len dot))))
+        (block))
+    (if (not (get m Mod.imported)) (return t) (block))
+    (let last:i32 (call last_index t 46))
+    (if (or (call (strmap.has i32) (get m Mod.decls) t)
+            (and (gte last 0) (call (strmap.has i32) (get m Mod.decls) (call slice t 0 last))))
         (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
         t))
 
@@ -204,6 +225,8 @@
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
         ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call buf.push_bytes out tmpl))
+        ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
+        ((and (eq i 0) (and (not square) (call is_symbol c))) (call buf.push_bytes out (call text (get m Mod.src) c)))
         ((gte (get tmpl str.Bytes.len) 0) (call emit m c 2 out))
         (else (call emit m c (call child_role m g i) out)))
       (set! prev_colon colon)
@@ -224,6 +247,7 @@
     (put m Mod.imported imported)
     (put m Mod.fns (call (strmap.make i32) 64))
     (put m Mod.structs (call (strmap.make i32) 8))
+    (put m Mod.decls (call (strmap.make i32) 8))
     (put m Mod.aliases (call (strmap.make (ptr str.Bytes)) 8))
     (put m Mod.templates (call (strmap.make i32) 8))
     (put m Mod.known known)
@@ -246,6 +270,8 @@
          (call (strmap.set i32) (get m Mod.fns) (call text src name) 1))
         ((and (call eq_lit h "struct") (call is_symbol name))
          (call (strmap.set i32) (get m Mod.structs) (call text src name) 1))
+        ((and (or (call eq_lit h "const") (call eq_lit h "enum")) (call is_symbol name))
+         (call (strmap.set i32) (get m Mod.decls) (call text src name) 1))
         ((call eq_lit h "import")
          ;; (import name as alias)
          (let alias:(ptr compiler.Node) (call nth item 3))
@@ -263,7 +289,7 @@
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
       (cond
-        ((call eq_lit h "struct")
+        ((or (call eq_lit h "struct") (or (call eq_lit h "const") (call eq_lit h "enum")))
          (call buf.push_str (get st State.structs_out) "  ")
          (call emit m item 0 (get st State.structs_out))
          (call buf.push_byte (get st State.structs_out) 10))

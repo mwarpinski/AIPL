@@ -81,6 +81,30 @@ fn aliases_diamonds_and_struct_names() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An alias may share a name with an op's prefix: `(import lib as mem)`
+/// renames `mem.LIMIT` and `mem.Color.red` but leaves the op `(mem.alloc n)`
+/// alone, since the head of a form is never a renamed name.
+#[test]
+fn aliases_do_not_rename_op_heads() {
+    let dir = std::env::temp_dir().join(format!("aipl_alias_ops_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib (const LIMIT:i32 16) (enum Color [red (green 5)]) (fn f [c:Color] -> i32 (enum.ord c)))").unwrap();
+    std::fs::write(
+        dir.join("main.aipl"),
+        "(module main (import lib as mem)\n  (fn main [] -> i32 (let p:i32 (mem.alloc mem.LIMIT)) (mem.store32 p (call mem.f mem.Color.green)) (mem.load32 p)))",
+    )
+    .unwrap();
+    let m = Resolver::resolve(&dir.join("main.aipl")).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let mut vm = aipl_core::vm::VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), aipl_core::vm::Value::Int(5));
+    // the AIPL resolver renames the same names (consts.aipl then erases them)
+    let flat = aipl_resolve(&dir.join("main.aipl")).unwrap();
+    assert!(flat.contains("(mem.alloc lib.LIMIT)") && flat.contains("(call lib.f lib.Color.green)"), "{flat}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn cycles_and_missing_modules_are_errors() {
     let dir = std::env::temp_dir().join(format!("aipl_p14_err_{}", std::process::id()));
@@ -173,6 +197,21 @@ fn wasm_toolchain_compiles_a_multi_module_program() {
     match wasm_driver::run(&driver, "examples/missing.aipl", "aipl_src/std/") {
         wasm_driver::Outcome::ResolveError(e) => assert_eq!(e, "cannot read entry file: examples/missing.aipl"),
         _ => panic!("a missing entry file must be a resolve error"),
+    }
+}
+
+/// Constants and enums across modules (tests/aipl/consts_enums.aipl, which
+/// imports tests/aipl/palette.aipl directly and through an alias, and uses
+/// enums as generic type arguments): the AIPL resolver renames them like the
+/// Rust one, and consts.aipl erases them to the Rust toolchain's bytes.
+#[test]
+fn wasm_toolchain_compiles_constants_and_enums_across_modules() {
+    let driver = driver_wasm();
+    let rel = "tests/aipl/consts_enums.aipl";
+    match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+        wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+        wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+        wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
     }
 }
 

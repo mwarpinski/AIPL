@@ -13,7 +13,7 @@
 ## What it is
 
 - **One syntax form per construct.** Prefix S-expressions with no operator precedence, no indentation rules, and `(call f ...)` kept distinct from built-in ops. A missing or extra paren is reported with a `line:col` position.
-- **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, and heap arrays `(arr T)`. A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
+- **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, heap arrays `(arr T)`, and enums (`(enum Kind [a b c])`, compared only with `eq`/`neq`), plus named constants (`(const PAGE_SIZE:i32 65536)`). A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
 - **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call. Compiled code does not check them yet, and does not bounds-check arrays (AIPL_Structural_Audit.md D1).
 - **Wasm semantics are the spec.** The VM, the WebAssembly backend, and the native backend must agree: `tests/test_differential.rs` runs the same programs in the VM and wasmtime, and `tests/test_native.rs` compares native executables with wasmtime, failing on any divergence.
 - **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone executable: on Linux x86-64, native machine code written by a backend in AIPL (no runtime; `word_count` is 31 KB, the compiler itself 348 KB); elsewhere, the module plus a wasmtime launcher ([docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md), AIPL_SPEC.md 6.5-6.6).
@@ -59,7 +59,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (239 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+Run the full test suite with `cargo test` (249 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Repository layout
 

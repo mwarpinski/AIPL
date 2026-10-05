@@ -34,6 +34,8 @@ const EXPECTED: &[(&str, i32)] = &[
     ("hello", 11),
     ("file_demo", 1),
     ("word_count", -1), // no input.txt in the scratch directory
+    ("shapes", 28),
+    ("tokens_demo", 110),
 ];
 
 /// AIPL_SPEC.md modules that cannot simply run in both backends, and why.

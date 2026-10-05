@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     match ty {
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => Ok((4, 4)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
     }
@@ -41,6 +41,7 @@ pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
     struct_defs: HashMap<String, StructDef>,
+    enum_defs: HashMap<String, EnumDef>,
     /// Number of while/loop bodies enclosing the expression being checked.
     loop_depth: std::cell::Cell<u32>,
     /// Return type of the function body being checked; None inside contracts.
@@ -52,12 +53,39 @@ impl TypeChecker {
         TypeChecker {
             fn_signatures: HashMap::new(),
             struct_defs: HashMap::new(),
+            enum_defs: HashMap::new(),
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
         }
     }
 
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
+        // Register enum definitions (AIPL_SPEC.md 4.I)
+        for e in &module.enums {
+            let (l, c) = e.span;
+            if self.enum_defs.contains_key(&e.name) {
+                return Err(format!("{}:{}: Duplicate enum definition '{}'", l, c, e.name));
+            }
+            if module.structs.iter().any(|s| s.name == e.name) {
+                return Err(format!("{}:{}: '{}' is defined as both a struct and an enum", l, c, e.name));
+            }
+            if e.members.is_empty() {
+                return Err(format!("{}:{}: enum '{}' has no members", l, c, e.name));
+            }
+            for (i, (m, v)) in e.members.iter().enumerate() {
+                if !m.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
+                    return Err(format!("{}:{}: enum member '{}.{}' must start with a lowercase letter or '_'", l, c, e.name, m));
+                }
+                if let Some((other, _)) = e.members[..i].iter().find(|(o, _)| o == m) {
+                    return Err(format!("{}:{}: enum '{}' has two members named '{}'", l, c, e.name, other));
+                }
+                if let Some((other, _)) = e.members[..i].iter().find(|(_, w)| w == v) {
+                    return Err(format!("{}:{}: enum '{}': members '{}' and '{}' both have the value {}", l, c, e.name, other, m, v));
+                }
+            }
+            self.enum_defs.insert(e.name.clone(), e.clone());
+        }
+
         // Register struct definitions
         for s in &module.structs {
             if self.struct_defs.contains_key(&s.name) {
@@ -132,6 +160,12 @@ impl TypeChecker {
                 }
                 self.validate_type(ret, span)
             }
+            Type::Enum(name) if self.enum_defs.contains_key(name) => Ok(()),
+            Type::Enum(name) if self.struct_defs.contains_key(name) => Err(format!(
+                "{}:{}: '{}' is a struct, which is only used through a pointer: write (ptr {})",
+                span.0, span.1, name, name
+            )),
+            Type::Enum(name) => Err(format!("{}:{}: Unknown type '{}' (not a scalar type or an enum)", span.0, span.1, name)),
             _ => Ok(()),
         }
     }
@@ -357,13 +391,24 @@ impl TypeChecker {
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
-                    if t1 != t2 {
+                    // A pointer, function ref, or enum operand gets its own
+                    // explanation even when the other operand is a number:
+                    // (+ p 4), (+ 1 e).
+                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_));
+                    let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
+                    if t1 != t2 && !special(&t1) {
                         return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
                         return Err(format!(
                             "{}:{}: {:?} on {:?}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
+                        ));
+                    }
+                    if let Type::Enum(e) = &t1 {
+                        return Err(format!(
+                            "{}:{}: {:?} on enum '{}': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast {} n)",
+                            l, c, op, e, e
                         ));
                     }
                     Ok(t1)
@@ -494,8 +539,8 @@ impl TypeChecker {
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
-                        return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, and function refs compare only with eq/neq", l, c, op, t1));
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                        return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
                     Ok(Type::Bool)
                 }
@@ -884,6 +929,9 @@ impl TypeChecker {
                 self.validate_type(ty, *span)?;
                 let t = self.infer_expr_type(addr, env)?;
                 if t != Type::I32 {
+                    if let Type::Enum(e) = ty {
+                        return Err(format!("{}:{}: enum.cast {} needs an i32 value, got {:?}", span.0, span.1, e, t));
+                    }
                     return Err(format!("{}:{}: cast needs an i32 address, got {:?}", span.0, span.1, t));
                 }
                 Ok(ty.clone())
@@ -915,12 +963,13 @@ impl TypeChecker {
                 }
                 Ok(ret)
             }
-            Expr::Addr { val, array, span } => {
+            Expr::Addr { val, kind, span } => {
                 let t = self.infer_expr_type(val, env)?;
-                match (array, &t) {
-                    (false, Type::Ptr(_)) | (true, Type::Array(_)) => Ok(Type::I32),
-                    (false, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {:?}", span.0, span.1, t)),
-                    (true, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {:?}", span.0, span.1, t)),
+                match (kind, &t) {
+                    (AddrKind::Ptr, Type::Ptr(_)) | (AddrKind::Arr, Type::Array(_)) | (AddrKind::Enum, Type::Enum(_)) => Ok(Type::I32),
+                    (AddrKind::Ptr, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {:?}", span.0, span.1, t)),
+                    (AddrKind::Arr, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {:?}", span.0, span.1, t)),
+                    (AddrKind::Enum, _) => Err(format!("{}:{}: enum.ord needs an enum value, got {:?}", span.0, span.1, t)),
                 }
             }
         }

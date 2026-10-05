@@ -1,0 +1,41 @@
+;; Constants and enums (AIPL_SPEC.md 4.I) across modules, for
+;; tests/test_consts_enums.rs and the self-hosted parity tests. main is 2294.
+(module consts_enums
+  (import palette)
+  (import palette as pal)
+  (import vec)
+  (const SCALE:i64 1000000000000i64)
+  (const RATIO:f64 0.25)
+  (const ON:bool true)
+  (const TAG:str "tag")
+  (enum Op [add sub (mul 7)])
+  (fn apply [op:Op a:i32 b:i32] -> i32
+    (cond
+      ((eq op Op.add) (+ a b))
+      ((eq op Op.sub) (- a b))
+      (else (* a b))))
+  (fn pick [yes:bool] -> (result Op i32) (if yes (ok Op.mul) (err:Op -1)))
+  (fn main [] -> i32
+    (let ops:(ptr (vec.Vec Op)) (call (vec.make Op) 2))
+    (call (vec.push Op) ops Op.sub)
+    (match_result (call pick ON)
+      (ok o (call (vec.push Op) ops o))
+      (err e (block)))
+    (let f:(fn [Op i32 i32] -> i32) (ref apply))
+    (let total:i32 0)
+    (loop i 0 (- (call (vec.len Op) ops) 1) 1
+      (set! total (+ total (call_ref (fn [Op i32 i32] -> i32) f (call (vec.at Op) ops i) 6 3))))
+    ;; total: 6 - 3 + 6 * 3 = 21
+    (let s:(ptr pal.Swatch) (new pal.Swatch))
+    (put s palette.Swatch.c (call palette.next pal.Color.blue))
+    (put s pal.Swatch.weight (/ SCALE 1000000000i64))
+    (let colours:(ptr (vec.Vec palette.Color)) (call palette.all))
+    (+ total
+       (+ (* 100 (enum.ord (get s palette.Swatch.c)))                         ;; cyan: 1100
+          (+ (i32.wrap (get s pal.Swatch.weight))                             ;; 1000
+             (+ (* palette.LIMIT pal.LIMIT)                                    ;; 49
+                (+ (+ (str.len TAG) (str.len palette.NAME))                    ;; 3 + 7
+                   (+ (if (call palette.is_red (call palette.favourite)) 1000 0)
+                      (+ (i32.wrap (i64.trunc_f64_s (* RATIO 400.0)))           ;; 100
+                         (+ (enum.ord (call (vec.at palette.Color) colours 2))  ;; blue: 10
+                            (call (vec.len palette.Color) colours)))))))))))    ;; 4

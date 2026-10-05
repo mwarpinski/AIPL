@@ -702,7 +702,7 @@ impl VM {
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
         let mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -768,7 +768,7 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Str => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }

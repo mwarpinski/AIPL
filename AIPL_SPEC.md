@@ -18,13 +18,16 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 ## 2. Updated Formal Grammar (EBNF)
 
 ```ebnf
-program        ::= "(" "module" identifier import* ( struct_def | fn_def )* ")" ;
+program        ::= "(" "module" identifier import* ( struct_def | enum_def | const_def | fn_def )* ")" ;
 import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
 import_path    ::= identifier ( "/" identifier )* ;
 struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" ")" ;
 field          ::= identifier ":" type ;
 generic_head   ::= "(" identifier type_param+ ")" ;
 type_param     ::= identifier ;                     (* starts with an uppercase letter *)
+
+enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" ")" ;
+const_def      ::= "(" "const" identifier ":" type literal ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
 
 fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type contract* expr* ")" ;
 param          ::= identifier ":" type ;
@@ -36,7 +39,8 @@ type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "arr" type ")"
                  | "(" "fn" "[" type* "]" "->" type ")"
                  | "(" struct_name type+ ")"          (* a generic struct instance, used behind ptr *)
-                 | type_param ;                       (* inside a generic definition *)
+                 | type_param                         (* inside a generic definition *)
+                 | identifier ;                       (* an enum, e.g. Color *)
 struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
 fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic *)
@@ -68,6 +72,7 @@ expr           ::= literal
                  | "(" "ptr.cast" struct_ref expr ")" | "(" "arr.cast" type expr ")"
                  | "(" "ptr.addr" expr ")" | "(" "arr.addr" expr ")"
                  | "(" "ref" fn_name ")"
+                 | "(" "enum.cast" identifier expr ")" | "(" "enum.ord" expr ")"
                  | "(" "call_ref" type expr expr* ")"
                  | "(" op expr* ")" ;
 
@@ -96,7 +101,7 @@ Notes on the grammar as implemented by `src/parser.rs`:
 - Integer literals are decimal, optionally negative (`-1` is one token) and are `i32`. An `i64` literal carries the suffix as part of the token: `42i64`, `-7i64`. Float literals must contain a `.` and at least one digit (`1.0`, not `1` or `inf`) and are `f64`. Strings are double-quoted and support the escapes `\n \t \r \0 \\ \"`; any other `\x` is an error. Booleans are `true` / `false`.
 - `(call f ...)` takes a bare function name, never an expression. Imported functions are called as `(call modname.fn ...)`.
 - `i64` is fully supported (section 8.1). `(fn [t1 t2] -> r)` is the type of a function reference (section 4.G).
-- The generic forms (`generic_head`, `struct_ref`, `fn_name`, the instance type) are expanded away before type checking (section 4.H).
+- The generic forms (`generic_head`, `struct_ref`, `fn_name`, the instance type) are expanded away before type checking (section 4.H), and so are constants: an identifier naming a constant is its literal, and `Enum.member` is a value of that enum (section 4.I).
 - `mem.free`, `mem.load_f32`, `mem.load_f64`, `mem.store_f32`, `mem.store_f64` and `inv` parse but do nothing or are rejected by every backend (section 6.3).
 - `(ptr i32)` is rejected (`ptr points to a struct; for a sequence of i32 use (arr i32)`), and so is the old `(arr T N)` form (`(arr T) takes no length`).
 - In `(get p S.f)` / `(put p S.f v)` the field reference is one symbol, `StructName.fieldName`, split at its last `.`, so `(get p compiler.Node.next)` names field `next` of struct `compiler.Node`.
@@ -117,6 +122,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(result T_ok T_err)`: the type of `ok`/`err` values, consumed by `match_result` (section 4.F).
 - `(ptr S)`: a pointer to a struct `S`. `(arr T)`: a heap array of `T` made by `arr.new`. Both are checked strictly, are never interchangeable with `i32` or with each other, and lower to `i32` in wasm (section 4.E).
 - `(fn [t1 ...] -> r)`: a reference to a function with that signature, made by `(ref f)` and called with `call_ref` (section 4.G).
+- `Name` for an enum `Name`: one of its members (section 4.I). An `i32` at run time, a distinct type to the checker.
 - `(Name t...)`: a generic struct instantiated with types `t...` (section 4.H), used behind `(ptr ...)` like any struct.
 
 ### Contracts
@@ -293,6 +299,45 @@ Generics are expanded before type checking (`src/generics.rs`, `aipl_src/generic
 - A generic whose instances keep growing (`(fn (f T) ... (call (f (ptr T)) ...))`) is an error once an instance name passes 1024 characters.
 - Imports qualify generics like everything else: `vec.Vec` from another module, `(vec.Vec i32)`, `(call (vec.push i32) v 5)`; aliases work (`(import vec as v)`, `(v.Vec i32)`).
 
+### I. Constants and Enums
+
+```lisp
+(module shapes
+  (const MAX_SIDES:i32 12)
+  (const UNIT:f64 0.5)
+  (const LABEL:str "shape")
+  (enum Kind [triangle square (hexagon 6) octagon])   ;; 0, 1, 6, 7
+
+  (fn sides [k:Kind] -> i32
+    (cond
+      ((eq k Kind.triangle) 3)
+      ((eq k Kind.square) 4)
+      (else (enum.ord k))))                            ;; hexagon 6, octagon 7
+
+  (fn main [] -> i32
+    (let ks:(arr Kind) (arr.new Kind 2))
+    (arr.set Kind ks 0 Kind.square)
+    (arr.set Kind ks 1 (enum.cast Kind 7))
+    (+ (call sides (arr.get Kind ks 0))
+       (+ (call sides (arr.get Kind ks 1)) (+ MAX_SIDES (str.len LABEL))))))   ;; => 28
+```
+
+| Form | Meaning |
+|---|---|
+| `(const NAME:T literal)` | a named literal. `T` is `i32`, `i64`, `f64`, `bool`, or `str`, and the value must be a literal of that type (`65536`, `-1i64`, `0.5`, `true`, `"text"`); no expressions. `NAME` is in capitals: at least two characters from `A-Z`, `0-9`, `_`, starting with a letter |
+| `NAME` | anywhere an expression goes: the literal itself. It cannot also be the name of a variable, parameter, or field |
+| `(enum Name [a b (c 10) ...])` | a new type `Name` with the named members. A member without a value is one more than the member before it, the first `0`. Members start with a lowercase letter or `_`; names and values must be unique; at least one member |
+| `Name.member` | a value of type `Name` |
+| `Name` as a type | `[k:Name]`, `-> Name`, struct fields, `(arr Name)`, `(result Name E)`, `(fn [Name] -> r)`, generic type arguments `(vec.Vec Name)` |
+| `(enum.ord e)` | `i32`: the member's value |
+| `(enum.cast Name n)` | `Name`: the `i32` `n` as a member, unchecked (like `ptr.cast`); for values read back from memory |
+
+Enums are checked like pointers: a `Name` is never an `i32` or another enum, has no arithmetic, and compares only with `eq`/`neq`. Write `(eq k Kind.square)`, and convert explicitly with `enum.ord`/`enum.cast` where a number is meant. A bare type name that is not a scalar or an enum is `Unknown type 'Colr'`; a struct name written as a type (`p:Point`) is reported with the fix (`(ptr Point)`).
+
+At run time a constant is its literal and an enum is an `i32` (4 bytes in structs and arrays), so neither changes the compiled code. Both are expanded after import resolution and generics: in Rust by `src/consts.rs` (constants become their literals and `Name.member` becomes `(enum.cast Name value)` for the checker), and in the self-hosted toolchain by `aipl_src/consts.aipl`, which erases both (types to `i32`, members to numbers) at the start of `codegen.compile_module`; the two produce identical bytes. Like generics, constants need the resolver: `Parser::parse` alone rejects a `(const ...)` item.
+
+Imports qualify them like structs: `palette.LIMIT`, `palette.Color`, `palette.Color.red`, and through an alias `pal.Color.red`. Two modules may each define `Color`.
+
 ---
 
 ## 5. WebAssembly Binary Execution Semantics
@@ -407,6 +452,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI | Yes |
 | `args.sizes/get`, `env.sizes/get` | Yes | Yes (host-set args, process environment) | Yes via WASI `args_*` / `environ_*` | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
+| `const`, `enum`, `enum.cast`, `enum.ord` | Yes | Yes | Yes (literals and `i32`; no code of their own) | Yes (erased by `consts.aipl`) |
 | `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Yes, as a threaded module (section 4.D): needs a host that provides `wasi.thread-spawn` | Yes |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
@@ -444,6 +490,7 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 768 | string literals exceed the self-hosted buffers (64 KiB of literal data or 1364 distinct literals), or the 1 MiB limit both backends share |
 | 971 | a symbol that is not a local or parameter |
 | 973 | a float literal outside the exact range above |
+| 974 | `Name.member` naming a member its enum does not have (`consts.aipl`; the Rust resolver reports it first) |
 | 987 | a form whose head is not a recognised keyword |
 | 999 | an empty expression where one is required |
 | 1452 | call to an undefined function; cells 44/48 hold the callee name's source offset and length |
@@ -500,6 +547,9 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(ok v)` / `(ok:T_err v)` | `ResultType<typeof v, T_err>` (default `T_err` = `i32`) | `(ok 42)` |
 | `(err e)` / `(err:T_ok e)` | `ResultType<T_ok, typeof e>` (default `T_ok` = `i32`) | `(err -1)` |
 | `(match_result r (ok v body*) (err e body*))` | type of the last expr of the bodies (which must agree); `v` bound as `T_ok`, `e` bound as `T_err` | |
+| `NAME` (a constant) | the type of its literal | `PAGE_SIZE` |
+| `Name.member` | the enum `Name` | `Kind.square` |
+| `(enum.ord e)` / `(enum.cast Name n)` | `i32` / `Name` | `e` must be an enum, `n` an `i32` |
 | `(new S)` / `(arr.new T n)` | `(ptr S)` / `(arr T)` | |
 | `(sizeof S)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
 | `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
@@ -781,7 +831,13 @@ Representative messages, exactly as produced:
 | `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got Ptr(Struct("Node"))` |
 | an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got I32` |
 | arithmetic on two pointers, `(+ p p)` | `3:5: Add on Ptr(Struct("Point")): pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
-| a pointer plus a number, `(+ p 4)` | `3:5: Type mismatch in binary op: Ptr(Struct("Point")) vs I32` |
+| a pointer plus a number, `(+ p 4)` | the same message as two pointers |
+| arithmetic on an enum, `(+ k 1)` | `3:5: Add on enum 'Kind': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast Kind n)` |
+| two different enums compared | `3:5: Type mismatch in comparison: Enum("C") vs Enum("D")` |
+| an enum member that does not exist | `m.aipl: 3:5: enum 'Kind' has no member 'circle'` |
+| a struct written as a type, `p:Point` | `1:30: 'Point' is a struct, which is only used through a pointer: write (ptr Point)` |
+| a constant reused as a variable | `m.aipl: 3:10: 'MAX' is a constant; it cannot also name a variable, parameter, or field` |
+| a constant whose value does not match its type | `m.aipl: 1:25: constant 'NN' is declared i32 but its value is not an i32 literal` |
 | `arr.get` with the wrong element type | `4:5: arr.get I64 needs an (arr I64), got Array(I32)` |
 | `(ptr i32)` | `1:20: (ptr i32) is not a type: ptr points to a struct; for a sequence of i32 use (arr i32)` |
 | `call_ref` signature differs from the reference's type | `3:5: call_ref signature Fn([I32, I32], I64) does not match the function's type Fn([I32, I32], I32)` |
@@ -848,7 +904,7 @@ Pattern for a module's own runner: perform real work, then assert on the **conte
   (if (and (gt p2 p1) (and (gt a2 a1) (eq a3 a1))) 1 0))
 ```
 
-Expected terminal output (21 groups; abridged):
+Expected terminal output (22 groups; abridged):
 ```
 [AIPL Test] Running 'run_all' from 'aipl_src/test_suite.aipl'...
 
@@ -857,6 +913,7 @@ Expected terminal output (21 groups; abridged):
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 ...
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
+[PASS] consts: constants and enums erased for codegen (4 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 
 [AIPL Test] All groups passed.
@@ -913,7 +970,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (24 files, 239 tests as of 2026-10-04): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (25 files, 249 tests as of 2026-10-04): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -984,6 +1041,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
 - Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
 - `(ref f)` is rewritten like `(call f ...)`, so a function reference inside an imported module points at the qualified function, including the worker of a `thread.spawn`.
+- Constants and enums follow the struct rule: `util.LIMIT`, `util.Color`, `util.Color.red` outside `util` (and `u.Color.red` through an alias). The head of a form is never renamed, so `(import util as mem)` leaves the op `(mem.alloc n)` alone.
 
 ---
 
@@ -1196,6 +1254,10 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(if (lt i 0) (return -1) i)` | `return` is a statement (void): `(if (lt i 0) (return -1) (block))`, then the value |
 | `(cond ((lt n 0) -1) ((eq n 0) 0))` without `else` | `cond` needs a final `(else ...)` clause; use `(else (block))` when the clauses are statements |
 | `else if`, `elif`, `switch`, `case` | do not exist; use `cond` |
+| a zero-argument function or a bare number standing for a fixed value | `(const PAGE_SIZE:i32 65536)`; for a set of related codes, `(enum Kind [a b c])` (section 4.I) |
+| `(+ k 1)`, `(lt k Kind.b)`, or passing `Kind.b` where an `i32` is expected | enums are not numbers: compare with `eq`/`neq`; convert with `(enum.ord k)` and `(enum.cast Kind n)` |
+| `(const max:i32 5)` or `(let MAX:i32 1)` after `(const MAX ...)` | constants are named in capitals and cannot double as variables |
+| `p:Point` for a struct | structs are always behind a pointer: `p:(ptr Point)`; a bare type name must be a scalar or an enum |
 | `(break)` in a `while` condition or outside any loop | only inside a `while` or `loop` body |
 | a `done`/`found` flag variable to stop a loop | `(break)`, or `(return v)` from the function |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected input after the module's closing ')'` |
