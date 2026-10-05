@@ -1,0 +1,33 @@
+;; Unions, make, and match (AIPL_SPEC.md 4.J) across modules, for
+;; tests/test_sum_types.rs and the wasm toolchain's parity tests: names from
+;; tests/aipl/geometry.aipl are used directly and through an alias, in make,
+;; in match arms, and as types. main is 1103.
+(module sum_types
+  (import geometry)
+  (import geometry as geo)
+  (import vec)
+  (union Op [(lit v:i32) (neg e:Op) (add a:Op b:Op)])
+  (fn eval [e:Op] -> i32
+    (match e
+      (Op.lit [v] v)
+      (Op.neg [x] (- 0 (call eval x)))
+      (Op.add [a b] (+ (call eval a) (call eval b)))))
+  (fn sides [s:geo.Shape] -> i32
+    (match s (geometry.Shape.rect [w h] 4) (geo.Shape.circle [r] 0) (else 1)))
+  (fn main [] -> i32
+    (let shapes:(ptr (vec.Vec geometry.Shape)) (call geometry.some))
+    (let total:i32 0)
+    (loop i 0 (- (call (vec.len geo.Shape) shapes) 1) 1
+      (let s:geometry.Shape (call (vec.at geometry.Shape) shapes i))
+      (set! total (+ total (+ (call geo.area s) (call sides s)))))
+    ;; total: (10 + 4) + (3 + 0) + (0 + 1) = 18
+    (let l:(ptr geo.Labelled) (new geo.Labelled))
+    (put l geometry.Labelled.shape (make geo.Shape.rect 3 3))
+    (put l geo.Labelled.turn geometry.Turn.back)
+    (let p:geo.Path (make geometry.Path.step 1 2 (make geo.Path.step 3 4 (make geo.Path.stop))))
+    (+ total                                                          ;; 18
+       (+ (call geometry.area (get l geo.Labelled.shape))              ;; 9
+          (+ (call geo.degrees (get l geometry.Labelled.turn))         ;; 180
+             (+ (call geometry.length p)                               ;; 10
+                (+ (match (get l geo.Labelled.turn) (geo.Turn.back 800) (else 0))
+                   (call eval (make Op.add (make Op.lit 90) (make Op.neg (make Op.lit 4))))))))))) ;; 86

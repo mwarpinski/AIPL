@@ -1,0 +1,84 @@
+;; spigot: the first N digits of pi (default 1000) by the Rabinowitz-Wagon
+;; spigot algorithm, using only integers and one array (no bignums). Output
+;; as the Benchmarks Game's pidigits: ten digits per line, then a tab, a
+;; colon, and the count so far; a short last line is padded with spaces.
+;;
+;;   aipl compile --exe benchmarks/spigot/spigot.aipl -o spigot && ./spigot 1000
+;; Prints the time the computation took on stderr (std/time).
+(module spigot
+  (import io)
+  (import os)
+  (import str)
+  (import buf)
+  (import time)
+
+  (struct Out [b:(ptr buf.Buf) count:i32])
+
+  (fn digits_wanted [] -> i32
+    (if (gt (call os.arg_count) 1)
+        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 1000))
+        1000))
+
+  (fn emit [o:(ptr Out) d:i32] -> void
+    (let b:(ptr buf.Buf) (get o Out.b))
+    (call buf.push_byte b (+ 48 d))
+    (put o Out.count (+ (get o Out.count) 1))
+    (if (eq (% (get o Out.count) 10) 0)
+        (block (call buf.push_str b "\t:") (call buf.push_int b (get o Out.count)) (call buf.push_byte b 10))
+        (block)))
+
+  (fn finish [o:(ptr Out)] -> void
+    (let b:(ptr buf.Buf) (get o Out.b))
+    (let left:i32 (% (get o Out.count) 10))
+    (if (neq left 0)
+        (block
+          (loop k left 9 1 (call buf.push_byte b 32))
+          (call buf.push_str b "\t:")
+          (call buf.push_int b (get o Out.count))
+          (call buf.push_byte b 10))
+        (block)))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call digits_wanted))
+    ;; one array cell per term of the series, each starting at 2
+    (let len:i32 (+ (/ (* n 10) 3) 1))
+    (let a:(arr i64) (arr.new i64 len))
+    (loop i 0 (- len 1) 1 (arr.set i64 a i 2i64))
+    (let o:(ptr Out) (new Out))
+    (put o Out.b (call buf.make (+ (* n 2) 64)))
+    (put o Out.count 0)
+    ;; a digit is held back (predigit) until the next shows it needs no carry;
+    ;; runs of 9s wait too
+    (let nines:i32 0)
+    (let predigit:i32 0)
+    (let first:bool true)
+    (loop j 1 n 1
+      (let q:i64 0i64)
+      (loop k 1 len 1
+        (let i:i32 (- (+ len 1) k))
+        (let x:i64 (+ (* 10i64 (arr.get i64 a (- i 1))) (* q (i64.extend_s i))))
+        (let d:i64 (i64.extend_s (- (* 2 i) 1)))
+        (arr.set i64 a (- i 1) (% x d))
+        (set! q (/ x d)))
+      (arr.set i64 a 0 (% q 10i64))
+      (set! q (/ q 10i64))
+      (cond
+        ((eq q 9i64) (set! nines (+ nines 1)))
+        ((eq q 10i64)
+         (call emit o (+ predigit 1))
+         (loop m 1 nines 1 (call emit o 0))
+         (set! predigit 0)
+         (set! nines 0))
+        (else
+         (if first (set! first false) (call emit o predigit))
+         (set! predigit (i32.wrap q))
+         (loop m 1 nines 1 (call emit o 9))
+         (set! nines 0))))
+    (call emit o predigit)
+    (call finish o)
+    ;; the computation's own time, on stderr (the digits stay the output)
+    (call time.report "spigot computed in" started)
+    (let out:(ptr buf.Buf) (get o Out.b))
+    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    0))

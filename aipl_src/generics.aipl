@@ -27,7 +27,7 @@
   ;; ===== Trees =====
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
-    (ptr.cast compiler.Node (get g compiler.Node.a)))
+    (get g compiler.Node.first))
 
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
@@ -45,7 +45,7 @@
     n)
 
   (fn is_symbol [n:(ptr compiler.Node)] -> bool
-    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) 6)))
+    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) compiler.Kind.symbol)))
 
   (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
     (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b)))
@@ -55,13 +55,13 @@
 
   ;; The head symbol of a (...) group, or len -1.
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
-    (if (neq (get g compiler.Node.kind) 20) (return (call str.bytes 0 -1)) (block))
+    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
     (let h:(ptr compiler.Node) (call first_child g))
     (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
 
   ;; A (...) group whose head names a template.
   (fn is_app [st:(ptr St) n:(ptr compiler.Node)] -> bool
-    (if (neq (get n compiler.Node.kind) 20) (return false) (block))
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
     (let h:(ptr str.Bytes) (call head st n))
     (and (gte (get h str.Bytes.len) 0) (call (strmap.has (ptr Tmpl)) (get st St.templates) h)))
 
@@ -90,7 +90,7 @@
           (let k:i32 (call lookup env t))
           (return (if (gte k 0) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) k) t)))
         (block))
-    (if (neq (get n compiler.Node.kind) 20) (return (call text st n)) (block))
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return (call text st n)) (block))
     (if (call is_app st n) (return (call instance st n env)) (block))
     (let out:(ptr buf.Buf) (call buf.make 32))
     (let h:(ptr str.Bytes) (call head st n))
@@ -169,26 +169,26 @@
   ;; ===== Printing =====
 
   (fn print_atom [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
-    (let k:i32 (get n compiler.Node.kind))
+    (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
-      ((eq k 6)
+      ((eq k compiler.Kind.symbol)
        (let t:(ptr str.Bytes) (call text st n))
        (let i:i32 (call lookup env t))
        (call buf.push_bytes out (if (gte i 0) (call (vec.at (ptr str.Bytes)) (get env Env.printed) i) t)))
-      ((or (eq k 10) (eq k 11)) (call buf.push_bytes out (call text st n)))
-      ((eq k 7) (call buf.push_int out (get n compiler.Node.a)))
-      ((eq k 8) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
-      ((eq k 9)
+      ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text st n)))
+      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
+      ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
        (call buf.push_bytes out (call text st n))
        (call buf.push_byte out 34))
-      ((eq k 4) (call buf.push_byte out 58))
-      ((eq k 5) (call buf.push_str out "->"))
+      ((eq k compiler.Kind.colon) (call buf.push_byte out 58))
+      ((eq k compiler.Kind.arrow) (call buf.push_str out "->"))
       (else (block))))
 
   (fn print [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
-    (let k:i32 (get n compiler.Node.kind))
-    (if (and (neq k 20) (neq k 21)) (block (call print_atom st n env out) (return)) (block))
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (block (call print_atom st n env out) (return)) (block))
     (if (call is_app st n) (block (call buf.push_bytes out (call instance st n env)) (return)) (block))
     (call print_group st n env (call str.bytes 0 -1) out))
 
@@ -196,7 +196,7 @@
   ;; `rename` replaces child 1 (an instance's header). (get p (Name T) f) and
   ;; (put p (Name T) f v) print as (get p Name<T>.f).
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
-    (let square:bool (eq (get g compiler.Node.kind) 21))
+    (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let h:(ptr str.Bytes) (call head st g))
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
                                  (and (or (call lit h "get") (call lit h "put"))
@@ -206,7 +206,7 @@
     (let i:i32 0)
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
-      (let colon:bool (eq (get c compiler.Node.kind) 4))
+      (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (cond
         ;; the field name was printed with its instance
         ((and generic_field (eq i 3)) (block))
@@ -252,7 +252,7 @@
     (if (lt (get h str.Bytes.len) 0) (return false) (block))
     (if (not (or (call lit h "fn") (call lit h "struct"))) (return false) (block))
     (let header:(ptr compiler.Node) (call nth item 1))
-    (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) 20)) (return false) (block))
+    (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) compiler.Kind.paren)) (return false) (block))
     (let name:(ptr str.Bytes) (call head st header))
     (if (call built_in (call last_part name))
         (call fail st "generic name is a built-in form; choose another name: " name)
@@ -278,7 +278,7 @@
     (let n:i32 (get flat str.Bytes.len))
     (let tok:i32 (mem.alloc (* 12 (+ n 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
-    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
     (let st:(ptr St) (new St))
     (put st St.text flat)

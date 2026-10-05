@@ -56,7 +56,8 @@ struct ModuleSx {
 }
 
 impl Resolver {
-    /// Reads `entry_path`, resolves its imports, expands generics, and returns
+    /// Reads `entry_path`, resolves its imports, expands generics, constants,
+    /// and enum members, and returns
     /// one flat `Module` for the checker, the VM, and the wasm backend.
     pub fn resolve(entry_path: &Path) -> Result<Module, String> {
         let entry_src = fs::read_to_string(entry_path)
@@ -83,10 +84,19 @@ impl Resolver {
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], functions: vec![] };
+        let flat = crate::consts::expand(flat)?;
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![] };
+        let unions: HashSet<String> = flat
+            .structs
+            .iter()
+            .filter(|i| i.sx.head() == Some("union"))
+            .filter_map(|i| i.sx.items().get(1).and_then(|n| n.symbol()).map(String::from))
+            .collect();
         for item in flat.structs.iter().chain(flat.fns.iter()) {
-            let parsed = parse_item(&flat.name, item)?;
+            let parsed = parse_item(&flat.name, item, &unions)?;
             module.structs.extend(parsed.structs);
+            module.enums.extend(parsed.enums);
+            module.unions.extend(parsed.unions);
             module.functions.extend(parsed.functions);
         }
         Ok(module)
@@ -114,13 +124,13 @@ impl Resolver {
 }
 
 /// Parses one item as `(module NAME item)`, prefixing errors with its file.
-fn parse_item(module_name: &str, item: &Item) -> Result<Module, String> {
+fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Result<Module, String> {
     let (line, col) = item.sx.position();
     let tok = |kind| Token { kind, line, col };
     let mut tokens = vec![tok(TokenKind::LParen), tok(TokenKind::Symbol("module".into())), tok(TokenKind::Symbol(module_name.into()))];
     item.sx.flatten(&mut tokens);
     tokens.push(tok(TokenKind::RParen));
-    Parser::parse_tokens(tokens).map_err(|e| format!("{}: {}", item.file.display(), e))
+    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| format!("{}: {}", item.file.display(), e))
 }
 
 fn read_module(src: &str) -> Result<ModuleSx, String> {
@@ -223,6 +233,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         prefix: prefix.clone(),
         fns: HashSet::new(),
         structs: HashSet::new(),
+        decls: HashSet::new(),
         own_templates: HashSet::new(),
         aliases: module.imports.iter().filter_map(|(m, a)| a.clone().map(|a| (a, module_name(m).to_string()))).collect(),
         known_templates: &st.templates,
@@ -232,6 +243,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
             match item.head() {
                 Some("fn") => names.fns.insert(n.to_string()),
                 Some("struct") => names.structs.insert(n.to_string()),
+                Some("const" | "enum" | "union") => names.decls.insert(n.to_string()),
                 _ => false,
             };
             if generic {
@@ -251,7 +263,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     for mut item in module.items {
         names.walk(&mut item, 0);
         let it = Item { sx: item, file: file.to_path_buf() };
-        if it.sx.head() == Some("struct") {
+        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
             out_structs.push(it);
         } else {
             out_fns.push(it);
@@ -264,10 +276,15 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
 
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
 /// none, 1 function name, 2 struct name, 3 field reference `S.f`.
+/// Constants and enums are renamed wherever their names appear (a constant
+/// may not double as a variable name, and enum names are types), as are
+/// `alias.x` names in any position.
 struct Names<'a> {
     prefix: Option<String>,
     fns: HashSet<String>,
     structs: HashSet<String>,
+    /// The module's constants and enums.
+    decls: HashSet<String>,
     own_templates: HashSet<String>,
     aliases: HashMap<String, String>,
     known_templates: &'a HashSet<String>,
@@ -276,7 +293,7 @@ struct Names<'a> {
 impl Names<'_> {
     fn rename(&self, t: &str, role: u8) -> String {
         if role == 0 {
-            return t.to_string();
+            return self.rename_decl(t);
         }
         if role == 3 {
             return match t.rfind('.') {
@@ -291,8 +308,29 @@ impl Names<'_> {
             };
         }
         let own = if role == 1 { &self.fns } else { &self.structs };
+        // a struct-name position may also hold an enum (a template's type
+        // argument: `(vec.Vec Color)`)
         match &self.prefix {
-            Some(p) if own.contains(t) => format!("{}.{}", p, t),
+            Some(p) if own.contains(t) || (role == 2 && self.decls.contains(t)) => format!("{}.{}", p, t),
+            _ => t.to_string(),
+        }
+    }
+
+    /// A name in any position: one of this module's constants or enums
+    /// (`MAX`, `Color`), an enum member (`Color.red`), or an alias-qualified
+    /// name (`c.MAX`, `c.Color.red`). Anything else is unchanged.
+    fn rename_decl(&self, t: &str) -> String {
+        if let Some((alias, rest)) = t.split_once('.') {
+            if let Some(canonical) = self.aliases.get(alias) {
+                return format!("{}.{}", canonical, rest);
+            }
+        }
+        let Some(p) = &self.prefix else { return t.to_string() };
+        if self.decls.contains(t) {
+            return format!("{}.{}", p, t);
+        }
+        match t.rfind('.') {
+            Some(dot) if self.decls.contains(&t[..dot]) => format!("{}.{}", p, t),
             _ => t.to_string(),
         }
     }
@@ -346,8 +384,29 @@ impl Names<'_> {
                             *child = Sx::symbol_at(t.clone(), child);
                             continue;
                         }
+                        // the head of a (...) form is a keyword or an op
+                        // (`mem.alloc`), never a renamed name
+                        if head.is_some() {
+                            continue;
+                        }
                     }
-                    let r = if template.is_some() { 0 } else { Names::child_role(head.as_deref(), i) };
+                    // a match arm's head names a member of the matched type:
+                    // (Shape.circle [r] ...) in module m is m.Shape.circle
+                    if head.as_deref() == Some("match") && i >= 2 {
+                        if let Some(arm) = child.items_mut() {
+                            for (j, part) in arm.iter_mut().enumerate() {
+                                match part {
+                                    Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => *s = self.rename(s, 0),
+                                    _ if j == 0 => {}
+                                    _ => self.walk(part, 0),
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    // a template's type arguments are struct names (or types
+                    // built from them): `(alloc Pair)` in module m names m.Pair
+                    let r = if template.is_some() { 2 } else { Names::child_role(head.as_deref(), i) };
                     self.walk(child, r);
                 }
             }

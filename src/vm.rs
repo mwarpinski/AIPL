@@ -62,6 +62,9 @@ pub struct VM {
     /// also its slot in the wasm backend's function table.
     fn_order: Arc<Vec<String>>,
     structs: Arc<HashMap<String, StructDef>>,
+    unions: Arc<HashMap<String, UnionDef>>,
+    /// Enum members by enum name, for `match` on an enum value.
+    enums: Arc<HashMap<String, EnumDef>>,
     flow: Option<Flow>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
@@ -89,6 +92,8 @@ impl VM {
             functions: Arc::new(HashMap::new()),
             fn_order: Arc::new(Vec::new()),
             structs: Arc::new(HashMap::new()),
+            unions: Arc::new(HashMap::new()),
+            enums: Arc::new(HashMap::new()),
             flow: None,
             shared: Arc::new(Mutex::new(SharedMemory {
                 bytes: {
@@ -121,6 +126,8 @@ impl VM {
             functions: Arc::clone(&self.functions),
             fn_order: Arc::clone(&self.fn_order),
             structs: Arc::clone(&self.structs),
+            unions: Arc::clone(&self.unions),
+            enums: Arc::clone(&self.enums),
             flow: None,
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
@@ -229,6 +236,17 @@ impl VM {
             s_map.insert(s.name.clone(), s);
         }
         self.structs = Arc::new(s_map);
+
+        let mut u_map = (*self.unions).clone();
+        for u in module.unions {
+            u_map.insert(u.name.clone(), u);
+        }
+        self.unions = Arc::new(u_map);
+        let mut e_map = (*self.enums).clone();
+        for e in module.enums {
+            e_map.insert(e.name.clone(), e);
+        }
+        self.enums = Arc::new(e_map);
     }
 
     pub fn invoke(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -483,6 +501,57 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 last
             }
+            Expr::Make { union_name, variant, args, .. } => {
+                let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
+                let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
+                let v = &def.variants[tag];
+                let (offsets, size) = crate::checker::variant_layout(v)?;
+                // the cell is claimed before the fields are evaluated, as in the wasm lowering
+                let cell = self.alloc_bytes(size) as u32 as usize;
+                self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
+                for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
+                    let val = self.eval_expr(a, scope)?;
+                    self.store_val_at(cell + off, &f.ty, val)?;
+                }
+                Ok(Value::Int(cell as i64))
+            }
+            Expr::Match { value, arms, else_body, .. } => {
+                let v = match self.eval_expr(value, scope)? {
+                    Value::Int(i) => i,
+                    other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
+                };
+                let member = |m: &str| m[m.rfind('.').map_or(0, |d| d + 1)..].to_string();
+                let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
+                let tname = arms.first().map(|a| a.member[..a.member.rfind('.').unwrap_or(0)].to_string()).unwrap_or_default();
+                let mut chosen: Option<&Vec<Expr>> = None;
+                if let Some(def) = self.unions.get(&tname).cloned() {
+                    let cell = v as u32 as usize;
+                    let tag = match self.load_val_at(cell, &Type::I32)? {
+                        Value::Int(t) => t as usize,
+                        _ => unreachable!(),
+                    };
+                    if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
+                        let var = &def.variants[tag];
+                        let (offsets, _) = crate::checker::variant_layout(var)?;
+                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets) {
+                            let fv = self.load_val_at(cell + off, &f.ty)?;
+                            scope.insert(name.clone(), fv);
+                        }
+                        chosen = Some(&arm.body);
+                    }
+                } else if let Some(def) = self.enums.get(&tname) {
+                    chosen = arms
+                        .iter()
+                        .find(|a| def.members.iter().any(|(m, val)| *m == member(&a.member) && *val as i64 == v))
+                        .map(|a| &a.body);
+                }
+                let res = match chosen.or(else_body.as_ref()) {
+                    Some(body) => self.eval_seq(body, scope),
+                    None => Err("unreachable: match on a value that is none of its type's members".to_string()),
+                };
+                scope.retain(|k, _| keys_before.contains(k));
+                res
+            }
             Expr::NewStruct { struct_name, .. } => {
                 let def = self
                     .structs
@@ -702,7 +771,7 @@ impl VM {
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
         let mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -768,7 +837,7 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Str => {
+            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
@@ -839,7 +908,6 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
-                    (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{}{}", x, y))),
                     _ => Err("Invalid types for +".to_string()),
                 }
             }
@@ -1045,7 +1113,6 @@ impl VM {
                 // share one allocator state.
                 Ok(Value::Int(self.alloc_bytes(size) as i64))
             }
-            OpCode::MemFree => Ok(Value::Void),
             OpCode::MemGrow => {
                 let pages = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as i32,
@@ -1290,6 +1357,52 @@ impl VM {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;
                 Ok(Value::Bool(a != b))
+            }
+            OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                let name = match op {
+                    OpCode::CheckedAdd => "checked.add",
+                    OpCode::CheckedSub => "checked.sub",
+                    _ => "checked.mul",
+                };
+                let overflow = || format!("Integer overflow in {}", name);
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        let (x, y) = (x as i32, y as i32);
+                        let r = match op {
+                            OpCode::CheckedAdd => x.checked_add(y),
+                            OpCode::CheckedSub => x.checked_sub(y),
+                            _ => x.checked_mul(y),
+                        };
+                        r.map(|v| Value::Int(v as i64)).ok_or_else(overflow)
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let r = match op {
+                            OpCode::CheckedAdd => x.checked_add(y),
+                            OpCode::CheckedSub => x.checked_sub(y),
+                            _ => x.checked_mul(y),
+                        };
+                        r.map(Value::Int64).ok_or_else(overflow)
+                    }
+                    _ => Err(format!("Invalid types for {}", name)),
+                }
+            }
+            OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                let ord = match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => (x as i32 as u32).cmp(&(y as i32 as u32)),
+                    (Value::Int64(x), Value::Int64(y)) => (x as u64).cmp(&(y as u64)),
+                    _ => return Err(format!("Invalid types for {:?}", op)),
+                };
+                use std::cmp::Ordering::*;
+                Ok(Value::Bool(match op {
+                    OpCode::LtU => ord == Less,
+                    OpCode::LteU => ord != Greater,
+                    OpCode::GtU => ord == Greater,
+                    _ => ord != Less,
+                }))
             }
             OpCode::Lt => {
                 let a = self.eval_expr(&args[0], scope)?;
@@ -1600,6 +1713,11 @@ impl VM {
                 Value::Int64(x) => Ok(Value::Float(x as f64)),
                 _ => Err("f64.convert_i64_s requires Int64".to_string()),
             },
+            // Rust's sqrt is IEEE 754's correctly rounded square root, as wasm's f64.sqrt.
+            OpCode::F64Sqrt => match self.eval_expr(&args[0], scope)? {
+                Value::Float(x) => Ok(Value::Float(x.sqrt())),
+                _ => Err("f64.sqrt requires Float".to_string()),
+            },
             // Truncates toward zero; NaN or a result outside i64 is an error where wasm traps.
             OpCode::I64TruncF64S => match self.eval_expr(&args[0], scope)? {
                 Value::Float(x) if x.is_nan() => Err("i64.trunc_f64_s: invalid conversion to integer (NaN)".to_string()),
@@ -1615,9 +1733,6 @@ impl VM {
                 Value::Float(x) => Ok(Value::Int64(x.to_bits() as i64)),
                 _ => Err("i64.reinterpret_f64 requires Float".to_string()),
             },
-            OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
-                Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
-            }
             OpCode::SysTime => {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
                 Ok(Value::Int64(now.as_nanos() as i64))

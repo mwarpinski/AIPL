@@ -1,0 +1,67 @@
+;; binarytrees: the Benchmarks Game's binary-trees. Builds perfect binary
+;; trees of many depths and walks them, allocating millions of short-lived
+;; nodes; one long-lived tree stays throughout. AIPL has no general free, so
+;; each short-lived tree comes from an arena that is reset once the tree is
+;; checked (std/arena), as the benchmark allows for memory pools.
+;;
+;;   ./binarytrees 10
+(module binarytrees
+  (import os)
+  (import str)
+  (import buf)
+  (import arena)
+  (import time)
+
+  (struct Node [left:(ptr Node) right:(ptr Node)])
+
+  (fn depth_wanted [] -> i32
+    (if (gt (call os.arg_count) 1)
+        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 10))
+        10))
+
+  (fn bottom_up [a:(ptr arena.Arena) depth:i32] -> (ptr Node)
+    (let n:(ptr Node) (call (arena.alloc Node) a))
+    (if (gt depth 0)
+        (block
+          (put n Node.left (call bottom_up a (- depth 1)))
+          (put n Node.right (call bottom_up a (- depth 1))))
+        (block))
+    n)
+
+  (fn check [n:(ptr Node)] -> i32
+    (if (eq (get n Node.left) (ptr.null Node))
+        1
+        (+ 1 (+ (call check (get n Node.left)) (call check (get n Node.right))))))
+
+  (fn line [out:(ptr buf.Buf) label:str depth:i32 checked:i32] -> void
+    (call buf.push_str out label)
+    (call buf.push_int out depth)
+    (call buf.push_str out "\t check: ")
+    (call buf.push_int out checked)
+    (call buf.push_byte out 10))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call depth_wanted))
+    (let min_depth:i32 4)
+    (let max_depth:i32 (if (gt (+ min_depth 2) n) (+ min_depth 2) n))
+    (let out:(ptr buf.Buf) (call buf.make 1024))
+    (let scratch:(ptr arena.Arena) (call arena.make 1048576))
+    (call line out "stretch tree of depth " (+ max_depth 1) (call check (call bottom_up scratch (+ max_depth 1))))
+    (call arena.reset scratch)
+    (let keep:(ptr arena.Arena) (call arena.make 1048576))
+    (let long_lived:(ptr Node) (call bottom_up keep max_depth))
+    (let d:i32 min_depth)
+    (while (lte d max_depth)
+      (let iterations:i32 (shl 1 (+ (- max_depth d) min_depth)))
+      (let checked:i32 0)
+      (loop i 1 iterations 1
+        (set! checked (+ checked (call check (call bottom_up scratch d))))
+        (call arena.reset scratch))
+      (call buf.push_int out iterations)
+      (call line out "\t trees of depth " d checked)
+      (set! d (+ d 2)))
+    (call line out "long lived tree of depth " max_depth (call check long_lived))
+    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call time.report "binarytrees computed in" started)
+    0))

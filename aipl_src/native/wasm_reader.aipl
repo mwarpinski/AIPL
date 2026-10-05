@@ -309,15 +309,16 @@
       ((and (gte op 54) (lte op 58)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8
       ((or (eq op 63) (eq op 64)) 8)                                                ;; memory.size memory.grow
       ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7)                                  ;; i32/i64/f64.const
-      ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s ge_s
-      ((or (and (gte op 69) (lte op 76)) (eq op 78)) 0)
-      ;; i64: eq ne lt_s gt_s le_s ge_s
-      ((or (and (gte op 81) (lte op 83)) (or (eq op 85) (or (eq op 87) (eq op 89)))) 0)
+      ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
+      ((and (gte op 69) (lte op 79)) 0)
+      ;; i64: eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
+      ((and (gte op 81) (lte op 90)) 0)
       ((and (gte op 91) (lte op 102)) 0)                                            ;; f32 and f64 comparisons
       ((and (gte op 106) (lte op 118)) 0)                                           ;; i32 add .. shr_u
       ((and (gte op 124) (lte op 136)) 0)                                           ;; i64 add .. shr_u
       ((and (gte op 146) (lte op 149)) 0)                                           ;; f32 add sub mul div
       ((and (gte op 160) (lte op 163)) 0)                                           ;; f64 add sub mul div
+      ((eq op 159) 0)                                                               ;; f64.sqrt
       ;; i32.wrap_i64, i64.extend_i32_s/u, i64.trunc_f64_s, f64.convert_i64_s, the reinterprets
       ((or (eq op 167) (or (eq op 172) (or (eq op 173) (or (eq op 176) (or (eq op 185) (or (eq op 189) (eq op 191)))))))
        0)
@@ -366,10 +367,16 @@
       ((eq op 74) "i32.gt_s")
       ((eq op 75) "i32.gt_u")
       ((eq op 76) "i32.le_s")
+      ((eq op 77) "i32.le_u")
       ((eq op 78) "i32.ge_s")
+      ((eq op 79) "i32.ge_u")
       ((eq op 81) "i64.eq")
       ((eq op 82) "i64.ne")
       ((eq op 83) "i64.lt_s")
+      ((eq op 84) "i64.lt_u")
+      ((eq op 86) "i64.gt_u")
+      ((eq op 88) "i64.le_u")
+      ((eq op 90) "i64.ge_u")
       ((eq op 85) "i64.gt_s")
       ((eq op 87) "i64.le_s")
       ((eq op 89) "i64.ge_s")
@@ -415,6 +422,7 @@
       ((eq op 147) "f32.sub")
       ((eq op 148) "f32.mul")
       ((eq op 149) "f32.div")
+      ((eq op 159) "f64.sqrt")
       ((eq op 160) "f64.add")
       ((eq op 161) "f64.sub")
       ((eq op 162) "f64.mul")
@@ -614,23 +622,9 @@
       (call buf.push_byte out 32)
       (call buf.push_int out (get ins Instr.b))
       (call buf.push_byte out 32)
-      (call push_i64 out (get ins Instr.c))
+      (call buf.push_i64 out (get ins Instr.c))
       (call buf.push_byte out 10)))
 
-  ;; An i64 in decimal (buf.push_int handles i32 only).
-  (fn push_i64 [out:(ptr buf.Buf) v:i64] -> void
-    (if (eq v 0i64) (block (call buf.push_byte out 48) (return)) (block))
-    (let digits:(ptr buf.Buf) (call buf.make 24))
-    (let neg:bool (lt v 0i64))
-    ;; work with negative values so the minimum i64 does not overflow
-    (let x:i64 (if neg v (- 0i64 v)))
-    (while (neq x 0i64)
-      (call buf.push_byte digits (+ 48 (i32.wrap (- 0i64 (% x 10i64)))))
-      (set! x (/ x 10i64)))
-    (if neg (call buf.push_byte out 45) (block))
-    (let d:(ptr str.Bytes) (call buf.bytes digits))
-    (loop k 0 (- (get d str.Bytes.len) 1) 1
-      (call buf.push_byte out (call str.byte_at d (- (- (get d str.Bytes.len) 1) k)))))
 
   (fn summary [w:(ptr Wasm)] -> (ptr str.Bytes)
     (let out:(ptr buf.Buf) (call buf.make 4096))
@@ -687,13 +681,13 @@
         (block (call buf.push_str out "start ") (call buf.push_int out (get w Wasm.start)) (call buf.push_byte out 10))
         (block))
     (loop i 0 (- (call (vec.len (ptr Elem)) (get w Wasm.elems)) 1) 1
-      (let e:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
+      (let el:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
       (call buf.push_str out "elem offset ")
-      (call buf.push_int out (get e Elem.offset))
+      (call buf.push_int out (get el Elem.offset))
       (call buf.push_str out " funcs")
-      (loop k 0 (- (call (vec.len i32) (get e Elem.funcs)) 1) 1
+      (loop k 0 (- (call (vec.len i32) (get el Elem.funcs)) 1) 1
         (call buf.push_byte out 32)
-        (call buf.push_int out (call (vec.at i32) (get e Elem.funcs) k)))
+        (call buf.push_int out (call (vec.at i32) (get el Elem.funcs) k)))
       (call buf.push_byte out 10))
     (if (gte (get w Wasm.data_count) 0)
         (block (call buf.push_str out "datacount ") (call buf.push_int out (get w Wasm.data_count)) (call buf.push_byte out 10))

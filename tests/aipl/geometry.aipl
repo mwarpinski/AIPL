@@ -1,0 +1,23 @@
+;; Imported by tests/aipl/sum_types.aipl: a union, a recursive union, and an
+;; enum, matched both here and in the importing module.
+(module geometry
+  (import vec)
+  (union Shape [(circle r:f64) (rect w:i32 h:i32) (dot)])
+  (union Path [(stop) (step dx:i32 dy:i32 rest:Path)])
+  (enum Turn [left right (back 4)])
+  (struct Labelled [shape:Shape turn:Turn])
+  (fn area [s:Shape] -> i32
+    (match s
+      (Shape.circle [r] (i32.wrap (i64.trunc_f64_s (* 3.0 (* r r)))))
+      (Shape.rect [w h] (* w h))
+      (Shape.dot 0)))
+  (fn length [p:Path] -> i32
+    (match p (Path.stop 0) (Path.step [dx dy rest] (+ (+ dx dy) (call length rest)))))
+  (fn degrees [t:Turn] -> i32 (match t (Turn.left 90) (Turn.right 270) (Turn.back 180)))
+  ;; a list of shapes: a union as a generic type argument
+  (fn some [] -> (ptr (vec.Vec Shape))
+    (let v:(ptr (vec.Vec Shape)) (call (vec.make Shape) 4))
+    (call (vec.push Shape) v (make Shape.rect 2 5))
+    (call (vec.push Shape) v (make Shape.circle 1.0))
+    (call (vec.push Shape) v (make Shape.dot))
+    v))

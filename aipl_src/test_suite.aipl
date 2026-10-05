@@ -24,6 +24,10 @@
   (import map)
   (import strmap)
   (import buf)
+  (import time)
+  (import arena)
+  (import bigint)
+  (import consts)
   (import thread_sync)
   (import resolver)
   (import os)
@@ -36,8 +40,8 @@
   ;; caller to sum.
   (fn report [label:str result:i32 expected:i32] -> i32
     (if (eq result expected)
-        (block (sys.print (+ "[PASS] " label)) 0)
-        (block (sys.print (+ "[FAIL] " label)) 1)))
+        (block (call io.write_str 1 "[PASS] ") (call io.println label) 0)
+        (block (call io.write_str 1 "[FAIL] ") (call io.println label) 1)))
 
   ;; Runs every verified-real module's self-test, prints one line each, and
   ;; returns the total number of failing groups (0 = everything passed).
@@ -49,7 +53,7 @@
     (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
     (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
     (set! failures (+ failures (call report "std/str: byte slices + parse_int (7 tests)" (call str.run_str_tests) 7)))
-    (set! failures (+ failures (call report "std/fmt: number formatting (6 tests)" (call fmt.run_fmt_tests) 6)))
+    (set! failures (+ failures (call report "std/fmt: number formatting (14 tests)" (call fmt.run_fmt_tests) 14)))
     (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
     (set! failures (+ failures (call report "std/os: arguments + environment (2 tests)" (call os.run_os_tests) 2)))
     (set! failures (+ failures (call report "native/wasm_reader: module structure and bodies (5 tests)" (call wasm_reader.run_reader_tests) 5)))
@@ -60,5 +64,9 @@
     (set! failures (+ failures (call report "std/map: generic i32-keyed hash map (4 tests)" (call map.run_map_tests) 4)))
     (set! failures (+ failures (call report "std/strmap: generic byte-string hash map (4 tests)" (call strmap.run_strmap_tests) 4)))
     (set! failures (+ failures (call report "std/buf: string builder (3 tests)" (call buf.run_buf_tests) 3)))
+    (set! failures (+ failures (call report "std/time: durations and the clock (7 tests)" (call time.run_time_tests) 7)))
+    (set! failures (+ failures (call report "std/arena: typed region allocator (5 tests)" (call arena.run_arena_tests) 5)))
+    (set! failures (+ failures (call report "std/bigint: arbitrary-precision integers (13 tests)" (call bigint.run_bigint_tests) 13)))
+    (set! failures (+ failures (call report "consts: constants and enums erased for codegen (5 tests)" (call consts.run_consts_tests) 5)))
     (set! failures (+ failures (call report "thread_sync: 4 threads x 1000 atomic adds = 4000" (call thread_sync.run_thread_tests) 1)))
     failures))

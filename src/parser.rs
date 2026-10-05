@@ -27,6 +27,9 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     last_pos: (u32, u32),
+    /// Names of the program's unions: a bare type name is a union if listed,
+    /// otherwise an enum (the checker reports unknown names).
+    unions: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -253,11 +256,21 @@ impl Parser {
     /// Parses an already-tokenized `(module ...)`. The resolver uses it to
     /// parse each item of a flattened program with its original positions.
     pub fn parse_tokens(tokens: Vec<Token>) -> Result<Module, String> {
-        let mut parser = Parser {
-            tokens,
-            pos: 0,
-            last_pos: (1, 1),
-        };
+        // the unions declared in these tokens: `( union NAME`
+        let unions = tokens
+            .windows(3)
+            .filter_map(|w| match (&w[0].kind, &w[1].kind, &w[2].kind) {
+                (TokenKind::LParen, TokenKind::Symbol(u), TokenKind::Symbol(n)) if u == "union" => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+        Self::parse_tokens_with(tokens, unions)
+    }
+
+    /// parse_tokens for one item of a larger program, given the program's
+    /// union names (the resolver parses items one at a time).
+    pub fn parse_tokens_with(tokens: Vec<Token>, unions: std::collections::HashSet<String>) -> Result<Module, String> {
+        let mut parser = Parser { tokens, pos: 0, last_pos: (1, 1), unions };
         parser.parse_module()
     }
 
@@ -343,12 +356,24 @@ impl Parser {
 
         let mut imports = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
+        let mut unions = Vec::new();
         let mut functions = Vec::new();
         while let Some(TokenKind::LParen) = self.peek_kind() {
             if self.is_import_ahead() {
                 imports.push(self.parse_import()?);
             } else if self.is_struct_ahead() {
                 structs.push(self.parse_struct_def()?);
+            } else if self.is_head_ahead("enum") {
+                enums.push(self.parse_enum_def()?);
+            } else if self.is_head_ahead("union") {
+                unions.push(self.parse_union_def()?);
+            } else if self.is_head_ahead("const") {
+                let (l, c) = self.cur_pos();
+                return Err(format!(
+                    "{}:{}: (const ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
+                    l, c
+                ));
             } else {
                 functions.push(self.parse_fn_def()?);
             }
@@ -367,8 +392,89 @@ impl Parser {
             name,
             imports,
             structs,
+            enums,
+            unions,
             functions,
         })
+    }
+
+    /// `(union Name [(variant field:T ...) ...])`; a variant without fields
+    /// is `(variant)`.
+    fn parse_union_def(&mut self) -> Result<UnionDef, String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let span = (tok.line, tok.col);
+        self.next(); // `union`
+        let name = self.expect_symbol("union name", span)?;
+        self.expect_kind(TokenKind::LBracket)?;
+        let mut variants = Vec::new();
+        while !matches!(self.peek_kind(), Some(TokenKind::RBracket) | None) {
+            let (l, c) = self.cur_pos();
+            if self.peek_kind() != Some(&TokenKind::LParen) {
+                return Err(format!("{}:{}: a union variant is (name field:type ...), e.g. (circle radius:f64) or (empty)", l, c));
+            }
+            self.next();
+            let vname = self.expect_symbol("variant name", (l, c))?;
+            let mut fields = Vec::new();
+            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                let fname = self.expect_symbol("field name", (l, c))?;
+                self.expect_kind(TokenKind::Colon)?;
+                fields.push(StructField { name: fname, ty: self.parse_type()? });
+            }
+            self.expect_kind(TokenKind::RParen)?;
+            variants.push(Variant { name: vname, fields });
+        }
+        self.expect_kind(TokenKind::RBracket)?;
+        self.expect_kind(TokenKind::RParen)?;
+        Ok(UnionDef { name, variants, span })
+    }
+
+    fn is_head_ahead(&self, head: &str) -> bool {
+        matches!(self.tokens.get(self.pos + 1), Some(Token { kind: TokenKind::Symbol(s), .. }) if s == head)
+    }
+
+    /// `(enum Name [a b (c 10) ...])`. Member values are i32 literals; the
+    /// checker validates names and uniqueness.
+    fn parse_enum_def(&mut self) -> Result<EnumDef, String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let span = (tok.line, tok.col);
+        self.next(); // `enum`
+        let name = self.expect_symbol("enum name", span)?;
+        let open = self.expect_kind(TokenKind::LBracket)?;
+        let mut members = Vec::new();
+        let mut next_value: i64 = 0;
+        loop {
+            let (l, c) = self.cur_pos();
+            match self.next() {
+                Some(Token { kind: TokenKind::RBracket, .. }) => break,
+                Some(Token { kind: TokenKind::Symbol(m), .. }) => {
+                    members.push((m, next_value));
+                }
+                Some(Token { kind: TokenKind::LParen, .. }) => {
+                    let m = self.expect_symbol("enum member name", (l, c))?;
+                    let v = match self.next() {
+                        Some(Token { kind: TokenKind::IntLit(v), .. }) => v,
+                        _ => return Err(format!("{}:{}: an enum member with a value is (name INTEGER), e.g. (blue 5)", l, c)),
+                    };
+                    self.expect_kind(TokenKind::RParen)?;
+                    members.push((m, v));
+                }
+                None => return Err(format!("{}:{}: this bracket is never closed", open.line, open.col)),
+                Some(t) => {
+                    return Err(format!(
+                        "{}:{}: an enum member is a name or (name INTEGER), got {:?}",
+                        t.line, t.col, t.kind
+                    ))
+                }
+            }
+            let v = members.last().unwrap().1;
+            if v < i32::MIN as i64 || v > i32::MAX as i64 {
+                return Err(format!("{}:{}: enum member value {} is not an i32", l, c, v));
+            }
+            next_value = v + 1;
+        }
+        self.expect_kind(TokenKind::RParen)?;
+        let members = members.into_iter().map(|(m, v)| (m, v as i32)).collect();
+        Ok(EnumDef { name, members, span })
     }
 
     fn is_import_ahead(&self) -> bool {
@@ -680,6 +786,9 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "str" => Ok(Type::Str),
                 "void" => Ok(Type::Void),
+                // any other name is a union or an enum type; the checker reports unknown ones
+                _ if self.unions.contains(&s) => Ok(Type::Union(s)),
+                _ if !s.is_empty() && !s.starts_with(|ch: char| ch.is_ascii_digit() || ch == '-') => Ok(Type::Enum(s)),
                 _ => Err(format!("{}:{}: Unknown scalar type: {}", line, col, s)),
             },
             Some(Token {
@@ -983,6 +1092,55 @@ impl Parser {
                             };
                             let val = self.parse_expr()?;
                             Expr::Err(Box::new(val), explicit_ty, span)
+                        }
+                        "make" => {
+                            let target = self.expect_symbol("Union.variant in make", span)?;
+                            let Some(dot) = target.rfind('.') else {
+                                return Err(format!("{}:{}: make names a variant as Union.variant, got {}", span.0, span.1, target));
+                            };
+                            let mut args = Vec::new();
+                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                args.push(self.parse_expr()?);
+                            }
+                            Expr::Make { union_name: target[..dot].to_string(), variant: target[dot + 1..].to_string(), args, span }
+                        }
+                        "match" => {
+                            let value = self.parse_expr()?;
+                            let mut arms = Vec::new();
+                            let mut else_body = None;
+                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                let open = self.expect_kind(TokenKind::LParen)?;
+                                let arm_span = (open.line, open.col);
+                                let member = self.expect_symbol("Name.member or else in a match arm", arm_span)?;
+                                if else_body.is_some() {
+                                    return Err(format!("{}:{}: the (else ...) arm of a match comes last", arm_span.0, arm_span.1));
+                                }
+                                let binders = if self.peek_kind() == Some(&TokenKind::LBracket) {
+                                    self.next();
+                                    let mut names = Vec::new();
+                                    while !matches!(self.peek_kind(), Some(TokenKind::RBracket) | None) {
+                                        names.push(self.expect_symbol("a binder name", arm_span)?);
+                                    }
+                                    self.expect_kind(TokenKind::RBracket)?;
+                                    Some(names)
+                                } else {
+                                    None
+                                };
+                                let mut body = Vec::new();
+                                while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                    body.push(self.parse_expr()?);
+                                }
+                                self.expect_kind(TokenKind::RParen)?;
+                                if member == "else" {
+                                    if binders.is_some() {
+                                        return Err(format!("{}:{}: the else arm of a match binds nothing", arm_span.0, arm_span.1));
+                                    }
+                                    else_body = Some(body);
+                                } else {
+                                    arms.push(MatchArm { member, binders, body, span: arm_span });
+                                }
+                            }
+                            Expr::Match { value: Box::new(value), arms, else_body, span }
                         }
                         "block" => {
                             let mut body = Vec::new();
@@ -1311,9 +1469,19 @@ impl Parser {
                             let addr = self.parse_expr()?;
                             Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), span }
                         }
-                        "ptr.addr" | "arr.addr" => {
+                        "ptr.addr" | "arr.addr" | "enum.ord" => {
                             let val = self.parse_expr()?;
-                            Expr::Addr { val: Box::new(val), array: head == "arr.addr", span }
+                            let kind = match head.as_str() {
+                                "ptr.addr" => AddrKind::Ptr,
+                                "arr.addr" => AddrKind::Arr,
+                                _ => AddrKind::Enum,
+                            };
+                            Expr::Addr { val: Box::new(val), kind, span }
+                        }
+                        "enum.cast" => {
+                            let name = self.expect_symbol("enum name in enum.cast", span)?;
+                            let val = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), span }
                         }
                         "arr.new" => {
                             let elem_ty = self.parse_type()?;
@@ -1348,6 +1516,18 @@ impl Parser {
                                 span,
                             }
                         }
+                        "mem.free" => {
+                            return Err(format!(
+                                "{}:{}: there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)",
+                                span.0, span.1
+                            ))
+                        }
+                        float_mem @ ("mem.load_f32" | "mem.load_f64" | "mem.store_f32" | "mem.store_f64") => {
+                            return Err(format!(
+                                "{}:{}: there is no {}: keep floats in struct fields or (arr f64), or move their bits with mem.load64/mem.store64 and f64.reinterpret_i64/i64.reinterpret_f64",
+                                span.0, span.1, float_mem
+                            ))
+                        }
                         op_str => {
                             let op = match op_str {
                                 "+" => OpCode::Add,
@@ -1364,15 +1544,10 @@ impl Parser {
                                 "mem.load8" => OpCode::MemLoad8,
                                 "mem.load32" => OpCode::MemLoad32,
                                 "mem.load64" => OpCode::MemLoad64,
-                                "mem.load_f32" => OpCode::MemLoadF32,
-                                "mem.load_f64" => OpCode::MemLoadF64,
                                 "mem.store8" => OpCode::MemStore8,
                                 "mem.store32" => OpCode::MemStore32,
                                 "mem.store64" => OpCode::MemStore64,
-                                "mem.store_f32" => OpCode::MemStoreF32,
-                                "mem.store_f64" => OpCode::MemStoreF64,
                                 "mem.alloc" => OpCode::MemAlloc,
-                                "mem.free" => OpCode::MemFree,
                                 "mem.grow" => OpCode::MemGrow,
                                 "str.len" => OpCode::StrLen,
                                 "str.ptr" => OpCode::StrPtr,
@@ -1384,6 +1559,13 @@ impl Parser {
                                 "neq" => OpCode::Neq,
                                 "lt" => OpCode::Lt,
                                 "lte" => OpCode::Lte,
+                                "ltu" => OpCode::LtU,
+                                "checked.add" => OpCode::CheckedAdd,
+                                "checked.sub" => OpCode::CheckedSub,
+                                "checked.mul" => OpCode::CheckedMul,
+                                "lteu" => OpCode::LteU,
+                                "gtu" => OpCode::GtU,
+                                "gteu" => OpCode::GteU,
                                 "gt" => OpCode::Gt,
                                 "gte" => OpCode::Gte,
                                 "and" => OpCode::And,
@@ -1409,6 +1591,7 @@ impl Parser {
                                 "remu" => OpCode::RemU,
                                 "i64.extend_s" => OpCode::I64ExtendS,
                                 "f64.convert_i64_s" => OpCode::F64ConvertI64S,
+                                "f64.sqrt" => OpCode::F64Sqrt,
                                 "i64.trunc_f64_s" => OpCode::I64TruncF64S,
                                 "f64.reinterpret_i64" => OpCode::F64ReinterpretI64,
                                 "i64.reinterpret_f64" => OpCode::I64ReinterpretF64,

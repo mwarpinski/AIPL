@@ -1,0 +1,101 @@
+;; std/arena: a region allocator. Allocate many values, then free them all at
+;; once with reset (AIPL has no general free: there is no mem.free, and the
+;; heap only grows). Typed, with no casts at the call site:
+;;
+;;   (let a:(ptr arena.Arena) (call arena.make 65536))
+;;   (let n:(ptr Node) (call (arena.alloc Node) a))   ;; zeroed, like (new Node)
+;;   ...
+;;   (call arena.reset a)    ;; everything allocated from a is free again
+;;
+;; Memory comes in chunks from mem.alloc; a full chunk moves on to the next
+;; (allocating one if needed), and reset reuses them all, so an arena never
+;; fails while memory remains. A pointer from an arena must not be used after
+;; reset (the memory will be handed out again).
+(module arena
+  (import vec)
+
+  (struct Chunk [base:i32 cap:i32])
+  (struct Arena [chunks:(ptr (vec.Vec (ptr Chunk))) current:i32 used:i32 chunk_size:i32])
+
+  ;; An arena that takes memory in chunks of at least chunk_size bytes.
+  (fn make [chunk_size:i32] -> (ptr Arena)
+    (req (gt chunk_size 0))
+    (let a:(ptr Arena) (new Arena))
+    (put a Arena.chunks (call (vec.make (ptr Chunk)) 4))
+    (put a Arena.current 0)
+    (put a Arena.used 0)
+    (put a Arena.chunk_size (bitand (+ chunk_size 7) -8))
+    (call add_chunk a (get a Arena.chunk_size))
+    a)
+
+  (fn add_chunk [a:(ptr Arena) size:i32] -> void
+    (let c:(ptr Chunk) (new Chunk))
+    (put c Chunk.base (mem.alloc size))
+    (put c Chunk.cap size)
+    (call (vec.push (ptr Chunk)) (get a Arena.chunks) c))
+
+  ;; n zeroed bytes, 8-aligned.
+  (fn raw [a:(ptr Arena) n:i32] -> i32
+    (req (gt n 0))
+    (let size:i32 (bitand (+ n 7) -8))
+    (let found:i32 -1)
+    (while (eq found -1)
+      (let chunks:(ptr (vec.Vec (ptr Chunk))) (get a Arena.chunks))
+      (if (eq (get a Arena.current) (call (vec.len (ptr Chunk)) chunks))
+          (call add_chunk a (if (gt size (get a Arena.chunk_size)) size (get a Arena.chunk_size)))
+          (block))
+      (let c:(ptr Chunk) (call (vec.at (ptr Chunk)) chunks (get a Arena.current)))
+      (if (lte (+ (get a Arena.used) size) (get c Chunk.cap))
+          (block
+            (set! found (+ (get c Chunk.base) (get a Arena.used)))
+            (put a Arena.used (+ (get a Arena.used) size)))
+          (block
+            (put a Arena.current (+ (get a Arena.current) 1))
+            (put a Arena.used 0))))
+    (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ found (* 8 i)) 0i64))
+    found)
+
+  ;; A zeroed T from the arena.
+  (fn (alloc T) [a:(ptr Arena)] -> (ptr T)
+    (ptr.cast T (call raw a (sizeof T))))
+
+  ;; Frees everything allocated from the arena (its chunks are reused).
+  (fn reset [a:(ptr Arena)] -> void
+    (put a Arena.current 0)
+    (put a Arena.used 0))
+
+  ;; Bytes the arena holds from the heap (all chunks).
+  (fn reserved [a:(ptr Arena)] -> i32
+    (let total:i32 0)
+    (let chunks:(ptr (vec.Vec (ptr Chunk))) (get a Arena.chunks))
+    (loop i 0 (- (call (vec.len (ptr Chunk)) chunks) 1) 1
+      (set! total (+ total (get (call (vec.at (ptr Chunk)) chunks i) Chunk.cap))))
+    total)
+
+  (struct Pair [left:i32 right:i64])
+
+  ;; Pass count; test_suite.aipl expects 5.
+  (fn run_arena_tests [] -> i32
+    (let p:i32 0)
+    (let a:(ptr Arena) (call make 64))
+    ;; typed, zeroed, distinct
+    (let x:(ptr Pair) (call (alloc Pair) a))
+    (let y:(ptr Pair) (call (alloc Pair) a))
+    (put x Pair.left 7)
+    (if (and (eq (get y Pair.left) 0) (neq (ptr.addr x) (ptr.addr y))) (set! p (+ p 1)) (block))
+    ;; a full chunk moves on to a new one
+    (loop i 1 10 1 (let _z:(ptr Pair) (call (alloc Pair) a)))
+    (if (gt (call reserved a) 64) (set! p (+ p 1)) (block))
+    ;; reset reuses the memory: the next allocation is where the first was
+    (let before:i32 (call reserved a))
+    (call reset a)
+    (let x2:(ptr Pair) (call (alloc Pair) a))
+    (if (eq (ptr.addr x2) (ptr.addr x)) (set! p (+ p 1)) (block))
+    ;; and it is zeroed again, though x set it to 7
+    (if (eq (get x2 Pair.left) 0) (set! p (+ p 1)) (block))
+    ;; refilling after reset takes no new memory; an oversized request gets
+    ;; a chunk of its own
+    (loop i 1 10 1 (let _z:(ptr Pair) (call (alloc Pair) a)))
+    (let big:i32 (call raw a 1000))
+    (if (and (gte (- (call reserved a) before) 1000) (eq (bitand big 7) 0)) (set! p (+ p 1)) (block))
+    p))

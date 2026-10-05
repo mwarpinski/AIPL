@@ -1,0 +1,239 @@
+;; Constants and enums for the self-hosted toolchain (AIPL_SPEC.md 4.I).
+;; Runs at the start of codegen.compile_module, on the flat program the
+;; resolver and generics.aipl produced, or on src/printer.rs output. It
+;; erases both features, since at run time a constant is its literal and an
+;; enum is an i32:
+;;   (const NAME:T literal) and (enum Name [...]) items are dropped;
+;;   NAME becomes the literal, Name (a type) becomes i32, Name.member
+;;   becomes its value, (enum.cast Name x) becomes x, (enum.ord x) becomes x.
+;; The Rust toolchain checks enums as distinct types (src/consts.rs keeps
+;; them for its checker); both compile to the same bytes. Like the rest of
+;; the self-hosted toolchain, this pass trusts that the program type-checks,
+;; and reports only what would otherwise compile to something wrong.
+(module consts
+  (import compiler)
+  (import str)
+  (import buf)
+  (import strmap)
+
+  (struct St [text:(ptr str.Bytes)
+              consts:(ptr (strmap.StrMap (ptr compiler.Node)))
+              enums:(ptr (strmap.StrMap (ptr (strmap.StrMap i32))))
+              err:(ptr buf.Buf) failed:bool])
+
+  ;; ===== Trees =====
+
+  (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (get g compiler.Node.first))
+
+  (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (loop k 1 i 1
+      (if (eq c (ptr.null compiler.Node)) (return c) (block))
+      (set! c (get c compiler.Node.next)))
+    c)
+
+  (fn is_symbol [n:(ptr compiler.Node)] -> bool
+    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) compiler.Kind.symbol)))
+
+  (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b)))
+
+  (fn lit [b:(ptr str.Bytes) s:str] -> bool
+    (call str.bytes_eq b (call str.from_str s)))
+
+  ;; The head symbol of a (...) group, or len -1.
+  (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
+    (let h:(ptr compiler.Node) (call first_child g))
+    (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
+
+  (fn fail [st:(ptr St) msg:str name:(ptr str.Bytes)] -> void
+    (if (get st St.failed) (return) (block))
+    (put st St.failed true)
+    (call buf.push_str (get st St.err) msg)
+    (call buf.push_bytes (get st St.err) name))
+
+  ;; The index of the last '.' in t, or -1.
+  (fn last_dot [t:(ptr str.Bytes)] -> i32
+    (let dot:i32 -1)
+    (loop i 0 (- (get t str.Bytes.len) 1) 1
+      (if (eq (call str.byte_at t i) 46) (set! dot i) (block)))
+    dot)
+
+  (fn slice [t:(ptr str.Bytes) start:i32 len:i32] -> (ptr str.Bytes)
+    (call str.bytes (+ (get t str.Bytes.addr) start) len))
+
+  ;; ===== Collecting =====
+
+  ;; (const NAME : TYPE VALUE): remembers VALUE's node.
+  (fn collect_const [st:(ptr St) item:(ptr compiler.Node)] -> void
+    (call (strmap.set (ptr compiler.Node)) (get st St.consts) (call text st (call nth item 1)) (call nth item 4)))
+
+  ;; (enum NAME [a b (c 10) ...]): a member without a value is one more than
+  ;; the member before it, the first 0 (as the Rust parser computes them).
+  (fn collect_enum [st:(ptr St) item:(ptr compiler.Node)] -> void
+    (let members:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 16))
+    (let next:i32 0)
+    (let m:(ptr compiler.Node) (call first_child (call nth item 2)))
+    (while (neq m (ptr.null compiler.Node))
+      (if (call is_symbol m)
+          (call (strmap.set i32) members (call text st m) next)
+          (block
+            (set! next (get (call nth m 1) compiler.Node.a))
+            (call (strmap.set i32) members (call text st (call first_child m)) next)))
+      (set! next (+ next 1))
+      (set! m (get m compiler.Node.next)))
+    (call (strmap.set (ptr (strmap.StrMap i32))) (get st St.enums) (call text st (call nth item 1)) members))
+
+  ;; ===== Printing =====
+
+  ;; A literal node as source text.
+  (fn print_literal [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (cond
+      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
+      ((eq k compiler.Kind.string)
+       (call buf.push_byte out 34)
+       (call buf.push_bytes out (call text st n))
+       (call buf.push_byte out 34))
+      ((eq k compiler.Kind.colon) (call buf.push_byte out 58))
+      ((eq k compiler.Kind.arrow) (call buf.push_str out "->"))
+      (else (call buf.push_bytes out (call text st n)))))
+
+  (fn print_symbol [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let t:(ptr str.Bytes) (call text st n))
+    (if (call (strmap.has (ptr compiler.Node)) (get st St.consts) t)
+        (block (call print_literal st (call (strmap.get_or (ptr compiler.Node)) (get st St.consts) t (ptr.null compiler.Node)) out) (return))
+        (block))
+    (if (call (strmap.has (ptr (strmap.StrMap i32))) (get st St.enums) t)
+        (block (call buf.push_str out "i32") (return))
+        (block))
+    (let dot:i32 (call last_dot t))
+    (if (gte dot 0)
+        (block
+          (let e:(ptr str.Bytes) (call slice t 0 dot))
+          (if (call (strmap.has (ptr (strmap.StrMap i32))) (get st St.enums) e)
+              (block
+                (let members:(ptr (strmap.StrMap i32)) (call (strmap.get_or (ptr (strmap.StrMap i32))) (get st St.enums) e (ptr.null (strmap.StrMap i32))))
+                (let m:(ptr str.Bytes) (call slice t (+ dot 1) (- (get t str.Bytes.len) (+ dot 1))))
+                (if (call (strmap.has i32) members m)
+                    (call buf.push_int out (call (strmap.get_or i32) members m 0))
+                    (call fail st "no such enum member: " t))
+                (return))
+              (block)))
+        (block))
+    (call buf.push_bytes out t))
+
+  (fn print [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (cond
+      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out false))
+      ((eq k compiler.Kind.symbol) (call print_symbol st n out))
+      (else (call print_literal st n out))))
+
+  ;; Children separated by spaces, except none around ':'. (enum.cast E x)
+  ;; prints as x and (enum.ord x) as x. A match arm's head is a name like
+  ;; any other (arm_head), so an enum arm (Color.red ...) prints as (0 ...).
+  (fn print_group [st:(ptr St) g:(ptr compiler.Node) out:(ptr buf.Buf) arm_head:bool] -> void
+    (let h:(ptr str.Bytes) (call head st g))
+    (if (gte (get h str.Bytes.len) 0)
+        (block
+          (if (call lit h "enum.cast") (block (call print st (call nth g 2) out) (return)) (block))
+          (if (call lit h "enum.ord") (block (call print st (call nth g 1) out) (return)) (block)))
+        (block))
+    (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
+    (let is_match:bool (and (gte (get h str.Bytes.len) 0) (call lit h "match")))
+    (call buf.push_byte out (if square 91 40))
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
+    (let first:bool true)
+    (let prev_colon:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
+      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      ;; a form's head is a keyword or an op, printed as written
+      (cond
+        ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call print_group st c out true))
+        ((and first (and (not square) (and (not arm_head) (call is_symbol c)))) (call buf.push_bytes out (call text st c)))
+        (else (call print st c out)))
+      (set! i (+ i 1))
+      (set! first false)
+      (set! prev_colon colon)
+      (set! c (get c compiler.Node.next)))
+    (call buf.push_byte out (if square 93 41)))
+
+  ;; ===== Driver =====
+
+  ;; Writes `src` with its constants and enums erased into `out`; false with
+  ;; a message in `err` for a use of an enum member that does not exist. A
+  ;; program with neither is copied unchanged.
+  (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+    (let n:i32 (get src str.Bytes.len))
+    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
+    (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
+    (let st:(ptr St) (new St))
+    (put st St.text src)
+    (put st St.consts (call (strmap.make (ptr compiler.Node)) 16))
+    (put st St.enums (call (strmap.make (ptr (strmap.StrMap i32))) 16))
+    (put st St.err err)
+    (put st St.failed false)
+    (let item:(ptr compiler.Node) (call nth root 2))
+    (let found:bool false)
+    (while (neq item (ptr.null compiler.Node))
+      (let h:(ptr str.Bytes) (call head st item))
+      (cond
+        ((call lit h "const") (call collect_const st item) (set! found true))
+        ((call lit h "enum") (call collect_enum st item) (set! found true))
+        (else (block)))
+      (set! item (get item compiler.Node.next)))
+    (if (not found) (block (call buf.push_bytes out src) (return true)) (block))
+    (call buf.push_str out "(module ")
+    (call buf.push_bytes out (call text st (call nth root 1)))
+    (call buf.push_byte out 10)
+    (set! item (call nth root 2))
+    (while (neq item (ptr.null compiler.Node))
+      (let h:(ptr str.Bytes) (call head st item))
+      (if (or (call lit h "const") (call lit h "enum"))
+          (block)
+          (block
+            (call buf.push_str out "  ")
+            (call print_group st item out false)
+            (call buf.push_byte out 10)))
+      (set! item (get item compiler.Node.next)))
+    (call buf.push_byte out 41)
+    (not (get st St.failed)))
+
+  (fn expands_to [src:str want:str] -> bool
+    (let out:(ptr buf.Buf) (call buf.make 256))
+    (let err:(ptr buf.Buf) (call buf.make 64))
+    (and (call expand (call str.from_str src) out err)
+         (call str.bytes_eq (call buf.bytes out) (call str.from_str want))))
+
+  ;; Pass count; test_suite.aipl expects 5.
+  (fn run_consts_tests [] -> i32
+    (let p:i32 0)
+    ;; nothing to erase: copied unchanged
+    (if (call expands_to "(module m (fn f [] -> i32 1))" "(module m (fn f [] -> i32 1))") (set! p (+ p 1)) (block))
+    ;; constants of each kind become their literals
+    (if (call expands_to "(module m (const NN:i32 -7) (const SS:str \"a b\") (const BB:bool true) (fn f [] -> i32 (if BB (+ NN (str.len SS)) 0)))"
+                         "(module m\n  (fn f [] -> i32 (if true (+ -7 (str.len \"a b\")) 0))\n)")
+        (set! p (+ p 1)) (block))
+    ;; enum types become i32, members their values (auto and explicit), casts disappear
+    (if (call expands_to "(module m (enum C [a (b 10) c]) (struct S [k:C]) (fn f [x:C] -> i32 (if (eq x C.c) (enum.ord C.b) (enum.ord (enum.cast C 3)))))"
+                         "(module m\n  (struct S [k:i32])\n  (fn f [x:i32] -> i32 (if (eq x 11) 10 3))\n)")
+        (set! p (+ p 1)) (block))
+    ;; an enum match arm's head becomes the member's value; a union's stays a name
+    (if (call expands_to "(module m (enum C [a b]) (fn f [x:C] -> i32 (match x (C.b 1) (else (match (make U.v) (U.v 2)))))"
+                         "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
+        (set! p (+ p 1)) (block))
+    ;; a member that does not exist is an error
+    (let out:(ptr buf.Buf) (call buf.make 64))
+    (let err:(ptr buf.Buf) (call buf.make 64))
+    (if (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err))
+             (call str.bytes_eq (call buf.bytes err) (call str.from_str "no such enum member: C.z")))
+        (set! p (+ p 1)) (block))
+    p))

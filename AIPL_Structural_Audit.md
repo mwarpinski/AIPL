@@ -1,12 +1,193 @@
 # AIPL Structural Audit
 
-Audit date: 2026-09-17. Tree at commit `c97a10c`. Every claim below is anchored to a file and line in this repo; nothing under `target/` was consulted.
+**Current audit: 2026-10-04**, at commit `4f530eb` on `development`, after the Linux x86-64 native backend (NE1–NE18) and the eight benchmarks. It re-reads the language as a whole: what is sound, what is wrong but fixable, and what is structural. Every claim was checked against the code or by running a program; the evidence is given with each finding.
 
-Companion documents: [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not yet do), [PROGRESS.md](PROGRESS.md) (what has been built and verified). This document is the execution roadmap: what is structurally sound, what is debt, what will break at scale, and the ordered list of tasks (with ready-to-run agent prompts) to fix it.
+The first audit (2026-09-17) and the record of the tasks it produced (P1–P14) are kept as appendices, because other documents cite their finding IDs (`B5`, `U6`, `N4`, `P12`). The findings below use new prefixes (G, D, S) so those IDs keep their meaning.
 
-## Status of the findings below (re-checked 2026-10-01)
+Companion documents: [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not do), [PROGRESS.md](PROGRESS.md) (what is built and how to verify it), [docs/BENCHMARKS.md](docs/BENCHMARKS.md) (the speed measurements cited below).
 
-Sections 1–3 are the audit as written on 2026-09-17, and their line references point at that tree. Every finding was re-checked against the code on 2026-10-01 (after P14); the table gives its current state. Findings the original audit did not cover are in section 3b.
+## Summary
+
+AIPL's foundation is unusually solid for a young language. It has one semantic reference (wasm), checked mechanically against every other implementation, and a test culture that refuses fake work. The problems are not in the foundation. They sit in three places:
+
+1. **The safety features do not ship.** Contracts and array bounds checks run only in the VM, the slowest backend and the one nobody deploys. Compiled programs, the ones people run, have neither (D1).
+2. **The self-hosted compiler is written in the style the language was redesigned to prevent.** `codegen.aipl`, the program everything else trusts, does all of its data access through raw memory offsets and bare numbers (S2). The language also lacks the features that would make a compiler pleasant to write: enums, sum types and constants (S3).
+3. **Everything is built twice.** Rust and AIPL each carry a parser, resolver, generics expander and code generator, held equal by tests. Adding `f64.sqrt` touched ten implementation files in two languages (S1). The way out is a type checker written in AIPL, which is the critical path off Rust.
+
+The recommended order of work is at the end (section 4).
+
+---
+
+## 1. THE GOOD
+
+**G1. One reference semantics, mechanically enforced.** Wasm defines the behaviour. `tests/test_differential.rs` runs programs in the VM and wasmtime and fails on any disagreement. The self-hosted code generator must emit byte-identical modules to the Rust one (`tests/test_selfhost.rs`), and the compiled toolchain reproduces itself byte for byte. Native executables must match `aipl-run` on stdout, stderr, exit status and the files left behind (`tests/test_native.rs`). Few languages of any age have four implementations held equal this tightly.
+
+**G2. The grammar is regular and machine-friendly.** Every construct is one parenthesised form with a keyword head, with no precedence and no layout rules. `src/printer.rs` prints any program back as canonical text that both compilers accept. The resolver and the generics expander work on plain S-expressions (`src/sexpr.rs`) before typing, which is why both could be written twice cheaply. For a language whose authors are programs, this is the right trade.
+
+**G3. The type system rejects the mistakes generators actually make.** `(ptr S)`, `(arr T)` and `(fn [..] -> r)` are distinct from `i32` and from each other. Conversions are explicit casts that can be found with grep. Structs are namespaced by module, so two packages may each define `Node`. There is no implicit widening (`(+ 1 2i64)` is an error), and `let` cannot shadow. Typed code really is the norm where it was adopted: the resolver, the native lowering and the wasm reader make 563 `get`/`put` accesses between them, with 2 casts and no raw memory operations.
+
+**G4. A real native backend without a C toolchain.** `aipl compile --exe` produces a static Linux x86-64 ELF with no libc, written entirely in AIPL (`aipl_src/native/`). The compiler builds to 348 KB and starts in milliseconds. File access is sandboxed by the kernel (`openat2` with `RESOLVE_BENEATH`), with the same rules as wasmtime's preopens. Translating wasm rather than the AST means language features never touch the native backend unless they add a wasm instruction.
+
+**G5. Wasm speed is competitive.** On five of the eight benchmarks, compiled AIPL under wasmtime is within 0.8–1.8× of `gcc -O2`. It beats Python by 6–63× on everything except the two dominated by hash maps and big numbers, where it ties (docs/BENCHMARKS.md).
+
+**G6. A test culture with teeth.** Tests are mutation-checked (bugs are planted on purpose to confirm a test fails). Arithmetic libraries are fuzzed against independent oracles (`std/fmt` against Rust's formatter, `std/bigint` against Python's integers). Documentation examples are executed (`tests/test_doc_examples.rs`), and the encoder is checked against GNU `as`. The 2026-09 audit's worst finding, tests certifying fake work, has not recurred.
+
+**G7. The documentation tells the truth.** LANGUAGE_GAPS.md lists what is missing, and the spec's pitfalls table records real generator mistakes. Claims carry evidence.
+
+**G8. The standard library is AIPL.** `std/` (strings, formatting, I/O, generic collections, a string builder, time, an arena, big integers) is written in AIPL over a dozen primitives. It is identical in every backend and needs no work when a backend is added.
+
+---
+
+## 2. THE BAD
+
+Defects that are fixable without redesign. Ordered by risk.
+
+**D1. The safety features do not reach compiled code.** `req`/`ens` contracts are type-checked and then dropped by both code generators (AIPL_SPEC.md 3, 7.6). `inv` is parsed and never evaluated. Array indexes are bounds-checked only in the VM. Demonstrated:
+
+```lisp
+(fn main [] -> i32 (let a:(arr i32) (arr.new i32 2)) (arr.set i32 a 5 99) (arr.get i32 a 5))
+```
+
+`aipl eval` fails with `Array index out of bounds: index 5 for array of length 2`. The native executable writes into the neighbouring heap block and exits 0. The language markets correctness, but its guarantees exist only in the interpreter. Meanwhile, compiled code does pay for a guard: every store runs a 12-instruction check against the runtime block (AIPL_SPEC.md 6.2). That protects the runtime's own cells but not the user's data from the user's own off-by-one. *Fix:* compile `req`/`ens` and bounds checks into wasm as traps that name the contract. Measure the cost on the benchmarks, and offer an explicit opt-out flag rather than an opt-in. Either evaluate `inv` (at function entry and exit, like `req` + `ens`) or delete it.
+
+**D2. Diagnostics work against the user they were designed for.** Positions are excellent (`L:C:` everywhere), but:
+- **One error per run.** Two independent type errors take two edit-compile cycles. For an agent that pays per round trip, reporting every independent error is the cheapest large win available.
+- **Types are spelled in Rust, not AIPL.** `get P.x needs a (ptr P), got Ptr(Struct("Q"))`: the expected type is in source syntax and the actual type is a Rust `Debug` dump. The CLI also prints errors as a Rust debug string (`Error: "1:92: ..."` with escaped quotes).
+- **The most common mistakes get the worst messages.** The pitfalls table's second row, `if` without an else, produces `Unexpected token parsing expression: RParen`. The fix the user needs (`(block)`) is never mentioned.
+- **Traps carry no source location.** A compiled divide by zero prints `./trap: wasm trap: integer divide by zero`, with no function and no line. The wasm output has no name section (`src/compiler/wasm.rs` emits none), so even a backtrace could not name functions.
+- **Unused generic templates are never checked.** `(fn (f T) [x:T] -> T (+ x "a"))` verifies OK as long as nothing calls it (by design, AIPL_SPEC.md 4.H, but a library author ships the error to their first user).
+
+**D3. The language fights its users' priors.** The pitfalls table (AIPL_SPEC.md 13) has 41 rows. Each row is a place where generators reliably write something else. "One obvious spelling" is right, but the spelling chosen is often not the one generators produce:
+- `if` must have an else. The repository contains **595** empty `(block)` else branches.
+- `loop` includes its end bound, so `(loop i 0 (- n 1) 1 ...)` appears everywhere and `(loop i 0 n 1 ...)` is an off-by-one.
+- `and`/`or` take exactly two operands, so three conditions nest.
+- A non-void value in statement position is silently dropped. That is fine, but the codebase still binds 27 `(let _x:i32 ...)` throwaways by habit, because nothing says it is allowed.
+
+*Fix:* add `(when c body...)`, an exclusive-range `(for i 0 n body...)` and variadic `and`/`or`. These keep one spelling per meaning; the spelling becomes the one generators already use. Keep `loop` for compatibility or retire it.
+
+**D4. No named constants or enums, so meaning lives in bare numbers.** *[Fixed 2026-10-04/05: `const` and `enum` (AIPL_SPEC.md 4.I), and codegen.aipl rewritten to use them (S2). The native backend's zero-argument constant functions remain.]*
+- `codegen.aipl` dispatches on node kinds 6–11 and keyword ids 100+.
+- It reports errors as 90–99, 768, 971, 973, 987, 999 and 1452.
+- `x64.aipl`, `lower.aipl` and `wasi.aipl` define 37 zero-argument functions (`(fn cc_e [] -> i32 4)`) as stand-in constants, each costing a call.
+
+A `const` form, and an `enum` whose members are checked, would let the checker see these values and catch a mistyped code. See also S3.
+
+**D5. Errors are easy to ignore and lossy when not ignored.**
+- A `(result ...)` value or an `fs.*` status in statement position is discarded silently.
+- Every WASI errno collapses to `-1`, so "not found", "permission denied" and "is a directory" are indistinguishable.
+- Result payloads must be 32-bit in compiled code (`(ok 1i64)` is rejected), so results carry pointers to structs or sentinels.
+- Library failures use sentinels: `str.Bytes` with `len` `-1`, `-1` returns.
+
+*Fix:* make discarding a `result` an error unless it is wrapped in `(drop ...)`. Pass the errno through (as a `result` error or a second value). Lift the payload limit as part of sum types (S3).
+
+**D6. Integer and float coverage has holes that systems code hits.**
+- ~~There are no unsigned comparisons.~~ Done 2026-10-05: `ltu lteu gtu gteu` (AIPL_SPEC.md 8.2). `std/bigint` still uses 32-bit limbs in `i64`.
+- There are no 8- or 16-bit types, and `mem.load8` is unsigned only (`I32Load8U`).
+- ~~There is no checked arithmetic.~~ Done 2026-10-05: `checked.add`, `checked.sub`, `checked.mul` stop the program on overflow in every backend.
+- `f32` exists without literals or conversions.
+- ~~`mem.load_f32/f64` and `mem.store_f32/f64` are in the grammar and rejected by every backend.~~ Removed 2026-10-05.
+- ~~`mem.free` is in the grammar and does nothing.~~ Removed 2026-10-05.
+
+Grammar forms that no backend implements are dead surface area: generators will use them. Remove them, or implement them.
+
+**D7. Strings are split three ways and differ between backends.**
+- `str` is an immutable length-prefixed literal, `(ptr str.Bytes)` is a slice, and `buf.Buf` is a builder. Converting between them is manual (`str.from_str`, `buf.bytes`).
+- ~~`(+ str str)` works only in the VM.~~ Removed 2026-10-05.
+- ~~`sys.print` prints any value in the VM but only `str` in wasm.~~ The checker requires `str` (2026-10-05).
+- The VM represents `str` as a Rust string rather than a pointer, with careful emulation to make `str.ptr` agree (AIPL_SPEC.md 4.B).
+
+A single slice type, with literals as constant slices, would remove a class of conversions.
+
+**D8. Native code is far slower than the wasm it is translated from.** The baseline translator keeps the wasm value stack in memory. That costs 2.7–9.3× against Cranelift across the eight benchmarks (fannkuch 6.4×, spectral-norm 3.3×, n-body 8.6×, pidigits 9.3×; docs/BENCHMARKS.md). This makes the default `--exe` output on Linux the slow one. *Fix:* the register-caching step already identified (keep the stack top and the memory size in registers). Until then, `--target wasm` should arguably be the default for long-running programs, or the docs should say so.
+
+**D9. Memory is small and never returned.** 64 MiB maximum (knucleotide at its standard size runs out), 32-bit signed addresses, bump allocation with no free. `std/arena` covers phase-structured programs only. The cap is a one-line change in several places, and is waiting on a decision. A general allocator is real work. Both limit AIPL to batch tools today.
+
+**D10. The documents have drifted.** *[Fixed 2026-10-04, branch `features/docs-sync`: every claim in the spec, README, prompt guide, gaps list, and CLI help was checked against the code or by running it, and `tests/test_doc_examples.rs` now executes the spec's examples too. The list below is what was found.]*
+- AIPL_SPEC.md 10.2 shows a test asserting `sys.print not supported in wasm backend`, which has been false since P6.
+- 10.1 and PROGRESS.md show suite output from before `fmt`, `time`, `arena` and `bigint`.
+- The spec opens with two overlapping "wasm is the spec" blockquotes.
+- The section 6 pipeline diagram puts the resolver before the parser, though the resolver parses.
+- The `call_ref` signature limit is 31 in the spec and 32 in LANGUAGE_GAPS.md.
+- The spec mixes the language with its history ("Until 2026-10-02 the end and step were re-evaluated..."). A specification should state what is true. History belongs in PROGRESS.md.
+
+---
+
+## 3. THE UGLY
+
+Structural issues: each needs a decision or a multi-step plan, not a patch.
+
+**S1. Everything is built twice, and the project pays for each feature in ten places.**
+
+| Stage | Rust | AIPL |
+|---|---|---|
+| parse | `src/parser.rs`, `src/sexpr.rs` | `compiler.aipl` |
+| resolve | `src/resolver.rs` | `resolver.aipl` |
+| generics | `src/generics.rs` | `generics.aipl` |
+| check | `src/checker.rs` | none |
+| run | `src/vm.rs` | none |
+| code generation | `src/compiler/wasm.rs` | `codegen.aipl` |
+| native | none | `native/*` |
+
+Parity tests hold the pairs equal, which is excellent for correctness and expensive for everything else. Adding one instruction, `f64.sqrt` (commit `8fe51c7`), touched ast, parser, checker, VM, printer and wasm.rs in Rust, then codegen, wasm_reader, lower and x64 in AIPL, plus six test files.
+
+The migration off Rust is blocked on one item: **there is no type checker in AIPL** (old N3). Until it exists, the Rust parser, resolver and checker must stay, and every language change costs double. *This is the critical path.*
+
+**S2. The self-hosted compiler does not use the language it compiles.** *[Fixed 2026-10-05 (docs/CODEGEN_REWRITE.md, CR1-CR9): enums for keywords, node kinds, types, compile errors, WASI functions, and labels; typed nodes and tables; one `Cg` context; output through a cursor; opcodes as named constants. codegen.aipl went from 422 raw memory operations and no struct accesses to 38 and 281, compiler.aipl from 150 to 17; the compiler is a fifth smaller and about 1.4x faster, with identical output. The finding as written:]*
+- `codegen.aipl` (3077 lines, the largest AIPL program) has **422 raw `mem.load`/`mem.store` operations and zero `get`/`put`**. `compiler.aipl`, its parser, has 150 raw operations.
+- AST nodes are raw memory read through helper functions.
+- Node kinds and keywords are bare numbers (D4).
+- Every function threads the same seven parameters (`src_ptr node out_ptr locals_base locals_count func_table_base func_count`) because there is no context struct.
+- Global state lives at fixed memory cells 4–60 (AIPL_SPEC.md 7.9), which is the old audit's U2 ("fixed-address global state") in tidier form.
+- Its tables are fixed-size: 2048 functions, 255 structs, 31 `call_ref` signatures.
+
+The rest of the toolchain written after P8 (resolver, native backend) is typed and reads well. This file is the one most likely to hide a silent error, and it is the one the bootstrap trusts. Rewriting it on structs is also the natural first step towards the AIPL checker (S1), which needs the same AST.
+
+**S3. No sum types, in a language whose main programs are compilers.**
+- Every AST in the repository is an integer tag plus fields reused by cast. `compiler.aipl`'s `Node.a` means different things for different kinds (LANGUAGE_GAPS.md 2).
+- `match_result` is the only pattern match, and `result` is the only tagged union, limited to 32-bit payloads.
+- There are no enums (D4), no unions, and structs live only behind pointers (no by-value fields, no packed arrays of records).
+
+A single feature would fix most of this: tagged unions with exhaustive `match`, `result` redefined as one instance, and enums as the payload-free case. It would turn the largest class of compiler bugs into type errors.
+
+*Status 2026-10-05:* unions with exhaustive `match` (on unions and enums) are done (AIPL_SPEC.md 4.J), and `compiler.aipl`'s `Node.a` is no longer used two ways (a group's first child is a typed `first` field). Still open: `result` as a union instance (and so the 32-bit payload limit), generic unions, and moving the compiler's own AST onto unions.
+
+**S4. The safest backend is the one nobody runs.** The VM is the only place contracts and bounds checks execute (D1). It is also a tree-walker with string-keyed scopes, seconds where compiled code takes milliseconds, and it is still a third semantics (Rust strings for `str`, `sys.exit` as an error, `(+ str str)`). Every feature must still be implemented in it. Once contracts and bounds checks compile (D1), the VM has no unique job left except `aipl eval`/`aipl test`, which the compiled toolchain could do. Retiring it removes one column from S1.
+
+**S5. Portability is a stated requirement that the stack does not yet meet.**
+- Compiled threads need the wasi-threads `thread-spawn` import, which wasmtime removed in version 47. They run only under AIPL's own runner, not the stock wasmtime CLI or a browser.
+- Native output exists only for Linux x86-64. Elsewhere an executable is an 18 MB launcher bundle.
+- The design choice (translate wasm) makes new native targets cheap, but none exist yet.
+
+**S6. No module boundary.**
+- Every function and struct of every module is reachable by its qualified name.
+- Every function is exported from the compiled wasm (`src/compiler/wasm.rs` exports each one), so a module has no API surface distinct from its implementation.
+- There is no module-level state except raw memory cells, and no versioning.
+
+This is acceptable for one author and becomes the main source of coupling once packages exist.
+
+---
+
+## 4. Recommended order
+
+Each step is independently valuable. Earlier steps make later ones cheaper.
+
+1. **Make the safety features real (D1).** Compile `req`/`ens` and array bounds checks into wasm, with traps that name the contract and position. Add a wasm name section so traps can name the function. Decide `inv`. Measure the cost on all eight benchmarks before and after. *Why first:* it is the language's core promise, and nothing else depends on it.
+2. **Diagnostics pass (D2).** Report every independent error, spell types in AIPL syntax, print errors as plain text, write targeted messages for the top pitfalls, and check unused templates against a placeholder type.
+3. **Constants, enums, and sum types with `match` (D4, D5, S3) as one design.** Include `result` as a sum-type instance (lifting the 32-bit payload limit), and must-use results with `(drop ...)`.
+4. **Rewrite `codegen.aipl` and `compiler.aipl` on structs and enums (S2),** then **write the type checker in AIPL (S1)**. Then delete `src/parser.rs`, `src/resolver.rs`, `src/generics.rs` and `src/compiler/wasm.rs`. With step 1 done, retire the VM (S4).
+5. **Ergonomic forms (D3):** `when`, exclusive `for`, variadic `and`/`or`. Prune grammar forms no backend implements (D6).
+6. **Performance and capacity (D8, D9):** native register caching, the memory-cap decision, a free-list allocator. Unsigned comparisons and checked arithmetic (D6).
+7. ~~**Documentation hygiene (D10)**~~ done 2026-10-04. The user moved it first, followed by step 4's `codegen.aipl` rewrite and then step 3's language features (PROGRESS.md, "Next steps").
+
+---
+
+## Appendix A. The 2026-09-17 audit
+
+Kept for the finding IDs other documents cite. Its line references point at the 2026-09-17 tree.
+
+### A.1 Status of its findings (re-checked 2026-10-01)
+
+Sections A.2–A.4 are the audit as written on 2026-09-17, and their line references point at that tree. Every finding was re-checked against the code on 2026-10-01 (after P14); the table gives its current state. Findings the original audit did not cover are in A.5.
 
 | Finding | Status |
 |---|---|
@@ -34,11 +215,8 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | U7 memory has no growth or bounds contract | Mostly fixed: allocation grows memory automatically up to 1024 pages and bounds are enforced in both backends. Still open: `mem.free` is a no-op (N6) |
 | U8 nothing versioned | Deferred (P12 note: until there are packages or a second toolchain) |
 
-The order of upcoming work is in PROGRESS.md ("Next steps"), not section 4 below, which is the completed P1–P14 history. **Still open, in order of risk:** N4 (compiled array indexing is unchecked), N3 (the checker exists only in Rust), B5 (contracts), N6 (no `free`).
 
----
-
-## 1. THE GOOD
+### A.2 The good
 
 **As of 2026-10-01**, the strengths that matter most are ones the original audit could only hope for:
 
@@ -70,7 +248,7 @@ The original section follows.
 
 ---
 
-## 2. THE BAD
+### A.3 The bad
 
 **B1. Silent catch-all arms are the root anti-pattern.** Four of them, in the four load-bearing files:
 - VM: `_ => Ok(Value::Int(0))` ([vm.rs:781](src/vm.rs#L781))
@@ -120,7 +298,7 @@ Consequences today: `%` parses ([parser.rs:505](src/parser.rs#L505)), type-check
 
 ---
 
-## 3. THE UGLY
+### A.4 The ugly
 
 **U1. No aggregate data types = no compiler can be written without hand-rolled offset arithmetic.** No structs, no real arrays (`arr.get`/`arr.set` are no-ops), no strings in compiled code, no growable buffers. compiler.aipl and codegen.aipl are ~1400 lines of `(mem.load32 (+ ptr (+ (* idx 16) (* field 4))))`. Manual field offsets are exactly where LLMs make silent errors, so the current language design maximizes the failure mode it was built to minimize. A self-hosted compiler needs symbol tables, string interning, and growing vectors; every module today reinvents a layout and no two agree.
 
@@ -140,7 +318,7 @@ Consequences today: `%` parses ([parser.rs:505](src/parser.rs#L505)), type-check
 
 ---
 
-## 3b. Findings not covered by the original audit (2026-10-01)
+### A.5 Findings not covered by the original audit (2026-10-01)
 
 Found during P8–P14 and the 2026-10-01 re-check.
 
@@ -164,9 +342,13 @@ Found during P8–P14 and the 2026-10-01 re-check.
 
 **N10. The VM is the slow path. [Partly fixed 2026-10-02: `aipl-run` and `aipl run` execute compiled modules natively; `eval`, `test`, and `compile --self` still use the VM]** The self-hosted toolchain takes seconds in the VM and milliseconds compiled. `aipl compile --self`, `aipl eval`, and `aipl test` all use the VM. An `aipl run FILE.wasm` that executes compiled output in-process (wasmtime is currently only a dev-dependency) would let the toolchain and tests run compiled.
 
+
 ---
 
-## 4. MASTER PRIORITIES & AI PROMPTS
+## Appendix B. Task record P1–P14
+
+The tasks the 2026-09-17 audit produced, with their prompts and verification notes. All are complete or explicitly deferred (P12 versioning).
+
 
 Ordered by dependency and leverage. Each prompt is self-contained and ends in a runnable check, so "done" means the check passed — not that a number came back.
 

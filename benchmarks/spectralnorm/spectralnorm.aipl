@@ -1,0 +1,60 @@
+;; spectralnorm: the Benchmarks Game's spectral-norm. The largest
+;; eigenvalue of an infinite matrix A (a[i][j] = 1 / ((i+j)(i+j+1)/2 + i + 1)),
+;; estimated by 10 rounds of the power method on A transpose A, printed to
+;; nine decimals. Float arrays, nested loops, f64.sqrt, fmt.f64_fixed.
+;;
+;;   ./spectralnorm 100   ->   1.274219991
+(module spectralnorm
+  (import io)
+  (import os)
+  (import str)
+  (import time)
+
+  (fn size_wanted [] -> i32
+    (if (gt (call os.arg_count) 1)
+        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 100))
+        100))
+
+  (fn a [i:i32 j:i32] -> f64
+    (/ 1.0 (f64.convert_i64_s (i64.extend_s (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ i 1))))))
+
+  ;; out = A v
+  (fn times [n:i32 v:(arr f64) out:(arr f64)] -> void
+    (loop i 0 (- n 1) 1
+      (let sum:f64 0.0)
+      (loop j 0 (- n 1) 1
+        (set! sum (+ sum (* (call a i j) (arr.get f64 v j)))))
+      (arr.set f64 out i sum)))
+
+  ;; out = A' v
+  (fn times_transposed [n:i32 v:(arr f64) out:(arr f64)] -> void
+    (loop i 0 (- n 1) 1
+      (let sum:f64 0.0)
+      (loop j 0 (- n 1) 1
+        (set! sum (+ sum (* (call a j i) (arr.get f64 v j)))))
+      (arr.set f64 out i sum)))
+
+  ;; out = A' A v
+  (fn times_ata [n:i32 v:(arr f64) out:(arr f64) tmp:(arr f64)] -> void
+    (call times n v tmp)
+    (call times_transposed n tmp out))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call size_wanted))
+    (let u:(arr f64) (arr.new f64 n))
+    (let v:(arr f64) (arr.new f64 n))
+    (let tmp:(arr f64) (arr.new f64 n))
+    (loop i 0 (- n 1) 1 (arr.set f64 u i 1.0))
+    (loop round 1 10 1
+      (call times_ata n u v tmp)
+      (call times_ata n v u tmp))
+    (let vbv:f64 0.0)
+    (let vv:f64 0.0)
+    (loop i 0 (- n 1) 1
+      (set! vbv (+ vbv (* (arr.get f64 u i) (arr.get f64 v i))))
+      (set! vv (+ vv (* (arr.get f64 v i) (arr.get f64 v i)))))
+    (call io.print_f64 (f64.sqrt (/ vbv vv)) 9)
+    (call io.println "")
+    (call time.report "spectralnorm computed in" started)
+    0))

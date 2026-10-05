@@ -1,0 +1,19 @@
+;; Imported by tests/aipl/consts_enums.aipl: constants, an enum, an enum as a
+;; struct field and as a generic type argument, all used from another module.
+(module palette
+  (import vec)
+  (const LIMIT:i32 7)
+  (const NAME:str "palette")
+  (enum Color [red green (blue 10) cyan])
+  (struct Swatch [c:Color weight:i64])
+  (fn favourite [] -> Color Color.green)
+  (fn is_red [c:Color] -> bool (eq c Color.red))
+  (fn next [c:Color] -> Color (enum.cast Color (+ (enum.ord c) 1)))
+  ;; the colours in order, as a generic list of the enum
+  (fn all [] -> (ptr (vec.Vec Color))
+    (let v:(ptr (vec.Vec Color)) (call (vec.make Color) 4))
+    (call (vec.push Color) v Color.red)
+    (call (vec.push Color) v Color.green)
+    (call (vec.push Color) v Color.blue)
+    (call (vec.push Color) v Color.cyan)
+    v))

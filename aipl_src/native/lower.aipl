@@ -331,6 +331,7 @@
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u
       ((or (or (eq op 176) (eq op 185)) (or (eq op 189) (eq op 191))) 0) ;; trunc, convert, reinterprets
+      ((eq op 159) 0)                                               ;; f64.sqrt
       ((or (and (gte op 40) (lte op 43)) (or (eq op 45) (eq op 64))) 0) ;; loads, memory.grow
       ((and (gte op 54) (lte op 58)) -2)                            ;; stores
       ((eq op 63) 1)                                                ;; memory.size
@@ -817,6 +818,14 @@
        (call x64.cvttsd2si c (call rax) (call xmm0))
        (call push_rax l)
        true)
+      ;; f64.sqrt (sqrtsd rounds correctly, as IEEE 754 and wasm require)
+      ((eq op 159)
+       (call pop_rax l)
+       (call x64.movq_xr c (call xmm0) (call rax))
+       (call x64.sqrtsd c (call xmm0) (call xmm0))
+       (call x64.movq_rx c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
       ;; i64.reinterpret_f64, f64.reinterpret_i64: the slot already holds the bits
       ((or (eq op 189) (eq op 191)) true)
       (else false)))
@@ -859,8 +868,8 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (let rdx:i32 2)
     (cond
-      ;; eq ne lt_s gt_s le_s ge_s
-      ((or (and (gte op 81) (lte op 83)) (or (eq op 85) (or (eq op 87) (eq op 89))))
+      ;; eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
+      ((and (gte op 81) (lte op 90))
        (call pop_operands l)
        (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) (call rcx))
        (call set_cc_from l (call compare64_cc op) false)
@@ -934,8 +943,10 @@
 
   (fn compare64_cc [op:i32] -> i32
     (cond ((eq op 81) (call x64.cc_e)) ((eq op 82) (call x64.cc_ne))
-          ((eq op 83) (call x64.cc_l)) ((eq op 85) (call x64.cc_g))
-          ((eq op 87) (call x64.cc_le)) (else (call x64.cc_ge))))
+          ((eq op 83) (call x64.cc_l)) ((eq op 84) (call x64.cc_b))
+          ((eq op 85) (call x64.cc_g)) ((eq op 86) (call x64.cc_a))
+          ((eq op 87) (call x64.cc_le)) ((eq op 88) (call x64.cc_be))
+          ((eq op 89) (call x64.cc_ge)) (else (call x64.cc_ae))))
 
   (fn alu64_of [op:i32] -> i32
     (cond ((eq op 124) (call x64.op_add)) ((eq op 125) (call x64.op_sub))
@@ -953,8 +964,8 @@
        (call pop_rax l)
        (call set_cc_from l (call x64.cc_e) true)
        true)
-      ;; eq ne lt_s lt_u gt_s gt_u le_s ge_s: compare a with b, push 0 or 1
-      ((or (and (gte op 70) (lte op 76)) (eq op 78))
+      ;; eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u: compare a with b, push 0 or 1
+      ((and (gte op 70) (lte op 79))
        (call pop_operands l)
        (call x64.alu_rr c 32 (call x64.op_cmp) (call rax) (call rcx))
        (call set_cc_from l (call compare_cc op) false)
@@ -1037,7 +1048,8 @@
     (cond ((eq op 70) (call x64.cc_e)) ((eq op 71) (call x64.cc_ne))
           ((eq op 72) (call x64.cc_l)) ((eq op 73) (call x64.cc_b))
           ((eq op 74) (call x64.cc_g)) ((eq op 75) (call x64.cc_a))
-          ((eq op 76) (call x64.cc_le)) (else (call x64.cc_ge))))
+          ((eq op 76) (call x64.cc_le)) ((eq op 77) (call x64.cc_be))
+          ((eq op 78) (call x64.cc_ge)) (else (call x64.cc_ae))))
 
   (fn alu_of [op:i32] -> i32
     (cond ((eq op 106) (call x64.op_add)) ((eq op 107) (call x64.op_sub))

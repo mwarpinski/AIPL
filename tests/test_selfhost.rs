@@ -190,6 +190,15 @@ fn self_hosted_bytes_match_strings_interned_by_content() {
     assert_self_hosted_matches_rust("repeat", "(module m (fn f [] -> i32 (+ (str.len \"ab\") (+ (str.len \"a\") (str.len \"ab\")))))");
 }
 
+/// f64.sqrt (added for the benchmarks), at byte parity.
+#[test]
+fn self_hosted_bytes_match_f64_sqrt() {
+    assert_self_hosted_matches_rust(
+        "sqrt",
+        "(module m (fn hyp [a:f64 b:f64] -> f64 (f64.sqrt (+ (* a a) (* b b)))) (fn f [] -> f64 (call hyp 3.0 4.0)))",
+    );
+}
+
 /// Structs may have up to 64 fields in the self-hosted compiler (it was
 /// 15, which the native backend's translator state passed in NE8).
 #[test]
@@ -493,6 +502,9 @@ fn self_hosted_bytes_match_std_library() {
         ("std_strmap", "aipl_src/std/strmap.aipl"),
         ("std_buf", "aipl_src/std/buf.aipl"),
         ("std_os", "aipl_src/std/os.aipl"),
+        ("std_time", "aipl_src/std/time.aipl"),
+        ("std_arena", "aipl_src/std/arena.aipl"),
+        ("std_bigint", "aipl_src/std/bigint.aipl"),
         ("wasm_reader", "aipl_src/native/wasm_reader.aipl"),
         ("word_count", "examples/word_count.aipl"),
         ("word_freq", "examples/word_freq.aipl"),
@@ -1023,4 +1035,132 @@ fn self_hosted_compiler_reproduces_itself_under_wasmtime() {
     let mut stage2 = vec![0u8; len as usize];
     memory.read(&store, u32::from_le_bytes(word) as usize, &mut stage2).unwrap();
     assert!(stage2 == stage1, "stage 2 ({} bytes) differs from stage 1 ({} bytes)", stage2.len(), stage1.len());
+}
+
+/// Constants and enums (AIPL_SPEC.md 4.I): consts.aipl erases them before
+/// codegen; the Rust toolchain keeps enums as types for its checker. Both
+/// must emit the same bytes: constants of every kind (a string constant is
+/// interned like the literal), enum types in parameters, results, struct
+/// fields, arrays, and function references, members with explicit values,
+/// enum.cast and enum.ord.
+#[test]
+fn self_hosted_bytes_match_consts_and_enums() {
+    assert_self_hosted_matches_rust(
+        "consts_enums",
+        "(module ce
+  (const LIMIT:i32 -12)
+  (const WIDE:i64 4294967296i64)
+  (const HALF:f64 0.5)
+  (const YES:bool true)
+  (const WORD:str \"word\")
+  (enum Kind [atom (group 20) square])
+  (struct Node [kind:Kind next:i32])
+  (fn kind_of [n:(ptr Node)] -> Kind (get n Node.kind))
+  (fn same [a:Kind b:Kind] -> bool (eq a b))
+  (fn bump [k:Kind] -> (result Kind i32) (ok (enum.cast Kind (+ (enum.ord k) 1))))
+  (fn main [] -> i32
+    (let n:(ptr Node) (new Node))
+    (put n Node.kind Kind.group)
+    (let ks:(arr Kind) (arr.new Kind 3))
+    (arr.set Kind ks 2 Kind.square)
+    (let f:(fn [Kind Kind] -> bool) (ref same))
+    (let w:str WORD)
+    (+ (str.len w)
+       (+ (match_result (call bump (call kind_of n)) (ok k (enum.ord k)) (err e 0))
+          (+ (if (call_ref (fn [Kind Kind] -> bool) f (arr.get Kind ks 2) Kind.square) LIMIT 0)
+             (+ (i32.wrap (/ WIDE 65536i64)) (if YES (i32.wrap (i64.trunc_f64_s (* HALF 10.0))) 0)))))))",
+    );
+}
+
+/// Locals declared inside operands, loop bounds, and a match_result's matched
+/// expression are numbered in the same order by both compilers (a pre-order
+/// walk); see tests/test_differential.rs NESTED_LOCALS.
+#[test]
+fn self_hosted_bytes_match_nested_locals() {
+    assert_self_hosted_matches_rust(
+        "nested_locals",
+        "(module nested
+  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok n) (err n)))
+  (fn main [] -> i32
+    (let total:i32 0)
+    (loop i 0 (block (let last:i32 3) last) 1
+      (set! total (+ total (match_result (call g i) (ok k (+ k 1)) (err e (- e 1))))))
+    (+ total
+       (+ (block (let x:i32 40) (+ x 2))
+          (match_result (block (let y:i32 5) (call g y)) (ok v (* v 100)) (err w 0))))))",
+    );
+}
+
+/// Past its table limits the self-hosted compiler reports an error rather
+/// than failing: more than 1024 locals in a function is compile error 93,
+/// and more than 2048 functions is 92 (codegen.aipl's tables are bounded
+/// arrays since the CR6 rewrite, so the counts stop at the limit).
+#[test]
+fn self_hosted_table_limits_are_compile_errors() {
+    let lets: String = (0..1100).map(|i| format!("(let v{i}:i32 {i}) ")).collect();
+    let err = self_host(&format!("(module m (fn f [] -> i32 {lets} 0))")).unwrap_err();
+    assert!(err.contains("compile error 93"), "{err}");
+    let fns: String = (0..2100).map(|i| format!("(fn f{i} [] -> i32 {i}) ")).collect();
+    let err = self_host(&format!("(module m {fns})")).unwrap_err();
+    assert!(err.contains("compile error 92"), "{err}");
+}
+
+#[test]
+fn self_hosted_bytes_match_unsigned_comparisons() {
+    assert_self_hosted_matches_rust(
+        "unsigned",
+        "(module u (fn f [a:i32 b:i32 c:i64 d:i64] -> i32
+           (+ (if (ltu a b) 1 0) (+ (if (lteu a b) 2 0) (+ (if (gtu a b) 4 0) (+ (if (gteu a b) 8 0)
+           (+ (if (ltu c d) 16 0) (+ (if (lteu c d) 32 0) (+ (if (gtu c d) 64 0) (if (gteu c d) 128 0))))))))))",
+    );
+}
+
+/// Checked arithmetic: three hidden i64 locals per function that uses it
+/// (registered where the first checked operation is met, in the pre-order
+/// walk), and the same instruction sequences in both compilers.
+#[test]
+fn self_hosted_bytes_match_checked_arithmetic() {
+    assert_self_hosted_matches_rust(
+        "checked",
+        "(module ck
+  (fn f [a:i32 b:i32] -> i32 (let x:i32 (checked.add a b)) (checked.sub (checked.mul x 3) b))
+  (fn g [a:i64 b:i64] -> i64 (checked.add (checked.mul a b) (checked.sub a b)))
+  (fn h [] -> i32 (let n:i32 1) (loop i 0 3 1 (set! n (checked.mul n 2))) n))",
+    );
+}
+
+/// Unions, make, and match: variant layouts (i64/f64 fields aligned to 8,
+/// bool fields normalized when read), a recursive union, enum arms (their
+/// heads numbers after consts.aipl), an else-only match, void arms, and
+/// make/match nested in each other's operands, so the scratch local is
+/// reused while a cell is being filled.
+#[test]
+fn self_hosted_bytes_match_sum_types() {
+    assert_self_hosted_matches_rust(
+        "sum_types",
+        "(module sum
+  (union Shape [(circle r:f64) (rect w:i32 h:i32) (big n:i64 flag:bool) (empty)])
+  (union List [(nil) (cons head:i32 tail:List)])
+  (enum Color [red green (blue 10)])
+  (struct Holder [s:Shape c:Color])
+  (fn area [s:Shape] -> i64
+    (match s
+      (Shape.circle [r] (i64.trunc_f64_s (* r r)))
+      (Shape.rect [w h] (i64.extend_s (* w h)))
+      (Shape.big [n flag] (if flag n 0i64))
+      (Shape.empty -1i64)))
+  (fn sum [l:List] -> i32
+    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum rest)))))
+  (fn code [c:Color] -> i32 (match c (Color.red 1) (Color.blue 3) (else 2)))
+  (fn always [c:Color] -> i32 (match c (else 7)))
+  (fn effect [s:Shape] -> void
+    (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
+  (fn main [] -> i32
+    (let h:(ptr Holder) (new Holder))
+    (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
+    (put h Holder.c Color.blue)
+    (call effect (get h Holder.s))
+    (let l:List (make List.cons 1 (make List.cons 2 (make List.nil))))
+    (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",
+    );
 }

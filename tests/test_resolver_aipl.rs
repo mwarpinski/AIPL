@@ -4,7 +4,6 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use std::path::{Path, PathBuf};
 
@@ -21,11 +20,19 @@ fn rust_bytes(path: &Path) -> Vec<u8> {
     WasmCompiler::compile(&m).unwrap()
 }
 
+/// The AIPL resolver's flat output (imports gone, generics expanded) as a
+/// Module. It goes through the Rust resolver rather than Parser::parse,
+/// because constants and enum members are expanded there, after generics;
+/// with no imports left, nothing else changes.
+fn parse_flat(flat: &str, path: &Path) -> Result<aipl_core::ast::Module, String> {
+    Resolver::resolve_source(flat, path)
+}
+
 fn assert_resolves_like_rust(rel: &str) {
     let path = root().join(rel);
     let flat = aipl_resolve(&path).unwrap_or_else(|e| panic!("aipl resolve {rel}: {e}"));
     assert!(!flat.contains("(import"), "{rel}: imports left in the output");
-    let m = Parser::parse(&flat).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
+    let m = parse_flat(&flat, &path).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{rel}: flat output does not check: {e}"));
     let ours = WasmCompiler::compile(&m).unwrap();
     assert!(ours == rust_bytes(&path), "{rel}: AIPL resolver output compiles to different bytes than the Rust resolver");
@@ -56,7 +63,7 @@ fn compiler_sources_resolve_like_rust() {
 #[test]
 fn test_suite_resolves_and_checks() {
     let flat = aipl_resolve(&root().join("aipl_src/test_suite.aipl")).unwrap();
-    let m = Parser::parse(&flat).unwrap_or_else(|e| panic!("flat test_suite does not parse: {e}"));
+    let m = parse_flat(&flat, &root().join("aipl_src/test_suite.aipl")).unwrap_or_else(|e| panic!("flat test_suite does not parse: {e}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat test_suite does not check: {e}"));
     let rust = Resolver::resolve(&root().join("aipl_src/test_suite.aipl")).unwrap();
     let names = |m: &aipl_core::ast::Module| {
@@ -78,6 +85,30 @@ fn aliases_diamonds_and_struct_names() {
     assert_resolves_like_rust(dir.join("main.aipl").to_str().unwrap());
     let flat = aipl_resolve(&dir.join("main.aipl")).unwrap();
     assert_eq!(flat.matches("(fn base.mk ").count(), 1, "diamond import emitted twice:\n{flat}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An alias may share a name with an op's prefix: `(import lib as mem)`
+/// renames `mem.LIMIT` and `mem.Color.red` but leaves the op `(mem.alloc n)`
+/// alone, since the head of a form is never a renamed name.
+#[test]
+fn aliases_do_not_rename_op_heads() {
+    let dir = std::env::temp_dir().join(format!("aipl_alias_ops_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib (const LIMIT:i32 16) (enum Color [red (green 5)]) (fn f [c:Color] -> i32 (enum.ord c)))").unwrap();
+    std::fs::write(
+        dir.join("main.aipl"),
+        "(module main (import lib as mem)\n  (fn main [] -> i32 (let p:i32 (mem.alloc mem.LIMIT)) (mem.store32 p (call mem.f mem.Color.green)) (mem.load32 p)))",
+    )
+    .unwrap();
+    let m = Resolver::resolve(&dir.join("main.aipl")).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let mut vm = aipl_core::vm::VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), aipl_core::vm::Value::Int(5));
+    // the AIPL resolver renames the same names (consts.aipl then erases them)
+    let flat = aipl_resolve(&dir.join("main.aipl")).unwrap();
+    assert!(flat.contains("(mem.alloc lib.LIMIT)") && flat.contains("(call lib.f lib.Color.green)"), "{flat}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -173,6 +204,38 @@ fn wasm_toolchain_compiles_a_multi_module_program() {
     match wasm_driver::run(&driver, "examples/missing.aipl", "aipl_src/std/") {
         wasm_driver::Outcome::ResolveError(e) => assert_eq!(e, "cannot read entry file: examples/missing.aipl"),
         _ => panic!("a missing entry file must be a resolve error"),
+    }
+}
+
+/// Constants and enums across modules (tests/aipl/consts_enums.aipl, which
+/// imports tests/aipl/palette.aipl directly and through an alias, and uses
+/// enums as generic type arguments): the AIPL resolver renames them like the
+/// Rust one, and consts.aipl erases them to the Rust toolchain's bytes.
+#[test]
+fn wasm_toolchain_compiles_constants_and_enums_across_modules() {
+    let driver = driver_wasm();
+    let rel = "tests/aipl/consts_enums.aipl";
+    match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+        wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+        wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+        wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+    }
+}
+
+/// Unions and match across modules (tests/aipl/sum_types.aipl, which imports
+/// tests/aipl/geometry.aipl directly and through an alias, matches its union
+/// and enum, and uses its union as a generic type argument): both resolvers
+/// rename the arms' heads alike, and the wasm toolchain compiles the result
+/// to the Rust toolchain's bytes.
+#[test]
+fn wasm_toolchain_compiles_sum_types_across_modules() {
+    let rel = "tests/aipl/sum_types.aipl";
+    assert_resolves_like_rust(rel);
+    let driver = driver_wasm();
+    match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+        wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+        wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+        wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
     }
 }
 
