@@ -43,14 +43,19 @@
   ;; What every compile function needs, passed as one value: the source text,
   ;; the locals of the function being compiled, and the module's functions.
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
-  (struct Cg [src:i32 locals:i32 nlocals:i32 fns:i32 nfns:i32])
+  (struct Cg [src:i32 locals:i32 nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32])
+
+  ;; A function of the module: its name (a span of the source), parameter
+  ;; and result types, wasm index, and definition.
+  (struct FnInfo [name_pos:i32 name_len:i32 nparams:i32 ret:Ty index:i32
+                  node:(ptr compiler.Node) params:(arr Ty)])
 
   (fn new_cg [src:i32] -> (ptr Cg)
     (let cg:(ptr Cg) (new Cg))
     (put cg Cg.src src)
     (put cg Cg.locals (call locals_table))
     (put cg Cg.nlocals 0)
-    (put cg Cg.fns (call fn_table))
+    (put cg Cg.fns (arr.new (ptr FnInfo) 2048))
     (put cg Cg.nfns 0)
     cg)
 
@@ -61,7 +66,7 @@
   ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
   ;;             the blob buffer holds 65536 bytes)
   ;;   mem[16] = keyword table pointer      (1024 bytes)
-  ;;   mem[20] = function table pointer     (2048 entries x 88 bytes: up to 16 params)
+  ;;   mem[20] = unused (the function table is Cg.fns)
   ;;   mem[24] = locals table pointer       (1024 entries x 12 bytes)
   ;;   mem[28] = running locals count for the function being compiled
   ;;   mem[32] = WASI import count
@@ -103,7 +108,6 @@
     0)
   (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
-  (fn fn_table [] -> i32 (mem.load32 20))
   (fn locals_table [] -> i32 (mem.load32 24))
   (fn get_str_blob_len [] -> i32 (mem.load32 (+ (call str_table_ptr) 0)))
   (fn set_str_blob_len [len:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 0) len) 0)
@@ -124,7 +128,6 @@
           (mem.store32 8 (mem.alloc (+ 16 (* 255 1040))))
           (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (ptr.addr (call new_keywords)))
-          (mem.store32 20 (mem.alloc 180224))
           (mem.store32 24 (mem.alloc 49152))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
@@ -393,39 +396,46 @@
                                    (else 54)))
 
   ;; ===== Function table =====
-  (fn func_entry_ptr [cg:(ptr Cg) idx:i32] -> i32
-    (+ (get cg Cg.fns) (* idx 88)))
+  (fn func_entry_ptr [cg:(ptr Cg) idx:i32] -> (ptr FnInfo)
+    (arr.get (ptr FnInfo) (get cg Cg.fns) idx))
 
+  ;; Records every (fn ...) of the module, in order; returns the count.
   (fn collect_functions [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     (let count:i32 0)
     (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
-    (while (neq child (ptr.null compiler.Node)) (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.fn))
-                (block
-                  (let fname_node:(ptr compiler.Node) (call nth_child child 1))
-                  (let params_node:(ptr compiler.Node) (call nth_child child 2))
-                  (let rettype_node:(ptr compiler.Node) (call nth_child child 4))
-                  (if (gte count 2048) (call set_compile_error CgErr.too_many_functions) 0)
-                  (let entry:i32 (call func_entry_ptr cg (if (gte count 2048) 2047 count)))
-                  (mem.store32 (+ entry 0) (call node_a fname_node))
-                  (mem.store32 (+ entry 4) (call node_b fname_node))
-                  (mem.store32 (+ entry 12) (enum.ord (call type_node_id cg rettype_node)))
-                  (mem.store32 (+ entry 16) count)
-                  (mem.store32 (+ entry 20) (ptr.addr child))
-                  (let pcount:i32 0)
-                  (let pchild:(ptr compiler.Node) (call first_child params_node))
-                  (while (neq pchild (ptr.null compiler.Node)) (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error CgErr.too_many_functions) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
-                                       (enum.ord (call type_node_id cg ptype_node))) (set! pcount (+ pcount 1)) (set! pchild (call node_next ptype_node)))
-                  (mem.store32 (+ entry 8) pcount)
-                  (set! count (+ count 1))
-                  0)
-                0) (set! child (call node_next child)))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.fn))
+          (block
+            (let fname_node:(ptr compiler.Node) (call nth_child child 1))
+            (let params_node:(ptr compiler.Node) (call nth_child child 2))
+            (if (gte count 2048) (call set_compile_error CgErr.too_many_functions) 0)
+            (let f:(ptr FnInfo) (new FnInfo))
+            (put f FnInfo.name_pos (call node_a fname_node))
+            (put f FnInfo.name_len (call node_b fname_node))
+            (put f FnInfo.ret (call type_node_id cg (call nth_child child 4)))
+            (put f FnInfo.index count)
+            (put f FnInfo.node child)
+            (put f FnInfo.params (arr.new Ty 16))
+            (let pcount:i32 0)
+            (let pchild:(ptr compiler.Node) (call first_child params_node))
+            (while (neq pchild (ptr.null compiler.Node))
+              (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild)))
+              (if (gte pcount 16) (call set_compile_error CgErr.too_many_functions) 0)
+              (arr.set Ty (get f FnInfo.params) (if (gte pcount 16) 15 pcount) (call type_node_id cg ptype_node))
+              (set! pcount (+ pcount 1))
+              (set! pchild (call node_next ptype_node)))
+            (put f FnInfo.nparams pcount)
+            (arr.set (ptr FnInfo) (get cg Cg.fns) (if (gte count 2048) 2047 count) f)
+            (set! count (+ count 1)))
+          (block))
+      (set! child (call node_next child)))
     count)
 
   ;; Exact name match, as in the checker: `a.f` never resolves to a bare `f`.
   (fn find_function [cg:(ptr Cg) name_ptr:i32 name_len:i32] -> i32
     (loop i 0 (- (get cg Cg.nfns) 1) 1
-      (let entry:i32 (call func_entry_ptr cg i))
-      (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (mem.load32 (+ entry 0))) (mem.load32 (+ entry 4)))
+      (let entry:(ptr FnInfo) (call func_entry_ptr cg i))
+      (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get entry FnInfo.name_pos)) (get entry FnInfo.name_len))
           (return i)
           (block)))
     -1)
@@ -517,9 +527,9 @@
           (let kw:Kw (call classify_keyword cg (call node_a head) (call node_b head)))
           (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv))))))
 
-  (fn collect_locals_for_function [cg:(ptr Cg) entry:i32 base:i32] -> i32
+  (fn collect_locals_for_function [cg:(ptr Cg) entry:(ptr FnInfo) base:i32] -> i32
     (mem.store32 28 0)
-    (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20))))
+    (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node))
     (let params_node:(ptr compiler.Node) (call nth_child fndef_group 2))
     (let pchild:(ptr compiler.Node) (call first_child params_node))
     (while (neq pchild (ptr.null compiler.Node)) (let type_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (let type_id:Ty (call type_node_id cg type_node)) (let _r:i32 (call add_local_if_new cg base (call node_a pchild) (call node_b pchild) type_id)) (set! pchild (call node_next type_node)))
@@ -867,7 +877,7 @@
     (let fidx:i32 (call find_function cg (call node_a fname) (call node_b fname)))
     (if (eq fidx -1)
         false
-        (eq (enum.cast Ty (mem.load32 (+ (call func_entry_ptr cg fidx) 12))) Ty.void)))
+        (eq (get (call func_entry_ptr cg fidx) FnInfo.ret) Ty.void)))
 
   (fn is_void_node [cg:(ptr Cg) node:(ptr compiler.Node)] -> bool
     (if (neq (call node_kind node) compiler.Kind.paren)
@@ -1470,7 +1480,7 @@
         (block
           (let fname:(ptr compiler.Node) (call nth_child node 1))
           (let fidx:i32 (call find_function cg (call node_a fname) (call node_b fname)))
-          (if (neq fidx -1) (set! res (enum.cast Ty (mem.load32 (+ (call func_entry_ptr cg fidx) 12)))) (block)))
+          (if (neq fidx -1) (set! res (get (call func_entry_ptr cg fidx) FnInfo.ret)) (block)))
         (block))
     ;; ok / err: the payload's type, as expr_type does
     (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res (call node_type cg (call result_payload node))) (block))
@@ -2421,7 +2431,7 @@
     (call label_pop)
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
-  (fn compile_function_body [cg:(ptr Cg) entry:i32 out_ptr:i32] -> i32 (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20)))) (let ret_type:Ty (enum.cast Ty (mem.load32 (+ entry 12)))) (let off:i32 0) (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5)) (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head cg bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) (ptr.null compiler.Node))) (let keep_value:bool (and is_last (neq ret_type Ty.void))) (let n:i32 (call compile_expr cg bchild (+ out_ptr off))) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node cg bchild))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
+  (fn compile_function_body [cg:(ptr Cg) entry:(ptr FnInfo) out_ptr:i32] -> i32 (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node)) (let ret_type:Ty (get entry FnInfo.ret)) (let off:i32 0) (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5)) (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head cg bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) (ptr.null compiler.Node))) (let keep_value:bool (and is_last (neq ret_type Ty.void))) (let n:i32 (call compile_expr cg bchild (+ out_ptr off))) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node cg bchild))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
 
   ;; ===== Master WASM Module Generator =====
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
@@ -2473,7 +2483,7 @@
     ;; a zero-argument main and no _start: an automatic _start (wasm.rs auto_start)
     (let main_idx:i32 (call find_function cg (- (str.ptr "main") src_ptr) 4))
     (let auto_start:bool (and (gte main_idx 0)
-                              (and (eq (mem.load32 (+ (call func_entry_ptr cg main_idx) 8)) 0)
+                              (and (eq (get (call func_entry_ptr cg main_idx) FnInfo.nparams) 0)
                                    (lt (call find_function cg (- (str.ptr "_start") src_ptr) 6) 0))))
     (if auto_start (set! total_types (+ total_types 1)) (block))
     (let extra_fns:i32 (if (call threaded) 2 0))
@@ -2529,14 +2539,14 @@
     ;; User function types
     (let f:i32 0)
     (while (lt f func_count)
-      (let entry:i32 (call func_entry_ptr cg f))
-      (let pcount:i32 (mem.load32 (+ entry 8)))
-      (let ret_ty:Ty (enum.cast Ty (mem.load32 (+ entry 12))))
+      (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
+      (let pcount:i32 (get entry FnInfo.nparams))
+      (let ret_ty:Ty (get entry FnInfo.ret))
       (mem.store8 (+ scratch sc_off) 96) (set! sc_off (+ sc_off 1))
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) pcount)))
       (let p:i32 0)
       (while (lt p pcount)
-        (let pty:Ty (enum.cast Ty (mem.load32 (+ entry (+ 24 (* p 4))))))
+        (let pty:Ty (arr.get Ty (get entry FnInfo.params) p))
         (mem.store8 (+ scratch sc_off) (call type_id_to_valtype pty)) (set! sc_off (+ sc_off 1))
         (set! p (+ p 1)))
       (if (eq ret_ty Ty.void) ;; void
@@ -2696,9 +2706,9 @@
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ func_count (+ 1 (+ (if (call threaded) 1 0) (if auto_start 1 0)))))))
     (set! f 0)
     (while (lt f func_count)
-      (let entry:i32 (call func_entry_ptr cg f))
-      (let name_pos:i32 (mem.load32 (+ entry 0)))
-      (let name_len:i32 (mem.load32 (+ entry 4)))
+      (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
+      (let name_pos:i32 (get entry FnInfo.name_pos))
+      (let name_len:i32 (get entry FnInfo.name_len))
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) name_len)))
       (let n_idx:i32 0)
       (while (lt n_idx name_len)
@@ -2775,9 +2785,9 @@
     (let fcode_scratch:i32 (call cg_alloc cap))
     (set! f 0)
     (while (lt f func_count)
-      (let entry:i32 (call func_entry_ptr cg f))
-      (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20))))
-      (let pcount:i32 (mem.load32 (+ entry 8)))
+      (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
+      (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node))
+      (let pcount:i32 (get entry FnInfo.nparams))
       (let total_locals:i32 (call collect_locals_for_function cg entry (call locals_table)))
       (let extra_local_cnt:i32 (- total_locals pcount))
       (let fn_uses_io_flag:bool (call fn_uses_io cg fndef_group))
@@ -2845,7 +2855,7 @@
           ;; no locals; call main; drop a non-void result; end
           (let b:i32 (call emit_byte fcode_scratch 0))
           (set! b (+ b (call emit_call (+ fcode_scratch b) (+ import_count main_idx))))
-          (if (neq (enum.cast Ty (mem.load32 (+ (call func_entry_ptr cg main_idx) 12))) Ty.void)
+          (if (neq (get (call func_entry_ptr cg main_idx) FnInfo.ret) Ty.void)
               (set! b (+ b (call emit_byte (+ fcode_scratch b) 26)))
               (block))
           (set! b (+ b (call emit_byte (+ fcode_scratch b) 11)))
@@ -2990,10 +3000,10 @@
     (let cg:(ptr Cg) (call new_cg src))
     (let func_count:i32 (call collect_functions cg root))
     (put cg Cg.nfns func_count)
-    (let e0:i32 (call func_entry_ptr cg 0))
-    (let e0_pcount:i32 (mem.load32 (+ e0 8)))
-    (let e0_ret:Ty (enum.cast Ty (mem.load32 (+ e0 12))))
-    (let e1:i32 (call func_entry_ptr cg 1))
+    (let e0:(ptr FnInfo) (call func_entry_ptr cg 0))
+    (let e0_pcount:i32 (get e0 FnInfo.nparams))
+    (let e0_ret:Ty (get e0 FnInfo.ret))
+    (let e1:(ptr FnInfo) (call func_entry_ptr cg 1))
     (let local_count:i32 (call collect_locals_for_function cg e1 (call locals_table)))
     ;; compute's locals: x, y, z, i, and the loop's hidden end and step
     (if (and (eq func_count 2) (and (eq e0_pcount 2) (and (eq e0_ret Ty.i32) (eq local_count 6))))
