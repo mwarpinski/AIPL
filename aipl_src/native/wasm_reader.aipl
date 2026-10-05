@@ -614,23 +614,9 @@
       (call buf.push_byte out 32)
       (call buf.push_int out (get ins Instr.b))
       (call buf.push_byte out 32)
-      (call push_i64 out (get ins Instr.c))
+      (call buf.push_i64 out (get ins Instr.c))
       (call buf.push_byte out 10)))
 
-  ;; An i64 in decimal (buf.push_int handles i32 only).
-  (fn push_i64 [out:(ptr buf.Buf) v:i64] -> void
-    (if (eq v 0i64) (block (call buf.push_byte out 48) (return)) (block))
-    (let digits:(ptr buf.Buf) (call buf.make 24))
-    (let neg:bool (lt v 0i64))
-    ;; work with negative values so the minimum i64 does not overflow
-    (let x:i64 (if neg v (- 0i64 v)))
-    (while (neq x 0i64)
-      (call buf.push_byte digits (+ 48 (i32.wrap (- 0i64 (% x 10i64)))))
-      (set! x (/ x 10i64)))
-    (if neg (call buf.push_byte out 45) (block))
-    (let d:(ptr str.Bytes) (call buf.bytes digits))
-    (loop k 0 (- (get d str.Bytes.len) 1) 1
-      (call buf.push_byte out (call str.byte_at d (- (- (get d str.Bytes.len) 1) k)))))
 
   (fn summary [w:(ptr Wasm)] -> (ptr str.Bytes)
     (let out:(ptr buf.Buf) (call buf.make 4096))

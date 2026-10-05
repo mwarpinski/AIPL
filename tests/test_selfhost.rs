@@ -493,6 +493,7 @@ fn self_hosted_bytes_match_std_library() {
         ("std_strmap", "aipl_src/std/strmap.aipl"),
         ("std_buf", "aipl_src/std/buf.aipl"),
         ("std_os", "aipl_src/std/os.aipl"),
+        ("std_time", "aipl_src/std/time.aipl"),
         ("wasm_reader", "aipl_src/native/wasm_reader.aipl"),
         ("word_count", "examples/word_count.aipl"),
         ("word_freq", "examples/word_freq.aipl"),

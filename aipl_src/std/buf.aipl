@@ -52,6 +52,12 @@
     (let k:i32 (call fmt.int_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
     (put b Buf.len (+ (get b Buf.len) k)))
 
+  ;; An i64 in decimal, with '-' when negative.
+  (fn push_i64 [b:(ptr Buf) n:i64] -> void
+    (call ensure b 21)
+    (let k:i32 (call fmt.int64_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
+    (put b Buf.len (+ (get b Buf.len) k)))
+
   (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes)
     (call str.bytes (get b Buf.data) (get b Buf.len)))
 

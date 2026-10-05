@@ -1,0 +1,64 @@
+;; std/time: measuring how long code takes, from the monotonic clock
+;; (sys.monotonic: nanoseconds, never going backwards).
+;;
+;;   (let t:i64 (call time.now))
+;;   ... work ...
+;;   (call time.report "sort" t)          ;; stderr: "sort: 12.345 ms"
+;;
+;; Durations print with three decimals in the largest fitting unit (ns, us,
+;; ms, s), from integer arithmetic.
+(module time
+  (import str)
+  (import buf)
+
+  ;; Now, in nanoseconds since an arbitrary start (only differences matter).
+  (fn now [] -> i64 (sys.monotonic))
+
+  ;; Nanoseconds since `start` (a value from now).
+  (fn since [start:i64] -> i64 (- (sys.monotonic) start))
+
+  ;; Appends a duration: "850 ns", "12.345 us", "3.071 ms", "4.200 s".
+  (fn push_duration [b:(ptr buf.Buf) ns:i64] -> void
+    (if (lt ns 1000i64)
+        (block (call buf.push_i64 b ns) (call buf.push_str b " ns") (return))
+        (block))
+    (let unit:i64 (cond ((lt ns 1000000i64) 1000i64) ((lt ns 1000000000i64) 1000000i64) (else 1000000000i64)))
+    (call buf.push_i64 b (/ ns unit))
+    (call buf.push_byte b 46)
+    ;; three decimals, zero-padded
+    (let milli:i64 (/ (* (% ns unit) 1000i64) unit))
+    (if (lt milli 100i64) (call buf.push_byte b 48) (block))
+    (if (lt milli 10i64) (call buf.push_byte b 48) (block))
+    (call buf.push_i64 b milli)
+    (call buf.push_str b (cond ((eq unit 1000i64) " us") ((eq unit 1000000i64) " ms") (else " s"))))
+
+  ;; Writes "label: <duration since start>" and a newline to stderr (so a
+  ;; program's own output stays clean).
+  (fn report [label:str start:i64] -> void
+    (let ns:i64 (call since start))
+    (let b:(ptr buf.Buf) (call buf.make 64))
+    (call buf.push_str b label)
+    (call buf.push_str b ": ")
+    (call push_duration b ns)
+    (call buf.push_byte b 10)
+    (let _w:i32 (fs.write 2 (get b buf.Buf.data) (call buf.len b))))
+
+  ;; True if the duration formats as `want`.
+  (fn formats [ns:i64 want:str] -> bool
+    (let b:(ptr buf.Buf) (call buf.make 32))
+    (call push_duration b ns)
+    (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
+
+  ;; Pass count; test_suite.aipl expects 7.
+  (fn run_time_tests [] -> i32
+    (let p:i32 0)
+    (if (call formats 0i64 "0 ns") (set! p (+ p 1)) (block))
+    (if (call formats 999i64 "999 ns") (set! p (+ p 1)) (block))
+    (if (call formats 1000i64 "1.000 us") (set! p (+ p 1)) (block))
+    (if (call formats 12345678i64 "12.345 ms") (set! p (+ p 1)) (block))
+    (if (call formats 4200000000i64 "4.200 s") (set! p (+ p 1)) (block))
+    (if (call formats 1005000i64 "1.005 ms") (set! p (+ p 1)) (block))
+    ;; the clock moves forward (or stays)
+    (let t:i64 (call now))
+    (if (gte (call since t) 0i64) (set! p (+ p 1)) (block))
+    p))

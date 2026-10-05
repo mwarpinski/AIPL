@@ -20,6 +20,17 @@
     (let buf:i32 (mem.alloc 11))
     (fs.write 1 buf (call fmt.int_to_bytes n buf)))
 
+  ;; An i64 in decimal. Each call allocates 21 bytes (never freed).
+  (fn print_i64 [n:i64] -> void
+    (let buf:i32 (mem.alloc 21))
+    (fs.write 1 buf (call fmt.int64_to_bytes n buf)))
+
+  ;; label, then the i64 n, then a newline.
+  (fn println_i64 [label:str n:i64] -> void
+    (call write_str 1 label)
+    (call print_i64 n)
+    (call write_str 1 "\n"))
+
   ;; label, then n, then a newline: (call io.println_int "lines: " 4) prints "lines: 4".
   (fn println_int [label:str n:i32] -> void
     (call write_str 1 label)
