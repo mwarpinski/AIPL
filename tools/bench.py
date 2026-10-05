@@ -36,7 +36,9 @@ def build(name):
         subprocess.run([AIPL, "compile", "--exe", f"--target={target}", os.path.join(src, f"{name}.aipl"), "-o", exe[target]],
                        check=True, capture_output=True, env=dict(os.environ, AIPL_RUNNER=os.path.join(ROOT, "target", "release", "aipl-run")))
     exe["c"] = os.path.join(OUT, f"{name}_c")
-    subprocess.run(["gcc", "-O2", "-o", exe["c"], os.path.join(src, f"{name}.c"), "-lm"], check=True)
+    c = os.path.join(src, f"{name}.c")
+    libs = ["-lm"] + (["-lgmp"] if "#include <gmp.h>" in open(c).read() else [])
+    subprocess.run(["gcc", "-O2", "-o", exe["c"], c] + libs, check=True)
     return {
         "AIPL native": [exe["native"]],
         "AIPL wasm (wasmtime)": [exe["wasm"]],

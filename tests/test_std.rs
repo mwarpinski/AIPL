@@ -231,3 +231,59 @@ fn f64_fixed_matches_exact_formatting() {
     assert_eq!(format(-f64::NAN, 3), "-nan");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// std/bigint against Python's integers: tests/aipl/bigint_ops.aipl walks
+/// 4000 random operations (signs, carries, numbers of up to 40 limbs) and
+/// prints every result; its transcript must hash to what
+/// tools/bigint_vectors.py computes. Run under aipl-run and natively.
+#[test]
+fn bigint_matches_python_integers() {
+    use std::os::unix::fs::PermissionsExt;
+    // `python3 tools/bigint_vectors.py --hash`: lines, FNV-1a 64, bytes
+    const LINES: usize = 4000;
+    const FNV: u64 = 0x9edf386e681d431a;
+    const BYTES: usize = 1023116;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (_, wasm) = load(&root.join("tests/aipl/bigint_ops.aipl"));
+    let dir = scratch("bigint_ops");
+    let wasm_path = dir.join("bigint_ops.wasm");
+    std::fs::write(&wasm_path, &wasm).unwrap();
+    let exe = dir.join("bigint_ops");
+    std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap()).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (way, cmd) in [("wasm", vec![env!("CARGO_BIN_EXE_aipl-run").into(), wasm_path.clone()]), ("native", vec![exe.clone()])] {
+        let mut child = loop {
+            match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdout(std::process::Stdio::piped()).spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
+                r => break r.unwrap(),
+            }
+        };
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut v).unwrap();
+            v
+        });
+        // a broken bigint can loop forever (a correction that never ends)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(st) = child.try_wait().unwrap() {
+                break st;
+            }
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                panic!("{way}: still running after 60 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let text = reader.join().unwrap();
+        assert!(status.success(), "{way}: exit {status}");
+        let hash = text.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
+        assert_eq!(
+            (text.iter().filter(|b| **b == b'\n').count(), text.len(), hash),
+            (LINES, BYTES, FNV),
+            "{way}: transcript differs from tools/bigint_vectors.py (diff the two outputs to find the first wrong line)"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1,0 +1,335 @@
+;; std/bigint: arbitrarily large signed integers. Operations work in place on
+;; numbers you keep and reuse: AIPL has no general free, so an API that
+;; returned a fresh number from every operation would leak.
+;;
+;;   (let a:(ptr bigint.Int) (call bigint.from_i32 1))
+;;   (loop k 1 30 1 (call bigint.mul_small a k))      ;; a = 30!
+;;   (call bigint.push_decimal b a)                    ;; "265252859812191058636308480000000"
+;;
+;; Sign and magnitude. The magnitude's limbs are 32 bits, least significant
+;; first, each held in an i64 so a limb times a multiplier below 2^31 plus a
+;; carry still fits (AIPL has no unsigned comparison or 64x64 -> 128-bit
+;; multiply). A number's limb array grows by doubling (the old one is left
+;; behind); len is the count of limbs in use, with no leading zero limbs,
+;; and every limb from len to the array's end is zero (so loops may read
+;; past len without a check). Zero has len 0 and is never negative.
+(module bigint
+  (import str)
+  (import buf)
+
+  (struct Int [limbs:(arr i64) len:i32 neg:bool])
+
+  (fn with_capacity [limbs:i32] -> (ptr Int)
+    (let n:(ptr Int) (new Int))
+    (let xs:(arr i64) (arr.new i64 (if (lt limbs 4) 4 limbs)))
+    (loop i 0 (- (arr.len xs) 1) 1 (arr.set i64 xs i 0i64))
+    (put n Int.limbs xs)
+    (put n Int.len 0)
+    (put n Int.neg false)
+    n)
+
+  ;; A number from any i32.
+  (fn from_i32 [v:i32] -> (ptr Int)
+    (let n:(ptr Int) (call with_capacity 4))
+    (call set_i32 n v)
+    n)
+
+  ;; a = v
+  (fn set_i32 [a:(ptr Int) v:i32] -> void
+    (loop i 0 (- (get a Int.len) 1) 1 (arr.set i64 (get a Int.limbs) i 0i64))
+    (let w:i64 (i64.extend_s v))
+    (put a Int.neg (lt w 0i64))
+    (if (lt w 0i64) (set! w (- 0i64 w)) (block))
+    (arr.set i64 (get a Int.limbs) 0 w)
+    (put a Int.len 1)
+    (call trim a))
+
+  (fn is_zero [a:(ptr Int)] -> bool (eq (get a Int.len) 0))
+
+  ;; The number of 32-bit limbs in |a| (0 for zero).
+  (fn limb_count [a:(ptr Int)] -> i32 (get a Int.len))
+
+  ;; -1, 0, or 1.
+  (fn sign [a:(ptr Int)] -> i32
+    (if (call is_zero a) 0 (if (get a Int.neg) -1 1)))
+
+  ;; Makes room for `limbs` limbs (new ones zero).
+  (fn reserve [a:(ptr Int) limbs:i32] -> void
+    (let old:(arr i64) (get a Int.limbs))
+    (if (lte limbs (arr.len old)) (return) (block))
+    (let cap:i32 (arr.len old))
+    (while (lt cap limbs) (set! cap (* cap 2)))
+    (let grown:(arr i64) (arr.new i64 cap))
+    (loop i 0 (- (get a Int.len) 1) 1 (arr.set i64 grown i (arr.get i64 old i)))
+    (loop i (get a Int.len) (- cap 1) 1 (arr.set i64 grown i 0i64))
+    (put a Int.limbs grown))
+
+  ;; Drops leading zero limbs; zero is not negative.
+  (fn trim [a:(ptr Int)] -> void
+    (while (and (gt (get a Int.len) 0) (eq (arr.get i64 (get a Int.limbs) (- (get a Int.len) 1)) 0i64))
+      (put a Int.len (- (get a Int.len) 1)))
+    (if (eq (get a Int.len) 0) (put a Int.neg false) (block)))
+
+  ;; dst = src (dst keeps its own limbs)
+  (fn assign [dst:(ptr Int) src:(ptr Int)] -> void
+    (call reserve dst (get src Int.len))
+    (let d:(arr i64) (get dst Int.limbs))
+    (let s:(arr i64) (get src Int.limbs))
+    (loop i 0 (- (get src Int.len) 1) 1 (arr.set i64 d i (arr.get i64 s i)))
+    (loop i (get src Int.len) (- (get dst Int.len) 1) 1 (arr.set i64 d i 0i64))
+    (put dst Int.len (get src Int.len))
+    (put dst Int.neg (get src Int.neg)))
+
+  ;; Compares magnitudes: -1, 0, or 1 as |a| is less than, equal to, or greater than |b|.
+  (fn compare_magnitude [a:(ptr Int) b:(ptr Int)] -> i32
+    (if (neq (get a Int.len) (get b Int.len)) (return (if (lt (get a Int.len) (get b Int.len)) -1 1)) (block))
+    (let x:(arr i64) (get a Int.limbs))
+    (let y:(arr i64) (get b Int.limbs))
+    (loop j 1 (get a Int.len) 1
+      (let i:i32 (- (get a Int.len) j))
+      (if (neq (arr.get i64 x i) (arr.get i64 y i))
+          (return (if (lt (arr.get i64 x i) (arr.get i64 y i)) -1 1))
+          (block)))
+    0)
+
+  ;; -1, 0, or 1 as a is less than, equal to, or greater than b.
+  (fn compare [a:(ptr Int) b:(ptr Int)] -> i32
+    (let sa:i32 (call sign a))
+    (let sb:i32 (call sign b))
+    (if (neq sa sb) (return (if (lt sa sb) -1 1)) (block))
+    (* sa (call compare_magnitude a b)))
+
+  ;; |a| = |a| + |b| * m (0 <= m < 2^31); a's sign is untouched.
+  (fn magnitude_add_mul [a:(ptr Int) b:(ptr Int) m:i64] -> void
+    (let n:i32 (if (gt (get a Int.len) (get b Int.len)) (get a Int.len) (get b Int.len)))
+    (call reserve a (+ n 1))
+    (let x:(arr i64) (get a Int.limbs))
+    (let y:(arr i64) (get b Int.limbs))
+    (let carry:i64 0i64)
+    (let lb:i32 (get b Int.len))
+    (loop i 0 (- lb 1) 1
+      ;; b's limb * m < 2^63 - 2^33, plus a's limb and carry (each < 2^32)
+      (let t:i64 (+ (+ (* (arr.get i64 y i) m) (arr.get i64 x i)) carry))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! carry (shru t 32i64)))
+    (loop i lb (- n 1) 1
+      (let t:i64 (+ (arr.get i64 x i) carry))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! carry (shru t 32i64)))
+    (arr.set i64 x n carry)
+    (put a Int.len (+ n 1)))
+
+  ;; |a| = | |a| - |b| * m | (0 <= m < 2^31); true when |b| * m was larger
+  ;; (the caller flips a's sign). Subtracts limb by limb with a signed
+  ;; borrow over n limbs, one more than either operand (|b| * m may need
+  ;; it); a final borrow means the limbs hold 2^(32n) - result, which is
+  ;; then negated in place.
+  (fn magnitude_sub_mul [a:(ptr Int) b:(ptr Int) m:i64] -> bool
+    (let n:i32 (+ (if (gt (get a Int.len) (get b Int.len)) (get a Int.len) (get b Int.len)) 1))
+    (call reserve a n)
+    (let x:(arr i64) (get a Int.limbs))
+    (let y:(arr i64) (get b Int.limbs))
+    (let borrow:i64 0i64)
+    (let lb:i32 (get b Int.len))
+    (loop i 0 (- lb 1) 1
+      ;; a's limb - b's limb * m - borrow > -2^63: no overflow; shr floors
+      (let t:i64 (- (- (arr.get i64 x i) (* (arr.get i64 y i) m)) borrow))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! borrow (- 0i64 (shr t 32i64))))
+    (loop i lb (- n 1) 1
+      (let t:i64 (- (arr.get i64 x i) borrow))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! borrow (- 0i64 (shr t 32i64))))
+    (put a Int.len n)
+    (if (eq borrow 0i64) (return false) (block))
+    ;; two's complement over n limbs: complement each, then add one
+    (let carry:i64 1i64)
+    (loop i 0 (- n 1) 1
+      (let t:i64 (+ (bitand (^ (arr.get i64 x i) -1i64) 4294967295i64) carry))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! carry (shru t 32i64)))
+    true)
+
+  ;; a = a + b * m (|m| < 2^31; a and b may be the same number)
+  (fn add_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void
+    (req (gt m -2147483648))
+    (let mm:i64 (i64.extend_s m))
+    (let term_neg:bool (if (lt m 0) (not (get b Int.neg)) (get b Int.neg)))
+    (if (lt mm 0i64) (set! mm (- 0i64 mm)) (block))
+    (if (call is_zero a) (put a Int.neg term_neg) (block))
+    (if (eq (get a Int.neg) term_neg)
+        (call magnitude_add_mul a b mm)
+        (if (call magnitude_sub_mul a b mm) (put a Int.neg (not (get a Int.neg))) (block)))
+    (call trim a))
+
+  ;; a = a - b * m (|m| < 2^31)
+  (fn sub_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void
+    (req (gt m -2147483648))
+    (call add_mul_small a b (- 0 m)))
+
+  (fn add [a:(ptr Int) b:(ptr Int)] -> void (call add_mul_small a b 1))
+  (fn sub [a:(ptr Int) b:(ptr Int)] -> void (call add_mul_small a b -1))
+
+  ;; a = a * m (|m| < 2^31)
+  (fn mul_small [a:(ptr Int) m:i32] -> void
+    (req (gt m -2147483648))
+    (call reserve a (+ (get a Int.len) 1))
+    (let x:(arr i64) (get a Int.limbs))
+    (let mm:i64 (i64.extend_s m))
+    (if (lt m 0) (block (set! mm (- 0i64 mm)) (put a Int.neg (not (get a Int.neg)))) (block))
+    (let carry:i64 0i64)
+    (loop i 0 (- (get a Int.len) 1) 1
+      (let t:i64 (+ (* (arr.get i64 x i) mm) carry))
+      (arr.set i64 x i (bitand t 4294967295i64))
+      (set! carry (shru t 32i64)))
+    (arr.set i64 x (get a Int.len) carry)
+    (put a Int.len (+ (get a Int.len) 1))
+    (call trim a))
+
+  ;; a = a / d rounded toward zero; returns the remainder, which has a's
+  ;; sign (as i32 / and %). 0 < d < 2^31.
+  (fn div_small [a:(ptr Int) d:i32] -> i32
+    (req (gt d 0))
+    (let x:(arr i64) (get a Int.limbs))
+    (let dd:i64 (i64.extend_s d))
+    (let rem:i64 0i64)
+    (loop j 1 (get a Int.len) 1
+      (let i:i32 (- (get a Int.len) j))
+      ;; rem < d < 2^31, so rem * 2^32 + limb < 2^63
+      (let t:i64 (bitor (shl rem 32i64) (arr.get i64 x i)))
+      (arr.set i64 x i (/ t dd))
+      (set! rem (% t dd)))
+    (let r:i32 (if (get a Int.neg) (- 0 (i32.wrap rem)) (i32.wrap rem)))
+    (call trim a)
+    r)
+
+  ;; |x| / 2^(32 unit) from x's top limbs (those from unit - 2 up): within
+  ;; a relative 2^-60 or so of the exact value.
+  (fn top_f64 [x:(ptr Int) unit:i32] -> f64
+    (let xs:(arr i64) (get x Int.limbs))
+    (let lo:i32 (if (lt unit 2) 0 (- unit 2)))
+    (let r:f64 0.0)
+    (loop j 1 (- (get x Int.len) lo) 1
+      (set! r (+ (* r 4294967296.0) (f64.convert_i64_s (arr.get i64 xs (- (get x Int.len) j))))))
+    (loop j 1 (- unit lo) 1 (set! r (/ r 4294967296.0)))
+    r)
+
+  ;; Returns a / b rounded down and leaves the remainder in a, for a >= 0,
+  ;; b > 0 and a quotient below 2^31 (pidigits' digit extraction). The
+  ;; quotient is estimated in floating point from the top limbs, taken off
+  ;; in one multiply-subtract, then corrected (by at most a step or two).
+  (fn div_small_quotient [a:(ptr Int) b:(ptr Int)] -> i32
+    (req (gte (call sign a) 0))
+    (req (gt (call sign b) 0))
+    (let unit:i32 (- (get b Int.len) 1))
+    (let est:f64 (/ (call top_f64 a unit) (call top_f64 b unit)))
+    (let q:i32 (if (gte est 2147483647.0) 2147483647 (i32.wrap (i64.trunc_f64_s est))))
+    (call sub_mul_small a b q)
+    (while (lt (call sign a) 0) (call add a b) (set! q (- q 1)))
+    (while (gte (call compare a b) 0) (call sub a b) (set! q (+ q 1)))
+    q)
+
+  ;; a = -a
+  (fn negate [a:(ptr Int)] -> void
+    (if (call is_zero a) (block) (put a Int.neg (not (get a Int.neg)))))
+
+  ;; Appends a in decimal (works on a copy).
+  (fn push_decimal [out:(ptr buf.Buf) a:(ptr Int)] -> void
+    (if (call is_zero a) (block (call buf.push_byte out 48) (return)) (block))
+    (if (get a Int.neg) (call buf.push_byte out 45) (block))
+    (let t:(ptr Int) (call with_capacity (get a Int.len)))
+    (call assign t a)
+    (put t Int.neg false)
+    ;; nine digits at a time, least significant group first
+    (let groups:(ptr buf.Buf) (call buf.make 64))
+    (while (not (call is_zero t))
+      (let g:i32 (call div_small t 1000000000))
+      (loop k 1 9 1
+        (call buf.push_byte groups (+ 48 (% g 10)))
+        (set! g (/ g 10))))
+    (let digits:(ptr str.Bytes) (call buf.bytes groups))
+    (let n:i32 (get digits str.Bytes.len))
+    ;; skip the leading zeros of the most significant group
+    (while (eq (call str.byte_at digits (- n 1)) 48) (set! n (- n 1)))
+    (loop k 1 n 1 (call buf.push_byte out (call str.byte_at digits (- n k)))))
+
+  (fn decimal_is [a:(ptr Int) want:str] -> bool
+    (let b:(ptr buf.Buf) (call buf.make 64))
+    (call push_decimal b a)
+    (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
+
+  ;; Pass count; test_suite.aipl expects 13.
+  (fn run_bigint_tests [] -> i32
+    (let p:i32 0)
+    (let f:(ptr Int) (call from_i32 1))
+    (loop k 1 30 1 (call mul_small f k))
+    (if (call decimal_is f "265252859812191058636308480000000") (set! p (+ p 1)) (block))
+    ;; 2^100 by doubling, then back down
+    (let t:(ptr Int) (call from_i32 1))
+    (loop k 1 100 1 (call mul_small t 2))
+    (if (call decimal_is t "1267650600228229401496703205376") (set! p (+ p 1)) (block))
+    (loop k 1 100 1 (let _r:i32 (call div_small t 2)))
+    (if (call decimal_is t "1") (set! p (+ p 1)) (block))
+    ;; add and subtract with carries and borrows across limbs
+    (let a:(ptr Int) (call from_i32 2147483647))
+    (call mul_small a 2147483647)
+    (call mul_small a 2147483647)
+    (let b:(ptr Int) (call with_capacity 4))
+    (call assign b a)
+    (call add a b)
+    (call sub a b)
+    (if (and (eq (call compare a b) 0) (call decimal_is a "9903520300447984150353281023")) (set! p (+ p 1)) (block))
+    ;; crossing zero: 1 - a is negative, and adding a back gives 1
+    (let c:(ptr Int) (call from_i32 1))
+    (call sub c a)
+    (if (call decimal_is c "-9903520300447984150353281022") (set! p (+ p 1)) (block))
+    (call add c a)
+    (if (call decimal_is c "1") (set! p (+ p 1)) (block))
+    ;; signed comparison and zero
+    (let m:(ptr Int) (call from_i32 -5))
+    (let z:(ptr Int) (call from_i32 0))
+    (if (and (eq (call compare m z) -1) (and (eq (call compare a m) 1) (and (eq (call sign z) 0) (call decimal_is z "0"))))
+        (set! p (+ p 1)) (block))
+    ;; a - a is zero, and zero is not negative
+    (call sub b a)
+    (call sub_mul_small b a 3)
+    (call add_mul_small b a 3)
+    (if (and (call is_zero b) (eq (call sign b) 0)) (set! p (+ p 1)) (block))
+    ;; negative multipliers and truncating division with a signed remainder
+    (let q:(ptr Int) (call from_i32 -7))
+    (call mul_small q -3)
+    (call mul_small q 1000000)
+    (call mul_small q -1000000)
+    (let r:i32 (call div_small q 1000))
+    (if (and (call decimal_is q "-21000000000") (eq r 0)) (set! p (+ p 1)) (block))
+    (let s:(ptr Int) (call from_i32 -2147483647))
+    (if (and (eq (call div_small s 10) -7) (call decimal_is s "-214748364")) (set! p (+ p 1)) (block))
+    ;; v = n * (2^31 - 1) + (n - 1): the largest quotient, and the
+    ;; largest remainder, with n = (2^31 - 1)^5
+    (let n:(ptr Int) (call from_i32 1))
+    (loop k 1 5 1 (call mul_small n 2147483647))
+    (let w:(ptr Int) (call with_capacity 4))
+    (call assign w n)
+    (call sub w (call from_i32 1))
+    (let v:(ptr Int) (call with_capacity 4))
+    (call assign v n)
+    (call mul_small v 2147483647)
+    (call add v w)
+    (if (and (eq (call div_small_quotient v n) 2147483647) (eq (call compare v w) 0)) (set! p (+ p 1)) (block))
+    ;; negate, twice and of zero
+    (call negate w)
+    (let before:i32 (call sign w))
+    (call negate w)
+    (call negate z)
+    (if (and (eq before -1) (and (eq (call compare v w) 0) (eq (call sign z) 0))) (set! p (+ p 1)) (block))
+    ;; overwriting a large number with a small one leaves no stale limbs:
+    ;; 5 + 2^100, where add reads the target's limbs past its length
+    (let big:(ptr Int) (call from_i32 1))
+    (loop k 1 100 1 (call mul_small big 2))
+    (let x:(ptr Int) (call with_capacity 4))
+    (call assign x big)
+    (call mul_small x 3)
+    (call set_i32 x 5)
+    (call add x big)
+    (if (call decimal_is x "1267650600228229401496703205381") (set! p (+ p 1)) (block))
+    p))

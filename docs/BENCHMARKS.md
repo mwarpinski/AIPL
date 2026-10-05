@@ -33,6 +33,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | mandelbrot | 1000 x 1000 | 0.235 s (4.6x) | 0.067 s (1.3x) | 0.051 s (1.0x) | 3.107 s (61.3x) |
 | binarytrees | depth 16 | 0.568 s (2.4x) | 0.193 s (0.8x) | 0.239 s (1.0x) | 1.168 s (4.9x) |
 | knucleotide | fasta 150000 | 1.411 s (28.0x) | 0.528 s (10.5x) | 0.050 s (1.0x) | 0.518 s (10.3x) |
+| pidigits | 10000 digits | 21.059 s (54.2x) | 2.255 s (5.8x) | 0.389 s (1.0x) | 2.158 s (5.6x) |
 
 ## Notes per benchmark
 
@@ -122,3 +123,28 @@ What it showed:
   dict is optimised C, and the C version packs each k-mer into a 64-bit
   integer. Faster hashing (word at a time) or an integer-keyed map for short
   keys would help most.
+
+**pidigits** (pi by Gibbons' unbounded spigot, as in the Benchmarks Game:
+arbitrary-precision integers). C uses GMP, as the Benchmarks Game's C
+entries do, so C here means decades of hand-tuned assembly rather than C
+the language; Python uses its built-in integers. What it showed:
+- **No big integers.** Added `std/bigint`: signed, 32-bit limbs in `i64`
+  (AIPL has no unsigned compare or 128-bit multiply), changed in place
+  because nothing is freed. It is checked against Python's integers by a
+  4000-operation random walk (`tests/aipl/bigint_ops.aipl`,
+  `tools/bigint_vectors.py`). A first version handled only non-negative
+  numbers; the algorithm's `accum` goes negative, which is how the signed
+  version came about. The walk then found a carry limb dropped in
+  multiply-subtract.
+- **Library speed matters more than the language here.** Finding each digit
+  by repeated subtraction took 7.1 s (wasm); `div_small_quotient`
+  (estimate the quotient in floating point from the top limbs, then
+  correct) brought it to 4.0 s, and loops without per-limb bounds checks
+  (limbs past the length are kept zero) to about Python's time.
+- **Native is far behind wasm** (about 9x), the baseline translator's cost
+  on tight loops again.
+- **Length.** The AIPL file is 90 lines against C's 40 and Python's 29:
+  bignums are calls rather than operators, state lives in a struct (no
+  globals), and the argument parsing and digit output are repeated from
+  spigot. `os.arg_int`, a stdout helper for `buf`, and a shared digit
+  printer would remove about a third.
