@@ -29,6 +29,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | spigot | 10000 digits | 4.360 s (4.7x) | 1.573 s (1.7x) | 0.922 s (1.0x) | 47.345 s (51.3x) |
 | fannkuch | n = 10 | 1.358 s (8.8x) | 0.212 s (1.4x) | 0.155 s (1.0x) | 3.745 s (24.2x) |
 | spectralnorm | n = 1000 | 0.395 s (14.6x) | 0.121 s (4.5x) | 0.027 s (1.0x) | 7.373 s (272.0x) |
+| nbody | 1,000,000 steps | 0.794 s (15.2x) | 0.092 s (1.8x) | 0.052 s (1.0x) | 5.829 s (111.8x) |
 
 ## Notes per benchmark
 
@@ -70,3 +71,13 @@ two additions, both now in the language and standard library:
   style) and parsing floats from text remain gaps.
 C gains most here: gcc inlines the matrix-entry function and vectorises the
 inner loop, while AIPL calls a function per entry.
+
+**nbody** (the Sun and the four gas giants, energy printed to nine decimals
+before and after). Ran with the spectralnorm additions (`f64.sqrt`,
+`fmt.f64_fixed`). AIPL float literals have no exponent notation, so the
+benchmark's constants are written out in decimal (the same doubles). All
+four versions print the published values, bit-identical float arithmetic
+in the same operation order. Float code is where the native translator
+trails most (8.6 times wasmtime): every operation moves values from the
+stack in memory into xmm registers and back, where Cranelift keeps them in
+registers.
