@@ -176,7 +176,8 @@
        (let i:i32 (call lookup env t))
        (call buf.push_bytes out (if (gte i 0) (call (vec.at (ptr str.Bytes)) (get env Env.printed) i) t)))
       ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text st n)))
-      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ;; an int as written (its value is only the low 32 bits)
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.pos)) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
@@ -276,7 +277,7 @@
   ;; message in `err` on a malformed or unbounded use.
   (fn expand [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
     (let n:i32 (get flat str.Bytes.len))
-    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ n 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))

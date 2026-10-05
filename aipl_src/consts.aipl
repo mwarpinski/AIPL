@@ -92,7 +92,8 @@
   (fn print_literal [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
-      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ;; an int as written (its value is only the low 32 bits)
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.pos)) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
@@ -171,7 +172,7 @@
   ;; program with neither is copied unchanged.
   (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
     (let n:i32 (get src str.Bytes.len))
-    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ n 1))))
     (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))

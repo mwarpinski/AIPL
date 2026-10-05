@@ -1164,3 +1164,16 @@ fn self_hosted_bytes_match_sum_types() {
     (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",
     );
 }
+
+/// Literal spellings the two tokenizers now agree on: a leading '+', and a
+/// 32-bit pattern written unsigned (4294967295 is -1).
+#[test]
+fn self_hosted_bytes_match_signed_literal_spellings() {
+    assert_self_hosted_matches_rust(
+        "literal_spellings",
+        "(module lits
+  (fn a [] -> i64 (+ +5i64 -5i64))
+  (fn b [] -> f64 (+ +2.0 -0.5))
+  (fn c [] -> i32 (+ +7 (+ 4294967295 2147483648))))",
+    );
+}

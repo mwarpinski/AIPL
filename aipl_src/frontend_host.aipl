@@ -1,0 +1,10 @@
+;; Entry points for tests/test_checker_aipl.rs: the AIPL front end
+;; (tokenizer, line_col, and later the parser and checker), callable from the
+;; VM with plain integers.
+(module frontend_host
+  (import compiler)
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+  (fn token_size [] -> i32 (sizeof compiler.Token))
+  (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))
+  (fn line_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.line))
+  (fn col_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.col)))

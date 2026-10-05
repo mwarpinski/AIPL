@@ -51,7 +51,7 @@ Large inputs run in the compiled toolchain under wasmtime (as
 
 | Step | What | Status |
 |---|---|---|
-| CK1 | Positions: tokens and nodes carry their source offset; a `line:col` helper counting characters. The AIPL tokenizer's literal rules brought in line with Rust's where they differ (out-of-range integers, string escapes, unterminated strings), each with an error | |
+| CK1 | Positions: tokens and nodes carry their source offset; a `line:col` helper counting characters. The AIPL tokenizer's literal rules brought in line with Rust's where they differ (out-of-range integers, string escapes, unterminated strings), each with an error | Done 2026-10-05. Both tokenizers checked token by token (kind, line:col, value) on every repository file and 17 tricky inputs (`tests/test_checker_aipl.rs`, mutation-checked). Rust fixes found on the way: a form feed or no-break space hung the tokenizer forever (now an error naming the character), and `i32` literals beyond 32 bits wrapped silently (now an error; `-2147483648`..`4294967295` allowed). The AIPL passes now print integers as written, and codegen.aipl reads `+` signs and reports exponents as 973 |
 | CK2 | `ast.aipl` and `parser.aipl` for module items and types (structs, enums, unions, functions, imports-free modules), `printer.aipl`; print parity on items | |
 | CK3 | Expressions in the parser, every form; print parity on every repository program | |
 | CK4 | Parse errors: every `src/parser.rs` message; message parity on its cases | |
