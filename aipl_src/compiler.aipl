@@ -37,23 +37,40 @@
     (mem.store32 (+ ptr 4) 1)
     8)
 
-  ;; ===== Real Tokenizer =====
-  ;; Token record layout: 12 bytes per token at (tok_ptr + idx*12) = [kind:i32, a:i32, b:i32]
-  ;; kind: 0=LParen 1=RParen 2=LBracket 3=RBracket 4=Colon 5=Arrow
-  ;;       6=Symbol(a=src offset,b=length) 7=IntLit(a=value) 8=BoolLit(a=0/1)
-  ;;       9=StringLit(a=src offset of first char inside quotes,b=length)
-  ;; Mirrors src/parser.rs::Parser::tokenize exactly (same delimiter set, same
-  ;; keyword/int classification rules) so the two tokenizers accept identical input.
+  ;; ===== Tokenizer =====
+  ;; Tokens are 12-byte records [kind a b] packed in a buffer the caller
+  ;; provides (at least one per source byte): a symbol, string, i64, or float
+  ;; token's a/b are its source offset and length (a string's without the
+  ;; quotes), an int's a is its value, a bool's 0/1. Mirrors
+  ;; src/parser.rs::Parser::tokenize (same delimiters, same literal rules), so
+  ;; the two tokenizers accept identical input.
+
+  (const CH_TAB:i32 9)
+  (const CH_NEWLINE:i32 10)
+  (const CH_RETURN:i32 13)
+  (const CH_SPACE:i32 32)
+  (const CH_QUOTE:i32 34)
+  (const CH_LPAREN:i32 40)
+  (const CH_RPAREN:i32 41)
+  (const CH_MINUS:i32 45)
+  (const CH_DOT:i32 46)
+  (const CH_ZERO:i32 48)
+  (const CH_NINE:i32 57)
+  (const CH_COLON:i32 58)
+  (const CH_SEMICOLON:i32 59)
+  (const CH_LBRACKET:i32 91)
+  (const CH_BACKSLASH:i32 92)
+  (const CH_RBRACKET:i32 93)
 
   (fn is_whitespace [ch:i32] -> bool
-    (or (or (eq ch 32) (eq ch 9)) (or (eq ch 13) (eq ch 10))))
+    (or (or (eq ch CH_SPACE) (eq ch CH_TAB)) (or (eq ch CH_RETURN) (eq ch CH_NEWLINE))))
 
   (fn is_delim [ch:i32] -> bool
     (or (call is_whitespace ch)
-        (or (or (eq ch 40) (eq ch 41)) (or (or (eq ch 91) (eq ch 93)) (eq ch 58)))))
+        (or (or (eq ch CH_LPAREN) (eq ch CH_RPAREN)) (or (or (eq ch CH_LBRACKET) (eq ch CH_RBRACKET)) (eq ch CH_COLON)))))
 
   (fn is_digit [ch:i32] -> bool
-    (and (gte ch 48) (lte ch 57)))
+    (and (gte ch CH_ZERO) (lte ch CH_NINE)))
 
   ;; Token records are packed back to back in one buffer; this is the one
   ;; place that turns an index into a record address.
@@ -64,97 +81,60 @@
     (req (gte tok_ptr 0))
     (req (gte idx 0))
     (ens (eq res (+ idx 1)))
-    (let base:(ptr Token) (call token_at tok_ptr idx))
-    (put base Token.kind kind)
-    (put base Token.a a)
-    (put base Token.b b)
+    (let t:(ptr Token) (call token_at tok_ptr idx))
+    (put t Token.kind kind)
+    (put t Token.a a)
+    (put t Token.b b)
     (+ idx 1))
 
-  (fn is_arrow [src_ptr:i32 pos:i32 len:i32] -> bool
-    (if (neq len 2)
-        false
-        (and (eq (mem.load8 (+ src_ptr pos)) 45)
-             (eq (mem.load8 (+ src_ptr (+ pos 1))) 62))))
+  ;; Whether the len bytes at src_ptr + pos spell `word`.
+  (fn span_is [src_ptr:i32 pos:i32 len:i32 word:str] -> bool
+    (if (neq len (str.len word)) (return false) (block))
+    (loop i 0 (- len 1) 1
+      (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ (str.ptr word) i))) (return false) (block)))
+    true)
 
-  (fn is_true_kw [src_ptr:i32 pos:i32 len:i32] -> bool
-    (if (neq len 4)
-        false
-        (and (eq (mem.load8 (+ src_ptr pos)) 116)
-        (and (eq (mem.load8 (+ src_ptr (+ pos 1))) 114)
-        (and (eq (mem.load8 (+ src_ptr (+ pos 2))) 117)
-             (eq (mem.load8 (+ src_ptr (+ pos 3))) 101))))))
-
-  (fn is_false_kw [src_ptr:i32 pos:i32 len:i32] -> bool
-    (if (neq len 5)
-        false
-        (and (eq (mem.load8 (+ src_ptr pos)) 102)
-        (and (eq (mem.load8 (+ src_ptr (+ pos 1))) 97)
-        (and (eq (mem.load8 (+ src_ptr (+ pos 2))) 108)
-        (and (eq (mem.load8 (+ src_ptr (+ pos 3))) 115)
-             (eq (mem.load8 (+ src_ptr (+ pos 4))) 101)))))))
-
-  ;; True if the span is a valid integer literal: optional leading '-' then >=1 digits.
+  ;; An optional leading '-' then at least one digit.
   (fn is_int_literal [src_ptr:i32 pos:i32 len:i32] -> bool
     (req (gte pos 0))
     (req (gt len 0))
-    (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
-    (let start:i32 pos)
-    (let digit_len:i32 len)
-    (if has_sign (set! start (+ pos 1)) (block))
-    (if has_sign (set! digit_len (- len 1)) (block))
-    (if (eq digit_len 0)
-        false
-        (block
-          (let all_digits:bool true)
-          (let i:i32 0)
-          (while (lt i digit_len)
-            (if (call is_digit (mem.load8 (+ src_ptr (+ start i))))
-                (block)
-                (set! all_digits false))
-            (set! i (+ i 1)))
-          all_digits)))
+    (let start:i32 (if (eq (mem.load8 (+ src_ptr pos)) CH_MINUS) 1 0))
+    (if (eq start len) (return false) (block))
+    (loop i start (- len 1) 1
+      (if (call is_digit (mem.load8 (+ src_ptr (+ pos i)))) (block) (return false)))
+    true)
 
-  ;; `42i64`, `-7i64`: an int literal followed by the suffix i64 (token kind 10).
+  ;; `42i64`, `-7i64`: an int literal followed by the suffix i64.
   (fn is_i64_literal [src_ptr:i32 pos:i32 len:i32] -> bool
-    (if (lt len 4)
-        false
-        (and (call is_int_literal src_ptr pos (- len 3))
-             (and (eq (mem.load8 (+ src_ptr (+ pos (- len 3)))) 105)
-                  (and (eq (mem.load8 (+ src_ptr (+ pos (- len 2)))) 54)
-                       (eq (mem.load8 (+ src_ptr (+ pos (- len 1)))) 52))))))
+    (and (gte len 4)
+         (and (call is_int_literal src_ptr pos (- len 3))
+              (call span_is src_ptr (+ pos (- len 3)) 3 "i64"))))
 
   ;; `1.5`, `-0.25`: optional sign, digits with exactly one '.', at least one
-  ;; digit (token kind 11). Mirrors the Rust tokenizer's float rule.
+  ;; digit. Mirrors the Rust tokenizer's float rule.
   (fn is_float_literal [src_ptr:i32 pos:i32 len:i32] -> bool
-    (let i:i32 0)
-    (if (eq (mem.load8 (+ src_ptr pos)) 45) (set! i 1) (block))
     (let dots:i32 0)
     (let digits:i32 0)
     (let other:i32 0)
-    (while (lt i len)
+    (loop i (if (eq (mem.load8 (+ src_ptr pos)) CH_MINUS) 1 0) (- len 1) 1
       (let c:i32 (mem.load8 (+ src_ptr (+ pos i))))
-      (if (eq c 46)
-          (set! dots (+ dots 1))
-          (if (call is_digit c) (set! digits (+ digits 1)) (set! other (+ other 1))))
-      (set! i (+ i 1)))
+      (cond
+        ((eq c CH_DOT) (set! dots (+ dots 1)))
+        ((call is_digit c) (set! digits (+ digits 1)))
+        (else (set! other (+ other 1)))))
     (and (eq dots 1) (and (gt digits 0) (eq other 0))))
 
   (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
     (req (gte pos 0))
     (req (gt len 0))
-    (let has_sign:bool (eq (mem.load8 (+ src_ptr pos)) 45))
-    (let start:i32 pos)
-    (let digit_len:i32 len)
-    (if has_sign (set! start (+ pos 1)) (block))
-    (if has_sign (set! digit_len (- len 1)) (block))
+    (let negative:bool (eq (mem.load8 (+ src_ptr pos)) CH_MINUS))
     (let value:i32 0)
-    (let i:i32 0)
-    (while (lt i digit_len)
-      (set! value (+ (* value 10) (- (mem.load8 (+ src_ptr (+ start i))) 48)))
-      (set! i (+ i 1)))
-    (if has_sign (- 0 value) value))
+    (loop i (if negative 1 0) (- len 1) 1
+      (set! value (+ (* value 10) (- (mem.load8 (+ src_ptr (+ pos i))) CH_ZERO))))
+    (if negative (- 0 value) value))
 
-  ;; Dynamic Tokenizer Pass: scans real source bytes and writes real token records.
+  ;; Tokenizes input_len bytes at input_ptr into token_out_ptr; returns the
+  ;; token count. Comments (;; to the end of the line) are skipped.
   (fn tokenize [input_ptr:i32 input_len:i32 token_out_ptr:i32] -> i32
     (req (gte input_ptr 0))
     (req (gte input_len 0))
@@ -166,370 +146,176 @@
       (let ch:i32 (mem.load8 (+ input_ptr i)))
       (cond
         ((call is_whitespace ch) (set! i (+ i 1)))
-        ((eq ch 59) (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 10))
-                  (set! i (+ i 1)))
-                (if (lt i input_len) (set! i (+ i 1)) (block)))
-        ((eq ch 40) (set! count (call write_token token_out_ptr count Kind.lparen 0 0)) (set! i (+ i 1)))
-        ((eq ch 41) (set! count (call write_token token_out_ptr count Kind.rparen 0 0)) (set! i (+ i 1)))
-        ((eq ch 91) (set! count (call write_token token_out_ptr count Kind.lbracket 0 0)) (set! i (+ i 1)))
-        ((eq ch 93) (set! count (call write_token token_out_ptr count Kind.rbracket 0 0)) (set! i (+ i 1)))
-        ((eq ch 58) (set! count (call write_token token_out_ptr count Kind.colon 0 0)) (set! i (+ i 1)))
-        ((eq ch 34) (set! i (+ i 1))
-                                        (let str_start:i32 i)
-                                        ;; a backslash escapes the next byte, so \" does not end the string
-                                        (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) 34))
-                                          (if (eq (mem.load8 (+ input_ptr i)) 92) (set! i (+ i 2)) (set! i (+ i 1))))
-                                        (let str_len:i32 (- i str_start))
-                                        (set! count (call write_token token_out_ptr count Kind.string str_start str_len))
-                                        (if (lt i input_len) (set! i (+ i 1)) (block)))
-        (else (let sym_start:i32 i)
-                                        (while (and (lt i input_len) (not (call is_delim (mem.load8 (+ input_ptr i)))))
-                                          (set! i (+ i 1)))
-                                        (let sym_len:i32 (- i sym_start))
-                                        (cond
-                                          ((call is_arrow input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.arrow 0 0)))
-                                          ((call is_true_kw input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.bool 1 0)))
-                                          ((call is_false_kw input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.bool 0 0)))
-                                          ((call is_int_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.int (call parse_int_literal input_ptr sym_start sym_len) 0)))
-                                          ((call is_i64_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.int64 sym_start sym_len)))
-                                          ((call is_float_literal input_ptr sym_start sym_len) (set! count (call write_token token_out_ptr count Kind.float sym_start sym_len)))
-                                          (else (set! count (call write_token token_out_ptr count Kind.symbol sym_start sym_len)))))))
+        ((eq ch CH_SEMICOLON)
+         (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) CH_NEWLINE))
+           (set! i (+ i 1)))
+         (if (lt i input_len) (set! i (+ i 1)) (block)))
+        ((eq ch CH_LPAREN) (set! count (call write_token token_out_ptr count Kind.lparen 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_RPAREN) (set! count (call write_token token_out_ptr count Kind.rparen 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_LBRACKET) (set! count (call write_token token_out_ptr count Kind.lbracket 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_RBRACKET) (set! count (call write_token token_out_ptr count Kind.rbracket 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_COLON) (set! count (call write_token token_out_ptr count Kind.colon 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_QUOTE)
+         (set! i (+ i 1))
+         (let str_start:i32 i)
+         ;; a backslash escapes the next byte, so \" does not end the string
+         (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) CH_QUOTE))
+           (if (eq (mem.load8 (+ input_ptr i)) CH_BACKSLASH) (set! i (+ i 2)) (set! i (+ i 1))))
+         (set! count (call write_token token_out_ptr count Kind.string str_start (- i str_start)))
+         (if (lt i input_len) (set! i (+ i 1)) (block)))
+        (else
+         (let s:i32 i)
+         (while (and (lt i input_len) (not (call is_delim (mem.load8 (+ input_ptr i)))))
+           (set! i (+ i 1)))
+         (let n:i32 (- i s))
+         (set! count
+               (cond
+                 ((call span_is input_ptr s n "->") (call write_token token_out_ptr count Kind.arrow 0 0))
+                 ((call span_is input_ptr s n "true") (call write_token token_out_ptr count Kind.bool 1 0))
+                 ((call span_is input_ptr s n "false") (call write_token token_out_ptr count Kind.bool 0 0))
+                 ((call is_int_literal input_ptr s n)
+                  (call write_token token_out_ptr count Kind.int (call parse_int_literal input_ptr s n) 0))
+                 ((call is_i64_literal input_ptr s n) (call write_token token_out_ptr count Kind.int64 s n))
+                 ((call is_float_literal input_ptr s n) (call write_token token_out_ptr count Kind.float s n))
+                 (else (call write_token token_out_ptr count Kind.symbol s n)))))))
     count)
 
-  ;; Symbol Table Lookup Pass: maps variable names to local register/stack indices (0, 1, 2, 3...)
-  (fn resolve_symbol_index [symbol_id:i32 sym_table_ptr:i32 sym_count:i32] -> i32
-    (req (gte symbol_id 0))
-    (req (gte sym_table_ptr 0))
-    (ens (gte res 0))
-    (let index:i32 0)
-    (let found:bool false)
-    (loop i 0 sym_count 1
-      (let entry:i32 (mem.load32 (+ sym_table_ptr (* i 4))))
-      (if (eq entry symbol_id)
-        (block
-          (set! index i)
-          (set! found true)
-          index)
-        index))
-    (if found index sym_count))
+  ;; ===== Parser: tokens -> a tree of Nodes =====
+  ;; An atom's node has its token's kind, a, and b. A group's ("(...)" or
+  ;; "[...]") a is its first child's address (read it back with
+  ;; ptr.cast; codegen's first_child) and b its child count; next links
+  ;; siblings. Nodes are bump-allocated in the buffer the caller provides
+  ;; (16 bytes each, at most one per token, plus 8).
 
-  ;; ===== Real Parser: tokens -> generic S-expression tree in memory =====
-  ;; Node record: 16 bytes at (ast_buf + 8 + offset) = [kind:i32, a:i32, b:i32, next_sibling:i32]
-  ;;   Atom kinds match token kinds: 6=Symbol(a=src offset,b=len) 7=IntLit(a=value)
-  ;;                                 8=BoolLit(a=0/1) 9=StringLit(a=src offset,b=len)
-  ;;                                 10=I64Lit, 11=FloatLit (a=src offset,b=len; text incl. suffix)
-  ;;   Group kinds: 20=Paren-group "(...)"  21=Bracket-group "[...]"
-  ;;     For groups: a=pointer to first child node (0 if empty), b=child count
-  ;;   next_sibling: pointer to the next node in the same parent list, 0=end of list
-  ;;
-  ;; ast_buf header (the 8 bytes before any node): [0]=next_free_offset (bump
-  ;; allocator state), [4]=current token index (parser state). AIPL functions
-  ;; only return one value, so mutable state shared across recursive calls
-  ;; (the allocator cursor, the parse position) lives in a well-known memory
-  ;; cell instead of being threaded through return values.
+  (struct Parser [tokens:i32 count:i32 pos:i32 ast:i32 used:i32])
 
-  (fn ast_alloc_node [ast_buf:i32 kind:Kind a:i32 b:i32] -> (ptr Node)
-    (req (gte ast_buf 0))
-    (ens (gt (ptr.addr res) ast_buf))
-    (let next_free:i32 (mem.load32 ast_buf))
-    (let node:(ptr Node) (ptr.cast Node (+ ast_buf (+ 8 next_free))))
+  (fn new_node [p:(ptr Parser) kind:Kind a:i32 b:i32] -> (ptr Node)
+    (let node:(ptr Node) (ptr.cast Node (+ (get p Parser.ast) (get p Parser.used))))
     (put node Node.kind kind)
     (put node Node.a a)
     (put node Node.b b)
     (put node Node.next (ptr.null Node))
-    (mem.store32 ast_buf (+ next_free (sizeof Node)))
+    (put p Parser.used (+ (get p Parser.used) (sizeof Node)))
     node)
 
-  (fn tok_kind [tokens_ptr:i32 idx:i32] -> Kind
-    (req (gte idx 0))
-    (get (call token_at tokens_ptr idx) Token.kind))
+  (fn current [p:(ptr Parser)] -> (ptr Token)
+    (call token_at (get p Parser.tokens) (get p Parser.pos)))
 
-  ;; Token field 1 (a) or 2 (b).
-  (fn tok_field [tokens_ptr:i32 idx:i32 field:i32] -> i32
-    (req (gte idx 0))
-    (req (or (eq field 1) (eq field 2)))
-    (let base:(ptr Token) (call token_at tokens_ptr idx))
-    (if (eq field 1)
-        (get base Token.a)
-        (get base Token.b)))
-
-  ;; Recursive-descent reader: consumes one atom or one balanced
-  ;; parenthesized/bracketed group starting at the current token index (held
-  ;; in the memory cell at state_ptr), returning the new node's pointer.
-  (fn parse_node [tokens_ptr:i32 token_count:i32 ast_buf:i32 state_ptr:i32] -> (ptr Node)
-    (req (gte tokens_ptr 0))
-    (req (gte ast_buf 0))
-    (req (gte state_ptr 0))
+  ;; Reads one atom, or one balanced group, at the current token.
+  (fn parse_node [p:(ptr Parser)] -> (ptr Node)
     (ens (neq res (ptr.null Node)))
-    (let idx:i32 (mem.load32 state_ptr))
-    (let kind:Kind (call tok_kind tokens_ptr idx))
-    (if (or (eq kind Kind.lparen) (eq kind Kind.lbracket))
-        (block
-          (let group_kind:Kind (if (eq kind Kind.lparen) Kind.paren Kind.bracket))
-          (let close_kind:Kind (if (eq kind Kind.lparen) Kind.rparen Kind.rbracket))
-          (mem.store32 state_ptr (+ idx 1))
-          (let first_child:(ptr Node) (ptr.null Node))
-          (let prev_child:(ptr Node) (ptr.null Node))
-          (let count:i32 0)
-          (while true
-            (let cur_idx:i32 (mem.load32 state_ptr))
-            (if (or (gte cur_idx token_count) (eq (call tok_kind tokens_ptr cur_idx) close_kind))
-                (break)
-                (block))
-            (let child:(ptr Node) (call parse_node tokens_ptr token_count ast_buf state_ptr))
-            (if (eq prev_child (ptr.null Node))
-                (set! first_child child)
-                (put prev_child Node.next child))
-            (set! prev_child child)
-            (set! count (+ count 1)))
-          (let idx2:i32 (mem.load32 state_ptr))
-          (if (lt idx2 token_count) (mem.store32 state_ptr (+ idx2 1)) (mem.store32 state_ptr idx2))
-          (call ast_alloc_node ast_buf group_kind (ptr.addr first_child) count))
-        (block
-          (let a:i32 (call tok_field tokens_ptr idx 1))
-          (let b:i32 (call tok_field tokens_ptr idx 2))
-          (mem.store32 state_ptr (+ idx 1))
-          (call ast_alloc_node ast_buf kind a b))))
+    (let t:(ptr Token) (call current p))
+    (let kind:Kind (get t Token.kind))
+    (put p Parser.pos (+ (get p Parser.pos) 1))
+    (if (and (neq kind Kind.lparen) (neq kind Kind.lbracket))
+        (return (call new_node p kind (get t Token.a) (get t Token.b)))
+        (block))
+    (let close:Kind (if (eq kind Kind.lparen) Kind.rparen Kind.rbracket))
+    (let first:(ptr Node) (ptr.null Node))
+    (let last:(ptr Node) (ptr.null Node))
+    (let n:i32 0)
+    (while (and (lt (get p Parser.pos) (get p Parser.count)) (neq (get (call current p) Token.kind) close))
+      (let child:(ptr Node) (call parse_node p))
+      (if (eq last (ptr.null Node)) (set! first child) (put last Node.next child))
+      (set! last child)
+      (set! n (+ n 1)))
+    ;; the closing bracket (absent at the end of an unbalanced input)
+    (if (lt (get p Parser.pos) (get p Parser.count)) (put p Parser.pos (+ (get p Parser.pos) 1)) (block))
+    (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) (ptr.addr first) n))
 
-  ;; Dynamic AST Parser Pass: turns a real token stream into a real tree.
+  ;; The tree of the token_count tokens at token_ptr, with its nodes in the
+  ;; buffer at ast_out_ptr.
   (fn parse_ast [token_ptr:i32 token_count:i32 ast_out_ptr:i32] -> (ptr Node)
     (req (gte token_ptr 0))
     (req (gte token_count 0))
     (req (gte ast_out_ptr 0))
     (ens (neq res (ptr.null Node)))
-    (mem.store32 (+ ast_out_ptr 0) 0)
-    (mem.store32 (+ ast_out_ptr 4) 0)
-    (call parse_node token_ptr token_count ast_out_ptr (+ ast_out_ptr 4)))
+    (let p:(ptr Parser) (new Parser))
+    (put p Parser.tokens token_ptr)
+    (put p Parser.count token_count)
+    (put p Parser.pos 0)
+    (put p Parser.ast ast_out_ptr)
+    (put p Parser.used 0)
+    (call parse_node p))
 
+  ;; ===== Self-tests: exact token and tree contents =====
 
-  ;; ===== Tokenizer self-tests (content assertions, not just shape checks) =====
-  ;; Each test builds a real source string byte-by-byte, tokenizes it, and checks
-  ;; the exact token count/kinds/values/text-offsets produced.
+  (fn kind_at [tok:i32 i:i32] -> Kind (get (call token_at tok i) Token.kind))
+  (fn a_at [tok:i32 i:i32] -> i32 (get (call token_at tok i) Token.a))
+  (fn b_at [tok:i32 i:i32] -> i32 (get (call token_at tok i) Token.b))
 
   (fn test_tokenize_signature [] -> i32
     (ens (eq res 1))
-    (let src1:i32 (mem.alloc 256))
-    (let tok1:i32 (mem.alloc 2048))
-    (mem.store8 (+ src1 0) 40) ;; '('
-    (mem.store8 (+ src1 1) 102) ;; 'f'
-    (mem.store8 (+ src1 2) 110) ;; 'n'
-    (mem.store8 (+ src1 3) 32) ;; ' '
-    (mem.store8 (+ src1 4) 97) ;; 'a'
-    (mem.store8 (+ src1 5) 100) ;; 'd'
-    (mem.store8 (+ src1 6) 100) ;; 'd'
-    (mem.store8 (+ src1 7) 32) ;; ' '
-    (mem.store8 (+ src1 8) 91) ;; '['
-    (mem.store8 (+ src1 9) 120) ;; 'x'
-    (mem.store8 (+ src1 10) 58) ;; ':'
-    (mem.store8 (+ src1 11) 105) ;; 'i'
-    (mem.store8 (+ src1 12) 51) ;; '3'
-    (mem.store8 (+ src1 13) 50) ;; '2'
-    (mem.store8 (+ src1 14) 32) ;; ' '
-    (mem.store8 (+ src1 15) 121) ;; 'y'
-    (mem.store8 (+ src1 16) 58) ;; ':'
-    (mem.store8 (+ src1 17) 105) ;; 'i'
-    (mem.store8 (+ src1 18) 51) ;; '3'
-    (mem.store8 (+ src1 19) 50) ;; '2'
-    (mem.store8 (+ src1 20) 93) ;; ']'
-    (mem.store8 (+ src1 21) 32) ;; ' '
-    (mem.store8 (+ src1 22) 45) ;; '-'
-    (mem.store8 (+ src1 23) 62) ;; '>'
-    (mem.store8 (+ src1 24) 32) ;; ' '
-    (mem.store8 (+ src1 25) 105) ;; 'i'
-    (mem.store8 (+ src1 26) 51) ;; '3'
-    (mem.store8 (+ src1 27) 50) ;; '2'
-    (mem.store8 (+ src1 28) 32) ;; ' '
-    (mem.store8 (+ src1 29) 40) ;; '('
-    (mem.store8 (+ src1 30) 43) ;; '+'
-    (mem.store8 (+ src1 31) 32) ;; ' '
-    (mem.store8 (+ src1 32) 120) ;; 'x'
-    (mem.store8 (+ src1 33) 32) ;; ' '
-    (mem.store8 (+ src1 34) 121) ;; 'y'
-    (mem.store8 (+ src1 35) 41) ;; ')'
-    (mem.store8 (+ src1 36) 41) ;; ')'
-    (let n:i32 (call tokenize src1 37 tok1))
-    (let t0_kind:Kind (get (call token_at tok1 0) Token.kind))
-    (let t1_ptr:(ptr Token) (call token_at tok1 1))
-    (let t1_kind:Kind (get t1_ptr Token.kind))
-    (let t1_a:i32 (get t1_ptr Token.a))
-    (let t1_b:i32 (get t1_ptr Token.b))
-    (let t11_ptr:(ptr Token) (call token_at tok1 11))
-    (let t11_kind:Kind (get t11_ptr Token.kind))
-    (let t18_ptr:(ptr Token) (call token_at tok1 18))
-    (let t18_kind:Kind (get t18_ptr Token.kind))
-    (let f_char:i32 (mem.load8 (+ src1 t1_a)))
-    (if (and (eq n 19) (and (eq t0_kind Kind.lparen) (and (eq t1_kind Kind.symbol) (and (eq t1_b 2) (and (eq f_char 102) (and (eq t11_kind Kind.arrow) (eq t18_kind Kind.rparen)))))))
+    (let src:str "(fn add [x:i32 y:i32] -> i32 (+ x y))")
+    (let tok:i32 (mem.alloc 2048))
+    (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
+    ;; ( fn add [ x : i32 y : i32 ] -> i32 ( + x y ) )
+    (if (and (eq n 19)
+             (and (eq (call kind_at tok 0) Kind.lparen)
+                  (and (eq (call kind_at tok 1) Kind.symbol)
+                       (and (call span_is (str.ptr src) (call a_at tok 1) (call b_at tok 1) "fn")
+                            (and (eq (call kind_at tok 11) Kind.arrow) (eq (call kind_at tok 18) Kind.rparen))))))
         1
         0))
 
   (fn test_tokenize_literals [] -> i32
-    (ens (eq res 1))
-    (let src2:i32 (mem.alloc 256))
-    (let tok2:i32 (mem.alloc 2048))
-    (mem.store8 (+ src2 0) 52) ;; '4'
-    (mem.store8 (+ src2 1) 50) ;; '2'
-    (mem.store8 (+ src2 2) 32) ;; ' '
-    (mem.store8 (+ src2 3) 45) ;; '-'
-    (mem.store8 (+ src2 4) 55) ;; '7'
-    (mem.store8 (+ src2 5) 32) ;; ' '
-    (mem.store8 (+ src2 6) 116) ;; 't'
-    (mem.store8 (+ src2 7) 114) ;; 'r'
-    (mem.store8 (+ src2 8) 117) ;; 'u'
-    (mem.store8 (+ src2 9) 101) ;; 'e'
-    (mem.store8 (+ src2 10) 32) ;; ' '
-    (mem.store8 (+ src2 11) 102) ;; 'f'
-    (mem.store8 (+ src2 12) 97) ;; 'a'
-    (mem.store8 (+ src2 13) 108) ;; 'l'
-    (mem.store8 (+ src2 14) 115) ;; 's'
-    (mem.store8 (+ src2 15) 101) ;; 'e'
-    (mem.store8 (+ src2 16) 32) ;; ' '
-    (mem.store8 (+ src2 17) 34) ;; '"'
-    (mem.store8 (+ src2 18) 104) ;; 'h'
-    (mem.store8 (+ src2 19) 105) ;; 'i'
-    (mem.store8 (+ src2 20) 34) ;; '"'
-    (mem.store8 (+ src2 21) 32) ;; ' '
-    (mem.store8 (+ src2 22) 59) ;; ';'
-    (mem.store8 (+ src2 23) 59) ;; ';'
-    (mem.store8 (+ src2 24) 32) ;; ' '
-    (mem.store8 (+ src2 25) 99) ;; 'c'
-    (mem.store8 (+ src2 26) 111) ;; 'o'
-    (mem.store8 (+ src2 27) 109) ;; 'm'
-    (mem.store8 (+ src2 28) 109) ;; 'm'
-    (mem.store8 (+ src2 29) 101) ;; 'e'
-    (mem.store8 (+ src2 30) 110) ;; 'n'
-    (mem.store8 (+ src2 31) 116) ;; 't'
-    (mem.store8 (+ src2 32) 10) ;; '\n'
-    (mem.store8 (+ src2 33) 57) ;; '9'
-    (mem.store8 (+ src2 34) 57) ;; '9'
-    (let n:i32 (call tokenize src2 35 tok2))
-    (let t0_kind:Kind (get (call token_at tok2 0) Token.kind))
-    (let t0_a:i32 (get (call token_at tok2 0) Token.a))
-    (let t1_ptr:(ptr Token) (call token_at tok2 1))
-    (let t1_kind:Kind (get t1_ptr Token.kind))
-    (let t1_a:i32 (get t1_ptr Token.a))
-    (let t2_ptr:(ptr Token) (call token_at tok2 2))
-    (let t2_kind:Kind (get t2_ptr Token.kind))
-    (let t2_a:i32 (get t2_ptr Token.a))
-    (let t3_ptr:(ptr Token) (call token_at tok2 3))
-    (let t3_kind:Kind (get t3_ptr Token.kind))
-    (let t3_a:i32 (get t3_ptr Token.a))
-    (let t4_ptr:(ptr Token) (call token_at tok2 4))
-    (let t4_kind:Kind (get t4_ptr Token.kind))
-    (let t4_a:i32 (get t4_ptr Token.a))
-    (let t4_b:i32 (get t4_ptr Token.b))
-    (let t5_ptr:(ptr Token) (call token_at tok2 5))
-    (let t5_kind:Kind (get t5_ptr Token.kind))
-    (let t5_a:i32 (get t5_ptr Token.a))
-    (let str_c0:i32 (mem.load8 (+ src2 t4_a)))
-    (let str_c1:i32 (mem.load8 (+ src2 (+ t4_a 1))))
-    (if (and (eq n 6) (and (eq t0_kind Kind.int) (and (eq t0_a 42) (and (eq t1_kind Kind.int) (and (eq t1_a -7) (and (eq t2_kind Kind.bool) (and (eq t2_a 1) (and (eq t3_kind Kind.bool) (and (eq t3_a 0) (and (eq t4_kind Kind.string) (and (eq t4_b 2) (and (eq str_c0 104) (and (eq str_c1 105) (and (eq t5_kind Kind.int) (eq t5_a 99)))))))))))))))
+    (let src:str "42 -7 true false \"hi\" ;; comment\n99")
+    (let tok:i32 (mem.alloc 2048))
+    (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
+    (if (and (eq n 6)
+             (and (and (eq (call kind_at tok 0) Kind.int) (eq (call a_at tok 0) 42))
+                  (and (and (eq (call kind_at tok 1) Kind.int) (eq (call a_at tok 1) -7))
+                       (and (and (eq (call kind_at tok 2) Kind.bool) (eq (call a_at tok 2) 1))
+                            (and (and (eq (call kind_at tok 3) Kind.bool) (eq (call a_at tok 3) 0))
+                                 (and (and (eq (call kind_at tok 4) Kind.string)
+                                           (call span_is (str.ptr src) (call a_at tok 4) (call b_at tok 4) "hi"))
+                                      (and (eq (call kind_at tok 5) Kind.int) (eq (call a_at tok 5) 99))))))))
         1
         0))
 
   (fn run_tokenizer_tests [] -> i32
     (ens (gte res 0))
-    (let p:i32 0)
-    (let r1:i32 (call test_tokenize_signature))
-    (if (eq r1 1) (set! p (+ p 1)) (block))
-    (let r2:i32 (call test_tokenize_literals))
-    (if (eq r2 1) (set! p (+ p 1)) (block))
-    p)
-
-  ;; ===== Parser self-tests (content assertions on the real tree shape) =====
+    (+ (call test_tokenize_signature) (call test_tokenize_literals)))
 
   (fn test_parse_simple_call [] -> i32
     (ens (eq res 1))
-    (let src:i32 (mem.alloc 256))
+    (let src:str "(+ 1 2)")
     (let tok:i32 (mem.alloc 2048))
-    (let ast:i32 (mem.alloc 4096))
-    (mem.store8 (+ src 0) 40) ;; '('
-    (mem.store8 (+ src 1) 43) ;; '+'
-    (mem.store8 (+ src 2) 32) ;; ' '
-    (mem.store8 (+ src 3) 49) ;; '1'
-    (mem.store8 (+ src 4) 32) ;; ' '
-    (mem.store8 (+ src 5) 50) ;; '2'
-    (mem.store8 (+ src 6) 41) ;; ')'
-    (let n:i32 (call tokenize src 7 tok))
-    (let root:(ptr Node) (call parse_ast tok n ast))
-    (let root_kind:Kind (get root Node.kind))
-    (let root_a:i32 (get root Node.a))
-    (let root_b:i32 (get root Node.b))
-    (let c0:(ptr Node) (ptr.cast Node root_a))
-    (let c0_kind:Kind (get c0 Node.kind))
-    (let c0_a:i32 (get c0 Node.a))
-    (let c0_b:i32 (get c0 Node.b))
+    (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
+    (let root:(ptr Node) (call parse_ast tok n (mem.alloc 4096)))
+    (let c0:(ptr Node) (ptr.cast Node (get root Node.a)))
     (let c1:(ptr Node) (get c0 Node.next))
-    (let c1_kind:Kind (get c1 Node.kind))
-    (let c1_a:i32 (get c1 Node.a))
     (let c2:(ptr Node) (get c1 Node.next))
-    (let c2_kind:Kind (get c2 Node.kind))
-    (let c2_a:i32 (get c2 Node.a))
-    (let c2_next:(ptr Node) (get c2 Node.next))
-    (let plus_char:i32 (mem.load8 (+ src c0_a)))
-    (if (and (eq n 5) (and (eq root_kind Kind.paren) (and (eq root_b 3) (and (eq c0_kind Kind.symbol) (and (eq c0_b 1) (and (eq plus_char 43) (and (eq c1_kind Kind.int) (and (eq c1_a 1) (and (eq c2_kind Kind.int) (and (eq c2_a 2) (eq c2_next (ptr.null Node))))))))))))
+    (if (and (eq n 5)
+             (and (and (eq (get root Node.kind) Kind.paren) (eq (get root Node.b) 3))
+                  (and (and (eq (get c0 Node.kind) Kind.symbol) (call span_is (str.ptr src) (get c0 Node.a) (get c0 Node.b) "+"))
+                       (and (and (eq (get c1 Node.kind) Kind.int) (eq (get c1 Node.a) 1))
+                            (and (and (eq (get c2 Node.kind) Kind.int) (eq (get c2 Node.a) 2))
+                                 (eq (get c2 Node.next) (ptr.null Node)))))))
         1
         0))
 
   (fn test_parse_nested [] -> i32
     (ens (eq res 1))
-    (let src:i32 (mem.alloc 256))
+    (let src:str "(fn add [x:i32] -> i32 x)")
     (let tok:i32 (mem.alloc 2048))
-    (let ast:i32 (mem.alloc 4096))
-    (mem.store8 (+ src 0) 40) ;; '('
-    (mem.store8 (+ src 1) 102) ;; 'f'
-    (mem.store8 (+ src 2) 110) ;; 'n'
-    (mem.store8 (+ src 3) 32) ;; ' '
-    (mem.store8 (+ src 4) 97) ;; 'a'
-    (mem.store8 (+ src 5) 100) ;; 'd'
-    (mem.store8 (+ src 6) 100) ;; 'd'
-    (mem.store8 (+ src 7) 32) ;; ' '
-    (mem.store8 (+ src 8) 91) ;; '['
-    (mem.store8 (+ src 9) 120) ;; 'x'
-    (mem.store8 (+ src 10) 58) ;; ':'
-    (mem.store8 (+ src 11) 105) ;; 'i'
-    (mem.store8 (+ src 12) 51) ;; '3'
-    (mem.store8 (+ src 13) 50) ;; '2'
-    (mem.store8 (+ src 14) 93) ;; ']'
-    (mem.store8 (+ src 15) 32) ;; ' '
-    (mem.store8 (+ src 16) 45) ;; '-'
-    (mem.store8 (+ src 17) 62) ;; '>'
-    (mem.store8 (+ src 18) 32) ;; ' '
-    (mem.store8 (+ src 19) 105) ;; 'i'
-    (mem.store8 (+ src 20) 51) ;; '3'
-    (mem.store8 (+ src 21) 50) ;; '2'
-    (mem.store8 (+ src 22) 32) ;; ' '
-    (mem.store8 (+ src 23) 120) ;; 'x'
-    (mem.store8 (+ src 24) 41) ;; ')'
-    (let n:i32 (call tokenize src 25 tok))
-    (let root:(ptr Node) (call parse_ast tok n ast))
-    (let root_kind:Kind (get root Node.kind))
-    (let root_b:i32 (get root Node.b))
-    (let c0:(ptr Node) (ptr.cast Node (get root Node.a)))
-    (let c1:(ptr Node) (get c0 Node.next))
-    (let c2:(ptr Node) (get c1 Node.next))
-    (let c2_kind:Kind (get c2 Node.kind))
-    (let c2_b:i32 (get c2 Node.b))
-    (let bc0:(ptr Node) (ptr.cast Node (get c2 Node.a)))
-    (let bc0_kind:Kind (get bc0 Node.kind))
-    (let bc0_a:i32 (get bc0 Node.a))
-    (let bc0_b:i32 (get bc0 Node.b))
-    (let bc1:(ptr Node) (get bc0 Node.next))
-    (let bc1_kind:Kind (get bc1 Node.kind))
-    (let bc2:(ptr Node) (get bc1 Node.next))
-    (let bc2_kind:Kind (get bc2 Node.kind))
-    (let bc2_a:i32 (get bc2 Node.a))
-    (let bc2_b:i32 (get bc2 Node.b))
-    (let bc2_next:(ptr Node) (get bc2 Node.next))
-    (let x_char:i32 (mem.load8 (+ src bc0_a)))
-    (if (and (eq n 12) (and (eq root_kind Kind.paren) (and (eq root_b 6) (and (eq c2_kind Kind.bracket) (and (eq c2_b 3) (and (eq bc0_kind Kind.symbol) (and (eq bc0_b 1) (and (eq x_char 120) (and (eq bc1_kind Kind.colon) (and (eq bc2_kind Kind.symbol) (and (eq bc2_a 11) (and (eq bc2_b 3) (eq bc2_next (ptr.null Node))))))))))))))
+    (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
+    (let root:(ptr Node) (call parse_ast tok n (mem.alloc 4096)))
+    ;; the third child is the parameter list [x:i32]
+    (let params:(ptr Node) (get (get (ptr.cast Node (get root Node.a)) Node.next) Node.next))
+    (let x:(ptr Node) (ptr.cast Node (get params Node.a)))
+    (let colon:(ptr Node) (get x Node.next))
+    (let ty:(ptr Node) (get colon Node.next))
+    (if (and (eq n 12)
+             (and (and (eq (get root Node.kind) Kind.paren) (eq (get root Node.b) 6))
+                  (and (and (eq (get params Node.kind) Kind.bracket) (eq (get params Node.b) 3))
+                       (and (call span_is (str.ptr src) (get x Node.a) (get x Node.b) "x")
+                            (and (eq (get colon Node.kind) Kind.colon)
+                                 (and (call span_is (str.ptr src) (get ty Node.a) (get ty Node.b) "i32")
+                                      (eq (get ty Node.next) (ptr.null Node))))))))
         1
         0))
 
   (fn run_parser_tests [] -> i32
     (ens (gte res 0))
-    (let p:i32 0)
-    (let r1:i32 (call test_parse_simple_call))
-    (if (eq r1 1) (set! p (+ p 1)) (block))
-    (let r2:i32 (call test_parse_nested))
-    (if (eq r2 1) (set! p (+ p 1)) (block))
-    p))
+    (+ (call test_parse_simple_call) (call test_parse_nested))))
