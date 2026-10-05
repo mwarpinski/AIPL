@@ -69,7 +69,7 @@
   (fn label_push [kind:i32] -> i32
     (let ls:i32 (call label_stack))
     (let n:i32 (mem.load32 ls))
-    (if (gte n 255) (return (call set_compile_error 100)) (block))
+    (if (gte n 255) (return (call set_compile_error CgErr.too_deeply_nested)) (block))
     (mem.store32 (+ ls (+ 4 (* n 4))) kind)
     (mem.store32 ls (+ n 1))
     0)
@@ -84,7 +84,7 @@
     (loop d 0 (- n 1) 1
       (let k:i32 (mem.load32 (+ ls (+ 4 (* (- (- n 1) d) 4)))))
       (if (or (eq k a) (eq k b)) (return d) (block)))
-    (call set_compile_error 101)
+    (call set_compile_error CgErr.jump_outside_loop)
     0)
   (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
@@ -340,7 +340,7 @@
               (if (eq head Kw.fn) (set! t Ty.fn) (block)))
             (block)))
     (if (eq t Ty.none)
-        (block (call set_compile_error 98) Ty.i32)
+        (block (call set_compile_error CgErr.unlowerable_type) Ty.i32)
         t))
 
   ;; The wasm value type byte: 0x7f i32, 0x7e i64, 0x7d f32, 0x7c f64.
@@ -349,8 +349,8 @@
       ((eq t Ty.i64) 126)
       ((eq t Ty.f32) 125)
       ((eq t Ty.f64) 124)
-      ((eq t Ty.void) (call set_compile_error 98) 127)
-      ((eq t Ty.none) (call set_compile_error 98) 127)
+      ((eq t Ty.void) (call set_compile_error CgErr.unlowerable_type) 127)
+      ((eq t Ty.none) (call set_compile_error CgErr.unlowerable_type) 127)
       (else 127)))
 
   ;; Block type byte for a value of this type: 0x40 (empty) for void.
@@ -363,7 +363,7 @@
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
   (fn elem_type_id [src_ptr:i32 node:(ptr compiler.Node)] -> Ty
     (let t:Ty (call type_node_id src_ptr node))
-    (if (call is_memory_type t) t (block (call set_compile_error 95) Ty.i32)))
+    (if (call is_memory_type t) t (block (call set_compile_error CgErr.not_a_memory_type) Ty.i32)))
   (fn type_size [t:Ty] -> i32 (if (or (eq t Ty.i64) (eq t Ty.f64)) 8 4))
   (fn mem_align [t:Ty] -> i32 (if (eq (call type_size t) 8) 3 2))
   (fn load_opcode [t:Ty] -> i32 (cond
@@ -389,7 +389,7 @@
                   (let fname_node:(ptr compiler.Node) (call nth_child child 1))
                   (let params_node:(ptr compiler.Node) (call nth_child child 2))
                   (let rettype_node:(ptr compiler.Node) (call nth_child child 4))
-                  (if (gte count 2048) (call set_compile_error 92) 0)
+                  (if (gte count 2048) (call set_compile_error CgErr.too_many_functions) 0)
                   (let entry:i32 (call func_entry_ptr func_table_base (if (gte count 2048) 2047 count)))
                   (mem.store32 (+ entry 0) (call node_a fname_node))
                   (mem.store32 (+ entry 4) (call node_b fname_node))
@@ -398,7 +398,7 @@
                   (mem.store32 (+ entry 20) (ptr.addr child))
                   (let pcount:i32 0)
                   (let pchild:(ptr compiler.Node) (call first_child params_node))
-                  (while (neq pchild (ptr.null compiler.Node)) (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error 92) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
+                  (while (neq pchild (ptr.null compiler.Node)) (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error CgErr.too_many_functions) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
                                        (enum.ord (call type_node_id src_ptr ptype_node))) (set! pcount (+ pcount 1)) (set! pchild (call node_next ptype_node)))
                   (mem.store32 (+ entry 8) pcount)
                   (set! count (+ count 1))
@@ -432,7 +432,7 @@
     (let existing:i32 (call find_local base count src_ptr name_ptr name_len))
     (if (eq existing -1)
         (block
-          (if (gte count 1024) (call set_compile_error 93) 0)
+          (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
           (let e:i32 (call locals_entry_ptr base (if (gte count 1024) 1023 count)))
           (mem.store32 (+ e 0) name_ptr)
           (mem.store32 (+ e 4) name_len)
@@ -457,7 +457,7 @@
   (fn add_hidden_if_new [src_ptr:i32 base:i32 name_ptr:i32 name_len:i32 marker:Ty] -> i32
     (let count:i32 (mem.load32 28))
     (if (gte (call find_hidden base count src_ptr name_ptr name_len marker) 0) (return 0) (block))
-    (if (gte count 1024) (call set_compile_error 93) 0)
+    (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
     (let e:i32 (call locals_entry_ptr base (if (gte count 1024) 1023 count)))
     (mem.store32 (+ e 0) name_ptr)
     (mem.store32 (+ e 4) name_len)
@@ -589,7 +589,7 @@
             (if seen_dot (set! frac (+ frac 1)) (block))))
       (set! i (+ i 1)))
     ;; sig <= 18 keeps m from overflowing i64; m <= 2^53 makes it an exact double
-    (if (or (gt sig 18) (or (gt m 9007199254740992i64) (gt frac 22))) (call set_compile_error 973) 0)
+    (if (or (gt sig 18) (or (gt m 9007199254740992i64) (gt frac 22))) (call set_compile_error CgErr.inexact_float_literal) 0)
     (let p:f64 (f64.convert_i64_s (call pow10_i64 (if (gt frac 18) 18 frac))))
     (if (gt frac 18) (set! p (* p (f64.convert_i64_s (call pow10_i64 (- frac 18))))) (block))
     (let v:f64 (/ (f64.convert_i64_s m) p))
@@ -812,7 +812,7 @@
     (block
       (let opc:i32 (call binop_opcode op_id t))
       (if (eq opc -1)
-          (block (call set_compile_error 99) 0)
+          (block (call set_compile_error CgErr.no_instruction_for_type) 0)
           (call emit_byte ptr opc))))))
 
   (fn emit_local_tee [ptr:i32 idx:i32] -> i32
@@ -902,7 +902,7 @@
           (block
             (let sname_node:(ptr compiler.Node) (call nth_child child 1))
             (let fields_bracket:(ptr compiler.Node) (call nth_child child 2))
-            (if (gte scount 255) (call set_compile_error 94) 0)
+            (if (gte scount 255) (call set_compile_error CgErr.table_full) 0)
             (let sentry:i32 (+ (+ st_base 16) (* (if (gte scount 255) 254 scount) 1040)))
             (mem.store32 (+ sentry 0) (call node_a sname_node))
             (mem.store32 (+ sentry 4) (call node_b sname_node))
@@ -916,9 +916,9 @@
               (let type_node:(ptr compiler.Node) (call node_next colon_node))
               (let fpos:i32 (call node_a fchild))
               (let flen:i32 (call node_b fchild))
-              (if (gte fcount 64) (call set_compile_error 94) 0)
+              (if (gte fcount 64) (call set_compile_error CgErr.table_full) 0)
               (let ftype:Ty (call type_node_id src_ptr type_node))
-              (if (call is_memory_type ftype) 0 (call set_compile_error 95))
+              (if (call is_memory_type ftype) 0 (call set_compile_error CgErr.not_a_memory_type))
               (let fsize:i32 (call type_size ftype))
               (if (gt fsize max_align) (set! max_align fsize) (block))
               (set! cur_offset (bitand (+ cur_offset (- fsize 1)) (- 0 fsize)))
@@ -963,11 +963,11 @@
 
   (fn get_struct_size [src_ptr:i32 s_pos:i32 s_len:i32] -> i32
     (let sentry:i32 (call find_struct src_ptr s_pos s_len))
-    (if (eq sentry 0) (block (call set_compile_error 96) 0) (mem.load32 (+ sentry 8))))
+    (if (eq sentry 0) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (mem.load32 (+ sentry 8))))
 
   (fn get_field_offset [src_ptr:i32 s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> i32
     (let fentry:i32 (call find_field src_ptr s_pos s_len f_pos f_len))
-    (if (eq fentry 0) (block (call set_compile_error 96) 0) (mem.load32 (+ fentry 8))))
+    (if (eq fentry 0) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (mem.load32 (+ fentry 8))))
 
   ;; The type of field S.f, or Ty.none if unknown.
   (fn get_field_type [src_ptr:i32 s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> Ty
@@ -980,9 +980,31 @@
     (+ n (call emit_byte (+ ptr n) 71)))
 
   ;; ===== Compile error signaling =====
+  ;; Compile errors (AIPL_SPEC.md 6.4). The host reads the number from cell 4,
+  ;; so the values are fixed.
+  (enum CgErr [(memory_cap 90)            ;; mem.grow refused: more than 1024 pages
+               (output_full 91)           ;; output or a function body passed 4 * src_len + 64 KiB
+               (too_many_functions 92)    ;; more than 2048 functions, or 16 parameters
+               (too_many_locals 93)       ;; more than 1024 locals in a function
+               (table_full 94)            ;; 255 structs, 64 fields, or 31 call_ref signatures
+               (not_a_memory_type 95)     ;; a field or element type that is not a scalar
+               (unknown_struct_or_field 96)
+               (wide_result_payload 97)   ;; an ok/err payload that is not 32-bit
+               (unlowerable_type 98)
+               (no_instruction_for_type 99) ;; e.g. % on f64, + on str
+               (too_deeply_nested 100)    ;; more than 255 nested blocks
+               (jump_outside_loop 101)
+               (too_many_literals 768)
+               (unknown_symbol 971)
+               (inexact_float_literal 973)
+               (unknown_enum_member 974)
+               (unknown_form 987)
+               (empty_expression 999)
+               (undefined_function 1452)])
+
   ;; Records the first error only: later errors are usually consequences of it.
-  (fn set_compile_error [code:i32] -> i32
-    (if (eq (mem.load32 4) 0) (mem.store32 4 code) (block))
+  (fn set_compile_error [e:CgErr] -> i32
+    (if (eq (mem.load32 4) 0) (mem.store32 4 (enum.ord e)) (block))
     0)
 
   (fn has_compile_error [] -> bool
@@ -997,7 +1019,7 @@
     (let have:i32 (* (mem.grow 0) 65536))
     (if (gt end have)
         (if (eq (mem.grow (+ (/ (- end have) 65536) 1)) -1)
-            (call set_compile_error 90)
+            (call set_compile_error CgErr.memory_cap)
             0)
         0)
     p)
@@ -1040,7 +1062,7 @@
     (if (neq existing -1) (return existing) (block))
     ;; the blob buffer and entry table are full: compile error 768
     (if (or (gt (+ (call get_str_blob_len) (+ 4 len)) 65536) (gte (call get_str_count) 1364))
-        (block (call set_compile_error 768) (return 1028))
+        (block (call set_compile_error CgErr.too_many_literals) (return 1028))
         (block))
     (let blob_len:i32 (call get_str_blob_len))
     (let addr:i32 (+ 1028 blob_len))
@@ -1231,7 +1253,7 @@
     (let n:i32 0)
     (let p:(ptr compiler.Node) (call first_child (call nth_child sig 1)))
     (while (neq p (ptr.null compiler.Node))
-      (if (lt n 16) (mem.store8 (+ out (+ 1 n)) (call type_id_to_valtype (call type_node_id src_ptr p))) (block (call set_compile_error 92) (block)))
+      (if (lt n 16) (mem.store8 (+ out (+ 1 n)) (call type_id_to_valtype (call type_node_id src_ptr p))) (block (call set_compile_error CgErr.too_many_functions) (block)))
       (set! n (+ n 1))
       (set! p (call node_next p)))
     (mem.store8 out n)
@@ -1262,7 +1284,7 @@
         (if (neq (mem.load8 (+ (call ref_sig_ptr i) b)) (mem.load8 (+ tmp b))) (set! same false) (block)))
       (if same (return i) (block)))
     ;; 32 signatures fit the 1024-byte ref state (8 + 32 x 20 bytes)
-    (if (gte count 31) (call set_compile_error 94) 0)
+    (if (gte count 31) (call set_compile_error CgErr.table_full) 0)
     (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
     (mem.store32 (+ (call ref_state) 4) (+ count 1))
     count)
@@ -1473,7 +1495,7 @@
   (fn compile_expr [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (if (eq node (ptr.null compiler.Node))
         (block
-          (let _e:i32 (call set_compile_error 999))
+          (let _e:i32 (call set_compile_error CgErr.empty_expression))
           0)
         (block
           (let kind:compiler.Kind (call node_kind node))
@@ -1488,7 +1510,7 @@
             ((eq kind compiler.Kind.symbol) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
                 (if (eq idx -1)
                     (block
-                      (let _e:i32 (call set_compile_error 971))
+                      (let _e:i32 (call set_compile_error CgErr.unknown_symbol))
                       (call emit_i32_const out_ptr 0))
                     (call emit_local_get out_ptr idx)))
             (else (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))
@@ -1507,7 +1529,7 @@
       ((eq kw Kw.match_result) (call compile_match_result src_ptr node out_ptr locals_base locals_count func_table_base func_count))
       ((eq kw Kw.cond) (call compile_cond_from src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
       ((neq kw Kw.none) (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count))
-      (else (let _e:i32 (call set_compile_error 987))
+      (else (let _e:i32 (call set_compile_error CgErr.unknown_form))
           (call emit_i32_const out_ptr 0))))
 
   (fn compile_match_result [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
@@ -1863,7 +1885,7 @@
         (block
           (let fname:(ptr compiler.Node) (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
-          (if (eq fidx -1) (call set_compile_error 1452) 0)
+          (if (eq fidx -1) (call set_compile_error CgErr.undefined_function) 0)
           (set! res (call emit_i32_const out_ptr fidx)))
         (block))
     (if (eq op_id Kw.call_ref) ;; call_ref sig f args... -> args, f, call_indirect
@@ -1901,7 +1923,7 @@
     (if (eq op_id Kw.ok) ;; ok
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
-              (call set_compile_error 97)
+              (call set_compile_error CgErr.wide_result_payload)
               0)
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
@@ -1921,7 +1943,7 @@
     (if (eq op_id Kw.err) ;; err
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
-              (call set_compile_error 97)
+              (call set_compile_error CgErr.wide_result_payload)
               0)
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
@@ -2258,7 +2280,7 @@
         (block
           (mem.store32 44 (call node_a fname_node))
           (mem.store32 48 (call node_b fname_node))
-          (let _e:i32 (call set_compile_error 1452))
+          (let _e:i32 (call set_compile_error CgErr.undefined_function))
           offset)
         (block
           (let import_cnt:i32 (mem.load32 32))
@@ -2392,7 +2414,7 @@
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
     (let plain:(ptr buf.Buf) (call buf.make (+ src_len 64)))
     (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make 64)))
-        (block (call set_compile_error 974) (return -1))
+        (block (call set_compile_error CgErr.unknown_enum_member) (return -1))
         (block))
     (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))
     (set! src_len (call buf.len plain))
@@ -2412,7 +2434,7 @@
           (set! worker_type (call worker_sig_index)))
         (block))
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
-    (if (gt (call heap_start) 1048576) (call set_compile_error 768) 0)
+    (if (gt (call heap_start) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
     (let _s:i32 (call collect_structs src_ptr root))
     (let import_count:i32 (mem.load32 32))
     (let func_count:i32 (call collect_functions src_ptr root (call fn_table)))
@@ -2780,7 +2802,7 @@
       (mem.store8 (+ fcode_scratch fcode_off) 11) (set! fcode_off (+ fcode_off 1)) ;; end
       
       ;; Encode function size prefix and append function code
-      (if (gt fcode_off cap) (call set_compile_error 91) 0)
+      (if (gt fcode_off cap) (call set_compile_error CgErr.output_full) 0)
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) fcode_off)))
       (set! i 0)
       (while (lt i fcode_off)
@@ -2869,7 +2891,7 @@
       (set! off (+ off 1))
       (set! i (+ i 1)))
 
-    (if (gt off cap) (call set_compile_error 91) 0)
+    (if (gt off cap) (call set_compile_error CgErr.output_full) 0)
     (mem.store32 60 out)
     (if (call has_compile_error) -1 off))
 
