@@ -31,27 +31,24 @@
              declared:(ptr (strmap.StrMap ast.Type))
              loop_depth:i32
              ret:ast.MaybeType
-             err:(ptr buf.Buf) failed:bool])
+             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
 
   ;; ===== Messages =====
 
   (fn s [b:(ptr buf.Buf) x:str] -> void (call buf.push_str b x))
   (fn by [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call buf.push_bytes b x))
 
-  ;; A message for the error at source offset `at`, starting "line:col: ".
+  ;; A message for the error at source offset `at` (the position goes with
+  ;; it to fail; front.aipl puts "line:col: " in front).
   (fn msg [c:(ptr C) at:i32] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make 128))
-    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get c C.src) at))
-    (call buf.push_int b (get lc compiler.LineCol.line))
-    (call buf.push_byte b 58)
-    (call buf.push_int b (get lc compiler.LineCol.col))
-    (call s b ": ")
-    b)
+    (put c C.last_at at)
+    (call buf.make 128))
 
   (fn fail [c:(ptr C) b:(ptr buf.Buf)] -> void
     (if (get c C.failed) (return) (block))
     (put c C.failed true)
-    (put c C.err b))
+    (put c C.err b)
+    (put c C.err_at (get c C.last_at)))
 
   (fn fail_str [c:(ptr C) at:i32 x:str] -> void
     (let b:(ptr buf.Buf) (call msg c at))
@@ -1552,8 +1549,11 @@
 
   ;; ===== Entry =====
 
+  ;; A rejected program's first error: where, and the message.
+  (struct Problem [at:i32 text:(ptr buf.Buf)])
+
   ;; Checks a parsed module: null if it type-checks, else the first error.
-  (fn check [src:i32 m:(ptr ast.Module)] -> (ptr buf.Buf)
+  (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
     (let c:(ptr C) (new C))
     (put c C.src src)
     (put c C.structs (call (strmap.make (ptr ast.StructDef)) 64))
@@ -1565,4 +1565,10 @@
     (put c C.ret (make ast.MaybeType.none))
     (put c C.failed false)
     (call check_module c m)
-    (if (get c C.failed) (get c C.err) (ptr.null buf.Buf))))
+    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (ptr.null Problem)))
+
+  (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem)
+    (let pr:(ptr Problem) (new Problem))
+    (put pr Problem.at at)
+    (put pr Problem.text text)
+    pr))

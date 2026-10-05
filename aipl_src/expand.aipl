@@ -15,10 +15,10 @@
   (struct X [src:i32 toks:i32 n:i32 out:i32 count:i32
              consts:(ptr (strmap.StrMap i32))
              enums:(ptr (strmap.StrMap (ptr (strmap.StrMap i32))))
-             spare:(ptr buf.Buf) err:(ptr buf.Buf) failed:bool])
+             spare:(ptr buf.Buf) err:(ptr buf.Buf) err_at:i32 failed:bool])
 
   ;; The result: the expanded tokens, or the first error.
-  (struct Expanded [toks:i32 n:i32 ok:bool err:(ptr buf.Buf)])
+  (struct Expanded [toks:i32 n:i32 ok:bool err:(ptr buf.Buf) err_at:i32])
 
   ;; ===== Tokens =====
 
@@ -68,15 +68,9 @@
 
   (fn fail [x:(ptr X) at_tok:i32 parts:(ptr buf.Buf)] -> void
     (if (get x X.failed) (return) (block))
-    (let b:(ptr buf.Buf) (call buf.make 96))
-    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get x X.src) (get (call tok x at_tok) compiler.Token.pos)))
-    (call buf.push_int b (get lc compiler.LineCol.line))
-    (call buf.push_byte b 58)
-    (call buf.push_int b (get lc compiler.LineCol.col))
-    (call buf.push_str b ": ")
-    (call buf.push_bytes b (call buf.bytes parts))
     (put x X.failed true)
-    (put x X.err b))
+    (put x X.err parts)
+    (put x X.err_at (get (call tok x at_tok) compiler.Token.pos)))
 
   (fn words [] -> (ptr buf.Buf) (call buf.make 96))
 
@@ -322,7 +316,7 @@
       (if (get x X.failed) (break) (block))
       (set! it (call elem_end x it)))
     (if (get x X.failed)
-        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (return r))
+        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (put r Expanded.err_at (get x X.err_at)) (return r))
         (block))
     (if (and (eq (call (strmap.count i32) (get x X.consts)) 0) (eq (call (strmap.count (ptr (strmap.StrMap i32))) (get x X.enums)) 0))
         (return r)
@@ -340,7 +334,7 @@
       (set! it (call elem_end x it)))
     (loop k it (- n 1) 1 (call emit x k (call pos x k)))
     (if (get x X.failed)
-        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (return r))
+        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (put r Expanded.err_at (get x X.err_at)) (return r))
         (block))
     (put r Expanded.toks (get x X.out))
     (put r Expanded.n (get x X.count))

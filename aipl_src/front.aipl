@@ -1,0 +1,47 @@
+;; The checking front end of the self-hosted toolchain, in one call: over a
+;; flat program (the resolver's output), tokenize, expand constants
+;; (expand.aipl), parse (parser.aipl), and type-check (checker.aipl). The
+;; result is null, or the first error as a checker.Problem: a source offset
+;; in that program and the message, which `render` turns into
+;; "line:col: message" (driver.aipl first maps the offset back to the file
+;; it came from).
+(module front
+  (import compiler)
+  (import parser)
+  (import expand)
+  (import checker)
+  (import buf)
+
+  (fn check [src:i32 len:i32] -> (ptr checker.Problem)
+    (let r:(ptr parser.Parsed) (call parse src len))
+    (if (get r parser.Parsed.ok)
+        (call checker.check src (get r parser.Parsed.module))
+        (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
+
+  ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.
+  (fn parse [src:i32 len:i32] -> (ptr parser.Parsed)
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    (if (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
+        (return (call parser.parse_tokens src toks n))
+        (block))
+    (let x:(ptr expand.Expanded) (call expand.expand src toks n))
+    (if (get x expand.Expanded.ok)
+        (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n))
+        (block
+          (let r:(ptr parser.Parsed) (new parser.Parsed))
+          (put r parser.Parsed.ok false)
+          (put r parser.Parsed.err (get x expand.Expanded.err))
+          (put r parser.Parsed.err_at (get x expand.Expanded.err_at))
+          r)))
+
+  ;; "line:col: message", counting in the text at src.
+  (fn render [src:i32 pr:(ptr checker.Problem)] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make 128))
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get pr checker.Problem.at)))
+    (call buf.push_int b (get lc compiler.LineCol.line))
+    (call buf.push_byte b 58)
+    (call buf.push_int b (get lc compiler.LineCol.col))
+    (call buf.push_str b ": ")
+    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+    b))

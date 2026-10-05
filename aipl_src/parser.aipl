@@ -24,7 +24,7 @@
              unions:(ptr (strmap.StrMap i32))
              forms:(ptr (strmap.StrMap Form))
              ops:(ptr (strmap.StrMap i32))
-             err:(ptr buf.Buf) failed:bool])
+             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
 
   ;; ===== Tokens =====
 
@@ -72,15 +72,11 @@
 
   ;; ===== Messages =====
 
-  ;; A message for the error at source offset `at`, starting "line:col: ".
+  ;; A message for the error at source offset `at` (the position goes with
+  ;; it to fail; front.aipl puts "line:col: " in front).
   (fn msg [p:(ptr P) at:i32] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make 96))
-    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get p P.src) at))
-    (call buf.push_int b (get lc compiler.LineCol.line))
-    (call buf.push_byte b 58)
-    (call buf.push_int b (get lc compiler.LineCol.col))
-    (call buf.push_str b ": ")
-    b)
+    (put p P.last_at at)
+    (call buf.make 96))
 
   ;; Records the first error and ends the parse.
   (fn fail [p:(ptr P) b:(ptr buf.Buf)] -> void
@@ -88,7 +84,8 @@
         (block)
         (block
           (put p P.failed true)
-          (put p P.err b)))
+          (put p P.err b)
+          (put p P.err_at (get p P.last_at))))
     (put p P.pos (get p P.n)))
 
   (fn fail_str [p:(ptr P) at:i32 s:str] -> void
@@ -879,7 +876,7 @@
   ;; ===== Entry =====
 
   ;; The result of a parse: the module, or the first error's message.
-  (struct Parsed [module:(ptr ast.Module) ok:bool err:(ptr buf.Buf)])
+  (struct Parsed [module:(ptr ast.Module) ok:bool err:(ptr buf.Buf) err_at:i32])
 
   ;; Parses the n tokens at toks (from compiler.tokenize over src). A bad
   ;; token (always last) is the tokenizer's error, reported first, as Rust's
@@ -906,11 +903,13 @@
           (put r Parsed.module (new ast.Module))
           (put r Parsed.ok false)
           (put r Parsed.err (get p P.err))
+          (put r Parsed.err_at (get p P.err_at))
           (return r))
         (block))
     (put r Parsed.module (call parse_module p))
     (put r Parsed.ok (not (get p P.failed)))
     (put r Parsed.err (get p P.err))
+    (put r Parsed.err_at (get p P.err_at))
     r)
 
   ;; src/parser.rs tokenize's messages for compiler.tokenize's bad token.

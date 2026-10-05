@@ -1,17 +1,16 @@
 ;; Entry points for tests/test_checker_aipl.rs: the AIPL front end
-;; (tokenizer, line_col, and later the parser and checker), callable from the
-;; VM with plain integers.
+;; (tokenizer, line_col, parser, printer, checker), callable with plain
+;; integers. Each writes [status addr len] at out: status 1 with the result
+;; text, or 0 with the error message ("line:col: ..." in the given text).
 (module frontend_host
   (import compiler)
   (import parser)
-  (import expand)
-  (import checker)
   (import printer)
+  (import checker)
+  (import front)
   (import buf)
   (import str)
 
-  ;; Where a result is: [status addr len] at out (status 1 = ok, 0 = error,
-  ;; with the error message in addr/len).
   (fn put_result [out:i32 ok:bool b:(ptr buf.Buf)] -> i32
     (let bs:(ptr str.Bytes) (call buf.bytes b))
     (mem.store32 out (if ok 1 0))
@@ -19,45 +18,23 @@
     (mem.store32 (+ out 8) (get bs str.Bytes.len))
     0)
 
-  ;; parser.aipl then printer.aipl over len bytes at src.
-  (fn parse_print [src:i32 len:i32 out:i32] -> i32
-    (let r:(ptr parser.Parsed) (call parser.parse src len))
+  (fn put_parsed [src:i32 out:i32 r:(ptr parser.Parsed)] -> i32
     (if (get r parser.Parsed.ok)
         (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
-        (call put_result out false (get r parser.Parsed.err))))
-  ;; The checker's front end over a flat program (constants and enums in
-  ;; it): tokenize, expand constants (expand.aipl), parse, then print.
-  (fn front [src:i32 len:i32] -> (ptr parser.Parsed)
-    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
-    (let n:i32 (call compiler.tokenize src len toks))
-    ;; a tokenizer error comes first, as in Rust
-    (if (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
-        (return (call parser.parse_tokens src toks n))
-        (block))
-    (let x:(ptr expand.Expanded) (call expand.expand src toks n))
-    (if (not (get x expand.Expanded.ok))
-        (block
-          (let r:(ptr parser.Parsed) (new parser.Parsed))
-          (put r parser.Parsed.ok false)
-          (put r parser.Parsed.err (get x expand.Expanded.err))
-          (return r))
-        (block))
-    (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n)))
+        (call put_result out false (call front.render src (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))))
 
-  (fn expand_print [src:i32 len:i32 out:i32] -> i32
-    (let r:(ptr parser.Parsed) (call front src len))
-    (if (get r parser.Parsed.ok)
-        (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
-        (call put_result out false (get r parser.Parsed.err))))
+  ;; parser.aipl then printer.aipl (no constant expansion).
+  (fn parse_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call parser.parse src len)))
 
-  ;; The whole front end: expand, parse, check. "ok", or the first error.
+  ;; expand.aipl, parser.aipl, then printer.aipl.
+  (fn expand_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call front.parse src len)))
+
+  ;; The whole front end: "ok", or the first error.
   (fn check_text [src:i32 len:i32 out:i32] -> i32
-    (let r:(ptr parser.Parsed) (call front src len))
-    (if (not (get r parser.Parsed.ok)) (return (call put_result out false (get r parser.Parsed.err))) (block))
-    (let e:(ptr buf.Buf) (call checker.check src (get r parser.Parsed.module)))
-    (if (eq e (ptr.null buf.Buf))
+    (let pr:(ptr checker.Problem) (call front.check src len))
+    (if (eq pr (ptr.null checker.Problem))
         (block (let okb:(ptr buf.Buf) (call buf.make 4)) (call buf.push_str okb "ok") (call put_result out true okb))
-        (call put_result out false e)))
+        (call put_result out false (call front.render src pr))))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
   (fn token_size [] -> i32 (sizeof compiler.Token))
