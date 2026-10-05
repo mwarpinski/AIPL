@@ -81,9 +81,9 @@ A `const` form, and an `enum` whose members are checked, would let the checker s
 *Fix:* make discarding a `result` an error unless it is wrapped in `(drop ...)`. Pass the errno through (as a `result` error or a second value). Lift the payload limit as part of sum types (S3).
 
 **D6. Integer and float coverage has holes that systems code hits.**
-- There are no unsigned comparisons. `std/bigint` works around this with 32-bit limbs in `i64`, and its header says why.
+- ~~There are no unsigned comparisons.~~ Done 2026-10-05: `ltu lteu gtu gteu` (AIPL_SPEC.md 8.2). `std/bigint` still uses 32-bit limbs in `i64`.
 - There are no 8- or 16-bit types, and `mem.load8` is unsigned only (`I32Load8U`).
-- There is no checked arithmetic. Wrapping is the only behaviour, in a language that prizes correctness. An `(add_checked a b)` that traps on overflow would cost little.
+- ~~There is no checked arithmetic.~~ Done 2026-10-05: `checked.add`, `checked.sub`, `checked.mul` stop the program on overflow in every backend.
 - `f32` exists without literals or conversions.
 - `mem.load_f32/f64` and `mem.store_f32/f64` are in the grammar and rejected by every backend.
 - `mem.free` is in the grammar and does nothing.
@@ -148,6 +148,8 @@ The rest of the toolchain written after P8 (resolver, native backend) is typed a
 - There are no enums (D4), no unions, and structs live only behind pointers (no by-value fields, no packed arrays of records).
 
 A single feature would fix most of this: tagged unions with exhaustive `match`, `result` redefined as one instance, and enums as the payload-free case. It would turn the largest class of compiler bugs into type errors.
+
+*Status 2026-10-05:* unions with exhaustive `match` (on unions and enums) are done (AIPL_SPEC.md 4.J), and `compiler.aipl`'s `Node.a` is no longer used two ways (a group's first child is a typed `first` field). Still open: `result` as a union instance (and so the 32-bit payload limit), generic unions, and moving the compiler's own AST onto unions.
 
 **S4. The safest backend is the one nobody runs.** The VM is the only place contracts and bounds checks execute (D1). It is also a tree-walker with string-keyed scopes, seconds where compiled code takes milliseconds, and it is still a third semantics (Rust strings for `str`, `sys.exit` as an error, `(+ str str)`). Every feature must still be implemented in it. Once contracts and bounds checks compile (D1), the VM has no unique job left except `aipl eval`/`aipl test`, which the compiled toolchain could do. Retiring it removes one column from S1.
 
