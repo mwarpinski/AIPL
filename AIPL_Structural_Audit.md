@@ -19,7 +19,7 @@ Sections 1–3 are the audit as written on 2026-09-17, and their line references
 | B7 fabrications in tree | Fixed (P1) |
 | B8 duplicated code | Fixed: `wasm_emitter.aipl` is in `attic/`; `compiler.aipl` holds the only `encode_u32`/`emit_header` |
 | B9 byte emission via `mem.store32` | Fixed (2026-10-01): `encode_u32` writes bytes with `mem.store8`; `emit_header` writes two aligned words |
-| B10 ELF backend | Retired (P1 quarantine, P13 strategy in `docs/NATIVE_TARGET.md`) |
+| B10 ELF backend | Old emitter retired (P1 quarantine; P13, `docs/NATIVE_TARGET.md`). Replaced from scratch by the wasm-to-x86-64 backend in `aipl_src/native/` (`docs/NATIVE_BACKEND_PLAN.md`, NE1–NE18 done 2026-10-04; `aipl compile --exe` uses it on Linux x86-64) |
 | B11 no positions | Fixed (P4) for parse and check errors; most VM runtime errors still have none (LANGUAGE_GAPS.md 1) |
 | B12 tokenizer edge cases | Fixed (P4, P6 escapes) |
 | B13 interpreter clones the body on every call | Fixed (2026-10-01): function bodies are shared (`Arc<FnDef>`), about 20% faster on the self-hosted toolchain. The VM is still a tree-walker with string-keyed scopes and is far slower than the compiled toolchain (N10) |

@@ -176,6 +176,22 @@ fn wasm_toolchain_compiles_a_multi_module_program() {
     }
 }
 
+/// The native backend (aipl_src/native/, reached through subdirectory
+/// imports) compiles to the Rust toolchain's bytes with the wasm toolchain.
+/// Run here, compiled, rather than in the VM like test_selfhost's parity
+/// list, because the backend is large.
+#[test]
+fn wasm_toolchain_compiles_the_native_backend() {
+    let driver = driver_wasm();
+    for rel in ["aipl_src/native/x64.aipl", "aipl_src/native/elf.aipl", "aipl_src/native/native.aipl"] {
+        match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+            wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+            wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+            wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+        }
+    }
+}
+
 /// The bootstrap fixpoint for the whole toolchain: the wasm driver compiles
 /// its own sources (driver, resolver, codegen, compiler, std) to exactly the
 /// bytes it was built from.

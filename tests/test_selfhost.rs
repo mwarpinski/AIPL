@@ -178,6 +178,49 @@ fn self_hosted_bytes_match_minimal() {
     assert_self_hosted_matches_rust("min", "(module min (fn f [] -> i32 42))");
 }
 
+/// String literals are interned by content, as wasm.rs does: a `"\n"`
+/// literal shares the newline `sys.print` reserves (codegen.aipl once gave it
+/// a second copy, found compiling aipl_src/native/native.aipl), and two
+/// spellings of the same text (an escape and the raw character) share one.
+#[test]
+fn self_hosted_bytes_match_strings_interned_by_content() {
+    assert_self_hosted_matches_rust("nl_after", "(module m (fn f [] -> i32 (sys.print \"a\") (str.len \"\\n\")))");
+    assert_self_hosted_matches_rust("nl_before", "(module m (fn f [] -> i32 (str.len \"\\n\") (sys.print \"a\") 0))");
+    assert_self_hosted_matches_rust("tab", "(module m (fn f [] -> i32 (+ (str.len \"\\t\") (str.len \"\t\"))))");
+    assert_self_hosted_matches_rust("repeat", "(module m (fn f [] -> i32 (+ (str.len \"ab\") (+ (str.len \"a\") (str.len \"ab\")))))");
+}
+
+/// Structs may have up to 64 fields in the self-hosted compiler (it was
+/// 15, which the native backend's translator state passed in NE8).
+#[test]
+fn self_hosted_bytes_match_a_wide_struct() {
+    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
+    let src = format!(
+        "(module wide (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W)) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
+        fields.join(" ")
+    );
+    assert_self_hosted_matches_rust("wide", &src);
+}
+
+/// Body items that are atoms, not groups. codegen.is_contract_head once read
+/// a bare number's value as a node address: harmless garbage for small
+/// numbers, a crash for any number past the end of memory (found compiling
+/// aipl_src/native/elf.aipl, whose `base_vaddr` returns 4194304).
+#[test]
+fn self_hosted_bytes_match_atom_bodies() {
+    assert_self_hosted_matches_rust(
+        "atoms",
+        "(module atoms
+           (fn big [] -> i32 4194304)
+           (fn past_memory [] -> i32 70000000)
+           (fn negative [] -> i32 -4096)
+           (fn wide [] -> i64 4294967297i64)
+           (fn name [x:i32] -> i32 x)
+           (fn text [] -> str \"hi\")
+           (fn after_contract [x:i32] -> i32 (req (gt x 0)) 2000000000))",
+    );
+}
+
 #[test]
 fn self_hosted_bytes_match_add() {
     assert_self_hosted_matches_rust("add", "(module add (fn add [a:i32 b:i32] -> i32 (+ a b)))");

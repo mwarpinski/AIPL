@@ -1,13 +1,13 @@
 # AIPL Language Gap Analysis
 
-What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
+What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
 
 ---
 
 ## 1. Toolchain
 
 - **The self-hosted toolchain has no type checker.** `aipl_src/driver.aipl` (resolver + codegen, a WASI command when compiled) compiles multi-file programs to the same bytes as the Rust toolchain, itself included, but it trusts its input: only the Rust checker type-checks. Float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973 (AIPL_SPEC.md 6.4).
-- **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (bundling the launcher and the module) is Rust; the planned fix is a launcher-provided import so the AIPL compiler can do it. Executables are built for the host's OS and CPU and are about 18 MB (wasmtime).
+- **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (native code on Linux x86-64, the launcher bundle elsewhere) is written by the Rust CLI, which also runs the AIPL native backend (`aipl_src/native/native.aipl`) in its embedded wasmtime; the planned fix is a host-provided import so the AIPL driver can do it. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two import resolvers.** `src/resolver.rs` serves `verify`, `eval`, `compile`, and `test`; `aipl_src/resolver.aipl` serves `compile --self` and the wasm toolchain. Tests hold them equal (AIPL_SPEC.md 11). The Rust one can go once the checker is also in AIPL, since the Rust checker consumes the Rust resolver's parsed module.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts, and nothing is proven statically (`aipl verify` says so).
@@ -21,6 +21,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
+- **No named constants.** A fixed value gets a name only through a zero-argument function, e.g. `(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`, called as `(call x64.cc_e)`. This works and costs a call; a `const` form (or enums, above) would let the checker see the value.
 - **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), `mem.load_f32/f64` and `mem.store_f32/f64` are rejected by both backends (use struct fields or arrays of `f64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 ## 3. Memory
@@ -33,7 +34,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-01. [AIPL_SPE
 ## 4. Strings and I/O
 
 - **No string concatenation in wasm.** `(+ str str)` is VM-only.
-- **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, number formatting and parsing (`str.parse_int`), a string builder (`buf`), and `i32` collections (`vec`, `map`, `strmap`); still missing are floats in text, sets, and anything generic.
+- **`sys.print` takes only `str` in wasm.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`, `strmap`); still missing are `i64` and floats in text (`aipl_src/native/wasm_reader.aipl` has its own `push_i64`), and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
 - **No dates or time zones, no sockets, no directory listing or file metadata.** The runtime surface is preopened files, stdio, args, environment, two clocks, and randomness (WASI preview1 has no listening sockets).
@@ -44,7 +45,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ## 6. Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 15 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
 
 ## 7. Before "many modules from many authors" is safe
 

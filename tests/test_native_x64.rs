@@ -13,7 +13,7 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::WasiCtxBuilder;
 
-const GROUPS: i32 = 6;
+const GROUPS: i32 = 9;
 
 fn encoder() -> aipl_core::ast::Module {
     let m = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/native/x64.aipl")).unwrap();

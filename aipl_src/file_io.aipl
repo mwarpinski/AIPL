@@ -1,19 +1,14 @@
-;; File I/O over fs.* (VM: std::fs; compiled: WASI)
-;; Thin AIPL wrappers over the real fs.open/fs.read/fs.write/fs.close opcodes.
-;; These opcodes perform genuine OS file I/O via Rust's std::fs in the VM
-;; (see src/vm.rs) - real syscalls, not a simulation. The previous version of
-;; this file claimed "bare-metal Linux syscall file operations" while its
-;; fs_read/fs_write bodies just echoed the byte-count argument back without
-;; touching any file - that has been replaced with the real opcodes below.
-;; The wasm backend does not support these yet (needs WASI file I/O imports);
-;; compiling a program that uses them to .wasm is a compile error, not a
-;; silent no-op - see src/compiler/wasm.rs.
+;; File I/O over fs.* (VM: std::fs; compiled: WASI path_open/fd_read/
+;; fd_write/fd_close/path_unlink_file; native: the same WASI functions as
+;; Linux system calls, aipl_src/native/wasi.aipl).
+;; Thin AIPL wrappers over the real fs.open/fs.read/fs.write/fs.close opcodes,
+;; which do genuine file I/O in every backend. (An early version of this file
+;; only echoed byte counts back without touching any file; see the audit.)
 
 (module file_io
 
   ;; path_ptr/path_len point at UTF-8 path bytes in linear memory (matching
-  ;; WASI's path_open convention, so this signature won't need to change once
-  ;; a wasm+WASI backend exists). flags: 0 = read-only, non-zero =
+  ;; WASI's path_open convention). flags: 0 = read-only, non-zero =
   ;; write/create/truncate. Returns a file descriptor, or -1 on error.
   (fn fs_open [path_ptr:i32 path_len:i32 flags:i32] -> i32
     (req (gte path_ptr 0))

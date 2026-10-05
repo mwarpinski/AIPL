@@ -30,7 +30,7 @@
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
   ;;   mem[4]  = compile error code (0 = none; codes in AIPL_SPEC.md 6.4)
-  ;;   mem[8]  = struct table pointer       (16-byte header, then 255 structs x 256 bytes: up to 15 fields)
+  ;;   mem[8]  = struct table pointer       (16-byte header, then 255 structs x 1040 bytes: up to 64 fields)
   ;;   mem[12] = string state block pointer (16384 bytes: blob len, count,
   ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
   ;;             the blob buffer holds 65536 bytes)
@@ -95,7 +95,7 @@
   (fn codegen_init [] -> i32
     (if (eq (mem.load32 16) 0)
         (block
-          (mem.store32 8 (mem.alloc 65536))
+          (mem.store32 8 (mem.alloc (+ 16 (* 255 1040))))
           (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (mem.alloc 1024))
           (mem.store32 20 (mem.alloc 180224))
@@ -549,7 +549,10 @@
           (while (neq child 0) (let _w:i32 (call collect_locals_walk src_ptr base child)) (set! child (call node_next child)))
           0)))
 
+  ;; Any body item may be an atom (a bare number, name, or string): its
+  ;; Node.a is a value, not a child address, so check the kind first.
   (fn is_contract_head [src_ptr:i32 group:i32] -> bool
+    (if (neq (call node_kind group) 20) (return false) (block))
     (let head:i32 (call node_a group))
     (if (neq (call node_kind head) 6)
         false
@@ -957,7 +960,7 @@
             (let sname_node:i32 (call nth_child child 1))
             (let fields_bracket:i32 (call nth_child child 2))
             (if (gte scount 255) (call set_compile_error 94) 0)
-            (let sentry:i32 (+ (+ st_base 16) (* (if (gte scount 255) 254 scount) 256)))
+            (let sentry:i32 (+ (+ st_base 16) (* (if (gte scount 255) 254 scount) 1040)))
             (mem.store32 (+ sentry 0) (call node_a sname_node))
             (mem.store32 (+ sentry 4) (call node_b sname_node))
             
@@ -970,13 +973,13 @@
               (let type_node:i32 (call node_next colon_node))
               (let fpos:i32 (call node_a fchild))
               (let flen:i32 (call node_b fchild))
-              (if (gte fcount 15) (call set_compile_error 94) 0)
+              (if (gte fcount 64) (call set_compile_error 94) 0)
               (let ftype:i32 (call type_node_id src_ptr type_node))
               (if (call is_memory_type ftype) 0 (call set_compile_error 95))
               (let fsize:i32 (call type_size ftype))
               (if (gt fsize max_align) (set! max_align fsize) (block))
               (set! cur_offset (bitand (+ cur_offset (- fsize 1)) (- 0 fsize)))
-              (let fentry:i32 (+ (+ sentry 16) (* (if (gte fcount 15) 14 fcount) 16)))
+              (let fentry:i32 (+ (+ sentry 16) (* (if (gte fcount 64) 63 fcount) 16)))
               (mem.store32 (+ fentry 0) fpos)
               (mem.store32 (+ fentry 4) flen)
               (mem.store32 (+ fentry 8) cur_offset)
@@ -998,7 +1001,7 @@
   ;; Struct table entry for a struct name, or 0.
   (fn find_struct [src_ptr:i32 s_pos:i32 s_len:i32] -> i32
     (loop i 0 (- (call get_struct_count) 1) 1
-      (let sentry:i32 (+ (+ (call struct_table) 16) (* i 256)))
+      (let sentry:i32 (+ (+ (call struct_table) 16) (* i 1040)))
       (if (call sym_eq src_ptr s_pos s_len (+ src_ptr (mem.load32 (+ sentry 0))) (mem.load32 (+ sentry 4)))
           (return sentry)
           (block)))
@@ -1069,6 +1072,26 @@
           (block)))
     -1)
 
+;; The address of an interned string whose bytes equal the `n` bytes at
+  ;; `bytes`, or -1. Each blob string is a 4-byte length, then its bytes; an
+  ;; address is 1028 + the offset of its bytes in the blob.
+  (fn find_interned_content [bytes:i32 n:i32] -> i32
+    (let blob:i32 (call str_blob_buf))
+    (let off:i32 0)
+    (let end:i32 (call get_str_blob_len))
+    (while (lt off end)
+      (let k:i32 (mem.load32 (+ blob off)))
+      (if (and (eq k n) (call bytes_equal (+ blob (+ off 4)) bytes n))
+          (return (+ 1028 off))
+          (block))
+      (set! off (+ off (+ 4 k))))
+    -1)
+
+  (fn bytes_equal [a:i32 b:i32 n:i32] -> bool
+    (loop i 0 (- n 1) 1
+      (if (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false) (block)))
+    true)
+
   (fn intern_string [src_ptr:i32 pos:i32 len:i32] -> i32
     (let existing:i32 (call find_interned_string src_ptr pos len))
     (if (neq existing -1) (return existing) (block))
@@ -1103,6 +1126,20 @@
             (mem.store8 (+ write_ptr decoded_len) b)
             (set! decoded_len (+ decoded_len 1))
             (set! i (+ i 1)))))
+    ;; Literals are interned by content, as wasm.rs string_layout does: if
+    ;; these bytes are already in the blob (another spelling of the same
+    ;; text, or the newline sys.print reserves), this spelling points there.
+    (let same:i32 (call find_interned_content write_ptr decoded_len))
+    (if (neq same -1)
+        (block
+          (let sc:i32 (call get_str_count))
+          (let e:i32 (call str_entry_ptr sc))
+          (mem.store32 (+ e 0) pos)
+          (mem.store32 (+ e 4) len)
+          (mem.store32 (+ e 8) same)
+          (call set_str_count (+ sc 1))
+          (return same))
+        (block))
     ;; Store length as 4 LE bytes at blob_ptr in heap memory
     (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
     (mem.store8 (+ blob_ptr 0) (bitand decoded_len 255))

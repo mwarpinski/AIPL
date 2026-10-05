@@ -13,6 +13,11 @@
 //! and `/` as fd 4 (so absolute paths work; `--sandbox` grants only the
 //! working directory), the wasi-threads `thread-spawn` import for threaded
 //! modules, and its exit status (`sys.exit`, or 0 when `_start` returns).
+//!
+//! A trap (or another runtime error) prints one line, `<argv[0]>: <reason>`
+//! (e.g. `prog: wasm trap: integer divide by zero`), and exits with 134, the
+//! same line a native executable prints. `AIPL_BACKTRACE=1` prints
+//! wasmtime's full report instead.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -99,7 +104,12 @@ fn status(r: wasmtime::Result<()>, argv0: &str) -> i32 {
         Err(e) => match e.downcast_ref::<I32Exit>() {
             Some(exit) => exit.0,
             None => {
-                eprintln!("{argv0}: {e:?}");
+                if std::env::var_os("AIPL_BACKTRACE").is_some_and(|v| v != "0") {
+                    eprintln!("{argv0}: {e:?}");
+                } else {
+                    // the innermost cause: a Trap displays as "wasm trap: <reason>"
+                    eprintln!("{argv0}: {}", e.root_cause());
+                }
                 134
             }
         },
