@@ -45,7 +45,7 @@
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
               structs:(arr (ptr StructInfo)) nstructs:i32
-              wasi:(arr i32) nimports:i32])
+              wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32])
 
   ;; The WASI functions a module may import, in the fixed import order of
   ;; wasm.rs enum Wasi.
@@ -80,6 +80,8 @@
     (put cg Cg.wasi (arr.new i32 13))
     (loop w 0 12 1 (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
+    (put cg Cg.labels (arr.new Label 255))
+    (put cg Cg.nlabels 0)
     cg)
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
@@ -101,30 +103,28 @@
   (fn ref_state [] -> i32 (mem.load32 (+ (call struct_table) 4)))
   (fn ref_sig_ptr [i:i32] -> i32 (+ (+ (call ref_state) 8) (* i 20)))
 
-  ;; Label stack, 1024 bytes, pointer kept at struct_table + 8: [count][kinds...]
-  ;; for the structured instructions around user code, innermost last, so
-  ;; break/continue can compute their branch depth (wasm.rs Label).
-  ;; Kinds: 0 if/else, 1 loop exit block (break), 2 loop header (while
-  ;; continue), 3 block around a loop body (loop continue).
-  (fn label_stack [] -> i32 (mem.load32 (+ (call struct_table) 8)))
-  (fn label_push [kind:i32] -> i32
-    (let ls:i32 (call label_stack))
-    (let n:i32 (mem.load32 ls))
+  ;; The structured instructions around the code being compiled, innermost
+  ;; last, so break and continue can compute their branch depth (wasm.rs
+  ;; Label): an if/else, the block a loop's break leaves, the loop a while's
+  ;; continue restarts, and the block around a loop body that a loop's
+  ;; continue leaves (falling into the step).
+  (enum Label [if_else loop_exit loop_header loop_body])
+
+  (fn label_push [cg:(ptr Cg) l:Label] -> i32
+    (let n:i32 (get cg Cg.nlabels))
     (if (gte n 255) (return (call set_compile_error CgErr.too_deeply_nested)) (block))
-    (mem.store32 (+ ls (+ 4 (* n 4))) kind)
-    (mem.store32 ls (+ n 1))
+    (arr.set Label (get cg Cg.labels) n l)
+    (put cg Cg.nlabels (+ n 1))
     0)
-  (fn label_pop [] -> i32
-    (let ls:i32 (call label_stack))
-    (mem.store32 ls (- (mem.load32 ls) 1))
+  (fn label_pop [cg:(ptr Cg)] -> i32
+    (put cg Cg.nlabels (- (get cg Cg.nlabels) 1))
     0)
-  ;; Branch depth to the innermost label of kind a or b (compile error 101 if none).
-  (fn label_depth [a:i32 b:i32] -> i32
-    (let ls:i32 (call label_stack))
-    (let n:i32 (mem.load32 ls))
+  ;; Branch depth to the innermost label a or b (compile error 101 if none).
+  (fn label_depth [cg:(ptr Cg) a:Label b:Label] -> i32
+    (let n:i32 (get cg Cg.nlabels))
     (loop d 0 (- n 1) 1
-      (let k:i32 (mem.load32 (+ ls (+ 4 (* (- (- n 1) d) 4)))))
-      (if (or (eq k a) (eq k b)) (return d) (block)))
+      (let l:Label (arr.get Label (get cg Cg.labels) (- (- n 1) d)))
+      (if (or (eq l a) (eq l b)) (return d) (block)))
     (call set_compile_error CgErr.jump_outside_loop)
     0)
   (fn kw [] -> i32 (mem.load32 16))
@@ -149,13 +149,11 @@
           (mem.store32 16 (ptr.addr (call new_keywords)))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
-          (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
           0)
         0)
 
     (mem.store32 4 0)
     (mem.store32 (call ref_state) 0)
-    (mem.store32 (call label_stack) 0)
     (mem.store32 (+ (call ref_state) 4) 0)
     (call set_str_blob_len 0)
     (call set_str_count 0)
@@ -1569,7 +1567,7 @@
     (mem.store8 (+ out_ptr off) 4)
     (mem.store8 (+ out_ptr (+ off 1)) block_ty)
     (set! off (+ off 2))
-    (call label_push 0)
+    (call label_push cg Label.if_else)
     (let ok_var_node:(ptr compiler.Node) (call nth_child ok_group 1))
     (let ok_var_idx:i32 (call find_local cg (call node_a ok_var_node) (call node_b ok_var_node)))
     (if (neq ok_var_idx -1)
@@ -1593,7 +1591,7 @@
         0)
     (let err_body_first:(ptr compiler.Node) (call node_next (call node_next (call first_child err_group))))
     (set! off (+ off (call compile_stmt_seq cg err_body_first (+ out_ptr off))))
-    (call label_pop)
+    (call label_pop cg)
     (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1))
     off)
 
@@ -1932,12 +1930,12 @@
     (if (eq op_id Kw.break) ;; break -> br to the innermost loop exit block
         (block
           (let n:i32 (call emit_byte out_ptr 12))
-          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 1 1)))))
+          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth cg Label.loop_exit Label.loop_exit)))))
         (block))
     (if (eq op_id Kw.continue) ;; continue -> br to the innermost loop header or loop-body block
         (block
           (let n:i32 (call emit_byte out_ptr 12))
-          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 2 3)))))
+          (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth cg Label.loop_header Label.loop_body)))))
         (block))
     (if (eq op_id Kw.ok) ;; ok
         (block
@@ -2261,7 +2259,7 @@
           (let off:i32 (call compile_expr cg (call nth_child node 1) out_ptr))
           (set! off (+ off (call emit_byte (+ out_ptr off) 4)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 127)))
-          (call label_push 0)
+          (call label_push cg Label.if_else)
           (if (eq op_id Kw.and)
               (block
                 (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
@@ -2271,7 +2269,7 @@
                 (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
                 (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
                 (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))))
-          (call label_pop)
+          (call label_pop cg)
           (set! res (+ off (call emit_byte (+ out_ptr off) 11))))
         (block))
 
@@ -2325,12 +2323,12 @@
     (mem.store8 (+ out_ptr off) 4)
     (mem.store8 (+ out_ptr (+ off 1)) block_ty)
     (set! off (+ off 2))
-    (call label_push 0)
+    (call label_push cg Label.if_else)
     (set! off (+ off (call compile_expr cg then_node (+ out_ptr off))))
     (mem.store8 (+ out_ptr off) 5)
     (set! off (+ off 1))
     (set! off (+ off (call compile_expr cg else_node (+ out_ptr off))))
-    (call label_pop)
+    (call label_pop cg)
     (mem.store8 (+ out_ptr off) 11)
     (set! off (+ off 1))
     off)
@@ -2343,15 +2341,15 @@
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
-    (call label_push 1)
-    (call label_push 2)
+    (call label_push cg Label.loop_exit)
+    (call label_push cg Label.loop_header)
     (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
     (set! off (+ off (call emit_byte (+ out_ptr off) 69)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 13)))
     (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1)))
     (set! off (+ off (call compile_all_stmts cg (call nth_child node 2) (+ out_ptr off))))
-    (call label_pop)
-    (call label_pop)
+    (call label_pop cg)
+    (call label_pop cg)
     (set! off (+ off (call emit_byte (+ out_ptr off) 12)))
     (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 0)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
@@ -2376,8 +2374,8 @@
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 3)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
-    (call label_push 1)
-    (call label_push 2)
+    (call label_push cg Label.loop_exit)
+    (call label_push cg Label.loop_header)
     (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
     (set! off (+ off (call emit_local_get (+ out_ptr off) end_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 74)))
@@ -2385,12 +2383,12 @@
     (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) 1)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
-    (call label_push 3)
+    (call label_push cg Label.loop_body)
     (set! off (+ off (call compile_all_stmts cg (call nth_child node 5) (+ out_ptr off))))
-    (call label_pop)
+    (call label_pop cg)
     (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
-    (call label_pop)
-    (call label_pop)
+    (call label_pop cg)
+    (call label_pop cg)
     (set! off (+ off (call emit_local_get (+ out_ptr off) var_idx)))
     (set! off (+ off (call emit_local_get (+ out_ptr off) step_idx)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
@@ -2418,11 +2416,11 @@
         (set! bt (call block_type_byte (call body_type cg body_first))))
     (set! off (+ off (call emit_byte (+ out_ptr off) 4)))
     (set! off (+ off (call emit_byte (+ out_ptr off) bt)))
-    (call label_push 0)
+    (call label_push cg Label.if_else)
     (set! off (+ off (call compile_stmt_seq cg body_first (+ out_ptr off))))
     (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
     (set! off (+ off (call compile_cond_from cg (call node_next clause) (+ out_ptr off))))
-    (call label_pop)
+    (call label_pop cg)
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
   (fn compile_function_body [cg:(ptr Cg) entry:(ptr FnInfo) out_ptr:i32] -> i32 (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node)) (let ret_type:Ty (get entry FnInfo.ret)) (let off:i32 0) (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5)) (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head cg bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) (ptr.null compiler.Node))) (let keep_value:bool (and is_last (neq ret_type Ty.void))) (let n:i32 (call compile_expr cg bchild (+ out_ptr off))) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node cg bchild))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
