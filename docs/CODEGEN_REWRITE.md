@@ -42,7 +42,24 @@ file type-checks, not when a search finds nothing.
 | CR6 | Tables as typed structs inside `Cg`: functions, locals, structs and fields, string literals, `call_ref` signatures, the label stack, WASI imports; `Cg` replaces runtime cells 8-32. Cells 4, 44, 48, and 60 stay, as the host interface | Done 2026-10-05 (CR6a-g): `FnInfo`, `Local`, `StructInfo`/`Field`, `Sig`, `StrLit` plus a `buf.Buf` blob, and enums `Wasi` and `Label`, all held by `Cg`. Cell 16 keeps the keyword map, which is built once and reused across compiles. Tables are bounded arrays, so counts stop at their limits after reporting the error (a new test checks errors 92 and 93). Raw memory operations fell from 422 to 252, nearly all of them now writing output bytes (CR7) or reading source bytes |
 | CR7 | Output: a buffer with a position instead of `out_ptr` arithmetic and returned byte counts; wasm opcodes and section ids as constants | Done 2026-10-05 except the opcode constants (moved to CR9). An `Out` cursor; every emitter and compile function appends to one; the module assembler builds each section in its own cursor (`emit_section`), function types through one `emit_func_type`, and the WASI signatures as a table (`wasi_sig`). Converted function by function with temporary old-style wrappers, all removed. Raw memory operations: 38 (from 422), reading source bytes and the host cells |
 | CR8 | compiler.aipl: tokens and nodes built with `new`/`put`, the token record read through a struct | Done 2026-10-05. Character codes are named constants (`CH_LPAREN`), keywords like `true` and `->` are matched against string literals (`span_is`), the parser's state is a `Parser` struct instead of two cells at the front of the node buffer, and the self-tests spell their inputs as string literals instead of byte codes. The dead `resolve_symbol_index` is gone. 535 to 321 lines; raw memory operations 150 to 17 |
-| CR9 | Documentation (AIPL_SPEC.md 6.4 and 7.9, LANGUAGE_GAPS.md 6), the audit, and a before/after comparison (size, speed of compiling the toolchain) | |
+| CR9 | Documentation (AIPL_SPEC.md 6.4 and 7.9, LANGUAGE_GAPS.md 6), the audit, and a before/after comparison (size, speed of compiling the toolchain) | Done 2026-10-05, with the opcode constants from CR7 (`OP_IF`, `OP_I32_ADD`, `BLOCK_EMPTY`, `VT_I32`, ...). Results below |
 
 Each step is one or more commits on `features/codegen-rewrite`, merged into
 `development` when the safety net is green.
+
+## Results
+
+| | Before (5e7aede) | After |
+|---|---|---|
+| codegen.aipl lines | 3077 | 2986 (including 70 lines of named opcodes and comments) |
+| raw `mem.load`/`mem.store` in codegen.aipl | 422 | 38 (reading source bytes, the host cells, `put_byte`) |
+| typed field accesses (`get`/`put`) in codegen.aipl | 0 | 281 |
+| compiler.aipl lines / raw memory operations | 535 / 150 | 321 / 17 |
+| the toolchain compiled to wasm (driver.aipl) | 105,058 bytes | 84,293 bytes |
+| the native compiler (`aipl compile --exe aipl_src/driver.aipl`) | 386 KB | 311 KB |
+| native compiler on driver.aipl / native.aipl / knucleotide.aipl | 0.124 / 0.102 / 0.023 s | 0.090 / 0.074 / 0.016 s (about 1.4x) |
+| test_selfhost (codegen run in the VM) | about 20 s | about 12 s |
+
+Output is byte-identical: both compilers produce the same bytes for the same input, and the Rust toolchain's.
+
+How it was done: mostly by scripts driven by the checker's errors (run `aipl verify`, fix what it reports at its position, repeat), with each kind of value moved to an enum or a typed pointer so the checker found every place that still treated it as a number. Byte parity after each batch caught every mistake the scripts made (a bridge rewrite that dropped calls, a misplaced bracket after a comment, a lost opcode before an immediate).

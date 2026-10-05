@@ -140,13 +140,10 @@
   (fn heap_start [cg:(ptr Cg)] -> i32 (bitand (+ 1031 (call buf.len (get cg Cg.blob))) -8))
 
   ;; Idempotent: allocates the tables on first call, and clears error flags.
+  ;; Builds the keyword map once (cell 16) and clears the error flag (cell 4);
+  ;; everything else a compile needs is in its Cg.
   (fn codegen_init [] -> i32
-    (if (eq (mem.load32 16) 0)
-        (block
-          (mem.store32 16 (ptr.addr (call new_keywords)))
-          0)
-        0)
-
+    (if (eq (mem.load32 16) 0) (mem.store32 16 (ptr.addr (call new_keywords))) (block))
     (mem.store32 4 0)
     0)
 

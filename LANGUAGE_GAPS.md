@@ -22,7 +22,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04 (after the
 - **Generics are explicit templates, not checked as such.** Every use names its type arguments (no inference), and a template is type-checked only through its instances, so an unused generic can hide errors. There are no constraints or interfaces: a generic body may do anything with `T` that its instances' types allow. `std/map` keys are `i32` only (no generic hashing yet).
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does), no unions (a field used two ways, like `compiler.aipl`'s `Node.a`, needs a cast), and no enums or general pattern matching (`match_result` is the only match).
 - **No visibility.** Every function and struct in every module is addressable by its qualified name.
-- **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
+- **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
 - **Constants are literals only.** `(const NAME:T literal)` (AIPL_SPEC.md 4.I) takes no expressions, not even another constant, and has no `f32` form. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`); converting them is part of the codegen rewrite.
 - **No unsigned comparisons** (`divu`, `remu`, and `shru` exist, but `lt`/`gt` are signed only), **no 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load), and **no checked arithmetic**: integer overflow always wraps, with no trapping or overflow-reporting form.
 - **No sum types.** Enums (AIPL_SPEC.md 4.I) name values but carry no data: a tag plus fields reused by cast still stands in for a tagged union (see the struct entry above), `result` is the only real one, and there is no `match` with exhaustiveness checking (`cond` over `eq` tests instead).
@@ -49,7 +49,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ## 6. Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
 
 ## 7. Before "many modules from many authors" is safe
 
