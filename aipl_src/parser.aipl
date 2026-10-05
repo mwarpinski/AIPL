@@ -30,7 +30,7 @@
 
   (fn tok [p:(ptr P) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get p P.toks) i))
   (fn kind_at [p:(ptr P) i:i32] -> compiler.Kind
-    (if (lt i (get p P.n)) (get (call tok p i) compiler.Token.kind) compiler.Kind.none))
+    (if (and (gte i 0) (lt i (get p P.n))) (get (call tok p i) compiler.Token.kind) compiler.Kind.none))
   (fn peek [p:(ptr P)] -> compiler.Kind (call kind_at p (get p P.pos)))
 
   ;; The next token's index, consumed, or -1 at the end.
