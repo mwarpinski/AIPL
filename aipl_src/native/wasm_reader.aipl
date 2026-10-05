@@ -681,13 +681,13 @@
         (block (call buf.push_str out "start ") (call buf.push_int out (get w Wasm.start)) (call buf.push_byte out 10))
         (block))
     (loop i 0 (- (call (vec.len (ptr Elem)) (get w Wasm.elems)) 1) 1
-      (let e:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
+      (let el:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
       (call buf.push_str out "elem offset ")
-      (call buf.push_int out (get e Elem.offset))
+      (call buf.push_int out (get el Elem.offset))
       (call buf.push_str out " funcs")
-      (loop k 0 (- (call (vec.len i32) (get e Elem.funcs)) 1) 1
+      (loop k 0 (- (call (vec.len i32) (get el Elem.funcs)) 1) 1
         (call buf.push_byte out 32)
-        (call buf.push_int out (call (vec.at i32) (get e Elem.funcs) k)))
+        (call buf.push_int out (call (vec.at i32) (get el Elem.funcs) k)))
       (call buf.push_byte out 10))
     (if (gte (get w Wasm.data_count) 0)
         (block (call buf.push_str out "datacount ") (call buf.push_int out (get w Wasm.data_count)) (call buf.push_byte out 10))

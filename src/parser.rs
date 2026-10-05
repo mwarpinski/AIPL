@@ -27,6 +27,9 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     last_pos: (u32, u32),
+    /// Names of the program's unions: a bare type name is a union if listed,
+    /// otherwise an enum (the checker reports unknown names).
+    unions: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -253,11 +256,21 @@ impl Parser {
     /// Parses an already-tokenized `(module ...)`. The resolver uses it to
     /// parse each item of a flattened program with its original positions.
     pub fn parse_tokens(tokens: Vec<Token>) -> Result<Module, String> {
-        let mut parser = Parser {
-            tokens,
-            pos: 0,
-            last_pos: (1, 1),
-        };
+        // the unions declared in these tokens: `( union NAME`
+        let unions = tokens
+            .windows(3)
+            .filter_map(|w| match (&w[0].kind, &w[1].kind, &w[2].kind) {
+                (TokenKind::LParen, TokenKind::Symbol(u), TokenKind::Symbol(n)) if u == "union" => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
+        Self::parse_tokens_with(tokens, unions)
+    }
+
+    /// parse_tokens for one item of a larger program, given the program's
+    /// union names (the resolver parses items one at a time).
+    pub fn parse_tokens_with(tokens: Vec<Token>, unions: std::collections::HashSet<String>) -> Result<Module, String> {
+        let mut parser = Parser { tokens, pos: 0, last_pos: (1, 1), unions };
         parser.parse_module()
     }
 
@@ -344,6 +357,7 @@ impl Parser {
         let mut imports = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut unions = Vec::new();
         let mut functions = Vec::new();
         while let Some(TokenKind::LParen) = self.peek_kind() {
             if self.is_import_ahead() {
@@ -352,6 +366,8 @@ impl Parser {
                 structs.push(self.parse_struct_def()?);
             } else if self.is_head_ahead("enum") {
                 enums.push(self.parse_enum_def()?);
+            } else if self.is_head_ahead("union") {
+                unions.push(self.parse_union_def()?);
             } else if self.is_head_ahead("const") {
                 let (l, c) = self.cur_pos();
                 return Err(format!(
@@ -377,8 +393,39 @@ impl Parser {
             imports,
             structs,
             enums,
+            unions,
             functions,
         })
+    }
+
+    /// `(union Name [(variant field:T ...) ...])`; a variant without fields
+    /// is `(variant)`.
+    fn parse_union_def(&mut self) -> Result<UnionDef, String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let span = (tok.line, tok.col);
+        self.next(); // `union`
+        let name = self.expect_symbol("union name", span)?;
+        self.expect_kind(TokenKind::LBracket)?;
+        let mut variants = Vec::new();
+        while !matches!(self.peek_kind(), Some(TokenKind::RBracket) | None) {
+            let (l, c) = self.cur_pos();
+            if self.peek_kind() != Some(&TokenKind::LParen) {
+                return Err(format!("{}:{}: a union variant is (name field:type ...), e.g. (circle radius:f64) or (empty)", l, c));
+            }
+            self.next();
+            let vname = self.expect_symbol("variant name", (l, c))?;
+            let mut fields = Vec::new();
+            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                let fname = self.expect_symbol("field name", (l, c))?;
+                self.expect_kind(TokenKind::Colon)?;
+                fields.push(StructField { name: fname, ty: self.parse_type()? });
+            }
+            self.expect_kind(TokenKind::RParen)?;
+            variants.push(Variant { name: vname, fields });
+        }
+        self.expect_kind(TokenKind::RBracket)?;
+        self.expect_kind(TokenKind::RParen)?;
+        Ok(UnionDef { name, variants, span })
     }
 
     fn is_head_ahead(&self, head: &str) -> bool {
@@ -739,7 +786,8 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "str" => Ok(Type::Str),
                 "void" => Ok(Type::Void),
-                // any other name is an enum type; the checker reports unknown ones
+                // any other name is a union or an enum type; the checker reports unknown ones
+                _ if self.unions.contains(&s) => Ok(Type::Union(s)),
                 _ if !s.is_empty() && !s.starts_with(|ch: char| ch.is_ascii_digit() || ch == '-') => Ok(Type::Enum(s)),
                 _ => Err(format!("{}:{}: Unknown scalar type: {}", line, col, s)),
             },
@@ -1044,6 +1092,55 @@ impl Parser {
                             };
                             let val = self.parse_expr()?;
                             Expr::Err(Box::new(val), explicit_ty, span)
+                        }
+                        "make" => {
+                            let target = self.expect_symbol("Union.variant in make", span)?;
+                            let Some(dot) = target.rfind('.') else {
+                                return Err(format!("{}:{}: make names a variant as Union.variant, got {}", span.0, span.1, target));
+                            };
+                            let mut args = Vec::new();
+                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                args.push(self.parse_expr()?);
+                            }
+                            Expr::Make { union_name: target[..dot].to_string(), variant: target[dot + 1..].to_string(), args, span }
+                        }
+                        "match" => {
+                            let value = self.parse_expr()?;
+                            let mut arms = Vec::new();
+                            let mut else_body = None;
+                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                let open = self.expect_kind(TokenKind::LParen)?;
+                                let arm_span = (open.line, open.col);
+                                let member = self.expect_symbol("Name.member or else in a match arm", arm_span)?;
+                                if else_body.is_some() {
+                                    return Err(format!("{}:{}: the (else ...) arm of a match comes last", arm_span.0, arm_span.1));
+                                }
+                                let binders = if self.peek_kind() == Some(&TokenKind::LBracket) {
+                                    self.next();
+                                    let mut names = Vec::new();
+                                    while !matches!(self.peek_kind(), Some(TokenKind::RBracket) | None) {
+                                        names.push(self.expect_symbol("a binder name", arm_span)?);
+                                    }
+                                    self.expect_kind(TokenKind::RBracket)?;
+                                    Some(names)
+                                } else {
+                                    None
+                                };
+                                let mut body = Vec::new();
+                                while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                    body.push(self.parse_expr()?);
+                                }
+                                self.expect_kind(TokenKind::RParen)?;
+                                if member == "else" {
+                                    if binders.is_some() {
+                                        return Err(format!("{}:{}: the else arm of a match binds nothing", arm_span.0, arm_span.1));
+                                    }
+                                    else_body = Some(body);
+                                } else {
+                                    arms.push(MatchArm { member, binders, body, span: arm_span });
+                                }
+                            }
+                            Expr::Match { value: Box::new(value), arms, else_body, span }
                         }
                         "block" => {
                             let mut body = Vec::new();

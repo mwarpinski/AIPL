@@ -42,6 +42,8 @@ impl WasmCompiler {
         for s in &module.structs {
             structs.insert(s.name.clone(), s.clone());
         }
+        let unions: HashMap<String, UnionDef> = module.unions.iter().map(|u| (u.name.clone(), u.clone())).collect();
+        let enums: HashMap<String, EnumDef> = module.enums.iter().map(|e| (e.name.clone(), e.clone())).collect();
 
         // 1. Build type section and function index mapping (after the imports)
         for (i, f) in module.functions.iter().enumerate() {
@@ -125,7 +127,7 @@ impl WasmCompiler {
         // 2. Build code section (body compilation)
         for f in &module.functions {
             let mut extra_lets = Vec::new();
-            collect_lets(&f.body, &mut extra_lets);
+            collect_lets(&f.body, &mut extra_lets, &unions);
 
             let mut local_map: HashMap<String, u32> = HashMap::new();
             let mut current_idx = 0;
@@ -181,6 +183,8 @@ impl WasmCompiler {
                 heap_start,
                 threaded,
                 structs: &structs,
+                unions: &unions,
+                enums: &enums,
                 fn_types: &fn_types,
                 import_count,
                 ref_sigs: &ref_sigs,
@@ -334,6 +338,8 @@ struct Ctx<'a> {
     /// The module spawns threads: runtime scratch cells are per thread.
     threaded: bool,
     structs: &'a HashMap<String, StructDef>,
+    unions: &'a HashMap<String, UnionDef>,
+    enums: &'a HashMap<String, EnumDef>,
     /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
     fn_types: &'a HashMap<String, Type>,
     import_count: u32,
@@ -412,6 +418,8 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
+        Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
+        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::GetField { struct_name, field_name, .. } => {
             if let Some(def) = ctx.structs.get(struct_name) {
                 if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name) {
@@ -702,12 +710,12 @@ fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Function) -
 /// node's own names first, then its children in source order. No wildcard:
 /// a new expression form must say what it declares and what it contains (a
 /// `(+ 1 (match_result ...))` once lost its arm variables to a `_` arm).
-fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
+fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap<String, UnionDef>) {
     for expr in exprs {
         match expr {
             Expr::Let { name, ty, val, .. } => {
                 lets.push((name.clone(), ty.clone()));
-                collect_lets(std::slice::from_ref(val.as_ref()), lets);
+                collect_lets(std::slice::from_ref(val.as_ref()), lets, unions);
             }
             // The induction variable is never declared via `let` but needs a
             // slot, and its end and step are evaluated once into two hidden
@@ -717,15 +725,15 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 lets.push((var.clone(), Type::I32));
                 lets.push((format!("{}#end", var), Type::I32));
                 lets.push((format!("{}#step", var), Type::I32));
-                collect_lets(&[*start.clone(), *end.clone(), *step.clone()], lets);
-                collect_lets(body, lets);
+                collect_lets(&[*start.clone(), *end.clone(), *step.clone()], lets, unions);
+                collect_lets(body, lets, unions);
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 lets.push((ok_var.clone(), Type::I32));
                 lets.push((err_var.clone(), Type::I32));
-                collect_lets(std::slice::from_ref(expr.as_ref()), lets);
-                collect_lets(ok_body, lets);
-                collect_lets(err_body, lets);
+                collect_lets(std::slice::from_ref(expr.as_ref()), lets, unions);
+                collect_lets(ok_body, lets, unions);
+                collect_lets(err_body, lets, unions);
             }
             Expr::Set { val: e, .. }
             | Expr::Ok(e, _, _)
@@ -735,34 +743,59 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
             | Expr::ArrNew { size: e, .. }
             | Expr::ArrLen { arr: e, .. }
             | Expr::Cast { addr: e, .. }
-            | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets),
+            | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets, unions),
             Expr::If { cond, then_branch, else_branch, .. } => {
-                collect_lets(&[*cond.clone(), *then_branch.clone(), *else_branch.clone()], lets);
+                collect_lets(&[*cond.clone(), *then_branch.clone(), *else_branch.clone()], lets, unions);
             }
             Expr::While { cond, body, .. } => {
-                collect_lets(std::slice::from_ref(cond.as_ref()), lets);
-                collect_lets(body, lets);
+                collect_lets(std::slice::from_ref(cond.as_ref()), lets, unions);
+                collect_lets(body, lets, unions);
             }
-            Expr::Block(body, _) => collect_lets(body, lets),
+            Expr::Block(body, _) => collect_lets(body, lets, unions),
+            // Every arm's binders first (a union arm binds its variant's
+            // fields, typed as declared), then the value, the arm bodies, and
+            // the else body.
+            Expr::Match { value, arms, else_body, .. } => {
+                for arm in arms {
+                    let Some(names) = &arm.binders else { continue };
+                    let dot = arm.member.rfind('.').unwrap_or(0);
+                    let fields = unions
+                        .get(&arm.member[..dot])
+                        .and_then(|u| u.variants.iter().find(|v| v.name == arm.member[dot + 1..]))
+                        .map(|v| v.fields.clone())
+                        .unwrap_or_default();
+                    for (n, f) in names.iter().zip(fields.iter()) {
+                        lets.push((n.clone(), f.ty.clone()));
+                    }
+                }
+                collect_lets(std::slice::from_ref(value.as_ref()), lets, unions);
+                for arm in arms {
+                    collect_lets(&arm.body, lets, unions);
+                }
+                if let Some(body) = else_body {
+                    collect_lets(body, lets, unions);
+                }
+            }
+            Expr::Make { args, .. } => collect_lets(args, lets, unions),
             Expr::Op { op: OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul, args, .. } => {
                 for n in CHECKED_LOCALS {
                     lets.push((n.to_string(), Type::I64));
                 }
-                collect_lets(args, lets)
+                collect_lets(args, lets, unions)
             }
-            Expr::Call { args, .. } | Expr::Op { args, .. } => collect_lets(args, lets),
+            Expr::Call { args, .. } | Expr::Op { args, .. } => collect_lets(args, lets, unions),
             Expr::CallRef { func, args, .. } => {
-                collect_lets(std::slice::from_ref(func.as_ref()), lets);
-                collect_lets(args, lets);
+                collect_lets(std::slice::from_ref(func.as_ref()), lets, unions);
+                collect_lets(args, lets, unions);
             }
             Expr::PutField { ptr, val, .. } => {
-                collect_lets(&[*ptr.clone(), *val.clone()], lets);
+                collect_lets(&[*ptr.clone(), *val.clone()], lets, unions);
             }
             Expr::ArrGet { ptr, index, .. } => {
-                collect_lets(&[*ptr.clone(), *index.clone()], lets);
+                collect_lets(&[*ptr.clone(), *index.clone()], lets, unions);
             }
             Expr::ArrSet { ptr, index, val, .. } => {
-                collect_lets(&[*ptr.clone(), *index.clone(), *val.clone()], lets);
+                collect_lets(&[*ptr.clone(), *index.clone(), *val.clone()], lets, unions);
             }
             Expr::Lit(..)
             | Expr::Var(..)
@@ -784,7 +817,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
         // Pointers, arrays, results, and function refs are i32 addresses/indices.
-        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => ValType::I32,
+        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
     }
 }
 
@@ -1458,6 +1491,8 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             ctx.labels.borrow_mut().pop();
             func.instruction(&Instruction::End);
         }
+        Expr::Make { union_name, variant, args, .. } => compile_make(union_name, variant, args, ctx, func)?,
+        Expr::Match { value, arms, else_body, .. } => compile_match(value, arms, else_body, ctx, func)?,
         Expr::NewStruct { struct_name, .. } => {
             let def = ctx
                 .structs
@@ -1482,7 +1517,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1532,7 +1567,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1652,7 +1687,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -1692,7 +1727,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 => {
@@ -1791,6 +1826,140 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
     Ok(())
 }
 
+/// The load of a memory value of type `ty` at `offset` from the address on the stack.
+fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
+    let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
+    Ok(match aipl_to_wasm_type(ty) {
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        ValType::I32 => Instruction::I32Load(m(2)),
+        ValType::I64 => Instruction::I64Load(m(3)),
+        ValType::F32 => Instruction::F32Load(m(2)),
+        ValType::F64 => Instruction::F64Load(m(3)),
+        other => return Err(format!("no memory layout for {:?}", other)),
+    })
+}
+
+/// The store of a value of type `ty` at `offset` from an address (stack: address, value).
+fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
+    let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
+    Ok(match aipl_to_wasm_type(ty) {
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        ValType::I32 => Instruction::I32Store(m(2)),
+        ValType::I64 => Instruction::I64Store(m(3)),
+        ValType::F32 => Instruction::F32Store(m(2)),
+        ValType::F64 => Instruction::F64Store(m(3)),
+        other => return Err(format!("no memory layout for {:?}", other)),
+    })
+}
+
+/// `(make U.v args...)`: claim the variant's cell from the heap cursor before
+/// evaluating the fields (the VM does the same), then store the tag and each
+/// field. The address is pushed n+2 times at once (the result, the tag store,
+/// one per field), so fields that use the scratch local cannot clobber it.
+/// The cell is fresh heap memory, so the stores need no write-address check.
+fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    let def = ctx.unions.get(union_name).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", union_name))?;
+    let tag = def.variants.iter().position(|v| v.name == variant).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", variant))?;
+    let v = &def.variants[tag];
+    let (offsets, size) = crate::checker::variant_layout(v)?;
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Const(round8(size as i32)));
+    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+    emit_grow_to_cursor(func);
+    for _ in 0..v.fields.len() + 2 {
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    }
+    func.instruction(&Instruction::I32Const(tag as i32));
+    func.instruction(&Instruction::I32Store(M4));
+    for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
+        compile_expr(a, ctx, func)?;
+        func.instruction(&store_instruction(&f.ty, off as u64)?);
+    }
+    Ok(())
+}
+
+/// The arm body whose last expression gives a match its type: the first
+/// arm's, or the else body's when there are no arms (the checker has made
+/// every arm agree).
+fn match_type_body<'e>(arms: &'e [MatchArm], else_body: &'e Option<Vec<Expr>>) -> &'e [Expr] {
+    match (arms.first(), else_body) {
+        (Some(arm), _) => &arm.body,
+        (None, Some(body)) => body,
+        (None, None) => &[],
+    }
+}
+
+/// `(match v arms... [(else ...)])`: v goes to the scratch local, then an
+/// if/else chain tests each arm in order (a union's tag at offset 0 of its
+/// cell, an enum's value) by reloading the scratch, before any arm body
+/// runs. A union arm loads its binders from the cell first. The chain ends
+/// in the else body, or in `unreachable` (only an enum.cast value that is no
+/// member gets there).
+fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    let body_of = match_type_body(arms, else_body);
+    let block_ty = match body_of.last() {
+        Some(e) if !is_void_expr(e, ctx) => wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(e, ctx))),
+        _ => wasm_encoder::BlockType::Empty,
+    };
+    let compile_body = |body: &[Expr], func: &mut Function| -> Result<(), String> {
+        for (i, stmt) in body.iter().enumerate() {
+            if i + 1 == body.len() && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
+                compile_expr(stmt, ctx, func)?;
+            } else {
+                compile_stmt(stmt, ctx, func)?;
+            }
+        }
+        Ok(())
+    };
+    compile_expr(value, ctx, func)?;
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+    for arm in arms {
+        let dot = arm.member.rfind('.').unwrap_or(0);
+        let (tname, member) = (&arm.member[..dot], &arm.member[dot + 1..]);
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+        let fields = if let Some(u) = ctx.unions.get(tname) {
+            let tag = u.variants.iter().position(|v| v.name == member).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", arm.member))?;
+            func.instruction(&Instruction::I32Load(M4));
+            func.instruction(&Instruction::I32Const(tag as i32));
+            Some(&u.variants[tag])
+        } else {
+            let e = ctx.enums.get(tname).ok_or_else(|| format!("Wasm Codegen: Unknown enum '{}'", tname))?;
+            let value = e.members.iter().find(|(m, _)| m == member).ok_or_else(|| format!("Wasm Codegen: Unknown member '{}'", arm.member))?.1;
+            func.instruction(&Instruction::I32Const(value as i32));
+            None
+        };
+        func.instruction(&Instruction::I32Eq);
+        func.instruction(&Instruction::If(block_ty));
+        ctx.labels.borrow_mut().push(Label::Plain);
+        if let (Some(v), Some(names)) = (fields, &arm.binders) {
+            let (offsets, _) = crate::checker::variant_layout(v)?;
+            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets) {
+                let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&load_instruction(&f.ty, off as u64)?);
+                if f.ty == Type::Bool {
+                    normalize_bool(func);
+                }
+                func.instruction(&Instruction::LocalSet(idx));
+            }
+        }
+        compile_body(&arm.body, func)?;
+        func.instruction(&Instruction::Else);
+    }
+    match else_body {
+        Some(body) => compile_body(body, func)?,
+        None => {
+            func.instruction(&Instruction::Unreachable);
+        }
+    }
+    for _ in arms {
+        ctx.labels.borrow_mut().pop();
+        func.instruction(&Instruction::End);
+    }
+    Ok(())
+}
+
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
@@ -1858,6 +2027,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         ),
         // Same rule as the block type compile_expr gives a match_result.
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(true, |e| is_void_expr(e, ctx)),
+        // Same rule as the block type compile_match gives a match.
+        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Make { .. } => false,
         Expr::Lit(..)
         | Expr::Var(..)
         | Expr::Ok(..)
@@ -2247,6 +2419,17 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
             for e in err_body {
+                walk_expr(e, visit);
+            }
+        }
+        Expr::Make { args, .. } => {
+            for a in args {
+                walk_expr(a, visit);
+            }
+        }
+        Expr::Match { value, arms, else_body, .. } => {
+            walk_expr(value, visit);
+            for e in arms.iter().flat_map(|a| a.body.iter()).chain(else_body.iter().flatten()) {
                 walk_expr(e, visit);
             }
         }

@@ -20,6 +20,10 @@ pub enum Type {
     /// A value of the enum named (`(enum Name [members])`, AIPL_SPEC.md 4.I):
     /// an `i32` at run time, a distinct type to the checker.
     Enum(String),
+    /// A value of the union named (`(union Name [(variant field:T ...) ...])`,
+    /// AIPL_SPEC.md 4.J): a tagged heap cell, never null; an `i32` address
+    /// at run time.
+    Union(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,6 +263,20 @@ pub enum Expr {
         addr: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(make Name.variant args...)`: a new union value of that variant.
+    Make {
+        union_name: String,
+        variant: String,
+        args: Vec<Expr>,
+        span: (u32, u32),
+    },
+    /// `(match v arms... [(else body...)])` over a union or an enum value.
+    Match {
+        value: Box<Expr>,
+        arms: Vec<MatchArm>,
+        else_body: Option<Vec<Expr>>,
+        span: (u32, u32),
+    },
     /// `(return v)` / `(return)`: leaves the function. Type void.
     Return {
         val: Option<Box<Expr>>,
@@ -323,6 +341,7 @@ impl Expr {
             Expr::Return { span, .. } => *span,
             Expr::Break(span) | Expr::Continue(span) => *span,
             Expr::CallRef { span, .. } => *span,
+            Expr::Make { span, .. } | Expr::Match { span, .. } => *span,
         }
     }
 }
@@ -336,6 +355,33 @@ pub enum AddrKind {
     Arr,
     /// `(enum.ord e)`
     Enum,
+}
+
+/// `(union Name [(variant field:T ...) ...])`: a value is one of the
+/// variants, carrying that variant's fields. Variants are numbered in order
+/// (the tag stored at offset 0 of the cell).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnionDef {
+    pub name: String,
+    pub variants: Vec<Variant>,
+    pub span: (u32, u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+/// One arm of a `match`: `(Name.member [binders] body...)` for a union
+/// (binders: the variant's fields, in order), `(Name.member body...)` for an
+/// enum (binders: None).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatchArm {
+    pub member: String,
+    pub binders: Option<Vec<String>>,
+    pub body: Vec<Expr>,
+    pub span: (u32, u32),
 }
 
 /// `(enum Name [a b (c 10) ...])`: named `i32` values. A member without a
@@ -382,5 +428,6 @@ pub struct Module {
     pub imports: Vec<Import>,
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
+    pub unions: Vec<UnionDef>,
     pub functions: Vec<FnDef>,
 }
