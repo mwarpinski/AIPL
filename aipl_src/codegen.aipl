@@ -45,7 +45,12 @@
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
               structs:(arr (ptr StructInfo)) nstructs:i32
-              wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32])
+              wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32
+              uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32])
+
+  ;; A call_ref signature as wasm sees it: parameter value-type bytes and an
+  ;; optional result (so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
+  (struct Sig [nparams:i32 params:(arr i32) has_result:bool result:i32])
 
   ;; The WASI functions a module may import, in the fixed import order of
   ;; wasm.rs enum Wasi.
@@ -82,26 +87,21 @@
     (put cg Cg.nimports 0)
     (put cg Cg.labels (arr.new Label 255))
     (put cg Cg.nlabels 0)
+    (put cg Cg.uses_refs false)
+    (put cg Cg.sigs (arr.new (ptr Sig) 31))
+    (put cg Cg.nsigs 0)
     cg)
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
-  ;;   mem[4]  = compile error code (0 = none; codes in AIPL_SPEC.md 6.4)
-  ;;   mem[8]  = header pointer (16 bytes: +4 call_ref signatures, +8 label stack, +12 WASI import indices; the structs are Cg.structs)
+  ;; The compile's state is in Cg. These cells remain:
+  ;;   mem[4]  = compile error code (0 = none; read by the host)
   ;;   mem[12] = string state block pointer (16384 bytes: blob len, count,
   ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
   ;;             the blob buffer holds 65536 bytes)
-  ;;   mem[16] = keyword table pointer      (1024 bytes)
-  ;;   mem[20] = unused (the function table is Cg.fns)
-  ;;   mem[24], mem[28] = unused (the locals are Cg.locals and Cg.nlocals)
-  ;;   mem[32] = WASI import count
-  ;;   mem[36..56] = unused (the WASI import indices moved to struct_table + 12)
-  ;;   mem[60] = compiled module output pointer
+  ;;   mem[16] = keyword map (Keywords)
+  ;;   mem[44], mem[48] = callee name span after compile error 1452 (read by the host)
+  ;;   mem[60] = compiled module output pointer (read by the host)
   (fn str_table_ptr [] -> i32 (mem.load32 12))
-  (fn struct_table [] -> i32 (mem.load32 8))
-  ;; Function-ref state, 1024 bytes, pointer kept at struct_table + 4:
-  ;; [uses_refs][sig_count][32 signatures x 20 bytes: nparams, params..., nresults, result]
-  (fn ref_state [] -> i32 (mem.load32 (+ (call struct_table) 4)))
-  (fn ref_sig_ptr [i:i32] -> i32 (+ (+ (call ref_state) 8) (* i 20)))
 
   ;; The structured instructions around the code being compiled, innermost
   ;; last, so break and continue can compute their branch depth (wasm.rs
@@ -144,17 +144,13 @@
   (fn codegen_init [] -> i32
     (if (eq (mem.load32 16) 0)
         (block
-          (mem.store32 8 (mem.alloc 16))
           (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (ptr.addr (call new_keywords)))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
-          (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           0)
         0)
 
     (mem.store32 4 0)
-    (mem.store32 (call ref_state) 0)
-    (mem.store32 (+ (call ref_state) 4) 0)
     (call set_str_blob_len 0)
     (call set_str_count 0)
     (call set_newline_addr 0)
@@ -1266,56 +1262,58 @@
 
   ;; Encodes a (fn [..] -> r) type node as [nparams, valtypes..., nresults, result]
   ;; at out (wasm-level, so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
-  (fn encode_sig [cg:(ptr Cg) sig:(ptr compiler.Node) out:i32] -> i32
+  ;; The wasm signature of a (fn [..] -> r) type node.
+  (fn encode_sig [cg:(ptr Cg) sig:(ptr compiler.Node)] -> (ptr Sig)
+    (let out:(ptr Sig) (new Sig))
+    (put out Sig.params (arr.new i32 16))
     (let n:i32 0)
     (let p:(ptr compiler.Node) (call first_child (call nth_child sig 1)))
     (while (neq p (ptr.null compiler.Node))
-      (if (lt n 16) (mem.store8 (+ out (+ 1 n)) (call type_id_to_valtype (call type_node_id cg p))) (block (call set_compile_error CgErr.too_many_functions) (block)))
+      (if (lt n 16)
+          (arr.set i32 (get out Sig.params) n (call type_id_to_valtype (call type_node_id cg p)))
+          (block (call set_compile_error CgErr.too_many_functions) (block)))
       (set! n (+ n 1))
       (set! p (call node_next p)))
-    (mem.store8 out n)
+    (put out Sig.nparams (if (lt n 16) n 16))
     (let ret:Ty (call type_node_id cg (call nth_child sig 3)))
-    (if (eq ret Ty.void)
-        (mem.store8 (+ out (+ 1 n)) 0)
-        (block
-          (mem.store8 (+ out (+ 1 n)) 1)
-          (mem.store8 (+ out (+ 2 n)) (call type_id_to_valtype ret))))
-    0)
+    (put out Sig.has_result (neq ret Ty.void))
+    (put out Sig.result (if (eq ret Ty.void) 0 (call type_id_to_valtype ret)))
+    out)
+
+  (fn sig_eq [a:(ptr Sig) b:(ptr Sig)] -> bool
+    (if (or (neq (get a Sig.nparams) (get b Sig.nparams))
+            (or (neq (get a Sig.has_result) (get b Sig.has_result)) (neq (get a Sig.result) (get b Sig.result))))
+        (return false)
+        (block))
+    (loop i 0 (- (get a Sig.nparams) 1) 1
+      (if (neq (arr.get i32 (get a Sig.params) i) (arr.get i32 (get b Sig.params) i)) (return false) (block)))
+    true)
+
+  ;; The index of a signature among the module's call_ref signatures, adding
+  ;; it if new (past 31: compile error 94).
+  (fn add_sig [cg:(ptr Cg) s:(ptr Sig)] -> i32
+    (let count:i32 (get cg Cg.nsigs))
+    (loop i 0 (- count 1) 1
+      (if (call sig_eq (arr.get (ptr Sig) (get cg Cg.sigs) i) s) (return i) (block)))
+    (if (gte count 31) (block (call set_compile_error CgErr.table_full) (return 30)) (block))
+    (arr.set (ptr Sig) (get cg Cg.sigs) count s)
+    (put cg Cg.nsigs (+ count 1))
+    count)
 
   ;; Index of the signature of a call_ref's type node, adding it if new.
   (fn sig_index [cg:(ptr Cg) sig:(ptr compiler.Node)] -> i32
-    (let tmp:i32 (call ref_sig_ptr 32))
-    ;; clear the 20-byte buffer: a shorter signature must not keep the tail of
-    ;; a longer earlier one, or identical signatures would not compare equal
-    (loop b 0 19 1 (mem.store8 (+ tmp b) 0))
-    (call encode_sig cg sig tmp)
-    (call add_sig_from_tmp))
-
-  ;; Index of the signature in the scratch buffer, adding it if new.
-  (fn add_sig_from_tmp [] -> i32
-    (let tmp:i32 (call ref_sig_ptr 32))
-    (let count:i32 (mem.load32 (+ (call ref_state) 4)))
-    (loop i 0 (- count 1) 1
-      (let same:bool true)
-      (loop b 0 19 1
-        (if (neq (mem.load8 (+ (call ref_sig_ptr i) b)) (mem.load8 (+ tmp b))) (set! same false) (block)))
-      (if same (return i) (block)))
-    ;; 32 signatures fit the 1024-byte ref state (8 + 32 x 20 bytes)
-    (if (gte count 31) (call set_compile_error CgErr.table_full) 0)
-    (loop b 0 19 1 (mem.store8 (+ (call ref_sig_ptr count) b) (mem.load8 (+ tmp b))))
-    (mem.store32 (+ (call ref_state) 4) (+ count 1))
-    count)
+    (call add_sig cg (call encode_sig cg sig)))
 
   ;; Threaded modules call workers through the table as (fn [i32] -> i32);
   ;; registered after the walk, as wasm.rs appends it. Returns its index.
-  (fn worker_sig_index [] -> i32
-    (let tmp:i32 (call ref_sig_ptr 32))
-    (loop b 0 19 1 (mem.store8 (+ tmp b) 0))
-    (mem.store8 tmp 1)
-    (mem.store8 (+ tmp 1) 127)
-    (mem.store8 (+ tmp 2) 1)
-    (mem.store8 (+ tmp 3) 127)
-    (call add_sig_from_tmp))
+  (fn worker_sig_index [cg:(ptr Cg)] -> i32
+    (let w:(ptr Sig) (new Sig))
+    (put w Sig.params (arr.new i32 1))
+    (arr.set i32 (get w Sig.params) 0 127)
+    (put w Sig.nparams 1)
+    (put w Sig.has_result true)
+    (put w Sig.result 127)
+    (call add_sig cg w))
 
   ;; Marks the module as using function refs and collects call_ref signatures
   ;; in source order, as wasm.rs walk_module does.
@@ -1323,7 +1321,7 @@
     (if (eq (call node_kind node) compiler.Kind.paren)
         (block
           (let kw:Kw (call group_head_keyword cg node))
-          (if (or (eq kw Kw.ref) (eq kw Kw.call_ref)) (mem.store32 (call ref_state) 1) (block))
+          (if (or (eq kw Kw.ref) (eq kw Kw.call_ref)) (put cg Cg.uses_refs true) (block))
           (if (eq kw Kw.call_ref) (call sig_index cg (call nth_child node 1)) 0)
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node))
@@ -2448,8 +2446,8 @@
     (let worker_type:i32 0)
     (if (call threaded cg)
         (block
-          (mem.store32 (call ref_state) 1)
-          (set! worker_type (call worker_sig_index)))
+          (put cg Cg.uses_refs true)
+          (set! worker_type (call worker_sig_index cg)))
         (block))
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
     (if (gt (call heap_start) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
@@ -2468,8 +2466,8 @@
 
     ;; 1. Type Section (Section ID 1)
     (let sc_off:i32 0)
-    (let sig_count:i32 (mem.load32 (+ (call ref_state) 4)))
-    (let uses_refs:bool (neq (mem.load32 (call ref_state)) 0))
+    (let sig_count:i32 (get cg Cg.nsigs))
+    (let uses_refs:bool (get cg Cg.uses_refs))
     (let total_types:i32 (+ import_count (+ func_count sig_count)))
     (if (call threaded cg) (set! total_types (+ total_types 2)) (block))
     ;; a zero-argument main and no _start: an automatic _start (wasm.rs auto_start)
@@ -2551,16 +2549,15 @@
 
     ;; call_ref signature types, after the function types (wasm.rs ref_sigs)
     (loop si 0 (- sig_count 1) 1
-      (let sp:i32 (call ref_sig_ptr si))
-      (let np:i32 (mem.load8 sp))
+      (let sg:(ptr Sig) (arr.get (ptr Sig) (get cg Cg.sigs) si))
+      (let np:i32 (get sg Sig.nparams))
       (mem.store8 (+ scratch sc_off) 96) (set! sc_off (+ sc_off 1))
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) np)))
-      (loop pi 1 np 1
-        (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp pi))) (set! sc_off (+ sc_off 1)))
-      (let nr:i32 (mem.load8 (+ sp (+ 1 np))))
-      (mem.store8 (+ scratch sc_off) nr) (set! sc_off (+ sc_off 1))
-      (if (eq nr 1)
-          (block (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp (+ 2 np)))) (set! sc_off (+ sc_off 1)))
+      (loop pi 0 (- np 1) 1
+        (mem.store8 (+ scratch sc_off) (arr.get i32 (get sg Sig.params) pi)) (set! sc_off (+ sc_off 1)))
+      (mem.store8 (+ scratch sc_off) (if (get sg Sig.has_result) 1 0)) (set! sc_off (+ sc_off 1))
+      (if (get sg Sig.has_result)
+          (block (mem.store8 (+ scratch sc_off) (get sg Sig.result)) (set! sc_off (+ sc_off 1)))
           (block)))
     ;; threaded: the start function [] -> [] and wasi_thread_start [i32 i32] -> []
     (if (call threaded cg)
