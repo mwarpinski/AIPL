@@ -1036,3 +1036,57 @@ fn self_hosted_compiler_reproduces_itself_under_wasmtime() {
     memory.read(&store, u32::from_le_bytes(word) as usize, &mut stage2).unwrap();
     assert!(stage2 == stage1, "stage 2 ({} bytes) differs from stage 1 ({} bytes)", stage2.len(), stage1.len());
 }
+
+/// Constants and enums (AIPL_SPEC.md 4.I): consts.aipl erases them before
+/// codegen; the Rust toolchain keeps enums as types for its checker. Both
+/// must emit the same bytes: constants of every kind (a string constant is
+/// interned like the literal), enum types in parameters, results, struct
+/// fields, arrays, and function references, members with explicit values,
+/// enum.cast and enum.ord.
+#[test]
+fn self_hosted_bytes_match_consts_and_enums() {
+    assert_self_hosted_matches_rust(
+        "consts_enums",
+        "(module ce
+  (const LIMIT:i32 -12)
+  (const WIDE:i64 4294967296i64)
+  (const HALF:f64 0.5)
+  (const YES:bool true)
+  (const WORD:str \"word\")
+  (enum Kind [atom (group 20) square])
+  (struct Node [kind:Kind next:i32])
+  (fn kind_of [n:(ptr Node)] -> Kind (get n Node.kind))
+  (fn same [a:Kind b:Kind] -> bool (eq a b))
+  (fn bump [k:Kind] -> (result Kind i32) (ok (enum.cast Kind (+ (enum.ord k) 1))))
+  (fn main [] -> i32
+    (let n:(ptr Node) (new Node))
+    (put n Node.kind Kind.group)
+    (let ks:(arr Kind) (arr.new Kind 3))
+    (arr.set Kind ks 2 Kind.square)
+    (let f:(fn [Kind Kind] -> bool) (ref same))
+    (let w:str WORD)
+    (+ (str.len w)
+       (+ (match_result (call bump (call kind_of n)) (ok k (enum.ord k)) (err e 0))
+          (+ (if (call_ref (fn [Kind Kind] -> bool) f (arr.get Kind ks 2) Kind.square) LIMIT 0)
+             (+ (i32.wrap (/ WIDE 65536i64)) (if YES (i32.wrap (i64.trunc_f64_s (* HALF 10.0))) 0)))))))",
+    );
+}
+
+/// Locals declared inside operands, loop bounds, and a match_result's matched
+/// expression are numbered in the same order by both compilers (a pre-order
+/// walk); see tests/test_differential.rs NESTED_LOCALS.
+#[test]
+fn self_hosted_bytes_match_nested_locals() {
+    assert_self_hosted_matches_rust(
+        "nested_locals",
+        "(module nested
+  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok n) (err n)))
+  (fn main [] -> i32
+    (let total:i32 0)
+    (loop i 0 (block (let last:i32 3) last) 1
+      (set! total (+ total (match_result (call g i) (ok k (+ k 1)) (err e (- e 1))))))
+    (+ total
+       (+ (block (let x:i32 40) (+ x 2))
+          (match_result (block (let y:i32 5) (call g y)) (ok v (* v 100)) (err w 0))))))",
+    );
+}

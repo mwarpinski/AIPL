@@ -56,7 +56,8 @@ struct ModuleSx {
 }
 
 impl Resolver {
-    /// Reads `entry_path`, resolves its imports, expands generics, and returns
+    /// Reads `entry_path`, resolves its imports, expands generics, constants,
+    /// and enum members, and returns
     /// one flat `Module` for the checker, the VM, and the wasm backend.
     pub fn resolve(entry_path: &Path) -> Result<Module, String> {
         let entry_src = fs::read_to_string(entry_path)
@@ -83,10 +84,12 @@ impl Resolver {
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], functions: vec![] };
+        let flat = crate::consts::expand(flat)?;
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], functions: vec![] };
         for item in flat.structs.iter().chain(flat.fns.iter()) {
             let parsed = parse_item(&flat.name, item)?;
             module.structs.extend(parsed.structs);
+            module.enums.extend(parsed.enums);
             module.functions.extend(parsed.functions);
         }
         Ok(module)
@@ -223,6 +226,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         prefix: prefix.clone(),
         fns: HashSet::new(),
         structs: HashSet::new(),
+        decls: HashSet::new(),
         own_templates: HashSet::new(),
         aliases: module.imports.iter().filter_map(|(m, a)| a.clone().map(|a| (a, module_name(m).to_string()))).collect(),
         known_templates: &st.templates,
@@ -232,6 +236,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
             match item.head() {
                 Some("fn") => names.fns.insert(n.to_string()),
                 Some("struct") => names.structs.insert(n.to_string()),
+                Some("const" | "enum") => names.decls.insert(n.to_string()),
                 _ => false,
             };
             if generic {
@@ -251,7 +256,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     for mut item in module.items {
         names.walk(&mut item, 0);
         let it = Item { sx: item, file: file.to_path_buf() };
-        if it.sx.head() == Some("struct") {
+        if matches!(it.sx.head(), Some("struct" | "const" | "enum")) {
             out_structs.push(it);
         } else {
             out_fns.push(it);
@@ -264,10 +269,15 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
 
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
 /// none, 1 function name, 2 struct name, 3 field reference `S.f`.
+/// Constants and enums are renamed wherever their names appear (a constant
+/// may not double as a variable name, and enum names are types), as are
+/// `alias.x` names in any position.
 struct Names<'a> {
     prefix: Option<String>,
     fns: HashSet<String>,
     structs: HashSet<String>,
+    /// The module's constants and enums.
+    decls: HashSet<String>,
     own_templates: HashSet<String>,
     aliases: HashMap<String, String>,
     known_templates: &'a HashSet<String>,
@@ -276,7 +286,7 @@ struct Names<'a> {
 impl Names<'_> {
     fn rename(&self, t: &str, role: u8) -> String {
         if role == 0 {
-            return t.to_string();
+            return self.rename_decl(t);
         }
         if role == 3 {
             return match t.rfind('.') {
@@ -291,8 +301,29 @@ impl Names<'_> {
             };
         }
         let own = if role == 1 { &self.fns } else { &self.structs };
+        // a struct-name position may also hold an enum (a template's type
+        // argument: `(vec.Vec Color)`)
         match &self.prefix {
-            Some(p) if own.contains(t) => format!("{}.{}", p, t),
+            Some(p) if own.contains(t) || (role == 2 && self.decls.contains(t)) => format!("{}.{}", p, t),
+            _ => t.to_string(),
+        }
+    }
+
+    /// A name in any position: one of this module's constants or enums
+    /// (`MAX`, `Color`), an enum member (`Color.red`), or an alias-qualified
+    /// name (`c.MAX`, `c.Color.red`). Anything else is unchanged.
+    fn rename_decl(&self, t: &str) -> String {
+        if let Some((alias, rest)) = t.split_once('.') {
+            if let Some(canonical) = self.aliases.get(alias) {
+                return format!("{}.{}", canonical, rest);
+            }
+        }
+        let Some(p) = &self.prefix else { return t.to_string() };
+        if self.decls.contains(t) {
+            return format!("{}.{}", p, t);
+        }
+        match t.rfind('.') {
+            Some(dot) if self.decls.contains(&t[..dot]) => format!("{}.{}", p, t),
             _ => t.to_string(),
         }
     }
@@ -344,6 +375,11 @@ impl Names<'_> {
                     if i == 0 {
                         if let Some(t) = &template {
                             *child = Sx::symbol_at(t.clone(), child);
+                            continue;
+                        }
+                        // the head of a (...) form is a keyword or an op
+                        // (`mem.alloc`), never a renamed name
+                        if head.is_some() {
                             continue;
                         }
                     }

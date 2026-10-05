@@ -5,6 +5,9 @@
 
 (module codegen
   (import compiler)
+  (import consts)
+  (import str)
+  (import buf)
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [src_ptr:i32 pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
@@ -2415,6 +2418,13 @@
   ;; ===== Master WASM Module Generator =====
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
     (let _init:i32 (call init_keywords))
+    ;; constants and enums are erased to literals and i32 first (consts.aipl)
+    (let plain:(ptr buf.Buf) (call buf.make (+ src_len 64)))
+    (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make 64)))
+        (block (call set_compile_error 974) (return -1))
+        (block))
+    (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))
+    (set! src_len (call buf.len plain))
     ;; Buffers are sized from the input: a token is at least one source byte
     ;; (12-byte records), an AST node is at most one per token (16 bytes).
     (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) 12)))

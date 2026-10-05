@@ -17,6 +17,9 @@ pub enum Type {
     /// `(arr T)`: an `arr.new` array of `T`, whose length sits in the 4 bytes before it.
     Array(Box<Type>),
     Fn(Vec<Type>, Box<Type>),
+    /// A value of the enum named (`(enum Name [members])`, AIPL_SPEC.md 4.I):
+    /// an `i32` at run time, a distinct type to the checker.
+    Enum(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,11 +271,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: (u32, u32),
     },
-    /// `(ptr.addr p)` / `(arr.addr a)`: the `i32` address of a pointer or array.
-    /// `array` records which spelling was used, so the checker can require it.
+    /// `(ptr.addr p)` / `(arr.addr a)`: the `i32` address of a pointer or
+    /// array; `(enum.ord e)`: the `i32` value of an enum. `kind` records which
+    /// spelling was used, so the checker can require the matching operand.
     Addr {
         val: Box<Expr>,
-        array: bool,
+        kind: AddrKind,
         span: (u32, u32),
     },
 }
@@ -312,6 +316,26 @@ impl Expr {
     }
 }
 
+/// Which `i32` view an `Expr::Addr` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum AddrKind {
+    /// `(ptr.addr p)`
+    Ptr,
+    /// `(arr.addr a)`
+    Arr,
+    /// `(enum.ord e)`
+    Enum,
+}
+
+/// `(enum Name [a b (c 10) ...])`: named `i32` values. A member without a
+/// value is one more than the member before it (the first is 0).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnumDef {
+    pub name: String,
+    pub members: Vec<(String, i32)>,
+    pub span: (u32, u32),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StructField {
     pub name: String,
@@ -346,5 +370,6 @@ pub struct Module {
     pub name: String,
     pub imports: Vec<Import>,
     pub structs: Vec<StructDef>,
+    pub enums: Vec<EnumDef>,
     pub functions: Vec<FnDef>,
 }

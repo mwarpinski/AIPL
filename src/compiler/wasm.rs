@@ -559,8 +559,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
         (OpCode::Lt, Type::I32) => I32LtS,
         (OpCode::Lte, Type::I32) => I32LeS,
         (OpCode::Gt, Type::I32) => I32GtS,
@@ -597,75 +597,76 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     Ok(ins)
 }
 
+/// Every local a body declares, in the order the self-hosted compiler
+/// numbers them (codegen.aipl `collect_locals_walk`): a pre-order walk, each
+/// node's own names first, then its children in source order. No wildcard:
+/// a new expression form must say what it declares and what it contains (a
+/// `(+ 1 (match_result ...))` once lost its arm variables to a `_` arm).
 fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
     for expr in exprs {
         match expr {
             Expr::Let { name, ty, val, .. } => {
                 lets.push((name.clone(), ty.clone()));
-                collect_lets(&[*(val.clone())], lets);
+                collect_lets(std::slice::from_ref(val.as_ref()), lets);
             }
-            Expr::Set { name: _, val, .. } => {
-                collect_lets(&[*(val.clone())], lets);
-            }
-            Expr::If { cond, then_branch, else_branch, .. } => {
-                collect_lets(&[*(cond.clone()), *(then_branch.clone()), *(else_branch.clone())], lets);
-            }
-            // The loop induction variable is never declared via `let` but still
-            // needs a wasm local slot - without this, codegen silently drops
-            // the whole loop body (see Expr::Loop in compile_expr).
-            // ...and its end and step are evaluated once into two hidden
-            // locals, named after the variable (sequential loops over the same
-            // variable share them; nested loops cannot reuse a name).
-            Expr::Loop { var, body, .. } => {
+            // The induction variable is never declared via `let` but needs a
+            // slot, and its end and step are evaluated once into two hidden
+            // locals named after it (sequential loops over the same variable
+            // share them; nested loops cannot reuse a name).
+            Expr::Loop { var, start, end, step, body, .. } => {
                 lets.push((var.clone(), Type::I32));
                 lets.push((format!("{}#end", var), Type::I32));
                 lets.push((format!("{}#step", var), Type::I32));
+                collect_lets(&[*start.clone(), *end.clone(), *step.clone()], lets);
                 collect_lets(body, lets);
-            }
-            Expr::While { body, .. } | Expr::Block(body, _) => {
-                collect_lets(body, lets);
-            }
-            Expr::Call { args, .. } => {
-                collect_lets(args, lets);
-            }
-            Expr::CallRef { func, args, .. } => {
-                collect_lets(&[*(func.clone())], lets);
-                collect_lets(args, lets);
-            }
-            Expr::Return { val: Some(v), .. } => {
-                collect_lets(&[*(v.clone())], lets);
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
-                collect_lets(&[*(expr.clone())], lets);
                 lets.push((ok_var.clone(), Type::I32));
                 lets.push((err_var.clone(), Type::I32));
+                collect_lets(std::slice::from_ref(expr.as_ref()), lets);
                 collect_lets(ok_body, lets);
                 collect_lets(err_body, lets);
             }
-            Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => {
-                collect_lets(&[*(inner.clone())], lets);
+            Expr::Set { val: e, .. }
+            | Expr::Ok(e, _, _)
+            | Expr::Err(e, _, _)
+            | Expr::Return { val: Some(e), .. }
+            | Expr::GetField { ptr: e, .. }
+            | Expr::ArrNew { size: e, .. }
+            | Expr::ArrLen { arr: e, .. }
+            | Expr::Cast { addr: e, .. }
+            | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets),
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                collect_lets(&[*cond.clone(), *then_branch.clone(), *else_branch.clone()], lets);
             }
-            Expr::GetField { ptr, .. }
-            | Expr::ArrNew { size: ptr, .. }
-            | Expr::ArrLen { arr: ptr, .. }
-            | Expr::Cast { addr: ptr, .. }
-            | Expr::Addr { val: ptr, .. } => {
-                collect_lets(&[*(ptr.clone())], lets);
+            Expr::While { cond, body, .. } => {
+                collect_lets(std::slice::from_ref(cond.as_ref()), lets);
+                collect_lets(body, lets);
+            }
+            Expr::Block(body, _) => collect_lets(body, lets),
+            Expr::Call { args, .. } | Expr::Op { args, .. } => collect_lets(args, lets),
+            Expr::CallRef { func, args, .. } => {
+                collect_lets(std::slice::from_ref(func.as_ref()), lets);
+                collect_lets(args, lets);
             }
             Expr::PutField { ptr, val, .. } => {
-                collect_lets(&[*(ptr.clone())], lets);
-                collect_lets(&[*(val.clone())], lets);
+                collect_lets(&[*ptr.clone(), *val.clone()], lets);
             }
             Expr::ArrGet { ptr, index, .. } => {
-                collect_lets(&[*(ptr.clone())], lets);
-                collect_lets(&[*(index.clone())], lets);
+                collect_lets(&[*ptr.clone(), *index.clone()], lets);
             }
             Expr::ArrSet { ptr, index, val, .. } => {
-                collect_lets(&[*(ptr.clone())], lets);
-                collect_lets(&[*(index.clone())], lets);
-                collect_lets(&[*(val.clone())], lets);
+                collect_lets(&[*ptr.clone(), *index.clone(), *val.clone()], lets);
             }
-            _ => {}
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::NewStruct { .. }
+            | Expr::Sizeof { .. }
+            | Expr::Null { .. }
+            | Expr::Ref { .. }
+            | Expr::Return { val: None, .. }
+            | Expr::Break(_)
+            | Expr::Continue(_) => {}
         }
     }
 }
@@ -677,7 +678,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
         // Pointers, arrays, results, and function refs are i32 addresses/indices.
-        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) => ValType::I32,
+        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => ValType::I32,
     }
 }
 
@@ -1373,7 +1374,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1423,7 +1424,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -1543,7 +1544,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Mul);
             func.instruction(&Instruction::I32Add);
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -1583,7 +1584,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 => {

@@ -343,12 +343,21 @@ impl Parser {
 
         let mut imports = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut functions = Vec::new();
         while let Some(TokenKind::LParen) = self.peek_kind() {
             if self.is_import_ahead() {
                 imports.push(self.parse_import()?);
             } else if self.is_struct_ahead() {
                 structs.push(self.parse_struct_def()?);
+            } else if self.is_head_ahead("enum") {
+                enums.push(self.parse_enum_def()?);
+            } else if self.is_head_ahead("const") {
+                let (l, c) = self.cur_pos();
+                return Err(format!(
+                    "{}:{}: (const ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
+                    l, c
+                ));
             } else {
                 functions.push(self.parse_fn_def()?);
             }
@@ -367,8 +376,58 @@ impl Parser {
             name,
             imports,
             structs,
+            enums,
             functions,
         })
+    }
+
+    fn is_head_ahead(&self, head: &str) -> bool {
+        matches!(self.tokens.get(self.pos + 1), Some(Token { kind: TokenKind::Symbol(s), .. }) if s == head)
+    }
+
+    /// `(enum Name [a b (c 10) ...])`. Member values are i32 literals; the
+    /// checker validates names and uniqueness.
+    fn parse_enum_def(&mut self) -> Result<EnumDef, String> {
+        let tok = self.expect_kind(TokenKind::LParen)?;
+        let span = (tok.line, tok.col);
+        self.next(); // `enum`
+        let name = self.expect_symbol("enum name", span)?;
+        let open = self.expect_kind(TokenKind::LBracket)?;
+        let mut members = Vec::new();
+        let mut next_value: i64 = 0;
+        loop {
+            let (l, c) = self.cur_pos();
+            match self.next() {
+                Some(Token { kind: TokenKind::RBracket, .. }) => break,
+                Some(Token { kind: TokenKind::Symbol(m), .. }) => {
+                    members.push((m, next_value));
+                }
+                Some(Token { kind: TokenKind::LParen, .. }) => {
+                    let m = self.expect_symbol("enum member name", (l, c))?;
+                    let v = match self.next() {
+                        Some(Token { kind: TokenKind::IntLit(v), .. }) => v,
+                        _ => return Err(format!("{}:{}: an enum member with a value is (name INTEGER), e.g. (blue 5)", l, c)),
+                    };
+                    self.expect_kind(TokenKind::RParen)?;
+                    members.push((m, v));
+                }
+                None => return Err(format!("{}:{}: this bracket is never closed", open.line, open.col)),
+                Some(t) => {
+                    return Err(format!(
+                        "{}:{}: an enum member is a name or (name INTEGER), got {:?}",
+                        t.line, t.col, t.kind
+                    ))
+                }
+            }
+            let v = members.last().unwrap().1;
+            if v < i32::MIN as i64 || v > i32::MAX as i64 {
+                return Err(format!("{}:{}: enum member value {} is not an i32", l, c, v));
+            }
+            next_value = v + 1;
+        }
+        self.expect_kind(TokenKind::RParen)?;
+        let members = members.into_iter().map(|(m, v)| (m, v as i32)).collect();
+        Ok(EnumDef { name, members, span })
     }
 
     fn is_import_ahead(&self) -> bool {
@@ -680,6 +739,8 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "str" => Ok(Type::Str),
                 "void" => Ok(Type::Void),
+                // any other name is an enum type; the checker reports unknown ones
+                _ if !s.is_empty() && !s.starts_with(|ch: char| ch.is_ascii_digit() || ch == '-') => Ok(Type::Enum(s)),
                 _ => Err(format!("{}:{}: Unknown scalar type: {}", line, col, s)),
             },
             Some(Token {
@@ -1311,9 +1372,19 @@ impl Parser {
                             let addr = self.parse_expr()?;
                             Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), span }
                         }
-                        "ptr.addr" | "arr.addr" => {
+                        "ptr.addr" | "arr.addr" | "enum.ord" => {
                             let val = self.parse_expr()?;
-                            Expr::Addr { val: Box::new(val), array: head == "arr.addr", span }
+                            let kind = match head.as_str() {
+                                "ptr.addr" => AddrKind::Ptr,
+                                "arr.addr" => AddrKind::Arr,
+                                _ => AddrKind::Enum,
+                            };
+                            Expr::Addr { val: Box::new(val), kind, span }
+                        }
+                        "enum.cast" => {
+                            let name = self.expect_symbol("enum name in enum.cast", span)?;
+                            let val = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), span }
                         }
                         "arr.new" => {
                             let elem_ty = self.parse_type()?;

@@ -65,7 +65,7 @@ Defects that are fixable without redesign. Ordered by risk.
 
 *Fix:* add `(when c body...)`, an exclusive-range `(for i 0 n body...)` and variadic `and`/`or`. These keep one spelling per meaning; the spelling becomes the one generators already use. Keep `loop` for compatibility or retire it.
 
-**D4. No named constants or enums, so meaning lives in bare numbers.**
+**D4. No named constants or enums, so meaning lives in bare numbers.** *[Language half fixed 2026-10-04: `const` and `enum` (AIPL_SPEC.md 4.I). The code below still uses bare numbers until the `codegen.aipl` rewrite (S2) and a pass over the native backend.]*
 - `codegen.aipl` dispatches on node kinds 6–11 and keyword ids 100+.
 - It reports errors as 90–99, 768, 971, 973, 987, 999 and 1452.
 - `x64.aipl`, `lower.aipl` and `wasi.aipl` define 37 zero-argument functions (`(fn cc_e [] -> i32 4)`) as stand-in constants, each costing a call.
