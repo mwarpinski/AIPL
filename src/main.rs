@@ -32,7 +32,8 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
-        /// Compile using the self-hosted codegen.aipl backend and verify bit-for-bit parity with Rust compiler
+        /// Also compile with the self-hosted toolchain (resolver.aipl + codegen.aipl, in the VM)
+    /// and fail unless its bytes equal the Rust compiler's
         #[arg(long = "self")]
         self_flag: bool,
         /// Write a standalone executable: native machine code on Linux x86-64, else the
@@ -55,7 +56,8 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Type-check and formally verify an AIPL file without running it
+    /// Parse and type-check an AIPL file without running it (contracts are
+    /// type-checked, not proven)
     Verify { file: String },
     /// Run an AIPL test entrypoint and report pass/fail via the process exit
     /// code. The entrypoint owns all test/reporting logic (via sys.print) and
@@ -67,7 +69,7 @@ enum Commands {
         #[arg(short, long, default_value = "run_all")]
         func: String,
     },
-    /// Launch the Agent Swarm RPC server for inter-agent remote execution
+    /// Serve /eval, /verify and /compile over HTTP for agents (JSON responses)
     Serve {
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         addr: String,

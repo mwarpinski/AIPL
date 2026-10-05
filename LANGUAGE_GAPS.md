@@ -1,6 +1,6 @@
 # AIPL Language Gap Analysis
 
-What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
+What AIPL does **not** do yet, checked against the code on 2026-10-04 (after the documentation sync). [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
 
 ---
 
@@ -13,6 +13,8 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPE
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts, and nothing is proven statically (`aipl verify` says so).
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
 - **Most VM runtime errors have no source position.** Contract failures do (`Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`); an out-of-bounds index, a bad memory access, or a store into the reserved block names the op and address but not the line.
+- **Compiled traps have no source position or function name.** `./prog: wasm trap: integer divide by zero` is all a crash reports; the wasm output has no name section.
+- **Diagnostics stop at the first error** and spell types the Rust way (`Ptr(Struct("Point"))`, `Array(I32)`) rather than in AIPL syntax. Syntax errors carry the file path; type errors do not, so an error in an imported module gives a line but not the file. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: RParen`, and `(+ p 4)` on a pointer is a plain operand mismatch.
 
 ## 2. Language
 
@@ -22,6 +24,8 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPE
 - **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in `mem.alloc`'d blocks whose pointers live in runtime cells (codegen.aipl owns cells 4–60).
 - **No named constants.** A fixed value gets a name only through a zero-argument function, e.g. `(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`, called as `(call x64.cc_e)`. This works and costs a call; a `const` form (or enums, above) would let the checker see the value.
+- **No unsigned comparisons** (`divu`, `remu`, and `shru` exist, but `lt`/`gt` are signed only), **no 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load), and **no checked arithmetic**: integer overflow always wraps, with no trapping or overflow-reporting form.
+- **No enums or sum types.** A tag plus fields reused by cast stands in for both (see the struct entry above); `result` is the only tagged union.
 - **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), `mem.load_f32/f64` and `mem.store_f32/f64` are rejected by both backends (use struct fields or arrays of `f64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 ## 3. Memory
@@ -45,7 +49,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ## 6. Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 32 distinct `call_ref` signatures, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 250 functions. The Rust backend has none of these limits.
 
 ## 7. Before "many modules from many authors" is safe
 

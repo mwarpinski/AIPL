@@ -14,8 +14,8 @@
 
 - **One syntax form per construct.** Prefix S-expressions with no operator precedence, no indentation rules, and `(call f ...)` kept distinct from built-in ops. A missing or extra paren is reported with a `line:col` position.
 - **Static types with mandatory annotations** on every parameter, return, `let`, and struct field: `i32`, `i64`, `f32`, `f64`, `bool`, `str`, `void`, `(result T E)`, typed struct pointers `(ptr S)`, and heap arrays `(arr T)`. A pointer to one struct can never be used as another, or as an integer, without an explicit cast.
-- **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call.
-- **Wasm semantics are the spec.** A tree-walking VM and a WebAssembly backend must agree; `tests/test_differential.rs` runs the same programs in both, the VM against wasmtime, and fails on any divergence.
+- **Contracts.** `(req ...)` and `(ens ...)` are type-checked and run by the VM before and after each call. Compiled code does not check them yet, and does not bounds-check arrays (AIPL_Structural_Audit.md D1).
+- **Wasm semantics are the spec.** The VM, the WebAssembly backend, and the native backend must agree: `tests/test_differential.rs` runs the same programs in the VM and wasmtime, and `tests/test_native.rs` compares native executables with wasmtime, failing on any divergence.
 - **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone executable: on Linux x86-64, native machine code written by a backend in AIPL (no runtime; `word_count` is 31 KB, the compiler itself 348 KB); elsewhere, the module plus a wasmtime launcher ([docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md), AIPL_SPEC.md 6.5-6.6).
 - **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language except VM-only ops. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that rebuilds itself to the same bytes, with no Rust involved. Type checking is still Rust-only.
 
@@ -59,7 +59,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (over 200 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM).
+Run the full test suite with `cargo test` (239 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Repository layout
 
@@ -73,13 +73,15 @@ Run the full test suite with `cargo test` (over 200 tests; the self-hosting test
 | `aipl_src/resolver.aipl`, `generics.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, generics expansion, tokenizer and parser, wasm code generator, and the command that chains them |
 | `aipl_src/native/` | The Linux x86-64 backend: `native` (wasm in, executable out), `wasm_reader`, `lower` (wasm to machine code), `x64` (encoder), `elf`, `runtime` (start-up, traps), `wasi` (the WASI functions as system calls) |
 | `src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
-| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder), `os` (command line, environment); found by `(import io)` from anywhere |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder), `os` (command line, environment), `time` (timing), `arena` (region allocator), `bigint` (big integers); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
+| `benchmarks/` | Eight benchmark programs, each in AIPL, C, and Python with expected output ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) |
+| `src/agent_api/` | `aipl serve`: `/eval`, `/verify`, `/compile` over HTTP |
 | `web/` | Browser demo: sends source to `aipl serve`, runs the compiled module with WASI shims |
-| `tests/` | Rust integration, differential, WASI, self-hosting, and native-backend tests |
-| `tools/` | Development helpers not used by the build or tests (`x64_vectors.py` regenerates the encoder's test vectors with GNU as) |
+| `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
+| `tools/` | Development helpers not used by the build or tests: `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python), `bench.py` (benchmark timing) |
 | `attic/` | Quarantined modules that returned constants instead of doing work (see `attic/README.md`); do not build on them |
 
 ## Documentation
@@ -87,10 +89,11 @@ Run the full test suite with `cargo test` (over 200 tests; the self-hosting test
 - [AIPL_SPEC.md](AIPL_SPEC.md): the language as implemented (grammar, typing rules, memory layout, backend support matrix, diagnostics, testing conventions, pitfalls for code generators).
 - [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md): a compact system-prompt module and examples for agents writing AIPL.
 - [PROGRESS.md](PROGRESS.md): current status, how to verify, decisions, next steps.
-- [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md): the original ordered roadmap (P1–P14) with self-contained agent prompts.
+- [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md): the current audit (strengths, defects, structural issues, recommended order), with the original 2026-09 audit and its P1–P14 task record as appendices.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md): eight benchmarks against C and Python, and what each showed the language was missing.
 - [docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md): the native backend's design and its tasks NE1–NE18.
 - [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md): what AIPL does not do yet.
 
 ## Roadmap in one paragraph
 
-Done (P1–P14 and the pre-native work): honest tests with no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays, strict pointer types, function references, `return`/`break`/`continue`/`cond`, generics, threads and atomics in compiled code, a standard library with generic collections, standalone executables through the `aipl-run` launcher, and a self-hosted toolchain that matches the Rust one byte for byte and rebuilds itself when compiled to wasm. Done since: a Linux x86-64 backend written in AIPL that turns that wasm into executables with no runtime, now the default for `aipl compile --exe` there; the AIPL compiler itself builds natively and reproduces itself. Next: the type checker in AIPL, contracts compiled into wasm, and retiring the Rust compiler, leaving Rust only in the launcher for platforms without a native backend. PROGRESS.md has the direction and the order; [docs/NATIVE_TARGET.md](docs/NATIVE_TARGET.md) records why the earlier "no native backend" decision changed.
+Done (P1–P14 and the pre-native work): honest tests with no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, block scoping, structs and arrays, strict pointer types, function references, `return`/`break`/`continue`/`cond`, generics, threads and atomics in compiled code, a standard library with generic collections, standalone executables through the `aipl-run` launcher, and a self-hosted toolchain that matches the Rust one byte for byte and rebuilds itself when compiled to wasm. Done since: a Linux x86-64 backend written in AIPL that turns that wasm into executables with no runtime, now the default for `aipl compile --exe` there; the AIPL compiler itself builds natively and reproduces itself. Then eight benchmarks, which added `std/time`, `std/arena`, `std/bigint`, `f64.sqrt`, and exact float printing. Next, in order: bring the documentation in line with the code, rewrite the self-hosted code generator on typed structs, and add constants, enums, sum types, unsigned comparisons, and checked arithmetic; after that the type checker in AIPL, contracts compiled into wasm, and retiring the Rust compiler, leaving Rust only in the launcher for platforms without a native backend. PROGRESS.md has the direction and the order; [docs/NATIVE_TARGET.md](docs/NATIVE_TARGET.md) records why the earlier "no native backend" decision changed.
