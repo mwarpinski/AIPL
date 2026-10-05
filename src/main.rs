@@ -35,12 +35,17 @@ enum Commands {
         /// Compile using the self-hosted codegen.aipl backend and verify bit-for-bit parity with Rust compiler
         #[arg(long = "self")]
         self_flag: bool,
-        /// Write a standalone executable: the aipl-run launcher with the module appended
+        /// Write a standalone executable: native machine code on Linux x86-64, else the
+        /// aipl-run launcher with the module appended (see --target)
         #[arg(long)]
         exe: bool,
         /// With --exe: the program may only access the working directory, not absolute paths
         #[arg(long, requires = "exe")]
         sandbox: bool,
+        /// With --exe: `native` (Linux x86-64; the default there) or `wasm` (the launcher bundle;
+        /// the default elsewhere)
+        #[arg(long, requires = "exe", value_parser = ["native", "wasm"])]
+        target: Option<String>,
     },
     /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
     Run {
@@ -281,7 +286,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let res = vm.invoke(&func, vec![])?;
             println!("[AIPL Result]: {:?}", res);
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox, target } => {
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
@@ -309,9 +314,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 fs::write(&output, &rust_bytes)?;
             }
             if exe {
-                // `output` holds the module; replace it with launcher + module + trailer
+                // `output` holds the module; replace it with the executable
                 let wasm = fs::read(&output)?;
-                write_executable(&output, &wasm, sandbox)?;
+                let native = match target.as_deref() {
+                    Some("native") if !aipl_core::native::supported() => {
+                        return Err("--target native: the native backend targets Linux x86-64 only (use --target wasm)".into())
+                    }
+                    Some("native") => true,
+                    Some(_) => false,
+                    None => aipl_core::native::supported(),
+                };
+                if native {
+                    let exe_bytes = aipl_core::native::executable(&wasm, sandbox)?;
+                    fs::write(&output, &exe_bytes)?;
+                    // WASI cannot set the execute bit, so the host does (LANGUAGE_GAPS.md 1)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&output, fs::Permissions::from_mode(0o755))?;
+                    }
+                } else {
+                    // launcher + module + trailer
+                    write_executable(&output, &wasm, sandbox)?;
+                }
             }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
         }

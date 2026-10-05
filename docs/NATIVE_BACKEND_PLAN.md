@@ -184,6 +184,7 @@ Done when: the native `aiplc` compiles every repository program to the same wasm
 **NE18: make it the default.** Depends on: NE17.
 `aipl compile --exe` produces a native executable on Linux x86-64 (and the launcher bundle elsewhere, or with `--target wasm`); `--sandbox` works for both. Update AIPL_SPEC.md (a native backend section beside 6.5), README, PROGRESS, LANGUAGE_GAPS, and the audit.
 Done when: the full test suite passes, `test_runner.rs` covers both kinds of executable, and the docs describe the native path.
+**Done (2026-10-04).** `aipl compile --exe` writes native code on Linux x86-64 and the launcher bundle elsewhere; `--target native|wasm` chooses explicitly (`--target native` elsewhere is an error); `--sandbox` works for both. `src/native.rs` runs `native.aipl` in the CLI's embedded wasmtime and the CLI sets the execute bit (WASI cannot). `test_runner.rs` runs, for each kind: `word_count` (from another directory, and sandboxed), the AIPL compiler as `aiplc` compiling a program to the Rust toolchain's bytes, a trap's exact message, and a threaded program; it checks each file is the kind asked for (native: an ELF with no launcher inside; wasm: the launcher bundle) and that the default is native here. AIPL_SPEC.md 6.6 describes the native path.
 
 ## Testing
 

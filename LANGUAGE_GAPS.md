@@ -1,13 +1,13 @@
 # AIPL Language Gap Analysis
 
-What AIPL does **not** do yet, checked against the code on 2026-10-03. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
+What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPEC.md](AIPL_SPEC.md) describes what it does; [PROGRESS.md](PROGRESS.md) has task status and how to verify; [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) has the ordered task list (P-numbers below refer to it). When something here gets built, delete its entry rather than appending an update note.
 
 ---
 
 ## 1. Toolchain
 
 - **The self-hosted toolchain has no type checker.** `aipl_src/driver.aipl` (resolver + codegen, a WASI command when compiled) compiles multi-file programs to the same bytes as the Rust toolchain, itself included, but it trusts its input: only the Rust checker type-checks. Float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973 (AIPL_SPEC.md 6.4).
-- **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (bundling the launcher and the module) is Rust; the planned fix is a launcher-provided import so the AIPL compiler can do it. The native backend has the same need: `aipl_src/native/elf.aipl` builds the bytes, but whoever writes the file must mark it executable (NATIVE_BACKEND_PLAN.md, NE18). Executables are built for the host's OS and CPU and are about 18 MB (wasmtime).
+- **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (native code on Linux x86-64, the launcher bundle elsewhere) is written by the Rust CLI, which also runs the AIPL native backend (`aipl_src/native/native.aipl`) in its embedded wasmtime; the planned fix is a host-provided import so the AIPL driver can do it. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two import resolvers.** `src/resolver.rs` serves `verify`, `eval`, `compile`, and `test`; `aipl_src/resolver.aipl` serves `compile --self` and the wasm toolchain. Tests hold them equal (AIPL_SPEC.md 11). The Rust one can go once the checker is also in AIPL, since the Rust checker consumes the Rust resolver's parsed module.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
 - **Contracts are VM-only, and `inv` is never evaluated (audit B5).** The wasm backend emits no contracts, and nothing is proven statically (`aipl verify` says so).

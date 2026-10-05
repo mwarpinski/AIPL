@@ -111,18 +111,49 @@ fn threads_run_under_the_runner() {
 /// `aipl compile --exe`: one file that runs anywhere with no toolchain, and
 /// `--sandbox` confines it to the working directory. The self-hosted compiler
 /// itself, built this way, compiles a program to the Rust toolchain's bytes.
+/// Both kinds: native machine code (`--target native`, the default on Linux
+/// x86-64) and the launcher bundle (`--target wasm`).
 #[test]
 fn standalone_executables() {
-    let dir = scratch("exe");
+    for target in ["native", "wasm"] {
+        standalone_executables_for(target);
+    }
+    // the default: native code on Linux x86-64, the launcher bundle elsewhere
+    let dir = scratch("exe_default");
     let wc = dir.join("word_count");
     compile(&root().join("examples/word_count.aipl"), &wc, &["--exe"]);
-    let elsewhere = scratch("exe_elsewhere");
+    assert_kind(&wc, if cfg!(all(target_os = "linux", target_arch = "x86_64")) { "native" } else { "wasm" });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Which kind of executable `path` is: an ELF file AIPL wrote (no launcher
+/// inside), or the launcher with a module appended.
+fn assert_kind(path: &Path, target: &str) {
+    let bytes = std::fs::read(path).unwrap();
+    assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
+    match target {
+        "native" => {
+            assert!(!bytes.ends_with(b"AIPLEXE1"), "{}: a launcher bundle, not native code", path.display());
+            assert!(bytes.len() < 2_000_000, "{}: {} bytes is not a native AIPL executable", path.display(), bytes.len());
+        }
+        _ => assert!(bytes.ends_with(b"AIPLEXE1"), "{}: not a launcher bundle", path.display()),
+    }
+}
+
+fn standalone_executables_for(target: &str) {
+    let t = format!("--target={target}");
+    let dir = scratch(&format!("exe_{target}"));
+    let wc = dir.join("word_count");
+    compile(&root().join("examples/word_count.aipl"), &wc, &["--exe", &t]);
+    assert_kind(&wc, target);
+    let elsewhere = scratch(&format!("exe_elsewhere_{target}"));
     std::fs::write(elsewhere.join("notes.txt"), "one two\nthree\n").unwrap();
     let o = run_in(&elsewhere, &wc, &["notes.txt"], "");
     assert_eq!(stdout(&o), "lines: 2\nwords: 3\nbytes: 14\n");
 
     let boxed = dir.join("word_count_boxed");
-    compile(&root().join("examples/word_count.aipl"), &boxed, &["--exe", "--sandbox"]);
+    compile(&root().join("examples/word_count.aipl"), &boxed, &["--exe", "--sandbox", &t]);
+    assert_kind(&boxed, target);
     let abs = elsewhere.join("notes.txt");
     let o = run_in(&elsewhere, &boxed, &[abs.to_str().unwrap()], "");
     assert!(stdout(&o).is_empty(), "sandboxed program read an absolute path: {}", stdout(&o));
@@ -131,13 +162,42 @@ fn standalone_executables() {
 
     // the AIPL compiler as a standalone command
     let aiplc = dir.join("aiplc");
-    compile(&root().join("aipl_src/driver.aipl"), &aiplc, &["--exe"]);
+    compile(&root().join("aipl_src/driver.aipl"), &aiplc, &["--exe", &t]);
+    assert_kind(&aiplc, target);
     let out = dir.join("wc.wasm");
     let o = run_in(&root(), &aiplc, &["examples/word_count.aipl", out.to_str().unwrap()], "");
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
     let rust = dir.join("wc_rust.wasm");
     compile(&root().join("examples/word_count.aipl"), &rust, &[]);
     assert!(std::fs::read(&out).unwrap() == std::fs::read(&rust).unwrap(), "aiplc output differs from the Rust toolchain");
+    // a trap and threads, as executables of this kind
+    std::fs::write(dir.join("t.aipl"), "(module t (fn main [] -> i32 (/ 1 0)))").unwrap();
+    let trapper = dir.join("trapper");
+    compile(&dir.join("t.aipl"), &trapper, &["--exe", &t]);
+    let o = run_in(&dir, &trapper, &[], "");
+    assert_eq!(o.status.code(), Some(134));
+    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n", trapper.display()));
+    std::fs::write(
+        dir.join("th.aipl"),
+        "(module th (import io) (fn sq [x:i32] -> i32 (* x x)) (fn main [] -> i32 (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
+    )
+    .unwrap();
+    let threaded = dir.join("threaded");
+    compile(&dir.join("th.aipl"), &threaded, &["--exe", &t]);
+    assert_kind(&threaded, target);
+    assert_eq!(stdout(&run_in(&dir, &threaded, &[], "")), "joined: 81\n");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&elsewhere);
+}
+
+/// --target without --exe is an error, and so is an unknown target.
+#[test]
+fn target_needs_exe_and_a_known_name() {
+    let dir = scratch("target_flags");
+    std::fs::write(dir.join("m.aipl"), "(module m (fn main [] -> i32 0))").unwrap();
+    for args in [vec!["--target=native"], vec!["--exe", "--target=arm"]] {
+        let o = Command::new(AIPL).arg("compile").arg(dir.join("m.aipl")).arg("-o").arg(dir.join("m")).args(&args).output().unwrap();
+        assert!(!o.status.success(), "{args:?} was accepted");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
