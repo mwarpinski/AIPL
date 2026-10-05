@@ -150,3 +150,31 @@ fn malformed_generics_are_errors() {
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.starts_with("3:"), "{e}");
 }
+
+/// An imported module calling its own generic function with its own struct
+/// type: `(alloc Item)` inside module lib must name lib.Item (it once stayed
+/// `Item`, so the instance's type differed from the struct's; found by
+/// std/arena's self-test when the binarytrees benchmark imported it).
+#[test]
+fn a_modules_own_struct_as_a_type_argument_is_qualified() {
+    let entry = write_program(
+        "own_struct_arg",
+        &[
+            ("main.aipl", "(module main (import lib) (fn main [] -> i32 (+ (call lib.use_own) (call lib.nested))))"),
+            (
+                "lib.aipl",
+                "(module lib
+                   (struct Item [x:i32 y:i64])
+                   (struct (Wrap T) [inner:(ptr T)])
+                   (fn (make T) [] -> (ptr T) (new T))
+                   (fn use_own [] -> i32 (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
+                   (fn nested [] -> i32
+                     (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))
+                     (put w (Wrap Item) inner (call (make Item)))
+                     (get (get w (Wrap Item) inner) Item.x)))",
+            ),
+        ],
+    );
+    assert_eq!(run_both(&entry, "main"), 56);
+    assert_aipl_resolver_agrees(&entry);
+}

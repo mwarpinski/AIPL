@@ -26,7 +26,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04. [AIPL_SPE
 
 ## 3. Memory
 
-- **`mem.free` is a no-op** in both backends (the argument is not even evaluated). The allocator is bump-only, so long-running programs leak.
+- **`mem.free` is a no-op** in both backends (the argument is not even evaluated). The allocator is bump-only, so long-running programs leak. `std/arena` frees many values at once (allocate from a region, `reset` it), which suits phases and trees (binary-trees uses it); a general-purpose allocator with per-object free is still missing.
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 1024 pages (64 MiB)** in both backends. Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.

@@ -347,7 +347,9 @@ impl Names<'_> {
                             continue;
                         }
                     }
-                    let r = if template.is_some() { 0 } else { Names::child_role(head.as_deref(), i) };
+                    // a template's type arguments are struct names (or types
+                    // built from them): `(alloc Pair)` in module m names m.Pair
+                    let r = if template.is_some() { 2 } else { Names::child_role(head.as_deref(), i) };
                     self.walk(child, r);
                 }
             }

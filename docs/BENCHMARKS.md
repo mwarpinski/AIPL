@@ -31,6 +31,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | spectralnorm | n = 1000 | 0.395 s (14.6x) | 0.121 s (4.5x) | 0.027 s (1.0x) | 7.373 s (272.0x) |
 | nbody | 1,000,000 steps | 0.794 s (15.2x) | 0.092 s (1.8x) | 0.052 s (1.0x) | 5.829 s (111.8x) |
 | mandelbrot | 1000 x 1000 | 0.235 s (4.6x) | 0.067 s (1.3x) | 0.051 s (1.0x) | 3.107 s (61.3x) |
+| binarytrees | depth 16 | 0.568 s (2.4x) | 0.193 s (0.8x) | 0.239 s (1.0x) | 1.168 s (4.9x) |
 
 ## Notes per benchmark
 
@@ -87,3 +88,17 @@ registers.
 Ran with no language changes: bit operations and raw byte output already
 work (`buf.push_byte`, `fs.write`). The test size (199) is not a multiple of
 8, so the padded last byte of each row is checked too.
+
+**binarytrees** (millions of short-lived tree nodes, one long-lived tree).
+AIPL has no general `free`, so at the benchmark's sizes it would run out of
+its 64 MiB. Added `std/arena`: a typed region allocator (`(call (arena.alloc
+Node) a)` returns a zeroed `(ptr Node)`, no cast; `arena.reset` frees
+everything at once and its chunks are reused), as the benchmark allows for
+memory pools. Not a like-for-like race: AIPL resets an arena per tree, the C
+version calls malloc and free per node (the classic C entry), and Python
+uses its garbage collector, which is why AIPL under wasmtime beats C here.
+A general per-object free remains a gap. Writing it found a resolver bug,
+fixed in both resolvers: a module calling its own generic function with its
+own struct (`(alloc Pair)` inside std/arena) left the type argument
+unqualified, so the instance's type no longer matched the struct once the
+module was imported (`tests/test_generics.rs`).
