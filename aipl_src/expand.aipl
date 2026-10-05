@@ -1,0 +1,347 @@
+;; Constants and enum members for the checker, as src/consts.rs expands
+;; them (AIPL_SPEC.md 4.I): `(const NAME:T literal)` items are removed and
+;; each use of NAME becomes the literal; an enum member E.m becomes
+;; (enum.cast E value), so enums stay distinct types; (enum ...) items stay.
+;; Works on compiler.aipl's tokens, so every token keeps the position of
+;; the text it replaced and the checker reports src/consts.rs's positions
+;; (consts.aipl, which erases enums for the code generator, reprints text
+;; instead). The same errors, word for word.
+(module expand
+  (import compiler)
+  (import str)
+  (import buf)
+  (import strmap)
+
+  (struct X [src:i32 toks:i32 n:i32 out:i32 count:i32
+             consts:(ptr (strmap.StrMap i32))
+             enums:(ptr (strmap.StrMap (ptr (strmap.StrMap i32))))
+             spare:(ptr buf.Buf) err:(ptr buf.Buf) failed:bool])
+
+  ;; The result: the expanded tokens, or the first error.
+  (struct Expanded [toks:i32 n:i32 ok:bool err:(ptr buf.Buf)])
+
+  ;; ===== Tokens =====
+
+  (fn tok [x:(ptr X) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get x X.toks) i))
+  (fn kind [x:(ptr X) i:i32] -> compiler.Kind
+    (if (and (gte i 0) (lt i (get x X.n))) (get (call tok x i) compiler.Token.kind) compiler.Kind.none))
+  (fn text [x:(ptr X) i:i32] -> (ptr str.Bytes)
+    (let t:(ptr compiler.Token) (call tok x i))
+    (call str.bytes (+ (get x X.src) (get t compiler.Token.a)) (get t compiler.Token.b)))
+  (fn is_sym [x:(ptr X) i:i32 s:str] -> bool
+    (and (eq (call kind x i) compiler.Kind.symbol) (call str.bytes_eq (call text x i) (call str.from_str s))))
+  (fn is_open [x:(ptr X) i:i32] -> bool
+    (or (eq (call kind x i) compiler.Kind.lparen) (eq (call kind x i) compiler.Kind.lbracket)))
+  (fn is_close [x:(ptr X) i:i32] -> bool
+    (or (eq (call kind x i) compiler.Kind.rparen) (eq (call kind x i) compiler.Kind.rbracket)))
+
+  ;; The index after the element starting at i (an atom, or a group with
+  ;; its closing bracket).
+  (fn elem_end [x:(ptr X) i:i32] -> i32
+    (if (not (call is_open x i)) (return (+ i 1)) (block))
+    (let depth:i32 0)
+    (let k:i32 i)
+    (while (lt k (get x X.n))
+      (if (call is_open x k) (set! depth (+ depth 1)) (block))
+      (if (call is_close x k) (set! depth (- depth 1)) (block))
+      (set! k (+ k 1))
+      (if (eq depth 0) (break) (block)))
+    k)
+
+  ;; The children of the group at g: element start indices, at most 8
+  ;; (enough for the shapes read here: const and enum items, enum members).
+  (struct Kids [at:(arr i32) n:i32])
+
+  (fn kids [x:(ptr X) g:i32] -> (ptr Kids)
+    (let ks:(ptr Kids) (new Kids))
+    (put ks Kids.at (arr.new i32 8))
+    (put ks Kids.n 0)
+    (let c:i32 (+ g 1))
+    (while (and (lt c (get x X.n)) (not (call is_close x c)))
+      (if (lt (get ks Kids.n) 8) (arr.set i32 (get ks Kids.at) (get ks Kids.n) c) (block))
+      (put ks Kids.n (+ (get ks Kids.n) 1))
+      (set! c (call elem_end x c)))
+    ks)
+  (fn kid [ks:(ptr Kids) k:i32] -> i32 (if (lt k (get ks Kids.n)) (arr.get i32 (get ks Kids.at) k) -1))
+
+  ;; ===== Messages =====
+
+  (fn fail [x:(ptr X) at_tok:i32 parts:(ptr buf.Buf)] -> void
+    (if (get x X.failed) (return) (block))
+    (let b:(ptr buf.Buf) (call buf.make 96))
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get x X.src) (get (call tok x at_tok) compiler.Token.pos)))
+    (call buf.push_int b (get lc compiler.LineCol.line))
+    (call buf.push_byte b 58)
+    (call buf.push_int b (get lc compiler.LineCol.col))
+    (call buf.push_str b ": ")
+    (call buf.push_bytes b (call buf.bytes parts))
+    (put x X.failed true)
+    (put x X.err b))
+
+  (fn words [] -> (ptr buf.Buf) (call buf.make 96))
+
+  ;; ===== Collecting =====
+
+  ;; The name after the last '.'.
+  (fn base [s:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let d:i32 -1)
+    (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
+    (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1))))
+
+  ;; At least two characters of A-Z, 0-9, _, starting with A-Z.
+  (fn well_formed [s:(ptr str.Bytes)] -> bool
+    (if (lt (get s str.Bytes.len) 2) (return false) (block))
+    (let c0:i32 (call str.byte_at s 0))
+    (if (or (lt c0 65) (gt c0 90)) (return false) (block))
+    (loop k 0 (- (get s str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at s k))
+      (if (not (or (and (gte c 65) (lte c 90)) (or (and (gte c 48) (lte c 57)) (eq c 95)))) (return false) (block)))
+    true)
+
+  (fn i64_of [x:(ptr X) i:i32] -> i64
+    (let s:(ptr str.Bytes) (call text x i))
+    (let c0:i32 (call str.byte_at s 0))
+    (let v:i64 0i64)
+    (loop k (if (or (eq c0 45) (eq c0 43)) 1 0) (- (get s str.Bytes.len) 1) 1
+      (set! v (- (* v 10i64) (i64.extend_s (- (call str.byte_at s k) 48)))))
+    (if (eq c0 45) v (- 0i64 v)))
+
+  ;; (const NAME : TYPE VALUE): remembers VALUE's token (src/consts.rs read_const).
+  (fn read_const [x:(ptr X) item:i32] -> void
+    (let ks:(ptr Kids) (call kids x item))
+    (let shape:str "a constant is (const NAME:TYPE literal), e.g. (const PAGE_SIZE:i32 65536)")
+    (if (or (neq (get ks Kids.n) 5) (or (neq (call kind x (call kid ks 2)) compiler.Kind.colon)
+                                        (neq (call kind x (call kid ks 1)) compiler.Kind.symbol)))
+        (block (let b:(ptr buf.Buf) (call words)) (call buf.push_str b shape) (call fail x item b) (return))
+        (block))
+    (let name:(ptr str.Bytes) (call text x (call kid ks 1)))
+    (let bs:(ptr str.Bytes) (call base name))
+    (if (not (call well_formed bs))
+        (block
+          (let b:(ptr buf.Buf) (call words))
+          (call buf.push_str b "constant '")
+          (call buf.push_bytes b bs)
+          (call buf.push_str b "' must be named in capitals, at least two characters (A-Z, 0-9, _), e.g. MAX_DEPTH")
+          (call fail x (call kid ks 1) b)
+          (return))
+        (block))
+    (let ti:i32 (call kid ks 3))
+    (let ty:(ptr str.Bytes) (if (eq (call kind x ti) compiler.Kind.symbol) (call text x ti) (call str.from_str "")))
+    (let vi:i32 (call kid ks 4))
+    (let vk:compiler.Kind (call kind x vi))
+    (let tname:str "")
+    (let fits:bool false)
+    (cond
+      ((call str.bytes_eq ty (call str.from_str "i32"))
+       (set! fits (and (eq vk compiler.Kind.int) (and (gte (call i64_of x vi) -2147483648i64) (lte (call i64_of x vi) 2147483647i64)))))
+      ((call str.bytes_eq ty (call str.from_str "i64")) (set! fits (eq vk compiler.Kind.int64)))
+      ((call str.bytes_eq ty (call str.from_str "f64")) (set! fits (eq vk compiler.Kind.float)))
+      ((call str.bytes_eq ty (call str.from_str "bool")) (set! fits (eq vk compiler.Kind.bool)))
+      ((call str.bytes_eq ty (call str.from_str "str")) (set! fits (eq vk compiler.Kind.string)))
+      (else
+       (let b:(ptr buf.Buf) (call words))
+       (call buf.push_str b "constant '")
+       (call buf.push_bytes b bs)
+       (call buf.push_str b "' has type '")
+       (call buf.push_bytes b ty)
+       (call buf.push_str b "'; a constant is i32, i64, f64, bool, or str")
+       (call fail x ti b)
+       (return)))
+    (if (not fits)
+        (block
+          (let b:(ptr buf.Buf) (call words))
+          (call buf.push_str b "constant '")
+          (call buf.push_bytes b bs)
+          (call buf.push_str b "' is declared ")
+          (call buf.push_bytes b ty)
+          (call buf.push_str b " but its value is not an ")
+          (call buf.push_bytes b ty)
+          (call buf.push_str b " literal")
+          (call fail x vi b)
+          (return))
+        (block))
+    (if (call (strmap.has i32) (get x X.consts) name)
+        (block
+          (let b:(ptr buf.Buf) (call words))
+          (call buf.push_str b "constant '")
+          (call buf.push_bytes b name)
+          (call buf.push_str b "' is defined twice")
+          (call fail x item b))
+        (call (strmap.set i32) (get x X.consts) name vi)))
+
+  ;; (enum NAME [a b (c 10) ...]): its members' values (src/consts.rs
+  ;; read_enum); a malformed enum is left for the parser to report.
+  (fn read_enum [x:(ptr X) item:i32] -> void
+    (let ks:(ptr Kids) (call kids x item))
+    (if (neq (call kind x (call kid ks 1)) compiler.Kind.symbol) (return) (block))
+    (let members:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 16))
+    (let next:i64 0i64)
+    (let li:i32 (call kid ks 2))
+    (if (call is_open x li)
+        (block
+          (let m:i32 (+ li 1))
+          (while (and (lt m (get x X.n)) (not (call is_close x m)))
+            (let value:i64 next)
+            (cond
+              ((eq (call kind x m) compiler.Kind.symbol) (call (strmap.set i32) members (call text x m) (i32.wrap value)))
+              ((and (call is_open x m) (and (eq (call kind x (+ m 1)) compiler.Kind.symbol) (eq (call kind x (+ m 2)) compiler.Kind.int)))
+               (set! value (call i64_of x (+ m 2)))
+               (call (strmap.set i32) members (call text x (+ m 1)) (i32.wrap value)))
+              (else (return)))
+            (set! next (+ value 1i64))
+            (set! m (call elem_end x m))))
+        (block))
+    (call (strmap.set (ptr (strmap.StrMap i32))) (get x X.enums) (call text x (call kid ks 1)) members))
+
+  ;; ===== Rewriting =====
+
+  ;; Appends a copy of token i, reported at `pos`.
+  (fn emit [x:(ptr X) i:i32 pos:i32] -> void
+    (let t:(ptr compiler.Token) (call tok x i))
+    (call emit_new x (get t compiler.Token.kind) (get t compiler.Token.a) (get t compiler.Token.b) pos))
+
+  (fn emit_new [x:(ptr X) k:compiler.Kind a:i32 b:i32 pos:i32] -> void
+    (let c:i32 (get x X.count))
+    (let t:(ptr compiler.Token) (call compiler.token_at (get x X.out) c))
+    (put t compiler.Token.kind k)
+    (put t compiler.Token.a a)
+    (put t compiler.Token.b b)
+    (put t compiler.Token.pos pos)
+    (put x X.count (+ c 1)))
+
+  (fn pos [x:(ptr X) i:i32] -> i32 (get (call tok x i) compiler.Token.pos))
+
+  ;; Text that is not in the source (enum.cast, a member's value) goes in
+  ;; the spare buffer; a token's a is relative to the source, so the offset
+  ;; is the difference of the addresses.
+  (fn spare_text [x:(ptr X) start:i32] -> i32
+    (- (+ (get (get x X.spare) buf.Buf.data) start) (get x X.src)))
+
+  ;; The whole element at i, unchanged.
+  (fn copy [x:(ptr X) i:i32] -> void
+    (loop k i (- (call elem_end x i) 1) 1 (call emit x k (call pos x k))))
+
+  ;; One element: a constant's literal, an enum member's (enum.cast E v),
+  ;; a group rewritten, or the token itself.
+  (fn rewrite [x:(ptr X) i:i32 next_is_colon:bool] -> void
+    (cond
+      ((call is_open x i) (call rewrite_group x i))
+      ((eq (call kind x i) compiler.Kind.symbol)
+       (let s:(ptr str.Bytes) (call text x i))
+       (if (call (strmap.has i32) (get x X.consts) s)
+           (block
+             (if next_is_colon
+                 (block
+                   (let b:(ptr buf.Buf) (call words))
+                   (call buf.push_str b "'")
+                   (call buf.push_bytes b s)
+                   (call buf.push_str b "' is a constant; it cannot also name a variable, parameter, or field")
+                   (call fail x i b))
+                 (block))
+             (call emit x (call (strmap.get_or i32) (get x X.consts) s 0) (call pos x i))
+             (return))
+           (block))
+       (let d:i32 -1)
+       (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
+       (let e:(ptr str.Bytes) (call str.bytes (get s str.Bytes.addr) (if (lt d 0) 0 d)))
+       (if (and (gte d 0) (call (strmap.has (ptr (strmap.StrMap i32))) (get x X.enums) e))
+           (block
+             (let members:(ptr (strmap.StrMap i32)) (call (strmap.get_or (ptr (strmap.StrMap i32))) (get x X.enums) e (ptr.null (strmap.StrMap i32))))
+             (let m:(ptr str.Bytes) (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1))))
+             (if (not (call (strmap.has i32) members m))
+                 (block
+                   (let b:(ptr buf.Buf) (call words))
+                   (call buf.push_str b "enum '")
+                   (call buf.push_bytes b e)
+                   (call buf.push_str b "' has no member '")
+                   (call buf.push_bytes b m)
+                   (call buf.push_str b "'")
+                   (call fail x i b)
+                   (return))
+                 (block))
+             (let at:i32 (call pos x i))
+             (let t:(ptr compiler.Token) (call tok x i))
+             (call emit_new x compiler.Kind.lparen 0 0 at)
+             (call emit_new x compiler.Kind.symbol (call spare_text x 0) 9 at)
+             (call emit_new x compiler.Kind.symbol (get t compiler.Token.a) d at)
+             (let vstart:i32 (call buf.len (get x X.spare)))
+             (call buf.push_int (get x X.spare) (call (strmap.get_or i32) members m 0))
+             (call emit_new x compiler.Kind.int (call spare_text x vstart) (- (call buf.len (get x X.spare)) vstart) at)
+             (call emit_new x compiler.Kind.rparen 0 0 at))
+           (call emit x i (call pos x i))))
+      (else (call emit x i (call pos x i)))))
+
+  ;; A group, each child rewritten; in a (match v arms...), each arm's head
+  ;; is a name for the checker and stays as written.
+  (fn rewrite_group [x:(ptr X) g:i32] -> void
+    (call emit x g (call pos x g))
+    (let is_match:bool (and (eq (call kind x g) compiler.Kind.lparen) (call is_sym x (+ g 1) "match")))
+    (let c:i32 (+ g 1))
+    (let ci:i32 0)
+    (while (and (lt c (get x X.n)) (not (call is_close x c)))
+      (let after:i32 (call elem_end x c))
+      (if (and is_match (and (gte ci 2) (and (call is_open x c) (not (call is_close x (+ c 1))))))
+          (block
+            (call emit x c (call pos x c))
+            (call copy x (+ c 1))
+            (let a:i32 (call elem_end x (+ c 1)))
+            (while (and (lt a (get x X.n)) (not (call is_close x a)))
+              (call rewrite x a (eq (call kind x (call elem_end x a)) compiler.Kind.colon))
+              (set! a (call elem_end x a)))
+            (if (lt a (get x X.n)) (call emit x a (call pos x a)) (block)))
+          (call rewrite x c (eq (call kind x after) compiler.Kind.colon)))
+      (set! ci (+ ci 1))
+      (set! c after))
+    (if (lt c (get x X.n)) (call emit x c (call pos x c)) (block)))
+
+  ;; ===== Driver =====
+
+  ;; Expands the n tokens at toks (from compiler.tokenize over src).
+  (fn expand [src:i32 toks:i32 n:i32] -> (ptr Expanded)
+    (let x:(ptr X) (new X))
+    (put x X.src src)
+    (put x X.toks toks)
+    (put x X.n n)
+    (put x X.out (mem.alloc (* (sizeof compiler.Token) (+ (* 5 n) 1))))
+    (put x X.count 0)
+    (put x X.consts (call (strmap.make i32) 16))
+    (put x X.enums (call (strmap.make (ptr (strmap.StrMap i32))) 16))
+    (put x X.spare (call buf.make 4096))
+    (call buf.push_str (get x X.spare) "enum.cast")
+    (put x X.failed false)
+    (let r:(ptr Expanded) (new Expanded))
+    (put r Expanded.toks toks)
+    (put r Expanded.n n)
+    (put r Expanded.ok true)
+    ;; (module NAME items...): items from token 3
+    (let first:i32 3)
+    (let it:i32 first)
+    (while (and (lt it n) (call is_open x it))
+      (if (call is_sym x (+ it 1) "const") (call read_const x it) (block))
+      (if (call is_sym x (+ it 1) "enum") (call read_enum x it) (block))
+      (if (get x X.failed) (break) (block))
+      (set! it (call elem_end x it)))
+    (if (get x X.failed)
+        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (return r))
+        (block))
+    (if (and (eq (call (strmap.count i32) (get x X.consts)) 0) (eq (call (strmap.count (ptr (strmap.StrMap i32))) (get x X.enums)) 0))
+        (return r)
+        (block))
+    ;; the spare text must not move once tokens point into it
+    (call buf.ensure (get x X.spare) (* 12 n))
+    (loop k 0 (- first 1) 1 (call emit x k (call pos x k)))
+    (set! it first)
+    (while (and (lt it n) (call is_open x it))
+      (cond
+        ((call is_sym x (+ it 1) "const") (block))
+        ((call is_sym x (+ it 1) "enum") (call copy x it))
+        (else (call rewrite_group x it)))
+      (if (get x X.failed) (break) (block))
+      (set! it (call elem_end x it)))
+    (loop k it (- n 1) 1 (call emit x k (call pos x k)))
+    (if (get x X.failed)
+        (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (return r))
+        (block))
+    (put r Expanded.toks (get x X.out))
+    (put r Expanded.n (get x X.count))
+    r))

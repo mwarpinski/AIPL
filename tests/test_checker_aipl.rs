@@ -534,3 +534,68 @@ fn parse_errors_match_word_for_word() {
         assert_eq!(ours, theirs, "{src:?}");
     }
 }
+
+/// CK5: the AIPL resolver's flat output (constants, enums, unions, imported
+/// names) through expand.aipl and parser.aipl is the program the Rust
+/// resolver makes of the same text.
+#[test]
+fn constants_expand_like_rust() {
+    let front = front::load();
+    let mut checked = 0;
+    for rel in [
+        "tests/aipl/consts_enums.aipl",
+        "tests/aipl/sum_types.aipl",
+        "examples/word_count.aipl",
+        "aipl_src/consts.aipl",
+        "aipl_src/codegen.aipl",
+        "aipl_src/native/x64.aipl",
+        "benchmarks/pidigits/pidigits.aipl",
+    ] {
+        let path = root().join(rel);
+        let flat = aipl_core::selfhost::resolve_with_aipl(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let theirs = aipl_core::printer::print_module(&Resolver::resolve_source(&flat, &path).unwrap());
+        let ours = front.run("expand_print", &flat).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{rel}: {e}\n{ours}")));
+        assert!(ours == theirs, "{rel}: expanded programs differ");
+        checked += 1;
+    }
+    assert_eq!(checked, 7);
+}
+
+/// CK5: constant and enum errors, word for word (Rust prefixes the file).
+#[test]
+fn constant_errors_match_word_for_word() {
+    let front = front::load();
+    let cases = [
+        "(const NN:i32 1) (const NN:i32 2)",
+        "(const NN:i32)",
+        "(const NN i32 1)",
+        "(const 5:i32 1)",
+        "(const nn:i32 1)",
+        "(const N:i32 1)",
+        "(const N_a:i32 1)",
+        "(const lib.MAX_X:i32 1) (const lib.max:i32 1)",
+        "(const NN:i32 true)",
+        "(const NN:i32 3000000000)",
+        "(const NN:i64 5)",
+        "(const NN:f64 5)",
+        "(const NN:bool 1)",
+        "(const NN:str 1)",
+        "(const NN:f32 1.0)",
+        "(const NN:(arr i32) 1)",
+        "(const NN:i32 (+ 1 2))",
+        "(const NN:i32 1) (fn f [NN:i32] -> i32 0)",
+        "(const NN:i32 1) (fn f [] -> i32 (let NN:i32 2) 0)",
+        "(const NN:i32 1) (struct S [NN:i32])",
+        "(enum C [a b]) (fn f [] -> C C.z)",
+        "(enum C [a]) (fn f [] -> i32 (match (enum.ord C.q) (else 1)))",
+        "(enum C [a]) (union U [(v x:C)]) (fn f [] -> U (make U.v C.nope))",
+    ];
+    for body in cases {
+        let flat = format!("(module m\n  {body}\n  (fn main [] -> i32 0))");
+        let theirs = Resolver::resolve_source(&flat, Path::new("m.aipl")).err().unwrap_or_else(|| panic!("Rust accepts {body}"));
+        let theirs = theirs.strip_prefix("m.aipl: ").unwrap_or(&theirs).to_string();
+        let ours = front.run("expand_print", &flat).err().unwrap_or_else(|| panic!("expand.aipl accepts {body}"));
+        assert_eq!(ours, theirs, "{body}");
+    }
+}

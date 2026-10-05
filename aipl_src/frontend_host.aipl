@@ -4,6 +4,7 @@
 (module frontend_host
   (import compiler)
   (import parser)
+  (import expand)
   (import printer)
   (import buf)
   (import str)
@@ -23,6 +24,31 @@
     (if (get r parser.Parsed.ok)
         (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
         (call put_result out false (get r parser.Parsed.err))))
+  ;; The checker's front end over a flat program (constants and enums in
+  ;; it): tokenize, expand constants (expand.aipl), parse, then print.
+  (fn front [src:i32 len:i32] -> (ptr parser.Parsed)
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    ;; a tokenizer error comes first, as in Rust
+    (if (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
+        (return (call parser.parse_tokens src toks n))
+        (block))
+    (let x:(ptr expand.Expanded) (call expand.expand src toks n))
+    (if (not (get x expand.Expanded.ok))
+        (block
+          (let r:(ptr parser.Parsed) (new parser.Parsed))
+          (put r parser.Parsed.ok false)
+          (put r parser.Parsed.err (get x expand.Expanded.err))
+          (return r))
+        (block))
+    (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n)))
+
+  (fn expand_print [src:i32 len:i32 out:i32] -> i32
+    (let r:(ptr parser.Parsed) (call front src len))
+    (if (get r parser.Parsed.ok)
+        (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
+        (call put_result out false (get r parser.Parsed.err))))
+
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
   (fn token_size [] -> i32 (sizeof compiler.Token))
   (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))
