@@ -511,7 +511,15 @@
     (call x64.alu_ri c 32 (call x64.op_add) (call r14) 1)
     (call x64.patch_rel32 c (call x64.jmp c) top)
     (call x64.patch_rel32 c found (call buf.len c))
-    (call x64.store c 32 (call x64.mem_index (call rcx) (call r14) 4 0) (call r13))
+    ;; claim it atomically (threads may open files at once): -1 -> the fd,
+    ;; or keep looking if another thread took it first
+    (call x64.mov_ri32 c (call rax) -1)
+    (call x64.lock c)
+    (call x64.cmpxchg c 32 (call x64.mem_index (call rcx) (call r14) 4 0) (call r13))
+    (let claimed:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 32 (call x64.op_add) (call r14) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) top)
+    (call x64.patch_rel32 c claimed (call buf.len c))
     (call arg c 32 9 8 (call r8))
     (call x64.mov_ri32 c (call r9) 4)
     (call emit_guest_check l w (call r8) (call r9) 4)

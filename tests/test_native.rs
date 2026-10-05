@@ -285,6 +285,13 @@ fn program_from(file: &str, marker: &str) -> String {
 /// exits with the number that differ. Run under aipl-run (which must exit 0:
 /// the expected values are right) and natively, as every program is.
 fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, &[i32])]) {
+    assert_functions_give(name, src, drop, calls, None);
+}
+
+/// assert_functions_match with the expected results given (for programs the
+/// in-process wasmtime cannot run, such as threaded ones, which need
+/// aipl-run's thread host).
+fn assert_functions_give(name: &str, src: &str, drop: &[&str], calls: &[(&str, &[i32])], given: Option<&[i32]>) {
     use aipl_core::ast::Type;
     let mut module = parse_program(src);
     module.functions.retain(|f| !drop.contains(&f.name.as_str()));
@@ -296,7 +303,10 @@ fn assert_functions_match(name: &str, src: &str, drop: &[&str], calls: &[(&str, 
     // the calls run in order in one instance, as in the generated main, since
     // results such as heap addresses depend on what ran before
     let calls: Vec<(&str, &[i32])> = calls.iter().map(|(f, a)| (if *f == "main" { "orig_main" } else { *f }, *a)).collect();
-    let wants = call_exports(&wasm, &calls);
+    let wants = match given {
+        Some(v) => v.iter().map(|x| wasmtime::Val::I32(*x)).collect(),
+        None => call_exports(&wasm, &calls),
+    };
     let mut checks = String::new();
     for ((f, args), want) in calls.iter().zip(wants) {
         let def = module.functions.iter().find(|d| d.name == *f).unwrap_or_else(|| panic!("{name}: no function {f}"));
@@ -707,6 +717,234 @@ fn file_programs_match_natively() {
         assert!(!root.join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+/// NE15-NE16: threads. The thread programs of tests/test_threads.rs, each
+/// run 20 times natively to shake out races (the expected values are those
+/// tests' results; aipl-run must give them too).
+#[test]
+fn thread_programs_match_natively() {
+    let threads = program_from(include_str!("test_threads.rs"), "const THREADS");
+    for round in 0..20 {
+        assert_functions_give(
+            &format!("threads_{round}"),
+            &threads,
+            &["concurrent_print"],
+            &[("atomic_counter", &[]), ("join_results", &[]), ("mutex_counter", &[]), ("concurrent_alloc", &[])],
+            Some(&[4000, 25, 4000, 4]),
+        );
+    }
+    // threads really run at once: each side waits for the other to start, so
+    // this finishes only if both run concurrently (else the time limit fails it)
+    let handshake = "(module m
+       (fn worker [flags:i32] -> i32
+         (let _a:i32 (atomic.add flags 1))
+         (while (eq (atomic.add (+ flags 4) 0) 0) (block))
+         7)
+       (fn main [] -> i32
+         (let f:i32 (mem.alloc 8))
+         (let h:i32 (thread.spawn (ref worker) f))
+         (while (eq (atomic.add f 0) 0) (block))
+         (let _b:i32 (atomic.add (+ f 4) 1))
+         (sys.exit (thread.join h))
+         0))";
+    for round in 0..5 {
+        assert_native_matches(&format!("handshake_{round}"), handshake);
+    }
+    let out = run_native(&scratch("handshake_checked"), &to_native(&to_wasm(handshake)).unwrap());
+    assert_eq!(out.status.code(), Some(7));
+    // a trap in a spawned thread ends the whole program, with its message
+    let thread_trap = "(module m
+       (fn worker [z:i32] -> i32 (/ 1 z))
+       (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 0)) (sys.exit (thread.join h)) 0))";
+    assert_native_matches("trap_in_a_thread", thread_trap);
+    let exit_in_thread = "(module m
+       (fn worker [n:i32] -> i32 (sys.exit n) 0)
+       (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 9)) (let r:i32 (thread.join h)) (sys.exit 1) 0))";
+    assert_native_matches("exit_in_a_thread", exit_in_thread);
+    // waits and wakes on shared memory directly: a wait that times out (2),
+    // one whose word differs (1), and a notify nobody waits for (0)
+    for (name, wasm, status) in [
+        ("wait_times_out", shared_module(&[I::I32Const(64), I::I32Const(0), I::I64Const(2_000_000), I::MemoryAtomicWait32(m4()), I::End]), 2),
+        ("wait_on_a_different_value", shared_module(&[I::I32Const(64), I::I32Const(5), I::I64Const(-1), I::MemoryAtomicWait32(m4()), I::End]), 1),
+        ("notify_without_waiters", shared_module(&[I::I32Const(64), I::I32Const(3), I::MemoryAtomicNotify(m4()), I::End]), 0),
+        ("trap_wait_unaligned", shared_module(&[I::I32Const(66), I::I32Const(0), I::I64Const(1), I::MemoryAtomicWait32(m4()), I::End]), 134),
+        // memory.init copies the passive segment; both ranges are checked
+        ("memory_init_copies", shared_module(&[
+            I::I32Const(100), I::I32Const(1), I::I32Const(2), I::MemoryInit { mem: 0, data_index: 0 },
+            I::I32Const(100), I::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }),
+            I::I32Const(101), I::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }), I::I32Add, I::I32Const(100), I::I32Sub, I::End,
+        ]), 97),
+        ("trap_memory_init_past_the_segment", shared_module(&[I::I32Const(100), I::I32Const(2), I::I32Const(2), I::MemoryInit { mem: 0, data_index: 0 }, I::I32Const(0), I::End]), 134),
+        ("trap_memory_init_past_memory", shared_module(&[I::I32Const(1048575), I::I32Const(0), I::I32Const(3), I::MemoryInit { mem: 0, data_index: 0 }, I::I32Const(0), I::End]), 134),
+        ("memory_init_empty_at_the_end", shared_module(&[I::I32Const(1048576), I::I32Const(3), I::I32Const(0), I::MemoryInit { mem: 0, data_index: 0 }, I::I32Const(5), I::End]), 5),
+    ] {
+        assert_wasm_native_matches(name, &wasm);
+        assert_eq!(run_native(&scratch("shared_checked"), &to_native(&wasm).unwrap()).status.code(), Some(status), "{name}");
+    }
+    // the main thread of a threaded module uses its globals too (printing
+    // goes through its runtime scratch block)
+    let main_prints = "(module m (import io)
+       (fn sq [x:i32] -> i32 (* x x))
+       (fn main [] -> i32
+         (call io.println \"before\")
+         (let h:i32 (thread.spawn (ref sq) 6))
+         (call io.println_int \"joined: \" (thread.join h))
+         0))";
+    assert_native_matches("main_thread_prints", main_prints);
+    // concurrent memory.grow: 8 threads x 50 one-page grows; every grow
+    // returns a different old size, so they sum to 16 + 17 + ... + 415
+    let growers = "(module m
+       (fn grower [total:i32] -> i32
+         (loop i 1 50 1 (let _a:i32 (atomic.add total (mem.grow 1))))
+         0)
+       (fn main [] -> i32
+         (let total:i32 (mem.alloc 8))
+         (let hs:(arr i32) (arr.new i32 8))
+         (loop i 0 7 1 (arr.set i32 hs i (thread.spawn (ref grower) total)))
+         (loop i 0 7 1 (let _j:i32 (thread.join (arr.get i32 hs i))))
+         (sys.exit (+ (if (eq (atomic.add total 0) 86200) 1 0) (if (eq (mem.grow 0) 416) 2 0)))
+         0))";
+    for round in 0..10 {
+        assert_native_matches(&format!("concurrent_grow_{round}"), growers);
+    }
+    assert_eq!(run_native(&scratch("grow_checked"), &to_native(&to_wasm(growers)).unwrap()).status.code(), Some(3));
+    // a spawned thread's globals start at their initial values
+    let wasm = spawn_reads_global();
+    assert_wasm_native_matches("thread_global_initial_value", &wasm);
+    assert_eq!(run_native(&scratch("global_checked"), &to_native(&wasm).unwrap()).status.code(), Some(42));
+    // many threads, each joined, results summed
+    let many = "(module m
+       (fn sq [x:i32] -> i32 (* x x))
+       (fn main [] -> i32
+         (let hs:(arr i32) (arr.new i32 40))
+         (loop i 0 39 1 (arr.set i32 hs i (thread.spawn (ref sq) i)))
+         (let sum:i32 0)
+         (loop i 0 39 1 (set! sum (+ sum (thread.join (arr.get i32 hs i)))))
+         (sys.exit (% sum 101)) 0))";
+    assert_native_matches("forty_threads", many);
+    // concurrent printing: whole texts intact, line order free (as in
+    // test_threads.rs); checked natively and under aipl-run
+    let mut module = parse_program(&threads);
+    module.functions.retain(|f| f.name != "main");
+    let printed = aipl_core::printer::print_module(&module);
+    let end = printed.rfind(')').unwrap();
+    let program = format!("{}\n(fn main [] -> i32 (sys.exit (call concurrent_print)) 0))", &printed[..end]);
+    let wasm = to_wasm(&program);
+    let exe = to_native(&wasm).unwrap();
+    let dir = scratch("concurrent_print");
+    for round in 0..20 {
+        for (who, out) in [("aipl-run", run_wasm(&dir, &wasm)), ("native", run_native(&dir, &exe))] {
+            if who == "aipl-run" && round > 0 {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            assert_eq!(out.status.code(), Some(0), "{who}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(text.matches("one one one one one one").count(), 50, "{who}: {text}");
+            assert_eq!(text.matches("two two two two two two").count(), 50, "{who}: {text}");
+            assert_eq!(text.matches('\n').count(), 100, "{who}");
+            assert_eq!(text.len(), 100 * ("one one one one one one".len() + 1), "{who}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+use wasm_encoder::Instruction as I;
+
+fn m4() -> wasm_encoder::MemArg {
+    wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }
+}
+
+/// A threaded-shape module (an imported shared memory, thread-spawn, and a
+/// passive data segment "abc", as AIPL's threaded modules have) whose
+/// `_start` exits with `f()`, `body`.
+fn shared_module(body: &[wasm_encoder::Instruction]) -> Vec<u8> {
+    use wasm_encoder::{
+        CodeSection, DataCountSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+        ImportSection, MemoryType, Module, TypeSection, ValType,
+    };
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32], []); // 0 proc_exit
+    types.ty().function([], []); // 1 _start
+    types.ty().function([], [ValType::I32]); // 2 f
+    types.ty().function([ValType::I32], [ValType::I32]); // 3 thread-spawn
+    types.ty().function([ValType::I32, ValType::I32], []); // 4 wasi_thread_start
+    let mut imports = ImportSection::new();
+    imports.import("wasi_snapshot_preview1", "proc_exit", EntityType::Function(0));
+    imports.import("wasi", "thread-spawn", EntityType::Function(3));
+    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(1024), memory64: false, shared: true, page_size_log2: None }));
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    funcs.function(2);
+    funcs.function(4);
+    let mut exports = ExportSection::new();
+    exports.export("_start", ExportKind::Func, 2);
+    exports.export("wasi_thread_start", ExportKind::Func, 4);
+    exports.export("memory", ExportKind::Memory, 0);
+    let mut code = CodeSection::new();
+    let mut start = Function::new([]);
+    start.instruction(&I::Call(3)).instruction(&I::Call(0)).instruction(&I::End);
+    code.function(&start);
+    let mut f = Function::new([]);
+    for ins in body {
+        f.instruction(ins);
+    }
+    code.function(&f);
+    let mut ts = Function::new([]);
+    ts.instruction(&I::End);
+    code.function(&ts);
+    let mut data = DataSection::new();
+    data.passive(b"abc".iter().copied());
+    let mut m = Module::new();
+    m.section(&types).section(&imports).section(&funcs).section(&exports).section(&DataCountSection { count: 1 }).section(&code).section(&data);
+    m.finish()
+}
+
+/// A threaded module with a global (mutable i32, initially 42): `_start`
+/// spawns a thread that stores the global's value at address 128 and sets
+/// a flag at 132; the main thread waits for the flag and exits with the
+/// value.
+fn spawn_reads_global() -> Vec<u8> {
+    use wasm_encoder::{
+        BlockType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function, FunctionSection, GlobalSection,
+        GlobalType, ImportSection, MemArg, MemoryType, Module, TypeSection, ValType,
+    };
+    let m = |offset| MemArg { offset, align: 2, memory_index: 0 };
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32], []); // 0 proc_exit
+    types.ty().function([], []); // 1 _start
+    types.ty().function([ValType::I32], [ValType::I32]); // 2 thread-spawn
+    types.ty().function([ValType::I32, ValType::I32], []); // 3 wasi_thread_start
+    let mut imports = ImportSection::new();
+    imports.import("wasi_snapshot_preview1", "proc_exit", EntityType::Function(0));
+    imports.import("wasi", "thread-spawn", EntityType::Function(2));
+    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(1024), memory64: false, shared: true, page_size_log2: None }));
+    let mut funcs = FunctionSection::new();
+    funcs.function(1); // 2: _start
+    funcs.function(3); // 3: wasi_thread_start
+    let mut globals = GlobalSection::new();
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(42));
+    let mut exports = ExportSection::new();
+    exports.export("_start", ExportKind::Func, 2);
+    exports.export("wasi_thread_start", ExportKind::Func, 3);
+    exports.export("memory", ExportKind::Memory, 0);
+    let mut code = CodeSection::new();
+    let mut start = Function::new([]);
+    // the main thread changes its own copy first: the new thread must not see it
+    start.instruction(&I::I32Const(7)).instruction(&I::GlobalSet(0));
+    start.instruction(&I::I32Const(0)).instruction(&I::Call(1)).instruction(&I::Drop);
+    start.instruction(&I::Loop(BlockType::Empty));
+    start.instruction(&I::I32Const(132)).instruction(&I::I32AtomicLoad(m(0))).instruction(&I::I32Eqz).instruction(&I::BrIf(0));
+    start.instruction(&I::End);
+    start.instruction(&I::I32Const(128)).instruction(&I::I32Load(m(0))).instruction(&I::Call(0)).instruction(&I::End);
+    code.function(&start);
+    let mut ts = Function::new([]);
+    ts.instruction(&I::I32Const(128)).instruction(&I::GlobalGet(0)).instruction(&I::I32Store(m(0)));
+    ts.instruction(&I::I32Const(132)).instruction(&I::I32Const(1)).instruction(&I::I32AtomicStore(m(0))).instruction(&I::End);
+    code.function(&ts);
+    let mut module = Module::new();
+    module.section(&types).section(&imports).section(&funcs).section(&globals).section(&exports).section(&code);
+    module.finish()
 }
 
 /// NE14: function references (the table and call_indirect).
@@ -1692,15 +1930,26 @@ fn traps_print_one_line_and_exit_134() {
 /// Anything not translated yet is an error naming it, never a wrong program.
 #[test]
 fn unsupported_instructions_and_imports_are_named() {
-    for (src, expected) in [
-        (
-            "(module m (fn work [x:i32] -> i32 x) (fn main [] -> i32 (sys.exit (thread.join (thread.spawn (ref work) 3))) 0))",
-            "not supported natively yet: a start function (threaded modules)",
-        ),
-        ("(module m (fn f [] -> i32 7))", "the module has no _start export"),
-    ] {
-        assert_eq!(to_native(&to_wasm(src)), Err(expected.to_string()), "{src}");
-    }
+    // everything AIPL emits is translated since NE16; what is left are
+    // modules AIPL does not make
+    assert_eq!(to_native(&to_wasm("(module m (fn f [] -> i32 7))")), Err("the module has no _start export".to_string()));
+    use wasm_encoder::{CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection, Module, TypeSection, ValType};
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32, ValType::I64, ValType::I32, ValType::I32], [ValType::I32]);
+    types.ty().function([], []);
+    let mut imports = ImportSection::new();
+    imports.import("wasi_snapshot_preview1", "fd_seek", EntityType::Function(0));
+    let mut funcs = FunctionSection::new();
+    funcs.function(1);
+    let mut exports = ExportSection::new();
+    exports.export("_start", ExportKind::Func, 1);
+    let mut code = CodeSection::new();
+    let mut f = Function::new([]);
+    f.instruction(&I::End);
+    code.function(&f);
+    let mut m = Module::new();
+    m.section(&types).section(&imports).section(&funcs).section(&exports).section(&code);
+    assert_eq!(to_native(&m.finish()), Err("import not supported natively yet: wasi_snapshot_preview1.fd_seek".to_string()));
 }
 
 /// The native compiler run in the VM produces the same executable as the
