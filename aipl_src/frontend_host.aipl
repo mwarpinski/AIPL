@@ -5,6 +5,7 @@
   (import compiler)
   (import parser)
   (import expand)
+  (import checker)
   (import printer)
   (import buf)
   (import str)
@@ -48,6 +49,15 @@
     (if (get r parser.Parsed.ok)
         (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
         (call put_result out false (get r parser.Parsed.err))))
+
+  ;; The whole front end: expand, parse, check. "ok", or the first error.
+  (fn check_text [src:i32 len:i32 out:i32] -> i32
+    (let r:(ptr parser.Parsed) (call front src len))
+    (if (not (get r parser.Parsed.ok)) (return (call put_result out false (get r parser.Parsed.err))) (block))
+    (let e:(ptr buf.Buf) (call checker.check src (get r parser.Parsed.module)))
+    (if (eq e (ptr.null buf.Buf))
+        (block (let okb:(ptr buf.Buf) (call buf.make 4)) (call buf.push_str okb "ok") (call put_result out true okb))
+        (call put_result out false e)))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
   (fn token_size [] -> i32 (sizeof compiler.Token))

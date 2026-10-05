@@ -599,3 +599,256 @@ fn constant_errors_match_word_for_word() {
         assert_eq!(ours, theirs, "{body}");
     }
 }
+
+/// Rust's verdict on a flat program: Ok, or the first error without the
+/// file prefix the resolver adds to parse and constant errors.
+fn rust_verdict(flat: &str) -> Result<(), String> {
+    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(|e| e.strip_prefix("m.aipl: ").unwrap_or(&e).to_string())?;
+    TypeChecker::new().check_module(&m)
+}
+
+fn aipl_verdict(front: &front::Front, flat: &str) -> Result<(), String> {
+    front.run("check_text", flat).map(|_| ())
+}
+
+/// CK6-CK10 acceptance: every repository program, as the Rust printer
+/// prints it, is accepted by checker.aipl.
+#[test]
+fn checker_accepts_every_repository_program() {
+    let front = front::load();
+    let mut checked = 0;
+    for f in aipl_files(&["aipl_src", "aipl_src/std", "aipl_src/native", "examples", "tests/aipl", "benchmarks"]) {
+        let Ok(m) = Resolver::resolve(&f) else { continue };
+        if TypeChecker::new().check_module(&m).is_err() {
+            continue;
+        }
+        let text = aipl_core::printer::print_module(&m);
+        if let Err(e) = aipl_verdict(&front, &text) {
+            panic!("{}: checker.aipl rejects: {e}", f.display());
+        }
+        checked += 1;
+    }
+    assert!(checked > 40, "{checked}");
+}
+
+const HEADER: &str = "(struct P [x:i32 f:f64 n:(ptr P)]) (enum E [a b]) (union U [(v x:i32) (w)]) (fn w [x:i32] -> i32 x) (fn nothing [] -> void (block))";
+
+/// CK10: every operator over 0-3 operands of each kind of value: both
+/// checkers give the same verdict and, for a rejection, the same message.
+#[test]
+fn checkers_agree_on_every_operator_and_operand() {
+    let front = front::load();
+    let ops = "+ - * / % ^ shl shr shru bitand bitor mem.load8 mem.load32 mem.load64 mem.store8 mem.store32 mem.store64 mem.alloc mem.grow str.len str.ptr atomic.add atomic.cas atomic.lock atomic.unlock eq neq lt lte ltu lteu gtu gteu gt gte checked.add checked.sub checked.mul and or not sys.print sys.time sys.monotonic sys.random sys.exit fs.open fs.read fs.write fs.close fs.delete args.sizes args.get env.sizes env.get thread.spawn thread.join divu remu i64.extend_s i64.extend_u i32.wrap f64.convert_i64_s f64.sqrt i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64";
+    let pool = ["2000", "2000i64", "1.5", "\"s\"", "true", "(ref w)", "(new P)", "(arr.new i32 1)", "E.a", "(make U.w)", "0", "70", "6"];
+    let mut programs = Vec::new();
+    for op in ops.split_whitespace() {
+        programs.push(format!("({op})"));
+        for a in pool {
+            programs.push(format!("({op} {a})"));
+            for b in pool {
+                programs.push(format!("({op} {a} {b})"));
+            }
+            for (b, c) in [("2000", "2000"), ("1.5", "1.5"), ("2000", "true"), ("(ref w)", "2000")] {
+                programs.push(format!("({op} {a} {b} {c})"));
+            }
+        }
+    }
+    let (mut agreed, mut rejected) = (0, 0);
+    for body in &programs {
+        // as a value and as a statement
+        for flat in [format!("(module m {HEADER} (fn main [] -> i32 {body}))"), format!("(module m {HEADER} (fn main [] -> i32 {body} 0))")] {
+            let theirs = rust_verdict(&flat);
+            let ours = aipl_verdict(&front, &flat);
+            assert_eq!(ours, theirs, "{flat}");
+            agreed += 1;
+            rejected += theirs.is_err() as usize;
+        }
+    }
+    assert!(agreed > 20000 && rejected > 15000, "{agreed} agreed, {rejected} rejections");
+}
+
+/// CK10: hand-written programs reaching each checker message in every
+/// form, and definitions; full modules or bodies of `main` (wrapped with
+/// HEADER). Both checkers must give the same verdict and message.
+const FORMS: &[&str] = &[
+    // registration
+    "M:(module m (enum E [a]) (enum E [b]) (fn main [] -> i32 0))",
+    "M:(module m (struct E [x:i32]) (enum E [a]) (fn main [] -> i32 0))",
+    "M:(module m (enum E []) (fn main [] -> i32 0))",
+    "M:(module m (enum E [A]) (fn main [] -> i32 0))",
+    "M:(module m (enum E [a a]) (fn main [] -> i32 0))",
+    "M:(module m (enum E [a (b 0)]) (fn main [] -> i32 0))",
+    "M:(module m (enum E [_x (b -5) c]) (fn main [] -> i32 (enum.ord E.c)))",
+    "M:(module m (struct S [x:i32]) (struct S [y:i32]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [x:i32 x:i64]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [x:void]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [x:(result i32 i32)]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [p:(ptr Q)]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [p:Q]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [p:(arr void)]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [p:(fn [Q] -> i32)]) (fn main [] -> i32 0))",
+    "M:(module m (struct S [p:(arr (ptr Q))]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a)]) (union U [(b)]) (fn main [] -> i32 0))",
+    "M:(module m (struct U [x:i32]) (union U [(a)]) (fn main [] -> i32 0))",
+    "M:(module m (enum U [z]) (union U [(a)]) (fn main [] -> i32 0))",
+    "M:(module m (union U []) (fn main [] -> i32 0))",
+    "M:(module m (union U [(A)]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a) (a)]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a x:i32 x:i32)]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a x:void)]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a p:(ptr Q))]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a p:Nope)]) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a p:U)]) (struct S [u:U]) (fn main [] -> i32 0))",
+    // functions and contracts
+    "M:(module m (fn f [x:Nope] -> i32 0) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:(ptr Nope)] -> i32 0) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> Nope 0) (fn main [] -> i32 0))",
+    "M:(module m (struct S [x:i32]) (fn f [x:S] -> i32 0) (fn main [] -> i32 0))",
+    "M:(module m (union U [(a)]) (fn f [x:i32] -> i32 (enum.ord (enum.cast U x))) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:i32] -> i32 (req x) x) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:i32] -> i32 (inv 1) x) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:i32] -> i32 (ens res) x) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:i32] -> i32 (ens (gt res x)) (req (return true)) x) (fn main [] -> i32 0))",
+    "M:(module m (fn f [x:i32] -> i32 (req (gt y 0)) x) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> i32 true) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> i32) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> i32 (let x:i32 1)) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> i32 (return 1)) (fn g [] -> i64 (return 1)) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> void (return 1)) (fn main [] -> i32 0))",
+    "M:(module m (fn f [] -> void (return)) (fn g [] -> i32 (return)) (fn main [] -> i32 0))",
+    // variables, let, set!, if, loops
+    "y",
+    "(let x:i32 1) (let x:i32 2) x",
+    "(let x:i32 1i64) x",
+    "(let x:Nope 1) 0",
+    "(let x:(ptr Q) 1) 0",
+    "(set! zz 1) 0",
+    "(let x:i32 1) (set! x true) x",
+    "(if 1 2 3)",
+    "(if true 2 3i64)",
+    "(if true (block) 3)",
+    "(if true (let q:i32 1) (block)) q",
+    "(if true (let q:i32 1) (let q:i32 2)) 0",
+    "(match E.a (E.a (let q:i32 1)) (E.b (let q:i32 2))) 0",
+    "(block (let q:i32 1)) q",
+    "(loop i 0 2i64 1) 0",
+    "(loop i 0 2 1.5) 0",
+    "(let i:i32 0) (loop i 0 2 1) 0",
+    "(loop i 0 2 1 (let i2:i64 1i64)) (let i2:i32 0) i2",
+    "(while 1) 0",
+    "(while true (break)) (break) 0",
+    "(continue) 0",
+    "(loop i 0 1 1 (while true (break)) (continue)) 0",
+    "(let x:f64 1.5) (block (let y:i32 1)) (block (let y:f64 1.5)) 0",
+    "(let x:i32 0) (loop x 0 1 1) 0",
+    // calls and references
+    "(call nope)",
+    "(call w)",
+    "(call w 1 2)",
+    "(call w true)",
+    "(call nothing)",
+    "(let r:(fn [i32] -> i32) (ref w)) (call_ref (fn [i32] -> i32) r 1)",
+    "(ref nope)",
+    "(call_ref i32 (ref w) 1)",
+    "(call_ref (fn [i32] -> bool) (ref w) 1)",
+    "(call_ref (fn [i32] -> i32) (ref w))",
+    "(call_ref (fn [i32] -> i32) (ref w) true)",
+    "(call_ref (fn [Nope] -> i32) (ref w) 1)",
+    // results
+    "(let r:(result i32 i32) (ok 1)) 0",
+    "(let r:(result bool str) (ok:str true)) 0",
+    "(let r:(result i32 i64) (err 1i64)) 0",
+    "(let r:(result i32 i64) (err:bool 1i64)) 0",
+    "(let r:(result i32 i32) (ok:Nope 1)) 0",
+    "(match_result 5 (ok v v) (err e e))",
+    "(let v:i32 0) (match_result (ok 1) (ok v v) (err e e))",
+    "(let e:i32 0) (match_result (ok 1) (ok v v) (err e e))",
+    "(match_result (ok 1) (ok v v) (err e true))",
+    "(match_result (ok 1) (ok v (block)) (err e (block))) 0",
+    "(match_result (ok 1) (ok v v) (err e (block)))",
+    "(let v:bool true) (match_result (ok:i32 1) (ok v2 v2) (err v e3)) ",
+    // structs
+    "(let p:(ptr Q) (new Q)) 0",
+    "(get (new Q) Q.x)",
+    "(get 5 P.x)",
+    "(get (new P) P.zz)",
+    "(i32.wrap (i64.trunc_f64_s (get (new P) P.f)))",
+    "(put (new Q) Q.x 1) 0",
+    "(put 5 P.x 1) 0",
+    "(put (new P) P.zz 1) 0",
+    "(put (new P) P.x 1.5) 0",
+    "(put (new P) P.n (ptr.null P)) 0",
+    "(sizeof Q)",
+    "(sizeof P)",
+    // arrays
+    "(arr.len (arr.new i32 1i64))",
+    "(arr.len (arr.new void 1))",
+    "(arr.len (arr.new Nope 1))",
+    "(arr.get i32 (arr.new i64 1) 0)",
+    "(arr.get i32 5 0)",
+    "(arr.get i32 (arr.new i32 1) true)",
+    "(arr.get Nope (arr.new i32 1) 0)",
+    "(arr.set i32 (arr.new i32 1) 0 1.5) 0",
+    "(arr.set i32 (arr.new f64 1) 0 1) 0",
+    "(arr.set i32 (arr.new i32 1) 1.5 1) 0",
+    "(arr.len 5)",
+    "(arr.len (arr.null i32))",
+    "(arr.len (arr.null void))",
+    "(let p:(ptr Q) (ptr.null Q)) 0",
+    "(let a:(arr i32) (arr.cast i32 1.5)) 0",
+    "(let p:(ptr P) (ptr.cast P true)) 0",
+    "(let p:(ptr P) (ptr.cast Q 4096)) 0",
+    "(let a:(arr i32) (arr.cast void 4096)) 0",
+    "(ptr.addr 5)",
+    "(arr.addr (new P))",
+    "(enum.ord 5)",
+    "(enum.ord (enum.cast E 1i64))",
+    "(enum.ord (enum.cast Nope 1))",
+    "(+ (ptr.addr (new P)) (+ (arr.addr (arr.new i32 1)) (enum.ord E.b)))",
+    // enums and unions
+    "(match 5 (else 0))",
+    "(match E.a (E.a 1))",
+    "(match E.a (E.a 1) (E.b 2) (else 3))",
+    "(match E.a (E.a 1) (E.a 2) (else 3))",
+    "(match E.a (E.zz 1) (else 3))",
+    "(match E.a (U.v 1) (else 3))",
+    "(match E.a (Ea 1) (else 3))",
+    "(match E.a (E.a [x] 1) (else 3))",
+    "(match E.a (E.a 1) (else true))",
+    "(match (make U.w) (U.v [x] x) (U.w 2))",
+    "(match (make U.w) (U.v x) (U.w 2))",
+    "(match (make U.w) (U.v [x y] x) (U.w 2))",
+    "(match (make U.w) (U.v [_] 1) (U.w 2))",
+    "(let x:i32 0) (match (make U.w) (U.v [x] x) (U.w 2))",
+    "(let x:bool true) (match (make U.w) (U.v [y] y) (U.w (block (let y:bool true) 2)))",
+    "(match (make U.w) (U.v [y] (block)) (U.w (block))) 0",
+    "(match (make U.w) (U.v [y] y) (else 2))",
+    "(make Nope.v)",
+    "(make U.zz)",
+    "(make U.v)",
+    "(make U.v 1 2)",
+    "(make U.v true)",
+    "(match (make U.v 1) (U.v [x] x) (U.w 0))",
+    "(match (make U.w) (U.w 1) (else (+ 1 true)))",
+    // literal addresses
+    "(mem.load32 -1)", "(mem.store32 0 1) 0", "(mem.load32 0)", "(mem.store8 3 1) 0", "(mem.store32 4 1) 0",
+    "(mem.store32 5 1) 0", "(mem.load8 63)", "(mem.store32 64 1) 0", "(mem.load32 1023)", "(mem.load32 1024)",
+    "(atomic.add 0 1)", "(atomic.lock 2) 0", "(if (atomic.cas 60 0 1) 1 0)", "(atomic.unlock 512) 0", "(mem.load64 8)",
+];
+
+#[test]
+fn checkers_agree_on_every_form() {
+    let front = front::load();
+    let mut rejected = 0;
+    for case in FORMS {
+        let flat = match case.strip_prefix("M:") {
+            Some(m) => m.to_string(),
+            None => format!("(module m {HEADER}\n  (fn main [] -> i32\n    {case}))"),
+        };
+        let theirs = rust_verdict(&flat);
+        let ours = aipl_verdict(&front, &flat);
+        assert_eq!(ours, theirs, "{flat}");
+        rejected += theirs.is_err() as usize;
+    }
+    assert!(rejected >= 140, "{rejected} of {} rejected", FORMS.len());
+}
