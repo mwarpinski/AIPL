@@ -1,5 +1,5 @@
 ;; std/arena: a region allocator. Allocate many values, then free them all at
-;; once with reset (AIPL has no general free: mem.free is a no-op, and the
+;; once with reset (AIPL has no general free: there is no mem.free, and the
 ;; heap only grows). Typed, with no casts at the call site:
 ;;
 ;;   (let a:(ptr arena.Arena) (call arena.make 65536))

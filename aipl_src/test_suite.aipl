@@ -40,8 +40,8 @@
   ;; caller to sum.
   (fn report [label:str result:i32 expected:i32] -> i32
     (if (eq result expected)
-        (block (sys.print (+ "[PASS] " label)) 0)
-        (block (sys.print (+ "[FAIL] " label)) 1)))
+        (block (call io.write_str 1 "[PASS] ") (call io.println label) 0)
+        (block (call io.write_str 1 "[FAIL] ") (call io.println label) 1)))
 
   ;; Runs every verified-real module's self-test, prints one line each, and
   ;; returns the total number of failing groups (0 = everything passed).

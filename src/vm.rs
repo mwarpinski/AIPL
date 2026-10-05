@@ -908,7 +908,6 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
-                    (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{}{}", x, y))),
                     _ => Err("Invalid types for +".to_string()),
                 }
             }
@@ -1114,7 +1113,6 @@ impl VM {
                 // share one allocator state.
                 Ok(Value::Int(self.alloc_bytes(size) as i64))
             }
-            OpCode::MemFree => Ok(Value::Void),
             OpCode::MemGrow => {
                 let pages = match self.eval_expr(&args[0], scope)? {
                     Value::Int(i) => i as i32,
@@ -1735,9 +1733,6 @@ impl VM {
                 Value::Float(x) => Ok(Value::Int64(x.to_bits() as i64)),
                 _ => Err("i64.reinterpret_f64 requires Float".to_string()),
             },
-            OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
-                Err(format!("{:?} not supported in VM backend: floating point memory ops not implemented", op))
-            }
             OpCode::SysTime => {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?;
                 Ok(Value::Int64(now.as_nanos() as i64))

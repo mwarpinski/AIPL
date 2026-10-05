@@ -85,15 +85,15 @@ A `const` form, and an `enum` whose members are checked, would let the checker s
 - There are no 8- or 16-bit types, and `mem.load8` is unsigned only (`I32Load8U`).
 - ~~There is no checked arithmetic.~~ Done 2026-10-05: `checked.add`, `checked.sub`, `checked.mul` stop the program on overflow in every backend.
 - `f32` exists without literals or conversions.
-- `mem.load_f32/f64` and `mem.store_f32/f64` are in the grammar and rejected by every backend.
-- `mem.free` is in the grammar and does nothing.
+- ~~`mem.load_f32/f64` and `mem.store_f32/f64` are in the grammar and rejected by every backend.~~ Removed 2026-10-05.
+- ~~`mem.free` is in the grammar and does nothing.~~ Removed 2026-10-05.
 
 Grammar forms that no backend implements are dead surface area: generators will use them. Remove them, or implement them.
 
 **D7. Strings are split three ways and differ between backends.**
 - `str` is an immutable length-prefixed literal, `(ptr str.Bytes)` is a slice, and `buf.Buf` is a builder. Converting between them is manual (`str.from_str`, `buf.bytes`).
-- `(+ str str)` works only in the VM.
-- `sys.print` prints any value in the VM but only `str` in wasm.
+- ~~`(+ str str)` works only in the VM.~~ Removed 2026-10-05.
+- ~~`sys.print` prints any value in the VM but only `str` in wasm.~~ The checker requires `str` (2026-10-05).
 - The VM represents `str` as a Rust string rather than a pointer, with careful emulation to make `str.ptr` agree (AIPL_SPEC.md 4.B).
 
 A single slice type, with literals as constant slices, would remove a class of conversions.

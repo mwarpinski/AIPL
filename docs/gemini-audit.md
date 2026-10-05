@@ -204,3 +204,28 @@ However, AIPL cannot be classified as a production-grade or memory-safe systems 
 - [ ] **Clean `Cargo.toml` Build Targets:** Remove the redundant `[[bin]]` declaration for `benches/execution_bench.rs` to silence manifest warnings.
 - [ ] **Validate Generic Templates at Parse Time:** Perform structural type checking on generic template bodies before instantiation so syntax/type errors in uncalled generics are caught during compilation.
 
+
+---
+
+## Response (2026-10-05, branch `features/audit-fixes`)
+
+Each finding was reproduced against the current code (which also has the unions, unsigned comparisons, and checked arithmetic added after 7c67971) before anything was changed. Then every operator was run with 0 to 3 operands of each kind of value (about 2,800 programs), plus 42 other forms in statement position, looking for anything `aipl verify` accepts but a backend cannot run or compile. That sweep found more than the audit did.
+
+| Finding | Outcome |
+|---|---|
+| P0 `(atomic.add)` and the other atomics: no operand checks; the compilers panic | Fixed. All four atomics check operand count and types (`atomic.cas takes 3 operands, (atomic.cas p expected new); got 2`) |
+| P0 `thread.join` accepts any type | Fixed: the handle must be `i32` |
+| P0 `sys.print` accepted any type, but the compilers take only `str` | Fixed in the checker: `str` only, with the `io.print_*` alternatives in the message |
+| P0 `mem.free` breaks self-hosted parity | Fixed by removing `mem.free`: a no-op free in a bump allocator promises something that never happens. The parser explains, pointing to `std/arena` |
+| P1 float memory ops in the grammar, rejected everywhere | Removed from the language (parser error with the alternatives: struct fields, `(arr f64)`, or `mem.load64` plus `f64.reinterpret_i64`) |
+| P2 conformance test passes when either backend fails | Rewritten, and it was worse than reported: it also skipped ops that failed to parse or check. Every op must now check, run in the VM, compile to wasm that validates in value and statement position, and match the self-hosted compiler's bytes. Mutation-checked |
+| P2 `Cargo.toml` warning | Fixed: `benches/execution_bench.rs` (a VM loop timing and a token-count banner from the initial commit) deleted; the real benchmarks are `benchmarks/` and `tools/bench.py` |
+| P1 contracts and bounds checks only in the VM | Accurate and already documented (AIPL_SPEC.md 7.6, 4.E; LANGUAGE_GAPS.md). Compiling them is the roadmap's next step after the AIPL checker (PROGRESS.md) |
+| P1 1 GiB stack | Reserved address space for the recursive interpreter, not memory used. A design trade-off, not a vulnerability; retiring the VM (audit S4) removes it |
+| P2 generic templates checked only through instances | Accurate and documented (LANGUAGE_GAPS.md 2) |
+
+**Found by the sweep, not by the audit:**
+- Arithmetic on `bool` and `str`, integer-only ops (`%`, shifts, bitwise, `divu`, `remu`) on floats, and ordering (`lt` ...) on `bool` and `str` all passed `verify` and failed to compile. The checker now rejects them. `(+ str str)`, which only ever worked in the VM, is gone; text is built with `std/buf`. The self-test suite's own `report` used it (it now compiles to wasm too).
+- **A miscompilation in the Rust backend:** `checked.add/sub/mul`, `sys.time`, `sys.monotonic`, `sys.random`, `thread.spawn`, `thread.join`, `atomic.add`, and `atomic.cas`, used as a statement (value discarded), produced invalid wasm: their value was never dropped. The backend's list of value-producing ops had drifted from its type table; it now asks the type table, so a new op cannot be missed. The self-hosted compiler was right all along, and byte parity is what exposed the difference.
+
+After the fixes the sweep finds no program that `verify` accepts and a backend rejects.

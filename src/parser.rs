@@ -1516,6 +1516,18 @@ impl Parser {
                                 span,
                             }
                         }
+                        "mem.free" => {
+                            return Err(format!(
+                                "{}:{}: there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)",
+                                span.0, span.1
+                            ))
+                        }
+                        float_mem @ ("mem.load_f32" | "mem.load_f64" | "mem.store_f32" | "mem.store_f64") => {
+                            return Err(format!(
+                                "{}:{}: there is no {}: keep floats in struct fields or (arr f64), or move their bits with mem.load64/mem.store64 and f64.reinterpret_i64/i64.reinterpret_f64",
+                                span.0, span.1, float_mem
+                            ))
+                        }
                         op_str => {
                             let op = match op_str {
                                 "+" => OpCode::Add,
@@ -1532,15 +1544,10 @@ impl Parser {
                                 "mem.load8" => OpCode::MemLoad8,
                                 "mem.load32" => OpCode::MemLoad32,
                                 "mem.load64" => OpCode::MemLoad64,
-                                "mem.load_f32" => OpCode::MemLoadF32,
-                                "mem.load_f64" => OpCode::MemLoadF64,
                                 "mem.store8" => OpCode::MemStore8,
                                 "mem.store32" => OpCode::MemStore32,
                                 "mem.store64" => OpCode::MemStore64,
-                                "mem.store_f32" => OpCode::MemStoreF32,
-                                "mem.store_f64" => OpCode::MemStoreF64,
                                 "mem.alloc" => OpCode::MemAlloc,
-                                "mem.free" => OpCode::MemFree,
                                 "mem.grow" => OpCode::MemGrow,
                                 "str.len" => OpCode::StrLen,
                                 "str.ptr" => OpCode::StrPtr,
