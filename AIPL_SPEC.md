@@ -381,7 +381,7 @@ A union is a type whose value is exactly one of several variants, each carrying 
 |---|---|
 | `(union Name [(variant field:T ...) ...])` | a new type `Name`. A variant without fields is `(variant)`. Variant names start with a lowercase letter or `_` and are unique; field names are unique within a variant; field types are those a struct field may have, including any union (so a union may refer to itself); at least one variant |
 | `(make Name.variant v ...)` | a new value of that variant: one value per field, in declaration order, each of the field's type. Type `Name` |
-| `(match v arm ... [(else body...)])` | `v` is a union or an enum. A union arm is `(Name.variant [x y ...] body...)`, binding the variant's fields in order (every field, each to a new name; a variant without fields may omit the brackets); an enum arm is `(Name.member body...)` |
+| `(match v arm ... [(else body...)])` | `v` is a union or an enum. A union arm is `(Name.variant [x y ...] body...)`, binding the variant's fields in order (every field, each to a new name or to `_`, which skips it and may repeat; a variant without fields may omit the brackets); an enum arm is `(Name.member body...)` |
 | `Name` as a type | everywhere a type goes: parameters, results, `let`, struct fields, variant fields, `(arr Name)`, generic type arguments |
 
 Rules the checker enforces:
@@ -1339,7 +1339,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(match s (circle [r] ...))`, `(match s (Shape.circle r ...))` | arms name `Union.variant` in full, and binders go in brackets: `(Shape.circle [r] ...)` |
 | a `match` arm per variant plus an `else` "just in case" | the checker rejects an `else` that can never run; leave it out when every variant has an arm |
 | `(eq s1 s2)` or `(ptr.null Shape)` on a union | union values do not compare and are never null: use `match`; for "maybe a value", add a variant such as `(none)` |
-| the same name declared with two types in one function (`(let x:f64 ...)` in one block, `(let x:i32 ...)` in another, or as binders of two arms) | a name keeps one type per function; rename one |
+| the same name declared with two types in one function (`(let x:f64 ...)` in one block, `(let x:i32 ...)` in another, or as binders of two arms) | a name keeps one type per function; rename one, or bind a field you do not read as `_` |
 | `(lt size limit)` on sizes or hashes that may pass `2^31` | `(ltu size limit)`: compares as unsigned |
 | `(+ balance amount)` where wrapping would be a silent wrong answer | `(checked.add balance amount)`: stops the program on overflow |
 | `(break)` in a `while` condition or outside any loop | only inside a `while` or `loop` body |

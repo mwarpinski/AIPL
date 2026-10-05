@@ -207,3 +207,23 @@ fn every_rule_has_its_message() {
         }
     }
 }
+
+/// `_` in an arm's binders reads nothing: it may repeat, need not keep a
+/// type, and gets no local, in every backend and the self-hosted compiler.
+#[test]
+fn wildcard_binders_bind_nothing() {
+    let m = check(
+        "wild",
+        "(module m (union U [(a x:i64 y:bool) (b x:f64 y:i32)])
+           (fn f [u:U] -> i32 (match u (U.a [_ _] 1) (U.b [_ y] y)))
+           (fn main [] -> i32 (+ (call f (make U.a 5i64 true)) (call f (make U.b 1.5 41)))))",
+    )
+    .unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m.clone());
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(42));
+    assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(42));
+    // `_` is not a variable inside the arm
+    let e = check("wild2", "(module m (union U [(a x:i32)]) (fn f [u:U] -> i32 (match u (U.a [_] _))))").unwrap_err();
+    assert!(e.contains("Undefined variable '_'"), "{e}");
+}

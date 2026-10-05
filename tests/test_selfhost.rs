@@ -1177,3 +1177,12 @@ fn self_hosted_bytes_match_signed_literal_spellings() {
   (fn c [] -> i32 (+ +7 (+ 4294967295 2147483648))))",
     );
 }
+
+#[test]
+fn self_hosted_bytes_match_wildcard_binders() {
+    assert_self_hosted_matches_rust(
+        "wildcards",
+        "(module wild (union U [(a x:i64 y:bool) (b x:f64 y:i32)])
+  (fn f [u:U] -> i32 (match u (U.a [_ _] 1) (U.b [_ y] y))))",
+    );
+}

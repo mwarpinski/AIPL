@@ -1145,7 +1145,8 @@ impl TypeChecker {
                                     al, ac, tname, member, fields.len(), want.join(" "), names.len()
                                 ));
                             }
-                            for (n, f) in names.iter().zip(fields.iter()) {
+                            // `_` binds nothing: the field is not read
+                            for (n, f) in names.iter().zip(fields.iter()).filter(|(n, _)| n.as_str() != "_") {
                                 if arm_env.contains_key(n) {
                                     return Err(format!("{}:{}: Cannot shadow existing variable '{}' in the {}.{} arm", al, ac, n, tname, member));
                                 }

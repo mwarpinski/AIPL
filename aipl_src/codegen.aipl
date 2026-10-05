@@ -543,7 +543,9 @@
                      (let b:(ptr compiler.Node) (call first_child binders))
                      (let k:i32 0)
                      (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
-                       (call add_local_if_new cg (call node_a b) (call node_b b) (get (arr.get (ptr Field) (get v VariantInfo.fields) k) Field.ty))
+                       (if (call is_wildcard cg b)
+                           0
+                           (call add_local_if_new cg (call node_a b) (call node_b b) (get (arr.get (ptr Field) (get v VariantInfo.fields) k) Field.ty)))
                        (set! k (+ k 1))
                        (set! b (call node_next b))))
                    (block))
@@ -1302,6 +1304,10 @@
     (if (neq (call node_kind arm) compiler.Kind.paren) (return (ptr.null VariantInfo)) (block))
     (call find_variant cg (call first_child arm)))
 
+  ;; A binder written `_`: the field is not read.
+  (fn is_wildcard [cg:(ptr Cg) b:(ptr compiler.Node)] -> bool
+    (and (eq (call node_kind b) compiler.Kind.symbol) (call sym_eq cg (call node_a b) (call node_b b) (str.ptr "_") 1)))
+
   ;; The first expression of a match arm's body: after its head and, for a
   ;; union arm, its [binders].
   (fn arm_body [arm:(ptr compiler.Node)] -> (ptr compiler.Node)
@@ -1977,10 +1983,13 @@
                   (let k:i32 0)
                   (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
                     (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
-                    (call emit_local_get o scratch)
-                    (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
-                    (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
-                    (call emit_local_set o (call find_local cg (call node_a b) (call node_b b)))
+                    (if (call is_wildcard cg b)
+                        (block)
+                        (block
+                          (call emit_local_get o scratch)
+                          (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
+                          (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
+                          (call emit_local_set o (call find_local cg (call node_a b) (call node_b b)))))
                     (set! k (+ k 1))
                     (set! b (call node_next b))))
                 (block))
