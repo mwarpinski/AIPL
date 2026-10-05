@@ -1,0 +1,113 @@
+;; knucleotide: the Benchmarks Game's k-nucleotide. Reads a FASTA file on
+;; stdin, takes the sequence after ">THREE", and counts its substrings: the
+;; frequency of each 1- and 2-letter one (percent, three decimals, most
+;; frequent first), then how often five given ones occur. Hash maps keyed by
+;; byte strings (slices of the sequence, no copies), sorting with a
+;; comparator, float printing.
+;;
+;;   python3 benchmarks/knucleotide/fasta.py 1000 | ./knucleotide
+(module knucleotide
+  (import io)
+  (import str)
+  (import buf)
+  (import vec)
+  (import strmap)
+  (import time)
+
+  (struct Entry [key:(ptr str.Bytes) count:i32])
+
+  ;; The sequence after the line starting ">THREE", upper-cased, newlines removed.
+  (fn sequence_three [input:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let n:i32 (get input str.Bytes.len))
+    (let marker:(ptr str.Bytes) (call str.from_str ">THREE"))
+    (let i:i32 0)
+    (let found:bool false)
+    ;; find the header line
+    (while (and (not found) (lt i n))
+      (if (and (lte (+ i 6) n) (call str.bytes_eq (call str.bytes (+ (get input str.Bytes.addr) i) 6) marker))
+          (set! found true)
+          (block
+            (while (and (lt i n) (neq (call str.byte_at input i) 10)) (set! i (+ i 1)))
+            (set! i (+ i 1)))))
+    (while (and (lt i n) (neq (call str.byte_at input i) 10)) (set! i (+ i 1)))
+    (let out:(ptr buf.Buf) (call buf.make (- n i)))
+    (while (lt i n)
+      (let c:i32 (call str.byte_at input i))
+      (cond
+        ((eq c 10) (block))
+        ((eq c 62) (set! i n))                                  ;; the next '>' ends it
+        ((and (gte c 97) (lte c 122)) (call buf.push_byte out (- c 32)))
+        (else (call buf.push_byte out c)))
+      (set! i (+ i 1)))
+    (call buf.bytes out))
+
+  ;; Counts every k-letter substring.
+  (fn count_kmers [seq:(ptr str.Bytes) k:i32] -> (ptr (strmap.StrMap i32))
+    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 64))
+    (let base:i32 (get seq str.Bytes.addr))
+    (loop i 0 (- (get seq str.Bytes.len) k) 1
+      (let key:(ptr str.Bytes) (call str.bytes (+ base i) k))
+      (call (strmap.set i32) m key (+ 1 (call (strmap.get_or i32) m key 0))))
+    m)
+
+  ;; byte order, then length
+  (fn compare_bytes [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32
+    (let la:i32 (get a str.Bytes.len))
+    (let lb:i32 (get b str.Bytes.len))
+    (let n:i32 (if (lt la lb) la lb))
+    (loop i 0 (- n 1) 1
+      (let d:i32 (- (call str.byte_at a i) (call str.byte_at b i)))
+      (if (neq d 0) (return d) (block)))
+    (- la lb))
+
+  ;; most frequent first, ties by key
+  (fn by_count [a:(ptr Entry) b:(ptr Entry)] -> i32
+    (if (neq (get a Entry.count) (get b Entry.count))
+        (- (get b Entry.count) (get a Entry.count))
+        (call compare_bytes (get a Entry.key) (get b Entry.key))))
+
+  (fn to_f64 [n:i32] -> f64 (f64.convert_i64_s (i64.extend_s n)))
+
+  (fn frequencies [out:(ptr buf.Buf) seq:(ptr str.Bytes) k:i32] -> void
+    (let m:(ptr (strmap.StrMap i32)) (call count_kmers seq k))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) 16))
+    (loop s 0 (- (call (strmap.capacity i32) m) 1) 1
+      (if (call (strmap.slot_used i32) m s)
+          (block
+            (let e:(ptr Entry) (new Entry))
+            (put e Entry.key (call (strmap.slot_key i32) m s))
+            (put e Entry.count (call (strmap.slot_val i32) m s))
+            (call (vec.push (ptr Entry)) entries e))
+          (block)))
+    (call (vec.sort_by (ptr Entry)) entries (ref by_count))
+    (let total:f64 (call to_f64 (+ (- (get seq str.Bytes.len) k) 1)))
+    (loop i 0 (- (call (vec.len (ptr Entry)) entries) 1) 1
+      (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))
+      (call buf.push_bytes out (get e Entry.key))
+      (call buf.push_byte out 32)
+      (call buf.push_f64 out (/ (* 100.0 (call to_f64 (get e Entry.count))) total) 3)
+      (call buf.push_byte out 10))
+    (call buf.push_byte out 10))
+
+  (fn occurrences [out:(ptr buf.Buf) seq:(ptr str.Bytes) fragment:str] -> void
+    (let key:(ptr str.Bytes) (call str.from_str fragment))
+    (let m:(ptr (strmap.StrMap i32)) (call count_kmers seq (get key str.Bytes.len)))
+    (call buf.push_int out (call (strmap.get_or i32) m key 0))
+    (call buf.push_byte out 9)
+    (call buf.push_str out fragment)
+    (call buf.push_byte out 10))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let seq:(ptr str.Bytes) (call sequence_three (call io.read_stdin)))
+    (let out:(ptr buf.Buf) (call buf.make 1024))
+    (call frequencies out seq 1)
+    (call frequencies out seq 2)
+    (call occurrences out seq "GGT")
+    (call occurrences out seq "GGTA")
+    (call occurrences out seq "GGTATT")
+    (call occurrences out seq "GGTATTTTAATT")
+    (call occurrences out seq "GGTATTTTAATTTATAGT")
+    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call time.report "knucleotide computed in" started)
+    0))

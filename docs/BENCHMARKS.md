@@ -32,6 +32,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | nbody | 1,000,000 steps | 0.794 s (15.2x) | 0.092 s (1.8x) | 0.052 s (1.0x) | 5.829 s (111.8x) |
 | mandelbrot | 1000 x 1000 | 0.235 s (4.6x) | 0.067 s (1.3x) | 0.051 s (1.0x) | 3.107 s (61.3x) |
 | binarytrees | depth 16 | 0.568 s (2.4x) | 0.193 s (0.8x) | 0.239 s (1.0x) | 1.168 s (4.9x) |
+| knucleotide | fasta 150000 | 1.411 s (28.0x) | 0.528 s (10.5x) | 0.050 s (1.0x) | 0.518 s (10.3x) |
 
 ## Notes per benchmark
 
@@ -102,3 +103,22 @@ fixed in both resolvers: a module calling its own generic function with its
 own struct (`(alloc Pair)` inside std/arena) left the type argument
 unqualified, so the instance's type no longer matched the struct once the
 module was imported (`tests/test_generics.rs`).
+
+**knucleotide** (count every 1-, 2-, ... 18-letter substring of a DNA
+sequence read from stdin; frequency tables and occurrence counts). Its input
+comes from the Benchmarks Game's fasta generator (`fasta.py`, run by
+`tools/bench.py` through `stdin_cmd`). Ran with no language changes, using
+`std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`.
+What it showed:
+- **The 64 MiB memory cap.** At the benchmark's usual size (fasta 250000,
+  1.25 million letters) both AIPL builds run out of memory: seven maps of up
+  to a million entries each, none ever freed. Measured at 150000 instead. A
+  larger cap (wasm allows up to 4 GiB; AIPL's signed 32-bit addresses make
+  2 GiB the natural ceiling) is a design decision across the VM, both
+  compilers, the launcher, and the native backend; a general free would
+  help too.
+- **String-keyed hash maps are slow.** AIPL is no faster than Python here:
+  `strmap` hashes and compares keys byte by byte in AIPL, while Python's
+  dict is optimised C, and the C version packs each k-mer into a 64-bit
+  integer. Faster hashing (word at a time) or an integer-keyed map for short
+  keys would help most.
