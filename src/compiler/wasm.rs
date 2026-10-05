@@ -478,16 +478,11 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::I64TruncF64S
             | OpCode::I64ReinterpretF64 => Type::I64,
             OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 | OpCode::F64Sqrt => Type::F64,
-            OpCode::MemLoadF32 => Type::F32,
-            OpCode::MemLoadF64 => Type::F64,
             OpCode::SysTime | OpCode::SysMonotonic => Type::I64,
             OpCode::SysRandom => Type::I32,
             OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
-            | OpCode::MemStoreF32
-            | OpCode::MemStoreF64
-            | OpCode::MemFree
             | OpCode::AtomicLock
             | OpCode::AtomicUnlock
             | OpCode::SysPrint
@@ -970,9 +965,6 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::MemoryGrow(0));
             }
-            OpCode::MemFree => {
-                // No-op for bump allocator
-            }
             OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
             | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                 let ty = expr_type(&args[0], ctx);
@@ -1100,9 +1092,6 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[0], ctx, func)?;
             }
 
-            OpCode::MemLoadF32 | OpCode::MemLoadF64 | OpCode::MemStoreF32 | OpCode::MemStoreF64 => {
-                return Err(format!("Wasm Codegen: {:?} is not supported in the wasm backend", op));
-            }
             // Atomics (AIPL_SPEC.md 4.D). Each address passes the store guard
             // first, as in the VM. Operands are evaluated left to right and
             // only then unloaded into the scratch locals, so nesting is safe.
@@ -1972,59 +1961,9 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         }
         Expr::While { .. } | Expr::Loop { .. } => true,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).map_or(false, |t| *t == Type::Void),
-        Expr::Op { op, .. } => !matches!(
-            op,
-            OpCode::Add
-                | OpCode::Sub
-                | OpCode::Mul
-                | OpCode::Div
-                | OpCode::DivU
-                | OpCode::Mod
-                | OpCode::RemU
-                | OpCode::BitXor
-                | OpCode::Shl
-                | OpCode::Shr
-                | OpCode::ShrU
-                | OpCode::BitAnd
-                | OpCode::BitOr
-                | OpCode::MemLoad8
-                | OpCode::MemLoad32
-                | OpCode::MemLoad64
-                | OpCode::MemAlloc
-                | OpCode::MemGrow
-                | OpCode::StrLen
-                | OpCode::StrPtr
-                | OpCode::FsOpen
-                | OpCode::FsRead
-                | OpCode::FsWrite
-                | OpCode::FsClose
-                | OpCode::FsDelete
-                | OpCode::ArgsSizes
-                | OpCode::ArgsGet
-                | OpCode::EnvSizes
-                | OpCode::EnvGet
-                | OpCode::I64ExtendS
-                | OpCode::F64ConvertI64S
-                | OpCode::F64Sqrt
-                | OpCode::I64TruncF64S
-                | OpCode::F64ReinterpretI64
-                | OpCode::I64ReinterpretF64
-                | OpCode::I64ExtendU
-                | OpCode::I32Wrap
-                | OpCode::Eq
-                | OpCode::Neq
-                | OpCode::Lt
-                | OpCode::Lte
-                | OpCode::Gt
-                | OpCode::Gte
-                | OpCode::LtU
-                | OpCode::LteU
-                | OpCode::GtU
-                | OpCode::GteU
-                | OpCode::And
-                | OpCode::Or
-                | OpCode::Not
-        ),
+        // the op's own type (expr_type's exhaustive table): a new op cannot
+        // be left out, as checked.* and sys.time once were
+        Expr::Op { .. } => expr_type(expr, ctx) == Type::Void,
         // Same rule as the block type compile_expr gives a match_result.
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(true, |e| is_void_expr(e, ctx)),
         // Same rule as the block type compile_match gives a match.

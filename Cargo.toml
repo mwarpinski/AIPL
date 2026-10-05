@@ -23,10 +23,6 @@ path = "src/main.rs"
 name = "aipl-run"
 path = "src/bin/aipl_run.rs"
 
-[[bin]]
-name = "execution_bench"
-path = "benches/execution_bench.rs"
-
 [lib]
 name = "aipl_core"
 path = "src/lib.rs"

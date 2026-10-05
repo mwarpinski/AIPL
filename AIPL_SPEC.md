@@ -87,9 +87,9 @@ op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op
 
 arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" | "checked.add" | "checked.sub" | "checked.mul" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "shru" | "bitand" | "bitor" ;
-memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | "mem.load_f64"
-                 | "mem.store8" | "mem.store32" | "mem.store64" | "mem.store_f32" | "mem.store_f64"
-                 | "mem.alloc" | "mem.free" | "mem.grow" ;
+memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64"
+                 | "mem.store8" | "mem.store32" | "mem.store64"
+                 | "mem.alloc" | "mem.grow" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
 comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "ltu" | "lteu" | "gtu" | "gteu" | "and" | "or" | "not" ;
 conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
@@ -108,7 +108,7 @@ Notes on the grammar as implemented by `src/parser.rs`:
 - `(call f ...)` takes a bare function name, never an expression. Imported functions are called as `(call modname.fn ...)`.
 - `i64` is fully supported (section 8.1). `(fn [t1 t2] -> r)` is the type of a function reference (section 4.G).
 - The generic forms (`generic_head`, `struct_ref`, `fn_name`, the instance type) are expanded away before type checking (section 4.H), and so are constants: an identifier naming a constant is its literal, and `Enum.member` is a value of that enum (section 4.I).
-- `mem.free`, `mem.load_f32`, `mem.load_f64`, `mem.store_f32`, `mem.store_f64` and `inv` parse but do nothing or are rejected by every backend (section 6.3).
+- `inv` parses and type-checks but is never evaluated (section 3). There is no `mem.free` (memory is never freed) and there are no float loads or stores (`mem.load_f64` ...): floats live in struct fields and `(arr f64)`. The parser rejects all five with that advice.
 - `(ptr i32)` is rejected (`ptr points to a struct; for a sequence of i32 use (arr i32)`), and so is the old `(arr T N)` form (`(arr T) takes no length`).
 - In `(get p S.f)` / `(put p S.f v)` the field reference is one symbol, `StructName.fieldName`, split at its last `.`, so `(get p compiler.Node.next)` names field `next` of struct `compiler.Node`.
 
@@ -151,13 +151,13 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(mem.store32 ptr val)` -> Writes 4 bytes to linear memory offset `ptr` (`i32.store`).
 - `(mem.alloc size)` -> Bump allocation: returns the current heap cursor (the `i32` at address 0) and advances it by `size` rounded up to a multiple of 8, so every block is 8-aligned (the heap start is too): atomics, `i64`/`f64` values, and WASI out-parameters placed in any allocated block are aligned. The claim is one atomic add, so threads may allocate concurrently. If the new cursor is past the end of memory, memory grows by the pages needed to cover it (up to the 1024-page cap; beyond it nothing grows and the first access past the end fails). `new`, `arr.new`, and `ok`/`err` cells allocate the same way. Never frees. One cursor is shared by the VM, compiled wasm, and AIPL code.
 - `(mem.grow pages)` -> Grows linear memory by `pages` × 64 KiB. Returns the previous size in pages, or `-1` if the 1024-page (64 MiB) maximum would be exceeded.
-- `(mem.free ptr)` -> Accepted and type-checked, but a no-op today.
+- There is no `mem.free`: nothing is ever freed. For memory used in phases, allocate from a region and reset it (`std/arena`).
 
 See "Memory layout" (section 7.9) for the reserved runtime block below address 1024.
 
 ### B. Strings
 
-A `str` is a pointer to immutable UTF-8 bytes preceded by a 4-byte little-endian length. String literals are interned once per module, in first-use order, into the data area that starts at address 1024; the heap starts at the first 8-aligned address after them (section 7.9). Literals are read-only: a store into one traps like a store into the runtime block. A module may have up to 1 MiB of literals (64 KiB in the self-hosted compiler, section 6.4). `(str.len s)` returns the byte length as `i32`; `(str.ptr s)` returns the address of the bytes as `i32`, which is how a string becomes the `(ptr, len)` pair that `fs.*` and other pointer-taking ops expect (identity in both backends: the VM places the literals at the same addresses as wasm when it loads a module, and copies a string onto the heap only if it is not one of the first-loaded module's literals). Two literals with the same text share one address, so `(eq "a" "a")` is `true` and `(eq "a" "b")` is `false` in both backends. `(+ s t)` concatenation exists in the VM only. The VM represents a `str` as a Rust string rather than a pointer; the observable semantics above are the same.
+A `str` is a pointer to immutable UTF-8 bytes preceded by a 4-byte little-endian length. String literals are interned once per module, in first-use order, into the data area that starts at address 1024; the heap starts at the first 8-aligned address after them (section 7.9). Literals are read-only: a store into one traps like a store into the runtime block. A module may have up to 1 MiB of literals (64 KiB in the self-hosted compiler, section 6.4). `(str.len s)` returns the byte length as `i32`; `(str.ptr s)` returns the address of the bytes as `i32`, which is how a string becomes the `(ptr, len)` pair that `fs.*` and other pointer-taking ops expect (identity in both backends: the VM places the literals at the same addresses as wasm when it loads a module, and copies a string onto the heap only if it is not one of the first-loaded module's literals). Two literals with the same text share one address, so `(eq "a" "a")` is `true` and `(eq "a" "b")` is `false` in both backends. There is no `+` on strings; text is built with `std/buf`. The VM represents a `str` as a Rust string rather than a pointer; the observable semantics above are the same.
 
 ### C. Host I/O (WASI)
 
@@ -481,7 +481,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 
 ### 6.3 Backend support matrix (as of 2026-10-05)
 
-"Yes" means the op runs. The native backend (section 6.6) translates the wasm backend's output, so it supports exactly what that column supports. "Err" means the backend returns an explicit error naming the op; apart from `mem.free` (documented as a no-op) there are no silent defaults or no-ops in any backend. The self-hosted column is `aipl_src/codegen.aipl` (section 6.4).
+"Yes" means the op runs. The native backend (section 6.6) translates the wasm backend's output, so it supports exactly what that column supports. "Err" means the backend returns an explicit error naming the op; there are no silent defaults or no-ops in any backend. Every op the checker accepts compiles: `tests/test_opcode_conformance.rs` checks each one in value and statement position, validates the wasm, and compares the self-hosted compiler's bytes. The self-hosted column is `aipl_src/codegen.aipl` (section 6.4).
 
 | Ops | Checker | VM | Rust wasm backend | Self-hosted |
 |---|---|---|---|---|
@@ -497,14 +497,12 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `f64.convert_i64_s i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64` | Yes | Yes (`trunc` errors on NaN / out of range) | Yes (`trunc` traps) | Yes |
 | `f64.sqrt` | Yes | Yes (Rust's correctly rounded `sqrt`) | Yes | Yes |
 | `mem.load8/32/64`, `mem.store8/32/64` | Yes | Yes | Yes | Yes |
-| `mem.load_f32/f64`, `mem.store_f32/f64` | Yes | Err | Err | compile error 987 |
 | `mem.alloc`, `mem.grow` | Yes | Yes | Yes | Yes |
-| `mem.free` | Yes | no-op (argument not evaluated) | no-op (argument not evaluated) | compile error 987 |
 | `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Yes (wasm atomics; `lock` waits with `memory.atomic.wait32`) | Yes |
 | `struct`, `new`, `get`, `put`, `sizeof` | Yes | Yes | Yes | Yes |
 | `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, **not** bounds-checked | Yes |
 | `ok`, `err`, `match_result` | Yes | Yes | Yes (8-byte heap cell; 32-bit payloads only) | Yes |
-| `sys.print` | Yes | Yes (`println!`, any value) | Yes via WASI `fd_write`; `str` arguments only | Yes |
+| `sys.print` | Yes, `str` arguments only | Yes | Yes via WASI `fd_write` | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
 | `sys.time`, `sys.monotonic`, `sys.random` | Yes | Yes | Yes via WASI `clock_time_get` / `random_get` | Yes |
 | `fs.open/read/write/close/delete` | Yes | Yes, real `std::fs` | Yes via WASI | Yes |
@@ -515,10 +513,9 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Yes, as a threaded module (section 4.D): needs a host that provides `wasi.thread-spawn` | Yes |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
-| `(+ str str)` | Yes | Yes | Err (no string concatenation in wasm) | compile error 99 |
 | `(import ...)` | resolved before checking | | | resolved first by `resolver.aipl` (`driver.aipl` chains the two); `compile_module` itself takes one import-free module |
 
-Rule of thumb for code generators: string concatenation is **VM-only** today. Integer/boolean/float code, memory, structs, arrays, results, string literals, printing, and file I/O run in both; compiled I/O needs a WASI host with a preopened directory (section 10.5). Array bounds checks and contracts exist only in the VM.
+Rule of thumb for code generators: whatever `aipl verify` accepts runs in the VM and compiles. Compiled I/O needs a WASI host with a preopened directory (section 10.5), and threads need a wasi-threads host (AIPL's runner). Array bounds checks and contracts exist only in the VM.
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
@@ -616,8 +613,8 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(sizeof S)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
 | `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
 | `(put p S.f v)` / `(arr.set T a i v)` | `void` | as above; `v` must match the field / `T` |
-| binary arithmetic / bitwise | type of the operands, which must be equal | `(+ 1 2)` is `i32` |
-| comparisons | `bool`; operands must have equal type | `ltu lteu gtu gteu`: `i32` or `i64` only |
+| binary arithmetic / bitwise | type of the operands, which must be equal | `+ - * /` on numbers (`i32 i64 f32 f64`); `% divu remu ^ shl shr shru bitand bitor` on `i32`/`i64` only |
+| comparisons | `bool`; operands must have equal type | `eq neq` on anything but a union; `lt lte gt gte` on numbers; `ltu lteu gtu gteu` on `i32`/`i64` only |
 | `checked.add` / `checked.sub` / `checked.mul` | type of the operands, which must be equal | `i32` or `i64` only |
 
 A function body is a sequence of expressions. The **last** expression's type must equal the declared return type unless the return type is `void`, in which case the last value is discarded.
@@ -928,9 +925,11 @@ Representative messages, exactly as produced:
 | wrong arity | `4:5: Function 'add' expects 2 arguments, got 1` |
 | wrong argument type | `4:5: Arg 1 of 'add' expects I32, got Bool` |
 | body/return mismatch | `2:3: Function 'f' expects return type I32, but body returned Bool` |
-| op no backend implements | `Wasm Codegen: MemStoreF64 is not supported in the wasm backend` / `MemStoreF64 not supported in VM backend: floating point memory ops not implemented` |
-| non-`str` `sys.print` in wasm | `Wasm Codegen: sys.print supports str arguments only in the wasm backend, got I32` |
-| `(+ str str)` in wasm | `Wasm Codegen: Add is not supported for operands of type Str` |
+| an op that does not exist | `3:5: there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)` |
+| non-`str` `sys.print` | `3:5: sys.print prints str values, got I32; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)` |
+| `(+ str str)` | `3:5: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)` |
+| arithmetic or ordering on something that is not a number | `3:5: Add needs numbers (i32, i64, f32, f64), got Bool` / `Mod is integer arithmetic (i32 or i64), got F64` / `Lt on Str: only numbers are ordered; bool and str compare only with eq/neq` |
+| wrong operand count or type for an op | `3:5: atomic.cas takes 3 operands, (atomic.cas p expected new); got 2` / `atomic.add operand 2 must be I32, got I64` |
 | non-`bool` contract | `1:50: Contract expression in 'safe_div' must evaluate to Bool, got I32` |
 | store or lock at literal address 0 | `3:5: AtomicLock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
 | literal address in 64-1023 | `3:5: MemStore32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
@@ -996,7 +995,7 @@ Expected terminal output (22 groups; abridged):
 [AIPL Test] All groups passed.
 ```
 
-The `report` function uses `(+ str str)`, so the suite runs in the VM only.
+`aipl test` runs the suite in the VM; it also compiles to wasm.
 
 Rules: import a module into `test_suite.aipl` only once its runner is verified to do real work. `thread_sync.aipl` is imported like every other module: `thread.spawn` takes a function reference, which survives the resolver's renaming (P10).
 
@@ -1257,7 +1256,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 
 Containers are generic (section 4.H): a list of points is `(ptr (vec.Vec (ptr Point)))`, filled with `(call (vec.push (ptr Point)) v p)` and read with `(call (vec.at (ptr Point)) v i)`, with no casts.
 
-From outside, the slice type is `str.Bytes`: `(ptr str.Bytes)`, `(get b str.Bytes.len)`. Every module ends in a `run_<module>_tests` runner wired into `aipl_src/test_suite.aipl`. Allocation grows memory as needed (section 4.A), but nothing is freed (`mem.free` is a no-op): `print_int` allocates 11 bytes per call, `read_file` a buffer per file, and growing a `vec`, `map`, or `buf` abandons the old storage. Long-running programs should reuse containers (`clear`) rather than make new ones.
+From outside, the slice type is `str.Bytes`: `(ptr str.Bytes)`, `(get b str.Bytes.len)`. Every module ends in a `run_<module>_tests` runner wired into `aipl_src/test_suite.aipl`. Allocation grows memory as needed (section 4.A), but nothing is freed (there is no `mem.free`): `print_int` allocates 11 bytes per call, `read_file` a buffer per file, and growing a `vec`, `map`, or `buf` abandons the old storage. Long-running programs should reuse containers (`clear`) rather than make new ones.
 
 ### 12.7 A complete I/O program with the standard library, both backends
 
@@ -1317,7 +1316,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
 | `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
-| `(+ str str)` in code meant for `aipl compile` | VM-only; build strings with `std/buf`. Threads and atomics compile; a program using `thread.spawn` needs AIPL's runner (or another wasi-threads host) to run |
+| `(+ str str)` | there is no string `+`; build strings with `std/buf`. Threads and atomics compile; a program using `thread.spawn` needs AIPL's runner (or another wasi-threads host) to run |
 | `(get p x)` or `(get p Point x)` | the field is one symbol: `(get p Point.x)`; arrays name the element type every time: `(arr.get i32 a i)` |
 | relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (arr.len a))` yourself where it matters |
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |

@@ -239,6 +239,28 @@ impl TypeChecker {
         }
     }
 
+    /// An op's operands: exactly `want.len()` of them, of those types.
+    fn expect_operands(
+        &self,
+        name: &str,
+        form: &str,
+        args: &[Expr],
+        want: &[Type],
+        env: &mut HashMap<String, Type>,
+        (l, c): (u32, u32),
+    ) -> Result<(), String> {
+        if args.len() != want.len() {
+            return Err(format!("{}:{}: {} takes {} operands, {}; got {}", l, c, name, want.len(), form, args.len()));
+        }
+        for (i, (a, w)) in args.iter().zip(want).enumerate() {
+            let t = self.infer_expr_type(a, env)?;
+            if t != *w {
+                return Err(format!("{}:{}: {} operand {} must be {:?}, got {:?}", l, c, name, i + 1, w, t));
+            }
+        }
+        Ok(())
+    }
+
     /// Checks a while/loop body with break/continue allowed inside it.
     fn check_loop_body(&self, body: &[Expr], env: &mut HashMap<String, Type>) -> Result<(), String> {
         self.loop_depth.set(self.loop_depth.get() + 1);
@@ -510,6 +532,16 @@ impl TypeChecker {
                     if let Type::Union(u) = &t1 {
                         return Err(format!("{}:{}: {:?} on union '{}': unions have no arithmetic; take them apart with match", l, c, op, u));
                     }
+                    let integer_only = !matches!(op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div);
+                    if t1 == Type::Str && matches!(op, OpCode::Add) {
+                        return Err(format!("{}:{}: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)", l, c));
+                    }
+                    if integer_only && !matches!(t1, Type::I32 | Type::I64 | Type::Enum(_)) {
+                        return Err(format!("{}:{}: {:?} is integer arithmetic (i32 or i64), got {:?}", l, c, op, t1));
+                    }
+                    if !matches!(t1, Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Enum(_)) {
+                        return Err(format!("{}:{}: {:?} needs numbers (i32, i64, f32, f64), got {:?}", l, c, op, t1));
+                    }
                     if let Type::Enum(e) = &t1 {
                         return Err(format!(
                             "{}:{}: {:?} on enum '{}': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast {} n)",
@@ -538,26 +570,6 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
-                OpCode::MemLoadF32 => {
-                    if args.len() != 1 {
-                        return Err(format!("{}:{}: mem.load_f32 requires 1 argument (ptr: i32)", l, c));
-                    }
-                    let t = self.infer_expr_type(&args[0], env)?;
-                    if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.load_f32 requires i32 ptr, got {:?}", l, c, t));
-                    }
-                    Ok(Type::F32)
-                }
-                OpCode::MemLoadF64 => {
-                    if args.len() != 1 {
-                        return Err(format!("{}:{}: mem.load_f64 requires 1 argument (ptr: i32)", l, c));
-                    }
-                    let t = self.infer_expr_type(&args[0], env)?;
-                    if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.load_f64 requires i32 ptr, got {:?}", l, c, t));
-                    }
-                    Ok(Type::F64)
-                }
                 OpCode::MemStore8 | OpCode::MemStore32 => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: {:?} requires 2 arguments (ptr: i32, val: i32)", l, c, op));
@@ -580,28 +592,6 @@ impl TypeChecker {
                     }
                     Ok(Type::Void)
                 }
-                OpCode::MemStoreF32 => {
-                    if args.len() != 2 {
-                        return Err(format!("{}:{}: mem.store_f32 requires 2 arguments (ptr: i32, val: f32)", l, c));
-                    }
-                    let t1 = self.infer_expr_type(&args[0], env)?;
-                    let t2 = self.infer_expr_type(&args[1], env)?;
-                    if t1 != Type::I32 || t2 != Type::F32 {
-                        return Err(format!("{}:{}: mem.store_f32 requires (i32, f32), got ({:?}, {:?})", l, c, t1, t2));
-                    }
-                    Ok(Type::Void)
-                }
-                OpCode::MemStoreF64 => {
-                    if args.len() != 2 {
-                        return Err(format!("{}:{}: mem.store_f64 requires 2 arguments (ptr: i32, val: f64)", l, c));
-                    }
-                    let t1 = self.infer_expr_type(&args[0], env)?;
-                    let t2 = self.infer_expr_type(&args[1], env)?;
-                    if t1 != Type::I32 || t2 != Type::F64 {
-                        return Err(format!("{}:{}: mem.store_f64 requires (i32, f64), got ({:?}, {:?})", l, c, t1, t2));
-                    }
-                    Ok(Type::Void)
-                }
                 OpCode::MemAlloc => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: mem.alloc requires 1 argument (size: i32)", l, c));
@@ -611,16 +601,6 @@ impl TypeChecker {
                         return Err(format!("{}:{}: mem.alloc requires i32 size, got {:?}", l, c, t));
                     }
                     Ok(Type::I32)
-                }
-                OpCode::MemFree => {
-                    if args.len() != 1 {
-                        return Err(format!("{}:{}: mem.free requires 1 argument (ptr: i32)", l, c));
-                    }
-                    let t = self.infer_expr_type(&args[0], env)?;
-                    if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.free requires i32 ptr, got {:?}", l, c, t));
-                    }
-                    Ok(Type::Void)
                 }
                 OpCode::MemGrow => {
                     if args.len() != 1 {
@@ -632,9 +612,19 @@ impl TypeChecker {
                     }
                     Ok(Type::I32)
                 }
-                OpCode::AtomicAdd => Ok(Type::I32),
-                OpCode::AtomicCas => Ok(Type::Bool),
-                OpCode::AtomicLock | OpCode::AtomicUnlock => Ok(Type::Void),
+                OpCode::AtomicAdd => {
+                    self.expect_operands("atomic.add", "(atomic.add p v)", args, &[Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::AtomicCas => {
+                    self.expect_operands("atomic.cas", "(atomic.cas p expected new)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::Bool)
+                }
+                OpCode::AtomicLock | OpCode::AtomicUnlock => {
+                    let (name, form) = if matches!(op, OpCode::AtomicLock) { ("atomic.lock", "(atomic.lock p)") } else { ("atomic.unlock", "(atomic.unlock p)") };
+                    self.expect_operands(name, form, args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::Void)
+                }
                 OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
                 | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                     if args.len() != 2 {
@@ -653,6 +643,10 @@ impl TypeChecker {
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
+                    }
+                    // lt/lte/gt/gte order numbers; bool and str compare only with eq/neq
+                    if matches!(t1, Type::Bool | Type::Str) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                        return Err(format!("{}:{}: {:?} on {:?}: only numbers are ordered; bool and str compare only with eq/neq", l, c, op, t1));
                     }
                     Ok(Type::Bool)
                 }
@@ -685,7 +679,13 @@ impl TypeChecker {
                 }
                 OpCode::SysPrint => {
                     for arg in args {
-                        self.infer_expr_type(arg, env)?;
+                        let t = self.infer_expr_type(arg, env)?;
+                        if t != Type::Str {
+                            return Err(format!(
+                                "{}:{}: sys.print prints str values, got {:?}; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)",
+                                l, c, t
+                            ));
+                        }
                     }
                     Ok(Type::Void)
                 }
@@ -804,7 +804,10 @@ impl TypeChecker {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: thread.join requires 1 argument (thread handle)", l, c));
                     }
-                    self.infer_expr_type(&args[0], env)?;
+                    let t = self.infer_expr_type(&args[0], env)?;
+                    if t != Type::I32 {
+                        return Err(format!("{}:{}: thread.join needs the i32 handle thread.spawn returned, got {:?}", l, c, t));
+                    }
                     Ok(Type::I32)
                 }
                 OpCode::I64ExtendS | OpCode::I64ExtendU => {
@@ -1205,13 +1208,9 @@ fn is_address_op(op: &OpCode) -> bool {
         OpCode::MemLoad8
             | OpCode::MemLoad32
             | OpCode::MemLoad64
-            | OpCode::MemLoadF32
-            | OpCode::MemLoadF64
             | OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
-            | OpCode::MemStoreF32
-            | OpCode::MemStoreF64
             | OpCode::AtomicAdd
             | OpCode::AtomicCas
             | OpCode::AtomicLock
@@ -1226,8 +1225,6 @@ fn is_write_op(op: &OpCode) -> bool {
         OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
-            | OpCode::MemStoreF32
-            | OpCode::MemStoreF64
             | OpCode::AtomicAdd
             | OpCode::AtomicCas
             | OpCode::AtomicLock

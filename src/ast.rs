@@ -56,15 +56,10 @@ pub enum OpCode {
     MemLoad8,
     MemLoad32,
     MemLoad64,
-    MemLoadF32,
-    MemLoadF64,
     MemStore8,
     MemStore32,
     MemStore64,
-    MemStoreF32,
-    MemStoreF64,
     MemAlloc,
-    MemFree,
     /// `(mem.grow pages)`: grows linear memory by `pages` 64 KiB pages and
     /// returns the previous size in pages, or -1 if the maximum (1024 pages)
     /// would be exceeded (wasm `memory.grow`).
