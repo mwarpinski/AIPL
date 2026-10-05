@@ -24,6 +24,9 @@
   ;; symbol, string, or i64/float literal (compiler.aipl). A group's
   ;; children start at first_child.
   (fn node_a [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.a)))
+  ;; An int literal's value (its low 32 bits).
+  (fn int_node_value [cg:(ptr Cg) node:(ptr compiler.Node)] -> i32
+    (call compiler.int_value (get cg Cg.src) (call node_a node) (call node_b node)))
   (fn node_b [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.b)))
   (fn node_next [node:(ptr compiler.Node)] -> (ptr compiler.Node)
     (if (eq node (ptr.null compiler.Node)) node (get node compiler.Node.next)))
@@ -1831,7 +1834,8 @@
         (block))
     (let kind:compiler.Kind (call node_kind node))
     (cond
-      ((or (eq kind compiler.Kind.int) (eq kind compiler.Kind.bool)) (call emit_i32_const o (call node_a node)))
+      ((eq kind compiler.Kind.int) (call emit_i32_const o (call int_node_value cg node)))
+      ((eq kind compiler.Kind.bool) (call emit_i32_const o (call node_a node)))
       ((eq kind compiler.Kind.int64)
        (call put_byte o OP_I64_CONST)
        (call put_s64 o (call parse_i64_literal cg (call node_a node) (call node_b node))))
@@ -1965,7 +1969,7 @@
             (call emit_local_get o scratch)
             (let v:(ptr VariantInfo) (ptr.null VariantInfo))
             (if (eq (call node_kind head) compiler.Kind.int)
-                (call emit_i32_const o (call node_a head))
+                (call emit_i32_const o (call int_node_value cg head))
                 (block
                   (set! v (call find_variant cg head))
                   (if (eq v (ptr.null VariantInfo)) (call set_compile_error CgErr.unknown_variant) 0)

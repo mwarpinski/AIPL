@@ -181,7 +181,7 @@
       ((eq k compiler.Kind.symbol) (call buf.push_bytes out (call rename m (call text src n) role)))
       ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text src n)))
       ;; an int as written (its value is only the low 32 bits)
-      ((eq k compiler.Kind.int) (call buf.push_bytes out (call slice (get src Src.text) (get n compiler.Node.pos) (get n compiler.Node.b))))
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call slice (get src Src.text) (get n compiler.Node.a) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)

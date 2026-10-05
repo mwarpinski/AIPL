@@ -112,11 +112,8 @@ fn aipl_tokens(vm: &mut VM, src: &str) -> Result<Vec<Tok>, String> {
         let span = |a: i32, b: i32| src[a as usize..(a + b) as usize].to_string();
         let value = match kind {
             "symbol" => span(a, b),
-            // the low 32 bits; b is the literal's length
-            "int" => {
-                assert_eq!(src[pos..pos + b as usize].parse::<i64>().unwrap() as i32, a, "int literal at {pos}");
-                a.to_string()
-            }
+            // the literal's text; compared as its low 32 bits
+            "int" => (span(a, b).parse::<i64>().unwrap() as i32).to_string(),
             "bool" => (a != 0).to_string(),
             "string" => unescape(&span(a, b)),
             "int64" => span(a, b - 3).parse::<i64>().unwrap().to_string(),

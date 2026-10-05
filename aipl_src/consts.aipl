@@ -80,7 +80,8 @@
       (if (call is_symbol m)
           (call (strmap.set i32) members (call text st m) next)
           (block
-            (set! next (get (call nth m 1) compiler.Node.a))
+            (let vn:(ptr compiler.Node) (call nth m 1))
+            (set! next (call compiler.int_value (get (get st St.text) str.Bytes.addr) (get vn compiler.Node.a) (get vn compiler.Node.b)))
             (call (strmap.set i32) members (call text st (call first_child m)) next)))
       (set! next (+ next 1))
       (set! m (get m compiler.Node.next)))
@@ -93,7 +94,7 @@
     (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
       ;; an int as written (its value is only the low 32 bits)
-      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.pos)) (get n compiler.Node.b))))
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)

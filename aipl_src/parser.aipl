@@ -55,9 +55,7 @@
     (call str.bytes (+ (get p P.src) (get t compiler.Token.a)) (get t compiler.Token.b)))
 
   ;; An int token's literal as written.
-  (fn int_text [p:(ptr P) i:i32] -> (ptr str.Bytes)
-    (let t:(ptr compiler.Token) (call tok p i))
-    (call str.bytes (+ (get p P.src) (get t compiler.Token.pos)) (get t compiler.Token.b)))
+  (fn int_text [p:(ptr P) i:i32] -> (ptr str.Bytes) (call text p i))
 
   (fn is_sym [p:(ptr P) i:i32 s:str] -> bool
     (and (eq (call kind_at p i) compiler.Kind.symbol) (call str.bytes_eq (call text p i) (call str.from_str s))))

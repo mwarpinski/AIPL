@@ -46,9 +46,9 @@
   ;; ===== Tokenizer =====
   ;; Tokens are Token records packed in a buffer the caller provides (at
   ;; least one per source byte, (sizeof Token) bytes each): a symbol, string,
-  ;; i64, or float token's a/b are its source offset and length (a string's
-  ;; without the quotes), an int's a is its value (the low 32 bits) and b its
-  ;; length in the source, a bool's a is 0/1. Mirrors
+  ;; int, i64, or float token's a/b are its source offset and length (a
+  ;; string's without the quotes; an int's value is int_value), a bool's a is
+  ;; 0/1. Mirrors
   ;; src/parser.rs::Parser::tokenize (same delimiters, same literal rules,
   ;; same errors as bad tokens), so the two tokenizers accept identical input.
 
@@ -193,6 +193,9 @@
       (if (call is_digit (mem.load8 (+ src_ptr (+ pos k)))) (block) (return false)))
     true)
 
+  ;; An int token's or node's value (the low 32 bits), from its text a/b.
+  (fn int_value [src:i32 a:i32 b:i32] -> i32 (call parse_int_literal src a b))
+
   ;; The low 32 bits of an int literal's value.
   (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
     (req (gte pos 0))
@@ -270,7 +273,7 @@
                  ((call span_is input_ptr s n "true") (call write_token token_out_ptr count Kind.bool 1 0 s))
                  ((call span_is input_ptr s n "false") (call write_token token_out_ptr count Kind.bool 0 0 s))
                  ((call is_int_literal input_ptr s n)
-                  (call write_token token_out_ptr count Kind.int (call parse_int_literal input_ptr s n) n s))
+                  (call write_token token_out_ptr count Kind.int s n s))
                  ((call is_i64_literal input_ptr s n) (call write_token token_out_ptr count Kind.int64 s n s))
                  ((call is_float_literal input_ptr s n) (call write_token token_out_ptr count Kind.float s n s))
                  (else (call write_token token_out_ptr count Kind.symbol s n s)))))))
@@ -362,13 +365,13 @@
     (let tok:i32 (mem.alloc 2048))
     (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
     (if (and (eq n 6)
-             (and (and (eq (call kind_at tok 0) Kind.int) (eq (call a_at tok 0) 42))
-                  (and (and (eq (call kind_at tok 1) Kind.int) (eq (call a_at tok 1) -7))
+             (and (and (eq (call kind_at tok 0) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 0) (call b_at tok 0)) 42))
+                  (and (and (eq (call kind_at tok 1) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 1) (call b_at tok 1)) -7))
                        (and (and (eq (call kind_at tok 2) Kind.bool) (eq (call a_at tok 2) 1))
                             (and (and (eq (call kind_at tok 3) Kind.bool) (eq (call a_at tok 3) 0))
                                  (and (and (eq (call kind_at tok 4) Kind.string)
                                            (call span_is (str.ptr src) (call a_at tok 4) (call b_at tok 4) "hi"))
-                                      (and (eq (call kind_at tok 5) Kind.int) (eq (call a_at tok 5) 99))))))))
+                                      (and (eq (call kind_at tok 5) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 5) (call b_at tok 5)) 99))))))))
         1
         0))
 
@@ -388,8 +391,8 @@
     (if (and (eq n 5)
              (and (and (eq (get root Node.kind) Kind.paren) (eq (get root Node.b) 3))
                   (and (and (eq (get c0 Node.kind) Kind.symbol) (call span_is (str.ptr src) (get c0 Node.a) (get c0 Node.b) "+"))
-                       (and (and (eq (get c1 Node.kind) Kind.int) (eq (get c1 Node.a) 1))
-                            (and (and (eq (get c2 Node.kind) Kind.int) (eq (get c2 Node.a) 2))
+                       (and (and (eq (get c1 Node.kind) Kind.int) (eq (call int_value (str.ptr src) (get c1 Node.a) (get c1 Node.b)) 1))
+                            (and (and (eq (get c2 Node.kind) Kind.int) (eq (call int_value (str.ptr src) (get c2 Node.a) (get c2 Node.b)) 2))
                                  (eq (get c2 Node.next) (ptr.null Node)))))))
         1
         0))
