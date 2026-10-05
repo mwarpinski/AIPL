@@ -44,7 +44,14 @@
   ;; the locals of the function being compiled, and the module's functions.
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
-              structs:(arr (ptr StructInfo)) nstructs:i32])
+              structs:(arr (ptr StructInfo)) nstructs:i32
+              wasi:(arr i32) nimports:i32])
+
+  ;; The WASI functions a module may import, in the fixed import order of
+  ;; wasm.rs enum Wasi.
+  (enum Wasi [(none -1) fd_write fd_read path_open fd_close proc_exit path_unlink_file
+              args_sizes_get args_get environ_sizes_get environ_get thread_spawn
+              clock_time_get random_get])
 
   ;; A struct of the module and its layout (checker.rs get_field_offset):
   ;; fields in declaration order, each aligned to its size.
@@ -70,6 +77,9 @@
     (put cg Cg.nfns 0)
     (put cg Cg.structs (arr.new (ptr StructInfo) 255))
     (put cg Cg.nstructs 0)
+    (put cg Cg.wasi (arr.new i32 13))
+    (loop w 0 12 1 (arr.set i32 (get cg Cg.wasi) w -1))
+    (put cg Cg.nimports 0)
     cg)
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
@@ -140,7 +150,6 @@
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
-          (mem.store32 (+ (mem.load32 8) 12) (mem.alloc 52))
           0)
         0)
 
@@ -148,14 +157,9 @@
     (mem.store32 (call ref_state) 0)
     (mem.store32 (call label_stack) 0)
     (mem.store32 (+ (call ref_state) 4) 0)
-    (mem.store32 32 0)
     (call set_str_blob_len 0)
     (call set_str_count 0)
     (call set_newline_addr 0)
-    (let i:i32 0)
-    (while (lt i 13)
-      (mem.store32 (call wasi_cell i) -1)
-      (set! i (+ i 1)))
     0)
 
   ;; ===== Keywords =====
@@ -312,14 +316,14 @@
     (or (or (eq k Kw.eq) (or (eq k Kw.neq) (or (eq k Kw.lt) (or (eq k Kw.lte) (or (eq k Kw.gt) (eq k Kw.gte))))))
         (or (eq k Kw.and) (or (eq k Kw.or) (eq k Kw.not)))))
 
-  ;; The WASI function behind args.sizes / args.get / env.sizes / env.get, or -1.
-  (fn proc_wasi [k:Kw] -> i32
+  ;; The WASI function behind args.sizes / args.get / env.sizes / env.get, or none.
+  (fn proc_wasi [k:Kw] -> Wasi
     (cond
-      ((eq k Kw.args_sizes) 6)
-      ((eq k Kw.args_get) 7)
-      ((eq k Kw.env_sizes) 8)
-      ((eq k Kw.env_get) 9)
-      (else -1)))
+      ((eq k Kw.args_sizes) Wasi.args_sizes_get)
+      ((eq k Kw.args_get) Wasi.args_get)
+      ((eq k Kw.env_sizes) Wasi.environ_sizes_get)
+      ((eq k Kw.env_get) Wasi.environ_get)
+      (else Wasi.none)))
 
   ;; The keyword spelled by len bytes at src_ptr + pos, or Kw.none.
   (fn classify_keyword [cg:(ptr Cg) pos:i32 len:i32] -> Kw
@@ -1182,59 +1186,47 @@
     (+ n (str.len s)))
 
   ;; The import name of WASI function w (the order of wasm.rs Wasi).
-  (fn wasi_name [w:i32] -> str
+  ;; The import name of a WASI function.
+  (fn wasi_name [w:Wasi] -> str
     (cond
-      ((eq w 0) "fd_write")
-      ((eq w 1) "fd_read")
-      ((eq w 2) "path_open")
-      ((eq w 3) "fd_close")
-      ((eq w 4) "proc_exit")
-      ((eq w 5) "path_unlink_file")
-      ((eq w 6) "args_sizes_get")
-      ((eq w 7) "args_get")
-      ((eq w 8) "environ_sizes_get")
-      ((eq w 9) "environ_get")
-      ((eq w 10) "thread-spawn")
-      ((eq w 11) "clock_time_get")
+      ((eq w Wasi.fd_write) "fd_write")
+      ((eq w Wasi.fd_read) "fd_read")
+      ((eq w Wasi.path_open) "path_open")
+      ((eq w Wasi.fd_close) "fd_close")
+      ((eq w Wasi.proc_exit) "proc_exit")
+      ((eq w Wasi.path_unlink_file) "path_unlink_file")
+      ((eq w Wasi.args_sizes_get) "args_sizes_get")
+      ((eq w Wasi.args_get) "args_get")
+      ((eq w Wasi.environ_sizes_get) "environ_sizes_get")
+      ((eq w Wasi.environ_get) "environ_get")
+      ((eq w Wasi.thread_spawn) "thread-spawn")
+      ((eq w Wasi.clock_time_get) "clock_time_get")
       (else "random_get")))
 
   ;; ===== WASI Import Detection =====
-  ;; WASI import table, 11 words at struct_table + 12, in the fixed import
-  ;; order (wasm.rs enum Wasi): fd_write, fd_read, path_open, fd_close,
-  ;; proc_exit, path_unlink_file, args_sizes_get, args_get,
-  ;; environ_sizes_get, environ_get, wasi-threads' thread-spawn (10),
-  ;; clock_time_get (11), random_get (12).
-  ;; 1 while marking used, then the function index, or -1 if unused.
-  (fn wasi_cell [wasi_id:i32] -> i32
-    (+ (mem.load32 (+ (call struct_table) 12)) (* wasi_id 4)))
-
-  (fn mark_wasi_used [wasi_id:i32] -> i32
-    (mem.store32 (call wasi_cell wasi_id) 1)
+  ;; Cg.wasi holds, per WASI function, -1 (unused), 1 while marking it used,
+  ;; then its function index (imports come first, in the fixed order).
+  (fn mark_wasi_used [cg:(ptr Cg) w:Wasi] -> i32
+    (arr.set i32 (get cg Cg.wasi) (enum.ord w) 1)
     0)
 
-  (fn finalize_wasi_indices [] -> i32
+  (fn finalize_wasi_indices [cg:(ptr Cg)] -> i32
     (let count:i32 0)
-    (let i:i32 0)
-    (while (lt i 13)
-      (let cell_idx:i32 (call wasi_cell i))
-      (if (eq (mem.load32 cell_idx) 1)
+    (loop i 0 12 1
+      (if (eq (arr.get i32 (get cg Cg.wasi) i) 1)
           (block
-            (mem.store32 cell_idx count)
-            (set! count (+ count 1))
-            0)
-          (block
-            (mem.store32 cell_idx -1)
-            0))
-      (set! i (+ i 1)))
-    (mem.store32 32 count)
+            (arr.set i32 (get cg Cg.wasi) i count)
+            (set! count (+ count 1)))
+          (arr.set i32 (get cg Cg.wasi) i -1)))
+    (put cg Cg.nimports count)
     count)
 
-  (fn get_wasi_index [wasi_id:i32] -> i32
-    (mem.load32 (call wasi_cell wasi_id)))
+  (fn get_wasi_index [cg:(ptr Cg) w:Wasi] -> i32
+    (arr.get i32 (get cg Cg.wasi) (enum.ord w)))
 
   ;; A module that uses thread.spawn is threaded (wasm.rs `threaded`).
-  (fn threaded [] -> bool
-    (neq (call get_wasi_index 10) -1))
+  (fn threaded [cg:(ptr Cg)] -> bool
+    (neq (call get_wasi_index cg Wasi.thread_spawn) -1))
 
   ;; ===== AST Walker for WASI & Strings =====
   (fn walk_ast_for_wasi [cg:(ptr Cg) node:(ptr compiler.Node)] -> i32
@@ -1243,20 +1235,20 @@
         (block
           (let kw:Kw (call group_head_keyword cg node))
           (cond
-            ((eq kw Kw.sys_print) (call mark_wasi_used 0) 0)
-            ((eq kw Kw.sys_exit) (call mark_wasi_used 4) 0)
-            ((eq kw Kw.fs_open) (call mark_wasi_used 2) 0)
-            ((eq kw Kw.fs_read) (call mark_wasi_used 1) 0)
-            ((eq kw Kw.fs_write) (call mark_wasi_used 0) 0)
-            ((eq kw Kw.fs_close) (call mark_wasi_used 3) 0)
-            ((eq kw Kw.fs_delete) (call mark_wasi_used 5) 0)
-            ((eq kw Kw.args_sizes) (call mark_wasi_used 6) 0)
-            ((eq kw Kw.args_get) (call mark_wasi_used 7) 0)
-            ((eq kw Kw.env_sizes) (call mark_wasi_used 8) 0)
-            ((eq kw Kw.env_get) (call mark_wasi_used 9) 0)
-            ((eq kw Kw.thread_spawn) (call mark_wasi_used 10) 0)
-            ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used 11) 0)
-            ((eq kw Kw.sys_random) (call mark_wasi_used 12) 0)
+            ((eq kw Kw.sys_print) (call mark_wasi_used cg Wasi.fd_write) 0)
+            ((eq kw Kw.sys_exit) (call mark_wasi_used cg Wasi.proc_exit) 0)
+            ((eq kw Kw.fs_open) (call mark_wasi_used cg Wasi.path_open) 0)
+            ((eq kw Kw.fs_read) (call mark_wasi_used cg Wasi.fd_read) 0)
+            ((eq kw Kw.fs_write) (call mark_wasi_used cg Wasi.fd_write) 0)
+            ((eq kw Kw.fs_close) (call mark_wasi_used cg Wasi.fd_close) 0)
+            ((eq kw Kw.fs_delete) (call mark_wasi_used cg Wasi.path_unlink_file) 0)
+            ((eq kw Kw.args_sizes) (call mark_wasi_used cg Wasi.args_sizes_get) 0)
+            ((eq kw Kw.args_get) (call mark_wasi_used cg Wasi.args_get) 0)
+            ((eq kw Kw.env_sizes) (call mark_wasi_used cg Wasi.environ_sizes_get) 0)
+            ((eq kw Kw.env_get) (call mark_wasi_used cg Wasi.environ_get) 0)
+            ((eq kw Kw.thread_spawn) (call mark_wasi_used cg Wasi.thread_spawn) 0)
+            ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
+            ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -1355,10 +1347,10 @@
           (block))
       (set! child (call node_next child)))
 
-    (call finalize_wasi_indices)
+    (call finalize_wasi_indices cg)
 
     ;; Pass 2: Intern newline if sys.print is present and fd_write used
-    (if (and (neq (call get_wasi_index 0) -1) (call ast_uses_sys_print cg root))
+    (if (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root))
         (block (call intern_newline) 0)
         0)
 
@@ -1609,8 +1601,8 @@
   ;; The address of runtime cell `cell` (64..88), as wasm.rs emit_rt: the fixed
   ;; cell, or in a threaded module global 0 (this thread's scratch block) plus
   ;; the cell's offset.
-  (fn emit_rt [ptr:i32 cell:i32] -> i32
-    (if (call threaded)
+  (fn emit_rt [cg:(ptr Cg) ptr:i32 cell:i32] -> i32
+    (if (call threaded cg)
         (block
           (let off:i32 (call emit_byte ptr 35)) ;; global.get 0
           (set! off (+ off (call emit_byte (+ ptr off) 0)))
@@ -1622,7 +1614,7 @@
           off)
         (call emit_i32_const ptr cell)))
 
-  (fn emit_errno_to_result [out_ptr:i32 out_cell:i32] -> i32
+  (fn emit_errno_to_result [cg:(ptr Cg) out_ptr:i32 out_cell:i32] -> i32
     (let off:i32 0)
     (mem.store8 (+ out_ptr off) 4)
     (mem.store8 (+ out_ptr (+ off 1)) 127)
@@ -1632,7 +1624,7 @@
     (set! off (+ off 1))
     (if (gte out_cell 0)
         (block
-          (set! off (+ off (call emit_rt (+ out_ptr off) out_cell)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) out_cell)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2))))
         (set! off (+ off (call emit_i32_const (+ out_ptr off) 0))))
     (mem.store8 (+ out_ptr off) 11)
@@ -1640,7 +1632,7 @@
     off)
 
   (fn compile_op [cg:(ptr Cg) op_id:Kw node:(ptr compiler.Node) out_ptr:i32] -> i32
-    (let import_cnt:i32 (mem.load32 32))
+    (let import_cnt:i32 (get cg Cg.nimports))
     (let io_a:i32 (+ (get cg Cg.nlocals) 1))
     (let io_b:i32 (+ (get cg Cg.nlocals) 2))
     (let res:i32 -1)
@@ -1687,10 +1679,10 @@
             (set! off (+ off (call compile_expr cg arg (+ out_ptr off))))
             (set! off (+ off (call emit_local_set (+ out_ptr off) (get cg Cg.nlocals))))
             ;; iov0 = { ptr, len }
-            (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
             (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 68)))
             (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 4)))
             (mem.store8 (+ out_ptr off) 107) (set! off (+ off 1)) ;; sub
@@ -1698,25 +1690,25 @@
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
             ;; iov1 = { "\n", 1 }
             (let nl_addr:i32 (call get_newline_addr))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 72)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 72)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) nl_addr)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 76)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 76)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
             ;; Call fd_write (1, iovs=64, iovs_len=1, nwritten=80)
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
-            (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
+            (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.fd_write))))
             (set! off (+ off (call emit_byte (+ out_ptr off) 26))) ;; drop
             ;; Call fd_write (1, iovs=72, iovs_len=1, nwritten=80)
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 72)))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 72)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-            (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
-            (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
+            (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
+            (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.fd_write))))
             (set! off (+ off (call emit_byte (+ out_ptr off) 26))) ;; drop
             
             (set! arg (call node_next arg)))
@@ -1725,7 +1717,7 @@
     (if (eq op_id Kw.sys_exit) ;; sys.exit
         (block
           (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr))
-          (set! res (+ n1 (call emit_call (+ out_ptr n1) (call get_wasi_index 4)))))
+          (set! res (+ n1 (call emit_call (+ out_ptr n1) (call get_wasi_index cg Wasi.proc_exit)))))
         (block))
     (if (eq op_id Kw.fs_open) ;; fs.open (path_ptr, path_len, flags)
         (block
@@ -1763,9 +1755,9 @@
           ;; fdflags = 0
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           ;; out_fd cell RT_OPENED_FD = 84
-          (set! off (+ off (call emit_rt (+ out_ptr off) 84)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 2))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 84)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 84)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.path_open))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) 84)))
           (set! res off))
         (block))
     (if (eq op_id Kw.fs_read) ;; fs.read (fd, buf_ptr, max_len)
@@ -1778,20 +1770,20 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) (get cg Cg.nlocals))))
           ;; iov0: RT_IOV0_BUF = 64
-          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; iov0: RT_IOV0_LEN = 68
-          (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 68)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; call fd_read(fd, iovs=64, iovs_len=1, nread=80)
           (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 1))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.fd_read))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) 80)))
           (set! res off))
         (block))
     (if (eq op_id Kw.fs_write) ;; fs.write (fd, buf_ptr, len)
@@ -1804,37 +1796,37 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_local_set (+ out_ptr off) (get cg Cg.nlocals))))
           ;; iov0: RT_IOV0_BUF = 64
-          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; iov0: RT_IOV0_LEN = 68
-          (set! off (+ off (call emit_rt (+ out_ptr off) 68)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 68)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
           ;; call fd_write(fd, iovs=64, iovs_len=1, nwritten=80)
           (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 64)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 64)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 1)))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 0))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.fd_write))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) 80)))
           (set! res off))
         (block))
     (if (eq op_id Kw.fs_close) ;; fs.close (fd)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 3))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.fd_close))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) -1)))
           (set! res off))
         (block))
-    (if (neq (call proc_wasi op_id) -1) ;; args.sizes, args.get, env.sizes, env.get (a, b)
+    (if (neq (call proc_wasi op_id) Wasi.none) ;; args.sizes, args.get, env.sizes, env.get (a, b)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
           (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index (call proc_wasi op_id)))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg (call proc_wasi op_id)))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) -1)))
           (set! res off))
         (block))
     (if (eq op_id Kw.fs_delete) ;; fs.delete (path_ptr, path_len)
@@ -1847,8 +1839,8 @@
           (set! off (+ off (call emit_path_dir (+ out_ptr off) (get cg Cg.nlocals) io_a)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_a)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 5))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.path_unlink_file))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) -1)))
           (set! res off))
         (block))
     (if (eq op_id Kw.mem_alloc) ;; mem.alloc (size) -> i32.const 0, size rounded to 8, i32.atomic.rmw.add
@@ -1924,7 +1916,7 @@
             (set! arg (call node_next arg)))
           (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
           (set! off (+ off (call emit_byte (+ out_ptr off) 17)))
-          (let tidx:i32 (+ (mem.load32 32) (+ (get cg Cg.nfns) (call sig_index cg (call nth_child node 1)))))
+          (let tidx:i32 (+ (get cg Cg.nimports) (+ (get cg Cg.nfns) (call sig_index cg (call nth_child node 1)))))
           (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) tidx)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
           (set! res off))
@@ -2206,7 +2198,7 @@
           (set! off (+ off (call emit_local_get (+ out_ptr off) io_b)))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 12)))
           (set! off (+ off (call emit_local_get (+ out_ptr off) (get cg Cg.nlocals))))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 10))))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.thread_spawn))))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 72)))
           (set! off (+ off (call emit_trap_if (+ out_ptr off))))
@@ -2246,10 +2238,10 @@
           (let off:i32 (call emit_i32_const out_ptr (if (eq op_id Kw.sys_time) 0 1)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 66)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 1)))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 11))))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.clock_time_get))))
           (set! off (+ off (call emit_trap_if (+ out_ptr off))))
-          (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
+          (set! off (+ off (call emit_rt cg (+ out_ptr off) 80)))
           (set! off (+ off (call emit_memop (+ out_ptr off) 41 3)))
           (set! res off))
         (block))
@@ -2257,8 +2249,8 @@
         (block
           (let off:i32 (call compile_expr cg (call nth_child node 1) out_ptr))
           (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index 12))))
-          (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index cg Wasi.random_get))))
+          (set! off (+ off (call emit_errno_to_result cg (+ out_ptr off) -1)))
           (set! res off))
         (block))
 
@@ -2310,7 +2302,7 @@
           (let _e:i32 (call set_compile_error CgErr.undefined_function))
           offset)
         (block
-          (let import_cnt:i32 (mem.load32 32))
+          (let import_cnt:i32 (get cg Cg.nimports))
           (+ offset (call emit_call (+ out_ptr offset) (+ import_cnt fidx))))))
 
   (fn compile_stmt [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32 (let n:i32 (call compile_expr cg node out_ptr)) (if (call is_void_node cg node) n (+ n (call emit_byte (+ out_ptr n) 26))))
@@ -2456,7 +2448,7 @@
     (let _p:i32 (call walk_module_prepass cg root))
     ;; threaded modules call workers through the table (wasm.rs worker_sig)
     (let worker_type:i32 0)
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (mem.store32 (call ref_state) 1)
           (set! worker_type (call worker_sig_index)))
@@ -2464,7 +2456,7 @@
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
     (if (gt (call heap_start) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
     (let _s:i32 (call collect_structs cg root))
-    (let import_count:i32 (mem.load32 32))
+    (let import_count:i32 (get cg Cg.nimports))
     (let func_count:i32 (call collect_functions cg root))
     (put cg Cg.nfns func_count)
     
@@ -2481,54 +2473,55 @@
     (let sig_count:i32 (mem.load32 (+ (call ref_state) 4)))
     (let uses_refs:bool (neq (mem.load32 (call ref_state)) 0))
     (let total_types:i32 (+ import_count (+ func_count sig_count)))
-    (if (call threaded) (set! total_types (+ total_types 2)) (block))
+    (if (call threaded cg) (set! total_types (+ total_types 2)) (block))
     ;; a zero-argument main and no _start: an automatic _start (wasm.rs auto_start)
     (let main_idx:i32 (call find_function cg (- (str.ptr "main") src_ptr) 4))
     (let auto_start:bool (and (gte main_idx 0)
                               (and (eq (get (call func_entry_ptr cg main_idx) FnInfo.nparams) 0)
                                    (lt (call find_function cg (- (str.ptr "_start") src_ptr) 6) 0))))
     (if auto_start (set! total_types (+ total_types 1)) (block))
-    (let extra_fns:i32 (if (call threaded) 2 0))
+    (let extra_fns:i32 (if (call threaded cg) 2 0))
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) total_types)))
     
     ;; WASI import types (fixed order)
     (let w:i32 0)
     (while (lt w 13)
-      (let w_idx:i32 (call get_wasi_index w))
+      (let wv:Wasi (enum.cast Wasi w))
+      (let w_idx:i32 (call get_wasi_index cg wv))
       (if (neq w_idx -1)
           (block
             (mem.store8 (+ scratch sc_off) 96) (set! sc_off (+ sc_off 1))
             (cond
-              ((eq w 0) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.fd_write) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-              ((eq w 1) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.fd_read) (mem.store8 (+ scratch sc_off) 4) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-              ((eq w 2) (mem.store8 (+ scratch sc_off) 9) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.path_open) (mem.store8 (+ scratch sc_off) 9) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 127) (mem.store8 (+ scratch (+ sc_off 4)) 127) (set! sc_off (+ sc_off 5))
                   (mem.store8 (+ scratch sc_off) 126) (mem.store8 (+ scratch (+ sc_off 1)) 126) (set! sc_off (+ sc_off 2))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-              ((eq w 3) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.fd_close) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
-              ((eq w 4) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.proc_exit) (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) 0)
-              ((eq w 5) (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
+              ((eq wv Wasi.path_unlink_file) (mem.store8 (+ scratch sc_off) 3) (set! sc_off (+ sc_off 1))
                   (mem.store8 (+ scratch sc_off) 127) (mem.store8 (+ scratch (+ sc_off 1)) 127) (mem.store8 (+ scratch (+ sc_off 2)) 127) (set! sc_off (+ sc_off 3))
                   (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127) (set! sc_off (+ sc_off 2)) 0)
               ;; clock_time_get: [i32 i64 i32] -> [i32]
-              ((eq w 11) (mem.store8 (+ scratch sc_off) 3) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+              ((eq wv Wasi.clock_time_get) (mem.store8 (+ scratch sc_off) 3) (mem.store8 (+ scratch (+ sc_off 1)) 127)
                   (mem.store8 (+ scratch (+ sc_off 2)) 126) (mem.store8 (+ scratch (+ sc_off 3)) 127)
                   (mem.store8 (+ scratch (+ sc_off 4)) 1) (mem.store8 (+ scratch (+ sc_off 5)) 127) (set! sc_off (+ sc_off 6)) 0)
               ;; random_get: [i32 i32] -> [i32]
-              ((eq w 12) (mem.store8 (+ scratch sc_off) 2) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+              ((eq wv Wasi.random_get) (mem.store8 (+ scratch sc_off) 2) (mem.store8 (+ scratch (+ sc_off 1)) 127)
                   (mem.store8 (+ scratch (+ sc_off 2)) 127) (mem.store8 (+ scratch (+ sc_off 3)) 1)
                   (mem.store8 (+ scratch (+ sc_off 4)) 127) (set! sc_off (+ sc_off 5)) 0)
               ;; thread-spawn: [i32] -> [i32]
-              ((eq w 10) (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127)
+              ((eq wv Wasi.thread_spawn) (mem.store8 (+ scratch sc_off) 1) (mem.store8 (+ scratch (+ sc_off 1)) 127)
                   (mem.store8 (+ scratch (+ sc_off 2)) 1) (mem.store8 (+ scratch (+ sc_off 3)) 127) (set! sc_off (+ sc_off 4)) 0)
               ;; args/environ sizes and get: [i32 i32] -> [i32]
               ((gte w 6) (mem.store8 (+ scratch sc_off) 2) (set! sc_off (+ sc_off 1))
@@ -2572,7 +2565,7 @@
           (block (mem.store8 (+ scratch sc_off) (mem.load8 (+ sp (+ 2 np)))) (set! sc_off (+ sc_off 1)))
           (block)))
     ;; threaded: the start function [] -> [] and wasi_thread_start [i32 i32] -> []
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (mem.store8 (+ scratch sc_off) 96) (mem.store8 (+ scratch (+ sc_off 1)) 0) (mem.store8 (+ scratch (+ sc_off 2)) 0)
           (mem.store8 (+ scratch (+ sc_off 3)) 96) (mem.store8 (+ scratch (+ sc_off 4)) 2) (mem.store8 (+ scratch (+ sc_off 5)) 127)
@@ -2595,19 +2588,20 @@
       (set! i (+ i 1)))
 
     ;; 2. Import Section (Section ID 2, only if import_count > 0)
-    (if (or (gt import_count 0) (call threaded))
+    (if (or (gt import_count 0) (call threaded cg))
         (block
           (set! sc_off 0)
-          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded) (+ import_count 1) import_count))))
+          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (if (call threaded cg) (+ import_count 1) import_count))))
           (let curr_imp:i32 0)
           (set! w 0)
           (while (lt w 13)
-            (let w_idx:i32 (call get_wasi_index w))
+            (let wv:Wasi (enum.cast Wasi w))
+            (let w_idx:i32 (call get_wasi_index cg wv))
             (if (neq w_idx -1)
                 (block
                   ;; module name ("wasi" for thread-spawn), then the function's name
-                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (if (eq w 10) "wasi" "wasi_snapshot_preview1"))))
-                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (call wasi_name w))))
+                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (if (eq wv Wasi.thread_spawn) "wasi" "wasi_snapshot_preview1"))))
+                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (call wasi_name wv))))
                   ;; Entity type 0 (Func) + type index
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
                   (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) curr_imp)))
@@ -2616,7 +2610,7 @@
                 0)
             (set! w (+ w 1)))
           ;; threaded: the shared memory, "env" "memory", min 16 max 1024 (flags 3: max + shared)
-          (if (call threaded)
+          (if (call threaded cg)
               (block
                 (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "env")))
                 (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "memory")))
@@ -2644,7 +2638,7 @@
     (while (lt f func_count)
       (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count f))))
       (set! f (+ f 1)))
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (let tbase:i32 (+ import_count (+ func_count sig_count)))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) tbase)))
@@ -2682,7 +2676,7 @@
     ;; 4. Memory Section (Section ID 5); a threaded module imports its memory
     ;; and has a Global Section (ID 6) instead: global 0, the runtime scratch
     ;; pointer, mutable i32 = 64
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (mem.store8 (+ out off) 6) (mem.store8 (+ out (+ off 1)) 7) (mem.store8 (+ out (+ off 2)) 1)
           (mem.store8 (+ out (+ off 3)) 127) (mem.store8 (+ out (+ off 4)) 1)
@@ -2705,7 +2699,7 @@
         (set! i (+ i 1)))))
     ;; 5. Export Section (Section ID 7)
     (set! sc_off 0)
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ func_count (+ 1 (+ (if (call threaded) 1 0) (if auto_start 1 0)))))))
+    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ func_count (+ 1 (+ (if (call threaded cg) 1 0) (if auto_start 1 0)))))))
     (set! f 0)
     (while (lt f func_count)
       (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
@@ -2725,7 +2719,7 @@
     (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "memory")))
     (mem.store8 (+ scratch sc_off) 2) (set! sc_off (+ sc_off 1)) ;; ExportKind: Memory
     (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; Index 0
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "wasi_thread_start")))
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
@@ -2747,7 +2741,7 @@
       (set! i (+ i 1)))
 
     ;; Start Section (Section ID 8), threaded only: the one-time init function
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (mem.store8 (+ out off) 8) (set! off (+ off 1))
           (let n:i32 (call compiler.encode_u32 (+ scratch 0) (+ import_count func_count)))
@@ -2775,7 +2769,7 @@
 
     ;; Data Count Section (Section ID 12), threaded only (memory.init needs it)
     (let n_segments:i32 (if (gt (call get_str_blob_len) 0) 2 1))
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (mem.store8 (+ out off) 12) (mem.store8 (+ out (+ off 1)) 1) (mem.store8 (+ out (+ off 2)) n_segments)
           (set! off (+ off 3)))
@@ -2840,7 +2834,7 @@
         (set! i (+ i 1)))
       (set! f (+ f 1)))
 
-    (if (call threaded)
+    (if (call threaded cg)
         (block
           (let b1:i32 (call threaded_init_body fcode_scratch (call get_str_blob_len)))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b1)))
@@ -2882,7 +2876,7 @@
     
     ;; Segment 0: heap cursor = heap_start at address 0 (passive when
     ;; threaded: the start function copies it once)
-    (if (call threaded)
+    (if (call threaded cg)
         (block (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)))
         (block
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; active segment 0
@@ -2896,7 +2890,7 @@
     ;; Segment 1: string blob at address 1024
     (if has_strings
         (block
-          (if (call threaded)
+          (if (call threaded cg)
               (block (mem.store8 (+ scratch sc_off) 1) (set! sc_off (+ sc_off 1)))
               (block
                 (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
