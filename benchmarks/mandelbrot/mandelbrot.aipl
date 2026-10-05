@@ -1,0 +1,56 @@
+;; mandelbrot: the Benchmarks Game's mandelbrot. An N x N bitmap of the
+;; Mandelbrot set over [-1.5, 0.5] x [-1, 1], 50 iterations, written as a
+;; binary PBM image (P4: a text header, then one bit per pixel, eight to a
+;; byte, rows padded). Floats, bit operations, binary output.
+;;
+;;   ./mandelbrot 200 > m.pbm
+(module mandelbrot
+  (import os)
+  (import str)
+  (import buf)
+  (import time)
+
+  (fn size_wanted [] -> i32
+    (if (gt (call os.arg_count) 1)
+        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 200))
+        200))
+
+  (fn to_f64 [n:i32] -> f64 (f64.convert_i64_s (i64.extend_s n)))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call size_wanted))
+    (let out:(ptr buf.Buf) (call buf.make (+ 32 (* n (+ (/ n 8) 1)))))
+    (call buf.push_str out "P4\n")
+    (call buf.push_int out n)
+    (call buf.push_byte out 32)
+    (call buf.push_int out n)
+    (call buf.push_byte out 10)
+    (let w:f64 (call to_f64 n))
+    (let bits:i32 0)
+    (let count:i32 0)
+    (loop y 0 (- n 1) 1
+      (let ci:f64 (- (/ (* 2.0 (call to_f64 y)) w) 1.0))
+      (loop x 0 (- n 1) 1
+        (let cr:f64 (- (/ (* 2.0 (call to_f64 x)) w) 1.5))
+        (let zr:f64 0.0) (let zi:f64 0.0) (let tr:f64 0.0) (let ti:f64 0.0)
+        (let i:i32 0)
+        (while (and (lt i 50) (lte (+ tr ti) 4.0))
+          (set! zi (+ (* (* 2.0 zr) zi) ci))
+          (set! zr (+ (- tr ti) cr))
+          (set! tr (* zr zr))
+          (set! ti (* zi zi))
+          (set! i (+ i 1)))
+        (set! bits (bitor (shl bits 1) (if (lte (+ tr ti) 4.0) 1 0)))
+        (set! count (+ count 1))
+        (cond
+          ((eq count 8)
+           (call buf.push_byte out bits)
+           (set! bits 0) (set! count 0))
+          ((eq x (- n 1))
+           (call buf.push_byte out (shl bits (- 8 (% n 8))))
+           (set! bits 0) (set! count 0))
+          (else (block)))))
+    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call time.report "mandelbrot computed in" started)
+    0))

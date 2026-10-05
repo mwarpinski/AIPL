@@ -30,6 +30,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | fannkuch | n = 10 | 1.358 s (8.8x) | 0.212 s (1.4x) | 0.155 s (1.0x) | 3.745 s (24.2x) |
 | spectralnorm | n = 1000 | 0.395 s (14.6x) | 0.121 s (4.5x) | 0.027 s (1.0x) | 7.373 s (272.0x) |
 | nbody | 1,000,000 steps | 0.794 s (15.2x) | 0.092 s (1.8x) | 0.052 s (1.0x) | 5.829 s (111.8x) |
+| mandelbrot | 1000 x 1000 | 0.235 s (4.6x) | 0.067 s (1.3x) | 0.051 s (1.0x) | 3.107 s (61.3x) |
 
 ## Notes per benchmark
 
@@ -81,3 +82,8 @@ in the same operation order. Float code is where the native translator
 trails most (8.6 times wasmtime): every operation moves values from the
 stack in memory into xmm registers and back, where Cranelift keeps them in
 registers.
+
+**mandelbrot** (a binary PBM bitmap of the set, 50 iterations per point).
+Ran with no language changes: bit operations and raw byte output already
+work (`buf.push_byte`, `fs.write`). The test size (199) is not a multiple of
+8, so the padded last byte of each row is checked too.
