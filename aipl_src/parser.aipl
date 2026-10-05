@@ -1,0 +1,945 @@
+;; The AIPL parser in AIPL: compiler.aipl's tokens to ast.aipl's typed tree,
+;; a port of src/parser.rs (Parser::parse_module and everything it calls)
+;; that accepts the same programs and reports the same first error, word for
+;; word (docs/CHECKER_PLAN.md).
+;;
+;; Errors: AIPL has no exceptions, so the first error is recorded in P.err
+;; and the parser jumps to the end of the tokens. Every loop then stops (they
+;; all stop at the end, as Rust's do), later errors are ignored, and the
+;; caller reads P.failed. Functions return placeholder values after an error.
+(module parser
+  (import compiler)
+  (import ast)
+  (import str)
+  (import buf)
+  (import vec)
+  (import strmap)
+
+  ;; The forms of src/parser.rs parse_expr that are not operators.
+  (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
+              sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
+              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem])
+
+  (struct P [src:i32 toks:i32 n:i32 pos:i32
+             unions:(ptr (strmap.StrMap i32))
+             forms:(ptr (strmap.StrMap Form))
+             ops:(ptr (strmap.StrMap i32))
+             err:(ptr buf.Buf) failed:bool])
+
+  ;; ===== Tokens =====
+
+  (fn tok [p:(ptr P) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get p P.toks) i))
+  (fn kind_at [p:(ptr P) i:i32] -> compiler.Kind
+    (if (lt i (get p P.n)) (get (call tok p i) compiler.Token.kind) compiler.Kind.none))
+  (fn peek [p:(ptr P)] -> compiler.Kind (call kind_at p (get p P.pos)))
+
+  ;; The next token's index, consumed, or -1 at the end.
+  (fn next [p:(ptr P)] -> i32
+    (let i:i32 (get p P.pos))
+    (if (gte i (get p P.n)) (return -1) (block))
+    (put p P.pos (+ i 1))
+    i)
+
+  ;; src/parser.rs cur_pos: the next token's position, else the last token's.
+  (fn cur_pos [p:(ptr P)] -> i32
+    (cond
+      ((lt (get p P.pos) (get p P.n)) (get (call tok p (get p P.pos)) compiler.Token.pos))
+      ((gt (get p P.n) 0) (get (call tok p (- (get p P.n) 1)) compiler.Token.pos))
+      (else 0)))
+
+  (fn tpos [p:(ptr P) i:i32] -> i32 (get (call tok p i) compiler.Token.pos))
+
+  ;; A symbol-like token's text (symbol; a string's body; i64 and float literals).
+  (fn text [p:(ptr P) i:i32] -> (ptr str.Bytes)
+    (let t:(ptr compiler.Token) (call tok p i))
+    (call str.bytes (+ (get p P.src) (get t compiler.Token.a)) (get t compiler.Token.b)))
+
+  ;; An int token's literal as written.
+  (fn int_text [p:(ptr P) i:i32] -> (ptr str.Bytes)
+    (let t:(ptr compiler.Token) (call tok p i))
+    (call str.bytes (+ (get p P.src) (get t compiler.Token.pos)) (get t compiler.Token.b)))
+
+  (fn is_sym [p:(ptr P) i:i32 s:str] -> bool
+    (and (eq (call kind_at p i) compiler.Kind.symbol) (call str.bytes_eq (call text p i) (call str.from_str s))))
+
+  ;; The value of an integer literal's text (an optional sign, then digits;
+  ;; the tokenizer has checked it fits in i64).
+  (fn i64_value [b:(ptr str.Bytes)] -> i64
+    (let c0:i32 (call str.byte_at b 0))
+    (let start:i32 (if (or (eq c0 45) (eq c0 43)) 1 0))
+    (let v:i64 0i64)
+    (loop k start (- (get b str.Bytes.len) 1) 1
+      (set! v (- (* v 10i64) (i64.extend_s (- (call str.byte_at b k) 48)))))
+    (if (eq c0 45) v (- 0i64 v)))
+
+  ;; ===== Messages =====
+
+  ;; A message for the error at source offset `at`, starting "line:col: ".
+  (fn msg [p:(ptr P) at:i32] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make 96))
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get p P.src) at))
+    (call buf.push_int b (get lc compiler.LineCol.line))
+    (call buf.push_byte b 58)
+    (call buf.push_int b (get lc compiler.LineCol.col))
+    (call buf.push_str b ": ")
+    b)
+
+  ;; Records the first error and ends the parse.
+  (fn fail [p:(ptr P) b:(ptr buf.Buf)] -> void
+    (if (get p P.failed)
+        (block)
+        (block
+          (put p P.failed true)
+          (put p P.err b)))
+    (put p P.pos (get p P.n)))
+
+  (fn fail_str [p:(ptr P) at:i32 s:str] -> void
+    (let b:(ptr buf.Buf) (call msg p at))
+    (call buf.push_str b s)
+    (call fail p b))
+
+  ;; Rust's Debug spelling of a string's characters, without the quotes:
+  ;; \" \\ \n \t \r \0, other ASCII controls as \u{..}.
+  (fn push_debug_byte [b:(ptr buf.Buf) c:i32] -> void
+    (cond
+      ((eq c 34) (call buf.push_str b "\\\""))
+      ((eq c 92) (call buf.push_str b "\\\\"))
+      ((eq c 10) (call buf.push_str b "\\n"))
+      ((eq c 9) (call buf.push_str b "\\t"))
+      ((eq c 13) (call buf.push_str b "\\r"))
+      ((eq c 0) (call buf.push_str b "\\0"))
+      ((or (lt c 32) (eq c 127))
+       (call buf.push_str b "\\u{")
+       (call push_hex b c)
+       (call buf.push_byte b 125))
+      (else (call buf.push_byte b c))))
+
+  (fn push_hex [b:(ptr buf.Buf) c:i32] -> void
+    (if (gte c 16) (call push_hex b (shru c 4)) (block))
+    (let d:i32 (bitand c 15))
+    (call buf.push_byte b (if (lt d 10) (+ d 48) (+ d 87))))
+
+  (fn push_debug_bytes [b:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
+    (loop k 0 (- (get s str.Bytes.len) 1) 1 (call push_debug_byte b (call str.byte_at s k))))
+
+  ;; A string literal's characters (its escapes expanded), in Debug spelling.
+  (fn push_debug_string [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+    (let k:i32 0)
+    (while (lt k (get raw str.Bytes.len))
+      (let c:i32 (call str.byte_at raw k))
+      (if (eq c 92)
+          (block
+            (let e:i32 (call str.byte_at raw (+ k 1)))
+            (call push_debug_byte b (cond ((eq e 110) 10) ((eq e 116) 9) ((eq e 114) 13) ((eq e 48) 0) (else e)))
+            (set! k (+ k 2)))
+          (block (call push_debug_byte b c) (set! k (+ k 1))))))
+
+  ;; A float literal as Rust's Debug prints its value, for the literals
+  ;; whose shortest spelling is their own digits: sign, digits without
+  ;; leading or trailing zeros, at least one digit on each side of the '.'.
+  ;; (A literal with an exponent, or more digits than an f64 holds, may be
+  ;; spelled differently by Rust; see docs/CHECKER_PLAN.md.)
+  (fn push_float_debug [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void
+    (let n:i32 (get t str.Bytes.len))
+    (let k:i32 0)
+    (if (eq (call str.byte_at t 0) 45) (block (call buf.push_byte b 45) (set! k 1)) (block))
+    (if (eq (call str.byte_at t 0) 43) (set! k 1) (block))
+    (let dot:i32 (call str.find_byte t 46))
+    ;; integer part: skip leading zeros, keep one digit
+    (let i:i32 k)
+    (while (and (lt i (- dot 1)) (eq (call str.byte_at t i) 48)) (set! i (+ i 1)))
+    (if (eq i dot) (call buf.push_byte b 48) (loop j i (- dot 1) 1 (call buf.push_byte b (call str.byte_at t j))))
+    (call buf.push_byte b 46)
+    ;; fraction: drop trailing zeros, keep one digit
+    (let last:i32 (- n 1))
+    (while (and (gt last (+ dot 1)) (eq (call str.byte_at t last) 48)) (set! last (- last 1)))
+    (if (gt last dot) (loop j (+ dot 1) last 1 (call buf.push_byte b (call str.byte_at t j))) (call buf.push_byte b 48)))
+
+  ;; Rust's {:?} of token i (src/parser.rs TokenKind).
+  (fn push_token_debug [p:(ptr P) b:(ptr buf.Buf) i:i32] -> void
+    (let k:compiler.Kind (call kind_at p i))
+    (let t:(ptr compiler.Token) (call tok p i))
+    (cond
+      ((eq k compiler.Kind.lparen) (call buf.push_str b "LParen"))
+      ((eq k compiler.Kind.rparen) (call buf.push_str b "RParen"))
+      ((eq k compiler.Kind.lbracket) (call buf.push_str b "LBracket"))
+      ((eq k compiler.Kind.rbracket) (call buf.push_str b "RBracket"))
+      ((eq k compiler.Kind.colon) (call buf.push_str b "Colon"))
+      ((eq k compiler.Kind.arrow) (call buf.push_str b "Arrow"))
+      ((eq k compiler.Kind.symbol)
+       (call buf.push_str b "Symbol(\"") (call push_debug_bytes b (call text p i)) (call buf.push_str b "\")"))
+      ((eq k compiler.Kind.int)
+       (call buf.push_str b "IntLit(") (call buf.push_i64 b (call i64_value (call int_text p i))) (call buf.push_byte b 41))
+      ((eq k compiler.Kind.int64)
+       (let s:(ptr str.Bytes) (call text p i))
+       (call buf.push_str b "Int64Lit(")
+       (call buf.push_i64 b (call i64_value (call str.bytes (get s str.Bytes.addr) (- (get s str.Bytes.len) 3))))
+       (call buf.push_byte b 41))
+      ((eq k compiler.Kind.float)
+       (call buf.push_str b "FloatLit(") (call push_float_debug b (call text p i)) (call buf.push_byte b 41))
+      ((eq k compiler.Kind.bool) (call buf.push_str b (if (eq (get t compiler.Token.a) 0) "BoolLit(false)" "BoolLit(true)")))
+      ((eq k compiler.Kind.string)
+       (call buf.push_str b "StringLit(\"") (call push_debug_string b (call text p i)) (call buf.push_str b "\")"))
+      (else (call buf.push_str b "?"))))
+
+  ;; "Expected WHAT, got TOKEN" at the token, or "got EOF" at `eof_at`.
+  (fn fail_expected [p:(ptr P) i:i32 what:str eof_at:i32] -> void
+    (let b:(ptr buf.Buf) (call msg p (if (gte i 0) (call tpos p i) eof_at)))
+    (call buf.push_str b "Expected ")
+    (call buf.push_str b what)
+    (call buf.push_str b ", got ")
+    (if (gte i 0) (call push_token_debug p b i) (call buf.push_str b "EOF"))
+    (call fail p b))
+
+  (fn kind_name [k:compiler.Kind] -> str
+    (cond
+      ((eq k compiler.Kind.lparen) "LParen")
+      ((eq k compiler.Kind.rparen) "RParen")
+      ((eq k compiler.Kind.lbracket) "LBracket")
+      ((eq k compiler.Kind.rbracket) "RBracket")
+      ((eq k compiler.Kind.colon) "Colon")
+      (else "Arrow")))
+
+  ;; src/parser.rs expect_kind: the token's index, or -1 after an error.
+  (fn expect [p:(ptr P) k:compiler.Kind] -> i32
+    (let at:i32 (call cur_pos p))
+    (let i:i32 (call next p))
+    (if (and (gte i 0) (eq (call kind_at p i) k)) (return i) (block))
+    (call fail_expected p i (call kind_name k) at)
+    -1)
+
+  ;; next, as a statement.
+  (fn want_next [p:(ptr P)] -> void (let _i:i32 (call next p)) (block))
+
+  ;; expect, as a statement.
+  (fn want [p:(ptr P) k:compiler.Kind] -> void
+    (let _i:i32 (call expect p k))
+    (block))
+
+  ;; src/parser.rs expect_symbol (and the inline "Expected X name" matches).
+  (fn expect_symbol [p:(ptr P) what:str eof_at:i32] -> (ptr str.Bytes)
+    (let i:i32 (call next p))
+    (if (and (gte i 0) (eq (call kind_at p i) compiler.Kind.symbol)) (return (call text p i)) (block))
+    (call fail_expected p i what eof_at)
+    (call str.from_str ""))
+
+  ;; ===== Building arrays =====
+
+  (fn (to_arr T) [v:(ptr (vec.Vec T))] -> (arr T)
+    (let a:(arr T) (arr.new T (call (vec.len T) v)))
+    (loop k 0 (- (call (vec.len T) v) 1) 1 (arr.set T a k (call (vec.at T) v k)))
+    a)
+
+  (fn exprs [] -> (ptr (vec.Vec ast.Expr)) (call (vec.make ast.Expr) 4))
+
+  ;; Expressions until the closing ')' (or the end).
+  (fn parse_body [p:(ptr P)] -> (arr ast.Expr)
+    (let v:(ptr (vec.Vec ast.Expr)) (call exprs))
+    (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
+      (call (vec.push ast.Expr) v (call parse_expr p)))
+    (call (to_arr ast.Expr) v))
+
+  ;; ===== Types =====
+
+  (fn scalar_type [s:(ptr str.Bytes)] -> ast.MaybeType
+    (let t:ast.MaybeType (make ast.MaybeType.none))
+    (if (call str.bytes_eq s (call str.from_str "i32")) (set! t (make ast.MaybeType.some (make ast.Type.i32))) (block))
+    (if (call str.bytes_eq s (call str.from_str "i64")) (set! t (make ast.MaybeType.some (make ast.Type.i64))) (block))
+    (if (call str.bytes_eq s (call str.from_str "f32")) (set! t (make ast.MaybeType.some (make ast.Type.f32))) (block))
+    (if (call str.bytes_eq s (call str.from_str "f64")) (set! t (make ast.MaybeType.some (make ast.Type.f64))) (block))
+    (if (call str.bytes_eq s (call str.from_str "bool")) (set! t (make ast.MaybeType.some (make ast.Type.bool))) (block))
+    (if (call str.bytes_eq s (call str.from_str "str")) (set! t (make ast.MaybeType.some (make ast.Type.str))) (block))
+    (if (call str.bytes_eq s (call str.from_str "void")) (set! t (make ast.MaybeType.some (make ast.Type.void))) (block))
+    t)
+
+  (fn is_scalar [s:(ptr str.Bytes)] -> bool
+    (match (call scalar_type s) (ast.MaybeType.none false) (ast.MaybeType.some [_] true)))
+
+  (fn parse_type [p:(ptr P)] -> ast.Type
+    (let start:i32 (call cur_pos p))
+    (let i:i32 (call next p))
+    (let k:compiler.Kind (call kind_at p i))
+    (cond
+      ((eq k compiler.Kind.symbol)
+       (let s:(ptr str.Bytes) (call text p i))
+       (match (call scalar_type s)
+         (ast.MaybeType.some [t] t)
+         (ast.MaybeType.none
+          (let c0:i32 (call str.byte_at s 0))
+          (cond
+            ((call (strmap.has i32) (get p P.unions) s) (make ast.Type.union_ s))
+            ((not (or (and (gte c0 48) (lte c0 57)) (eq c0 45))) (make ast.Type.enum_ s))
+            (else
+             (let b:(ptr buf.Buf) (call msg p (call tpos p i)))
+             (call buf.push_str b "Unknown scalar type: ")
+             (call buf.push_bytes b s)
+             (call fail p b)
+             (make ast.Type.i32))))))
+      ((eq k compiler.Kind.lparen)
+       (let at:i32 (call tpos p i))
+       (let ctor:(ptr str.Bytes) (call expect_symbol p "type constructor" at))
+       (if (get p P.failed) (return (make ast.Type.i32)) (block))
+       (cond
+         ((call str.bytes_eq ctor (call str.from_str "result"))
+          (let ok_t:ast.Type (call parse_type p))
+          (let err_t:ast.Type (call parse_type p))
+          (call want p compiler.Kind.rparen)
+          (make ast.Type.result ok_t err_t))
+         ((call str.bytes_eq ctor (call str.from_str "arr"))
+          (let elem:ast.Type (call parse_type p))
+          (if (eq (call peek p) compiler.Kind.int)
+              (call fail_str p at "(arr T) takes no length; an array's length is set by (arr.new T n)")
+              (block))
+          (call want p compiler.Kind.rparen)
+          (make ast.Type.arr elem))
+         ((call str.bytes_eq ctor (call str.from_str "fn"))
+          (call want p compiler.Kind.lbracket)
+          (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) 4))
+          (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
+            (call (vec.push ast.Type) ps (call parse_type p)))
+          (call want p compiler.Kind.rbracket)
+          (call want p compiler.Kind.arrow)
+          (let ret:ast.Type (call parse_type p))
+          (call want p compiler.Kind.rparen)
+          (make ast.Type.fn_ (call (to_arr ast.Type) ps) ret))
+         ((call str.bytes_eq ctor (call str.from_str "ptr"))
+          (let name:(ptr str.Bytes) (call expect_symbol p "struct name in (ptr S)" at))
+          (if (and (not (get p P.failed)) (call is_scalar name))
+              (block
+                (let b:(ptr buf.Buf) (call msg p at))
+                (call buf.push_str b "(ptr ")
+                (call buf.push_bytes b name)
+                (call buf.push_str b ") is not a type: ptr points to a struct; for a sequence of ")
+                (call buf.push_bytes b name)
+                (call buf.push_str b " use (arr ")
+                (call buf.push_bytes b name)
+                (call buf.push_byte b 41)
+                (call fail p b))
+              (block))
+          (call want p compiler.Kind.rparen)
+          (make ast.Type.ptr (make ast.Type.struct_ name)))
+         (else
+          (let b:(ptr buf.Buf) (call msg p at))
+          (call buf.push_str b "Unknown compound type: ")
+          (call buf.push_bytes b ctor)
+          (call fail p b)
+          (make ast.Type.i32))))
+      (else
+       (call fail_expected p i "type token" start)
+       (make ast.Type.i32))))
+
+  ;; ===== Module items =====
+
+  (fn head_is [p:(ptr P) s:str] -> bool (call is_sym p (+ (get p P.pos) 1) s))
+
+  (fn parse_module [p:(ptr P)] -> (ptr ast.Module)
+    (let m:(ptr ast.Module) (new ast.Module))
+    (let start:i32 (call cur_pos p))
+    (call want p compiler.Kind.lparen)
+    (let i:i32 (call next p))
+    (if (not (call is_sym p i "module")) (call fail_expected p i "'module' symbol" start) (block))
+    (put m ast.Module.name (call expect_symbol p "module name" start))
+    (let imports:(ptr (vec.Vec (ptr ast.Import))) (call (vec.make (ptr ast.Import)) 4))
+    (let structs:(ptr (vec.Vec (ptr ast.StructDef))) (call (vec.make (ptr ast.StructDef)) 8))
+    (let enums:(ptr (vec.Vec (ptr ast.EnumDef))) (call (vec.make (ptr ast.EnumDef)) 4))
+    (let unions:(ptr (vec.Vec (ptr ast.UnionDef))) (call (vec.make (ptr ast.UnionDef)) 4))
+    (let fns:(ptr (vec.Vec (ptr ast.FnDef))) (call (vec.make (ptr ast.FnDef)) 16))
+    (while (eq (call peek p) compiler.Kind.lparen)
+      (cond
+        ((call head_is p "import") (call (vec.push (ptr ast.Import)) imports (call parse_import p)))
+        ((call head_is p "struct") (call (vec.push (ptr ast.StructDef)) structs (call parse_struct p)))
+        ((call head_is p "enum") (call (vec.push (ptr ast.EnumDef)) enums (call parse_enum p)))
+        ((call head_is p "union") (call (vec.push (ptr ast.UnionDef)) unions (call parse_union p)))
+        ((call head_is p "const")
+         (call fail_str p (call cur_pos p) "(const ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse"))
+        (else (call (vec.push (ptr ast.FnDef)) fns (call parse_fn p)))))
+    (call want p compiler.Kind.rparen)
+    (if (lt (get p P.pos) (get p P.n))
+        (call fail_str p (call cur_pos p) "unexpected tokens after module end — check for an extra ')'")
+        (block))
+    (put m ast.Module.imports (call (to_arr (ptr ast.Import)) imports))
+    (put m ast.Module.structs (call (to_arr (ptr ast.StructDef)) structs))
+    (put m ast.Module.enums (call (to_arr (ptr ast.EnumDef)) enums))
+    (put m ast.Module.unions (call (to_arr (ptr ast.UnionDef)) unions))
+    (put m ast.Module.fns (call (to_arr (ptr ast.FnDef)) fns))
+    m)
+
+  (fn parse_import [p:(ptr P)] -> (ptr ast.Import)
+    (let start:i32 (call cur_pos p))
+    (let im:(ptr ast.Import) (new ast.Import))
+    (call want p compiler.Kind.lparen)
+    (call next p)
+    (put im ast.Import.name (call expect_symbol p "module name in import" start))
+    (put im ast.Import.alias (ptr.null str.Bytes))
+    (if (call is_sym p (get p P.pos) "as")
+        (block
+          (call next p)
+          (put im ast.Import.alias (call expect_symbol p "alias after 'as'" start)))
+        (block))
+    (call want p compiler.Kind.rparen)
+    im)
+
+  ;; name:type ... up to ']' as fields; `what` names the name expected.
+  (fn parse_fields [p:(ptr P) what:str eof_at:i32 close:compiler.Kind] -> (arr (ptr ast.Field))
+    (let v:(ptr (vec.Vec (ptr ast.Field))) (call (vec.make (ptr ast.Field)) 4))
+    (while (and (neq (call peek p) close) (neq (call peek p) compiler.Kind.none))
+      (let f:(ptr ast.Field) (new ast.Field))
+      (put f ast.Field.name (call expect_symbol p what eof_at))
+      (call want p compiler.Kind.colon)
+      (put f ast.Field.ty (call parse_type p))
+      (call (vec.push (ptr ast.Field)) v f))
+    (call (to_arr (ptr ast.Field)) v))
+
+  (fn parse_struct [p:(ptr P)] -> (ptr ast.StructDef)
+    (let s:(ptr ast.StructDef) (new ast.StructDef))
+    (let open:i32 (call expect p compiler.Kind.lparen))
+    (let at:i32 (call tpos p open))
+    (put s ast.StructDef.at at)
+    (call next p)
+    (put s ast.StructDef.name (call expect_symbol p "struct name" at))
+    (call want p compiler.Kind.lbracket)
+    (put s ast.StructDef.fields (call parse_fields p "field name" at compiler.Kind.rbracket))
+    (call want p compiler.Kind.rbracket)
+    (call want p compiler.Kind.rparen)
+    s)
+
+  (fn parse_enum [p:(ptr P)] -> (ptr ast.EnumDef)
+    (let e:(ptr ast.EnumDef) (new ast.EnumDef))
+    (let open:i32 (call expect p compiler.Kind.lparen))
+    (let at:i32 (call tpos p open))
+    (put e ast.EnumDef.at at)
+    (call next p)
+    (put e ast.EnumDef.name (call expect_symbol p "enum name" at))
+    (let bracket:i32 (call expect p compiler.Kind.lbracket))
+    (let members:(ptr (vec.Vec (ptr ast.Member))) (call (vec.make (ptr ast.Member)) 8))
+    (let next_value:i64 0i64)
+    (while (not (get p P.failed))
+      (let mat:i32 (call cur_pos p))
+      (let i:i32 (call next p))
+      (let k:compiler.Kind (call kind_at p i))
+      (let value:i64 next_value)
+      (let name:(ptr str.Bytes) (ptr.null str.Bytes))
+      (cond
+        ((eq k compiler.Kind.rbracket) (break))
+        ((eq k compiler.Kind.symbol) (set! name (call text p i)))
+        ((eq k compiler.Kind.lparen)
+         (set! name (call expect_symbol p "enum member name" mat))
+         (let vi:i32 (call next p))
+         (if (eq (call kind_at p vi) compiler.Kind.int)
+             (set! value (call i64_value (call int_text p vi)))
+             (call fail_str p mat "an enum member with a value is (name INTEGER), e.g. (blue 5)"))
+         (call want p compiler.Kind.rparen))
+        ((eq k compiler.Kind.none) (call fail_str p (call tpos p bracket) "this bracket is never closed"))
+        (else
+         (let b:(ptr buf.Buf) (call msg p (call tpos p i)))
+         (call buf.push_str b "an enum member is a name or (name INTEGER), got ")
+         (call push_token_debug p b i)
+         (call fail p b)))
+      (if (get p P.failed) (break) (block))
+      (if (or (lt value -2147483648i64) (gt value 2147483647i64))
+          (block
+            (let b:(ptr buf.Buf) (call msg p mat))
+            (call buf.push_str b "enum member value ")
+            (call buf.push_i64 b value)
+            (call buf.push_str b " is not an i32")
+            (call fail p b))
+          (block))
+      (let mem:(ptr ast.Member) (new ast.Member))
+      (put mem ast.Member.name name)
+      (put mem ast.Member.value (i32.wrap value))
+      (call (vec.push (ptr ast.Member)) members mem)
+      (set! next_value (+ value 1i64)))
+    (call want p compiler.Kind.rparen)
+    (put e ast.EnumDef.members (call (to_arr (ptr ast.Member)) members))
+    e)
+
+  (fn parse_union [p:(ptr P)] -> (ptr ast.UnionDef)
+    (let u:(ptr ast.UnionDef) (new ast.UnionDef))
+    (let open:i32 (call expect p compiler.Kind.lparen))
+    (let at:i32 (call tpos p open))
+    (put u ast.UnionDef.at at)
+    (call next p)
+    (put u ast.UnionDef.name (call expect_symbol p "union name" at))
+    (call want p compiler.Kind.lbracket)
+    (let vs:(ptr (vec.Vec (ptr ast.Variant))) (call (vec.make (ptr ast.Variant)) 4))
+    (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
+      (let vat:i32 (call cur_pos p))
+      (if (neq (call peek p) compiler.Kind.lparen)
+          (call fail_str p vat "a union variant is (name field:type ...), e.g. (circle radius:f64) or (empty)")
+          (block))
+      (call next p)
+      (let v:(ptr ast.Variant) (new ast.Variant))
+      (put v ast.Variant.name (call expect_symbol p "variant name" vat))
+      (put v ast.Variant.fields (call parse_fields p "field name" vat compiler.Kind.rparen))
+      (call want p compiler.Kind.rparen)
+      (call (vec.push (ptr ast.Variant)) vs v))
+    (call want p compiler.Kind.rbracket)
+    (call want p compiler.Kind.rparen)
+    (put u ast.UnionDef.variants (call (to_arr (ptr ast.Variant)) vs))
+    u)
+
+  (fn parse_fn [p:(ptr P)] -> (ptr ast.FnDef)
+    (let f:(ptr ast.FnDef) (new ast.FnDef))
+    (let open:i32 (call expect p compiler.Kind.lparen))
+    (let at:i32 (if (gte open 0) (call tpos p open) 0))
+    (put f ast.FnDef.at at)
+    (let i:i32 (call next p))
+    (if (not (call is_sym p i "fn")) (call fail_expected p i "'fn'" at) (block))
+    (put f ast.FnDef.name (call expect_symbol p "fn name" at))
+    (call want p compiler.Kind.lbracket)
+    (let ps:(ptr (vec.Vec (ptr ast.Param))) (call (vec.make (ptr ast.Param)) 4))
+    (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
+      (let prm:(ptr ast.Param) (new ast.Param))
+      (put prm ast.Param.name (call expect_symbol p "param name" at))
+      (call want p compiler.Kind.colon)
+      (put prm ast.Param.ty (call parse_type p))
+      (call (vec.push (ptr ast.Param)) ps prm))
+    (call want p compiler.Kind.rbracket)
+    (call want p compiler.Kind.arrow)
+    (put f ast.FnDef.params (call (to_arr (ptr ast.Param)) ps))
+    (put f ast.FnDef.ret (call parse_type p))
+    (let cs:(ptr (vec.Vec ast.Contract)) (call (vec.make ast.Contract) 2))
+    (let body:(ptr (vec.Vec ast.Expr)) (call exprs))
+    (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
+      (if (and (eq (call peek p) compiler.Kind.lparen)
+               (or (call head_is p "req") (or (call head_is p "ens") (call head_is p "inv"))))
+          (call (vec.push ast.Contract) cs (call parse_contract p))
+          (call (vec.push ast.Expr) body (call parse_expr p))))
+    (call want p compiler.Kind.rparen)
+    (put f ast.FnDef.contracts (call (to_arr ast.Contract) cs))
+    (put f ast.FnDef.body (call (to_arr ast.Expr) body))
+    f)
+
+  (fn parse_contract [p:(ptr P)] -> ast.Contract
+    (call want p compiler.Kind.lparen)
+    (let i:i32 (call next p))
+    (let e:ast.Expr (call parse_expr p))
+    (call want p compiler.Kind.rparen)
+    (cond
+      ((call is_sym p i "req") (make ast.Contract.requires e))
+      ((call is_sym p i "ens") (make ast.Contract.ensures e))
+      (else (make ast.Contract.invariant e))))
+
+  ;; ===== Expressions =====
+
+  ;; Consumes one token and returns e unchanged.
+  (fn skip [p:(ptr P) e:ast.Expr] -> ast.Expr (let _i:i32 (call next p)) e)
+
+  (fn placeholder [at:i32] -> ast.Expr (make ast.Expr.lit_int at 0i64))
+
+  (fn parse_expr [p:(ptr P)] -> ast.Expr
+    (let start:i32 (call cur_pos p))
+    (let k:compiler.Kind (call peek p))
+    (if (eq k compiler.Kind.none)
+        (block (call fail_str p start "Unexpected EOF parsing expression") (return (call placeholder start)))
+        (block))
+    (let i:i32 (get p P.pos))
+    (let at:i32 (call tpos p i))
+    (cond
+      ((eq k compiler.Kind.int)
+       (call next p)
+       (let v:i64 (call i64_value (call int_text p i)))
+       (if (or (lt v -2147483648i64) (gt v 4294967295i64))
+           (block
+             (let b:(ptr buf.Buf) (call msg p at))
+             (call buf.push_str b "integer literal ")
+             (call buf.push_i64 b v)
+             (call buf.push_str b " does not fit in 32 bits; write ")
+             (call buf.push_i64 b v)
+             (call buf.push_str b "i64 for an i64")
+             (call fail p b))
+           (block))
+       (make ast.Expr.lit_int at v))
+      ((eq k compiler.Kind.int64)
+       (call next p)
+       (let s:(ptr str.Bytes) (call text p i))
+       (make ast.Expr.lit_i64 at (call i64_value (call str.bytes (get s str.Bytes.addr) (- (get s str.Bytes.len) 3)))))
+      ((eq k compiler.Kind.float) (call next p) (make ast.Expr.lit_float at (call text p i)))
+      ((eq k compiler.Kind.bool) (call next p) (make ast.Expr.lit_bool at (neq (get (call tok p i) compiler.Token.a) 0)))
+      ((eq k compiler.Kind.string) (call next p) (make ast.Expr.lit_str at (call text p i)))
+      ((eq k compiler.Kind.symbol) (call next p) (make ast.Expr.var at (call text p i)))
+      ((eq k compiler.Kind.lparen) (call parse_group p))
+      (else
+       (let b:(ptr buf.Buf) (call msg p at))
+       (call buf.push_str b "Unexpected token parsing expression: ")
+       (call push_token_debug p b i)
+       (call fail p b)
+       (call placeholder at))))
+
+  ;; "(" head ... ")": a form or an operator.
+  (fn parse_group [p:(ptr P)] -> ast.Expr
+    (let lp:i32 (call next p))
+    (let at:i32 (call tpos p lp))
+    (let hi:i32 (call next p))
+    (if (neq (call kind_at p hi) compiler.Kind.symbol)
+        (block (call fail_expected p hi "operator or keyword in expr" at) (return (call placeholder at)))
+        (block))
+    (let head:(ptr str.Bytes) (call text p hi))
+    (let form:Form (call (strmap.get_or Form) (get p P.forms) head Form.none))
+    (let e:ast.Expr (call parse_form p form head at))
+    (call want p compiler.Kind.rparen)
+    e)
+
+  (fn parse_form [p:(ptr P) form:Form head:(ptr str.Bytes) at:i32] -> ast.Expr
+    (cond
+      ((eq form Form.let_)
+       (let name:(ptr str.Bytes) (call expect_symbol p "variable name" at))
+       (call want p compiler.Kind.colon)
+       (let ty:ast.Type (call parse_type p))
+       (make ast.Expr.let_ at name ty (call parse_expr p)))
+      ((eq form Form.set)
+       (let name:(ptr str.Bytes) (call expect_symbol p "variable name" at))
+       (make ast.Expr.set at name (call parse_expr p)))
+      ((eq form Form.if_)
+       (let c:ast.Expr (call parse_expr p))
+       (let t:ast.Expr (call parse_expr p))
+       (make ast.Expr.if_ at c t (call parse_expr p)))
+      ((eq form Form.loop)
+       (let var:(ptr str.Bytes) (call expect_symbol p "loop var" at))
+       (let s:ast.Expr (call parse_expr p))
+       (let e:ast.Expr (call parse_expr p))
+       (let st:ast.Expr (call parse_expr p))
+       (make ast.Expr.loop at var s e st (call parse_body p)))
+      ((eq form Form.while_)
+       (let c:ast.Expr (call parse_expr p))
+       (make ast.Expr.while_ at c (call parse_body p)))
+      ((eq form Form.call)
+       (let fname:(ptr str.Bytes) (call expect_symbol p "func name in call" at))
+       (make ast.Expr.call at fname (call parse_body p)))
+      ((or (eq form Form.ok) (eq form Form.err))
+       (let oty:ast.MaybeType (make ast.MaybeType.none))
+       (if (eq (call peek p) compiler.Kind.colon)
+           (block (call want_next p) (set! oty (make ast.MaybeType.some (call parse_type p))))
+           (block))
+       (let v:ast.Expr (call parse_expr p))
+       (if (eq form Form.ok) (make ast.Expr.ok at v oty) (make ast.Expr.err at v oty)))
+      ((eq form Form.make)
+       (let target:(ptr str.Bytes) (call expect_symbol p "Union.variant in make" at))
+       (let dot:i32 (call last_dot target))
+       (if (and (lt dot 0) (not (get p P.failed)))
+           (block
+             (let b:(ptr buf.Buf) (call msg p at))
+             (call buf.push_str b "make names a variant as Union.variant, got ")
+             (call buf.push_bytes b target)
+             (call fail p b))
+           (block))
+       (let d:i32 (if (lt dot 0) 0 dot))
+       (make ast.Expr.make at (call prefix target d) (call suffix target (+ d 1)) (call parse_body p)))
+      ((eq form Form.match_) (call parse_match p at))
+      ((eq form Form.block) (make ast.Expr.block at (call parse_body p)))
+      ((eq form Form.match_result) (call parse_match_result p at))
+      ((eq form Form.new_) (make ast.Expr.new_ at (call expect_symbol p "struct name in new" at)))
+      ((or (eq form Form.get_) (eq form Form.put_)) (call parse_get_put p (eq form Form.put_) at))
+      ((eq form Form.sizeof) (make ast.Expr.sizeof at (call expect_symbol p "struct name in sizeof" at)))
+      ((eq form Form.return_)
+       (if (eq (call peek p) compiler.Kind.rparen)
+           (make ast.Expr.return_ at (make ast.MaybeExpr.none))
+           (make ast.Expr.return_ at (make ast.MaybeExpr.some (call parse_expr p)))))
+      ((eq form Form.break_) (make ast.Expr.break_ at))
+      ((eq form Form.continue_) (make ast.Expr.continue_ at))
+      ((eq form Form.cond) (call parse_cond p at))
+      ((eq form Form.ref) (make ast.Expr.ref at (call expect_symbol p "function name in ref" at)))
+      ((eq form Form.call_ref)
+       (let sig:ast.Type (call parse_type p))
+       (let callee:ast.Expr (call parse_expr p))
+       (make ast.Expr.call_ref at sig callee (call parse_body p)))
+      ((eq form Form.arr_len) (make ast.Expr.arr_len at (call parse_expr p)))
+      ((eq form Form.ptr_null)
+       (make ast.Expr.null at (make ast.Type.ptr (make ast.Type.struct_ (call expect_symbol p "struct name in ptr.null" at)))))
+      ((eq form Form.arr_null) (make ast.Expr.null at (make ast.Type.arr (call parse_type p))))
+      ((eq form Form.ptr_cast)
+       (let name:(ptr str.Bytes) (call expect_symbol p "struct name in ptr.cast" at))
+       (make ast.Expr.cast at (make ast.Type.ptr (make ast.Type.struct_ name)) (call parse_expr p)))
+      ((eq form Form.arr_cast)
+       (let elem:ast.Type (call parse_type p))
+       (make ast.Expr.cast at (make ast.Type.arr elem) (call parse_expr p)))
+      ((eq form Form.ptr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.ptr))
+      ((eq form Form.arr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.arr))
+      ((eq form Form.enum_ord) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.enum_))
+      ((eq form Form.enum_cast)
+       (let name:(ptr str.Bytes) (call expect_symbol p "enum name in enum.cast" at))
+       (make ast.Expr.cast at (make ast.Type.enum_ name) (call parse_expr p)))
+      ((eq form Form.arr_new)
+       (let ty:ast.Type (call parse_type p))
+       (make ast.Expr.arr_new at ty (call parse_expr p)))
+      ((eq form Form.arr_get)
+       (let ty:ast.Type (call parse_type p))
+       (let a:ast.Expr (call parse_expr p))
+       (make ast.Expr.arr_get at ty a (call parse_expr p)))
+      ((eq form Form.arr_set)
+       (let ty:ast.Type (call parse_type p))
+       (let a:ast.Expr (call parse_expr p))
+       (let ix:ast.Expr (call parse_expr p))
+       (make ast.Expr.arr_set at ty a ix (call parse_expr p)))
+      ((eq form Form.mem_free)
+       (call fail_str p at "there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)")
+       (call placeholder at))
+      ((eq form Form.float_mem)
+       (let b:(ptr buf.Buf) (call msg p at))
+       (call buf.push_str b "there is no ")
+       (call buf.push_bytes b head)
+       (call buf.push_str b ": keep floats in struct fields or (arr f64), or move their bits with mem.load64/mem.store64 and f64.reinterpret_i64/i64.reinterpret_f64")
+       (call fail p b)
+       (call placeholder at))
+      (else
+       (if (not (call (strmap.has i32) (get p P.ops) head))
+           (block
+             (let b:(ptr buf.Buf) (call msg p at))
+             (call buf.push_str b "Unknown op/keyword: ")
+             (call buf.push_bytes b head)
+             (call fail p b)
+             (return (call placeholder at)))
+           (block))
+       (let op:ast.Op (enum.cast ast.Op (call (strmap.get_or i32) (get p P.ops) head 0)))
+       (make ast.Expr.op at op (call parse_body p)))))
+
+  (fn last_dot [s:(ptr str.Bytes)] -> i32
+    (let d:i32 -1)
+    (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
+    d)
+  (fn prefix [s:(ptr str.Bytes) n:i32] -> (ptr str.Bytes) (call str.bytes (get s str.Bytes.addr) n))
+  (fn suffix [s:(ptr str.Bytes) from:i32] -> (ptr str.Bytes)
+    (call str.bytes (+ (get s str.Bytes.addr) from) (- (get s str.Bytes.len) from)))
+
+  ;; (get p S.f) / (put p S.f v): the field reference split at its last '.'.
+  (fn parse_get_put [p:(ptr P) is_put:bool at:i32] -> ast.Expr
+    (let ptr:ast.Expr (call parse_expr p))
+    (let what:str (if is_put "'Struct.field' symbol in put" "'Struct.field' symbol in get"))
+    (let field:(ptr str.Bytes) (call expect_symbol p what at))
+    (let val:ast.Expr (if is_put (call parse_expr p) (call placeholder at)))
+    (let dot:i32 (call last_dot field))
+    (if (and (not (get p P.failed)) (or (lt dot 1) (eq dot (- (get field str.Bytes.len) 1))))
+        (block
+          (let b:(ptr buf.Buf) (call msg p at))
+          (call buf.push_str b "Expected ")
+          (call buf.push_str b what)
+          (call buf.push_str b ", got '")
+          (call buf.push_bytes b field)
+          (call buf.push_byte b 39)
+          (call fail p b))
+        (block))
+    (let d:i32 (if (lt dot 0) 0 dot))
+    (let sname:(ptr str.Bytes) (call prefix field d))
+    (let fname:(ptr str.Bytes) (call suffix field (+ d 1)))
+    (if is_put (make ast.Expr.put_ at sname fname ptr val) (make ast.Expr.get_ at sname fname ptr)))
+
+  (fn parse_match [p:(ptr P) at:i32] -> ast.Expr
+    (let value:ast.Expr (call parse_expr p))
+    (let arms:(ptr (vec.Vec (ptr ast.Arm))) (call (vec.make (ptr ast.Arm)) 4))
+    (let else_body:(arr ast.Expr) (arr.null ast.Expr))
+    (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
+      (let open:i32 (call expect p compiler.Kind.lparen))
+      (let aat:i32 (if (gte open 0) (call tpos p open) at))
+      (let member:(ptr str.Bytes) (call expect_symbol p "Name.member or else in a match arm" aat))
+      (if (and (not (get p P.failed)) (neq else_body (arr.null ast.Expr)))
+          (call fail_str p aat "the (else ...) arm of a match comes last")
+          (block))
+      (let binders:(arr (ptr str.Bytes)) (arr.null (ptr str.Bytes)))
+      (if (eq (call peek p) compiler.Kind.lbracket)
+          (block
+            (call next p)
+            (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) 4))
+            (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
+              (call (vec.push (ptr str.Bytes)) names (call expect_symbol p "a binder name" aat)))
+            (call want p compiler.Kind.rbracket)
+            (set! binders (call (to_arr (ptr str.Bytes)) names)))
+          (block))
+      (let body:(arr ast.Expr) (call parse_body p))
+      (call want p compiler.Kind.rparen)
+      (if (call str.bytes_eq member (call str.from_str "else"))
+          (block
+            (if (and (not (get p P.failed)) (neq binders (arr.null (ptr str.Bytes))))
+                (call fail_str p aat "the else arm of a match binds nothing")
+                (block))
+            (set! else_body body))
+          (block
+            (let arm:(ptr ast.Arm) (new ast.Arm))
+            (put arm ast.Arm.member member)
+            (put arm ast.Arm.binders binders)
+            (put arm ast.Arm.body body)
+            (put arm ast.Arm.at aat)
+            (call (vec.push (ptr ast.Arm)) arms arm))))
+    (make ast.Expr.match_ at value (call (to_arr (ptr ast.Arm)) arms) else_body))
+
+  (fn parse_match_result [p:(ptr P) at:i32] -> ast.Expr
+    (let value:ast.Expr (call parse_expr p))
+    (call want p compiler.Kind.lparen)
+    (let i:i32 (call next p))
+    (if (not (call is_sym p i "ok")) (call fail_expected p i "'ok' arm in match_result" at) (block))
+    (let ok_var:(ptr str.Bytes) (call expect_symbol p "ok var" at))
+    (let ok_body:(arr ast.Expr) (call parse_body p))
+    (call want p compiler.Kind.rparen)
+    (call want p compiler.Kind.lparen)
+    (let j:i32 (call next p))
+    (if (not (call is_sym p j "err")) (call fail_expected p j "'err' arm in match_result" at) (block))
+    (let err_var:(ptr str.Bytes) (call expect_symbol p "err var" at))
+    (let err_body:(arr ast.Expr) (call parse_body p))
+    (call want p compiler.Kind.rparen)
+    (make ast.Expr.match_result at value ok_var ok_body err_var err_body))
+
+  ;; (cond (c1 e...) ... (else e...)) is (if c1 (block e...) (if ... (block e...))),
+  ;; each if and block at its clause's '('.
+  (struct Clause [test:ast.Expr body:(arr ast.Expr) at:i32])
+
+  (fn parse_cond [p:(ptr P) at:i32] -> ast.Expr
+    (let clauses:(ptr (vec.Vec (ptr Clause))) (call (vec.make (ptr Clause)) 4))
+    (let else_body:(arr ast.Expr) (arr.null ast.Expr))
+    (let else_at:i32 0)
+    (while (eq (call peek p) compiler.Kind.lparen)
+      (let open:i32 (call expect p compiler.Kind.lparen))
+      (let cat:i32 (call tpos p open))
+      (if (neq else_body (arr.null ast.Expr)) (call fail_str p cat "cond: the else clause must be last") (block))
+      (let is_else:bool (call is_sym p (get p P.pos) "else"))
+      (let test:ast.Expr (call placeholder cat))
+      (if is_else (set! test (call skip p test)) (set! test (call parse_expr p)))
+      (let body:(arr ast.Expr) (call parse_body p))
+      (call want p compiler.Kind.rparen)
+      (if (and (not (get p P.failed)) (eq (arr.len body) 0)) (call fail_str p cat "cond clause needs a body") (block))
+      (if is_else
+          (block (set! else_body body) (set! else_at cat))
+          (block
+            (let cl:(ptr Clause) (new Clause))
+            (put cl Clause.test test)
+            (put cl Clause.body body)
+            (put cl Clause.at cat)
+            (call (vec.push (ptr Clause)) clauses cl))))
+    (if (and (not (get p P.failed)) (eq else_body (arr.null ast.Expr)))
+        (block
+          (call fail_str p at "cond needs a final (else ...) clause, as if needs an else branch")
+          (return (call placeholder at)))
+        (block))
+    (if (and (not (get p P.failed)) (eq (call (vec.len (ptr Clause)) clauses) 0))
+        (call fail_str p at "cond needs at least one (test body...) clause before else")
+        (block))
+    (if (get p P.failed) (return (call placeholder at)) (block))
+    (let acc:ast.Expr (make ast.Expr.block else_at else_body))
+    (let k:i32 (- (call (vec.len (ptr Clause)) clauses) 1))
+    (while (gte k 0)
+      (let cl:(ptr Clause) (call (vec.at (ptr Clause)) clauses k))
+      (set! acc (make ast.Expr.if_ (get cl Clause.at) (get cl Clause.test)
+                      (make ast.Expr.block (get cl Clause.at) (get cl Clause.body)) acc))
+      (set! k (- k 1)))
+    acc)
+
+  ;; ===== Tables =====
+
+  (fn form [m:(ptr (strmap.StrMap Form)) s:str f:Form] -> void
+    (call (strmap.set Form) m (call str.from_str s) f))
+
+  (fn form_table [] -> (ptr (strmap.StrMap Form))
+    (let m:(ptr (strmap.StrMap Form)) (call (strmap.make Form) 64))
+    (call form m "let" Form.let_) (call form m "set!" Form.set) (call form m "if" Form.if_)
+    (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
+    (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
+    (call form m "match" Form.match_) (call form m "block" Form.block) (call form m "match_result" Form.match_result)
+    (call form m "new" Form.new_) (call form m "get" Form.get_) (call form m "put" Form.put_)
+    (call form m "sizeof" Form.sizeof) (call form m "return" Form.return_) (call form m "break" Form.break_)
+    (call form m "continue" Form.continue_) (call form m "cond" Form.cond) (call form m "ref" Form.ref)
+    (call form m "call_ref" Form.call_ref) (call form m "arr.len" Form.arr_len) (call form m "ptr.null" Form.ptr_null)
+    (call form m "arr.null" Form.arr_null) (call form m "ptr.cast" Form.ptr_cast) (call form m "arr.cast" Form.arr_cast)
+    (call form m "ptr.addr" Form.ptr_addr) (call form m "arr.addr" Form.arr_addr) (call form m "enum.ord" Form.enum_ord)
+    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.arr_new) (call form m "arr.get" Form.arr_get)
+    (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free)
+    (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
+    (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)
+    m)
+
+  (fn op [m:(ptr (strmap.StrMap i32)) s:str o:ast.Op] -> void
+    (call (strmap.set i32) m (call str.from_str s) (enum.ord o)))
+
+  ;; Operator spellings (src/parser.rs parse_expr's op table).
+  (fn op_table [] -> (ptr (strmap.StrMap i32))
+    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 128))
+    (call op m "+" ast.Op.add) (call op m "-" ast.Op.sub) (call op m "*" ast.Op.mul) (call op m "/" ast.Op.div)
+    (call op m "%" ast.Op.mod) (call op m "^" ast.Op.bitxor) (call op m "shl" ast.Op.shl) (call op m "shr" ast.Op.shr)
+    (call op m "shru" ast.Op.shru) (call op m "bitand" ast.Op.bitand) (call op m "bitor" ast.Op.bitor)
+    (call op m "mem.load8" ast.Op.mem_load8) (call op m "mem.load32" ast.Op.mem_load32) (call op m "mem.load64" ast.Op.mem_load64)
+    (call op m "mem.store8" ast.Op.mem_store8) (call op m "mem.store32" ast.Op.mem_store32) (call op m "mem.store64" ast.Op.mem_store64)
+    (call op m "mem.alloc" ast.Op.mem_alloc) (call op m "mem.grow" ast.Op.mem_grow)
+    (call op m "str.len" ast.Op.str_len) (call op m "str.ptr" ast.Op.str_ptr)
+    (call op m "atomic.add" ast.Op.atomic_add) (call op m "atomic.cas" ast.Op.atomic_cas)
+    (call op m "atomic.lock" ast.Op.atomic_lock) (call op m "atomic.unlock" ast.Op.atomic_unlock)
+    (call op m "eq" ast.Op.eq) (call op m "neq" ast.Op.neq) (call op m "lt" ast.Op.lt) (call op m "lte" ast.Op.lte)
+    (call op m "ltu" ast.Op.ltu) (call op m "checked.add" ast.Op.checked_add) (call op m "checked.sub" ast.Op.checked_sub)
+    (call op m "checked.mul" ast.Op.checked_mul) (call op m "lteu" ast.Op.lteu) (call op m "gtu" ast.Op.gtu)
+    (call op m "gteu" ast.Op.gteu) (call op m "gt" ast.Op.gt) (call op m "gte" ast.Op.gte)
+    (call op m "and" ast.Op.and) (call op m "or" ast.Op.or) (call op m "not" ast.Op.not)
+    (call op m "sys.print" ast.Op.sys_print) (call op m "sys.time" ast.Op.sys_time) (call op m "sys.monotonic" ast.Op.sys_monotonic)
+    (call op m "sys.random" ast.Op.sys_random) (call op m "sys.exit" ast.Op.sys_exit)
+    (call op m "fs.open" ast.Op.fs_open) (call op m "fs.read" ast.Op.fs_read) (call op m "fs.write" ast.Op.fs_write)
+    (call op m "fs.close" ast.Op.fs_close) (call op m "fs.delete" ast.Op.fs_delete)
+    (call op m "args.sizes" ast.Op.args_sizes) (call op m "args.get" ast.Op.args_get)
+    (call op m "env.sizes" ast.Op.env_sizes) (call op m "env.get" ast.Op.env_get)
+    (call op m "thread.spawn" ast.Op.thread_spawn) (call op m "thread.join" ast.Op.thread_join)
+    (call op m "divu" ast.Op.divu) (call op m "remu" ast.Op.remu)
+    (call op m "i64.extend_s" ast.Op.i64_extend_s) (call op m "f64.convert_i64_s" ast.Op.f64_convert_i64_s)
+    (call op m "f64.sqrt" ast.Op.f64_sqrt) (call op m "i64.trunc_f64_s" ast.Op.i64_trunc_f64_s)
+    (call op m "f64.reinterpret_i64" ast.Op.f64_reinterpret_i64) (call op m "i64.reinterpret_f64" ast.Op.i64_reinterpret_f64)
+    (call op m "i64.extend_u" ast.Op.i64_extend_u) (call op m "i32.wrap" ast.Op.i32_wrap)
+    m)
+
+  ;; ===== Entry =====
+
+  ;; The result of a parse: the module, or the first error's message.
+  (struct Parsed [module:(ptr ast.Module) ok:bool err:(ptr buf.Buf)])
+
+  ;; Parses the n tokens at toks (from compiler.tokenize over src). A bad
+  ;; token (always last) is the tokenizer's error, reported first, as Rust's
+  ;; tokenizer fails before its parser runs.
+  (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed)
+    (let p:(ptr P) (new P))
+    (put p P.src src)
+    (put p P.toks toks)
+    (put p P.n n)
+    (put p P.pos 0)
+    (put p P.failed false)
+    (put p P.forms (call form_table))
+    (put p P.ops (call op_table))
+    (put p P.unions (call (strmap.make i32) 16))
+    ;; the program's unions: `( union NAME`
+    (loop k 0 (- n 3) 1
+      (if (and (eq (call kind_at p k) compiler.Kind.lparen) (and (call is_sym p (+ k 1) "union") (eq (call kind_at p (+ k 2)) compiler.Kind.symbol)))
+          (call (strmap.set i32) (get p P.unions) (call text p (+ k 2)) 1)
+          (block)))
+    (let r:(ptr Parsed) (new Parsed))
+    (if (and (gt n 0) (eq (call kind_at p (- n 1)) compiler.Kind.bad))
+        (block
+          (call tokenizer_error p (- n 1))
+          (put r Parsed.module (new ast.Module))
+          (put r Parsed.ok false)
+          (put r Parsed.err (get p P.err))
+          (return r))
+        (block))
+    (put r Parsed.module (call parse_module p))
+    (put r Parsed.ok (not (get p P.failed)))
+    (put r Parsed.err (get p P.err))
+    r)
+
+  ;; src/parser.rs tokenize's messages for compiler.tokenize's bad token.
+  (fn tokenizer_error [p:(ptr P) i:i32] -> void
+    (let t:(ptr compiler.Token) (call tok p i))
+    (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
+    (let b:(ptr buf.Buf) (call msg p (get t compiler.Token.pos)))
+    (match why
+      (compiler.TokErr.unterminated_string (call buf.push_str b "Unterminated string literal"))
+      (compiler.TokErr.unknown_escape
+       (call buf.push_str b "Unknown escape sequence \\")
+       (call buf.push_byte b (mem.load8 (+ (get p P.src) (get t compiler.Token.pos))))
+       (call buf.push_str b " in string literal"))
+      (compiler.TokErr.stray_whitespace
+       (call buf.push_str b "unexpected whitespace character U+")
+       (call push_hex4 b (get t compiler.Token.b))
+       (call buf.push_str b "; separate tokens with spaces, tabs, or newlines")))
+    (call fail p b))
+
+  ;; {:04X}: at least four uppercase hex digits.
+  (fn push_hex4 [b:(ptr buf.Buf) c:i32] -> void
+    (loop k 0 3 1
+      (let d:i32 (bitand (shru c (* 4 (- 3 k))) 15))
+      (call buf.push_byte b (if (lt d 10) (+ d 48) (+ d 55)))))
+
+  ;; Tokenizes and parses len bytes at src.
+  (fn parse [src:i32 len:i32] -> (ptr Parsed)
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    (call parse_tokens src toks n)))

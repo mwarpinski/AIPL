@@ -3,6 +3,26 @@
 ;; VM with plain integers.
 (module frontend_host
   (import compiler)
+  (import parser)
+  (import printer)
+  (import buf)
+  (import str)
+
+  ;; Where a result is: [status addr len] at out (status 1 = ok, 0 = error,
+  ;; with the error message in addr/len).
+  (fn put_result [out:i32 ok:bool b:(ptr buf.Buf)] -> i32
+    (let bs:(ptr str.Bytes) (call buf.bytes b))
+    (mem.store32 out (if ok 1 0))
+    (mem.store32 (+ out 4) (get bs str.Bytes.addr))
+    (mem.store32 (+ out 8) (get bs str.Bytes.len))
+    0)
+
+  ;; parser.aipl then printer.aipl over len bytes at src.
+  (fn parse_print [src:i32 len:i32 out:i32] -> i32
+    (let r:(ptr parser.Parsed) (call parser.parse src len))
+    (if (get r parser.Parsed.ok)
+        (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
+        (call put_result out false (get r parser.Parsed.err))))
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
   (fn token_size [] -> i32 (sizeof compiler.Token))
   (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))

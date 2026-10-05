@@ -205,3 +205,186 @@ fn line_col_counts_characters() {
         assert_eq!(line_col(src, pos as usize), want, "offset {pos} (test helper)");
     }
 }
+
+/// The AIPL front end (aipl_src/frontend_host.aipl) compiled to wasm by the
+/// Rust toolchain, run under wasmtime: large inputs (the whole toolchain)
+/// would take minutes in the VM.
+mod front {
+    use super::root;
+    use aipl_core::checker::TypeChecker;
+    use aipl_core::compiler::wasm::WasmCompiler;
+    use aipl_core::resolver::Resolver;
+    use wasmtime::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+    use wasmtime_wasi::p1::WasiP1Ctx;
+
+    pub struct Front {
+        engine: Engine,
+        module: Module,
+    }
+
+    pub fn load() -> Front {
+        let m = Resolver::resolve(&root().join("aipl_src/frontend_host.aipl")).unwrap();
+        TypeChecker::new().check_module(&m).unwrap();
+        let wasm = WasmCompiler::compile(&m).unwrap();
+        let mut config = wasmtime::Config::new();
+        config.wasm_threads(true);
+        let engine = Engine::new(&config).unwrap();
+        let module = Module::new(&engine, &wasm).unwrap();
+        Front { engine, module }
+    }
+
+    impl Front {
+        /// Calls `name [src len out]` on a fresh instance; Ok(text) for status
+        /// 1, Err(text) for status 0.
+        pub fn run(&self, name: &str, src: &str) -> Result<String, String> {
+            let mut linker: Linker<WasiP1Ctx> = Linker::new(&self.engine);
+            wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+            let mut store = Store::new(&self.engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+            let inst: Instance = linker.instantiate(&mut store, &self.module).unwrap();
+            let memory: Memory = inst.get_memory(&mut store, "memory").unwrap();
+            let alloc: TypedFunc<i32, i32> = inst.get_typed_func(&mut store, "host_alloc").unwrap();
+            let f: TypedFunc<(i32, i32, i32), i32> = inst.get_typed_func(&mut store, name).unwrap();
+            let p = alloc.call(&mut store, src.len() as i32 + 1).unwrap();
+            memory.write(&mut store, p as usize, src.as_bytes()).unwrap();
+            let out = alloc.call(&mut store, 12).unwrap();
+            f.call(&mut store, (p, src.len() as i32, out)).unwrap_or_else(|e| panic!("{name} trapped: {e:?}"));
+            let mut w = [0u8; 12];
+            memory.read(&store, out as usize, &mut w).unwrap();
+            let word = |i: usize| u32::from_le_bytes(w[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+            let mut text = vec![0u8; word(2)];
+            memory.read(&store, word(1), &mut text).unwrap();
+            let text = String::from_utf8(text).unwrap();
+            if word(0) == 1 { Ok(text) } else { Err(text) }
+        }
+    }
+}
+
+/// Every .aipl file under the given directories, sorted.
+fn aipl_files(dirs: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        let mut files: Vec<_> = std::fs::read_dir(root().join(dir)).unwrap().map(|e| e.unwrap().path()).collect();
+        files.sort();
+        out.extend(files.into_iter().filter(|f| f.extension().is_some_and(|e| e == "aipl")));
+    }
+    out
+}
+
+/// CK2-CK3 print parity: for every repository program, the Rust resolver's
+/// module printed by src/printer.rs, parsed by parser.aipl and printed by
+/// printer.aipl, is the same text.
+#[test]
+fn parser_round_trips_every_repository_program() {
+    let front = front::load();
+    let mut checked = 0;
+    for f in aipl_files(&["aipl_src", "aipl_src/std", "aipl_src/native", "examples", "tests/aipl", "benchmarks"]) {
+        let Ok(m) = Resolver::resolve(&f) else { continue };
+        let text = aipl_core::printer::print_module(&m);
+        let ours = front.run("parse_print", &text).unwrap_or_else(|e| panic!("{}: parser.aipl rejects: {e}", f.display()));
+        if ours != text {
+            let at = ours.bytes().zip(text.bytes()).position(|(a, b)| a != b).unwrap_or(ours.len().min(text.len()));
+            panic!(
+                "{}: round trip differs at byte {at}\n  rust: {:?}\n  aipl: {:?}",
+                f.display(),
+                &text[at.saturating_sub(60)..(at + 60).min(text.len())],
+                &ours[at.saturating_sub(60)..(at + 60).min(ours.len())]
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 40, "{checked} programs");
+}
+
+/// Every form and every operator at least once (cond, match, make, ok:T,
+/// call_ref, the address forms, ...), for the direct-parse test below.
+const EVERY_FORM: &str = r#"(module every
+  (import io as out)
+  (enum Color [red (green 5) blue])
+  (union Shape [(circle r:f64) (rect w:i32 h:i32) (dot)])
+  (struct P [x:i32 next:(ptr P) items:(arr i64) f:(fn [i32] -> bool) r:(result i32 str) c:Color s:Shape])
+  (fn helper [n:i32] -> bool (gt n 0))
+  (fn every [a:i32 b:i64 c:f64 d:bool e:str p:(ptr P) xs:(arr i32)] -> i32
+    (req (gte a 0))
+    (ens (gte res 0))
+    (inv true)
+    (let n:i32 (+ +1 -2))
+    (set! n (cond ((lt n 0) 1) ((eq n 0) (block 2)) (else 3)))
+    (if d (block) (block (return 1)))
+    (loop i 0 10 2 (if (eq i 4) (continue) (block)) (if (eq i 8) (break) (block)))
+    (while false)
+    (let r:(result i32 str) (ok:str 5))
+    (let r2:(result bool i32) (err:bool 7))
+    (match_result r (ok v (set! n v)) (err m (block)))
+    (let q:(ptr P) (new P))
+    (put q P.x (get p P.x))
+    (let z:i32 (sizeof P))
+    (let arr2:(arr f64) (arr.new f64 3))
+    (arr.set f64 arr2 0 (arr.get f64 arr2 1))
+    (let l:i32 (arr.len arr2))
+    (let np:(ptr P) (ptr.null P))
+    (let na:(arr i32) (arr.null i32))
+    (let cp:(ptr P) (ptr.cast P 4096))
+    (let ca:(arr i32) (arr.cast i32 4096))
+    (let ad:i32 (+ (ptr.addr p) (arr.addr xs)))
+    (let co:i32 (enum.ord (enum.cast Color 5)))
+    (let sh:Shape (make Shape.rect 1 2))
+    (let area:i32 (match sh (Shape.circle [_] 0) (Shape.rect [w h] (* w h)) (else 1)))
+    (let col:i32 (match Color.red (Color.red 1) (Color.green 2) (Color.blue 3)))
+    (let fr:(fn [i32] -> bool) (ref helper))
+    (let fb:bool (call_ref (fn [i32] -> bool) fr 3))
+    (let s1:str "esc \n \t \r \0 \\ \" é")
+    (let x:i32 (+ (- (* (/ (% 1 2) 3) 4) 5) (divu (remu 6 7) 8)))
+    (let y:i32 (^ (shl 1 2) (shr (shru 3 4) (bitand 5 (bitor 6 7)))))
+    (mem.store8 (mem.alloc 8) (mem.load8 (mem.alloc 8)))
+    (mem.store32 (mem.alloc 8) (mem.load32 (mem.alloc 8)))
+    (mem.store64 (mem.alloc 8) (mem.load64 (mem.alloc 8)))
+    (let g:i32 (mem.grow 0))
+    (let aa:i32 (atomic.add (mem.alloc 4) 1))
+    (let ac:bool (atomic.cas (mem.alloc 4) 0 1))
+    (atomic.lock (mem.alloc 4))
+    (atomic.unlock (mem.alloc 4))
+    (let cmp:bool (and (eq 1 1) (and (neq 1 2) (and (lt 1 2) (and (lte 1 2) (and (gt 2 1) (gte 2 1)))))))
+    (let ucmp:bool (or (ltu 1 2) (or (lteu 1 2) (or (gtu 2 1) (not (gteu 2 1))))))
+    (let ck:i64 (checked.add (checked.sub 1i64 2i64) (checked.mul 3i64 -4i64)))
+    (sys.print "a" "b")
+    (let t:i64 (+ (sys.time) (sys.monotonic)))
+    (let rnd:i32 (sys.random (mem.alloc 8) 8))
+    (let fo:i32 (fs.open (str.ptr e) (str.len e) 0))
+    (let fio:i32 (+ (fs.read fo 0 0) (+ (fs.write fo 0 0) (+ (fs.close fo) (fs.delete 0 0)))))
+    (let ar:i32 (+ (args.sizes 0 0) (+ (args.get 0 0) (+ (env.sizes 0 0) (env.get 0 0)))))
+    (let th:i32 (thread.join (thread.spawn (ref w) 1)))
+    (let cv:i64 (+ (i64.extend_s 1) (+ (i64.extend_u 1) (+ (i64.trunc_f64_s 1.5) (i64.reinterpret_f64 (f64.sqrt (f64.convert_i64_s 4i64)))))))
+    (let rf:f64 (f64.reinterpret_i64 4611686018427387904i64))
+    (let wr:i32 (i32.wrap 4294967297i64))
+    (if (eq n 0) (sys.exit 0) (block))
+    (call out.println "x")
+    0)
+  (fn w [x:i32] -> i32 x)
+  (fn nothing [] -> void (return)))"#;
+
+/// The same source parsed directly by both parsers (no resolver), printed by
+/// both printers: the same text, for the corpus above and for every
+/// repository file Parser::parse accepts (those without constants).
+#[test]
+fn parsers_agree_on_original_sources() {
+    let front = front::load();
+    let mut inputs = vec![("every_form".to_string(), EVERY_FORM.to_string())];
+    for f in aipl_files(&["aipl_src", "aipl_src/std", "aipl_src/native", "examples", "tests/aipl", "benchmarks"]) {
+        inputs.push((f.display().to_string(), std::fs::read_to_string(&f).unwrap()));
+    }
+    let mut compared = 0;
+    for (name, src) in &inputs {
+        let m = match Parser::parse(src) {
+            Ok(m) => m,
+            Err(_) if name != "every_form" => continue,
+            Err(e) => panic!("the corpus must parse: {e}"),
+        };
+        let theirs = aipl_core::printer::print_module(&m);
+        // parser.aipl keeps literals as written; normalize through Rust
+        let ours = front.run("parse_print", src).unwrap_or_else(|e| panic!("{name}: parser.aipl rejects: {e}"));
+        let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{name}: AIPL output does not parse: {e}\n{ours}")));
+        assert_eq!(ours, theirs, "{name}");
+        compared += 1;
+    }
+    assert!(compared >= 25, "{compared}");
+}
