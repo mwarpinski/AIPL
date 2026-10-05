@@ -27,6 +27,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
 | spigot | 10000 digits | 4.360 s (4.7x) | 1.573 s (1.7x) | 0.922 s (1.0x) | 47.345 s (51.3x) |
+| fannkuch | n = 10 | 1.358 s (8.8x) | 0.212 s (1.4x) | 0.155 s (1.0x) | 3.745 s (24.2x) |
 
 ## Notes per benchmark
 
@@ -44,3 +45,12 @@ language changes. What it showed:
   re-reads the memory size for its bounds check). The first optimisation
   target, if native speed matters: keep the top of the value stack in
   registers, and the memory size in a register for single-threaded code.
+
+**fannkuch** (fannkuch-redux, single-threaded: permutations of 0..n-1, each
+flipped until 0 comes first). Ran with no language changes. What it showed:
+array-heavy code is where the native translator trails wasmtime most (6.4
+times): each `arr.get`/`arr.set` is several wasm instructions, every one
+passing its values through the stack in memory, plus a bounds check that
+reloads the memory size. wasmtime keeps them in registers. The same
+optimisations as for spigot (value stack in registers, memory size in a
+register) would matter most here.
