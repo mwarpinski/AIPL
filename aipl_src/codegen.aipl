@@ -536,6 +536,80 @@
       (set! bchild (call node_next bchild)))
     (get cg Cg.nlocals))
 
+  ;; ===== WebAssembly encoding =====
+  ;; Opcodes (the 0xFC and 0xFE prefixes take a second, LEB128 opcode),
+  ;; block types, and value types, as the binary format spells them.
+  (const OP_UNREACHABLE:i32 0)
+  (const OP_BLOCK:i32 2)
+  (const OP_LOOP:i32 3)
+  (const OP_IF:i32 4)
+  (const OP_ELSE:i32 5)
+  (const OP_END:i32 11)
+  (const OP_BR:i32 12)
+  (const OP_BR_IF:i32 13)
+  (const OP_RETURN:i32 15)
+  (const OP_CALL:i32 16)
+  (const OP_DROP:i32 26)
+  (const OP_LOCAL_GET:i32 32)
+  (const OP_LOCAL_SET:i32 33)
+  (const OP_LOCAL_TEE:i32 34)
+  (const OP_GLOBAL_GET:i32 35)
+  (const OP_GLOBAL_SET:i32 36)
+  (const OP_I32_LOAD:i32 40)
+  (const OP_I64_LOAD:i32 41)
+  (const OP_F32_LOAD:i32 42)
+  (const OP_F64_LOAD:i32 43)
+  (const OP_I32_LOAD8_U:i32 45)
+  (const OP_I32_STORE:i32 54)
+  (const OP_I64_STORE:i32 55)
+  (const OP_F32_STORE:i32 56)
+  (const OP_F64_STORE:i32 57)
+  (const OP_I32_STORE8:i32 58)
+  (const OP_MEMORY_SIZE:i32 63)
+  (const OP_MEMORY_GROW:i32 64)
+  (const OP_I32_CONST:i32 65)
+  (const OP_I64_CONST:i32 66)
+  (const OP_F64_CONST:i32 68)
+  (const OP_I32_EQZ:i32 69)
+  (const OP_I32_EQ:i32 70)
+  (const OP_I32_NE:i32 71)
+  (const OP_I32_LT_S:i32 72)
+  (const OP_I32_LT_U:i32 73)
+  (const OP_I32_GT_S:i32 74)
+  (const OP_I32_GT_U:i32 75)
+  (const OP_I32_ADD:i32 106)
+  (const OP_I32_SUB:i32 107)
+  (const OP_I32_MUL:i32 108)
+  (const OP_I32_AND:i32 113)
+  (const OP_I32_OR:i32 114)
+  (const OP_I32_SHL:i32 116)
+  (const OP_I32_SHR_U:i32 118)
+  (const OP_I64_REINTERPRET_F64:i32 189)
+  (const OP_F64_REINTERPRET_I64:i32 191)
+  (const OP_PREFIX_MISC:i32 252)
+  (const OP_I32_WRAP_I64:i32 167)
+  (const OP_F64_SQRT:i32 159)
+  (const OP_I64_EXTEND_I32_S:i32 172)
+  (const OP_I64_EXTEND_I32_U:i32 173)
+  (const OP_I64_TRUNC_F64_S:i32 176)
+  (const OP_F64_CONVERT_I64_S:i32 185)
+  (const OP_CALL_INDIRECT:i32 17)
+  (const MISC_MEMORY_INIT:i32 8)
+  (const OP_PREFIX_ATOMIC:i32 254)
+  (const ATOMIC_NOTIFY:i32 0)
+  (const ATOMIC_WAIT32:i32 1)
+  (const ATOMIC_LOAD:i32 16)
+  (const ATOMIC_STORE:i32 23)
+  (const ATOMIC_RMW_ADD:i32 30)
+  (const ATOMIC_RMW_XCHG:i32 65)
+  (const ATOMIC_RMW_CMPXCHG:i32 72)
+  (const BLOCK_EMPTY:i32 64)
+  (const VT_I32:i32 127)
+  (const VT_I64:i32 126)
+  (const VT_F32:i32 125)
+  (const VT_F64:i32 124)
+  (const FUNC_TYPE:i32 96)
+
   ;; ===== Output =====
   ;; A cursor writing bytes forward from base. Emitters append at pos.
   (struct Out [base:i32 pos:i32])
@@ -641,7 +715,7 @@
     (let v:f64 (/ (f64.convert_i64_s m) p))
     (if neg (set! v (* v (f64.convert_i64_s -1i64))) (block))
     (let bits:i64 (i64.reinterpret_f64 v))
-    (call put_byte o 68)
+    (call put_byte o OP_F64_CONST)
     (loop b 0 7 1
       (call put_byte o (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64)))))
 
@@ -652,7 +726,7 @@
   ;; no locals and no net stack effect (wasm.rs emit_grow_to_cursor).
 ;; A 0xFE-prefixed atomic instruction with align 2, offset 0.
   (fn emit_atomic [o:(ptr Out) op:i32] -> void
-    (call put_byte o 254)
+    (call put_byte o OP_PREFIX_ATOMIC)
     (call put_u32 o op)
     (call put_byte o 2)
     (call put_byte o 0))
@@ -662,10 +736,10 @@
 
   ;; With a condition on the stack: if it holds, unreachable.
   (fn emit_trap_if [o:(ptr Out)] -> void
-    (call put_byte o 4)
-    (call put_byte o 64)
-    (call put_byte o 0)
-    (call put_byte o 11))
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END))
 
 
 
@@ -674,9 +748,9 @@
   ;; every allocation size is, so every block is 8-aligned.
   (fn emit_round8 [o:(ptr Out)] -> void
     (call emit_i32_const o 7)
-    (call put_byte o 106)
+    (call put_byte o OP_I32_ADD)
     (call emit_i32_const o -8)
-    (call put_byte o 113))
+    (call put_byte o OP_I32_AND))
 
 
 
@@ -685,23 +759,23 @@
   ;; dropped, anything else in fd 3 (the working directory).
   (fn emit_path_dir [o:(ptr Out) ptr_l:i32 len_l:i32] -> void
     (call emit_local_get o ptr_l)
-    (call emit_memop o 45 0) ;; i32.load8_u
+    (call emit_memop o OP_I32_LOAD8_U 0) ;; i32.load8_u
     (call emit_i32_const o 47)
-    (call put_byte o 70)
-    (call put_byte o 4)
-    (call put_byte o 127)
+    (call put_byte o OP_I32_EQ)
+    (call put_byte o OP_IF)
+    (call put_byte o VT_I32)
     (call emit_local_get o ptr_l)
     (call emit_i32_const o 1)
-    (call put_byte o 106)
+    (call put_byte o OP_I32_ADD)
     (call emit_local_set o ptr_l)
     (call emit_local_get o len_l)
     (call emit_i32_const o 1)
-    (call put_byte o 107)
+    (call put_byte o OP_I32_SUB)
     (call emit_local_set o len_l)
     (call emit_i32_const o 4)
-    (call put_byte o 5)
+    (call put_byte o OP_ELSE)
     (call emit_i32_const o 3)
-    (call put_byte o 11))
+    (call put_byte o OP_END))
 
 
 
@@ -709,8 +783,8 @@
     ;; i32.atomic.rmw.add with align 2, offset 0: [addr] [n] -> [old]. Every
   ;; allocation claims its block with one of these on the cursor at address 0.
   (fn emit_rmw_add [o:(ptr Out)] -> void
-    (call put_byte o 254)
-    (call put_byte o 30)
+    (call put_byte o OP_PREFIX_ATOMIC)
+    (call put_byte o ATOMIC_RMW_ADD)
     (call put_byte o 2)
     (call put_byte o 0))
 
@@ -719,59 +793,59 @@
 
   (fn emit_grow_to_cursor [o:(ptr Out)] -> void
     (call emit_i32_const o 0)
-    (call emit_memop o 40 2)
+    (call emit_memop o OP_I32_LOAD 2)
     (call emit_size_bytes o)
-    (call put_byte o 75)
-    (call put_byte o 4)
-    (call put_byte o 64)
+    (call put_byte o OP_I32_GT_U)
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
     (call emit_i32_const o 0)
-    (call emit_memop o 40 2)
+    (call emit_memop o OP_I32_LOAD 2)
     (call emit_size_bytes o)
-    (call put_byte o 107)
+    (call put_byte o OP_I32_SUB)
     (call emit_i32_const o 65535)
-    (call put_byte o 106)
+    (call put_byte o OP_I32_ADD)
     (call emit_i32_const o 16)
-    (call put_byte o 118)
-    (call put_byte o 64)
+    (call put_byte o OP_I32_SHR_U)
+    (call put_byte o OP_MEMORY_GROW)
     (call put_byte o 0)
-    (call put_byte o 26)
-    (call put_byte o 11))
+    (call put_byte o OP_DROP)
+    (call put_byte o OP_END))
 
 
 
   ;; memory.size; i32.const 16; i32.shl -> memory size in bytes
   (fn emit_size_bytes [o:(ptr Out)] -> void
-    (call put_byte o 63)
+    (call put_byte o OP_MEMORY_SIZE)
     (call put_byte o 0)
     (call emit_i32_const o 16)
-    (call put_byte o 116))
+    (call put_byte o OP_I32_SHL))
 
 
 
 
   (fn emit_i32_const [o:(ptr Out) val:i32] -> void
-    (call put_byte o 65)
+    (call put_byte o OP_I32_CONST)
     (call put_s32 o val))
 
 
 
 
   (fn emit_local_get [o:(ptr Out) idx:i32] -> void
-    (call put_byte o 32)
+    (call put_byte o OP_LOCAL_GET)
     (call put_u32 o idx))
 
 
 
 
   (fn emit_local_set [o:(ptr Out) idx:i32] -> void
-    (call put_byte o 33)
+    (call put_byte o OP_LOCAL_SET)
     (call put_u32 o idx))
 
 
 
 
   (fn emit_call [o:(ptr Out) idx:i32] -> void
-    (call put_byte o 16)
+    (call put_byte o OP_CALL)
     (call put_u32 o idx))
 
 
@@ -786,21 +860,21 @@
 
 
   (fn emit_store_guard [cg:(ptr Cg) o:(ptr Out) scratch_idx:i32] -> void
-    (call put_byte o 34)                  ;; local.tee
+    (call put_byte o OP_LOCAL_TEE)
     (call put_u32 o scratch_idx)
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 4)
-    (call put_byte o 73)                  ;; i32.lt_u
+    (call put_byte o OP_I32_LT_U)
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 64)
-    (call put_byte o 107)                 ;; i32.sub
+    (call put_byte o OP_I32_SUB)
     (call emit_i32_const o (- (call heap_start cg) 64))
-    (call put_byte o 73)                  ;; i32.lt_u
-    (call put_byte o 114)                 ;; i32.or
-    (call put_byte o 4)                   ;; if
-    (call put_byte o 64)                  ;; blocktype: empty
-    (call put_byte o 0)                   ;; unreachable
-    (call put_byte o 11))  ;; end
+    (call put_byte o OP_I32_LT_U)
+    (call put_byte o OP_I32_OR)
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END))  ;; end
 
 
 
@@ -881,8 +955,8 @@
   ;; binop_opcode with the first operand's type. Unsupported: compile error 99.
   (fn emit_typed_binop [o:(ptr Out) op_id:Kw t:Ty] -> void
     (cond
-      ((eq op_id Kw.and) (call put_byte o 113))
-      ((eq op_id Kw.or) (call put_byte o 114))
+      ((eq op_id Kw.and) (call put_byte o OP_I32_AND))
+      ((eq op_id Kw.or) (call put_byte o OP_I32_OR))
       (else
        (let opc:i32 (call binop_opcode op_id t))
        (if (eq opc -1)
@@ -1049,7 +1123,7 @@
   ;; A bool read from memory is normalised to 0/1 (i32.const 0; i32.ne), as in wasm.rs normalize_bool.
   (fn emit_normalize_bool [o:(ptr Out)] -> void
     (call emit_i32_const o 0)
-    (call put_byte o 71))
+    (call put_byte o OP_I32_NE))
 
 
 
@@ -1540,7 +1614,7 @@
     (cond
       ((or (eq kind compiler.Kind.int) (eq kind compiler.Kind.bool)) (call emit_i32_const o (call node_a node)))
       ((eq kind compiler.Kind.int64)
-       (call put_byte o 66)
+       (call put_byte o OP_I64_CONST)
        (call put_s64 o (call parse_i64_literal cg (call node_a node) (call node_b node))))
       ((eq kind compiler.Kind.float) (call emit_f64_literal o cg (call node_a node) (call node_b node)))
       ((eq kind compiler.Kind.string)
@@ -1581,39 +1655,39 @@
     (call compile_expr cg expr_node o)
     (call emit_local_set o scratch)
     (call emit_local_get o scratch)
-    (call emit_memop o 40 2)
-    (call put_byte o 69)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call put_byte o OP_I32_EQZ)
     (let ok_last:(ptr compiler.Node) (call last_child ok_group))
     (let is_void:bool (call is_void_node cg ok_last))
     (let block_ty:i32 64)
     (if is_void (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg ok_last))))
-    (call put_byte o 4) (call put_byte o block_ty)
+    (call put_byte o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
     (let ok_var_node:(ptr compiler.Node) (call nth_child ok_group 1))
     (let ok_var_idx:i32 (call find_local cg (call node_a ok_var_node) (call node_b ok_var_node)))
     (if (neq ok_var_idx -1)
         (block
           (call emit_local_get o scratch)
-          (call emit_memop_offset o 40 2 4)
+          (call emit_memop_offset o OP_I32_LOAD 2 4)
           (call emit_local_set o ok_var_idx)
           0)
         0)
     (let ok_body_first:(ptr compiler.Node) (call node_next (call node_next (call first_child ok_group))))
     (call compile_stmt_seq cg ok_body_first o)
-    (call put_byte o 5)
+    (call put_byte o OP_ELSE)
     (let err_var_node:(ptr compiler.Node) (call nth_child err_group 1))
     (let err_var_idx:i32 (call find_local cg (call node_a err_var_node) (call node_b err_var_node)))
     (if (neq err_var_idx -1)
         (block
           (call emit_local_get o scratch)
-          (call emit_memop_offset o 40 2 4)
+          (call emit_memop_offset o OP_I32_LOAD 2 4)
           (call emit_local_set o err_var_idx)
           0)
         0)
     (let err_body_first:(ptr compiler.Node) (call node_next (call node_next (call first_child err_group))))
     (call compile_stmt_seq cg err_body_first o)
     (call label_pop cg)
-    (call put_byte o 11))
+    (call put_byte o OP_END))
 
 
 
@@ -1622,12 +1696,12 @@
   (fn emit_rt [cg:(ptr Cg) o:(ptr Out) cell:i32] -> void
     (if (call threaded cg)
         (block
-          (call put_byte o 35) ;; global.get 0
+          (call put_byte o OP_GLOBAL_GET) ;; global.get 0
           (call put_byte o 0)
           (if (neq cell 64)
               (block
                 (call emit_i32_const o (- cell 64))
-                (call put_byte o 106))
+                (call put_byte o OP_I32_ADD))
               (block)))
         (call emit_i32_const o cell)))
 
@@ -1635,15 +1709,15 @@
 
 
   (fn emit_errno_to_result [cg:(ptr Cg) o:(ptr Out) out_cell:i32] -> void
-    (call put_byte o 4) (call put_byte o 127)
+    (call put_byte o OP_IF) (call put_byte o VT_I32)
     (call emit_i32_const o -1)
-    (call put_byte o 5)
+    (call put_byte o OP_ELSE)
     (if (gte out_cell 0)
         (block
           (call emit_rt cg o out_cell)
-          (call emit_memop o 40 2))
+          (call emit_memop o OP_I32_LOAD 2))
         (call emit_i32_const o 0))
-    (call put_byte o 11))
+    (call put_byte o OP_END))
 
 
 
@@ -1654,32 +1728,32 @@
     (let done:bool false)
 
     (if (eq op_id Kw.mem_load8)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 45 0) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o OP_I32_LOAD8_U 0) (set! done true))
         (block))
     (if (eq op_id Kw.mem_load32)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 40 2) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o OP_I32_LOAD 2) (set! done true))
         (block))
     (if (eq op_id Kw.mem_load64)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 41 3) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o OP_I64_LOAD 3) (set! done true))
         (block))
     (if (eq op_id Kw.mem_store8)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o 58 0) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o OP_I32_STORE8 0) (set! done true))
         (block))
     (if (eq op_id Kw.mem_store32)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o 54 2) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o OP_I32_STORE 2) (set! done true))
         (block))
     (if (eq op_id Kw.mem_store64)
-        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o 55 3) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.nlocals)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o OP_I64_STORE 3) (set! done true))
         (block))
     (if (eq op_id Kw.not)
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 69) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I32_EQZ) (set! done true))
         (block))
     (if (eq op_id Kw.str_len) ;; str.len -> i32.const 4, i32.sub, i32.load
         (block
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_i32_const o 4)
-          (call put_byte o 107) ;; i32.sub
-          (call emit_memop o 40 2)
+          (call put_byte o OP_I32_SUB)
+          (call emit_memop o OP_I32_LOAD 2)
           (set! done true))
         (block))
     (if (eq op_id Kw.str_ptr) ;; str.ptr -> identity
@@ -1694,35 +1768,35 @@
             ;; iov0 = { ptr, len }
             (call emit_rt cg o 64)
             (call emit_local_get o (get cg Cg.nlocals))
-            (call emit_memop o 54 2)
+            (call emit_memop o OP_I32_STORE 2)
             (call emit_rt cg o 68)
             (call emit_local_get o (get cg Cg.nlocals))
             (call emit_i32_const o 4)
-            (call put_byte o 107) ;; sub
-            (call emit_memop o 40 2) ;; load
-            (call emit_memop o 54 2)
+            (call put_byte o OP_I32_SUB) ;; sub
+            (call emit_memop o OP_I32_LOAD 2) ;; load
+            (call emit_memop o OP_I32_STORE 2)
             ;; iov1 = { "\n", 1 }
             (let nl_addr:i32 (get cg Cg.newline))
             (call emit_rt cg o 72)
             (call emit_i32_const o nl_addr)
-            (call emit_memop o 54 2)
+            (call emit_memop o OP_I32_STORE 2)
             (call emit_rt cg o 76)
             (call emit_i32_const o 1)
-            (call emit_memop o 54 2)
+            (call emit_memop o OP_I32_STORE 2)
             ;; Call fd_write (1, iovs=64, iovs_len=1, nwritten=80)
             (call emit_i32_const o 1)
             (call emit_rt cg o 64)
             (call emit_i32_const o 1)
             (call emit_rt cg o 80)
             (call emit_call o (call get_wasi_index cg Wasi.fd_write))
-            (call put_byte o 26) ;; drop
+            (call put_byte o OP_DROP) ;; drop
             ;; Call fd_write (1, iovs=72, iovs_len=1, nwritten=80)
             (call emit_i32_const o 1)
             (call emit_rt cg o 72)
             (call emit_i32_const o 1)
             (call emit_rt cg o 80)
             (call emit_call o (call get_wasi_index cg Wasi.fd_write))
-            (call put_byte o 26) ;; drop
+            (call put_byte o OP_DROP) ;; drop
             
             (set! arg (call node_next arg)))
           (set! done true))
@@ -1747,22 +1821,22 @@
           (call emit_local_get o io_a)
           ;; oflags
           (call emit_local_get o io_b)
-          (call put_byte o 4) (call put_byte o 127) ;; if(i32)
+          (call put_byte o OP_IF) (call put_byte o VT_I32) ;; if(i32)
           (call emit_i32_const o 9) ;; CREAT|TRUNC (1|8 = 9)
-          (call put_byte o 5) ;; else
+          (call put_byte o OP_ELSE)
           (call emit_i32_const o 0)
-          (call put_byte o 11) ;; end
+          (call put_byte o OP_END)
           ;; fs_rights_base (i64)
           (call emit_local_get o io_b)
-          (call put_byte o 4) (call put_byte o 126) ;; if(i64)
-          (call put_byte o 66) ;; i64.const 66 (2|64 = 66)
+          (call put_byte o OP_IF) (call put_byte o VT_I64) ;; if(i64)
+          (call put_byte o OP_I64_CONST) ;; i64.const 66 (2|64 = 66)
           (call put_s32 o 66)
-          (call put_byte o 5) ;; else
-          (call put_byte o 66) ;; i64.const 2
+          (call put_byte o OP_ELSE)
+          (call put_byte o OP_I64_CONST) ;; i64.const 2
           (call put_s32 o 2)
-          (call put_byte o 11) ;; end
+          (call put_byte o OP_END)
           ;; fs_rights_inheriting (i64) = 0
-          (call put_byte o 66) ;; i64.const 0
+          (call put_byte o OP_I64_CONST) ;; i64.const 0
           (call put_s32 o 0)
           ;; fdflags = 0
           (call emit_i32_const o 0)
@@ -1783,11 +1857,11 @@
           ;; iov0: RT_IOV0_BUF = 64
           (call emit_rt cg o 64)
           (call emit_local_get o io_a)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           ;; iov0: RT_IOV0_LEN = 68
           (call emit_rt cg o 68)
           (call emit_local_get o io_b)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           ;; call fd_read(fd, iovs=64, iovs_len=1, nread=80)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_rt cg o 64)
@@ -1808,11 +1882,11 @@
           ;; iov0: RT_IOV0_BUF = 64
           (call emit_rt cg o 64)
           (call emit_local_get o io_a)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           ;; iov0: RT_IOV0_LEN = 68
           (call emit_rt cg o 68)
           (call emit_local_get o io_b)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           ;; call fd_write(fd, iovs=64, iovs_len=1, nwritten=80)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_rt cg o 64)
@@ -1862,33 +1936,33 @@
     (if (eq op_id Kw.mem_grow) ;; mem.grow (pages) -> memory.grow 0
         (block
           (call compile_expr cg (call nth_child node 1) o)
-          (call put_byte o 64) ;; memory.grow
+          (call put_byte o OP_MEMORY_GROW)
           (call put_byte o 0)
           (set! done true))
         (block))
     (if (eq op_id Kw.i64_extend_s) ;; i64.extend_s
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 172) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I64_EXTEND_I32_S) (set! done true))
         (block))
     (if (eq op_id Kw.i64_extend_u) ;; i64.extend_u
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 173) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I64_EXTEND_I32_U) (set! done true))
         (block))
     (if (eq op_id Kw.i32_wrap) ;; i32.wrap
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 167) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I32_WRAP_I64) (set! done true))
         (block))
     (if (eq op_id Kw.f64_convert_i64_s) ;; f64.convert_i64_s
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 185) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_F64_CONVERT_I64_S) (set! done true))
         (block))
     (if (eq op_id Kw.f64_sqrt) ;; f64.sqrt
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 159) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_F64_SQRT) (set! done true))
         (block))
     (if (eq op_id Kw.i64_trunc_f64_s) ;; i64.trunc_f64_s
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 176) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I64_TRUNC_F64_S) (set! done true))
         (block))
     (if (eq op_id Kw.f64_reinterpret_i64) ;; f64.reinterpret_i64
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 191) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_F64_REINTERPRET_I64) (set! done true))
         (block))
     (if (eq op_id Kw.i64_reinterpret_f64) ;; i64.reinterpret_f64
-        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o 189) (set! done true))
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_byte o OP_I64_REINTERPRET_F64) (set! done true))
         (block))
     (if (or (eq op_id Kw.ptr_null) (eq op_id Kw.arr_null)) ;; ptr.null / arr.null -> i32.const 0
         (block (call emit_i32_const o 0) (set! done true))
@@ -1903,8 +1977,8 @@
         (block
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_i32_const o 4)
-          (call put_byte o 107)
-          (call emit_memop o 40 2) (set! done true))
+          (call put_byte o OP_I32_SUB)
+          (call emit_memop o OP_I32_LOAD 2) (set! done true))
         (block))
     (if (eq op_id Kw.ref) ;; ref f -> i32.const (f's position, its table slot)
         (block
@@ -1920,7 +1994,7 @@
             (call compile_expr cg arg o)
             (set! arg (call node_next arg)))
           (call compile_expr cg (call nth_child node 2) o)
-          (call put_byte o 17)
+          (call put_byte o OP_CALL_INDIRECT)
           (let tidx:i32 (+ (get cg Cg.nimports) (+ (get cg Cg.nfns) (call sig_index cg (call nth_child node 1)))))
           (call put_u32 o tidx)
           (call put_byte o 0)
@@ -1931,16 +2005,16 @@
           (if (neq (call nth_child node 1) (ptr.null compiler.Node))
               (call compile_expr cg (call nth_child node 1) o)
               (block))
-          (call put_byte o 15) (set! done true))
+          (call put_byte o OP_RETURN) (set! done true))
         (block))
     (if (eq op_id Kw.break) ;; break -> br to the innermost loop exit block
         (block
-          (call put_byte o 12)
+          (call put_byte o OP_BR)
           (call put_u32 o (call label_depth cg Label.loop_exit Label.loop_exit)) (set! done true))
         (block))
     (if (eq op_id Kw.continue) ;; continue -> br to the innermost loop header or loop-body block
         (block
-          (call put_byte o 12)
+          (call put_byte o OP_BR)
           (call put_u32 o (call label_depth cg Label.loop_header Label.loop_body)) (set! done true))
         (block))
     (if (eq op_id Kw.ok) ;; ok
@@ -1955,11 +2029,11 @@
           (call emit_grow_to_cursor o)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 0)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_local_get o (get cg Cg.nlocals))
           (call compile_expr cg (call result_payload node) o)
-          (call emit_memop_offset o 54 2 4)
+          (call emit_memop_offset o OP_I32_STORE 2 4)
           (set! done true))
         (block))
     (if (eq op_id Kw.err) ;; err
@@ -1974,11 +2048,11 @@
           (call emit_grow_to_cursor o)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 1)
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_local_get o (get cg Cg.nlocals))
           (call compile_expr cg (call result_payload node) o)
-          (call emit_memop_offset o 54 2 4)
+          (call emit_memop_offset o OP_I32_STORE 2 4)
           (set! done true))
         (block))
     (if (eq op_id Kw.new) ;; new Struct
@@ -2038,18 +2112,18 @@
           ;; if n < 0: unreachable
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 0)
-          (call put_byte o 72)
-          (call put_byte o 4)
-          (call put_byte o 64)
-          (call put_byte o 0)
-          (call put_byte o 11)
+          (call put_byte o OP_I32_LT_S)
+          (call put_byte o OP_IF)
+          (call put_byte o BLOCK_EMPTY)
+          (call put_byte o OP_UNREACHABLE)
+          (call put_byte o OP_END)
           ;; claim 4 + n * sizeof(type) bytes atomically; the block starts at old
           (call emit_i32_const o 0)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o (call type_size etype))
-          (call put_byte o 108)
+          (call put_byte o OP_I32_MUL)
           (call emit_i32_const o 4)
-          (call put_byte o 106)
+          (call put_byte o OP_I32_ADD)
           (call emit_round8 o)
           (call emit_rmw_add o)
           (call emit_local_set o io_a)
@@ -2057,10 +2131,10 @@
           ;; header mem[old] = n; the array is old + 4
           (call emit_local_get o io_a)
           (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_memop o 54 2)
+          (call emit_memop o OP_I32_STORE 2)
           (call emit_local_get o io_a)
           (call emit_i32_const o 4)
-          (call put_byte o 106)
+          (call put_byte o OP_I32_ADD)
           (set! done true))
         (block))
     (if (eq op_id Kw.arr_get) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
@@ -2071,8 +2145,8 @@
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
           (call emit_i32_const o (call type_size etype))
-          (call put_byte o 108)
-          (call put_byte o 106)
+          (call put_byte o OP_I32_MUL)
+          (call put_byte o OP_I32_ADD)
           (call emit_memop o (call load_opcode etype) (call mem_align etype))
           (if (eq etype Ty.bool)
               (call emit_normalize_bool o)
@@ -2088,8 +2162,8 @@
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
           (call emit_i32_const o (call type_size etype))
-          (call put_byte o 108)
-          (call put_byte o 106)
+          (call put_byte o OP_I32_MUL)
+          (call put_byte o OP_I32_ADD)
           (call emit_store_guard cg o (get cg Cg.nlocals))
           (call compile_expr cg val_node o)
           (call emit_memop o (call store_opcode etype) (call mem_align etype))
@@ -2101,7 +2175,7 @@
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_store_guard cg o (get cg Cg.nlocals))
           (call compile_expr cg (call nth_child node 2) o)
-          (call emit_atomic o 30)
+          (call emit_atomic o ATOMIC_RMW_ADD)
           (set! done true))
         (block))
     (if (eq op_id Kw.atomic_cas) ;; atomic.cas ptr expected new -> bool
@@ -2114,9 +2188,9 @@
           (call emit_local_set o io_a)
           (call emit_local_get o io_a)
           (call emit_local_get o io_b)
-          (call emit_atomic o 72)
+          (call emit_atomic o ATOMIC_RMW_CMPXCHG)
           (call emit_local_get o io_a)
-          (call put_byte o 70)
+          (call put_byte o OP_I32_EQ)
           (set! done true))
         (block))
     (if (eq op_id Kw.atomic_lock) ;; atomic.lock ptr: cmpxchg 0 -> 1, sleep while held, trap on a non-lock word
@@ -2124,50 +2198,49 @@
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_store_guard cg o (get cg Cg.nlocals))
           (call emit_local_set o io_a)
-          (call put_byte o 2)
-          (call put_byte o 64)
-          (call put_byte o 3)
-          (call put_byte o 64)
+          (call put_byte o OP_BLOCK)
+          (call put_byte o BLOCK_EMPTY)
+          (call put_byte o OP_LOOP)
+          (call put_byte o BLOCK_EMPTY)
           (call emit_local_get o io_a)
           (call emit_i32_const o 0)
           (call emit_i32_const o 1)
-          (call emit_atomic o 72)
-          (call put_byte o 34)
+          (call emit_atomic o ATOMIC_RMW_CMPXCHG)
+          (call put_byte o OP_LOCAL_TEE)
           (call put_u32 o io_b)
-          (call put_byte o 69)
-          (call put_byte o 13)
+          (call put_byte o OP_I32_EQZ)
+          (call put_byte o OP_BR_IF)
           (call put_byte o 1)
           (call emit_local_get o io_b)
           (call emit_i32_const o 1)
-          (call put_byte o 71)
+          (call put_byte o OP_I32_NE)
           (call emit_trap_if o)
           (call emit_local_get o io_a)
           (call emit_i32_const o 1)
-          (call put_byte o 66)
-          (call put_byte o 127)
-          (call emit_atomic o 1)
-          (call put_byte o 26)
-          (call put_byte o 12)
+          (call put_byte o OP_I64_CONST) (call put_s64 o -1i64)
+          (call emit_atomic o ATOMIC_WAIT32)
+          (call put_byte o OP_DROP)
+          (call put_byte o OP_BR)
           (call put_byte o 0)
-          (call put_byte o 11)
-          (call put_byte o 11)
+          (call put_byte o OP_END)
+          (call put_byte o OP_END)
           (set! done true))
         (block))
     (if (eq op_id Kw.atomic_unlock) ;; atomic.unlock ptr: xchg 1 -> 0 (trap otherwise), wake all waiters
         (block
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_store_guard cg o (get cg Cg.nlocals))
-          (call put_byte o 34)
+          (call put_byte o OP_LOCAL_TEE)
           (call put_u32 o io_a)
           (call emit_i32_const o 0)
-          (call emit_atomic o 65)
+          (call emit_atomic o ATOMIC_RMW_XCHG)
           (call emit_i32_const o 1)
-          (call put_byte o 71)
+          (call put_byte o OP_I32_NE)
           (call emit_trap_if o)
           (call emit_local_get o io_a)
           (call emit_i32_const o -1)
-          (call emit_atomic o 0)
-          (call put_byte o 26)
+          (call emit_atomic o ATOMIC_NOTIFY)
+          (call put_byte o OP_DROP)
           (set! done true))
         (block))
     (if (eq op_id Kw.thread_spawn) ;; thread.spawn worker arg -> handle: a 16-byte record [done result fn arg] passed to thread-spawn
@@ -2183,20 +2256,20 @@
           (call emit_grow_to_cursor o)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 0)
-          (call emit_memop_offset o 54 2 0)
+          (call emit_memop_offset o OP_I32_STORE 2 0)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 0)
-          (call emit_memop_offset o 54 2 4)
+          (call emit_memop_offset o OP_I32_STORE 2 4)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_local_get o io_a)
-          (call emit_memop_offset o 54 2 8)
+          (call emit_memop_offset o OP_I32_STORE 2 8)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_local_get o io_b)
-          (call emit_memop_offset o 54 2 12)
+          (call emit_memop_offset o OP_I32_STORE 2 12)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_call o (call get_wasi_index cg Wasi.thread_spawn))
           (call emit_i32_const o 0)
-          (call put_byte o 72)
+          (call put_byte o OP_I32_LT_S)
           (call emit_trap_if o)
           (call emit_local_get o (get cg Cg.nlocals))
           (set! done true))
@@ -2205,39 +2278,38 @@
         (block
           (call compile_expr cg (call nth_child node 1) o)
           (call emit_local_set o (get cg Cg.nlocals))
-          (call put_byte o 2)
-          (call put_byte o 64)
-          (call put_byte o 3)
-          (call put_byte o 64)
+          (call put_byte o OP_BLOCK)
+          (call put_byte o BLOCK_EMPTY)
+          (call put_byte o OP_LOOP)
+          (call put_byte o BLOCK_EMPTY)
           (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_atomic o 16)
-          (call put_byte o 13)
+          (call emit_atomic o ATOMIC_LOAD)
+          (call put_byte o OP_BR_IF)
           (call put_byte o 1)
           (call emit_local_get o (get cg Cg.nlocals))
           (call emit_i32_const o 0)
-          (call put_byte o 66)
-          (call put_byte o 127)
-          (call emit_atomic o 1)
-          (call put_byte o 26)
-          (call put_byte o 12)
+          (call put_byte o OP_I64_CONST) (call put_s64 o -1i64)
+          (call emit_atomic o ATOMIC_WAIT32)
+          (call put_byte o OP_DROP)
+          (call put_byte o OP_BR)
           (call put_byte o 0)
-          (call put_byte o 11)
-          (call put_byte o 11)
+          (call put_byte o OP_END)
+          (call put_byte o OP_END)
           (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_memop_offset o 40 2 4)
+          (call emit_memop_offset o OP_I32_LOAD 2 4)
           (set! done true))
         (block))
 
     (if (or (eq op_id Kw.sys_time) (eq op_id Kw.sys_monotonic)) ;; sys.time / sys.monotonic -> clock_time_get into cell 80, i64.load
         (block
           (call emit_i32_const o (if (eq op_id Kw.sys_time) 0 1))
-          (call put_byte o 66)
+          (call put_byte o OP_I64_CONST)
           (call put_byte o 1)
           (call emit_rt cg o 80)
           (call emit_call o (call get_wasi_index cg Wasi.clock_time_get))
           (call emit_trap_if o)
           (call emit_rt cg o 80)
-          (call emit_memop o 41 3)
+          (call emit_memop o OP_I64_LOAD 3)
           (set! done true))
         (block))
     (if (eq op_id Kw.sys_random) ;; sys.random ptr len -> random_get, errno -> 0 / -1
@@ -2254,20 +2326,20 @@
     (if (or (eq op_id Kw.and) (eq op_id Kw.or))
         (block
           (call compile_expr cg (call nth_child node 1) o)
-          (call put_byte o 4)
-          (call put_byte o 127)
+          (call put_byte o OP_IF)
+          (call put_byte o VT_I32)
           (call label_push cg Label.if_else)
           (if (eq op_id Kw.and)
               (block
                 (call compile_expr cg (call nth_child node 2) o)
-                (call put_byte o 5)
+                (call put_byte o OP_ELSE)
                 (call emit_i32_const o 0))
               (block
                 (call emit_i32_const o 1)
-                (call put_byte o 5)
+                (call put_byte o OP_ELSE)
                 (call compile_expr cg (call nth_child node 2) o)))
           (call label_pop cg)
-          (call put_byte o 11) (set! done true))
+          (call put_byte o OP_END) (set! done true))
         (block))
 
     (if (not done)
@@ -2309,7 +2381,7 @@
 
 
 
-  (fn compile_stmt [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_expr cg node o) (if (call is_void_node cg node) (block) (call put_byte o 26)))
+  (fn compile_stmt [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void (call compile_expr cg node o) (if (call is_void_node cg node) (block) (call put_byte o OP_DROP)))
 
 
 
@@ -2337,36 +2409,36 @@
     (let void_then:bool (call is_void_node cg then_node))
     (let block_ty:i32 64)
     (if void_then (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg then_node))))
-    (call put_byte o 4) (call put_byte o block_ty)
+    (call put_byte o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
     (call compile_expr cg then_node o)
-    (call put_byte o 5)
+    (call put_byte o OP_ELSE)
     (call compile_expr cg else_node o)
     (call label_pop cg)
-    (call put_byte o 11))
+    (call put_byte o OP_END))
 
 
 
   ;; block { loop { cond; eqz; br_if 1; body; br 0 } }: break = br to the block,
   ;; continue = br to the loop header (wasm.rs Expr::While).
   (fn compile_while [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
-    (call put_byte o 2)
-    (call put_byte o 64)
-    (call put_byte o 3)
-    (call put_byte o 64)
+    (call put_byte o OP_BLOCK)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_LOOP)
+    (call put_byte o BLOCK_EMPTY)
     (call label_push cg Label.loop_exit)
     (call label_push cg Label.loop_header)
     (call compile_expr cg (call nth_child node 1) o)
-    (call put_byte o 69)
-    (call put_byte o 13)
+    (call put_byte o OP_I32_EQZ)
+    (call put_byte o OP_BR_IF)
     (call put_u32 o 1)
     (call compile_all_stmts cg (call nth_child node 2) o)
     (call label_pop cg)
     (call label_pop cg)
-    (call put_byte o 12)
+    (call put_byte o OP_BR)
     (call put_u32 o 0)
-    (call put_byte o 11)
-    (call put_byte o 11))
+    (call put_byte o OP_END)
+    (call put_byte o OP_END))
 
 
 
@@ -2385,33 +2457,33 @@
     (call emit_local_set o end_idx)
     (call compile_expr cg (call nth_child node 4) o)
     (call emit_local_set o step_idx)
-    (call put_byte o 2)
-    (call put_byte o 64)
-    (call put_byte o 3)
-    (call put_byte o 64)
+    (call put_byte o OP_BLOCK)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_LOOP)
+    (call put_byte o BLOCK_EMPTY)
     (call label_push cg Label.loop_exit)
     (call label_push cg Label.loop_header)
     (call emit_local_get o var_idx)
     (call emit_local_get o end_idx)
-    (call put_byte o 74)
-    (call put_byte o 13)
+    (call put_byte o OP_I32_GT_S)
+    (call put_byte o OP_BR_IF)
     (call put_u32 o 1)
-    (call put_byte o 2)
-    (call put_byte o 64)
+    (call put_byte o OP_BLOCK)
+    (call put_byte o BLOCK_EMPTY)
     (call label_push cg Label.loop_body)
     (call compile_all_stmts cg (call nth_child node 5) o)
     (call label_pop cg)
-    (call put_byte o 11)
+    (call put_byte o OP_END)
     (call label_pop cg)
     (call label_pop cg)
     (call emit_local_get o var_idx)
     (call emit_local_get o step_idx)
-    (call put_byte o 106)
+    (call put_byte o OP_I32_ADD)
     (call emit_local_set o var_idx)
-    (call put_byte o 12)
+    (call put_byte o OP_BR)
     (call put_u32 o 0)
-    (call put_byte o 11)
-    (call put_byte o 11))
+    (call put_byte o OP_END)
+    (call put_byte o OP_END))
 
 
 
@@ -2431,14 +2503,14 @@
     (if (call is_void_node cg (call last_child clause))
         (block)
         (set! bt (call block_type_byte (call body_type cg body_first))))
-    (call put_byte o 4)
+    (call put_byte o OP_IF)
     (call put_byte o bt)
     (call label_push cg Label.if_else)
     (call compile_stmt_seq cg body_first o)
-    (call put_byte o 5)
+    (call put_byte o OP_ELSE)
     (call compile_cond_from cg (call node_next clause) o)
     (call label_pop cg)
-    (call put_byte o 11))
+    (call put_byte o OP_END))
 
 
 
@@ -2454,7 +2526,7 @@
           (block
             (let keep_value:bool (and (eq (call node_next bchild) (ptr.null compiler.Node)) (neq ret_type Ty.void)))
             (call compile_expr cg bchild o)
-            (if (and (not keep_value) (not (call is_void_node cg bchild))) (call put_byte o 26) (block))))
+            (if (and (not keep_value) (not (call is_void_node cg bchild))) (call put_byte o OP_DROP) (block))))
       (set! bchild (call node_next bchild))))
 
 
@@ -2483,7 +2555,7 @@
 
   ;; A function type: 0x60, the parameter value types, the result types.
   (fn emit_func_type [o:(ptr Out) s:(ptr Sig)] -> void
-    (call put_byte o 96)
+    (call put_byte o FUNC_TYPE)
     (call put_u32 o (get s Sig.nparams))
     (loop i 0 (- (get s Sig.nparams) 1) 1 (call put_byte o (arr.get i32 (get s Sig.params) i)))
     (if (get s Sig.has_result)
@@ -2538,11 +2610,11 @@
     (loop l 0 (- extra 1) 1
       (call put_u32 fc 1)
       (call put_byte fc (call type_id_to_valtype (get (call local_at cg (+ pcount l)) Local.ty))))
-    (call put_u32 fc 1) (call put_byte fc 127)
-    (if uses_io (block (call put_u32 fc 2) (call put_byte fc 127)) (block))
+    (call put_u32 fc 1) (call put_byte fc VT_I32)
+    (if uses_io (block (call put_u32 fc 2) (call put_byte fc VT_I32)) (block))
     (put cg Cg.nlocals total_locals)
     (call compile_function_body cg entry fc)
-    (call put_byte fc 11))
+    (call put_byte fc OP_END))
 
   ;; Compiles one import-free module (src_len bytes at src_ptr) to wasm. The
   ;; module goes to a fresh buffer whose address is stored in cell 60; returns
@@ -2764,8 +2836,8 @@
           (let fc:(ptr Out) (call out_at fcode_scratch))
           (call put_byte fc 0)
           (call emit_call fc (+ imports main_idx))
-          (if (neq (get (call func_entry_ptr cg main_idx) FnInfo.ret) Ty.void) (call put_byte fc 26) (block))
-          (call put_byte fc 11)
+          (if (neq (get (call func_entry_ptr cg main_idx) FnInfo.ret) Ty.void) (call put_byte fc OP_DROP) (block))
+          (call put_byte fc OP_END)
           (call emit_sized sec fc))
         (block))
     (call emit_section o 10 sec)
@@ -2805,10 +2877,10 @@
     (call emit_i32_const o 88)
     (call emit_i32_const o 0)
     (call emit_i32_const o 1)
-    (call emit_atomic o 72)
-    (call put_byte o 69)
-    (call put_byte o 4)
-    (call put_byte o 64)
+    (call emit_atomic o ATOMIC_RMW_CMPXCHG)
+    (call put_byte o OP_I32_EQZ)
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
     (call emit_i32_const o 0)
     (call emit_i32_const o 0)
     (call emit_i32_const o 4)
@@ -2820,15 +2892,15 @@
           (call emit_i32_const o blob_len)
           (call emit_memory_init o 1))
         (block))
-    (call put_byte o 11)
-    (call put_byte o 11))
+    (call put_byte o OP_END)
+    (call put_byte o OP_END))
 
 
 
   ;; memory.init data_index, memory 0
   (fn emit_memory_init [o:(ptr Out) data_index:i32] -> void
-    (call put_byte o 252)
-    (call put_byte o 8)
+    (call put_byte o OP_PREFIX_MISC)
+    (call put_byte o MISC_MEMORY_INIT)
     (call put_u32 o data_index)
     (call put_byte o 0))
 
@@ -2843,26 +2915,26 @@
     (call emit_i32_const o 0)
     (call emit_i32_const o 24)
     (call emit_rmw_add o)
-    (call put_byte o 36) ;; global.set 0
+    (call put_byte o OP_GLOBAL_SET) ;; global.set 0
     (call put_byte o 0)
     (call emit_grow_to_cursor o)
     (call emit_local_get o 1)
     (call emit_local_get o 1)
-    (call emit_memop_offset o 40 2 12)
+    (call emit_memop_offset o OP_I32_LOAD 2 12)
     (call emit_local_get o 1)
-    (call emit_memop_offset o 40 2 8)
-    (call put_byte o 17) ;; call_indirect
+    (call emit_memop_offset o OP_I32_LOAD 2 8)
+    (call put_byte o OP_CALL_INDIRECT)
     (call put_u32 o worker_type)
     (call put_byte o 0)
-    (call emit_memop_offset o 54 2 4)
+    (call emit_memop_offset o OP_I32_STORE 2 4)
     (call emit_local_get o 1)
     (call emit_i32_const o 1)
-    (call emit_atomic o 23) ;; i32.atomic.store
+    (call emit_atomic o ATOMIC_STORE) ;; i32.atomic.store
     (call emit_local_get o 1)
     (call emit_i32_const o -1)
-    (call emit_atomic o 0) ;; memory.atomic.notify
-    (call put_byte o 26)
-    (call put_byte o 11))
+    (call emit_atomic o ATOMIC_NOTIFY) ;; memory.atomic.notify
+    (call put_byte o OP_DROP)
+    (call put_byte o OP_END))
 
 
 
