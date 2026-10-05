@@ -671,18 +671,13 @@ There is one layout and one allocator, shared by the VM, compiled wasm, and AIPL
 | Address | Width | Owner | Meaning |
 |---|---|---|---|
 | 0 | i32 | allocator | heap cursor: the next address `mem.alloc` will return. Initialised to `1024` by `VM::new` and by the wasm data segment. |
-| 4 | i32 | codegen | compile-error flag (`0` = none). `set_compile_error` writes `1`; `has_compile_error` reads it. |
-| 8 | i32 | codegen | pointer to the struct table: a 16-byte header (its words at +4, +8, +12 point to the `call_ref` signature table, the label stack, and the WASI import indices), then 255 entries of 1040 bytes (up to 64 fields each) |
-| 12 | i32 | codegen | pointer to the string-interning state block (blob length, count, newline address, blob pointer, entries) |
-| 16 | i32 | codegen | pointer to the keyword table (1024 bytes, `mem.alloc`'d once by `codegen_init`) |
-| 20 | i32 | codegen | pointer to the function signature table (2048 entries × 88 bytes) |
-| 24 | i32 | codegen | pointer to the default locals table (1024 entries × 48 bytes) |
-| 28 | i32 | codegen | running locals count for the function being compiled |
-| 32 | i32 | codegen | WASI import count of the module being compiled |
-| 36, 40 | | unused | |
-| 44, 48 | i32, i32 | codegen | source offset and length of the callee name, after compile error 1452 |
+| 4 | i32 | codegen | the first compile error's code (`0` = none; section 6.4), read by the host |
+| 8..12 | | unused | |
+| 16 | i32 | codegen | pointer to the keyword map, built once by `codegen_init` and reused by later compiles |
+| 20..40 | | unused | (the rest of a compile's state is in the `Cg` struct `compile_module` creates) |
+| 44, 48 | i32, i32 | codegen | source offset and length of the callee name, after compile error 1452, read by the host |
 | 52, 56 | | unused | |
-| 60 | i32 | codegen | pointer to the module `compile_module` emitted |
+| 60 | i32 | codegen | pointer to the module `compile_module` emitted, read by the host |
 | 64, 68 | i32, i32 | WASI runtime | iovec 0: buffer pointer, length (used by `sys.print`, `fs.read`, `fs.write`) |
 | 72, 76 | i32, i32 | WASI runtime | iovec 1: the interned `"\n"` and length 1 (`sys.print`) |
 | 80 | i32 | WASI runtime | `nwritten` / `nread` out-parameter |
@@ -702,7 +697,7 @@ Rules that follow from this:
 - **The VM additionally enforces lock validity.** A lock word is only ever `0` (free) or `1` (held). `atomic.lock` on a word holding anything else fails immediately with `atomic.lock: word at ptr N holds V, which is not a lock state ...` instead of spinning forever, and `atomic.unlock` on a word that is not `1` fails with `... a held lock holds 1 ...`. This is what turns "I locked the heap cursor by accident" from a silent hang into an error, whichever way the address was produced.
 - **Fresh instances agree.** A fresh VM and a fresh wasm instance both return the heap start from the first `mem.alloc` (1024 for a module without string literals), then that plus `size` rounded up to a multiple of 8, and so on: the VM lays out the first loaded module's literals exactly as the wasm backend does (`wasm::string_layout`). This is why memory-heavy programs can be compared across backends (section 10.4).
 - **Threads share the block.** OS threads spawned by `thread.spawn` share the same linear memory and allocator; allocation is atomic, so workers may allocate. In a threaded module, spawned threads use their own copy of cells 64-87 (section 6.2).
-- **Codegen state is per instance.** `codegen_init` is idempotent: it allocates its tables only when cell 16 is zero and always clears cells 4 and 28.
+- **Codegen state is per compile.** `compile_module` keeps its tables in a fresh `Cg`; `codegen_init` builds the keyword map only when cell 16 is zero and always clears cell 4.
 
 
 ### 7.10 Control flow: `return`, `break`, `continue`, `cond`

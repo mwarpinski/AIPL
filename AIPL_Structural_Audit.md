@@ -65,7 +65,7 @@ Defects that are fixable without redesign. Ordered by risk.
 
 *Fix:* add `(when c body...)`, an exclusive-range `(for i 0 n body...)` and variadic `and`/`or`. These keep one spelling per meaning; the spelling becomes the one generators already use. Keep `loop` for compatibility or retire it.
 
-**D4. No named constants or enums, so meaning lives in bare numbers.** *[Language half fixed 2026-10-04: `const` and `enum` (AIPL_SPEC.md 4.I). The code below still uses bare numbers until the `codegen.aipl` rewrite (S2) and a pass over the native backend.]*
+**D4. No named constants or enums, so meaning lives in bare numbers.** *[Fixed 2026-10-04/05: `const` and `enum` (AIPL_SPEC.md 4.I), and codegen.aipl rewritten to use them (S2). The native backend's zero-argument constant functions remain.]*
 - `codegen.aipl` dispatches on node kinds 6–11 and keyword ids 100+.
 - It reports errors as 90–99, 768, 971, 973, 987, 999 and 1452.
 - `x64.aipl`, `lower.aipl` and `wasi.aipl` define 37 zero-argument functions (`(fn cc_e [] -> i32 4)`) as stand-in constants, each costing a call.
@@ -132,7 +132,7 @@ Parity tests hold the pairs equal, which is excellent for correctness and expens
 
 The migration off Rust is blocked on one item: **there is no type checker in AIPL** (old N3). Until it exists, the Rust parser, resolver and checker must stay, and every language change costs double. *This is the critical path.*
 
-**S2. The self-hosted compiler does not use the language it compiles.**
+**S2. The self-hosted compiler does not use the language it compiles.** *[Fixed 2026-10-05 (docs/CODEGEN_REWRITE.md, CR1-CR9): enums for keywords, node kinds, types, compile errors, WASI functions, and labels; typed nodes and tables; one `Cg` context; output through a cursor; opcodes as named constants. codegen.aipl went from 422 raw memory operations and no struct accesses to 38 and 281, compiler.aipl from 150 to 17; the compiler is a fifth smaller and about 1.4x faster, with identical output. The finding as written:]*
 - `codegen.aipl` (3077 lines, the largest AIPL program) has **422 raw `mem.load`/`mem.store` operations and zero `get`/`put`**. `compiler.aipl`, its parser, has 150 raw operations.
 - AST nodes are raw memory read through helper functions.
 - Node kinds and keywords are bare numbers (D4).
