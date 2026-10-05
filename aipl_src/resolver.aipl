@@ -82,14 +82,14 @@
     (let n:i32 (get text str.Bytes.len))
     (let tok:i32 (mem.alloc (* 12 (+ n 1))))
     (let count:i32 (call compiler.tokenize (get text str.Bytes.addr) n tok))
-    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let src:(ptr Src) (new Src))
     (put src Src.text text)
     (put src Src.root (call compiler.parse_ast tok count ast))
     src)
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
-    (ptr.cast compiler.Node (get g compiler.Node.a)))
+    (get g compiler.Node.first))
 
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
@@ -220,10 +220,12 @@
         (block))
     (let i:i32 0)
     (let prev_colon:bool true)
+    (let is_match:bool (and (not square) (call eq_lit (call head (get m Mod.src) g) "match")))
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
+        ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
         ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call buf.push_bytes out tmpl))
         ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
         ((and (eq i 0) (and (not square) (call is_symbol c))) (call buf.push_bytes out (call text (get m Mod.src) c)))
@@ -233,6 +235,25 @@
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
     (call buf.push_byte out (if square 93 41)))
+
+  ;; A match arm: its head names a member of the matched type, so it is
+  ;; renamed like any name ((Shape.circle [r] ...) in module m is
+  ;; m.Shape.circle), except else.
+  (fn emit_arm [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (call buf.push_byte out 40)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
+    (let prev_colon:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
+      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (if (and (eq i 0) (and (call is_symbol c) (call eq_lit (call text (get m Mod.src) c) "else")))
+          (call buf.push_str out "else")
+          (call emit m c 0 out))
+      (set! prev_colon colon)
+      (set! i (+ i 1))
+      (set! c (get c compiler.Node.next)))
+    (call buf.push_byte out 41))
 
   ;; ===== Modules =====
 
@@ -270,7 +291,7 @@
          (call (strmap.set i32) (get m Mod.fns) (call text src name) 1))
         ((and (call eq_lit h "struct") (call is_symbol name))
          (call (strmap.set i32) (get m Mod.structs) (call text src name) 1))
-        ((and (or (call eq_lit h "const") (call eq_lit h "enum")) (call is_symbol name))
+        ((and (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))) (call is_symbol name))
          (call (strmap.set i32) (get m Mod.decls) (call text src name) 1))
         ((call eq_lit h "import")
          ;; (import name as alias)
@@ -289,7 +310,7 @@
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
       (cond
-        ((or (call eq_lit h "struct") (or (call eq_lit h "const") (call eq_lit h "enum")))
+        ((or (call eq_lit h "struct") (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))))
          (call buf.push_str (get st State.structs_out) "  ")
          (call emit m item 0 (get st State.structs_out))
          (call buf.push_byte (get st State.structs_out) 10))

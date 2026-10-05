@@ -1128,3 +1128,39 @@ fn self_hosted_bytes_match_checked_arithmetic() {
   (fn h [] -> i32 (let n:i32 1) (loop i 0 3 1 (set! n (checked.mul n 2))) n))",
     );
 }
+
+/// Unions, make, and match: variant layouts (i64/f64 fields aligned to 8,
+/// bool fields normalized when read), a recursive union, enum arms (their
+/// heads numbers after consts.aipl), an else-only match, void arms, and
+/// make/match nested in each other's operands, so the scratch local is
+/// reused while a cell is being filled.
+#[test]
+fn self_hosted_bytes_match_sum_types() {
+    assert_self_hosted_matches_rust(
+        "sum_types",
+        "(module sum
+  (union Shape [(circle r:f64) (rect w:i32 h:i32) (big n:i64 flag:bool) (empty)])
+  (union List [(nil) (cons head:i32 tail:List)])
+  (enum Color [red green (blue 10)])
+  (struct Holder [s:Shape c:Color])
+  (fn area [s:Shape] -> i64
+    (match s
+      (Shape.circle [r] (i64.trunc_f64_s (* r r)))
+      (Shape.rect [w h] (i64.extend_s (* w h)))
+      (Shape.big [n flag] (if flag n 0i64))
+      (Shape.empty -1i64)))
+  (fn sum [l:List] -> i32
+    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum rest)))))
+  (fn code [c:Color] -> i32 (match c (Color.red 1) (Color.blue 3) (else 2)))
+  (fn always [c:Color] -> i32 (match c (else 7)))
+  (fn effect [s:Shape] -> void
+    (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
+  (fn main [] -> i32
+    (let h:(ptr Holder) (new Holder))
+    (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
+    (put h Holder.c Color.blue)
+    (call effect (get h Holder.s))
+    (let l:List (make List.cons 1 (make List.cons 2 (make List.nil))))
+    (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",
+    );
+}

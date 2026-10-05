@@ -21,14 +21,14 @@
   (fn node_kind [node:(ptr compiler.Node)] -> compiler.Kind
     (if (eq node (ptr.null compiler.Node)) compiler.Kind.none (get node compiler.Node.kind)))
   ;; An atom's value: an integer literal's value, or the source offset of a
-  ;; symbol, string, or i64/float literal (compiler.aipl). A group's is its
-  ;; first child's address: use first_child.
+  ;; symbol, string, or i64/float literal (compiler.aipl). A group's
+  ;; children start at first_child.
   (fn node_a [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.a)))
   (fn node_b [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.b)))
   (fn node_next [node:(ptr compiler.Node)] -> (ptr compiler.Node)
     (if (eq node (ptr.null compiler.Node)) node (get node compiler.Node.next)))
   (fn first_child [group:(ptr compiler.Node)] -> (ptr compiler.Node)
-    (if (eq group (ptr.null compiler.Node)) group (ptr.cast compiler.Node (get group compiler.Node.a))))
+    (if (eq group (ptr.null compiler.Node)) group (get group compiler.Node.first)))
 
   (fn nth_child [group:(ptr compiler.Node) n:i32] -> (ptr compiler.Node)
     (req (gte n 0))
@@ -45,6 +45,7 @@
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
               structs:(arr (ptr StructInfo)) nstructs:i32
+              unions:(arr (ptr UnionInfo)) nunions:i32
               wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32
               uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32
               strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32])
@@ -71,6 +72,12 @@
   (struct StructInfo [name_pos:i32 name_len:i32 size:i32 fields:(arr (ptr Field)) nfields:i32])
   (struct Field [name_pos:i32 name_len:i32 offset:i32 ty:Ty])
 
+  ;; A union of the module (checker.rs variant_layout): each variant's cell
+  ;; holds its index (the tag) at offset 0 and its fields from offset 4,
+  ;; laid out like a struct's.
+  (struct UnionInfo [name_pos:i32 name_len:i32 variants:(arr (ptr VariantInfo)) nvariants:i32])
+  (struct VariantInfo [name_pos:i32 name_len:i32 size:i32 fields:(arr (ptr Field)) nfields:i32])
+
   ;; A local of the function being compiled (parameters first): its name (a
   ;; span of the source) and type. A loop's hidden end and step locals carry
   ;; the loop variable's name and the type loop_end / loop_step.
@@ -90,6 +97,8 @@
     (put cg Cg.nfns 0)
     (put cg Cg.structs (arr.new (ptr StructInfo) 255))
     (put cg Cg.nstructs 0)
+    (put cg Cg.unions (arr.new (ptr UnionInfo) 255))
+    (put cg Cg.nunions 0)
     (put cg Cg.wasi (arr.new i32 13))
     (loop w 0 12 1 (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
@@ -151,7 +160,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
@@ -274,6 +283,9 @@
     (call reg m "module" Kw.module)
     (call reg m "fn" Kw.fn)
     (call reg m "match_result" Kw.match_result)
+    (call reg m "union" Kw.union)
+    (call reg m "match" Kw.match)
+    (call reg m "make" Kw.make)
     (call reg m "struct" Kw.struct)
     (call reg m "cond" Kw.cond)
     (call reg m "else" Kw.else)
@@ -336,7 +348,7 @@
   ;; results, pointers, arrays, and function refs are i32 in wasm; loop_end
   ;; and loop_step are the hidden locals holding a loop's bound and step.
   ;; The values are the ids codegen has always stored in its tables.
-  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step ck_a ck_b ck_r])
+  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step ck_a ck_b ck_r union])
 
   ;; The type a type keyword names, or Ty.none.
   (fn ty_of_kw [k:Kw] -> Ty
@@ -353,12 +365,17 @@
       ((eq k Kw.ty_arr) Ty.arr)
       (else Ty.none)))
 
-  ;; The type a type node names: a scalar symbol, or a (result T E), (ptr S),
-  ;; (arr T), or (fn [..] -> r) group. Anything else is compile error 98.
+  ;; The type a type node names: a scalar or union name, or a (result T E),
+  ;; (ptr S), (arr T), or (fn [..] -> r) group. Anything else is compile
+  ;; error 98.
   (fn type_node_id [cg:(ptr Cg) node:(ptr compiler.Node)] -> Ty
     (let t:Ty Ty.none)
     (if (eq (call node_kind node) compiler.Kind.symbol)
-        (set! t (call ty_of_kw (call classify_keyword cg (call node_a node) (call node_b node))))
+        (block
+          (set! t (call ty_of_kw (call classify_keyword cg (call node_a node) (call node_b node))))
+          (if (and (eq t Ty.none) (neq (call find_union cg (call node_a node) (call node_b node)) (ptr.null UnionInfo)))
+              (set! t Ty.union)
+              (block)))
         (if (eq (call node_kind node) compiler.Kind.paren)
             (block
               (let head:Kw (call group_head_keyword cg node))
@@ -499,7 +516,6 @@
     (if (neq (call node_kind node) compiler.Kind.paren)
         0
         (block
-          (let head:i32 (call node_a node))
           (let kw:Kw (call group_head_keyword cg node))
           (cond
             ((eq kw Kw.let) (let name_node:(ptr compiler.Node) (call nth_child node 1))
@@ -516,6 +532,23 @@
                         (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
                         (call add_local_if_new cg (call node_a ok_var) (call node_b ok_var) Ty.i32)
                         (call add_local_if_new cg (call node_a err_var) (call node_b err_var) Ty.i32))
+            ;; every union arm's binders, typed as the variant's fields (wasm.rs collect_lets)
+            ((eq kw Kw.match)
+             (let arm:(ptr compiler.Node) (call nth_child node 2))
+             (while (neq arm (ptr.null compiler.Node))
+               (let binders:(ptr compiler.Node) (call node_next (call first_child arm)))
+               (let v:(ptr VariantInfo) (call arm_variant cg arm))
+               (if (and (eq (call node_kind binders) compiler.Kind.bracket) (neq v (ptr.null VariantInfo)))
+                   (block
+                     (let b:(ptr compiler.Node) (call first_child binders))
+                     (let k:i32 0)
+                     (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
+                       (call add_local_if_new cg (call node_a b) (call node_b b) (get (arr.get (ptr Field) (get v VariantInfo.fields) k) Field.ty))
+                       (set! k (+ k 1))
+                       (set! b (call node_next b))))
+                   (block))
+               (set! arm (call node_next arm)))
+             0)
             ;; checked arithmetic: three hidden i64 locals (wasm.rs CHECKED_LOCALS)
             ((call is_checked kw)
              (call add_hidden_if_new cg 0 0 Ty.ck_a)
@@ -526,8 +559,8 @@
           (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk cg child)) (set! child (call node_next child)))
           0)))
 
-  ;; Any body item may be an atom (a bare number, name, or string): its
-  ;; Node.a is a value, not a child address, so check the kind first.
+  ;; Any body item may be an atom (a bare number, name, or string), which
+  ;; has no head: check the kind first.
   (fn is_contract_head [cg:(ptr Cg) group:(ptr compiler.Node)] -> bool
     (if (neq (call node_kind group) compiler.Kind.paren) (return false) (block))
     (let head:(ptr compiler.Node) (call first_child group))
@@ -1028,7 +1061,7 @@
     cur)
 
   ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds itself
-  ;; so any caller is safe: an atom's a field is a value, not a node address.
+  ;; so any caller is safe: an atom has no children.
   (fn group_head_keyword [cg:(ptr Cg) group:(ptr compiler.Node)] -> Kw
     (if (neq (call node_kind group) compiler.Kind.paren) (return Kw.none) (block))
     (let head:(ptr compiler.Node) (call first_child group))
@@ -1055,6 +1088,11 @@
           (if (eq kw Kw.while) (set! res true) (block))
           (if (eq kw Kw.struct) (set! res true) (block))
           (if (eq kw Kw.match_result) (set! res (call is_void_node cg (call last_child (call nth_child node 2)))) (block))
+          (if (eq kw Kw.match)
+              (block
+                (let last:(ptr compiler.Node) (call last_of (call arm_body (call nth_child node 2))))
+                (set! res (or (eq last (ptr.null compiler.Node)) (call is_void_node cg last))))
+              (block))
           ;; an empty (block) is void, like Expr::Block([]) in wasm.rs
           (if (eq kw Kw.block) (set! res (or (eq (call node_next (call first_child node)) (ptr.null compiler.Node)) (call is_void_node cg (call last_child node)))) (block))
           (if (eq kw Kw.if) (set! res (and (call is_void_node cg (call nth_child node 2)) (call is_void_node cg (call nth_child node 3)))) (block))
@@ -1147,6 +1185,133 @@
           (block)))
     (ptr.null Field))
 
+  ;; Records every (union ...) of the module with its variants' layouts.
+  ;; Names first, so a field may have the type of any union. Past 255
+  ;; unions, 255 variants, or 64 fields: compile error 94.
+  (fn collect_unions [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
+    (let ucount:i32 0)
+    (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.union))
+          (block
+            (let name_node:(ptr compiler.Node) (call nth_child child 1))
+            (if (gte ucount 255) (call set_compile_error CgErr.table_full) 0)
+            (let u:(ptr UnionInfo) (new UnionInfo))
+            (put u UnionInfo.name_pos (call node_a name_node))
+            (put u UnionInfo.name_len (call node_b name_node))
+            (put u UnionInfo.variants (arr.new (ptr VariantInfo) 255))
+            (put u UnionInfo.nvariants 0)
+            (arr.set (ptr UnionInfo) (get cg Cg.unions) (if (gte ucount 255) 254 ucount) u)
+            (if (lt ucount 255) (set! ucount (+ ucount 1)) (block)))
+          (block))
+      (set! child (call node_next child)))
+    (put cg Cg.nunions ucount)
+    (let ui:i32 0)
+    (set! child (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.union))
+          (block
+            (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) (if (gte ui 255) 254 ui)))
+            (let vcount:i32 0)
+            (let vnode:(ptr compiler.Node) (call first_child (call nth_child child 2)))
+            (while (neq vnode (ptr.null compiler.Node))
+              (if (gte vcount 255) (call set_compile_error CgErr.table_full) 0)
+              (arr.set (ptr VariantInfo) (get u UnionInfo.variants) (if (gte vcount 255) 254 vcount) (call collect_variant cg vnode))
+              (if (lt vcount 255) (set! vcount (+ vcount 1)) (block))
+              (set! vnode (call node_next vnode)))
+            (put u UnionInfo.nvariants vcount)
+            (set! ui (+ ui 1)))
+          (block))
+      (set! child (call node_next child)))
+    ucount)
+
+  ;; A variant (name field:T ...) and its layout: fields from offset 4, each
+  ;; aligned to its size; the size rounded up to the largest alignment (at
+  ;; least 4, the tag's).
+  (fn collect_variant [cg:(ptr Cg) vnode:(ptr compiler.Node)] -> (ptr VariantInfo)
+    (let name_node:(ptr compiler.Node) (call first_child vnode))
+    (let v:(ptr VariantInfo) (new VariantInfo))
+    (put v VariantInfo.name_pos (call node_a name_node))
+    (put v VariantInfo.name_len (call node_b name_node))
+    (put v VariantInfo.fields (arr.new (ptr Field) 64))
+    (let cur_offset:i32 4)
+    (let max_align:i32 4)
+    (let fcount:i32 0)
+    (let fchild:(ptr compiler.Node) (call node_next name_node))
+    (while (neq fchild (ptr.null compiler.Node))
+      (let type_node:(ptr compiler.Node) (call node_next (call node_next fchild)))
+      (if (gte fcount 64) (call set_compile_error CgErr.table_full) 0)
+      (let ftype:Ty (call type_node_id cg type_node))
+      (if (call is_memory_type ftype) 0 (call set_compile_error CgErr.not_a_memory_type))
+      (let fsize:i32 (call type_size ftype))
+      (if (gt fsize max_align) (set! max_align fsize) (block))
+      (set! cur_offset (bitand (+ cur_offset (- fsize 1)) (- 0 fsize)))
+      (let f:(ptr Field) (new Field))
+      (put f Field.name_pos (call node_a fchild))
+      (put f Field.name_len (call node_b fchild))
+      (put f Field.offset cur_offset)
+      (put f Field.ty ftype)
+      (arr.set (ptr Field) (get v VariantInfo.fields) (if (gte fcount 64) 63 fcount) f)
+      (set! cur_offset (+ cur_offset fsize))
+      (if (lt fcount 64) (set! fcount (+ fcount 1)) (block))
+      (set! fchild (call node_next type_node)))
+    (put v VariantInfo.size (bitand (+ cur_offset (- max_align 1)) (- 0 max_align)))
+    (put v VariantInfo.nfields fcount)
+    v)
+
+  ;; The union with this name, or null.
+  (fn find_union [cg:(ptr Cg) pos:i32 len:i32] -> (ptr UnionInfo)
+    (loop i 0 (- (get cg Cg.nunions) 1) 1
+      (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) i))
+      (if (call sym_eq cg pos len (+ (get cg Cg.src) (get u UnionInfo.name_pos)) (get u UnionInfo.name_len))
+          (return u)
+          (block)))
+    (ptr.null UnionInfo))
+
+  ;; The index of variant U.v, spelled by the symbol node `target`, in its
+  ;; union (-1 if there is none).
+  (fn variant_index [cg:(ptr Cg) target:(ptr compiler.Node)] -> i32
+    (if (neq (call node_kind target) compiler.Kind.symbol) (return -1) (block))
+    (let pos:i32 (call node_a target))
+    (let len:i32 (call node_b target))
+    (let dot:i32 (call find_last_char cg pos len 46))
+    (if (lt dot 0) (return -1) (block))
+    (let u:(ptr UnionInfo) (call find_union cg pos dot))
+    (if (eq u (ptr.null UnionInfo)) (return -1) (block))
+    (loop i 0 (- (get u UnionInfo.nvariants) 1) 1
+      (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get u UnionInfo.variants) i))
+      (if (call sym_eq cg (+ pos (+ dot 1)) (- len (+ dot 1)) (+ (get cg Cg.src) (get v VariantInfo.name_pos)) (get v VariantInfo.name_len))
+          (return i)
+          (block)))
+    -1)
+
+  ;; Variant U.v spelled by `target`, or null.
+  (fn find_variant [cg:(ptr Cg) target:(ptr compiler.Node)] -> (ptr VariantInfo)
+    (let i:i32 (call variant_index cg target))
+    (if (lt i 0) (return (ptr.null VariantInfo)) (block))
+    (let dot:i32 (call find_last_char cg (call node_a target) (call node_b target) 46))
+    (arr.get (ptr VariantInfo) (get (call find_union cg (call node_a target) dot) UnionInfo.variants) i))
+
+  ;; The variant a match arm (U.v [binders] body...) names; null for an enum
+  ;; arm (its head a number after consts.aipl) or the else arm.
+  (fn arm_variant [cg:(ptr Cg) arm:(ptr compiler.Node)] -> (ptr VariantInfo)
+    (if (neq (call node_kind arm) compiler.Kind.paren) (return (ptr.null VariantInfo)) (block))
+    (call find_variant cg (call first_child arm)))
+
+  ;; The first expression of a match arm's body: after its head and, for a
+  ;; union arm, its [binders].
+  (fn arm_body [arm:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (if (eq arm (ptr.null compiler.Node)) (return arm) (block))
+    (let b:(ptr compiler.Node) (call node_next (call first_child arm)))
+    (if (eq (call node_kind b) compiler.Kind.bracket) (call node_next b) b))
+
+  ;; The last of a list of nodes starting at `first` (null if empty).
+  (fn last_of [first:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (if (eq first (ptr.null compiler.Node)) (return first) (block))
+    (let cur:(ptr compiler.Node) first)
+    (while (neq (call node_next cur) (ptr.null compiler.Node)) (set! cur (call node_next cur)))
+    cur)
+
   (fn get_struct_size [cg:(ptr Cg) s_pos:i32 s_len:i32] -> i32
     (let si:(ptr StructInfo) (call find_struct cg s_pos s_len))
     (if (eq si (ptr.null StructInfo)) (block (call set_compile_error CgErr.unknown_struct_or_field) 0) (get si StructInfo.size)))
@@ -1187,6 +1352,7 @@
                (unknown_symbol 971)
                (inexact_float_literal 973)
                (unknown_enum_member 974)
+               (unknown_variant 975)      ;; make or match names no variant of a union
                (unknown_form 987)
                (empty_expression 999)
                (undefined_function 1452)])
@@ -1605,6 +1771,9 @@
     (if (eq kw Kw.match_result)
         (set! res (call body_type cg (call node_next (call node_next (call first_child (call nth_child node 2))))))
         (block))
+    ;; match: its first arm's type (wasm.rs match_type_body); make: a union
+    (if (eq kw Kw.match) (set! res (call body_type cg (call arm_body (call nth_child node 2)))) (block))
+    (if (eq kw Kw.make) (set! res Ty.union) (block))
     (if (eq kw Kw.call)
         (block
           (let fname:(ptr compiler.Node) (call nth_child node 1))
@@ -1680,6 +1849,8 @@
       ((eq kw Kw.call) (call compile_call cg node o))
       ((eq kw Kw.block) (call compile_block cg node o))
       ((eq kw Kw.match_result) (call compile_match_result cg node o))
+      ((eq kw Kw.match) (call compile_match cg node o))
+      ((eq kw Kw.make) (call compile_make cg node o))
       ((eq kw Kw.cond) (call compile_cond_from cg (call nth_child node 1) o))
       ((neq kw Kw.none) (call compile_op cg kw node o))
       (else (call set_compile_error CgErr.unknown_form) (call emit_i32_const o 0))))
@@ -1730,6 +1901,98 @@
     (call put_byte o OP_END))
 
 
+
+  ;; (make U.v args...) (wasm.rs compile_make): claim the variant's cell
+  ;; before evaluating the fields, push its address once per store plus once
+  ;; for the result, then store the tag and each field.
+  (fn compile_make [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
+    (let target:(ptr compiler.Node) (call nth_child node 1))
+    (let v:(ptr VariantInfo) (call find_variant cg target))
+    (if (eq v (ptr.null VariantInfo))
+        (block (call set_compile_error CgErr.unknown_variant) (call emit_i32_const o 0) (return))
+        (block))
+    (let scratch:i32 (get cg Cg.nlocals))
+    (call emit_i32_const o 0)
+    (call emit_i32_const o (bitand (+ (get v VariantInfo.size) 7) -8))
+    (call emit_rmw_add o)
+    (call emit_local_set o scratch)
+    (call emit_grow_to_cursor o)
+    (loop k 0 (+ (get v VariantInfo.nfields) 1) 1 (call emit_local_get o scratch))
+    (call emit_i32_const o (call variant_index cg target))
+    (call emit_memop o OP_I32_STORE 2)
+    (let arg:(ptr compiler.Node) (call node_next target))
+    (loop k 0 (- (get v VariantInfo.nfields) 1) 1
+      (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
+      (call compile_expr cg arg o)
+      (call emit_memop_offset o (call store_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
+      (set! arg (call node_next arg))))
+
+  ;; (match v arms... [(else ...)]) (wasm.rs compile_match): v goes to the
+  ;; scratch local; each arm tests it in turn in an if/else chain (a union
+  ;; arm the tag at offset 0, an enum arm, whose head consts.aipl made a
+  ;; number, the value) and a union arm first loads its binders. The chain
+  ;; ends in the else body or `unreachable`.
+  (fn compile_match [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
+    (let scratch:i32 (get cg Cg.nlocals))
+    (let first_arm:(ptr compiler.Node) (call nth_child node 2))
+    (let last:(ptr compiler.Node) (call last_of (call arm_body first_arm)))
+    (let block_ty:i32 BLOCK_EMPTY)
+    (if (or (eq last (ptr.null compiler.Node)) (call is_void_node cg last))
+        (block)
+        (set! block_ty (call block_type_byte (call node_type cg last))))
+    (call compile_expr cg (call nth_child node 1) o)
+    (call emit_local_set o scratch)
+    (let arm:(ptr compiler.Node) first_arm)
+    (let opened:i32 0)
+    (let has_else:bool false)
+    (while (neq arm (ptr.null compiler.Node))
+      (let head:(ptr compiler.Node) (call first_child arm))
+      (if (eq (call group_head_keyword cg arm) Kw.else)
+          (block
+            (set! has_else true)
+            (call compile_arm_body cg (call arm_body arm) block_ty o))
+          (block
+            (call emit_local_get o scratch)
+            (let v:(ptr VariantInfo) (ptr.null VariantInfo))
+            (if (eq (call node_kind head) compiler.Kind.int)
+                (call emit_i32_const o (call node_a head))
+                (block
+                  (set! v (call find_variant cg head))
+                  (if (eq v (ptr.null VariantInfo)) (call set_compile_error CgErr.unknown_variant) 0)
+                  (call emit_memop o OP_I32_LOAD 2)
+                  (call emit_i32_const o (call variant_index cg head))))
+            (call put_byte o OP_I32_EQ)
+            (call put_byte o OP_IF)
+            (call put_byte o block_ty)
+            (call label_push cg Label.if_else)
+            (set! opened (+ opened 1))
+            (let binders:(ptr compiler.Node) (call node_next head))
+            (if (and (neq v (ptr.null VariantInfo)) (eq (call node_kind binders) compiler.Kind.bracket))
+                (block
+                  (let b:(ptr compiler.Node) (call first_child binders))
+                  (let k:i32 0)
+                  (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
+                    (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
+                    (call emit_local_get o scratch)
+                    (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
+                    (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
+                    (call emit_local_set o (call find_local cg (call node_a b) (call node_b b)))
+                    (set! k (+ k 1))
+                    (set! b (call node_next b))))
+                (block))
+            (call compile_arm_body cg (call arm_body arm) block_ty o)
+            (call put_byte o OP_ELSE)))
+      (set! arm (call node_next arm)))
+    (if has_else (block) (call put_byte o OP_UNREACHABLE))
+    (loop k 1 opened 1
+      (call label_pop cg)
+      (call put_byte o OP_END)))
+
+  ;; An arm's body: every expression but a valued match's last is a statement.
+  (fn compile_arm_body [cg:(ptr Cg) first:(ptr compiler.Node) block_ty:i32 o:(ptr Out)] -> void
+    (if (eq block_ty BLOCK_EMPTY)
+        (call compile_all_stmts cg first o)
+        (call compile_stmt_seq cg first o)))
 
   ;; The address of runtime cell `cell` (64-87): the cell itself, or in a
   ;; threaded module the same offset in this thread's block (global 0).
@@ -2743,10 +3006,10 @@
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (set! src_len (call buf.len plain))
     ;; Buffers are sized from the input: a token is at least one source byte
-    ;; (12-byte records), an AST node is at most one per token (16 bytes).
+    ;; (12-byte records), an AST node is at most one per token.
     (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) 12)))
     (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
-    (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) 16)))
+    (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) (sizeof compiler.Node))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
 
     (call walk_module_prepass cg root)
@@ -2760,6 +3023,7 @@
         (block))
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
     (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
+    (call collect_unions cg root)
     (call collect_structs cg root)
     (let imports:i32 (get cg Cg.nimports))
     (let nfns:i32 (call collect_functions cg root))
@@ -3058,7 +3322,7 @@
     (let src:i32 (str.ptr text))
     (let tok:i32 (mem.alloc (* 12 (+ (str.len text) 1))))
     (let n:i32 (call compiler.tokenize src (str.len text) tok))
-    (let ast:i32 (mem.alloc (* 16 (+ n 2))))
+    (let ast:i32 (mem.alloc (* (sizeof compiler.Node) (+ n 2))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok n ast))
     (let cg:(ptr Cg) (call new_cg src))
     (let func_count:i32 (call collect_functions cg root))

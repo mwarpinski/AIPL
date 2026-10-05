@@ -223,6 +223,11 @@ impl TypeChecker {
                 self.validate_type(ret, span)
             }
             Type::Enum(name) if self.enum_defs.contains_key(name) => Ok(()),
+            // only enum.cast names an enum type outside a type position
+            Type::Enum(name) if self.union_defs.contains_key(name) => Err(format!(
+                "{}:{}: '{}' is a union, not an enum: its values are made with (make {}.variant ...)",
+                span.0, span.1, name, name
+            )),
             Type::Union(name) if self.union_defs.contains_key(name) => Ok(()),
             Type::Union(name) => Err(format!("{}:{}: Unknown union '{}'", span.0, span.1, name)),
             Type::Enum(name) if self.struct_defs.contains_key(name) => Err(format!(
@@ -1032,16 +1037,12 @@ impl TypeChecker {
             },
             Expr::Null { ty, span } => {
                 self.validate_type(ty, *span)?;
-                if let Type::Union(u) = ty {
-                    return Err(format!("{}:{}: a union value is never null; there is no (null {})", span.0, span.1, u));
-                }
+
                 Ok(ty.clone())
             }
             Expr::Cast { ty, addr, span } => {
                 self.validate_type(ty, *span)?;
-                if let Type::Union(u) = ty {
-                    return Err(format!("{}:{}: a union value is only made with (make {}.variant ...)", span.0, span.1, u));
-                }
+
                 let t = self.infer_expr_type(addr, env)?;
                 if t != Type::I32 {
                     if let Type::Enum(e) = ty {

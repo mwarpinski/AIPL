@@ -390,6 +390,20 @@ impl Names<'_> {
                             continue;
                         }
                     }
+                    // a match arm's head names a member of the matched type:
+                    // (Shape.circle [r] ...) in module m is m.Shape.circle
+                    if head.as_deref() == Some("match") && i >= 2 {
+                        if let Some(arm) = child.items_mut() {
+                            for (j, part) in arm.iter_mut().enumerate() {
+                                match part {
+                                    Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => *s = self.rename(s, 0),
+                                    _ if j == 0 => {}
+                                    _ => self.walk(part, 0),
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     // a template's type arguments are struct names (or types
                     // built from them): `(alloc Pair)` in module m names m.Pair
                     let r = if template.is_some() { 2 } else { Names::child_role(head.as_deref(), i) };
