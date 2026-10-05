@@ -190,6 +190,15 @@ fn self_hosted_bytes_match_strings_interned_by_content() {
     assert_self_hosted_matches_rust("repeat", "(module m (fn f [] -> i32 (+ (str.len \"ab\") (+ (str.len \"a\") (str.len \"ab\")))))");
 }
 
+/// f64.sqrt (added for the benchmarks), at byte parity.
+#[test]
+fn self_hosted_bytes_match_f64_sqrt() {
+    assert_self_hosted_matches_rust(
+        "sqrt",
+        "(module m (fn hyp [a:f64 b:f64] -> f64 (f64.sqrt (+ (* a a) (* b b)))) (fn f [] -> f64 (call hyp 3.0 4.0)))",
+    );
+}
+
 /// Structs may have up to 64 fields in the self-hosted compiler (it was
 /// 15, which the native backend's translator state passed in NE8).
 #[test]
@@ -493,6 +502,9 @@ fn self_hosted_bytes_match_std_library() {
         ("std_strmap", "aipl_src/std/strmap.aipl"),
         ("std_buf", "aipl_src/std/buf.aipl"),
         ("std_os", "aipl_src/std/os.aipl"),
+        ("std_time", "aipl_src/std/time.aipl"),
+        ("std_arena", "aipl_src/std/arena.aipl"),
+        ("std_bigint", "aipl_src/std/bigint.aipl"),
         ("wasm_reader", "aipl_src/native/wasm_reader.aipl"),
         ("word_count", "examples/word_count.aipl"),
         ("word_freq", "examples/word_freq.aipl"),

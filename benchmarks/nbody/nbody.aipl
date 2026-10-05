@@ -1,0 +1,107 @@
+;; nbody: the Benchmarks Game's n-body. The Sun and the four gas giants
+;; under gravity, advanced N steps of 0.01 (default 1000); the system's
+;; energy printed to nine decimals before and after. Floats in arrays,
+;; f64.sqrt, fmt.f64_fixed. The constants are the benchmark's, written out
+;; in decimal (AIPL float literals have no exponent).
+;;
+;;   ./nbody 1000   ->   -0.169075164 / -0.169087605
+(module nbody
+  (import io)
+  (import os)
+  (import str)
+  (import time)
+
+  ;; one array per coordinate, five bodies (0 = the Sun)
+  (struct Bodies [x:(arr f64) y:(arr f64) z:(arr f64) vx:(arr f64) vy:(arr f64) vz:(arr f64) m:(arr f64)])
+
+  (fn steps_wanted [] -> i32
+    (if (gt (call os.arg_count) 1)
+        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 1000))
+        1000))
+
+  (fn body [b:(ptr Bodies) i:i32 x:f64 y:f64 z:f64 vx:f64 vy:f64 vz:f64 m:f64] -> void
+    (arr.set f64 (get b Bodies.x) i x) (arr.set f64 (get b Bodies.y) i y) (arr.set f64 (get b Bodies.z) i z)
+    (arr.set f64 (get b Bodies.vx) i vx) (arr.set f64 (get b Bodies.vy) i vy) (arr.set f64 (get b Bodies.vz) i vz)
+    (arr.set f64 (get b Bodies.m) i m))
+
+  (fn system [] -> (ptr Bodies)
+    (let b:(ptr Bodies) (new Bodies))
+    (put b Bodies.x (arr.new f64 5)) (put b Bodies.y (arr.new f64 5)) (put b Bodies.z (arr.new f64 5))
+    (put b Bodies.vx (arr.new f64 5)) (put b Bodies.vy (arr.new f64 5)) (put b Bodies.vz (arr.new f64 5))
+    (put b Bodies.m (arr.new f64 5))
+    (let pi:f64 3.141592653589793)
+    (let sm:f64 (* (* 4.0 pi) pi))
+    (let dpy:f64 365.24)
+    (call body b 0 0.0 0.0 0.0 0.0 0.0 0.0 sm)
+    ;; jupiter
+    (call body b 1 4.84143144246472090 -1.16032004402742839 -0.103622044471123109 (* 0.00166007664274403694 dpy) (* 0.00769901118419740425 dpy) (* -0.0000690460016972063023 dpy) (* 0.000954791938424326609 sm))
+    ;; saturn
+    (call body b 2 8.34336671824457987 4.12479856412430479 -0.403523417114321381 (* -0.00276742510726862411 dpy) (* 0.00499852801234917238 dpy) (* 0.0000230417297573763929 dpy) (* 0.000285885980666130812 sm))
+    ;; uranus
+    (call body b 3 12.8943695621391310 -15.1111514016986312 -0.223307578892655734 (* 0.00296460137564761618 dpy) (* 0.00237847173959480950 dpy) (* -0.0000296589568540237556 dpy) (* 0.0000436624404335156298 sm))
+    ;; neptune
+    (call body b 4 15.3796971148509165 -25.9193146099879641 0.179258772950371181 (* 0.00268067772490389322 dpy) (* 0.00162824170038242295 dpy) (* -0.0000951592254519715870 dpy) (* 0.0000515138902046611451 sm))
+    ;; the Sun takes the momentum that makes the total zero
+    (let px:f64 0.0) (let py:f64 0.0) (let pz:f64 0.0)
+    (loop i 0 4 1
+      (set! px (+ px (* (arr.get f64 (get b Bodies.vx) i) (arr.get f64 (get b Bodies.m) i))))
+      (set! py (+ py (* (arr.get f64 (get b Bodies.vy) i) (arr.get f64 (get b Bodies.m) i))))
+      (set! pz (+ pz (* (arr.get f64 (get b Bodies.vz) i) (arr.get f64 (get b Bodies.m) i)))))
+    (arr.set f64 (get b Bodies.vx) 0 (/ (- 0.0 px) sm))
+    (arr.set f64 (get b Bodies.vy) 0 (/ (- 0.0 py) sm))
+    (arr.set f64 (get b Bodies.vz) 0 (/ (- 0.0 pz) sm))
+    b)
+
+  (fn energy [b:(ptr Bodies)] -> f64
+    (let x:(arr f64) (get b Bodies.x)) (let y:(arr f64) (get b Bodies.y)) (let z:(arr f64) (get b Bodies.z))
+    (let vx:(arr f64) (get b Bodies.vx)) (let vy:(arr f64) (get b Bodies.vy)) (let vz:(arr f64) (get b Bodies.vz))
+    (let m:(arr f64) (get b Bodies.m))
+    (let e:f64 0.0)
+    (loop i 0 4 1
+      (set! e (+ e (* (* 0.5 (arr.get f64 m i))
+                      (+ (+ (* (arr.get f64 vx i) (arr.get f64 vx i)) (* (arr.get f64 vy i) (arr.get f64 vy i)))
+                         (* (arr.get f64 vz i) (arr.get f64 vz i))))))
+      (loop j (+ i 1) 4 1
+        (let dx:f64 (- (arr.get f64 x i) (arr.get f64 x j)))
+        (let dy:f64 (- (arr.get f64 y i) (arr.get f64 y j)))
+        (let dz:f64 (- (arr.get f64 z i) (arr.get f64 z j)))
+        (let distance:f64 (f64.sqrt (+ (+ (* dx dx) (* dy dy)) (* dz dz))))
+        (set! e (- e (/ (* (arr.get f64 m i) (arr.get f64 m j)) distance)))))
+    e)
+
+  (fn advance [b:(ptr Bodies) dt:f64] -> void
+    (let x:(arr f64) (get b Bodies.x)) (let y:(arr f64) (get b Bodies.y)) (let z:(arr f64) (get b Bodies.z))
+    (let vx:(arr f64) (get b Bodies.vx)) (let vy:(arr f64) (get b Bodies.vy)) (let vz:(arr f64) (get b Bodies.vz))
+    (let m:(arr f64) (get b Bodies.m))
+    (loop i 0 4 1
+      (loop j (+ i 1) 4 1
+        (let dx:f64 (- (arr.get f64 x i) (arr.get f64 x j)))
+        (let dy:f64 (- (arr.get f64 y i) (arr.get f64 y j)))
+        (let dz:f64 (- (arr.get f64 z i) (arr.get f64 z j)))
+        (let dsq:f64 (+ (+ (* dx dx) (* dy dy)) (* dz dz)))
+        (let distance:f64 (f64.sqrt dsq))
+        (let mag:f64 (/ dt (* dsq distance)))
+        (let mi:f64 (arr.get f64 m i))
+        (let mj:f64 (arr.get f64 m j))
+        (arr.set f64 vx i (- (arr.get f64 vx i) (* (* dx mj) mag)))
+        (arr.set f64 vy i (- (arr.get f64 vy i) (* (* dy mj) mag)))
+        (arr.set f64 vz i (- (arr.get f64 vz i) (* (* dz mj) mag)))
+        (arr.set f64 vx j (+ (arr.get f64 vx j) (* (* dx mi) mag)))
+        (arr.set f64 vy j (+ (arr.get f64 vy j) (* (* dy mi) mag)))
+        (arr.set f64 vz j (+ (arr.get f64 vz j) (* (* dz mi) mag)))))
+    (loop i 0 4 1
+      (arr.set f64 x i (+ (arr.get f64 x i) (* dt (arr.get f64 vx i))))
+      (arr.set f64 y i (+ (arr.get f64 y i) (* dt (arr.get f64 vy i))))
+      (arr.set f64 z i (+ (arr.get f64 z i) (* dt (arr.get f64 vz i))))))
+
+  (fn main [] -> i32
+    (let started:i64 (call time.now))
+    (let n:i32 (call steps_wanted))
+    (let b:(ptr Bodies) (call system))
+    (call io.print_f64 (call energy b) 9)
+    (call io.println "")
+    (loop s 1 n 1 (call advance b 0.01))
+    (call io.print_f64 (call energy b) 9)
+    (call io.println "")
+    (call time.report "nbody computed in" started)
+    0))

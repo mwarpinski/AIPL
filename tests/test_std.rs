@@ -163,3 +163,127 @@ fn std_printing_is_byte_exact_under_wasi() {
     assert_eq!(vm_call(&module, "main", &[], &dir), Ok(7));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// fmt.f64_fixed against Rust's own exact formatting ({:.N}, the exact
+/// decimal value rounded half to even, as C's printf and Python's format):
+/// 20,000 doubles across the whole range (subnormals, huge values, exact
+/// ties), 0-20 digits, compiled to wasm; plus the special values.
+#[test]
+fn f64_fixed_matches_exact_formatting() {
+    let dir = scratch("f64_fixed");
+    let src = dir.join("w.aipl");
+    std::fs::write(
+        &src,
+        "(module w (import fmt)
+           (fn fmt_at [lo:i32 hi:i32 d:i32 out:i32] -> i32
+             (call fmt.f64_fixed (f64.reinterpret_i64 (bitor (i64.extend_u lo) (shl (i64.extend_s hi) 32i64))) d out))
+           (fn alloc [n:i32] -> i32 (mem.alloc n)))",
+    )
+    .unwrap();
+    let (_, wasm) = load(&src);
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &module).unwrap();
+    let alloc = inst.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+    let fmt_at = inst.get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "fmt_at").unwrap();
+    let mem = inst.get_memory(&mut store, "memory").unwrap();
+    let out = alloc.call(&mut store, 400).unwrap();
+    let mut format = |x: f64, d: usize| -> String {
+        let bits = x.to_bits();
+        let n = fmt_at.call(&mut store, (bits as u32 as i32, (bits >> 32) as u32 as i32, d as i32, out)).unwrap();
+        String::from_utf8(mem.data(&store)[out as usize..(out + n) as usize].to_vec()).unwrap()
+    };
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut values: Vec<f64> = vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1e-310, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e300, 123456789.987654321];
+    for _ in 0..20000 {
+        let r = next();
+        let x = match r % 4 {
+            // any bit pattern (finite)
+            0 => f64::from_bits(r >> 1 | (r & 1) << 63),
+            // moderate values
+            1 => (r % 2_000_000_000) as f64 / 1000.0 - 1e6,
+            // exact ties at the digit count: k / 2^j
+            2 => (r % 100_000) as f64 / (1u64 << (r % 12)) as f64,
+            // small magnitudes
+            _ => (r % 1_000_000) as f64 * 1e-12,
+        };
+        if x.is_finite() {
+            values.push(x);
+        }
+    }
+    for (i, x) in values.iter().enumerate() {
+        let d = i % 21;
+        assert_eq!(format(*x, d), format!("{:.*}", d, x), "{x:e} with {d} digits (bits {:016x})", x.to_bits());
+    }
+    // special values print as glibc's printf does
+    assert_eq!(format(f64::INFINITY, 3), "inf");
+    assert_eq!(format(f64::NEG_INFINITY, 3), "-inf");
+    assert_eq!(format(f64::NAN, 3), "nan");
+    assert_eq!(format(-f64::NAN, 3), "-nan");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// std/bigint against Python's integers: tests/aipl/bigint_ops.aipl walks
+/// 4000 random operations (signs, carries, numbers of up to 40 limbs) and
+/// prints every result; its transcript must hash to what
+/// tools/bigint_vectors.py computes. Run under aipl-run and natively.
+#[test]
+fn bigint_matches_python_integers() {
+    use std::os::unix::fs::PermissionsExt;
+    // `python3 tools/bigint_vectors.py --hash`: lines, FNV-1a 64, bytes
+    const LINES: usize = 4000;
+    const FNV: u64 = 0x9edf386e681d431a;
+    const BYTES: usize = 1023116;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (_, wasm) = load(&root.join("tests/aipl/bigint_ops.aipl"));
+    let dir = scratch("bigint_ops");
+    let wasm_path = dir.join("bigint_ops.wasm");
+    std::fs::write(&wasm_path, &wasm).unwrap();
+    let exe = dir.join("bigint_ops");
+    std::fs::write(&exe, aipl_core::native::executable(&wasm, false).unwrap()).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (way, cmd) in [("wasm", vec![env!("CARGO_BIN_EXE_aipl-run").into(), wasm_path.clone()]), ("native", vec![exe.clone()])] {
+        let mut child = loop {
+            match std::process::Command::new(&cmd[0]).args(&cmd[1..]).stdout(std::process::Stdio::piped()).spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
+                r => break r.unwrap(),
+            }
+        };
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut v).unwrap();
+            v
+        });
+        // a broken bigint can loop forever (a correction that never ends)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(st) = child.try_wait().unwrap() {
+                break st;
+            }
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                panic!("{way}: still running after 60 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let text = reader.join().unwrap();
+        assert!(status.success(), "{way}: exit {status}");
+        let hash = text.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
+        assert_eq!(
+            (text.iter().filter(|b| **b == b'\n').count(), text.len(), hash),
+            (LINES, BYTES, FNV),
+            "{way}: transcript differs from tools/bigint_vectors.py (diff the two outputs to find the first wrong line)"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

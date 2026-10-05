@@ -1095,7 +1095,10 @@ fn float_programs_match_natively() {
            (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
            (fn uses_pick [] -> f64 (+ (call pick 4.0 2.0) (call pick 2.0 4.0)))
            (fn struct_field [] -> f64 (let p:(ptr P) (new P)) (put p P.z 6.5) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
-           (fn struct_size [] -> i32 (sizeof P)))",
+           (fn struct_size [] -> i32 (sizeof P))
+           (fn sqrt_two [] -> f64 (f64.sqrt 2.0))
+           (fn sqrt_neg_zero [] -> f64 (f64.sqrt -0.0))
+           (fn sqrt_negative [] -> f64 (f64.sqrt -4.0)))",
         &[],
         &[
             ("convert_neg", &[]), ("convert_rounds_to_even", &[]), ("convert_min", &[]), ("trunc_pos", &[]), ("trunc_neg", &[]),
@@ -1103,7 +1106,8 @@ fn float_programs_match_natively() {
             ("bits_neg_zero", &[]), ("nan_payload", &[]), ("tenth", &[]), ("arithmetic", &[]), ("lt_true", &[]), ("nan", &[]),
             ("neg_nan_sub", &[]), ("inf", &[]), ("inf_minus_inf", &[]), ("neg_zero_times", &[]), ("zero_plus_neg_zero", &[]),
             ("nan_eq", &[]), ("nan_neq", &[]), ("nan_lt", &[]), ("nan_gte", &[]), ("zeros_equal", &[]), ("uses_lerp", &[]),
-            ("uses_pick", &[]), ("struct_field", &[]), ("struct_size", &[]),
+            ("uses_pick", &[]), ("struct_field", &[]), ("struct_size", &[]), ("sqrt_two", &[]), ("sqrt_neg_zero", &[]),
+            ("sqrt_negative", &[]),
         ],
     );
     for (name, src) in [
@@ -1253,6 +1257,14 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         body.extend(status_from_checks());
         out.push((format!("f32_{name}"), exit_with_typed(&locals, &body)));
     }
+    // f64.sqrt over every edge (negative ones give NaN)
+    let mut sqrt = Vec::new();
+    for a in f64_edges() {
+        sqrt.extend([I::F64Const(a.into()), I::F64Sqrt]);
+        sqrt.extend(check_result_f64(bb(a).sqrt()));
+    }
+    sqrt.extend(status_from_checks());
+    out.push(("f64_sqrt".into(), exit_with_typed(&locals, &sqrt)));
     // conversions both ways over in-range edges
     let mut conv = Vec::new();
     for a in [0i64, 1, -7, i64::MAX, i64::MIN, 9007199254740993, -9007199254740993, 0x1234_5678_9ABC_DEF0] {

@@ -660,9 +660,10 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
-                OpCode::F64ConvertI64S | OpCode::I64TruncF64S | OpCode::F64ReinterpretI64 | OpCode::I64ReinterpretF64 => {
+                OpCode::F64ConvertI64S | OpCode::I64TruncF64S | OpCode::F64ReinterpretI64 | OpCode::I64ReinterpretF64 | OpCode::F64Sqrt => {
                     let (from, to) = match op {
                         OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => (Type::I64, Type::F64),
+                        OpCode::F64Sqrt => (Type::F64, Type::F64),
                         _ => (Type::F64, Type::I64),
                     };
                     if args.len() != 1 {

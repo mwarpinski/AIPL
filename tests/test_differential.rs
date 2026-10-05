@@ -394,6 +394,18 @@ fn f64_i64_conversions_agree() {
     assert_i64("(i64.reinterpret_f64 (/ (f64.convert_i64_s 1i64) (f64.convert_i64_s 10i64)))", 0.1f64.to_bits() as i64);
 }
 
+/// f64.sqrt: correctly rounded; NaN for a negative argument; -0.0 stays
+/// -0.0; infinity stays infinity. Compared by bits.
+#[test]
+fn f64_sqrt_agrees() {
+    assert_i64("(i64.reinterpret_f64 (f64.sqrt 2.0))", 2.0f64.sqrt().to_bits() as i64);
+    assert_i64("(i64.reinterpret_f64 (f64.sqrt 0.25))", 0.5f64.to_bits() as i64);
+    assert_i64("(i64.reinterpret_f64 (f64.sqrt -0.0))", (-0.0f64).to_bits() as i64);
+    assert_i64("(i64.reinterpret_f64 (f64.sqrt (/ 1.0 (- 0.0 0.0))))", f64::INFINITY.to_bits() as i64);
+    let nan = expr("i64", "(i64.reinterpret_f64 (f64.sqrt -1.0))").unwrap();
+    assert!(matches!(nan, Value::Int64(b) if f64::from_bits(b as u64).is_nan()), "{nan:?}");
+}
+
 #[test]
 fn f64_arithmetic_agrees() {
     assert_eq!(expr("f64", "(/ (+ 1.5 2.25) 0.5)").unwrap(), Value::Float(7.5));

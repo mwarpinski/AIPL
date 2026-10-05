@@ -331,6 +331,7 @@
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u
       ((or (or (eq op 176) (eq op 185)) (or (eq op 189) (eq op 191))) 0) ;; trunc, convert, reinterprets
+      ((eq op 159) 0)                                               ;; f64.sqrt
       ((or (and (gte op 40) (lte op 43)) (or (eq op 45) (eq op 64))) 0) ;; loads, memory.grow
       ((and (gte op 54) (lte op 58)) -2)                            ;; stores
       ((eq op 63) 1)                                                ;; memory.size
@@ -815,6 +816,14 @@
        (call x64.ucomi c 64 (call xmm0) (call xmm1))
        (call emit_trap_if l (call x64.cc_b) (get l L.overflow))
        (call x64.cvttsd2si c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
+      ;; f64.sqrt (sqrtsd rounds correctly, as IEEE 754 and wasm require)
+      ((eq op 159)
+       (call pop_rax l)
+       (call x64.movq_xr c (call xmm0) (call rax))
+       (call x64.sqrtsd c (call xmm0) (call xmm0))
+       (call x64.movq_rx c (call rax) (call xmm0))
        (call push_rax l)
        true)
       ;; i64.reinterpret_f64, f64.reinterpret_i64: the slot already holds the bits

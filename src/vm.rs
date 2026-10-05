@@ -1600,6 +1600,11 @@ impl VM {
                 Value::Int64(x) => Ok(Value::Float(x as f64)),
                 _ => Err("f64.convert_i64_s requires Int64".to_string()),
             },
+            // Rust's sqrt is IEEE 754's correctly rounded square root, as wasm's f64.sqrt.
+            OpCode::F64Sqrt => match self.eval_expr(&args[0], scope)? {
+                Value::Float(x) => Ok(Value::Float(x.sqrt())),
+                _ => Err("f64.sqrt requires Float".to_string()),
+            },
             // Truncates toward zero; NaN or a result outside i64 is an error where wasm traps.
             OpCode::I64TruncF64S => match self.eval_expr(&args[0], scope)? {
                 Value::Float(x) if x.is_nan() => Err("i64.trunc_f64_s: invalid conversion to integer (NaN)".to_string()),

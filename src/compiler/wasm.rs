@@ -462,7 +462,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::I64ExtendU
             | OpCode::I64TruncF64S
             | OpCode::I64ReinterpretF64 => Type::I64,
-            OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => Type::F64,
+            OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 | OpCode::F64Sqrt => Type::F64,
             OpCode::MemLoadF32 => Type::F32,
             OpCode::MemLoadF64 => Type::F64,
             OpCode::SysTime | OpCode::SysMonotonic => Type::I64,
@@ -884,6 +884,10 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::I64TruncF64S => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I64TruncF64S);
+            }
+            OpCode::F64Sqrt => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&Instruction::F64Sqrt);
             }
             OpCode::F64ReinterpretI64 => {
                 compile_expr(&args[0], ctx, func)?;
@@ -1723,6 +1727,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::EnvGet
                 | OpCode::I64ExtendS
                 | OpCode::F64ConvertI64S
+                | OpCode::F64Sqrt
                 | OpCode::I64TruncF64S
                 | OpCode::F64ReinterpretI64
                 | OpCode::I64ReinterpretF64

@@ -187,7 +187,8 @@
 
   ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
   ;; group whose head names a generic template prints its canonical name,
-  ;; and its type arguments are not renamed by position.
+  ;; and its type arguments are renamed as struct names (a module's own
+  ;; struct passed to a template, `(alloc Pair)`, becomes `m.Pair`).
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) 21))
     (call buf.push_byte out (if square 91 40))
@@ -203,7 +204,7 @@
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
         ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call buf.push_bytes out tmpl))
-        ((gte (get tmpl str.Bytes.len) 0) (call emit m c 0 out))
+        ((gte (get tmpl str.Bytes.len) 0) (call emit m c 2 out))
         (else (call emit m c (call child_role m g i) out)))
       (set! prev_colon colon)
       (set! i (+ i 1))

@@ -1,0 +1,95 @@
+;; A random walk over std/bigint for tests/test_std.rs: 4000 operations (a third of them multiplications) on
+;; four registers, chosen by xorshift32, printing each result. The
+;; transcript must match tools/bigint_vectors.py (Python's own integers)
+;; byte for byte. Values are kept below 40 limbs by dividing them down, and
+;; a zero result is usually replaced by a fresh small value.
+(module bigint_ops
+  (import buf)
+  (import bigint)
+
+  (struct Rng [x:i32])
+  (struct Regs [r0:(ptr bigint.Int) r1:(ptr bigint.Int) r2:(ptr bigint.Int) r3:(ptr bigint.Int)
+                den:(ptr bigint.Int) part:(ptr bigint.Int) one:(ptr bigint.Int)])
+
+  (fn next [r:(ptr Rng)] -> i32
+    (let x:i32 (get r Rng.x))
+    (set! x (^ x (shl x 13)))
+    (set! x (^ x (shru x 17)))
+    (set! x (^ x (shl x 5)))
+    (put r Rng.x x)
+    (shru x 1))
+
+  ;; a nonzero multiplier of either sign: small, medium, or up to 2^31 - 1
+  (fn mult [r:(ptr Rng)] -> i32
+    (let k:i32 (% (call next r) 4))
+    (let v:i32 (+ 1 (if (eq k 0) (% (call next r) 3)
+                        (if (eq k 1) (% (call next r) 1000) (% (call next r) 2147483646)))))
+    (if (eq (% (call next r) 2) 0) (- 0 v) v))
+
+  (fn abs [v:i32] -> i32 (if (lt v 0) (- 0 v) v))
+
+  (fn reg [rs:(ptr Regs) i:i32] -> (ptr bigint.Int)
+    (if (eq i 0) (get rs Regs.r0) (if (eq i 1) (get rs Regs.r1) (if (eq i 2) (get rs Regs.r2) (get rs Regs.r3)))))
+
+  ;; a = |b| * m + part with 0 <= part < |b| (part from a's low limbs, or
+  ;; |b| - 1 - that), then a / |b|: m is the quotient, part the remainder
+  (fn quotient [r:(ptr Rng) rs:(ptr Regs) a:(ptr bigint.Int) b:(ptr bigint.Int)] -> i32
+    (if (call bigint.is_zero b) (return 0) (block))
+    (let m:i32 (call abs (call mult r)))
+    (let den:(ptr bigint.Int) (get rs Regs.den))
+    (let part:(ptr bigint.Int) (get rs Regs.part))
+    (call bigint.assign den b)
+    (if (lt (call bigint.sign den) 0) (call bigint.negate den) (block))
+    (call bigint.assign part a)
+    (if (lt (call bigint.sign part) 0) (call bigint.negate part) (block))
+    (while (gte (call bigint.limb_count part) (call bigint.limb_count den)) (let _d:i32 (call bigint.div_small part 2147483647)))
+    (if (eq (% (call next r) 2) 0)
+        (block (call bigint.negate part) (call bigint.add part den) (call bigint.sub part (get rs Regs.one)))
+        (block))
+    (call bigint.assign a den)
+    (call bigint.mul_small a m)
+    (call bigint.add a part)
+    (call bigint.div_small_quotient a den))
+
+  (fn main [] -> i32
+    (let r:(ptr Rng) (new Rng))
+    (put r Rng.x 123456789)
+    (let rs:(ptr Regs) (new Regs))
+    (put rs Regs.r0 (call bigint.from_i32 (call mult r)))
+    (put rs Regs.r1 (call bigint.from_i32 (call mult r)))
+    (put rs Regs.r2 (call bigint.from_i32 (call mult r)))
+    (put rs Regs.r3 (call bigint.from_i32 (call mult r)))
+    (put rs Regs.den (call bigint.from_i32 0))
+    (put rs Regs.part (call bigint.from_i32 0))
+    (put rs Regs.one (call bigint.from_i32 1))
+    (let out:(ptr buf.Buf) (call buf.make 65536))
+    (loop step 1 4000 1
+      (let op:i32 (% (call next r) 10))
+      (let a:(ptr bigint.Int) (call reg rs (% (call next r) 4)))
+      (let b:(ptr bigint.Int) (call reg rs (% (call next r) 4)))
+      (let rem:i32 0)
+      (cond
+        ((eq op 0) (call bigint.add a b))
+        ((eq op 1) (call bigint.sub a b))
+        ((eq op 2) (call bigint.add_mul_small a b (call mult r)))
+        ((eq op 3) (call bigint.sub_mul_small a b (call mult r)))
+        ((eq op 5) (set! rem (call bigint.div_small a (call abs (call mult r)))))
+        ((eq op 6) (call bigint.assign a b))
+        ((eq op 9) (set! rem (call quotient r rs a b)))
+        ;; 4, 7 and 8 multiply, so values grow to the 40-limb bound
+        (else (call bigint.mul_small a (call mult r))))
+      (while (gt (call bigint.limb_count a) 40) (let _d:i32 (call bigint.div_small a 2147483647)))
+      ;; zero would stay zero under multiplication: usually start afresh
+      (if (and (call bigint.is_zero a) (neq (% (call next r) 8) 0)) (call bigint.set_i32 a (call mult r)) (block))
+      (call buf.push_int out op)
+      (call buf.push_byte out 32)
+      (call bigint.push_decimal out a)
+      (call buf.push_byte out 32)
+      (call buf.push_int out (call bigint.compare a b))
+      (call buf.push_byte out 32)
+      (call buf.push_int out (call bigint.sign a))
+      (call buf.push_byte out 32)
+      (call buf.push_int out rem)
+      (call buf.push_byte out 10))
+    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    0))

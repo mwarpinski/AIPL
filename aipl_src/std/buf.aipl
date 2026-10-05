@@ -52,6 +52,19 @@
     (let k:i32 (call fmt.int_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
     (put b Buf.len (+ (get b Buf.len) k)))
 
+  ;; An i64 in decimal, with '-' when negative.
+  (fn push_i64 [b:(ptr Buf) n:i64] -> void
+    (call ensure b 21)
+    (let k:i32 (call fmt.int64_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
+    (put b Buf.len (+ (get b Buf.len) k)))
+
+  ;; An f64 with `digits` decimals (fmt.f64_fixed: exact, ties to even).
+  (fn push_f64 [b:(ptr Buf) x:f64 digits:i32] -> void
+    (req (and (gte digits 0) (lte digits 40)))
+    (call ensure b (+ 312 digits))
+    (let k:i32 (call fmt.f64_fixed x digits (+ (get b Buf.data) (get b Buf.len))))
+    (put b Buf.len (+ (get b Buf.len) k)))
+
   (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes)
     (call str.bytes (get b Buf.data) (get b Buf.len)))
 
