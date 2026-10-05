@@ -24,9 +24,14 @@
 ;;     address + offset + width against that size and traps like wasm.
 ;;   - Atomics (NE9): aligned x86 loads are atomic; store and exchange use
 ;;     xchg (a full barrier, as wasm's sequentially consistent atomics
-;;     need), add `lock xadd`, compare-exchange `lock cmpxchg`. Native code
-;;     has no threads yet (NE15) and its memory is never shared, so, as in
-;;     wasm, notify wakes nobody (returns 0) and wait traps.
+;;     need), add `lock xadd`, compare-exchange `lock cmpxchg`. With
+;;     unshared memory (a module without threads), as wasm specifies,
+;;     notify wakes nobody (returns 0) and wait traps; with shared memory
+;;     (NE15-NE16) they are futex wait and wake.
+;;   - Threads (NE15): each thread's FS base points at its own globals block
+;;     (wasm globals are per instance, and aipl-run gives each thread its
+;;     own instance), 8 bytes per global; memory.grow is a compare-and-swap
+;;     loop on the size cell, since threads allocate (and grow) at once.
 ;;   - Floats (NE13): a slot holds an f32's or f64's bits; arithmetic moves
 ;;     them through xmm0/xmm1 (SSE2), which compute what wasm specifies
 ;;     (IEEE 754, round to nearest), NaN results included.
@@ -79,6 +84,7 @@
              unaligned:(ptr Reason) wait_unshared:(ptr Reason) bad_conversion:(ptr Reason)
              table_addr:i32 table_size:i32 canon_types:(ptr (vec.Vec i32))
              table_oob:(ptr Reason) null_element:(ptr Reason) bad_signature:(ptr Reason)
+             shared:bool seg_addrs:(ptr (vec.Vec i32)) seg_lens:(ptr (vec.Vec i32))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              failed:bool msg:(ptr buf.Buf)])
 
@@ -107,6 +113,9 @@
     (put l L.table_addr 0)
     (put l L.table_size 0)
     (put l L.canon_types (call canonical_types w))
+    (put l L.shared false)
+    (put l L.seg_addrs (call (vec.make i32) 4))
+    (put l L.seg_lens (call (vec.make i32) 4))
     (put l L.mem_cell -1)
     (put l L.mem_max 0)
     (put l L.fixups (call (vec.make (ptr Fixup)) 64))
@@ -293,6 +302,20 @@
        (if (gt (call nresults t) 0) (call push_rax l) (block))
        true)
       ((eq op 17) (call emit_call_indirect l w a) true)
+      ;; global.get / global.set: the thread's globals block (FS-relative)
+      ((eq op 35)
+       (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+       (call x64.fs c)
+       (call x64.load c 64 (call rax) (call x64.mem (call rcx) (* 8 a)))
+       (call push_rax l)
+       true)
+      ((eq op 36)
+       (call pop_rax l)
+       (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+       (call x64.fs c)
+       (call x64.store c 64 (call x64.mem (call rcx) (* 8 a)) (call rax))
+       true)
+      ((eq op 64520) (call emit_memory_init l a) true)
       ((call i32_op l op) true)
       ((call i64_op l op) true)
       ((call float_op l op) true)
@@ -314,6 +337,8 @@
       ((eq op 65040) 0)                                             ;; i32.atomic.load
       ((or (eq op 65047) (or (eq op 65096) (eq op 65025))) -2)      ;; atomic.store, cmpxchg, wait32
       ((or (eq op 65054) (or (eq op 65089) (eq op 65024))) -1)      ;; rmw.add, rmw.xchg, notify
+      ((eq op 35) 1)                                                ;; global.get
+      ((eq op 64520) -3)                                            ;; memory.init
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (- (call nresults t) (call nparams t)))
@@ -521,25 +546,107 @@
        (call x64.cmpxchg c 32 (call x64.mem (call r11) 0) (call r9))
        (call push_rax l)
        true)
-      ;; notify(address, count): no thread can be waiting
+      ;; notify(address, count): unshared memory has no waiters; shared,
+      ;; futex wake (a count of 2^31 or more wakes everyone)
       ((eq op 65024)
        (call x64.pop c (call r8))
        (call pop_rax l)
-       (let _n:(ptr x64.Mem) (call atomic_address l offset))
-       (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+       (let at:(ptr x64.Mem) (call atomic_address l offset))
+       (if (get l L.shared)
+           (block
+             (call x64.lea c 64 7 at)
+             (call x64.mov_ri32 c 6 129)                       ;; FUTEX_WAKE_PRIVATE
+             (call x64.mov_rr c 32 2 (call r8))
+             (call x64.test_rr c 32 2 2)
+             (let small:i32 (call x64.jcc c (call x64.cc_ns)))
+             (call x64.mov_ri32 c 2 2147483647)
+             (call x64.patch_rel32 c small (call buf.len c))
+             (call x64.mov_ri32 c (call rax) 202)
+             (call x64.syscall c))
+           (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax)))
        (call push_rax l)
        true)
-      ;; wait32(address, expected, timeout): traps on unshared memory, after
-      ;; the address checks, as wasmtime does
+      ;; wait32(address, expected, timeout ns, negative: forever): traps on
+      ;; unshared memory, after the address checks, as wasmtime does. Shared:
+      ;; futex wait, which sleeps only while the word still holds `expected`;
+      ;; returns 0 (woken), 1 (the word differed), 2 (timed out). An
+      ;; interrupted wait counts as woken (callers loop on their condition).
       ((eq op 65025)
        (call x64.pop c (call r8))
        (call x64.pop c (call r9))
        (call pop_rax l)
-       (let _w:(ptr x64.Mem) (call atomic_address l offset))
-       (call emit_trap l (get l L.wait_unshared))
+       (let at:(ptr x64.Mem) (call atomic_address l offset))
+       (if (get l L.shared)
+           (call emit_futex_wait l at)
+           (call emit_trap l (get l L.wait_unshared)))
        (call push_rax l)
        true)
       (else false)))
+
+  ;; The shared wait32 (see atomic_op): address operand `at`, expected in
+  ;; r9, timeout in r8. Leaves the result in rax.
+  (fn emit_futex_wait [l:(ptr L) at:(ptr x64.Mem)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call x64.lea c 64 7 at)
+    (call x64.mov_ri32 c 6 128)                                 ;; FUTEX_WAIT_PRIVATE
+    (call x64.mov_rr c 32 2 (call r9))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r10) (call r10))
+    (call x64.test_rr c 64 (call r8) (call r8))
+    (let forever:i32 (call x64.jcc c (call x64.cc_s)))
+    ;; a timespec on the stack: seconds, nanoseconds
+    (call x64.mov_rr c 64 (call rax) (call r8))
+    (call x64.mov_ri64 c (call rcx) 1000000000i64)
+    (call x64.mov_rr c 64 (call r9) 2)
+    (call x64.alu_rr c 32 (call x64.op_xor) 2 2)
+    (call x64.div_r c 64 (call rcx))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 16)
+    (call x64.store c 64 (call x64.mem (call rsp) 0) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 8) 2)
+    (call x64.mov_rr c 64 2 (call r9))
+    (call x64.mov_rr c 64 (call r10) (call rsp))
+    (call x64.patch_rel32 c forever (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 202)
+    (call x64.syscall c)
+    ;; drop the timespec, if one was pushed (r10 points at it then)
+    (call x64.test_rr c 64 (call r10) (call r10))
+    (let no_timespec:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 16)
+    (call x64.patch_rel32 c no_timespec (call buf.len c))
+    ;; -EAGAIN (11): the word differed -> 1; -ETIMEDOUT (110) -> 2; else 0
+    (call x64.mov_rr c 64 (call rcx) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rcx) -11)
+    (let not_again:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_ri32 c (call rax) 1)
+    (call x64.patch_rel32 c not_again (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rcx) -110)
+    (let not_timeout:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_ri32 c (call rax) 2)
+    (call x64.patch_rel32 c not_timeout (call buf.len c)))
+
+  ;; memory.init (passive segment `seg`): pops length, source offset,
+  ;; destination; traps if either range is out of bounds, then copies.
+  (fn emit_memory_init [l:(ptr L) seg:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (req (lt seg (call (vec.len i32) (get l L.seg_lens))))
+    (call x64.pop c (call r9))
+    (call x64.pop c (call r8))
+    (call pop_rax l)
+    (call x64.mov_rr c 32 (call r9) (call r9))
+    (call x64.mov_rr c 32 (call r8) (call r8))
+    (call x64.mov_rr c 32 (call rax) (call rax))
+    (call x64.lea c 64 (call r10) (call x64.mem_index (call r8) (call r9) 1 0))
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call r10) (call (vec.at i32) (get l L.seg_lens) seg))
+    (call emit_trap_if l (call x64.cc_a) (get l L.out_of_bounds))
+    (call x64.lea c 64 (call r11) (call x64.mem_index (call rax) (call r9) 1 0))
+    (call load_mem_size l (call rcx))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call rcx))
+    (call emit_trap_if l (call x64.cc_a) (get l L.out_of_bounds))
+    (call x64.lea c 64 7 (call x64.mem_index (call r15) (call rax) 1 0))
+    (call x64.mov_ri32 c 6 (call (vec.at i32) (get l L.seg_addrs) seg))
+    (call x64.alu_rr c 64 (call x64.op_add) 6 (call r8))
+    (call x64.mov_rr c 64 (call rcx) (call r9))
+    (call x64.rep_movsb c))
 
   ;; checked_address for an atomic 4-byte access: first traps unless
   ;; address + offset is 4-aligned (before the bounds check, as wasmtime
@@ -589,9 +696,12 @@
   ;; them readable and writable (mprotect). They are zero, never touched.
   (fn emit_memory_grow [l:(ptr L)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
-    (let rdx:i32 2) (let rsi:i32 6) (let rdi:i32 7)
+    (let rdx:i32 2) (let rsi:i32 6) (let rdi:i32 7) (let rbx:i32 3)
     (call pop_rax l)
-    (call x64.mov_rr c 32 (call rax) (call rax))
+    (call x64.mov_rr c 32 rbx (call rax))
+    ;; retry from here if another thread changed the size meanwhile
+    (let retry:i32 (call buf.len c))
+    (call x64.mov_rr c 64 (call rax) rbx)
     (call load_mem_size l rdx)
     (call x64.mov_rr c 64 (call r8) rdx)
     (call x64.shift_ri c 64 (call x64.sh_shr) (call r8) 16)              ;; r8 = old pages
@@ -608,10 +718,15 @@
     (call x64.syscall c)
     (call x64.test_rr c 64 (call rax) (call rax))
     (let refused:i32 (call x64.jcc c (call x64.cc_ne)))
-    (call x64.mov_rr c 64 (call rax) (call r9))
+    ;; publish the new size if it is still the one read: cmpxchg on the cell
+    (call x64.mov_rr c 64 (call rcx) (call r9))
+    (call x64.shift_ri c 64 (call x64.sh_shl) (call rcx) 16)
+    (call x64.mov_rr c 64 (call rax) (call r8))
     (call x64.shift_ri c 64 (call x64.sh_shl) (call rax) 16)
-    (call x64.mov_ri32 c (call rcx) (get l L.mem_cell))
-    (call x64.store c 64 (call x64.mem (call rcx) 0) (call rax))
+    (call x64.mov_ri32 c (call r10) (get l L.mem_cell))
+    (call x64.lock c)
+    (call x64.cmpxchg c 64 (call x64.mem (call r10) 0) (call rcx))
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ne)) retry)
     (call x64.mov_rr c 64 (call rax) (call r8))
     (let done:i32 (call x64.jmp c))
     (call x64.patch_rel32 c too_big (call buf.len c))
