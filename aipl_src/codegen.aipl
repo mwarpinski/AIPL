@@ -46,7 +46,15 @@
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
               structs:(arr (ptr StructInfo)) nstructs:i32
               wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32
-              uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32])
+              uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32
+              strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32])
+
+  ;; A string literal's spelling (a span of the source; pos -1 for the
+  ;; newline sys.print reserves) and the address of its interned bytes. The
+  ;; blob holds every distinct literal as [len u32 LE][bytes], in first-use
+  ;; order; it becomes the data segment at 1024, so an address is 1028 + the
+  ;; offset of the bytes in the blob.
+  (struct StrLit [pos:i32 len:i32 addr:i32])
 
   ;; A call_ref signature as wasm sees it: parameter value-type bytes and an
   ;; optional result (so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
@@ -90,18 +98,18 @@
     (put cg Cg.uses_refs false)
     (put cg Cg.sigs (arr.new (ptr Sig) 31))
     (put cg Cg.nsigs 0)
+    (put cg Cg.strs (arr.new (ptr StrLit) 1364))
+    (put cg Cg.nstrs 0)
+    (put cg Cg.blob (call buf.make 4096))
+    (put cg Cg.newline 0)
     cg)
 
   ;; ===== Runtime memory cells (AIPL_SPEC.md 7.9) =====
   ;; The compile's state is in Cg. These cells remain:
   ;;   mem[4]  = compile error code (0 = none; read by the host)
-  ;;   mem[12] = string state block pointer (16384 bytes: blob len, count,
-  ;;             newline addr, blob buffer ptr, then 1364 12-byte entries;
-  ;;             the blob buffer holds 65536 bytes)
   ;;   mem[16] = keyword map (Keywords)
   ;;   mem[44], mem[48] = callee name span after compile error 1452 (read by the host)
   ;;   mem[60] = compiled module output pointer (read by the host)
-  (fn str_table_ptr [] -> i32 (mem.load32 12))
 
   ;; The structured instructions around the code being compiled, innermost
   ;; last, so break and continue can compute their branch depth (wasm.rs
@@ -128,32 +136,19 @@
     (call set_compile_error CgErr.jump_outside_loop)
     0)
   (fn kw [] -> i32 (mem.load32 16))
-  (fn get_str_blob_len [] -> i32 (mem.load32 (+ (call str_table_ptr) 0)))
-  (fn set_str_blob_len [len:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 0) len) 0)
-  (fn get_str_count [] -> i32 (mem.load32 (+ (call str_table_ptr) 4)))
-  (fn set_str_count [cnt:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 4) cnt) 0)
-  (fn get_newline_addr [] -> i32 (mem.load32 (+ (call str_table_ptr) 8)))
-  (fn set_newline_addr [addr:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 8) addr) 0)
-  (fn str_blob_buf [] -> i32 (mem.load32 (+ (call str_table_ptr) 12)))
-  (fn str_entry_ptr [idx:i32] -> i32 (+ (+ (call str_table_ptr) 16) (* idx 12)))
   ;; String literals are placed at 1024; the heap starts at the first 8-aligned
   ;; address after them (wasm.rs heap_start_after), and stores below it trap.
-  (fn heap_start [] -> i32 (bitand (+ 1031 (call get_str_blob_len)) -8))
+  (fn heap_start [cg:(ptr Cg)] -> i32 (bitand (+ 1031 (call buf.len (get cg Cg.blob))) -8))
 
   ;; Idempotent: allocates the tables on first call, and clears error flags.
   (fn codegen_init [] -> i32
     (if (eq (mem.load32 16) 0)
         (block
-          (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (ptr.addr (call new_keywords)))
-          (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           0)
         0)
 
     (mem.store32 4 0)
-    (call set_str_blob_len 0)
-    (call set_str_count 0)
-    (call set_newline_addr 0)
     0)
 
   ;; ===== Keywords =====
@@ -740,7 +735,7 @@
     (mem.store8 (+ ptr 2) 0)
     3)
 
-  (fn emit_store_guard [ptr:i32 scratch_idx:i32] -> i32
+  (fn emit_store_guard [cg:(ptr Cg) ptr:i32 scratch_idx:i32] -> i32
     (let off:i32 0)
     (set! off (+ off (call emit_byte (+ ptr off) 34)))                  ;; local.tee
     (set! off (+ off (call compiler.encode_u32 (+ ptr off) scratch_idx)))
@@ -750,7 +745,7 @@
     (set! off (+ off (call emit_local_get (+ ptr off) scratch_idx)))
     (set! off (+ off (call emit_i32_const (+ ptr off) 64)))
     (set! off (+ off (call emit_byte (+ ptr off) 107)))                 ;; i32.sub
-    (set! off (+ off (call emit_i32_const (+ ptr off) (- (call heap_start) 64))))
+    (set! off (+ off (call emit_i32_const (+ ptr off) (- (call heap_start cg) 64))))
     (set! off (+ off (call emit_byte (+ ptr off) 73)))                  ;; i32.lt_u
     (set! off (+ off (call emit_byte (+ ptr off) 114)))                 ;; i32.or
     (set! off (+ off (call emit_byte (+ ptr off) 4)))                   ;; if
@@ -1053,22 +1048,20 @@
     (mem.alloc len))
 
   ;; ===== String Interning =====
+  ;; The address of the literal spelled by this span, or -1 if not interned.
   (fn find_interned_string [cg:(ptr Cg) pos:i32 len:i32] -> i32
-    (loop i 0 (- (call get_str_count) 1) 1
-      (let entry:i32 (call str_entry_ptr i))
-      (let e_pos:i32 (mem.load32 (+ entry 0)))
-      (if (and (neq e_pos -1) (call sym_eq cg pos len (+ (get cg Cg.src) e_pos) (mem.load32 (+ entry 4))))
-          (return (mem.load32 (+ entry 8)))
+    (loop i 0 (- (get cg Cg.nstrs) 1) 1
+      (let e:(ptr StrLit) (arr.get (ptr StrLit) (get cg Cg.strs) i))
+      (if (and (neq (get e StrLit.pos) -1) (call sym_eq cg pos len (+ (get cg Cg.src) (get e StrLit.pos)) (get e StrLit.len)))
+          (return (get e StrLit.addr))
           (block)))
     -1)
 
-;; The address of an interned string whose bytes equal the `n` bytes at
-  ;; `bytes`, or -1. Each blob string is a 4-byte length, then its bytes; an
-  ;; address is 1028 + the offset of its bytes in the blob.
-  (fn find_interned_content [bytes:i32 n:i32] -> i32
-    (let blob:i32 (call str_blob_buf))
+  ;; The address of interned bytes equal to the n bytes at `bytes`, or -1.
+  (fn find_interned_content [cg:(ptr Cg) bytes:i32 n:i32] -> i32
+    (let blob:i32 (get (get cg Cg.blob) buf.Buf.data))
     (let off:i32 0)
-    (let end:i32 (call get_str_blob_len))
+    (let end:i32 (call buf.len (get cg Cg.blob)))
     (while (lt off end)
       (let k:i32 (mem.load32 (+ blob off)))
       (if (and (eq k n) (call bytes_equal (+ blob (+ off 4)) bytes n))
@@ -1082,95 +1075,70 @@
       (if (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false) (block)))
     true)
 
+  (fn add_str_entry [cg:(ptr Cg) pos:i32 len:i32 addr:i32] -> void
+    (let e:(ptr StrLit) (new StrLit))
+    (put e StrLit.pos pos)
+    (put e StrLit.len len)
+    (put e StrLit.addr addr)
+    (arr.set (ptr StrLit) (get cg Cg.strs) (get cg Cg.nstrs) e)
+    (put cg Cg.nstrs (+ (get cg Cg.nstrs) 1)))
+
+  ;; Appends [len u32 LE][bytes] to the blob; returns the bytes' address.
+  (fn append_to_blob [cg:(ptr Cg) bytes:i32 n:i32] -> i32
+    (let blob:(ptr buf.Buf) (get cg Cg.blob))
+    (let addr:i32 (+ 1028 (call buf.len blob)))
+    (call buf.push_byte blob (bitand n 255))
+    (call buf.push_byte blob (bitand (shr n 8) 255))
+    (call buf.push_byte blob (bitand (shr n 16) 255))
+    (call buf.push_byte blob (bitand (shr n 24) 255))
+    (loop i 0 (- n 1) 1 (call buf.push_byte blob (mem.load8 (+ bytes i))))
+    addr)
+
+  ;; Interns the literal spelled by this span (escapes decoded) by content,
+  ;; as wasm.rs string_layout does; returns its address. Past 64 KiB of
+  ;; literals or 1364 spellings: compile error 768.
   (fn intern_string [cg:(ptr Cg) pos:i32 len:i32] -> i32
     (let existing:i32 (call find_interned_string cg pos len))
     (if (neq existing -1) (return existing) (block))
-    ;; the blob buffer and entry table are full: compile error 768
-    (if (or (gt (+ (call get_str_blob_len) (+ 4 len)) 65536) (gte (call get_str_count) 1364))
+    (if (or (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536) (gte (get cg Cg.nstrs) 1364))
         (block (call set_compile_error CgErr.too_many_literals) (return 1028))
         (block))
-    (let blob_len:i32 (call get_str_blob_len))
-    (let addr:i32 (+ 1028 blob_len))
-    ;; Decode escapes while writing bytes into str_blob_buf heap memory
-    (let write_ptr:i32 (+ (call str_blob_buf) (+ blob_len 4)))
-    (let decoded_len:i32 0)
+    (let text:(ptr buf.Buf) (call buf.make (+ len 1)))
     (let i:i32 0)
     (while (lt i len)
       (let b:i32 (mem.load8 (+ (get cg Cg.src) (+ pos i))))
       (if (and (eq b 92) (lt (+ i 1) len))
           (block
             (let nb:i32 (mem.load8 (+ (get cg Cg.src) (+ pos (+ i 1)))))
-            (let esc:i32 nb)
-            (cond
-              ((eq nb 110) (set! esc 10))
-              ((eq nb 116) (set! esc 9))
-              ((eq nb 114) (set! esc 13))
-              ((eq nb 48) (set! esc 0))
-              ((eq nb 92) (set! esc 92))
-              ((eq nb 34) (set! esc 34))
-              (else (set! esc nb)))
-            (mem.store8 (+ write_ptr decoded_len) esc)
-            (set! decoded_len (+ decoded_len 1))
+            (call buf.push_byte text
+                  (cond
+                    ((eq nb 110) 10)
+                    ((eq nb 116) 9)
+                    ((eq nb 114) 13)
+                    ((eq nb 48) 0)
+                    (else nb)))
             (set! i (+ i 2)))
           (block
-            (mem.store8 (+ write_ptr decoded_len) b)
-            (set! decoded_len (+ decoded_len 1))
+            (call buf.push_byte text b)
             (set! i (+ i 1)))))
-    ;; Literals are interned by content, as wasm.rs string_layout does: if
-    ;; these bytes are already in the blob (another spelling of the same
-    ;; text, or the newline sys.print reserves), this spelling points there.
-    (let same:i32 (call find_interned_content write_ptr decoded_len))
-    (if (neq same -1)
-        (block
-          (let sc:i32 (call get_str_count))
-          (let e:i32 (call str_entry_ptr sc))
-          (mem.store32 (+ e 0) pos)
-          (mem.store32 (+ e 4) len)
-          (mem.store32 (+ e 8) same)
-          (call set_str_count (+ sc 1))
-          (return same))
-        (block))
-    ;; Store length as 4 LE bytes at blob_ptr in heap memory
-    (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
-    (mem.store8 (+ blob_ptr 0) (bitand decoded_len 255))
-    (mem.store8 (+ blob_ptr 1) (bitand (shr decoded_len 8) 255))
-    (mem.store8 (+ blob_ptr 2) (bitand (shr decoded_len 16) 255))
-    (mem.store8 (+ blob_ptr 3) (bitand (shr decoded_len 24) 255))
-
-    (let new_blob_len:i32 (+ blob_len (+ 4 decoded_len)))
-    (call set_str_blob_len new_blob_len)
-
-    (let scount:i32 (call get_str_count))
-    (let entry:i32 (call str_entry_ptr scount))
-    (mem.store32 (+ entry 0) pos)
-    (mem.store32 (+ entry 4) len)
-    (mem.store32 (+ entry 8) addr)
-    (call set_str_count (+ scount 1))
+    ;; another spelling of the same text (or the reserved newline) shares it
+    (let data:i32 (get text buf.Buf.data))
+    (let addr:i32 (call find_interned_content cg data (call buf.len text)))
+    (if (eq addr -1) (set! addr (call append_to_blob cg data (call buf.len text))) (block))
+    (call add_str_entry cg pos len addr)
     addr)
 
-  (fn intern_newline [] -> i32
-    (if (neq (call get_newline_addr) 0)
-        (call get_newline_addr)
+  ;; The newline sys.print writes after each argument, interned once.
+  (fn intern_newline [cg:(ptr Cg)] -> i32
+    (if (eq (get cg Cg.newline) 0)
         (block
-          (let blob_len:i32 (call get_str_blob_len))
-          (let addr:i32 (+ 1028 blob_len))
-          (let write_ptr:i32 (+ (call str_blob_buf) (+ blob_len 4)))
-          (mem.store8 write_ptr 10)
-          (let blob_ptr:i32 (+ (call str_blob_buf) blob_len))
-          (mem.store8 (+ blob_ptr 0) 1)
-          (mem.store8 (+ blob_ptr 1) 0)
-          (mem.store8 (+ blob_ptr 2) 0)
-          (mem.store8 (+ blob_ptr 3) 0)
-          (let new_blob_len:i32 (+ blob_len 5))
-          (call set_str_blob_len new_blob_len)
-          (let scount:i32 (call get_str_count))
-          (let entry:i32 (call str_entry_ptr scount))
-          (mem.store32 (+ entry 0) -1)
-          (mem.store32 (+ entry 4) 1)
-          (mem.store32 (+ entry 8) addr)
-          (call set_str_count (+ scount 1))
-          (call set_newline_addr addr)
-          addr)))
+          (let nl:i32 (mem.alloc 8))
+          (mem.store8 nl 10)
+          (let addr:i32 (call append_to_blob cg nl 1))
+          (call add_str_entry cg -1 1 addr)
+          (put cg Cg.newline addr))
+        (block))
+    (get cg Cg.newline))
 
   ;; A wasm name: its length (LEB128), then its bytes. Returns the byte count.
   (fn emit_name [ptr:i32 s:str] -> i32
@@ -1347,7 +1315,7 @@
 
     ;; Pass 2: Intern newline if sys.print is present and fd_write used
     (if (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root))
-        (block (call intern_newline) 0)
+        (block (call intern_newline cg) 0)
         0)
 
     ;; Pass 3: Intern string literals
@@ -1643,13 +1611,13 @@
         (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 41 3))))
         (block))
     (if (eq op_id Kw.mem_store8)
-        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 58 0))))
+        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard cg (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 58 0))))
         (block))
     (if (eq op_id Kw.mem_store32)
-        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 54 2))))
+        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard cg (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 54 2))))
         (block))
     (if (eq op_id Kw.mem_store64)
-        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 55 3))))
+        (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (let g:i32 (call emit_store_guard cg (+ out_ptr n1) (get cg Cg.nlocals))) (let n2:i32 (call compile_expr cg (call nth_child node 2) (+ out_ptr (+ n1 g)))) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 55 3))))
         (block))
     (if (eq op_id Kw.not)
         (block (let n1:i32 (call compile_expr cg (call nth_child node 1) out_ptr)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 69))))
@@ -1685,7 +1653,7 @@
             (set! off (+ off (call emit_memop (+ out_ptr off) 40 2))) ;; load
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
             ;; iov1 = { "\n", 1 }
-            (let nl_addr:i32 (call get_newline_addr))
+            (let nl_addr:i32 (get cg Cg.newline))
             (set! off (+ off (call emit_rt cg (+ out_ptr off) 72)))
             (set! off (+ off (call emit_i32_const (+ out_ptr off) nl_addr)))
             (set! off (+ off (call emit_memop (+ out_ptr off) 54 2)))
@@ -2013,7 +1981,7 @@
           (let f_offset:i32 (call get_field_offset cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let ftype:Ty (call get_field_type cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let off:i32 (call compile_expr cg ptr_node out_ptr))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call compile_expr cg val_node (+ out_ptr off))))
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) (call store_opcode ftype) (call mem_align ftype) f_offset)))
           (set! res off))
@@ -2085,7 +2053,7 @@
           (set! off (+ off (call emit_i32_const (+ out_ptr off) (call type_size etype))))
           (set! off (+ off (call emit_byte (+ out_ptr off) 108)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call compile_expr cg val_node (+ out_ptr off))))
           (set! off (+ off (call emit_memop (+ out_ptr off) (call store_opcode etype) (call mem_align etype))))
           (set! res off))
@@ -2095,7 +2063,7 @@
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
           (set! off (+ off (call emit_atomic (+ out_ptr off) 30)))
           (set! res off))
@@ -2104,7 +2072,7 @@
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call compile_expr cg (call nth_child node 2) (+ out_ptr off))))
           (set! off (+ off (call compile_expr cg (call nth_child node 3) (+ out_ptr off))))
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_b)))
@@ -2120,7 +2088,7 @@
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call emit_local_set (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
@@ -2155,7 +2123,7 @@
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr cg (call nth_child node 1) (+ out_ptr off))))
-          (set! off (+ off (call emit_store_guard (+ out_ptr off) (get cg Cg.nlocals))))
+          (set! off (+ off (call emit_store_guard cg (+ out_ptr off) (get cg Cg.nlocals))))
           (set! off (+ off (call emit_byte (+ out_ptr off) 34)))
           (set! off (+ off (call compiler.encode_u32 (+ out_ptr off) io_a)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
@@ -2450,7 +2418,7 @@
           (set! worker_type (call worker_sig_index cg)))
         (block))
     ;; Literals plus the heap start must fit in the initial 16 pages (wasm.rs STRING_DATA_LIMIT).
-    (if (gt (call heap_start) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
+    (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
     (let _s:i32 (call collect_structs cg root))
     (let import_count:i32 (get cg Cg.nimports))
     (let func_count:i32 (call collect_functions cg root))
@@ -2763,7 +2731,7 @@
         (block))
 
     ;; Data Count Section (Section ID 12), threaded only (memory.init needs it)
-    (let n_segments:i32 (if (gt (call get_str_blob_len) 0) 2 1))
+    (let n_segments:i32 (if (gt (call buf.len (get cg Cg.blob)) 0) 2 1))
     (if (call threaded cg)
         (block
           (mem.store8 (+ out off) 12) (mem.store8 (+ out (+ off 1)) 1) (mem.store8 (+ out (+ off 2)) n_segments)
@@ -2831,7 +2799,7 @@
 
     (if (call threaded cg)
         (block
-          (let b1:i32 (call threaded_init_body fcode_scratch (call get_str_blob_len)))
+          (let b1:i32 (call threaded_init_body fcode_scratch (call buf.len (get cg Cg.blob))))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) b1)))
           (loop k 0 (- b1 1) 1 (mem.store8 (+ scratch (+ sc_off k)) (mem.load8 (+ fcode_scratch k))))
           (set! sc_off (+ sc_off b1))
@@ -2863,7 +2831,7 @@
 
     ;; 7. Data Section (Section ID 11)
     (set! sc_off 0)
-    (let string_blob_len:i32 (call get_str_blob_len))
+    (let string_blob_len:i32 (call buf.len (get cg Cg.blob)))
     (let has_strings:bool (gt string_blob_len 0))
     (let seg_cnt:i32 1)
     (if has_strings (set! seg_cnt 2) (set! seg_cnt 1))
@@ -2879,7 +2847,7 @@
           (set! sc_off (+ sc_off (call encode_s32 (+ scratch sc_off) 0)))
           (mem.store8 (+ scratch sc_off) 11) (set! sc_off (+ sc_off 1)))) ;; end
     (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 4))) ;; 4 bytes
-    (mem.store32 (+ scratch sc_off) (call heap_start))
+    (mem.store32 (+ scratch sc_off) (call heap_start cg))
     (set! sc_off (+ sc_off 4))
 
     ;; Segment 1: string blob at address 1024
@@ -2895,7 +2863,7 @@
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) string_blob_len)))
           (set! i 0)
           (while (lt i string_blob_len)
-            (mem.store8 (+ scratch sc_off) (mem.load8 (+ (call str_blob_buf) i)))
+            (mem.store8 (+ scratch sc_off) (mem.load8 (+ (get (get cg Cg.blob) buf.Buf.data) i)))
             (set! sc_off (+ sc_off 1))
             (set! i (+ i 1)))
           0)
