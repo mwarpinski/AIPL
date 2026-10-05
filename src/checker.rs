@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     match ty {
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) => Ok((4, 4)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
     }
@@ -20,6 +20,23 @@ pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Typ
         offset += s;
     }
     Err(format!("Struct '{}' has no field '{}'", def.name, field_name))
+}
+
+/// Where each field of a union variant lives in its cell: the tag (i32) is
+/// at offset 0 and the fields follow from offset 4, laid out like a struct's.
+/// Returns the field offsets and the cell's size.
+pub fn variant_layout(v: &Variant) -> Result<(Vec<usize>, usize), String> {
+    let mut offset = 4;
+    let mut max_align = 4;
+    let mut offsets = Vec::new();
+    for f in &v.fields {
+        let (s, a) = type_size_and_align(&f.ty)?;
+        max_align = max_align.max(a);
+        offset = (offset + a - 1) & !(a - 1);
+        offsets.push(offset);
+        offset += s;
+    }
+    Ok((offsets, (offset + max_align - 1) & !(max_align - 1)))
 }
 
 pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
@@ -42,8 +59,13 @@ pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
     struct_defs: HashMap<String, StructDef>,
     enum_defs: HashMap<String, EnumDef>,
+    union_defs: HashMap<String, UnionDef>,
     /// Number of while/loop bodies enclosing the expression being checked.
     loop_depth: std::cell::Cell<u32>,
+    /// Every name declared in the function being checked, with its type: a
+    /// compiled function has one local per name, so a name declared again in
+    /// another scope (a sibling block, another arm) must keep its type.
+    declared: std::cell::RefCell<HashMap<String, Type>>,
     /// Return type of the function body being checked; None inside contracts.
     return_type: std::cell::RefCell<Option<Type>>,
 }
@@ -54,6 +76,8 @@ impl TypeChecker {
             fn_signatures: HashMap::new(),
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
+            union_defs: HashMap::new(),
+            declared: std::cell::RefCell::new(HashMap::new()),
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
         }
@@ -108,10 +132,48 @@ impl TypeChecker {
             self.struct_defs.insert(s.name.clone(), s.clone());
         }
 
-        // Field types may name structs defined later in the module.
+        // Register union definitions (AIPL_SPEC.md 4.J)
+        for u in &module.unions {
+            let (l, c) = u.span;
+            if self.union_defs.contains_key(&u.name) {
+                return Err(format!("{}:{}: Duplicate union definition '{}'", l, c, u.name));
+            }
+            if self.struct_defs.contains_key(&u.name) || self.enum_defs.contains_key(&u.name) {
+                return Err(format!("{}:{}: '{}' is defined as a union and as a struct or enum", l, c, u.name));
+            }
+            if u.variants.is_empty() {
+                return Err(format!("{}:{}: union '{}' has no variants", l, c, u.name));
+            }
+            for (i, v) in u.variants.iter().enumerate() {
+                if !v.name.starts_with(|ch: char| ch.is_ascii_lowercase() || ch == '_') {
+                    return Err(format!("{}:{}: union variant '{}.{}' must start with a lowercase letter or '_'", l, c, u.name, v.name));
+                }
+                if u.variants[..i].iter().any(|w| w.name == v.name) {
+                    return Err(format!("{}:{}: union '{}' has two variants named '{}'", l, c, u.name, v.name));
+                }
+                for (j, f) in v.fields.iter().enumerate() {
+                    if v.fields[..j].iter().any(|g| g.name == f.name) {
+                        return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, u.name, v.name, f.name));
+                    }
+                    type_size_and_align(&f.ty)
+                        .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
+                }
+            }
+            self.union_defs.insert(u.name.clone(), u.clone());
+        }
+
+        // Field types may name structs and unions defined later in the module.
         for s in &module.structs {
             for f in &s.fields {
                 self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, s.name))?;
+            }
+        }
+        for u in &module.unions {
+            for v in &u.variants {
+                for f in &v.fields {
+                    self.validate_type(&f.ty, u.span)
+                        .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, u.name, v.name))?;
+                }
             }
         }
 
@@ -161,6 +223,13 @@ impl TypeChecker {
                 self.validate_type(ret, span)
             }
             Type::Enum(name) if self.enum_defs.contains_key(name) => Ok(()),
+            // only enum.cast names an enum type outside a type position
+            Type::Enum(name) if self.union_defs.contains_key(name) => Err(format!(
+                "{}:{}: '{}' is a union, not an enum: its values are made with (make {}.variant ...)",
+                span.0, span.1, name, name
+            )),
+            Type::Union(name) if self.union_defs.contains_key(name) => Ok(()),
+            Type::Union(name) => Err(format!("{}:{}: Unknown union '{}'", span.0, span.1, name)),
             Type::Enum(name) if self.struct_defs.contains_key(name) => Err(format!(
                 "{}:{}: '{}' is a struct, which is only used through a pointer: write (ptr {})",
                 span.0, span.1, name, name
@@ -182,9 +251,26 @@ impl TypeChecker {
         self.struct_defs.get(name)
     }
 
+    /// Records a local's declaration; see `declared`.
+    fn declare(&self, name: &str, ty: &Type, (l, c): (u32, u32)) -> Result<(), String> {
+        let mut declared = self.declared.borrow_mut();
+        match declared.get(name) {
+            Some(prev) if prev != ty => Err(format!(
+                "{}:{}: '{}' is {:?} here but {:?} elsewhere in this function; a name keeps one type per function (rename one)",
+                l, c, name, ty, prev
+            )),
+            _ => {
+                declared.insert(name.to_string(), ty.clone());
+                Ok(())
+            }
+        }
+    }
+
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
         let mut env = HashMap::new();
+        self.declared.borrow_mut().clear();
         for (param_name, param_ty) in &f.params {
+            self.declared.borrow_mut().insert(param_name.clone(), param_ty.clone());
             self.validate_type(param_ty, f.span)
                 .map_err(|e| format!("{} (parameter '{}' of '{}')", e, param_name, f.name))?;
             env.insert(param_name.clone(), param_ty.clone());
@@ -278,6 +364,7 @@ impl TypeChecker {
                         l, c, ty, val_ty
                     ));
                 }
+                self.declare(name, ty, (l, c))?;
                 env.insert(name.clone(), ty.clone());
                 Ok(Type::Void)
             }
@@ -324,6 +411,7 @@ impl TypeChecker {
                     return Err(format!("{}:{}: Cannot shadow existing variable '{}' in loop", l, c, var));
                 }
                 let mut local_env = env.clone();
+                self.declare(var, &Type::I32, (l, c))?;
                 local_env.insert(var.clone(), Type::I32);
                 self.check_loop_body(body, &mut local_env)?;
                 Ok(Type::Void)
@@ -385,6 +473,20 @@ impl TypeChecker {
             Expr::Op { op, args, .. } => {
                 check_literal_address(op, args, l, c)?;
                 match op {
+                OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: {:?} requires 2 arguments", l, c, op));
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != t2 {
+                        return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
+                    }
+                    if !matches!(t1, Type::I32 | Type::I64) {
+                        return Err(format!("{}:{}: {:?} is integer arithmetic (i32 or i64), got {:?}", l, c, op, t1));
+                    }
+                    Ok(t1)
+                }
                 OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::DivU | OpCode::RemU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: Arithmetic/bitwise opcode {:?} requires 2 arguments", l, c, op));
@@ -394,7 +496,7 @@ impl TypeChecker {
                     // A pointer, function ref, or enum operand gets its own
                     // explanation even when the other operand is a number:
                     // (+ p 4), (+ 1 e).
-                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_));
+                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_));
                     let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
                     if t1 != t2 && !special(&t1) {
                         return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
@@ -404,6 +506,9 @@ impl TypeChecker {
                             "{}:{}: {:?} on {:?}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
                         ));
+                    }
+                    if let Type::Union(u) = &t1 {
+                        return Err(format!("{}:{}: {:?} on union '{}': unions have no arithmetic; take them apart with match", l, c, op, u));
                     }
                     if let Type::Enum(e) = &t1 {
                         return Err(format!(
@@ -530,7 +635,8 @@ impl TypeChecker {
                 OpCode::AtomicAdd => Ok(Type::I32),
                 OpCode::AtomicCas => Ok(Type::Bool),
                 OpCode::AtomicLock | OpCode::AtomicUnlock => Ok(Type::Void),
-                OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte => {
+                OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
+                | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: Comparison opcode {:?} requires 2 arguments", l, c, op));
                     }
@@ -538,6 +644,12 @@ impl TypeChecker {
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
+                    }
+                    if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
+                        return Err(format!("{}:{}: {:?} compares integers (i32 or i64) as unsigned, got {:?}", l, c, op, t1));
+                    }
+                    if let Type::Union(u) = &t1 {
+                        return Err(format!("{}:{}: {:?} on union '{}': union values do not compare; take them apart with match", l, c, op, u));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
@@ -755,6 +867,7 @@ impl TypeChecker {
                     return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result ok arm", l, c, ok_var));
                 }
                 let mut ok_env = env.clone();
+                self.declare(ok_var, &ok_ty, (l, c))?;
                 ok_env.insert(ok_var.clone(), ok_ty);
                 let mut last_ok_ty = Type::Void;
                 for stmt in ok_body {
@@ -765,6 +878,7 @@ impl TypeChecker {
                     return Err(format!("{}:{}: Cannot shadow existing variable '{}' in match_result err arm", l, c, err_var));
                 }
                 let mut err_env = env.clone();
+                self.declare(err_var, &err_ty, (l, c))?;
                 err_env.insert(err_var.clone(), err_ty);
                 let mut last_err_ty = Type::Void;
                 for stmt in err_body {
@@ -923,10 +1037,12 @@ impl TypeChecker {
             },
             Expr::Null { ty, span } => {
                 self.validate_type(ty, *span)?;
+
                 Ok(ty.clone())
             }
             Expr::Cast { ty, addr, span } => {
                 self.validate_type(ty, *span)?;
+
                 let t = self.infer_expr_type(addr, env)?;
                 if t != Type::I32 {
                     if let Type::Enum(e) = ty {
@@ -962,6 +1078,112 @@ impl TypeChecker {
                     }
                 }
                 Ok(ret)
+            }
+            Expr::Make { union_name, variant, args, span } => {
+                let (l, c) = *span;
+                let Some(u) = self.union_defs.get(union_name) else {
+                    return Err(format!("{}:{}: Unknown union '{}' in make", l, c, union_name));
+                };
+                let Some(v) = u.variants.iter().find(|v| &v.name == variant) else {
+                    return Err(format!("{}:{}: union '{}' has no variant '{}'", l, c, union_name, variant));
+                };
+                if args.len() != v.fields.len() {
+                    return Err(format!(
+                        "{}:{}: make {}.{} takes {} values (its fields), got {}",
+                        l, c, union_name, variant, v.fields.len(), args.len()
+                    ));
+                }
+                for (a, f) in args.iter().zip(v.fields.iter()) {
+                    let at = self.infer_expr_type(a, env)?;
+                    if at != f.ty {
+                        return Err(format!("{}:{}: make {}.{}: field '{}' is {:?}, got {:?}", l, c, union_name, variant, f.name, f.ty, at));
+                    }
+                }
+                Ok(Type::Union(union_name.clone()))
+            }
+            Expr::Match { value, arms, else_body, span } => {
+                let (l, c) = *span;
+                let vt = self.infer_expr_type(value, env)?;
+                // the members in order, with each union variant's fields
+                let (tname, members): (String, Vec<(String, Option<&Vec<StructField>>)>) = match &vt {
+                    Type::Union(u) => (u.clone(), self.union_defs[u].variants.iter().map(|v| (v.name.clone(), Some(&v.fields))).collect()),
+                    Type::Enum(e) => (e.clone(), self.enum_defs[e].members.iter().map(|(m, _)| (m.clone(), None)).collect()),
+                    other => return Err(format!("{}:{}: match needs a union or enum value, got {:?}", l, c, other)),
+                };
+                let mut seen: Vec<&str> = Vec::new();
+                let mut arm_types = Vec::new();
+                for arm in arms {
+                    let (al, ac) = arm.span;
+                    let member = match arm.member.rfind('.') {
+                        Some(dot) if arm.member[..dot] == tname => &arm.member[dot + 1..],
+                        _ => {
+                            return Err(format!("{}:{}: a match arm on {} is ({}.member ...), got {}", al, ac, tname, tname, arm.member))
+                        }
+                    };
+                    let Some((_, fields)) = members.iter().find(|(m, _)| m == member) else {
+                        return Err(format!("{}:{}: {} has no member '{}'", al, ac, tname, member));
+                    };
+                    if seen.contains(&member) {
+                        return Err(format!("{}:{}: {}.{} is matched twice", al, ac, tname, member));
+                    }
+                    seen.push(member);
+                    let mut arm_env = env.clone();
+                    match (fields, &arm.binders) {
+                        (None, Some(_)) => {
+                            return Err(format!("{}:{}: {}.{} is an enum member; its arm binds nothing", al, ac, tname, member))
+                        }
+                        (None, None) => {}
+                        (Some(fields), binders) => {
+                            let names: &[String] = binders.as_deref().unwrap_or(&[]);
+                            if names.len() != fields.len() {
+                                let want: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                                return Err(format!(
+                                    "{}:{}: the {}.{} arm binds its {} fields in order: [{}], got {} names",
+                                    al, ac, tname, member, fields.len(), want.join(" "), names.len()
+                                ));
+                            }
+                            for (n, f) in names.iter().zip(fields.iter()) {
+                                if arm_env.contains_key(n) {
+                                    return Err(format!("{}:{}: Cannot shadow existing variable '{}' in the {}.{} arm", al, ac, n, tname, member));
+                                }
+                                self.declare(n, &f.ty, (al, ac))?;
+                                arm_env.insert(n.clone(), f.ty.clone());
+                            }
+                        }
+                    }
+                    let mut t = Type::Void;
+                    for stmt in &arm.body {
+                        t = self.infer_expr_type(stmt, &mut arm_env)?;
+                    }
+                    arm_types.push((format!("{}.{}", tname, member), t));
+                }
+                match else_body {
+                    Some(body) => {
+                        if seen.len() == members.len() {
+                            return Err(format!("{}:{}: the else arm never runs: every member of {} is matched", l, c, tname));
+                        }
+                        let mut else_env = env.clone();
+                        let mut t = Type::Void;
+                        for stmt in body {
+                            t = self.infer_expr_type(stmt, &mut else_env)?;
+                        }
+                        arm_types.push(("else".to_string(), t));
+                    }
+                    None => {
+                        let missing: Vec<String> =
+                            members.iter().filter(|(m, _)| !seen.contains(&m.as_str())).map(|(m, _)| format!("{}.{}", tname, m)).collect();
+                        if !missing.is_empty() {
+                            return Err(format!("{}:{}: match is missing {} (add those arms or an else arm)", l, c, missing.join(", ")));
+                        }
+                    }
+                }
+                let (first_name, first) = &arm_types[0];
+                for (name, t) in &arm_types[1..] {
+                    if t != first {
+                        return Err(format!("{}:{}: match arm type mismatch: {} yields {:?}, {} yields {:?}", l, c, first_name, first, name, t));
+                    }
+                }
+                Ok(first.clone())
             }
             Expr::Addr { val, kind, span } => {
                 let t = self.infer_expr_type(val, env)?;

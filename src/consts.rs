@@ -123,8 +123,24 @@ fn substitute(
     enums: &HashMap<String, Vec<(String, i64)>>,
     err: &dyn Fn(&Sx, &str) -> String,
 ) -> Result<(), String> {
+    let is_match = sx.head() == Some("match");
     let Sx::List { items, .. } = sx else { return Ok(()) };
     for i in 0..items.len() {
+        // a match arm's head names an enum member or union variant for the
+        // checker; it stays a name: (Color.red body...)
+        if is_match && i >= 2 {
+            if let Sx::List { items: arm, .. } = &mut items[i] {
+                if !arm.is_empty() {
+                    let placeholder = Sx::symbol_at("match-arm".into(), &arm[0]);
+                    let head = std::mem::replace(&mut arm[0], placeholder);
+                    substitute(&mut items[i], consts, enums, err)?;
+                    if let Sx::List { items: arm, .. } = &mut items[i] {
+                        arm[0] = head;
+                    }
+                    continue;
+                }
+            }
+        }
         let replacement = match &items[i] {
             Sx::Atom(Token { kind: TokenKind::Symbol(s), line, col }) => {
                 if let Some(value) = consts.get(s) {

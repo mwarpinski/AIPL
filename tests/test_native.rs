@@ -1418,6 +1418,10 @@ fn i64_operator_programs() -> Vec<(String, Vec<u8>)> {
         ("gt_s", I::I64GtS, R::Bool(|a, b| a > b)),
         ("le_s", I::I64LeS, R::Bool(|a, b| a <= b)),
         ("ge_s", I::I64GeS, R::Bool(|a, b| a >= b)),
+        ("lt_u", I::I64LtU, R::Bool(|a, b| (a as u64) < (b as u64))),
+        ("gt_u", I::I64GtU, R::Bool(|a, b| (a as u64) > (b as u64))),
+        ("le_u", I::I64LeU, R::Bool(|a, b| (a as u64) <= (b as u64))),
+        ("ge_u", I::I64GeU, R::Bool(|a, b| (a as u64) >= (b as u64))),
     ];
     let mut out = Vec::new();
     for (name, op, expected) in ops {
@@ -1503,6 +1507,8 @@ fn i32_operator_programs() -> Vec<(String, Vec<u8>)> {
         ("gt_u", I::I32GtU, |a, b| Some(((a as u32) > (b as u32)) as i32)),
         ("le_s", I::I32LeS, |a, b| Some((a <= b) as i32)),
         ("ge_s", I::I32GeS, |a, b| Some((a >= b) as i32)),
+        ("le_u", I::I32LeU, |a, b| Some(((a as u32) <= (b as u32)) as i32)),
+        ("ge_u", I::I32GeU, |a, b| Some(((a as u32) >= (b as u32)) as i32)),
     ];
     let mut out = Vec::new();
     for (name, op, expected) in ops {
@@ -2035,5 +2041,43 @@ fn the_compiler_runs_natively() {
     assert_eq!(usage.status.code(), usage_wasm.status.code());
     let missing = run_fresh_executable(Command::new(&exe).args(["examples/missing.aipl", "target/ne17/x.wasm"]).current_dir(root()), &[]);
     assert_ne!(missing.status.code(), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Checked arithmetic natively: the same values as under aipl-run, and an
+/// overflow traps with "integer overflow" (exit 134) in both.
+#[test]
+fn checked_arithmetic_matches_natively() {
+    let dir = scratch("checked");
+    let prog = dir.join("prog").display().to_string();
+    let ops = [
+        ("(checked.add 2147483646 1)", None),
+        ("(checked.sub -2147483647 1)", None),
+        ("(checked.mul 46340 46340)", None),
+        ("(i32.wrap (/ (checked.mul -3037000499i64 3037000499i64) 1000000i64))", None),
+        ("(i32.wrap (/ (checked.add 9223372036854775806i64 1i64) 4294967296i64))", None),
+        ("(checked.add 2147483647 1)", Some("integer overflow")),
+        ("(checked.sub -2147483648 1)", Some("integer overflow")),
+        ("(checked.mul 65536 32768)", Some("integer overflow")),
+        ("(i32.wrap (checked.add 9223372036854775807i64 1i64))", Some("integer overflow")),
+        ("(i32.wrap (checked.sub -9223372036854775808i64 1i64))", Some("integer overflow")),
+        ("(i32.wrap (checked.mul 3037000500i64 3037000500i64))", Some("integer overflow")),
+        ("(i32.wrap (checked.mul -1i64 -9223372036854775808i64))", Some("integer overflow")),
+    ];
+    for (e, trap) in ops {
+        let src = format!("(module m (import io) (fn main [] -> i32 (call io.println_int \"\" {e}) 0))");
+        let wasm = to_wasm(&src);
+        let native = run_native(&dir, &to_native(&wasm).unwrap());
+        let launched = run_wasm(&dir, &wasm);
+        assert_eq!(native.stdout, launched.stdout, "{e}");
+        assert_eq!(native.status.code(), launched.status.code(), "{e}");
+        match trap {
+            Some(reason) => {
+                assert_eq!(native.status.code(), Some(134), "{e}");
+                assert_eq!(String::from_utf8_lossy(&native.stderr), format!("{prog}: wasm trap: {reason}\n"), "{e}");
+            }
+            None => assert_eq!(native.status.code(), Some(0), "{e}: {}", String::from_utf8_lossy(&native.stderr)),
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -222,6 +222,23 @@ fn wasm_toolchain_compiles_constants_and_enums_across_modules() {
     }
 }
 
+/// Unions and match across modules (tests/aipl/sum_types.aipl, which imports
+/// tests/aipl/geometry.aipl directly and through an alias, matches its union
+/// and enum, and uses its union as a generic type argument): both resolvers
+/// rename the arms' heads alike, and the wasm toolchain compiles the result
+/// to the Rust toolchain's bytes.
+#[test]
+fn wasm_toolchain_compiles_sum_types_across_modules() {
+    let rel = "tests/aipl/sum_types.aipl";
+    assert_resolves_like_rust(rel);
+    let driver = driver_wasm();
+    match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+        wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+        wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+        wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+    }
+}
+
 /// The native backend (aipl_src/native/, reached through subdirectory
 /// imports) compiles to the Rust toolchain's bytes with the wasm toolchain.
 /// Run here, compiled, rather than in the VM like test_selfhost's parity

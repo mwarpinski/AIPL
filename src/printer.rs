@@ -21,6 +21,17 @@ pub fn print_module(m: &Module) -> String {
         let members: Vec<String> = e.members.iter().map(|(n, v)| format!("({} {})", n, v)).collect();
         out.push_str(&format!("  (enum {} [{}])\n", e.name, members.join(" ")));
     }
+    for u in &m.unions {
+        let variants: Vec<String> = u
+            .variants
+            .iter()
+            .map(|v| {
+                let fields: Vec<String> = v.fields.iter().map(|f| format!(" {}:{}", f.name, type_str(&f.ty))).collect();
+                format!("({}{})", v.name, fields.concat())
+            })
+            .collect();
+        out.push_str(&format!("  (union {} [{}])\n", u.name, variants.join(" ")));
+    }
     for s in &m.structs {
         let fields: Vec<String> = s.fields.iter().map(|f| format!("{}:{}", f.name, type_str(&f.ty))).collect();
         out.push_str(&format!("  (struct {} [{}])\n", s.name, fields.join(" ")));
@@ -63,7 +74,7 @@ pub fn type_str(t: &Type) -> String {
             let ps: Vec<String> = params.iter().map(type_str).collect();
             format!("(fn [{}] -> {})", ps.join(" "), type_str(ret))
         }
-        Type::Enum(name) => name.clone(),
+        Type::Enum(name) | Type::Union(name) => name.clone(),
     }
 }
 
@@ -156,6 +167,13 @@ pub fn op_name(op: &OpCode) -> &'static str {
         Neq => "neq",
         Lt => "lt",
         Lte => "lte",
+        LtU => "ltu",
+        CheckedAdd => "checked.add",
+        CheckedSub => "checked.sub",
+        CheckedMul => "checked.mul",
+        LteU => "lteu",
+        GtU => "gtu",
+        GteU => "gteu",
         Gt => "gt",
         Gte => "gte",
         And => "and",
@@ -257,6 +275,24 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::Continue(_) => "(continue)".to_string(),
         Expr::CallRef { sig, func, args, .. } => {
             with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
+        }
+        Expr::Make { union_name, variant, args, .. } => with_body(format!("make {}.{}", union_name, variant), args),
+        Expr::Match { value, arms, else_body, .. } => {
+            let mut out = format!("(match {}", expr_str(value));
+            for arm in arms {
+                let head = match &arm.binders {
+                    Some(names) => format!("{} [{}]", arm.member, names.join(" ")),
+                    None => arm.member.clone(),
+                };
+                out.push(' ');
+                out.push_str(&with_body(head, &arm.body));
+            }
+            if let Some(body) = else_body {
+                out.push(' ');
+                out.push_str(&with_body("else".to_string(), body));
+            }
+            out.push(')');
+            out
         }
         Expr::Addr { val, kind, .. } => {
             let head = match kind {

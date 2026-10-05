@@ -85,11 +85,18 @@ impl Resolver {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
         let flat = crate::consts::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], functions: vec![] };
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![] };
+        let unions: HashSet<String> = flat
+            .structs
+            .iter()
+            .filter(|i| i.sx.head() == Some("union"))
+            .filter_map(|i| i.sx.items().get(1).and_then(|n| n.symbol()).map(String::from))
+            .collect();
         for item in flat.structs.iter().chain(flat.fns.iter()) {
-            let parsed = parse_item(&flat.name, item)?;
+            let parsed = parse_item(&flat.name, item, &unions)?;
             module.structs.extend(parsed.structs);
             module.enums.extend(parsed.enums);
+            module.unions.extend(parsed.unions);
             module.functions.extend(parsed.functions);
         }
         Ok(module)
@@ -117,13 +124,13 @@ impl Resolver {
 }
 
 /// Parses one item as `(module NAME item)`, prefixing errors with its file.
-fn parse_item(module_name: &str, item: &Item) -> Result<Module, String> {
+fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Result<Module, String> {
     let (line, col) = item.sx.position();
     let tok = |kind| Token { kind, line, col };
     let mut tokens = vec![tok(TokenKind::LParen), tok(TokenKind::Symbol("module".into())), tok(TokenKind::Symbol(module_name.into()))];
     item.sx.flatten(&mut tokens);
     tokens.push(tok(TokenKind::RParen));
-    Parser::parse_tokens(tokens).map_err(|e| format!("{}: {}", item.file.display(), e))
+    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| format!("{}: {}", item.file.display(), e))
 }
 
 fn read_module(src: &str) -> Result<ModuleSx, String> {
@@ -236,7 +243,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
             match item.head() {
                 Some("fn") => names.fns.insert(n.to_string()),
                 Some("struct") => names.structs.insert(n.to_string()),
-                Some("const" | "enum") => names.decls.insert(n.to_string()),
+                Some("const" | "enum" | "union") => names.decls.insert(n.to_string()),
                 _ => false,
             };
             if generic {
@@ -256,7 +263,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     for mut item in module.items {
         names.walk(&mut item, 0);
         let it = Item { sx: item, file: file.to_path_buf() };
-        if matches!(it.sx.head(), Some("struct" | "const" | "enum")) {
+        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
             out_structs.push(it);
         } else {
             out_fns.push(it);
@@ -380,6 +387,20 @@ impl Names<'_> {
                         // the head of a (...) form is a keyword or an op
                         // (`mem.alloc`), never a renamed name
                         if head.is_some() {
+                            continue;
+                        }
+                    }
+                    // a match arm's head names a member of the matched type:
+                    // (Shape.circle [r] ...) in module m is m.Shape.circle
+                    if head.as_deref() == Some("match") && i >= 2 {
+                        if let Some(arm) = child.items_mut() {
+                            for (j, part) in arm.iter_mut().enumerate() {
+                                match part {
+                                    Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => *s = self.rename(s, 0),
+                                    _ if j == 0 => {}
+                                    _ => self.walk(part, 0),
+                                }
+                            }
                             continue;
                         }
                     }

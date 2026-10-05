@@ -11,9 +11,10 @@
   (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float (paren 20) (bracket 21)])
 
   (struct Token [kind:Kind a:i32 b:i32])
-  ;; Node.a is a union: an atom's value (or source offset), or for a group the
-  ;; address of its first child, which is read back with (ptr.cast Node ...).
-  (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node)])
+  ;; An atom's a and b are its token's (a value, or a span of the source); a
+  ;; group's b is its child count and first its first child. next links
+  ;; siblings.
+  (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node) first:(ptr Node)])
 
 ;; Unsigned LEB128 of val at ptr (val read as unsigned); returns the byte count.
   (fn encode_u32 [ptr:i32 val:i32] -> i32
@@ -182,10 +183,9 @@
 
   ;; ===== Parser: tokens -> a tree of Nodes =====
   ;; An atom's node has its token's kind, a, and b. A group's ("(...)" or
-  ;; "[...]") a is its first child's address (read it back with
-  ;; ptr.cast; codegen's first_child) and b its child count; next links
+  ;; "[...]") first is its first child and b its child count; next links
   ;; siblings. Nodes are bump-allocated in the buffer the caller provides
-  ;; (16 bytes each, at most one per token, plus 8).
+  ;; ((sizeof Node) bytes each, at most one per token, plus 8).
 
   (struct Parser [tokens:i32 count:i32 pos:i32 ast:i32 used:i32])
 
@@ -195,6 +195,7 @@
     (put node Node.a a)
     (put node Node.b b)
     (put node Node.next (ptr.null Node))
+    (put node Node.first (ptr.null Node))
     (put p Parser.used (+ (get p Parser.used) (sizeof Node)))
     node)
 
@@ -221,7 +222,9 @@
       (set! n (+ n 1)))
     ;; the closing bracket (absent at the end of an unbalanced input)
     (if (lt (get p Parser.pos) (get p Parser.count)) (put p Parser.pos (+ (get p Parser.pos) 1)) (block))
-    (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) (ptr.addr first) n))
+    (let group:(ptr Node) (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) 0 n))
+    (put group Node.first first)
+    group)
 
   ;; The tree of the token_count tokens at token_ptr, with its nodes in the
   ;; buffer at ast_out_ptr.
@@ -283,7 +286,7 @@
     (let tok:i32 (mem.alloc 2048))
     (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
     (let root:(ptr Node) (call parse_ast tok n (mem.alloc 4096)))
-    (let c0:(ptr Node) (ptr.cast Node (get root Node.a)))
+    (let c0:(ptr Node) (get root Node.first))
     (let c1:(ptr Node) (get c0 Node.next))
     (let c2:(ptr Node) (get c1 Node.next))
     (if (and (eq n 5)
@@ -302,8 +305,8 @@
     (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
     (let root:(ptr Node) (call parse_ast tok n (mem.alloc 4096)))
     ;; the third child is the parameter list [x:i32]
-    (let params:(ptr Node) (get (get (ptr.cast Node (get root Node.a)) Node.next) Node.next))
-    (let x:(ptr Node) (ptr.cast Node (get params Node.a)))
+    (let params:(ptr Node) (get (get (get root Node.first) Node.next) Node.next))
+    (let x:(ptr Node) (get params Node.first))
     (let colon:(ptr Node) (get x Node.next))
     (let ty:(ptr Node) (get colon Node.next))
     (if (and (eq n 12)

@@ -309,10 +309,10 @@
       ((and (gte op 54) (lte op 58)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8
       ((or (eq op 63) (eq op 64)) 8)                                                ;; memory.size memory.grow
       ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7)                                  ;; i32/i64/f64.const
-      ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s ge_s
-      ((or (and (gte op 69) (lte op 76)) (eq op 78)) 0)
-      ;; i64: eq ne lt_s gt_s le_s ge_s
-      ((or (and (gte op 81) (lte op 83)) (or (eq op 85) (or (eq op 87) (eq op 89)))) 0)
+      ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
+      ((and (gte op 69) (lte op 79)) 0)
+      ;; i64: eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
+      ((and (gte op 81) (lte op 90)) 0)
       ((and (gte op 91) (lte op 102)) 0)                                            ;; f32 and f64 comparisons
       ((and (gte op 106) (lte op 118)) 0)                                           ;; i32 add .. shr_u
       ((and (gte op 124) (lte op 136)) 0)                                           ;; i64 add .. shr_u
@@ -367,10 +367,16 @@
       ((eq op 74) "i32.gt_s")
       ((eq op 75) "i32.gt_u")
       ((eq op 76) "i32.le_s")
+      ((eq op 77) "i32.le_u")
       ((eq op 78) "i32.ge_s")
+      ((eq op 79) "i32.ge_u")
       ((eq op 81) "i64.eq")
       ((eq op 82) "i64.ne")
       ((eq op 83) "i64.lt_s")
+      ((eq op 84) "i64.lt_u")
+      ((eq op 86) "i64.gt_u")
+      ((eq op 88) "i64.le_u")
+      ((eq op 90) "i64.ge_u")
       ((eq op 85) "i64.gt_s")
       ((eq op 87) "i64.le_s")
       ((eq op 89) "i64.ge_s")
@@ -675,13 +681,13 @@
         (block (call buf.push_str out "start ") (call buf.push_int out (get w Wasm.start)) (call buf.push_byte out 10))
         (block))
     (loop i 0 (- (call (vec.len (ptr Elem)) (get w Wasm.elems)) 1) 1
-      (let e:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
+      (let el:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
       (call buf.push_str out "elem offset ")
-      (call buf.push_int out (get e Elem.offset))
+      (call buf.push_int out (get el Elem.offset))
       (call buf.push_str out " funcs")
-      (loop k 0 (- (call (vec.len i32) (get e Elem.funcs)) 1) 1
+      (loop k 0 (- (call (vec.len i32) (get el Elem.funcs)) 1) 1
         (call buf.push_byte out 32)
-        (call buf.push_int out (call (vec.at i32) (get e Elem.funcs) k)))
+        (call buf.push_int out (call (vec.at i32) (get el Elem.funcs) k)))
       (call buf.push_byte out 10))
     (if (gte (get w Wasm.data_count) 0)
         (block (call buf.push_str out "datacount ") (call buf.push_int out (get w Wasm.data_count)) (call buf.push_byte out 10))

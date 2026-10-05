@@ -27,6 +27,7 @@ const EXPECTED: &[(&str, i32)] = &[
     ("io_demo", 15),
     ("std_demo", 32),
     ("generics_demo", 17),
+    ("expr_demo", 80),
     // AIPL_SPEC.md
     ("points", 33),
     ("gcd_demo", 21),
@@ -35,6 +36,7 @@ const EXPECTED: &[(&str, i32)] = &[
     ("file_demo", 1),
     ("word_count", -1), // no input.txt in the scratch directory
     ("shapes", 28),
+    ("geom", 15),
     ("tokens_demo", 110),
 ];
 

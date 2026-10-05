@@ -18,7 +18,7 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 ## 2. Updated Formal Grammar (EBNF)
 
 ```ebnf
-program        ::= "(" "module" identifier import* ( struct_def | enum_def | const_def | fn_def )* ")" ;
+program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def )* ")" ;
 import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
 import_path    ::= identifier ( "/" identifier )* ;
 struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" ")" ;
@@ -28,6 +28,7 @@ type_param     ::= identifier ;                     (* starts with an uppercase 
 
 enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" ")" ;
 const_def      ::= "(" "const" identifier ":" type literal ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
+union_def      ::= "(" "union" identifier "[" ( "(" identifier field* ")" )+ "]" ")" ;
 
 fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type contract* expr* ")" ;
 param          ::= identifier ":" type ;
@@ -40,7 +41,7 @@ type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "fn" "[" type* "]" "->" type ")"
                  | "(" struct_name type+ ")"          (* a generic struct instance, used behind ptr *)
                  | type_param                         (* inside a generic definition *)
-                 | identifier ;                       (* an enum, e.g. Color *)
+                 | identifier ;                       (* an enum or a union, e.g. Color, Shape *)
 struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
 fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic *)
@@ -74,18 +75,23 @@ expr           ::= literal
                  | "(" "ref" fn_name ")"
                  | "(" "enum.cast" identifier expr ")" | "(" "enum.ord" expr ")"
                  | "(" "call_ref" type expr expr* ")"
+                 | "(" "make" identifier expr* ")"     (* Union.variant *)
+                 | "(" "match" expr match_arm+ ")"
                  | "(" op expr* ")" ;
+
+match_arm      ::= "(" identifier [ "[" identifier* "]" ] expr* ")"   (* Name.member; binders for a union variant *)
+                 | "(" "else" expr* ")" ;                             (* last *)
 
 op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op
                  | conv_op | sys_op | fs_op | proc_op | thread_op | str_op ;
 
-arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" ;
+arithmetic_op  ::= "+" | "-" | "*" | "/" | "%" | "divu" | "remu" | "checked.add" | "checked.sub" | "checked.mul" ;
 bitwise_op     ::= "^" | "shl" | "shr" | "shru" | "bitand" | "bitor" ;
 memory_op      ::= "mem.load8" | "mem.load32" | "mem.load64" | "mem.load_f32" | "mem.load_f64"
                  | "mem.store8" | "mem.store32" | "mem.store64" | "mem.store_f32" | "mem.store_f64"
                  | "mem.alloc" | "mem.free" | "mem.grow" ;
 atomic_op      ::= "atomic.add" | "atomic.cas" | "atomic.lock" | "atomic.unlock" ;
-comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "and" | "or" | "not" ;
+comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "ltu" | "lteu" | "gtu" | "gteu" | "and" | "or" | "not" ;
 conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
                  | "f64.convert_i64_s" | "i64.trunc_f64_s" | "f64.reinterpret_i64" | "i64.reinterpret_f64" | "f64.sqrt" ;
 sys_op         ::= "sys.print" | "sys.time" | "sys.monotonic" | "sys.random" | "sys.exit" ;
@@ -123,6 +129,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(ptr S)`: a pointer to a struct `S`. `(arr T)`: a heap array of `T` made by `arr.new`. Both are checked strictly, are never interchangeable with `i32` or with each other, and lower to `i32` in wasm (section 4.E).
 - `(fn [t1 ...] -> r)`: a reference to a function with that signature, made by `(ref f)` and called with `call_ref` (section 4.G).
 - `Name` for an enum `Name`: one of its members (section 4.I). An `i32` at run time, a distinct type to the checker.
+- `Name` for a union `Name`: one of its variants, carrying that variant's fields (section 4.J). A pointer to a heap cell at run time, never null.
 - `(Name t...)`: a generic struct instantiated with types `t...` (section 4.H), used behind `(ptr ...)` like any struct.
 
 ### Contracts
@@ -338,6 +345,55 @@ At run time a constant is its literal and an enum is an `i32` (4 bytes in struct
 
 Imports qualify them like structs: `palette.LIMIT`, `palette.Color`, `palette.Color.red`, and through an alias `pal.Color.red`. Two modules may each define `Color`.
 
+### J. Unions and `match`
+
+A union is a type whose value is exactly one of several variants, each carrying its own fields: a value of `Shape` below is a circle with a radius, or a rectangle with a width and a height, or a dot with nothing. `match` takes a value apart, running the arm for its variant with the variant's fields bound to names. It works on enums too.
+
+```lisp
+(module geom
+  (union Shape [(circle r:i32) (rect w:i32 h:i32) (dot)])
+  (union List [(nil) (cons head:Shape tail:List)])     ;; may refer to itself
+  (enum Dir [north east south west])
+
+  (fn area [s:Shape] -> i32
+    (match s
+      (Shape.circle [r] (* 3 (* r r)))
+      (Shape.rect [w h] (* w h))
+      (Shape.dot 0)))
+
+  (fn total [l:List] -> i32
+    (match l
+      (List.nil 0)
+      (List.cons [s rest] (+ (call area s) (call total rest)))))
+
+  (fn turns [d:Dir] -> i32
+    (match d (Dir.north 0) (Dir.south 2) (else 1)))
+
+  (fn main [] -> i32
+    (let shapes:List (make List.cons (make Shape.rect 2 5)
+                      (make List.cons (make Shape.circle 1)
+                      (make List.cons (make Shape.dot) (make List.nil)))))
+    (+ (call total shapes) (call turns Dir.south))))     ;; 10 + 3 + 0 + 2 => 15
+```
+
+| Form | Meaning |
+|---|---|
+| `(union Name [(variant field:T ...) ...])` | a new type `Name`. A variant without fields is `(variant)`. Variant names start with a lowercase letter or `_` and are unique; field names are unique within a variant; field types are those a struct field may have, including any union (so a union may refer to itself); at least one variant |
+| `(make Name.variant v ...)` | a new value of that variant: one value per field, in declaration order, each of the field's type. Type `Name` |
+| `(match v arm ... [(else body...)])` | `v` is a union or an enum. A union arm is `(Name.variant [x y ...] body...)`, binding the variant's fields in order (every field, each to a new name; a variant without fields may omit the brackets); an enum arm is `(Name.member body...)` |
+| `Name` as a type | everywhere a type goes: parameters, results, `let`, struct fields, variant fields, `(arr Name)`, generic type arguments |
+
+Rules the checker enforces:
+
+- **Exhaustive.** Every variant (member) has an arm, or there is an `(else ...)` arm, which comes last and binds nothing. An `else` arm when every variant already has one is an error (`the else arm never runs`), and so is matching one variant twice.
+- **One type.** Every arm (and `else`) yields the same type, or all are `void`, as with `if`. That type is the match's.
+- **Binders are new names**, scoped to their arm: they may not shadow a name in scope.
+- **Union values are opaque.** They have no arithmetic and do not compare (`eq`/`neq` included): take them apart with `match`. There is no null union value, and no cast to one; `make` is the only way to build one.
+
+A union value is the address of a heap cell: the variant's index (its position in the declaration, from 0) as an `i32` at offset 0, then the variant's fields laid out like a struct's starting at offset 4 (an `i64` or `f64` field is aligned to 8). Each `make` allocates the variant's exact size, rounded up to 8, and the cell is never changed afterwards. `make` claims the cell before evaluating its fields, in both backends. `match` reads the index and compares it with each arm's in order; a match on an enum compares the value. Only a value built with `(enum.cast Name n)` from a number that is no member can reach the end of a `match` without an `else`: the VM reports `unreachable` and compiled code traps.
+
+`Parser::parse` alone knows the unions of the module it parses; across modules the resolver passes them along. Imports qualify unions like structs and enums: `geom.Shape`, `(make geom.Shape.dot)`, and in an arm `(geom.Shape.circle [r] ...)`, or through an alias `(g.Shape.circle [r] ...)`.
+
 ---
 
 ## 5. WebAssembly Binary Execution Semantics
@@ -423,7 +479,7 @@ A **threaded module** (one that uses `thread.spawn`) differs: it imports its mem
 
 Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module that compiles must also pass `wasmparser::Validator::validate_all`; the test suite enforces this.
 
-### 6.3 Backend support matrix (as of 2026-10-04)
+### 6.3 Backend support matrix (as of 2026-10-05)
 
 "Yes" means the op runs. The native backend (section 6.6) translates the wasm backend's output, so it supports exactly what that column supports. "Err" means the backend returns an explicit error naming the op; apart from `mem.free` (documented as a no-op) there are no silent defaults or no-ops in any backend. The self-hosted column is `aipl_src/codegen.aipl` (section 6.4).
 
@@ -433,6 +489,8 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | the same on `i64` | Yes | Yes, wrapping at 64 bits | Yes (`i64.*`) | Yes |
 | `+ - * /`, comparisons on `f32` / `f64` | Yes | Yes | Yes (`f32.*` / `f64.*`); `%`, `divu`, `remu`, shifts, bitwise are Err | Yes (same rejections, compile error 99) |
 | `eq neq lt lte gt gte` on `i32` / `bool` / `str`; `and or not` | Yes | Yes | Yes | Yes |
+| `ltu lteu gtu gteu` on `i32` / `i64` | Yes | Yes | Yes (`i32.lt_u` ... `i64.ge_u`) | Yes |
+| `checked.add checked.sub checked.mul` on `i32` / `i64` | Yes | Yes, error `Integer overflow in checked.add` | Yes, trap on overflow (section 8.2) | Yes |
 | `i64` literals | Yes | Yes | Yes | Yes |
 | `f64` literals | Yes | Yes | Yes | Yes when the digits form an integer ≤ 2^53 with ≤ 22 after the point (section 6.4); otherwise compile error 973 |
 | `i64.extend_s i64.extend_u i32.wrap` | Yes | Yes | Yes | Yes |
@@ -453,6 +511,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `args.sizes/get`, `env.sizes/get` | Yes | Yes (host-set args, process environment) | Yes via WASI `args_*` / `environ_*` | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
 | `const`, `enum`, `enum.cast`, `enum.ord` | Yes | Yes | Yes (literals and `i32`; no code of their own) | Yes (erased by `consts.aipl`) |
+| `union`, `make`, `match` | Yes | Yes | Yes (a tagged heap cell; `match` is an `if` chain ending in `unreachable`) | Yes |
 | `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Yes, as a threaded module (section 4.D): needs a host that provides `wasi.thread-spawn` | Yes |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
@@ -471,7 +530,7 @@ It infers each expression's static type the way `expr_type` in `src/compiler/was
 - **Float literals must be exact by construction.** `compile_module` computes an `f64` literal as `m / 10^k`, where `m` is the integer formed by all its digits and `k` is the number of digits after the point, using `f64.convert_i64_s` and one division. That equals Rust's correctly rounded `parse::<f64>` whenever `m ≤ 2^53` and `k ≤ 22`. Anything else (for example `9007199254740993.0`) is compile error 973 rather than a possibly different rounding. Exponent notation (`1.5e3`) and a leading `+` are not float literals in the self-hosted tokenizer (the Rust tokenizer accepts them), so they fail as unknown symbols (971).
 - Ops listed as compile error 987 in section 6.3 are not in its keyword table.
 
-Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (tokens + 2)`, and output, section scratch, and function scratch `4 * src_len + 64 KiB` each. Memory is grown with `mem.grow` as needed, so a compile works within the 1024-page limit shared by both backends. Compiling the whole self-hosted toolchain (driver, resolver, codegen, compiler, and the standard library it uses: about 216 KB) fits.
+Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `20 * (tokens + 2)` (`(sizeof compiler.Node)` per node), and output, section scratch, and function scratch `4 * src_len + 64 KiB` each. Memory is grown with `mem.grow` as needed, so a compile works within the 1024-page limit shared by both backends. Compiling the whole self-hosted toolchain (driver, resolver, codegen, compiler, and the standard library it uses: about 216 KB) fits.
 
 | Compile error (cell 4) | Meaning |
 |---|---|
@@ -479,7 +538,7 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 91 | output or a function body exceeded `4 * src_len + 64 KiB` |
 | 92 | more than 2048 functions, or a function with more than 16 parameters |
 | 93 | more than 1024 locals in one function |
-| 94 | more than 255 structs, a struct with more than 64 fields, or more than 31 distinct `call_ref` signatures |
+| 94 | more than 255 structs or unions, more than 255 variants in a union, more than 64 fields in a struct or variant, or more than 31 distinct `call_ref` signatures |
 | 95 | struct field or array element type is not a scalar (`i32 i64 f32 f64 bool str`) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
 | 97 | an `ok`/`err` payload that is not 32-bit |
@@ -491,6 +550,7 @@ Buffers are sized from the input: tokens `12 * (src_len + 1)` bytes, AST `16 * (
 | 971 | a symbol that is not a local or parameter |
 | 973 | a float literal outside the exact range above |
 | 974 | `Name.member` naming a member its enum does not have (`consts.aipl`; the Rust resolver reports it first) |
+| 975 | `make` or a `match` arm naming a variant its union does not have (the Rust checker reports it first) |
 | 987 | a form whose head is not a recognised keyword |
 | 999 | an empty expression where one is required |
 | 1452 | call to an undefined function; cells 44/48 hold the callee name's source offset and length |
@@ -526,7 +586,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 1. `set!` has type void.
 2. `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`.
 3. `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void.
-4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error.
+4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. A name declared again in a sibling scope (another block, another `match` arm) keeps the type it had: a compiled function has one local per name, so `(block (let y:f64 1.5)) (block (let y:i32 3))` is `'y' is I32 here but F64 elsewhere in this function`.
 5. `set!` on an undeclared name is a type error (and a VM runtime error); there are no implicit globals.
 6. `match_result` binds its `ok` variable to the result's ok type and its `err` variable to the error type. `(ok v)` takes its ok type from `v` and defaults its error type to `i32`; `(ok:E v)` names the error type, and `(err:T e)` names the ok type (section 7.7).
 
@@ -550,12 +610,15 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `NAME` (a constant) | the type of its literal | `PAGE_SIZE` |
 | `Name.member` | the enum `Name` | `Kind.square` |
 | `(enum.ord e)` / `(enum.cast Name n)` | `i32` / `Name` | `e` must be an enum, `n` an `i32` |
+| `(make Name.v x ...)` | the union `Name` | one value per field of `v`, each of the field's type |
+| `(match v arm ... [(else ...)])` | the type of the arms' last expressions, which must agree (or `void`) | `v` a union or enum; every member matched, or an `else` arm (section 4.J) |
 | `(new S)` / `(arr.new T n)` | `(ptr S)` / `(arr T)` | |
 | `(sizeof S)`, `(arr.len a)`, `(ptr.addr p)`, `(arr.addr a)` | `i32` | |
 | `(get p S.f)` / `(arr.get T a i)` | the field's type / `T` | `p` must be `(ptr S)`, `a` must be `(arr T)`, `i` must be `i32` |
 | `(put p S.f v)` / `(arr.set T a i v)` | `void` | as above; `v` must match the field / `T` |
 | binary arithmetic / bitwise | type of the operands, which must be equal | `(+ 1 2)` is `i32` |
-| comparisons | `bool`; operands must have equal type | |
+| comparisons | `bool`; operands must have equal type | `ltu lteu gtu gteu`: `i32` or `i64` only |
+| `checked.add` / `checked.sub` / `checked.mul` | type of the operands, which must be equal | `i32` or `i64` only |
 
 A function body is a sequence of expressions. The **last** expression's type must equal the declared return type unless the return type is `void`, in which case the last value is discarded.
 
@@ -785,7 +848,26 @@ A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal becaus
 
 Loop bounds, memory addresses, `mem.alloc` sizes, file descriptors, and thread handles remain `i32`. To index memory with an `i64` computation, narrow it first with `i32.wrap`. The VM prints an `i64` result as `Int64(n)`, an `i32` as `Int(n)`.
 
-### 8.2 Type-directed code generation
+### 8.2 Unsigned comparisons and checked arithmetic
+
+The signed comparisons (`lt lte gt gte`) read their operands as two's-complement numbers. `ltu lteu gtu gteu` compare the same bits as unsigned numbers (wasm `i32.lt_u` ... `i64.ge_u`), so `-1` is the largest value: the right test for sizes, hashes, and addresses that may exceed `2^31`.
+
+`+ - *` wrap. `checked.add`, `checked.sub`, and `checked.mul` compute the same result when it fits in the operands' type and stop the program when it does not: the VM fails with `Integer overflow in checked.add` (`.sub`, `.mul`), and compiled code traps with the host's integer-overflow trap. Use them where a wrapped result would be a wrong answer rather than an intended one (money, sizes, counters).
+
+| Expression | Result |
+|---|---|
+| `(ltu 1 -1)` | `true` (`-1` is `4294967295` unsigned) |
+| `(gtu -2147483648 2147483647)` | `true` |
+| `(lteu -1i64 0i64)` | `false` |
+| `(checked.add 2147483646 1)` | `2147483647` |
+| `(checked.add 2147483647 1)` | runtime error / trap |
+| `(checked.sub -2147483648 1)` | runtime error / trap |
+| `(checked.mul 46341 46341)` | runtime error / trap (`46340` squared fits) |
+| `(checked.mul -1i64 -9223372036854775808i64)` | runtime error / trap |
+
+The wasm lowering (`compile_checked` in `src/compiler/wasm.rs`, `codegen.aipl` alike): for `i32`, both operands are widened to `i64`, the exact result is computed there, and it traps unless it lies in `[-2^31, 2^31)`; for `i64`, addition and subtraction test the sign bits (`(a ^ r) & (b ^ r) < 0` for `+`, `(a ^ b) & (a ^ r) < 0` for `-`) and multiplication checks `r / a == b` when `a` is not 0 (and the `-1 * MIN` case through the same division). The trap is an `i32.div_s` of `MIN` by `-1`, so every host reports it as integer overflow. `tests/test_differential.rs` runs every pair of 12 edge values per width through the VM and wasmtime and compares both with Rust's `checked_*`.
+
+### 8.3 Type-directed code generation
 
 The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type F64`.
 
@@ -1252,7 +1334,14 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | a zero-argument function or a bare number standing for a fixed value | `(const PAGE_SIZE:i32 65536)`; for a set of related codes, `(enum Kind [a b c])` (section 4.I) |
 | `(+ k 1)`, `(lt k Kind.b)`, or passing `Kind.b` where an `i32` is expected | enums are not numbers: compare with `eq`/`neq`; convert with `(enum.ord k)` and `(enum.cast Kind n)` |
 | `(const max:i32 5)` or `(let MAX:i32 1)` after `(const MAX ...)` | constants are named in capitals and cannot double as variables |
-| `p:Point` for a struct | structs are always behind a pointer: `p:(ptr Point)`; a bare type name must be a scalar or an enum |
+| `p:Point` for a struct | structs are always behind a pointer: `p:(ptr Point)`; a bare type name must be a scalar, an enum, or a union |
+| a struct with a `kind` field and fields that mean different things per kind | a union: `(union Shape [(circle r:f64) (rect w:f64 h:f64)])`, built with `make`, taken apart with `match` (section 4.J) |
+| `(match s (circle [r] ...))`, `(match s (Shape.circle r ...))` | arms name `Union.variant` in full, and binders go in brackets: `(Shape.circle [r] ...)` |
+| a `match` arm per variant plus an `else` "just in case" | the checker rejects an `else` that can never run; leave it out when every variant has an arm |
+| `(eq s1 s2)` or `(ptr.null Shape)` on a union | union values do not compare and are never null: use `match`; for "maybe a value", add a variant such as `(none)` |
+| the same name declared with two types in one function (`(let x:f64 ...)` in one block, `(let x:i32 ...)` in another, or as binders of two arms) | a name keeps one type per function; rename one |
+| `(lt size limit)` on sizes or hashes that may pass `2^31` | `(ltu size limit)`: compares as unsigned |
+| `(+ balance amount)` where wrapping would be a silent wrong answer | `(checked.add balance amount)`: stops the program on overflow |
 | `(break)` in a `while` condition or outside any loop | only inside a `while` or `loop` body |
 | a `done`/`found` flag variable to stop a loop | `(break)`, or `(return v)` from the function |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected input after the module's closing ')'` |

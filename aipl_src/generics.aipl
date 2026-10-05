@@ -27,7 +27,7 @@
   ;; ===== Trees =====
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
-    (ptr.cast compiler.Node (get g compiler.Node.a)))
+    (get g compiler.Node.first))
 
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
@@ -278,7 +278,7 @@
     (let n:i32 (get flat str.Bytes.len))
     (let tok:i32 (mem.alloc (* 12 (+ n 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
-    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
     (let st:(ptr St) (new St))
     (put st St.text flat)

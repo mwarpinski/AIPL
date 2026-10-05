@@ -24,7 +24,7 @@
   ;; ===== Trees =====
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
-    (ptr.cast compiler.Node (get g compiler.Node.a)))
+    (get g compiler.Node.first))
 
   (fn nth [g:(ptr compiler.Node) i:i32] -> (ptr compiler.Node)
     (let c:(ptr compiler.Node) (call first_child g))
@@ -129,13 +129,14 @@
   (fn print [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
-      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out))
+      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out false))
       ((eq k compiler.Kind.symbol) (call print_symbol st n out))
       (else (call print_literal st n out))))
 
   ;; Children separated by spaces, except none around ':'. (enum.cast E x)
-  ;; prints as x and (enum.ord x) as x.
-  (fn print_group [st:(ptr St) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+  ;; prints as x and (enum.ord x) as x. A match arm's head is a name like
+  ;; any other (arm_head), so an enum arm (Color.red ...) prints as (0 ...).
+  (fn print_group [st:(ptr St) g:(ptr compiler.Node) out:(ptr buf.Buf) arm_head:bool] -> void
     (let h:(ptr str.Bytes) (call head st g))
     (if (gte (get h str.Bytes.len) 0)
         (block
@@ -143,17 +144,21 @@
           (if (call lit h "enum.ord") (block (call print st (call nth g 1) out) (return)) (block)))
         (block))
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
+    (let is_match:bool (and (gte (get h str.Bytes.len) 0) (call lit h "match")))
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
     (let first:bool true)
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       ;; a form's head is a keyword or an op, printed as written
-      (if (and first (and (not square) (call is_symbol c)))
-          (call buf.push_bytes out (call text st c))
-          (call print st c out))
+      (cond
+        ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call print_group st c out true))
+        ((and first (and (not square) (and (not arm_head) (call is_symbol c)))) (call buf.push_bytes out (call text st c)))
+        (else (call print st c out)))
+      (set! i (+ i 1))
       (set! first false)
       (set! prev_colon colon)
       (set! c (get c compiler.Node.next)))
@@ -168,7 +173,7 @@
     (let n:i32 (get src str.Bytes.len))
     (let tok:i32 (mem.alloc (* 12 (+ n 1))))
     (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
-    (let ast:i32 (mem.alloc (+ 8 (* 16 (+ count 2)))))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
     (let st:(ptr St) (new St))
     (put st St.text src)
@@ -196,7 +201,7 @@
           (block)
           (block
             (call buf.push_str out "  ")
-            (call print_group st item out)
+            (call print_group st item out false)
             (call buf.push_byte out 10)))
       (set! item (get item compiler.Node.next)))
     (call buf.push_byte out 41)
@@ -208,7 +213,7 @@
     (and (call expand (call str.from_str src) out err)
          (call str.bytes_eq (call buf.bytes out) (call str.from_str want))))
 
-  ;; Pass count; test_suite.aipl expects 4.
+  ;; Pass count; test_suite.aipl expects 5.
   (fn run_consts_tests [] -> i32
     (let p:i32 0)
     ;; nothing to erase: copied unchanged
@@ -220,6 +225,10 @@
     ;; enum types become i32, members their values (auto and explicit), casts disappear
     (if (call expands_to "(module m (enum C [a (b 10) c]) (struct S [k:C]) (fn f [x:C] -> i32 (if (eq x C.c) (enum.ord C.b) (enum.ord (enum.cast C 3)))))"
                          "(module m\n  (struct S [k:i32])\n  (fn f [x:i32] -> i32 (if (eq x 11) 10 3))\n)")
+        (set! p (+ p 1)) (block))
+    ;; an enum match arm's head becomes the member's value; a union's stays a name
+    (if (call expands_to "(module m (enum C [a b]) (fn f [x:C] -> i32 (match x (C.b 1) (else (match (make U.v) (U.v 2)))))"
+                         "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
         (set! p (+ p 1)) (block))
     ;; a member that does not exist is an error
     (let out:(ptr buf.Buf) (call buf.make 64))
