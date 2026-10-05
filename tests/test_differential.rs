@@ -859,3 +859,24 @@ fn locals_inside_operands_agree() {
     // -1 + 2 + 3 + 4, then 42, then 500
     assert_eq!(differential(&module, &wasm, "main", &[]).unwrap(), Value::Int(550));
 }
+
+/// ltu/lteu/gtu/gteu compare i32 and i64 as unsigned, at the edges where
+/// signed and unsigned order disagree.
+#[test]
+fn unsigned_comparisons_agree() {
+    let yes = |e: &str| assert_eq!(expr("bool", e).unwrap(), Value::Int(1), "{e}");
+    let no = |e: &str| assert_eq!(expr("bool", e).unwrap(), Value::Int(0), "{e}");
+    yes("(ltu 1 -1)");
+    no("(ltu -1 1)");
+    yes("(gtu -2147483648 2147483647)");
+    yes("(lteu -1 -1)");
+    no("(gteu 0 1)");
+    yes("(gteu -1 0)");
+    yes("(ltu 5i64 -1i64)");
+    yes("(gtu -9223372036854775808i64 9223372036854775807i64)");
+    no("(lteu -1i64 0i64)");
+    yes("(gteu 7i64 7i64)");
+    let m = Parser::parse("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
+    let e = TypeChecker::new().check_module(&m).unwrap_err();
+    assert!(e.contains("LtU compares integers (i32 or i64) as unsigned, got F64"), "{e}");
+}

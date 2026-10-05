@@ -151,7 +151,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
@@ -254,6 +254,10 @@
     (call reg m "sys.monotonic" Kw.sys_monotonic)
     (call reg m "sys.random" Kw.sys_random)
     (call reg m "f64.sqrt" Kw.f64_sqrt)
+    (call reg m "ltu" Kw.ltu)
+    (call reg m "lteu" Kw.lteu)
+    (call reg m "gtu" Kw.gtu)
+    (call reg m "gteu" Kw.gteu)
     (call reg m "let" Kw.let)
     (call reg m "set!" Kw.set)
     (call reg m "if" Kw.if)
@@ -299,7 +303,8 @@
   ;; Comparisons and logic, which yield bool.
   (fn is_compare [k:Kw] -> bool
     (or (or (eq k Kw.eq) (or (eq k Kw.neq) (or (eq k Kw.lt) (or (eq k Kw.lte) (or (eq k Kw.gt) (eq k Kw.gte))))))
-        (or (eq k Kw.and) (or (eq k Kw.or) (eq k Kw.not)))))
+        (or (or (eq k Kw.and) (or (eq k Kw.or) (eq k Kw.not)))
+            (or (eq k Kw.ltu) (or (eq k Kw.lteu) (or (eq k Kw.gtu) (eq k Kw.gteu)))))))
 
   ;; The WASI function behind args.sizes / args.get / env.sizes / env.get, or none.
   (fn proc_wasi [k:Kw] -> Wasi
@@ -899,6 +904,10 @@
                     ((eq op_id Kw.divu) 110)
                     ((eq op_id Kw.remu) 112)
                     ((eq op_id Kw.shru) 118)
+                    ((eq op_id Kw.ltu) 73)
+                    ((eq op_id Kw.lteu) 77)
+                    ((eq op_id Kw.gtu) 75)
+                    ((eq op_id Kw.gteu) 79)
                     (else -1)))
       ((eq t Ty.i64) (cond
                     ((eq op_id Kw.add) 124)
@@ -920,6 +929,10 @@
                     ((eq op_id Kw.divu) 128)
                     ((eq op_id Kw.remu) 130)
                     ((eq op_id Kw.shru) 136)
+                    ((eq op_id Kw.ltu) 84)
+                    ((eq op_id Kw.lteu) 88)
+                    ((eq op_id Kw.gtu) 86)
+                    ((eq op_id Kw.gteu) 90)
                     (else -1)))
       ((eq t Ty.f32) (cond
                     ((eq op_id Kw.add) 146)

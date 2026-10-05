@@ -530,7 +530,8 @@ impl TypeChecker {
                 OpCode::AtomicAdd => Ok(Type::I32),
                 OpCode::AtomicCas => Ok(Type::Bool),
                 OpCode::AtomicLock | OpCode::AtomicUnlock => Ok(Type::Void),
-                OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte => {
+                OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
+                | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: Comparison opcode {:?} requires 2 arguments", l, c, op));
                     }
@@ -538,6 +539,9 @@ impl TypeChecker {
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
+                    }
+                    if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
+                        return Err(format!("{}:{}: {:?} compares integers (i32 or i64) as unsigned, got {:?}", l, c, op, t1));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));

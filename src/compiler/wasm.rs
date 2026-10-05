@@ -453,6 +453,10 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::Lte
             | OpCode::Gt
             | OpCode::Gte
+            | OpCode::LtU
+            | OpCode::LteU
+            | OpCode::GtU
+            | OpCode::GteU
             | OpCode::And
             | OpCode::Or
             | OpCode::Not
@@ -565,6 +569,10 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
         (OpCode::Lte, Type::I32) => I32LeS,
         (OpCode::Gt, Type::I32) => I32GtS,
         (OpCode::Gte, Type::I32) => I32GeS,
+        (OpCode::LtU, Type::I32) => I32LtU,
+        (OpCode::LteU, Type::I32) => I32LeU,
+        (OpCode::GtU, Type::I32) => I32GtU,
+        (OpCode::GteU, Type::I32) => I32GeU,
 
         (OpCode::Eq, Type::I64) => I64Eq,
         (OpCode::Neq, Type::I64) => I64Ne,
@@ -572,6 +580,10 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
         (OpCode::Lte, Type::I64) => I64LeS,
         (OpCode::Gt, Type::I64) => I64GtS,
         (OpCode::Gte, Type::I64) => I64GeS,
+        (OpCode::LtU, Type::I64) => I64LtU,
+        (OpCode::LteU, Type::I64) => I64LeU,
+        (OpCode::GtU, Type::I64) => I64GtU,
+        (OpCode::GteU, Type::I64) => I64GeU,
 
         (OpCode::Eq, Type::F64) => F64Eq,
         (OpCode::Neq, Type::F64) => F64Ne,
@@ -833,7 +845,8 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             OpCode::MemFree => {
                 // No-op for bump allocator
             }
-            OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte => {
+            OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
+            | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                 let ty = expr_type(&args[0], ctx);
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
@@ -1740,6 +1753,10 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
                 | OpCode::Lte
                 | OpCode::Gt
                 | OpCode::Gte
+                | OpCode::LtU
+                | OpCode::LteU
+                | OpCode::GtU
+                | OpCode::GteU
                 | OpCode::And
                 | OpCode::Or
                 | OpCode::Not

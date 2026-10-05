@@ -73,6 +73,12 @@ pub enum OpCode {
     Neq,
     Lt,
     Lte,
+    /// `(ltu a b)`, `(lteu a b)`, `(gtu a b)`, `(gteu a b)`: i32/i64 compared as
+    /// unsigned (wasm `i32.lt_u` ...).
+    LtU,
+    LteU,
+    GtU,
+    GteU,
     Gt,
     Gte,
     And,

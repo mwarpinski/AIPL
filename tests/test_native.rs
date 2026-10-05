@@ -1418,6 +1418,10 @@ fn i64_operator_programs() -> Vec<(String, Vec<u8>)> {
         ("gt_s", I::I64GtS, R::Bool(|a, b| a > b)),
         ("le_s", I::I64LeS, R::Bool(|a, b| a <= b)),
         ("ge_s", I::I64GeS, R::Bool(|a, b| a >= b)),
+        ("lt_u", I::I64LtU, R::Bool(|a, b| (a as u64) < (b as u64))),
+        ("gt_u", I::I64GtU, R::Bool(|a, b| (a as u64) > (b as u64))),
+        ("le_u", I::I64LeU, R::Bool(|a, b| (a as u64) <= (b as u64))),
+        ("ge_u", I::I64GeU, R::Bool(|a, b| (a as u64) >= (b as u64))),
     ];
     let mut out = Vec::new();
     for (name, op, expected) in ops {
@@ -1503,6 +1507,8 @@ fn i32_operator_programs() -> Vec<(String, Vec<u8>)> {
         ("gt_u", I::I32GtU, |a, b| Some(((a as u32) > (b as u32)) as i32)),
         ("le_s", I::I32LeS, |a, b| Some((a <= b) as i32)),
         ("ge_s", I::I32GeS, |a, b| Some((a >= b) as i32)),
+        ("le_u", I::I32LeU, |a, b| Some(((a as u32) <= (b as u32)) as i32)),
+        ("ge_u", I::I32GeU, |a, b| Some(((a as u32) >= (b as u32)) as i32)),
     ];
     let mut out = Vec::new();
     for (name, op, expected) in ops {

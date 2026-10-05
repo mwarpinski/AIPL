@@ -1291,6 +1291,22 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 Ok(Value::Bool(a != b))
             }
+            OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                let ord = match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => (x as i32 as u32).cmp(&(y as i32 as u32)),
+                    (Value::Int64(x), Value::Int64(y)) => (x as u64).cmp(&(y as u64)),
+                    _ => return Err(format!("Invalid types for {:?}", op)),
+                };
+                use std::cmp::Ordering::*;
+                Ok(Value::Bool(match op {
+                    OpCode::LtU => ord == Less,
+                    OpCode::LteU => ord != Greater,
+                    OpCode::GtU => ord == Greater,
+                    _ => ord != Less,
+                }))
+            }
             OpCode::Lt => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;

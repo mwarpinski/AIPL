@@ -1104,3 +1104,13 @@ fn self_hosted_table_limits_are_compile_errors() {
     let err = self_host(&format!("(module m {fns})")).unwrap_err();
     assert!(err.contains("compile error 92"), "{err}");
 }
+
+#[test]
+fn self_hosted_bytes_match_unsigned_comparisons() {
+    assert_self_hosted_matches_rust(
+        "unsigned",
+        "(module u (fn f [a:i32 b:i32 c:i64 d:i64] -> i32
+           (+ (if (ltu a b) 1 0) (+ (if (lteu a b) 2 0) (+ (if (gtu a b) 4 0) (+ (if (gteu a b) 8 0)
+           (+ (if (ltu c d) 16 0) (+ (if (lteu c d) 32 0) (+ (if (gtu c d) 64 0) (if (gteu c d) 128 0))))))))))",
+    );
+}
