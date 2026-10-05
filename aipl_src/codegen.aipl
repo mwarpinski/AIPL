@@ -43,7 +43,12 @@
   ;; What every compile function needs, passed as one value: the source text,
   ;; the locals of the function being compiled, and the module's functions.
   ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
-  (struct Cg [src:i32 locals:i32 nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32])
+  (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32])
+
+  ;; A local of the function being compiled (parameters first): its name (a
+  ;; span of the source) and type. A loop's hidden end and step locals carry
+  ;; the loop variable's name and the type loop_end / loop_step.
+  (struct Local [name_pos:i32 name_len:i32 ty:Ty])
 
   ;; A function of the module: its name (a span of the source), parameter
   ;; and result types, wasm index, and definition.
@@ -53,7 +58,7 @@
   (fn new_cg [src:i32] -> (ptr Cg)
     (let cg:(ptr Cg) (new Cg))
     (put cg Cg.src src)
-    (put cg Cg.locals (call locals_table))
+    (put cg Cg.locals (arr.new (ptr Local) 1024))
     (put cg Cg.nlocals 0)
     (put cg Cg.fns (arr.new (ptr FnInfo) 2048))
     (put cg Cg.nfns 0)
@@ -67,8 +72,7 @@
   ;;             the blob buffer holds 65536 bytes)
   ;;   mem[16] = keyword table pointer      (1024 bytes)
   ;;   mem[20] = unused (the function table is Cg.fns)
-  ;;   mem[24] = locals table pointer       (1024 entries x 12 bytes)
-  ;;   mem[28] = running locals count for the function being compiled
+  ;;   mem[24], mem[28] = unused (the locals are Cg.locals and Cg.nlocals)
   ;;   mem[32] = WASI import count
   ;;   mem[36..56] = unused (the WASI import indices moved to struct_table + 12)
   ;;   mem[60] = compiled module output pointer
@@ -108,7 +112,6 @@
     0)
   (fn set_struct_count [cnt:i32] -> i32 (mem.store32 (+ (call struct_table) 0) cnt) 0)
   (fn kw [] -> i32 (mem.load32 16))
-  (fn locals_table [] -> i32 (mem.load32 24))
   (fn get_str_blob_len [] -> i32 (mem.load32 (+ (call str_table_ptr) 0)))
   (fn set_str_blob_len [len:i32] -> i32 (mem.store32 (+ (call str_table_ptr) 0) len) 0)
   (fn get_str_count [] -> i32 (mem.load32 (+ (call str_table_ptr) 4)))
@@ -128,7 +131,6 @@
           (mem.store32 8 (mem.alloc (+ 16 (* 255 1040))))
           (mem.store32 12 (mem.alloc 16384))
           (mem.store32 16 (ptr.addr (call new_keywords)))
-          (mem.store32 24 (mem.alloc 49152))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
           (mem.store32 (+ (mem.load32 8) 4) (mem.alloc 1024))
           (mem.store32 (+ (mem.load32 8) 8) (mem.alloc 1024))
@@ -141,7 +143,6 @@
     (mem.store32 (call ref_state) 0)
     (mem.store32 (call label_stack) 0)
     (mem.store32 (+ (call ref_state) 4) 0)
-    (mem.store32 28 0)
     (mem.store32 32 0)
     (call set_str_blob_len 0)
     (call set_str_count 0)
@@ -426,7 +427,7 @@
               (set! pchild (call node_next ptype_node)))
             (put f FnInfo.nparams pcount)
             (arr.set (ptr FnInfo) (get cg Cg.fns) (if (gte count 2048) 2047 count) f)
-            (set! count (+ count 1)))
+            (if (lt count 2048) (set! count (+ count 1)) (block)))
           (block))
       (set! child (call node_next child)))
     count)
@@ -441,56 +442,50 @@
     -1)
 
   ;; ===== Local variable table =====
-  (fn locals_entry_ptr [base:i32 idx:i32] -> i32
-    (+ base (* idx 12)))
+  (fn local_at [cg:(ptr Cg) idx:i32] -> (ptr Local)
+    (arr.get (ptr Local) (get cg Cg.locals) idx))
 
-  (fn find_local [base:i32 count:i32 cg:(ptr Cg) name_ptr:i32 name_len:i32] -> i32
-    (loop i 0 (- count 1) 1
-      (let e:i32 (call locals_entry_ptr base i))
-      (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (mem.load32 (+ e 0))) (mem.load32 (+ e 4)))
+  (fn find_local [cg:(ptr Cg) name_ptr:i32 name_len:i32] -> i32
+    (loop i 0 (- (get cg Cg.nlocals) 1) 1
+      (let l:(ptr Local) (call local_at cg i))
+      (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get l Local.name_pos)) (get l Local.name_len))
           (return i)
           (block)))
     -1)
 
-  (fn add_local_if_new [cg:(ptr Cg) base:i32 name_ptr:i32 name_len:i32 type_id:Ty] -> i32
-    (let count:i32 (mem.load32 28))
-    (let existing:i32 (call find_local base count cg name_ptr name_len))
-    (if (eq existing -1)
-        (block
-          (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
-          (let e:i32 (call locals_entry_ptr base (if (gte count 1024) 1023 count)))
-          (mem.store32 (+ e 0) name_ptr)
-          (mem.store32 (+ e 4) name_len)
-          (mem.store32 (+ e 8) (enum.ord type_id))
-          (mem.store32 28 (+ count 1))
-          0)
-        0))
-
-;; A loop's hidden end / step local (wasm.rs `i#end` / `i#step`): an entry
-  ;; with the loop variable's name and type marker 211 (end) or 212 (step),
-  ;; added once per name like any local. Lookups by name find the variable
-  ;; itself, which is always added first.
-  (fn find_hidden [base:i32 count:i32 cg:(ptr Cg) name_ptr:i32 name_len:i32 marker:Ty] -> i32
-    (loop i 0 (- count 1) 1
-      (let e:i32 (call locals_entry_ptr base i))
-      (if (and (eq (enum.cast Ty (mem.load32 (+ e 8))) marker)
-               (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (mem.load32 (+ e 0))) (mem.load32 (+ e 4))))
-          (return i)
-          (block)))
-    -1)
-
-  (fn add_hidden_if_new [cg:(ptr Cg) base:i32 name_ptr:i32 name_len:i32 marker:Ty] -> i32
-    (let count:i32 (mem.load32 28))
-    (if (gte (call find_hidden base count cg name_ptr name_len marker) 0) (return 0) (block))
+  ;; Appends a local (the 1024th and later overwrite the last, after compile
+  ;; error 93).
+  (fn add_local [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty] -> void
+    (let count:i32 (get cg Cg.nlocals))
     (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
-    (let e:i32 (call locals_entry_ptr base (if (gte count 1024) 1023 count)))
-    (mem.store32 (+ e 0) name_ptr)
-    (mem.store32 (+ e 4) name_len)
-    (mem.store32 (+ e 8) (enum.ord marker))
-    (mem.store32 28 (+ count 1))
+    (let l:(ptr Local) (new Local))
+    (put l Local.name_pos name_ptr)
+    (put l Local.name_len name_len)
+    (put l Local.ty ty)
+    (arr.set (ptr Local) (get cg Cg.locals) (if (gte count 1024) 1023 count) l)
+    (put cg Cg.nlocals (if (gte count 1024) 1024 (+ count 1))))
+
+  (fn add_local_if_new [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty] -> i32
+    (if (eq (call find_local cg name_ptr name_len) -1) (call add_local cg name_ptr name_len ty) (block))
     0)
 
-  (fn collect_locals_walk [cg:(ptr Cg) base:i32 node:(ptr compiler.Node)] -> i32
+  ;; A loop's hidden end / step local (wasm.rs `i#end` / `i#step`), added once
+  ;; per name like any local. Lookups by name find the variable itself,
+  ;; which is always added first.
+  (fn find_hidden [cg:(ptr Cg) name_ptr:i32 name_len:i32 marker:Ty] -> i32
+    (loop i 0 (- (get cg Cg.nlocals) 1) 1
+      (let l:(ptr Local) (call local_at cg i))
+      (if (and (eq (get l Local.ty) marker)
+               (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get l Local.name_pos)) (get l Local.name_len)))
+          (return i)
+          (block)))
+    -1)
+
+  (fn add_hidden_if_new [cg:(ptr Cg) name_ptr:i32 name_len:i32 marker:Ty] -> i32
+    (if (lt (call find_hidden cg name_ptr name_len marker) 0) (call add_local cg name_ptr name_len marker) (block))
+    0)
+
+  (fn collect_locals_walk [cg:(ptr Cg) node:(ptr compiler.Node)] -> i32
     (if (neq (call node_kind node) compiler.Kind.paren)
         0
         (block
@@ -500,20 +495,20 @@
             ((eq kw Kw.let) (let name_node:(ptr compiler.Node) (call nth_child node 1))
                 (let type_node:(ptr compiler.Node) (call nth_child node 3))
                 (let type_id:Ty (call type_node_id cg type_node))
-                (call add_local_if_new cg base (call node_a name_node) (call node_b name_node) type_id))
+                (call add_local_if_new cg (call node_a name_node) (call node_b name_node) type_id))
             ((eq kw Kw.loop) (let var_node:(ptr compiler.Node) (call nth_child node 1))
-                    (call add_local_if_new cg base (call node_a var_node) (call node_b var_node) Ty.i32)
-                    (call add_hidden_if_new cg base (call node_a var_node) (call node_b var_node) Ty.loop_end)
-                    (call add_hidden_if_new cg base (call node_a var_node) (call node_b var_node) Ty.loop_step))
+                    (call add_local_if_new cg (call node_a var_node) (call node_b var_node) Ty.i32)
+                    (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_end)
+                    (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_step))
             ((eq kw Kw.match_result) (let ok_group:(ptr compiler.Node) (call nth_child node 2))
                         (let err_group:(ptr compiler.Node) (call nth_child node 3))
                         (let ok_var:(ptr compiler.Node) (call nth_child ok_group 1))
                         (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
-                        (call add_local_if_new cg base (call node_a ok_var) (call node_b ok_var) Ty.i32)
-                        (call add_local_if_new cg base (call node_a err_var) (call node_b err_var) Ty.i32))
+                        (call add_local_if_new cg (call node_a ok_var) (call node_b ok_var) Ty.i32)
+                        (call add_local_if_new cg (call node_a err_var) (call node_b err_var) Ty.i32))
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
-          (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk cg base child)) (set! child (call node_next child)))
+          (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk cg child)) (set! child (call node_next child)))
           0)))
 
   ;; Any body item may be an atom (a bare number, name, or string): its
@@ -527,17 +522,22 @@
           (let kw:Kw (call classify_keyword cg (call node_a head) (call node_b head)))
           (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv))))))
 
-  (fn collect_locals_for_function [cg:(ptr Cg) entry:(ptr FnInfo) base:i32] -> i32
-    (mem.store32 28 0)
+  ;; Collects the function's locals into cg (parameters first, then every
+  ;; let, loop variable and its hidden end and step, and match_result
+  ;; variable, in a pre-order walk); returns the count.
+  (fn collect_locals_for_function [cg:(ptr Cg) entry:(ptr FnInfo)] -> i32
+    (put cg Cg.nlocals 0)
     (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node))
-    (let params_node:(ptr compiler.Node) (call nth_child fndef_group 2))
-    (let pchild:(ptr compiler.Node) (call first_child params_node))
-    (while (neq pchild (ptr.null compiler.Node)) (let type_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (let type_id:Ty (call type_node_id cg type_node)) (let _r:i32 (call add_local_if_new cg base (call node_a pchild) (call node_b pchild) type_id)) (set! pchild (call node_next type_node)))
+    (let pchild:(ptr compiler.Node) (call first_child (call nth_child fndef_group 2)))
+    (while (neq pchild (ptr.null compiler.Node))
+      (let type_node:(ptr compiler.Node) (call node_next (call node_next pchild)))
+      (call add_local_if_new cg (call node_a pchild) (call node_b pchild) (call type_node_id cg type_node))
+      (set! pchild (call node_next type_node)))
     (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5))
-    (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head cg bchild)
-                0
-                (call collect_locals_walk cg base bchild)) (set! bchild (call node_next bchild)))
-    (mem.load32 28))
+    (while (neq bchild (ptr.null compiler.Node))
+      (if (call is_contract_head cg bchild) 0 (call collect_locals_walk cg bchild))
+      (set! bchild (call node_next bchild)))
+    (get cg Cg.nlocals))
 
   ;; ===== Low-level WASM instruction emitters =====
   (fn encode_s32 [ptr:i32 val:i32] -> i32
@@ -1445,8 +1445,8 @@
     (if (eq kind compiler.Kind.float) (set! res Ty.f64) (block))
     (if (eq kind compiler.Kind.symbol)
         (block
-          (let idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a node) (call node_b node)))
-          (if (neq idx -1) (set! res (enum.cast Ty (mem.load32 (+ (call locals_entry_ptr (get cg Cg.locals) idx) 8)))) (block)))
+          (let idx:i32 (call find_local cg (call node_a node) (call node_b node)))
+          (if (neq idx -1) (set! res (get (call local_at cg idx) Local.ty)) (block)))
         (block))
     (if (eq kind compiler.Kind.paren) (set! res (call group_type cg node)) (block))
     res)
@@ -1532,7 +1532,7 @@
             ((eq kind compiler.Kind.float) (call emit_f64_literal out_ptr cg (call node_a node) (call node_b node)))
             ((eq kind compiler.Kind.string) (let addr:i32 (call find_interned_string cg (call node_a node) (call node_b node)))
                 (call emit_i32_const out_ptr addr))
-            ((eq kind compiler.Kind.symbol) (let idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a node) (call node_b node)))
+            ((eq kind compiler.Kind.symbol) (let idx:i32 (call find_local cg (call node_a node) (call node_b node)))
                 (if (eq idx -1)
                     (block
                       (let _e:i32 (call set_compile_error CgErr.unknown_symbol))
@@ -1577,7 +1577,7 @@
     (set! off (+ off 2))
     (call label_push 0)
     (let ok_var_node:(ptr compiler.Node) (call nth_child ok_group 1))
-    (let ok_var_idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a ok_var_node) (call node_b ok_var_node)))
+    (let ok_var_idx:i32 (call find_local cg (call node_a ok_var_node) (call node_b ok_var_node)))
     (if (neq ok_var_idx -1)
         (block
           (set! off (+ off (call emit_local_get (+ out_ptr off) scratch)))
@@ -1589,7 +1589,7 @@
     (set! off (+ off (call compile_stmt_seq cg ok_body_first (+ out_ptr off))))
     (mem.store8 (+ out_ptr off) 5) (set! off (+ off 1))
     (let err_var_node:(ptr compiler.Node) (call nth_child err_group 1))
-    (let err_var_idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a err_var_node) (call node_b err_var_node)))
+    (let err_var_idx:i32 (call find_local cg (call node_a err_var_node) (call node_b err_var_node)))
     (if (neq err_var_idx -1)
         (block
           (set! off (+ off (call emit_local_get (+ out_ptr off) scratch)))
@@ -2291,9 +2291,9 @@
 
     res)
 
-  (fn compile_let [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 4)) (let n1:i32 (call compile_expr cg val_node out_ptr)) (let idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+  (fn compile_let [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 4)) (let n1:i32 (call compile_expr cg val_node out_ptr)) (let idx:i32 (call find_local cg (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
 
-  (fn compile_set [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 2)) (let n1:i32 (call compile_expr cg val_node out_ptr)) (let idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+  (fn compile_set [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 2)) (let n1:i32 (call compile_expr cg val_node out_ptr)) (let idx:i32 (call find_local cg (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
 
   (fn compile_call [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32
     (let fname_node:(ptr compiler.Node) (call nth_child node 1))
@@ -2368,9 +2368,9 @@
   ;; which falls into the step (wasm.rs Expr::Loop).
   (fn compile_loop [cg:(ptr Cg) node:(ptr compiler.Node) out_ptr:i32] -> i32
     (let var_node:(ptr compiler.Node) (call nth_child node 1))
-    (let var_idx:i32 (call find_local (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a var_node) (call node_b var_node)))
-    (let end_idx:i32 (call find_hidden (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a var_node) (call node_b var_node) Ty.loop_end))
-    (let step_idx:i32 (call find_hidden (get cg Cg.locals) (get cg Cg.nlocals) cg (call node_a var_node) (call node_b var_node) Ty.loop_step))
+    (let var_idx:i32 (call find_local cg (call node_a var_node) (call node_b var_node)))
+    (let end_idx:i32 (call find_hidden cg (call node_a var_node) (call node_b var_node) Ty.loop_end))
+    (let step_idx:i32 (call find_hidden cg (call node_a var_node) (call node_b var_node) Ty.loop_step))
     ;; start, end, and step are each evaluated once, in that order
     (let off:i32 (call compile_expr cg (call nth_child node 2) out_ptr))
     (set! off (+ off (call emit_local_set (+ out_ptr off) var_idx)))
@@ -2788,7 +2788,7 @@
       (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
       (let fndef_group:(ptr compiler.Node) (get entry FnInfo.node))
       (let pcount:i32 (get entry FnInfo.nparams))
-      (let total_locals:i32 (call collect_locals_for_function cg entry (call locals_table)))
+      (let total_locals:i32 (call collect_locals_for_function cg entry))
       (let extra_local_cnt:i32 (- total_locals pcount))
       (let fn_uses_io_flag:bool (call fn_uses_io cg fndef_group))
       
@@ -2805,8 +2805,7 @@
       ;; 1 per let/loop local
       (let l_idx:i32 0)
       (while (lt l_idx extra_local_cnt)
-        (let lentry:i32 (call locals_entry_ptr (call locals_table) (+ pcount l_idx)))
-        (let ltype_id:Ty (enum.cast Ty (mem.load32 (+ lentry 8))))
+        (let ltype_id:Ty (get (call local_at cg (+ pcount l_idx)) Local.ty))
         (set! fcode_off (+ fcode_off (call compiler.encode_u32 (+ fcode_scratch fcode_off) 1)))
         (mem.store8 (+ fcode_scratch fcode_off) (call type_id_to_valtype ltype_id))
         (set! fcode_off (+ fcode_off 1))
@@ -3004,7 +3003,7 @@
     (let e0_pcount:i32 (get e0 FnInfo.nparams))
     (let e0_ret:Ty (get e0 FnInfo.ret))
     (let e1:(ptr FnInfo) (call func_entry_ptr cg 1))
-    (let local_count:i32 (call collect_locals_for_function cg e1 (call locals_table)))
+    (let local_count:i32 (call collect_locals_for_function cg e1))
     ;; compute's locals: x, y, z, i, and the loop's hidden end and step
     (if (and (eq func_count 2) (and (eq e0_pcount 2) (and (eq e0_ret Ty.i32) (eq local_count 6))))
         1
