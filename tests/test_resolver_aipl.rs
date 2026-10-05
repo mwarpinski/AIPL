@@ -4,7 +4,6 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use std::path::{Path, PathBuf};
 
@@ -21,11 +20,19 @@ fn rust_bytes(path: &Path) -> Vec<u8> {
     WasmCompiler::compile(&m).unwrap()
 }
 
+/// The AIPL resolver's flat output (imports gone, generics expanded) as a
+/// Module. It goes through the Rust resolver rather than Parser::parse,
+/// because constants and enum members are expanded there, after generics;
+/// with no imports left, nothing else changes.
+fn parse_flat(flat: &str, path: &Path) -> Result<aipl_core::ast::Module, String> {
+    Resolver::resolve_source(flat, path)
+}
+
 fn assert_resolves_like_rust(rel: &str) {
     let path = root().join(rel);
     let flat = aipl_resolve(&path).unwrap_or_else(|e| panic!("aipl resolve {rel}: {e}"));
     assert!(!flat.contains("(import"), "{rel}: imports left in the output");
-    let m = Parser::parse(&flat).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
+    let m = parse_flat(&flat, &path).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{rel}: flat output does not check: {e}"));
     let ours = WasmCompiler::compile(&m).unwrap();
     assert!(ours == rust_bytes(&path), "{rel}: AIPL resolver output compiles to different bytes than the Rust resolver");
@@ -56,7 +63,7 @@ fn compiler_sources_resolve_like_rust() {
 #[test]
 fn test_suite_resolves_and_checks() {
     let flat = aipl_resolve(&root().join("aipl_src/test_suite.aipl")).unwrap();
-    let m = Parser::parse(&flat).unwrap_or_else(|e| panic!("flat test_suite does not parse: {e}"));
+    let m = parse_flat(&flat, &root().join("aipl_src/test_suite.aipl")).unwrap_or_else(|e| panic!("flat test_suite does not parse: {e}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat test_suite does not check: {e}"));
     let rust = Resolver::resolve(&root().join("aipl_src/test_suite.aipl")).unwrap();
     let names = |m: &aipl_core::ast::Module| {

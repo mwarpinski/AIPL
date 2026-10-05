@@ -8,6 +8,7 @@
   (import consts)
   (import str)
   (import buf)
+  (import strmap)
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [src_ptr:i32 pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
@@ -100,7 +101,7 @@
         (block
           (mem.store32 8 (mem.alloc (+ 16 (* 255 1040))))
           (mem.store32 12 (mem.alloc 16384))
-          (mem.store32 16 (mem.alloc 1024))
+          (mem.store32 16 (ptr.addr (call new_keywords)))
           (mem.store32 20 (mem.alloc 180224))
           (mem.store32 24 (mem.alloc 49152))
           (mem.store32 (+ (mem.load32 12) 12) (mem.alloc 65536))
@@ -126,261 +127,176 @@
       (set! i (+ i 1)))
     0)
 
-  ;; Helper to store a raw string literal into keyword table
-  (fn store_kw_str [kw_base:i32 off:i32 c0:i32 c1:i32 c2:i32 c3:i32 c4:i32 c5:i32 c6:i32 c7:i32 c8:i32 c9:i32 c10:i32 c11:i32 len:i32] -> i32
-    (let p:i32 (+ kw_base off))
-    (if (gt len 0) (block (mem.store8 (+ p 0) c0) 0) 0)
-    (if (gt len 1) (block (mem.store8 (+ p 1) c1) 0) 0)
-    (if (gt len 2) (block (mem.store8 (+ p 2) c2) 0) 0)
-    (if (gt len 3) (block (mem.store8 (+ p 3) c3) 0) 0)
-    (if (gt len 4) (block (mem.store8 (+ p 4) c4) 0) 0)
-    (if (gt len 5) (block (mem.store8 (+ p 5) c5) 0) 0)
-    (if (gt len 6) (block (mem.store8 (+ p 6) c6) 0) 0)
-    (if (gt len 7) (block (mem.store8 (+ p 7) c7) 0) 0)
-    (if (gt len 8) (block (mem.store8 (+ p 8) c8) 0) 0)
-    (if (gt len 9) (block (mem.store8 (+ p 9) c9) 0) 0)
-    (if (gt len 10) (block (mem.store8 (+ p 10) c10) 0) 0)
-    (if (gt len 11) (block (mem.store8 (+ p 11) c11) 0) 0)
-    (+ off len))
+  ;; ===== Keywords =====
+  ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
+  ;; type names (200-209); none for any other symbol. The values are the ids
+  ;; the code generator has always used.
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
-  ;; ===== Keyword table (populated via init_keywords, which also runs codegen_init) =====
+  ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
+  ;; so that a lookup allocates nothing.
+  (struct Keywords [map:(ptr (strmap.StrMap Kw)) key:(ptr str.Bytes)])
+
+  (fn keywords [] -> (ptr Keywords) (ptr.cast Keywords (mem.load32 16)))
+
+  (fn new_keywords [] -> (ptr Keywords)
+    (let ks:(ptr Keywords) (new Keywords))
+    (put ks Keywords.map (call (strmap.make Kw) 256))
+    (put ks Keywords.key (call str.bytes 0 0))
+    ks)
+
+  (fn reg [m:(ptr (strmap.StrMap Kw)) word:str k:Kw] -> void
+    (call (strmap.set Kw) m (call str.from_str word) k))
+
+  ;; Fills the keyword map once (it also runs codegen_init, every time).
   (fn init_keywords [] -> i32
     (let _init:i32 (call codegen_init))
-    (let k:i32 (call kw))
-    (let o:i32 0)
-    (set! o (call store_kw_str k 0 43 0 0 0 0 0 0 0 0 0 0 0 1)) ;; + (op 0)
-    (set! o (call store_kw_str k 1 45 0 0 0 0 0 0 0 0 0 0 0 1)) ;; - (op 1)
-    (set! o (call store_kw_str k 2 42 0 0 0 0 0 0 0 0 0 0 0 1)) ;; * (op 2)
-    (set! o (call store_kw_str k 3 47 0 0 0 0 0 0 0 0 0 0 0 1)) ;; / (op 3)
-    (set! o (call store_kw_str k 4 94 0 0 0 0 0 0 0 0 0 0 0 1)) ;; ^ (op 4)
-    (set! o (call store_kw_str k 5 115 104 108 0 0 0 0 0 0 0 0 0 3)) ;; shl (op 5)
-    (set! o (call store_kw_str k 8 115 104 114 0 0 0 0 0 0 0 0 0 3)) ;; shr (op 6)
-    (set! o (call store_kw_str k 11 98 105 116 97 110 100 0 0 0 0 0 0 6)) ;; bitand (op 7)
-    (set! o (call store_kw_str k 17 98 105 116 111 114 0 0 0 0 0 0 0 5)) ;; bitor (op 8)
-    (set! o (call store_kw_str k 22 109 101 109 46 108 111 97 100 56 0 0 0 9)) ;; mem.load8 (op 9)
-    (set! o (call store_kw_str k 31 109 101 109 46 108 111 97 100 51 50 0 0 10)) ;; mem.load32 (op 10)
-    (set! o (call store_kw_str k 41 109 101 109 46 108 111 97 100 54 52 0 0 10)) ;; mem.load64 (op 11)
-    (set! o (call store_kw_str k 51 109 101 109 46 115 116 111 114 101 56 0 0 10)) ;; mem.store8 (op 12)
-    (set! o (call store_kw_str k 61 109 101 109 46 115 116 111 114 101 51 50 0 11)) ;; mem.store32 (op 13)
-    (set! o (call store_kw_str k 72 109 101 109 46 115 116 111 114 101 54 52 0 11)) ;; mem.store64 (op 14)
-    (set! o (call store_kw_str k 83 101 113 0 0 0 0 0 0 0 0 0 0 2)) ;; eq (op 15)
-    (set! o (call store_kw_str k 85 110 101 113 0 0 0 0 0 0 0 0 0 3)) ;; neq (op 16)
-    (set! o (call store_kw_str k 88 108 116 0 0 0 0 0 0 0 0 0 0 2)) ;; lt (op 17)
-    (set! o (call store_kw_str k 90 108 116 101 0 0 0 0 0 0 0 0 0 3)) ;; lte (op 18)
-    (set! o (call store_kw_str k 93 103 116 0 0 0 0 0 0 0 0 0 0 2)) ;; gt (op 19)
-    (set! o (call store_kw_str k 95 103 116 101 0 0 0 0 0 0 0 0 0 3)) ;; gte (op 20)
-    (set! o (call store_kw_str k 98 97 110 100 0 0 0 0 0 0 0 0 0 3)) ;; and (op 21)
-    (set! o (call store_kw_str k 101 111 114 0 0 0 0 0 0 0 0 0 0 2)) ;; or (op 22)
-    (set! o (call store_kw_str k 103 110 111 116 0 0 0 0 0 0 0 0 0 3)) ;; not (op 23)
-
-    ;; Forms
-    (set! o (call store_kw_str k 106 108 101 116 0 0 0 0 0 0 0 0 0 3)) ;; let (kw 100)
-    (set! o (call store_kw_str k 109 115 101 116 33 0 0 0 0 0 0 0 0 4)) ;; set! (kw 101)
-    (set! o (call store_kw_str k 113 105 102 0 0 0 0 0 0 0 0 0 0 2)) ;; if (kw 102)
-    (set! o (call store_kw_str k 115 108 111 111 112 0 0 0 0 0 0 0 0 4)) ;; loop (kw 103)
-    (set! o (call store_kw_str k 119 119 104 105 108 101 0 0 0 0 0 0 0 5)) ;; while (kw 104)
-    (set! o (call store_kw_str k 124 99 97 108 108 0 0 0 0 0 0 0 0 4)) ;; call (kw 105)
-    (set! o (call store_kw_str k 128 98 108 111 99 107 0 0 0 0 0 0 0 5)) ;; block (kw 106)
-    (set! o (call store_kw_str k 133 114 101 113 0 0 0 0 0 0 0 0 0 3)) ;; req (kw 107)
-    (set! o (call store_kw_str k 136 101 110 115 0 0 0 0 0 0 0 0 0 3)) ;; ens (kw 108)
-    (set! o (call store_kw_str k 139 105 110 118 0 0 0 0 0 0 0 0 0 3)) ;; inv (kw 109)
-    (set! o (call store_kw_str k 142 109 111 100 117 108 101 0 0 0 0 0 0 6)) ;; module (kw 110)
-    (set! o (call store_kw_str k 148 102 110 0 0 0 0 0 0 0 0 0 0 2)) ;; fn (kw 111)
-
-    ;; Types
-    (set! o (call store_kw_str k 150 105 51 50 0 0 0 0 0 0 0 0 0 3)) ;; i32 (type 200)
-    (set! o (call store_kw_str k 153 105 54 52 0 0 0 0 0 0 0 0 0 3)) ;; i64 (type 201)
-    (set! o (call store_kw_str k 156 102 51 50 0 0 0 0 0 0 0 0 0 3)) ;; f32 (type 202)
-    (set! o (call store_kw_str k 159 102 54 52 0 0 0 0 0 0 0 0 0 3)) ;; f64 (type 203)
-    (set! o (call store_kw_str k 162 98 111 111 108 0 0 0 0 0 0 0 0 4)) ;; bool (type 204)
-    (set! o (call store_kw_str k 166 118 111 105 100 0 0 0 0 0 0 0 0 4)) ;; void (type 205)
-    (set! o (call store_kw_str k 170 115 116 114 0 0 0 0 0 0 0 0 0 3)) ;; str (type 206)
-
-    ;; Extended ops (30+)
-    (set! o (call store_kw_str k 173 115 116 114 46 108 101 110 0 0 0 0 0 7)) ;; str.len (op 30)
-    (set! o (call store_kw_str k 180 115 116 114 46 112 116 114 0 0 0 0 0 7)) ;; str.ptr (op 31)
-    (set! o (call store_kw_str k 187 115 121 115 46 112 114 105 110 116 0 0 0 9)) ;; sys.print (op 32)
-    (set! o (call store_kw_str k 196 115 121 115 46 101 120 105 116 0 0 0 0 8)) ;; sys.exit (op 33)
-    (set! o (call store_kw_str k 204 102 115 46 111 112 101 110 0 0 0 0 0 7)) ;; fs.open (op 34)
-    (set! o (call store_kw_str k 211 102 115 46 114 101 97 100 0 0 0 0 0 7)) ;; fs.read (op 35)
-    (set! o (call store_kw_str k 218 102 115 46 119 114 105 116 101 0 0 0 0 8)) ;; fs.write (op 36)
-    (set! o (call store_kw_str k 226 102 115 46 99 108 111 115 101 0 0 0 0 8)) ;; fs.close (op 37)
-    (set! o (call store_kw_str k 234 102 115 46 100 101 108 101 116 101 0 0 0 9)) ;; fs.delete (op 38)
-    (set! o (call store_kw_str k 243 37 0 0 0 0 0 0 0 0 0 0 0 1)) ;; % (op 39)
-    (set! o (call store_kw_str k 244 100 105 118 117 0 0 0 0 0 0 0 0 4)) ;; divu (op 40)
-    (set! o (call store_kw_str k 248 114 101 109 117 0 0 0 0 0 0 0 0 4)) ;; remu (op 41)
-    (set! o (call store_kw_str k 252 115 104 114 117 0 0 0 0 0 0 0 0 4)) ;; shru (op 42)
-    (set! o (call store_kw_str k 256 109 101 109 46 97 108 108 111 99 0 0 0 9)) ;; mem.alloc (op 43)
-    (set! o (call store_kw_str k 265 109 101 109 46 103 114 111 119 0 0 0 0 8)) ;; mem.grow (op 44)
-    (set! o (call store_kw_str k 273 105 54 52 46 101 120 116 101 110 100 95 115 12)) ;; i64.extend_s (op 45)
-    (set! o (call store_kw_str k 285 105 54 52 46 101 120 116 101 110 100 95 117 12)) ;; i64.extend_u (op 46)
-    (set! o (call store_kw_str k 297 105 51 50 46 119 114 97 112 0 0 0 0 8)) ;; i32.wrap (op 47)
-    (set! o (call store_kw_str k 305 111 107 0 0 0 0 0 0 0 0 0 0 2)) ;; ok (op 48)
-    (set! o (call store_kw_str k 307 101 114 114 0 0 0 0 0 0 0 0 0 3)) ;; err (op 49)
-    (set! o (call store_kw_str k 310 110 101 119 0 0 0 0 0 0 0 0 0 3)) ;; new (op 50)
-    (set! o (call store_kw_str k 313 103 101 116 0 0 0 0 0 0 0 0 0 3)) ;; get (op 51)
-    (set! o (call store_kw_str k 316 112 117 116 0 0 0 0 0 0 0 0 0 3)) ;; put (op 52)
-    (set! o (call store_kw_str k 319 115 105 122 101 111 102 0 0 0 0 0 0 6)) ;; sizeof (op 53)
-    (set! o (call store_kw_str k 325 97 114 114 46 110 101 119 0 0 0 0 0 7)) ;; arr.new (op 54)
-    (set! o (call store_kw_str k 332 97 114 114 46 103 101 116 0 0 0 0 0 7)) ;; arr.get (op 55)
-    (set! o (call store_kw_str k 339 97 114 114 46 115 101 116 0 0 0 0 0 7)) ;; arr.set (op 56)
-    (set! o (call store_kw_str k 346 109 97 116 99 104 95 114 101 115 117 108 116 12)) ;; match_result (kw 112)
-    (set! o (call store_kw_str k 358 115 116 114 117 99 116 0 0 0 0 0 0 6)) ;; struct (kw 113)
-    (set! o (call store_kw_str k 364 114 101 115 117 108 116 0 0 0 0 0 0 6)) ;; result (type 207)
-    (set! o (call store_kw_str k 440 112 116 114 0 0 0 0 0 0 0 0 0 3)) ;; ptr (type 208)
-    (set! o (call store_kw_str k 443 97 114 114 0 0 0 0 0 0 0 0 0 3)) ;; arr (type 209)
-    (set! o (call store_kw_str k 446 112 116 114 46 110 117 108 108 0 0 0 0 8)) ;; ptr.null (op 61)
-    (set! o (call store_kw_str k 454 112 116 114 46 99 97 115 116 0 0 0 0 8)) ;; ptr.cast (op 62)
-    (set! o (call store_kw_str k 462 112 116 114 46 97 100 100 114 0 0 0 0 8)) ;; ptr.addr (op 63)
-    (set! o (call store_kw_str k 470 97 114 114 46 110 117 108 108 0 0 0 0 8)) ;; arr.null (op 64)
-    (set! o (call store_kw_str k 478 97 114 114 46 99 97 115 116 0 0 0 0 8)) ;; arr.cast (op 65)
-    (set! o (call store_kw_str k 486 97 114 114 46 97 100 100 114 0 0 0 0 8)) ;; arr.addr (op 66)
-    (set! o (call store_kw_str k 494 97 114 114 46 108 101 110 0 0 0 0 0 7)) ;; arr.len (op 67)
-    (set! o (call store_kw_str k 501 114 101 102 0 0 0 0 0 0 0 0 0 3)) ;; ref (op 68)
-    (set! o (call store_kw_str k 504 99 97 108 108 95 114 101 102 0 0 0 0 8)) ;; call_ref (op 69)
-    (set! o (call store_kw_str k 512 114 101 116 117 114 110 0 0 0 0 0 0 6)) ;; return (op 70)
-    (set! o (call store_kw_str k 518 98 114 101 97 107 0 0 0 0 0 0 0 5)) ;; break (op 71)
-    (set! o (call store_kw_str k 523 99 111 110 116 105 110 117 101 0 0 0 0 8)) ;; continue (op 72)
-    (set! o (call store_kw_str k 531 99 111 110 100 0 0 0 0 0 0 0 0 4)) ;; cond (kw 114)
-    (set! o (call store_kw_str k 535 101 108 115 101 0 0 0 0 0 0 0 0 4)) ;; else (kw 115)
-    (set! o (call store_kw_str k 539 97 114 103 115 46 115 105 122 101 115 0 0 10)) ;; args.sizes (op 73)
-    (set! o (call store_kw_str k 549 97 114 103 115 46 103 101 116 0 0 0 0 8)) ;; args.get (op 74)
-    (set! o (call store_kw_str k 557 101 110 118 46 115 105 122 101 115 0 0 0 9)) ;; env.sizes (op 75)
-    (set! o (call store_kw_str k 566 101 110 118 46 103 101 116 0 0 0 0 0 7)) ;; env.get (op 76)
-    (set! o (call store_kw_str k 573 116 104 114 101 97 100 46 115 112 97 119 110 12)) ;; thread.spawn (op 77)
-    (set! o (call store_kw_str k 585 116 104 114 101 97 100 46 106 111 105 110 0 11)) ;; thread.join (op 78)
-    (set! o (call store_kw_str k 596 97 116 111 109 105 99 46 97 100 100 0 0 10)) ;; atomic.add (op 79)
-    (set! o (call store_kw_str k 606 97 116 111 109 105 99 46 99 97 115 0 0 10)) ;; atomic.cas (op 80)
-    (set! o (call store_kw_str k 616 97 116 111 109 105 99 46 108 111 99 107 0 11)) ;; atomic.lock (op 81)
-    (set! o (call store_kw_str k 627 97 116 111 109 105 99 46 117 110 108 111 99 12)) ;; atomic.unlock (op 82)
-    (set! o (call store_kw_str k 639 107 0 0 0 0 0 0 0 0 0 0 0 1))
-    (set! o (call store_kw_str k 640 115 121 115 46 116 105 109 101 0 0 0 0 8)) ;; sys.time (op 83)
-    (set! o (call store_kw_str k 648 115 121 115 46 109 111 110 111 116 111 110 105 12)) ;; sys.monotonic (op 84)
-    (set! o (call store_kw_str k 660 99 0 0 0 0 0 0 0 0 0 0 0 1))
-    (set! o (call store_kw_str k 661 115 121 115 46 114 97 110 100 111 109 0 0 10)) ;; sys.random (op 85)
-    (set! o (call store_kw_str k 671 102 54 52 46 115 113 114 116 0 0 0 0 8)) ;; f64.sqrt (op 86)
-    (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
-    (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
-    (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
-    (set! o (call store_kw_str k 399 52 95 115 0 0 0 0 0 0 0 0 0 3))
-    (set! o (call store_kw_str k 402 102 54 52 46 114 101 105 110 116 101 114 112 12)) ;; f64.reinterpret_i64 (op 59)
-    (set! o (call store_kw_str k 414 114 101 116 95 105 54 52 0 0 0 0 0 7))
-    (set! o (call store_kw_str k 421 105 54 52 46 114 101 105 110 116 101 114 112 12)) ;; i64.reinterpret_f64 (op 60)
-    (set! o (call store_kw_str k 433 114 101 116 95 102 54 52 0 0 0 0 0 7))
+    (let m:(ptr (strmap.StrMap Kw)) (get (call keywords) Keywords.map))
+    (if (gt (call (strmap.count Kw) m) 0) (return 0) (block))
+    (call reg m "+" Kw.add)
+    (call reg m "-" Kw.sub)
+    (call reg m "*" Kw.mul)
+    (call reg m "/" Kw.div)
+    (call reg m "^" Kw.xor)
+    (call reg m "shl" Kw.shl)
+    (call reg m "shr" Kw.shr)
+    (call reg m "bitand" Kw.bitand)
+    (call reg m "bitor" Kw.bitor)
+    (call reg m "mem.load8" Kw.mem_load8)
+    (call reg m "mem.load32" Kw.mem_load32)
+    (call reg m "mem.load64" Kw.mem_load64)
+    (call reg m "mem.store8" Kw.mem_store8)
+    (call reg m "mem.store32" Kw.mem_store32)
+    (call reg m "mem.store64" Kw.mem_store64)
+    (call reg m "eq" Kw.eq)
+    (call reg m "neq" Kw.neq)
+    (call reg m "lt" Kw.lt)
+    (call reg m "lte" Kw.lte)
+    (call reg m "gt" Kw.gt)
+    (call reg m "gte" Kw.gte)
+    (call reg m "and" Kw.and)
+    (call reg m "or" Kw.or)
+    (call reg m "not" Kw.not)
+    (call reg m "str.len" Kw.str_len)
+    (call reg m "str.ptr" Kw.str_ptr)
+    (call reg m "sys.print" Kw.sys_print)
+    (call reg m "sys.exit" Kw.sys_exit)
+    (call reg m "fs.open" Kw.fs_open)
+    (call reg m "fs.read" Kw.fs_read)
+    (call reg m "fs.write" Kw.fs_write)
+    (call reg m "fs.close" Kw.fs_close)
+    (call reg m "fs.delete" Kw.fs_delete)
+    (call reg m "%" Kw.rem)
+    (call reg m "divu" Kw.divu)
+    (call reg m "remu" Kw.remu)
+    (call reg m "shru" Kw.shru)
+    (call reg m "mem.alloc" Kw.mem_alloc)
+    (call reg m "mem.grow" Kw.mem_grow)
+    (call reg m "i64.extend_s" Kw.i64_extend_s)
+    (call reg m "i64.extend_u" Kw.i64_extend_u)
+    (call reg m "i32.wrap" Kw.i32_wrap)
+    (call reg m "ok" Kw.ok)
+    (call reg m "err" Kw.err)
+    (call reg m "new" Kw.new)
+    (call reg m "get" Kw.get)
+    (call reg m "put" Kw.put)
+    (call reg m "sizeof" Kw.sizeof)
+    (call reg m "arr.new" Kw.arr_new)
+    (call reg m "arr.get" Kw.arr_get)
+    (call reg m "arr.set" Kw.arr_set)
+    (call reg m "f64.convert_i64_s" Kw.f64_convert_i64_s)
+    (call reg m "i64.trunc_f64_s" Kw.i64_trunc_f64_s)
+    (call reg m "f64.reinterpret_i64" Kw.f64_reinterpret_i64)
+    (call reg m "i64.reinterpret_f64" Kw.i64_reinterpret_f64)
+    (call reg m "ptr.null" Kw.ptr_null)
+    (call reg m "ptr.cast" Kw.ptr_cast)
+    (call reg m "ptr.addr" Kw.ptr_addr)
+    (call reg m "arr.null" Kw.arr_null)
+    (call reg m "arr.cast" Kw.arr_cast)
+    (call reg m "arr.addr" Kw.arr_addr)
+    (call reg m "arr.len" Kw.arr_len)
+    (call reg m "ref" Kw.ref)
+    (call reg m "call_ref" Kw.call_ref)
+    (call reg m "return" Kw.return)
+    (call reg m "break" Kw.break)
+    (call reg m "continue" Kw.continue)
+    (call reg m "args.sizes" Kw.args_sizes)
+    (call reg m "args.get" Kw.args_get)
+    (call reg m "env.sizes" Kw.env_sizes)
+    (call reg m "env.get" Kw.env_get)
+    (call reg m "thread.spawn" Kw.thread_spawn)
+    (call reg m "thread.join" Kw.thread_join)
+    (call reg m "atomic.add" Kw.atomic_add)
+    (call reg m "atomic.cas" Kw.atomic_cas)
+    (call reg m "atomic.lock" Kw.atomic_lock)
+    (call reg m "atomic.unlock" Kw.atomic_unlock)
+    (call reg m "sys.time" Kw.sys_time)
+    (call reg m "sys.monotonic" Kw.sys_monotonic)
+    (call reg m "sys.random" Kw.sys_random)
+    (call reg m "f64.sqrt" Kw.f64_sqrt)
+    (call reg m "let" Kw.let)
+    (call reg m "set!" Kw.set)
+    (call reg m "if" Kw.if)
+    (call reg m "loop" Kw.loop)
+    (call reg m "while" Kw.while)
+    (call reg m "call" Kw.call)
+    (call reg m "block" Kw.block)
+    (call reg m "req" Kw.req)
+    (call reg m "ens" Kw.ens)
+    (call reg m "inv" Kw.inv)
+    (call reg m "module" Kw.module)
+    (call reg m "fn" Kw.fn)
+    (call reg m "match_result" Kw.match_result)
+    (call reg m "struct" Kw.struct)
+    (call reg m "cond" Kw.cond)
+    (call reg m "else" Kw.else)
+    (call reg m "i32" Kw.ty_i32)
+    (call reg m "i64" Kw.ty_i64)
+    (call reg m "f32" Kw.ty_f32)
+    (call reg m "f64" Kw.ty_f64)
+    (call reg m "bool" Kw.ty_bool)
+    (call reg m "void" Kw.ty_void)
+    (call reg m "str" Kw.ty_str)
+    (call reg m "result" Kw.ty_result)
+    (call reg m "ptr" Kw.ty_ptr)
+    (call reg m "arr" Kw.ty_arr)
     0)
 
-  ;; Unified keyword classifier (flat statements to prevent deep AST recursion)
-  (fn classify_keyword [src_ptr:i32 pos:i32 len:i32] -> i32
-    (let k:i32 (call kw))
-    (let res:i32 -1)
-    (if (call sym_eq src_ptr pos len (+ k 0) 1) (set! res 0) (block))
-    (if (call sym_eq src_ptr pos len (+ k 1) 1) (set! res 1) (block))
-    (if (call sym_eq src_ptr pos len (+ k 2) 1) (set! res 2) (block))
-    (if (call sym_eq src_ptr pos len (+ k 3) 1) (set! res 3) (block))
-    (if (call sym_eq src_ptr pos len (+ k 4) 1) (set! res 4) (block))
-    (if (call sym_eq src_ptr pos len (+ k 5) 3) (set! res 5) (block))
-    (if (call sym_eq src_ptr pos len (+ k 8) 3) (set! res 6) (block))
-    (if (call sym_eq src_ptr pos len (+ k 11) 6) (set! res 7) (block))
-    (if (call sym_eq src_ptr pos len (+ k 17) 5) (set! res 8) (block))
-    (if (call sym_eq src_ptr pos len (+ k 22) 9) (set! res 9) (block))
-    (if (call sym_eq src_ptr pos len (+ k 31) 10) (set! res 10) (block))
-    (if (call sym_eq src_ptr pos len (+ k 41) 10) (set! res 11) (block))
-    (if (call sym_eq src_ptr pos len (+ k 51) 10) (set! res 12) (block))
-    (if (call sym_eq src_ptr pos len (+ k 61) 11) (set! res 13) (block))
-    (if (call sym_eq src_ptr pos len (+ k 72) 11) (set! res 14) (block))
-    (if (call sym_eq src_ptr pos len (+ k 83) 2) (set! res 15) (block))
-    (if (call sym_eq src_ptr pos len (+ k 85) 3) (set! res 16) (block))
-    (if (call sym_eq src_ptr pos len (+ k 88) 2) (set! res 17) (block))
-    (if (call sym_eq src_ptr pos len (+ k 90) 3) (set! res 18) (block))
-    (if (call sym_eq src_ptr pos len (+ k 93) 2) (set! res 19) (block))
-    (if (call sym_eq src_ptr pos len (+ k 95) 3) (set! res 20) (block))
-    (if (call sym_eq src_ptr pos len (+ k 98) 3) (set! res 21) (block))
-    (if (call sym_eq src_ptr pos len (+ k 101) 2) (set! res 22) (block))
-    (if (call sym_eq src_ptr pos len (+ k 103) 3) (set! res 23) (block))
-    (if (call sym_eq src_ptr pos len (+ k 173) 7) (set! res 30) (block))
-    (if (call sym_eq src_ptr pos len (+ k 180) 7) (set! res 31) (block))
-    (if (call sym_eq src_ptr pos len (+ k 187) 9) (set! res 32) (block))
-    (if (call sym_eq src_ptr pos len (+ k 196) 8) (set! res 33) (block))
-    (if (call sym_eq src_ptr pos len (+ k 204) 7) (set! res 34) (block))
-    (if (call sym_eq src_ptr pos len (+ k 211) 7) (set! res 35) (block))
-    (if (call sym_eq src_ptr pos len (+ k 218) 8) (set! res 36) (block))
-    (if (call sym_eq src_ptr pos len (+ k 226) 8) (set! res 37) (block))
-    (if (call sym_eq src_ptr pos len (+ k 234) 9) (set! res 38) (block))
-    (if (call sym_eq src_ptr pos len (+ k 243) 1) (set! res 39) (block))
-    (if (call sym_eq src_ptr pos len (+ k 244) 4) (set! res 40) (block))
-    (if (call sym_eq src_ptr pos len (+ k 248) 4) (set! res 41) (block))
-    (if (call sym_eq src_ptr pos len (+ k 252) 4) (set! res 42) (block))
-    (if (call sym_eq src_ptr pos len (+ k 256) 9) (set! res 43) (block))
-    (if (call sym_eq src_ptr pos len (+ k 265) 8) (set! res 44) (block))
-    (if (call sym_eq src_ptr pos len (+ k 273) 12) (set! res 45) (block))
-    (if (call sym_eq src_ptr pos len (+ k 285) 12) (set! res 46) (block))
-    (if (call sym_eq src_ptr pos len (+ k 297) 8) (set! res 47) (block))
-    (if (call sym_eq src_ptr pos len (+ k 305) 2) (set! res 48) (block))
-    (if (call sym_eq src_ptr pos len (+ k 307) 3) (set! res 49) (block))
-    (if (call sym_eq src_ptr pos len (+ k 310) 3) (set! res 50) (block))
-    (if (call sym_eq src_ptr pos len (+ k 313) 3) (set! res 51) (block))
-    (if (call sym_eq src_ptr pos len (+ k 316) 3) (set! res 52) (block))
-    (if (call sym_eq src_ptr pos len (+ k 319) 6) (set! res 53) (block))
-    (if (call sym_eq src_ptr pos len (+ k 325) 7) (set! res 54) (block))
-    (if (call sym_eq src_ptr pos len (+ k 332) 7) (set! res 55) (block))
-    (if (call sym_eq src_ptr pos len (+ k 339) 7) (set! res 56) (block))
-    (if (call sym_eq src_ptr pos len (+ k 106) 3) (set! res 100) (block))
-    (if (call sym_eq src_ptr pos len (+ k 109) 4) (set! res 101) (block))
-    (if (call sym_eq src_ptr pos len (+ k 113) 2) (set! res 102) (block))
-    (if (call sym_eq src_ptr pos len (+ k 115) 4) (set! res 103) (block))
-    (if (call sym_eq src_ptr pos len (+ k 119) 5) (set! res 104) (block))
-    (if (call sym_eq src_ptr pos len (+ k 124) 4) (set! res 105) (block))
-    (if (call sym_eq src_ptr pos len (+ k 128) 5) (set! res 106) (block))
-    (if (call sym_eq src_ptr pos len (+ k 133) 3) (set! res 107) (block))
-    (if (call sym_eq src_ptr pos len (+ k 136) 3) (set! res 108) (block))
-    (if (call sym_eq src_ptr pos len (+ k 139) 3) (set! res 109) (block))
-    (if (call sym_eq src_ptr pos len (+ k 142) 6) (set! res 110) (block))
-    (if (call sym_eq src_ptr pos len (+ k 148) 2) (set! res 111) (block))
-    (if (call sym_eq src_ptr pos len (+ k 346) 12) (set! res 112) (block))
-    (if (call sym_eq src_ptr pos len (+ k 358) 6) (set! res 113) (block))
-    (if (call sym_eq src_ptr pos len (+ k 364) 6) (set! res 207) (block))
-    (if (call sym_eq src_ptr pos len (+ k 440) 3) (set! res 208) (block))
-    (if (call sym_eq src_ptr pos len (+ k 443) 3) (set! res 209) (block))
-    (if (call sym_eq src_ptr pos len (+ k 446) 8) (set! res 61) (block))
-    (if (call sym_eq src_ptr pos len (+ k 454) 8) (set! res 62) (block))
-    (if (call sym_eq src_ptr pos len (+ k 462) 8) (set! res 63) (block))
-    (if (call sym_eq src_ptr pos len (+ k 470) 8) (set! res 64) (block))
-    (if (call sym_eq src_ptr pos len (+ k 478) 8) (set! res 65) (block))
-    (if (call sym_eq src_ptr pos len (+ k 486) 8) (set! res 66) (block))
-    (if (call sym_eq src_ptr pos len (+ k 494) 7) (set! res 67) (block))
-    (if (call sym_eq src_ptr pos len (+ k 501) 3) (set! res 68) (block))
-    (if (call sym_eq src_ptr pos len (+ k 504) 8) (set! res 69) (block))
-    (if (call sym_eq src_ptr pos len (+ k 512) 6) (set! res 70) (block))
-    (if (call sym_eq src_ptr pos len (+ k 518) 5) (set! res 71) (block))
-    (if (call sym_eq src_ptr pos len (+ k 523) 8) (set! res 72) (block))
-    (if (call sym_eq src_ptr pos len (+ k 531) 4) (set! res 114) (block))
-    (if (call sym_eq src_ptr pos len (+ k 535) 4) (set! res 115) (block))
-    (if (call sym_eq src_ptr pos len (+ k 539) 10) (set! res 73) (block))
-    (if (call sym_eq src_ptr pos len (+ k 549) 8) (set! res 74) (block))
-    (if (call sym_eq src_ptr pos len (+ k 557) 9) (set! res 75) (block))
-    (if (call sym_eq src_ptr pos len (+ k 566) 7) (set! res 76) (block))
-    (if (call sym_eq src_ptr pos len (+ k 573) 12) (set! res 77) (block))
-    (if (call sym_eq src_ptr pos len (+ k 585) 11) (set! res 78) (block))
-    (if (call sym_eq src_ptr pos len (+ k 596) 10) (set! res 79) (block))
-    (if (call sym_eq src_ptr pos len (+ k 606) 10) (set! res 80) (block))
-    (if (call sym_eq src_ptr pos len (+ k 616) 11) (set! res 81) (block))
-    (if (call sym_eq src_ptr pos len (+ k 627) 13) (set! res 82) (block))
-    (if (call sym_eq src_ptr pos len (+ k 640) 8) (set! res 83) (block))
-    (if (call sym_eq src_ptr pos len (+ k 648) 13) (set! res 84) (block))
-    (if (call sym_eq src_ptr pos len (+ k 661) 10) (set! res 85) (block))
-    (if (call sym_eq src_ptr pos len (+ k 671) 8) (set! res 86) (block))
-    (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (block))
-    (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (block))
-    (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (block))
-    (if (call sym_eq src_ptr pos len (+ k 421) 19) (set! res 60) (block))
-    (if (call sym_eq src_ptr pos len (+ k 150) 3) (set! res 200) (block))
-    (if (call sym_eq src_ptr pos len (+ k 153) 3) (set! res 201) (block))
-    (if (call sym_eq src_ptr pos len (+ k 156) 3) (set! res 202) (block))
-    (if (call sym_eq src_ptr pos len (+ k 159) 3) (set! res 203) (block))
-    (if (call sym_eq src_ptr pos len (+ k 162) 4) (set! res 204) (block))
-    (if (call sym_eq src_ptr pos len (+ k 166) 4) (set! res 205) (block))
-    (if (call sym_eq src_ptr pos len (+ k 170) 3) (set! res 206) (block))
-    res)
+  ;; An operator (as opposed to a form, a type name, or none): ids 0-99.
+  (fn is_op [k:Kw] -> bool
+    (and (gte (enum.ord k) 0) (lt (enum.ord k) 100)))
+
+  ;; return, break, continue: statements that jump.
+  (fn is_jump [k:Kw] -> bool
+    (or (eq k Kw.return) (or (eq k Kw.break) (eq k Kw.continue))))
+
+  ;; Arithmetic and bitwise ops, whose type is their operands' type.
+  (fn is_arith [k:Kw] -> bool
+    (or (or (eq k Kw.add) (or (eq k Kw.sub) (or (eq k Kw.mul) (or (eq k Kw.div) (eq k Kw.xor)))))
+        (or (or (eq k Kw.shl) (or (eq k Kw.shr) (or (eq k Kw.bitand) (eq k Kw.bitor))))
+            (or (eq k Kw.rem) (or (eq k Kw.divu) (or (eq k Kw.remu) (eq k Kw.shru)))))))
+
+  ;; Comparisons and logic, which yield bool.
+  (fn is_compare [k:Kw] -> bool
+    (or (or (eq k Kw.eq) (or (eq k Kw.neq) (or (eq k Kw.lt) (or (eq k Kw.lte) (or (eq k Kw.gt) (eq k Kw.gte))))))
+        (or (eq k Kw.and) (or (eq k Kw.or) (eq k Kw.not)))))
+
+  ;; The WASI function behind args.sizes / args.get / env.sizes / env.get, or -1.
+  (fn proc_wasi [k:Kw] -> i32
+    (cond
+      ((eq k Kw.args_sizes) 6)
+      ((eq k Kw.args_get) 7)
+      ((eq k Kw.env_sizes) 8)
+      ((eq k Kw.env_get) 9)
+      (else -1)))
+
+  ;; The keyword spelled by len bytes at src_ptr + pos, or Kw.none.
+  (fn classify_keyword [src_ptr:i32 pos:i32 len:i32] -> Kw
+    (let ks:(ptr Keywords) (call keywords))
+    (let key:(ptr str.Bytes) (get ks Keywords.key))
+    (put key str.Bytes.addr (+ src_ptr pos))
+    (put key str.Bytes.len len)
+    (call (strmap.get_or Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
   ;; Type ids: 200 i32, 201 i64, 202 f32, 203 f64, 204 bool, 205 void, 206 str,
@@ -392,12 +308,12 @@
   (fn type_node_id [src_ptr:i32 node:i32] -> i32
     (let id:i32 -1)
     (if (eq (call node_kind node) 6)
-        (set! id (call classify_keyword src_ptr (call node_a node) (call node_b node)))
+        (set! id (enum.ord (call classify_keyword src_ptr (call node_a node) (call node_b node))))
         (if (eq (call node_kind node) 20)
             (block
-              (let head:i32 (call group_head_keyword src_ptr node))
-              (if (or (eq head 207) (or (eq head 208) (eq head 209))) (set! id head) (block))
-              (if (eq head 111) (set! id 210) (block)))
+              (let head:Kw (call group_head_keyword src_ptr node))
+              (if (or (eq head Kw.ty_result) (or (eq head Kw.ty_ptr) (eq head Kw.ty_arr))) (set! id (enum.ord head)) (block))
+              (if (eq head Kw.fn) (set! id 210) (block)))
             (block)))
     (if (and (gte id 200) (lte id 210))
         id
@@ -444,7 +360,7 @@
   (fn collect_functions [src_ptr:i32 root:i32 func_table_base:i32] -> i32
     (let count:i32 0)
     (let child:i32 (call node_next (call node_next (call node_a root))))
-    (while (neq child 0) (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
+    (while (neq child 0) (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
                 (block
                   (let fname_node:i32 (call nth_child child 1))
                   (let params_node:i32 (call nth_child child 2))
@@ -530,20 +446,17 @@
         0
         (block
           (let head:i32 (call node_a node))
-          (let kw:i32 -1)
-          (if (eq (call node_kind head) 6)
-              (set! kw (call classify_keyword src_ptr (call node_a head) (call node_b head)))
-              (set! kw -1))
+          (let kw:Kw (call group_head_keyword src_ptr node))
           (cond
-            ((eq kw 100) (let name_node:i32 (call nth_child node 1))
+            ((eq kw Kw.let) (let name_node:i32 (call nth_child node 1))
                 (let type_node:i32 (call nth_child node 3))
                 (let type_id:i32 (call type_node_id src_ptr type_node))
                 (call add_local_if_new src_ptr base (call node_a name_node) (call node_b name_node) type_id))
-            ((eq kw 103) (let var_node:i32 (call nth_child node 1))
+            ((eq kw Kw.loop) (let var_node:i32 (call nth_child node 1))
                     (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200)
                     (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 211)
                     (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 212))
-            ((eq kw 112) (let ok_group:i32 (call nth_child node 2))
+            ((eq kw Kw.match_result) (let ok_group:i32 (call nth_child node 2))
                         (let err_group:i32 (call nth_child node 3))
                         (let ok_var:i32 (call nth_child ok_group 1))
                         (let err_var:i32 (call nth_child err_group 1))
@@ -562,8 +475,8 @@
     (if (neq (call node_kind head) 6)
         false
         (block
-          (let kw:i32 (call classify_keyword src_ptr (call node_a head) (call node_b head)))
-          (or (eq kw 107) (or (eq kw 108) (eq kw 109))))))
+          (let kw:Kw (call classify_keyword src_ptr (call node_a head) (call node_b head)))
+          (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv))))))
 
   (fn collect_locals_for_function [src_ptr:i32 entry:i32 base:i32] -> i32
     (mem.store32 28 0)
@@ -796,82 +709,82 @@
 
   ;; Opcode for a binary arithmetic/comparison op on operands of type t, as
   ;; arith_instruction / compare_instruction in wasm.rs; -1 if unsupported.
-  (fn binop_opcode [op_id:i32 t:i32] -> i32
+  (fn binop_opcode [op_id:Kw t:i32] -> i32
     (cond
       ((eq t 200) (cond
-                    ((eq op_id 0) 106)
-                    ((eq op_id 1) 107)
-                    ((eq op_id 2) 108)
-                    ((eq op_id 3) 109)
-                    ((eq op_id 4) 115)
-                    ((eq op_id 5) 116)
-                    ((eq op_id 6) 117)
-                    ((eq op_id 7) 113)
-                    ((eq op_id 8) 114)
-                    ((eq op_id 15) 70)
-                    ((eq op_id 16) 71)
-                    ((eq op_id 17) 72)
-                    ((eq op_id 18) 76)
-                    ((eq op_id 19) 74)
-                    ((eq op_id 20) 78)
-                    ((eq op_id 39) 111)
-                    ((eq op_id 40) 110)
-                    ((eq op_id 41) 112)
-                    ((eq op_id 42) 118)
+                    ((eq op_id Kw.add) 106)
+                    ((eq op_id Kw.sub) 107)
+                    ((eq op_id Kw.mul) 108)
+                    ((eq op_id Kw.div) 109)
+                    ((eq op_id Kw.xor) 115)
+                    ((eq op_id Kw.shl) 116)
+                    ((eq op_id Kw.shr) 117)
+                    ((eq op_id Kw.bitand) 113)
+                    ((eq op_id Kw.bitor) 114)
+                    ((eq op_id Kw.eq) 70)
+                    ((eq op_id Kw.neq) 71)
+                    ((eq op_id Kw.lt) 72)
+                    ((eq op_id Kw.lte) 76)
+                    ((eq op_id Kw.gt) 74)
+                    ((eq op_id Kw.gte) 78)
+                    ((eq op_id Kw.rem) 111)
+                    ((eq op_id Kw.divu) 110)
+                    ((eq op_id Kw.remu) 112)
+                    ((eq op_id Kw.shru) 118)
                     (else -1)))
       ((eq t 201) (cond
-                    ((eq op_id 0) 124)
-                    ((eq op_id 1) 125)
-                    ((eq op_id 2) 126)
-                    ((eq op_id 3) 127)
-                    ((eq op_id 4) 133)
-                    ((eq op_id 5) 134)
-                    ((eq op_id 6) 135)
-                    ((eq op_id 7) 131)
-                    ((eq op_id 8) 132)
-                    ((eq op_id 15) 81)
-                    ((eq op_id 16) 82)
-                    ((eq op_id 17) 83)
-                    ((eq op_id 18) 87)
-                    ((eq op_id 19) 85)
-                    ((eq op_id 20) 89)
-                    ((eq op_id 39) 129)
-                    ((eq op_id 40) 128)
-                    ((eq op_id 41) 130)
-                    ((eq op_id 42) 136)
+                    ((eq op_id Kw.add) 124)
+                    ((eq op_id Kw.sub) 125)
+                    ((eq op_id Kw.mul) 126)
+                    ((eq op_id Kw.div) 127)
+                    ((eq op_id Kw.xor) 133)
+                    ((eq op_id Kw.shl) 134)
+                    ((eq op_id Kw.shr) 135)
+                    ((eq op_id Kw.bitand) 131)
+                    ((eq op_id Kw.bitor) 132)
+                    ((eq op_id Kw.eq) 81)
+                    ((eq op_id Kw.neq) 82)
+                    ((eq op_id Kw.lt) 83)
+                    ((eq op_id Kw.lte) 87)
+                    ((eq op_id Kw.gt) 85)
+                    ((eq op_id Kw.gte) 89)
+                    ((eq op_id Kw.rem) 129)
+                    ((eq op_id Kw.divu) 128)
+                    ((eq op_id Kw.remu) 130)
+                    ((eq op_id Kw.shru) 136)
                     (else -1)))
       ((eq t 202) (cond
-                    ((eq op_id 0) 146)
-                    ((eq op_id 1) 147)
-                    ((eq op_id 2) 148)
-                    ((eq op_id 3) 149)
-                    ((eq op_id 15) 91)
-                    ((eq op_id 16) 92)
-                    ((eq op_id 17) 93)
-                    ((eq op_id 18) 95)
-                    ((eq op_id 19) 94)
-                    ((eq op_id 20) 96)
+                    ((eq op_id Kw.add) 146)
+                    ((eq op_id Kw.sub) 147)
+                    ((eq op_id Kw.mul) 148)
+                    ((eq op_id Kw.div) 149)
+                    ((eq op_id Kw.eq) 91)
+                    ((eq op_id Kw.neq) 92)
+                    ((eq op_id Kw.lt) 93)
+                    ((eq op_id Kw.lte) 95)
+                    ((eq op_id Kw.gt) 94)
+                    ((eq op_id Kw.gte) 96)
                     (else -1)))
       ((eq t 203) (cond
-                    ((eq op_id 0) 160)
-                    ((eq op_id 1) 161)
-                    ((eq op_id 2) 162)
-                    ((eq op_id 3) 163)
-                    ((eq op_id 15) 97)
-                    ((eq op_id 16) 98)
-                    ((eq op_id 17) 99)
-                    ((eq op_id 18) 101)
-                    ((eq op_id 19) 100)
-                    ((eq op_id 20) 102)
+                    ((eq op_id Kw.add) 160)
+                    ((eq op_id Kw.sub) 161)
+                    ((eq op_id Kw.mul) 162)
+                    ((eq op_id Kw.div) 163)
+                    ((eq op_id Kw.eq) 97)
+                    ((eq op_id Kw.neq) 98)
+                    ((eq op_id Kw.lt) 99)
+                    ((eq op_id Kw.lte) 101)
+                    ((eq op_id Kw.gt) 100)
+                    ((eq op_id Kw.gte) 102)
                     (else -1)))
-      ((or (eq t 204) (or (eq t 206) (or (eq t 208) (or (eq t 209) (eq t 210))))) (if (eq op_id 15) 70 (if (eq op_id 16) 71 -1)))
+      ((or (eq t 204) (or (eq t 206) (or (eq t 208) (or (eq t 209) (eq t 210))))) (if (eq op_id Kw.eq) 70 (if (eq op_id Kw.neq) 71 -1)))
       (else -1)))
 
   ;; and / or are i32.and / i32.or whatever the operands; others go through
   ;; binop_opcode with the first operand's type. Unsupported: compile error 99.
-  (fn emit_typed_binop [ptr:i32 op_id:i32 t:i32] -> i32
-    (if (eq op_id 21) (call emit_byte ptr 113)
-    (if (eq op_id 22) (call emit_byte ptr 114)
+  (fn emit_typed_binop [ptr:i32 op_id:Kw t:i32] -> i32
+    (if (eq op_id Kw.and) (call emit_byte ptr 113)
+    (if (eq op_id Kw.or) (call emit_byte ptr 114)
     (block
       (let opc:i32 (call binop_opcode op_id t))
       (if (eq opc -1)
@@ -889,10 +802,11 @@
     (+ 2 n))
 
   ;; ===== Voidness classification =====
-  (fn is_void_op [op_id:i32] -> bool
-    (or (or (eq op_id 81) (eq op_id 82))
-    (or (and (gte op_id 70) (lte op_id 72))
-    (or (eq op_id 12) (or (eq op_id 13) (or (eq op_id 14) (or (eq op_id 32) (or (eq op_id 33) (or (eq op_id 52) (eq op_id 56))))))))))
+  (fn is_void_op [k:Kw] -> bool
+    (or (eq k Kw.atomic_lock) (or (eq k Kw.atomic_unlock)
+    (or (eq k Kw.return) (or (eq k Kw.break) (or (eq k Kw.continue)
+    (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64)
+    (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set)))))))))))))
 
   (fn last_child [group:i32] -> i32
     (let cur:i32 (call node_a group))
@@ -902,11 +816,11 @@
 
   ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds itself
   ;; so any caller is safe: an atom's a field is a value, not a node address.
-  (fn group_head_keyword [src_ptr:i32 group:i32] -> i32
-    (if (neq (call node_kind group) 20) (return -1) (block))
+  (fn group_head_keyword [src_ptr:i32 group:i32] -> Kw
+    (if (neq (call node_kind group) 20) (return Kw.none) (block))
     (let head:i32 (call node_a group))
     (if (neq (call node_kind head) 6)
-        -1
+        Kw.none
         (call classify_keyword src_ptr (call node_a head) (call node_b head))))
 
   (fn is_void_call [src_ptr:i32 node:i32 func_table_base:i32 func_count:i32] -> bool
@@ -920,20 +834,20 @@
     (if (neq (call node_kind node) 20)
         false
         (block
-          (let kw:i32 (call group_head_keyword src_ptr node))
+          (let kw:Kw (call group_head_keyword src_ptr node))
           (let res:bool false)
-          (if (eq kw 100) (set! res true) (block))
-          (if (eq kw 101) (set! res true) (block))
-          (if (eq kw 103) (set! res true) (block))
-          (if (eq kw 104) (set! res true) (block))
-          (if (eq kw 113) (set! res true) (block))
-          (if (eq kw 112) (set! res (call is_void_node src_ptr (call last_child (call nth_child node 2)) func_table_base func_count)) (block))
+          (if (eq kw Kw.let) (set! res true) (block))
+          (if (eq kw Kw.set) (set! res true) (block))
+          (if (eq kw Kw.loop) (set! res true) (block))
+          (if (eq kw Kw.while) (set! res true) (block))
+          (if (eq kw Kw.struct) (set! res true) (block))
+          (if (eq kw Kw.match_result) (set! res (call is_void_node src_ptr (call last_child (call nth_child node 2)) func_table_base func_count)) (block))
           ;; an empty (block) is void, like Expr::Block([]) in wasm.rs
-          (if (eq kw 106) (set! res (or (eq (call node_next (call node_a node)) 0) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (block))
-          (if (eq kw 102) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (block))
-          (if (eq kw 105) (set! res (call is_void_call src_ptr node func_table_base func_count)) (block))
-          (if (and (gte kw 0) (lt kw 100)) (set! res (call is_void_op kw)) (block))
-          (if (eq kw 114)
+          (if (eq kw Kw.block) (set! res (or (eq (call node_next (call node_a node)) 0) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (block))
+          (if (eq kw Kw.if) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (block))
+          (if (eq kw Kw.call) (set! res (call is_void_call src_ptr node func_table_base func_count)) (block))
+          (if (call is_op kw) (set! res (call is_void_op kw)) (block))
+          (if (eq kw Kw.cond)
               (block
                 (let all_void:bool true)
                 (let clause:i32 (call nth_child node 1))
@@ -943,7 +857,7 @@
                 (set! res all_void))
               (block))
           ;; call_ref is void when its signature returns void (after the generic op rule)
-          (if (eq kw 69) (set! res (eq (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3)) 205)) (block))
+          (if (eq kw Kw.call_ref) (set! res (eq (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3)) 205)) (block))
           res)))
 
   ;; ===== Struct table & resolution =====
@@ -960,7 +874,7 @@
     (let scount:i32 0)
     (let child:i32 (call node_next (call node_next (call node_a root))))
     (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 113))
+      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.struct))
           (block
             (let sname_node:i32 (call nth_child child 1))
             (let fields_bracket:i32 (call nth_child child 2))
@@ -1187,6 +1101,30 @@
           (call set_newline_addr addr)
           addr)))
 
+  ;; A wasm name: its length (LEB128), then its bytes. Returns the byte count.
+  (fn emit_name [ptr:i32 s:str] -> i32
+    (let n:i32 (call compiler.encode_u32 ptr (str.len s)))
+    (loop i 0 (- (str.len s) 1) 1
+      (mem.store8 (+ ptr (+ n i)) (mem.load8 (+ (str.ptr s) i))))
+    (+ n (str.len s)))
+
+  ;; The import name of WASI function w (the order of wasm.rs Wasi).
+  (fn wasi_name [w:i32] -> str
+    (cond
+      ((eq w 0) "fd_write")
+      ((eq w 1) "fd_read")
+      ((eq w 2) "path_open")
+      ((eq w 3) "fd_close")
+      ((eq w 4) "proc_exit")
+      ((eq w 5) "path_unlink_file")
+      ((eq w 6) "args_sizes_get")
+      ((eq w 7) "args_get")
+      ((eq w 8) "environ_sizes_get")
+      ((eq w 9) "environ_get")
+      ((eq w 10) "thread-spawn")
+      ((eq w 11) "clock_time_get")
+      (else "random_get")))
+
   ;; ===== WASI Import Detection =====
   ;; WASI import table, 11 words at struct_table + 12, in the fixed import
   ;; order (wasm.rs enum Wasi): fd_write, fd_read, path_open, fd_close,
@@ -1230,19 +1168,22 @@
     (let kind:i32 (call node_kind node))
     (if (eq kind 20)
         (block
-          (let kw:i32 (call group_head_keyword src_ptr node))
+          (let kw:Kw (call group_head_keyword src_ptr node))
           (cond
-            ((eq kw 32) (call mark_wasi_used 0) 0)
-            ((eq kw 33) (call mark_wasi_used 4) 0)
-            ((eq kw 34) (call mark_wasi_used 2) 0)
-            ((eq kw 35) (call mark_wasi_used 1) 0)
-            ((eq kw 36) (call mark_wasi_used 0) 0)
-            ((eq kw 37) (call mark_wasi_used 3) 0)
-            ((eq kw 38) (call mark_wasi_used 5) 0)
-            ((and (gte kw 73) (lte kw 76)) (call mark_wasi_used (- kw 67)) 0)
-            ((eq kw 77) (call mark_wasi_used 10) 0)
-            ((or (eq kw 83) (eq kw 84)) (call mark_wasi_used 11) 0)
-            ((eq kw 85) (call mark_wasi_used 12) 0)
+            ((eq kw Kw.sys_print) (call mark_wasi_used 0) 0)
+            ((eq kw Kw.sys_exit) (call mark_wasi_used 4) 0)
+            ((eq kw Kw.fs_open) (call mark_wasi_used 2) 0)
+            ((eq kw Kw.fs_read) (call mark_wasi_used 1) 0)
+            ((eq kw Kw.fs_write) (call mark_wasi_used 0) 0)
+            ((eq kw Kw.fs_close) (call mark_wasi_used 3) 0)
+            ((eq kw Kw.fs_delete) (call mark_wasi_used 5) 0)
+            ((eq kw Kw.args_sizes) (call mark_wasi_used 6) 0)
+            ((eq kw Kw.args_get) (call mark_wasi_used 7) 0)
+            ((eq kw Kw.env_sizes) (call mark_wasi_used 8) 0)
+            ((eq kw Kw.env_get) (call mark_wasi_used 9) 0)
+            ((eq kw Kw.thread_spawn) (call mark_wasi_used 10) 0)
+            ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used 11) 0)
+            ((eq kw Kw.sys_random) (call mark_wasi_used 12) 0)
             (else 0))
           (let child:i32 (call node_a node))
           (while (neq child 0) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
@@ -1318,9 +1259,9 @@
   (fn walk_ast_for_refs [src_ptr:i32 node:i32] -> i32
     (if (eq (call node_kind node) 20)
         (block
-          (let kw:i32 (call group_head_keyword src_ptr node))
-          (if (or (eq kw 68) (eq kw 69)) (mem.store32 (call ref_state) 1) (block))
-          (if (eq kw 69) (call sig_index src_ptr (call nth_child node 1)) 0)
+          (let kw:Kw (call group_head_keyword src_ptr node))
+          (if (or (eq kw Kw.ref) (eq kw Kw.call_ref)) (mem.store32 (call ref_state) 1) (block))
+          (if (eq kw Kw.call_ref) (call sig_index src_ptr (call nth_child node 1)) 0)
           (let child:i32 (call node_a node))
           (while (neq child 0)
             (call walk_ast_for_refs src_ptr child)
@@ -1332,7 +1273,7 @@
     ;; Pass 1: WASI detection
     (let child:i32 (call node_next (call node_next (call node_a root))))
     (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
+      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
           (block
             (let bchild:i32 (call nth_child child 5))
             (while (neq bchild 0)
@@ -1351,7 +1292,7 @@
     ;; Pass 3: Intern string literals
     (set! child (call node_next (call node_next (call node_a root))))
     (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) 111))
+      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
           (block
             (let bchild:i32 (call nth_child child 5))
             (while (neq bchild 0)
@@ -1366,8 +1307,8 @@
     (if (neq (call node_kind node) 20)
         false
         (block
-          (let kw:i32 (call group_head_keyword src_ptr node))
-          (if (eq kw 32)
+          (let kw:Kw (call group_head_keyword src_ptr node))
+          (if (eq kw Kw.sys_print)
               true
               (block
                 (let child:i32 (call node_a node))
@@ -1379,17 +1320,23 @@
                   (set! child (call node_next child)))
                 found)))))
 
+  ;; Ops whose lowering uses the two extra scratch locals (wasm.rs
+  ;; fn_uses_io): the WASI ops, arr.new, thread.spawn, and the atomics that
+  ;; wait or compare.
+  (fn needs_io_scratch [k:Kw] -> bool
+    (cond
+      ((or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.fs_open) (or (eq k Kw.fs_read)
+          (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
+      ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
+      ((or (eq k Kw.arr_new) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
+      (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
+
   ;; Check if function uses I/O ops
   (fn ast_uses_io [src_ptr:i32 node:i32] -> bool
     (if (neq (call node_kind node) 20)
         false
         (block
-          (let kw:i32 (call group_head_keyword src_ptr node))
-                    ;; WASI ops and arr.new (54) get the two extra scratch locals, as in wasm.rs fn_uses_io
-          ;; and thread.spawn (77), atomic.cas/lock/unlock (80-82)
-          (let is_io:bool (or (or (and (gte kw 32) (lte kw 38)) (and (gte kw 73) (lte kw 77)))
-                              (or (eq kw 54) (and (gte kw 80) (lte kw 85)))))
-          (if is_io
+          (if (call needs_io_scratch (call group_head_keyword src_ptr node))
               true
               (block
                 (let child:i32 (call node_a node))
@@ -1443,30 +1390,30 @@
           (call node_type src_ptr cur locals_base locals_count func_table_base func_count))))
 
   (fn group_type [src_ptr:i32 node:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let kw:i32 (call group_head_keyword src_ptr node))
+    (let kw:Kw (call group_head_keyword src_ptr node))
     (let res:i32 200)
     ;; let, set!, loop, while, put, arr.set, stores, sys.print, sys.exit
-    (if (or (eq kw 100) (or (eq kw 101) (or (eq kw 103) (or (eq kw 104) (or (eq kw 52) (eq kw 56))))))
+    (if (or (eq kw Kw.let) (or (eq kw Kw.set) (or (eq kw Kw.loop) (or (eq kw Kw.while) (or (eq kw Kw.put) (eq kw Kw.arr_set))))))
         (set! res 205) (block))
-    (if (or (eq kw 12) (or (eq kw 13) (or (eq kw 14) (or (eq kw 32) (eq kw 33))))) (set! res 205) (block))
+    (if (or (eq kw Kw.mem_store8) (or (eq kw Kw.mem_store32) (or (eq kw Kw.mem_store64) (or (eq kw Kw.sys_print) (eq kw Kw.sys_exit))))) (set! res 205) (block))
     ;; return, break, continue are statements
-    (if (and (gte kw 70) (lte kw 72)) (set! res 205) (block))
+    (if (call is_jump kw) (set! res 205) (block))
     ;; cond: the type of its first clause's body (the desugared if's then branch)
-    (if (eq kw 114) (set! res (call body_type src_ptr (call node_next (call node_a (call nth_child node 1))) locals_base locals_count func_table_base func_count)) (block))
-    (if (eq kw 102) (set! res (call node_type src_ptr (call nth_child node 2) locals_base locals_count func_table_base func_count)) (block))
-    (if (eq kw 106) (set! res (call body_type src_ptr (call node_next (call node_a node)) locals_base locals_count func_table_base func_count)) (block))
-    (if (eq kw 112)
+    (if (eq kw Kw.cond) (set! res (call body_type src_ptr (call node_next (call node_a (call nth_child node 1))) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.if) (set! res (call node_type src_ptr (call nth_child node 2) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.block) (set! res (call body_type src_ptr (call node_next (call node_a node)) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.match_result)
         (set! res (call body_type src_ptr (call node_next (call node_next (call node_a (call nth_child node 2)))) locals_base locals_count func_table_base func_count))
         (block))
-    (if (eq kw 105)
+    (if (eq kw Kw.call)
         (block
           (let fname:i32 (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
           (if (neq fidx -1) (set! res (mem.load32 (+ (call func_entry_ptr func_table_base fidx) 12))) (block)))
         (block))
     ;; ok / err: the payload's type, as expr_type does
-    (if (or (eq kw 48) (eq kw 49)) (set! res (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) (block))
-    (if (eq kw 51)
+    (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.get)
         (block
           (let sf_node:i32 (call nth_child node 2))
           (let sf_pos:i32 (call node_a sf_node))
@@ -1475,27 +1422,27 @@
           (let ft:i32 (call get_field_type src_ptr sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (if (neq ft -1) (set! res ft) (block)))
         (block))
-    (if (eq kw 55) (set! res (call type_node_id src_ptr (call nth_child node 1))) (block))
+    (if (eq kw Kw.arr_get) (set! res (call type_node_id src_ptr (call nth_child node 1))) (block))
     ;; arithmetic and bitwise: the first operand's type
-    (if (or (and (gte kw 0) (lte kw 8)) (and (gte kw 39) (lte kw 42)))
+    (if (call is_arith kw)
         (set! res (call node_type src_ptr (call nth_child node 1) locals_base locals_count func_table_base func_count))
         (block))
     ;; comparisons and logic
-    (if (and (gte kw 15) (lte kw 23)) (set! res 204) (block))
+    (if (call is_compare kw) (set! res 204) (block))
     ;; mem.load64, i64.extend_s, i64.extend_u, i64.trunc_f64_s, i64.reinterpret_f64
-    (if (or (eq kw 11) (or (eq kw 45) (or (eq kw 46) (or (eq kw 58) (eq kw 60))))) (set! res 201) (block))
-    (if (eq kw 68) (set! res 210) (block))
+    (if (or (eq kw Kw.mem_load64) (or (eq kw Kw.i64_extend_s) (or (eq kw Kw.i64_extend_u) (or (eq kw Kw.i64_trunc_f64_s) (eq kw Kw.i64_reinterpret_f64))))) (set! res 201) (block))
+    (if (eq kw Kw.ref) (set! res 210) (block))
     ;; sys.time / sys.monotonic -> i64
-    (if (or (eq kw 83) (eq kw 84)) (set! res 201) (block))
+    (if (or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (set! res 201) (block))
     ;; atomic.cas -> bool; atomic.lock / unlock are statements
-    (if (eq kw 80) (set! res 204) (block))
-    (if (or (eq kw 81) (eq kw 82)) (set! res 205) (block))
-    (if (eq kw 69) (set! res (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3))) (block))
+    (if (eq kw Kw.atomic_cas) (set! res 204) (block))
+    (if (or (eq kw Kw.atomic_lock) (eq kw Kw.atomic_unlock)) (set! res 205) (block))
+    (if (eq kw Kw.call_ref) (set! res (call type_node_id src_ptr (call nth_child (call nth_child node 1) 3))) (block))
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
-    (if (or (eq kw 50) (or (eq kw 61) (eq kw 62))) (set! res 208) (block))
-    (if (or (eq kw 54) (or (eq kw 64) (eq kw 65))) (set! res 209) (block))
+    (if (or (eq kw Kw.new) (or (eq kw Kw.ptr_null) (eq kw Kw.ptr_cast))) (set! res 208) (block))
+    (if (or (eq kw Kw.arr_new) (or (eq kw Kw.arr_null) (eq kw Kw.arr_cast))) (set! res 209) (block))
     ;; f64.convert_i64_s, f64.reinterpret_i64, f64.sqrt
-    (if (or (eq kw 57) (or (eq kw 59) (eq kw 86))) (set! res 203) (block))
+    (if (or (eq kw Kw.f64_convert_i64_s) (or (eq kw Kw.f64_reinterpret_i64) (eq kw Kw.f64_sqrt))) (set! res 203) (block))
     res)
 
   ;; ===== Expression / statement codegen =====
@@ -1523,19 +1470,19 @@
             (else (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))
 
   (fn compile_group [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let kw:i32 (call group_head_keyword src_ptr node))
+    (let kw:Kw (call group_head_keyword src_ptr node))
     (let head_node:i32 (call node_a node))
     (cond
-      ((eq kw 100) (call compile_let src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 101) (call compile_set src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 102) (call compile_if src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 103) (call compile_loop src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 104) (call compile_while src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 105) (call compile_call src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 106) (call compile_block src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 112) (call compile_match_result src_ptr node out_ptr locals_base locals_count func_table_base func_count))
-      ((eq kw 114) (call compile_cond_from src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
-      ((gte kw 0) (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.let) (call compile_let src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.set) (call compile_set src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.if) (call compile_if src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.loop) (call compile_loop src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.while) (call compile_while src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.call) (call compile_call src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.block) (call compile_block src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.match_result) (call compile_match_result src_ptr node out_ptr locals_base locals_count func_table_base func_count))
+      ((eq kw Kw.cond) (call compile_cond_from src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
+      ((neq kw Kw.none) (call compile_op src_ptr kw node out_ptr locals_base locals_count func_table_base func_count))
       (else (let _e:i32 (call set_compile_error 987))
           (call emit_i32_const out_ptr 0))))
 
@@ -1619,34 +1566,34 @@
     (set! off (+ off 1))
     off)
 
-  (fn compile_op [src_ptr:i32 op_id:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+  (fn compile_op [src_ptr:i32 op_id:Kw node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let import_cnt:i32 (mem.load32 32))
     (let io_a:i32 (+ locals_count 1))
     (let io_b:i32 (+ locals_count 2))
     (let res:i32 -1)
 
-    (if (eq op_id 9)
+    (if (eq op_id Kw.mem_load8)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 45 0))))
         (block))
-    (if (eq op_id 10)
+    (if (eq op_id Kw.mem_load32)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 40 2))))
         (block))
-    (if (eq op_id 11)
+    (if (eq op_id Kw.mem_load64)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_memop (+ out_ptr n1) 41 3))))
         (block))
-    (if (eq op_id 12)
+    (if (eq op_id Kw.mem_store8)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 58 0))))
         (block))
-    (if (eq op_id 13)
+    (if (eq op_id Kw.mem_store32)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 54 2))))
         (block))
-    (if (eq op_id 14)
+    (if (eq op_id Kw.mem_store64)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (let g:i32 (call emit_store_guard (+ out_ptr n1) locals_count)) (let n2:i32 (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr (+ n1 g)) locals_base locals_count func_table_base func_count)) (set! res (+ (+ n1 (+ g n2)) (call emit_memop (+ out_ptr (+ n1 (+ g n2))) 55 3))))
         (block))
-    (if (eq op_id 23)
+    (if (eq op_id Kw.not)
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 69))))
         (block))
-    (if (eq op_id 30) ;; str.len -> i32.const 4, i32.sub, i32.load
+    (if (eq op_id Kw.str_len) ;; str.len -> i32.const 4, i32.sub, i32.load
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (let off:i32 n1)
@@ -1656,10 +1603,10 @@
           (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
           (set! res off))
         (block))
-    (if (eq op_id 31) ;; str.ptr -> identity
+    (if (eq op_id Kw.str_ptr) ;; str.ptr -> identity
         (set! res (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
         (block))
-    (if (eq op_id 32) ;; sys.print
+    (if (eq op_id Kw.sys_print) ;; sys.print
         (block
           (let off:i32 0)
           (let arg:i32 (call node_next (call node_a node)))
@@ -1702,12 +1649,12 @@
             (set! arg (call node_next arg)))
           (set! res off))
         (block))
-    (if (eq op_id 33) ;; sys.exit
+    (if (eq op_id Kw.sys_exit) ;; sys.exit
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (set! res (+ n1 (call emit_call (+ out_ptr n1) (call get_wasi_index 4)))))
         (block))
-    (if (eq op_id 34) ;; fs.open (path_ptr, path_len, flags)
+    (if (eq op_id Kw.fs_open) ;; fs.open (path_ptr, path_len, flags)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1748,7 +1695,7 @@
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 84)))
           (set! res off))
         (block))
-    (if (eq op_id 35) ;; fs.read (fd, buf_ptr, max_len)
+    (if (eq op_id Kw.fs_read) ;; fs.read (fd, buf_ptr, max_len)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1774,7 +1721,7 @@
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
         (block))
-    (if (eq op_id 36) ;; fs.write (fd, buf_ptr, len)
+    (if (eq op_id Kw.fs_write) ;; fs.write (fd, buf_ptr, len)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1800,7 +1747,7 @@
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) 80)))
           (set! res off))
         (block))
-    (if (eq op_id 37) ;; fs.close (fd)
+    (if (eq op_id Kw.fs_close) ;; fs.close (fd)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1808,16 +1755,16 @@
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
         (block))
-    (if (and (gte op_id 73) (lte op_id 76)) ;; args.sizes, args.get, env.sizes, env.get (a, b)
+    (if (neq (call proc_wasi op_id) -1) ;; args.sizes, args.get, env.sizes, env.get (a, b)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
-          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index (- op_id 67)))))
+          (set! off (+ off (call emit_call (+ out_ptr off) (call get_wasi_index (call proc_wasi op_id)))))
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
         (block))
-    (if (eq op_id 38) ;; fs.delete (path_ptr, path_len)
+    (if (eq op_id Kw.fs_delete) ;; fs.delete (path_ptr, path_len)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1831,7 +1778,7 @@
           (set! off (+ off (call emit_errno_to_result (+ out_ptr off) -1)))
           (set! res off))
         (block))
-    (if (eq op_id 43) ;; mem.alloc (size) -> i32.const 0, size rounded to 8, i32.atomic.rmw.add
+    (if (eq op_id Kw.mem_alloc) ;; mem.alloc (size) -> i32.const 0, size rounded to 8, i32.atomic.rmw.add
         (block
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
@@ -1841,61 +1788,61 @@
           (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
         (block))
-    (if (eq op_id 44) ;; mem.grow (pages) -> memory.grow 0
+    (if (eq op_id Kw.mem_grow) ;; mem.grow (pages) -> memory.grow 0
         (block
           (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (mem.store8 (+ out_ptr off) 64) ;; memory.grow
           (mem.store8 (+ out_ptr (+ off 1)) 0)
           (set! res (+ off 2)))
         (block))
-    (if (eq op_id 45) ;; i64.extend_s
+    (if (eq op_id Kw.i64_extend_s) ;; i64.extend_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 172) (set! res (+ n1 1)))
         (block))
-    (if (eq op_id 46) ;; i64.extend_u
+    (if (eq op_id Kw.i64_extend_u) ;; i64.extend_u
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 173) (set! res (+ n1 1)))
         (block))
-    (if (eq op_id 47) ;; i32.wrap
+    (if (eq op_id Kw.i32_wrap) ;; i32.wrap
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (mem.store8 (+ out_ptr n1) 167) (set! res (+ n1 1)))
         (block))
-    (if (eq op_id 57) ;; f64.convert_i64_s
+    (if (eq op_id Kw.f64_convert_i64_s) ;; f64.convert_i64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 185))))
         (block))
-    (if (eq op_id 86) ;; f64.sqrt
+    (if (eq op_id Kw.f64_sqrt) ;; f64.sqrt
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 159))))
         (block))
-    (if (eq op_id 58) ;; i64.trunc_f64_s
+    (if (eq op_id Kw.i64_trunc_f64_s) ;; i64.trunc_f64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 176))))
         (block))
-    (if (eq op_id 59) ;; f64.reinterpret_i64
+    (if (eq op_id Kw.f64_reinterpret_i64) ;; f64.reinterpret_i64
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 191))))
         (block))
-    (if (eq op_id 60) ;; i64.reinterpret_f64
+    (if (eq op_id Kw.i64_reinterpret_f64) ;; i64.reinterpret_f64
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 189))))
         (block))
-    (if (or (eq op_id 61) (eq op_id 64)) ;; ptr.null / arr.null -> i32.const 0
+    (if (or (eq op_id Kw.ptr_null) (eq op_id Kw.arr_null)) ;; ptr.null / arr.null -> i32.const 0
         (set! res (call emit_i32_const out_ptr 0))
         (block))
-    (if (or (eq op_id 62) (eq op_id 65)) ;; ptr.cast / arr.cast: the address itself
+    (if (or (eq op_id Kw.ptr_cast) (eq op_id Kw.arr_cast)) ;; ptr.cast / arr.cast: the address itself
         (set! res (call compile_expr src_ptr (call nth_child node 2) out_ptr locals_base locals_count func_table_base func_count))
         (block))
-    (if (or (eq op_id 63) (eq op_id 66)) ;; ptr.addr / arr.addr: the pointer itself
+    (if (or (eq op_id Kw.ptr_addr) (eq op_id Kw.arr_addr)) ;; ptr.addr / arr.addr: the pointer itself
         (set! res (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
         (block))
-    (if (eq op_id 67) ;; arr.len -> i32.const 4, i32.sub, i32.load (like str.len)
+    (if (eq op_id Kw.arr_len) ;; arr.len -> i32.const 4, i32.sub, i32.load (like str.len)
         (block
           (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (let n2:i32 (call emit_i32_const (+ out_ptr n1) 4))
           (mem.store8 (+ out_ptr (+ n1 n2)) 107)
           (set! res (+ (+ n1 (+ n2 1)) (call emit_memop (+ out_ptr (+ n1 (+ n2 1))) 40 2))))
         (block))
-    (if (eq op_id 68) ;; ref f -> i32.const (f's position, its table slot)
+    (if (eq op_id Kw.ref) ;; ref f -> i32.const (f's position, its table slot)
         (block
           (let fname:i32 (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
           (if (eq fidx -1) (call set_compile_error 1452) 0)
           (set! res (call emit_i32_const out_ptr fidx)))
         (block))
-    (if (eq op_id 69) ;; call_ref sig f args... -> args, f, call_indirect
+    (if (eq op_id Kw.call_ref) ;; call_ref sig f args... -> args, f, call_indirect
         (block
           (let off:i32 0)
           (let arg:i32 (call nth_child node 3))
@@ -1909,7 +1856,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 0)))
           (set! res off))
         (block))
-    (if (eq op_id 70) ;; return [v] -> v; return
+    (if (eq op_id Kw.return) ;; return [v] -> v; return
         (block
           (let off:i32 0)
           (if (neq (call nth_child node 1) 0)
@@ -1917,17 +1864,17 @@
               (block))
           (set! res (+ off (call emit_byte (+ out_ptr off) 15))))
         (block))
-    (if (eq op_id 71) ;; break -> br to the innermost loop exit block
+    (if (eq op_id Kw.break) ;; break -> br to the innermost loop exit block
         (block
           (let n:i32 (call emit_byte out_ptr 12))
           (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 1 1)))))
         (block))
-    (if (eq op_id 72) ;; continue -> br to the innermost loop header or loop-body block
+    (if (eq op_id Kw.continue) ;; continue -> br to the innermost loop header or loop-body block
         (block
           (let n:i32 (call emit_byte out_ptr 12))
           (set! res (+ n (call compiler.encode_u32 (+ out_ptr n) (call label_depth 2 3)))))
         (block))
-    (if (eq op_id 48) ;; ok
+    (if (eq op_id Kw.ok) ;; ok
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
               (call set_compile_error 97)
@@ -1947,7 +1894,7 @@
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 4)))
           (set! res off))
         (block))
-    (if (eq op_id 49) ;; err
+    (if (eq op_id Kw.err) ;; err
         (block
           (if (neq (call type_id_to_valtype (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) 127)
               (call set_compile_error 97)
@@ -1967,7 +1914,7 @@
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) 54 2 4)))
           (set! res off))
         (block))
-    (if (eq op_id 50) ;; new Struct
+    (if (eq op_id Kw.new) ;; new Struct
         (block
           (let snode:i32 (call nth_child node 1))
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
@@ -1978,7 +1925,7 @@
           (set! off (+ off (call emit_grow_to_cursor (+ out_ptr off))))
           (set! res off))
         (block))
-    (if (eq op_id 51) ;; get ptr Struct.field: load by field type at its offset
+    (if (eq op_id Kw.get) ;; get ptr Struct.field: load by field type at its offset
         (block
           (let ptr_node:i32 (call nth_child node 1))
           (let sf_node:i32 (call nth_child node 2))
@@ -1994,7 +1941,7 @@
               (block))
           (set! res off))
         (block))
-    (if (eq op_id 52) ;; put ptr Struct.field val: store by field type at its offset
+    (if (eq op_id Kw.put) ;; put ptr Struct.field val: store by field type at its offset
         (block
           (let ptr_node:i32 (call nth_child node 1))
           (let sf_node:i32 (call nth_child node 2))
@@ -2010,13 +1957,13 @@
           (set! off (+ off (call emit_memop_offset (+ out_ptr off) (call store_opcode ftype) (call mem_align ftype) f_offset)))
           (set! res off))
         (block))
-    (if (eq op_id 53) ;; sizeof Struct
+    (if (eq op_id Kw.sizeof) ;; sizeof Struct
         (block
           (let snode:i32 (call nth_child node 1))
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
           (set! res (call emit_i32_const out_ptr size)))
         (block))
-    (if (eq op_id 54) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
+    (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
           (let size_node:i32 (call nth_child node 2))
@@ -2050,7 +1997,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 106)))
           (set! res off))
         (block))
-    (if (eq op_id 55) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
+    (if (eq op_id Kw.arr_get) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
           (let ptr_node:i32 (call nth_child node 2))
@@ -2066,7 +2013,7 @@
               (block))
           (set! res off))
         (block))
-    (if (eq op_id 56) ;; arr.set type ptr index val
+    (if (eq op_id Kw.arr_set) ;; arr.set type ptr index val
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
           (let ptr_node:i32 (call nth_child node 2))
@@ -2083,7 +2030,7 @@
           (set! res off))
         (block))
 
-    (if (eq op_id 79) ;; atomic.add ptr v -> previous value (wasm.rs AtomicAdd)
+    (if (eq op_id Kw.atomic_add) ;; atomic.add ptr v -> previous value (wasm.rs AtomicAdd)
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2092,7 +2039,7 @@
           (set! off (+ off (call emit_atomic (+ out_ptr off) 30)))
           (set! res off))
         (block))
-    (if (eq op_id 80) ;; atomic.cas ptr expected new -> bool
+    (if (eq op_id Kw.atomic_cas) ;; atomic.cas ptr expected new -> bool
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2108,7 +2055,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 70)))
           (set! res off))
         (block))
-    (if (eq op_id 81) ;; atomic.lock ptr: cmpxchg 0 -> 1, sleep while held, trap on a non-lock word
+    (if (eq op_id Kw.atomic_lock) ;; atomic.lock ptr: cmpxchg 0 -> 1, sleep while held, trap on a non-lock word
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2143,7 +2090,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
           (set! res off))
         (block))
-    (if (eq op_id 82) ;; atomic.unlock ptr: xchg 1 -> 0 (trap otherwise), wake all waiters
+    (if (eq op_id Kw.atomic_unlock) ;; atomic.unlock ptr: xchg 1 -> 0 (trap otherwise), wake all waiters
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2161,7 +2108,7 @@
           (set! off (+ off (call emit_byte (+ out_ptr off) 26)))
           (set! res off))
         (block))
-    (if (eq op_id 77) ;; thread.spawn worker arg -> handle: a 16-byte record [done result fn arg] passed to thread-spawn
+    (if (eq op_id Kw.thread_spawn) ;; thread.spawn worker arg -> handle: a 16-byte record [done result fn arg] passed to thread-spawn
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2193,7 +2140,7 @@
           (set! off (+ off (call emit_local_get (+ out_ptr off) locals_count)))
           (set! res off))
         (block))
-    (if (eq op_id 78) ;; thread.join handle -> result: sleep until done, read the result
+    (if (eq op_id Kw.thread_join) ;; thread.join handle -> result: sleep until done, read the result
         (block
           (let off:i32 0)
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 1) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2221,9 +2168,9 @@
           (set! res off))
         (block))
 
-    (if (or (eq op_id 83) (eq op_id 84)) ;; sys.time / sys.monotonic -> clock_time_get into cell 80, i64.load
+    (if (or (eq op_id Kw.sys_time) (eq op_id Kw.sys_monotonic)) ;; sys.time / sys.monotonic -> clock_time_get into cell 80, i64.load
         (block
-          (let off:i32 (call emit_i32_const out_ptr (if (eq op_id 83) 0 1)))
+          (let off:i32 (call emit_i32_const out_ptr (if (eq op_id Kw.sys_time) 0 1)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 66)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 1)))
           (set! off (+ off (call emit_rt (+ out_ptr off) 80)))
@@ -2233,7 +2180,7 @@
           (set! off (+ off (call emit_memop (+ out_ptr off) 41 3)))
           (set! res off))
         (block))
-    (if (eq op_id 85) ;; sys.random ptr len -> random_get, errno -> 0 / -1
+    (if (eq op_id Kw.sys_random) ;; sys.random ptr len -> random_get, errno -> 0 / -1
         (block
           (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -2244,13 +2191,13 @@
 
     ;; and / or short-circuit, as wasm.rs: (and a b) = a; if (result i32) b else
     ;; i32.const 0 end; (or a b) = a; if (result i32) i32.const 1 else b end.
-    (if (or (eq op_id 21) (eq op_id 22))
+    (if (or (eq op_id Kw.and) (eq op_id Kw.or))
         (block
           (let off:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
           (set! off (+ off (call emit_byte (+ out_ptr off) 4)))
           (set! off (+ off (call emit_byte (+ out_ptr off) 127)))
           (call label_push 0)
-          (if (eq op_id 21)
+          (if (eq op_id Kw.and)
               (block
                 (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
                 (set! off (+ off (call emit_byte (+ out_ptr off) 5)))
@@ -2389,7 +2336,7 @@
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
   (fn is_else_clause [src_ptr:i32 clause:i32] -> bool
-    (eq (call group_head_keyword src_ptr clause) 115))
+    (eq (call group_head_keyword src_ptr clause) Kw.else))
 
   ;; (cond (c1 e...) ... (else e...)) as the nested ifs the Rust parser builds:
   ;; (if c1 (block e...) (if c2 (block e...) ... (block else...))).
@@ -2583,69 +2530,9 @@
             (let w_idx:i32 (call get_wasi_index w))
             (if (neq w_idx -1)
                 (block
-                  ;; module name: "wasi" for thread-spawn, else "wasi_snapshot_preview1"
-                  (if (eq w 10)
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 4)))
-                        (call store_kw_str (+ scratch sc_off) 0 119 97 115 105 0 0 0 0 0 0 0 0 4)
-                        (set! sc_off (+ sc_off 4)))
-                      (block
-                        (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 22)))
-                        (let m_str:i32 (+ scratch sc_off))
-                        (call store_kw_str m_str 0 119 97 115 105 95 115 110 97 112 115 104 111 12)
-                        (call store_kw_str m_str 12 116 95 112 114 101 118 105 101 119 49 0 0 10)
-                        (set! sc_off (+ sc_off 22))))
-                  ;; field name
-                  (cond
-                    ((eq w 0) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
-                        (call store_kw_str (+ scratch sc_off) 0 102 100 95 119 114 105 116 101 0 0 0 0 8)
-                        (set! sc_off (+ sc_off 8)) 0)
-                    ((eq w 1) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 7)))
-                        (call store_kw_str (+ scratch sc_off) 0 102 100 95 114 101 97 100 0 0 0 0 0 7)
-                        (set! sc_off (+ sc_off 7)) 0)
-                    ((eq w 2) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
-                        (call store_kw_str (+ scratch sc_off) 0 112 97 116 104 95 111 112 101 110 0 0 0 9)
-                        (set! sc_off (+ sc_off 9)) 0)
-                    ((eq w 3) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
-                        (call store_kw_str (+ scratch sc_off) 0 102 100 95 99 108 111 115 101 0 0 0 0 8)
-                        (set! sc_off (+ sc_off 8)) 0)
-                    ((eq w 4) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 9)))
-                        (call store_kw_str (+ scratch sc_off) 0 112 114 111 99 95 101 120 105 116 0 0 0 9)
-                        (set! sc_off (+ sc_off 9)) 0)
-                    ((eq w 5) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16)))
-                        (let p_str:i32 (+ scratch sc_off))
-                        (call store_kw_str p_str 0 112 97 116 104 95 117 110 108 105 110 107 95 12)
-                        (call store_kw_str p_str 12 102 105 108 101 0 0 0 0 0 0 0 0 4)
-                        (set! sc_off (+ sc_off 16)) 0)
-                    ((eq w 6) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 14)))
-                        (let p_str:i32 (+ scratch sc_off))
-                        (call store_kw_str p_str 0 97 114 103 115 95 115 105 122 101 115 95 103 12)
-                        (call store_kw_str p_str 12 101 116 0 0 0 0 0 0 0 0 0 0 2)
-                        (set! sc_off (+ sc_off 14)) 0)
-                    ((eq w 7) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 8)))
-                        (let p_str:i32 (+ scratch sc_off))
-                        (call store_kw_str p_str 0 97 114 103 115 95 103 101 116 0 0 0 0 8)
-                        (set! sc_off (+ sc_off 8)) 0)
-                    ((eq w 8) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 17)))
-                        (let p_str:i32 (+ scratch sc_off))
-                        (call store_kw_str p_str 0 101 110 118 105 114 111 110 95 115 105 122 101 12)
-                        (call store_kw_str p_str 12 115 95 103 101 116 0 0 0 0 0 0 0 5)
-                        (set! sc_off (+ sc_off 17)) 0)
-                    ((eq w 9) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 11)))
-                        (let p_str:i32 (+ scratch sc_off))
-                        (call store_kw_str p_str 0 101 110 118 105 114 111 110 95 103 101 116 0 11)
-                        (set! sc_off (+ sc_off 11)) 0)
-                    ((eq w 11) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 14)))
-                        (call store_kw_str (+ scratch sc_off) 0 99 108 111 99 107 95 116 105 109 101 95 103 12)
-                        (call store_kw_str (+ scratch sc_off) 12 101 116 0 0 0 0 0 0 0 0 0 0 2)
-                        (set! sc_off (+ sc_off 14)) 0)
-                    ((eq w 12) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 10)))
-                        (call store_kw_str (+ scratch sc_off) 0 114 97 110 100 111 109 95 103 101 116 0 0 10)
-                        (set! sc_off (+ sc_off 10)) 0)
-                    ((eq w 10) (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 12)))
-                        (call store_kw_str (+ scratch sc_off) 0 116 104 114 101 97 100 45 115 112 97 119 110 12)
-                        (set! sc_off (+ sc_off 12)) 0)
-                    (else 0))
+                  ;; module name ("wasi" for thread-spawn), then the function's name
+                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (if (eq w 10) "wasi" "wasi_snapshot_preview1"))))
+                  (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) (call wasi_name w))))
                   ;; Entity type 0 (Func) + type index
                   (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
                   (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) curr_imp)))
@@ -2656,12 +2543,8 @@
           ;; threaded: the shared memory, "env" "memory", min 16 max 1024 (flags 3: max + shared)
           (if (call threaded)
               (block
-                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 3)))
-                (call store_kw_str (+ scratch sc_off) 0 101 110 118 0 0 0 0 0 0 0 0 0 3)
-                (set! sc_off (+ sc_off 3))
-                (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 6)))
-                (call store_kw_str (+ scratch sc_off) 0 109 101 109 111 114 121 0 0 0 0 0 0 6)
-                (set! sc_off (+ sc_off 6))
+                (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "env")))
+                (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "memory")))
                 (mem.store8 (+ scratch sc_off) 2) (mem.store8 (+ scratch (+ sc_off 1)) 3) (set! sc_off (+ sc_off 2))
                 (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 16)))
                 (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 1024))))
@@ -2764,25 +2647,18 @@
       (set! f (+ f 1)))
 
     ;; Export "memory"
-    (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 6)))
-    (call store_kw_str (+ scratch sc_off) 0 109 101 109 111 114 121 0 0 0 0 0 0 6)
-    (set! sc_off (+ sc_off 6))
+    (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "memory")))
     (mem.store8 (+ scratch sc_off) 2) (set! sc_off (+ sc_off 1)) ;; ExportKind: Memory
     (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1)) ;; Index 0
     (if (call threaded)
         (block
-          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 17)))
-          (call store_kw_str (+ scratch sc_off) 0 119 97 115 105 95 116 104 114 101 97 100 95 12)
-          (call store_kw_str (+ scratch sc_off) 12 115 116 97 114 116 0 0 0 0 0 0 0 5)
-          (set! sc_off (+ sc_off 17))
+          (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "wasi_thread_start")))
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count 1))))))
         (block))
     (if auto_start
         (block
-          (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) 6)))
-          (call store_kw_str (+ scratch sc_off) 0 95 115 116 97 114 116 0 0 0 0 0 0 6)
-          (set! sc_off (+ sc_off 6))
+          (set! sc_off (+ sc_off (call emit_name (+ scratch sc_off) "_start")))
           (mem.store8 (+ scratch sc_off) 0) (set! sc_off (+ sc_off 1))
           (set! sc_off (+ sc_off (call compiler.encode_u32 (+ scratch sc_off) (+ import_count (+ func_count extra_fns))))))
         (block))
