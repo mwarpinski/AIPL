@@ -34,7 +34,7 @@
     c)
 
   (fn is_symbol [n:(ptr compiler.Node)] -> bool
-    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) 6)))
+    (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) compiler.Kind.symbol)))
 
   (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
     (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b)))
@@ -44,7 +44,7 @@
 
   ;; The head symbol of a (...) group, or len -1.
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
-    (if (neq (get g compiler.Node.kind) 20) (return (call str.bytes 0 -1)) (block))
+    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
     (let h:(ptr compiler.Node) (call first_child g))
     (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
 
@@ -90,16 +90,16 @@
 
   ;; A literal node as source text.
   (fn print_literal [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
-    (let k:i32 (get n compiler.Node.kind))
+    (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
-      ((eq k 7) (call buf.push_int out (get n compiler.Node.a)))
-      ((eq k 8) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
-      ((eq k 9)
+      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
+      ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
        (call buf.push_bytes out (call text st n))
        (call buf.push_byte out 34))
-      ((eq k 4) (call buf.push_byte out 58))
-      ((eq k 5) (call buf.push_str out "->"))
+      ((eq k compiler.Kind.colon) (call buf.push_byte out 58))
+      ((eq k compiler.Kind.arrow) (call buf.push_str out "->"))
       (else (call buf.push_bytes out (call text st n)))))
 
   (fn print_symbol [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
@@ -127,10 +127,10 @@
     (call buf.push_bytes out t))
 
   (fn print [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
-    (let k:i32 (get n compiler.Node.kind))
+    (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
-      ((or (eq k 20) (eq k 21)) (call print_group st n out))
-      ((eq k 6) (call print_symbol st n out))
+      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out))
+      ((eq k compiler.Kind.symbol) (call print_symbol st n out))
       (else (call print_literal st n out))))
 
   ;; Children separated by spaces, except none around ':'. (enum.cast E x)
@@ -142,13 +142,13 @@
           (if (call lit h "enum.cast") (block (call print st (call nth g 2) out) (return)) (block))
           (if (call lit h "enum.ord") (block (call print st (call nth g 1) out) (return)) (block)))
         (block))
-    (let square:bool (eq (get g compiler.Node.kind) 21))
+    (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let first:bool true)
     (let prev_colon:bool true)
     (while (neq c (ptr.null compiler.Node))
-      (let colon:bool (eq (get c compiler.Node.kind) 4))
+      (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       ;; a form's head is a keyword or an op, printed as written
       (if (and first (and (not square) (call is_symbol c)))

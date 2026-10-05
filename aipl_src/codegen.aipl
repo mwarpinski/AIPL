@@ -18,14 +18,21 @@
     true)
 
   ;; ===== Node accessors (see compiler.aipl for the tree layout) =====
-  (fn node_kind [node:i32] -> i32 (if (lte node 0) 0 (mem.load32 (+ node 0))))
-  (fn node_a [node:i32] -> i32 (if (lte node 0) 0 (mem.load32 (+ node 4))))
-  (fn node_b [node:i32] -> i32 (if (lte node 0) 0 (mem.load32 (+ node 8))))
-  (fn node_next [node:i32] -> i32 (if (lte node 0) 0 (mem.load32 (+ node 12))))
+  (fn node_kind [node:(ptr compiler.Node)] -> compiler.Kind
+    (if (eq node (ptr.null compiler.Node)) compiler.Kind.none (get node compiler.Node.kind)))
+  ;; An atom's value: an integer literal's value, or the source offset of a
+  ;; symbol, string, or i64/float literal (compiler.aipl). A group's is its
+  ;; first child's address: use first_child.
+  (fn node_a [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.a)))
+  (fn node_b [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.b)))
+  (fn node_next [node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (if (eq node (ptr.null compiler.Node)) node (get node compiler.Node.next)))
+  (fn first_child [group:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (if (eq group (ptr.null compiler.Node)) group (ptr.cast compiler.Node (get group compiler.Node.a))))
 
-  (fn nth_child [group:i32 n:i32] -> i32
+  (fn nth_child [group:(ptr compiler.Node) n:i32] -> (ptr compiler.Node)
     (req (gte n 0))
-    (let cur:i32 (call node_a group))
+    (let cur:(ptr compiler.Node) (call first_child group))
     (let i:i32 0)
     (while (lt i n)
       (set! cur (call node_next cur))
@@ -305,11 +312,11 @@
 
   ;; Type id of a type node: a scalar symbol or a (result T E) group.
   ;; Anything else is compile error 98.
-  (fn type_node_id [src_ptr:i32 node:i32] -> i32
+  (fn type_node_id [src_ptr:i32 node:(ptr compiler.Node)] -> i32
     (let id:i32 -1)
-    (if (eq (call node_kind node) 6)
+    (if (eq (call node_kind node) compiler.Kind.symbol)
         (set! id (enum.ord (call classify_keyword src_ptr (call node_a node) (call node_b node))))
-        (if (eq (call node_kind node) 20)
+        (if (eq (call node_kind node) compiler.Kind.paren)
             (block
               (let head:Kw (call group_head_keyword src_ptr node))
               (if (or (eq head Kw.ty_result) (or (eq head Kw.ty_ptr) (eq head Kw.ty_arr))) (set! id (enum.ord head)) (block))
@@ -337,7 +344,7 @@
     (or (and (gte type_id 200) (and (lte type_id 206) (neq type_id 205)))
         (or (eq type_id 208) (or (eq type_id 209) (eq type_id 210)))))
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
-  (fn elem_type_id [src_ptr:i32 node:i32] -> i32
+  (fn elem_type_id [src_ptr:i32 node:(ptr compiler.Node)] -> i32
     (let t:i32 (call type_node_id src_ptr node))
     (if (call is_memory_type t) t (block (call set_compile_error 95) 200)))
   (fn type_size [type_id:i32] -> i32 (if (or (eq type_id 201) (eq type_id 203)) 8 4))
@@ -357,24 +364,24 @@
   (fn func_entry_ptr [func_table_base:i32 idx:i32] -> i32
     (+ func_table_base (* idx 88)))
 
-  (fn collect_functions [src_ptr:i32 root:i32 func_table_base:i32] -> i32
+  (fn collect_functions [src_ptr:i32 root:(ptr compiler.Node) func_table_base:i32] -> i32
     (let count:i32 0)
-    (let child:i32 (call node_next (call node_next (call node_a root))))
-    (while (neq child 0) (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
+    (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node)) (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword src_ptr child) Kw.fn))
                 (block
-                  (let fname_node:i32 (call nth_child child 1))
-                  (let params_node:i32 (call nth_child child 2))
-                  (let rettype_node:i32 (call nth_child child 4))
+                  (let fname_node:(ptr compiler.Node) (call nth_child child 1))
+                  (let params_node:(ptr compiler.Node) (call nth_child child 2))
+                  (let rettype_node:(ptr compiler.Node) (call nth_child child 4))
                   (if (gte count 2048) (call set_compile_error 92) 0)
                   (let entry:i32 (call func_entry_ptr func_table_base (if (gte count 2048) 2047 count)))
                   (mem.store32 (+ entry 0) (call node_a fname_node))
                   (mem.store32 (+ entry 4) (call node_b fname_node))
                   (mem.store32 (+ entry 12) (call type_node_id src_ptr rettype_node))
                   (mem.store32 (+ entry 16) count)
-                  (mem.store32 (+ entry 20) child)
+                  (mem.store32 (+ entry 20) (ptr.addr child))
                   (let pcount:i32 0)
-                  (let pchild:i32 (call node_a params_node))
-                  (while (neq pchild 0) (let ptype_node:i32 (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error 92) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
+                  (let pchild:(ptr compiler.Node) (call first_child params_node))
+                  (while (neq pchild (ptr.null compiler.Node)) (let ptype_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (if (gte pcount 16) (call set_compile_error 92) 0) (mem.store32 (+ entry (+ 24 (* (if (gte pcount 16) 15 pcount) 4)))
                                        (call type_node_id src_ptr ptype_node)) (set! pcount (+ pcount 1)) (set! pchild (call node_next ptype_node)))
                   (mem.store32 (+ entry 8) pcount)
                   (set! count (+ count 1))
@@ -441,38 +448,38 @@
     (mem.store32 28 (+ count 1))
     0)
 
-  (fn collect_locals_walk [src_ptr:i32 base:i32 node:i32] -> i32
-    (if (neq (call node_kind node) 20)
+  (fn collect_locals_walk [src_ptr:i32 base:i32 node:(ptr compiler.Node)] -> i32
+    (if (neq (call node_kind node) compiler.Kind.paren)
         0
         (block
           (let head:i32 (call node_a node))
           (let kw:Kw (call group_head_keyword src_ptr node))
           (cond
-            ((eq kw Kw.let) (let name_node:i32 (call nth_child node 1))
-                (let type_node:i32 (call nth_child node 3))
+            ((eq kw Kw.let) (let name_node:(ptr compiler.Node) (call nth_child node 1))
+                (let type_node:(ptr compiler.Node) (call nth_child node 3))
                 (let type_id:i32 (call type_node_id src_ptr type_node))
                 (call add_local_if_new src_ptr base (call node_a name_node) (call node_b name_node) type_id))
-            ((eq kw Kw.loop) (let var_node:i32 (call nth_child node 1))
+            ((eq kw Kw.loop) (let var_node:(ptr compiler.Node) (call nth_child node 1))
                     (call add_local_if_new src_ptr base (call node_a var_node) (call node_b var_node) 200)
                     (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 211)
                     (call add_hidden_if_new src_ptr base (call node_a var_node) (call node_b var_node) 212))
-            ((eq kw Kw.match_result) (let ok_group:i32 (call nth_child node 2))
-                        (let err_group:i32 (call nth_child node 3))
-                        (let ok_var:i32 (call nth_child ok_group 1))
-                        (let err_var:i32 (call nth_child err_group 1))
+            ((eq kw Kw.match_result) (let ok_group:(ptr compiler.Node) (call nth_child node 2))
+                        (let err_group:(ptr compiler.Node) (call nth_child node 3))
+                        (let ok_var:(ptr compiler.Node) (call nth_child ok_group 1))
+                        (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
                         (call add_local_if_new src_ptr base (call node_a ok_var) (call node_b ok_var) 200)
                         (call add_local_if_new src_ptr base (call node_a err_var) (call node_b err_var) 200))
             (else 0))
-          (let child:i32 (call node_a node))
-          (while (neq child 0) (let _w:i32 (call collect_locals_walk src_ptr base child)) (set! child (call node_next child)))
+          (let child:(ptr compiler.Node) (call first_child node))
+          (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk src_ptr base child)) (set! child (call node_next child)))
           0)))
 
   ;; Any body item may be an atom (a bare number, name, or string): its
   ;; Node.a is a value, not a child address, so check the kind first.
-  (fn is_contract_head [src_ptr:i32 group:i32] -> bool
-    (if (neq (call node_kind group) 20) (return false) (block))
-    (let head:i32 (call node_a group))
-    (if (neq (call node_kind head) 6)
+  (fn is_contract_head [src_ptr:i32 group:(ptr compiler.Node)] -> bool
+    (if (neq (call node_kind group) compiler.Kind.paren) (return false) (block))
+    (let head:(ptr compiler.Node) (call first_child group))
+    (if (neq (call node_kind head) compiler.Kind.symbol)
         false
         (block
           (let kw:Kw (call classify_keyword src_ptr (call node_a head) (call node_b head)))
@@ -480,12 +487,12 @@
 
   (fn collect_locals_for_function [src_ptr:i32 entry:i32 base:i32] -> i32
     (mem.store32 28 0)
-    (let fndef_group:i32 (mem.load32 (+ entry 20)))
-    (let params_node:i32 (call nth_child fndef_group 2))
-    (let pchild:i32 (call node_a params_node))
-    (while (neq pchild 0) (let type_node:i32 (call node_next (call node_next pchild))) (let type_id:i32 (call type_node_id src_ptr type_node)) (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id)) (set! pchild (call node_next type_node)))
-    (let bchild:i32 (call nth_child fndef_group 5))
-    (while (neq bchild 0) (if (call is_contract_head src_ptr bchild)
+    (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20))))
+    (let params_node:(ptr compiler.Node) (call nth_child fndef_group 2))
+    (let pchild:(ptr compiler.Node) (call first_child params_node))
+    (while (neq pchild (ptr.null compiler.Node)) (let type_node:(ptr compiler.Node) (call node_next (call node_next pchild))) (let type_id:i32 (call type_node_id src_ptr type_node)) (let _r:i32 (call add_local_if_new src_ptr base (call node_a pchild) (call node_b pchild) type_id)) (set! pchild (call node_next type_node)))
+    (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5))
+    (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head src_ptr bchild)
                 0
                 (call collect_locals_walk src_ptr base bchild)) (set! bchild (call node_next bchild)))
     (mem.load32 28))
@@ -808,30 +815,30 @@
     (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64)
     (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set)))))))))))))
 
-  (fn last_child [group:i32] -> i32
-    (let cur:i32 (call node_a group))
-    (while (neq (call node_next cur) 0)
+  (fn last_child [group:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let cur:(ptr compiler.Node) (call first_child group))
+    (while (neq (call node_next cur) (ptr.null compiler.Node))
       (set! cur (call node_next cur)))
     cur)
 
   ;; -1 unless group is a (...) whose head is a symbol. Checks the kinds itself
   ;; so any caller is safe: an atom's a field is a value, not a node address.
-  (fn group_head_keyword [src_ptr:i32 group:i32] -> Kw
-    (if (neq (call node_kind group) 20) (return Kw.none) (block))
-    (let head:i32 (call node_a group))
-    (if (neq (call node_kind head) 6)
+  (fn group_head_keyword [src_ptr:i32 group:(ptr compiler.Node)] -> Kw
+    (if (neq (call node_kind group) compiler.Kind.paren) (return Kw.none) (block))
+    (let head:(ptr compiler.Node) (call first_child group))
+    (if (neq (call node_kind head) compiler.Kind.symbol)
         Kw.none
         (call classify_keyword src_ptr (call node_a head) (call node_b head))))
 
-  (fn is_void_call [src_ptr:i32 node:i32 func_table_base:i32 func_count:i32] -> bool
-    (let fname:i32 (call nth_child node 1))
+  (fn is_void_call [src_ptr:i32 node:(ptr compiler.Node) func_table_base:i32 func_count:i32] -> bool
+    (let fname:(ptr compiler.Node) (call nth_child node 1))
     (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
     (if (eq fidx -1)
         false
         (eq (mem.load32 (+ (call func_entry_ptr func_table_base fidx) 12)) 205)))
 
-  (fn is_void_node [src_ptr:i32 node:i32 func_table_base:i32 func_count:i32] -> bool
-    (if (neq (call node_kind node) 20)
+  (fn is_void_node [src_ptr:i32 node:(ptr compiler.Node) func_table_base:i32 func_count:i32] -> bool
+    (if (neq (call node_kind node) compiler.Kind.paren)
         false
         (block
           (let kw:Kw (call group_head_keyword src_ptr node))
@@ -843,15 +850,15 @@
           (if (eq kw Kw.struct) (set! res true) (block))
           (if (eq kw Kw.match_result) (set! res (call is_void_node src_ptr (call last_child (call nth_child node 2)) func_table_base func_count)) (block))
           ;; an empty (block) is void, like Expr::Block([]) in wasm.rs
-          (if (eq kw Kw.block) (set! res (or (eq (call node_next (call node_a node)) 0) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (block))
+          (if (eq kw Kw.block) (set! res (or (eq (call node_next (call first_child node)) (ptr.null compiler.Node)) (call is_void_node src_ptr (call last_child node) func_table_base func_count))) (block))
           (if (eq kw Kw.if) (set! res (and (call is_void_node src_ptr (call nth_child node 2) func_table_base func_count) (call is_void_node src_ptr (call nth_child node 3) func_table_base func_count))) (block))
           (if (eq kw Kw.call) (set! res (call is_void_call src_ptr node func_table_base func_count)) (block))
           (if (call is_op kw) (set! res (call is_void_op kw)) (block))
           (if (eq kw Kw.cond)
               (block
                 (let all_void:bool true)
-                (let clause:i32 (call nth_child node 1))
-                (while (neq clause 0)
+                (let clause:(ptr compiler.Node) (call nth_child node 1))
+                (while (neq clause (ptr.null compiler.Node))
                   (if (call is_void_node src_ptr (call last_child clause) func_table_base func_count) (block) (set! all_void false))
                   (set! clause (call node_next clause)))
                 (set! res all_void))
@@ -868,16 +875,16 @@
       (if (eq (mem.load8 (+ src_ptr (+ pos i))) target) (set! found i) (block)))
     found)
 
-  (fn collect_structs [src_ptr:i32 root:i32] -> i32
+  (fn collect_structs [src_ptr:i32 root:(ptr compiler.Node)] -> i32
     (call set_struct_count 0)
     (let st_base:i32 (call struct_table))
     (let scount:i32 0)
-    (let child:i32 (call node_next (call node_next (call node_a root))))
-    (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.struct))
+    (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword src_ptr child) Kw.struct))
           (block
-            (let sname_node:i32 (call nth_child child 1))
-            (let fields_bracket:i32 (call nth_child child 2))
+            (let sname_node:(ptr compiler.Node) (call nth_child child 1))
+            (let fields_bracket:(ptr compiler.Node) (call nth_child child 2))
             (if (gte scount 255) (call set_compile_error 94) 0)
             (let sentry:i32 (+ (+ st_base 16) (* (if (gte scount 255) 254 scount) 1040)))
             (mem.store32 (+ sentry 0) (call node_a sname_node))
@@ -886,10 +893,10 @@
             (let cur_offset:i32 0)
             (let max_align:i32 1)
             (let fcount:i32 0)
-            (let fchild:i32 (call node_a fields_bracket))
-            (while (neq fchild 0)
-              (let colon_node:i32 (call node_next fchild))
-              (let type_node:i32 (call node_next colon_node))
+            (let fchild:(ptr compiler.Node) (call first_child fields_bracket))
+            (while (neq fchild (ptr.null compiler.Node))
+              (let colon_node:(ptr compiler.Node) (call node_next fchild))
+              (let type_node:(ptr compiler.Node) (call node_next colon_node))
               (let fpos:i32 (call node_a fchild))
               (let flen:i32 (call node_b fchild))
               (if (gte fcount 64) (call set_compile_error 94) 0)
@@ -905,9 +912,9 @@
               (mem.store32 (+ fentry 12) ftype)
               (set! cur_offset (+ cur_offset fsize))
               (set! fcount (+ fcount 1))
-              (if (neq type_node 0)
+              (if (neq type_node (ptr.null compiler.Node))
                   (set! fchild (call node_next type_node))
-                  (set! fchild 0)))
+                  (set! fchild (ptr.null compiler.Node))))
             (mem.store32 (+ sentry 8) (bitand (+ cur_offset (- max_align 1)) (- 0 max_align)))
             (mem.store32 (+ sentry 12) fcount)
             (set! scount (+ scount 1))
@@ -1164,9 +1171,9 @@
     (neq (call get_wasi_index 10) -1))
 
   ;; ===== AST Walker for WASI & Strings =====
-  (fn walk_ast_for_wasi [src_ptr:i32 node:i32] -> i32
-    (let kind:i32 (call node_kind node))
-    (if (eq kind 20)
+  (fn walk_ast_for_wasi [src_ptr:i32 node:(ptr compiler.Node)] -> i32
+    (let kind:compiler.Kind (call node_kind node))
+    (if (eq kind compiler.Kind.paren)
         (block
           (let kw:Kw (call group_head_keyword src_ptr node))
           (cond
@@ -1185,28 +1192,28 @@
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used 11) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used 12) 0)
             (else 0))
-          (let child:i32 (call node_a node))
-          (while (neq child 0) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
+          (let child:(ptr compiler.Node) (call first_child node))
+          (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi src_ptr child) (set! child (call node_next child)))
           0)
         0))
 
-  (fn walk_ast_for_strings [src_ptr:i32 node:i32] -> i32
-    (let kind:i32 (call node_kind node))
-    (if (eq kind 9)
+  (fn walk_ast_for_strings [src_ptr:i32 node:(ptr compiler.Node)] -> i32
+    (let kind:compiler.Kind (call node_kind node))
+    (if (eq kind compiler.Kind.string)
         (call intern_string src_ptr (call node_a node) (call node_b node))
-        (if (eq kind 20)
+        (if (eq kind compiler.Kind.paren)
             (block
-              (let child:i32 (call node_a node))
-              (while (neq child 0) (call walk_ast_for_strings src_ptr child) (set! child (call node_next child)))
+              (let child:(ptr compiler.Node) (call first_child node))
+              (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_strings src_ptr child) (set! child (call node_next child)))
               0)
             0)))
 
   ;; Encodes a (fn [..] -> r) type node as [nparams, valtypes..., nresults, result]
   ;; at out (wasm-level, so (fn [bool] -> i32) and (fn [i32] -> i32) coincide).
-  (fn encode_sig [src_ptr:i32 sig:i32 out:i32] -> i32
+  (fn encode_sig [src_ptr:i32 sig:(ptr compiler.Node) out:i32] -> i32
     (let n:i32 0)
-    (let p:i32 (call node_a (call nth_child sig 1)))
-    (while (neq p 0)
+    (let p:(ptr compiler.Node) (call first_child (call nth_child sig 1)))
+    (while (neq p (ptr.null compiler.Node))
       (if (lt n 16) (mem.store8 (+ out (+ 1 n)) (call type_id_to_valtype (call type_node_id src_ptr p))) (block (call set_compile_error 92) (block)))
       (set! n (+ n 1))
       (set! p (call node_next p)))
@@ -1220,7 +1227,7 @@
     0)
 
   ;; Index of the signature of a call_ref's type node, adding it if new.
-  (fn sig_index [src_ptr:i32 sig:i32] -> i32
+  (fn sig_index [src_ptr:i32 sig:(ptr compiler.Node)] -> i32
     (let tmp:i32 (call ref_sig_ptr 32))
     ;; clear the 20-byte buffer: a shorter signature must not keep the tail of
     ;; a longer earlier one, or identical signatures would not compare equal
@@ -1256,27 +1263,27 @@
 
   ;; Marks the module as using function refs and collects call_ref signatures
   ;; in source order, as wasm.rs walk_module does.
-  (fn walk_ast_for_refs [src_ptr:i32 node:i32] -> i32
-    (if (eq (call node_kind node) 20)
+  (fn walk_ast_for_refs [src_ptr:i32 node:(ptr compiler.Node)] -> i32
+    (if (eq (call node_kind node) compiler.Kind.paren)
         (block
           (let kw:Kw (call group_head_keyword src_ptr node))
           (if (or (eq kw Kw.ref) (eq kw Kw.call_ref)) (mem.store32 (call ref_state) 1) (block))
           (if (eq kw Kw.call_ref) (call sig_index src_ptr (call nth_child node 1)) 0)
-          (let child:i32 (call node_a node))
-          (while (neq child 0)
+          (let child:(ptr compiler.Node) (call first_child node))
+          (while (neq child (ptr.null compiler.Node))
             (call walk_ast_for_refs src_ptr child)
             (set! child (call node_next child)))
           0)
         0))
 
-  (fn walk_module_prepass [src_ptr:i32 root:i32] -> i32
+  (fn walk_module_prepass [src_ptr:i32 root:(ptr compiler.Node)] -> i32
     ;; Pass 1: WASI detection
-    (let child:i32 (call node_next (call node_next (call node_a root))))
-    (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
+    (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword src_ptr child) Kw.fn))
           (block
-            (let bchild:i32 (call nth_child child 5))
-            (while (neq bchild 0)
+            (let bchild:(ptr compiler.Node) (call nth_child child 5))
+            (while (neq bchild (ptr.null compiler.Node))
               (call walk_ast_for_wasi src_ptr bchild)
               (set! bchild (call node_next bchild))))
           (block))
@@ -1290,12 +1297,12 @@
         0)
 
     ;; Pass 3: Intern string literals
-    (set! child (call node_next (call node_next (call node_a root))))
-    (while (neq child 0)
-      (if (and (eq (call node_kind child) 20) (eq (call group_head_keyword src_ptr child) Kw.fn))
+    (set! child (call node_next (call node_next (call first_child root))))
+    (while (neq child (ptr.null compiler.Node))
+      (if (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword src_ptr child) Kw.fn))
           (block
-            (let bchild:i32 (call nth_child child 5))
-            (while (neq bchild 0)
+            (let bchild:(ptr compiler.Node) (call nth_child child 5))
+            (while (neq bchild (ptr.null compiler.Node))
               (call walk_ast_for_strings src_ptr bchild)
               (call walk_ast_for_refs src_ptr bchild)
               (set! bchild (call node_next bchild))))
@@ -1303,17 +1310,17 @@
       (set! child (call node_next child)))
     0)
 
-  (fn ast_uses_sys_print [src_ptr:i32 node:i32] -> bool
-    (if (neq (call node_kind node) 20)
+  (fn ast_uses_sys_print [src_ptr:i32 node:(ptr compiler.Node)] -> bool
+    (if (neq (call node_kind node) compiler.Kind.paren)
         false
         (block
           (let kw:Kw (call group_head_keyword src_ptr node))
           (if (eq kw Kw.sys_print)
               true
               (block
-                (let child:i32 (call node_a node))
+                (let child:(ptr compiler.Node) (call first_child node))
                 (let found:bool false)
-                (while (neq child 0)
+                (while (neq child (ptr.null compiler.Node))
                   (if (call ast_uses_sys_print src_ptr child)
                       (set! found true)
                       (block))
@@ -1332,26 +1339,26 @@
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
 
   ;; Check if function uses I/O ops
-  (fn ast_uses_io [src_ptr:i32 node:i32] -> bool
-    (if (neq (call node_kind node) 20)
+  (fn ast_uses_io [src_ptr:i32 node:(ptr compiler.Node)] -> bool
+    (if (neq (call node_kind node) compiler.Kind.paren)
         false
         (block
           (if (call needs_io_scratch (call group_head_keyword src_ptr node))
               true
               (block
-                (let child:i32 (call node_a node))
+                (let child:(ptr compiler.Node) (call first_child node))
                 (let found:bool false)
-                (while (neq child 0)
+                (while (neq child (ptr.null compiler.Node))
                   (if (call ast_uses_io src_ptr child)
                       (set! found true)
                       (block))
                   (set! child (call node_next child)))
                 found)))))
 
-  (fn fn_uses_io [src_ptr:i32 fndef_group:i32] -> bool
-    (let bchild:i32 (call nth_child fndef_group 5))
+  (fn fn_uses_io [src_ptr:i32 fndef_group:(ptr compiler.Node)] -> bool
+    (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5))
     (let found:bool false)
-    (while (neq bchild 0)
+    (while (neq bchild (ptr.null compiler.Node))
       (if (call ast_uses_io src_ptr bchild)
           (set! found true)
           (block))
@@ -1359,37 +1366,37 @@
     found)
 
   ;; Payload of (ok v) / (err e), skipping the `: T` of (ok:T v) / (err:T e).
-  (fn result_payload [node:i32] -> i32
-    (if (eq (call node_kind (call nth_child node 1)) 4)
+  (fn result_payload [node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (if (eq (call node_kind (call nth_child node 1)) compiler.Kind.colon)
         (call nth_child node 3)
         (call nth_child node 1)))
 
   ;; ===== Static expression types (mirrors expr_type in wasm.rs) =====
-  (fn node_type [src_ptr:i32 node:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let kind:i32 (call node_kind node))
+  (fn node_type [src_ptr:i32 node:(ptr compiler.Node) locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let kind:compiler.Kind (call node_kind node))
     (let res:i32 200)
-    (if (eq kind 8) (set! res 204) (block))
-    (if (eq kind 9) (set! res 206) (block))
-    (if (eq kind 10) (set! res 201) (block))
-    (if (eq kind 11) (set! res 203) (block))
-    (if (eq kind 6)
+    (if (eq kind compiler.Kind.bool) (set! res 204) (block))
+    (if (eq kind compiler.Kind.string) (set! res 206) (block))
+    (if (eq kind compiler.Kind.int64) (set! res 201) (block))
+    (if (eq kind compiler.Kind.float) (set! res 203) (block))
+    (if (eq kind compiler.Kind.symbol)
         (block
           (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
           (if (neq idx -1) (set! res (mem.load32 (+ (call locals_entry_ptr locals_base idx) 8))) (block)))
         (block))
-    (if (eq kind 20) (set! res (call group_type src_ptr node locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kind compiler.Kind.paren) (set! res (call group_type src_ptr node locals_base locals_count func_table_base func_count)) (block))
     res)
 
   ;; Type of the last expression of a body starting at `first` (void if empty).
-  (fn body_type [src_ptr:i32 first:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (if (eq first 0)
+  (fn body_type [src_ptr:i32 first:(ptr compiler.Node) locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (if (eq first (ptr.null compiler.Node))
         205
         (block
-          (let cur:i32 first)
-          (while (neq (call node_next cur) 0) (set! cur (call node_next cur)))
+          (let cur:(ptr compiler.Node) first)
+          (while (neq (call node_next cur) (ptr.null compiler.Node)) (set! cur (call node_next cur)))
           (call node_type src_ptr cur locals_base locals_count func_table_base func_count))))
 
-  (fn group_type [src_ptr:i32 node:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+  (fn group_type [src_ptr:i32 node:(ptr compiler.Node) locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let kw:Kw (call group_head_keyword src_ptr node))
     (let res:i32 200)
     ;; let, set!, loop, while, put, arr.set, stores, sys.print, sys.exit
@@ -1399,15 +1406,15 @@
     ;; return, break, continue are statements
     (if (call is_jump kw) (set! res 205) (block))
     ;; cond: the type of its first clause's body (the desugared if's then branch)
-    (if (eq kw Kw.cond) (set! res (call body_type src_ptr (call node_next (call node_a (call nth_child node 1))) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.cond) (set! res (call body_type src_ptr (call node_next (call first_child (call nth_child node 1))) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw Kw.if) (set! res (call node_type src_ptr (call nth_child node 2) locals_base locals_count func_table_base func_count)) (block))
-    (if (eq kw Kw.block) (set! res (call body_type src_ptr (call node_next (call node_a node)) locals_base locals_count func_table_base func_count)) (block))
+    (if (eq kw Kw.block) (set! res (call body_type src_ptr (call node_next (call first_child node)) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw Kw.match_result)
-        (set! res (call body_type src_ptr (call node_next (call node_next (call node_a (call nth_child node 2)))) locals_base locals_count func_table_base func_count))
+        (set! res (call body_type src_ptr (call node_next (call node_next (call first_child (call nth_child node 2)))) locals_base locals_count func_table_base func_count))
         (block))
     (if (eq kw Kw.call)
         (block
-          (let fname:i32 (call nth_child node 1))
+          (let fname:(ptr compiler.Node) (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
           (if (neq fidx -1) (set! res (mem.load32 (+ (call func_entry_ptr func_table_base fidx) 12))) (block)))
         (block))
@@ -1415,7 +1422,7 @@
     (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res (call node_type src_ptr (call result_payload node) locals_base locals_count func_table_base func_count)) (block))
     (if (eq kw Kw.get)
         (block
-          (let sf_node:i32 (call nth_child node 2))
+          (let sf_node:(ptr compiler.Node) (call nth_child node 2))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
           (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
@@ -1446,22 +1453,22 @@
     res)
 
   ;; ===== Expression / statement codegen =====
-  (fn compile_expr [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (if (eq node 0)
+  (fn compile_expr [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (if (eq node (ptr.null compiler.Node))
         (block
           (let _e:i32 (call set_compile_error 999))
           0)
         (block
-          (let kind:i32 (call node_kind node))
+          (let kind:compiler.Kind (call node_kind node))
           (cond
-            ((eq kind 7) (call emit_i32_const out_ptr (call node_a node)))
-            ((eq kind 8) (call emit_i32_const out_ptr (call node_a node)))
-            ((eq kind 10) (call emit_byte out_ptr 66)
+            ((eq kind compiler.Kind.int) (call emit_i32_const out_ptr (call node_a node)))
+            ((eq kind compiler.Kind.bool) (call emit_i32_const out_ptr (call node_a node)))
+            ((eq kind compiler.Kind.int64) (call emit_byte out_ptr 66)
                 (+ 1 (call encode_s64 (+ out_ptr 1) (call parse_i64_literal src_ptr (call node_a node) (call node_b node)))))
-            ((eq kind 11) (call emit_f64_literal out_ptr src_ptr (call node_a node) (call node_b node)))
-            ((eq kind 9) (let addr:i32 (call find_interned_string src_ptr (call node_a node) (call node_b node)))
+            ((eq kind compiler.Kind.float) (call emit_f64_literal out_ptr src_ptr (call node_a node) (call node_b node)))
+            ((eq kind compiler.Kind.string) (let addr:i32 (call find_interned_string src_ptr (call node_a node) (call node_b node)))
                 (call emit_i32_const out_ptr addr))
-            ((eq kind 6) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
+            ((eq kind compiler.Kind.symbol) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a node) (call node_b node)))
                 (if (eq idx -1)
                     (block
                       (let _e:i32 (call set_compile_error 971))
@@ -1469,7 +1476,7 @@
                     (call emit_local_get out_ptr idx)))
             (else (call compile_group src_ptr node out_ptr locals_base locals_count func_table_base func_count))))))
 
-  (fn compile_group [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+  (fn compile_group [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let kw:Kw (call group_head_keyword src_ptr node))
     (let head_node:i32 (call node_a node))
     (cond
@@ -1486,10 +1493,10 @@
       (else (let _e:i32 (call set_compile_error 987))
           (call emit_i32_const out_ptr 0))))
 
-  (fn compile_match_result [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let expr_node:i32 (call nth_child node 1))
-    (let ok_group:i32 (call nth_child node 2))
-    (let err_group:i32 (call nth_child node 3))
+  (fn compile_match_result [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let expr_node:(ptr compiler.Node) (call nth_child node 1))
+    (let ok_group:(ptr compiler.Node) (call nth_child node 2))
+    (let err_group:(ptr compiler.Node) (call nth_child node 3))
     (let scratch:i32 locals_count)
     (let off:i32 0)
     (set! off (+ off (call compile_expr src_ptr expr_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1497,7 +1504,7 @@
     (set! off (+ off (call emit_local_get (+ out_ptr off) scratch)))
     (set! off (+ off (call emit_memop (+ out_ptr off) 40 2)))
     (mem.store8 (+ out_ptr off) 69) (set! off (+ off 1))
-    (let ok_last:i32 (call last_child ok_group))
+    (let ok_last:(ptr compiler.Node) (call last_child ok_group))
     (let is_void:bool (call is_void_node src_ptr ok_last func_table_base func_count))
     (let block_ty:i32 64)
     (if is_void (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type src_ptr ok_last locals_base locals_count func_table_base func_count))))
@@ -1505,7 +1512,7 @@
     (mem.store8 (+ out_ptr (+ off 1)) block_ty)
     (set! off (+ off 2))
     (call label_push 0)
-    (let ok_var_node:i32 (call nth_child ok_group 1))
+    (let ok_var_node:(ptr compiler.Node) (call nth_child ok_group 1))
     (let ok_var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a ok_var_node) (call node_b ok_var_node)))
     (if (neq ok_var_idx -1)
         (block
@@ -1514,10 +1521,10 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) ok_var_idx)))
           0)
         0)
-    (let ok_body_first:i32 (call node_next (call node_next (call node_a ok_group))))
+    (let ok_body_first:(ptr compiler.Node) (call node_next (call node_next (call first_child ok_group))))
     (set! off (+ off (call compile_stmt_seq src_ptr ok_body_first (+ out_ptr off) locals_base locals_count func_table_base func_count)))
     (mem.store8 (+ out_ptr off) 5) (set! off (+ off 1))
-    (let err_var_node:i32 (call nth_child err_group 1))
+    (let err_var_node:(ptr compiler.Node) (call nth_child err_group 1))
     (let err_var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a err_var_node) (call node_b err_var_node)))
     (if (neq err_var_idx -1)
         (block
@@ -1526,7 +1533,7 @@
           (set! off (+ off (call emit_local_set (+ out_ptr off) err_var_idx)))
           0)
         0)
-    (let err_body_first:i32 (call node_next (call node_next (call node_a err_group))))
+    (let err_body_first:(ptr compiler.Node) (call node_next (call node_next (call first_child err_group))))
     (set! off (+ off (call compile_stmt_seq src_ptr err_body_first (+ out_ptr off) locals_base locals_count func_table_base func_count)))
     (call label_pop)
     (mem.store8 (+ out_ptr off) 11) (set! off (+ off 1))
@@ -1566,7 +1573,7 @@
     (set! off (+ off 1))
     off)
 
-  (fn compile_op [src_ptr:i32 op_id:Kw node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+  (fn compile_op [src_ptr:i32 op_id:Kw node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let import_cnt:i32 (mem.load32 32))
     (let io_a:i32 (+ locals_count 1))
     (let io_b:i32 (+ locals_count 2))
@@ -1609,8 +1616,8 @@
     (if (eq op_id Kw.sys_print) ;; sys.print
         (block
           (let off:i32 0)
-          (let arg:i32 (call node_next (call node_a node)))
-          (while (neq arg 0)
+          (let arg:(ptr compiler.Node) (call node_next (call first_child node)))
+          (while (neq arg (ptr.null compiler.Node))
             (set! off (+ off (call compile_expr src_ptr arg (+ out_ptr off) locals_base locals_count func_table_base func_count)))
             (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
             ;; iov0 = { ptr, len }
@@ -1837,7 +1844,7 @@
         (block))
     (if (eq op_id Kw.ref) ;; ref f -> i32.const (f's position, its table slot)
         (block
-          (let fname:i32 (call nth_child node 1))
+          (let fname:(ptr compiler.Node) (call nth_child node 1))
           (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname) (call node_b fname)))
           (if (eq fidx -1) (call set_compile_error 1452) 0)
           (set! res (call emit_i32_const out_ptr fidx)))
@@ -1845,8 +1852,8 @@
     (if (eq op_id Kw.call_ref) ;; call_ref sig f args... -> args, f, call_indirect
         (block
           (let off:i32 0)
-          (let arg:i32 (call nth_child node 3))
-          (while (neq arg 0)
+          (let arg:(ptr compiler.Node) (call nth_child node 3))
+          (while (neq arg (ptr.null compiler.Node))
             (set! off (+ off (call compile_expr src_ptr arg (+ out_ptr off) locals_base locals_count func_table_base func_count)))
             (set! arg (call node_next arg)))
           (set! off (+ off (call compile_expr src_ptr (call nth_child node 2) (+ out_ptr off) locals_base locals_count func_table_base func_count)))
@@ -1859,7 +1866,7 @@
     (if (eq op_id Kw.return) ;; return [v] -> v; return
         (block
           (let off:i32 0)
-          (if (neq (call nth_child node 1) 0)
+          (if (neq (call nth_child node 1) (ptr.null compiler.Node))
               (set! off (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count))
               (block))
           (set! res (+ off (call emit_byte (+ out_ptr off) 15))))
@@ -1916,7 +1923,7 @@
         (block))
     (if (eq op_id Kw.new) ;; new Struct
         (block
-          (let snode:i32 (call nth_child node 1))
+          (let snode:(ptr compiler.Node) (call nth_child node 1))
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
           (let off:i32 0)
           (set! off (+ off (call emit_i32_const (+ out_ptr off) 0)))
@@ -1927,8 +1934,8 @@
         (block))
     (if (eq op_id Kw.get) ;; get ptr Struct.field: load by field type at its offset
         (block
-          (let ptr_node:i32 (call nth_child node 1))
-          (let sf_node:i32 (call nth_child node 2))
+          (let ptr_node:(ptr compiler.Node) (call nth_child node 1))
+          (let sf_node:(ptr compiler.Node) (call nth_child node 2))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
           (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
@@ -1943,9 +1950,9 @@
         (block))
     (if (eq op_id Kw.put) ;; put ptr Struct.field val: store by field type at its offset
         (block
-          (let ptr_node:i32 (call nth_child node 1))
-          (let sf_node:i32 (call nth_child node 2))
-          (let val_node:i32 (call nth_child node 3))
+          (let ptr_node:(ptr compiler.Node) (call nth_child node 1))
+          (let sf_node:(ptr compiler.Node) (call nth_child node 2))
+          (let val_node:(ptr compiler.Node) (call nth_child node 3))
           (let sf_pos:i32 (call node_a sf_node))
           (let sf_len:i32 (call node_b sf_node))
           (let dot_idx:i32 (call find_last_char src_ptr sf_pos sf_len 46))
@@ -1959,14 +1966,14 @@
         (block))
     (if (eq op_id Kw.sizeof) ;; sizeof Struct
         (block
-          (let snode:i32 (call nth_child node 1))
+          (let snode:(ptr compiler.Node) (call nth_child node 1))
           (let size:i32 (call get_struct_size src_ptr (call node_a snode) (call node_b snode)))
           (set! res (call emit_i32_const out_ptr size)))
         (block))
     (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
-          (let size_node:i32 (call nth_child node 2))
+          (let size_node:(ptr compiler.Node) (call nth_child node 2))
           (let off:i32 (call compile_expr src_ptr size_node out_ptr locals_base locals_count func_table_base func_count))
           (set! off (+ off (call emit_local_set (+ out_ptr off) locals_count)))
           ;; if n < 0: unreachable
@@ -2000,8 +2007,8 @@
     (if (eq op_id Kw.arr_get) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
-          (let ptr_node:i32 (call nth_child node 2))
-          (let idx_node:i32 (call nth_child node 3))
+          (let ptr_node:(ptr compiler.Node) (call nth_child node 2))
+          (let idx_node:(ptr compiler.Node) (call nth_child node 3))
           (let off:i32 (call compile_expr src_ptr ptr_node out_ptr locals_base locals_count func_table_base func_count))
           (set! off (+ off (call compile_expr src_ptr idx_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) (call type_size etype))))
@@ -2016,9 +2023,9 @@
     (if (eq op_id Kw.arr_set) ;; arr.set type ptr index val
         (block
           (let etype:i32 (call elem_type_id src_ptr (call nth_child node 1)))
-          (let ptr_node:i32 (call nth_child node 2))
-          (let idx_node:i32 (call nth_child node 3))
-          (let val_node:i32 (call nth_child node 4))
+          (let ptr_node:(ptr compiler.Node) (call nth_child node 2))
+          (let idx_node:(ptr compiler.Node) (call nth_child node 3))
+          (let val_node:(ptr compiler.Node) (call nth_child node 4))
           (let off:i32 (call compile_expr src_ptr ptr_node out_ptr locals_base locals_count func_table_base func_count))
           (set! off (+ off (call compile_expr src_ptr idx_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
           (set! off (+ off (call emit_i32_const (+ out_ptr off) (call type_size etype))))
@@ -2220,15 +2227,15 @@
 
     res)
 
-  (fn compile_let [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:i32 (call nth_child node 1)) (let val_node:i32 (call nth_child node 4)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+  (fn compile_let [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 4)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
 
-  (fn compile_set [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:i32 (call nth_child node 1)) (let val_node:i32 (call nth_child node 2)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
+  (fn compile_set [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let name_node:(ptr compiler.Node) (call nth_child node 1)) (let val_node:(ptr compiler.Node) (call nth_child node 2)) (let n1:i32 (call compile_expr src_ptr val_node out_ptr locals_base locals_count func_table_base func_count)) (let idx:i32 (call find_local locals_base locals_count src_ptr (call node_a name_node) (call node_b name_node))) (+ n1 (call emit_local_set (+ out_ptr n1) idx)))
 
-  (fn compile_call [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let fname_node:i32 (call nth_child node 1))
+  (fn compile_call [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let fname_node:(ptr compiler.Node) (call nth_child node 1))
     (let offset:i32 0)
-    (let arg:i32 (call node_next (call node_next (call node_a node))))
-    (while (neq arg 0) (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg)))
+    (let arg:(ptr compiler.Node) (call node_next (call node_next (call first_child node))))
+    (while (neq arg (ptr.null compiler.Node)) (let n:i32 (call compile_expr src_ptr arg (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! arg (call node_next arg)))
     (let fidx:i32 (call find_function src_ptr func_table_base func_count (call node_a fname_node) (call node_b fname_node)))
     (if (eq fidx -1)
         (block
@@ -2240,18 +2247,18 @@
           (let import_cnt:i32 (mem.load32 32))
           (+ offset (call emit_call (+ out_ptr offset) (+ import_cnt fidx))))))
 
-  (fn compile_stmt [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let n:i32 (call compile_expr src_ptr node out_ptr locals_base locals_count func_table_base func_count)) (if (call is_void_node src_ptr node func_table_base func_count) n (+ n (call emit_byte (+ out_ptr n) 26))))
+  (fn compile_stmt [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let n:i32 (call compile_expr src_ptr node out_ptr locals_base locals_count func_table_base func_count)) (if (call is_void_node src_ptr node func_table_base func_count) n (+ n (call emit_byte (+ out_ptr n) 26))))
 
-  (fn compile_stmt_seq [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (while (neq node 0) (let nxt:i32 (call node_next node)) (let n:i32 0) (if (eq nxt 0) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt)) offset)
+  (fn compile_stmt_seq [src_ptr:i32 first:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:(ptr compiler.Node) first) (while (neq node (ptr.null compiler.Node)) (let nxt:(ptr compiler.Node) (call node_next node)) (let n:i32 0) (if (eq nxt (ptr.null compiler.Node)) (set! n (call compile_expr src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! n (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count))) (set! offset (+ offset n)) (set! node nxt)) offset)
 
-  (fn compile_all_stmts [src_ptr:i32 first:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:i32 first) (while (neq node 0) (let nxt:i32 (call node_next node)) (let n:i32 (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! node nxt)) offset)
+  (fn compile_all_stmts [src_ptr:i32 first:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let offset:i32 0) (let node:(ptr compiler.Node) first) (while (neq node (ptr.null compiler.Node)) (let nxt:(ptr compiler.Node) (call node_next node)) (let n:i32 (call compile_stmt src_ptr node (+ out_ptr offset) locals_base locals_count func_table_base func_count)) (set! offset (+ offset n)) (set! node nxt)) offset)
 
-  (fn compile_block [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (call compile_stmt_seq src_ptr (call node_next (call node_a node)) out_ptr locals_base locals_count func_table_base func_count))
+  (fn compile_block [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (call compile_stmt_seq src_ptr (call node_next (call first_child node)) out_ptr locals_base locals_count func_table_base func_count))
 
-  (fn compile_if [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let cond_node:i32 (call nth_child node 1))
-    (let then_node:i32 (call nth_child node 2))
-    (let else_node:i32 (call nth_child node 3))
+  (fn compile_if [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let cond_node:(ptr compiler.Node) (call nth_child node 1))
+    (let then_node:(ptr compiler.Node) (call nth_child node 2))
+    (let else_node:(ptr compiler.Node) (call nth_child node 3))
     (let off:i32 0)
     (set! off (+ off (call compile_expr src_ptr cond_node (+ out_ptr off) locals_base locals_count func_table_base func_count)))
     (let void_then:bool (call is_void_node src_ptr then_node func_table_base func_count))
@@ -2272,7 +2279,7 @@
 
   ;; block { loop { cond; eqz; br_if 1; body; br 0 } }: break = br to the block,
   ;; continue = br to the loop header (wasm.rs Expr::While).
-  (fn compile_while [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+  (fn compile_while [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
     (let off:i32 0)
     (set! off (+ off (call emit_byte (+ out_ptr off) 2)))
     (set! off (+ off (call emit_byte (+ out_ptr off) 64)))
@@ -2295,8 +2302,8 @@
   ;; var = start; block { loop { var > end -> br_if 1; block { body }; var += step; br 0 } }:
   ;; break = br to the outer block, continue = br to the end of the body block,
   ;; which falls into the step (wasm.rs Expr::Loop).
-  (fn compile_loop [src_ptr:i32 node:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let var_node:i32 (call nth_child node 1))
+  (fn compile_loop [src_ptr:i32 node:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let var_node:(ptr compiler.Node) (call nth_child node 1))
     (let var_idx:i32 (call find_local locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node)))
     (let end_idx:i32 (call find_hidden locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node) 211))
     (let step_idx:i32 (call find_hidden locals_base locals_count src_ptr (call node_a var_node) (call node_b var_node) 212))
@@ -2335,17 +2342,17 @@
     (set! off (+ off (call emit_byte (+ out_ptr off) 11)))
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
-  (fn is_else_clause [src_ptr:i32 clause:i32] -> bool
+  (fn is_else_clause [src_ptr:i32 clause:(ptr compiler.Node)] -> bool
     (eq (call group_head_keyword src_ptr clause) Kw.else))
 
   ;; (cond (c1 e...) ... (else e...)) as the nested ifs the Rust parser builds:
   ;; (if c1 (block e...) (if c2 (block e...) ... (block else...))).
-  (fn compile_cond_from [src_ptr:i32 clause:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
-    (let head:i32 (call node_a clause))
+  (fn compile_cond_from [src_ptr:i32 clause:(ptr compiler.Node) out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32
+    (let head:(ptr compiler.Node) (call first_child clause))
     (if (call is_else_clause src_ptr clause)
         (return (call compile_stmt_seq src_ptr (call node_next head) out_ptr locals_base locals_count func_table_base func_count))
         (block))
-    (let body_first:i32 (call node_next head))
+    (let body_first:(ptr compiler.Node) (call node_next head))
     (let off:i32 (call compile_expr src_ptr head out_ptr locals_base locals_count func_table_base func_count))
     (let bt:i32 64)
     (if (call is_void_node src_ptr (call last_child clause) func_table_base func_count)
@@ -2360,7 +2367,7 @@
     (call label_pop)
     (+ off (call emit_byte (+ out_ptr off) 11)))
 
-  (fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:i32 (mem.load32 (+ entry 20))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:i32 (call nth_child fndef_group 5)) (while (neq bchild 0) (if (call is_contract_head src_ptr bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) 0)) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
+  (fn compile_function_body [src_ptr:i32 entry:i32 out_ptr:i32 locals_base:i32 locals_count:i32 func_table_base:i32 func_count:i32] -> i32 (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20)))) (let ret_type:i32 (mem.load32 (+ entry 12))) (let off:i32 0) (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5)) (while (neq bchild (ptr.null compiler.Node)) (if (call is_contract_head src_ptr bchild) (set! bchild (call node_next bchild)) (block (let is_last:bool (eq (call node_next bchild) (ptr.null compiler.Node))) (let keep_value:bool (and is_last (neq ret_type 205))) (let n:i32 (call compile_expr src_ptr bchild (+ out_ptr off) locals_base locals_count func_table_base func_count)) (set! off (+ off n)) (if (and (not keep_value) (not (call is_void_node src_ptr bchild func_table_base func_count))) (set! off (+ off (call emit_byte (+ out_ptr off) 26))) (block)) (set! bchild (call node_next bchild))))) off)
 
   ;; ===== Master WASM Module Generator =====
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
@@ -2377,7 +2384,7 @@
     (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) 12)))
     (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) 16)))
-    (let root:i32 (ptr.addr (call compiler.parse_ast tok_buf tok_cnt ast_buf)))
+    (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
     
     (let _p:i32 (call walk_module_prepass src_ptr root))
     ;; threaded modules call workers through the table (wasm.rs worker_sig)
@@ -2713,7 +2720,7 @@
     (set! f 0)
     (while (lt f func_count)
       (let entry:i32 (call func_entry_ptr (call fn_table) f))
-      (let fndef_group:i32 (mem.load32 (+ entry 20)))
+      (let fndef_group:(ptr compiler.Node) (ptr.cast compiler.Node (mem.load32 (+ entry 20))))
       (let pcount:i32 (mem.load32 (+ entry 8)))
       (let total_locals:i32 (call collect_locals_for_function src_ptr entry (call locals_table)))
       (let extra_local_cnt:i32 (- total_locals pcount))
@@ -2922,7 +2929,7 @@
     (let tok:i32 (mem.alloc (* 12 (+ (str.len text) 1))))
     (let n:i32 (call compiler.tokenize src (str.len text) tok))
     (let ast:i32 (mem.alloc (* 16 (+ n 2))))
-    (let root:i32 (ptr.addr (call compiler.parse_ast tok n ast)))
+    (let root:(ptr compiler.Node) (call compiler.parse_ast tok n ast))
     (let func_count:i32 (call collect_functions src root (call fn_table)))
     (let e0:i32 (call func_entry_ptr (call fn_table) 0))
     (let e0_pcount:i32 (mem.load32 (+ e0 8)))
