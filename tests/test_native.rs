@@ -1968,3 +1968,60 @@ fn the_vm_builds_the_same_executable() {
     let (a, n) = (word(&mut vm, exe_ptr), word(&mut vm, exe_ptr + 4));
     assert_eq!(vm.read_bytes(a, n), to_native(&wasm).unwrap());
 }
+
+/// NE17: the AIPL compiler (aipl_src/driver.aipl) built natively. It must
+/// compile every repository program to the Rust toolchain's bytes, compile
+/// itself to its own wasm (the fixpoint, with no Rust or wasmtime in the
+/// second build), and building it natively twice must give the same file.
+#[test]
+fn the_compiler_runs_natively() {
+    let driver = WasmCompiler::compile(&Resolver::resolve(&root().join("aipl_src/driver.aipl")).unwrap()).unwrap();
+    let aiplc = to_native(&driver).unwrap();
+    assert_eq!(aiplc, to_native(&driver).unwrap(), "two native builds of the compiler differ");
+    let dir = scratch("aiplc");
+    let exe = dir.join("aiplc");
+    std::fs::write(&exe, &aiplc).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out_dir = root().join("target/ne17");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    // every program the Rust toolchain compiles, from the repository root
+    let mut paths = Vec::new();
+    for sub in ["examples", "aipl_src/std", "aipl_src", "aipl_src/native"] {
+        for e in std::fs::read_dir(root().join(sub)).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().is_some_and(|x| x == "aipl") {
+                paths.push(p);
+            }
+        }
+    }
+    paths.sort();
+    let mut compared = 0;
+    for p in &paths {
+        let Ok(m) = Resolver::resolve(p) else { continue };
+        if TypeChecker::new().check_module(&m).is_err() {
+            continue;
+        }
+        let Ok(want) = WasmCompiler::compile(&m) else { continue };
+        let rel = p.strip_prefix(root()).unwrap().display().to_string();
+        let out = out_dir.join(format!("{}.wasm", rel.replace('/', "_")));
+        let run = run_fresh_executable(Command::new(&exe).arg(&rel).arg(&out).current_dir(root()), &[]);
+        assert_eq!(run.status.code(), Some(0), "{rel}: {}", String::from_utf8_lossy(&run.stderr));
+        assert!(std::fs::read(&out).unwrap() == want, "{rel}: the native compiler's output differs from the Rust toolchain's");
+        compared += 1;
+    }
+    assert!(compared >= 25, "only {compared} programs compared");
+    // the fixpoint: the native compiler compiles itself to the wasm it was built from
+    let own = out_dir.join("driver_by_native.wasm");
+    let run = run_fresh_executable(Command::new(&exe).arg("aipl_src/driver.aipl").arg(&own).current_dir(root()), &[]);
+    assert_eq!(run.status.code(), Some(0), "{}", String::from_utf8_lossy(&run.stderr));
+    assert!(std::fs::read(&own).unwrap() == driver, "the native compiler does not reproduce itself");
+    // and that wasm, built natively again, is the same executable
+    assert_eq!(to_native(&std::fs::read(&own).unwrap()).unwrap(), aiplc);
+    // errors: usage, and a program that does not resolve
+    let usage = run_fresh_executable(Command::new(&exe).current_dir(root()), &[]);
+    let usage_wasm = run_wasm(&dir, &driver);
+    assert_eq!(usage.status.code(), usage_wasm.status.code());
+    let missing = run_fresh_executable(Command::new(&exe).args(["examples/missing.aipl", "target/ne17/x.wasm"]).current_dir(root()), &[]);
+    assert_ne!(missing.status.code(), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
