@@ -28,6 +28,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 |---|---|---|---|---|---|
 | spigot | 10000 digits | 4.360 s (4.7x) | 1.573 s (1.7x) | 0.922 s (1.0x) | 47.345 s (51.3x) |
 | fannkuch | n = 10 | 1.358 s (8.8x) | 0.212 s (1.4x) | 0.155 s (1.0x) | 3.745 s (24.2x) |
+| spectralnorm | n = 1000 | 0.395 s (14.6x) | 0.121 s (4.5x) | 0.027 s (1.0x) | 7.373 s (272.0x) |
 
 ## Notes per benchmark
 
@@ -54,3 +55,18 @@ passing its values through the stack in memory, plus a bounds check that
 reloads the memory size. wasmtime keeps them in registers. The same
 optimisations as for spigot (value stack in registers, memory size in a
 register) would matter most here.
+
+**spectralnorm** (the power method on A'A, printed to nine decimals). Needed
+two additions, both now in the language and standard library:
+- `(f64.sqrt x)`: a new operation, correctly rounded (wasm `f64.sqrt`,
+  SSE2 `sqrtsd` natively, Rust's `sqrt` in the VM), so results match C to
+  the bit. A library square root (Newton's method) could differ in the last
+  bit and break the output comparison.
+- Printing floats: `fmt.f64_fixed` (and `buf.push_f64`, `io.print_f64`,
+  `io.println_f64`) writes the exact decimal value rounded half to even, as
+  C's `printf("%.9f")` and Python's format do, using a small
+  arbitrary-precision integer; checked against Rust's exact formatting on
+  20,000 random doubles. Shortest round-trip printing (`printf("%g")`
+  style) and parsing floats from text remain gaps.
+C gains most here: gcc inlines the matrix-entry function and vectorises the
+inner loop, while AIPL calls a function per entry.

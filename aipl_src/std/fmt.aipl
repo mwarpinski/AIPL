@@ -1,6 +1,6 @@
 ;; std/fmt: numbers to text. Each function writes ASCII bytes at `out` (which
 ;; must have room: 10 bytes for uint/hex, 11 for int, 20 for uint64, 21 for
-;; int64) and returns the count.
+;; int64, 312 + digits for f64_fixed) and returns the count.
 (module fmt
   ;; Decimal digits of n read as unsigned, so -1 is 4294967295.
   (fn uint_to_bytes [n:i32 out:i32] -> i32
@@ -48,6 +48,169 @@
           (+ 1 (call uint64_to_bytes (- 0i64 n) (+ out 1))))
         (call uint64_to_bytes n out)))
 
+  ;; ===== f64 with a fixed number of decimals =====
+  ;;
+  ;; f64_fixed writes x with `digits` digits after the point, as C's
+  ;; printf("%.*f") and Python's format(x, ".Nf") do: the exact decimal value
+  ;; of the binary double, rounded half to even (ties are exact halves).
+  ;; "-" for any negative sign bit (so -0.0 and a negative value that rounds
+  ;; to zero keep it), "inf"/"-inf", and "nan"/"-nan". Exact, so it uses a
+  ;; small arbitrary-precision integer: up to 40 limbs of 32 bits, held in
+  ;; an (arr i64), least significant first.
+
+  (fn big_limbs [] -> i32 40)
+
+  (fn big_new [] -> (arr i64)
+    (let a:(arr i64) (arr.new i64 (call big_limbs)))
+    (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 a i 0i64))
+    a)
+
+  (fn big_bit [a:(arr i64) k:i32] -> i32
+    (i32.wrap (bitand (shru (arr.get i64 a (/ k 32)) (i64.extend_s (% k 32))) 1i64)))
+
+  (fn big_is_zero [a:(arr i64)] -> bool
+    (loop i 0 (- (call big_limbs) 1) 1
+      (if (neq (arr.get i64 a i) 0i64) (return false) (block)))
+    true)
+
+  ;; a = a << s (bits), in place
+  (fn big_shl [a:(arr i64) s:i32] -> void
+    (let q:i32 (/ s 32))
+    (let r:i64 (i64.extend_s (% s 32)))
+    (loop j 0 (- (call big_limbs) 1) 1
+      (let i:i32 (- (- (call big_limbs) 1) j))
+      (let hi:i64 (if (gte (- i q) 0) (arr.get i64 a (- i q)) 0i64))
+      (let lo:i64 (if (and (gte (- (- i q) 1) 0) (neq r 0i64)) (arr.get i64 a (- (- i q) 1)) 0i64))
+      (arr.set i64 a i (bitand (bitor (shl hi r) (if (eq r 0i64) 0i64 (shru lo (- 32i64 r)))) 4294967295i64))))
+
+  ;; keeps only the low k bits of a, in place
+  (fn big_mask [a:(arr i64) k:i32] -> void
+    (let q:i32 (/ k 32))
+    (loop i 0 (- (call big_limbs) 1) 1
+      (cond
+        ((gt i q) (arr.set i64 a i 0i64))
+        ((eq i q) (arr.set i64 a i (bitand (arr.get i64 a i) (- (shl 1i64 (i64.extend_s (% k 32))) 1i64))))
+        (else (block)))))
+
+  ;; a = a * f (f <= 10), in place
+  (fn big_mul_small [a:(arr i64) f:i64] -> void
+    (let carry:i64 0i64)
+    (loop i 0 (- (call big_limbs) 1) 1
+      (let t:i64 (+ (* (arr.get i64 a i) f) carry))
+      (arr.set i64 a i (bitand t 4294967295i64))
+      (set! carry (shru t 32i64))))
+
+  ;; a = a / d, returns a % d (d <= 10), in place
+  (fn big_divmod_small [a:(arr i64) d:i64] -> i64
+    (let rem:i64 0i64)
+    (loop j 0 (- (call big_limbs) 1) 1
+      (let i:i32 (- (- (call big_limbs) 1) j))
+      (let t:i64 (bitor (shl rem 32i64) (arr.get i64 a i)))
+      (arr.set i64 a i (divu t d))
+      (set! rem (remu t d)))
+    rem)
+
+  ;; floor(a / 2^k), for a < 16 * 2^k: its 4 bits at k
+  (fn big_digit_at [a:(arr i64) k:i32] -> i32
+    (+ (call big_bit a k) (+ (* 2 (call big_bit a (+ k 1))) (+ (* 4 (call big_bit a (+ k 2))) (* 8 (call big_bit a (+ k 3)))))))
+
+  (fn put_str [out:i32 s:str] -> i32
+    (let p:i32 (str.ptr s))
+    (loop i 0 (- (str.len s) 1) 1 (mem.store8 (+ out i) (mem.load8 (+ p i))))
+    (str.len s))
+
+  (fn f64_fixed [x:f64 digits:i32 out:i32] -> i32
+    (req (and (gte digits 0) (lte digits 40)))
+    (let bits:i64 (i64.reinterpret_f64 x))
+    (let neg:bool (lt bits 0i64))
+    (let ex:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
+    (let mant:i64 (bitand bits 4503599627370495i64))
+    (let n:i32 0)
+    (if neg (block (mem.store8 out 45) (set! n 1)) (block))
+    (if (eq ex 2047)
+        (return (+ n (call put_str (+ out n) (if (eq mant 0i64) "inf" "nan"))))
+        (block))
+    ;; x = m * 2^e
+    (let m:i64 (if (eq ex 0) mant (bitor mant 4503599627370496i64)))
+    (let e:i32 (if (eq ex 0) -1074 (- ex 1075)))
+    (let whole:(arr i64) (call big_new))
+    (arr.set i64 whole 0 (bitand m 4294967295i64))
+    (arr.set i64 whole 1 (shru m 32i64))
+    (let frac:(arr i64) (call big_new))
+    (let k:i32 0)
+    (if (gte e 0)
+        (call big_shl whole e)
+        (block
+          ;; frac = m's low k bits (the fraction is frac / 2^k); whole = m >> k
+          (set! k (- 0 e))
+          (arr.set i64 frac 0 (arr.get i64 whole 0))
+          (arr.set i64 frac 1 (arr.get i64 whole 1))
+          (call big_mask frac k)
+          (if (gte k 64)
+              (block (arr.set i64 whole 0 0i64) (arr.set i64 whole 1 0i64))
+              (block
+                (let w:i64 (shru m (i64.extend_s k)))
+                (arr.set i64 whole 0 (bitand w 4294967295i64))
+                (arr.set i64 whole 1 (shru w 32i64))))))
+    ;; integer digits, least significant first, then reversed into place
+    (let start:i32 n)
+    (let first:bool true)
+    (while (or first (not (call big_is_zero whole)))
+      (set! first false)
+      (mem.store8 (+ out n) (+ 48 (i32.wrap (call big_divmod_small whole 10i64))))
+      (set! n (+ n 1)))
+    (loop i 0 (- (/ (- n start) 2) 1) 1
+      (let a:i32 (+ start i))
+      (let b:i32 (- (- n 1) i))
+      (let t:i32 (mem.load8 (+ out a)))
+      (mem.store8 (+ out a) (mem.load8 (+ out b)))
+      (mem.store8 (+ out b) t))
+    ;; fraction digits: times ten, take the digit above bit k, keep the rest
+    (if (gt digits 0) (block (mem.store8 (+ out n) 46) (set! n (+ n 1))) (block))
+    (loop d 1 digits 1
+      (if (eq k 0)
+          (mem.store8 (+ out n) 48)
+          (block
+            (call big_mul_small frac 10i64)
+            (mem.store8 (+ out n) (+ 48 (call big_digit_at frac k)))
+            (call big_mask frac k)))
+      (set! n (+ n 1)))
+    ;; round half to even on what remains (frac / 2^k)
+    (if (gt k 0)
+        (block
+          (let half_bit:i32 (call big_bit frac (- k 1)))
+          (let rest:(arr i64) (call big_new))
+          (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 rest i (arr.get i64 frac i)))
+          (call big_mask rest (- k 1))
+          (let above:bool (and (eq half_bit 1) (not (call big_is_zero rest))))
+          (let tie:bool (and (eq half_bit 1) (call big_is_zero rest)))
+          (let last_odd:bool (eq (% (- (mem.load8 (+ out (- n 1))) 48) 2) 1))
+          (if (or above (and tie last_odd)) (set! n (call round_up out start n)) (block)))
+        (block))
+    n)
+
+  ;; Adds one unit in the last place to the decimal at out[start..n) (digits
+  ;; and one '.'), carrying; a carry out of the first digit prepends a 1.
+  ;; Returns the new length.
+  (fn round_up [out:i32 start:i32 n:i32] -> i32
+    (let i:i32 (- n 1))
+    (let carry:bool true)
+    (while (and carry (gte i start))
+      (let c:i32 (mem.load8 (+ out i)))
+      (cond
+        ((eq c 46) (block))
+        ((eq c 57) (mem.store8 (+ out i) 48))
+        (else (mem.store8 (+ out i) (+ c 1)) (set! carry false)))
+      (set! i (- i 1)))
+    (if carry
+        (block
+          (loop j 0 (- (- n start) 1) 1
+            (let from:i32 (- (- n 1) j))
+            (mem.store8 (+ out (+ from 1)) (mem.load8 (+ out from))))
+          (mem.store8 (+ out start) 49)
+          (+ n 1))
+        n))
+
   (fn hex_digit [d:i32] -> i32
     (if (lt d 10) (+ 48 d) (+ 87 d)))
 
@@ -73,9 +236,9 @@
       (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (return false) (block)))
     true)
 
-  ;; Pass count; test_suite.aipl expects 10.
+  ;; Pass count; test_suite.aipl expects 14.
   (fn run_fmt_tests [] -> i32
-    (let b:i32 (mem.alloc 24))
+    (let b:i32 (mem.alloc 400))
     (let p:i32 0)
     (if (call spells b (call uint_to_bytes 0 b) "0") (set! p (+ p 1)) (block))
     (if (call spells b (call uint_to_bytes -1 b) "4294967295") (set! p (+ p 1)) (block))
@@ -87,4 +250,9 @@
     (if (call spells b (call uint64_to_bytes -1i64 b) "18446744073709551615") (set! p (+ p 1)) (block))
     (if (call spells b (call int64_to_bytes 0i64 b) "0") (set! p (+ p 1)) (block))
     (if (call spells b (call int64_to_bytes 4294967296i64 b) "4294967296") (set! p (+ p 1)) (block))
+    (if (call spells b (call f64_fixed -0.1690751638285 9 b) "-0.169075164") (set! p (+ p 1)) (block))
+    ;; ties round to even: 2.5 -> 2, 0.125 -> 0.12
+    (if (call spells b (call f64_fixed 2.5 0 b) "2") (set! p (+ p 1)) (block))
+    (if (call spells b (call f64_fixed 0.125 2 b) "0.12") (set! p (+ p 1)) (block))
+    (if (call spells b (call f64_fixed 9.9996 3 b) "10.000") (set! p (+ p 1)) (block))
     p))

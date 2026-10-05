@@ -255,6 +255,7 @@
     (set! o (call store_kw_str k 648 115 121 115 46 109 111 110 111 116 111 110 105 12)) ;; sys.monotonic (op 84)
     (set! o (call store_kw_str k 660 99 0 0 0 0 0 0 0 0 0 0 0 1))
     (set! o (call store_kw_str k 661 115 121 115 46 114 97 110 100 111 109 0 0 10)) ;; sys.random (op 85)
+    (set! o (call store_kw_str k 671 102 54 52 46 115 113 114 116 0 0 0 0 8)) ;; f64.sqrt (op 86)
     (set! o (call store_kw_str k 370 102 54 52 46 99 111 110 118 101 114 116 95 12)) ;; f64.convert_i64_s (op 57)
     (set! o (call store_kw_str k 382 105 54 52 95 115 0 0 0 0 0 0 0 5))
     (set! o (call store_kw_str k 387 105 54 52 46 116 114 117 110 99 95 102 54 12)) ;; i64.trunc_f64_s (op 58)
@@ -364,6 +365,7 @@
     (if (call sym_eq src_ptr pos len (+ k 640) 8) (set! res 83) (block))
     (if (call sym_eq src_ptr pos len (+ k 648) 13) (set! res 84) (block))
     (if (call sym_eq src_ptr pos len (+ k 661) 10) (set! res 85) (block))
+    (if (call sym_eq src_ptr pos len (+ k 671) 8) (set! res 86) (block))
     (if (call sym_eq src_ptr pos len (+ k 370) 17) (set! res 57) (block))
     (if (call sym_eq src_ptr pos len (+ k 387) 15) (set! res 58) (block))
     (if (call sym_eq src_ptr pos len (+ k 402) 19) (set! res 59) (block))
@@ -1489,8 +1491,8 @@
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
     (if (or (eq kw 50) (or (eq kw 61) (eq kw 62))) (set! res 208) (block))
     (if (or (eq kw 54) (or (eq kw 64) (eq kw 65))) (set! res 209) (block))
-    ;; f64.convert_i64_s, f64.reinterpret_i64
-    (if (or (eq kw 57) (eq kw 59)) (set! res 203) (block))
+    ;; f64.convert_i64_s, f64.reinterpret_i64, f64.sqrt
+    (if (or (eq kw 57) (or (eq kw 59) (eq kw 86))) (set! res 203) (block))
     res)
 
   ;; ===== Expression / statement codegen =====
@@ -1854,6 +1856,9 @@
         (block))
     (if (eq op_id 57) ;; f64.convert_i64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 185))))
+        (block))
+    (if (eq op_id 86) ;; f64.sqrt
+        (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 159))))
         (block))
     (if (eq op_id 58) ;; i64.trunc_f64_s
         (block (let n1:i32 (call compile_expr src_ptr (call nth_child node 1) out_ptr locals_base locals_count func_table_base func_count)) (set! res (+ n1 (call emit_byte (+ out_ptr n1) 176))))

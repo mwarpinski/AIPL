@@ -176,6 +176,7 @@ pub fn op_name(op: &OpCode) -> &'static str {
         I64ExtendU => "i64.extend_u",
         I32Wrap => "i32.wrap",
         F64ConvertI64S => "f64.convert_i64_s",
+        F64Sqrt => "f64.sqrt",
         I64TruncF64S => "i64.trunc_f64_s",
         F64ReinterpretI64 => "f64.reinterpret_i64",
         I64ReinterpretF64 => "i64.reinterpret_f64",

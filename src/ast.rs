@@ -111,6 +111,9 @@ pub enum OpCode {
     /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
     I32Wrap,
     F64ConvertI64S,
+    /// `(f64.sqrt x)`: the square root, correctly rounded (wasm `f64.sqrt`,
+    /// IEEE 754); NaN for a negative x, and sqrt(-0.0) is -0.0.
+    F64Sqrt,
     I64TruncF64S,
     F64ReinterpretI64,
     I64ReinterpretF64,

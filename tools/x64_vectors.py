@@ -89,7 +89,7 @@ def sse():
         o+=[f"movq {X[r]}, {R64[p]}", f"movq {R64[p]}, {X[r]}", f"movd {X[r]}, {R32[p]}", f"movd {R32[p]}, {X[r]}"]
         o+=[f"{op}sd {X[r]}, {X[p]}" for op in ["add","sub","mul","div"]]
         o+=[f"{op}ss {X[r]}, {X[p]}" for op in ["add","sub","mul","div"]]
-        o+=[f"ucomisd {X[r]}, {X[p]}", f"ucomiss {X[r]}, {X[p]}", f"cvtsi2sd {X[r]}, {R64[p]}", f"cvttsd2si {R64[p]}, {X[r]}"]
+        o+=[f"ucomisd {X[r]}, {X[p]}", f"ucomiss {X[r]}, {X[p]}", f"cvtsi2sd {X[r]}, {R64[p]}", f"cvttsd2si {R64[p]}, {X[r]}", f"sqrtsd {X[r]}, {X[p]}"]
     return o
 def tls():
     o=[]

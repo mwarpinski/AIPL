@@ -1409,6 +1409,7 @@ impl Parser {
                                 "remu" => OpCode::RemU,
                                 "i64.extend_s" => OpCode::I64ExtendS,
                                 "f64.convert_i64_s" => OpCode::F64ConvertI64S,
+                                "f64.sqrt" => OpCode::F64Sqrt,
                                 "i64.trunc_f64_s" => OpCode::I64TruncF64S,
                                 "f64.reinterpret_i64" => OpCode::F64ReinterpretI64,
                                 "i64.reinterpret_f64" => OpCode::I64ReinterpretF64,

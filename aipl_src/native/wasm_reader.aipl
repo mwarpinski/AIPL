@@ -318,6 +318,7 @@
       ((and (gte op 124) (lte op 136)) 0)                                           ;; i64 add .. shr_u
       ((and (gte op 146) (lte op 149)) 0)                                           ;; f32 add sub mul div
       ((and (gte op 160) (lte op 163)) 0)                                           ;; f64 add sub mul div
+      ((eq op 159) 0)                                                               ;; f64.sqrt
       ;; i32.wrap_i64, i64.extend_i32_s/u, i64.trunc_f64_s, f64.convert_i64_s, the reinterprets
       ((or (eq op 167) (or (eq op 172) (or (eq op 173) (or (eq op 176) (or (eq op 185) (or (eq op 189) (eq op 191)))))))
        0)
@@ -415,6 +416,7 @@
       ((eq op 147) "f32.sub")
       ((eq op 148) "f32.mul")
       ((eq op 149) "f32.div")
+      ((eq op 159) "f64.sqrt")
       ((eq op 160) "f64.add")
       ((eq op 161) "f64.sub")
       ((eq op 162) "f64.mul")
