@@ -248,6 +248,14 @@ Before the native backend, the language and runtime surface are completed so the
 9. **The type checker in AIPL**, then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
 10. **Stage-0 seed and retiring the Rust compiler code.**
 
+Candidates after these, not yet ordered (from Gemini's planning docs, 2026-10-05, checked against the code; the docs themselves were dropped so this file stays the only plan):
+- **Compiled contracts and array bounds checks** are step 9's second half; Gemini ranks them first too. Bounds checks reach the native backend through the wasm it translates.
+- **Arena-aware containers.** `vec`, `map`, `strmap`, and `buf` grow by allocating anew and abandoning the old block; letting them take a `(ptr arena.Arena)` would make that memory reclaimable with `arena.reset` (`std/arena` already exists).
+- **Small structs by value.** Today every struct is `(ptr S)` on the heap; a value form for small records (a span, a point) would live in locals. Touches the type system, both compilers, and the native backend's calling convention.
+- **Constraints on generics (traits/interfaces).** A generic may do anything its instances allow and is checked only through them (LANGUAGE_GAPS.md 2); named constraints would let a template be checked once and give dispatch over a set of operations (function-reference tables, as `call_ref` already does).
+- **Generic unions** (`(Option T)`, `(Result T E)`), which would also let `result` become a union and lift its 32-bit payload limit (AIPL_SPEC.md 4.J).
+- **Standard library:** JSON (a parser and printer over a union value type) and sockets through WASI.
+
 Explicitly not now, each additive later rather than a rewrite: SIMD, 64-bit memory, exceptions (results cover errors).
 
 Later: language versioning (once packages exist); `inv` contracts; a freeing allocator (N6).
