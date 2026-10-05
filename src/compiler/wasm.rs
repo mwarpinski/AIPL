@@ -446,7 +446,10 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
             | OpCode::DivU
             | OpCode::RemU
             | OpCode::BitAnd
-            | OpCode::BitOr => args.first().map_or(Type::I32, |a| expr_type(a, ctx)),
+            | OpCode::BitOr
+            | OpCode::CheckedAdd
+            | OpCode::CheckedSub
+            | OpCode::CheckedMul => args.first().map_or(Type::I32, |a| expr_type(a, ctx)),
             OpCode::Eq
             | OpCode::Neq
             | OpCode::Lt
@@ -609,6 +612,91 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     Ok(ins)
 }
 
+/// The hidden i64 locals of a function that uses checked arithmetic: the
+/// operands and the result (codegen.aipl markers Ty.ck_a, ck_b, ck_r).
+const CHECKED_LOCALS: [&str; 3] = ["#ck_a", "#ck_b", "#ck_r"];
+
+/// checked.add/sub/mul: the operation, then a trap if it overflowed.
+/// i32: computed exactly in i64 and trapped unless it fits in i32. i64 add
+/// and sub: the sign test ((a^r)&(b^r) < 0, (a^b)&(a^r) < 0); i64 mul: when
+/// a != 0, r / a must be b (a = -1, b = MIN traps in the division itself).
+/// Both operands are evaluated before any hidden local is written, so a
+/// checked operation nested in an operand cannot clobber them.
+fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+    use Instruction::*;
+    let local = |n: &str| *ctx.locals.get(n).expect("checked arithmetic locals");
+    let (a, b, r) = (local(CHECKED_LOCALS[0]), local(CHECKED_LOCALS[1]), local(CHECKED_LOCALS[2]));
+    // The trap is i32.div_s(MIN, -1), which wasm defines to trap with
+    // "integer overflow", so every host reports the real reason.
+    let trap_if = |func: &mut Function| {
+        func.instruction(&If(wasm_encoder::BlockType::Empty));
+        func.instruction(&I32Const(i32::MIN));
+        func.instruction(&I32Const(-1));
+        func.instruction(&I32DivS);
+        func.instruction(&Drop);
+        func.instruction(&End);
+    };
+    if expr_type(&args[0], ctx) == Type::I32 {
+        compile_expr(&args[0], ctx, func)?;
+        func.instruction(&I64ExtendI32S);
+        compile_expr(&args[1], ctx, func)?;
+        func.instruction(&I64ExtendI32S);
+        func.instruction(match op {
+            OpCode::CheckedAdd => &I64Add,
+            OpCode::CheckedSub => &I64Sub,
+            _ => &I64Mul,
+        });
+        func.instruction(&LocalTee(r));
+        func.instruction(&I64Const(2147483648));
+        func.instruction(&I64Add);
+        func.instruction(&I64Const(4294967296));
+        func.instruction(&I64GeU);
+        trap_if(func);
+        func.instruction(&LocalGet(r));
+        func.instruction(&I32WrapI64);
+        return Ok(());
+    }
+    compile_expr(&args[0], ctx, func)?;
+    compile_expr(&args[1], ctx, func)?;
+    func.instruction(&LocalSet(b));
+    func.instruction(&LocalSet(a));
+    func.instruction(&LocalGet(a));
+    func.instruction(&LocalGet(b));
+    match op {
+        OpCode::CheckedAdd | OpCode::CheckedSub => {
+            func.instruction(if *op == OpCode::CheckedAdd { &I64Add } else { &I64Sub });
+            func.instruction(&LocalSet(r));
+            func.instruction(&LocalGet(a));
+            func.instruction(&LocalGet(if *op == OpCode::CheckedAdd { r } else { b }));
+            func.instruction(&I64Xor);
+            func.instruction(&LocalGet(if *op == OpCode::CheckedAdd { b } else { a }));
+            func.instruction(&LocalGet(r));
+            func.instruction(&I64Xor);
+            func.instruction(&I64And);
+            func.instruction(&I64Const(0));
+            func.instruction(&I64LtS);
+            trap_if(func);
+        }
+        _ => {
+            func.instruction(&I64Mul);
+            func.instruction(&LocalSet(r));
+            func.instruction(&LocalGet(a));
+            func.instruction(&I64Const(0));
+            func.instruction(&I64Ne);
+            func.instruction(&If(wasm_encoder::BlockType::Empty));
+            func.instruction(&LocalGet(r));
+            func.instruction(&LocalGet(a));
+            func.instruction(&I64DivS);
+            func.instruction(&LocalGet(b));
+            func.instruction(&I64Ne);
+            trap_if(func);
+            func.instruction(&End);
+        }
+    }
+    func.instruction(&LocalGet(r));
+    Ok(())
+}
+
 /// Every local a body declares, in the order the self-hosted compiler
 /// numbers them (codegen.aipl `collect_locals_walk`): a pre-order walk, each
 /// node's own names first, then its children in source order. No wildcard:
@@ -656,6 +744,12 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>) {
                 collect_lets(body, lets);
             }
             Expr::Block(body, _) => collect_lets(body, lets),
+            Expr::Op { op: OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul, args, .. } => {
+                for n in CHECKED_LOCALS {
+                    lets.push((n.to_string(), Type::I64));
+                }
+                collect_lets(args, lets)
+            }
             Expr::Call { args, .. } | Expr::Op { args, .. } => collect_lets(args, lets),
             Expr::CallRef { func, args, .. } => {
                 collect_lets(std::slice::from_ref(func.as_ref()), lets);
@@ -795,6 +889,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&arith_instruction(op, &ty)?);
             }
+            OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => compile_checked(op, args, ctx, func)?,
             OpCode::MemLoad8 => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Load8U(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));

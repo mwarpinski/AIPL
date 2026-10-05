@@ -1291,6 +1291,36 @@ impl VM {
                 let b = self.eval_expr(&args[1], scope)?;
                 Ok(Value::Bool(a != b))
             }
+            OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
+                let a = self.eval_expr(&args[0], scope)?;
+                let b = self.eval_expr(&args[1], scope)?;
+                let name = match op {
+                    OpCode::CheckedAdd => "checked.add",
+                    OpCode::CheckedSub => "checked.sub",
+                    _ => "checked.mul",
+                };
+                let overflow = || format!("Integer overflow in {}", name);
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => {
+                        let (x, y) = (x as i32, y as i32);
+                        let r = match op {
+                            OpCode::CheckedAdd => x.checked_add(y),
+                            OpCode::CheckedSub => x.checked_sub(y),
+                            _ => x.checked_mul(y),
+                        };
+                        r.map(|v| Value::Int(v as i64)).ok_or_else(overflow)
+                    }
+                    (Value::Int64(x), Value::Int64(y)) => {
+                        let r = match op {
+                            OpCode::CheckedAdd => x.checked_add(y),
+                            OpCode::CheckedSub => x.checked_sub(y),
+                            _ => x.checked_mul(y),
+                        };
+                        r.map(Value::Int64).ok_or_else(overflow)
+                    }
+                    _ => Err(format!("Invalid types for {}", name)),
+                }
+            }
             OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                 let a = self.eval_expr(&args[0], scope)?;
                 let b = self.eval_expr(&args[1], scope)?;

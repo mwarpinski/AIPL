@@ -73,6 +73,11 @@ pub enum OpCode {
     Neq,
     Lt,
     Lte,
+    /// `(checked.add a b)`, `(checked.sub a b)`, `(checked.mul a b)`: i32/i64
+    /// arithmetic that traps on signed overflow instead of wrapping.
+    CheckedAdd,
+    CheckedSub,
+    CheckedMul,
     /// `(ltu a b)`, `(lteu a b)`, `(gtu a b)`, `(gteu a b)`: i32/i64 compared as
     /// unsigned (wasm `i32.lt_u` ...).
     LtU,

@@ -385,6 +385,20 @@ impl TypeChecker {
             Expr::Op { op, args, .. } => {
                 check_literal_address(op, args, l, c)?;
                 match op {
+                OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
+                    if args.len() != 2 {
+                        return Err(format!("{}:{}: {:?} requires 2 arguments", l, c, op));
+                    }
+                    let t1 = self.infer_expr_type(&args[0], env)?;
+                    let t2 = self.infer_expr_type(&args[1], env)?;
+                    if t1 != t2 {
+                        return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
+                    }
+                    if !matches!(t1, Type::I32 | Type::I64) {
+                        return Err(format!("{}:{}: {:?} is integer arithmetic (i32 or i64), got {:?}", l, c, op, t1));
+                    }
+                    Ok(t1)
+                }
                 OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::DivU | OpCode::RemU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: Arithmetic/bitwise opcode {:?} requires 2 arguments", l, c, op));

@@ -1114,3 +1114,17 @@ fn self_hosted_bytes_match_unsigned_comparisons() {
            (+ (if (ltu c d) 16 0) (+ (if (lteu c d) 32 0) (+ (if (gtu c d) 64 0) (if (gteu c d) 128 0))))))))))",
     );
 }
+
+/// Checked arithmetic: three hidden i64 locals per function that uses it
+/// (registered where the first checked operation is met, in the pre-order
+/// walk), and the same instruction sequences in both compilers.
+#[test]
+fn self_hosted_bytes_match_checked_arithmetic() {
+    assert_self_hosted_matches_rust(
+        "checked",
+        "(module ck
+  (fn f [a:i32 b:i32] -> i32 (let x:i32 (checked.add a b)) (checked.sub (checked.mul x 3) b))
+  (fn g [a:i64 b:i64] -> i64 (checked.add (checked.mul a b) (checked.sub a b)))
+  (fn h [] -> i32 (let n:i32 1) (loop i 0 3 1 (set! n (checked.mul n 2))) n))",
+    );
+}

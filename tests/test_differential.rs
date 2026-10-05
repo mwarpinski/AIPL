@@ -880,3 +880,46 @@ fn unsigned_comparisons_agree() {
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("LtU compares integers (i32 or i64) as unsigned, got F64"), "{e}");
 }
+
+/// checked.add/sub/mul on every pair of edge values, both widths: the VM and
+/// wasmtime agree with each other and with Rust's checked_* (a value, or an
+/// overflow error in the VM and a trap in wasm).
+#[test]
+fn checked_arithmetic_agrees_with_rust() {
+    let e32: [i32; 12] = [0, 1, -1, 2, -2, 46340, 46341, -46341, 65536, i32::MAX, i32::MIN, i32::MAX - 1];
+    let e64: [i64; 12] = [0, 1, -1, 2, -2, 3037000499, 3037000500, -3037000500, 4294967296, i64::MAX, i64::MIN, i64::MIN + 1];
+    let ops: [(&str, fn(i64, i64, bool) -> Option<i64>); 3] = [
+        ("checked.add", |a, b, w| if w { a.checked_add(b) } else { (a as i32).checked_add(b as i32).map(i64::from) }),
+        ("checked.sub", |a, b, w| if w { a.checked_sub(b) } else { (a as i32).checked_sub(b as i32).map(i64::from) }),
+        ("checked.mul", |a, b, w| if w { a.checked_mul(b) } else { (a as i32).checked_mul(b as i32).map(i64::from) }),
+    ];
+    let mut checked = 0;
+    for (name, f) in ops {
+        for &a in &e32 {
+            for &b in &e32 {
+                let got = expr("i32", &format!("({name} {a} {b})"));
+                match f(a as i64, b as i64, false) {
+                    Some(v) => assert_eq!(got.unwrap(), Value::Int(v), "({name} {a} {b})"),
+                    None => assert!(got.unwrap_err().contains("Integer overflow"), "({name} {a} {b})"),
+                }
+                checked += 1;
+            }
+        }
+        for &a in &e64 {
+            for &b in &e64 {
+                let got = expr("i64", &format!("({name} {a}i64 {b}i64)"));
+                match f(a, b, true) {
+                    Some(v) => assert_eq!(got.unwrap(), Value::Int64(v), "({name} {a}i64 {b}i64)"),
+                    None => assert!(got.unwrap_err().contains("Integer overflow"), "({name} {a}i64 {b}i64)"),
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 864);
+    // nested: an operand that is itself checked
+    assert_eq!(expr("i64", "(checked.add (checked.mul 3i64 4i64) (checked.sub 10i64 (checked.add 1i64 2i64)))").unwrap(), Value::Int64(19));
+    let m = Parser::parse("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
+    let e = TypeChecker::new().check_module(&m).unwrap_err();
+    assert!(e.contains("CheckedAdd is integer arithmetic (i32 or i64), got F64"), "{e}");
+}

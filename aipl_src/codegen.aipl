@@ -151,7 +151,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
@@ -258,6 +258,9 @@
     (call reg m "lteu" Kw.lteu)
     (call reg m "gtu" Kw.gtu)
     (call reg m "gteu" Kw.gteu)
+    (call reg m "checked.add" Kw.checked_add)
+    (call reg m "checked.sub" Kw.checked_sub)
+    (call reg m "checked.mul" Kw.checked_mul)
     (call reg m "let" Kw.let)
     (call reg m "set!" Kw.set)
     (call reg m "if" Kw.if)
@@ -298,7 +301,12 @@
   (fn is_arith [k:Kw] -> bool
     (or (or (eq k Kw.add) (or (eq k Kw.sub) (or (eq k Kw.mul) (or (eq k Kw.div) (eq k Kw.xor)))))
         (or (or (eq k Kw.shl) (or (eq k Kw.shr) (or (eq k Kw.bitand) (eq k Kw.bitor))))
-            (or (eq k Kw.rem) (or (eq k Kw.divu) (or (eq k Kw.remu) (eq k Kw.shru)))))))
+            (or (or (eq k Kw.rem) (or (eq k Kw.divu) (or (eq k Kw.remu) (eq k Kw.shru))))
+                (call is_checked k)))))
+
+  ;; checked.add / checked.sub / checked.mul: arithmetic that traps on overflow.
+  (fn is_checked [k:Kw] -> bool
+    (or (eq k Kw.checked_add) (or (eq k Kw.checked_sub) (eq k Kw.checked_mul))))
 
   ;; Comparisons and logic, which yield bool.
   (fn is_compare [k:Kw] -> bool
@@ -328,7 +336,7 @@
   ;; results, pointers, arrays, and function refs are i32 in wasm; loop_end
   ;; and loop_step are the hidden locals holding a loop's bound and step.
   ;; The values are the ids codegen has always stored in its tables.
-  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step])
+  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step ck_a ck_b ck_r])
 
   ;; The type a type keyword names, or Ty.none.
   (fn ty_of_kw [k:Kw] -> Ty
@@ -365,6 +373,8 @@
   (fn type_id_to_valtype [t:Ty] -> i32
     (cond
       ((eq t Ty.i64) 126)
+      ;; checked arithmetic's hidden operand and result locals
+      ((or (eq t Ty.ck_a) (or (eq t Ty.ck_b) (eq t Ty.ck_r))) 126)
       ((eq t Ty.f32) 125)
       ((eq t Ty.f64) 124)
       ((eq t Ty.void) (call set_compile_error CgErr.unlowerable_type) 127)
@@ -377,7 +387,8 @@
 
   ;; Scalars that can live in a struct field or array element.
   (fn is_memory_type [t:Ty] -> bool
-    (not (or (eq t Ty.void) (or (eq t Ty.result) (or (eq t Ty.none) (or (eq t Ty.loop_end) (eq t Ty.loop_step)))))))
+    (not (or (or (eq t Ty.void) (or (eq t Ty.result) (or (eq t Ty.none) (or (eq t Ty.loop_end) (eq t Ty.loop_step)))))
+             (or (eq t Ty.ck_a) (or (eq t Ty.ck_b) (eq t Ty.ck_r))))))
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
   (fn elem_type_id [cg:(ptr Cg) node:(ptr compiler.Node)] -> Ty
     (let t:Ty (call type_node_id cg node))
@@ -505,6 +516,11 @@
                         (let err_var:(ptr compiler.Node) (call nth_child err_group 1))
                         (call add_local_if_new cg (call node_a ok_var) (call node_b ok_var) Ty.i32)
                         (call add_local_if_new cg (call node_a err_var) (call node_b err_var) Ty.i32))
+            ;; checked arithmetic: three hidden i64 locals (wasm.rs CHECKED_LOCALS)
+            ((call is_checked kw)
+             (call add_hidden_if_new cg 0 0 Ty.ck_a)
+             (call add_hidden_if_new cg 0 0 Ty.ck_b)
+             (call add_hidden_if_new cg 0 0 Ty.ck_r))
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk cg child)) (set! child (call node_next child)))
@@ -585,7 +601,17 @@
   (const OP_I32_AND:i32 113)
   (const OP_I32_OR:i32 114)
   (const OP_I32_SHL:i32 116)
+  (const OP_I32_DIV_S:i32 109)
   (const OP_I32_SHR_U:i32 118)
+  (const OP_I64_NE:i32 82)
+  (const OP_I64_LT_S:i32 83)
+  (const OP_I64_GE_U:i32 90)
+  (const OP_I64_ADD:i32 124)
+  (const OP_I64_SUB:i32 125)
+  (const OP_I64_MUL:i32 126)
+  (const OP_I64_DIV_S:i32 127)
+  (const OP_I64_AND:i32 131)
+  (const OP_I64_XOR:i32 133)
   (const OP_I64_REINTERPRET_F64:i32 189)
   (const OP_F64_REINTERPRET_I64:i32 191)
   (const OP_PREFIX_MISC:i32 252)
@@ -845,6 +871,10 @@
 
 
 
+
+  (fn emit_local_tee [o:(ptr Out) idx:i32] -> void
+    (call put_byte o OP_LOCAL_TEE)
+    (call put_u32 o idx))
 
   (fn emit_call [o:(ptr Out) idx:i32] -> void
     (call put_byte o OP_CALL)
@@ -1731,11 +1761,84 @@
 
 
 
+;; With a condition on the stack: if it holds, trap with "integer overflow"
+  ;; (i32.div_s of MIN by -1, which wasm defines to trap with that reason).
+  (fn emit_overflow_trap_if [o:(ptr Out)] -> void
+    (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+    (call emit_i32_const o -2147483648)
+    (call emit_i32_const o -1)
+    (call put_byte o OP_I32_DIV_S)
+    (call put_byte o OP_DROP)
+    (call put_byte o OP_END))
+
+  ;; checked.add/sub/mul (wasm.rs compile_checked): the operation, then a trap
+  ;; if it overflowed. i32: computed exactly in i64, trapped unless it fits.
+  ;; i64 add/sub: the sign test; i64 mul: r / a must be b when a != 0. Both
+  ;; operands are evaluated before the hidden locals are written.
+  (fn compile_checked [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out) op:Kw] -> void
+    (let a:i32 (call find_hidden cg 0 0 Ty.ck_a))
+    (let b:i32 (call find_hidden cg 0 0 Ty.ck_b))
+    (let r:i32 (call find_hidden cg 0 0 Ty.ck_r))
+    (let wide_op:i32 (cond ((eq op Kw.checked_add) OP_I64_ADD) ((eq op Kw.checked_sub) OP_I64_SUB) (else OP_I64_MUL)))
+    (if (eq (call node_type cg (call nth_child node 1)) Ty.i32)
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call put_byte o OP_I64_EXTEND_I32_S)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call put_byte o OP_I64_EXTEND_I32_S)
+          (call put_byte o wide_op)
+          (call emit_local_tee o r)
+          (call put_byte o OP_I64_CONST) (call put_s64 o 2147483648i64)
+          (call put_byte o OP_I64_ADD)
+          (call put_byte o OP_I64_CONST) (call put_s64 o 4294967296i64)
+          (call put_byte o OP_I64_GE_U)
+          (call emit_overflow_trap_if o)
+          (call emit_local_get o r)
+          (call put_byte o OP_I32_WRAP_I64)
+          (return))
+        (block))
+    (call compile_expr cg (call nth_child node 1) o)
+    (call compile_expr cg (call nth_child node 2) o)
+    (call emit_local_set o b)
+    (call emit_local_set o a)
+    (call emit_local_get o a)
+    (call emit_local_get o b)
+    (call put_byte o wide_op)
+    (call emit_local_set o r)
+    (if (eq op Kw.checked_mul)
+        (block
+          (call emit_local_get o a)
+          (call put_byte o OP_I64_CONST) (call put_s64 o 0i64)
+          (call put_byte o OP_I64_NE)
+          (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+          (call emit_local_get o r)
+          (call emit_local_get o a)
+          (call put_byte o OP_I64_DIV_S)
+          (call emit_local_get o b)
+          (call put_byte o OP_I64_NE)
+          (call emit_overflow_trap_if o)
+          (call put_byte o OP_END))
+        (block
+          ;; add: (a ^ r) & (b ^ r) < 0; sub: (a ^ b) & (a ^ r) < 0
+          (let add:bool (eq op Kw.checked_add))
+          (call emit_local_get o a)
+          (call emit_local_get o (if add r b))
+          (call put_byte o OP_I64_XOR)
+          (call emit_local_get o (if add b a))
+          (call emit_local_get o r)
+          (call put_byte o OP_I64_XOR)
+          (call put_byte o OP_I64_AND)
+          (call put_byte o OP_I64_CONST) (call put_s64 o 0i64)
+          (call put_byte o OP_I64_LT_S)
+          (call emit_overflow_trap_if o)))
+    (call emit_local_get o r))
+
   (fn compile_op [cg:(ptr Cg) op_id:Kw node:(ptr compiler.Node) o:(ptr Out)] -> void
     (let import_cnt:i32 (get cg Cg.nimports))
     (let io_a:i32 (+ (get cg Cg.nlocals) 1))
     (let io_b:i32 (+ (get cg Cg.nlocals) 2))
     (let done:bool false)
+    (if (call is_checked op_id) (block (call compile_checked cg node o op_id) (set! done true)) (block))
 
     (if (eq op_id Kw.mem_load8)
         (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o OP_I32_LOAD8_U 0) (set! done true))
