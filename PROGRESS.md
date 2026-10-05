@@ -248,6 +248,8 @@ Before the native backend, the language and runtime surface are completed so the
 9. **The type checker in AIPL**, then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
 10. **Stage-0 seed and retiring the Rust compiler code.**
 
+Decided 2026-10-05 (the user), to do after the AIPL checker: **raise the memory cap** (64 MiB today; 2 GiB is wasm32's natural ceiling for a signed-address design, up to 4 GiB unsigned) since a production language needs it; **native speed: the known fixes** (keep the stack top and memory size in registers; see docs/BENCHMARKS.md); **more standard library where it shortens real programs** (the benchmark helpers: `os.arg_int`, buffered stdout, a shared digit printer). Packaging: lean towards embedding the standard library in the compiler binary; **no version number or public release until the language is mature**.
+
 Candidates after these, not yet ordered (from Gemini's planning docs, 2026-10-05, checked against the code; the docs themselves were dropped so this file stays the only plan):
 - **Compiled contracts and array bounds checks** are step 9's second half; Gemini ranks them first too. Bounds checks reach the native backend through the wasm it translates.
 - **Arena-aware containers.** `vec`, `map`, `strmap`, and `buf` grow by allocating anew and abandoning the old block; letting them take a `(ptr arena.Arena)` would make that memory reclaimable with `arena.reset` (`std/arena` already exists).
