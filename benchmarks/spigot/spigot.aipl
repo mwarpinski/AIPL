@@ -6,6 +6,7 @@
 ;;   aipl compile --exe benchmarks/spigot/spigot.aipl -o spigot && ./spigot 1000
 ;; Prints the time the computation took on stderr (std/time).
 (module spigot
+  (import alloc)
   (import io)
   (import os)
   (import buf)
@@ -40,7 +41,7 @@
     (let a:(arr i64) (arr.new i64 len))
     (loop i 0 (- len 1) 1 (arr.set i64 a i 2i64))
     (let o:(ptr Out) (new Out))
-    (put o Out.b (call buf.make (+ (* n 2) 64)))
+    (put o Out.b (call buf.make (call alloc.default) (+ (* n 2) 64)))
     (put o Out.count 0)
     ;; a digit is held back (predigit) until the next shows it needs no carry;
     ;; runs of 9s wait too

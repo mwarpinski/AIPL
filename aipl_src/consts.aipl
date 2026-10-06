@@ -11,6 +11,7 @@
 ;; the self-hosted toolchain, this pass trusts that the program type-checks,
 ;; and reports only what would otherwise compile to something wrong.
 (module consts
+  (import alloc)
   (import compiler)
   (import str)
   (import buf)
@@ -73,7 +74,7 @@
   ;; (enum NAME [a b (c 10) ...]): a member without a value is one more than
   ;; the member before it, the first 0 (as the Rust parser computes them).
   (fn collect_enum [st:(ptr St) item:(ptr compiler.Node)] -> void
-    (let members:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 16))
+    (let members:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 16))
     (let next:i32 0)
     (let m:(ptr compiler.Node) (call first_child (call nth item 2)))
     (while (neq m (ptr.null compiler.Node))
@@ -179,8 +180,8 @@
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
     (let st:(ptr St) (new St))
     (put st St.text src)
-    (put st St.consts (call (strmap.make (ptr compiler.Node)) 16))
-    (put st St.enums (call (strmap.make (ptr (strmap.StrMap i32))) 16))
+    (put st St.consts (call (strmap.make (ptr compiler.Node)) (call alloc.default) 16))
+    (put st St.enums (call (strmap.make (ptr (strmap.StrMap i32))) (call alloc.default) 16))
     (put st St.err err)
     (put st St.failed false)
     (let item:(ptr compiler.Node) (call nth root 2))
@@ -210,8 +211,8 @@
     (not (get st St.failed)))
 
   (fn expands_to [src:str want:str] -> bool
-    (let out:(ptr buf.Buf) (call buf.make 256))
-    (let err:(ptr buf.Buf) (call buf.make 64))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+    (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (and (call expand (call str.from_str src) out err)
          (call str.bytes_eq (call buf.bytes out) (call str.from_str want))))
 
@@ -233,8 +234,8 @@
                          "(module m\n  (fn f [x:i32] -> i32 (match x (1 1) (else (match (make U.v) (U.v 2)))))\n)")
         (set! p (+ p 1)) (block))
     ;; a member that does not exist is an error
-    (let out:(ptr buf.Buf) (call buf.make 64))
-    (let err:(ptr buf.Buf) (call buf.make 64))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (if (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err))
              (call str.bytes_eq (call buf.bytes err) (call str.from_str "no such enum member: C.z")))
         (set! p (+ p 1)) (block))

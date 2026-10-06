@@ -57,6 +57,7 @@
 ;;     something branches to (or falls into) ends; nothing is emitted there.
 ;; Instructions a task has not reached yet are an error naming them.
 (module lower
+  (import alloc)
   (import str)
   (import buf)
   (import vec)
@@ -100,19 +101,19 @@
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
     (let l:(ptr L) (new L))
-    (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) 16))
+    (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) (call alloc.default) 16))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
       (if (eq (get imp wasm_reader.Import.kind) 0)
           (call (vec.push (ptr wasm_reader.Import)) (get l L.fimports) imp)
           (block)))
-    (put l L.code (call buf.make 4096))
-    (put l L.data (call buf.make 256))
+    (put l L.code (call buf.make (call alloc.default) 4096))
+    (put l L.data (call buf.make (call alloc.default) 256))
     (put l L.trap_routine -1)
     (put l L.div_zero (call reason l "wasm trap: integer divide by zero"))
     (put l L.overflow (call reason l "wasm trap: integer overflow"))
     (put l L.unreachable (call reason l "wasm trap: wasm `unreachable` instruction executed"))
-    (put l L.labels (call (vec.make (ptr Label)) 16))
+    (put l L.labels (call (vec.make (ptr Label)) (call alloc.default) 16))
     (put l L.out_of_bounds (call reason l "wasm trap: out of bounds memory access"))
     (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
     (put l L.wait_unshared (call reason l "wasm trap: atomic wait on non-shared memory"))
@@ -124,13 +125,13 @@
     (put l L.table_size 0)
     (put l L.canon_types (call canonical_types w))
     (put l L.shared false)
-    (put l L.seg_addrs (call (vec.make i32) 4))
-    (put l L.seg_lens (call (vec.make i32) 4))
+    (put l L.seg_addrs (call (vec.make i32) (call alloc.default) 4))
+    (put l L.seg_lens (call (vec.make i32) (call alloc.default) 4))
     (put l L.mem_cell -1)
     (put l L.mem_max 0)
-    (put l L.fixups (call (vec.make (ptr Fixup)) 64))
+    (put l L.fixups (call (vec.make (ptr Fixup)) (call alloc.default) 64))
     (put l L.failed false)
-    (put l L.msg (call buf.make 64))
+    (put l L.msg (call buf.make (call alloc.default) 64))
     l)
 
   ;; Appends `text` to the data; returns its address once loaded.
@@ -233,7 +234,7 @@
   (fn canonical_types [w:(ptr wasm_reader.Wasm)] -> (ptr (vec.Vec i32))
     (let types:(ptr (vec.Vec (ptr wasm_reader.FuncType))) (get w wasm_reader.Wasm.types))
     (let n:i32 (call (vec.len (ptr wasm_reader.FuncType)) types))
-    (let out:(ptr (vec.Vec i32)) (call (vec.make i32) (+ n 1)))
+    (let out:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ n 1)))
     (loop i 0 (- n 1) 1
       (let first:i32 i)
       (loop j 0 (- i 1) 1
@@ -292,7 +293,7 @@
     (put l L.reg_of (arr.new i32 (+ n 1)))
     (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1))
     ;; per open block: 1 for a loop; the loop depth is their sum
-    (let kinds:(ptr (vec.Vec i32)) (call (vec.make i32) 16))
+    (let kinds:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 16))
     (let loops:i32 0)
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
     (let calls_import:bool false)
@@ -518,7 +519,7 @@
     (put lab Label.arity arity)
     (put lab Label.height (get l L.depth))
     (put lab Label.start (call buf.len (get l L.code)))
-    (put lab Label.fixups (call (vec.make i32) 4))
+    (put lab Label.fixups (call (vec.make i32) (call alloc.default) 4))
     (put lab Label.else_at -1)
     (put lab Label.entry_dead (get l L.dead))
     (put lab Label.reached false)

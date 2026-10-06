@@ -220,8 +220,10 @@ pub enum Expr {
         val: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(sizeof S)` for a struct, or `(sizeof T)` for any type that can be
+    /// stored in memory (`Type::Struct` for a struct name).
     Sizeof {
-        struct_name: String,
+        ty: Type,
         span: (u32, u32),
     },
     ArrNew {

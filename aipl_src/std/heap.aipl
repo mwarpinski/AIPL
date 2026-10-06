@@ -1,0 +1,238 @@
+;; std/heap: a general-purpose allocator with per-object free, in the spirit
+;; of Zig's: nothing allocates from a heap unless it is handed one, and a
+;; free names what it frees (its type, or its size), so a wrong free is
+;; caught instead of corrupting memory.
+;;
+;;   (let h:(ptr heap.Heap) (call heap.make))
+;;   (let p:(ptr Point) (call (heap.create Point) h))     ;; zeroed, like (new Point)
+;;   (call (heap.destroy Point) h p)
+;;   (let xs:(arr i64) (call (heap.array i64) h 100))     ;; zeroed, like (arr.new i64 100)
+;;   (call (heap.free_array i64) h xs)
+;;   (call heap.live h)                                  ;; blocks not yet freed: 0
+;;
+;; Checked on every free, as contract failures that stop the program:
+;; freeing twice, freeing what this heap did not allocate, and freeing
+;; with a different size (or type) than was allocated. Freed memory is
+;; filled with a junk pattern, and checked when the block is handed out
+;; again: a write after free is reported then. Reading freed memory is not
+;; detected, but reads the pattern (-559038737 as an i32), not old data.
+;;
+;; How: a request is rounded up to a size class (8, 16, 24, then four per
+;; doubling: 32 40 48 56 64 80 96 112 128 ..., so at most a quarter is
+;; spare). A freed block goes on its class's free list and is reused for
+;; the next request of that class. New blocks are cut from chunks of at
+;; least 64 KiB taken with mem.alloc, which never gives memory back to the
+;; system: a heap's memory is reused, not returned. Each block has an
+;; 8-byte header: which heap and state (live or freed) in one word, the
+;; size asked for in the other. Allocating and freeing take the heap's
+;; lock, so threads can share a heap.
+(module heap
+
+  ;; Header word 0 is the heap's address xor one of these.
+  (const LIVE:i32 1279874629)     ;; "LIVE"
+  (const FREED:i32 1179796805)    ;; "FREE"
+  ;; What freed memory holds (0xDEADBEEF in each half).
+  (const POISON:i64 -2401053088876216593i64)
+  (const NCLASSES:i32 107)
+  (const CHUNK:i32 65536)
+
+  ;; lock: held while the heap changes (first, so its address is the
+  ;; heap's); heads: each size class's first free block (0 for none); new
+  ;; blocks come from [cur, end).
+  (struct Heap [lock:i32 heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32])
+
+  (fn make [] -> (ptr Heap)
+    (let h:(ptr Heap) (new Heap))
+    (put h Heap.lock 0)
+    (put h Heap.heads (arr.new i32 NCLASSES))
+    (loop c 0 (- NCLASSES 1) 1 (arr.set i32 (get h Heap.heads) c 0))
+    (put h Heap.cur 0)
+    (put h Heap.end 0)
+    (put h Heap.nlive 0)
+    (put h Heap.live_bytes 0)
+    (put h Heap.reserved 0)
+    h)
+
+  ;; ===== Size classes =====
+
+  ;; Bytes in blocks of class c.
+  (fn class_size [c:i32] -> i32
+    (if (lt c 3)
+        (* 8 (+ c 1))
+        (block
+          (let k:i32 (+ 5 (/ (- c 3) 4)))
+          (+ (shl 1 k) (* (% (- c 3) 4) (shl 1 (- k 2)))))))
+
+  ;; The smallest class that holds n bytes.
+  (fn class_of [n:i32] -> i32
+    (req (gt n 0))
+    (let s:i32 (bitand (+ n 7) -8))
+    (if (lte s 24) (return (- (/ s 8) 1)) (block))
+    ;; k: the highest bit of s, so 2^k <= s < 2^(k+1); then the quarter step
+    (let k:i32 5)
+    (while (gte s (shl 1 (+ k 1))) (set! k (+ k 1)))
+    (let base:i32 (shl 1 k))
+    (let step:i32 (shl 1 (- k 2)))
+    (let j:i32 (/ (+ (- s base) (- step 1)) step))
+    (if (eq j 4) (block (set! k (+ k 1)) (set! j 0)) (block))
+    (+ 3 (+ (* 4 (- k 5)) j)))
+
+  ;; ===== Allocating and freeing =====
+
+  ;; n zeroed bytes, 8-aligned.
+  (fn raw [h:(ptr Heap) n:i32] -> i32
+    (req (gt n 0))
+    (req (lte n 1879048184))
+    (atomic.lock (ptr.addr h))
+    (let c:i32 (call class_of n))
+    (let size:i32 (call class_size c))
+    (let p:i32 (arr.get i32 (get h Heap.heads) c))
+    (if (neq p 0)
+        (block
+          (call reuse h p)
+          (arr.set i32 (get h Heap.heads) c (mem.load32 p)))
+        (set! p (call carve h size)))
+    (mem.store32 (- p 8) (^ (ptr.addr h) LIVE))
+    (mem.store32 (- p 4) n)
+    (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
+    (put h Heap.nlive (+ (get h Heap.nlive) 1))
+    (put h Heap.live_bytes (+ (get h Heap.live_bytes) n))
+    (atomic.unlock (ptr.addr h))
+    p)
+
+  ;; A new block of `size` bytes (after its header) from the current chunk,
+  ;; or from a new one.
+  (fn carve [h:(ptr Heap) size:i32] -> i32
+    (let need:i32 (+ size 8))
+    (if (gt need (- (get h Heap.end) (get h Heap.cur)))
+        (block
+          (let chunk:i32 (if (gt need CHUNK) need CHUNK))
+          (put h Heap.cur (mem.alloc chunk))
+          (put h Heap.end (+ (get h Heap.cur) chunk))
+          (put h Heap.reserved (+ (get h Heap.reserved) chunk)))
+        (block))
+    (let p:i32 (+ (get h Heap.cur) 8))
+    (put h Heap.cur (+ (get h Heap.cur) need))
+    p)
+
+  ;; A freed block handed out again: it must still hold the junk pattern.
+  (fn reuse [h:(ptr Heap) p:i32] -> void
+    (req (not (call written_after_free p))))
+
+  ;; Whether freed block p (its first 8 bytes are the free list link) has
+  ;; been written since it was freed.
+  (fn written_after_free [p:i32] -> bool
+    (let end:i32 (+ p (bitand (+ (mem.load32 (- p 4)) 7) -8)))
+    (let q:i32 (+ p 8))
+    (while (lt q end)
+      (if (neq (mem.load64 q) POISON) (return true) (block))
+      (set! q (+ q 8)))
+    false)
+
+  ;; Frees the n bytes at p, which raw returned for n bytes.
+  (fn free_raw [h:(ptr Heap) p:i32 n:i32] -> void
+    (req (call not_freed_already h p))
+    (req (call allocated_by h p))
+    (req (call size_matches p n))
+    (atomic.lock (ptr.addr h))
+    (mem.store32 (- p 8) (^ (ptr.addr h) FREED))
+    (let end:i32 (+ p (bitand (+ n 7) -8)))
+    (let q:i32 (+ p 8))
+    (while (lt q end)
+      (mem.store64 q POISON)
+      (set! q (+ q 8)))
+    (let c:i32 (call class_of n))
+    (mem.store32 p (arr.get i32 (get h Heap.heads) c))
+    (mem.store32 (+ p 4) 0)
+    (arr.set i32 (get h Heap.heads) c p)
+    (put h Heap.nlive (- (get h Heap.nlive) 1))
+    (put h Heap.live_bytes (- (get h Heap.live_bytes) n))
+    (atomic.unlock (ptr.addr h)))
+
+  ;; The checks of free_raw, named for the failure they catch.
+  (fn not_freed_already [h:(ptr Heap) p:i32] -> bool
+    (if (or (lt p 1032) (neq (bitand p 7) 0)) (return true) (block))
+    (neq (mem.load32 (- p 8)) (^ (ptr.addr h) FREED)))
+  (fn allocated_by [h:(ptr Heap) p:i32] -> bool
+    (if (or (lt p 1032) (neq (bitand p 7) 0)) (return false) (block))
+    (eq (mem.load32 (- p 8)) (^ (ptr.addr h) LIVE)))
+  (fn size_matches [p:i32 n:i32] -> bool
+    (eq (mem.load32 (- p 4)) n))
+
+  ;; ===== Typed =====
+
+  ;; A zeroed T.
+  (fn (create T) [h:(ptr Heap)] -> (ptr T)
+    (ptr.cast T (call raw h (sizeof T))))
+
+  (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void
+    (call free_raw h (ptr.addr p) (sizeof T)))
+
+  ;; n zeroed Ts, laid out like (arr.new T n): the length in the 4 bytes
+  ;; before the first element.
+  (fn (array T) [h:(ptr Heap) n:i32] -> (arr T)
+    (req (gte n 0))
+    (let base:i32 (call raw h (checked.add 4 (checked.mul n (sizeof T)))))
+    (mem.store32 base n)
+    (arr.cast T (+ base 4)))
+
+  (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void
+    (call free_raw h (- (arr.addr a) 4) (+ 4 (* (arr.len a) (sizeof T)))))
+
+  ;; ===== Accounting =====
+
+  ;; Blocks allocated and not yet freed (a test can require 0: no leaks).
+  (fn live [h:(ptr Heap)] -> i32 (get h Heap.nlive))
+  ;; Bytes asked for in those blocks.
+  (fn live_bytes [h:(ptr Heap)] -> i32 (get h Heap.live_bytes))
+  ;; Bytes the heap holds from mem.alloc.
+  (fn reserved [h:(ptr Heap)] -> i32 (get h Heap.reserved))
+
+  (struct Pair [left:i32 right:i64])
+
+  ;; Pass count; test_suite.aipl expects 8.
+  (fn run_heap_tests [] -> i32
+    (let p:i32 0)
+    ;; size classes: every size fits its class, and the class below is too small
+    (let classes_ok:bool true)
+    (loop n 1 5000 1
+      (let c:i32 (call class_of n))
+      (if (or (lt (call class_size c) n) (and (gt c 0) (gte (call class_size (- c 1)) (bitand (+ n 7) -8))))
+          (set! classes_ok false)
+          (block)))
+    (if (and classes_ok (eq (call class_size (call class_of 1000000)) 1048576)) (set! p (+ p 1)) (block))
+    (let h:(ptr Heap) (call make))
+    ;; typed, zeroed, distinct, 8-aligned
+    (let x:(ptr Pair) (call (create Pair) h))
+    (let y:(ptr Pair) (call (create Pair) h))
+    (put x Pair.right 7i64)
+    (if (and (eq (get y Pair.right) 0i64) (and (neq (ptr.addr x) (ptr.addr y)) (eq (bitand (ptr.addr y) 7) 0)))
+        (set! p (+ p 1))
+        (block))
+    ;; a freed block is reused for the next request of its class, zeroed again
+    (call (destroy Pair) h x)
+    (let z:(ptr Pair) (call (create Pair) h))
+    (if (and (eq (ptr.addr z) (ptr.addr x)) (eq (get z Pair.right) 0i64)) (set! p (+ p 1)) (block))
+    ;; arrays: length, zeroed, usable like arr.new's
+    (let a:(arr i64) (call (array i64) h 100))
+    (arr.set i64 a 99 5i64)
+    (if (and (eq (arr.len a) 100) (and (eq (arr.get i64 a 0) 0i64) (eq (arr.get i64 a 99) 5i64))) (set! p (+ p 1)) (block))
+    ;; accounting: three live blocks, then none
+    (if (eq (call live h) 3) (set! p (+ p 1)) (block))
+    (call (free_array i64) h a)
+    (call (destroy Pair) h y)
+    (call (destroy Pair) h z)
+    (if (and (eq (call live h) 0) (eq (call live_bytes h) 0)) (set! p (+ p 1)) (block))
+    ;; freed memory reads as the junk pattern, not the old values
+    (let e:(arr i32) (call (array i32) h 4))
+    (arr.set i32 e 3 42)
+    (call (free_array i32) h e)
+    (if (eq (mem.load32 (+ (arr.addr e) 12)) -559038737) (set! p (+ p 1)) (block))
+    ;; churn: memory is reused, so a thousand allocations of 1 KiB, each freed,
+    ;; take no more than the first chunk
+    (let before:i32 (call reserved h))
+    (loop i 1 1000 1
+      (let b:i32 (call raw h 1024))
+      (call free_raw h b 1024))
+    (if (eq (call reserved h) before) (set! p (+ p 1)) (block))
+    p))

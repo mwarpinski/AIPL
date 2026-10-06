@@ -12,27 +12,28 @@
 ;; fails while memory remains. A pointer from an arena must not be used after
 ;; reset (the memory will be handed out again).
 (module arena
-  (import vec)
 
-  (struct Chunk [base:i32 cap:i32])
-  (struct Arena [chunks:(ptr (vec.Vec (ptr Chunk))) current:i32 used:i32 chunk_size:i32])
+  ;; The chunks form a list in the order they were taken; `current` is the
+  ;; one being filled, `used` bytes into it.
+  (struct Chunk [base:i32 cap:i32 next:(ptr Chunk)])
+  (struct Arena [first:(ptr Chunk) current:(ptr Chunk) used:i32 chunk_size:i32])
 
   ;; An arena that takes memory in chunks of at least chunk_size bytes.
   (fn make [chunk_size:i32] -> (ptr Arena)
     (req (gt chunk_size 0))
     (let a:(ptr Arena) (new Arena))
-    (put a Arena.chunks (call (vec.make (ptr Chunk)) 4))
-    (put a Arena.current 0)
-    (put a Arena.used 0)
     (put a Arena.chunk_size (bitand (+ chunk_size 7) -8))
-    (call add_chunk a (get a Arena.chunk_size))
+    (put a Arena.first (call new_chunk (get a Arena.chunk_size)))
+    (put a Arena.current (get a Arena.first))
+    (put a Arena.used 0)
     a)
 
-  (fn add_chunk [a:(ptr Arena) size:i32] -> void
+  (fn new_chunk [size:i32] -> (ptr Chunk)
     (let c:(ptr Chunk) (new Chunk))
     (put c Chunk.base (mem.alloc size))
     (put c Chunk.cap size)
-    (call (vec.push (ptr Chunk)) (get a Arena.chunks) c))
+    (put c Chunk.next (ptr.null Chunk))
+    c)
 
   ;; n zeroed bytes, 8-aligned.
   (fn raw [a:(ptr Arena) n:i32] -> i32
@@ -40,17 +41,17 @@
     (let size:i32 (bitand (+ n 7) -8))
     (let found:i32 -1)
     (while (eq found -1)
-      (let chunks:(ptr (vec.Vec (ptr Chunk))) (get a Arena.chunks))
-      (if (eq (get a Arena.current) (call (vec.len (ptr Chunk)) chunks))
-          (call add_chunk a (if (gt size (get a Arena.chunk_size)) size (get a Arena.chunk_size)))
-          (block))
-      (let c:(ptr Chunk) (call (vec.at (ptr Chunk)) chunks (get a Arena.current)))
+      (let c:(ptr Chunk) (get a Arena.current))
       (if (lte (+ (get a Arena.used) size) (get c Chunk.cap))
           (block
             (set! found (+ (get c Chunk.base) (get a Arena.used)))
             (put a Arena.used (+ (get a Arena.used) size)))
           (block
-            (put a Arena.current (+ (get a Arena.current) 1))
+            ;; on to the next chunk, taking a new one at the end of the list
+            (if (eq (get c Chunk.next) (ptr.null Chunk))
+                (put c Chunk.next (call new_chunk (if (gt size (get a Arena.chunk_size)) size (get a Arena.chunk_size))))
+                (block))
+            (put a Arena.current (get c Chunk.next))
             (put a Arena.used 0))))
     (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ found (* 8 i)) 0i64))
     found)
@@ -61,15 +62,16 @@
 
   ;; Frees everything allocated from the arena (its chunks are reused).
   (fn reset [a:(ptr Arena)] -> void
-    (put a Arena.current 0)
+    (put a Arena.current (get a Arena.first))
     (put a Arena.used 0))
 
   ;; Bytes the arena holds from the heap (all chunks).
   (fn reserved [a:(ptr Arena)] -> i32
     (let total:i32 0)
-    (let chunks:(ptr (vec.Vec (ptr Chunk))) (get a Arena.chunks))
-    (loop i 0 (- (call (vec.len (ptr Chunk)) chunks) 1) 1
-      (set! total (+ total (get (call (vec.at (ptr Chunk)) chunks i) Chunk.cap))))
+    (let c:(ptr Chunk) (get a Arena.first))
+    (while (neq c (ptr.null Chunk))
+      (set! total (+ total (get c Chunk.cap)))
+      (set! c (get c Chunk.next)))
     total)
 
   (struct Pair [left:i32 right:i64])

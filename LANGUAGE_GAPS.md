@@ -30,7 +30,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04 (after the
 
 ## 3. Memory
 
-- **Nothing is freed.** There is no `mem.free` (it was a no-op until 2026-10-05, now removed). The allocator is bump-only, so long-running programs leak. `std/arena` frees many values at once (allocate from a region, `reset` it), which suits phases and trees (binary-trees uses it); a general-purpose allocator with per-object free is still missing.
+- **Nothing is freed.** There is no `mem.free` (it was a no-op until 2026-10-05, now removed). The allocator is bump-only, so long-running programs leak. `std/arena` frees many values at once (allocate from a region, `reset` it), which suits phases and trees (binary-trees uses it); `std/heap` (2026-10-06) frees single objects, with checks for double frees, wrong sizes, and writes after free. Containers take an allocator (`std/alloc`) and free their old storage; `new`, `arr.new`, and `mem.alloc` are still never freed. Freeing object by object costs about 4x C's malloc/free on binarytrees (docs/HEAP_PLAN.md H5).
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.

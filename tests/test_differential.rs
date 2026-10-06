@@ -658,6 +658,10 @@ fn p8_structs_and_arrays() {
   (fn test_sizeof [] -> i32
     (+ (sizeof Point) (+ (sizeof Mixed) (sizeof Floats))))
 
+  ;; any memory type: 8 + 4 + 4 + 8 + 4 + 4 + 4 = 36
+  (fn test_sizeof_types [] -> i32
+    (+ (sizeof i64) (+ (sizeof i32) (+ (sizeof (ptr Point)) (+ (sizeof f64) (+ (sizeof (arr i64)) (+ (sizeof bool) (sizeof str))))))))
+
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32
     (let m:(ptr Mixed) (new Mixed))
@@ -760,6 +764,7 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_point_ops", &[15, 27]), Ok(Value::Int(42)));
     // Point 8; Mixed 24 (bool 4 + pad 4 + i64 8 + i32 4 + pad 4); Floats 16 (f32 4 + pad 4 + f64 8)
     assert_eq!(differential(&module, &wasm, "test_sizeof", &[]), Ok(Value::Int(48)));
+    assert_eq!(differential(&module, &wasm, "test_sizeof_types", &[]), Ok(Value::Int(36)));
     // high word of n << 32 is n; tag read via get and via raw offset 16
     assert_eq!(differential(&module, &wasm, "test_mixed", &[3]), Ok(Value::Int(3 + 7 + 7)));
     assert_eq!(differential(&module, &wasm, "test_floats", &[]), Ok(Value::Int(1)));

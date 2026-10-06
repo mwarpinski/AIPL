@@ -1,15 +1,16 @@
 ;; std/strmap: hash map from byte strings to values of any type (symbol
 ;; tables, word counts). Generic in the value type (AIPL_SPEC.md 4.H):
-;;   (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 0))
+;;   (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 0))
 ;;   (call (strmap.set i32) m key 1)
 ;;   (call (strmap.get_or i32) m key 0)
 ;; Keys are (ptr str.Bytes); the map keeps the pointer, so a key's bytes must
 ;; not change while it is in the map. Same design as std/map.
 (module strmap
+  (import alloc)
   (import str)
 
   ;; state per slot: 0 empty, 1 used, 2 deleted
-  (struct (StrMap V) [keys:(arr (ptr str.Bytes)) vals:(arr V) states:(arr i32) count:i32 used:i32])
+  (struct (StrMap V) [keys:(arr (ptr str.Bytes)) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator])
 
   ;; FNV-1a over the bytes
   (fn hash [b:(ptr str.Bytes)] -> i32
@@ -19,18 +20,30 @@
     h)
 
   (fn (alloc_slots V) [m:(ptr (StrMap V)) cap:i32] -> void
-    (put m (StrMap V) keys (arr.new (ptr str.Bytes) cap))
-    (put m (StrMap V) vals (arr.new V cap))
-    (put m (StrMap V) states (arr.new i32 cap))
+    (let a:alloc.Allocator (get m (StrMap V) allocator))
+    (put m (StrMap V) keys (call (alloc.array (ptr str.Bytes)) a cap))
+    (put m (StrMap V) vals (call (alloc.array V) a cap))
+    (put m (StrMap V) states (call (alloc.array i32) a cap))
     (put m (StrMap V) count 0)
     (put m (StrMap V) used 0))
 
-  (fn (make V) [capacity:i32] -> (ptr (StrMap V))
+  (fn (make V) [a:alloc.Allocator capacity:i32] -> (ptr (StrMap V))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
-    (let m:(ptr (StrMap V)) (new (StrMap V)))
+    (let m:(ptr (StrMap V)) (call (alloc.create (StrMap V)) a))
+    (put m (StrMap V) allocator a)
     (call (alloc_slots V) m cap)
     m)
+
+  ;; Frees the table and the map itself; neither may be used afterwards.
+  (fn (free V) [m:(ptr (StrMap V))] -> void
+    (call (free_slots V) (get m (StrMap V) allocator) (get m (StrMap V) keys) (get m (StrMap V) vals) (get m (StrMap V) states))
+    (call (alloc.destroy (StrMap V)) (get m (StrMap V) allocator) m))
+
+  (fn (free_slots V) [a:alloc.Allocator keys:(arr (ptr str.Bytes)) vals:(arr V) states:(arr i32)] -> void
+    (call (alloc.free_array (ptr str.Bytes)) a keys)
+    (call (alloc.free_array V) a vals)
+    (call (alloc.free_array i32) a states))
 
   (fn (capacity V) [m:(ptr (StrMap V))] -> i32 (arr.len (get m (StrMap V) keys)))
   (fn (count V) [m:(ptr (StrMap V))] -> i32 (get m (StrMap V) count))
@@ -58,7 +71,8 @@
     (loop i 0 (- old_cap 1) 1
       (if (eq (arr.get i32 old_states i) 1)
           (call (set V) m (arr.get (ptr str.Bytes) old_keys i) (arr.get V old_vals i))
-          (block))))
+          (block)))
+    (call (free_slots V) (get m (StrMap V) allocator) old_keys old_vals old_states))
 
   ;; Adds k -> v, or replaces k's value.
   (fn (set V) [m:(ptr (StrMap V)) k:(ptr str.Bytes) v:V] -> void
@@ -99,7 +113,7 @@
     (let p:i32 0)
     ;; word frequencies of a small text, splitting on spaces by hand
     (let text:(ptr str.Bytes) (call str.from_str "the cat and the hat and the bat"))
-    (let m:(ptr (StrMap i32)) (call (make i32) 0))
+    (let m:(ptr (StrMap i32)) (call (make i32) (call alloc.default) 0))
     (let start:i32 0)
     (loop i 0 (get text str.Bytes.len) 1
       (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (get text str.Bytes.addr) i)) 32))
@@ -118,7 +132,7 @@
         (set! p (+ p 1))
         (block))
     ;; 300 distinct generated keys survive resizing
-    (let big:(ptr (StrMap i32)) (call (make i32) 0))
+    (let big:(ptr (StrMap i32)) (call (make i32) (call alloc.default) 0))
     (loop i 0 299 1
       (let k:i32 (mem.alloc 2))
       (mem.store8 k (+ 65 (/ i 26)))
@@ -132,7 +146,7 @@
       (if (neq (call (get_or i32) big (call str.bytes k 2) -1) i) (set! ok false) (block)))
     (if ok (set! p (+ p 1)) (block))
     ;; non-i32 values: a map to byte strings
-    (let names:(ptr (StrMap (ptr str.Bytes))) (call (make (ptr str.Bytes)) 0))
+    (let names:(ptr (StrMap (ptr str.Bytes))) (call (make (ptr str.Bytes)) (call alloc.default) 0))
     (call (set (ptr str.Bytes)) names (call str.from_str "k") (call str.from_str "value"))
     (if (eq (get (call (get_or (ptr str.Bytes)) names (call str.from_str "k") (call str.bytes 0 -1)) str.Bytes.len) 5)
         (set! p (+ p 1))

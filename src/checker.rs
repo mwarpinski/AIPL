@@ -966,9 +966,23 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
-            Expr::Sizeof { struct_name, span } => {
-                if !self.struct_defs.contains_key(struct_name) {
-                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+            Expr::Sizeof { ty, span } => {
+                match ty {
+                    // a bare name: a struct, or an enum (an i32)
+                    Type::Struct(name) => {
+                        if !self.struct_defs.contains_key(name) && !self.enum_defs.contains_key(name) {
+                            return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, name));
+                        }
+                    }
+                    _ => {
+                        self.validate_type(ty, *span)?;
+                        if type_size_and_align(ty).is_err() {
+                            return Err(format!(
+                                "{}:{}: sizeof needs a struct or a type that can be stored in memory, got {:?}",
+                                span.0, span.1, ty
+                            ));
+                        }
+                    }
                 }
                 Ok(Type::I32)
             }

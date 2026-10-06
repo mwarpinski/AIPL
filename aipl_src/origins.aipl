@@ -7,6 +7,7 @@
 ;; or before it, so an error in the flat program is reported in the user's
 ;; file (driver.aipl).
 (module origins
+  (import alloc)
   (import str)
   (import buf)
   (import vec)
@@ -22,8 +23,8 @@
 
   (fn make [] -> (ptr Origins)
     (let o:(ptr Origins) (new Origins))
-    (put o Origins.entries (call (vec.make (ptr Entry)) 1024))
-    (put o Origins.files (call (vec.make (ptr File)) 8))
+    (put o Origins.entries (call (vec.make (ptr Entry)) (call alloc.default) 1024))
+    (put o Origins.files (call (vec.make (ptr File)) (call alloc.default) 8))
     o)
 
   ;; Registers a file; its index.
@@ -48,7 +49,7 @@
   ;; rewrites each entry's offset as a final one, in final order.
   (fn join [o:(ptr Origins) parts:(arr (ptr buf.Buf)) bases:(arr i32)] -> void
     (let es:(ptr (vec.Vec (ptr Entry))) (get o Origins.entries))
-    (let out:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (+ (call (vec.len (ptr Entry)) es) 1)))
+    (let out:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (+ (call (vec.len (ptr Entry)) es) 1)))
     (loop k 0 (- (arr.len parts) 1) 1
       (let id:i32 (ptr.addr (arr.get (ptr buf.Buf) parts k)))
       (loop i 0 (- (call (vec.len (ptr Entry)) es) 1) 1

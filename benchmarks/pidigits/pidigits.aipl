@@ -5,6 +5,7 @@
 ;;   aipl compile --exe benchmarks/pidigits/pidigits.aipl -o pidigits && ./pidigits 1000
 ;; Prints the time the computation took on stderr (std/time).
 (module pidigits
+  (import alloc)
   (import os)
   (import buf)
   (import time)
@@ -63,7 +64,7 @@
     (put s State.denom (call bigint.from_i32 1))
     (put s State.t (call bigint.from_i32 0))
     (let o:(ptr Out) (new Out))
-    (put o Out.b (call buf.make (+ (* n 2) 64)))
+    (put o Out.b (call buf.make (call alloc.default) (+ (* n 2) 64)))
     (put o Out.count 0)
     (let k:i32 0)
     (while (lt (get o Out.count) n)

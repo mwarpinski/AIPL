@@ -1,19 +1,28 @@
 ;; std/buf: a growable byte buffer for building text (a string builder).
 ;; (call buf.bytes b) views the contents as a (ptr str.Bytes) without copying;
-;; later pushes may move the data, so take the view after building.
+;; later pushes may move the data (and free the old storage), so take the
+;; view after building. Its memory comes from the allocator it is made with
+;; (std/alloc); free releases it.
 (module buf
   (import str)
   (import fmt)
+  (import alloc)
 
-  (struct Buf [data:i32 len:i32 cap:i32])
+  (struct Buf [data:i32 len:i32 cap:i32 allocator:alloc.Allocator])
 
-  (fn make [capacity:i32] -> (ptr Buf)
+  (fn make [a:alloc.Allocator capacity:i32] -> (ptr Buf)
     (let cap:i32 (if (lt capacity 16) 16 capacity))
-    (let b:(ptr Buf) (new Buf))
-    (put b Buf.data (mem.alloc cap))
+    (let b:(ptr Buf) (call (alloc.create Buf) a))
+    (put b Buf.data (call alloc.raw a cap))
     (put b Buf.len 0)
     (put b Buf.cap cap)
+    (put b Buf.allocator a)
     b)
+
+  ;; Frees the storage and the buffer itself (and so any view of them).
+  (fn free [b:(ptr Buf)] -> void
+    (call alloc.free_raw (get b Buf.allocator) (get b Buf.data) (get b Buf.cap))
+    (call (alloc.destroy Buf) (get b Buf.allocator) b))
 
   (fn len [b:(ptr Buf)] -> i32 (get b Buf.len))
   (fn clear [b:(ptr Buf)] -> void (put b Buf.len 0))
@@ -24,9 +33,10 @@
     (if (lte need (get b Buf.cap)) (return) (block))
     (let cap:i32 (* 2 (get b Buf.cap)))
     (while (lt cap need) (set! cap (* cap 2)))
-    (let data:i32 (mem.alloc cap))
+    (let data:i32 (call alloc.raw (get b Buf.allocator) cap))
     (loop i 0 (- (get b Buf.len) 1) 1
       (mem.store8 (+ data i) (mem.load8 (+ (get b Buf.data) i))))
+    (call alloc.free_raw (get b Buf.allocator) (get b Buf.data) (get b Buf.cap))
     (put b Buf.data data)
     (put b Buf.cap cap))
 
@@ -79,7 +89,7 @@
   ;; Pass count; test_suite.aipl expects 3.
   (fn run_buf_tests [] -> i32
     (let p:i32 0)
-    (let b:(ptr Buf) (call make 0))
+    (let b:(ptr Buf) (call make (call alloc.default) 0))
     (call push_str b "x=")
     (call push_int b -42)
     (call push_byte b 33)
@@ -92,7 +102,7 @@
       (if (neq (call str.byte_at (call bytes b) i) (+ 97 (% i 26))) (set! ok false) (block)))
     (if ok (set! p (+ p 1)) (block))
     ;; numbers round-trip through text
-    (let c:(ptr Buf) (call make 0))
+    (let c:(ptr Buf) (call make (call alloc.default) 0))
     (call push_int c -2147483648)
     (match_result (call str.parse_int (call bytes c))
       (ok n (if (eq n -2147483648) (set! p (+ p 1)) (block)))

@@ -5,6 +5,7 @@
 ;;
 ;;   ./fannkuch 7   ->   228 / Pfannkuchen(7) = 16
 (module fannkuch
+  (import alloc)
   (import io)
   (import os)
   (import buf)
@@ -55,7 +56,7 @@
               (arr.set i32 count r (- (arr.get i32 count r) 1))
               (if (gt (arr.get i32 count r) 0) (set! next true) (set! r (+ r 1))))))
       (set! perm_count (+ perm_count 1)))
-    (let b:(ptr buf.Buf) (call buf.make 64))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call buf.push_int b checksum)
     (call buf.push_str b "\nPfannkuchen(")
     (call buf.push_int b n)
