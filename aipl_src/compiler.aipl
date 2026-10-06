@@ -17,7 +17,8 @@
   ;; pos is the source offset the token starts at (a string's opening quote).
   (struct Token [kind:Kind a:i32 b:i32 pos:i32])
   ;; An atom's a and b are its token's (a value, or a span of the source); a
-  ;; group's b is its child count and first its first child. next links
+  ;; group's a is where its closing bracket starts (-1 if the input ends
+  ;; first), b its child count, and first its first child. next links
   ;; siblings; pos is where the atom or the group's opening bracket starts.
   (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node) first:(ptr Node) pos:i32])
 
@@ -326,8 +327,11 @@
       (set! last child)
       (set! n (+ n 1)))
     ;; the closing bracket (absent at the end of an unbalanced input)
-    (if (lt (get p Parser.pos) (get p Parser.count)) (put p Parser.pos (+ (get p Parser.pos) 1)) (block))
-    (let group:(ptr Node) (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) 0 n (get t Token.pos)))
+    (let close_at:i32 -1)
+    (if (lt (get p Parser.pos) (get p Parser.count))
+        (block (set! close_at (get (call current p) Token.pos)) (put p Parser.pos (+ (get p Parser.pos) 1)))
+        (block))
+    (let group:(ptr Node) (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) close_at n (get t Token.pos)))
     (put group Node.first first)
     group)
 

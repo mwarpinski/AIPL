@@ -121,9 +121,12 @@ fn cycles_and_missing_modules_are_errors() {
     std::fs::write(dir.join("main.aipl"), "(module main (import a) (fn main [] -> i32 0))").unwrap();
     std::fs::write(dir.join("lost.aipl"), "(module lost (import nowhere) (fn main [] -> i32 0))").unwrap();
     let err = aipl_resolve(&dir.join("main.aipl")).unwrap_err();
-    assert!(err.starts_with("circular import: "), "{err}");
+    assert!(err.contains(".aipl: Circular import detected: '") && err.ends_with(".aipl' is imported while already being resolved"), "{err}");
     let err = aipl_resolve(&dir.join("lost.aipl")).unwrap_err();
-    assert_eq!(err, "cannot find module: nowhere");
+    assert!(err.contains("lost.aipl: Cannot resolve import 'nowhere': no 'nowhere.aipl' found in '"), "{err}");
+    // the same wording as the Rust resolver (the paths searched are listed in each one's own form)
+    let rust = Resolver::resolve(&dir.join("lost.aipl")).unwrap_err();
+    assert_eq!(rust.split(" found in ").next(), err.split(" found in ").next());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -373,11 +376,14 @@ fn subdirectory_import_errors() {
     let rust = Resolver::resolve(&dir.join("clash.aipl")).unwrap_err();
     assert!(rust.contains("two different modules are named 'x'"), "{rust}");
     let ours = aipl_resolve(&dir.join("clash.aipl")).unwrap_err();
-    assert_eq!(ours, "two different modules are named x");
+    // Rust's wording, after the importing file; the two paths in each one's own form
+    let wording = |e: &str| e.split_once("clash.aipl: ").map(|(_, m)| m.split(": ").next().unwrap().to_string());
+    assert_eq!(wording(&ours), wording(&rust), "{ours}");
+    assert!(ours.contains("a/x.aipl and ") && ours.ends_with("b/x.aipl"), "{ours}");
     let rust = Resolver::resolve(&dir.join("dots.aipl")).unwrap_err();
     assert!(rust.contains("'../x' is not an import path"), "{rust}");
     let ours = aipl_resolve(&dir.join("dots.aipl")).unwrap_err();
-    assert!(ours.starts_with("not an import path"), "{ours}");
+    assert_eq!(ours, rust);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -453,6 +459,19 @@ fn malformed_files_are_rejected_like_rust() {
         ("unknown_item", b"(module m\n  (imp buf)\n  (fn main [] -> i32 1))"),
         ("stray_atom_item", b"(module m\n  (import str) 9\n  (fn main [] -> i32 1))"),
         ("broken_import", b"(module m (import broken_dep) (fn main [] -> i32 1))"),
+        // the generics pass: Rust's messages, at the right place in the right file
+        ("generic_arity", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32 i32)) (call (vec.make i32) (call alloc.default) 1))\n    0))"),
+        ("generic_builtin_name", b"(module m\n  (fn (get T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
+        ("generic_lowercase_param", b"(module m\n  (fn (f t) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
+        ("generic_no_params", b"(module m\n  (fn (f) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
+        ("generic_twice", b"(module m\n  (fn (f T) [x:T] -> T x)\n  (fn (f T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
+        ("generic_field_form", b"(module m\n  (struct (B T) [v:T])\n  (fn main [] -> i32 (let b:(ptr (B i32)) (new (B i32))) (get b (B i32) 5)))"),
+        ("not_a_type", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec (ptr))) (ptr.null (vec.Vec i32)))\n    0))"),
+        // an error inside a type argument, reported where the argument is written
+        ("bad_type_argument", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec 0x)) (call (vec.make 0x) (call alloc.default) 1))\n    0))"),
+        // errors at a closing bracket
+        ("if_without_else", b"(module m\n  (fn main [] -> i32\n    (if true 1)))"),
+        ("type_without_constructor", b"(module m\n  (fn main [x:()] -> i32 1))"),
     ];
     let driver = driver_wasm();
     for (name, src) in cases {

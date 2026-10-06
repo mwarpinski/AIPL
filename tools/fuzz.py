@@ -80,7 +80,9 @@ def message(out):
         line = re.sub(r"\\u\{([0-9a-f]+)\}|\\(.)",
                       lambda m: chr(int(m.group(1), 16)) if m.group(1) else esc.get(m.group(2), m.group(0)),
                       line[len('Error: "'):-1])
-    return line.split(".aipl: ", 1)[-1]
+    line = line.split(".aipl: ", 1)[-1]
+    # the places searched for a missing module are listed in each toolchain's own path form
+    return line.split(" found in ", 1)[0]
 
 
 def check(case, sources, seed):

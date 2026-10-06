@@ -23,9 +23,20 @@ use std::path::{Path, PathBuf};
 pub struct Resolver;
 
 /// An item of the flat program and the file it came from (for diagnostics).
+/// A generic instance is made from its template's file, but the type
+/// arguments substituted into it were written elsewhere: `foreign` maps
+/// those tokens' positions to their own files.
 pub struct Item {
     pub sx: Sx,
     pub file: PathBuf,
+    pub foreign: HashMap<(u32, u32), PathBuf>,
+}
+
+impl Item {
+    /// The file a token at `pos` of this item was written in.
+    pub fn file_of(&self, pos: (u32, u32)) -> &Path {
+        self.foreign.get(&pos).map(|p| p.as_path()).unwrap_or(&self.file)
+    }
 }
 
 /// The flat program before parsing: entry module name, then every struct
@@ -130,7 +141,15 @@ fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Resul
     let mut tokens = vec![tok(TokenKind::LParen), tok(TokenKind::Symbol("module".into())), tok(TokenKind::Symbol(module_name.into()))];
     item.sx.flatten(&mut tokens);
     tokens.push(tok(TokenKind::RParen));
-    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| format!("{}: {}", item.file.display(), e))
+    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| {
+        // the error's own "L:C: " says which token, and so which file
+        let pos = e.split(':').take(2).map(|n| n.trim().parse::<u32>()).collect::<Result<Vec<_>, _>>();
+        let file = match pos.as_deref() {
+            Ok([l, c]) => item.file_of((*l, *c)),
+            _ => &item.file,
+        };
+        format!("{}: {}", file.display(), e)
+    })
 }
 
 fn read_module(src: &str) -> Result<ModuleSx, String> {
@@ -262,7 +281,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     let mut out_fns = Vec::new();
     for mut item in module.items {
         names.walk(&mut item, 0);
-        let it = Item { sx: item, file: file.to_path_buf() };
+        let it = Item { sx: item, file: file.to_path_buf(), foreign: HashMap::new() };
         if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
             out_structs.push(it);
         } else {
