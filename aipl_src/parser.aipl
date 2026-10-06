@@ -684,7 +684,7 @@
        (let ix:ast.Expr (call parse_expr p))
        (make ast.Expr.arr_set at ty a ix (call parse_expr p)))
       ((eq form Form.mem_free)
-       (call fail_str p at "there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)")
+       (call fail_str p at "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena")
        (call placeholder at))
       ((eq form Form.float_mem)
        (let b:(ptr buf.Buf) (call msg p at))

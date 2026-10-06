@@ -9,6 +9,19 @@ pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     }
 }
 
+/// A result cell holds a 32-bit payload, so a 64-bit or float value cannot be
+/// one (the wasm backend's rule; checked here so `verify` rejects what no
+/// backend compiles).
+fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
+    if matches!(t, Type::I64 | Type::F32 | Type::F64) {
+        return Err(format!(
+            "{}:{}: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got {:?}",
+            l, c, t
+        ));
+    }
+    Ok(())
+}
+
 pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
     let mut offset = 0;
     for f in &def.fields {
@@ -852,12 +865,14 @@ impl TypeChecker {
             }
             Expr::Ok(val, extra_ty, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
+                check_result_payload(&inner_ty, (l, c))?;
                 let err_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
             Expr::Err(err, extra_ty, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
+                check_result_payload(&err_ty, (l, c))?;
                 let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&ok_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))

@@ -1,5 +1,7 @@
 # Linux x86-64 native backend: implementation plan
 
+**Status: done (NE1–NE18, 2026-10-04).** Kept as the design record; where it differs from the code, the code and AIPL_SPEC.md 6.6 win (the memory cap, for one, is now 32768 pages, 2 GiB, not 64 MiB).
+
 Written 2026-10-02, before any native code exists. This is the plan for step 6 of PROGRESS.md ("Next steps"). Read PROGRESS.md's "Direction" section first; the decisions below follow from it.
 
 ## Goal

@@ -160,7 +160,7 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         ("(if (lt \"a\" \"b\") 1 0)", "Lt on Str: only numbers are ordered; bool and str compare only with eq/neq"),
         ("(if (gte true false) 1 0)", "Gte on Bool: only numbers are ordered"),
         // ops that no longer exist
-        ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory is never freed"),
+        ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap"),
         ("(i32.wrap (i64.trunc_f64_s (mem.load_f64 (mem.alloc 8))))", "there is no mem.load_f64: keep floats in struct fields or (arr f64)"),
         ("(mem.store_f32 (mem.alloc 8) 1.5) 0", "there is no mem.store_f32"),
     ];

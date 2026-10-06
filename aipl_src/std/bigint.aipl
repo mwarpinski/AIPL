@@ -1,6 +1,7 @@
 ;; std/bigint: arbitrarily large signed integers. Operations work in place on
-;; numbers you keep and reuse: AIPL has no general free, so an API that
-;; returned a fresh number from every operation would leak.
+;; numbers you keep and reuse: its memory comes from mem.alloc, which never
+;; frees, so an API that returned a fresh number from every operation would
+;; leak.
 ;;
 ;;   (let a:(ptr bigint.Int) (call bigint.from_i32 1))
 ;;   (loop k 1 30 1 (call bigint.mul_small a k))      ;; a = 30!
