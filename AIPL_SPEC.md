@@ -134,7 +134,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(Name t...)`: a generic struct instantiated with types `t...` (section 4.H), used behind `(ptr ...)` like any struct.
 
 ### Contracts
-`(req e)` (precondition) and `(ens e)` (postcondition) are `bool` expressions placed before the body; inside `ens`, `res` is the return value. The checker type-checks them; nothing is proven statically. The VM evaluates every `req` before the body and every `ens` after it (including after an early `return`) and fails the call with `Pre-condition failed in 'f' at L:C: (req ...) with x = ...` (or `Post-condition`, which also shows `res`). Compiled wasm omits contracts. `(inv e)` is parsed and type-checked but never evaluated (audit B5).
+`(req e)` (precondition) and `(ens e)` (postcondition) are `bool` expressions placed before the body; inside `ens`, `res` is the return value. The checker type-checks them; nothing is proven statically. The VM evaluates every `req` before the body and every `ens` after it (including after an early `return`) and fails the call with `Pre-condition failed in 'f' at L:C: (req ...) with x = ...` (or `Post-condition`, which also shows `res`). Compiled code (wasm, and native through it) checks them the same way and stops with the same message, without the position: `Pre-condition failed in 'f': (req ...) with x = ...` (section 7.6). `(inv e)` is parsed and type-checked but never evaluated (audit B5).
 ```lisp
 (fn db_read_slot [ptr:i32 offset:i32] -> i32
   (req (gt ptr 0))
@@ -232,7 +232,7 @@ Field and element types are the scalars, `(ptr S)`, and `(arr T)`, so arrays of 
 
 **Struct names are namespaced like functions** (section 11): inside the module that defines it, a struct is `Node`; an importer writes `compiler.Node` (or `c.Node` after `(import compiler as c)`), in `new`, `sizeof`, `(ptr ...)`, and field references such as `(get p compiler.Node.next)`. Two imported modules may each define a `Node`.
 
-**Bounds checks are VM-only.** The VM checks `0 <= i < n` against the header at `a - 4` and fails with `Array index out of bounds: index I for array of length N`. The wasm backend does not check (it would need a second scratch local per function), so an out-of-range index reads or writes neighbouring heap memory. This is the second accepted VM-only check alongside contracts (section 10.4).
+**Bounds checks run everywhere.** Every `arr.get` and `arr.set` checks `0 <= i < n` against the header at `a - 4`, before the value to store is evaluated, and fails with `Array index out of bounds: index I for array of length N`: the VM as an error, compiled code (wasm and native) by writing that message and trapping (section 7.9), which `aipl-run` and native executables print as `<program>: <message>` with exit status 134. The wasm backend uses a second scratch local per function for the index and calls the module's `$aipl_oob` helper on failure. The checks cost about 20-30% under wasmtime and 45-55% natively on array-bound loops (docs/CHECKS_PLAN.md).
 
 ```lisp
 (module points
@@ -432,7 +432,7 @@ source.aipl
    ▼                              ▼
 [5a] VM        (src/vm.rs)       [5b] Wasm backend (src/compiler/wasm.rs)
      tree-walking interpreter         a core wasm module (wasm-encoder)
-     runs contracts and               contracts and bounds checks are NOT emitted
+     runs contracts and               contracts and bounds checks compiled in
      array bounds checks              │
                                       ▼
                                  [6] Native backend (aipl_src/native/, Linux x86-64, `compile --exe`)
@@ -501,7 +501,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `mem.alloc`, `mem.grow` | Yes | Yes | Yes | Yes |
 | `atomic.add/cas/lock/unlock` | Yes | Yes, real across OS threads | Yes (wasm atomics; `lock` waits with `memory.atomic.wait32`) | Yes |
 | `struct`, `new`, `get`, `put`, `sizeof` | Yes | Yes | Yes | Yes |
-| `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, **not** bounds-checked | Yes |
+| `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, bounds-checked | Yes |
 | `ok`, `err`, `match_result` | Yes | Yes | Yes (8-byte heap cell; 32-bit payloads only) | Yes |
 | `sys.print` | Yes, `str` arguments only | Yes | Yes via WASI `fd_write` | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
@@ -516,7 +516,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
 | `(import ...)` | resolved before checking | | | resolved first by `resolver.aipl` (`driver.aipl` chains the two); `compile_module` itself takes one import-free module |
 
-Rule of thumb for code generators: whatever `aipl verify` accepts runs in the VM and compiles. Compiled I/O needs a WASI host with a preopened directory (section 10.5), and threads need a wasi-threads host (AIPL's runner). Array bounds checks and contracts exist only in the VM.
+Rule of thumb for code generators: whatever `aipl verify` accepts runs in the VM and compiles. Compiled I/O needs a WASI host with a preopened directory (section 10.5), and threads need a wasi-threads host (AIPL's runner). Array bounds checks and `req`/`ens` contracts run in every backend.
 
 ### 6.4 The self-hosted backend (`aipl_src/codegen.aipl`)
 
@@ -681,10 +681,10 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.6 Contracts: what runs, where, and what happens on failure
 
-- `req` expressions are type-checked with the parameters in scope and **evaluated by the VM before the body**. Every `req` must be `bool`.
-- `ens` expressions are type-checked with parameters plus `res` (bound to the return type) and **evaluated by the VM after the body** with `res` bound to the actual result.
+- `req` expressions are type-checked with the parameters in scope and **evaluated before the body**, in every backend. Every `req` must be `bool`.
+- `ens` expressions are type-checked with parameters plus `res` (bound to the return type) and **evaluated after the body** with `res` bound to the actual result, after an early `return` too.
 - `inv` is type-checked like `req` but is not evaluated at runtime by any backend today.
-- The wasm backend does **not** emit contracts. A compiled module has no runtime checks; the contracts were only verified to be well-typed, not proven.
+- **Compiled code checks `req` and `ens` too.** The wasm backend (and so the native one) compiles each `req` at the function's entry and each `ens` at its exit; with an `ens`, the body is a block and `(return v)` branches to its end, where `v` is kept in `res`. A failure writes the message into memory, stores its address and length in cells 92 and 96 (section 7.9), and traps; `aipl-run` and native executables print it. The message is the VM's without the position, which is a position in the program text the resolver flattens and so is not stable across toolchains, and with only the values compiled code can show: integers, pointers, `i64`, and `bool` parameters and `res`, but not floats, strings, or results. The texts are string literals of the module, after the program's own.
 
 ```lisp
 (module contracts_demo
@@ -696,7 +696,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
   (fn main [] -> i32
     (call safe_div 10 0)))
 ```
-`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
+`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). Compiled (`aipl compile`, then `aipl run`), it stops with `contracts_demo.wasm: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0` and exit status 134. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
 
 ### 7.7 Results
 
@@ -1067,14 +1067,14 @@ This is what makes "wasm semantics are the spec" enforceable. `wasmtime` is a de
 - both return the same value (`bool` is normalised to `Int(0|1)`, its wasm shape), or
 - both fail (VM `Err` and wasmtime trap, e.g. division by zero).
 
-Two VM-only checks are **not** divergences when paired with a wasmtime success: a `req`/`ens` failure (the wasm backend emits no contracts) and `Array index out of bounds` (the wasm backend does not bounds-check, section 4.E). Any other mismatch panics with `DIVERGENCE ... (fix src/vm.rs)`. The wasm side is never changed to match the interpreter.
+Contract and bounds failures must happen in both: the compiled message (read from cells 92 and 96) must be the VM's, without the position and the values compiled code cannot show for a contract. Any other mismatch panics with `DIVERGENCE ... (fix src/vm.rs)`. The wasm side is never changed to match the interpreter.
 
 Coverage:
 
 - Every edge case in section 8 and 8.1 as a single-expression program.
 - Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
 - Typing and scoping (P7): one case per rule.
-- Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in the VM only; and the section 4.E example.
+- Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in both with the same message; and the section 4.E example.
 - Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason, and files that do I/O (`word_count`, `word_freq`) are compared with captured output in `tests/test_wasi.rs` instead. Every example must parse (the stale-file list is empty). The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous; today it compares `accounts`, `math_core`, `matrix_mult`, and `quicksort` over 116 calls. Every example is also compiled by the self-hosted compiler at byte parity (`tests/test_selfhost.rs`).
 - `aipl_src/codegen.aipl`'s `test_signatures_and_locals` is compared under WASI (the module uses `fs.*` and so imports WASI).
 
@@ -1321,7 +1321,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
 | `(+ str str)` | there is no string `+`; build strings with `std/buf`. Threads and atomics compile; a program using `thread.spawn` needs AIPL's runner (or another wasi-threads host) to run |
 | `(get p x)` or `(get p Point x)` | the field is one symbol: `(get p Point.x)`; arrays name the element type every time: `(arr.get i32 a i)` |
-| relying on `arr.get` to catch a bad index in compiled code | only the VM bounds-checks; check `(lt i (arr.len a))` yourself where it matters |
+| catching a bad index with `arr.get` and carrying on | a bad index stops the program in every backend; check `(lt i (arr.len a))` first where an index may be out of range |
 | `(ok 1i64)` or an `f64` payload in code meant for `aipl compile` | result payloads must be 32-bit in wasm; return an `i32` pointer to a struct instead |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
 | `(sys.print n)` with an `i32` in code meant for `aipl compile` | the wasm backend prints `str` only; use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |

@@ -220,7 +220,7 @@ Each finding was reproduced against the current code (which also has the unions,
 | P1 float memory ops in the grammar, rejected everywhere | Removed from the language (parser error with the alternatives: struct fields, `(arr f64)`, or `mem.load64` plus `f64.reinterpret_i64`) |
 | P2 conformance test passes when either backend fails | Rewritten, and it was worse than reported: it also skipped ops that failed to parse or check. Every op must now check, run in the VM, compile to wasm that validates in value and statement position, and match the self-hosted compiler's bytes. Mutation-checked |
 | P2 `Cargo.toml` warning | Fixed: `benches/execution_bench.rs` (a VM loop timing and a token-count banner from the initial commit) deleted; the real benchmarks are `benchmarks/` and `tools/bench.py` |
-| P1 contracts and bounds checks only in the VM | Accurate and already documented (AIPL_SPEC.md 7.6, 4.E; LANGUAGE_GAPS.md). Compiling them is the roadmap's next step after the AIPL checker (PROGRESS.md) |
+| P1 contracts and bounds checks only in the VM | Accurate and already documented (AIPL_SPEC.md 7.6, 4.E; LANGUAGE_GAPS.md). Compiling them is the roadmap's next step after the AIPL checker (PROGRESS.md). *Done 2026-10-05 (docs/CHECKS_PLAN.md).* |
 | P1 1 GiB stack | Reserved address space for the recursive interpreter, not memory used. A design trade-off, not a vulnerability; retiring the VM (audit S4) removes it |
 | P2 generic templates checked only through instances | Accurate and documented (LANGUAGE_GAPS.md 2) |
 

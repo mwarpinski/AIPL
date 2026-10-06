@@ -123,18 +123,18 @@ impl WasmCompiler {
             types.ty().function(vec![], vec![]);
             functions.function(base);
         }
-        // A module that indexes arrays ends with the two bounds-failure
-        // helpers (`oob_functions`): $aipl_dec [i32 i32] -> [i32] and
-        // $aipl_oob [i32 i32] -> [], after every other function.
-        let uses_arrays = module_uses_arrays(module);
-        let dec_fn = start_fn + if auto_start { 1 } else { 0 };
-        let oob_fn = dec_fn + 1;
-        if uses_arrays {
+        // A module with compiled checks (an array index, a req or ens) ends
+        // with the five check helpers (`check_functions`), after every other
+        // function, each with its own type.
+        let uses_checks = module_uses_checks(module);
+        let checks_base = start_fn + if auto_start { 1 } else { 0 };
+        let check_fns = CheckFns::at(checks_base);
+        if uses_checks {
             let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 } + if auto_start { 1 } else { 0 };
-            types.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
-            types.ty().function(vec![ValType::I32, ValType::I32], vec![]);
-            functions.function(base);
-            functions.function(base + 1);
+            for (k, (params, results)) in check_signatures().into_iter().enumerate() {
+                types.ty().function(params, results);
+                functions.function(base + k as u32);
+            }
         }
 
         // 2. Build code section (body compilation)
@@ -167,6 +167,16 @@ impl WasmCompiler {
                 }
             }
 
+            // A function with `ens` keeps its result in `res` for the checks
+            // (a hidden local after the lets, unless a let already named it).
+            let has_ens = f.contracts.iter().any(|c| matches!(c, Contract::Ensures(_)));
+            if has_ens && f.return_type != Type::Void && !local_map.contains_key("res") {
+                local_map.insert("res".to_string(), current_idx);
+                local_types.insert("res".to_string(), f.return_type.clone());
+                wasm_locals.push((1, aipl_to_wasm_type(&f.return_type)));
+                current_idx += 1;
+            }
+
             // Two extra i32 locals per function: scratch for write-address
             // checks, allocation, and array bounds checks (the array), and the
             // index of a bounds check
@@ -189,7 +199,8 @@ impl WasmCompiler {
                 locals: &local_map,
                 addr_scratch,
                 index_scratch: addr_scratch + 1,
-                oob_fn,
+                checks: &check_fns,
+                ens_block: has_ens,
                 io_locals,
                 local_types: &local_types,
                 fn_indices: &fn_indices,
@@ -214,6 +225,20 @@ impl WasmCompiler {
             // The last statement's value (if any) is the function's implicit
             // return, so it's kept - unless the function is declared void, in
             // which case it must be dropped too.
+            let checks = contract_messages(f);
+            for (is_ens, expr, msg) in &checks {
+                if !is_ens {
+                    emit_contract_check(expr, msg, &ctx, &mut func, &strings)?;
+                }
+            }
+            if has_ens {
+                func.instruction(&Instruction::Block(if f.return_type == Type::Void {
+                    BlockType::Empty
+                } else {
+                    BlockType::Result(aipl_to_wasm_type(&f.return_type))
+                }));
+                ctx.labels.borrow_mut().push(Label::Plain);
+            }
             let body_len = f.body.len();
             for (i, expr) in f.body.iter().enumerate() {
                 compile_expr(expr, &ctx, &mut func)?;
@@ -221,6 +246,22 @@ impl WasmCompiler {
                 let keep_value = is_last && f.return_type != Type::Void;
                 if !keep_value && !is_void_expr(expr, &ctx) {
                     func.instruction(&Instruction::Drop);
+                }
+            }
+            if has_ens {
+                ctx.labels.borrow_mut().pop();
+                func.instruction(&Instruction::End);
+                let res = ctx.locals.get("res").copied();
+                if let (true, Some(r)) = (f.return_type != Type::Void, res) {
+                    func.instruction(&Instruction::LocalSet(r));
+                }
+                for (is_ens, expr, msg) in &checks {
+                    if *is_ens {
+                        emit_contract_check(expr, msg, &ctx, &mut func, &strings)?;
+                    }
+                }
+                if let (true, Some(r)) = (f.return_type != Type::Void, res) {
+                    func.instruction(&Instruction::LocalGet(r));
                 }
             }
             func.instruction(&Instruction::End);
@@ -281,10 +322,10 @@ impl WasmCompiler {
             f.instruction(&Instruction::End);
             codes.function(&f);
         }
-        if uses_arrays {
-            let (dec, oob) = oob_functions(dec_fn);
-            codes.function(&dec);
-            codes.function(&oob);
+        if uses_checks {
+            for f in check_functions(&check_fns) {
+                codes.function(&f);
+            }
         }
 
         wasm_module.section(&types);
@@ -346,8 +387,11 @@ struct Ctx<'a> {
     addr_scratch: u32,
     /// The index of an array bounds check (addr_scratch holds the array).
     index_scratch: u32,
-    /// $aipl_oob's function index (meaningful when the module indexes arrays).
-    oob_fn: u32,
+    /// The check helpers' function indices (meaningful when the module has checks).
+    checks: &'a CheckFns,
+    /// The function has `ens`: its body is a block, and `return` branches to
+    /// its end, where the `ens` checks run.
+    ens_block: bool,
     /// `(a, b)` scratch locals for WASI lowerings; `None` when the function does no I/O.
     io_locals: Option<(u32, u32)>,
     local_types: &'a HashMap<String, Type>,
@@ -1657,7 +1701,12 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             if let Some(v) = val {
                 compile_expr(v, ctx, func)?;
             }
-            func.instruction(&Instruction::Return);
+            if ctx.ens_block {
+                // to the end of the function's body block, where ens is checked
+                func.instruction(&Instruction::Br(ctx.labels.borrow().len() as u32 - 1));
+            } else {
+                func.instruction(&Instruction::Return);
+            }
         }
         Expr::Break(_) => {
             func.instruction(&Instruction::Br(label_depth(ctx, &[Label::Break])?));
@@ -2071,7 +2120,7 @@ fn emit_bounds_check(func: &mut Function, ctx: &Ctx) {
     func.instruction(&If(BlockType::Empty));
     func.instruction(&LocalGet(i));
     func.instruction(&LocalGet(a));
-    func.instruction(&Call(ctx.oob_fn));
+    func.instruction(&Call(ctx.checks.oob));
     func.instruction(&Unreachable);
     func.instruction(&End);
     func.instruction(&LocalGet(i));
@@ -2099,100 +2148,137 @@ fn emit_text_store(f: &mut Function, addr: &Instruction, text: &[u8]) {
     }
 }
 
-/// The bounds-failure helpers, function indices dec_fn and dec_fn + 1:
+/// The check helpers' function indices, in the order they are emitted.
+pub struct CheckFns {
+    dec: u32,
+    oob: u32,
+    text: u32,
+    begin: u32,
+    end: u32,
+}
+
+impl CheckFns {
+    fn at(base: u32) -> CheckFns {
+        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4 }
+    }
+}
+
+/// The check helpers' types, in order (see `check_functions`).
+fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
+    use ValType::{I32, I64};
+    vec![
+        (vec![I32, I64], vec![I32]),
+        (vec![I32, I32], vec![]),
+        (vec![I32, I32, I32], vec![I32]),
+        (vec![I32, I32, I32], vec![I32]),
+        (vec![I32], vec![]),
+    ]
+}
+
+/// The check helpers, emitted once at the end of a module with checks:
 ///
-/// $aipl_dec(v, at) -> end: writes v as signed decimal at `at`, returns the
-/// address after it.
-/// $aipl_oob(index, array): writes the VM's message ("Array index out of
-/// bounds: index I for array of length N") at RT_FAIL_TEXT, stores its address
-/// and length in cells 92 and 96, and traps (`unreachable`).
-fn oob_functions(dec_fn: u32) -> (Function, Function) {
+/// - $aipl_dec(at, v:i64) -> end: writes v in signed decimal at `at`;
+///   returns the address after it.
+/// - $aipl_oob(index, array): writes the VM's bounds message ("Array index
+///   out of bounds: index I for array of length N") at RT_FAIL_TEXT, stores
+///   its address and length in cells 92 and 96, and traps (`unreachable`).
+/// - $aipl_text(at, addr, len) -> end: copies len bytes from addr to at.
+/// - $aipl_begin(addr, len, max) -> end: starts a contract message of at most
+///   max bytes at the heap cursor (growing memory to hold it; nothing is
+///   allocated, since the program is about to end), stores its address in
+///   cell 92, and copies the len bytes at addr there.
+/// - $aipl_end(end): stores the message's length in cell 96 and traps.
+fn check_functions(fns: &CheckFns) -> Vec<Function> {
     use Instruction::*;
     let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
-    // params v (0), at (1); locals x (2), t (3), end (4)
-    let mut d = Function::new(vec![(3, ValType::I32)]);
-    d.instruction(&LocalGet(0));
-    d.instruction(&LocalSet(2));
-    d.instruction(&LocalGet(2));
-    d.instruction(&I32Const(0));
-    d.instruction(&I32LtS);
-    d.instruction(&If(BlockType::Empty));
+
+    // $aipl_dec: params at (0), v (1); locals t:i64 (2), end (3)
+    let mut d = Function::new(vec![(1, ValType::I64), (1, ValType::I32)]);
     d.instruction(&LocalGet(1));
+    d.instruction(&I64Const(0));
+    d.instruction(&I64LtS);
+    d.instruction(&If(BlockType::Empty));
+    d.instruction(&LocalGet(0));
     d.instruction(&I32Const(45)); // '-'
     d.instruction(&I32Store8(b0));
-    d.instruction(&LocalGet(1));
+    d.instruction(&LocalGet(0));
     d.instruction(&I32Const(1));
     d.instruction(&I32Add);
+    d.instruction(&LocalSet(0));
+    // the magnitude, read unsigned (so the most negative value works too)
+    d.instruction(&I64Const(0));
+    d.instruction(&LocalGet(1));
+    d.instruction(&I64Sub);
     d.instruction(&LocalSet(1));
-    // the magnitude, read unsigned (so -2147483648 is 2147483648)
-    d.instruction(&I32Const(0));
-    d.instruction(&LocalGet(2));
-    d.instruction(&I32Sub);
-    d.instruction(&LocalSet(2));
     d.instruction(&End);
-    // count the digits: end = at + 1 + (number of times x / 10 stays >= 1)
-    d.instruction(&LocalGet(2));
-    d.instruction(&LocalSet(3));
+    // count the digits: end = at + 1 + (times v / 10 stays >= 1)
     d.instruction(&LocalGet(1));
+    d.instruction(&LocalSet(2));
+    d.instruction(&LocalGet(0));
     d.instruction(&I32Const(1));
     d.instruction(&I32Add);
-    d.instruction(&LocalSet(4));
+    d.instruction(&LocalSet(3));
     d.instruction(&Block(BlockType::Empty));
     d.instruction(&Loop(BlockType::Empty));
-    d.instruction(&LocalGet(3));
-    d.instruction(&I32Const(10));
-    d.instruction(&I32LtU);
+    d.instruction(&LocalGet(2));
+    d.instruction(&I64Const(10));
+    d.instruction(&I64LtU);
     d.instruction(&BrIf(1));
+    d.instruction(&LocalGet(2));
+    d.instruction(&I64Const(10));
+    d.instruction(&I64DivU);
+    d.instruction(&LocalSet(2));
     d.instruction(&LocalGet(3));
-    d.instruction(&I32Const(10));
-    d.instruction(&I32DivU);
-    d.instruction(&LocalSet(3));
-    d.instruction(&LocalGet(4));
     d.instruction(&I32Const(1));
     d.instruction(&I32Add);
-    d.instruction(&LocalSet(4));
+    d.instruction(&LocalSet(3));
     d.instruction(&Br(0));
     d.instruction(&End);
     d.instruction(&End);
     // write them last to first
-    d.instruction(&LocalGet(4));
-    d.instruction(&LocalSet(1));
+    d.instruction(&LocalGet(3));
+    d.instruction(&LocalSet(0));
     d.instruction(&Loop(BlockType::Empty));
-    d.instruction(&LocalGet(1));
+    d.instruction(&LocalGet(0));
     d.instruction(&I32Const(1));
     d.instruction(&I32Sub);
-    d.instruction(&LocalTee(1));
-    d.instruction(&LocalGet(2));
-    d.instruction(&I32Const(10));
-    d.instruction(&I32RemU);
+    d.instruction(&LocalTee(0));
+    d.instruction(&LocalGet(1));
+    d.instruction(&I64Const(10));
+    d.instruction(&I64RemU);
+    d.instruction(&I32WrapI64);
     d.instruction(&I32Const(48)); // '0'
     d.instruction(&I32Add);
     d.instruction(&I32Store8(b0));
-    d.instruction(&LocalGet(2));
-    d.instruction(&I32Const(10));
-    d.instruction(&I32DivU);
-    d.instruction(&LocalTee(2));
+    d.instruction(&LocalGet(1));
+    d.instruction(&I64Const(10));
+    d.instruction(&I64DivU);
+    d.instruction(&LocalTee(1));
+    d.instruction(&I64Const(0));
+    d.instruction(&I64Ne);
     d.instruction(&BrIf(0));
     d.instruction(&End);
-    d.instruction(&LocalGet(4));
+    d.instruction(&LocalGet(3));
     d.instruction(&End);
 
-    // params index (0), array (1); local at (2)
+    // $aipl_oob: params index (0), array (1); local at (2)
     let mut o = Function::new(vec![(1, ValType::I32)]);
     emit_text_store(&mut o, &I32Const(RT_FAIL_TEXT), OOB_PREFIX);
-    o.instruction(&LocalGet(0));
     o.instruction(&I32Const(RT_FAIL_TEXT + OOB_PREFIX.len() as i32));
-    o.instruction(&Call(dec_fn));
+    o.instruction(&LocalGet(0));
+    o.instruction(&I64ExtendI32S);
+    o.instruction(&Call(fns.dec));
     o.instruction(&LocalSet(2));
     emit_text_store(&mut o, &LocalGet(2), OOB_MIDDLE);
+    o.instruction(&LocalGet(2));
+    o.instruction(&I32Const(OOB_MIDDLE.len() as i32));
+    o.instruction(&I32Add);
     o.instruction(&LocalGet(1));
     o.instruction(&I32Const(4));
     o.instruction(&I32Sub);
     o.instruction(&I32Load(M4));
-    o.instruction(&LocalGet(2));
-    o.instruction(&I32Const(OOB_MIDDLE.len() as i32));
-    o.instruction(&I32Add);
-    o.instruction(&Call(dec_fn));
+    o.instruction(&I64ExtendI32S);
+    o.instruction(&Call(fns.dec));
     o.instruction(&LocalSet(2));
     o.instruction(&I32Const(RT_FAIL_ADDR));
     o.instruction(&I32Const(RT_FAIL_TEXT));
@@ -2204,7 +2290,212 @@ fn oob_functions(dec_fn: u32) -> (Function, Function) {
     o.instruction(&I32Store(M4));
     o.instruction(&Unreachable);
     o.instruction(&End);
-    (d, o)
+
+    // $aipl_text: params at (0), addr (1), len (2)
+    let mut t = Function::new(vec![]);
+    t.instruction(&Block(BlockType::Empty));
+    t.instruction(&Loop(BlockType::Empty));
+    t.instruction(&LocalGet(2));
+    t.instruction(&I32Eqz);
+    t.instruction(&BrIf(1));
+    t.instruction(&LocalGet(0));
+    t.instruction(&LocalGet(1));
+    t.instruction(&I32Load8U(b0));
+    t.instruction(&I32Store8(b0));
+    for k in [0u32, 1] {
+        t.instruction(&LocalGet(k));
+        t.instruction(&I32Const(1));
+        t.instruction(&I32Add);
+        t.instruction(&LocalSet(k));
+    }
+    t.instruction(&LocalGet(2));
+    t.instruction(&I32Const(1));
+    t.instruction(&I32Sub);
+    t.instruction(&LocalSet(2));
+    t.instruction(&Br(0));
+    t.instruction(&End);
+    t.instruction(&End);
+    t.instruction(&LocalGet(0));
+    t.instruction(&End);
+
+    // $aipl_begin: params addr (0), len (1), max (2); locals at (3), pages (4)
+    let mut b = Function::new(vec![(2, ValType::I32)]);
+    b.instruction(&I32Const(0));
+    b.instruction(&I32Load(M4));
+    b.instruction(&LocalSet(3));
+    // pages needed past the current size: (at + max + 65535) / 65536 - size
+    b.instruction(&LocalGet(3));
+    b.instruction(&LocalGet(2));
+    b.instruction(&I32Add);
+    b.instruction(&I32Const(65535));
+    b.instruction(&I32Add);
+    b.instruction(&I32Const(16));
+    b.instruction(&I32ShrU);
+    b.instruction(&MemorySize(0));
+    b.instruction(&I32Sub);
+    b.instruction(&LocalTee(4));
+    b.instruction(&I32Const(0));
+    b.instruction(&I32GtS);
+    b.instruction(&If(BlockType::Empty));
+    b.instruction(&LocalGet(4));
+    b.instruction(&MemoryGrow(0));
+    b.instruction(&Drop);
+    b.instruction(&End);
+    b.instruction(&I32Const(RT_FAIL_ADDR));
+    b.instruction(&LocalGet(3));
+    b.instruction(&I32Store(M4));
+    b.instruction(&LocalGet(3));
+    b.instruction(&LocalGet(0));
+    b.instruction(&LocalGet(1));
+    b.instruction(&Call(fns.text));
+    b.instruction(&End);
+
+    // $aipl_end: param end (0)
+    let mut e = Function::new(vec![]);
+    e.instruction(&I32Const(RT_FAIL_LEN));
+    e.instruction(&LocalGet(0));
+    e.instruction(&I32Const(RT_FAIL_ADDR));
+    e.instruction(&I32Load(M4));
+    e.instruction(&I32Sub);
+    e.instruction(&I32Store(M4));
+    e.instruction(&Unreachable);
+    e.instruction(&End);
+    vec![d, o, t, b, e]
+}
+
+/// One piece of a contract failure's message after its fixed text: literal
+/// text, or the value of a local (by name) shown as the VM shows it.
+enum MsgItem {
+    Text(String),
+    /// an i32 (or a pointer, array, enum, union, or function reference): decimal
+    Int(String),
+    /// an i64: decimal, then the text "i64" (a separate item)
+    Long(String),
+    /// a bool: true or false
+    Bool(String),
+}
+
+/// How the VM shows a value of type `ty` in a contract message, if compiled
+/// code can show it the same way (floats, strings, and results it cannot).
+fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
+    match ty {
+        Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
+        Type::I64 => Some(MsgItem::Long(name.to_string())),
+        Type::Bool => Some(MsgItem::Bool(name.to_string())),
+        _ => None,
+    }
+}
+
+/// The function's `req` and `ens` contracts in order, each with its failure
+/// message as the VM writes it (`vm.rs contract_failure`) but without the
+/// position: the fixed part (`Pre-condition failed in 'f': (req (gt n 0))`),
+/// then ` with n = -1, res = 5`, leaving out values compiled code cannot
+/// show. The position is left out because it is a position in the program
+/// text the resolver flattened, which the Rust and AIPL resolvers lay out
+/// differently (and which is not the user's file once there are imports):
+/// with it, the bytes would depend on that layout.
+fn contract_messages(f: &FnDef) -> Vec<(bool, &Expr, (String, Vec<MsgItem>))> {
+    let mut out = Vec::new();
+    for c in &f.contracts {
+        let (is_ens, expr) = match c {
+            Contract::Requires(e) => (false, e),
+            Contract::Ensures(e) => (true, e),
+            Contract::Invariant(_) => continue,
+        };
+        let (kind, form) = if is_ens { ("Post-condition", "ens") } else { ("Pre-condition", "req") };
+        let text = format!("{} failed in '{}': ({} {})", kind, f.name, form, crate::printer::expr_str(expr));
+        let mut items = Vec::new();
+        let mut shown: Vec<(String, Option<MsgItem>)> =
+            f.params.iter().map(|(n, t)| (n.clone(), shown_as(t, n))).collect();
+        if is_ens {
+            shown.push(("res".to_string(), if f.return_type == Type::Void { None } else { shown_as(&f.return_type, "res") }));
+        }
+        for (name, item) in shown {
+            let sep = if items.is_empty() { " with " } else { ", " };
+            match item {
+                Some(v) => {
+                    let long = matches!(v, MsgItem::Long(_));
+                    items.push(MsgItem::Text(format!("{sep}{name} = ")));
+                    items.push(v);
+                    if long {
+                        items.push(MsgItem::Text("i64".to_string()));
+                    }
+                }
+                None if name == "res" && f.return_type == Type::Void => items.push(MsgItem::Text(format!("{sep}res = void"))),
+                None => {}
+            }
+        }
+        out.push((is_ens, expr, (text, items)));
+    }
+    out
+}
+
+/// A `req`/`ens` check: unless the condition holds, write the message (its
+/// fixed text and the values shown) to fresh memory, store its address and
+/// length in cells 92 and 96, and trap.
+fn emit_contract_check(
+    expr: &Expr,
+    msg: &(String, Vec<MsgItem>),
+    ctx: &Ctx,
+    func: &mut Function,
+    strings: &HashMap<String, u32>,
+) -> Result<(), String> {
+    use Instruction::*;
+    let (text, items) = msg;
+    let addr = |s: &str| strings.get(s).map(|a| *a as i32).ok_or_else(|| format!("Wasm Codegen: contract text not interned: {s}"));
+    let local = |n: &str| ctx.locals.get(n).copied().ok_or_else(|| format!("Wasm Codegen: unknown local '{n}' in a contract message"));
+    // at most: the texts, 24 bytes per number, 5 per bool
+    let max: usize = text.len()
+        + items
+            .iter()
+            .map(|i| match i {
+                MsgItem::Text(t) => t.len(),
+                MsgItem::Int(_) | MsgItem::Long(_) => 24,
+                MsgItem::Bool(_) => 5,
+            })
+            .sum::<usize>();
+    compile_expr(expr, ctx, func)?;
+    func.instruction(&I32Eqz);
+    func.instruction(&If(BlockType::Empty));
+    func.instruction(&I32Const(addr(text)?));
+    func.instruction(&I32Const(text.len() as i32));
+    func.instruction(&I32Const(max as i32));
+    func.instruction(&Call(ctx.checks.begin));
+    for item in items {
+        match item {
+            MsgItem::Text(t) => {
+                func.instruction(&I32Const(addr(t)?));
+                func.instruction(&I32Const(t.len() as i32));
+                func.instruction(&Call(ctx.checks.text));
+            }
+            MsgItem::Int(n) => {
+                func.instruction(&LocalGet(local(n)?));
+                func.instruction(&I64ExtendI32S);
+                func.instruction(&Call(ctx.checks.dec));
+            }
+            MsgItem::Long(n) => {
+                func.instruction(&LocalGet(local(n)?));
+                func.instruction(&Call(ctx.checks.dec));
+            }
+            MsgItem::Bool(n) => {
+                // "true" or "false": address, then length
+                let l = local(n)?;
+                for (t, f) in [(addr("true")?, addr("false")?), (4, 5)] {
+                    func.instruction(&LocalGet(l));
+                    func.instruction(&If(BlockType::Result(ValType::I32)));
+                    func.instruction(&I32Const(t));
+                    func.instruction(&Else);
+                    func.instruction(&I32Const(f));
+                    func.instruction(&End);
+                }
+                func.instruction(&Call(ctx.checks.text));
+            }
+        }
+    }
+    func.instruction(&Call(ctx.checks.end));
+    func.instruction(&Unreachable);
+    func.instruction(&End);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2267,6 +2558,24 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
             intern(s, &mut blob, &mut addrs);
         }
     });
+    // then the texts of compiled contract messages, function by function
+    for f in &module.functions {
+        for (_, _, (text, items)) in contract_messages(f) {
+            intern(&text, &mut blob, &mut addrs);
+            for item in &items {
+                match item {
+                    MsgItem::Text(t) => {
+                        intern(t, &mut blob, &mut addrs);
+                    }
+                    MsgItem::Bool(_) => {
+                        intern("true", &mut blob, &mut addrs);
+                        intern("false", &mut blob, &mut addrs);
+                    }
+                    MsgItem::Int(_) | MsgItem::Long(_) => {}
+                }
+            }
+        }
+    }
     let heap_start = heap_start_after(blob.len());
     if heap_start > STRING_DATA_LIMIT {
         return Err(format!(
@@ -2598,10 +2907,13 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
     }
 }
 
-/// Whether any function (contracts included) indexes an array, so the module
-/// needs the bounds-failure helpers.
-fn module_uses_arrays(module: &Module) -> bool {
-    let mut found = false;
+/// Whether the module has compiled checks (a req or ens, or an array index
+/// anywhere, contracts included), so it needs the check helpers.
+fn module_uses_checks(module: &Module) -> bool {
+    let mut found = module
+        .functions
+        .iter()
+        .any(|f| f.contracts.iter().any(|c| matches!(c, Contract::Requires(_) | Contract::Ensures(_))));
     walk_module(module, &mut |e| {
         if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. }) {
             found = true;
