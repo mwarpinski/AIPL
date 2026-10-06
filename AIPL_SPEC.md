@@ -737,7 +737,8 @@ There is one layout and one allocator, shared by the VM, compiled wasm, and AIPL
 | 16 | i32 | codegen | pointer to the keyword map, built once by `codegen_init` and reused by later compiles |
 | 20..40 | | unused | (the rest of a compile's state is in the `Cg` struct `compile_module` creates) |
 | 44, 48 | i32, i32 | codegen | source offset and length of the callee name, after compile error 1452, read by the host |
-| 52, 56 | | unused | |
+| 52 | i32 | std/alloc | pointer to the shared default allocator, made by the first `alloc.default` (0 until then) |
+| 56 | | unused | |
 | 60 | i32 | codegen | pointer to the module `compile_module` emitted, read by the host |
 | 64, 68 | i32, i32 | WASI runtime | iovec 0: buffer pointer, length (used by `sys.print`, `fs.read`, `fs.write`) |
 | 72, 76 | i32, i32 | WASI runtime | iovec 1: the interned `"\n"` and length 1 (`sys.print`) |
@@ -1255,6 +1256,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 
 | `arena` | a region allocator (no general `free` exists): `make [chunk_size] -> (ptr arena.Arena)`, `(call (arena.alloc T) a) -> (ptr T)` (zeroed, like `new`, no cast), `raw [a n] -> i32` (n zeroed bytes, 8-aligned), `reset [a]` (frees everything from `a`; its chunks are reused), `reserved [a]`; never fails while memory remains (a full chunk moves on to another) |
 | `heap` | a general-purpose allocator with per-object free (docs/HEAP_PLAN.md): `make [] -> (ptr heap.Heap)`, `(call (heap.create T) h) -> (ptr T)` and `(call (heap.destroy T) h p)`, `(call (heap.array T) h n) -> (arr T)` and `(call (heap.free_array T) h a)`, `raw [h n] -> i32` and `free_raw [h p n]` (n zeroed bytes, 8-aligned), `live [h]` (blocks not freed), `live_bytes [h]`, `reserved [h]`. A double free, a free of memory this heap did not allocate, a free with the wrong size or type, and a write after free (found when the block is reused) stop the program with a contract failure naming the check; freed memory reads as `0xDEADBEEF` words |
+| `alloc` | any allocator as one value (docs/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]`, `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` |
 | `time` | timing code with the monotonic clock: `now [] -> i64` (nanoseconds), `since [start] -> i64`, `push_duration [b ns]` ("850 ns", "12.345 us", "3.071 ms", "4.200 s": three decimals in the largest fitting unit, integer arithmetic), `report [label start]` ("label: 12.345 ms" on stderr, so a program's output stays clean) |
 | `bigint` | arbitrarily large signed integers, changed in place (reuse numbers rather than making new ones; nothing is freed): `(ptr bigint.Int)` from `from_i32 [v]`, `with_capacity [limbs]`; `set_i32 [a v]`, `assign [dst src]`, `add [a b]`, `sub [a b]`, `add_mul_small [a b m]` (a += b·m), `sub_mul_small [a b m]`, `mul_small [a m]` (\|m\| < 2^31), `div_small [a d] -> i32` (a /= d toward zero, returns the remainder, 0 < d < 2^31), `div_small_quotient [a b] -> i32` (a ≥ 0, b > 0, quotient < 2^31: returns a / b, leaves the remainder in a), `negate [a]`, `compare [a b] -> i32`, `sign [a] -> i32`, `is_zero [a]`, `limb_count [a]`, `push_decimal [out a]` |
 

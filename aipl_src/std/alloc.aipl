@@ -1,0 +1,150 @@
+;; std/alloc: any allocator, as one value (docs/HEAP_PLAN.md). Code that
+;; allocates freeable memory takes an Allocator and does not care which:
+;;
+;;   (fn (fill T) [a:alloc.Allocator n:i32 x:T] -> (arr T)
+;;     (let xs:(arr T) (call (alloc.array T) a n)) ...)
+;;
+;;   (call (fill i32) (call alloc.default) 10 7)               ;; the shared heap
+;;   (call (fill i32) (call alloc.of_heap h) 10 7)             ;; a heap of your own
+;;   (call (fill i32) (call alloc.of_arena ar) 10 7)           ;; freed by arena.reset
+;;   (call (fill i32) (call alloc.fixed (mem.alloc 4096) 4096) 10 7)  ;; inside a buffer
+;;
+;; Make an Allocator once and pass it around: each of_heap, of_arena, and
+;; fixed makes a small cell that is never freed. What a free does depends
+;; on the allocator: a heap reuses the block and checks the free (std/heap);
+;; an arena ignores it (arena.reset frees everything); a fixed buffer takes
+;; back only its most recent allocation, as Zig's FixedBufferAllocator does.
+(module alloc
+  (import heap)
+  (import arena)
+
+  ;; A region inside a buffer: [base, base + len), the first `used` bytes
+  ;; handed out.
+  (struct Fixed [base:i32 len:i32 used:i32])
+
+  (union Allocator [(heap h:(ptr heap.Heap))
+                    (arena r:(ptr arena.Arena))
+                    (fixed f:(ptr Fixed))])
+
+  (fn of_heap [h:(ptr heap.Heap)] -> Allocator (make Allocator.heap h))
+  (fn of_arena [r:(ptr arena.Arena)] -> Allocator (make Allocator.arena r))
+
+  ;; An allocator handing out the len bytes at base (from mem.alloc, or
+  ;; from another allocator), 8 bytes at a time.
+  (fn fixed [base:i32 len:i32] -> Allocator
+    (req (gte len 0))
+    (let f:(ptr Fixed) (new Fixed))
+    (put f Fixed.base base)
+    (put f Fixed.len len)
+    (put f Fixed.used 0)
+    (make Allocator.fixed f))
+
+  ;; The shared general-purpose heap, made on first use. AIPL has no
+  ;; globals, so runtime cell 52 (AIPL_SPEC.md 7.9) points to a Shared
+  ;; holding it. Like any heap it is not safe to use from two threads at once.
+  (struct Shared [a:Allocator])
+
+  (fn default [] -> Allocator
+    (if (eq (mem.load32 52) 0)
+        (block
+          (let s:(ptr Shared) (new Shared))
+          (put s Shared.a (call of_heap (call heap.make)))
+          (mem.store32 52 (ptr.addr s)))
+        (block))
+    (get (ptr.cast Shared (mem.load32 52)) Shared.a))
+
+  ;; ===== Raw bytes =====
+
+  ;; n zeroed bytes, 8-aligned.
+  (fn raw [a:Allocator n:i32] -> i32
+    (req (gt n 0))
+    (match a
+      (Allocator.heap [h] (call heap.raw h n))
+      (Allocator.arena [r] (call arena.raw r n))
+      (Allocator.fixed [f] (call fixed_raw f n))))
+
+  ;; Frees the n bytes at p, which raw returned for n bytes.
+  (fn free_raw [a:Allocator p:i32 n:i32] -> void
+    (match a
+      (Allocator.heap [h] (call heap.free_raw h p n))
+      (Allocator.arena [_] (block))
+      (Allocator.fixed [f] (call fixed_free f p n))))
+
+  (fn fixed_raw [f:(ptr Fixed) n:i32] -> i32
+    (req (call fits f n))
+    (let size:i32 (bitand (+ n 7) -8))
+    (let p:i32 (+ (get f Fixed.base) (get f Fixed.used)))
+    (put f Fixed.used (+ (get f Fixed.used) size))
+    (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
+    p)
+
+  ;; Whether n more bytes fit in the buffer.
+  (fn fits [f:(ptr Fixed) n:i32] -> bool
+    (lte (bitand (+ n 7) -8) (- (get f Fixed.len) (get f Fixed.used))))
+
+  (fn fixed_free [f:(ptr Fixed) p:i32 n:i32] -> void
+    (let size:i32 (bitand (+ n 7) -8))
+    (if (eq (+ p size) (+ (get f Fixed.base) (get f Fixed.used)))
+        (put f Fixed.used (- (get f Fixed.used) size))
+        (block)))
+
+  ;; ===== Typed =====
+
+  ;; A zeroed T.
+  (fn (create T) [a:Allocator] -> (ptr T)
+    (ptr.cast T (call raw a (sizeof T))))
+
+  (fn (destroy T) [a:Allocator p:(ptr T)] -> void
+    (call free_raw a (ptr.addr p) (sizeof T)))
+
+  ;; n zeroed Ts, laid out like (arr.new T n).
+  (fn (array T) [a:Allocator n:i32] -> (arr T)
+    (req (gte n 0))
+    (let base:i32 (call raw a (checked.add 4 (checked.mul n (sizeof T)))))
+    (mem.store32 base n)
+    (arr.cast T (+ base 4)))
+
+  (fn (free_array T) [a:Allocator xs:(arr T)] -> void
+    (call free_raw a (- (arr.addr xs) 4) (+ 4 (* (arr.len xs) (sizeof T)))))
+
+  (struct Pair [left:i32 right:i64])
+
+  ;; Allocates and frees through `a`: a Pair and an array, zeroed and usable.
+  (fn round_trip [a:Allocator] -> bool
+    (let p:(ptr Pair) (call (create Pair) a))
+    (let xs:(arr i64) (call (array i64) a 10))
+    (put p Pair.right 5i64)
+    (arr.set i64 xs 9 6i64)
+    (let ok:bool (and (eq (+ (get p Pair.right) (arr.get i64 xs 9)) 11i64)
+                      (and (eq (arr.len xs) 10) (eq (arr.get i64 xs 0) 0i64))))
+    (call (free_array i64) a xs)
+    (call (destroy Pair) a p)
+    ok)
+
+  ;; Pass count; test_suite.aipl expects 6.
+  (fn run_alloc_tests [] -> i32
+    (let p:i32 0)
+    ;; the same code works with every kind of allocator
+    (let h:(ptr heap.Heap) (call heap.make))
+    (if (and (call round_trip (call of_heap h)) (eq (call heap.live h) 0)) (set! p (+ p 1)) (block))
+    (let r:(ptr arena.Arena) (call arena.make 4096))
+    (if (call round_trip (call of_arena r)) (set! p (+ p 1)) (block))
+    (let f:Allocator (call fixed (mem.alloc 256) 256))
+    (if (call round_trip f) (set! p (+ p 1)) (block))
+    (if (call round_trip (call default)) (set! p (+ p 1)) (block))
+    ;; default is one shared heap: the same block comes back after a free
+    (let d:Allocator (call default))
+    (let x:(ptr Pair) (call (create Pair) d))
+    (call (destroy Pair) d x)
+    (let y:(ptr Pair) (call (create Pair) (call default)))
+    (if (eq (ptr.addr x) (ptr.addr y)) (set! p (+ p 1)) (block))
+    ;; a fixed buffer takes back only its most recent allocation
+    (let g:Allocator (call fixed (mem.alloc 64) 64))
+    (let a1:i32 (call raw g 16))
+    (let a2:i32 (call raw g 16))
+    (call free_raw g a1 16)
+    (let a3:i32 (call raw g 16))
+    (call free_raw g a3 16)
+    (let a4:i32 (call raw g 16))
+    (if (and (eq a3 (+ a2 16)) (eq a4 a3)) (set! p (+ p 1)) (block))
+    p))

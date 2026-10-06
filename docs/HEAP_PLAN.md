@@ -38,7 +38,7 @@ allocator, and code says which allocator it uses.
 |---|---|---|
 | H0 | `sizeof` of any memory type (`(sizeof i64)` 8), so generic code can size a `T` | done |
 | H1 | `std/heap`: size classes, free lists, the checks above, `live`/`live_bytes`/`reserved`; typed `create`/`destroy`/`array`/`free_array` | done |
-| H2 | `std/alloc`: the `Allocator` union (heap, arena, fixed buffer), `alloc.default`, typed helpers over any allocator | |
+| H2 | `std/alloc`: the `Allocator` union (heap, arena, fixed buffer), `alloc.default`, typed helpers over any allocator | done |
 | H3 | `vec`, `buf`, `strmap` (and `map`) take an allocator and free old storage when they grow; callers updated, the compiler included | |
 | H4 | Function references in struct fields (a language change), then `Allocator.custom` | |
 | H5 | Docs (spec, prompt guide, gaps), benchmarks (binarytrees with a heap as well as an arena) | |
