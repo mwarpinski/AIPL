@@ -419,3 +419,58 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A file that is not one well-formed (module NAME ...) form is rejected by
+/// the wasm toolchain with the Rust toolchain's message, word for word, and
+/// never compiled (a fuzzing run found the AIPL resolver accepting such files
+/// and emitting an empty module; docs/LAUNCH_CHECKLIST.md 1).
+#[test]
+fn malformed_files_are_rejected_like_rust() {
+    let dir = root().join("target").join(format!("aipl_malformed_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("broken_dep.aipl"), "(module broken_dep\n  (fn f [] -> i32 1)").unwrap();
+    let cases: &[(&str, &[u8])] = &[
+        ("bad_utf8", b"(module m\n  (fn main [] -> i32 \xff 1))"),
+        ("truncated_utf8", b"(module m (fn main [] -> i32 1)) ;; \xe2\x82"),
+        ("never_closed", b"(module m\n  (fn main [] -> i32\n    (+ 1 2))"),
+        ("mismatched", b"(module m\n  (fn main [] -> i32 1]\n)"),
+        ("starts_with_closer", b")\n(module m)"),
+        ("trailing_form", b"(module m (fn main [] -> i32 1))\n(fn g [] -> i32 2)"),
+        ("trailing_atom", b"(module m (fn main [] -> i32 1)) x"),
+        ("empty", b"  ;; nothing here\n"),
+        ("not_a_module", b"(fn main [] -> i32 1)"),
+        ("bare_atom", b"module"),
+        ("brackets", b"[module m]"),
+        ("no_name", b"(module (x) (fn main [] -> i32 1))"),
+        ("import_no_name", b"(module m (import) (fn main [] -> i32 1))"),
+        ("import_extra", b"(module m (import a b) (fn main [] -> i32 1))"),
+        ("import_alias_missing", b"(module m (import a as) (fn main [] -> i32 1))"),
+        ("import_not_symbol", b"(module m (import (a)) (fn main [] -> i32 1))"),
+        ("unterminated_string", b"(module m (fn main [] -> i32 (str.len \"abc)))"),
+        ("unknown_escape", b"(module m (fn main [] -> i32 (str.len \"a\\qb\")))"),
+        ("stray_whitespace", b"(module m\xc2\xa0(fn main [] -> i32 1))"),
+        ("unknown_item", b"(module m\n  (imp buf)\n  (fn main [] -> i32 1))"),
+        ("stray_atom_item", b"(module m\n  (import str) 9\n  (fn main [] -> i32 1))"),
+        ("broken_import", b"(module m (import broken_dep) (fn main [] -> i32 1))"),
+    ];
+    let driver = driver_wasm();
+    for (name, src) in cases {
+        let path = dir.join(format!("{name}.aipl"));
+        std::fs::write(&path, src).unwrap();
+        let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+        let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+        let (rust_file, rust_msg) = rust.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {rust}"));
+        let ours = match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
+            wasm_driver::Outcome::ResolveError(e) | wasm_driver::Outcome::TypeError(e) => e,
+            wasm_driver::Outcome::Wasm(w) => panic!("{name}: compiled ({} bytes); Rust says {rust}", w.len()),
+            wasm_driver::Outcome::CompileError(c) => panic!("{name}: compile error {c}; Rust says {rust}"),
+        };
+        let (our_file, our_msg) = ours.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {ours}"));
+        assert_eq!(our_msg, rust_msg, "{name}");
+        // the same file is blamed (an import's own error names the import)
+        let stem = |f: &str| f.rsplit('/').next().unwrap().to_string();
+        assert_eq!(stem(our_file), stem(rust_file), "{name}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

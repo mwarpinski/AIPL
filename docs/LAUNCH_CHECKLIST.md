@@ -14,33 +14,43 @@ has evidence behind it.
 
 ## 1. Correctness and robustness (blocking)
 
-- [ ] **The self-hosted compiler accepts malformed files.** A fuzzing run
-  (1,500 mutated copies of the repository's programs, 2026-10-06) found 97
-  files that `aipl verify` rejects but `aiplc` (`aipl_src/driver.aipl`)
-  compiles, exiting 0, often to an empty 49-byte module. Every case is a
-  file-level structure error that `src/sexpr.rs` checks and
-  `aipl_src/resolver.aipl` does not:
-  | Rust's message | cases |
-  |---|---|
-  | `Cannot read: stream did not contain valid UTF-8` | 30 |
-  | `unexpected input after the module's closing ')'` | 26 |
-  | `this bracket is never closed` | 21 |
-  | `mismatched closing bracket` | 6 |
-  | `Unterminated string literal` | 2 |
-  | `Expected RParen, got ...` (a malformed item) | 9 |
-  | `Expected 'fn', got Symbol("imp")` (an unknown item is dropped) | 2 |
-  | a malformed generic header | 1 |
-
-  Fix in `resolver.aipl` (and wherever it reads a file), with the Rust
-  messages word for word, and add the cases to `tests/test_resolver_aipl.rs`.
-  The same run found no crashes, hangs, or traps in either compiler, and
-  no program that `verify` accepts but `compile` rejects, or that the two
-  compilers translate differently.
-- [ ] **Keep the fuzzer.** Turn the throwaway script into `tools/fuzz.py`
-  (mutated repository programs into `verify`, `compile`, and `aiplc`;
-  report crashes, hangs, disagreements, and byte differences), run it for
-  an hour before any public post, and add a short deterministic run (a
-  fixed seed, a few hundred cases) to the test suite.
+- [x] **The self-hosted compiler accepted malformed files** (fixed
+  2026-10-06). A fuzzing run found 97 of 1,500 mutated files that `aipl
+  verify` rejects but `aiplc` compiled, exiting 0, often to an empty
+  module: invalid UTF-8, unclosed or mismatched brackets, input after the
+  module, bad imports, tokenizer errors, and unknown items (which it
+  dropped). `resolver.aipl` now checks file structure in Rust's order with
+  Rust's messages (`str.valid_utf8` is new in `std/str`), passes unknown
+  items on to the parser, and notes group heads so errors there point at
+  the right column; `generics.aipl` keeps a stray atom an atom.
+  `tests/test_resolver_aipl.rs` (`malformed_files_are_rejected_like_rust`,
+  22 cases) checks message and file against Rust; with the check disabled
+  it fails.
+- [x] **The fuzzer is a tool:** `tools/fuzz.py` (both toolchains on mutated
+  repository programs; crashes, hangs, and any disagreement in acceptance,
+  bytes, or message). Still to do: a short fixed-seed run in the test suite.
+- [ ] **Remaining fuzz differences** (3,000 cases, seed 11, after the fix:
+  53, none an acceptance bug except the float case below; no crashes or
+  hangs):
+  - *Generics-pass messages* differ in wording and lack a position
+    (`wrong number of type arguments for generic vec.Vec` against Rust's
+    `15:17: generic 'vec.Vec' takes 1 type argument(s) (T), got 3`); Rust
+    also checks generic headers on items that are not `fn`/`struct`.
+    Bring `generics.aipl`'s errors to Rust's text and positions.
+  - *An error inside a type argument* (`(vec.Vec 0palette.Color)`) is
+    reported inside the standard library's template (`vec.aipl` 12:31)
+    instead of where the user wrote it: the generics pass does not record
+    where substituted arguments came from.
+  - *Errors at a closing bracket* (`Unexpected token parsing expression:
+    RParen`, `Expected type constructor, got RParen`) land a few columns
+    early: closing brackets are not recorded in the origin maps (the AST
+    keeps no position for them).
+  - *A missing module* is `cannot find module: X` in AIPL and `Cannot
+    resolve import 'X': no 'X.aipl' found in ...` in Rust. Pick one text.
+  - *Float literals* the self-hosted compiler cannot convert exactly are
+    compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: a real
+    gap between the toolchains. Exact decimal-to-double conversion in AIPL
+    closes it.
 - [ ] **Fuzz the VM and compiled programs too:** generated well-typed
   programs (not just mutated text) run in the VM, under `aipl-run`, and
   natively, compared as the differential test does. This is where a

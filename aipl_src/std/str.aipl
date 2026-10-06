@@ -85,6 +85,29 @@
     (match_result (call parse_int b) (ok n n) (err e default)))
 
   ;; Pass count; test_suite.aipl expects 8.
+  ;; Whether b is valid UTF-8 (as Rust's str::from_utf8 decides: no
+  ;; overlong forms, no surrogates, nothing past U+10FFFF).
+  (fn valid_utf8 [b:(ptr Bytes)] -> bool
+    (let n:i32 (get b Bytes.len))
+    (let i:i32 0)
+    (while (lt i n)
+      (let c:i32 (call byte_at b i))
+      (let need:i32 (cond ((lt c 128) 0) ((and (gte c 194) (lte c 223)) 1) ((and (gte c 224) (lte c 239)) 2) ((and (gte c 240) (lte c 244)) 3) (else -1)))
+      (if (or (lt need 0) (gt (+ i need) (- n 1))) (if (eq need 0) (block) (return false)) (block))
+      (if (gt need 0)
+          (block
+            ;; the second byte's range depends on the first (overlong, surrogate, and range limits)
+            (let c1:i32 (call byte_at b (+ i 1)))
+            (let lo:i32 (cond ((eq c 224) 160) ((eq c 240) 144) (else 128)))
+            (let hi:i32 (cond ((eq c 237) 159) ((eq c 244) 143) (else 191)))
+            (if (or (lt c1 lo) (gt c1 hi)) (return false) (block))
+            (loop k 2 need 1
+              (let ck:i32 (call byte_at b (+ i k)))
+              (if (or (lt ck 128) (gt ck 191)) (return false) (block))))
+          (block))
+      (set! i (+ i (+ need 1))))
+    true)
+
   (fn run_str_tests [] -> i32
     (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
@@ -99,4 +122,18 @@
     (let empty:i32 (match_result (call parse_int (call from_str "-")) (ok n -1) (err e e)))
     (if (and (eq good -305) (and (eq bad 2) (eq empty 0))) (set! p (+ p 1)) (block))
     (if (and (eq (call parse_int_or (call from_str "42") 7) 42) (eq (call parse_int_or (call from_str "4x") 7) 7)) (set! p (+ p 1)) (block))
+    ;; valid_utf8: text and multi-byte characters pass; a lone continuation
+    ;; byte, a truncated sequence, an overlong form, and a surrogate fail
+    (let u:i32 (mem.alloc 8))
+    (mem.store8 u 226) (mem.store8 (+ u 1) 130) (mem.store8 (+ u 2) 172)   ;; U+20AC, the euro sign
+    (mem.store8 (+ u 3) 192) (mem.store8 (+ u 4) 175)                     ;; an overlong '/'
+    (mem.store8 (+ u 5) 237) (mem.store8 (+ u 6) 160) (mem.store8 (+ u 7) 128)   ;; a surrogate
+    (if (and (call valid_utf8 ab)
+             (and (call valid_utf8 (call bytes u 3))
+                  (and (not (call valid_utf8 (call bytes (+ u 1) 2)))
+                       (and (not (call valid_utf8 (call bytes u 2)))
+                            (and (not (call valid_utf8 (call bytes (+ u 3) 2)))
+                                 (not (call valid_utf8 (call bytes (+ u 5) 3))))))))
+        (set! p (+ p 1))
+        (block))
     p))

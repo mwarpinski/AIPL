@@ -932,19 +932,23 @@
   ;; src/parser.rs tokenize's messages for compiler.tokenize's bad token.
   (fn tokenizer_error [p:(ptr P) i:i32] -> void
     (let t:(ptr compiler.Token) (call tok p i))
-    (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (let b:(ptr buf.Buf) (call msg p (get t compiler.Token.pos)))
+    (call push_token_error b (get p P.src) t)
+    (call fail p b))
+
+  ;; The message for a bad token from compiler.tokenize over src (no position).
+  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void
+    (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (match why
       (compiler.TokErr.unterminated_string (call buf.push_str b "Unterminated string literal"))
       (compiler.TokErr.unknown_escape
        (call buf.push_str b "Unknown escape sequence \\")
-       (call buf.push_byte b (mem.load8 (+ (get p P.src) (get t compiler.Token.pos))))
+       (call buf.push_byte b (mem.load8 (+ src (get t compiler.Token.pos))))
        (call buf.push_str b " in string literal"))
       (compiler.TokErr.stray_whitespace
        (call buf.push_str b "unexpected whitespace character U+")
        (call push_hex4 b (get t compiler.Token.b))
-       (call buf.push_str b "; separate tokens with spaces, tabs, or newlines")))
-    (call fail p b))
+       (call buf.push_str b "; separate tokens with spaces, tabs, or newlines"))))
 
   ;; {:04X}: at least four uppercase hex digits.
   (fn push_hex4 [b:(ptr buf.Buf) c:i32] -> void
