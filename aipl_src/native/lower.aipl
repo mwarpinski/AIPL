@@ -1,5 +1,5 @@
 ;; lower: translates one decoded wasm function into x86-64 machine code
-;; (native backend, docs/NATIVE_BACKEND_PLAN.md, from NE5). A baseline
+;; (native backend, docs/design/NATIVE_BACKEND_PLAN.md, from NE5). A baseline
 ;; compiler: one pass over the instructions, no register allocation.
 ;;
 ;; Frame and calling convention (internal to native code; system calls and

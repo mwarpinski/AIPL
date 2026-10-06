@@ -247,7 +247,10 @@
 
   (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
     (call buf.push_str out "  ")
-    (call print_group st item env rename out)
+    ;; a stray atom at module level stays an atom, for the parser to report
+    (if (or (eq (get item compiler.Node.kind) compiler.Kind.paren) (eq (get item compiler.Node.kind) compiler.Kind.bracket))
+        (call print_group st item env rename out)
+        (call print st item env out false))
     (call buf.push_byte out 10))
 
   ;; ===== Driver =====

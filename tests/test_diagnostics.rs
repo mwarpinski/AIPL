@@ -131,7 +131,7 @@ fn test_diagnostic_layout_allows_legitimate_runtime_access() {
     check_ok("(module m (fn f [] -> void (mem.store32 4096 1)))");
 }
 
-/// What the checker accepts must compile (docs/gemini-audit.md found the
+/// What the checker accepts must compile (an external audit on 2026-10-05 found the
 /// first four holes; a sweep of every op over 0-3 operands of each kind
 /// found the rest). Each rejected program, with the message it gets.
 #[test]
@@ -160,7 +160,7 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         ("(if (lt \"a\" \"b\") 1 0)", "Lt on Str: only numbers are ordered; bool and str compare only with eq/neq"),
         ("(if (gte true false) 1 0)", "Gte on Bool: only numbers are ordered"),
         // ops that no longer exist
-        ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory is never freed"),
+        ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap"),
         ("(i32.wrap (i64.trunc_f64_s (mem.load_f64 (mem.alloc 8))))", "there is no mem.load_f64: keep floats in struct fields or (arr f64)"),
         ("(mem.store_f32 (mem.alloc 8) 1.5) 0", "there is no mem.store_f32"),
     ];

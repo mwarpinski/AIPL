@@ -146,7 +146,7 @@ impl AgentServer {
         match checker.check_module(&module) {
             Ok(_) => EvalResponse {
                 success: true,
-                result: Some("Module type-checks. Contracts are type-checked, not proven; the VM evaluates req/ens on every call.".to_string()),
+                result: Some("Module type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.".to_string()),
                 error: None,
             },
             Err(e) => EvalResponse {

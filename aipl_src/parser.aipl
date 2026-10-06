@@ -1,7 +1,7 @@
 ;; The AIPL parser in AIPL: compiler.aipl's tokens to ast.aipl's typed tree,
 ;; a port of src/parser.rs (Parser::parse_module and everything it calls)
 ;; that accepts the same programs and reports the same first error, word for
-;; word (docs/CHECKER_PLAN.md).
+;; word (docs/design/CHECKER_PLAN.md).
 ;;
 ;; Errors: AIPL has no exceptions, so the first error is recorded in P.err
 ;; and the parser jumps to the end of the tokens. Every loop then stops (they
@@ -135,7 +135,7 @@
   ;; whose shortest spelling is their own digits: sign, digits without
   ;; leading or trailing zeros, at least one digit on each side of the '.'.
   ;; (A literal with an exponent, or more digits than an f64 holds, may be
-  ;; spelled differently by Rust; see docs/CHECKER_PLAN.md.)
+  ;; spelled differently by Rust; see docs/design/CHECKER_PLAN.md.)
   (fn push_float_debug [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void
     (let n:i32 (get t str.Bytes.len))
     (let k:i32 0)
@@ -684,7 +684,7 @@
        (let ix:ast.Expr (call parse_expr p))
        (make ast.Expr.arr_set at ty a ix (call parse_expr p)))
       ((eq form Form.mem_free)
-       (call fail_str p at "there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)")
+       (call fail_str p at "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena")
        (call placeholder at))
       ((eq form Form.float_mem)
        (let b:(ptr buf.Buf) (call msg p at))
@@ -932,19 +932,23 @@
   ;; src/parser.rs tokenize's messages for compiler.tokenize's bad token.
   (fn tokenizer_error [p:(ptr P) i:i32] -> void
     (let t:(ptr compiler.Token) (call tok p i))
-    (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (let b:(ptr buf.Buf) (call msg p (get t compiler.Token.pos)))
+    (call push_token_error b (get p P.src) t)
+    (call fail p b))
+
+  ;; The message for a bad token from compiler.tokenize over src (no position).
+  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void
+    (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (match why
       (compiler.TokErr.unterminated_string (call buf.push_str b "Unterminated string literal"))
       (compiler.TokErr.unknown_escape
        (call buf.push_str b "Unknown escape sequence \\")
-       (call buf.push_byte b (mem.load8 (+ (get p P.src) (get t compiler.Token.pos))))
+       (call buf.push_byte b (mem.load8 (+ src (get t compiler.Token.pos))))
        (call buf.push_str b " in string literal"))
       (compiler.TokErr.stray_whitespace
        (call buf.push_str b "unexpected whitespace character U+")
        (call push_hex4 b (get t compiler.Token.b))
-       (call buf.push_str b "; separate tokens with spaces, tabs, or newlines")))
-    (call fail p b))
+       (call buf.push_str b "; separate tokens with spaces, tabs, or newlines"))))
 
   ;; {:04X}: at least four uppercase hex digits.
   (fn push_hex4 [b:(ptr buf.Buf) c:i32] -> void

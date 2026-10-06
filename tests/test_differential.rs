@@ -803,10 +803,18 @@ fn p8_structs_and_arrays() {
 }
 
 #[test]
-fn p8_wasm_rejects_non_32_bit_result_payloads() {
-    let src = "(module m (fn f [] -> (result i64 i32) (ok 1i64)))";
-    let module = Parser::parse(src).expect("parses");
-    TypeChecker::new().check_module(&module).expect("checks");
+fn p8_non_32_bit_result_payloads_are_rejected() {
+    // the checker rejects them, so verify never accepts what cannot compile
+    for (src, at) in [
+        ("(module m (fn f [] -> (result i64 i32) (ok 1i64)))", "1:40:"),
+        ("(module m (fn f [] -> (result i32 f64) (err 1.5)))", "1:40:"),
+    ] {
+        let module = Parser::parse(src).expect("parses");
+        let err = TypeChecker::new().check_module(&module).unwrap_err();
+        assert!(err.starts_with(at) && err.contains("result payloads must be 32-bit"), "got {err}");
+    }
+    // and the wasm backend still refuses them if handed one unchecked
+    let module = Parser::parse("(module m (fn f [] -> (result i64 i32) (ok 1i64)))").unwrap();
     let err = WasmCompiler::compile(&module).unwrap_err();
     assert!(err.contains("result payloads must be 32-bit"), "got {err}");
 }

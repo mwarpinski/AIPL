@@ -1,7 +1,7 @@
 ;; Prints an ast.aipl module as canonical AIPL source, the way
 ;; src/printer.rs does, so the AIPL parser can be checked by round trip:
 ;; for a program the Rust printer printed, parser.aipl then printer.aipl
-;; give back the same text (docs/CHECKER_PLAN.md).
+;; give back the same text (docs/design/CHECKER_PLAN.md).
 ;;
 ;; Float and string literals print as written in the source (src/printer.rs
 ;; prints the value's shortest spelling and re-escapes strings, which is the

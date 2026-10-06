@@ -1,4 +1,4 @@
-//! Host side of the native backend (docs/NATIVE_BACKEND_PLAN.md, NE18):
+//! Host side of the native backend (docs/design/NATIVE_BACKEND_PLAN.md, NE18):
 //! runs aipl_src/native/native.aipl, compiled to wasm, in wasmtime to turn a
 //! module into a Linux x86-64 executable. Every decision is in the AIPL;
 //! this only moves bytes in and out (as `aipl compile --exe` needs a host

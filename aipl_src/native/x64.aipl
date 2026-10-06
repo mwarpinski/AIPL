@@ -1,5 +1,5 @@
 ;; x64: an x86-64 machine-code encoder (native backend task NE3,
-;; docs/NATIVE_BACKEND_PLAN.md). One function per instruction form the
+;; docs/design/NATIVE_BACKEND_PLAN.md). One function per instruction form the
 ;; lowering needs, each appending its bytes to a code buffer (std/buf).
 ;;
 ;; Registers are numbered as the hardware numbers them:

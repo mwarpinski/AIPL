@@ -36,7 +36,7 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 | pidigits | 10000 digits | 15.652 s (40.2x) | 2.650 s (6.8x) | 0.389 s (1.0x) | 2.155 s (5.5x) |
 
 Updated 2026-10-05 after compiled code started checking array indexes and
-`req`/`ens` contracts (docs/CHECKS_PLAN.md); without them (the same day,
+`req`/`ens` contracts (docs/design/CHECKS_PLAN.md); without them (the same day,
 after the native translator kept the top of the value stack in a register,
 see "Native speed" below) native was spigot 2.068 s, fannkuch 0.719,
 spectralnorm 0.363, nbody 0.517, mandelbrot 0.211, binarytrees 0.347,
@@ -103,14 +103,15 @@ work (`buf.push_byte`, `fs.write`). The test size (199) is not a multiple of
 8, so the padded last byte of each row is checked too.
 
 **binarytrees** (millions of short-lived tree nodes, one long-lived tree).
-AIPL has no general `free`, so at the benchmark's sizes it would run out of
-its 64 MiB. Added `std/arena`: a typed region allocator (`(call (arena.alloc
+AIPL had no general `free` (it has since 2026-10-06, `std/heap`), so at the
+benchmark's sizes it would have run out of its then 64 MiB. Added `std/arena`: a typed region allocator (`(call (arena.alloc
 Node) a)` returns a zeroed `(ptr Node)`, no cast; `arena.reset` frees
 everything at once and its chunks are reused), as the benchmark allows for
 memory pools. Not a like-for-like race: AIPL resets an arena per tree, the C
 version calls malloc and free per node (the classic C entry), and Python
 uses its garbage collector, which is why AIPL under wasmtime beats C here.
-A general per-object free remains a gap. Writing it found a resolver bug,
+Freeing each node through `std/heap` instead takes 1.12 s natively against
+the arena's 0.26 s (docs/design/HEAP_PLAN.md H5). Writing it found a resolver bug,
 fixed in both resolvers: a module calling its own generic function with its
 own struct (`(alloc Pair)` inside std/arena) left the type argument
 unqualified, so the instance's type no longer matched the struct once the
@@ -195,7 +196,7 @@ Each function's four most used locals (a use inside a loop counting 8
 times per level) now live in rbx, r12, r13, and r14, saved on entry and
 restored on return; around a call to an import, whose routine uses those
 registers, they go back to their slots. Native times, before and after
-(with the compiled checks of docs/CHECKS_PLAN.md in both):
+(with the compiled checks of docs/design/CHECKS_PLAN.md in both):
 
 | Benchmark | before | after |
 |---|---|---|

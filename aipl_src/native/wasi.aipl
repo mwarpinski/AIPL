@@ -1,6 +1,6 @@
 ;; wasi: the WASI preview1 functions AIPL programs import, as native
 ;; routines over Linux system calls (native backend, NE10-NE11,
-;; docs/NATIVE_BACKEND_PLAN.md). Each routine is called like any translated
+;; docs/design/NATIVE_BACKEND_PLAN.md). Each routine is called like any translated
 ;; function (lower.aipl): arguments pushed in order, one 8-byte slot each,
 ;; result in rax (a WASI errno: 0 for success). Routines may clobber every
 ;; register except rbp, rsp, and r15 (the linear memory base).

@@ -1,5 +1,5 @@
 ;; native: wasm bytes in, a Linux x86-64 executable out (native backend,
-;; docs/NATIVE_BACKEND_PLAN.md, from NE5). The driver reaches it with
+;; docs/design/NATIVE_BACKEND_PLAN.md, from NE5). The driver reaches it with
 ;; `(import native/native)`.
 ;;
 ;;   (let out:(ptr native.Output) (call native.compile wasm_bytes))

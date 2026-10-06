@@ -54,7 +54,7 @@
     (set! failures (+ failures (call report "codegen: signatures + 3 real wasm modules (4 tests)" (call codegen.run_codegen_tests) 4)))
     (set! failures (+ failures (call report "memory: allocator + arena" (call memory.run_memory_tests) 1)))
     (set! failures (+ failures (call report "file_io: real disk round-trip" (call file_io.run_file_io_tests) 1)))
-    (set! failures (+ failures (call report "std/str: byte slices + parse_int (8 tests)" (call str.run_str_tests) 8)))
+    (set! failures (+ failures (call report "std/str: byte slices, parse_int, UTF-8 (9 tests)" (call str.run_str_tests) 9)))
     (set! failures (+ failures (call report "std/fmt: number formatting (14 tests)" (call fmt.run_fmt_tests) 14)))
     (set! failures (+ failures (call report "resolver: imports in AIPL (3 tests)" (call resolver.run_resolver_tests) 3)))
     (set! failures (+ failures (call report "std/os: arguments + environment (3 tests)" (call os.run_os_tests) 3)))

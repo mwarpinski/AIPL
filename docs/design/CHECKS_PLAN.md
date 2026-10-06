@@ -1,5 +1,7 @@
 # Contracts and array bounds checks in compiled code
 
+**Status: done (CC1–CC5, 2026-10-05).** Kept as the design record and for its cost measurements; the text below describes the state before the work.
+
 Today `req`/`ens` and array bounds checks run only in the VM: a compiled
 program skips its contracts and reads or writes past the end of an array
 silently (AIPL_SPEC.md 4.E, 7.6; audit D1, B5). This plan makes compiled
@@ -76,7 +78,7 @@ wasm instructions). Best of three, before and after:
 
 About 20-28% under wasmtime and 45-55% natively on array-bound loops:
 the native translator keeps every local in memory, so the check's extra
-local reads and writes cost more there; a register allocator (PROGRESS.md)
+local reads and writes cost more there; a register allocator (ROADMAP.md)
 is the fix.
 
 ## Cost of the contracts (CC3)

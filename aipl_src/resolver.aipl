@@ -23,10 +23,13 @@
   (import os)
   (import generics)
   (import origins)
+  (import parser)
 
   ;; A parsed file: its text, its (module ...) tree, and where its tokens'
   ;; origins are noted (file is its index there; -1 and null when not mapping).
-  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins)])
+  ;; error: why the file is not one well-formed (module NAME ...) form,
+  ;; "PATH: L:C: message" as src/resolver.rs reports it, or null.
+  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins) error:(ptr buf.Buf)])
 
   ;; One module being emitted. prefix is the import name; imported is false
   ;; for the entry module, whose names stay bare. aliases maps an alias to the
@@ -83,12 +86,26 @@
   (fn load [path:(ptr str.Bytes) o:(ptr origins.Origins)] -> (ptr Src)
     (let text:(ptr str.Bytes) (call io.read_path path))
     (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
+    (let src:(ptr Src) (new Src))
+    (put src Src.text text)
+    (put src Src.error (ptr.null buf.Buf))
+    (if (not (call str.valid_utf8 text))
+        (block
+          (put src Src.error (call path_message path))
+          (call buf.push_str (get src Src.error) "Cannot read: stream did not contain valid UTF-8")
+          (return src))
+        (block))
     (let n:i32 (get text str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get text str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get text str.Bytes.addr) n tok))
+    (let problem:(ptr buf.Buf) (call structure_error (get text str.Bytes.addr) tok count))
+    (if (neq problem (ptr.null buf.Buf))
+        (block
+          (put src Src.error (call path_message path))
+          (call buf.push_bytes (get src Src.error) (call buf.bytes problem))
+          (return src))
+        (block))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
-    (let src:(ptr Src) (new Src))
-    (put src Src.text text)
     (put src Src.root (call compiler.parse_ast tok count ast))
     (put src Src.origins o)
     (put src Src.file (if (eq o (ptr.null origins.Origins)) -1 (call origins.add_file o path text)))
@@ -240,9 +257,9 @@
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
-        ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call buf.push_bytes out tmpl))
+        ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call note m c out) (call buf.push_bytes out tmpl))
         ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
-        ((and (eq i 0) (and (not square) (call is_symbol c))) (call buf.push_bytes out (call text (get m Mod.src) c)))
+        ((and (eq i 0) (and (not square) (call is_symbol c))) (call note m c out) (call buf.push_bytes out (call text (get m Mod.src) c)))
         ((gte (get tmpl str.Bytes.len) 0) (call emit m c 2 out))
         (else (call emit m c (call child_role m g i) out)))
       (set! prev_colon colon)
@@ -273,6 +290,113 @@
   ;; ===== Modules =====
 
   ;; The first item of a (module name items...) tree.
+;; ===== File structure (src/sexpr.rs read_one, src/resolver.rs read_module) =====
+
+  ;; "PATH: ", the start of an error about a file.
+  (fn path_message [path:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_bytes b path)
+    (call buf.push_str b ": ")
+    b)
+
+  ;; "L:C: what" at token i.
+  (fn at_token [src:i32 toks:i32 i:i32 what:str] -> (ptr buf.Buf)
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get (call compiler.token_at toks i) compiler.Token.pos)))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_int b (get lc compiler.LineCol.line))
+    (call buf.push_byte b 58)
+    (call buf.push_int b (get lc compiler.LineCol.col))
+    (call buf.push_str b ": ")
+    (call buf.push_str b what)
+    b)
+
+  (fn kind_at [toks:i32 i:i32] -> compiler.Kind (get (call compiler.token_at toks i) compiler.Token.kind))
+  (fn is_opener [k:compiler.Kind] -> bool (or (eq k compiler.Kind.lparen) (eq k compiler.Kind.lbracket)))
+  (fn is_closer [k:compiler.Kind] -> bool (or (eq k compiler.Kind.rparen) (eq k compiler.Kind.rbracket)))
+
+  ;; Whether token i is the symbol `lit`.
+  (fn symbol_is [src:i32 toks:i32 i:i32 lit:str] -> bool
+    (let t:(ptr compiler.Token) (call compiler.token_at toks i))
+    (and (eq (get t compiler.Token.kind) compiler.Kind.symbol)
+         (call eq_lit (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)) lit)))
+
+  ;; The index after the form starting at token i (brackets known to balance).
+  (fn skip_form [toks:i32 i:i32] -> i32
+    (if (not (call is_opener (call kind_at toks i))) (return (+ i 1)) (block))
+    (let depth:i32 0)
+    (let j:i32 i)
+    (while true
+      (let k:compiler.Kind (call kind_at toks j))
+      (cond
+        ((call is_opener k) (set! depth (+ depth 1)))
+        ((call is_closer k) (set! depth (- depth 1)))
+        (else (block)))
+      (set! j (+ j 1))
+      (if (eq depth 0) (break) (block)))
+    j)
+
+  ;; Why the `count` tokens of src are not one well-formed module file, as
+  ;; Rust reports it ("L:C: message"), checked in Rust's order: a tokenizer
+  ;; error; the first form's brackets; anything after it; the form being
+  ;; (module NAME ...); each import's shape. Null if the file is well formed.
+  (fn structure_error [src:i32 toks:i32 count:i32] -> (ptr buf.Buf)
+    (if (and (gt count 0) (eq (call kind_at toks (- count 1)) compiler.Kind.bad))
+        (block
+          (let tb:(ptr buf.Buf) (call at_token src toks (- count 1) ""))
+          (call parser.push_token_error tb src (call compiler.token_at toks (- count 1)))
+          (return tb))
+        (block))
+    (if (eq count 0)
+        (block (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 32)) (call buf.push_str eb "unexpected end of input") (return eb))
+        (block))
+    (if (call is_closer (call kind_at toks 0)) (return (call at_token src toks 0 "unexpected closing bracket")) (block))
+    ;; the first form: a stack of open brackets (their token indices)
+    (let stack:(arr i32) (arr.new i32 (+ count 1)))
+    (let top:i32 0)
+    (let i:i32 0)
+    (if (call is_opener (call kind_at toks 0))
+        (while true
+          (if (eq i count) (return (call at_token src toks (arr.get i32 stack (- top 1)) "this bracket is never closed")) (block))
+          (let k:compiler.Kind (call kind_at toks i))
+          (cond
+            ((call is_opener k) (arr.set i32 stack top i) (set! top (+ top 1)))
+            ((call is_closer k)
+             (let opened:compiler.Kind (call kind_at toks (arr.get i32 stack (- top 1))))
+             (if (neq (eq opened compiler.Kind.lparen) (eq k compiler.Kind.rparen))
+                 (return (call at_token src toks i "mismatched closing bracket"))
+                 (block))
+             (set! top (- top 1)))
+            (else (block)))
+          (set! i (+ i 1))
+          (if (eq top 0) (break) (block)))
+        (set! i 1))
+    (if (lt i count) (return (call at_token src toks i "unexpected input after the module's closing ')'")) (block))
+    ;; (module NAME item...)
+    (if (or (neq (call kind_at toks 0) compiler.Kind.lparen) (or (lt count 3) (not (call symbol_is src toks 1 "module"))))
+        (return (call at_token src toks 0 "a file must be one (module NAME ...) form"))
+        (block))
+    (if (neq (call kind_at toks 2) compiler.Kind.symbol) (return (call at_token src toks 0 "the module needs a name")) (block))
+    (let j:i32 3)
+    (while (lt j (- count 1))
+      (let next:i32 (call skip_form toks j))
+      (if (and (eq (call kind_at toks j) compiler.Kind.lparen) (call symbol_is src toks (+ j 1) "import"))
+          (block
+            ;; (import NAME) or (import NAME as ALIAS): the children after the head
+            (let parts:i32 0)
+            (let c:i32 (+ j 2))
+            (let shape_ok:bool true)
+            (while (lt c (- next 1))
+              (set! parts (+ parts 1))
+              (if (and (or (eq parts 1) (eq parts 3)) (neq (call kind_at toks c) compiler.Kind.symbol)) (set! shape_ok false) (block))
+              (if (and (eq parts 2) (not (call symbol_is src toks c "as"))) (set! shape_ok false) (block))
+              (set! c (call skip_form toks c)))
+            (if (or (not shape_ok) (and (neq parts 1) (neq parts 3)))
+                (return (call at_token src toks j "an import is (import NAME) or (import NAME as ALIAS)"))
+                (block)))
+          (block))
+      (set! j next))
+    (ptr.null buf.Buf))
+
   (fn first_item [src:(ptr Src)] -> (ptr compiler.Node)
     (call nth (get src Src.root) 2))
 
@@ -329,7 +453,9 @@
          (call buf.push_str (get st State.structs_out) "  ")
          (call emit m item 0 (get st State.structs_out))
          (call buf.push_byte (get st State.structs_out) 10))
-        ((call eq_lit h "fn")
+        ;; anything else but an import goes with the functions, as in
+        ;; resolver.rs, where the parser reports what is wrong with it
+        ((not (call eq_lit h "import"))
          (call buf.push_str (get st State.fns_out) "  ")
          (call emit m item 0 (get st State.fns_out))
          (call buf.push_byte (get st State.fns_out) 10))
@@ -343,6 +469,12 @@
                 (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call (strmap.slot_key i32) t i)) (call (strmap.slot_key i32) t i))
                 1)
           (block))))
+
+  ;; Reports a loaded file's structure error, if it has one.
+  (fn malformed [st:(ptr State) src:(ptr Src)] -> bool
+    (if (eq (get src Src.error) (ptr.null buf.Buf)) (return false) (block))
+    (call buf.push_bytes (get st State.err) (call buf.bytes (get src Src.error)))
+    true)
 
   (fn fail [st:(ptr State) msg:str name:(ptr str.Bytes)] -> bool
     (call buf.push_str (get st State.err) msg)
@@ -425,6 +557,7 @@
             (set! start (+ i 1)))
           (block)))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " import)) (block))
+    (if (call malformed st src) (return false) (block))
     (call (strmap.set (ptr str.Bytes)) (get st State.found) key path)
     (if (not (call check_name st name path)) (return false) (block))
     (if (call (strmap.has i32) (get st State.done) name) (return true) (block))
@@ -469,6 +602,7 @@
     (put st State.paths (call (strmap.make (ptr str.Bytes)) (call alloc.default) 16))
     (put st State.found (call (strmap.make (ptr str.Bytes)) (call alloc.default) 32))
     (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
+    (if (call malformed st src) (return false) (block))
     (if (call resolve_imports st src (call dirname entry)) (block) (return false))
     (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))
     (call emit_module st entry_mod)

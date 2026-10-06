@@ -1,8 +1,9 @@
 ;; binarytrees: the Benchmarks Game's binary-trees. Builds perfect binary
 ;; trees of many depths and walks them, allocating millions of short-lived
-;; nodes; one long-lived tree stays throughout. AIPL has no general free, so
-;; each short-lived tree comes from an arena that is reset once the tree is
-;; checked (std/arena), as the benchmark allows for memory pools.
+;; nodes; one long-lived tree stays throughout. Each short-lived tree comes
+;; from an arena that is reset once the tree is checked (std/arena), as the
+;; benchmark allows for memory pools; freeing node by node with std/heap is
+;; about 4x slower (docs/design/HEAP_PLAN.md).
 ;;
 ;;   ./binarytrees 10
 (module binarytrees

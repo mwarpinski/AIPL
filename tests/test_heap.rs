@@ -1,4 +1,4 @@
-//! std/heap's failure checks (docs/HEAP_PLAN.md): a double free, a free of
+//! std/heap's failure checks (docs/design/HEAP_PLAN.md): a double free, a free of
 //! memory another heap (or no heap) allocated, a free with the wrong size
 //! or type, and a write after free each stop the program with a contract
 //! failure naming the check, in the VM, under aipl-run, and natively. The

@@ -1,5 +1,7 @@
 # Rewriting the self-hosted code generator on typed data
 
+**Status: done (2026-10-05).** Kept as the design record.
+
 `aipl_src/codegen.aipl` (about 3000 lines) is the self-hosted wasm code
 generator, and everything else trusts it: the AIPL toolchain compiles itself
 with it, and the native backend translates its output. It was written before
@@ -7,7 +9,7 @@ AIPL had structs, enums, or constants, so all of its data is raw memory
 (`mem.load32`/`mem.store32` at computed offsets), and every kind of thing is
 a bare number: AST node kinds (6, 7, 20...), keywords (0-86 for ops, 100-115
 for forms, 200-209 for types), static types (200-212), and compile errors
-(90-101, 768, 971...). AIPL_Structural_Audit.md (S2) explains why that is the
+(90-101, 768, 971...). docs/history/AUDIT_2026-10.md (S2) explains why that is the
 riskiest code in the repository.
 
 This plan moves it, and the tokenizer/parser in `aipl_src/compiler.aipl`, onto
@@ -42,7 +44,7 @@ file type-checks, not when a search finds nothing.
 | CR6 | Tables as typed structs inside `Cg`: functions, locals, structs and fields, string literals, `call_ref` signatures, the label stack, WASI imports; `Cg` replaces runtime cells 8-32. Cells 4, 44, 48, and 60 stay, as the host interface | Done 2026-10-05 (CR6a-g): `FnInfo`, `Local`, `StructInfo`/`Field`, `Sig`, `StrLit` plus a `buf.Buf` blob, and enums `Wasi` and `Label`, all held by `Cg`. Cell 16 keeps the keyword map, which is built once and reused across compiles. Tables are bounded arrays, so counts stop at their limits after reporting the error (a new test checks errors 92 and 93). Raw memory operations fell from 422 to 252, nearly all of them now writing output bytes (CR7) or reading source bytes |
 | CR7 | Output: a buffer with a position instead of `out_ptr` arithmetic and returned byte counts; wasm opcodes and section ids as constants | Done 2026-10-05 except the opcode constants (moved to CR9). An `Out` cursor; every emitter and compile function appends to one; the module assembler builds each section in its own cursor (`emit_section`), function types through one `emit_func_type`, and the WASI signatures as a table (`wasi_sig`). Converted function by function with temporary old-style wrappers, all removed. Raw memory operations: 38 (from 422), reading source bytes and the host cells |
 | CR8 | compiler.aipl: tokens and nodes built with `new`/`put`, the token record read through a struct | Done 2026-10-05. Character codes are named constants (`CH_LPAREN`), keywords like `true` and `->` are matched against string literals (`span_is`), the parser's state is a `Parser` struct instead of two cells at the front of the node buffer, and the self-tests spell their inputs as string literals instead of byte codes. The dead `resolve_symbol_index` is gone. 535 to 321 lines; raw memory operations 150 to 17 |
-| CR9 | Documentation (AIPL_SPEC.md 6.4 and 7.9, LANGUAGE_GAPS.md 6), the audit, and a before/after comparison (size, speed of compiling the toolchain) | Done 2026-10-05, with the opcode constants from CR7 (`OP_IF`, `OP_I32_ADD`, `BLOCK_EMPTY`, `VT_I32`, ...). Results below |
+| CR9 | Documentation (AIPL_SPEC.md 6.4 and 7.9, ROADMAP.md), the audit, and a before/after comparison (size, speed of compiling the toolchain) | Done 2026-10-05, with the opcode constants from CR7 (`OP_IF`, `OP_I32_ADD`, `BLOCK_EMPTY`, `VT_I32`, ...). Results below |
 
 Each step is one or more commits on `features/codegen-rewrite`, merged into
 `development` when the safety net is green.

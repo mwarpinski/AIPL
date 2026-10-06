@@ -1,4 +1,4 @@
-//! The type checker in AIPL (docs/CHECKER_PLAN.md): each piece checked
+//! The type checker in AIPL (docs/design/CHECKER_PLAN.md): each piece checked
 //! against the Rust front end it mirrors, on the same text.
 
 use aipl_core::checker::TypeChecker;
@@ -788,6 +788,8 @@ const FORMS: &[&str] = &[
     "(sizeof (result i32 i32))",
     "(sizeof (ptr Nope))",
     "(sizeof bool)",
+    "(match_result (ok 1i64) (ok v 0) (err e 1))",
+    "(match_result (err:i32 2.5) (ok v 0) (err e 1))",
     // arrays
     "(arr.len (arr.new i32 1i64))",
     "(arr.len (arr.new void 1))",
