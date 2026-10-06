@@ -605,8 +605,22 @@
            (block (call unknown_struct c at name) (call void_t))))
       (ast.Expr.get_ [_ sname fname ptr] (call infer_field c env at sname fname ptr false (call placeholder at)))
       (ast.Expr.put_ [_ sname fname ptr val] (call infer_field c env at sname fname ptr true val))
-      (ast.Expr.sizeof [_ name]
-       (if (call has_struct c name) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
+      (ast.Expr.sizeof [_ st]
+       (match st
+         (ast.Type.struct_ [name]
+          (if (call has_struct c name) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
+         (else
+          (call validate_or_fail c st at)
+          (if (get c C.failed) (return (call void_t)) (block))
+          (let k:i32 (call tag st))
+          (if (or (eq k 6) (or (eq k 8) (eq k 9)))
+              (block
+                (let b:(ptr buf.Buf) (call msg c at))
+                (call s b "sizeof needs a struct or a type that can be stored in memory, got ")
+                (call ty b st)
+                (call fail c b)
+                (call void_t))
+              (call i32_t)))))
       (ast.Expr.arr_new [_ ety size]
        (call validate_or_fail c (make ast.Type.arr ety) at)
        (if (get c C.failed) (return (call void_t)) (block))

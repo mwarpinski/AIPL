@@ -1657,12 +1657,17 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                 _ => return Err(format!("Unsupported field type for struct put: {:?}", field_ty)),
             }
         }
-        Expr::Sizeof { struct_name, .. } => {
-            let def = ctx
-                .structs
-                .get(struct_name)
-                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let size = crate::checker::get_struct_size(def)?;
+        Expr::Sizeof { ty, .. } => {
+            let size = match ty {
+                Type::Struct(struct_name) => {
+                    let def = ctx
+                        .structs
+                        .get(struct_name)
+                        .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+                    crate::checker::get_struct_size(def)?
+                }
+                other => crate::checker::type_size_and_align(other)?.0,
+            };
             func.instruction(&Instruction::I32Const(size as i32));
         }
         Expr::ArrNew { elem_ty, size, .. } => {

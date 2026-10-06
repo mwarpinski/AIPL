@@ -2556,10 +2556,15 @@
           (call emit_memop_offset o (call store_opcode ftype) (call mem_align ftype) f_offset)
           (set! done true))
         (block))
-    (if (eq op_id Kw.sizeof) ;; sizeof Struct
+    (if (eq op_id Kw.sizeof) ;; sizeof Struct, or sizeof of any memory type
         (block
           (let snode:(ptr compiler.Node) (call nth_child node 1))
-          (let size:i32 (call get_struct_size cg (call node_a snode) (call node_b snode)))
+          (let is_struct:bool (and (eq (call node_kind snode) compiler.Kind.symbol)
+                                   (and (eq (call ty_of_kw (call classify_keyword cg (call node_a snode) (call node_b snode))) Ty.none)
+                                        (eq (call find_union cg (call node_a snode) (call node_b snode)) (ptr.null UnionInfo)))))
+          (let size:i32 (if is_struct
+                            (call get_struct_size cg (call node_a snode) (call node_b snode))
+                            (call type_size (call elem_type_id cg snode))))
           (call emit_i32_const o size) (set! done true))
         (block))
     (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew

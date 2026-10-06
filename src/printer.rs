@@ -239,7 +239,7 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::PutField { struct_name, field_name, ptr, val, .. } => {
             format!("(put {} {}.{} {})", expr_str(ptr), struct_name, field_name, expr_str(val))
         }
-        Expr::Sizeof { struct_name, .. } => format!("(sizeof {})", struct_name),
+        Expr::Sizeof { ty, .. } => format!("(sizeof {})", type_str(ty)),
         Expr::ArrNew { elem_ty, size, .. } => format!("(arr.new {} {})", type_str(elem_ty), expr_str(size)),
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             format!("(arr.get {} {} {})", type_str(elem_ty), expr_str(ptr), expr_str(index))

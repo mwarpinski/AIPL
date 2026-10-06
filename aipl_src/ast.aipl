@@ -65,7 +65,7 @@
                (new_ at:i32 name:(ptr str.Bytes))
                (get_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr)
                (put_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr val:Expr)
-               (sizeof at:i32 name:(ptr str.Bytes))
+               (sizeof at:i32 ty:Type)
                (arr_new at:i32 ty:Type size:Expr)
                (arr_get at:i32 ty:Type ptr:Expr index:Expr)
                (arr_set at:i32 ty:Type ptr:Expr index:Expr val:Expr)

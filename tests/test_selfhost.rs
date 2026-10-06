@@ -380,6 +380,7 @@ fn self_hosted_bytes_match_floats() {
   (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
   (fn eq32 [a:f32 b:f32] -> bool (eq a b))
   (fn sz [] -> i32 (sizeof P))
+  (fn sz2 [] -> i32 (+ (sizeof f64) (+ (sizeof (ptr P)) (sizeof f32))))
   (fn st [p:(ptr P) v:f64] -> f64 (put p P.z v) (get p P.z)))
 "#;
     assert_self_hosted_matches_rust("floats", src);

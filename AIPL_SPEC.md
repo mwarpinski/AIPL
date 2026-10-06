@@ -64,7 +64,7 @@ expr           ::= literal
                  | "(" "get" expr "(" struct_name type+ ")" identifier ")"
                  | "(" "put" expr struct_name "." identifier expr ")"
                  | "(" "put" expr "(" struct_name type+ ")" identifier expr ")"
-                 | "(" "sizeof" struct_ref ")"
+                 | "(" "sizeof" ( struct_ref | type ) ")"
                  | "(" "arr.new" type expr ")"
                  | "(" "arr.get" type expr expr ")"
                  | "(" "arr.set" type expr expr expr ")"
@@ -219,7 +219,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 | `(new S)` | `(ptr S)` | `mem.alloc (sizeof S)`; the memory is not zeroed beyond what the heap already holds |
 | `(get p S.f)` | type of `f` | `p` must be a `(ptr S)`; load at `p + offset(f)` with the instruction for `f`'s type |
 | `(put p S.f v)` | `void` | `p` must be a `(ptr S)`; store at `p + offset(f)`; `v` must have `f`'s type |
-| `(sizeof S)` | `i32` | compile-time constant |
+| `(sizeof S)` | `i32` | compile-time constant: a struct's size, or for any type that can be stored in memory its width (`(sizeof i64)` 8, `(sizeof (ptr S))` 4), so generic code can size a `T`; `void`, a result, and an unknown struct are checker errors |
 | `(arr.new T n)` | `(arr T)` | evaluates `n` first; `n < 0` is a VM error and a wasm trap; then allocates `4 + n * sizeof(T)` bytes, writes `n` into the first 4, returns the address after them |
 | `(arr.get T a i)` | `T` | `a` must be an `(arr T)`; load at `a + i * sizeof(T)` |
 | `(arr.set T a i v)` | `void` | `a` must be an `(arr T)`; store at `a + i * sizeof(T)` |

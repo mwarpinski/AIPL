@@ -196,7 +196,7 @@
       (ast.Expr.put_ [_ sname fname ptr val]
        (call s b "(put ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
        (call s b " ") (call print_expr b val) (call s b ")"))
-      (ast.Expr.sizeof [_ name] (call s b "(sizeof ") (call by b name) (call s b ")"))
+      (ast.Expr.sizeof [_ st] (call s b "(sizeof ") (call print_type b st) (call s b ")"))
       (ast.Expr.arr_new [_ ty size] (call s b "(arr.new ") (call print_type b ty) (call s b " ") (call print_expr b size) (call s b ")"))
       (ast.Expr.arr_get [_ ty ptr index]
        (call s b "(arr.get ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ") (call print_expr b index) (call s b ")"))

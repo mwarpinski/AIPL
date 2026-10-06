@@ -251,6 +251,21 @@
   (fn is_scalar [s:(ptr str.Bytes)] -> bool
     (match (call scalar_type s) (ast.MaybeType.none false) (ast.MaybeType.some [_] true)))
 
+  ;; sizeof's operand: a struct by its bare name, or any type.
+  (fn parse_sizeof_type [p:(ptr P) at:i32] -> ast.Type
+    (let k:compiler.Kind (call peek p))
+    (if (eq k compiler.Kind.none)
+        (block (call fail_str p at "Expected a type in sizeof, got EOF") (return (make ast.Type.i32)))
+        (block))
+    (if (eq k compiler.Kind.symbol)
+        (block
+          (let s:(ptr str.Bytes) (call text p (get p P.pos)))
+          (if (and (not (call is_scalar s)) (not (call (strmap.has i32) (get p P.unions) s)))
+              (block (call want_next p) (return (make ast.Type.struct_ s)))
+              (block)))
+        (block))
+    (call parse_type p))
+
   (fn parse_type [p:(ptr P)] -> ast.Type
     (let start:i32 (call cur_pos p))
     (let i:i32 (call next p))
@@ -626,7 +641,7 @@
       ((eq form Form.match_result) (call parse_match_result p at))
       ((eq form Form.new_) (make ast.Expr.new_ at (call expect_symbol p "struct name in new" at)))
       ((or (eq form Form.get_) (eq form Form.put_)) (call parse_get_put p (eq form Form.put_) at))
-      ((eq form Form.sizeof) (make ast.Expr.sizeof at (call expect_symbol p "struct name in sizeof" at)))
+      ((eq form Form.sizeof) (make ast.Expr.sizeof at (call parse_sizeof_type p at)))
       ((eq form Form.return_)
        (if (eq (call peek p) compiler.Kind.rparen)
            (make ast.Expr.return_ at (make ast.MaybeExpr.none))
