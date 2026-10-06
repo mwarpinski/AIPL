@@ -428,6 +428,38 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Errors in several functions, in different files, come back one per line,
+/// each naming its own file, the same from both toolchains.
+#[test]
+fn wasm_toolchain_reports_each_failing_function_with_its_file() {
+    let dir = root().join("target").join(format!("aipl_typeerrs_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn f [] -> i32\n    (+ 1 true)))").unwrap();
+    let path = dir.join("main.aipl");
+    std::fs::write(&path, "(module main\n  (import lib)\n  (fn g [] -> i32 zz)\n  (fn main [] -> i32 (call lib.f)))").unwrap();
+    let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+    let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+    let wasm_driver::Outcome::TypeError(ours) = wasm_driver::run(&driver_wasm(), &rel, "aipl_src/std/") else {
+        panic!("expected a type error ({rust})")
+    };
+    // (file, message) per line; the two toolchains spell paths differently
+    let lines = |e: &str| -> Vec<(String, String)> {
+        e.lines()
+            .map(|l| {
+                let (p, m) = l.split_once(".aipl: ").unwrap_or_else(|| panic!("no file in {l}"));
+                (p.rsplit('/').next().unwrap().to_string(), m.to_string())
+            })
+            .collect()
+    };
+    let expected = vec![
+        ("lib".to_string(), "3:5: Type mismatch in binary op: i32 vs bool".to_string()),
+        ("main".to_string(), "3:19: Undefined variable 'zz'".to_string()),
+    ];
+    assert_eq!(lines(&rust), expected, "{rust}");
+    assert_eq!(lines(&ours), expected, "{ours}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A file that is not one well-formed (module NAME ...) form is rejected by
 /// the wasm toolchain with the Rust toolchain's message, word for word, and
 /// never compiled (a fuzzing run found the AIPL resolver accepting such files

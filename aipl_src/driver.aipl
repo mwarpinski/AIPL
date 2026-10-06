@@ -64,10 +64,20 @@
     (put res Out.addr (get t str.Bytes.addr))
     (put res Out.len (get t str.Bytes.len)))
 
+  ;; "path: line:col: message" for each error, one per line.
+  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
+    (let pr:(ptr checker.Problem) first)
+    (while (neq pr (ptr.null checker.Problem))
+      (if (neq pr first) (call buf.push_byte b 10) (block))
+      (call buf.push_bytes b (call buf.bytes (call locate_one orig gen pr entry)))
+      (set! pr (get pr checker.Problem.next)))
+    b)
+
   ;; "path: line:col: message" for an error at an offset in the flat
   ;; program: through gen (empty when there were no generics) to the
   ;; resolver's text, through orig to a file.
-  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
+  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
     (let at:i32 (get pr checker.Problem.at))
     (let g:(ptr origins.Entry) (call origins.find gen at))
     (if (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)) (block))

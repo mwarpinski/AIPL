@@ -606,7 +606,7 @@ fn constant_errors_match_word_for_word() {
 /// file prefix the resolver adds to parse and constant errors.
 fn rust_verdict(flat: &str) -> Result<(), String> {
     // both name the file; check_text is given text, not a file
-    let strip = |e: String| e.strip_prefix("m.aipl: ").unwrap_or(&e).to_string();
+    let strip = |e: String| e.split('\n').map(|l| l.strip_prefix("m.aipl: ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
     let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(strip)?;
     TypeChecker::new().check_module(&m).map_err(strip)
 }
@@ -863,4 +863,38 @@ fn checkers_agree_on_every_form() {
         rejected += theirs.is_err() as usize;
     }
     assert!(rejected >= 140, "{rejected} of {} rejected", FORMS.len());
+}
+
+/// Definitions stop at the first error; after them every function is
+/// checked, and each failing one gives its first error, one per line in
+/// source order, the same in both checkers.
+#[test]
+fn checkers_report_each_failing_function() {
+    let front = front::load();
+    let cases: [(&str, &str); 3] = [
+        // two failing functions around a good one
+        (
+            "(module m\n  (fn a [] -> i32 (+ 1 true))\n  (fn good [] -> i32 1)\n  (fn b [] -> i32 (set! zz 1) 0)\n  (fn main [] -> i32 0))",
+            "2:19: Type mismatch in binary op: i32 vs bool\n4:19: Undefined variable 'zz' in set!",
+        ),
+        // a function failing inside a loop leaves no loop behind for the next
+        (
+            "(module m\n  (fn a [] -> i32 (while true (+ 1 true)) 0)\n  (fn b [] -> i32 (break) 0)\n  (fn main [] -> i32 0))",
+            "2:31: Type mismatch in binary op: i32 vs bool\n3:19: break is only allowed inside a while or loop body",
+        ),
+        // a definition's error is the only one
+        (
+            "(module m\n  (struct S [x:(ptr Nope)])\n  (fn a [] -> i32 (+ 1 true))\n  (fn main [] -> i32 0))",
+            "",
+        ),
+    ];
+    for (flat, expected) in cases {
+        let theirs = rust_verdict(flat).unwrap_err();
+        let ours = aipl_verdict(&front, flat).unwrap_err();
+        assert_eq!(ours, theirs, "{flat}");
+        if !expected.is_empty() {
+            assert_eq!(theirs, expected, "{flat}");
+        }
+    }
+    assert_eq!(rust_verdict(cases[2].0).unwrap_err().lines().count(), 1);
 }

@@ -1,7 +1,7 @@
 ;; The type checker in AIPL: src/checker.rs rule for rule, over ast.aipl's
 ;; tree, with the same first error word for word (docs/design/CHECKER_PLAN.md).
-;; Types in messages use Rust's Debug spelling (Ptr(Struct("P"))), as the
-;; Rust checker's do.
+;; Types and ops in messages are written as AIPL source writes them
+;; ((ptr P), +), as the Rust checker's are.
 ;;
 ;; Scopes: Rust checks if branches, blocks, loop bodies, and match arms
 ;; against a copy of the environment, and let adds to the current one. Here
@@ -10,7 +10,9 @@
 ;;
 ;; Errors: the first is recorded in C.err; every function returns early
 ;; once C.failed is set (later checks would look up definitions that the
-;; failed check never confirmed exist).
+;; failed check never confirmed exist). Definitions and signatures stop at
+;; the first error; each function body is checked on its own, and every
+;; failing function adds its first error to C.problems, as in Rust.
 (module checker
   (import alloc)
   (import compiler)
@@ -33,7 +35,8 @@
              declared:(ptr (strmap.StrMap ast.Type))
              loop_depth:i32
              ret:ast.MaybeType
-             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
+             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool
+             problems:(ptr Problem) last_problem:(ptr Problem)])
 
   ;; ===== Messages =====
 
@@ -238,8 +241,18 @@
       (put sig Sig.ret (get fd ast.FnDef.ret))
       (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     (loop k 0 (- (arr.len fns) 1) 1
-      (if (get c C.failed) (return) (block))
-      (call check_fn c (arr.get (ptr ast.FnDef) fns k))))
+      (call check_fn c (arr.get (ptr ast.FnDef) fns k))
+      (if (get c C.failed)
+          (block
+            (call add_problem c (call problem (get c C.err_at) (get c C.err)))
+            (put c C.failed false))
+          (block))))
+
+  (fn add_problem [c:(ptr C) pr:(ptr Problem)] -> void
+    (if (eq (get c C.problems) (ptr.null Problem))
+        (put c C.problems pr)
+        (put (get c C.last_problem) Problem.next pr))
+    (put c C.last_problem pr))
 
   (fn register_enum [c:(ptr C) m:(ptr ast.Module) e:(ptr ast.EnumDef)] -> void
     (let at:i32 (get e ast.EnumDef.at))
@@ -1548,10 +1561,11 @@
 
   ;; ===== Entry =====
 
-  ;; A rejected program's first error: where, and the message.
-  (struct Problem [at:i32 text:(ptr buf.Buf)])
+  ;; An error: where, the message, and the next error (null for the last).
+  (struct Problem [at:i32 text:(ptr buf.Buf) next:(ptr Problem)])
 
-  ;; Checks a parsed module: null if it type-checks, else the first error.
+  ;; Checks a parsed module: null if it type-checks, else its errors (a
+  ;; definition's error alone, or each failing function's first error).
   (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
     (let c:(ptr C) (new C))
     (put c C.src src)
@@ -1563,11 +1577,14 @@
     (put c C.loop_depth 0)
     (put c C.ret (make ast.MaybeType.none))
     (put c C.failed false)
+    (put c C.problems (ptr.null Problem))
+    (put c C.last_problem (ptr.null Problem))
     (call check_module c m)
-    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (ptr.null Problem)))
+    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (get c C.problems)))
 
   (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem)
     (let pr:(ptr Problem) (new Problem))
     (put pr Problem.at at)
     (put pr Problem.text text)
+    (put pr Problem.next (ptr.null Problem))
     pr))

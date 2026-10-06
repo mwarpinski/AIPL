@@ -108,19 +108,35 @@ impl TypeChecker {
         }
     }
 
-    /// Checks a module. When the resolver recorded where its items were
-    /// written, an error is prefixed with the file of the item it is in.
+    /// Checks a module. Definitions and signatures stop at the first error
+    /// (everything after depends on them); then every function body is
+    /// checked, and each failing function gives its first error, one per
+    /// line in source order. When the resolver recorded where items were
+    /// written, each error is prefixed with its item's file.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
-        self.check_items(module).map_err(|e| match module.sources.get(&*self.item.borrow()) {
+        self.check_items(module).map_err(|e| self.name_file(module, e))?;
+        let mut errors = Vec::new();
+        for f in &module.functions {
+            self.at_item("fn", &f.name);
+            if let Err(e) = self.check_fn_def(f) {
+                errors.push(self.name_file(module, e));
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+    }
+
+    fn name_file(&self, module: &Module, e: String) -> String {
+        match module.sources.get(&*self.item.borrow()) {
             Some(source) => source.name_file(e),
             None => e,
-        })
+        }
     }
 
     fn at_item(&self, kind: &str, name: &str) {
         *self.item.borrow_mut() = format!("{} {}", kind, name);
     }
 
+    /// Definitions and function signatures.
     fn check_items(&mut self, module: &Module) -> Result<(), String> {
         // Register enum definitions (AIPL_SPEC.md 4.I)
         for e in &module.enums {
@@ -229,12 +245,6 @@ impl TypeChecker {
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
             self.fn_signatures
                 .insert(f.name.clone(), (param_types, f.return_type.clone()));
-        }
-
-        // Second pass: type check bodies and verify contracts
-        for f in &module.functions {
-            self.at_item("fn", &f.name);
-            self.check_fn_def(f)?;
         }
 
         Ok(())
