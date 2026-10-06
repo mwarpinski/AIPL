@@ -158,6 +158,28 @@
     (call x64.mov_ri32 c 2 (get r Reason.len))
     (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine)))
 
+  ;; unreachable: a failed contract or bounds check has left its message in
+  ;; linear memory, its address and length in cells 92 and 96 (AIPL_SPEC.md
+  ;; 7.9); the trap routine prints that instead of the reason, as aipl-run
+  ;; does. Any other unreachable traps as before.
+  (fn emit_unreachable [l:(ptr L)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (if (gt (get l L.mem_max) 0)
+        (block
+          (call load_mem_size l (call rax))
+          (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) 100)
+          (let small:i32 (call x64.jcc c (call x64.cc_b)))
+          (call x64.load c 32 2 (call x64.mem (call r15) 96))
+          (call x64.test_rr c 32 2 2)
+          (let none:i32 (call x64.jcc c (call x64.cc_e)))
+          (call x64.load c 32 6 (call x64.mem (call r15) 92))
+          (call x64.lea c 64 6 (call x64.mem_index (call r15) 6 1 0))
+          (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine))
+          (call x64.patch_rel32 c small (call buf.len c))
+          (call x64.patch_rel32 c none (call buf.len c)))
+        (block))
+    (call emit_trap l (get l L.unreachable)))
+
   ;; Traps with reason `r` when condition `cc` holds (after a compare).
   (fn emit_trap_if [l:(ptr L) cc:i32 r:(ptr Reason)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
@@ -501,7 +523,7 @@
        true)
       ((eq op 0)
        (put l L.cached false)
-       (call emit_trap l (get l L.unreachable))
+       (call emit_unreachable l)
        (put l L.dead true)
        true)
       (else false)))

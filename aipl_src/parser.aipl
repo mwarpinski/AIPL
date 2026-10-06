@@ -936,6 +936,24 @@
       (let d:i32 (bitand (shru c (* 4 (- 3 k))) 15))
       (call buf.push_byte b (if (lt d 10) (+ d 48) (+ d 55)))))
 
+  ;; The one expression at the start of the len bytes at src (what follows
+  ;; it is ignored), for codegen.aipl's contract messages. The program's
+  ;; unions are not known here, so a union named in a type parses as a
+  ;; struct's name, which prints the same.
+  (fn parse_expr_text [src:i32 len:i32] -> ast.Expr
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
+    (let n:i32 (call compiler.tokenize src len toks))
+    (let p:(ptr P) (new P))
+    (put p P.src src)
+    (put p P.toks toks)
+    (put p P.n n)
+    (put p P.pos 0)
+    (put p P.failed false)
+    (put p P.forms (call form_table))
+    (put p P.ops (call op_table))
+    (put p P.unions (call (strmap.make i32) 16))
+    (call parse_expr p))
+
   ;; Tokenizes and parses len bytes at src.
   (fn parse [src:i32 len:i32] -> (ptr Parsed)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))

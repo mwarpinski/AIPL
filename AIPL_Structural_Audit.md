@@ -42,7 +42,7 @@ The recommended order of work is at the end (section 4).
 
 Defects that are fixable without redesign. Ordered by risk.
 
-**D1. The safety features do not reach compiled code.** `req`/`ens` contracts are type-checked and then dropped by both code generators (AIPL_SPEC.md 3, 7.6). `inv` is parsed and never evaluated. Array indexes are bounds-checked only in the VM. Demonstrated:
+**D1. The safety features do not reach compiled code.** *Fixed 2026-10-05 (docs/CHECKS_PLAN.md): compiled wasm and native code check `req`, `ens`, and every array index, and stop with the VM's message; `inv` is still never evaluated (B5).* `req`/`ens` contracts are type-checked and then dropped by both code generators (AIPL_SPEC.md 3, 7.6). `inv` is parsed and never evaluated. Array indexes are bounds-checked only in the VM. Demonstrated:
 
 ```lisp
 (fn main [] -> i32 (let a:(arr i32) (arr.new i32 2)) (arr.set i32 a 5 99) (arr.get i32 a 5))
@@ -151,7 +151,7 @@ A single feature would fix most of this: tagged unions with exhaustive `match`, 
 
 *Status 2026-10-05:* unions with exhaustive `match` (on unions and enums) are done (AIPL_SPEC.md 4.J), and `compiler.aipl`'s `Node.a` is no longer used two ways (a group's first child is a typed `first` field). Still open: `result` as a union instance (and so the 32-bit payload limit), generic unions, and moving the compiler's own AST onto unions.
 
-**S4. The safest backend is the one nobody runs.** The VM is the only place contracts and bounds checks execute (D1). It is also a tree-walker with string-keyed scopes, seconds where compiled code takes milliseconds, and it is still a third semantics (Rust strings for `str`, `sys.exit` as an error, `(+ str str)`). Every feature must still be implemented in it. Once contracts and bounds checks compile (D1), the VM has no unique job left except `aipl eval`/`aipl test`, which the compiled toolchain could do. Retiring it removes one column from S1.
+**S4. The safest backend is the one nobody runs.** The VM is the only place contracts and bounds checks execute (D1; *no longer so since 2026-10-05*). It is also a tree-walker with string-keyed scopes, seconds where compiled code takes milliseconds, and it is still a third semantics (Rust strings for `str`, `sys.exit` as an error, `(+ str str)`). Every feature must still be implemented in it. Once contracts and bounds checks compile (D1), the VM has no unique job left except `aipl eval`/`aipl test`, which the compiled toolchain could do. Retiring it removes one column from S1.
 
 **S5. Portability is a stated requirement that the stack does not yet meet.**
 - Compiled threads need the wasi-threads `thread-spawn` import, which wasmtime removed in version 47. They run only under AIPL's own runner, not the stock wasmtime CLI or a browser.
@@ -171,7 +171,7 @@ This is acceptable for one author and becomes the main source of coupling once p
 
 Each step is independently valuable. Earlier steps make later ones cheaper.
 
-1. **Make the safety features real (D1).** Compile `req`/`ens` and array bounds checks into wasm, with traps that name the contract and position. Add a wasm name section so traps can name the function. Decide `inv`. Measure the cost on all eight benchmarks before and after. *Why first:* it is the language's core promise, and nothing else depends on it.
+1. **Make the safety features real (D1).** *Done 2026-10-05, except `inv` and the name section; compiled messages name the function and contract but not the position (docs/CHECKS_PLAN.md).* Compile `req`/`ens` and array bounds checks into wasm, with traps that name the contract and position. Add a wasm name section so traps can name the function. Decide `inv`. Measure the cost on all eight benchmarks before and after. *Why first:* it is the language's core promise, and nothing else depends on it.
 2. **Diagnostics pass (D2).** Report every independent error, spell types in AIPL syntax, print errors as plain text, write targeted messages for the top pitfalls, and check unused templates against a placeholder type.
 3. **Constants, enums, and sum types with `match` (D4, D5, S3) as one design.** Include `result` as a sum-type instance (lifting the 32-bit payload limit), and must-use results with `(drop ...)`.
 4. **Rewrite `codegen.aipl` and `compiler.aipl` on structs and enums (S2),** then **write the type checker in AIPL (S1)**. Then delete `src/parser.rs`, `src/resolver.rs`, `src/generics.rs` and `src/compiler/wasm.rs`. With step 1 done, retire the VM (S4).
@@ -195,7 +195,7 @@ Sections A.2–A.4 are the audit as written on 2026-09-17, and their line refere
 | B2 integer semantics diverge | Fixed (P3, i64 task) |
 | B3 type-system holes | Fixed: strings compile (P6), `set!` is void and `match_result` binds real types (P7), `if` block types follow branch types, pointers and arrays are strictly typed `(ptr S)` / `(arr T)`, and `(fn [..] -> r)` types parse (P10) |
 | B4 scoping undefined | Fixed (P7) |
-| B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Partly fixed (2026-10-01): `aipl verify` now says contracts are type-checked, not proven, and a contract failure prints the contract as source with its position and the arguments. Still open: `inv` is never evaluated and compiled wasm has no contracts |
+| B5 `inv` never evaluated, contracts absent from wasm, `verify` overclaims | Partly fixed (2026-10-01): `aipl verify` now says contracts are type-checked, not proven, and a contract failure prints the contract as source with its position and the arguments. Compiled code checks `req` and `ens` since 2026-10-05 (D1). Still open: `inv` is never evaluated |
 | B6 two allocators | Fixed (P5) |
 | B7 fabrications in tree | Fixed (P1) |
 | B8 duplicated code | Fixed: `wasm_emitter.aipl` is in `attic/`; `compiler.aipl` holds the only `encode_u32`/`emit_header` |
@@ -328,7 +328,7 @@ Found during P8–P14 and the 2026-10-01 re-check.
 
 **N3. The checker exists only in Rust. [Open]** The self-hosted toolchain compiles whatever it is given; an ill-typed program can miscompile instead of failing. It is also why `src/resolver.rs` stays alongside `resolver.aipl`: the Rust checker consumes the Rust resolver's `Module`.
 
-**N4. Compiled array indexing is unchecked. [Open]** The VM bounds-checks `arr.get`/`arr.set`; wasm does not, so an off-by-one in compiled code silently reads or overwrites the neighbouring heap block. The differential test accepts this one divergence explicitly. The length is in the array header, so a check is one load, compare, and branch; the alternative is to keep the divergence documented.
+**N4. Compiled array indexing is unchecked. [Fixed 2026-10-05: compiled code checks every index with the VM's message, and the differential test requires agreement.]** The VM bounds-checks `arr.get`/`arr.set`; wasm does not, so an off-by-one in compiled code silently reads or overwrites the neighbouring heap block. The differential test accepts this one divergence explicitly. The length is in the array header, so a check is one load, compare, and branch; the alternative is to keep the divergence documented.
 
 **N5. Self-hosted compiler capacities were nearly exhausted. [Fixed 2026-10-01]** codegen.aipl's tables held 256 functions and 31 structs; the toolchain itself had reached 249 functions, so a few more would have broken self-compilation with error 92. Now 2048 functions, 1024 locals per function, and 255 structs, with a parity test past the old limits. The remaining fixed limits are listed in LANGUAGE_GAPS.md 6.
 

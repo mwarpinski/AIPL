@@ -983,7 +983,8 @@ fn codegen_combined_source() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let module = Resolver::resolve(&root.join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
     let src = aipl_core::printer::print_module(&module);
-    assert!(!src.contains("(import"), "combined module must be import-free");
+    // (a line, not a string literal: printer.aipl prints imports)
+    assert!(!src.lines().any(|l| l.trim_start().starts_with("(import")), "combined module must be import-free");
     src
 }
 

@@ -127,6 +127,15 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_lock_a_non_lock_word", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p) 0))"),
     ("trap_store_into_reserved_block", "(module m (fn main [] -> i32 (let a:i32 (* 8 64)) (mem.store32 a 7) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
+    // compiled bounds checks fail with the VM's message (cells 92/96)
+    ("trap_index_past_the_end", "(module m (fn main [] -> i32 (let a:(arr i32) (arr.new i32 5)) (arr.get i32 a 5)))"),
+    ("trap_negative_index_store", "(module m (fn main [] -> i32 (let a:(arr i64) (arr.new i64 3)) (arr.set i64 a -2147483648 1i64) 0))"),
+    // and so do compiled contracts (without the position)
+    ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
+    (
+        "trap_failed_ens_on_return",
+        "(module m (fn f [n:i64] -> i64 (ens (lt res 10i64)) (if (gt n 5i64) (return (* n 2i64)) (block)) n) (fn main [] -> i32 (i32.wrap (call f 7i64))))",
+    ),
     ("exit_status_negative_is_an_error", "(module m (fn main [] -> i32 (sys.exit -1) 0))"),
 ];
 
@@ -435,7 +444,7 @@ fn allocating_programs_match_natively() {
         &["test_floats", "test_put_reserved", "test_arr_set_reserved"],
         &[
             ("test_point_ops", &[3, 4]), ("test_sizeof", &[]), ("test_mixed", &[3]), ("test_mixed", &[-2]), ("test_array_ops", &[5]), ("test_array_ops", &[0]),
-            ("test_i64_array", &[3]), ("test_index_oob", &[1]), ("test_index_oob", &[7]), ("test_size_allocates", &[]),
+            ("test_i64_array", &[3]), ("test_index_oob", &[1]), ("test_index_oob", &[2]), ("test_size_allocates", &[]),
             ("test_result_heap", &[]), ("test_result_payload_allocates", &[]), ("test_points", &[]),
             ("test_bool_word", &[]), ("test_str_field", &[]),
         ],
@@ -1936,6 +1945,10 @@ fn traps_print_one_line_and_exit_134() {
         ("trap_lock_twice_waits", "wasm trap: atomic wait on non-shared memory"),
         ("trap_lock_a_non_lock_word", "wasm trap: wasm `unreachable` instruction executed"),
         ("trap_store_into_reserved_block", "wasm trap: wasm `unreachable` instruction executed"),
+        ("trap_index_past_the_end", "Array index out of bounds: index 5 for array of length 5"),
+        ("trap_negative_index_store", "Array index out of bounds: index -2147483648 for array of length 3"),
+        ("trap_failed_req", "Pre-condition failed in 'f': (req (gt n 0)) with n = -3, ok = true"),
+        ("trap_failed_ens_on_return", "Post-condition failed in 'f': (ens (lt res 10i64)) with n = 7i64, res = 14i64"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
