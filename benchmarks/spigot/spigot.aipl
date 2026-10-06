@@ -8,16 +8,10 @@
 (module spigot
   (import io)
   (import os)
-  (import str)
   (import buf)
   (import time)
 
   (struct Out [b:(ptr buf.Buf) count:i32])
-
-  (fn digits_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 1000))
-        1000))
 
   (fn emit [o:(ptr Out) d:i32] -> void
     (let b:(ptr buf.Buf) (get o Out.b))
@@ -40,7 +34,7 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call digits_wanted))
+    (let n:i32 (call os.arg_int 1 1000))
     ;; one array cell per term of the series, each starting at 2
     (let len:i32 (+ (/ (* n 10) 3) 1))
     (let a:(arr i64) (arr.new i64 len))
@@ -80,5 +74,5 @@
     ;; the computation's own time, on stderr (the digits stay the output)
     (call time.report "spigot computed in" started)
     (let out:(ptr buf.Buf) (get o Out.b))
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     0))

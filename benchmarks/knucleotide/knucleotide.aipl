@@ -108,6 +108,6 @@
     (call occurrences out seq "GGTATT")
     (call occurrences out seq "GGTATTTTAATT")
     (call occurrences out seq "GGTATTTTAATTTATAGT")
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     (call time.report "knucleotide computed in" started)
     0))

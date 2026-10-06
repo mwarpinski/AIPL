@@ -211,7 +211,7 @@ impl WasmCompiler {
         }
 
         // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
-        // same old size in both backends; 1024 pages max (64 MiB), also matching
+        // same old size in both backends; 32768 pages max (2 GiB: every address a non-negative i32), also matching
         // the VM. A threaded module imports it shared ("env" "memory") so every
         // thread's instance uses the same memory.
         let memory_type = wasm_encoder::MemoryType {
@@ -759,7 +759,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
                         .and_then(|u| u.variants.iter().find(|v| v.name == arm.member[dot + 1..]))
                         .map(|v| v.fields.clone())
                         .unwrap_or_default();
-                    for (n, f) in names.iter().zip(fields.iter()) {
+                    for (n, f) in names.iter().zip(fields.iter()).filter(|(n, _)| n.as_str() != "_") {
                         lets.push((n.clone(), f.ty.clone()));
                     }
                 }
@@ -1757,7 +1757,7 @@ fn normalize_bool(func: &mut Function) {
 
 /// After the heap cursor (address 0) has been bumped: if it is past the end of
 /// memory, grow memory by the pages needed to cover it. Uses no locals and has
-/// no net stack effect. memory.grow fails (-1, dropped) past the 1024-page cap,
+/// no net stack effect. memory.grow fails (-1, dropped) past the 32768-page cap,
 /// and the first access beyond the end then traps. The VM's alloc_bytes does
 /// the same.
 fn emit_grow_to_cursor(func: &mut Function) {
@@ -1923,7 +1923,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         ctx.labels.borrow_mut().push(Label::Plain);
         if let (Some(v), Some(names)) = (fields, &arm.binders) {
             let (offsets, _) = crate::checker::variant_layout(v)?;
-            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets) {
+            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                 let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&load_instruction(&f.ty, off as u64)?);

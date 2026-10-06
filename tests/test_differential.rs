@@ -799,16 +799,19 @@ fn allocation_grows_memory_identically() {
     (let big:i32 (mem.alloc 2000000))
     (mem.store32 (+ big 1999996) 7)
     (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
-  ;; past the 1024-page cap allocation stops growing and the store fails in both
+  ;; past the 32768-page (2 GiB) cap allocation stops growing and the store
+  ;; fails in both; a refused grow is -1 in both
   (fn too_big [] -> i32
-    (let p:i32 (mem.alloc 68000000))
-    (mem.store32 (+ p 67999996) 1)
-    0))
+    (let p:i32 (mem.alloc 2147483000))
+    (mem.store32 (+ p 2147482996) 1)
+    0)
+  (fn grow_past_cap [] -> i32 (mem.grow 40000)))
 "#;
     let (module, wasm) = compile_checked(src);
     // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
     assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
     assert!(differential(&module, &wasm, "too_big", &[]).is_err());
+    assert_eq!(differential(&module, &wasm, "grow_past_cap", &[]), Ok(Value::Int(-1)));
 }
 
 /// An allocation whose size expression itself allocates: the inner block must

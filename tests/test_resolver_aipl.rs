@@ -31,7 +31,7 @@ fn parse_flat(flat: &str, path: &Path) -> Result<aipl_core::ast::Module, String>
 fn assert_resolves_like_rust(rel: &str) {
     let path = root().join(rel);
     let flat = aipl_resolve(&path).unwrap_or_else(|e| panic!("aipl resolve {rel}: {e}"));
-    assert!(!flat.contains("(import"), "{rel}: imports left in the output");
+    assert!(!flat.lines().any(|l| l.trim_start().starts_with("(import")), "{rel}: imports left in the output");
     let m = parse_flat(&flat, &path).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{rel}: flat output does not check: {e}"));
     let ours = WasmCompiler::compile(&m).unwrap();
@@ -139,6 +139,8 @@ mod wasm_driver {
         Wasm(Vec<u8>),
         ResolveError(String),
         CompileError(i32),
+        /// status 3: "path: line:col: message"
+        TypeError(String),
     }
 
     /// Runs driver.compile_file (resolver + codegen, compiled to wasm) under
@@ -179,6 +181,7 @@ mod wasm_driver {
         match status {
             0 => Outcome::Wasm(bytes()),
             1 => Outcome::ResolveError(String::from_utf8(bytes()).unwrap()),
+            3 => Outcome::TypeError(String::from_utf8(bytes()).unwrap()),
             _ => Outcome::CompileError(len),
         }
     }
@@ -200,6 +203,7 @@ fn wasm_toolchain_compiles_a_multi_module_program() {
         }
         wasm_driver::Outcome::ResolveError(e) => panic!("resolve error: {e}"),
         wasm_driver::Outcome::CompileError(c) => panic!("compile error {c}"),
+        wasm_driver::Outcome::TypeError(e) => panic!("type error {e}"),
     }
     match wasm_driver::run(&driver, "examples/missing.aipl", "aipl_src/std/") {
         wasm_driver::Outcome::ResolveError(e) => assert_eq!(e, "cannot read entry file: examples/missing.aipl"),
@@ -219,6 +223,7 @@ fn wasm_toolchain_compiles_constants_and_enums_across_modules() {
         wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
         wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
         wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+        wasm_driver::Outcome::TypeError(e) => panic!("{rel}: type error {e}"),
     }
 }
 
@@ -236,6 +241,7 @@ fn wasm_toolchain_compiles_sum_types_across_modules() {
         wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
         wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
         wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+        wasm_driver::Outcome::TypeError(e) => panic!("{rel}: type error {e}"),
     }
 }
 
@@ -251,6 +257,7 @@ fn wasm_toolchain_compiles_the_native_backend() {
             wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
             wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
             wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+            wasm_driver::Outcome::TypeError(e) => panic!("{rel}: type error {e}"),
         }
     }
 }
@@ -265,6 +272,7 @@ fn wasm_toolchain_compiles_itself() {
         wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == driver, "driver.aipl: self-compiled bytes differ"),
         wasm_driver::Outcome::ResolveError(e) => panic!("resolve error: {e}"),
         wasm_driver::Outcome::CompileError(c) => panic!("compile error {c}"),
+        wasm_driver::Outcome::TypeError(e) => panic!("type error {e}"),
     }
 }
 
@@ -370,5 +378,44 @@ fn subdirectory_import_errors() {
     assert!(rust.contains("'../x' is not an import path"), "{rust}");
     let ours = aipl_resolve(&dir.join("dots.aipl")).unwrap_err();
     assert!(ours.starts_with("not an import path"), "{ours}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// CK11: the wasm toolchain type-checks before compiling, and reports the
+/// first error in the file it is in, at Rust's line:col with Rust's
+/// message: through the resolver's and the generics pass's origin maps.
+#[test]
+fn wasm_toolchain_reports_type_errors_in_the_users_files() {
+    let dir = root().join("target").join(format!("aipl_typeerr_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // shapes checks on its own; its template `bad` fails only when instantiated
+    std::fs::write(dir.join("shapes.aipl"), "(module shapes\n  (import vec)\n  (struct Box [w:i32])\n  (fn (first T) [v:(ptr (vec.Vec T))] -> T\n    (call (vec.at T) v 0))\n  (fn (bad T) [x:T] -> i32\n    (+ x 1)))").unwrap();
+    std::fs::write(dir.join("broken.aipl"), "(module broken\n  (import shapes)\n  (fn area [b:(ptr shapes.Box)] -> i32\n    (* (get b shapes.Box.w)\n       true)))").unwrap();
+    let cases = [
+        // in the entry file
+        ("entry", "(module entry\n  (import shapes)\n  (fn main [] -> i32\n    (let n:i32 1)\n    (set! n \"x\")\n    n))", "entry.aipl"),
+        // at an atom: an undefined variable on its own line
+        ("atom", "(module atom\n  (import shapes)\n  (fn main [] -> i32\n    (let n:i32 1)\n        zz))", "atom.aipl"),
+        // in an imported module (shapes.area)
+        ("uses_area", "(module uses_area\n  (import shapes)\n  (import broken)\n  (fn main [] -> i32 (call broken.area (new shapes.Box))))", "broken.aipl"),
+        // inside a generic template, reported at the template
+        ("uses_bad", "(module uses_bad\n  (import shapes)\n  (fn main [] -> i32 (call (shapes.bad bool) true)))", "shapes.aipl"),
+    ];
+    let driver = driver_wasm();
+    for (name, src, file) in cases {
+        let path = dir.join(format!("{name}.aipl"));
+        std::fs::write(&path, src).unwrap();
+        let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+        let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+        let rust = rust.rsplit_once(".aipl: ").map(|(_, m)| m.to_string()).unwrap_or(rust);
+        match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
+            wasm_driver::Outcome::TypeError(e) => {
+                let (path_part, msg) = e.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {e}"));
+                assert!(format!("{path_part}.aipl").ends_with(file), "{name}: error in {path_part}, expected {file}: {e}");
+                assert_eq!(msg, rust, "{name}");
+            }
+            _ => panic!("{name}: expected a type error ({rust})"),
+        }
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

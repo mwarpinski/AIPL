@@ -58,16 +58,24 @@
           (block)))
     (call str.bytes 0 -1))
 
+  ;; Argument i as a decimal i32, or `default` if there is no argument i or
+  ;; it is not a number: (call os.arg_int 1 1000).
+  (fn arg_int [i:i32 default:i32] -> i32
+    (if (gte i (call arg_count)) (return default) (block))
+    (call str.parse_int_or (call arg i) default))
+
   ;; A random i32 from the operating system's generator (sys.random).
   (fn random_i32 [] -> i32
     (let p:i32 (mem.alloc 4))
     (if (neq (sys.random p 4) 0) (sys.exit 70) (block))
     (mem.load32 p))
 
-  ;; Pass count; expects 2. A variable that is surely unset, and an argument
-  ;; index past the end.
+  ;; Pass count; expects 3. A variable that is surely unset, an argument
+  ;; index past the end, and arg_int's default (past the end, and argument
+  ;; 0, the program's name, which is not a number).
   (fn run_os_tests [] -> i32
     (let p:i32 0)
     (if (eq (get (call env "AIPL_OS_TEST_SURELY_UNSET") str.Bytes.len) -1) (set! p (+ p 1)) (block))
     (if (eq (get (call arg (call arg_count)) str.Bytes.len) -1) (set! p (+ p 1)) (block))
+    (if (and (eq (call arg_int (call arg_count) 5) 5) (eq (call arg_int 0 6) 6)) (set! p (+ p 1)) (block))
     p))

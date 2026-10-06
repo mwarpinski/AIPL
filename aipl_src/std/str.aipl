@@ -28,6 +28,13 @@
       (if (neq (call byte_at a i) (call byte_at b i)) (return false) (block)))
     true)
 
+  ;; Whether b spells the literal s, without allocating.
+  (fn is [b:(ptr Bytes) s:str] -> bool
+    (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
+    (loop i 0 (- (get b Bytes.len) 1) 1
+      (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
+    true)
+
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:(ptr Bytes) c:i32] -> i32
     (loop i 0 (- (get b Bytes.len) 1) 1
@@ -73,7 +80,11 @@
       (set! n (- (* n 10) (- c 48))))
     (ok (if neg n (- 0 n))))
 
-  ;; Pass count; test_suite.aipl expects 7.
+  ;; b as a decimal i32 (parse_int), or `default` if it is not one.
+  (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32
+    (match_result (call parse_int b) (ok n n) (err e default)))
+
+  ;; Pass count; test_suite.aipl expects 8.
   (fn run_str_tests [] -> i32
     (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
@@ -87,4 +98,5 @@
     (let bad:i32 (match_result (call parse_int (call from_str "12x4")) (ok n -1) (err e e)))
     (let empty:i32 (match_result (call parse_int (call from_str "-")) (ok n -1) (err e e)))
     (if (and (eq good -305) (and (eq bad 2) (eq empty 0))) (set! p (+ p 1)) (block))
+    (if (and (eq (call parse_int_or (call from_str "42") 7) 42) (eq (call parse_int_or (call from_str "4x") 7) 7)) (set! p (+ p 1)) (block))
     p))

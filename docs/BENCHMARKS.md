@@ -22,18 +22,23 @@ print it on stderr.
 ## Results
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
-2026-10-04.
+2026-10-05.
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| spigot | 10000 digits | 4.360 s (4.7x) | 1.573 s (1.7x) | 0.922 s (1.0x) | 47.345 s (51.3x) |
-| fannkuch | n = 10 | 1.358 s (8.8x) | 0.212 s (1.4x) | 0.155 s (1.0x) | 3.745 s (24.2x) |
-| spectralnorm | n = 1000 | 0.395 s (14.6x) | 0.121 s (4.5x) | 0.027 s (1.0x) | 7.373 s (272.0x) |
-| nbody | 1,000,000 steps | 0.794 s (15.2x) | 0.092 s (1.8x) | 0.052 s (1.0x) | 5.829 s (111.8x) |
-| mandelbrot | 1000 x 1000 | 0.235 s (4.6x) | 0.067 s (1.3x) | 0.051 s (1.0x) | 3.107 s (61.3x) |
-| binarytrees | depth 16 | 0.568 s (2.4x) | 0.193 s (0.8x) | 0.239 s (1.0x) | 1.168 s (4.9x) |
-| knucleotide | fasta 150000 | 1.411 s (28.0x) | 0.528 s (10.5x) | 0.050 s (1.0x) | 0.518 s (10.3x) |
-| pidigits | 10000 digits | 21.059 s (54.2x) | 2.255 s (5.8x) | 0.389 s (1.0x) | 2.158 s (5.6x) |
+| spigot | 10000 digits | 2.068 s (2.3x) | 1.552 s (1.7x) | 0.914 s (1.0x) | 47.222 s (51.7x) |
+| fannkuch | n = 10 | 0.719 s (4.7x) | 0.203 s (1.3x) | 0.153 s (1.0x) | 3.760 s (24.5x) |
+| spectralnorm | n = 1000 | 0.363 s (13.5x) | 0.113 s (4.2x) | 0.027 s (1.0x) | 7.131 s (266.0x) |
+| nbody | 1,000,000 steps | 0.517 s (10.0x) | 0.088 s (1.7x) | 0.052 s (1.0x) | 5.780 s (111.5x) |
+| mandelbrot | 1000 x 1000 | 0.211 s (4.2x) | 0.066 s (1.3x) | 0.050 s (1.0x) | 3.033 s (60.1x) |
+| binarytrees | depth 16 | 0.347 s (1.5x) | 0.184 s (0.8x) | 0.237 s (1.0x) | 1.108 s (4.7x) |
+| knucleotide | fasta 150000 | 0.985 s (20.1x) | 0.520 s (10.6x) | 0.049 s (1.0x) | 0.518 s (10.6x) |
+| pidigits | 10000 digits | 10.188 s (27.2x) | 2.206 s (5.9x) | 0.374 s (1.0x) | 2.090 s (5.6x) |
+
+Updated 2026-10-05 after the native translator kept the top of the value
+stack in a register (see "Native speed" below); the first run (2026-10-04)
+had native at spigot 4.360 s, fannkuch 1.358, nbody 0.794, binarytrees
+0.568, knucleotide 1.411, pidigits 21.059.
 
 ## Notes per benchmark
 
@@ -117,7 +122,8 @@ What it showed:
   larger cap (wasm allows up to 4 GiB; AIPL's signed 32-bit addresses make
   2 GiB the natural ceiling) is a design decision across the VM, both
   compilers, the launcher, and the native backend; a general free would
-  help too.
+  help too. *Raised to 2 GiB on 2026-10-05:* the native build now runs
+  fasta 1000000 (10 MB of input), with output identical to Python's.
 - **String-keyed hash maps are slow.** AIPL is no faster than Python here:
   `strmap` hashes and compares keys byte by byte in AIPL, while Python's
   dict is optimised C, and the C version packs each k-mer into a 64-bit
@@ -147,4 +153,32 @@ the language; Python uses its built-in integers. What it showed:
   bignums are calls rather than operators, state lives in a struct (no
   globals), and the argument parsing and digit output are repeated from
   spigot. `os.arg_int`, a stdout helper for `buf`, and a shared digit
-  printer would remove about a third.
+  printer would remove about a third. *2026-10-05:* `os.arg_int` and
+  `buf.print` are in the standard library and every benchmark uses them
+  (55 lines fewer across the eight); the digit printer stays in spigot and
+  pidigits, since it prints one contest's output format.
+
+## Native speed (2026-10-05)
+
+The two fixes these notes pointed at, measured one at a time (best of 3,
+the compiler compiling itself as a ninth program):
+
+- **The top of the value stack in a register.** The baseline translator
+  pushed every value to the machine stack and popped it back for the next
+  instruction; now a result stays in rax until something else needs the
+  register, spilled only where control flow joins (blocks, branches,
+  calls). About 2x on spigot, fannkuch, and pidigits, 1.5x on nbody,
+  binarytrees, and the compiler itself; nothing on the float-heavy
+  spectralnorm and mandelbrot. Kept.
+- **The memory size in a register** (single-threaded code): no measurable
+  difference, since the size cell is always in L1. Not kept.
+
+Three further steps on the same line were tried and also measured as no
+difference, so they were not kept: holding a constant or local unloaded
+until an instruction can use it as an immediate or memory operand; holding
+the value beneath it in a register too; and keeping a comparison in the
+flags for the branch that uses it. Once the stack round trips are gone,
+what sets the pace is that every local variable lives in memory: a loop
+counter or accumulator is stored and reloaded on every iteration. The next
+real gain needs locals in registers (a register allocator, at least for
+each function's hottest locals), a project of its own.

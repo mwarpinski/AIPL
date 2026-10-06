@@ -21,9 +21,11 @@
   (import strmap)
   (import os)
   (import generics)
+  (import origins)
 
-  ;; A parsed file: its text and its (module ...) tree.
-  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node)])
+  ;; A parsed file: its text, its (module ...) tree, and where its tokens'
+  ;; origins are noted (file is its index there; -1 and null when not mapping).
+  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins)])
 
   ;; One module being emitted. prefix is the import name; imported is false
   ;; for the entry module, whose names stay bare. aliases maps an alias to the
@@ -41,7 +43,8 @@
                  structs_out:(ptr buf.Buf) fns_out:(ptr buf.Buf) err:(ptr buf.Buf)
                  known:(ptr (strmap.StrMap i32))
                  paths:(ptr (strmap.StrMap (ptr str.Bytes)))
-                 found:(ptr (strmap.StrMap (ptr str.Bytes)))])
+                 found:(ptr (strmap.StrMap (ptr str.Bytes)))
+                 origins:(ptr origins.Origins)])
 
   ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
   (struct Out [ok:i32 addr:i32 len:i32])
@@ -76,16 +79,18 @@
 
   ;; ===== Parsed trees =====
 
-  (fn load [path:(ptr str.Bytes)] -> (ptr Src)
+  (fn load [path:(ptr str.Bytes) o:(ptr origins.Origins)] -> (ptr Src)
     (let text:(ptr str.Bytes) (call io.read_path path))
     (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
     (let n:i32 (get text str.Bytes.len))
-    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get text str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get text str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let src:(ptr Src) (new Src))
     (put src Src.text text)
     (put src Src.root (call compiler.parse_ast tok count ast))
+    (put src Src.origins o)
+    (put src Src.file (if (eq o (ptr.null origins.Origins)) -1 (call origins.add_file o path text)))
     src)
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
@@ -176,11 +181,13 @@
   (fn emit [m:(ptr Mod) n:(ptr compiler.Node) role:i32 out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
     (let src:(ptr Src) (get m Mod.src))
+    (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (call note m n out) (block))
     (cond
       ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call emit_group m n out))
       ((eq k compiler.Kind.symbol) (call buf.push_bytes out (call rename m (call text src n) role)))
       ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text src n)))
-      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ;; an int as written (its value is only the low 32 bits)
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call slice (get src Src.text) (get n compiler.Node.a) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
@@ -210,8 +217,14 @@
   ;; group whose head names a generic template prints its canonical name,
   ;; and its type arguments are renamed as struct names (a module's own
   ;; struct passed to a template, `(alloc Pair)`, becomes `m.Pair`).
+  ;; Notes where the next token printed into out comes from (origins.aipl).
+  (fn note [m:(ptr Mod) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (call origins.note (get src Src.origins) out (get src Src.file) (get n compiler.Node.pos)))
+
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
+    (call note m g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let tmpl:(ptr str.Bytes) (call str.bytes 0 -1))
@@ -240,6 +253,7 @@
   ;; renamed like any name ((Shape.circle [r] ...) in module m is
   ;; m.Shape.circle), except else.
   (fn emit_arm [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (call note m g out)
     (call buf.push_byte out 40)
     (let c:(ptr compiler.Node) (call first_child g))
     (let i:i32 0)
@@ -388,11 +402,11 @@
         (block))
     ;; search: importer's directory, entry's directory, standard library
     (let path:(ptr str.Bytes) (call with_ext dir import))
-    (let src:(ptr Src) (call load path))
+    (let src:(ptr Src) (call load path (get st State.origins)))
     (if (eq src (ptr.null Src))
         (block
           (set! path (call with_ext (get st State.entry_dir) import))
-          (set! src (call load path)))
+          (set! src (call load path (get st State.origins))))
         (block))
     ;; then each library directory, in order
     (let dirs:(ptr str.Bytes) (get st State.lib_dirs))
@@ -405,7 +419,7 @@
             (if (gt i start)
                 (block
                   (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) import))
-                  (set! src (call load path)))
+                  (set! src (call load path (get st State.origins))))
                 (block))
             (set! start (+ i 1)))
           (block)))
@@ -433,8 +447,16 @@
   ;; importer's and the entry's directories. Writes the flat source to `out`,
   ;; or an error message to `err` and returns false.
   (fn resolve [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
-    (let src:(ptr Src) (call load entry))
+    (call resolve_mapped entry std_dir out err (ptr.null origins.Origins) (ptr.null origins.Origins)))
+
+  ;; resolve, noting where every token of the result comes from: `orig`
+  ;; maps the resolver's flat text to the files, `gen` maps the result to
+  ;; that flat text (empty when there were no generics: the same text).
+  (fn resolve_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)
+                      orig:(ptr origins.Origins) gen:(ptr origins.Origins)] -> bool
+    (let src:(ptr Src) (call load entry orig))
     (let st:(ptr State) (new State))
+    (put st State.origins orig)
     (put st State.entry_dir (call dirname entry))
     (put st State.lib_dirs (call library_dirs std_dir))
     (put st State.done (call (strmap.make i32) 16))
@@ -453,11 +475,23 @@
     (call buf.push_str flat "(module ")
     (call buf.push_bytes flat (call text src (call nth (get src Src.root) 1)))
     (call buf.push_byte flat 10)
+    (let structs_at:i32 (call buf.len flat))
     (call buf.push_bytes flat (call buf.bytes (get st State.structs_out)))
+    (let fns_at:i32 (call buf.len flat))
     (call buf.push_bytes flat (call buf.bytes (get st State.fns_out)))
     (call buf.push_byte flat 41)
+    (if (neq orig (ptr.null origins.Origins))
+        (block
+          (let parts:(arr (ptr buf.Buf)) (arr.new (ptr buf.Buf) 2))
+          (arr.set (ptr buf.Buf) parts 0 (get st State.structs_out))
+          (arr.set (ptr buf.Buf) parts 1 (get st State.fns_out))
+          (let bases:(arr i32) (arr.new i32 2))
+          (arr.set i32 bases 0 structs_at)
+          (arr.set i32 bases 1 fns_at)
+          (call origins.join orig parts bases))
+        (block))
     ;; expand generic templates into concrete items (generics.aipl)
-    (call generics.expand (call buf.bytes flat) out err))
+    (call generics.expand_mapped (call buf.bytes flat) out err gen))
 
   ;; ===== Host interface =====
 

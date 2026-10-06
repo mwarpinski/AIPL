@@ -1,0 +1,1582 @@
+;; The type checker in AIPL: src/checker.rs rule for rule, over ast.aipl's
+;; tree, with the same first error word for word (docs/CHECKER_PLAN.md).
+;; Types in messages use Rust's Debug spelling (Ptr(Struct("P"))), as the
+;; Rust checker's do.
+;;
+;; Scopes: Rust checks if branches, blocks, loop bodies, and match arms
+;; against a copy of the environment, and let adds to the current one. Here
+;; the environment is a stack of bindings; a scope saves its height and
+;; restores it.
+;;
+;; Errors: the first is recorded in C.err; every function returns early
+;; once C.failed is set (later checks would look up definitions that the
+;; failed check never confirmed exist).
+(module checker
+  (import compiler)
+  (import ast)
+  (import str)
+  (import buf)
+  (import vec)
+  (import strmap)
+
+  (struct Sig [params:(arr ast.Type) ret:ast.Type])
+
+  (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) types:(ptr (vec.Vec ast.Type))])
+
+  (struct C [src:i32
+             structs:(ptr (strmap.StrMap (ptr ast.StructDef)))
+             enums:(ptr (strmap.StrMap (ptr ast.EnumDef)))
+             unions:(ptr (strmap.StrMap (ptr ast.UnionDef)))
+             fns:(ptr (strmap.StrMap (ptr Sig)))
+             declared:(ptr (strmap.StrMap ast.Type))
+             loop_depth:i32
+             ret:ast.MaybeType
+             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
+
+  ;; ===== Messages =====
+
+  (fn s [b:(ptr buf.Buf) x:str] -> void (call buf.push_str b x))
+  (fn by [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call buf.push_bytes b x))
+
+  ;; A message for the error at source offset `at` (the position goes with
+  ;; it to fail; front.aipl puts "line:col: " in front).
+  (fn msg [c:(ptr C) at:i32] -> (ptr buf.Buf)
+    (put c C.last_at at)
+    (call buf.make 128))
+
+  (fn fail [c:(ptr C) b:(ptr buf.Buf)] -> void
+    (if (get c C.failed) (return) (block))
+    (put c C.failed true)
+    (put c C.err b)
+    (put c C.err_at (get c C.last_at)))
+
+  (fn fail_str [c:(ptr C) at:i32 x:str] -> void
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b x)
+    (call fail c b))
+
+  ;; Rust's {:?} of a name: "name" (names have no characters to escape).
+  (fn quoted [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call s b "\"") (call by b x) (call s b "\""))
+
+  ;; Rust's {:?} of a Type.
+  (fn ty [b:(ptr buf.Buf) t:ast.Type] -> void
+    (match t
+      (ast.Type.i32 (call s b "I32"))
+      (ast.Type.i64 (call s b "I64"))
+      (ast.Type.f32 (call s b "F32"))
+      (ast.Type.f64 (call s b "F64"))
+      (ast.Type.bool (call s b "Bool"))
+      (ast.Type.str (call s b "Str"))
+      (ast.Type.void (call s b "Void"))
+      (ast.Type.ptr [inner] (call s b "Ptr(") (call ty b inner) (call s b ")"))
+      (ast.Type.struct_ [name] (call s b "Struct(") (call quoted b name) (call s b ")"))
+      (ast.Type.result [ok_t err_t] (call s b "ResultType(") (call ty b ok_t) (call s b ", ") (call ty b err_t) (call s b ")"))
+      (ast.Type.arr [elem] (call s b "Array(") (call ty b elem) (call s b ")"))
+      (ast.Type.fn_ [params ret]
+       (call s b "Fn([")
+       (loop k 0 (- (arr.len params) 1) 1
+         (if (gt k 0) (call s b ", ") (block))
+         (call ty b (arr.get ast.Type params k)))
+       (call s b "], ")
+       (call ty b ret)
+       (call s b ")"))
+      (ast.Type.enum_ [name] (call s b "Enum(") (call quoted b name) (call s b ")"))
+      (ast.Type.union_ [name] (call s b "Union(") (call quoted b name) (call s b ")"))))
+
+  ;; Rust's {:?} of an OpCode (src/ast.rs variant names).
+  (fn op_debug [o:ast.Op] -> str
+    (match o
+      (ast.Op.add "Add") (ast.Op.sub "Sub") (ast.Op.mul "Mul") (ast.Op.div "Div") (ast.Op.mod "Mod")
+      (ast.Op.divu "DivU") (ast.Op.remu "RemU") (ast.Op.bitxor "BitXor") (ast.Op.shl "Shl") (ast.Op.shr "Shr")
+      (ast.Op.shru "ShrU") (ast.Op.bitand "BitAnd") (ast.Op.bitor "BitOr")
+      (ast.Op.mem_load8 "MemLoad8") (ast.Op.mem_load32 "MemLoad32") (ast.Op.mem_load64 "MemLoad64")
+      (ast.Op.mem_store8 "MemStore8") (ast.Op.mem_store32 "MemStore32") (ast.Op.mem_store64 "MemStore64")
+      (ast.Op.mem_alloc "MemAlloc") (ast.Op.mem_grow "MemGrow")
+      (ast.Op.atomic_add "AtomicAdd") (ast.Op.atomic_cas "AtomicCas") (ast.Op.atomic_lock "AtomicLock") (ast.Op.atomic_unlock "AtomicUnlock")
+      (ast.Op.eq "Eq") (ast.Op.neq "Neq") (ast.Op.lt "Lt") (ast.Op.lte "Lte")
+      (ast.Op.checked_add "CheckedAdd") (ast.Op.checked_sub "CheckedSub") (ast.Op.checked_mul "CheckedMul")
+      (ast.Op.ltu "LtU") (ast.Op.lteu "LteU") (ast.Op.gtu "GtU") (ast.Op.gteu "GteU") (ast.Op.gt "Gt") (ast.Op.gte "Gte")
+      (ast.Op.and "And") (ast.Op.or "Or") (ast.Op.not "Not")
+      (ast.Op.sys_print "SysPrint") (ast.Op.sys_time "SysTime") (ast.Op.sys_monotonic "SysMonotonic")
+      (ast.Op.sys_random "SysRandom") (ast.Op.sys_exit "SysExit")
+      (ast.Op.fs_open "FsOpen") (ast.Op.fs_read "FsRead") (ast.Op.fs_write "FsWrite") (ast.Op.fs_close "FsClose") (ast.Op.fs_delete "FsDelete")
+      (ast.Op.args_sizes "ArgsSizes") (ast.Op.args_get "ArgsGet") (ast.Op.env_sizes "EnvSizes") (ast.Op.env_get "EnvGet")
+      (ast.Op.thread_spawn "ThreadSpawn") (ast.Op.thread_join "ThreadJoin")
+      (ast.Op.i64_extend_s "I64ExtendS") (ast.Op.i64_extend_u "I64ExtendU") (ast.Op.i32_wrap "I32Wrap")
+      (ast.Op.f64_convert_i64_s "F64ConvertI64S") (ast.Op.f64_sqrt "F64Sqrt") (ast.Op.i64_trunc_f64_s "I64TruncF64S")
+      (ast.Op.f64_reinterpret_i64 "F64ReinterpretI64") (ast.Op.i64_reinterpret_f64 "I64ReinterpretF64")
+      (ast.Op.str_len "StrLen") (ast.Op.str_ptr "StrPtr")))
+
+  ;; ===== Types =====
+
+  (fn void_t [] -> ast.Type (make ast.Type.void))
+  (fn i32_t [] -> ast.Type (make ast.Type.i32))
+  (fn i64_t [] -> ast.Type (make ast.Type.i64))
+  (fn f64_t [] -> ast.Type (make ast.Type.f64))
+  (fn bool_t [] -> ast.Type (make ast.Type.bool))
+
+  (fn beq [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (call str.bytes_eq a b))
+  (fn lit [a:(ptr str.Bytes) x:str] -> bool (call str.bytes_eq a (call str.from_str x)))
+
+  ;; The variant of a type as a number, for comparing shapes.
+  (fn tag [t:ast.Type] -> i32
+    (match t
+      (ast.Type.i32 0) (ast.Type.i64 1) (ast.Type.f32 2) (ast.Type.f64 3) (ast.Type.bool 4) (ast.Type.str 5)
+      (ast.Type.void 6) (ast.Type.ptr [_] 7) (ast.Type.struct_ [_] 8) (ast.Type.result [_ _] 9) (ast.Type.arr [_] 10)
+      (ast.Type.fn_ [_ _] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)))
+
+  ;; Structural equality (src/ast.rs derives PartialEq).
+  (fn teq [a:ast.Type b:ast.Type] -> bool
+    (if (neq (call tag a) (call tag b)) (return false) (block))
+    (match a
+      (ast.Type.ptr [ia] (match b (ast.Type.ptr [ib] (call teq ia ib)) (else false)))
+      (ast.Type.struct_ [na] (match b (ast.Type.struct_ [nb] (call beq na nb)) (else false)))
+      (ast.Type.result [oa ea] (match b (ast.Type.result [ob eb] (and (call teq oa ob) (call teq ea eb))) (else false)))
+      (ast.Type.arr [xa] (match b (ast.Type.arr [xb] (call teq xa xb)) (else false)))
+      (ast.Type.fn_ [pa ra]
+       (match b
+         (ast.Type.fn_ [pb rb]
+          (if (neq (arr.len pa) (arr.len pb)) (return false) (block))
+          (loop k 0 (- (arr.len pa) 1) 1
+            (if (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k)) (block) (return false)))
+          (call teq ra rb))
+         (else false)))
+      (ast.Type.enum_ [ea2] (match b (ast.Type.enum_ [eb2] (call beq ea2 eb2)) (else false)))
+      (ast.Type.union_ [ua] (match b (ast.Type.union_ [ub] (call beq ua ub)) (else false)))
+      (else true)))
+
+  (fn is_void [t:ast.Type] -> bool (eq (call tag t) 6))
+  (fn is_i64 [t:ast.Type] -> bool (eq (call tag t) 1))
+  (fn is_i32 [t:ast.Type] -> bool (eq (call tag t) 0))
+  (fn is_int [t:ast.Type] -> bool (or (eq (call tag t) 0) (eq (call tag t) 1)))
+
+  ;; src/checker.rs type_size_and_align: the error for a type with no memory
+  ;; layout (void, a struct by value, a result), or "".
+  (fn layout_error [b:(ptr buf.Buf) t:ast.Type] -> bool
+    (let k:i32 (call tag t))
+    (if (or (eq k 6) (or (eq k 8) (eq k 9)))
+        (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)
+        false))
+
+  ;; ===== Environment =====
+
+  (fn new_env [] -> (ptr Env)
+    (let e:(ptr Env) (new Env))
+    (put e Env.names (call (vec.make (ptr str.Bytes)) 32))
+    (put e Env.types (call (vec.make ast.Type) 32))
+    e)
+
+  (fn mark [e:(ptr Env)] -> i32 (call (vec.len (ptr str.Bytes)) (get e Env.names)))
+
+  (fn restore [e:(ptr Env) m:i32] -> void
+    (put (get e Env.names) (vec.Vec (ptr str.Bytes)) len m)
+    (put (get e Env.types) (vec.Vec ast.Type) len m))
+
+  (fn bind [e:(ptr Env) name:(ptr str.Bytes) t:ast.Type] -> void
+    (call (vec.push (ptr str.Bytes)) (get e Env.names) name)
+    (call (vec.push ast.Type) (get e Env.types) t))
+
+  ;; The binding's index, newest first, or -1.
+  (fn find [e:(ptr Env) name:(ptr str.Bytes)] -> i32
+    (let k:i32 (- (call mark e) 1))
+    (while (gte k 0)
+      (if (call beq (call (vec.at (ptr str.Bytes)) (get e Env.names) k) name) (return k) (block))
+      (set! k (- k 1)))
+    -1)
+
+  (fn has [e:(ptr Env) name:(ptr str.Bytes)] -> bool (gte (call find e name) 0))
+  (fn type_of [e:(ptr Env) name:(ptr str.Bytes)] -> ast.Type (call (vec.at ast.Type) (get e Env.types) (call find e name)))
+
+  ;; src/checker.rs declare: a name keeps one type per function.
+  (fn declare [c:(ptr C) name:(ptr str.Bytes) t:ast.Type at:i32] -> void
+    (let d:(ptr (strmap.StrMap ast.Type)) (get c C.declared))
+    (if (and (call (strmap.has ast.Type) d name) (not (call teq (call (strmap.get_or ast.Type) d name t) t)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "'") (call by b name) (call s b "' is ") (call ty b t) (call s b " here but ")
+          (call ty b (call (strmap.get_or ast.Type) d name t))
+          (call s b " elsewhere in this function; a name keeps one type per function (rename one)")
+          (call fail c b))
+        (call (strmap.set ast.Type) d name t)))
+
+  ;; ===== Definitions =====
+
+  (fn has_struct [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.StructDef)) (get c C.structs) n))
+  (fn has_enum [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.EnumDef)) (get c C.enums) n))
+  (fn has_union [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.UnionDef)) (get c C.unions) n))
+  (fn struct_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.StructDef)
+    (call (strmap.get_or (ptr ast.StructDef)) (get c C.structs) n (ptr.null ast.StructDef)))
+  (fn union_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.UnionDef)
+    (call (strmap.get_or (ptr ast.UnionDef)) (get c C.unions) n (ptr.null ast.UnionDef)))
+  (fn enum_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.EnumDef)
+    (call (strmap.get_or (ptr ast.EnumDef)) (get c C.enums) n (ptr.null ast.EnumDef)))
+
+  (fn lower_start [n:(ptr str.Bytes)] -> bool
+    (let c0:i32 (call str.byte_at n 0))
+    (and (gt (get n str.Bytes.len) 0) (or (and (gte c0 97) (lte c0 122)) (eq c0 95))))
+
+  ;; src/checker.rs check_module.
+  (fn check_module [c:(ptr C) m:(ptr ast.Module)] -> void
+    (let es:(arr (ptr ast.EnumDef)) (get m ast.Module.enums))
+    (loop k 0 (- (arr.len es) 1) 1
+      (if (get c C.failed) (return) (block))
+      (call register_enum c m (arr.get (ptr ast.EnumDef) es k)))
+    (let ss:(arr (ptr ast.StructDef)) (get m ast.Module.structs))
+    (loop k 0 (- (arr.len ss) 1) 1
+      (if (get c C.failed) (return) (block))
+      (call register_struct c (arr.get (ptr ast.StructDef) ss k)))
+    (let us:(arr (ptr ast.UnionDef)) (get m ast.Module.unions))
+    (loop k 0 (- (arr.len us) 1) 1
+      (if (get c C.failed) (return) (block))
+      (call register_union c (arr.get (ptr ast.UnionDef) us k)))
+    (if (get c C.failed) (return) (block))
+    ;; field types may name structs and unions defined later
+    (loop k 0 (- (arr.len ss) 1) 1
+      (let sd:(ptr ast.StructDef) (arr.get (ptr ast.StructDef) ss k))
+      (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
+      (loop j 0 (- (arr.len fs) 1) 1
+        (if (get c C.failed) (return) (block))
+        (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
+        (let b:(ptr buf.Buf) (call validate c (get f ast.Field.ty) (get sd ast.StructDef.at)))
+        (if (neq b (ptr.null buf.Buf))
+            (block
+              (call s b " (field '") (call by b (get f ast.Field.name)) (call s b "' of struct '")
+              (call by b (get sd ast.StructDef.name)) (call s b "')")
+              (call fail c b))
+            (block))))
+    (loop k 0 (- (arr.len us) 1) 1
+      (let ud:(ptr ast.UnionDef) (arr.get (ptr ast.UnionDef) us k))
+      (let vs:(arr (ptr ast.Variant)) (get ud ast.UnionDef.variants))
+      (loop j 0 (- (arr.len vs) 1) 1
+        (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs j))
+        (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+        (loop q 0 (- (arr.len fs) 1) 1
+          (if (get c C.failed) (return) (block))
+          (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs q))
+          (let b:(ptr buf.Buf) (call validate c (get f ast.Field.ty) (get ud ast.UnionDef.at)))
+          (if (neq b (ptr.null buf.Buf))
+              (block
+                (call s b " (field '") (call by b (get f ast.Field.name)) (call s b "' of variant '")
+                (call by b (get ud ast.UnionDef.name)) (call s b ".") (call by b (get v ast.Variant.name)) (call s b "')")
+                (call fail c b))
+              (block)))))
+    (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
+    (loop k 0 (- (arr.len fns) 1) 1
+      (let fd:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
+      (if (call (strmap.has (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name))
+          (block
+            (let b:(ptr buf.Buf) (call msg c (get fd ast.FnDef.at)))
+            (call s b "Duplicate function definition '") (call by b (get fd ast.FnDef.name)) (call s b "'")
+            (call fail c b) (return))
+          (block))
+      (let sig:(ptr Sig) (new Sig))
+      (let ps:(arr (ptr ast.Param)) (get fd ast.FnDef.params))
+      (let pts:(arr ast.Type) (arr.new ast.Type (arr.len ps)))
+      (loop j 0 (- (arr.len ps) 1) 1 (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
+      (put sig Sig.params pts)
+      (put sig Sig.ret (get fd ast.FnDef.ret))
+      (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
+    (loop k 0 (- (arr.len fns) 1) 1
+      (if (get c C.failed) (return) (block))
+      (call check_fn c (arr.get (ptr ast.FnDef) fns k))))
+
+  (fn register_enum [c:(ptr C) m:(ptr ast.Module) e:(ptr ast.EnumDef)] -> void
+    (let at:i32 (get e ast.EnumDef.at))
+    (let name:(ptr str.Bytes) (get e ast.EnumDef.name))
+    (if (call has_enum c name)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Duplicate enum definition '") (call by b name) (call s b "'") (call fail c b) (return))
+        (block))
+    (let ss:(arr (ptr ast.StructDef)) (get m ast.Module.structs))
+    (loop k 0 (- (arr.len ss) 1) 1
+      (if (call beq (get (arr.get (ptr ast.StructDef) ss k) ast.StructDef.name) name)
+          (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "'") (call by b name) (call s b "' is defined as both a struct and an enum") (call fail c b) (return))
+          (block)))
+    (let ms:(arr (ptr ast.Member)) (get e ast.EnumDef.members))
+    (if (eq (arr.len ms) 0)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "enum '") (call by b name) (call s b "' has no members") (call fail c b) (return))
+        (block))
+    (loop i 0 (- (arr.len ms) 1) 1
+      (let mi:(ptr ast.Member) (arr.get (ptr ast.Member) ms i))
+      (let mn:(ptr str.Bytes) (get mi ast.Member.name))
+      (if (not (call lower_start mn))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "enum member '") (call by b name) (call s b ".") (call by b mn) (call s b "' must start with a lowercase letter or '_'")
+            (call fail c b) (return))
+          (block))
+      (loop j 0 (- i 1) 1
+        (let mj:(ptr ast.Member) (arr.get (ptr ast.Member) ms j))
+        (if (call beq (get mj ast.Member.name) mn)
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "enum '") (call by b name) (call s b "' has two members named '") (call by b mn) (call s b "'")
+              (call fail c b) (return))
+            (block)))
+      (loop j 0 (- i 1) 1
+        (let mj:(ptr ast.Member) (arr.get (ptr ast.Member) ms j))
+        (if (eq (get mj ast.Member.value) (get mi ast.Member.value))
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "enum '") (call by b name) (call s b "': members '") (call by b (get mj ast.Member.name))
+              (call s b "' and '") (call by b mn) (call s b "' both have the value ") (call buf.push_int b (get mi ast.Member.value))
+              (call fail c b) (return))
+            (block))))
+    (call (strmap.set (ptr ast.EnumDef)) (get c C.enums) name e))
+
+  (fn register_struct [c:(ptr C) sd:(ptr ast.StructDef)] -> void
+    (let at:i32 (get sd ast.StructDef.at))
+    (let name:(ptr str.Bytes) (get sd ast.StructDef.name))
+    (if (call has_struct c name)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Duplicate struct definition '") (call by b name) (call s b "'") (call fail c b) (return))
+        (block))
+    (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
+    (loop i 0 (- (arr.len fs) 1) 1
+      (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
+      (loop j 0 (- i 1) 1
+        (if (call beq (get (arr.get (ptr ast.Field) fs j) ast.Field.name) (get fi ast.Field.name))
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "Duplicate field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b name) (call s b "'")
+              (call fail c b) (return))
+            (block)))
+      (let b:(ptr buf.Buf) (call msg c at))
+      (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b name) (call s b "': ")
+      (if (call layout_error b (get fi ast.Field.ty)) (block (call fail c b) (return)) (block)))
+    (call (strmap.set (ptr ast.StructDef)) (get c C.structs) name sd))
+
+  (fn register_union [c:(ptr C) u:(ptr ast.UnionDef)] -> void
+    (let at:i32 (get u ast.UnionDef.at))
+    (let name:(ptr str.Bytes) (get u ast.UnionDef.name))
+    (if (call has_union c name)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Duplicate union definition '") (call by b name) (call s b "'") (call fail c b) (return))
+        (block))
+    (if (or (call has_struct c name) (call has_enum c name))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "'") (call by b name) (call s b "' is defined as a union and as a struct or enum") (call fail c b) (return))
+        (block))
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (if (eq (arr.len vs) 0)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "union '") (call by b name) (call s b "' has no variants") (call fail c b) (return))
+        (block))
+    (loop i 0 (- (arr.len vs) 1) 1
+      (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs i))
+      (let vn:(ptr str.Bytes) (get v ast.Variant.name))
+      (if (not (call lower_start vn))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "union variant '") (call by b name) (call s b ".") (call by b vn) (call s b "' must start with a lowercase letter or '_'")
+            (call fail c b) (return))
+          (block))
+      (loop j 0 (- i 1) 1
+        (if (call beq (get (arr.get (ptr ast.Variant) vs j) ast.Variant.name) vn)
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "union '") (call by b name) (call s b "' has two variants named '") (call by b vn) (call s b "'")
+              (call fail c b) (return))
+            (block)))
+      (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+      (loop j 0 (- (arr.len fs) 1) 1
+        (let fj:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
+        (loop q 0 (- j 1) 1
+          (if (call beq (get (arr.get (ptr ast.Field) fs q) ast.Field.name) (get fj ast.Field.name))
+              (block
+                (let b:(ptr buf.Buf) (call msg c at))
+                (call s b "variant '") (call by b name) (call s b ".") (call by b vn) (call s b "' has two fields named '")
+                (call by b (get fj ast.Field.name)) (call s b "'")
+                (call fail c b) (return))
+              (block)))
+        (let b:(ptr buf.Buf) (call msg c at))
+        (call s b "Field '") (call by b (get fj ast.Field.name)) (call s b "' of variant '") (call by b name) (call s b ".") (call by b vn) (call s b "': ")
+        (if (call layout_error b (get fj ast.Field.ty)) (block (call fail c b) (return)) (block))))
+    (call (strmap.set (ptr ast.UnionDef)) (get c C.unions) name u))
+
+  ;; src/checker.rs validate_type: null, or the error's message (to which
+  ;; callers may add context).
+  (fn validate [c:(ptr C) t:ast.Type at:i32] -> (ptr buf.Buf)
+    (match t
+      (ast.Type.ptr [inner]
+       (match inner
+         (ast.Type.struct_ [name]
+          (if (call has_struct c name)
+              (ptr.null buf.Buf)
+              (block
+                (let b:(ptr buf.Buf) (call msg c at))
+                (call s b "Unknown struct '") (call by b name) (call s b "' in (ptr ") (call by b name) (call s b ")")
+                b)))
+         (else
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "ptr must point to a struct, got ") (call ty b inner)
+          b)))
+      (ast.Type.struct_ [sname]
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b "struct '") (call by b sname) (call s b "' cannot be used by value; use (ptr ") (call by b sname) (call s b ")")
+       b)
+      (ast.Type.arr [elem]
+       (let inner_err:(ptr buf.Buf) (call validate c elem at))
+       (if (neq inner_err (ptr.null buf.Buf)) (return inner_err) (block))
+       (let scratch:(ptr buf.Buf) (call buf.make 16))
+       (if (call layout_error scratch elem)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "(arr T) element must be a scalar, (ptr S), or (arr T), got ") (call ty b elem)
+             b)
+           (ptr.null buf.Buf)))
+      (ast.Type.result [ok_t err_t]
+       (let first:(ptr buf.Buf) (call validate c ok_t at))
+       (if (neq first (ptr.null buf.Buf)) first (call validate c err_t at)))
+      (ast.Type.fn_ [params ret]
+       (loop k 0 (- (arr.len params) 1) 1
+         (let pe:(ptr buf.Buf) (call validate c (arr.get ast.Type params k) at))
+         (if (neq pe (ptr.null buf.Buf)) (return pe) (block)))
+       (call validate c ret at))
+      (ast.Type.enum_ [ename]
+       (cond
+         ((call has_enum c ename) (ptr.null buf.Buf))
+         ((call has_union c ename)
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "'") (call by b ename) (call s b "' is a union, not an enum: its values are made with (make ")
+          (call by b ename) (call s b ".variant ...)")
+          b)
+         ((call has_struct c ename)
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "'") (call by b ename) (call s b "' is a struct, which is only used through a pointer: write (ptr ")
+          (call by b ename) (call s b ")")
+          b)
+         (else
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Unknown type '") (call by b ename) (call s b "' (not a scalar type or an enum)")
+          b)))
+      (ast.Type.union_ [uname]
+       (if (call has_union c uname)
+           (ptr.null buf.Buf)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "Unknown union '") (call by b uname) (call s b "'")
+             b)))
+      (else (ptr.null buf.Buf))))
+
+  ;; validate, failing with its message.
+  (fn validate_or_fail [c:(ptr C) t:ast.Type at:i32] -> void
+    (let b:(ptr buf.Buf) (call validate c t at))
+    (if (neq b (ptr.null buf.Buf)) (call fail c b) (block)))
+
+  ;; ===== Functions =====
+
+  (fn check_fn [c:(ptr C) f:(ptr ast.FnDef)] -> void
+    (let env:(ptr Env) (call new_env))
+    (put c C.declared (call (strmap.make ast.Type) 32))
+    (let at:i32 (get f ast.FnDef.at))
+    (let fname:(ptr str.Bytes) (get f ast.FnDef.name))
+    (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
+    (loop k 0 (- (arr.len ps) 1) 1
+      (let prm:(ptr ast.Param) (arr.get (ptr ast.Param) ps k))
+      (call (strmap.set ast.Type) (get c C.declared) (get prm ast.Param.name) (get prm ast.Param.ty))
+      (let b:(ptr buf.Buf) (call validate c (get prm ast.Param.ty) at))
+      (if (neq b (ptr.null buf.Buf))
+          (block
+            (call s b " (parameter '") (call by b (get prm ast.Param.name)) (call s b "' of '") (call by b fname) (call s b "')")
+            (call fail c b) (return))
+          (block))
+      (call bind env (get prm ast.Param.name) (get prm ast.Param.ty)))
+    (let rb:(ptr buf.Buf) (call validate c (get f ast.FnDef.ret) at))
+    (if (neq rb (ptr.null buf.Buf))
+        (block (call s rb " (return type of '") (call by rb fname) (call s rb "')") (call fail c rb) (return))
+        (block))
+    ;; contracts
+    (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
+    (loop k 0 (- (arr.len cs) 1) 1
+      (match (arr.get ast.Contract cs k)
+        (ast.Contract.ensures [ee]
+         (let m:i32 (call mark env))
+         (call bind env (call str.from_str "res") (get f ast.FnDef.ret))
+         (let et:ast.Type (call infer c ee env))
+         (call restore env m)
+         (if (get c C.failed) (return) (block))
+         (if (not (call teq et (call bool_t)))
+             (block
+               (let b:(ptr buf.Buf) (call msg c (call ast.at ee)))
+               (call s b "Ensures contract expression in '") (call by b fname) (call s b "' must evaluate to Bool, got ") (call ty b et)
+               (call fail c b) (return))
+             (block)))
+        (ast.Contract.requires [re] (call check_condition c re env fname))
+        (ast.Contract.invariant [ie] (call check_condition c ie env fname)))
+      (if (get c C.failed) (return) (block)))
+    ;; body
+    (put c C.ret (make ast.MaybeType.some (get f ast.FnDef.ret)))
+    (put c C.loop_depth 0)
+    (let last:ast.Type (call void_t))
+    (let body:(arr ast.Expr) (get f ast.FnDef.body))
+    (loop k 0 (- (arr.len body) 1) 1
+      (if (not (get c C.failed)) (set! last (call infer c (arr.get ast.Expr body k) env)) (block)))
+    (put c C.ret (make ast.MaybeType.none))
+    (if (get c C.failed) (return) (block))
+    (let ends_in_return:bool
+         (if (eq (arr.len body) 0)
+             false
+             (match (arr.get ast.Expr body (- (arr.len body) 1)) (ast.Expr.return_ [_ _] true) (else false))))
+    (if (and (not (call is_void (get f ast.FnDef.ret))) (and (not (call teq last (get f ast.FnDef.ret))) (not ends_in_return)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Function '") (call by b fname) (call s b "' expects return type ") (call ty b (get f ast.FnDef.ret))
+          (call s b ", but body returned ") (call ty b last)
+          (call fail c b))
+        (block)))
+
+  (fn check_condition [c:(ptr C) e:ast.Expr env:(ptr Env) fname:(ptr str.Bytes)] -> void
+    (let t:ast.Type (call infer c e env))
+    (if (get c C.failed) (return) (block))
+    (if (not (call teq t (call bool_t)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c (call ast.at e)))
+          (call s b "Contract expression in '") (call by b fname) (call s b "' must evaluate to Bool, got ") (call ty b t)
+          (call fail c b))
+        (block)))
+
+  ;; The type of the last of a sequence (void if empty), each checked in env.
+  (fn infer_seq [c:(ptr C) body:(arr ast.Expr) env:(ptr Env)] -> ast.Type
+    (let t:ast.Type (call void_t))
+    (loop k 0 (- (arr.len body) 1) 1
+      (if (not (get c C.failed)) (set! t (call infer c (arr.get ast.Expr body k) env)) (block)))
+    t)
+
+  ;; A loop body, with break/continue allowed.
+  (fn check_loop_body [c:(ptr C) body:(arr ast.Expr) env:(ptr Env)] -> void
+    (put c C.loop_depth (+ (get c C.loop_depth) 1))
+    (let _t:ast.Type (call infer_seq c body env))
+    (put c C.loop_depth (- (get c C.loop_depth) 1)))
+
+  ;; ===== Expressions =====
+
+  (fn infer [c:(ptr C) e:ast.Expr env:(ptr Env)] -> ast.Type
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let at:i32 (call ast.at e))
+    (match e
+      (ast.Expr.lit_int [_ _] (call i32_t))
+      (ast.Expr.lit_i64 [_ _] (call i64_t))
+      (ast.Expr.lit_float [_ _] (call f64_t))
+      (ast.Expr.lit_bool [_ _] (call bool_t))
+      (ast.Expr.lit_str [_ _] (make ast.Type.str))
+      (ast.Expr.var [_ name]
+       (if (call has env name)
+           (call type_of env name)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "Undefined variable '") (call by b name) (call s b "'")
+             (call fail c b)
+             (call void_t))))
+      (ast.Expr.let_ [_ name lty val] (call infer_let c env at name lty val))
+      (ast.Expr.set [_ name val] (call infer_set c env at name val))
+      (ast.Expr.if_ [_ cnd thn els] (call infer_if c env at cnd thn els))
+      (ast.Expr.loop [_ var start end step body] (call infer_loop c env at var start end step body))
+      (ast.Expr.while_ [_ cnd body]
+       (let ct:ast.Type (call infer c cnd env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call teq ct (call bool_t))) (block (call fail_str c at "While condition must be Bool") (return (call void_t))) (block))
+       (let m:i32 (call mark env))
+       (call check_loop_body c body env)
+       (call restore env m)
+       (call void_t))
+      (ast.Expr.return_ [_ rv] (call infer_return c env at rv))
+      (ast.Expr.break_ [_] (call jump c at "break"))
+      (ast.Expr.continue_ [_] (call jump c at "continue"))
+      (ast.Expr.call [_ func args] (call infer_call c env at func args))
+      (ast.Expr.op [_ o args] (call infer_op c env at o args))
+      (ast.Expr.ok [_ val oty]
+       (let inner:ast.Type (call infer c val env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let et:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
+       (call validate_or_fail c et at)
+       (make ast.Type.result inner et))
+      (ast.Expr.err [_ val oty]
+       (let errt:ast.Type (call infer c val env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let okt:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
+       (call validate_or_fail c okt at)
+       (make ast.Type.result okt errt))
+      (ast.Expr.match_result [_ val ok_var ok_body err_var err_body]
+       (call infer_match_result c env at val ok_var ok_body err_var err_body))
+      (ast.Expr.block [_ body]
+       (let m:i32 (call mark env))
+       (let t:ast.Type (call infer_seq c body env))
+       (call restore env m)
+       t)
+      (ast.Expr.new_ [_ name]
+       (if (call has_struct c name)
+           (make ast.Type.ptr (make ast.Type.struct_ name))
+           (block (call unknown_struct c at name) (call void_t))))
+      (ast.Expr.get_ [_ sname fname ptr] (call infer_field c env at sname fname ptr false (call placeholder at)))
+      (ast.Expr.put_ [_ sname fname ptr val] (call infer_field c env at sname fname ptr true val))
+      (ast.Expr.sizeof [_ name]
+       (if (call has_struct c name) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
+      (ast.Expr.arr_new [_ ety size]
+       (call validate_or_fail c (make ast.Type.arr ety) at)
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let st:ast.Type (call infer c size env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call is_i32 st))
+           (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "arr.new size must be i32, got ") (call ty b st) (call fail c b))
+           (block))
+       (make ast.Type.arr ety))
+      (ast.Expr.arr_get [_ ety ptr index] (call infer_arr c env at ety ptr index false (call placeholder at)))
+      (ast.Expr.arr_set [_ ety ptr index val] (call infer_arr c env at ety ptr index true val))
+      (ast.Expr.arr_len [_ a]
+       (let t:ast.Type (call infer c a env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (match t
+         (ast.Type.arr [_] (call i32_t))
+         (else
+          (let b:(ptr buf.Buf) (call msg c at)) (call s b "arr.len needs an (arr T), got ") (call ty b t) (call fail c b)
+          (call void_t))))
+      (ast.Expr.null [_ nty]
+       (call validate_or_fail c nty at)
+       nty)
+      (ast.Expr.cast [_ cty addr]
+       (call validate_or_fail c cty at)
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let t:ast.Type (call infer c addr env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call is_i32 t))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (match cty
+               (ast.Type.enum_ [en] (call s b "enum.cast ") (call by b en) (call s b " needs an i32 value, got "))
+               (else (call s b "cast needs an i32 address, got ")))
+             (call ty b t)
+             (call fail c b))
+           (block))
+       cty)
+      (ast.Expr.ref [_ name]
+       (if (call (strmap.has (ptr Sig)) (get c C.fns) name)
+           (block
+             (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
+             (make ast.Type.fn_ (get sig Sig.params) (get sig Sig.ret)))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "Undefined function '") (call by b name) (call s b "' in ref")
+             (call fail c b)
+             (call void_t))))
+      (ast.Expr.call_ref [_ csig callee args] (call infer_call_ref c env at csig callee args))
+      (ast.Expr.make [_ uname variant args] (call infer_make c env at uname variant args))
+      (ast.Expr.match_ [_ val arms else_body] (call infer_match c env at val arms else_body))
+      (ast.Expr.addr [_ val kind]
+       (let t:ast.Type (call infer c val env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let ok:bool
+            (match kind
+              (ast.AddrKind.ptr (eq (call tag t) 7))
+              (ast.AddrKind.arr (eq (call tag t) 10))
+              (ast.AddrKind.enum_ (eq (call tag t) 12))))
+       (if ok
+           (call i32_t)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b (match kind
+                         (ast.AddrKind.ptr "ptr.addr needs a (ptr S), got ")
+                         (ast.AddrKind.arr "arr.addr needs an (arr T), got ")
+                         (ast.AddrKind.enum_ "enum.ord needs an enum value, got ")))
+             (call ty b t)
+             (call fail c b)
+             (call void_t))))))
+
+  (fn placeholder [at:i32] -> ast.Expr (make ast.Expr.lit_int at 0i64))
+
+  (fn unknown_struct [c:(ptr C) at:i32 name:(ptr str.Bytes)] -> void
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b "Unknown struct '") (call by b name) (call s b "'")
+    (call fail c b))
+
+  (fn jump [c:(ptr C) at:i32 what:str] -> ast.Type
+    (if (eq (get c C.loop_depth) 0)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b what) (call s b " is only allowed inside a while or loop body")
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  (fn infer_let [c:(ptr C) env:(ptr Env) at:i32 name:(ptr str.Bytes) lty:ast.Type val:ast.Expr] -> ast.Type
+    (if (call has env name)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Cannot shadow existing variable '") (call by b name) (call s b "'")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (call validate_or_fail c lty at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq vt lty))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Type mismatch in 'let': expected ") (call ty b lty) (call s b ", got ") (call ty b vt)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (call declare c name lty at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (call bind env name lty)
+    (call void_t))
+
+  (fn infer_set [c:(ptr C) env:(ptr Env) at:i32 name:(ptr str.Bytes) val:ast.Expr] -> ast.Type
+    (if (not (call has env name))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Undefined variable '") (call by b name) (call s b "' in set!")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let var_t:ast.Type (call type_of env name))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq var_t vt))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Type mismatch in 'set!': variable is ") (call ty b var_t) (call s b ", value is ") (call ty b vt)
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  (fn infer_if [c:(ptr C) env:(ptr Env) at:i32 cnd:ast.Expr thn:ast.Expr els:ast.Expr] -> ast.Type
+    (let ct:ast.Type (call infer c cnd env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq ct (call bool_t)))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "If condition must be Bool, got ") (call ty b ct) (call fail c b) (return (call void_t)))
+        (block))
+    (let m:i32 (call mark env))
+    (let tt:ast.Type (call infer c thn env))
+    (call restore env m)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let et:ast.Type (call infer c els env))
+    (call restore env m)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (cond
+      ((and (call is_void tt) (call is_void et)) (call void_t))
+      ((and (not (call is_void tt)) (and (not (call is_void et)) (call teq tt et))) tt)
+      (else
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b "If branch type mismatch: then is ") (call ty b tt) (call s b ", else is ") (call ty b et)
+       (call s b ". If mixing void and non-void, consider wrapping in (block ... value)")
+       (call fail c b)
+       (call void_t))))
+
+  (fn infer_loop [c:(ptr C) env:(ptr Env) at:i32 var:(ptr str.Bytes) start:ast.Expr end:ast.Expr step:ast.Expr body:(arr ast.Expr)] -> ast.Type
+    (let st:ast.Type (call infer c start env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let et:ast.Type (call infer c end env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let pt:ast.Type (call infer c step env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (and (call is_i32 st) (and (call is_i32 et) (call is_i32 pt))))
+        (block (call fail_str c at "Loop bounds and step must be i32") (return (call void_t)))
+        (block))
+    (if (call has env var)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Cannot shadow existing variable '") (call by b var) (call s b "' in loop")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let m:i32 (call mark env))
+    (call declare c var (call i32_t) at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (call bind env var (call i32_t))
+    (call check_loop_body c body env)
+    (call restore env m)
+    (call void_t))
+
+  (fn infer_return [c:(ptr C) env:(ptr Env) at:i32 rv:ast.MaybeExpr] -> ast.Type
+    (let expected:ast.Type
+         (match (get c C.ret)
+           (ast.MaybeType.some [t] t)
+           (ast.MaybeType.none (call fail_str c at "return is not allowed in a contract") (call void_t))))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let got:ast.Type (match rv (ast.MaybeExpr.some [v] (call infer c v env)) (ast.MaybeExpr.none (call void_t))))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq got expected))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "return value has type ") (call ty b got) (call s b ", but the function returns ") (call ty b expected)
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  (fn infer_call [c:(ptr C) env:(ptr Env) at:i32 func:(ptr str.Bytes) args:(arr ast.Expr)] -> ast.Type
+    (if (not (call (strmap.has (ptr Sig)) (get c C.fns) func))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Call to unknown function '") (call by b func) (call s b "'")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) func (ptr.null Sig)))
+    (let ps:(arr ast.Type) (get sig Sig.params))
+    (if (neq (arr.len args) (arr.len ps))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Function '") (call by b func) (call s b "' expects ") (call buf.push_int b (arr.len ps))
+          (call s b " arguments, got ") (call buf.push_int b (arr.len args))
+          (call fail c b) (return (call void_t)))
+        (block))
+    (loop k 0 (- (arr.len args) 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return (call void_t)) (block))
+      (if (not (call teq t (arr.get ast.Type ps k)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "Arg ") (call buf.push_int b k) (call s b " of '") (call by b func) (call s b "' expects ")
+            (call ty b (arr.get ast.Type ps k)) (call s b ", got ") (call ty b t)
+            (call fail c b) (return (call void_t)))
+          (block)))
+    (get sig Sig.ret))
+
+  (fn infer_match_result [c:(ptr C) env:(ptr Env) at:i32 val:ast.Expr ok_var:(ptr str.Bytes) ok_body:(arr ast.Expr)
+                          err_var:(ptr str.Bytes) err_body:(arr ast.Expr)] -> ast.Type
+    (let rt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let okt:ast.Type (call void_t))
+    (let errt:ast.Type (call void_t))
+    (match rt
+      (ast.Type.result [o e2] (set! okt o) (set! errt e2))
+      (else
+       (let b:(ptr buf.Buf) (call msg c at)) (call s b "match_result expected ResultType, got ") (call ty b rt) (call fail c b)
+       (return (call void_t))))
+    (if (call has env ok_var)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Cannot shadow existing variable '") (call by b ok_var) (call s b "' in match_result ok arm")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let m:i32 (call mark env))
+    (call declare c ok_var okt at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (call bind env ok_var okt)
+    (let last_ok:ast.Type (call infer_seq c ok_body env))
+    (call restore env m)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (call has env err_var)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Cannot shadow existing variable '") (call by b err_var) (call s b "' in match_result err arm")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (call declare c err_var errt at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (call bind env err_var errt)
+    (let last_err:ast.Type (call infer_seq c err_body env))
+    (call restore env m)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (cond
+      ((and (call is_void last_ok) (call is_void last_err)) (call void_t))
+      ((and (not (call is_void last_ok)) (and (not (call is_void last_err)) (call teq last_ok last_err))) last_ok)
+      (else
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b "match_result arm type mismatch: ok arm yields ") (call ty b last_ok) (call s b ", err arm yields ") (call ty b last_err)
+       (call fail c b)
+       (call void_t))))
+
+  ;; get / put: the struct, the pointer's type, the field.
+  (fn infer_field [c:(ptr C) env:(ptr Env) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:ast.Expr is_put:bool val:ast.Expr] -> ast.Type
+    (if (not (call has_struct c sname)) (block (call unknown_struct c at sname) (return (call void_t))) (block))
+    (let sd:(ptr ast.StructDef) (call struct_def c sname))
+    (let pt:ast.Type (call infer c ptr env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq pt (make ast.Type.ptr (make ast.Type.struct_ sname))))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (if is_put "put " "get ")) (call by b sname) (call s b ".") (call by b fname)
+          (call s b " needs a (ptr ") (call by b sname) (call s b "), got ") (call ty b pt)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
+    (let found:i32 -1)
+    (loop k 0 (- (arr.len fs) 1) 1
+      (if (and (lt found 0) (call beq (get (arr.get (ptr ast.Field) fs k) ast.Field.name) fname)) (set! found k) (block)))
+    (if (lt found 0)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Struct '") (call by b sname) (call s b "' has no field '") (call by b fname) (call s b "'")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let ft:ast.Type (get (arr.get (ptr ast.Field) fs found) ast.Field.ty))
+    (if (not is_put) (return ft) (block))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq vt ft))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Type mismatch writing to field '") (call by b sname) (call s b ".") (call by b fname)
+          (call s b "': expected ") (call ty b ft) (call s b ", got ") (call ty b vt)
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  ;; arr.get / arr.set.
+  (fn infer_arr [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr is_set:bool val:ast.Expr] -> ast.Type
+    (let what:str (if is_set "arr.set" "arr.get"))
+    (call validate_or_fail c (make ast.Type.arr ety) at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let pt:ast.Type (call infer c ptr env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq pt (make ast.Type.arr ety)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b what) (call s b " ") (call ty b ety) (call s b " needs an (arr ") (call ty b ety) (call s b "), got ") (call ty b pt)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let it:ast.Type (call infer c index env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call is_i32 it))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b what) (call s b " index must be i32, got ") (call ty b it)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (if (not is_set) (return ety) (block))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq vt ety))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "arr.set value mismatch: expected ") (call ty b ety) (call s b ", got ") (call ty b vt)
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  (fn infer_call_ref [c:(ptr C) env:(ptr Env) at:i32 sig:ast.Type callee:ast.Expr args:(arr ast.Expr)] -> ast.Type
+    (call validate_or_fail c sig at)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let ps:(arr ast.Type) (arr.null ast.Type))
+    (let ret:ast.Type (call void_t))
+    (match sig
+      (ast.Type.fn_ [p r] (set! ps p) (set! ret r))
+      (else
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b "call_ref needs a (fn [...] -> r) signature, got ") (call ty b sig)
+       (call fail c b) (return (call void_t))))
+    (let ft:ast.Type (call infer c callee env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq ft sig))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "call_ref signature ") (call ty b sig) (call s b " does not match the function's type ") (call ty b ft)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (if (neq (arr.len args) (arr.len ps))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "call_ref expects ") (call buf.push_int b (arr.len ps)) (call s b " arguments, got ") (call buf.push_int b (arr.len args))
+          (call fail c b) (return (call void_t)))
+        (block))
+    (loop k 0 (- (arr.len args) 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return (call void_t)) (block))
+      (if (not (call teq t (arr.get ast.Type ps k)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "call_ref argument ") (call buf.push_int b (+ k 1)) (call s b " expects ") (call ty b (arr.get ast.Type ps k))
+            (call s b ", got ") (call ty b t)
+            (call fail c b) (return (call void_t)))
+          (block)))
+    ret)
+
+  (fn find_variant [u:(ptr ast.UnionDef) name:(ptr str.Bytes)] -> (ptr ast.Variant)
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (loop k 0 (- (arr.len vs) 1) 1
+      (if (call beq (get (arr.get (ptr ast.Variant) vs k) ast.Variant.name) name) (return (arr.get (ptr ast.Variant) vs k)) (block)))
+    (ptr.null ast.Variant))
+
+  (fn infer_make [c:(ptr C) env:(ptr Env) at:i32 uname:(ptr str.Bytes) variant:(ptr str.Bytes) args:(arr ast.Expr)] -> ast.Type
+    (if (not (call has_union c uname))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Unknown union '") (call by b uname) (call s b "' in make")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let v:(ptr ast.Variant) (call find_variant (call union_def c uname) variant))
+    (if (eq v (ptr.null ast.Variant))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "union '") (call by b uname) (call s b "' has no variant '") (call by b variant) (call s b "'")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+    (if (neq (arr.len args) (arr.len fs))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "make ") (call by b uname) (call s b ".") (call by b variant) (call s b " takes ")
+          (call buf.push_int b (arr.len fs)) (call s b " values (its fields), got ") (call buf.push_int b (arr.len args))
+          (call fail c b) (return (call void_t)))
+        (block))
+    (loop k 0 (- (arr.len args) 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return (call void_t)) (block))
+      (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
+      (if (not (call teq t (get f ast.Field.ty)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "make ") (call by b uname) (call s b ".") (call by b variant) (call s b ": field '")
+            (call by b (get f ast.Field.name)) (call s b "' is ") (call ty b (get f ast.Field.ty)) (call s b ", got ") (call ty b t)
+            (call fail c b) (return (call void_t)))
+          (block)))
+    (make ast.Type.union_ uname))
+
+  ;; The members a match on t names, in order, and (for a union) each one's
+  ;; fields; null for a type that is not a union or an enum.
+  (struct Members [type_name:(ptr str.Bytes) names:(arr (ptr str.Bytes)) fields:(arr (arr (ptr ast.Field))) is_union:bool])
+
+  (fn members_of [c:(ptr C) t:ast.Type] -> (ptr Members)
+    (let ms:(ptr Members) (new Members))
+    (match t
+      (ast.Type.union_ [u]
+       (let vs:(arr (ptr ast.Variant)) (get (call union_def c u) ast.UnionDef.variants))
+       (put ms Members.type_name u)
+       (put ms Members.is_union true)
+       (put ms Members.names (arr.new (ptr str.Bytes) (arr.len vs)))
+       (put ms Members.fields (arr.new (arr (ptr ast.Field)) (arr.len vs)))
+       (loop k 0 (- (arr.len vs) 1) 1
+         (arr.set (ptr str.Bytes) (get ms Members.names) k (get (arr.get (ptr ast.Variant) vs k) ast.Variant.name))
+         (arr.set (arr (ptr ast.Field)) (get ms Members.fields) k (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
+       ms)
+      (ast.Type.enum_ [en]
+       (let mems:(arr (ptr ast.Member)) (get (call enum_def c en) ast.EnumDef.members))
+       (put ms Members.type_name en)
+       (put ms Members.is_union false)
+       (put ms Members.names (arr.new (ptr str.Bytes) (arr.len mems)))
+       (loop k 0 (- (arr.len mems) 1) 1
+         (arr.set (ptr str.Bytes) (get ms Members.names) k (get (arr.get (ptr ast.Member) mems k) ast.Member.name)))
+       ms)
+      (else (ptr.null Members))))
+
+  (fn infer_match [c:(ptr C) env:(ptr Env) at:i32 val:ast.Expr arms:(arr (ptr ast.Arm)) else_body:(arr ast.Expr)] -> ast.Type
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let ms:(ptr Members) (call members_of c vt))
+    (if (eq ms (ptr.null Members))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at)) (call s b "match needs a union or enum value, got ") (call ty b vt) (call fail c b)
+          (return (call void_t)))
+        (block))
+    (let tname:(ptr str.Bytes) (get ms Members.type_name))
+    (let names:(arr (ptr str.Bytes)) (get ms Members.names))
+    (let seen:(arr bool) (arr.new bool (arr.len names)))
+    (let nseen:i32 0)
+    (let arm_names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) 8))
+    (let arm_types:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) 8))
+    (loop k 0 (- (arr.len arms) 1) 1
+      (if (get c C.failed) (return (call void_t)) (block))
+      (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms k))
+      (let aat:i32 (get arm ast.Arm.at))
+      (let full:(ptr str.Bytes) (get arm ast.Arm.member))
+      ;; Name.member, Name being the matched type
+      (let dot:i32 -1)
+      (loop q 0 (- (get full str.Bytes.len) 1) 1 (if (eq (call str.byte_at full q) 46) (set! dot q) (block)))
+      (if (or (lt dot 0) (not (call beq (call str.bytes (get full str.Bytes.addr) dot) tname)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c aat))
+            (call s b "a match arm on ") (call by b tname) (call s b " is (") (call by b tname) (call s b ".member ...), got ") (call by b full)
+            (call fail c b) (return (call void_t)))
+          (block))
+      (let member:(ptr str.Bytes) (call str.bytes (+ (get full str.Bytes.addr) (+ dot 1)) (- (get full str.Bytes.len) (+ dot 1))))
+      (let mi:i32 -1)
+      (loop q 0 (- (arr.len names) 1) 1 (if (and (lt mi 0) (call beq (arr.get (ptr str.Bytes) names q) member)) (set! mi q) (block)))
+      (if (lt mi 0)
+          (block
+            (let b:(ptr buf.Buf) (call msg c aat))
+            (call by b tname) (call s b " has no member '") (call by b member) (call s b "'")
+            (call fail c b) (return (call void_t)))
+          (block))
+      (if (arr.get bool seen mi)
+          (block
+            (let b:(ptr buf.Buf) (call msg c aat))
+            (call by b tname) (call s b ".") (call by b member) (call s b " is matched twice")
+            (call fail c b) (return (call void_t)))
+          (block))
+      (arr.set bool seen mi true)
+      (set! nseen (+ nseen 1))
+      (let m:i32 (call mark env))
+      (let binders:(arr (ptr str.Bytes)) (get arm ast.Arm.binders))
+      (let has_binders:bool (neq binders (arr.null (ptr str.Bytes))))
+      (if (get ms Members.is_union)
+          (call bind_fields c env aat tname member (arr.get (arr (ptr ast.Field)) (get ms Members.fields) mi) binders)
+          (if has_binders
+              (block
+                (let b:(ptr buf.Buf) (call msg c aat))
+                (call by b tname) (call s b ".") (call by b member) (call s b " is an enum member; its arm binds nothing")
+                (call fail c b))
+              (block)))
+      (if (get c C.failed) (return (call void_t)) (block))
+      (let t:ast.Type (call infer_seq c (get arm ast.Arm.body) env))
+      (call restore env m)
+      (let label:(ptr buf.Buf) (call buf.make 32))
+      (call by label tname) (call s label ".") (call by label member)
+      (call (vec.push (ptr str.Bytes)) arm_names (call buf.bytes label))
+      (call (vec.push ast.Type) arm_types t))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (neq else_body (arr.null ast.Expr))
+        (block
+          (if (eq nseen (arr.len names))
+              (block
+                (let b:(ptr buf.Buf) (call msg c at))
+                (call s b "the else arm never runs: every member of ") (call by b tname) (call s b " is matched")
+                (call fail c b) (return (call void_t)))
+              (block))
+          (let m:i32 (call mark env))
+          (let t:ast.Type (call infer_seq c else_body env))
+          (call restore env m)
+          (if (get c C.failed) (return (call void_t)) (block))
+          (call (vec.push (ptr str.Bytes)) arm_names (call str.from_str "else"))
+          (call (vec.push ast.Type) arm_types t))
+        (if (lt nseen (arr.len names))
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "match is missing ")
+              (let first:bool true)
+              (loop q 0 (- (arr.len names) 1) 1
+                (if (arr.get bool seen q)
+                    (block)
+                    (block
+                      (if first (block) (call s b ", "))
+                      (set! first false)
+                      (call by b tname) (call s b ".") (call by b (arr.get (ptr str.Bytes) names q)))))
+              (call s b " (add those arms or an else arm)")
+              (call fail c b) (return (call void_t)))
+            (block)))
+    (let t0:ast.Type (call (vec.at ast.Type) arm_types 0))
+    (loop k 1 (- (call (vec.len ast.Type) arm_types) 1) 1
+      (let tk:ast.Type (call (vec.at ast.Type) arm_types k))
+      (if (and (not (get c C.failed)) (not (call teq tk t0)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "match arm type mismatch: ") (call by b (call (vec.at (ptr str.Bytes)) arm_names 0))
+            (call s b " yields ") (call ty b t0) (call s b ", ")
+            (call by b (call (vec.at (ptr str.Bytes)) arm_names k)) (call s b " yields ") (call ty b tk)
+            (call fail c b))
+          (block)))
+    t0)
+
+  ;; A union arm's binders: one per field, in order; `_` binds nothing.
+  (fn bind_fields [c:(ptr C) env:(ptr Env) aat:i32 tname:(ptr str.Bytes) member:(ptr str.Bytes) fs:(arr (ptr ast.Field)) binders:(arr (ptr str.Bytes))] -> void
+    (let nb:i32 (if (eq binders (arr.null (ptr str.Bytes))) 0 (arr.len binders)))
+    (if (neq nb (arr.len fs))
+        (block
+          (let b:(ptr buf.Buf) (call msg c aat))
+          (call s b "the ") (call by b tname) (call s b ".") (call by b member) (call s b " arm binds its ")
+          (call buf.push_int b (arr.len fs)) (call s b " fields in order: [")
+          (loop q 0 (- (arr.len fs) 1) 1
+            (if (gt q 0) (call s b " ") (block))
+            (call by b (get (arr.get (ptr ast.Field) fs q) ast.Field.name)))
+          (call s b "], got ") (call buf.push_int b nb) (call s b " names")
+          (call fail c b) (return))
+        (block))
+    (loop q 0 (- nb 1) 1
+      (let n:(ptr str.Bytes) (arr.get (ptr str.Bytes) binders q))
+      (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs q))
+      (if (and (not (get c C.failed)) (not (call lit n "_")))
+          (block
+            (if (call has env n)
+                (block
+                  (let b:(ptr buf.Buf) (call msg c aat))
+                  (call s b "Cannot shadow existing variable '") (call by b n) (call s b "' in the ")
+                  (call by b tname) (call s b ".") (call by b member) (call s b " arm")
+                  (call fail c b) (return))
+                (block))
+            (call declare c n (get f ast.Field.ty) aat)
+            (if (get c C.failed) (return) (block))
+            (call bind env n (get f ast.Field.ty)))
+          (block))))
+
+  ;; ===== Operators =====
+
+  (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
+    (call check_literal_address c at o args)
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let n:i32 (arr.len args))
+    (cond
+      ((or (eq o ast.Op.checked_add) (or (eq o ast.Op.checked_sub) (eq o ast.Op.checked_mul)))
+       (if (neq n 2) (block (call op_msg c at o " requires 2 arguments") (return (call void_t))) (block))
+       (let t1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let t2:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call teq t1 t2)) (block (call pair_msg c at "Type mismatch in binary op: " t1 " vs " t2) (return (call void_t))) (block))
+       (if (not (call is_int t1))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b (call op_debug o)) (call s b " is integer arithmetic (i32 or i64), got ") (call ty b t1)
+             (call fail c b) (return (call void_t)))
+           (block))
+       t1)
+      ((call is_arith o) (call infer_arith c env at o args))
+      ((or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32))
+       (call one c env at args (call i32_t) o true " requires 1 argument (ptr: i32)" " requires i32 ptr, got ")
+       (call i32_t))
+      ((eq o ast.Op.mem_load64)
+       (call one c env at args (call i32_t) o false "mem.load64 requires 1 argument (ptr: i32)" "mem.load64 requires i32 ptr, got ")
+       (call i64_t))
+      ((or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store32))
+       (call store c env at o args (call i32_t) true " requires 2 arguments (ptr: i32, val: i32)" " requires (i32, i32), got (")
+       (call void_t))
+      ((eq o ast.Op.mem_store64)
+       (call store c env at o args (call i64_t) false "mem.store64 requires 2 arguments (ptr: i32, val: i64)" "mem.store64 requires (i32, i64), got (")
+       (call void_t))
+      ((eq o ast.Op.mem_alloc)
+       (call one c env at args (call i32_t) o false "mem.alloc requires 1 argument (size: i32)" "mem.alloc requires i32 size, got ")
+       (call i32_t))
+      ((eq o ast.Op.mem_grow)
+       (call one c env at args (call i32_t) o false "mem.grow requires 1 argument (pages: i32)" "mem.grow requires i32 pages, got ")
+       (call i32_t))
+      ((eq o ast.Op.atomic_add) (call operands c env at "atomic.add" "(atomic.add p v)" args 2) (call i32_t))
+      ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
+      ((eq o ast.Op.atomic_lock) (call operands c env at "atomic.lock" "(atomic.lock p)" args 1) (call void_t))
+      ((eq o ast.Op.atomic_unlock) (call operands c env at "atomic.unlock" "(atomic.unlock p)" args 1) (call void_t))
+      ((call is_compare o) (call infer_compare c env at o args))
+      ((or (eq o ast.Op.and) (eq o ast.Op.or))
+       (let name:str (if (eq o ast.Op.and) "and" "or"))
+       (if (neq n 2)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b name) (call s b " takes exactly 2 operands, got ") (call buf.push_int b n)
+             (call s b "; nest them: (") (call s b name) (call s b " a (") (call s b name) (call s b " b c))")
+             (call fail c b) (return (call void_t)))
+           (block))
+       (loop k 0 1 1
+         (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+         (if (get c C.failed) (return (call void_t)) (block))
+         (if (not (call teq t (call bool_t)))
+             (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Logical op expects Bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
+             (block)))
+       (call bool_t))
+      ((eq o ast.Op.not)
+       (if (neq n 1) (block (call fail_str c at "Not op expects 1 argument") (return (call void_t))) (block))
+       (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call teq t (call bool_t)))
+           (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Not op expects Bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
+           (block))
+       (call bool_t))
+      ((eq o ast.Op.sys_print)
+       (loop k 0 (- n 1) 1
+         (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+         (if (get c C.failed) (return (call void_t)) (block))
+         (if (neq (call tag t) 5)
+             (block
+               (let b:(ptr buf.Buf) (call msg c at))
+               (call s b "sys.print prints str values, got ") (call ty b t)
+               (call s b "; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)")
+               (call fail c b) (return (call void_t)))
+             (block)))
+       (call void_t))
+      ((or (eq o ast.Op.sys_time) (eq o ast.Op.sys_monotonic))
+       (if (neq n 0) (block (call op_msg c at o " takes no arguments") (return (call void_t))) (block))
+       (call i64_t))
+      ((eq o ast.Op.sys_random)
+       (call all_i32 c env at args 2 o false "sys.random requires 2 arguments (ptr, len)" "sys.random argument " " must be i32, got ")
+       (call i32_t))
+      ((eq o ast.Op.sys_exit)
+       (call one c env at args (call i32_t) o false "sys.exit requires 1 argument (code: i32)" "sys.exit requires i32 code, got ")
+       (call void_t))
+      ((or (eq o ast.Op.str_len) (eq o ast.Op.str_ptr))
+       (if (eq o ast.Op.str_len)
+           (call one c env at args (make ast.Type.str) o false "str.len requires 1 argument (s: str)" "str.len requires str, got ")
+           (call one c env at args (make ast.Type.str) o false "str.ptr requires 1 argument (s: str)" "str.ptr requires str, got "))
+       (call i32_t))
+      ((or (eq o ast.Op.fs_open) (or (eq o ast.Op.fs_read) (eq o ast.Op.fs_write)))
+       (call all_i32 c env at args 3 o true " requires 3 arguments" " argument " " must be i32 (pointer/length/fd), got ")
+       (call i32_t))
+      ((eq o ast.Op.fs_close)
+       (call one c env at args (call i32_t) o false "fs.close requires 1 argument" "fs.close requires i32 fd, got ")
+       (call i32_t))
+      ((or (eq o ast.Op.args_sizes) (or (eq o ast.Op.args_get) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get))))
+       (call all_i32 c env at args 2 o true " requires 2 arguments (two i32 addresses)" " argument " " must be an i32 address, got ")
+       (call i32_t))
+      ((eq o ast.Op.fs_delete)
+       (call all_i32 c env at args 2 o false "fs.delete requires 2 arguments (path_ptr, path_len)" "fs.delete argument " " must be i32 (pointer/length), got ")
+       (call i32_t))
+      ((eq o ast.Op.thread_spawn) (call infer_spawn c env at args))
+      ((eq o ast.Op.thread_join)
+       (if (neq n 1) (block (call fail_str c at "thread.join requires 1 argument (thread handle)") (return (call void_t))) (block))
+       (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call is_i32 t))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at)) (call s b "thread.join needs the i32 handle thread.spawn returned, got ") (call ty b t)
+             (call fail c b))
+           (block))
+       (call i32_t))
+      ((or (eq o ast.Op.i64_extend_s) (eq o ast.Op.i64_extend_u))
+       (call one c env at args (call i32_t) o true " requires 1 argument (x: i32)" " requires i32, got ")
+       (call i64_t))
+      ((eq o ast.Op.i32_wrap)
+       (call one c env at args (call i64_t) o false "i32.wrap requires 1 argument (x: i64)" "i32.wrap requires i64, got ")
+       (call i32_t))
+      (else
+       ;; f64.convert_i64_s, f64.reinterpret_i64: i64 -> f64; f64.sqrt: f64 -> f64;
+       ;; i64.trunc_f64_s, i64.reinterpret_f64: f64 -> i64
+       (let from:ast.Type (if (or (eq o ast.Op.f64_convert_i64_s) (eq o ast.Op.f64_reinterpret_i64)) (call i64_t) (call f64_t)))
+       (let to:ast.Type (if (or (eq o ast.Op.i64_trunc_f64_s) (eq o ast.Op.i64_reinterpret_f64)) (call i64_t) (call f64_t)))
+       (if (call is_i64 from)
+           (call one c env at args from o true " requires 1 argument (x: I64)" " requires I64, got ")
+           (call one c env at args from o true " requires 1 argument (x: F64)" " requires F64, got "))
+       to)))
+
+  ;; A message's fixed text, after the op's Debug name when `pre`.
+  (fn words [b:(ptr buf.Buf) o:ast.Op pre:bool x:str] -> void
+    (if pre (call s b (call op_debug o)) (block))
+    (call s b x))
+
+  (fn op_msg [c:(ptr C) at:i32 o:ast.Op x:str] -> void
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b (call op_debug o)) (call s b x)
+    (call fail c b))
+
+  (fn pair_msg [c:(ptr C) at:i32 x:str t1:ast.Type y:str t2:ast.Type] -> void
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b x) (call ty b t1) (call s b y) (call ty b t2)
+    (call fail c b))
+
+  ;; One operand of type `want`: arity's message, or mismatch's then the type.
+  (fn one [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) want:ast.Type o:ast.Op pre:bool arity:str mismatch:str] -> void
+    (if (neq (arr.len args) 1)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
+        (block))
+    (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+    (if (get c C.failed) (return) (block))
+    (if (not (call teq t want))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre mismatch) (call ty b t) (call fail c b))
+        (block)))
+
+  ;; mem.store*: (ptr: i32, val: want), both checked before either is reported.
+  (fn store [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr) want:ast.Type pre:bool arity:str mismatch:str] -> void
+    (if (neq (arr.len args) 2)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
+        (block))
+    (let t1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+    (if (get c C.failed) (return) (block))
+    (let t2:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+    (if (get c C.failed) (return) (block))
+    (if (not (and (call is_i32 t1) (call teq t2 want)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call words b o pre mismatch) (call ty b t1) (call s b ", ") (call ty b t2) (call s b ")")
+          (call fail c b))
+        (block)))
+
+  ;; `count` i32 operands, each checked in turn: "PREFIX i SUFFIX type".
+  (fn all_i32 [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) count:i32 o:ast.Op pre:bool arity:str prefix:str suffix:str] -> void
+    (if (neq (arr.len args) count)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
+        (block))
+    (loop k 0 (- count 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return) (block))
+      (if (not (call is_i32 t))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call words b o pre prefix) (call buf.push_int b k) (call s b suffix) (call ty b t)
+            (call fail c b) (return))
+          (block))))
+
+  ;; src/checker.rs expect_operands: exactly `count` i32 operands.
+  (fn operands [c:(ptr C) env:(ptr Env) at:i32 name:str form:str args:(arr ast.Expr) count:i32] -> void
+    (if (neq (arr.len args) count)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b name) (call s b " takes ") (call buf.push_int b count) (call s b " operands, ") (call s b form)
+          (call s b "; got ") (call buf.push_int b (arr.len args))
+          (call fail c b) (return))
+        (block))
+    (loop k 0 (- count 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return) (block))
+      (if (not (call is_i32 t))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b name) (call s b " operand ") (call buf.push_int b (+ k 1)) (call s b " must be I32, got ") (call ty b t)
+            (call fail c b) (return))
+          (block))))
+
+  (fn infer_spawn [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr)] -> ast.Type
+    (if (neq (arr.len args) 2)
+        (block (call fail_str c at "thread.spawn requires 2 arguments (worker: (fn [i32] -> i32), arg: i32)") (return (call void_t)))
+        (block))
+    (let ps:(arr ast.Type) (arr.new ast.Type 1))
+    (arr.set ast.Type ps 0 (call i32_t))
+    (let worker:ast.Type (make ast.Type.fn_ ps (call i32_t)))
+    (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq t worker))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at)) (call s b "thread.spawn needs a worker of type (fn [i32] -> i32), got ") (call ty b t)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let a:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call is_i32 a))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "thread.spawn argument must be i32, got ") (call ty b a) (call fail c b))
+        (block))
+    (call i32_t))
+
+  (fn is_arith [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.add) (or (eq o ast.Op.sub) (or (eq o ast.Op.mul) (eq o ast.Op.div))))
+        (or (or (eq o ast.Op.mod) (or (eq o ast.Op.bitxor) (or (eq o ast.Op.shl) (eq o ast.Op.shr))))
+            (or (or (eq o ast.Op.shru) (eq o ast.Op.divu)) (or (eq o ast.Op.remu) (or (eq o ast.Op.bitand) (eq o ast.Op.bitor)))))))
+
+  (fn is_compare [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.eq) (or (eq o ast.Op.neq) (or (eq o ast.Op.lt) (eq o ast.Op.lte))))
+        (or (or (eq o ast.Op.gt) (eq o ast.Op.gte)) (or (or (eq o ast.Op.ltu) (eq o ast.Op.lteu)) (or (eq o ast.Op.gtu) (eq o ast.Op.gteu))))))
+
+  (fn is_unsigned [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.ltu) (eq o ast.Op.lteu)) (or (eq o ast.Op.gtu) (eq o ast.Op.gteu))))
+
+  ;; pointers, arrays, function refs, enums, unions: the operand that gets
+  ;; its own explanation in arithmetic
+  (fn is_special [t:ast.Type] -> bool
+    (let k:i32 (call tag t))
+    (or (eq k 7) (or (eq k 10) (or (eq k 11) (or (eq k 12) (eq k 13))))))
+
+  (fn infer_arith [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
+    (if (neq (arr.len args) 2)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Arithmetic/bitwise opcode ") (call s b (call op_debug o)) (call s b " requires 2 arguments")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let a1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let t2:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let t1:ast.Type (if (and (not (call is_special a1)) (call is_special t2)) t2 a1))
+    (if (and (not (call teq t1 t2)) (not (call is_special t1)))
+        (block (call pair_msg c at "Type mismatch in binary op: " t1 " vs " t2) (return (call void_t)))
+        (block))
+    (let k:i32 (call tag t1))
+    (if (or (eq k 7) (or (eq k 10) (eq k 11)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " on ") (call ty b t1)
+          (call s b ": pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (match t1
+      (ast.Type.union_ [u]
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b (call op_debug o)) (call s b " on union '") (call by b u) (call s b "': unions have no arithmetic; take them apart with match")
+       (call fail c b) (return (call void_t)))
+      (else (block)))
+    (let integer_only:bool (not (or (eq o ast.Op.add) (or (eq o ast.Op.sub) (or (eq o ast.Op.mul) (eq o ast.Op.div))))))
+    (if (and (eq k 5) (eq o ast.Op.add))
+        (block (call fail_str c at "+ does not join strings; build them with std/buf (buf.push_str, buf.bytes)") (return (call void_t)))
+        (block))
+    (if (and integer_only (not (or (call is_int t1) (eq k 12))))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " is integer arithmetic (i32 or i64), got ") (call ty b t1)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (if (not (or (lte k 3) (eq k 12)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " needs numbers (i32, i64, f32, f64), got ") (call ty b t1)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (match t1
+      (ast.Type.enum_ [e]
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b (call op_debug o)) (call s b " on enum '") (call by b e)
+       (call s b "': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast ")
+       (call by b e) (call s b " n)")
+       (call fail c b) (return (call void_t)))
+      (else (block)))
+    t1)
+
+  (fn infer_compare [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
+    (if (neq (arr.len args) 2)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Comparison opcode ") (call s b (call op_debug o)) (call s b " requires 2 arguments")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let t1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let t2:ast.Type (call infer c (arr.get ast.Expr args 1) env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq t1 t2)) (block (call pair_msg c at "Type mismatch in comparison: " t1 " vs " t2) (return (call void_t))) (block))
+    (let k:i32 (call tag t1))
+    (let equality:bool (or (eq o ast.Op.eq) (eq o ast.Op.neq)))
+    (if (and (call is_unsigned o) (not (call is_int t1)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " compares integers (i32 or i64) as unsigned, got ") (call ty b t1)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (match t1
+      (ast.Type.union_ [u]
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b (call op_debug o)) (call s b " on union '") (call by b u) (call s b "': union values do not compare; take them apart with match")
+       (call fail c b) (return (call void_t)))
+      (else (block)))
+    (if (and (or (eq k 7) (or (eq k 10) (or (eq k 11) (eq k 12)))) (not equality))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " on ") (call ty b t1)
+          (call s b ": pointers, arrays, function refs, and enums compare only with eq/neq")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (if (and (or (eq k 4) (eq k 5)) (not equality))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o)) (call s b " on ") (call ty b t1)
+          (call s b ": only numbers are ordered; bool and str compare only with eq/neq")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (call bool_t))
+
+  ;; src/checker.rs check_literal_address: a literal address argument.
+  (fn check_literal_address [c:(ptr C) at:i32 o:ast.Op args:(arr ast.Expr)] -> void
+    (let is_write:bool (or (or (eq o ast.Op.mem_store8) (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)))
+                           (or (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)) (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)))))
+    (let is_addr:bool (or is_write (or (eq o ast.Op.mem_load8) (or (eq o ast.Op.mem_load32) (eq o ast.Op.mem_load64)))))
+    (if (or (not is_addr) (eq (arr.len args) 0)) (return) (block))
+    (let a:i64 0i64)
+    (match (arr.get ast.Expr args 0)
+      (ast.Expr.lit_int [_ v] (set! a v))
+      (else (return)))
+    (let b:(ptr buf.Buf) (call msg c at))
+    (cond
+      ((lt a 0i64)
+       (call s b (call op_debug o)) (call s b " at negative literal address ") (call buf.push_i64 b a)
+       (call fail c b))
+      ((and (lt a 4i64) is_write)
+       (call s b (call op_debug o)) (call s b " at address ") (call buf.push_i64 b a)
+       (call s b ": bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead")
+       (call fail c b))
+      ((and (and (gte a 4i64) (lt a 64i64)) (neq (% a 4i64) 0i64))
+       (call s b (call op_debug o)) (call s b " at address ") (call buf.push_i64 b a)
+       (call s b ": runtime cells 4-63 are 4-byte-aligned i32 slots (4, 8, 12, ...)")
+       (call fail c b))
+      ((and (gte a 64i64) (lt a 1024i64))
+       (call s b (call op_debug o)) (call s b " at literal address ") (call buf.push_i64 b a)
+       (call s b ": bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead")
+       (call fail c b))
+      (else (block))))
+
+  ;; ===== Entry =====
+
+  ;; A rejected program's first error: where, and the message.
+  (struct Problem [at:i32 text:(ptr buf.Buf)])
+
+  ;; Checks a parsed module: null if it type-checks, else the first error.
+  (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
+    (let c:(ptr C) (new C))
+    (put c C.src src)
+    (put c C.structs (call (strmap.make (ptr ast.StructDef)) 64))
+    (put c C.enums (call (strmap.make (ptr ast.EnumDef)) 16))
+    (put c C.unions (call (strmap.make (ptr ast.UnionDef)) 16))
+    (put c C.fns (call (strmap.make (ptr Sig)) 256))
+    (put c C.declared (call (strmap.make ast.Type) 32))
+    (put c C.loop_depth 0)
+    (put c C.ret (make ast.MaybeType.none))
+    (put c C.failed false)
+    (call check_module c m)
+    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (ptr.null Problem)))
+
+  (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem)
+    (let pr:(ptr Problem) (new Problem))
+    (put pr Problem.at at)
+    (put pr Problem.text text)
+    pr))

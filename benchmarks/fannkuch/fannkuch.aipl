@@ -7,18 +7,12 @@
 (module fannkuch
   (import io)
   (import os)
-  (import str)
   (import buf)
   (import time)
 
-  (fn size_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 7))
-        7))
-
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call size_wanted))
+    (let n:i32 (call os.arg_int 1 7))
     (let perm:(arr i32) (arr.new i32 n))
     (let perm1:(arr i32) (arr.new i32 n))
     (let count:(arr i32) (arr.new i32 n))
@@ -68,6 +62,6 @@
     (call buf.push_str b ") = ")
     (call buf.push_int b max_flips)
     (call buf.push_byte b 10)
-    (let _w:i32 (fs.write 1 (get b buf.Buf.data) (call buf.len b)))
+    (call buf.print b)
     (call time.report "fannkuch computed in" started)
     0))

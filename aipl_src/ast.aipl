@@ -1,0 +1,115 @@
+;; The typed syntax tree of an AIPL program, as AIPL data: what
+;; parser.aipl builds and checker.aipl checks. Mirrors src/ast.rs, form for
+;; form (docs/CHECKER_PLAN.md).
+;;
+;; Names and literal texts are spans of the source (str.Bytes), never
+;; copied. Every expression records `at`, the source offset of its first
+;; token (a group's opening parenthesis); compiler.line_col turns it into
+;; the line:col that messages report.
+(module ast
+  (import str)
+
+  ;; A type, as src/ast.rs Type. A struct is only ever named inside a ptr;
+  ;; a bare name is an enum or a union.
+  (union Type [(i32) (i64) (f32) (f64) (bool) (str) (void)
+               (ptr inner:Type)
+               (struct_ name:(ptr str.Bytes))
+               (result ok:Type err:Type)
+               (arr elem:Type)
+               (fn_ params:(arr Type) ret:Type)
+               (enum_ name:(ptr str.Bytes))
+               (union_ name:(ptr str.Bytes))])
+
+  ;; An optional type or expression (src/ast.rs Option<Type>, Option<Box<Expr>>).
+  (union MaybeType [(none) (some t:Type)])
+  (union MaybeExpr [(none) (some e:Expr)])
+
+  ;; The built-in operators, in src/ast.rs OpCode order.
+  (enum Op [add sub mul div mod divu remu bitxor shl shr shru bitand bitor
+            mem_load8 mem_load32 mem_load64 mem_store8 mem_store32 mem_store64 mem_alloc mem_grow
+            atomic_add atomic_cas atomic_lock atomic_unlock
+            eq neq lt lte checked_add checked_sub checked_mul ltu lteu gtu gteu gt gte and or not
+            sys_print sys_time sys_monotonic sys_random sys_exit
+            fs_open fs_read fs_write fs_close fs_delete args_sizes args_get env_sizes env_get
+            thread_spawn thread_join i64_extend_s i64_extend_u i32_wrap
+            f64_convert_i64_s f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
+            str_len str_ptr])
+
+  ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32.
+  (enum AddrKind [ptr arr enum_])
+
+  ;; One arm of a match (src/ast.rs MatchArm). binders is null for an arm
+  ;; written without brackets.
+  (struct Arm [member:(ptr str.Bytes) binders:(arr (ptr str.Bytes)) body:(arr Expr) at:i32])
+
+  ;; An expression, one variant per form of src/ast.rs Expr. A float
+  ;; literal keeps its text; a string literal its text between the quotes,
+  ;; escapes unexpanded.
+  (union Expr [(lit_int at:i32 v:i64)
+               (lit_i64 at:i32 v:i64)
+               (lit_float at:i32 text:(ptr str.Bytes))
+               (lit_bool at:i32 v:bool)
+               (lit_str at:i32 raw:(ptr str.Bytes))
+               (var at:i32 name:(ptr str.Bytes))
+               (let_ at:i32 name:(ptr str.Bytes) ty:Type val:Expr)
+               (set at:i32 name:(ptr str.Bytes) val:Expr)
+               (if_ at:i32 cond:Expr then_:Expr else_:Expr)
+               (loop at:i32 var:(ptr str.Bytes) start:Expr end:Expr step:Expr body:(arr Expr))
+               (while_ at:i32 cond:Expr body:(arr Expr))
+               (call at:i32 func:(ptr str.Bytes) args:(arr Expr))
+               (op at:i32 op:Op args:(arr Expr))
+               (ok at:i32 val:Expr ty:MaybeType)
+               (err at:i32 val:Expr ty:MaybeType)
+               (match_result at:i32 val:Expr ok_var:(ptr str.Bytes) ok_body:(arr Expr) err_var:(ptr str.Bytes) err_body:(arr Expr))
+               (block at:i32 body:(arr Expr))
+               (new_ at:i32 name:(ptr str.Bytes))
+               (get_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr)
+               (put_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr val:Expr)
+               (sizeof at:i32 name:(ptr str.Bytes))
+               (arr_new at:i32 ty:Type size:Expr)
+               (arr_get at:i32 ty:Type ptr:Expr index:Expr)
+               (arr_set at:i32 ty:Type ptr:Expr index:Expr val:Expr)
+               (arr_len at:i32 arr:Expr)
+               (null at:i32 ty:Type)
+               (cast at:i32 ty:Type addr:Expr)
+               (make at:i32 uname:(ptr str.Bytes) variant:(ptr str.Bytes) args:(arr Expr))
+               (match_ at:i32 val:Expr arms:(arr (ptr Arm)) else_body:(arr Expr))
+               (return_ at:i32 val:MaybeExpr)
+               (break_ at:i32)
+               (continue_ at:i32)
+               (ref at:i32 name:(ptr str.Bytes))
+               (call_ref at:i32 sig:Type func:Expr args:(arr Expr))
+               (addr at:i32 val:Expr kind:AddrKind)])
+
+  (union Contract [(requires e:Expr) (ensures e:Expr) (invariant e:Expr)])
+
+  (struct Field [name:(ptr str.Bytes) ty:Type])
+  (struct StructDef [name:(ptr str.Bytes) fields:(arr (ptr Field)) at:i32])
+  ;; members are names with their values (src/ast.rs EnumDef)
+  (struct Member [name:(ptr str.Bytes) value:i32])
+  (struct EnumDef [name:(ptr str.Bytes) members:(arr (ptr Member)) at:i32])
+  (struct Variant [name:(ptr str.Bytes) fields:(arr (ptr Field))])
+  (struct UnionDef [name:(ptr str.Bytes) variants:(arr (ptr Variant)) at:i32])
+  (struct Param [name:(ptr str.Bytes) ty:Type])
+  (struct FnDef [name:(ptr str.Bytes) params:(arr (ptr Param)) ret:Type
+                 contracts:(arr Contract) body:(arr Expr) at:i32])
+  (struct Import [name:(ptr str.Bytes) alias:(ptr str.Bytes)])
+  (struct Module [name:(ptr str.Bytes) imports:(arr (ptr Import))
+                  structs:(arr (ptr StructDef)) enums:(arr (ptr EnumDef))
+                  unions:(arr (ptr UnionDef)) fns:(arr (ptr FnDef))])
+
+  ;; Where an expression starts.
+  (fn at [e:Expr] -> i32
+    (match e
+      (Expr.lit_int [at _] at) (Expr.lit_i64 [at _] at) (Expr.lit_float [at _] at)
+      (Expr.lit_bool [at _] at) (Expr.lit_str [at _] at) (Expr.var [at _] at)
+      (Expr.let_ [at _ _ _] at) (Expr.set [at _ _] at) (Expr.if_ [at _ _ _] at)
+      (Expr.loop [at _ _ _ _ _] at) (Expr.while_ [at _ _] at) (Expr.call [at _ _] at)
+      (Expr.op [at _ _] at) (Expr.ok [at _ _] at) (Expr.err [at _ _] at)
+      (Expr.match_result [at _ _ _ _ _] at) (Expr.block [at _] at) (Expr.new_ [at _] at)
+      (Expr.get_ [at _ _ _] at) (Expr.put_ [at _ _ _ _] at) (Expr.sizeof [at _] at)
+      (Expr.arr_new [at _ _] at) (Expr.arr_get [at _ _ _] at) (Expr.arr_set [at _ _ _ _] at)
+      (Expr.arr_len [at _] at) (Expr.null [at _] at) (Expr.cast [at _ _] at)
+      (Expr.make [at _ _ _] at) (Expr.match_ [at _ _ _] at) (Expr.return_ [at _] at)
+      (Expr.break_ [at] at) (Expr.continue_ [at] at) (Expr.ref [at _] at)
+      (Expr.call_ref [at _ _ _] at) (Expr.addr [at _ _] at))))

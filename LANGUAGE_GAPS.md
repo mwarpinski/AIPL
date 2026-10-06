@@ -14,7 +14,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04 (after the
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
 - **Most VM runtime errors have no source position.** Contract failures do (`Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`); an out-of-bounds index, a bad memory access, or a store into the reserved block names the op and address but not the line.
 - **Compiled traps have no source position or function name.** `./prog: wasm trap: integer divide by zero` is all a crash reports; the wasm output has no name section.
-- **Diagnostics stop at the first error** and spell types the Rust way (`Ptr(Struct("Point"))`, `Array(I32)`) rather than in AIPL syntax. Syntax errors carry the file path; type errors do not, so an error in an imported module gives a line but not the file. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: RParen`, and `(+ p 4)` on a pointer is a plain operand mismatch.
+- **Diagnostics stop at the first error** and spell types the Rust way (`Ptr(Struct("Point"))`, `Array(I32)`) rather than in AIPL syntax. In the Rust toolchain syntax errors carry the file path but type errors do not, so an error in an imported module gives a line but not the file; the self-hosted compiler (`aiplc`) names the file for every error. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: RParen`, and `(+ p 4)` on a pointer is a plain operand mismatch.
 
 ## 2. Language
 
@@ -33,7 +33,7 @@ What AIPL does **not** do yet, checked against the code on 2026-10-04 (after the
 - **Nothing is freed.** There is no `mem.free` (it was a no-op until 2026-10-05, now removed). The allocator is bump-only, so long-running programs leak. `std/arena` frees many values at once (allocate from a region, `reset` it), which suits phases and trees (binary-trees uses it); a general-purpose allocator with per-object free is still missing.
 - **Array bounds are checked only in the VM.** Compiled `arr.get`/`arr.set` with a bad index reads or writes neighbouring heap memory (AIPL_SPEC.md 4.E).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
-- **Memory caps at 1024 pages (64 MiB)** in both backends. Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
+- **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 
 ## 4. Strings and I/O
 

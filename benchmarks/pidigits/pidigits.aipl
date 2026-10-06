@@ -6,7 +6,6 @@
 ;; Prints the time the computation took on stderr (std/time).
 (module pidigits
   (import os)
-  (import str)
   (import buf)
   (import time)
   (import bigint)
@@ -15,11 +14,6 @@
   ;; accum goes negative at times.
   (struct State [numer:(ptr bigint.Int) accum:(ptr bigint.Int) denom:(ptr bigint.Int) t:(ptr bigint.Int)])
   (struct Out [b:(ptr buf.Buf) count:i32])
-
-  (fn digits_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 1000))
-        1000))
 
   (fn next_term [s:(ptr State) k:i32] -> void
     (let k2:i32 (+ (* k 2) 1))
@@ -62,7 +56,7 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call digits_wanted))
+    (let n:i32 (call os.arg_int 1 1000))
     (let s:(ptr State) (new State))
     (put s State.numer (call bigint.from_i32 1))
     (put s State.accum (call bigint.from_i32 0))
@@ -86,5 +80,5 @@
     ;; the computation's own time, on stderr (the digits stay the output)
     (call time.report "pidigits computed in" started)
     (let out:(ptr buf.Buf) (get o Out.b))
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     0))

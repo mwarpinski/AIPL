@@ -46,7 +46,7 @@ fn run_threaded(wasm: &[u8], f: &str) -> (Result<i32, wasmtime::Error>, String) 
     config.wasm_threads(true).shared_memory(true);
     let engine = Engine::new(&config).unwrap();
     let module = Module::new(&engine, wasm).expect("module");
-    let memory = SharedMemory::new(&engine, MemoryType::shared(16, 1024)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(16, 32768)).unwrap();
     let stdout = MemoryOutputPipe::new(1 << 20);
     let ctx = || WasiCtxBuilder::new().stdout(stdout.clone()).inherit_stderr().build_p1();
 

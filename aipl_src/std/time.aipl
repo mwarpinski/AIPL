@@ -41,7 +41,7 @@
     (call buf.push_str b ": ")
     (call push_duration b ns)
     (call buf.push_byte b 10)
-    (let _w:i32 (fs.write 2 (get b buf.Buf.data) (call buf.len b))))
+    (let _w:i32 (call buf.write b 2)))
 
   ;; True if the duration formats as `want`.
   (fn formats [ns:i64 want:str] -> bool
