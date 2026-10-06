@@ -61,7 +61,7 @@ pub enum OpCode {
     MemStore64,
     MemAlloc,
     /// `(mem.grow pages)`: grows linear memory by `pages` 64 KiB pages and
-    /// returns the previous size in pages, or -1 if the maximum (1024 pages)
+    /// returns the previous size in pages, or -1 if the maximum (32768 pages, 2 GiB)
     /// would be exceeded (wasm `memory.grow`).
     MemGrow,
     AtomicAdd,

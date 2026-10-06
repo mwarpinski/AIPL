@@ -595,6 +595,9 @@
   ;; ===== WebAssembly encoding =====
   ;; Opcodes (the 0xFC and 0xFE prefixes take a second, LEB128 opcode),
   ;; block types, and value types, as the binary format spells them.
+  ;; The memory maximum, in 64 KiB pages: 2 GiB, where every address is
+  ;; still a non-negative i32 (vm.rs MAX_PAGES).
+  (const MAX_PAGES:i32 32768)
   (const OP_UNREACHABLE:i32 0)
   (const OP_BLOCK:i32 2)
   (const OP_LOOP:i32 3)
@@ -1349,7 +1352,7 @@
   ;; ===== Compile error signaling =====
   ;; Compile errors (AIPL_SPEC.md 6.4). The host reads the number from cell 4,
   ;; so the values are fixed.
-  (enum CgErr [(memory_cap 90)            ;; mem.grow refused: more than 1024 pages
+  (enum CgErr [(memory_cap 90)            ;; mem.grow refused: more than 32768 pages
                (output_full 91)           ;; output or a function body passed 4 * src_len + 64 KiB
                (too_many_functions 92)    ;; more than 2048 functions, or 16 parameters
                (too_many_locals 93)       ;; more than 1024 locals in a function
@@ -1380,12 +1383,13 @@
 
   ;; mem.alloc that grows linear memory to cover the new block. mem.alloc only
   ;; moves the cursor; without this a large compile walks off the end of
-  ;; memory. Sets compile error 90 if the 1024-page cap would be exceeded.
+  ;; memory. Sets compile error 90 if the 32768-page cap would be exceeded.
+  ;; Sizes compare unsigned: 32768 pages is 2^31 bytes.
   (fn cg_alloc [n:i32] -> i32
     (let p:i32 (mem.alloc n))
     (let end:i32 (mem.load32 0))
     (let have:i32 (* (mem.grow 0) 65536))
-    (if (gt end have)
+    (if (gtu end have)
         (if (eq (mem.grow (+ (/ (- end have) 65536) 1)) -1)
             (call set_compile_error CgErr.memory_cap)
             0)
@@ -3098,14 +3102,14 @@
                   (call put_u32 sec type_idx)
                   (set! type_idx (+ type_idx 1)))
                 (block)))
-          ;; "env" "memory": shared, min 16 max 1024 pages (flags 3)
+          ;; "env" "memory": shared, min 16 max 32768 pages (flags 3)
           (if threaded
               (block
                 (call emit_name sec "env")
                 (call emit_name sec "memory")
                 (call put_byte sec 2) (call put_byte sec 3)
                 (call put_u32 sec 16)
-                (call put_u32 sec 1024))
+                (call put_u32 sec MAX_PAGES))
               (block))
           (call emit_section o 2 sec))
         (block))
@@ -3134,7 +3138,7 @@
           (call emit_section o 4 sec))
         (block))
 
-    ;; Memory (5): min 16, max 1024 pages (vm.rs MAX_PAGES). A threaded module
+    ;; Memory (5): min 16, max 32768 pages (vm.rs MAX_PAGES). A threaded module
     ;; imports its memory and has a Global (6) instead: global 0, the runtime
     ;; scratch pointer, mutable i32 = 64
     (set! sec (call out_at scratch))
@@ -3148,7 +3152,7 @@
           (call put_byte sec 1)     ;; one memory
           (call put_byte sec 1)     ;; with a max
           (call put_u32 sec 16)
-          (call put_u32 sec 1024)
+          (call put_u32 sec MAX_PAGES)
           (call emit_section o 5 sec)))
 
     ;; Export (7): every function by name, the memory, wasi_thread_start, _start

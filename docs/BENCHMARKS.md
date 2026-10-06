@@ -117,7 +117,8 @@ What it showed:
   larger cap (wasm allows up to 4 GiB; AIPL's signed 32-bit addresses make
   2 GiB the natural ceiling) is a design decision across the VM, both
   compilers, the launcher, and the native backend; a general free would
-  help too.
+  help too. *Raised to 2 GiB on 2026-10-05:* the native build now runs
+  fasta 1000000 (10 MB of input), with output identical to Python's.
 - **String-keyed hash maps are slow.** AIPL is no faster than Python here:
   `strmap` hashes and compares keys byte by byte in AIPL, while Python's
   dict is optimised C, and the C version packs each k-mer into a 64-bit

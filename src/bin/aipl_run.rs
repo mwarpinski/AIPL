@@ -145,7 +145,7 @@ fn run(p: Program) -> i32 {
     let host: Arc<OnceLock<Host>> = Arc::new(OnceLock::new());
     if threaded {
         // every thread instantiates the module again on one shared memory
-        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, 1024)) {
+        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, 32768) /* vm.rs MAX_PAGES: 2 GiB */) {
             Ok(m) => m,
             Err(e) => return fail(e.to_string()),
         };

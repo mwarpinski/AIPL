@@ -35,7 +35,7 @@ pub const PAGE_SIZE: usize = 65536;
 /// minimum so `mem.grow` returns the same old-size in both backends.
 pub const INITIAL_PAGES: usize = 16;
 /// Maximum linear memory in pages. Matches the wasm backend's memory maximum.
-pub const MAX_PAGES: usize = 1024;
+pub const MAX_PAGES: usize = 32768;
 /// Address of the heap cursor word read and written by `mem.alloc`.
 pub const HEAP_PTR_ADDR: usize = 0;
 /// First heap address handed out by `mem.alloc`. Bytes below it are the
@@ -747,7 +747,7 @@ impl VM {
     /// Bumps the heap cursor by `size` and returns the old cursor. If the new
     /// cursor is past the end of memory, memory grows by the pages needed to
     /// cover it (the wasm lowering does the same with memory.grow); past the
-    /// 1024-page cap nothing grows and the first access beyond the end fails.
+    /// 32768-page (2 GiB) cap nothing grows and the first access beyond the end fails.
     /// Claims `size` bytes rounded up to a multiple of 8, so every block is
     /// 8-aligned (the heap start is), as in compiled code.
     fn alloc_bytes(&self, size: usize) -> i32 {
