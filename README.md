@@ -17,7 +17,7 @@
 - **Contracts and bounds checks.** `(req ...)` and `(ens ...)` are type-checked and run before and after each call, and every array index is checked, in the VM and in compiled code alike: a compiled program that breaks one stops with the same message the VM gives.
 - **Memory you can free, Zig style.** The built-ins (`new`, `arr.new`, `mem.alloc`) never free; freeable memory comes from an allocator passed explicitly: `std/heap` frees single objects and stops the program on a double free, a wrong-size free, or a write after free; `std/arena` frees a region at once; `std/alloc` makes any of them, or one you write, a single `Allocator` value that the collections take.
 - **Wasm semantics are the spec.** The VM, the WebAssembly backend, and the native backend must agree: `tests/test_differential.rs` runs the same programs in the VM and wasmtime, and `tests/test_native.rs` compares native executables with wasmtime, failing on any divergence.
-- **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone executable: on Linux x86-64, native machine code written by a backend in AIPL (no runtime; `word_count` is 57 KB, the compiler itself 910 KB); elsewhere, the module plus a wasmtime launcher ([docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md), AIPL_SPEC.md 6.5-6.6).
+- **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone executable: on Linux x86-64, native machine code written by a backend in AIPL (no runtime; `word_count` is 57 KB, the compiler itself 910 KB); elsewhere, the module plus a wasmtime launcher ([docs/design/NATIVE_BACKEND_PLAN.md](docs/design/NATIVE_BACKEND_PLAN.md), AIPL_SPEC.md 6.5-6.6).
 - **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language. The type checker is in AIPL too (`checker.aipl`, with `parser.aipl` and `expand.aipl`), giving the same first error as the Rust checker word for word. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that checks and compiles, rebuilds itself to the same bytes, and reports errors in the user's files, with no Rust involved (building it the first time still takes the Rust toolchain).
 
 ```lisp
@@ -60,7 +60,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (286 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+Run the full test suite with `cargo test` (287 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Repository layout
 
@@ -82,20 +82,18 @@ Run the full test suite with `cargo test` (286 tests; the self-hosting tests tak
 | `src/agent_api/` | `aipl serve`: `/eval`, `/verify`, `/compile` over HTTP |
 | `web/` | Browser demo: sends source to `aipl serve`, runs the compiled module with WASI shims |
 | `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
-| `tools/` | Development helpers not used by the build or tests: `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python), `bench.py` (benchmark timing) |
-| `attic/` | Quarantined modules that returned constants instead of doing work (see `attic/README.md`); do not build on them |
+| `tools/` | Development helpers not used by the build or tests: `fuzz.py` (the two toolchains against each other on mutated programs), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
 
 ## Documentation
 
 - [AIPL_SPEC.md](AIPL_SPEC.md): the language as implemented (grammar, typing rules, memory layout, backend support matrix, diagnostics, testing conventions, pitfalls for code generators).
 - [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md): a compact system-prompt module and examples for agents writing AIPL.
-- [PROGRESS.md](PROGRESS.md): current status, how to verify, decisions, next steps.
-- [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md): the current audit (strengths, defects, structural issues, recommended order), with the original 2026-09 audit and its P1–P14 task record as appendices.
+- [ROADMAP.md](ROADMAP.md): what comes next, and everything AIPL does not do yet.
+- [DEVELOPING.md](DEVELOPING.md): building, testing, and changing AIPL; the conventions, decisions, and direction the work follows.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md): eight benchmarks against C and Python, and what each showed the language was missing.
-- [docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md): the native backend's design and its tasks NE1–NE18.
-- [docs/CHECKER_PLAN.md](docs/CHECKER_PLAN.md), [docs/CHECKS_PLAN.md](docs/CHECKS_PLAN.md), [docs/HEAP_PLAN.md](docs/HEAP_PLAN.md): the type checker in AIPL, contracts and bounds checks in compiled code, and the allocators, each with its design, steps, and measurements.
-- [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md): what AIPL does not do yet.
+- [docs/design/](docs/design/): design records of the larger pieces of work, each with its steps and measurements: the native backend, the code generator rewrite, the type checker in AIPL, compiled contracts and bounds checks, and the allocators.
+- [docs/history/](docs/history/): the dated work log and the 2026-10 audit.
 
 ## Roadmap in one paragraph
 
-Done: honest tests with no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, structs, arrays, strict pointer types, function references, generics, constants, enums, unions with `match`, threads and atomics, a standard library with generic collections, and a self-hosted toolchain (resolver, generics, type checker, code generator) that matches the Rust one byte for byte and rebuilds itself; a Linux x86-64 backend written in AIPL that turns the wasm into executables with no runtime; eight benchmarks against C and Python; contracts and array bounds checks in compiled code; and Zig-style allocators. Not done, roughly in order: source positions and function names in runtime errors, option types and interfaces for generics, more of the standard library (data formats, directories, processes, networking), packaging, a faster native translator, and retiring the Rust compiler. [PROGRESS.md](PROGRESS.md) has the order and [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) the full list of what is missing.
+Done: honest tests with no silent fallbacks, i32/i64 wrapping semantics, positioned diagnostics, one memory layout, WASI I/O, structs, arrays, strict pointer types, function references, generics, constants, enums, unions with `match`, threads and atomics, a standard library with generic collections, and a self-hosted toolchain (resolver, generics, type checker, code generator) that matches the Rust one byte for byte and rebuilds itself; a Linux x86-64 backend written in AIPL that turns the wasm into executables with no runtime; eight benchmarks against C and Python; contracts and array bounds checks in compiled code; and Zig-style allocators. Not done, roughly in order: source positions and function names in runtime errors, option types and interfaces for generics, more of the standard library (data formats, directories, processes, networking), packaging, a faster native translator, and retiring the Rust compiler. [ROADMAP.md](ROADMAP.md) has the order and the full list of what is missing.

@@ -1,4 +1,4 @@
-//! The native backend's harness (docs/NATIVE_BACKEND_PLAN.md, from NE5).
+//! The native backend's harness (docs/design/NATIVE_BACKEND_PLAN.md, from NE5).
 //!
 //! Every program in `PROGRAMS` is compiled to wasm by the Rust toolchain and
 //! run under `aipl-run`, and translated to a native executable by

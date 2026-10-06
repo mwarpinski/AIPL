@@ -1,5 +1,5 @@
 ;; The type checker in AIPL: src/checker.rs rule for rule, over ast.aipl's
-;; tree, with the same first error word for word (docs/CHECKER_PLAN.md).
+;; tree, with the same first error word for word (docs/design/CHECKER_PLAN.md).
 ;; Types in messages use Rust's Debug spelling (Ptr(Struct("P"))), as the
 ;; Rust checker's do.
 ;;

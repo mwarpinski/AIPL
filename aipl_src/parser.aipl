@@ -1,7 +1,7 @@
 ;; The AIPL parser in AIPL: compiler.aipl's tokens to ast.aipl's typed tree,
 ;; a port of src/parser.rs (Parser::parse_module and everything it calls)
 ;; that accepts the same programs and reports the same first error, word for
-;; word (docs/CHECKER_PLAN.md).
+;; word (docs/design/CHECKER_PLAN.md).
 ;;
 ;; Errors: AIPL has no exceptions, so the first error is recorded in P.err
 ;; and the parser jumps to the end of the tokens. Every loop then stops (they
@@ -135,7 +135,7 @@
   ;; whose shortest spelling is their own digits: sign, digits without
   ;; leading or trailing zeros, at least one digit on each side of the '.'.
   ;; (A literal with an exponent, or more digits than an f64 holds, may be
-  ;; spelled differently by Rust; see docs/CHECKER_PLAN.md.)
+  ;; spelled differently by Rust; see docs/design/CHECKER_PLAN.md.)
   (fn push_float_debug [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void
     (let n:i32 (get t str.Bytes.len))
     (let k:i32 0)

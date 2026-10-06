@@ -78,7 +78,7 @@ wasm instructions). Best of three, before and after:
 
 About 20-28% under wasmtime and 45-55% natively on array-bound loops:
 the native translator keeps every local in memory, so the check's extra
-local reads and writes cost more there; a register allocator (PROGRESS.md)
+local reads and writes cost more there; a register allocator (ROADMAP.md)
 is the fix.
 
 ## Cost of the contracts (CC3)

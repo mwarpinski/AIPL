@@ -1,4 +1,4 @@
-;; std/alloc: any allocator, as one value (docs/HEAP_PLAN.md). Code that
+;; std/alloc: any allocator, as one value (docs/design/HEAP_PLAN.md). Code that
 ;; allocates freeable memory takes an Allocator and does not care which:
 ;;
 ;;   (fn (fill T) [a:alloc.Allocator n:i32 x:T] -> (arr T)

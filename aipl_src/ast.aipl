@@ -1,6 +1,6 @@
 ;; The typed syntax tree of an AIPL program, as AIPL data: what
 ;; parser.aipl builds and checker.aipl checks. Mirrors src/ast.rs, form for
-;; form (docs/CHECKER_PLAN.md).
+;; form (docs/design/CHECKER_PLAN.md).
 ;;
 ;; Names and literal texts are spans of the source (str.Bytes), never
 ;; copied. Every expression records `at`, the source offset of its first
