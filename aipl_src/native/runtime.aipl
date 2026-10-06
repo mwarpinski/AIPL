@@ -53,6 +53,90 @@
     (call emit_write c 2 nl 1)
     (call emit_exit c 134))
 
+  ;; The texts the call chain needs, as data addresses: "  at ", "  ... ",
+  ;; and " more\n".
+  (struct ChainTexts [at:i32 dots:i32 more:i32])
+
+  ;; The trap routine with the call chain, the lines aipl-run prints
+  ;; (src/bin/aipl_run.rs call_chain): `call` it from the trap's place with
+  ;; the reason's address in rsi and length in edx. Prints `<argv[0]>:
+  ;; <reason>`, then "  at NAME" for each frame whose function has a name to
+  ;; show, innermost first, at most 32, then "  ... N more"; exits with 134.
+  ;; The frames are found through the frame pointers (every function's
+  ;; prologue pushes rbp, so [rbp] is the caller's rbp and [rbp+8] the
+  ;; return address); the walk ends at an address outside every function.
+  ;; `table_cell` is the data address of [table address, entry count], each
+  ;; entry [start end name_addr name_len] (32-bit, by start address; name_len
+  ;; 0 for a function not shown). Never returns; clobbers everything.
+  (fn emit_backtrace_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32 t:(ptr ChainTexts) table_cell:i32] -> void
+    (let rbx:i32 3) (let rcx:i32 1) (let rbp:i32 5)
+    (let r12:i32 12) (let r13:i32 13) (let r14:i32 14) (let r15:i32 15)
+    (call x64.pop c r14)                                  ;; where the trap is
+    (call x64.mov_rr c 64 r12 (call rsi))
+    (call x64.mov_rr c 32 r13 (call rdx))
+    (call emit_write_argv0 c argv0_cell sep)
+    (call emit_write_regs c r12 r13)
+    (call emit_write c 2 nl 1)
+    ;; r12: an address in the current frame's function; r13: that frame's
+    ;; rbp; r14: frames shown; r15: frames not shown past the limit
+    (call x64.mov_rr c 64 r12 r14)
+    (call x64.mov_rr c 64 r13 rbp)
+    (call x64.alu_rr c 32 (call x64.op_xor) r14 r14)
+    (call x64.alu_rr c 32 (call x64.op_xor) r15 r15)
+    (let frame:i32 (call buf.len c))
+    ;; the entry with start <= address - 1 < end (a return address may be
+    ;; the first byte after its function)
+    (call x64.lea c 64 (call rax) (call x64.mem r12 -1))
+    (call x64.mov_ri32 c rcx table_cell)
+    (call x64.load c 32 rbx (call x64.mem rcx 0))
+    (call x64.load c 32 rcx (call x64.mem rcx 4))
+    (let scan:i32 (call buf.len c))
+    (call x64.test_rr c 32 rcx rcx)
+    (let done:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.load c 32 (call rdx) (call x64.mem rbx 0))
+    (call x64.alu_rr c 32 (call x64.op_cmp) (call rax) (call rdx))
+    (let before:i32 (call x64.jcc c (call x64.cc_b)))
+    (call x64.load c 32 (call rdx) (call x64.mem rbx 4))
+    (call x64.alu_rr c 32 (call x64.op_cmp) (call rax) (call rdx))
+    (let found:i32 (call x64.jcc c (call x64.cc_b)))
+    (call x64.patch_rel32 c before (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_add) rbx 16)
+    (call x64.alu_ri c 32 (call x64.op_sub) rcx 1)
+    (call x64.patch_rel32 c (call x64.jmp c) scan)
+    ;; found: shown (name_len > 0), or counted past the limit
+    (call x64.patch_rel32 c found (call buf.len c))
+    (call x64.load c 32 (call rdx) (call x64.mem rbx 12))
+    (call x64.test_rr c 32 (call rdx) (call rdx))
+    (let hidden:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_ri c 32 (call x64.op_cmp) r14 32)
+    (let over:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call emit_write c 2 (get t ChainTexts.at) 5)
+    (call x64.load c 32 (call rsi) (call x64.mem rbx 8))
+    (call x64.load c 32 (call rdx) (call x64.mem rbx 12))
+    (call x64.mov_ri32 c (call rdi) 2)
+    (call x64.mov_ri32 c (call rax) (call sys_write))
+    (call x64.syscall c)
+    (call emit_write c 2 nl 1)
+    (call x64.alu_ri c 32 (call x64.op_add) r14 1)
+    (let shown:i32 (call x64.jmp c))
+    (call x64.patch_rel32 c over (call buf.len c))
+    (call x64.alu_ri c 32 (call x64.op_add) r15 1)
+    ;; on to the caller's frame
+    (call x64.patch_rel32 c hidden (call buf.len c))
+    (call x64.patch_rel32 c shown (call buf.len c))
+    (call x64.load c 64 r12 (call x64.mem r13 8))
+    (call x64.load c 64 r13 (call x64.mem r13 0))
+    (call x64.patch_rel32 c (call x64.jmp c) frame)
+    ;; past the last frame
+    (call x64.patch_rel32 c done (call buf.len c))
+    (call x64.test_rr c 32 r15 r15)
+    (let none:i32 (call x64.jcc c (call x64.cc_e)))
+    (call emit_write c 2 (get t ChainTexts.dots) 6)
+    (call emit_write_decimal c r15)
+    (call emit_write c 2 (get t ChainTexts.more) 6)
+    (call x64.patch_rel32 c none (call buf.len c))
+    (call emit_exit c 134))
+
   ;; Writes argv[0] and ": " to stderr, or nothing if there is no argv[0].
   ;; Clobbers rax rbx rcx rdx rsi rdi r11.
   (fn emit_write_argv0 [c:(ptr buf.Buf) argv0_cell:i32 sep:i32] -> void

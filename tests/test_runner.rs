@@ -76,9 +76,9 @@ fn a_trap_is_reported_with_a_failing_status() {
     compile(&dir.join("t.aipl"), &dir.join("t.wasm"), &[]);
     let o = run_in(&dir, &dir.join("t.wasm"), &[], "");
     assert_eq!(o.status.code(), Some(134));
-    // one line: the program as invoked, then the reason
+    // the program as invoked and the reason, then the call chain
     let program = dir.join("t.wasm").display().to_string();
-    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{program}: wasm trap: integer divide by zero\n"));
+    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{program}: wasm trap: integer divide by zero\n  at main\n"));
     // the full wasmtime report on request
     let full = Command::new(RUNNER).arg(dir.join("t.wasm")).env("AIPL_BACKTRACE", "1").output().unwrap();
     let full = String::from_utf8_lossy(&full.stderr);
@@ -176,7 +176,7 @@ fn standalone_executables_for(target: &str) {
     compile(&dir.join("t.aipl"), &trapper, &["--exe", &t]);
     let o = run_in(&dir, &trapper, &[], "");
     assert_eq!(o.status.code(), Some(134));
-    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n", trapper.display()));
+    assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n  at main\n", trapper.display()));
     std::fs::write(
         dir.join("th.aipl"),
         "(module th (import io) (fn sq [x:i32] -> i32 (* x x)) (fn main [] -> i32 (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
