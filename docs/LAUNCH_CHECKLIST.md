@@ -81,7 +81,7 @@ more than usual.
 
 ## 3. Claims (every sentence must survive being checked)
 
-- [ ] **`Cargo.toml`:** `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
+- [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
   wasmtime; the compiler does not" is false (the CLI runs the native
   backend in wasmtime); the description says the toolchain is "written in
@@ -127,14 +127,14 @@ more than usual.
 - [ ] **Install in two commands.** `cargo install --git ...` at least;
   better, prebuilt `aipl` and `aipl-run` binaries on a GitHub release for
   Linux x86-64 (and macOS/Windows through the launcher).
-- [ ] **CI.** A GitHub Actions workflow running `cargo build`, `cargo test`,
+- [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.
 - [x] **Repository root** (2026-10-06): `attic/` and the stray `out.wasm`
   are gone; the root holds README, LICENSE, the spec, the prompt guide,
   ROADMAP.md, DEVELOPING.md, and the build files.
-- [ ] **`cargo clippy` is clean** (25 style warnings today; a reader running
-  it first should see none).
+- [x] **`cargo clippy` is clean** (2026-10-06, all targets; CI fails on any
+  new warning).
 - [ ] **A showcase.** One program a reader would want to run: the compiler
   compiling itself natively in 0.37 s is a good one; a small, real tool
   (a JSON pretty-printer, a `wc`/`grep` clone, a Markdown-to-HTML

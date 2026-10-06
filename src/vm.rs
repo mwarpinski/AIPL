@@ -86,6 +86,12 @@ pub struct VM {
     stdin: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VM {
     pub fn new() -> Self {
         VM {
@@ -762,7 +768,7 @@ impl VM {
         let mut mem = self.shared.lock().unwrap();
         let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
         let allocated_ptr = i32::from_le_bytes(cur);
-        let next = allocated_ptr.wrapping_add(size as i32);
+        let next = allocated_ptr.wrapping_add(size);
         mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
         let have = mem.bytes.len() as u32;
         if next as u32 > have {
@@ -1046,7 +1052,7 @@ impl VM {
                 }
                 let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
@@ -1062,7 +1068,7 @@ impl VM {
                 }
                 let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
@@ -1083,7 +1089,7 @@ impl VM {
                     _ => return Err("mem.store32 requires Int val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&val.to_le_bytes());
@@ -1104,7 +1110,7 @@ impl VM {
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 8].copy_from_slice(&val.to_le_bytes());
@@ -1289,10 +1295,9 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => {
                         let x32 = x as i32 as u32;
                         let y32 = y as i32 as u32;
-                        if y32 == 0 {
-                            Err("Division by zero".to_string())
-                        } else {
-                            Ok(Value::Int(((x32 / y32) as i32) as i64))
+                        match x32.checked_div(y32) {
+                            None => Err("Division by zero".to_string()),
+                            Some(q) => Ok(Value::Int((q as i32) as i64)),
                         }
                     }
                     (Value::Int64(x), Value::Int64(y)) => {
@@ -1728,7 +1733,7 @@ impl VM {
             // Truncates toward zero; NaN or a result outside i64 is an error where wasm traps.
             OpCode::I64TruncF64S => match self.eval_expr(&args[0], scope)? {
                 Value::Float(x) if x.is_nan() => Err("i64.trunc_f64_s: invalid conversion to integer (NaN)".to_string()),
-                Value::Float(x) if x >= -9223372036854775808.0 && x < 9223372036854775808.0 => Ok(Value::Int64(x.trunc() as i64)),
+                Value::Float(x) if (-9223372036854775808.0..9223372036854775808.0).contains(&x) => Ok(Value::Int64(x.trunc() as i64)),
                 Value::Float(x) => Err(format!("i64.trunc_f64_s: integer overflow converting {}", x)),
                 _ => Err("i64.trunc_f64_s requires Float".to_string()),
             },
@@ -1762,7 +1767,7 @@ impl VM {
                 let mut buf = vec![0u8; len];
                 let filled = File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
                 let mem_len = self.shared.lock().unwrap().bytes.len();
-                if !filled || ptr.checked_add(len).map_or(true, |end| end > mem_len) {
+                if !filled || ptr.checked_add(len).is_none_or(|end| end > mem_len) {
                     return Ok(Value::Int(-1));
                 }
                 self.write_bytes(ptr, &buf);
@@ -1866,7 +1871,7 @@ fn value_str(v: &Value) -> String {
 /// unaligned one, so the VM fails the same way. Blocks from mem.alloc are
 /// always 8-aligned.
 fn check_atomic_alignment(op: &str, ptr: usize) -> Result<(), String> {
-    if ptr % 4 != 0 {
+    if !ptr.is_multiple_of(4) {
         return Err(format!("{} at address {}: atomic operations need a 4-aligned address", op, ptr));
     }
     Ok(())

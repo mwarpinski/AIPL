@@ -247,7 +247,7 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
         ])),
         // f32/f64 loads and stores move bits
         ("float_bits_round_trip", exit_with(&[], &[
-            I::I32Const(64), I::F64Const(1.5f64.into()), I::F64Store(m(3, 0)), I::I32Const(68), I::I32Load(m(2, 0)), I::I32Const(0x3FF8_0000), I::I32Eq,
+            I::I32Const(64), I::F64Const(1.5f64), I::F64Store(m(3, 0)), I::I32Const(68), I::I32Load(m(2, 0)), I::I32Const(0x3FF8_0000), I::I32Eq,
             I::I32Const(32), I::I32Const(0x4049_0FDB), I::I32Store(m(2, 0)),
             I::I32Const(40), I::I32Const(32), I::F32Load(m(2, 0)), I::F32Store(m(2, 0)),
             I::I32Const(40), I::I32Load(m(2, 0)), I::I32Const(0x4049_0FDB), I::I32Eq, I::I32Const(2), I::I32Mul, I::I32Add, I::End,
@@ -368,7 +368,7 @@ fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<wasmtime::Val> {
             let result = func.ty(&store).results().next().unwrap_or_else(|| panic!("{f} returns nothing"));
             let mut out = [Val::default_for_ty(&result).unwrap()];
             func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
-            out[0].clone()
+            out[0]
         })
         .collect()
 }
@@ -1204,7 +1204,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         let mut body = Vec::new();
         for a in f64_edges() {
             for b in f64_edges() {
-                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend([I::F64Const(a), I::F64Const(b), op.clone()]);
                 body.extend(check_result_f64(f(a, b)));
             }
         }
@@ -1215,7 +1215,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         let mut body = Vec::new();
         for a in f64_edges() {
             for b in f64_edges() {
-                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend([I::F64Const(a), I::F64Const(b), op.clone()]);
                 body.extend(check_result(f(a, b) as i32));
             }
         }
@@ -1269,7 +1269,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
     // f64.sqrt over every edge (negative ones give NaN)
     let mut sqrt = Vec::new();
     for a in f64_edges() {
-        sqrt.extend([I::F64Const(a.into()), I::F64Sqrt]);
+        sqrt.extend([I::F64Const(a), I::F64Sqrt]);
         sqrt.extend(check_result_f64(bb(a).sqrt()));
     }
     sqrt.extend(status_from_checks());
@@ -1280,8 +1280,8 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         conv.extend([I::I64Const(a), I::F64ConvertI64S]);
         conv.extend(check_result_f64(a as f64));
     }
-    for a in [0.0f64, -0.0, 0.5, -0.5, 2.75, -2.75, 1e18, -9.2233720368547748e18, 9.2233720368547748e18, 5e-324] {
-        conv.extend([I::F64Const(a.into()), I::I64TruncF64S]);
+    for a in [0.0f64, -0.0, 0.5, -0.5, 2.75, -2.75, 1e18, -9.223_372_036_854_775e18, 9.223_372_036_854_775e18, 5e-324] {
+        conv.extend([I::F64Const(a), I::I64TruncF64S]);
         conv.extend(check_result_i64(a as i64));
     }
     conv.extend(status_from_checks());

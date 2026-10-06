@@ -79,7 +79,7 @@ enum Commands {
 fn run_self_hosted_codegen(src: &str) -> Result<Vec<u8>, String> {
     let codegen_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/codegen.aipl");
     let codegen_path = codegen_path.as_path();
-    let module = Resolver::resolve(&codegen_path).map_err(|e| format!("resolve codegen.aipl: {}", e))?;
+    let module = Resolver::resolve(codegen_path).map_err(|e| format!("resolve codegen.aipl: {}", e))?;
     TypeChecker::new().check_module(&module).map_err(|e| format!("check codegen.aipl: {}", e))?;
     let mut vm = VM::new();
     vm.load_module(module);
@@ -305,7 +305,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
                     eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));
                     let self_out = format!("{}.self.wasm", output);
-                    fs::write(&rust_out_path(&output), &rust_bytes)?;
+                    fs::write(rust_out_path(&output), &rust_bytes)?;
                     fs::write(&self_out, &self_bytes)?;
                     eprintln!("  wrote both outputs: {} and {}", rust_out_path(&output), self_out);
                     return Err("Byte-parity mismatch between Rust backend and self-hosted codegen!".into());

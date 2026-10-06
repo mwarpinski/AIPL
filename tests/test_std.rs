@@ -203,7 +203,7 @@ fn f64_fixed_matches_exact_formatting() {
         seed ^= seed << 17;
         seed
     };
-    let mut values: Vec<f64> = vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1e-310, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e300, 123456789.987654321];
+    let mut values: Vec<f64> = vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1e-310, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e300, 123_456_789.987_654_33];
     for _ in 0..20000 {
         let r = next();
         let x = match r % 4 {

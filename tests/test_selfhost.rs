@@ -139,14 +139,14 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
                     for f in 0..r_num_fn.max(s_num_fn) {
                         let r_fn_size = read_leb(&rust_bytes, &mut r_pos);
                         let s_fn_size = read_leb(&self_bytes, &mut s_pos);
-                        if r_fn_size != s_fn_size || &rust_bytes[r_pos..r_pos+r_fn_size] != &self_bytes[s_pos..s_pos+s_fn_size] {
+                        if r_fn_size != s_fn_size || rust_bytes[r_pos..r_pos+r_fn_size] != self_bytes[s_pos..s_pos+s_fn_size] {
                             eprintln!("Function index {} diff: Rust body size={}, Self body size={}", f, r_fn_size, s_fn_size);
                             let max_len = r_fn_size.max(s_fn_size);
                             for b in 0..max_len {
                                 let rb = rust_bytes.get(r_pos + b);
                                 let sb = self_bytes.get(s_pos + b);
                                 if rb != sb {
-                                    eprintln!("  Fn {} byte {}: Rust={:?} (0x{:02x?}), Self={:?} (0x{:02x?})", f, b, rb, rb.map(|x| *x), sb, sb.map(|x| *x));
+                                    eprintln!("  Fn {} byte {}: Rust={:?} (0x{:02x?}), Self={:?} (0x{:02x?})", f, b, rb, rb.copied(), sb, sb.copied());
                                     break;
                                 }
                             }
@@ -161,7 +161,7 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
                     let s = self_bytes.get(i);
                     if r != s {
                         eprintln!("First mismatch at byte index {}: Rust={:?} (0x{:02x?}), Self={:?} (0x{:02x?})", 
-                            i, r, r.map(|b| *b), s, s.map(|b| *b));
+                            i, r, r.copied(), s, s.copied());
                         break;
                     }
                 }

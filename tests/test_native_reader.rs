@@ -370,7 +370,7 @@ fn every_instruction_module(extra: &[wasm_encoder::Instruction]) -> Vec<u8> {
         I::F64Load(m(3, 4096)), I::I32Load8U(m(0, 1)), I::I32Store(m(2, 4)), I::I64Store(m(3, 0)), I::F32Store(m(2, 0)),
         I::F64Store(m(3, 24)), I::I32Store8(m(0, 3)), I::MemorySize(0), I::MemoryGrow(0), I::I32Const(0),
         I::I32Const(-1), I::I32Const(i32::MIN), I::I32Const(i32::MAX), I::I64Const(i64::MIN), I::I64Const(i64::MAX),
-        I::I64Const(-129), I::F64Const((-0.0f64).into()), I::F64Const(f64::NAN.into()), I::F64Const(1.5f64.into()),
+        I::I64Const(-129), I::F64Const(-0.0f64), I::F64Const(f64::NAN), I::F64Const(1.5f64),
         I::I32Eqz, I::I32Eq, I::I32Ne, I::I32LtS, I::I32LtU, I::I32GtS, I::I32GtU, I::I32LeS, I::I32LeU, I::I32GeS, I::I32GeU,
         I::I64Eq, I::I64Ne, I::I64LtS, I::I64LtU, I::I64GtS, I::I64GtU, I::I64LeS, I::I64LeU, I::I64GeS, I::I64GeU,
         I::F32Eq, I::F32Ne, I::F32Lt, I::F32Gt, I::F32Le, I::F32Ge, I::F64Eq, I::F64Ne, I::F64Lt, I::F64Gt, I::F64Le, I::F64Ge,
@@ -423,7 +423,7 @@ fn instructions_outside_the_list_are_errors_naming_the_opcode() {
         (I::I32Clz, 0x67),
         (I::I64Clz, 0x79),
         (I::F64Abs, 0x99),
-        (I::F32Const(1.0f32.into()), 0x43),
+        (I::F32Const(1.0f32), 0x43),
         (I::MemoryCopy { src_mem: 0, dst_mem: 0 }, 0xfc0a),
         (I::I64AtomicLoad(arg), 0xfe11),
     ] {
