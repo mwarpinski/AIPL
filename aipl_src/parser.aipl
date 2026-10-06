@@ -8,6 +8,7 @@
 ;; all stop at the end, as Rust's do), later errors are ignored, and the
 ;; caller reads P.failed. Functions return placeholder values after an error.
 (module parser
+  (import alloc)
   (import compiler)
   (import ast)
   (import str)
@@ -77,7 +78,7 @@
   ;; it to fail; front.aipl puts "line:col: " in front).
   (fn msg [p:(ptr P) at:i32] -> (ptr buf.Buf)
     (put p P.last_at at)
-    (call buf.make 96))
+    (call buf.make (call alloc.default) 96))
 
   ;; Records the first error and ends the parse.
   (fn fail [p:(ptr P) b:(ptr buf.Buf)] -> void
@@ -226,7 +227,7 @@
     (loop k 0 (- (call (vec.len T) v) 1) 1 (arr.set T a k (call (vec.at T) v k)))
     a)
 
-  (fn exprs [] -> (ptr (vec.Vec ast.Expr)) (call (vec.make ast.Expr) 4))
+  (fn exprs [] -> (ptr (vec.Vec ast.Expr)) (call (vec.make ast.Expr) (call alloc.default) 4))
 
   ;; Expressions until the closing ')' (or the end).
   (fn parse_body [p:(ptr P)] -> (arr ast.Expr)
@@ -305,7 +306,7 @@
           (make ast.Type.arr elem))
          ((call str.is ctor "fn")
           (call want p compiler.Kind.lbracket)
-          (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) 4))
+          (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
           (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
             (call (vec.push ast.Type) ps (call parse_type p)))
           (call want p compiler.Kind.rbracket)
@@ -350,11 +351,11 @@
     (let i:i32 (call next p))
     (if (not (call is_sym p i "module")) (call fail_expected p i "'module' symbol" start) (block))
     (put m ast.Module.name (call expect_symbol p "module name" start))
-    (let imports:(ptr (vec.Vec (ptr ast.Import))) (call (vec.make (ptr ast.Import)) 4))
-    (let structs:(ptr (vec.Vec (ptr ast.StructDef))) (call (vec.make (ptr ast.StructDef)) 8))
-    (let enums:(ptr (vec.Vec (ptr ast.EnumDef))) (call (vec.make (ptr ast.EnumDef)) 4))
-    (let unions:(ptr (vec.Vec (ptr ast.UnionDef))) (call (vec.make (ptr ast.UnionDef)) 4))
-    (let fns:(ptr (vec.Vec (ptr ast.FnDef))) (call (vec.make (ptr ast.FnDef)) 16))
+    (let imports:(ptr (vec.Vec (ptr ast.Import))) (call (vec.make (ptr ast.Import)) (call alloc.default) 4))
+    (let structs:(ptr (vec.Vec (ptr ast.StructDef))) (call (vec.make (ptr ast.StructDef)) (call alloc.default) 8))
+    (let enums:(ptr (vec.Vec (ptr ast.EnumDef))) (call (vec.make (ptr ast.EnumDef)) (call alloc.default) 4))
+    (let unions:(ptr (vec.Vec (ptr ast.UnionDef))) (call (vec.make (ptr ast.UnionDef)) (call alloc.default) 4))
+    (let fns:(ptr (vec.Vec (ptr ast.FnDef))) (call (vec.make (ptr ast.FnDef)) (call alloc.default) 16))
     (while (eq (call peek p) compiler.Kind.lparen)
       (cond
         ((call head_is p "import") (call (vec.push (ptr ast.Import)) imports (call parse_import p)))
@@ -392,7 +393,7 @@
 
   ;; name:type ... up to ']' as fields; `what` names the name expected.
   (fn parse_fields [p:(ptr P) what:str eof_at:i32 close:compiler.Kind] -> (arr (ptr ast.Field))
-    (let v:(ptr (vec.Vec (ptr ast.Field))) (call (vec.make (ptr ast.Field)) 4))
+    (let v:(ptr (vec.Vec (ptr ast.Field))) (call (vec.make (ptr ast.Field)) (call alloc.default) 4))
     (while (and (neq (call peek p) close) (neq (call peek p) compiler.Kind.none))
       (let f:(ptr ast.Field) (new ast.Field))
       (put f ast.Field.name (call expect_symbol p what eof_at))
@@ -422,7 +423,7 @@
     (call next p)
     (put e ast.EnumDef.name (call expect_symbol p "enum name" at))
     (let bracket:i32 (call expect p compiler.Kind.lbracket))
-    (let members:(ptr (vec.Vec (ptr ast.Member))) (call (vec.make (ptr ast.Member)) 8))
+    (let members:(ptr (vec.Vec (ptr ast.Member))) (call (vec.make (ptr ast.Member)) (call alloc.default) 8))
     (let next_value:i64 0i64)
     (while (not (get p P.failed))
       (let mat:i32 (call cur_pos p))
@@ -472,7 +473,7 @@
     (call next p)
     (put u ast.UnionDef.name (call expect_symbol p "union name" at))
     (call want p compiler.Kind.lbracket)
-    (let vs:(ptr (vec.Vec (ptr ast.Variant))) (call (vec.make (ptr ast.Variant)) 4))
+    (let vs:(ptr (vec.Vec (ptr ast.Variant))) (call (vec.make (ptr ast.Variant)) (call alloc.default) 4))
     (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
       (let vat:i32 (call cur_pos p))
       (if (neq (call peek p) compiler.Kind.lparen)
@@ -498,7 +499,7 @@
     (if (not (call is_sym p i "fn")) (call fail_expected p i "'fn'" at) (block))
     (put f ast.FnDef.name (call expect_symbol p "fn name" at))
     (call want p compiler.Kind.lbracket)
-    (let ps:(ptr (vec.Vec (ptr ast.Param))) (call (vec.make (ptr ast.Param)) 4))
+    (let ps:(ptr (vec.Vec (ptr ast.Param))) (call (vec.make (ptr ast.Param)) (call alloc.default) 4))
     (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
       (let prm:(ptr ast.Param) (new ast.Param))
       (put prm ast.Param.name (call expect_symbol p "param name" at))
@@ -509,7 +510,7 @@
     (call want p compiler.Kind.arrow)
     (put f ast.FnDef.params (call (to_arr (ptr ast.Param)) ps))
     (put f ast.FnDef.ret (call parse_type p))
-    (let cs:(ptr (vec.Vec ast.Contract)) (call (vec.make ast.Contract) 2))
+    (let cs:(ptr (vec.Vec ast.Contract)) (call (vec.make ast.Contract) (call alloc.default) 2))
     (let body:(ptr (vec.Vec ast.Expr)) (call exprs))
     (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
       (if (and (eq (call peek p) compiler.Kind.lparen)
@@ -736,7 +737,7 @@
 
   (fn parse_match [p:(ptr P) at:i32] -> ast.Expr
     (let value:ast.Expr (call parse_expr p))
-    (let arms:(ptr (vec.Vec (ptr ast.Arm))) (call (vec.make (ptr ast.Arm)) 4))
+    (let arms:(ptr (vec.Vec (ptr ast.Arm))) (call (vec.make (ptr ast.Arm)) (call alloc.default) 4))
     (let else_body:(arr ast.Expr) (arr.null ast.Expr))
     (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
       (let open:i32 (call expect p compiler.Kind.lparen))
@@ -749,7 +750,7 @@
       (if (eq (call peek p) compiler.Kind.lbracket)
           (block
             (call next p)
-            (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) 4))
+            (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
             (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
               (call (vec.push (ptr str.Bytes)) names (call expect_symbol p "a binder name" aat)))
             (call want p compiler.Kind.rbracket)
@@ -793,7 +794,7 @@
   (struct Clause [test:ast.Expr body:(arr ast.Expr) at:i32])
 
   (fn parse_cond [p:(ptr P) at:i32] -> ast.Expr
-    (let clauses:(ptr (vec.Vec (ptr Clause))) (call (vec.make (ptr Clause)) 4))
+    (let clauses:(ptr (vec.Vec (ptr Clause))) (call (vec.make (ptr Clause)) (call alloc.default) 4))
     (let else_body:(arr ast.Expr) (arr.null ast.Expr))
     (let else_at:i32 0)
     (while (eq (call peek p) compiler.Kind.lparen)
@@ -838,7 +839,7 @@
     (call (strmap.set Form) m (call str.from_str s) f))
 
   (fn form_table [] -> (ptr (strmap.StrMap Form))
-    (let m:(ptr (strmap.StrMap Form)) (call (strmap.make Form) 64))
+    (let m:(ptr (strmap.StrMap Form)) (call (strmap.make Form) (call alloc.default) 64))
     (call form m "let" Form.let_) (call form m "set!" Form.set) (call form m "if" Form.if_)
     (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
@@ -860,7 +861,7 @@
 
   ;; Operator spellings (src/parser.rs parse_expr's op table).
   (fn op_table [] -> (ptr (strmap.StrMap i32))
-    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 128))
+    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 128))
     (call op m "+" ast.Op.add) (call op m "-" ast.Op.sub) (call op m "*" ast.Op.mul) (call op m "/" ast.Op.div)
     (call op m "%" ast.Op.mod) (call op m "^" ast.Op.bitxor) (call op m "shl" ast.Op.shl) (call op m "shr" ast.Op.shr)
     (call op m "shru" ast.Op.shru) (call op m "bitand" ast.Op.bitand) (call op m "bitor" ast.Op.bitor)
@@ -906,7 +907,7 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (strmap.make i32) 16))
+    (put p P.unions (call (strmap.make i32) (call alloc.default) 16))
     ;; the program's unions: `( union NAME`
     (loop k 0 (- n 3) 1
       (if (and (eq (call kind_at p k) compiler.Kind.lparen) (and (call is_sym p (+ k 1) "union") (eq (call kind_at p (+ k 2)) compiler.Kind.symbol)))
@@ -966,7 +967,7 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (strmap.make i32) 16))
+    (put p P.unions (call (strmap.make i32) (call alloc.default) 16))
     (call parse_expr p))
 
   ;; Tokenizes and parses len bytes at src.

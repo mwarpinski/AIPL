@@ -39,7 +39,7 @@ allocator, and code says which allocator it uses.
 | H0 | `sizeof` of any memory type (`(sizeof i64)` 8), so generic code can size a `T` | done |
 | H1 | `std/heap`: size classes, free lists, the checks above, `live`/`live_bytes`/`reserved`; typed `create`/`destroy`/`array`/`free_array` | done |
 | H2 | `std/alloc`: the `Allocator` union (heap, arena, fixed buffer), `alloc.default`, typed helpers over any allocator | done |
-| H3 | `vec`, `buf`, `strmap` (and `map`) take an allocator and free old storage when they grow; callers updated, the compiler included | |
+| H3 | `vec`, `buf`, `strmap` (and `map`) take an allocator and free old storage when they grow; callers updated, the compiler included | done |
 | H4 | Function references in struct fields (a language change), then `Allocator.custom` | |
 | H5 | Docs (spec, prompt guide, gaps), benchmarks (binarytrees with a heap as well as an arena) | |
 
@@ -57,3 +57,25 @@ message says what went wrong:
 `Pre-condition failed in 'heap.free_raw': (req (call heap.not_freed_already h p)) with h = 1704, p = 2168, n = 8`.
 `tests/test_heap.rs` makes each mistake and checks that the VM, `aipl-run`,
 and native executables stop with the same message.
+
+## H3: containers
+
+`vec.make`, `map.make`, `strmap.make`, and `buf.make` take an
+`alloc.Allocator` first; each container keeps it, frees its old storage
+through it when it grows, and has a `free`. The 182 call sites in the
+repository pass `(call alloc.default)`. Two things this needed:
+
+- **The heap takes a lock** (`atomic.lock` on its first word), since
+  `mem.alloc` was safe to call from several threads and containers now
+  allocate from the shared heap.
+- **Generic functions apply only as callees.** With `vec` as the program
+  being checked, its generic `make` kept its bare name and swallowed
+  `alloc`'s union constructor `(make Allocator.heap h)`. A function
+  template is now applied only as child 1 of `call` or `ref` (a struct
+  template anywhere), in both generics passes.
+
+`arena` keeps its chunks in a list of its own instead of a `vec`, so
+`alloc` can import it without a cycle. Cost: the benchmarks are within
+noise (binarytrees 25% faster, knucleotide 6% slower); the compiler
+compiling itself takes about 13% longer and 47 MB instead of 41, since it
+frees little and pays the heap's per-block header and size rounding.

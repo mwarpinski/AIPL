@@ -5,6 +5,7 @@
 ;;
 ;;   ./mandelbrot 200 > m.pbm
 (module mandelbrot
+  (import alloc)
   (import os)
   (import buf)
   (import time)
@@ -14,7 +15,7 @@
   (fn main [] -> i32
     (let started:i64 (call time.now))
     (let n:i32 (call os.arg_int 1 200))
-    (let out:(ptr buf.Buf) (call buf.make (+ 32 (* n (+ (/ n 8) 1)))))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 32 (* n (+ (/ n 8) 1)))))
     (call buf.push_str out "P4\n")
     (call buf.push_int out n)
     (call buf.push_byte out 32)

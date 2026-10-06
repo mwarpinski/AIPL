@@ -1,6 +1,7 @@
 ;; Imported by tests/aipl/consts_enums.aipl: constants, an enum, an enum as a
 ;; struct field and as a generic type argument, all used from another module.
 (module palette
+  (import alloc)
   (import vec)
   (const LIMIT:i32 7)
   (const NAME:str "palette")
@@ -11,7 +12,7 @@
   (fn next [c:Color] -> Color (enum.cast Color (+ (enum.ord c) 1)))
   ;; the colours in order, as a generic list of the enum
   (fn all [] -> (ptr (vec.Vec Color))
-    (let v:(ptr (vec.Vec Color)) (call (vec.make Color) 4))
+    (let v:(ptr (vec.Vec Color)) (call (vec.make Color) (call alloc.default) 4))
     (call (vec.push Color) v Color.red)
     (call (vec.push Color) v Color.green)
     (call (vec.push Color) v Color.blue)

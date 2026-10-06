@@ -14,6 +14,7 @@
 ;; and every limb from len to the array's end is zero (so loops may read
 ;; past len without a check). Zero has len 0 and is never negative.
 (module bigint
+  (import alloc)
   (import str)
   (import buf)
 
@@ -241,7 +242,7 @@
     (call assign t a)
     (put t Int.neg false)
     ;; nine digits at a time, least significant group first
-    (let groups:(ptr buf.Buf) (call buf.make 64))
+    (let groups:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (while (not (call is_zero t))
       (let g:i32 (call div_small t 1000000000))
       (loop k 1 9 1
@@ -254,7 +255,7 @@
     (loop k 1 n 1 (call buf.push_byte out (call str.byte_at digits (- n k)))))
 
   (fn decimal_is [a:(ptr Int) want:str] -> bool
-    (let b:(ptr buf.Buf) (call buf.make 64))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call push_decimal b a)
     (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
 

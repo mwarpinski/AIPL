@@ -4,6 +4,7 @@
 ;; byte for byte. Values are kept below 40 limbs by dividing them down, and
 ;; a zero result is usually replaced by a fresh small value.
 (module bigint_ops
+  (import alloc)
   (import buf)
   (import bigint)
 
@@ -62,7 +63,7 @@
     (put rs Regs.den (call bigint.from_i32 0))
     (put rs Regs.part (call bigint.from_i32 0))
     (put rs Regs.one (call bigint.from_i32 1))
-    (let out:(ptr buf.Buf) (call buf.make 65536))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (loop step 1 4000 1
       (let op:i32 (% (call next r) 10))
       (let a:(ptr bigint.Int) (call reg rs (% (call next r) 4)))

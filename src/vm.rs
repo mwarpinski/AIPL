@@ -595,6 +595,7 @@ impl VM {
             }
             Expr::Sizeof { ty, .. } => {
                 let size = match ty {
+                    Type::Struct(name) if self.enums.contains_key(name) => 4,
                     Type::Struct(struct_name) => {
                         let def = self
                             .structs

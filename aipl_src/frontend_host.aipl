@@ -3,6 +3,7 @@
 ;; integers. Each writes [status addr len] at out: status 1 with the result
 ;; text, or 0 with the error message ("line:col: ..." in the given text).
 (module frontend_host
+  (import alloc)
   (import compiler)
   (import parser)
   (import printer)
@@ -33,7 +34,7 @@
   (fn check_text [src:i32 len:i32 out:i32] -> i32
     (let pr:(ptr checker.Problem) (call front.check src len))
     (if (eq pr (ptr.null checker.Problem))
-        (block (let okb:(ptr buf.Buf) (call buf.make 4)) (call buf.push_str okb "ok") (call put_result out true okb))
+        (block (let okb:(ptr buf.Buf) (call buf.make (call alloc.default) 4)) (call buf.push_str okb "ok") (call put_result out true okb))
         (call put_result out false (call front.render src pr))))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))

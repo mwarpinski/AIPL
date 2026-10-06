@@ -6,6 +6,7 @@
 ;;
 ;;   ./binarytrees 10
 (module binarytrees
+  (import alloc)
   (import os)
   (import buf)
   (import arena)
@@ -39,7 +40,7 @@
     (let n:i32 (call os.arg_int 1 10))
     (let min_depth:i32 4)
     (let max_depth:i32 (if (gt (+ min_depth 2) n) (+ min_depth 2) n))
-    (let out:(ptr buf.Buf) (call buf.make 1024))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let scratch:(ptr arena.Arena) (call arena.make 1048576))
     (call line out "stretch tree of depth " (+ max_depth 1) (call check (call bottom_up scratch (+ max_depth 1))))
     (call arena.reset scratch)

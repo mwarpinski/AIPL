@@ -8,6 +8,7 @@
 ;; r8 r9, result in rax (negative errno on failure); rcx and r11 are
 ;; clobbered.
 (module runtime
+  (import alloc)
   (import str)
   (import buf)
   (import x64)
@@ -143,10 +144,10 @@
   ;; The first native executable (NE4): writes "hello from native AIPL\n" to
   ;; stdout and exits with status 7.
   (fn hello_exe [] -> (ptr str.Bytes)
-    (let data:(ptr buf.Buf) (call buf.make 32))
+    (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str data "hello from native AIPL")
     (call buf.push_byte data 10)
-    (let c:(ptr buf.Buf) (call buf.make 64))
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call emit_write c 1 (call elf.data_vaddr) (call buf.len data))
     (call emit_exit c 7)
     (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0)))

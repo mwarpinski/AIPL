@@ -24,8 +24,8 @@
 ;; least 64 KiB taken with mem.alloc, which never gives memory back to the
 ;; system: a heap's memory is reused, not returned. Each block has an
 ;; 8-byte header: which heap and state (live or freed) in one word, the
-;; size asked for in the other. A heap is not safe to share between
-;; threads.
+;; size asked for in the other. Allocating and freeing take the heap's
+;; lock, so threads can share a heap.
 (module heap
 
   ;; Header word 0 is the heap's address xor one of these.
@@ -36,12 +36,14 @@
   (const NCLASSES:i32 107)
   (const CHUNK:i32 65536)
 
-  ;; heads: each size class's first free block (0 for none); new blocks
-  ;; come from [cur, end).
-  (struct Heap [heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32])
+  ;; lock: held while the heap changes (first, so its address is the
+  ;; heap's); heads: each size class's first free block (0 for none); new
+  ;; blocks come from [cur, end).
+  (struct Heap [lock:i32 heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32])
 
   (fn make [] -> (ptr Heap)
     (let h:(ptr Heap) (new Heap))
+    (put h Heap.lock 0)
     (put h Heap.heads (arr.new i32 NCLASSES))
     (loop c 0 (- NCLASSES 1) 1 (arr.set i32 (get h Heap.heads) c 0))
     (put h Heap.cur 0)
@@ -81,6 +83,7 @@
   (fn raw [h:(ptr Heap) n:i32] -> i32
     (req (gt n 0))
     (req (lte n 1879048184))
+    (atomic.lock (ptr.addr h))
     (let c:i32 (call class_of n))
     (let size:i32 (call class_size c))
     (let p:i32 (arr.get i32 (get h Heap.heads) c))
@@ -94,6 +97,7 @@
     (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
     (put h Heap.nlive (+ (get h Heap.nlive) 1))
     (put h Heap.live_bytes (+ (get h Heap.live_bytes) n))
+    (atomic.unlock (ptr.addr h))
     p)
 
   ;; A new block of `size` bytes (after its header) from the current chunk,
@@ -130,6 +134,7 @@
     (req (call not_freed_already h p))
     (req (call allocated_by h p))
     (req (call size_matches p n))
+    (atomic.lock (ptr.addr h))
     (mem.store32 (- p 8) (^ (ptr.addr h) FREED))
     (let end:i32 (+ p (bitand (+ n 7) -8)))
     (let q:i32 (+ p 8))
@@ -141,7 +146,8 @@
     (mem.store32 (+ p 4) 0)
     (arr.set i32 (get h Heap.heads) c p)
     (put h Heap.nlive (- (get h Heap.nlive) 1))
-    (put h Heap.live_bytes (- (get h Heap.live_bytes) n)))
+    (put h Heap.live_bytes (- (get h Heap.live_bytes) n))
+    (atomic.unlock (ptr.addr h)))
 
   ;; The checks of free_raw, named for the failure they catch.
   (fn not_freed_already [h:(ptr Heap) p:i32] -> bool

@@ -1,20 +1,30 @@
 ;; std/vec: a growable list of any element type (storage doubles when full).
-;; Generic (AIPL_SPEC.md 4.H): every use names the element type.
-;;   (let v:(ptr (vec.Vec i32)) (call (vec.make i32) 0))
+;; Generic (AIPL_SPEC.md 4.H): every use names the element type. Its memory
+;; comes from the allocator it is made with (std/alloc); growing frees the
+;; old storage, and free releases it all.
+;;   (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (call alloc.default) 0))
 ;;   (call (vec.push i32) v 7)
 ;;   (call (vec.at i32) v 0)
-;;   (let ps:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) 0))
+;;   (call (vec.free i32) v)
 (module vec
+  (import alloc)
 
-  (struct (Vec T) [items:(arr T) len:i32])
+  (struct (Vec T) [items:(arr T) len:i32 allocator:alloc.Allocator])
 
-  (fn (make T) [capacity:i32] -> (ptr (Vec T))
+  (fn (make T) [a:alloc.Allocator capacity:i32] -> (ptr (Vec T))
     (req (gte capacity 0))
     (let cap:i32 (if (lt capacity 4) 4 capacity))
-    (let v:(ptr (Vec T)) (new (Vec T)))
-    (put v (Vec T) items (arr.new T cap))
+    (let v:(ptr (Vec T)) (call (alloc.create (Vec T)) a))
+    (put v (Vec T) items (call (alloc.array T) a cap))
     (put v (Vec T) len 0)
+    (put v (Vec T) allocator a)
     v)
+
+  ;; Frees the storage and the vec itself; neither may be used afterwards.
+  (fn (free T) [v:(ptr (Vec T))] -> void
+    (let a:alloc.Allocator (get v (Vec T) allocator))
+    (call (alloc.free_array T) a (get v (Vec T) items))
+    (call (alloc.destroy (Vec T)) a v))
 
   (fn (len T) [v:(ptr (Vec T))] -> i32
     (get v (Vec T) len))
@@ -34,9 +44,10 @@
     (let items:(arr T) (get v (Vec T) items))
     (if (eq n (arr.len items))
         (block
-          (let bigger:(arr T) (arr.new T (* 2 n)))
+          (let bigger:(arr T) (call (alloc.array T) (get v (Vec T) allocator) (* 2 n)))
           (loop i 0 (- n 1) 1
             (arr.set T bigger i (arr.get T items i)))
+          (call (alloc.free_array T) (get v (Vec T) allocator) items)
           (put v (Vec T) items bigger))
         (block))
     (arr.set T (get v (Vec T) items) n x)
@@ -71,7 +82,8 @@
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))
     (let src:(arr T) (get v (Vec T) items))
-    (let dst:(arr T) (arr.new T n))
+    (let scratch:(arr T) (call (alloc.array T) (get v (Vec T) allocator) n))
+    (let dst:(arr T) scratch)
     (let width:i32 1)
     (while (lt width n)
       (let lo:i32 0)
@@ -103,7 +115,8 @@
     (if (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
         (loop i 0 (- n 1) 1
           (arr.set T (get v (Vec T) items) i (arr.get T src i)))
-        (block)))
+        (block))
+    (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
   ;; Ascending.
   (fn sort_i32 [v:(ptr (Vec i32))] -> void
@@ -120,14 +133,14 @@
   ;; Pass count; test_suite.aipl expects 6.
   (fn run_vec_tests [] -> i32
     (let p:i32 0)
-    (let v:(ptr (Vec i32)) (call (make i32) 0))
+    (let v:(ptr (Vec i32)) (call (make i32) (call alloc.default) 0))
     (loop i 0 999 1 (call (push i32) v (* i 3)))
     (if (and (eq (call (len i32) v) 1000) (and (eq (call (at i32) v 0) 0) (eq (call (at i32) v 999) 2997))) (set! p (+ p 1)) (block))
     (call (set i32) v 5 -7)
     (if (and (eq (call (pop i32) v) 2997) (and (eq (call (len i32) v) 999) (eq (call (at i32) v 5) -7))) (set! p (+ p 1)) (block))
     (if (and (eq (call (index_of i32) v 30) 10) (eq (call (index_of i32) v 31) -1)) (set! p (+ p 1)) (block))
     ;; sort 200 pseudo-random values; sorted and the same multiset (sum, count)
-    (let r:(ptr (Vec i32)) (call (make i32) 4))
+    (let r:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (let x:i32 12345)
     (let sum:i32 0)
     (loop i 1 200 1
@@ -142,16 +155,16 @@
       (if (and (gt i 0) (gt (call (at i32) r (- i 1)) (call (at i32) r i))) (set! ok false) (block)))
     (if (and ok (eq sum sum2)) (set! p (+ p 1)) (block))
     ;; stability: equal keys keep their order
-    (let s:(ptr (Vec i32)) (call (make i32) 4))
+    (let s:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (call (push i32) s 31) (call (push i32) s 12) (call (push i32) s 35) (call (push i32) s 10) (call (push i32) s 33)
     (call (sort_by i32) s (ref cmp_tens))
     (if (and (eq (call (at i32) s 0) 12) (and (eq (call (at i32) s 1) 10) (and (eq (call (at i32) s 2) 31) (and (eq (call (at i32) s 3) 35) (eq (call (at i32) s 4) 33)))))
         (set! p (+ p 1))
         (block))
     ;; other element types: i64 values and struct pointers, sorted by a field
-    (let big:(ptr (Vec i64)) (call (make i64) 0))
+    (let big:(ptr (Vec i64)) (call (make i64) (call alloc.default) 0))
     (call (push i64) big 5000000000i64)
-    (let pts:(ptr (Vec (ptr Point))) (call (make (ptr Point)) 0))
+    (let pts:(ptr (Vec (ptr Point))) (call (make (ptr Point)) (call alloc.default) 0))
     (loop i 0 4 1
       (let pt:(ptr Point) (new Point))
       (put pt Point.x (- 10 i))

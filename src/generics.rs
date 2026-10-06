@@ -69,7 +69,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         let file = work[i].0.file.clone();
         let mut sx = std::mem::replace(&mut work[i].0.sx, Sx::Atom(blank()));
         let mut created = Vec::new();
-        rewrite(&mut sx, &file, &templates, &mut made, &mut created)?;
+        rewrite(&mut sx, &file, &templates, &mut made, &mut created, false)?;
         work[i].0.sx = sx;
         work.extend(created);
         if made.len() > MAX_INSTANCES {
@@ -117,22 +117,31 @@ fn generic_header(item: &Item) -> Result<Option<(String, Vec<String>)>, String> 
 /// Rewrites `sx` bottom-up: every template application becomes the symbol of
 /// its instance (creating the instance the first time), and the 3-part
 /// generic field forms of get/put become `Instance.field`.
+///
+/// A struct template is applied anywhere; a function template only as a
+/// callee (`callee`: child 1 of `call` or `ref`), so that `(make U.v x)`
+/// stays a union constructor beside a generic named `make`.
 fn rewrite(
     sx: &mut Sx,
     file: &std::path::Path,
     templates: &HashMap<String, Template>,
     made: &mut HashSet<String>,
     created: &mut Vec<(Item, Kind)>,
+    callee: bool,
 ) -> Result<(), String> {
     let Sx::List { .. } = sx else { return Ok(()) };
     let head = sx.head().map(|h| h.to_string());
+    let applies = |h: Option<&str>, callee: bool| h.and_then(|h| templates.get(h)).is_some_and(|t| t.is_struct || callee);
+    let is_app = applies(head.as_deref(), callee);
+    let calls = matches!(head.as_deref(), Some("call" | "ref"));
     let items = sx.items_mut().unwrap();
     // the head of an application is the template's name, not something to rewrite
-    let start = if head.as_deref().is_some_and(|h| templates.contains_key(h)) { 1 } else { 0 };
+    let start = if is_app { 1 } else { 0 };
     let mut generic_field = false;
     for (k, child) in items.iter_mut().enumerate().skip(start) {
-        let was_app = child.head().is_some_and(|h| templates.contains_key(h));
-        rewrite(child, file, templates, made, created)?;
+        let child_callee = calls && k == 1;
+        let was_app = applies(child.head(), false);
+        rewrite(child, file, templates, made, created, child_callee)?;
         if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put")) {
             generic_field = true;
         }
@@ -151,7 +160,7 @@ fn rewrite(
     }
     let Some(h) = head else { return Ok(()) };
     let Some(t) = templates.get(&h) else { return Ok(()) };
-    if !sx.is_paren() {
+    if !is_app || !sx.is_paren() {
         return Ok(());
     }
     let args: Vec<Sx> = sx.items()[1..].to_vec();

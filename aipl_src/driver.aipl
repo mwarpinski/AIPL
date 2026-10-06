@@ -9,6 +9,7 @@
 ;; A host can also call compile_file directly with paths in memory taken from
 ;; host_alloc (tests/test_resolver_aipl.rs does both).
 (module driver
+  (import alloc)
   (import resolver)
   (import front)
   (import checker)
@@ -33,8 +34,8 @@
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
     (let res:(ptr Out) (new Out))
-    (let out:(ptr buf.Buf) (call buf.make 65536))
-    (let err:(ptr buf.Buf) (call buf.make 256))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
     (let gen:(ptr origins.Origins) (call origins.make))
     (if (not (call resolver.resolve_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) out err orig gen))
@@ -71,7 +72,7 @@
     (let g:(ptr origins.Entry) (call origins.find gen at))
     (if (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)) (block))
     (let r:(ptr origins.Entry) (call origins.find orig at))
-    (let b:(ptr buf.Buf) (call buf.make 160))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
     (let path:(ptr str.Bytes) entry)
     (let line:i32 1)
     (let col:i32 1)

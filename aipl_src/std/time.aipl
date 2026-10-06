@@ -8,6 +8,7 @@
 ;; Durations print with three decimals in the largest fitting unit (ns, us,
 ;; ms, s), from integer arithmetic.
 (module time
+  (import alloc)
   (import str)
   (import buf)
 
@@ -36,7 +37,7 @@
   ;; program's own output stays clean).
   (fn report [label:str start:i64] -> void
     (let ns:i64 (call since start))
-    (let b:(ptr buf.Buf) (call buf.make 64))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call buf.push_str b label)
     (call buf.push_str b ": ")
     (call push_duration b ns)
@@ -45,7 +46,7 @@
 
   ;; True if the duration formats as `want`.
   (fn formats [ns:i64 want:str] -> bool
-    (let b:(ptr buf.Buf) (call buf.make 32))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call push_duration b ns)
     (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
 

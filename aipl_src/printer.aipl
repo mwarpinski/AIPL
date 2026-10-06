@@ -8,6 +8,7 @@
 ;; same text when the source came from it), except that a tab, CR, or NUL
 ;; written raw inside a string prints as its escape.
 (module printer
+  (import alloc)
   (import ast)
   (import str)
   (import buf)
@@ -16,7 +17,7 @@
   (fn by [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call buf.push_bytes b x))
 
   (fn print_module [m:(ptr ast.Module)] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make 4096))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
     (call s b "(module ")
     (call by b (get m ast.Module.name))
     (call s b "\n")

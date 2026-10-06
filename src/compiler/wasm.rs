@@ -1659,6 +1659,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
         }
         Expr::Sizeof { ty, .. } => {
             let size = match ty {
+                Type::Struct(name) if ctx.enums.contains_key(name) => 4,
                 Type::Struct(struct_name) => {
                     let def = ctx
                         .structs

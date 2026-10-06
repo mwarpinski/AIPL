@@ -968,8 +968,9 @@ impl TypeChecker {
             }
             Expr::Sizeof { ty, span } => {
                 match ty {
+                    // a bare name: a struct, or an enum (an i32)
                     Type::Struct(name) => {
-                        if !self.struct_defs.contains_key(name) {
+                        if !self.struct_defs.contains_key(name) && !self.enum_defs.contains_key(name) {
                             return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, name));
                         }
                     }

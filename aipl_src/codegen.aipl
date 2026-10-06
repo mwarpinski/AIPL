@@ -4,6 +4,7 @@
 ;; Scope matches src/compiler/wasm.rs byte-for-byte.
 
 (module codegen
+  (import alloc)
   (import compiler)
   (import consts)
   (import str)
@@ -119,7 +120,7 @@
     (put cg Cg.nsigs 0)
     (put cg Cg.strs (arr.new (ptr StrLit) 1364))
     (put cg Cg.nstrs 0)
-    (put cg Cg.blob (call buf.make 4096))
+    (put cg Cg.blob (call buf.make (call alloc.default) 4096))
     (put cg Cg.newline 0)
     cg)
 
@@ -180,7 +181,7 @@
 
   (fn new_keywords [] -> (ptr Keywords)
     (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (strmap.make Kw) 256))
+    (put ks Keywords.map (call (strmap.make Kw) (call alloc.default) 256))
     (put ks Keywords.key (call str.bytes 0 0))
     ks)
 
@@ -1511,7 +1512,7 @@
     (if (or (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536) (gte (get cg Cg.nstrs) 1364))
         (block (call set_compile_error CgErr.too_many_literals) (return 1028))
         (block))
-    (let text:(ptr buf.Buf) (call buf.make (+ len 1)))
+    (let text:(ptr buf.Buf) (call buf.make (call alloc.default) (+ len 1)))
     (let i:i32 0)
     (while (lt i len)
       (let b:i32 (mem.load8 (+ (get cg Cg.src) (+ pos i))))
@@ -3061,7 +3062,7 @@
 
   ;; " with " before the first value shown, ", " before the others.
   (fn item_head [m:(ptr Msg) name_ptr:i32 name_len:i32] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make (+ name_len 12)))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ name_len 12)))
     (call buf.push_str b (if (eq (get m Msg.n) 0) " with " ", "))
     (call buf.push_bytes b (call str.bytes name_ptr name_len))
     b)
@@ -3072,7 +3073,7 @@
     (call add_item cg m ItemKind.text b 0)
     (call add_item cg m kind b local)
     (if (eq kind ItemKind.long)
-        (block (let sfx:(ptr buf.Buf) (call buf.make 4)) (call buf.push_str sfx "i64") (call add_item cg m ItemKind.text sfx 0))
+        (block (let sfx:(ptr buf.Buf) (call buf.make (call alloc.default) 4)) (call buf.push_str sfx "i64") (call add_item cg m ItemKind.text sfx 0))
         (block)))
 
   ;; The bytes of the expression starting at offset at of the source: up to
@@ -3107,7 +3108,7 @@
   (fn contract_msg [cg:(ptr Cg) entry:(ptr FnInfo) c:(ptr compiler.Node)] -> (ptr Msg)
     (let src:i32 (get cg Cg.src))
     (let is_ens:bool (eq (call contract_kind cg c) Kw.ens))
-    (let t:(ptr buf.Buf) (call buf.make 128))
+    (let t:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
     (call buf.push_str t (if is_ens "Post-condition failed in '" "Pre-condition failed in '"))
     (call buf.push_bytes t (call str.bytes (+ src (get entry FnInfo.name_pos)) (get entry FnInfo.name_len)))
     (call buf.push_str t (if is_ens "': (ens " "': (req "))
@@ -3308,8 +3309,8 @@
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
     (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
-    (let plain:(ptr buf.Buf) (call buf.make (+ src_len 64)))
-    (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make 64)))
+    (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
+    (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make (call alloc.default) 64)))
         (block (call set_compile_error CgErr.unknown_enum_member) (return -1))
         (block))
     (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))

@@ -13,6 +13,7 @@
 ;;
 ;;   (let exe:(ptr buf.Buf) (call elf.image code entry data bss))
 (module elf
+  (import alloc)
   (import str)
   (import buf)
 
@@ -69,7 +70,7 @@
     (let dlen:i32 (get data str.Bytes.len))
     (let clen:i32 (get code str.Bytes.len))
     (let l:(ptr Layout) (call layout dlen bss))
-    (let b:(ptr buf.Buf) (call buf.make (+ (get l Layout.code_offset) clen)))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get l Layout.code_offset) clen)))
     ;; ELF header: identification (64-bit, little-endian, version 1, System V)
     (call u8 b 127) (call buf.push_str b "ELF")
     (call u8 b 2) (call u8 b 1) (call u8 b 1) (call u8 b 0)
@@ -121,9 +122,9 @@
         (set! p (+ p 1))
         (block))
     ;; the header: magic, entry = code page + 2, the data and code at their offsets
-    (let code:(ptr buf.Buf) (call buf.make 4))
+    (let code:(ptr buf.Buf) (call buf.make (call alloc.default) 4))
     (call u8 code 144) (call u8 code 144) (call u8 code 195)  ;; nop nop ret
-    (let data:(ptr buf.Buf) (call buf.make 4))
+    (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 4))
     (call buf.push_str data "hi")
     (let b:(ptr buf.Buf) (call image (call buf.bytes code) 2 (call buf.bytes data) 0))
     (if (and (eq (call at32 b 0) 1179403647)                       ;; 7f 'E' 'L' 'F'

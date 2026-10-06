@@ -12,6 +12,7 @@
 ;; once C.failed is set (later checks would look up definitions that the
 ;; failed check never confirmed exist).
 (module checker
+  (import alloc)
   (import compiler)
   (import ast)
   (import str)
@@ -42,7 +43,7 @@
   ;; it to fail; front.aipl puts "line:col: " in front).
   (fn msg [c:(ptr C) at:i32] -> (ptr buf.Buf)
     (put c C.last_at at)
-    (call buf.make 128))
+    (call buf.make (call alloc.default) 128))
 
   (fn fail [c:(ptr C) b:(ptr buf.Buf)] -> void
     (if (get c C.failed) (return) (block))
@@ -162,8 +163,8 @@
 
   (fn new_env [] -> (ptr Env)
     (let e:(ptr Env) (new Env))
-    (put e Env.names (call (vec.make (ptr str.Bytes)) 32))
-    (put e Env.types (call (vec.make ast.Type) 32))
+    (put e Env.names (call (vec.make (ptr str.Bytes)) (call alloc.default) 32))
+    (put e Env.types (call (vec.make ast.Type) (call alloc.default) 32))
     e)
 
   (fn mark [e:(ptr Env)] -> i32 (call (vec.len (ptr str.Bytes)) (get e Env.names)))
@@ -413,7 +414,7 @@
       (ast.Type.arr [elem]
        (let inner_err:(ptr buf.Buf) (call validate c elem at))
        (if (neq inner_err (ptr.null buf.Buf)) (return inner_err) (block))
-       (let scratch:(ptr buf.Buf) (call buf.make 16))
+       (let scratch:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
        (if (call layout_error scratch elem)
            (block
              (let b:(ptr buf.Buf) (call msg c at))
@@ -463,7 +464,7 @@
 
   (fn check_fn [c:(ptr C) f:(ptr ast.FnDef)] -> void
     (let env:(ptr Env) (call new_env))
-    (put c C.declared (call (strmap.make ast.Type) 32))
+    (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
     (let at:i32 (get f ast.FnDef.at))
     (let fname:(ptr str.Bytes) (get f ast.FnDef.name))
     (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
@@ -607,8 +608,9 @@
       (ast.Expr.put_ [_ sname fname ptr val] (call infer_field c env at sname fname ptr true val))
       (ast.Expr.sizeof [_ st]
        (match st
+         ;; a bare name: a struct, or an enum (an i32)
          (ast.Type.struct_ [name]
-          (if (call has_struct c name) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
+          (if (or (call has_struct c name) (call has_enum c name)) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
          (else
           (call validate_or_fail c st at)
           (if (get c C.failed) (return (call void_t)) (block))
@@ -1069,8 +1071,8 @@
     (let names:(arr (ptr str.Bytes)) (get ms Members.names))
     (let seen:(arr bool) (arr.new bool (arr.len names)))
     (let nseen:i32 0)
-    (let arm_names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) 8))
-    (let arm_types:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) 8))
+    (let arm_names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (let arm_types:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 8))
     (loop k 0 (- (arr.len arms) 1) 1
       (if (get c C.failed) (return (call void_t)) (block))
       (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms k))
@@ -1116,7 +1118,7 @@
       (if (get c C.failed) (return (call void_t)) (block))
       (let t:ast.Type (call infer_seq c (get arm ast.Arm.body) env))
       (call restore env m)
-      (let label:(ptr buf.Buf) (call buf.make 32))
+      (let label:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
       (call by label tname) (call s label ".") (call by label member)
       (call (vec.push (ptr str.Bytes)) arm_names (call buf.bytes label))
       (call (vec.push ast.Type) arm_types t))
@@ -1578,11 +1580,11 @@
   (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
     (let c:(ptr C) (new C))
     (put c C.src src)
-    (put c C.structs (call (strmap.make (ptr ast.StructDef)) 64))
-    (put c C.enums (call (strmap.make (ptr ast.EnumDef)) 16))
-    (put c C.unions (call (strmap.make (ptr ast.UnionDef)) 16))
-    (put c C.fns (call (strmap.make (ptr Sig)) 256))
-    (put c C.declared (call (strmap.make ast.Type) 32))
+    (put c C.structs (call (strmap.make (ptr ast.StructDef)) (call alloc.default) 64))
+    (put c C.enums (call (strmap.make (ptr ast.EnumDef)) (call alloc.default) 16))
+    (put c C.unions (call (strmap.make (ptr ast.UnionDef)) (call alloc.default) 16))
+    (put c C.fns (call (strmap.make (ptr Sig)) (call alloc.default) 256))
+    (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
     (put c C.loop_depth 0)
     (put c C.ret (make ast.MaybeType.none))
     (put c C.failed false)
