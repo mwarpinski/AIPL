@@ -3577,6 +3577,37 @@
         (block))
     (call emit_section o 11 sec)
 
+    ;; Name (custom section 0, last): every function's name, so a trap can
+    ;; say where it happened (wasm.rs); the generated ones as wasm.rs names them
+    (let fnames:(ptr Out) (call out_at fcode_scratch))
+    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 5 0)))))
+    (loop f 0 (- nfns 1) 1
+      (let fentry:(ptr FnInfo) (call func_entry_ptr cg f))
+      (call put_u32 fnames (+ imports f))
+      (call put_u32 fnames (get fentry FnInfo.name_len))
+      (loop k 0 (- (get fentry FnInfo.name_len) 1) 1
+        (call put_byte fnames (mem.load8 (+ src_ptr (+ (get fentry FnInfo.name_pos) k))))))
+    (if threaded
+        (block
+          (call put_u32 fnames (+ imports nfns)) (call emit_name fnames "aipl.init")
+          (call put_u32 fnames (+ imports (+ nfns 1))) (call emit_name fnames "wasi_thread_start"))
+        (block))
+    (if auto_start (block (call put_u32 fnames (+ imports (+ nfns extra_fns))) (call emit_name fnames "_start")) (block))
+    (if uses_checks
+        (block
+          (let cb:i32 (get cg Cg.checks_base))
+          (call put_u32 fnames cb) (call emit_name fnames "aipl.dec")
+          (call put_u32 fnames (+ cb 1)) (call emit_name fnames "aipl.oob")
+          (call put_u32 fnames (+ cb 2)) (call emit_name fnames "aipl.text")
+          (call put_u32 fnames (+ cb 3)) (call emit_name fnames "aipl.begin")
+          (call put_u32 fnames (+ cb 4)) (call emit_name fnames "aipl.end"))
+        (block))
+    (set! sec (call out_at scratch))
+    (call emit_name sec "name")
+    (call put_byte sec 1)
+    (call emit_sized sec fnames)
+    (call emit_section o 0 sec)
+
     (if (gt (get o Out.pos) cap) (call set_compile_error CgErr.output_full) 0)
     (mem.store32 60 out)
     (if (call has_compile_error) -1 (get o Out.pos)))

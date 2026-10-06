@@ -63,10 +63,12 @@ has evidence behind it.
 The pitch is that agents fix code from error messages, so these matter
 more than usual.
 
-- [ ] **Compiled traps name nothing.** `./prog: wasm trap: integer divide by
-  zero` gives no function or line. Emit a wasm name section (function
-  names) in both compilers; have `aipl-run` and the native trap routine
-  print the function, ideally a short stack of them.
+- [x] **Compiled traps name their functions** (2026-10-06). Both compilers
+  emit a wasm name section; `aipl-run` and native executables print the
+  call chain after the reason (`  at math.div`, `  at main`; at most 32,
+  then `  ... N more`), the same lines byte for byte, for traps, failed
+  contracts, and bounds checks, in threads too. Native code walks its
+  frame pointers through a table of function addresses and names.
 - [ ] **Source positions at run time.** Map wasm code offsets back to source
   lines (a small line table, like DWARF's but simpler) so a trap and a
   failed compiled contract say `file:line:col`. The VM's runtime errors

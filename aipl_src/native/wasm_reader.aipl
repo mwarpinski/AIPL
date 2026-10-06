@@ -53,7 +53,12 @@
                 data_count:i32
                 datas:(ptr (vec.Vec (ptr Data)))
                 bodies:(ptr (vec.Vec (ptr Range)))
-                code:(ptr (vec.Vec (ptr Body)))])
+                code:(ptr (vec.Vec (ptr Body)))
+                names:(ptr (vec.Vec (ptr FnName)))])
+
+  ;; A function's name from the "name" custom section (index in the
+  ;; function index space), for naming functions in a trap's call chain.
+  (struct FnName [index:i32 name:(ptr str.Bytes)])
 
   ;; ===== Reading bytes =====
 
@@ -136,6 +141,31 @@
         (block))
     (put r R.pos (+ start n))
     (call str.bytes (+ (get (get r R.b) str.Bytes.addr) start) n))
+
+  ;; A custom section ending at `end`: the function names of a "name"
+  ;; section (subsection 1). A malformed name section is ignored, as the
+  ;; wasm spec asks of custom sections.
+  (fn read_custom [r:(ptr R) w:(ptr Wasm) end:i32] -> void
+    (let title:(ptr str.Bytes) (call name r))
+    (if (or (get r R.failed) (not (call str.bytes_eq title (call str.from_str "name")))) (return) (block))
+    (while (lt (get r R.pos) end)
+      (let sub:i32 (call byte r))
+      (let size:i32 (call u32 r))
+      (let sub_end:i32 (+ (get r R.pos) size))
+      (if (or (get r R.failed) (gt sub_end end)) (block (call (vec.clear (ptr FnName)) (get w Wasm.names)) (return)) (block))
+      (if (eq sub 1)
+          (block
+            (let count:i32 (call u32 r))
+            (loop k 1 count 1
+              (let fn_name:(ptr FnName) (new FnName))
+              (put fn_name FnName.index (call u32 r))
+              (put fn_name FnName.name (call name r))
+              (if (or (get r R.failed) (gt (get r R.pos) sub_end))
+                  (block (call (vec.clear (ptr FnName)) (get w Wasm.names)) (return))
+                  (block))
+              (call (vec.push (ptr FnName)) (get w Wasm.names) fn_name)))
+          (block))
+      (put r R.pos sub_end)))
 
   (fn valtype [r:(ptr R)] -> i32
     (let t:i32 (call byte r))
@@ -533,6 +563,7 @@
     (put w Wasm.datas (call (vec.make (ptr Data)) (call alloc.default) 2))
     (put w Wasm.bodies (call (vec.make (ptr Range)) (call alloc.default) 64))
     (put w Wasm.code (call (vec.make (ptr Body)) (call alloc.default) 64))
+    (put w Wasm.names (call (vec.make (ptr FnName)) (call alloc.default) 64))
     w)
 
   ;; Decodes `bytes`. On failure, ok is false and error says what and where.
@@ -557,7 +588,9 @@
       (let section_end:i32 (+ (get r R.pos) size))
       (if (gt section_end n) (block (call fail r "section runs past the end of the module") (break)) (block))
       (cond
-        ((eq id 0) (put r R.pos section_end)) ;; custom sections carry no meaning here
+        ;; custom sections: only "name" is read (function names); the rest
+        ;; carry no meaning here
+        ((eq id 0) (call read_custom r w section_end) (put r R.pos section_end))
         ((eq id 1) (call read_types r w))
         ((eq id 2) (call read_imports r w))
         ((eq id 3) (call read_functions r w))

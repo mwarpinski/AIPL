@@ -131,18 +131,42 @@ fn status(r: wasmtime::Result<()>, argv0: &str, read: &dyn Fn(usize, usize) -> O
                     Some(wasmtime::Trap::UnreachableCodeReached) => failure_message(read),
                     _ => None,
                 };
-                if let Some(m) = failed_check {
-                    eprintln!("{argv0}: {m}");
-                } else if std::env::var_os("AIPL_BACKTRACE").is_some_and(|v| v != "0") {
+                if std::env::var_os("AIPL_BACKTRACE").is_some_and(|v| v != "0") {
                     eprintln!("{argv0}: {e:?}");
-                } else {
+                    return 134;
+                }
+                match failed_check {
+                    Some(m) => eprintln!("{argv0}: {m}"),
                     // the innermost cause: a Trap displays as "wasm trap: <reason>"
-                    eprintln!("{argv0}: {}", e.root_cause());
+                    None => eprintln!("{argv0}: {}", e.root_cause()),
+                }
+                if e.downcast_ref::<wasmtime::Trap>().is_some() {
+                    if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
+                        eprint!("{}", call_chain(bt.frames().iter().filter_map(|f| f.func_name())));
+                    }
                 }
                 134
             }
         },
     }
+}
+
+/// The functions a trap happened in, innermost first, one "  at NAME" line
+/// each: the program's own functions (unnamed ones, the generated `_start`
+/// and `wasi_thread_start`, and the "aipl." check helpers are left out), at
+/// most 32, then "  ... N more". Native executables print the same lines
+/// (aipl_src/native/runtime.aipl emit_backtrace_routine).
+fn call_chain<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    const SHOWN: usize = 32;
+    let shown: Vec<&str> = names.filter(|n| !(n.starts_with("aipl.") || *n == "_start" || *n == "wasi_thread_start")).collect();
+    let mut out = String::new();
+    for n in shown.iter().take(SHOWN) {
+        out.push_str(&format!("  at {n}\n"));
+    }
+    if shown.len() > SHOWN {
+        out.push_str(&format!("  ... {} more\n", shown.len() - SHOWN));
+    }
+    out
 }
 
 fn run(p: Program) -> i32 {
@@ -153,6 +177,9 @@ fn run(p: Program) -> i32 {
     };
     let mut config = Config::new();
     config.wasm_threads(true).shared_memory(true);
+    // every frame, so a trap's call chain counts all of them, as native
+    // executables do (wasmtime keeps 20 by default)
+    config.wasm_backtrace_max_frames(std::num::NonZeroUsize::new(1 << 24));
     let engine = match Engine::new(&config) {
         Ok(e) => e,
         Err(e) => return fail(e.to_string()),

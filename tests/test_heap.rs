@@ -19,7 +19,9 @@ fn scratch(name: &str) -> PathBuf {
 
 /// The failure message of `main` in each backend: the VM's (without its
 /// ` at L:C` position, which compiled messages leave out), aipl-run's, and
-/// the native executable's (each without the `<program>: ` prefix).
+/// the native executable's (each without the `<program>: ` prefix). The two
+/// compiled ones must also print the same call chain after it, ending at
+/// main.
 fn failures(name: &str, body: &str) -> [String; 3] {
     let dir = scratch(name);
     let src = dir.join("prog.aipl");
@@ -48,8 +50,12 @@ fn failures(name: &str, body: &str) -> [String; 3] {
         let err = String::from_utf8_lossy(&o.stderr).to_string();
         err.trim_end().strip_prefix(&format!("{}: ", prog.display())).unwrap_or(&err).to_string()
     };
-    let wasm_msg = run(Command::new(RUNNER).arg(&wasm), &wasm);
-    let native_msg = run(&mut Command::new(&exe), &exe);
+    let wasm_out = run(Command::new(RUNNER).arg(&wasm), &wasm);
+    let native_out = run(&mut Command::new(&exe), &exe);
+    assert_eq!(wasm_out, native_out, "{name}: aipl-run and native print different chains");
+    assert!(wasm_out.ends_with("\n  at main"), "{name}: {wasm_out}");
+    let wasm_msg = wasm_out.lines().next().unwrap().to_string();
+    let native_msg = native_out.lines().next().unwrap().to_string();
     let _ = std::fs::remove_dir_all(&dir);
     [vm_msg, wasm_msg, native_msg]
 }

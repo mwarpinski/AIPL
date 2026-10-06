@@ -376,6 +376,29 @@ impl WasmCompiler {
         wasm_module.section(&codes);
         wasm_module.section(&data);
 
+        // The name section (a custom section, last): every function's name,
+        // so a trap can say where it happened (AIPL_SPEC.md 6.5). The
+        // generated functions have names starting with "aipl." or WASI's own.
+        let mut fn_names = wasm_encoder::NameMap::new();
+        for (i, f) in module.functions.iter().enumerate() {
+            fn_names.append(import_count + i as u32, &f.name);
+        }
+        if threaded {
+            fn_names.append(init_fn, "aipl.init");
+            fn_names.append(thread_start_fn, "wasi_thread_start");
+        }
+        if auto_start {
+            fn_names.append(start_fn, "_start");
+        }
+        if uses_checks {
+            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end"].iter().enumerate() {
+                fn_names.append(checks_base + k as u32, n);
+            }
+        }
+        let mut names = wasm_encoder::NameSection::new();
+        names.functions(&fn_names);
+        wasm_module.section(&names);
+
         Ok(wasm_module.finish())
     }
 }
