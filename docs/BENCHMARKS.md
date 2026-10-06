@@ -188,3 +188,38 @@ what sets the pace is that every local variable lives in memory: a loop
 counter or accumulator is stored and reloaded on every iteration. The next
 real gain needs locals in registers (a register allocator, at least for
 each function's hottest locals), a project of its own.
+
+## Locals in registers (2026-10-06)
+
+Each function's four most used locals (a use inside a loop counting 8
+times per level) now live in rbx, r12, r13, and r14, saved on entry and
+restored on return; around a call to an import, whose routine uses those
+registers, they go back to their slots. Native times, before and after
+(with the compiled checks of docs/CHECKS_PLAN.md in both):
+
+| Benchmark | before | after |
+|---|---|---|
+| spigot | 2.725 s | 2.479 s |
+| fannkuch | 1.080 s | 1.019 s |
+| nbody | 0.751 s | 0.697 s |
+| knucleotide | 1.395 s | 1.141 s |
+| pidigits | 15.652 s | 14.213 s |
+
+6-18%, less than expected. Two measurements say where the rest goes:
+
+- **Not the memory bounds checks.** Removing the check on every load and
+  store (unsafely, as a measurement only) gained another 6-14%. Checking
+  through guard pages instead (a reserved region past the memory that
+  faults, as wasmtime does) would get about that, at the cost of a fault
+  handler.
+- **The translation of one instruction at a time.** In `s = s + a[i]` the
+  loop body is about 60 instructions where an optimising compiler emits
+  under 10: each operand passes through rax and the machine stack
+  (`n - 1` is `push rax; mov eax,1; mov rcx,rax; pop rax; sub eax,ecx`).
+  Closing most of the gap to wasmtime needs a translator that tracks
+  where each value on the wasm stack is (a register, a constant, a local)
+  and emits code only when a value is used, as single-pass compilers such
+  as V8's Liftoff do: a rewrite of the instruction translation in
+  lower.aipl, not a tweak. Earlier attempts at pieces of this (constants
+  as immediates, two values in registers) measured no gain on their own
+  while locals were in memory.

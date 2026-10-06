@@ -95,7 +95,8 @@
              table_oob:(ptr Reason) null_element:(ptr Reason) bad_signature:(ptr Reason)
              shared:bool seg_addrs:(ptr (vec.Vec i32)) seg_lens:(ptr (vec.Vec i32))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32 cached:bool
-             failed:bool msg:(ptr buf.Buf)])
+             failed:bool msg:(ptr buf.Buf)
+             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32])
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
     (let l:(ptr L) (new L))
@@ -271,10 +272,83 @@
         (call x64.mem (call rbp) (+ 16 (* 8 (- (- n_params 1) i))))
         (call x64.mem (call rbp) (* -8 (+ (- i n_params) 1)))))
 
+;; ===== Locals in registers =====
+  ;; Up to four locals of a function live in the callee-saved registers rbx,
+  ;; r12, r13, r14 instead of their frame slots: the ones used most, a use
+  ;; inside a loop counting 8 times one outside it (per level, up to 4).
+  ;; A local used fewer than 3 times (so weighted) keeps its slot. The
+  ;; registers a function uses are saved on entry and restored on return;
+  ;; a function that calls an import saves all four, since the import's
+  ;; routine uses them freely.
+  (fn alloc_reg [k:i32] -> i32 (cond ((eq k 0) 3) ((eq k 1) 12) ((eq k 2) 13) (else 14)))
+
+  ;; The register holding local i, or -1.
+  (fn reg_of [l:(ptr L) i:i32] -> i32
+    (if (lt i (arr.len (get l L.reg_of))) (arr.get i32 (get l L.reg_of) i) -1))
+
+  (fn choose_registers [l:(ptr L) np:i32 body:(ptr wasm_reader.Body)] -> void
+    (let n:i32 (+ np (get l L.nlocals)))
+    (let weight:(arr i32) (arr.new i32 (+ n 1)))
+    (put l L.reg_of (arr.new i32 (+ n 1)))
+    (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1))
+    ;; per open block: 1 for a loop; the loop depth is their sum
+    (let kinds:(ptr (vec.Vec i32)) (call (vec.make i32) 16))
+    (let loops:i32 0)
+    (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
+    (let calls_import:bool false)
+    (loop j 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
+      (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code j))
+      (let op:i32 (get ins wasm_reader.Instr.op))
+      (if (and (eq op 16) (lt (get ins wasm_reader.Instr.a) (call n_fimports l))) (set! calls_import true) (block))
+      (cond
+        ((or (eq op 2) (eq op 4)) (call (vec.push i32) kinds 0))
+        ((eq op 3) (call (vec.push i32) kinds 1) (set! loops (+ loops 1)))
+        ((eq op 11)
+         (if (gt (call (vec.len i32) kinds) 0)
+             (set! loops (- loops (call (vec.pop i32) kinds)))
+             (block)))
+        ((and (gte op 32) (lte op 34))
+         (let a:i32 (get ins wasm_reader.Instr.a))
+         (if (lt a n)
+             (arr.set i32 weight a (+ (arr.get i32 weight a) (shl 1 (* 3 (if (gt loops 4) 4 loops)))))
+             (block)))
+        (else (block))))
+    ;; the four heaviest, in order
+    (put l L.nregs 0)
+    (loop k 0 3 1
+      (let best:i32 -1)
+      (loop i 0 (- n 1) 1
+        (if (and (lt (call reg_of l i) 0)
+                 (and (gte (arr.get i32 weight i) 3)
+                      (or (lt best 0) (gt (arr.get i32 weight i) (arr.get i32 weight best)))))
+            (set! best i)
+            (block)))
+      (if (gte best 0)
+          (block
+            (arr.set i32 (get l L.reg_of) best (call alloc_reg k))
+            (put l L.nregs (+ k 1)))
+          (block)))
+    (put l L.nsaved (if calls_import 4 (get l L.nregs))))
+
+  ;; Writes the register-held locals back to their slots (to_slots), or
+  ;; reloads them, around code that uses rbx and r12-r14.
+  (fn sync_locals [l:(ptr L) np:i32 to_slots:bool] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (loop i 0 (- (+ np (get l L.frame_locals)) 1) 1
+      (let r:i32 (call reg_of l i))
+      (if (gte r 0)
+          (if to_slots
+              (call x64.store c 64 (call local_slot np i) r)
+              (call x64.load c 64 r (call local_slot np i)))
+          (block))))
+
   ;; Leaves the function: the result (if any) from the stack top into rax.
   (fn emit_return [l:(ptr L) has_result:bool] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (if has_result (call pop_rax l) (block))
+    ;; the caller's values of the registers that held locals
+    (loop k 0 (- (get l L.nsaved) 1) 1
+      (call x64.load c 64 (call alloc_reg k) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ k 1))))))
     (call x64.mov_rr c 64 (call rsp) (call rbp))
     (call x64.pop c (call rbp))
     (call x64.ret c))
@@ -295,6 +369,20 @@
       (let n:i32 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count))
       (put l L.nlocals (+ (get l L.nlocals) n))
       (loop k 1 n 1 (call x64.push c (call rax))))
+    ;; the most used locals live in rbx, r12-r14; their old values are saved
+    ;; in frame slots after the locals' (counted as locals, so branches
+    ;; reset the stack below them), then the locals are loaded
+    (call choose_registers l np body)
+    (put l L.frame_locals (get l L.nlocals))
+    (loop k 0 (- (get l L.nsaved) 1) 1 (call x64.push c (call alloc_reg k)))
+    (put l L.nlocals (+ (get l L.nlocals) (get l L.nsaved)))
+    (loop i 0 (- (+ np (get l L.frame_locals)) 1) 1
+      (let ri:i32 (call reg_of l i))
+      (if (gte ri 0)
+          (if (lt i np)
+              (call x64.load c 64 ri (call local_slot np i))
+              (call x64.alu_rr c 32 (call x64.op_xor) ri ri))
+          (block)))
     ;; the body is the outermost label; its end returns
     (put l L.depth 0)
     (put l L.dead false)
@@ -326,16 +414,26 @@
        true)
       ((eq op 32)
        (call spill l)
-       (call x64.load c 64 (call rax) (call local_slot np a))
+       (let rg:i32 (call reg_of l a))
+       (if (gte rg 0)
+           (call x64.mov_rr c 64 (call rax) rg)
+           (call x64.load c 64 (call rax) (call local_slot np a)))
        (call push_rax l)
        true)
       ((eq op 33)
-       (call pop_rax l)
-       (call x64.store c 64 (call local_slot np a) (call rax))
+       (let rs:i32 (call reg_of l a))
+       (if (gte rs 0)
+           (call pop_to l rs)
+           (block
+             (call pop_rax l)
+             (call x64.store c 64 (call local_slot np a) (call rax))))
        true)
       ((eq op 34)
+       (let rt:i32 (call reg_of l a))
        (if (get l L.cached) (block) (call x64.load c 64 (call rax) (call x64.mem (call rsp) 0)))
-       (call x64.store c 64 (call local_slot np a) (call rax))
+       (if (gte rt 0)
+           (call x64.mov_rr c 64 rt (call rax))
+           (call x64.store c 64 (call local_slot np a) (call rax)))
        true)
       ((eq op 65)
        (call spill l)
@@ -351,7 +449,12 @@
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (call spill l)
+       ;; an import's routine uses rbx and r12-r14 freely: the locals they
+       ;; hold go back to their slots around it
+       (let to_import:bool (lt a (call n_fimports l)))
+       (if to_import (call sync_locals l np true) (block))
        (call emit_call l a)
+       (if to_import (call sync_locals l np false) (block))
        (if (gt (call nparams t) 0)
            (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
            (block))
@@ -764,6 +867,8 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (let rdx:i32 2) (let rsi:i32 6) (let rdi:i32 7) (let rbx:i32 3)
     (call pop_rax l)
+    ;; rbx may hold a local
+    (call x64.push c rbx)
     (call x64.mov_rr c 32 rbx (call rax))
     ;; retry from here if another thread changed the size meanwhile
     (let retry:i32 (call buf.len c))
@@ -799,6 +904,7 @@
     (call x64.patch_rel32 c refused (call buf.len c))
     (call x64.mov_ri32 c (call rax) -1)
     (call x64.patch_rel32 c done (call buf.len c))
+    (call x64.pop c rbx)
     (call push_rax l))
 
   ;; ===== Function references (NE14) =====
