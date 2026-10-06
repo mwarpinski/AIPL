@@ -872,7 +872,7 @@ fn shared_module(body: &[wasm_encoder::Instruction]) -> Vec<u8> {
     let mut imports = ImportSection::new();
     imports.import("wasi_snapshot_preview1", "proc_exit", EntityType::Function(0));
     imports.import("wasi", "thread-spawn", EntityType::Function(3));
-    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(1024), memory64: false, shared: true, page_size_log2: None }));
+    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(32768), memory64: false, shared: true, page_size_log2: None }));
     let mut funcs = FunctionSection::new();
     funcs.function(1);
     funcs.function(2);
@@ -918,7 +918,7 @@ fn spawn_reads_global() -> Vec<u8> {
     let mut imports = ImportSection::new();
     imports.import("wasi_snapshot_preview1", "proc_exit", EntityType::Function(0));
     imports.import("wasi", "thread-spawn", EntityType::Function(2));
-    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(1024), memory64: false, shared: true, page_size_log2: None }));
+    imports.import("env", "memory", EntityType::Memory(MemoryType { minimum: 16, maximum: Some(32768), memory64: false, shared: true, page_size_log2: None }));
     let mut funcs = FunctionSection::new();
     funcs.function(1); // 2: _start
     funcs.function(3); // 3: wasi_thread_start

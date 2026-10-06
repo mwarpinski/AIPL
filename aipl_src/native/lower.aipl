@@ -682,7 +682,8 @@
     (call x64.mov_rr c 32 (call rax) (call rax))
     ;; an offset past the largest memory (or negative as i32, i.e. 2 GiB and
     ;; up as u32) can never be in bounds
-    (if (or (lt offset 0) (gt offset (* (get l L.mem_max) 65536)))
+    ;; in 64 bits: the maximum, 32768 pages, is 2^31 bytes
+    (if (or (lt offset 0) (gt (i64.extend_s offset) (* (i64.extend_s (get l L.mem_max)) 65536i64)))
         (block (call emit_trap l (get l L.out_of_bounds)) (call x64.mem_index (call r15) (call rax) 1 0))
         (block
           (call x64.lea c 64 rdx (call x64.mem (call rax) (+ offset width)))

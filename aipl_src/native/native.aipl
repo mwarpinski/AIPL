@@ -172,12 +172,12 @@
 
   ;; The reason a module's memory or data cannot be translated, or "" if
   ;; it can (one memory, its own or imported, with a maximum of at most
-  ;; 16384 pages, 1 GiB, and active data segments that fit its initial size).
+  ;; 32768 pages, 2 GiB, and active data segments that fit its initial size).
   (fn memory_problem [w:(ptr wasm_reader.Wasm)] -> str
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (if (eq lim (ptr.null wasm_reader.Limits)) (return "") (block))
     (if (not (get lim wasm_reader.Limits.has_max)) (return "a memory without a maximum size") (block))
-    (if (gt (get lim wasm_reader.Limits.max) 16384) (return "a memory maximum above 16384 pages (1 GiB)") (block))
+    (if (gt (get lim wasm_reader.Limits.max) 32768) (return "a memory maximum above 32768 pages (2 GiB)") (block))
     (let datas:(ptr (vec.Vec (ptr wasm_reader.Data))) (get w wasm_reader.Wasm.datas))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Data)) datas) 1) 1
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
@@ -193,7 +193,8 @@
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (let initial:i32 (* 65536 (get lim wasm_reader.Limits.min)))
     (let refused:(ptr lower.Reason) (call lower.reason l "cannot reserve linear memory"))
-    ;; mmap(0, max bytes, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0)
+    ;; mmap(0, max bytes, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    ;; the length's 32 bits are zero-extended, so 32768 pages is 2^31 bytes
     (call x64.alu_rr c 32 (call x64.op_xor) 7 7)
     (call x64.mov_ri32 c 6 (* 65536 (get lim wasm_reader.Limits.max)))
     (call x64.alu_rr c 32 (call x64.op_xor) 2 2)
