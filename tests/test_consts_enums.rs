@@ -117,13 +117,13 @@ fn enum_values_count_up_from_the_last_explicit_one() {
 fn every_rule_has_its_message() {
     let cases: &[(&str, &str)] = &[
         // enums are their own types
-        ("(enum C [a b]) (fn f [] -> i32 (let x:C C.a) (+ x 1))", "Add on enum 'C': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast C n)"),
-        ("(enum C [a b]) (fn f [] -> i32 (+ 1 C.b))", "Add on enum 'C': enums have no arithmetic"),
-        ("(enum C [a b]) (enum D [a b]) (fn f [] -> bool (eq C.a D.a))", "Type mismatch in comparison: Enum(\"C\") vs Enum(\"D\")"),
+        ("(enum C [a b]) (fn f [] -> i32 (let x:C C.a) (+ x 1))", "+ on enum 'C': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast C n)"),
+        ("(enum C [a b]) (fn f [] -> i32 (+ 1 C.b))", "+ on enum 'C': enums have no arithmetic"),
+        ("(enum C [a b]) (enum D [a b]) (fn f [] -> bool (eq C.a D.a))", "Type mismatch in comparison: C vs D"),
         ("(enum C [a b]) (fn f [] -> bool (lt C.a C.b))", "pointers, arrays, function refs, and enums compare only with eq/neq"),
-        ("(enum C [a b]) (fn f [] -> i32 C.a)", "Function 'f' expects return type I32, but body returned Enum(\"C\")"),
-        ("(enum C [a]) (fn f [] -> C (enum.cast C 1i64))", "enum.cast C needs an i32 value, got I64"),
-        ("(fn f [] -> i32 (enum.ord 3))", "enum.ord needs an enum value, got I32"),
+        ("(enum C [a b]) (fn f [] -> i32 C.a)", "Function 'f' expects return type i32, but body returned C"),
+        ("(enum C [a]) (fn f [] -> C (enum.cast C 1i64))", "enum.cast C needs an i32 value, got i64"),
+        ("(fn f [] -> i32 (enum.ord 3))", "enum.ord needs an enum value, got i32"),
         // definitions
         ("(enum C [a b]) (fn f [] -> C C.z)", "enum 'C' has no member 'z'"),
         ("(enum C [a (b 0)]) (fn f [] -> i32 0)", "enum 'C': members 'a' and 'b' both have the value 0"),

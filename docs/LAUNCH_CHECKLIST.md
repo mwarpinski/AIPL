@@ -73,13 +73,15 @@ more than usual.
   lines (a small line table, like DWARF's but simpler) so a trap and a
   failed compiled contract say `file:line:col`. The VM's runtime errors
   other than contracts need positions too.
-- [ ] **Types in AIPL syntax.** Messages say `Ptr(Struct("Point"))` and
-  `Array(I32)`; print `(ptr Point)` and `(arr i32)`. Both checkers, word
-  for word.
-- [ ] **More than one error per run.** The checkers stop at the first; an
-  agent fixing code wants all of them (or at least one per function).
-- [ ] **Type errors name the file** in the Rust toolchain (`aiplc` already
-  does).
+- [x] **Types in AIPL syntax** (2026-10-06). Messages said
+  `Ptr(Struct("Point"))`, `Array(I32)`, and `Add on ...`; both checkers and
+  the compiler's own errors now write `(ptr Point)`, `(arr i32)`, `+`.
+- [x] **More than one error per run** (2026-10-06). Both checkers report
+  each failing function's first error, one per line; a syntax error or a
+  definition's error is still reported alone.
+- [x] **Type errors name the file** in the Rust toolchain (2026-10-06), as
+  `aiplc` already did. The CLI also prints `Error: MESSAGE` plainly instead
+  of in Rust's debug quoting.
 
 ## 3. Claims (every sentence must survive being checked)
 

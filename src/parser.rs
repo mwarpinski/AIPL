@@ -403,6 +403,7 @@ impl Parser {
             enums,
             unions,
             functions,
+            sources: Default::default(),
         })
     }
 

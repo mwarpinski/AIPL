@@ -413,7 +413,9 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
         std::fs::write(&path, src).unwrap();
         let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
         let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
-        let rust = rust.rsplit_once(".aipl: ").map(|(_, m)| m.to_string()).unwrap_or(rust);
+        // both toolchains name the same file, with the same message
+        let (rust_path, rust) = rust.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: Rust names no file in {rust}"));
+        assert!(format!("{rust_path}.aipl").ends_with(file), "{name}: Rust names {rust_path}, expected {file}");
         match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
             wasm_driver::Outcome::TypeError(e) => {
                 let (path_part, msg) = e.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {e}"));
@@ -423,6 +425,38 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
             _ => panic!("{name}: expected a type error ({rust})"),
         }
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Errors in several functions, in different files, come back one per line,
+/// each naming its own file, the same from both toolchains.
+#[test]
+fn wasm_toolchain_reports_each_failing_function_with_its_file() {
+    let dir = root().join("target").join(format!("aipl_typeerrs_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn f [] -> i32\n    (+ 1 true)))").unwrap();
+    let path = dir.join("main.aipl");
+    std::fs::write(&path, "(module main\n  (import lib)\n  (fn g [] -> i32 zz)\n  (fn main [] -> i32 (call lib.f)))").unwrap();
+    let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+    let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+    let wasm_driver::Outcome::TypeError(ours) = wasm_driver::run(&driver_wasm(), &rel, "aipl_src/std/") else {
+        panic!("expected a type error ({rust})")
+    };
+    // (file, message) per line; the two toolchains spell paths differently
+    let lines = |e: &str| -> Vec<(String, String)> {
+        e.lines()
+            .map(|l| {
+                let (p, m) = l.split_once(".aipl: ").unwrap_or_else(|| panic!("no file in {l}"));
+                (p.rsplit('/').next().unwrap().to_string(), m.to_string())
+            })
+            .collect()
+    };
+    let expected = vec![
+        ("lib".to_string(), "3:5: Type mismatch in binary op: i32 vs bool".to_string()),
+        ("main".to_string(), "3:19: Undefined variable 'zz'".to_string()),
+    ];
+    assert_eq!(lines(&rust), expected, "{rust}");
+    assert_eq!(lines(&ours), expected, "{ours}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

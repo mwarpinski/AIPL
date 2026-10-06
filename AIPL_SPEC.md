@@ -253,7 +253,7 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 
 ### F. Results
 
-`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. Both backends allocate an 8-byte heap cell `[tag:i32 payload:i32]` (tag 0 = ok, 1 = err) from the heap cursor **before** evaluating the payload, so a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell. Payloads must be 32-bit (`i32`, `bool`, `str`): the wasm backend rejects others with `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got I64`. The VM accepts them, so keep result payloads 32-bit in code meant to compile.
+`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. Both backends allocate an 8-byte heap cell `[tag:i32 payload:i32]` (tag 0 = ok, 1 = err) from the heap cursor **before** evaluating the payload, so a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell. Payloads must be 32-bit (`i32`, `bool`, `str`): the wasm backend rejects others with `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got i64`. The VM accepts them, so keep result payloads 32-bit in code meant to compile.
 
 
 ### G. Function References
@@ -440,7 +440,7 @@ source.aipl
                                       translates the wasm to an ELF executable
 ```
 
-The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`resolver.aipl`, `generics.aipl`), constants (`expand.aipl`), parsing (`parser.aipl`, into the typed tree of `ast.aipl`), checking (`checker.aipl`), and code generation (`codegen.aipl`). `front.aipl` chains the checking stages; its parser and checker report the same first error as Rust's, word for word (section 6.4).
+The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`resolver.aipl`, `generics.aipl`), constants (`expand.aipl`), parsing (`parser.aipl`, into the typed tree of `ast.aipl`), checking (`checker.aipl`), and code generation (`codegen.aipl`). `front.aipl` chains the checking stages; its parser and checker report the same errors as Rust's, word for word (section 6.4).
 
 ### 6.1 CLI surface (`src/main.rs`)
 
@@ -455,7 +455,7 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | `aipl test FILE [--func run_all]` | 1-4, 5a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
 | `aipl serve [--addr 127.0.0.1:8080]` | per request | an HTTP server for agents (`src/agent_api/server.rs`): `POST /eval` with JSON `{"source", "fn_name", "args"?}` runs a function in the VM (`args` are integers), `POST /verify` and `POST /compile` take the source as the request body; each answers JSON with `success` and `error`, plus `result` (eval) or `wasm_base64` (compile). Imports resolve against the standard library. Not covered by tests |
 
-Errors are printed as `Error: "MESSAGE"`, the message in Rust debug quoting (inner quotes escaped). `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
+Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1. `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
 
 ### 6.2 What a compiled `.wasm` module looks like
 
@@ -597,7 +597,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 1. `set!` has type void.
 2. `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`.
 3. `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void.
-4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. A name declared again in a sibling scope (another block, another `match` arm) keeps the type it had: a compiled function has one local per name, so `(block (let y:f64 1.5)) (block (let y:i32 3))` is `'y' is I32 here but F64 elsewhere in this function`.
+4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. A name declared again in a sibling scope (another block, another `match` arm) keeps the type it had: a compiled function has one local per name, so `(block (let y:f64 1.5)) (block (let y:i32 3))` is `'y' is i32 here but f64 elsewhere in this function`.
 5. `set!` on an undeclared name is a type error (and a VM runtime error); there are no implicit globals.
 6. `match_result` binds its `ok` variable to the result's ok type and its `err` variable to the error type. `(ok v)` takes its ok type from `v` and defaults its error type to `i32`; `(ok:E v)` names the error type, and `(err:T e)` names the ok type (section 7.7).
 
@@ -652,7 +652,7 @@ A function body is a sequence of expressions. The **last** expression's type mus
       1)              ;; type i32
   n)
 ```
-Checker output: `3:5: If branch type mismatch: then is Void, else is I32. If mixing void and non-void, consider wrapping in (block ... value)`.
+Checker output: `3:5: If branch type mismatch: then is void, else is i32. If mixing void and non-void, consider wrapping in (block ... value)`.
 
 ### 7.4 Void statements and void `if`
 
@@ -709,7 +709,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
   (fn main [] -> i32
     (call safe_div 10 0)))
 ```
-`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). Compiled (`aipl compile`, then `aipl run`), it stops with `contracts_demo.wasm: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0` and exit status 134. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
+`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). Compiled (`aipl compile`, then `aipl run`), it stops with `contracts_demo.wasm: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0` and exit status 134. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to bool, got i32`.
 
 ### 7.7 Results
 
@@ -830,7 +830,7 @@ A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal becaus
 
 ### 8.1 `i64`
 
-`i64` is a first-class declarable type with the same wrapping two's-complement semantics at 64 bits. There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: I32 vs I64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
+`i64` is a first-class declarable type with the same wrapping two's-complement semantics at 64 bits. There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: i32 vs i64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
 
 | Form | Meaning | wasm |
 |---|---|---|
@@ -883,7 +883,7 @@ The wasm lowering (`compile_checked` in `src/compiler/wasm.rs`, `codegen.aipl` a
 
 ### 8.3 Type-directed code generation
 
-The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type F64`.
+The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type f64`.
 
 **Status:** the wrapping rules above for both widths are implemented in `src/vm.rs`, covered by `tests/test_i64.rs` (VM result plus wasm validation), and proven equal across backends by `tests/test_differential.rs`, which executes every case in this section in both the VM and wasmtime and asserts identical results. When the two disagree, wasm is right and the VM is fixed (section 10.4).
 
@@ -897,7 +897,7 @@ Every parser and checker error is a single line of the form
 <line>:<col>: <message>
 ```
 
-with 1-based line and column of the offending token or the opening `(` of the offending form. Syntax errors, which the resolver finds while reading a file, are prefixed with that file's path (`examples/x.aipl: 3:5: Unknown op/keyword: badop`); type errors are not, so a type error in an imported module gives a position but not the file (the self-hosted `aiplc` names the file for every error, section 6.4). Only the first error is reported. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names neither the function nor the line (`./prog: wasm trap: integer divide by zero`).
+with 1-based line and column of the offending token or the opening `(` of the offending form. Every error found before run time is prefixed with the path of the file it is in (`examples/x.aipl: 3:5: Unknown op/keyword: badop`), whether the resolver, the parser, or the checker finds it, and in both toolchains (section 6.4). An error inside a generic instance names the template's file, or the file that wrote the type argument when the error is at that argument. A syntax error, or an error in a definition (struct, enum, union, constant, function signature), is reported alone, since everything after depends on it. Otherwise every function body is checked, and each failing function reports its first error, one per line in source order; both toolchains give the same lines. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names the functions on its call chain but not the line (section 6.5).
 
 Representative messages, exactly as produced:
 
@@ -908,51 +908,51 @@ Representative messages, exactly as produced:
 | `if` with no else branch | `1:37: Unexpected token parsing expression: RParen` (the `)` where the else was expected) |
 | unknown operator | `3:5: Unknown op/keyword: badop` |
 | unterminated string | `4:12: Unterminated string literal` |
-| wrong literal type in `let` | `3:5: Type mismatch in 'let': expected I32, got Bool` |
+| wrong literal type in `let` | `3:5: Type mismatch in 'let': expected i32, got bool` |
 | undefined name | `3:5: Undefined variable 'x'` |
 | `set!` before `let` | `3:5: Undefined variable 'x' in set!` |
-| `if` branches disagree | `3:5: If branch type mismatch: then is Void, else is I32. If mixing void and non-void, consider wrapping in (block ... value)` |
+| `if` branches disagree | `3:5: If branch type mismatch: then is void, else is i32. If mixing void and non-void, consider wrapping in (block ... value)` |
 | `let` of a name already in scope | `3:12: Cannot shadow existing variable 'x'` |
-| function body ends in `let` | `2:3: Function 'f' expects return type I32, but body returned Void` |
-| mixed `i32` / `i64` operands | `3:5: Type mismatch in binary op: I32 vs I64` |
+| function body ends in `let` | `2:3: Function 'f' expects return type i32, but body returned void` |
+| mixed `i32` / `i64` operands | `3:5: Type mismatch in binary op: i32 vs i64` |
 | unknown struct | `3:5: Unknown struct 'P'` |
 | unknown field | `3:5: Struct 'P' has no field 'z'` |
-| wrong `put` value type | `3:5: Type mismatch writing to field 'P.x': expected I32, got Bool` |
+| wrong `put` value type | `3:5: Type mismatch writing to field 'P.x': expected i32, got bool` |
 | struct defined twice in one module | `1:30: Duplicate struct definition 'P'` |
-| `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got Ptr(Struct("Node"))` |
-| an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got I32` |
-| arithmetic on two pointers, `(+ p p)` | `3:5: Add on Ptr(Struct("Point")): pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
+| `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got (ptr Node)` |
+| an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got i32` |
+| arithmetic on two pointers, `(+ p p)` | `3:5: + on (ptr Point): pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
 | a pointer plus a number, `(+ p 4)` | the same message as two pointers |
-| arithmetic on an enum, `(+ k 1)` | `3:5: Add on enum 'Kind': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast Kind n)` |
-| two different enums compared | `3:5: Type mismatch in comparison: Enum("C") vs Enum("D")` |
+| arithmetic on an enum, `(+ k 1)` | `3:5: + on enum 'Kind': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast Kind n)` |
+| two different enums compared | `3:5: Type mismatch in comparison: C vs D` |
 | an enum member that does not exist | `m.aipl: 3:5: enum 'Kind' has no member 'circle'` |
 | a struct written as a type, `p:Point` | `1:30: 'Point' is a struct, which is only used through a pointer: write (ptr Point)` |
 | a constant reused as a variable | `m.aipl: 3:10: 'MAX' is a constant; it cannot also name a variable, parameter, or field` |
 | a constant whose value does not match its type | `m.aipl: 1:25: constant 'NN' is declared i32 but its value is not an i32 literal` |
-| `arr.get` with the wrong element type | `4:5: arr.get I64 needs an (arr I64), got Array(I32)` |
+| `arr.get` with the wrong element type | `4:5: arr.get i64 needs an (arr i64), got (arr i32)` |
 | `(ptr i32)` | `1:20: (ptr i32) is not a type: ptr points to a struct; for a sequence of i32 use (arr i32)` |
-| `call_ref` signature differs from the reference's type | `3:5: call_ref signature Fn([I32, I32], I64) does not match the function's type Fn([I32, I32], I32)` |
-| wrong `thread.spawn` worker | `1:51: thread.spawn needs a worker of type (fn [i32] -> i32), got Fn([I64], I32)` |
+| `call_ref` signature differs from the reference's type | `3:5: call_ref signature (fn [i32 i32] -> i64) does not match the function's type (fn [i32 i32] -> i32)` |
+| wrong `thread.spawn` worker | `1:51: thread.spawn needs a worker of type (fn [i32] -> i32), got (fn [i64] -> i32)` |
 | array index out of range (runtime, VM) | `Array index out of bounds: index 3 for array of length 3` |
-| 64-bit or float result payload | `1:40: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got I64` |
-| non-bool `if` condition | `3:5: If condition must be Bool, got I32` |
+| 64-bit or float result payload | `1:40: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got i64` |
+| non-bool `if` condition | `3:5: If condition must be bool, got i32` |
 | `break` outside a loop | `3:5: break is only allowed inside a while or loop body` |
-| `return` with the wrong type | `3:5: return value has type Bool, but the function returns I32` |
+| `return` with the wrong type | `3:5: return value has type bool, but the function returns i32` |
 | `cond` without `else` | `1:32: cond needs a final (else ...) clause, as if needs an else branch` |
 | wrong arity | `4:5: Function 'add' expects 2 arguments, got 1` |
-| wrong argument type | `4:5: Arg 1 of 'add' expects I32, got Bool` |
-| body/return mismatch | `2:3: Function 'f' expects return type I32, but body returned Bool` |
+| wrong argument type | `4:5: Arg 1 of 'add' expects i32, got bool` |
+| body/return mismatch | `2:3: Function 'f' expects return type i32, but body returned bool` |
 | an op that does not exist | `3:5: there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena` |
-| non-`str` `sys.print` | `3:5: sys.print prints str values, got I32; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)` |
+| non-`str` `sys.print` | `3:5: sys.print prints str values, got i32; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)` |
 | `(+ str str)` | `3:5: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)` |
-| arithmetic or ordering on something that is not a number | `3:5: Add needs numbers (i32, i64, f32, f64), got Bool` / `Mod is integer arithmetic (i32 or i64), got F64` / `Lt on Str: only numbers are ordered; bool and str compare only with eq/neq` |
-| wrong operand count or type for an op | `3:5: atomic.cas takes 3 operands, (atomic.cas p expected new); got 2` / `atomic.add operand 2 must be I32, got I64` |
-| non-`bool` contract | `1:50: Contract expression in 'safe_div' must evaluate to Bool, got I32` |
-| store or lock at literal address 0 | `3:5: AtomicLock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
-| literal address in 64-1023 | `3:5: MemStore32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
+| arithmetic or ordering on something that is not a number | `3:5: + needs numbers (i32, i64, f32, f64), got bool` / `% is integer arithmetic (i32 or i64), got f64` / `lt on str: only numbers are ordered; bool and str compare only with eq/neq` |
+| wrong operand count or type for an op | `3:5: atomic.cas takes 3 operands, (atomic.cas p expected new); got 2` / `atomic.add operand 2 must be i32, got i64` |
+| non-`bool` contract | `1:50: Contract expression in 'safe_div' must evaluate to bool, got i32` |
+| store or lock at literal address 0 | `3:5: atomic.lock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
+| literal address in 64-1023 | `3:5: mem.store32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
 | locking a word that is not 0/1 (runtime, VM) | `atomic.lock: word at ptr 1024 holds 1024, which is not a lock state (0 = free, 1 = held); this address is data, not a mutex. Allocate a dedicated lock word with (mem.alloc 4)` |
 
-Type names in messages are the Rust `Debug` spelling, not AIPL syntax: `I32`, `F64`, `Bool`, `Str`, `Void`, `ResultType(I32, I32)`, `Ptr(Struct("Point"))`, `Array(I32)`, `Fn([I32], I32)`. A few messages also give the AIPL spelling of the expected type (`needs a (ptr Point)`).
+Types and ops in messages are written as AIPL source writes them: `i32`, `bool`, `(result i32 i32)`, `(ptr Point)`, `(arr i32)`, `(fn [i32] -> i32)`, an enum or union by its name, and ops as `+`, `lt`, `mem.store32`; both checkers spell them the same.
 
 ---
 
@@ -1064,7 +1064,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (28 files, 287 tests as of 2026-10-06): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (28 files, 289 tests as of 2026-10-06): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 

@@ -32,13 +32,6 @@ pub struct Item {
     pub foreign: HashMap<(u32, u32), PathBuf>,
 }
 
-impl Item {
-    /// The file a token at `pos` of this item was written in.
-    pub fn file_of(&self, pos: (u32, u32)) -> &Path {
-        self.foreign.get(&pos).map(|p| p.as_path()).unwrap_or(&self.file)
-    }
-}
-
 /// The flat program before parsing: entry module name, then every struct
 /// and every function (imports first, in resolution order).
 pub struct FlatProgram {
@@ -96,7 +89,7 @@ impl Resolver {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
         let flat = crate::consts::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![] };
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new() };
         let unions: HashSet<String> = flat
             .structs
             .iter()
@@ -105,6 +98,14 @@ impl Resolver {
             .collect();
         for item in flat.structs.iter().chain(flat.fns.iter()) {
             let parsed = parse_item(&flat.name, item, &unions)?;
+            let source = Source { file: item.file.clone(), foreign: item.foreign.clone() };
+            let keys = parsed.structs.iter().map(|d| format!("struct {}", d.name))
+                .chain(parsed.enums.iter().map(|d| format!("enum {}", d.name)))
+                .chain(parsed.unions.iter().map(|d| format!("union {}", d.name)))
+                .chain(parsed.functions.iter().map(|d| format!("fn {}", d.name)));
+            for key in keys {
+                module.sources.insert(key, source.clone());
+            }
             module.structs.extend(parsed.structs);
             module.enums.extend(parsed.enums);
             module.unions.extend(parsed.unions);
@@ -143,12 +144,7 @@ fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Resul
     tokens.push(tok(TokenKind::RParen));
     Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| {
         // the error's own "L:C: " says which token, and so which file
-        let pos = e.split(':').take(2).map(|n| n.trim().parse::<u32>()).collect::<Result<Vec<_>, _>>();
-        let file = match pos.as_deref() {
-            Ok([l, c]) => item.file_of((*l, *c)),
-            _ => &item.file,
-        };
-        format!("{}: {}", file.display(), e)
+        Source { file: item.file.clone(), foreign: item.foreign.clone() }.name_file(e)
     })
 }
 

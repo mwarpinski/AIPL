@@ -33,7 +33,7 @@ fn failures(name: &str, body: &str) -> [String; 3] {
     let vm = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();
     let vm_out = String::from_utf8_lossy(&vm.stdout).to_string() + &String::from_utf8_lossy(&vm.stderr);
     let line = vm_out.lines().find(|l| l.starts_with("Error: ")).unwrap_or_else(|| panic!("{name}: the VM did not fail: {vm_out}"));
-    let msg = line.trim_start_matches("Error: \"").trim_end_matches('"').replace("\\\"", "\"");
+    let msg = line.trim_start_matches("Error: ");
     // drop the position: "... in 'f' at 3:10: (req" -> "... in 'f': (req"
     let (head, rest) = msg.split_once("' at ").unwrap();
     let vm_msg = format!("{head}': {}", rest.split_once(": ").unwrap().1);

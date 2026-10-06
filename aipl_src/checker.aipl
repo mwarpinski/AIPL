@@ -1,7 +1,7 @@
 ;; The type checker in AIPL: src/checker.rs rule for rule, over ast.aipl's
 ;; tree, with the same first error word for word (docs/design/CHECKER_PLAN.md).
-;; Types in messages use Rust's Debug spelling (Ptr(Struct("P"))), as the
-;; Rust checker's do.
+;; Types and ops in messages are written as AIPL source writes them
+;; ((ptr P), +), as the Rust checker's are.
 ;;
 ;; Scopes: Rust checks if branches, blocks, loop bodies, and match arms
 ;; against a copy of the environment, and let adds to the current one. Here
@@ -10,11 +10,14 @@
 ;;
 ;; Errors: the first is recorded in C.err; every function returns early
 ;; once C.failed is set (later checks would look up definitions that the
-;; failed check never confirmed exist).
+;; failed check never confirmed exist). Definitions and signatures stop at
+;; the first error; each function body is checked on its own, and every
+;; failing function adds its first error to C.problems, as in Rust.
 (module checker
   (import alloc)
   (import compiler)
   (import ast)
+  (import printer)
   (import str)
   (import buf)
   (import vec)
@@ -32,7 +35,8 @@
              declared:(ptr (strmap.StrMap ast.Type))
              loop_depth:i32
              ret:ast.MaybeType
-             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
+             err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool
+             problems:(ptr Problem) last_problem:(ptr Problem)])
 
   ;; ===== Messages =====
 
@@ -59,54 +63,13 @@
   ;; Rust's {:?} of a name: "name" (names have no characters to escape).
   (fn quoted [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call s b "\"") (call by b x) (call s b "\""))
 
-  ;; Rust's {:?} of a Type.
-  (fn ty [b:(ptr buf.Buf) t:ast.Type] -> void
-    (match t
-      (ast.Type.i32 (call s b "I32"))
-      (ast.Type.i64 (call s b "I64"))
-      (ast.Type.f32 (call s b "F32"))
-      (ast.Type.f64 (call s b "F64"))
-      (ast.Type.bool (call s b "Bool"))
-      (ast.Type.str (call s b "Str"))
-      (ast.Type.void (call s b "Void"))
-      (ast.Type.ptr [inner] (call s b "Ptr(") (call ty b inner) (call s b ")"))
-      (ast.Type.struct_ [name] (call s b "Struct(") (call quoted b name) (call s b ")"))
-      (ast.Type.result [ok_t err_t] (call s b "ResultType(") (call ty b ok_t) (call s b ", ") (call ty b err_t) (call s b ")"))
-      (ast.Type.arr [elem] (call s b "Array(") (call ty b elem) (call s b ")"))
-      (ast.Type.fn_ [params ret]
-       (call s b "Fn([")
-       (loop k 0 (- (arr.len params) 1) 1
-         (if (gt k 0) (call s b ", ") (block))
-         (call ty b (arr.get ast.Type params k)))
-       (call s b "], ")
-       (call ty b ret)
-       (call s b ")"))
-      (ast.Type.enum_ [name] (call s b "Enum(") (call quoted b name) (call s b ")"))
-      (ast.Type.union_ [name] (call s b "Union(") (call quoted b name) (call s b ")"))))
+  ;; A type as AIPL source writes it ((ptr Point), (arr i64)), as
+  ;; checker.rs prints types in messages (ast.rs Display, printer.rs type_str).
+  (fn ty [b:(ptr buf.Buf) t:ast.Type] -> void (call printer.print_type b t))
 
-  ;; Rust's {:?} of an OpCode (src/ast.rs variant names).
-  (fn op_debug [o:ast.Op] -> str
-    (match o
-      (ast.Op.add "Add") (ast.Op.sub "Sub") (ast.Op.mul "Mul") (ast.Op.div "Div") (ast.Op.mod "Mod")
-      (ast.Op.divu "DivU") (ast.Op.remu "RemU") (ast.Op.bitxor "BitXor") (ast.Op.shl "Shl") (ast.Op.shr "Shr")
-      (ast.Op.shru "ShrU") (ast.Op.bitand "BitAnd") (ast.Op.bitor "BitOr")
-      (ast.Op.mem_load8 "MemLoad8") (ast.Op.mem_load32 "MemLoad32") (ast.Op.mem_load64 "MemLoad64")
-      (ast.Op.mem_store8 "MemStore8") (ast.Op.mem_store32 "MemStore32") (ast.Op.mem_store64 "MemStore64")
-      (ast.Op.mem_alloc "MemAlloc") (ast.Op.mem_grow "MemGrow")
-      (ast.Op.atomic_add "AtomicAdd") (ast.Op.atomic_cas "AtomicCas") (ast.Op.atomic_lock "AtomicLock") (ast.Op.atomic_unlock "AtomicUnlock")
-      (ast.Op.eq "Eq") (ast.Op.neq "Neq") (ast.Op.lt "Lt") (ast.Op.lte "Lte")
-      (ast.Op.checked_add "CheckedAdd") (ast.Op.checked_sub "CheckedSub") (ast.Op.checked_mul "CheckedMul")
-      (ast.Op.ltu "LtU") (ast.Op.lteu "LteU") (ast.Op.gtu "GtU") (ast.Op.gteu "GteU") (ast.Op.gt "Gt") (ast.Op.gte "Gte")
-      (ast.Op.and "And") (ast.Op.or "Or") (ast.Op.not "Not")
-      (ast.Op.sys_print "SysPrint") (ast.Op.sys_time "SysTime") (ast.Op.sys_monotonic "SysMonotonic")
-      (ast.Op.sys_random "SysRandom") (ast.Op.sys_exit "SysExit")
-      (ast.Op.fs_open "FsOpen") (ast.Op.fs_read "FsRead") (ast.Op.fs_write "FsWrite") (ast.Op.fs_close "FsClose") (ast.Op.fs_delete "FsDelete")
-      (ast.Op.args_sizes "ArgsSizes") (ast.Op.args_get "ArgsGet") (ast.Op.env_sizes "EnvSizes") (ast.Op.env_get "EnvGet")
-      (ast.Op.thread_spawn "ThreadSpawn") (ast.Op.thread_join "ThreadJoin")
-      (ast.Op.i64_extend_s "I64ExtendS") (ast.Op.i64_extend_u "I64ExtendU") (ast.Op.i32_wrap "I32Wrap")
-      (ast.Op.f64_convert_i64_s "F64ConvertI64S") (ast.Op.f64_sqrt "F64Sqrt") (ast.Op.i64_trunc_f64_s "I64TruncF64S")
-      (ast.Op.f64_reinterpret_i64 "F64ReinterpretI64") (ast.Op.i64_reinterpret_f64 "I64ReinterpretF64")
-      (ast.Op.str_len "StrLen") (ast.Op.str_ptr "StrPtr")))
+  ;; An op as AIPL source writes it (+, mem.load32), as checker.rs prints
+  ;; ops in messages.
+  (fn op_debug [o:ast.Op] -> str (call printer.op_name o))
 
   ;; ===== Types =====
 
@@ -278,8 +241,18 @@
       (put sig Sig.ret (get fd ast.FnDef.ret))
       (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     (loop k 0 (- (arr.len fns) 1) 1
-      (if (get c C.failed) (return) (block))
-      (call check_fn c (arr.get (ptr ast.FnDef) fns k))))
+      (call check_fn c (arr.get (ptr ast.FnDef) fns k))
+      (if (get c C.failed)
+          (block
+            (call add_problem c (call problem (get c C.err_at) (get c C.err)))
+            (put c C.failed false))
+          (block))))
+
+  (fn add_problem [c:(ptr C) pr:(ptr Problem)] -> void
+    (if (eq (get c C.problems) (ptr.null Problem))
+        (put c C.problems pr)
+        (put (get c C.last_problem) Problem.next pr))
+    (put c C.last_problem pr))
 
   (fn register_enum [c:(ptr C) m:(ptr ast.Module) e:(ptr ast.EnumDef)] -> void
     (let at:i32 (get e ast.EnumDef.at))
@@ -495,7 +468,7 @@
          (if (not (call teq et (call bool_t)))
              (block
                (let b:(ptr buf.Buf) (call msg c (call ast.at ee)))
-               (call s b "Ensures contract expression in '") (call by b fname) (call s b "' must evaluate to Bool, got ") (call ty b et)
+               (call s b "Ensures contract expression in '") (call by b fname) (call s b "' must evaluate to bool, got ") (call ty b et)
                (call fail c b) (return))
              (block)))
         (ast.Contract.requires [re] (call check_condition c re env fname))
@@ -528,7 +501,7 @@
     (if (not (call teq t (call bool_t)))
         (block
           (let b:(ptr buf.Buf) (call msg c (call ast.at e)))
-          (call s b "Contract expression in '") (call by b fname) (call s b "' must evaluate to Bool, got ") (call ty b t)
+          (call s b "Contract expression in '") (call by b fname) (call s b "' must evaluate to bool, got ") (call ty b t)
           (call fail c b))
         (block)))
 
@@ -571,7 +544,7 @@
       (ast.Expr.while_ [_ cnd body]
        (let ct:ast.Type (call infer c cnd env))
        (if (get c C.failed) (return (call void_t)) (block))
-       (if (not (call teq ct (call bool_t))) (block (call fail_str c at "While condition must be Bool") (return (call void_t))) (block))
+       (if (not (call teq ct (call bool_t))) (block (call fail_str c at "While condition must be bool") (return (call void_t))) (block))
        (let m:i32 (call mark env))
        (call check_loop_body c body env)
        (call restore env m)
@@ -768,7 +741,7 @@
     (let ct:ast.Type (call infer c cnd env))
     (if (get c C.failed) (return (call void_t)) (block))
     (if (not (call teq ct (call bool_t)))
-        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "If condition must be Bool, got ") (call ty b ct) (call fail c b) (return (call void_t)))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "If condition must be bool, got ") (call ty b ct) (call fail c b) (return (call void_t)))
         (block))
     (let m:i32 (call mark env))
     (let tt:ast.Type (call infer c thn env))
@@ -864,7 +837,7 @@
     (match rt
       (ast.Type.result [o e2] (set! okt o) (set! errt e2))
       (else
-       (let b:(ptr buf.Buf) (call msg c at)) (call s b "match_result expected ResultType, got ") (call ty b rt) (call fail c b)
+       (let b:(ptr buf.Buf) (call msg c at)) (call s b "match_result expected a (result T E), got ") (call ty b rt) (call fail c b)
        (return (call void_t))))
     (if (call has env ok_var)
         (block
@@ -1269,7 +1242,7 @@
          (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
          (if (get c C.failed) (return (call void_t)) (block))
          (if (not (call teq t (call bool_t)))
-             (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Logical op expects Bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
+             (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Logical op expects bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
              (block)))
        (call bool_t))
       ((eq o ast.Op.not)
@@ -1277,7 +1250,7 @@
        (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
        (if (get c C.failed) (return (call void_t)) (block))
        (if (not (call teq t (call bool_t)))
-           (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Not op expects Bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
+           (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Not op expects bool, got ") (call ty b t) (call fail c b) (return (call void_t)))
            (block))
        (call bool_t))
       ((eq o ast.Op.sys_print)
@@ -1341,8 +1314,8 @@
        (let from:ast.Type (if (or (eq o ast.Op.f64_convert_i64_s) (eq o ast.Op.f64_reinterpret_i64)) (call i64_t) (call f64_t)))
        (let to:ast.Type (if (or (eq o ast.Op.i64_trunc_f64_s) (eq o ast.Op.i64_reinterpret_f64)) (call i64_t) (call f64_t)))
        (if (call is_i64 from)
-           (call one c env at args from o true " requires 1 argument (x: I64)" " requires I64, got ")
-           (call one c env at args from o true " requires 1 argument (x: F64)" " requires F64, got "))
+           (call one c env at args from o true " requires 1 argument (x: i64)" " requires i64, got ")
+           (call one c env at args from o true " requires 1 argument (x: f64)" " requires f64, got "))
        to)))
 
   ;; A message's fixed text, after the op's Debug name when `pre`.
@@ -1417,7 +1390,7 @@
       (if (not (call is_i32 t))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
-            (call s b name) (call s b " operand ") (call buf.push_int b (+ k 1)) (call s b " must be I32, got ") (call ty b t)
+            (call s b name) (call s b " operand ") (call buf.push_int b (+ k 1)) (call s b " must be i32, got ") (call ty b t)
             (call fail c b) (return))
           (block))))
 
@@ -1588,10 +1561,11 @@
 
   ;; ===== Entry =====
 
-  ;; A rejected program's first error: where, and the message.
-  (struct Problem [at:i32 text:(ptr buf.Buf)])
+  ;; An error: where, the message, and the next error (null for the last).
+  (struct Problem [at:i32 text:(ptr buf.Buf) next:(ptr Problem)])
 
-  ;; Checks a parsed module: null if it type-checks, else the first error.
+  ;; Checks a parsed module: null if it type-checks, else its errors (a
+  ;; definition's error alone, or each failing function's first error).
   (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
     (let c:(ptr C) (new C))
     (put c C.src src)
@@ -1603,11 +1577,14 @@
     (put c C.loop_depth 0)
     (put c C.ret (make ast.MaybeType.none))
     (put c C.failed false)
+    (put c C.problems (ptr.null Problem))
+    (put c C.last_problem (ptr.null Problem))
     (call check_module c m)
-    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (ptr.null Problem)))
+    (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (get c C.problems)))
 
   (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem)
     (let pr:(ptr Problem) (new Problem))
     (put pr Problem.at at)
     (put pr Problem.text text)
+    (put pr Problem.next (ptr.null Problem))
     pr))

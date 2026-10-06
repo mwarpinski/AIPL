@@ -8,7 +8,7 @@ pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     match ty {
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
-        _ => Err(format!("Unsupported type for memory layout: {:?}", ty)),
+        _ => Err(format!("Unsupported type for memory layout: {}", ty)),
     }
 }
 
@@ -18,7 +18,7 @@ pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
 fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
     if matches!(t, Type::I64 | Type::F32 | Type::F64) {
         return Err(format!(
-            "{}:{}: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got {:?}",
+            "{}:{}: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got {}",
             l, c, t
         ));
     }
@@ -84,6 +84,8 @@ pub struct TypeChecker {
     declared: std::cell::RefCell<HashMap<String, Type>>,
     /// Return type of the function body being checked; None inside contracts.
     return_type: std::cell::RefCell<Option<Type>>,
+    /// The `Module::sources` key of the item being checked, so an error can name its file.
+    item: std::cell::RefCell<String>,
 }
 
 impl Default for TypeChecker {
@@ -102,12 +104,43 @@ impl TypeChecker {
             declared: std::cell::RefCell::new(HashMap::new()),
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
+            item: std::cell::RefCell::new(String::new()),
         }
     }
 
+    /// Checks a module. Definitions and signatures stop at the first error
+    /// (everything after depends on them); then every function body is
+    /// checked, and each failing function gives its first error, one per
+    /// line in source order. When the resolver recorded where items were
+    /// written, each error is prefixed with its item's file.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
+        self.check_items(module).map_err(|e| self.name_file(module, e))?;
+        let mut errors = Vec::new();
+        for f in &module.functions {
+            self.at_item("fn", &f.name);
+            if let Err(e) = self.check_fn_def(f) {
+                errors.push(self.name_file(module, e));
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+    }
+
+    fn name_file(&self, module: &Module, e: String) -> String {
+        match module.sources.get(&*self.item.borrow()) {
+            Some(source) => source.name_file(e),
+            None => e,
+        }
+    }
+
+    fn at_item(&self, kind: &str, name: &str) {
+        *self.item.borrow_mut() = format!("{} {}", kind, name);
+    }
+
+    /// Definitions and function signatures.
+    fn check_items(&mut self, module: &Module) -> Result<(), String> {
         // Register enum definitions (AIPL_SPEC.md 4.I)
         for e in &module.enums {
+            self.at_item("enum", &e.name);
             let (l, c) = e.span;
             if self.enum_defs.contains_key(&e.name) {
                 return Err(format!("{}:{}: Duplicate enum definition '{}'", l, c, e.name));
@@ -134,6 +167,7 @@ impl TypeChecker {
 
         // Register struct definitions
         for s in &module.structs {
+            self.at_item("struct", &s.name);
             if self.struct_defs.contains_key(&s.name) {
                 return Err(format!(
                     "{}:{}: Duplicate struct definition '{}'",
@@ -156,6 +190,7 @@ impl TypeChecker {
 
         // Register union definitions (AIPL_SPEC.md 4.J)
         for u in &module.unions {
+            self.at_item("union", &u.name);
             let (l, c) = u.span;
             if self.union_defs.contains_key(&u.name) {
                 return Err(format!("{}:{}: Duplicate union definition '{}'", l, c, u.name));
@@ -186,11 +221,13 @@ impl TypeChecker {
 
         // Field types may name structs and unions defined later in the module.
         for s in &module.structs {
+            self.at_item("struct", &s.name);
             for f in &s.fields {
                 self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, s.name))?;
             }
         }
         for u in &module.unions {
+            self.at_item("union", &u.name);
             for v in &u.variants {
                 for f in &v.fields {
                     self.validate_type(&f.ty, u.span)
@@ -201,17 +238,13 @@ impl TypeChecker {
 
         // First pass: register function signatures
         for f in &module.functions {
+            self.at_item("fn", &f.name);
             if self.fn_signatures.contains_key(&f.name) {
                 return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
             }
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
             self.fn_signatures
                 .insert(f.name.clone(), (param_types, f.return_type.clone()));
-        }
-
-        // Second pass: type check bodies and verify contracts
-        for f in &module.functions {
-            self.check_fn_def(f)?;
         }
 
         Ok(())
@@ -225,7 +258,7 @@ impl TypeChecker {
             Type::Ptr(inner) => match inner.as_ref() {
                 Type::Struct(name) if self.struct_defs.contains_key(name) => Ok(()),
                 Type::Struct(name) => Err(format!("{}:{}: Unknown struct '{}' in (ptr {})", span.0, span.1, name, name)),
-                other => Err(format!("{}:{}: ptr must point to a struct, got {:?}", span.0, span.1, other)),
+                other => Err(format!("{}:{}: ptr must point to a struct, got {}", span.0, span.1, other)),
             },
             Type::Struct(name) => Err(format!(
                 "{}:{}: struct '{}' cannot be used by value; use (ptr {})",
@@ -235,7 +268,7 @@ impl TypeChecker {
                 self.validate_type(elem, span)?;
                 type_size_and_align(elem)
                     .map(|_| ())
-                    .map_err(|_| format!("{}:{}: (arr T) element must be a scalar, (ptr S), or (arr T), got {:?}", span.0, span.1, elem))
+                    .map_err(|_| format!("{}:{}: (arr T) element must be a scalar, (ptr S), or (arr T), got {}", span.0, span.1, elem))
             }
             Type::ResultType(a, b) => {
                 self.validate_type(a, span)?;
@@ -280,7 +313,7 @@ impl TypeChecker {
         for (i, (a, w)) in args.iter().zip(want).enumerate() {
             let t = self.infer_expr_type(a, env)?;
             if t != *w {
-                return Err(format!("{}:{}: {} operand {} must be {:?}, got {:?}", l, c, name, i + 1, w, t));
+                return Err(format!("{}:{}: {} operand {} must be {}, got {}", l, c, name, i + 1, w, t));
             }
         }
         Ok(())
@@ -303,7 +336,7 @@ impl TypeChecker {
         let mut declared = self.declared.borrow_mut();
         match declared.get(name) {
             Some(prev) if prev != ty => Err(format!(
-                "{}:{}: '{}' is {:?} here but {:?} elsewhere in this function; a name keeps one type per function (rename one)",
+                "{}:{}: '{}' is {} here but {} elsewhere in this function; a name keeps one type per function (rename one)",
                 l, c, name, ty, prev
             )),
             _ => {
@@ -333,7 +366,7 @@ impl TypeChecker {
                     if cond_ty != Type::Bool {
                         let (l, c_col) = expr.span();
                         return Err(format!(
-                            "{}:{}: Contract expression in '{}' must evaluate to Bool, got {:?}",
+                            "{}:{}: Contract expression in '{}' must evaluate to bool, got {}",
                             l, c_col, f.name, cond_ty
                         ));
                     }
@@ -345,7 +378,7 @@ impl TypeChecker {
                     if cond_ty != Type::Bool {
                         let (l, c_col) = expr.span();
                         return Err(format!(
-                            "{}:{}: Ensures contract expression in '{}' must evaluate to Bool, got {:?}",
+                            "{}:{}: Ensures contract expression in '{}' must evaluate to bool, got {}",
                             l, c_col, f.name, cond_ty
                         ));
                     }
@@ -374,7 +407,7 @@ impl TypeChecker {
         let ends_in_return = matches!(f.body.last(), Some(Expr::Return { .. }));
         if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
             return Err(format!(
-                "{}:{}: Function '{}' expects return type {:?}, but body returned {:?}",
+                "{}:{}: Function '{}' expects return type {}, but body returned {}",
                 f.span.0, f.span.1, f.name, f.return_type, last_ty
             ));
         }
@@ -407,7 +440,7 @@ impl TypeChecker {
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != *ty {
                     return Err(format!(
-                        "{}:{}: Type mismatch in 'let': expected {:?}, got {:?}",
+                        "{}:{}: Type mismatch in 'let': expected {}, got {}",
                         l, c, ty, val_ty
                     ));
                 }
@@ -423,7 +456,7 @@ impl TypeChecker {
                 let val_ty = self.infer_expr_type(val, env)?;
                 if var_ty != val_ty {
                     return Err(format!(
-                        "{}:{}: Type mismatch in 'set!': variable is {:?}, value is {:?}",
+                        "{}:{}: Type mismatch in 'set!': variable is {}, value is {}",
                         l, c, var_ty, val_ty
                     ));
                 }
@@ -432,7 +465,7 @@ impl TypeChecker {
             Expr::If { cond, then_branch, else_branch, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
-                    return Err(format!("{}:{}: If condition must be Bool, got {:?}", l, c, cond_ty));
+                    return Err(format!("{}:{}: If condition must be bool, got {}", l, c, cond_ty));
                 }
                 let then_ty = self.infer_expr_type(then_branch, &mut env.clone())?;
                 let else_ty = self.infer_expr_type(else_branch, &mut env.clone())?;
@@ -442,7 +475,7 @@ impl TypeChecker {
                     Ok(then_ty)
                 } else {
                     Err(format!(
-                        "{}:{}: If branch type mismatch: then is {:?}, else is {:?}. If mixing void and non-void, consider wrapping in (block ... value)",
+                        "{}:{}: If branch type mismatch: then is {}, else is {}. If mixing void and non-void, consider wrapping in (block ... value)",
                         l, c, then_ty, else_ty
                     ))
                 }
@@ -466,7 +499,7 @@ impl TypeChecker {
             Expr::While { cond, body, .. } => {
                 let cond_ty = self.infer_expr_type(cond, env)?;
                 if cond_ty != Type::Bool {
-                    return Err(format!("{}:{}: While condition must be Bool", l, c));
+                    return Err(format!("{}:{}: While condition must be bool", l, c));
                 }
                 let mut local_env = env.clone();
                 self.check_loop_body(body, &mut local_env)?;
@@ -482,7 +515,7 @@ impl TypeChecker {
                 };
                 if got != expected {
                     return Err(format!(
-                        "{}:{}: return value has type {:?}, but the function returns {:?}",
+                        "{}:{}: return value has type {}, but the function returns {}",
                         l, c, got, expected
                     ));
                 }
@@ -510,7 +543,7 @@ impl TypeChecker {
                     let arg_ty = self.infer_expr_type(arg, env)?;
                     if arg_ty != param_types[i] {
                         return Err(format!(
-                            "{}:{}: Arg {} of '{}' expects {:?}, got {:?}",
+                            "{}:{}: Arg {} of '{}' expects {}, got {}",
                             l, c, i, func, param_types[i], arg_ty
                         ));
                     }
@@ -522,21 +555,21 @@ impl TypeChecker {
                 match op {
                 OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
                     if args.len() != 2 {
-                        return Err(format!("{}:{}: {:?} requires 2 arguments", l, c, op));
+                        return Err(format!("{}:{}: {} requires 2 arguments", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
-                        return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
                     }
                     if !matches!(t1, Type::I32 | Type::I64) {
-                        return Err(format!("{}:{}: {:?} is integer arithmetic (i32 or i64), got {:?}", l, c, op, t1));
+                        return Err(format!("{}:{}: {} is integer arithmetic (i32 or i64), got {}", l, c, op, t1));
                     }
                     Ok(t1)
                 }
                 OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::ShrU | OpCode::DivU | OpCode::RemU | OpCode::BitAnd | OpCode::BitOr => {
                     if args.len() != 2 {
-                        return Err(format!("{}:{}: Arithmetic/bitwise opcode {:?} requires 2 arguments", l, c, op));
+                        return Err(format!("{}:{}: Arithmetic/bitwise opcode {} requires 2 arguments", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
@@ -546,30 +579,30 @@ impl TypeChecker {
                     let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_));
                     let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
                     if t1 != t2 && !special(&t1) {
-                        return Err(format!("{}:{}: Type mismatch in binary op: {:?} vs {:?}", l, c, t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
                         return Err(format!(
-                            "{}:{}: {:?} on {:?}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
+                            "{}:{}: {} on {}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
                         ));
                     }
                     if let Type::Union(u) = &t1 {
-                        return Err(format!("{}:{}: {:?} on union '{}': unions have no arithmetic; take them apart with match", l, c, op, u));
+                        return Err(format!("{}:{}: {} on union '{}': unions have no arithmetic; take them apart with match", l, c, op, u));
                     }
                     let integer_only = !matches!(op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div);
                     if t1 == Type::Str && matches!(op, OpCode::Add) {
                         return Err(format!("{}:{}: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)", l, c));
                     }
                     if integer_only && !matches!(t1, Type::I32 | Type::I64 | Type::Enum(_)) {
-                        return Err(format!("{}:{}: {:?} is integer arithmetic (i32 or i64), got {:?}", l, c, op, t1));
+                        return Err(format!("{}:{}: {} is integer arithmetic (i32 or i64), got {}", l, c, op, t1));
                     }
                     if !matches!(t1, Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Enum(_)) {
-                        return Err(format!("{}:{}: {:?} needs numbers (i32, i64, f32, f64), got {:?}", l, c, op, t1));
+                        return Err(format!("{}:{}: {} needs numbers (i32, i64, f32, f64), got {}", l, c, op, t1));
                     }
                     if let Type::Enum(e) = &t1 {
                         return Err(format!(
-                            "{}:{}: {:?} on enum '{}': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast {} n)",
+                            "{}:{}: {} on enum '{}': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast {} n)",
                             l, c, op, e, e
                         ));
                     }
@@ -577,11 +610,11 @@ impl TypeChecker {
                 }
                 OpCode::MemLoad8 | OpCode::MemLoad32 => {
                     if args.len() != 1 {
-                        return Err(format!("{}:{}: {:?} requires 1 argument (ptr: i32)", l, c, op));
+                        return Err(format!("{}:{}: {} requires 1 argument (ptr: i32)", l, c, op));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: {:?} requires i32 ptr, got {:?}", l, c, op, t));
+                        return Err(format!("{}:{}: {} requires i32 ptr, got {}", l, c, op, t));
                     }
                     Ok(Type::I32)
                 }
@@ -591,18 +624,18 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.load64 requires i32 ptr, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: mem.load64 requires i32 ptr, got {}", l, c, t));
                     }
                     Ok(Type::I64)
                 }
                 OpCode::MemStore8 | OpCode::MemStore32 => {
                     if args.len() != 2 {
-                        return Err(format!("{}:{}: {:?} requires 2 arguments (ptr: i32, val: i32)", l, c, op));
+                        return Err(format!("{}:{}: {} requires 2 arguments (ptr: i32, val: i32)", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::I32 {
-                        return Err(format!("{}:{}: {:?} requires (i32, i32), got ({:?}, {:?})", l, c, op, t1, t2));
+                        return Err(format!("{}:{}: {} requires (i32, i32), got ({}, {})", l, c, op, t1, t2));
                     }
                     Ok(Type::Void)
                 }
@@ -613,7 +646,7 @@ impl TypeChecker {
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != Type::I32 || t2 != Type::I64 {
-                        return Err(format!("{}:{}: mem.store64 requires (i32, i64), got ({:?}, {:?})", l, c, t1, t2));
+                        return Err(format!("{}:{}: mem.store64 requires (i32, i64), got ({}, {})", l, c, t1, t2));
                     }
                     Ok(Type::Void)
                 }
@@ -623,7 +656,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.alloc requires i32 size, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: mem.alloc requires i32 size, got {}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
@@ -633,7 +666,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: mem.grow requires i32 pages, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: mem.grow requires i32 pages, got {}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
@@ -653,25 +686,25 @@ impl TypeChecker {
                 OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte
                 | OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU => {
                     if args.len() != 2 {
-                        return Err(format!("{}:{}: Comparison opcode {:?} requires 2 arguments", l, c, op));
+                        return Err(format!("{}:{}: Comparison opcode {} requires 2 arguments", l, c, op));
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
-                        return Err(format!("{}:{}: Type mismatch in comparison: {:?} vs {:?}", l, c, t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}", l, c, t1, t2));
                     }
                     if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
-                        return Err(format!("{}:{}: {:?} compares integers (i32 or i64) as unsigned, got {:?}", l, c, op, t1));
+                        return Err(format!("{}:{}: {} compares integers (i32 or i64) as unsigned, got {}", l, c, op, t1));
                     }
                     if let Type::Union(u) = &t1 {
-                        return Err(format!("{}:{}: {:?} on union '{}': union values do not compare; take them apart with match", l, c, op, u));
+                        return Err(format!("{}:{}: {} on union '{}': union values do not compare; take them apart with match", l, c, op, u));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
-                        return Err(format!("{}:{}: {:?} on {:?}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
+                        return Err(format!("{}:{}: {} on {}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
                     // lt/lte/gt/gte order numbers; bool and str compare only with eq/neq
                     if matches!(t1, Type::Bool | Type::Str) && !matches!(op, OpCode::Eq | OpCode::Neq) {
-                        return Err(format!("{}:{}: {:?} on {:?}: only numbers are ordered; bool and str compare only with eq/neq", l, c, op, t1));
+                        return Err(format!("{}:{}: {} on {}: only numbers are ordered; bool and str compare only with eq/neq", l, c, op, t1));
                     }
                     Ok(Type::Bool)
                 }
@@ -687,7 +720,7 @@ impl TypeChecker {
                     for arg in args {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Bool {
-                            return Err(format!("{}:{}: Logical op expects Bool, got {:?}", l, c, t));
+                            return Err(format!("{}:{}: Logical op expects bool, got {}", l, c, t));
                         }
                     }
                     Ok(Type::Bool)
@@ -698,7 +731,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::Bool {
-                        return Err(format!("{}:{}: Not op expects Bool, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: Not op expects bool, got {}", l, c, t));
                     }
                     Ok(Type::Bool)
                 }
@@ -707,7 +740,7 @@ impl TypeChecker {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::Str {
                             return Err(format!(
-                                "{}:{}: sys.print prints str values, got {:?}; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)",
+                                "{}:{}: sys.print prints str values, got {}; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)",
                                 l, c, t
                             ));
                         }
@@ -716,7 +749,7 @@ impl TypeChecker {
                 }
                 OpCode::SysTime | OpCode::SysMonotonic => {
                     if !args.is_empty() {
-                        return Err(format!("{}:{}: {:?} takes no arguments", l, c, op));
+                        return Err(format!("{}:{}: {} takes no arguments", l, c, op));
                     }
                     Ok(Type::I64)
                 }
@@ -727,7 +760,7 @@ impl TypeChecker {
                     for (i, arg) in args.iter().enumerate() {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::I32 {
-                            return Err(format!("{}:{}: sys.random argument {} must be i32, got {:?}", l, c, i, t));
+                            return Err(format!("{}:{}: sys.random argument {} must be i32, got {}", l, c, i, t));
                         }
                     }
                     Ok(Type::I32)
@@ -738,7 +771,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: sys.exit requires i32 code, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: sys.exit requires i32 code, got {}", l, c, t));
                     }
                     Ok(Type::Void)
                 }
@@ -749,7 +782,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::Str {
-                        return Err(format!("{}:{}: {} requires str, got {:?}", l, c, name, t));
+                        return Err(format!("{}:{}: {} requires str, got {}", l, c, name, t));
                     }
                     Ok(Type::I32)
                 }
@@ -758,13 +791,13 @@ impl TypeChecker {
                 // through here would work in one backend and fail in the other).
                 OpCode::FsOpen | OpCode::FsRead | OpCode::FsWrite => {
                     if args.len() != 3 {
-                        return Err(format!("{}:{}: {:?} requires 3 arguments", l, c, op));
+                        return Err(format!("{}:{}: {} requires 3 arguments", l, c, op));
                     }
                     for (i, arg) in args.iter().enumerate() {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::I32 {
                             return Err(format!(
-                                "{}:{}: {:?} argument {} must be i32 (pointer/length/fd), got {:?}",
+                                "{}:{}: {} argument {} must be i32 (pointer/length/fd), got {}",
                                 l, c, op, i, t
                             ));
                         }
@@ -777,19 +810,19 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: fs.close requires i32 fd, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: fs.close requires i32 fd, got {}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
                 // args.*/env.* take two i32 addresses the host writes through.
                 OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
                     if args.len() != 2 {
-                        return Err(format!("{}:{}: {:?} requires 2 arguments (two i32 addresses)", l, c, op));
+                        return Err(format!("{}:{}: {} requires 2 arguments (two i32 addresses)", l, c, op));
                     }
                     for (i, arg) in args.iter().enumerate() {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::I32 {
-                            return Err(format!("{}:{}: {:?} argument {} must be an i32 address, got {:?}", l, c, op, i, t));
+                            return Err(format!("{}:{}: {} argument {} must be an i32 address, got {}", l, c, op, i, t));
                         }
                     }
                     Ok(Type::I32)
@@ -802,7 +835,7 @@ impl TypeChecker {
                         let t = self.infer_expr_type(arg, env)?;
                         if t != Type::I32 {
                             return Err(format!(
-                                "{}:{}: fs.delete argument {} must be i32 (pointer/length), got {:?}",
+                                "{}:{}: fs.delete argument {} must be i32 (pointer/length), got {}",
                                 l, c, i, t
                             ));
                         }
@@ -817,11 +850,11 @@ impl TypeChecker {
                     let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32));
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != worker {
-                        return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {:?}", l, c, t));
+                        return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {}", l, c, t));
                     }
                     let a = self.infer_expr_type(&args[1], env)?;
                     if a != Type::I32 {
-                        return Err(format!("{}:{}: thread.spawn argument must be i32, got {:?}", l, c, a));
+                        return Err(format!("{}:{}: thread.spawn argument must be i32, got {}", l, c, a));
                     }
                     Ok(Type::I32)
                 }
@@ -831,17 +864,17 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: thread.join needs the i32 handle thread.spawn returned, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: thread.join needs the i32 handle thread.spawn returned, got {}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
                 OpCode::I64ExtendS | OpCode::I64ExtendU => {
                     if args.len() != 1 {
-                        return Err(format!("{}:{}: {:?} requires 1 argument (x: i32)", l, c, op));
+                        return Err(format!("{}:{}: {} requires 1 argument (x: i32)", l, c, op));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I32 {
-                        return Err(format!("{}:{}: {:?} requires i32, got {:?}", l, c, op, t));
+                        return Err(format!("{}:{}: {} requires i32, got {}", l, c, op, t));
                     }
                     Ok(Type::I64)
                 }
@@ -852,11 +885,11 @@ impl TypeChecker {
                         _ => (Type::F64, Type::I64),
                     };
                     if args.len() != 1 {
-                        return Err(format!("{}:{}: {:?} requires 1 argument (x: {:?})", l, c, op, from));
+                        return Err(format!("{}:{}: {} requires 1 argument (x: {})", l, c, op, from));
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != from {
-                        return Err(format!("{}:{}: {:?} requires {:?}, got {:?}", l, c, op, from, t));
+                        return Err(format!("{}:{}: {} requires {}, got {}", l, c, op, from, t));
                     }
                     Ok(to)
                 }
@@ -866,7 +899,7 @@ impl TypeChecker {
                     }
                     let t = self.infer_expr_type(&args[0], env)?;
                     if t != Type::I64 {
-                        return Err(format!("{}:{}: i32.wrap requires i64, got {:?}", l, c, t));
+                        return Err(format!("{}:{}: i32.wrap requires i64, got {}", l, c, t));
                     }
                     Ok(Type::I32)
                 }
@@ -890,7 +923,7 @@ impl TypeChecker {
                 let res_ty = self.infer_expr_type(expr, env)?;
                 let (ok_ty, err_ty) = match res_ty {
                     Type::ResultType(ok_t, err_t) => (*ok_t, *err_t),
-                    other => return Err(format!("{}:{}: match_result expected ResultType, got {:?}", l, c, other)),
+                    other => return Err(format!("{}:{}: match_result expected a (result T E), got {}", l, c, other)),
                 };
 
                 if env.contains_key(ok_var) {
@@ -921,7 +954,7 @@ impl TypeChecker {
                     Ok(last_ok_ty)
                 } else {
                     Err(format!(
-                        "{}:{}: match_result arm type mismatch: ok arm yields {:?}, err arm yields {:?}",
+                        "{}:{}: match_result arm type mismatch: ok arm yields {}, err arm yields {}",
                         l, c, last_ok_ty, last_err_ty
                     ))
                 }
@@ -952,7 +985,7 @@ impl TypeChecker {
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
-                        "{}:{}: get {}.{} needs a (ptr {}), got {:?}",
+                        "{}:{}: get {}.{} needs a (ptr {}), got {}",
                         span.0, span.1, struct_name, field_name, struct_name, ptr_ty
                     ));
                 }
@@ -974,7 +1007,7 @@ impl TypeChecker {
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
-                        "{}:{}: put {}.{} needs a (ptr {}), got {:?}",
+                        "{}:{}: put {}.{} needs a (ptr {}), got {}",
                         span.0, span.1, struct_name, field_name, struct_name, ptr_ty
                     ));
                 }
@@ -984,7 +1017,7 @@ impl TypeChecker {
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != field_ty {
                     return Err(format!(
-                        "{}:{}: Type mismatch writing to field '{}.{}': expected {:?}, got {:?}",
+                        "{}:{}: Type mismatch writing to field '{}.{}': expected {}, got {}",
                         span.0, span.1, struct_name, field_name, field_ty, val_ty
                     ));
                 }
@@ -1002,7 +1035,7 @@ impl TypeChecker {
                         self.validate_type(ty, *span)?;
                         if type_size_and_align(ty).is_err() {
                             return Err(format!(
-                                "{}:{}: sizeof needs a struct or a type that can be stored in memory, got {:?}",
+                                "{}:{}: sizeof needs a struct or a type that can be stored in memory, got {}",
                                 span.0, span.1, ty
                             ));
                         }
@@ -1015,7 +1048,7 @@ impl TypeChecker {
                 let sz_ty = self.infer_expr_type(size, env)?;
                 if sz_ty != Type::I32 {
                     return Err(format!(
-                        "{}:{}: arr.new size must be i32, got {:?}",
+                        "{}:{}: arr.new size must be i32, got {}",
                         span.0, span.1, sz_ty
                     ));
                 }
@@ -1031,14 +1064,14 @@ impl TypeChecker {
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Array(Box::new(elem_ty.clone())) {
                     return Err(format!(
-                        "{}:{}: arr.get {:?} needs an (arr {:?}), got {:?}",
+                        "{}:{}: arr.get {} needs an (arr {}), got {}",
                         span.0, span.1, elem_ty, elem_ty, ptr_ty
                     ));
                 }
                 let idx_ty = self.infer_expr_type(index, env)?;
                 if idx_ty != Type::I32 {
                     return Err(format!(
-                        "{}:{}: arr.get index must be i32, got {:?}",
+                        "{}:{}: arr.get index must be i32, got {}",
                         span.0, span.1, idx_ty
                     ));
                 }
@@ -1055,21 +1088,21 @@ impl TypeChecker {
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Array(Box::new(elem_ty.clone())) {
                     return Err(format!(
-                        "{}:{}: arr.set {:?} needs an (arr {:?}), got {:?}",
+                        "{}:{}: arr.set {} needs an (arr {}), got {}",
                         span.0, span.1, elem_ty, elem_ty, ptr_ty
                     ));
                 }
                 let idx_ty = self.infer_expr_type(index, env)?;
                 if idx_ty != Type::I32 {
                     return Err(format!(
-                        "{}:{}: arr.set index must be i32, got {:?}",
+                        "{}:{}: arr.set index must be i32, got {}",
                         span.0, span.1, idx_ty
                     ));
                 }
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != *elem_ty {
                     return Err(format!(
-                        "{}:{}: arr.set value mismatch: expected {:?}, got {:?}",
+                        "{}:{}: arr.set value mismatch: expected {}, got {}",
                         span.0, span.1, elem_ty, val_ty
                     ));
                 }
@@ -1077,7 +1110,7 @@ impl TypeChecker {
             }
             Expr::ArrLen { arr, span } => match self.infer_expr_type(arr, env)? {
                 Type::Array(_) => Ok(Type::I32),
-                other => Err(format!("{}:{}: arr.len needs an (arr T), got {:?}", span.0, span.1, other)),
+                other => Err(format!("{}:{}: arr.len needs an (arr T), got {}", span.0, span.1, other)),
             },
             Expr::Null { ty, span } => {
                 self.validate_type(ty, *span)?;
@@ -1090,9 +1123,9 @@ impl TypeChecker {
                 let t = self.infer_expr_type(addr, env)?;
                 if t != Type::I32 {
                     if let Type::Enum(e) = ty {
-                        return Err(format!("{}:{}: enum.cast {} needs an i32 value, got {:?}", span.0, span.1, e, t));
+                        return Err(format!("{}:{}: enum.cast {} needs an i32 value, got {}", span.0, span.1, e, t));
                     }
-                    return Err(format!("{}:{}: cast needs an i32 address, got {:?}", span.0, span.1, t));
+                    return Err(format!("{}:{}: cast needs an i32 address, got {}", span.0, span.1, t));
                 }
                 Ok(ty.clone())
             }
@@ -1105,12 +1138,12 @@ impl TypeChecker {
                 let (params, ret) = match sig {
                     Type::Fn(p, r) => (p.clone(), *r.clone()),
                     other => {
-                        return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {:?}", span.0, span.1, other))
+                        return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {}", span.0, span.1, other))
                     }
                 };
                 let ft = self.infer_expr_type(func, env)?;
                 if ft != *sig {
-                    return Err(format!("{}:{}: call_ref signature {:?} does not match the function's type {:?}", span.0, span.1, sig, ft));
+                    return Err(format!("{}:{}: call_ref signature {} does not match the function's type {}", span.0, span.1, sig, ft));
                 }
                 if args.len() != params.len() {
                     return Err(format!("{}:{}: call_ref expects {} arguments, got {}", span.0, span.1, params.len(), args.len()));
@@ -1118,7 +1151,7 @@ impl TypeChecker {
                 for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
                     let at = self.infer_expr_type(a, env)?;
                     if at != *p {
-                        return Err(format!("{}:{}: call_ref argument {} expects {:?}, got {:?}", span.0, span.1, i + 1, p, at));
+                        return Err(format!("{}:{}: call_ref argument {} expects {}, got {}", span.0, span.1, i + 1, p, at));
                     }
                 }
                 Ok(ret)
@@ -1140,7 +1173,7 @@ impl TypeChecker {
                 for (a, f) in args.iter().zip(v.fields.iter()) {
                     let at = self.infer_expr_type(a, env)?;
                     if at != f.ty {
-                        return Err(format!("{}:{}: make {}.{}: field '{}' is {:?}, got {:?}", l, c, union_name, variant, f.name, f.ty, at));
+                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}", l, c, union_name, variant, f.name, f.ty, at));
                     }
                 }
                 Ok(Type::Union(union_name.clone()))
@@ -1152,7 +1185,7 @@ impl TypeChecker {
                 let (tname, members): (String, Vec<MatchMember>) = match &vt {
                     Type::Union(u) => (u.clone(), self.union_defs[u].variants.iter().map(|v| (v.name.clone(), Some(&v.fields))).collect()),
                     Type::Enum(e) => (e.clone(), self.enum_defs[e].members.iter().map(|(m, _)| (m.clone(), None)).collect()),
-                    other => return Err(format!("{}:{}: match needs a union or enum value, got {:?}", l, c, other)),
+                    other => return Err(format!("{}:{}: match needs a union or enum value, got {}", l, c, other)),
                 };
                 let mut seen: Vec<&str> = Vec::new();
                 let mut arm_types = Vec::new();
@@ -1225,7 +1258,7 @@ impl TypeChecker {
                 let (first_name, first) = &arm_types[0];
                 for (name, t) in &arm_types[1..] {
                     if t != first {
-                        return Err(format!("{}:{}: match arm type mismatch: {} yields {:?}, {} yields {:?}", l, c, first_name, first, name, t));
+                        return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t));
                     }
                 }
                 Ok(first.clone())
@@ -1234,9 +1267,9 @@ impl TypeChecker {
                 let t = self.infer_expr_type(val, env)?;
                 match (kind, &t) {
                     (AddrKind::Ptr, Type::Ptr(_)) | (AddrKind::Arr, Type::Array(_)) | (AddrKind::Enum, Type::Enum(_)) => Ok(Type::I32),
-                    (AddrKind::Ptr, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {:?}", span.0, span.1, t)),
-                    (AddrKind::Arr, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {:?}", span.0, span.1, t)),
-                    (AddrKind::Enum, _) => Err(format!("{}:{}: enum.ord needs an enum value, got {:?}", span.0, span.1, t)),
+                    (AddrKind::Ptr, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {}", span.0, span.1, t)),
+                    (AddrKind::Arr, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {}", span.0, span.1, t)),
+                    (AddrKind::Enum, _) => Err(format!("{}:{}: enum.ord needs an enum value, got {}", span.0, span.1, t)),
                 }
             }
         }
@@ -1290,23 +1323,23 @@ fn check_literal_address(op: &OpCode, args: &[Expr], l: u32, c: u32) -> Result<(
     };
     let a = *a;
     if a < 0 {
-        return Err(format!("{}:{}: {:?} at negative literal address {}", l, c, op, a));
+        return Err(format!("{}:{}: {} at negative literal address {}", l, c, op, a));
     }
     if a < 4 && is_write_op(op) {
         return Err(format!(
-            "{}:{}: {:?} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead",
+            "{}:{}: {} at address {}: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead",
             l, c, op, a
         ));
     }
     if (4..64).contains(&a) && a % 4 != 0 {
         return Err(format!(
-            "{}:{}: {:?} at address {}: runtime cells 4-63 are 4-byte-aligned i32 slots (4, 8, 12, ...)",
+            "{}:{}: {} at address {}: runtime cells 4-63 are 4-byte-aligned i32 slots (4, 8, 12, ...)",
             l, c, op, a
         ));
     }
     if (64..1024).contains(&a) {
         return Err(format!(
-            "{}:{}: {:?} at literal address {}: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead",
+            "{}:{}: {} at literal address {}: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead",
             l, c, op, a
         ));
     }

@@ -70,16 +70,14 @@ def run(cmd):
 
 
 def message(out):
-    """An error message without its file path and Rust's debug quoting."""
-    # split on newlines only: a message may hold control characters
-    lines = [l for l in out.split("\n") if l.strip()]
-    line = lines[-1] if lines else ""
-    if line.startswith('Error: "'):
-        # undo Rust's debug quoting of the message
-        esc = {"\\": "\\", '"': '"', "n": "\n", "t": "\t", "r": "\r", "0": "\0", "'": "'"}
-        line = re.sub(r"\\u\{([0-9a-f]+)\}|\\(.)",
-                      lambda m: chr(int(m.group(1), 16)) if m.group(1) else esc.get(m.group(2), m.group(0)),
-                      line[len('Error: "'):-1])
+    """An error message without its file path."""
+    # the CLI prints "Error: MESSAGE" last; the message may hold newlines and control characters
+    at = out.rfind("Error: ")
+    if at >= 0 and (at == 0 or out[at - 1] == "\n"):
+        line = out[at + len("Error: "):].rstrip("\n")
+    else:
+        lines = [l for l in out.split("\n") if l.strip()]
+        line = lines[-1] if lines else ""
     line = line.split(".aipl: ", 1)[-1]
     # the places searched for a missing module are listed in each toolchain's own path form
     return line.split(" found in ", 1)[0]

@@ -1,10 +1,10 @@
 ;; The checking front end of the self-hosted toolchain, in one call: over a
 ;; flat program (the resolver's output), tokenize, expand constants
 ;; (expand.aipl), parse (parser.aipl), and type-check (checker.aipl). The
-;; result is null, or the first error as a checker.Problem: a source offset
-;; in that program and the message, which `render` turns into
-;; "line:col: message" (driver.aipl first maps the offset back to the file
-;; it came from).
+;; result is null, or the errors as a list of checker.Problem: a source
+;; offset in that program and the message, which `render` turns into
+;; "line:col: message" lines (driver.aipl first maps the offset back to the
+;; file it came from).
 (module front
   (import alloc)
   (import compiler)
@@ -36,13 +36,18 @@
           (put r parser.Parsed.err_at (get x expand.Expanded.err_at))
           r)))
 
-  ;; "line:col: message", counting in the text at src.
-  (fn render [src:i32 pr:(ptr checker.Problem)] -> (ptr buf.Buf)
+  ;; "line:col: message" for each error, one per line, counting in the
+  ;; text at src.
+  (fn render [src:i32 first:(ptr checker.Problem)] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
-    (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get pr checker.Problem.at)))
-    (call buf.push_int b (get lc compiler.LineCol.line))
-    (call buf.push_byte b 58)
-    (call buf.push_int b (get lc compiler.LineCol.col))
-    (call buf.push_str b ": ")
-    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+    (let pr:(ptr checker.Problem) first)
+    (while (neq pr (ptr.null checker.Problem))
+      (if (neq pr first) (call buf.push_byte b 10) (block))
+      (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get pr checker.Problem.at)))
+      (call buf.push_int b (get lc compiler.LineCol.line))
+      (call buf.push_byte b 58)
+      (call buf.push_int b (get lc compiler.LineCol.col))
+      (call buf.push_str b ": ")
+      (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+      (set! pr (get pr checker.Problem.next)))
     b))

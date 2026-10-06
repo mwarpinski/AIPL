@@ -140,25 +140,25 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         // atomics: operand count and types
         ("(atomic.add)", "atomic.add takes 2 operands, (atomic.add p v); got 0"),
         ("(atomic.add (mem.alloc 4) 1 2)", "atomic.add takes 2 operands, (atomic.add p v); got 3"),
-        ("(atomic.add (mem.alloc 4) 1i64)", "atomic.add operand 2 must be I32, got I64"),
+        ("(atomic.add (mem.alloc 4) 1i64)", "atomic.add operand 2 must be i32, got i64"),
         ("(if (atomic.cas (mem.alloc 4) 0) 1 0)", "atomic.cas takes 3 operands, (atomic.cas p expected new); got 2"),
-        ("(if (atomic.cas (mem.alloc 4) 0 true) 1 0)", "atomic.cas operand 3 must be I32, got Bool"),
+        ("(if (atomic.cas (mem.alloc 4) 0 true) 1 0)", "atomic.cas operand 3 must be i32, got bool"),
         ("(atomic.lock) 0", "atomic.lock takes 1 operands, (atomic.lock p); got 0"),
-        ("(atomic.unlock \"m\") 0", "atomic.unlock operand 1 must be I32, got Str"),
+        ("(atomic.unlock \"m\") 0", "atomic.unlock operand 1 must be i32, got str"),
         // threads
-        ("(thread.join \"x\")", "thread.join needs the i32 handle thread.spawn returned, got Str"),
+        ("(thread.join \"x\")", "thread.join needs the i32 handle thread.spawn returned, got str"),
         // printing
-        ("(sys.print 1) 0", "sys.print prints str values, got I32; for numbers use io.print_int"),
-        ("(sys.print \"a\" 2.5) 0", "sys.print prints str values, got F64"),
+        ("(sys.print 1) 0", "sys.print prints str values, got i32; for numbers use io.print_int"),
+        ("(sys.print \"a\" 2.5) 0", "sys.print prints str values, got f64"),
         // arithmetic on things that are not numbers
         ("(str.len (+ \"a\" \"b\"))", "+ does not join strings; build them with std/buf"),
-        ("(if (+ true false) 1 0)", "Add needs numbers (i32, i64, f32, f64), got Bool"),
-        ("(i32.wrap (i64.trunc_f64_s (% 1.5 1.0)))", "Mod is integer arithmetic (i32 or i64), got F64"),
-        ("(if (bitand true true) 1 0)", "BitAnd is integer arithmetic (i32 or i64), got Bool"),
-        ("(i32.wrap (i64.trunc_f64_s (shl 1.5 1.5)))", "Shl is integer arithmetic (i32 or i64), got F64"),
+        ("(if (+ true false) 1 0)", "+ needs numbers (i32, i64, f32, f64), got bool"),
+        ("(i32.wrap (i64.trunc_f64_s (% 1.5 1.0)))", "% is integer arithmetic (i32 or i64), got f64"),
+        ("(if (bitand true true) 1 0)", "bitand is integer arithmetic (i32 or i64), got bool"),
+        ("(i32.wrap (i64.trunc_f64_s (shl 1.5 1.5)))", "shl is integer arithmetic (i32 or i64), got f64"),
         // ordering things that are not numbers
-        ("(if (lt \"a\" \"b\") 1 0)", "Lt on Str: only numbers are ordered; bool and str compare only with eq/neq"),
-        ("(if (gte true false) 1 0)", "Gte on Bool: only numbers are ordered"),
+        ("(if (lt \"a\" \"b\") 1 0)", "lt on str: only numbers are ordered; bool and str compare only with eq/neq"),
+        ("(if (gte true false) 1 0)", "gte on bool: only numbers are ordered"),
         // ops that no longer exist
         ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap"),
         ("(i32.wrap (i64.trunc_f64_s (mem.load_f64 (mem.alloc 8))))", "there is no mem.load_f64: keep floats in struct fields or (arr f64)"),
