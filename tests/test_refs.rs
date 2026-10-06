@@ -74,7 +74,7 @@ fn call_ref_signature_must_match_the_function_type() {
     let err = check_err("(module m (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn f [] -> i32\n    (call_ref (fn [i32 i32] -> i32) (ref add) 1)))");
     assert!(err.contains("call_ref expects 2 arguments, got 1"), "{err}");
     let err = check_err("(module m (fn add [a:i32 b:i32] -> i32 (+ a b))\n  (fn f [] -> i32\n    (call_ref (fn [i32 i32] -> i32) (ref add) 1 true)))");
-    assert!(err.contains("call_ref argument 2 expects I32, got Bool"), "{err}");
+    assert!(err.contains("call_ref argument 2 expects i32, got bool"), "{err}");
 }
 
 #[test]

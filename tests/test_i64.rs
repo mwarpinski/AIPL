@@ -172,15 +172,15 @@ fn i64_loop_accumulator() {
 fn checker_rejects_mixing_i32_and_i64() {
     let module = Parser::parse("(module m (fn f [] -> i64 (+ 1 2i64)))").unwrap();
     let err = TypeChecker::new().check_module(&module).unwrap_err();
-    assert!(err.contains("Type mismatch in binary op: I32 vs I64"), "got {err}");
+    assert!(err.contains("Type mismatch in binary op: i32 vs i64"), "got {err}");
 
     let module = Parser::parse("(module m (fn f [] -> i64 (let x:i64 5) x))").unwrap();
     let err = TypeChecker::new().check_module(&module).unwrap_err();
-    assert!(err.contains("Type mismatch in 'let': expected I64, got I32"), "got {err}");
+    assert!(err.contains("Type mismatch in 'let': expected i64, got i32"), "got {err}");
 
     let module = Parser::parse("(module m (fn f [] -> i32 (i32.wrap 5)))").unwrap();
     let err = TypeChecker::new().check_module(&module).unwrap_err();
-    assert!(err.contains("i32.wrap requires i64, got I32"), "got {err}");
+    assert!(err.contains("i32.wrap requires i64, got i32"), "got {err}");
 }
 
 #[test]

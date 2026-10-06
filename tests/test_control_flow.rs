@@ -214,9 +214,9 @@ fn misplaced_control_flow_is_rejected() {
     let err = check_err("(module m (fn f [] -> i32 (while (continue) 0) 0))");
     assert!(err.contains("continue is only allowed inside a while or loop body") || err.contains("While condition"), "{err}");
     let err = check_err("(module m\n  (fn f [] -> i32\n    (return true)))");
-    assert!(err.starts_with("3:5: return value has type Bool, but the function returns I32"), "{err}");
+    assert!(err.starts_with("3:5: return value has type bool, but the function returns i32"), "{err}");
     let err = check_err("(module m (fn f [] -> void (return 1)))");
-    assert!(err.contains("return value has type I32, but the function returns Void"), "{err}");
+    assert!(err.contains("return value has type i32, but the function returns void"), "{err}");
     let err = check_err("(module m (fn f [n:i32] -> i32 (req (block (return 1) true)) n))");
     assert!(err.contains("return is not allowed in a contract"), "{err}");
     // return is a statement: it cannot stand in for a value in an if

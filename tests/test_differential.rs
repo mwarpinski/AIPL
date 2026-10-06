@@ -921,7 +921,7 @@ fn unsigned_comparisons_agree() {
     yes("(gteu 7i64 7i64)");
     let m = Parser::parse("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.contains("LtU compares integers (i32 or i64) as unsigned, got F64"), "{e}");
+    assert!(e.contains("ltu compares integers (i32 or i64) as unsigned, got f64"), "{e}");
 }
 
 /// checked.add/sub/mul on every pair of edge values, both widths: the VM and
@@ -965,7 +965,7 @@ fn checked_arithmetic_agrees_with_rust() {
     assert_eq!(expr("i64", "(checked.add (checked.mul 3i64 4i64) (checked.sub 10i64 (checked.add 1i64 2i64)))").unwrap(), Value::Int64(19));
     let m = Parser::parse("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.contains("CheckedAdd is integer arithmetic (i32 or i64), got F64"), "{e}");
+    assert!(e.contains("checked.add is integer arithmetic (i32 or i64), got f64"), "{e}");
 }
 
 const CONTRACTS: &str = r#"

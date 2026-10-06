@@ -428,3 +428,18 @@ pub struct Module {
     pub unions: Vec<UnionDef>,
     pub functions: Vec<FnDef>,
 }
+
+/// A type as AIPL source writes it (`(ptr Point)`, `(arr i64)`), for
+/// diagnostics; `{:?}` stays Rust's own form.
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::printer::type_str(self))
+    }
+}
+
+/// An op as AIPL source writes it (`+`, `mem.load32`), for diagnostics.
+impl std::fmt::Display for OpCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(crate::printer::op_name(self))
+    }
+}

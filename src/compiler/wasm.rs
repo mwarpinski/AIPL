@@ -648,7 +648,7 @@ fn arith_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, Str
 
         _ => {
             return Err(format!(
-                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                "Wasm Codegen: {} is not supported for operands of type {}",
                 op, ty
             ))
         }
@@ -700,7 +700,7 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
 
         _ => {
             return Err(format!(
-                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                "Wasm Codegen: {} is not supported for operands of type {}",
                 op, ty
             ))
         }
@@ -1132,7 +1132,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     let ty = expr_type(arg, ctx);
                     if ty != Type::Str {
                         return Err(format!(
-                            "Wasm Codegen: sys.print supports str arguments only in the wasm backend, got {:?}",
+                            "Wasm Codegen: sys.print supports str arguments only in the wasm backend, got {}",
                             ty
                         ));
                     }
@@ -1630,7 +1630,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported field type for struct get: {:?}", field_ty)),
+                _ => return Err(format!("Unsupported field type for struct get: {}", field_ty)),
             }
         }
         Expr::PutField {
@@ -1677,7 +1677,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported field type for struct put: {:?}", field_ty)),
+                _ => return Err(format!("Unsupported field type for struct put: {}", field_ty)),
             }
         }
         Expr::Sizeof { ty, .. } => {
@@ -1808,7 +1808,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported elem type for arr.get: {:?}", elem_ty)),
+                _ => return Err(format!("Unsupported elem type for arr.get: {}", elem_ty)),
             }
         }
         Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
@@ -1846,7 +1846,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported elem type for arr.set: {:?}", elem_ty)),
+                _ => return Err(format!("Unsupported elem type for arr.set: {}", elem_ty)),
             }
         }
     }
@@ -1900,7 +1900,7 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
     let payload_ty = expr_type(inner, ctx);
     if aipl_to_wasm_type(&payload_ty) != ValType::I32 {
         return Err(format!(
-            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {:?}",
+            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {}",
             payload_ty
         ));
     }
@@ -1925,7 +1925,7 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
 fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
-        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
         ValType::I32 => Instruction::I32Load(m(2)),
         ValType::I64 => Instruction::I64Load(m(3)),
         ValType::F32 => Instruction::F32Load(m(2)),
@@ -1938,7 +1938,7 @@ fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Stri
 fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
-        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
         ValType::I32 => Instruction::I32Store(m(2)),
         ValType::I64 => Instruction::I64Store(m(3)),
         ValType::F32 => Instruction::F32Store(m(2)),
