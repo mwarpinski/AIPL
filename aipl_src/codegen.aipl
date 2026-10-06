@@ -51,7 +51,8 @@
               unions:(arr (ptr UnionInfo)) nunions:i32
               wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32
               uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32
-              strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32])
+              strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32
+              uses_arrays:bool oob_fn:i32])
 
   ;; A string literal's spelling (a span of the source; pos -1 for the
   ;; newline sys.print reserves) and the address of its interned bytes. The
@@ -108,6 +109,8 @@
     (put cg Cg.labels (arr.new Label 255))
     (put cg Cg.nlabels 0)
     (put cg Cg.uses_refs false)
+    (put cg Cg.uses_arrays false)
+    (put cg Cg.oob_fn 0)
     (put cg Cg.sigs (arr.new (ptr Sig) 31))
     (put cg Cg.nsigs 0)
     (put cg Cg.strs (arr.new (ptr StrLit) 1364))
@@ -636,6 +639,9 @@
   (const OP_I32_LT_U:i32 73)
   (const OP_I32_GT_S:i32 74)
   (const OP_I32_GT_U:i32 75)
+  (const OP_I32_GE_U:i32 79)
+  (const OP_I32_DIV_U:i32 110)
+  (const OP_I32_REM_U:i32 112)
   (const OP_I32_ADD:i32 106)
   (const OP_I32_SUB:i32 107)
   (const OP_I32_MUL:i32 108)
@@ -952,6 +958,32 @@
     (call put_byte o BLOCK_EMPTY)
     (call put_byte o OP_UNREACHABLE)
     (call put_byte o OP_END))  ;; end
+
+  ;; The bounds check of arr.get/arr.set (wasm.rs emit_bounds_check): with
+  ;; [array index] on the stack, fails through $aipl_oob unless index <
+  ;; length, unsigned; leaves [array index]. The array goes in the store
+  ;; guard's scratch local, the index in the one after it. The `unreachable`
+  ;; after the call (which never returns) tells wasmtime nothing is live
+  ;; past it.
+  (fn emit_bounds_check [cg:(ptr Cg) o:(ptr Out)] -> void
+    (let a:i32 (get cg Cg.nlocals))
+    (let i:i32 (+ a 1))
+    (call emit_local_set o i)
+    (call emit_local_tee o a)
+    (call emit_local_get o i)
+    (call emit_local_get o a)
+    (call emit_i32_const o 4)
+    (call put_byte o OP_I32_SUB)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call put_byte o OP_I32_GE_U)
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o i)
+    (call emit_local_get o a)
+    (call emit_call o (get cg Cg.oob_fn))
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END)
+    (call emit_local_get o i))
 
 
 
@@ -1565,6 +1597,8 @@
             ((eq kw Kw.thread_spawn) (call mark_wasi_used cg Wasi.thread_spawn) 0)
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
+            ;; arrays are indexed: the module needs the bounds-failure helpers
+            ((or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (put cg Cg.uses_arrays true) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -2119,8 +2153,8 @@
 
   (fn compile_op [cg:(ptr Cg) op_id:Kw node:(ptr compiler.Node) o:(ptr Out)] -> void
     (let import_cnt:i32 (get cg Cg.nimports))
-    (let io_a:i32 (+ (get cg Cg.nlocals) 1))
-    (let io_b:i32 (+ (get cg Cg.nlocals) 2))
+    (let io_a:i32 (+ (get cg Cg.nlocals) 2))
+    (let io_b:i32 (+ (get cg Cg.nlocals) 3))
     (let done:bool false)
     (if (call is_checked op_id) (block (call compile_checked cg node o op_id) (set! done true)) (block))
 
@@ -2541,6 +2575,7 @@
           (let idx_node:(ptr compiler.Node) (call nth_child node 3))
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
+          (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
           (call put_byte o OP_I32_MUL)
           (call put_byte o OP_I32_ADD)
@@ -2558,6 +2593,7 @@
           (let val_node:(ptr compiler.Node) (call nth_child node 4))
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
+          (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
           (call put_byte o OP_I32_MUL)
           (call put_byte o OP_I32_ADD)
@@ -2996,8 +3032,9 @@
     (put s Sig.result (if (eq (get f FnInfo.ret) Ty.void) 0 (call type_id_to_valtype (get f FnInfo.ret))))
     s)
 
-  ;; One function body: the locals (declared ones, the store guard's scratch,
-  ;; and two I/O scratch locals if needed), the code, end.
+  ;; One function body: the locals (declared ones, the store guard's and
+  ;; bounds check's two scratch locals, and two I/O scratch locals if
+  ;; needed), the code, end.
   (fn emit_function [cg:(ptr Cg) entry:(ptr FnInfo) fc:(ptr Out)] -> void
     (let pcount:i32 (get entry FnInfo.nparams))
     (let total_locals:i32 (call collect_locals_for_function cg entry))
@@ -3007,7 +3044,7 @@
     (loop l 0 (- extra 1) 1
       (call put_u32 fc 1)
       (call put_byte fc (call type_id_to_valtype (get (call local_at cg (+ pcount l)) Local.ty))))
-    (call put_u32 fc 1) (call put_byte fc VT_I32)
+    (call put_u32 fc 2) (call put_byte fc VT_I32)
     (if uses_io (block (call put_u32 fc 2) (call put_byte fc VT_I32)) (block))
     (put cg Cg.nlocals total_locals)
     (call compile_function_body cg entry fc)
@@ -3058,7 +3095,12 @@
     ;; generated functions after the module's: a threaded module's start
     ;; function and wasi_thread_start, then _start
     (let extra_fns:i32 (if threaded 2 0))
-    (let n_fns:i32 (+ nfns (+ extra_fns (if auto_start 1 0))))
+    ;; then, in a module that indexes arrays, the bounds-failure helpers
+    ;; $aipl_dec and $aipl_oob (wasm.rs oob_functions)
+    (let uses_arrays:bool (get cg Cg.uses_arrays))
+    (let before_oob:i32 (+ extra_fns (if auto_start 1 0)))
+    (put cg Cg.oob_fn (+ imports (+ nfns (+ before_oob 1))))
+    (let n_fns:i32 (+ nfns (+ before_oob (if uses_arrays 2 0))))
 
     ;; Output, section scratch, and per-function scratch share one capacity;
     ;; overrunning it is compile error 91.
@@ -3072,7 +3114,7 @@
     ;; Type (1): the WASI imports' types, the functions', the call_ref
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
-    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ extra_fns (if auto_start 1 0))))))
+    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_oob (if uses_arrays 2 0))))))
     (loop w 0 12 1
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
     (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
@@ -3083,6 +3125,11 @@
           (call emit_func_type sec (call sig_from "ii" 0)))    ;; wasi_thread_start: [i32 i32] -> []
         (block))
     (if auto_start (call emit_func_type sec (call sig_from "" 0)) (block))
+    (if uses_arrays
+        (block
+          (call emit_func_type sec (call sig_from "ii" 127))   ;; $aipl_dec: [i32 i32] -> [i32]
+          (call emit_func_type sec (call sig_from "ii" 0)))    ;; $aipl_oob: [i32 i32] -> []
+        (block))
     (call emit_section o 1 sec)
 
     ;; Import (2): the WASI functions used, in the fixed order; a threaded
@@ -3123,6 +3170,9 @@
         (block (call put_u32 sec generated_types) (call put_u32 sec (+ generated_types 1)))
         (block))
     (if auto_start (call put_u32 sec (+ generated_types extra_fns)) (block))
+    (if uses_arrays
+        (block (call put_u32 sec (+ generated_types before_oob)) (call put_u32 sec (+ generated_types (+ before_oob 1))))
+        (block))
     (call emit_section o 3 sec)
 
     ;; Table (4), only with function refs: one funcref table holding every
@@ -3236,6 +3286,15 @@
           (call emit_call fc (+ imports main_idx))
           (if (neq (get (call func_entry_ptr cg main_idx) FnInfo.ret) Ty.void) (call put_byte fc OP_DROP) (block))
           (call put_byte fc OP_END)
+          (call emit_sized sec fc))
+        (block))
+    (if uses_arrays
+        (block
+          (let fc:(ptr Out) (call out_at fcode_scratch))
+          (call dec_body fc)
+          (call emit_sized sec fc)
+          (set! fc (call out_at fcode_scratch))
+          (call oob_body fc (- (get cg Cg.oob_fn) 1))
           (call emit_sized sec fc))
         (block))
     (call emit_section o 10 sec)
@@ -3384,4 +3443,83 @@
     (if (gt (call test_compile_compute) 0) (set! passed (+ passed 1)) (block))
     (if (gt (call test_compile_store) 0) (set! passed (+ passed 1)) (block))
     passed)
-)
+
+
+;; ===== Bounds-failure helpers (wasm.rs oob_functions) =====
+  ;; A compiled check's message goes in the reserved runtime block at 128,
+  ;; its address and length in cells 92 and 96 (AIPL_SPEC.md 7.9).
+  (const RT_FAIL_TEXT:i32 128)
+
+  ;; Writes text t at the address local `at_local` holds (or, if it is -1,
+  ;; at `at`), eight bytes per i64.store, the last chunk zero-padded
+  ;; (wasm.rs emit_text_store).
+  (fn emit_text_store [o:(ptr Out) at_local:i32 at:i32 t:str] -> void
+    (let n:i32 (str.len t))
+    (let p:i32 (str.ptr t))
+    (let k:i32 0)
+    (while (lt k n)
+      (let word:i64 0i64)
+      (loop j 0 7 1
+        (if (lt (+ k j) n)
+            (set! word (bitor word (shl (i64.extend_u (mem.load8 (+ p (+ k j)))) (i64.extend_u (* j 8)))))
+            (block)))
+      (if (gte at_local 0) (call emit_local_get o at_local) (call emit_i32_const o at))
+      (call put_byte o OP_I64_CONST)
+      (call put_s64 o word)
+      (call put_byte o OP_I64_STORE)
+      (call put_byte o 0)
+      (call put_u32 o k)
+      (set! k (+ k 8))))
+
+  ;; $aipl_dec(v, at) -> end: v in signed decimal at `at`; the address after it.
+  (fn dec_body [o:(ptr Out)] -> void
+    (call put_u32 o 1) (call put_u32 o 3) (call put_byte o VT_I32)   ;; x t end
+    (call emit_local_get o 0) (call emit_local_set o 2)
+    (call emit_local_get o 2) (call emit_i32_const o 0) (call put_byte o OP_I32_LT_S)
+    (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 1) (call emit_i32_const o 45) (call emit_memop o OP_I32_STORE8 0)
+    (call emit_local_get o 1) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 1)
+    (call emit_i32_const o 0) (call emit_local_get o 2) (call put_byte o OP_I32_SUB) (call emit_local_set o 2)
+    (call put_byte o OP_END)
+    ;; count the digits
+    (call emit_local_get o 2) (call emit_local_set o 3)
+    (call emit_local_get o 1) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 4)
+    (call put_byte o OP_BLOCK) (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_LOOP) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 3) (call emit_i32_const o 10) (call put_byte o OP_I32_LT_U)
+    (call put_byte o OP_BR_IF) (call put_u32 o 1)
+    (call emit_local_get o 3) (call emit_i32_const o 10) (call put_byte o OP_I32_DIV_U) (call emit_local_set o 3)
+    (call emit_local_get o 4) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 4)
+    (call put_byte o OP_BR) (call put_u32 o 0)
+    (call put_byte o OP_END)
+    (call put_byte o OP_END)
+    ;; write them last to first
+    (call emit_local_get o 4) (call emit_local_set o 1)
+    (call put_byte o OP_LOOP) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 1) (call emit_i32_const o 1) (call put_byte o OP_I32_SUB) (call emit_local_tee o 1)
+    (call emit_local_get o 2) (call emit_i32_const o 10) (call put_byte o OP_I32_REM_U)
+    (call emit_i32_const o 48) (call put_byte o OP_I32_ADD) (call emit_memop o OP_I32_STORE8 0)
+    (call emit_local_get o 2) (call emit_i32_const o 10) (call put_byte o OP_I32_DIV_U) (call emit_local_tee o 2)
+    (call put_byte o OP_BR_IF) (call put_u32 o 0)
+    (call put_byte o OP_END)
+    (call emit_local_get o 4)
+    (call put_byte o OP_END))
+
+  ;; $aipl_oob(index, array): the VM's message at RT_FAIL_TEXT, its address
+  ;; and length in cells 92 and 96, then a trap.
+  (fn oob_body [o:(ptr Out) dec_fn:i32] -> void
+    (let prefix:str "Array index out of bounds: index ")
+    (let middle:str " for array of length ")
+    (call put_u32 o 1) (call put_u32 o 1) (call put_byte o VT_I32)   ;; at
+    (call emit_text_store o -1 RT_FAIL_TEXT prefix)
+    (call emit_local_get o 0) (call emit_i32_const o (+ RT_FAIL_TEXT (str.len prefix)))
+    (call emit_call o dec_fn) (call emit_local_set o 2)
+    (call emit_text_store o 2 0 middle)
+    (call emit_local_get o 1) (call emit_i32_const o 4) (call put_byte o OP_I32_SUB) (call emit_memop o OP_I32_LOAD 2)
+    (call emit_local_get o 2) (call emit_i32_const o (str.len middle)) (call put_byte o OP_I32_ADD)
+    (call emit_call o dec_fn) (call emit_local_set o 2)
+    (call emit_i32_const o 92) (call emit_i32_const o RT_FAIL_TEXT) (call emit_memop o OP_I32_STORE 2)
+    (call emit_i32_const o 96) (call emit_local_get o 2) (call emit_i32_const o RT_FAIL_TEXT) (call put_byte o OP_I32_SUB)
+    (call emit_memop o OP_I32_STORE 2)
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END)))

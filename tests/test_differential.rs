@@ -71,8 +71,18 @@ fn run_wasmtime(wasm: &[u8], fn_name: &str, args: &[i32]) -> Outcome {
             other => panic!("unexpected wasm result type {other:?}"),
         })
         .collect();
-    func.call(&mut store, &params, &mut results)
-        .map_err(|e| format!("wasmtime trap: {e}"))?;
+    if let Err(e) = func.call(&mut store, &params, &mut results) {
+        // a failed compiled check left its message's address and length in
+        // cells 92 and 96
+        let memory = instance.get_memory(&mut store, "memory").expect("memory export");
+        let data = memory.data(&store);
+        let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let (addr, len) = (word(92), word(96));
+        if len > 0 {
+            return Err(format!("compiled check: {}", String::from_utf8_lossy(&data[addr..addr + len])));
+        }
+        return Err(format!("wasmtime trap: {e}"));
+    }
     Ok(match results.first() {
         None => Value::Void,
         Some(Val::I32(v)) => Value::Int(*v as i64),
@@ -87,13 +97,6 @@ fn is_contract_failure(e: &str) -> bool {
     e.starts_with("Pre-condition") || e.starts_with("Post-condition")
 }
 
-/// The VM bounds-checks `arr.get`/`arr.set` against the length header; the
-/// wasm backend does not (AIPL_SPEC.md 4.E). Like contracts, this is a check
-/// the VM adds on top of wasm semantics, so VM-error/wasm-success is accepted.
-fn is_vm_bounds_check(e: &str) -> bool {
-    e.starts_with("Array index out of bounds")
-}
-
 /// Runs `fn_name` with `args` in both backends and asserts agreement. Returns
 /// the agreed outcome so callers can additionally assert the concrete value.
 fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Outcome {
@@ -104,8 +107,14 @@ fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Ou
             a, b,
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM={a:?} wasmtime={b:?} (fix src/vm.rs)"
         ),
+        // a compiled bounds check reports the VM's message (AIPL_SPEC.md 7.9)
+        (Err(a), Err(b)) if a.starts_with("Array index out of bounds: index ") => assert_eq!(
+            Some(a.as_str()),
+            b.strip_prefix("compiled check: "),
+            "DIVERGENCE in '{fn_name}' with args {args:?}: the messages differ"
+        ),
         (Err(_), Err(_)) => {}
-        (Err(e), Ok(_)) if is_contract_failure(e) || is_vm_bounds_check(e) => {}
+        (Err(e), Ok(_)) if is_contract_failure(e) => {}
         (Err(e), Ok(b)) => panic!(
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM errored ({e}) but wasmtime returned {b:?} (fix src/vm.rs)"
         ),
@@ -762,7 +771,7 @@ fn p8_structs_and_arrays() {
     // (the VM's bounds check sees no length header there and fires first)
     assert!(differential(&module, &wasm, "test_arr_set_reserved", &[]).is_err());
 
-    // In-bounds index agrees; out-of-bounds index is a VM error (wasm reads past the array).
+    // In-bounds index agrees; out-of-bounds index fails in both, with the same message.
     assert_eq!(differential(&module, &wasm, "test_index_oob", &[2]), Ok(Value::Int(0)));
     for i in [3, -1] {
         let e = differential(&module, &wasm, "test_index_oob", &[i]).unwrap_err();

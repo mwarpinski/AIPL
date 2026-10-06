@@ -744,6 +744,8 @@ There is one layout and one allocator, shared by the VM, compiled wasm, and AIPL
 | 80 | i32 | WASI runtime | `nwritten` / `nread` out-parameter |
 | 84 | i32 | WASI runtime | `path_open`'s opened-fd out-parameter |
 | 88 | i32 | threaded modules | 1 once the shared memory has been initialised (section 6.2) |
+| 92, 96 | i32, i32 | compiled checks | address and length of a failed check's message (`Array index out of bounds: ...`), set just before the `unreachable` that ends the program; `aipl-run` and native executables print it instead of the trap (0 = none) |
+| 128..256 | | compiled checks | where a failed bounds check writes its message |
 | 88..1024 | | reserved | not handed out by `mem.alloc`; do not use |
 | 1024..heap start | | string literals | interned string literals, `[len u32 LE][bytes]` each, in first-use order; a `str` value points at the bytes. Empty for a module without literals. Read-only |
 | heap start.. | | heap | `mem.alloc` region. The heap start is the first 8-aligned address after the literals (1024 without literals); it is the initial value of the cursor at address 0 |
