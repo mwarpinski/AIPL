@@ -1,0 +1,282 @@
+;; Prints an ast.aipl module as canonical AIPL source, the way
+;; src/printer.rs does, so the AIPL parser can be checked by round trip:
+;; for a program the Rust printer printed, parser.aipl then printer.aipl
+;; give back the same text (docs/CHECKER_PLAN.md).
+;;
+;; Float and string literals print as written in the source (src/printer.rs
+;; prints the value's shortest spelling and re-escapes strings, which is the
+;; same text when the source came from it), except that a tab, CR, or NUL
+;; written raw inside a string prints as its escape.
+(module printer
+  (import ast)
+  (import str)
+  (import buf)
+
+  (fn s [b:(ptr buf.Buf) x:str] -> void (call buf.push_str b x))
+  (fn by [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call buf.push_bytes b x))
+
+  (fn print_module [m:(ptr ast.Module)] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make 4096))
+    (call s b "(module ")
+    (call by b (get m ast.Module.name))
+    (call s b "\n")
+    (let ims:(arr (ptr ast.Import)) (get m ast.Module.imports))
+    (loop k 0 (- (arr.len ims) 1) 1
+      (let im:(ptr ast.Import) (arr.get (ptr ast.Import) ims k))
+      (call s b "  (import ")
+      (call by b (get im ast.Import.name))
+      (if (neq (get im ast.Import.alias) (ptr.null str.Bytes))
+          (block (call s b " as ") (call by b (get im ast.Import.alias)))
+          (block))
+      (call s b ")\n"))
+    (let es:(arr (ptr ast.EnumDef)) (get m ast.Module.enums))
+    (loop k 0 (- (arr.len es) 1) 1
+      (let e:(ptr ast.EnumDef) (arr.get (ptr ast.EnumDef) es k))
+      (call s b "  (enum ")
+      (call by b (get e ast.EnumDef.name))
+      (call s b " [")
+      (let ms:(arr (ptr ast.Member)) (get e ast.EnumDef.members))
+      (loop j 0 (- (arr.len ms) 1) 1
+        (let mem:(ptr ast.Member) (arr.get (ptr ast.Member) ms j))
+        (if (gt j 0) (call s b " ") (block))
+        (call s b "(")
+        (call by b (get mem ast.Member.name))
+        (call s b " ")
+        (call buf.push_int b (get mem ast.Member.value))
+        (call s b ")"))
+      (call s b "])\n"))
+    (let us:(arr (ptr ast.UnionDef)) (get m ast.Module.unions))
+    (loop k 0 (- (arr.len us) 1) 1
+      (let u:(ptr ast.UnionDef) (arr.get (ptr ast.UnionDef) us k))
+      (call s b "  (union ")
+      (call by b (get u ast.UnionDef.name))
+      (call s b " [")
+      (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+      (loop j 0 (- (arr.len vs) 1) 1
+        (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs j))
+        (if (gt j 0) (call s b " ") (block))
+        (call s b "(")
+        (call by b (get v ast.Variant.name))
+        (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+        (loop q 0 (- (arr.len fs) 1) 1
+          (call s b " ")
+          (call field b (arr.get (ptr ast.Field) fs q)))
+        (call s b ")"))
+      (call s b "])\n"))
+    (let ss:(arr (ptr ast.StructDef)) (get m ast.Module.structs))
+    (loop k 0 (- (arr.len ss) 1) 1
+      (let st:(ptr ast.StructDef) (arr.get (ptr ast.StructDef) ss k))
+      (call s b "  (struct ")
+      (call by b (get st ast.StructDef.name))
+      (call s b " [")
+      (let fs:(arr (ptr ast.Field)) (get st ast.StructDef.fields))
+      (loop j 0 (- (arr.len fs) 1) 1
+        (if (gt j 0) (call s b " ") (block))
+        (call field b (arr.get (ptr ast.Field) fs j)))
+      (call s b "])\n"))
+    (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
+    (loop k 0 (- (arr.len fns) 1) 1
+      (call print_fn b (arr.get (ptr ast.FnDef) fns k)))
+    (call s b ")")
+    b)
+
+  (fn field [b:(ptr buf.Buf) f:(ptr ast.Field)] -> void
+    (call by b (get f ast.Field.name))
+    (call s b ":")
+    (call print_type b (get f ast.Field.ty)))
+
+  (fn print_fn [b:(ptr buf.Buf) f:(ptr ast.FnDef)] -> void
+    (call s b "  (fn ")
+    (call by b (get f ast.FnDef.name))
+    (call s b " [")
+    (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
+    (loop j 0 (- (arr.len ps) 1) 1
+      (let prm:(ptr ast.Param) (arr.get (ptr ast.Param) ps j))
+      (if (gt j 0) (call s b " ") (block))
+      (call by b (get prm ast.Param.name))
+      (call s b ":")
+      (call print_type b (get prm ast.Param.ty)))
+    (call s b "] -> ")
+    (call print_type b (get f ast.FnDef.ret))
+    (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
+    (loop j 0 (- (arr.len cs) 1) 1
+      (call s b "\n    (")
+      (match (arr.get ast.Contract cs j)
+        (ast.Contract.requires [e] (call s b "req ") (call print_expr b e))
+        (ast.Contract.ensures [e] (call s b "ens ") (call print_expr b e))
+        (ast.Contract.invariant [e] (call s b "inv ") (call print_expr b e)))
+      (call s b ")"))
+    (let body:(arr ast.Expr) (get f ast.FnDef.body))
+    (loop j 0 (- (arr.len body) 1) 1
+      (call s b "\n    ")
+      (call print_expr b (arr.get ast.Expr body j)))
+    (call s b ")\n"))
+
+  (fn print_type [b:(ptr buf.Buf) t:ast.Type] -> void
+    (match t
+      (ast.Type.i32 (call s b "i32"))
+      (ast.Type.i64 (call s b "i64"))
+      (ast.Type.f32 (call s b "f32"))
+      (ast.Type.f64 (call s b "f64"))
+      (ast.Type.bool (call s b "bool"))
+      (ast.Type.str (call s b "str"))
+      (ast.Type.void (call s b "void"))
+      (ast.Type.ptr [inner] (call s b "(ptr ") (call print_type b inner) (call s b ")"))
+      (ast.Type.struct_ [name] (call by b name))
+      (ast.Type.result [ok_t err_t] (call s b "(result ") (call print_type b ok_t) (call s b " ") (call print_type b err_t) (call s b ")"))
+      (ast.Type.arr [elem] (call s b "(arr ") (call print_type b elem) (call s b ")"))
+      (ast.Type.fn_ [params ret]
+       (call s b "(fn [")
+       (loop j 0 (- (arr.len params) 1) 1
+         (if (gt j 0) (call s b " ") (block))
+         (call print_type b (arr.get ast.Type params j)))
+       (call s b "] -> ")
+       (call print_type b ret)
+       (call s b ")"))
+      (ast.Type.enum_ [name] (call by b name))
+      (ast.Type.union_ [name] (call by b name))))
+
+  ;; src/printer.rs struct_name / elem: a ptr or arr type's inner name.
+  (fn print_inner [b:(ptr buf.Buf) t:ast.Type] -> void
+    (match t
+      (ast.Type.ptr [inner] (call print_type b inner))
+      (ast.Type.arr [elem] (call print_type b elem))
+      (else (call print_type b t))))
+
+  (fn print_raw_string [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+    (call s b "\"")
+    (loop k 0 (- (get raw str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at raw k))
+      (cond
+        ((eq c 9) (call s b "\\t"))
+        ((eq c 13) (call s b "\\r"))
+        ((eq c 0) (call s b "\\0"))
+        (else (call buf.push_byte b c))))
+    (call s b "\""))
+
+  (fn print_float [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void (call by b t))
+
+  ;; (head e1 e2 ...), or (head) for no expressions.
+  (fn with_body [b:(ptr buf.Buf) body:(arr ast.Expr)] -> void
+    (loop j 0 (- (arr.len body) 1) 1
+      (call s b " ")
+      (call print_expr b (arr.get ast.Expr body j)))
+    (call s b ")"))
+
+  (fn print_expr [b:(ptr buf.Buf) e:ast.Expr] -> void
+    (match e
+      (ast.Expr.lit_int [_ iv] (call buf.push_i64 b iv))
+      (ast.Expr.lit_i64 [_ lv] (call buf.push_i64 b lv) (call s b "i64"))
+      (ast.Expr.lit_float [_ text] (call print_float b text))
+      (ast.Expr.lit_bool [_ bv] (call s b (if bv "true" "false")))
+      (ast.Expr.lit_str [_ raw] (call print_raw_string b raw))
+      (ast.Expr.var [_ name] (call by b name))
+      (ast.Expr.let_ [_ name ty val]
+       (call s b "(let ") (call by b name) (call s b ":") (call print_type b ty) (call s b " ") (call print_expr b val) (call s b ")"))
+      (ast.Expr.set [_ name val] (call s b "(set! ") (call by b name) (call s b " ") (call print_expr b val) (call s b ")"))
+      (ast.Expr.if_ [_ c t f]
+       (call s b "(if ") (call print_expr b c) (call s b " ") (call print_expr b t) (call s b " ") (call print_expr b f) (call s b ")"))
+      (ast.Expr.loop [_ var start end step body]
+       (call s b "(loop ") (call by b var) (call s b " ") (call print_expr b start) (call s b " ")
+       (call print_expr b end) (call s b " ") (call print_expr b step) (call with_body b body))
+      (ast.Expr.while_ [_ c body] (call s b "(while ") (call print_expr b c) (call with_body b body))
+      (ast.Expr.call [_ fname args] (call s b "(call ") (call by b fname) (call with_body b args))
+      (ast.Expr.op [_ op args] (call s b "(") (call s b (call op_name op)) (call with_body b args))
+      (ast.Expr.ok [_ val oty] (call print_result b "ok" val oty))
+      (ast.Expr.err [_ val oty] (call print_result b "err" val oty))
+      (ast.Expr.match_result [_ val ok_var ok_body err_var err_body]
+       (call s b "(match_result ") (call print_expr b val)
+       (call s b " (ok ") (call by b ok_var) (call with_body b ok_body)
+       (call s b " (err ") (call by b err_var) (call with_body b err_body)
+       (call s b ")"))
+      (ast.Expr.block [_ body] (call s b "(block") (call with_body b body))
+      (ast.Expr.new_ [_ name] (call s b "(new ") (call by b name) (call s b ")"))
+      (ast.Expr.get_ [_ sname fname ptr]
+       (call s b "(get ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname) (call s b ")"))
+      (ast.Expr.put_ [_ sname fname ptr val]
+       (call s b "(put ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
+       (call s b " ") (call print_expr b val) (call s b ")"))
+      (ast.Expr.sizeof [_ name] (call s b "(sizeof ") (call by b name) (call s b ")"))
+      (ast.Expr.arr_new [_ ty size] (call s b "(arr.new ") (call print_type b ty) (call s b " ") (call print_expr b size) (call s b ")"))
+      (ast.Expr.arr_get [_ ty ptr index]
+       (call s b "(arr.get ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ") (call print_expr b index) (call s b ")"))
+      (ast.Expr.arr_set [_ ty ptr index val]
+       (call s b "(arr.set ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ")
+       (call print_expr b index) (call s b " ") (call print_expr b val) (call s b ")"))
+      (ast.Expr.arr_len [_ a] (call s b "(arr.len ") (call print_expr b a) (call s b ")"))
+      (ast.Expr.null [_ ty]
+       (match ty
+         (ast.Type.arr [_] (call s b "(arr.null ") (call print_inner b ty) (call s b ")"))
+         (else (call s b "(ptr.null ") (call print_inner b ty) (call s b ")"))))
+      (ast.Expr.cast [_ ty addr]
+       (match ty
+         (ast.Type.arr [_] (call s b "(arr.cast ") (call print_inner b ty))
+         (ast.Type.enum_ [name] (call s b "(enum.cast ") (call by b name))
+         (else (call s b "(ptr.cast ") (call print_inner b ty)))
+       (call s b " ") (call print_expr b addr) (call s b ")"))
+      (ast.Expr.make [_ uname variant args]
+       (call s b "(make ") (call by b uname) (call s b ".") (call by b variant) (call with_body b args))
+      (ast.Expr.match_ [_ val arms else_body]
+       (call s b "(match ") (call print_expr b val)
+       (loop j 0 (- (arr.len arms) 1) 1
+         (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms j))
+         (call s b " (")
+         (call by b (get arm ast.Arm.member))
+         (let names:(arr (ptr str.Bytes)) (get arm ast.Arm.binders))
+         (if (neq names (arr.null (ptr str.Bytes)))
+             (block
+               (call s b " [")
+               (loop q 0 (- (arr.len names) 1) 1
+                 (if (gt q 0) (call s b " ") (block))
+                 (call by b (arr.get (ptr str.Bytes) names q)))
+               (call s b "]"))
+             (block))
+         (call with_body b (get arm ast.Arm.body)))
+       (if (neq else_body (arr.null ast.Expr)) (block (call s b " (else") (call with_body b else_body)) (block))
+       (call s b ")"))
+      (ast.Expr.return_ [_ rv]
+       (match rv
+         (ast.MaybeExpr.none (call s b "(return)"))
+         (ast.MaybeExpr.some [v] (call s b "(return ") (call print_expr b v) (call s b ")"))))
+      (ast.Expr.break_ [_] (call s b "(break)"))
+      (ast.Expr.continue_ [_] (call s b "(continue)"))
+      (ast.Expr.ref [_ name] (call s b "(ref ") (call by b name) (call s b ")"))
+      (ast.Expr.call_ref [_ sig callee args]
+       (call s b "(call_ref ") (call print_type b sig) (call s b " ") (call print_expr b callee) (call with_body b args))
+      (ast.Expr.addr [_ val kind]
+       (call s b (match kind (ast.AddrKind.ptr "(ptr.addr ") (ast.AddrKind.arr "(arr.addr ") (ast.AddrKind.enum_ "(enum.ord ")))
+       (call print_expr b val) (call s b ")"))))
+
+  (fn print_result [b:(ptr buf.Buf) head:str val:ast.Expr ty:ast.MaybeType] -> void
+    (call s b "(")
+    (call s b head)
+    (match ty
+      (ast.MaybeType.none (block))
+      (ast.MaybeType.some [t] (call s b ":") (call print_type b t)))
+    (call s b " ")
+    (call print_expr b val)
+    (call s b ")"))
+
+  ;; src/printer.rs op_name.
+  (fn op_name [o:ast.Op] -> str
+    (match o
+      (ast.Op.add "+") (ast.Op.sub "-") (ast.Op.mul "*") (ast.Op.div "/") (ast.Op.mod "%")
+      (ast.Op.divu "divu") (ast.Op.remu "remu") (ast.Op.bitxor "^") (ast.Op.shl "shl") (ast.Op.shr "shr")
+      (ast.Op.shru "shru") (ast.Op.bitand "bitand") (ast.Op.bitor "bitor")
+      (ast.Op.mem_load8 "mem.load8") (ast.Op.mem_load32 "mem.load32") (ast.Op.mem_load64 "mem.load64")
+      (ast.Op.mem_store8 "mem.store8") (ast.Op.mem_store32 "mem.store32") (ast.Op.mem_store64 "mem.store64")
+      (ast.Op.mem_alloc "mem.alloc") (ast.Op.mem_grow "mem.grow")
+      (ast.Op.atomic_add "atomic.add") (ast.Op.atomic_cas "atomic.cas") (ast.Op.atomic_lock "atomic.lock") (ast.Op.atomic_unlock "atomic.unlock")
+      (ast.Op.eq "eq") (ast.Op.neq "neq") (ast.Op.lt "lt") (ast.Op.lte "lte")
+      (ast.Op.checked_add "checked.add") (ast.Op.checked_sub "checked.sub") (ast.Op.checked_mul "checked.mul")
+      (ast.Op.ltu "ltu") (ast.Op.lteu "lteu") (ast.Op.gtu "gtu") (ast.Op.gteu "gteu") (ast.Op.gt "gt") (ast.Op.gte "gte")
+      (ast.Op.and "and") (ast.Op.or "or") (ast.Op.not "not")
+      (ast.Op.sys_print "sys.print") (ast.Op.sys_time "sys.time") (ast.Op.sys_monotonic "sys.monotonic")
+      (ast.Op.sys_random "sys.random") (ast.Op.sys_exit "sys.exit")
+      (ast.Op.fs_open "fs.open") (ast.Op.fs_read "fs.read") (ast.Op.fs_write "fs.write") (ast.Op.fs_close "fs.close") (ast.Op.fs_delete "fs.delete")
+      (ast.Op.args_sizes "args.sizes") (ast.Op.args_get "args.get") (ast.Op.env_sizes "env.sizes") (ast.Op.env_get "env.get")
+      (ast.Op.thread_spawn "thread.spawn") (ast.Op.thread_join "thread.join")
+      (ast.Op.i64_extend_s "i64.extend_s") (ast.Op.i64_extend_u "i64.extend_u") (ast.Op.i32_wrap "i32.wrap")
+      (ast.Op.f64_convert_i64_s "f64.convert_i64_s") (ast.Op.f64_sqrt "f64.sqrt") (ast.Op.i64_trunc_f64_s "i64.trunc_f64_s")
+      (ast.Op.f64_reinterpret_i64 "f64.reinterpret_i64") (ast.Op.i64_reinterpret_f64 "i64.reinterpret_f64")
+      (ast.Op.str_len "str.len") (ast.Op.str_ptr "str.ptr"))))

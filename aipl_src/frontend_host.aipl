@@ -1,0 +1,43 @@
+;; Entry points for tests/test_checker_aipl.rs: the AIPL front end
+;; (tokenizer, line_col, parser, printer, checker), callable with plain
+;; integers. Each writes [status addr len] at out: status 1 with the result
+;; text, or 0 with the error message ("line:col: ..." in the given text).
+(module frontend_host
+  (import compiler)
+  (import parser)
+  (import printer)
+  (import checker)
+  (import front)
+  (import buf)
+  (import str)
+
+  (fn put_result [out:i32 ok:bool b:(ptr buf.Buf)] -> i32
+    (let bs:(ptr str.Bytes) (call buf.bytes b))
+    (mem.store32 out (if ok 1 0))
+    (mem.store32 (+ out 4) (get bs str.Bytes.addr))
+    (mem.store32 (+ out 8) (get bs str.Bytes.len))
+    0)
+
+  (fn put_parsed [src:i32 out:i32 r:(ptr parser.Parsed)] -> i32
+    (if (get r parser.Parsed.ok)
+        (call put_result out true (call printer.print_module (get r parser.Parsed.module)))
+        (call put_result out false (call front.render src (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))))
+
+  ;; parser.aipl then printer.aipl (no constant expansion).
+  (fn parse_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call parser.parse src len)))
+
+  ;; expand.aipl, parser.aipl, then printer.aipl.
+  (fn expand_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call front.parse src len)))
+
+  ;; The whole front end: "ok", or the first error.
+  (fn check_text [src:i32 len:i32 out:i32] -> i32
+    (let pr:(ptr checker.Problem) (call front.check src len))
+    (if (eq pr (ptr.null checker.Problem))
+        (block (let okb:(ptr buf.Buf) (call buf.make 4)) (call buf.push_str okb "ok") (call put_result out true okb))
+        (call put_result out false (call front.render src pr))))
+
+  (fn host_alloc [n:i32] -> i32 (mem.alloc n))
+  (fn token_size [] -> i32 (sizeof compiler.Token))
+  (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))
+  (fn line_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.line))
+  (fn col_of [src:i32 pos:i32] -> i32 (get (call compiler.line_col src pos) compiler.LineCol.col)))

@@ -174,6 +174,14 @@ impl Parser {
                         col += 1;
                     }
                 }
+                // any other whitespace (a form feed, a no-break space) is
+                // invisible in most editors: name it rather than guess
+                c if c.is_whitespace() => {
+                    return Err(format!(
+                        "{}:{}: unexpected whitespace character U+{:04X}; separate tokens with spaces, tabs, or newlines",
+                        line, col, c as u32
+                    ));
+                }
                 _ => {
                     let mut symbol = String::new();
                     while let Some(&c) = chars.peek() {
@@ -875,6 +883,13 @@ impl Parser {
             match tok.kind {
                 TokenKind::IntLit(val) => {
                     self.next();
+                    // 32 bits, read as signed or unsigned: 4294967295 is the bit pattern of -1
+                    if !(-2147483648..=4294967295).contains(&val) {
+                        return Err(format!(
+                            "{}:{}: integer literal {} does not fit in 32 bits; write {}i64 for an i64",
+                            tok.line, tok.col, val, val
+                        ));
+                    }
                     Ok(Expr::Lit(Literal::Int(val), (tok.line, tok.col)))
                 }
                 TokenKind::Int64Lit(val) => {

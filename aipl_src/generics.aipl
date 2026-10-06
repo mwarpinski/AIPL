@@ -15,6 +15,7 @@
   (import buf)
   (import strmap)
   (import vec)
+  (import origins)
 
   (struct Tmpl [node:(ptr compiler.Node) is_struct:bool params:(ptr (vec.Vec (ptr str.Bytes)))])
   ;; parallel lists: parameter names, the argument as code ("(ptr Point)"),
@@ -22,7 +23,8 @@
   (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) printed:(ptr (vec.Vec (ptr str.Bytes))) mangled:(ptr (vec.Vec (ptr str.Bytes)))])
   (struct Inst [tmpl:(ptr Tmpl) env:(ptr Env) name:(ptr str.Bytes)])
   (struct St [text:(ptr str.Bytes) templates:(ptr (strmap.StrMap (ptr Tmpl))) made:(ptr (strmap.StrMap i32))
-              queue:(ptr (vec.Vec (ptr Inst))) err:(ptr buf.Buf) failed:bool])
+              queue:(ptr (vec.Vec (ptr Inst))) err:(ptr buf.Buf) failed:bool
+              origins:(ptr origins.Origins)])
 
   ;; ===== Trees =====
 
@@ -168,15 +170,21 @@
 
   ;; ===== Printing =====
 
+  ;; Notes that the next token printed into out comes from n (origins.aipl).
+  (fn note [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (call origins.note (get st St.origins) out -1 (get n compiler.Node.pos)))
+
   (fn print_atom [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
+    (call note st n out)
     (cond
       ((eq k compiler.Kind.symbol)
        (let t:(ptr str.Bytes) (call text st n))
        (let i:i32 (call lookup env t))
        (call buf.push_bytes out (if (gte i 0) (call (vec.at (ptr str.Bytes)) (get env Env.printed) i) t)))
       ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text st n)))
-      ((eq k compiler.Kind.int) (call buf.push_int out (get n compiler.Node.a)))
+      ;; an int as written (its value is only the low 32 bits)
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
@@ -189,7 +197,7 @@
   (fn print [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
     (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (block (call print_atom st n env out) (return)) (block))
-    (if (call is_app st n) (block (call buf.push_bytes out (call instance st n env)) (return)) (block))
+    (if (call is_app st n) (block (call note st n out) (call buf.push_bytes out (call instance st n env)) (return)) (block))
     (call print_group st n env (call str.bytes 0 -1) out))
 
   ;; Children separated by spaces, except none around ':'. A non-empty
@@ -201,6 +209,7 @@
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
                                  (and (or (call lit h "get") (call lit h "put"))
                                       (call is_app st (call nth g 2)))))
+    (call note st g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let i:i32 0)
@@ -275,8 +284,14 @@
   ;; Expands the generics of flat program `flat` into `out`; false with a
   ;; message in `err` on a malformed or unbounded use.
   (fn expand [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+    (call expand_mapped flat out err (ptr.null origins.Origins)))
+
+  ;; expand, noting in `gen` (if not null) where each token of the result
+  ;; comes from in `flat`; nothing is noted when there are no generics (the
+  ;; result is `flat` itself).
+  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins)] -> bool
     (let n:i32 (get flat str.Bytes.len))
-    (let tok:i32 (mem.alloc (* 12 (+ n 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get flat str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
@@ -287,6 +302,7 @@
     (put st St.queue (call (vec.make (ptr Inst)) 16))
     (put st St.err err)
     (put st St.failed false)
+    (put st St.origins gen)
     (let items:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) 64))
     (let item:(ptr compiler.Node) (call nth root 2))
     (while (neq item (ptr.null compiler.Node))
@@ -320,9 +336,13 @@
     (call buf.push_str out "(module ")
     (call buf.push_bytes out (call text st (call nth root 1)))
     (call buf.push_byte out 10)
-    (call buf.push_bytes out (call as_bytes so))
-    (call buf.push_bytes out (call as_bytes si))
-    (call buf.push_bytes out (call as_bytes fo))
-    (call buf.push_bytes out (call as_bytes fi))
+    (let parts:(arr (ptr buf.Buf)) (arr.new (ptr buf.Buf) 4))
+    (let bases:(arr i32) (arr.new i32 4))
+    (arr.set (ptr buf.Buf) parts 0 so) (arr.set (ptr buf.Buf) parts 1 si)
+    (arr.set (ptr buf.Buf) parts 2 fo) (arr.set (ptr buf.Buf) parts 3 fi)
+    (loop k 0 3 1
+      (arr.set i32 bases k (call buf.len out))
+      (call buf.push_bytes out (call as_bytes (arr.get (ptr buf.Buf) parts k))))
     (call buf.push_byte out 41)
+    (if (neq gen (ptr.null origins.Origins)) (call origins.join gen parts bases) (block))
     true))

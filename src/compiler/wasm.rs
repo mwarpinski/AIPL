@@ -759,7 +759,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
                         .and_then(|u| u.variants.iter().find(|v| v.name == arm.member[dot + 1..]))
                         .map(|v| v.fields.clone())
                         .unwrap_or_default();
-                    for (n, f) in names.iter().zip(fields.iter()) {
+                    for (n, f) in names.iter().zip(fields.iter()).filter(|(n, _)| n.as_str() != "_") {
                         lets.push((n.clone(), f.ty.clone()));
                     }
                 }
@@ -1923,7 +1923,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         ctx.labels.borrow_mut().push(Label::Plain);
         if let (Some(v), Some(names)) = (fields, &arm.binders) {
             let (offsets, _) = crate::checker::variant_layout(v)?;
-            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets) {
+            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                 let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&load_instruction(&f.ty, off as u64)?);

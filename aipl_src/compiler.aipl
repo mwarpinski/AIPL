@@ -8,13 +8,18 @@
   ;; Token kinds, which are also the kinds of the atoms in the tree; paren
   ;; and bracket are the two kinds of group, "(...)" and "[...]". none is
   ;; for the absence of a node.
-  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float (paren 20) (bracket 21)])
+  ;; bad is the token for text the Rust tokenizer rejects (TokErr says why);
+  ;; tokenizing stops there, so it is always the last token.
+  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float bad (paren 20) (bracket 21)])
 
-  (struct Token [kind:Kind a:i32 b:i32])
+  (enum TokErr [unterminated_string unknown_escape stray_whitespace])
+
+  ;; pos is the source offset the token starts at (a string's opening quote).
+  (struct Token [kind:Kind a:i32 b:i32 pos:i32])
   ;; An atom's a and b are its token's (a value, or a span of the source); a
   ;; group's b is its child count and first its first child. next links
-  ;; siblings.
-  (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node) first:(ptr Node)])
+  ;; siblings; pos is where the atom or the group's opening bracket starts.
+  (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node) first:(ptr Node) pos:i32])
 
 ;; Unsigned LEB128 of val at ptr (val read as unsigned); returns the byte count.
   (fn encode_u32 [ptr:i32 val:i32] -> i32
@@ -39,12 +44,13 @@
     8)
 
   ;; ===== Tokenizer =====
-  ;; Tokens are 12-byte records [kind a b] packed in a buffer the caller
-  ;; provides (at least one per source byte): a symbol, string, i64, or float
-  ;; token's a/b are its source offset and length (a string's without the
-  ;; quotes), an int's a is its value, a bool's 0/1. Mirrors
-  ;; src/parser.rs::Parser::tokenize (same delimiters, same literal rules), so
-  ;; the two tokenizers accept identical input.
+  ;; Tokens are Token records packed in a buffer the caller provides (at
+  ;; least one per source byte, (sizeof Token) bytes each): a symbol, string,
+  ;; int, i64, or float token's a/b are its source offset and length (a
+  ;; string's without the quotes; an int's value is int_value), a bool's a is
+  ;; 0/1. Mirrors
+  ;; src/parser.rs::Parser::tokenize (same delimiters, same literal rules,
+  ;; same errors as bad tokens), so the two tokenizers accept identical input.
 
   (const CH_TAB:i32 9)
   (const CH_NEWLINE:i32 10)
@@ -53,6 +59,7 @@
   (const CH_QUOTE:i32 34)
   (const CH_LPAREN:i32 40)
   (const CH_RPAREN:i32 41)
+  (const CH_PLUS:i32 43)
   (const CH_MINUS:i32 45)
   (const CH_DOT:i32 46)
   (const CH_ZERO:i32 48)
@@ -70,6 +77,40 @@
     (or (call is_whitespace ch)
         (or (or (eq ch CH_LPAREN) (eq ch CH_RPAREN)) (or (or (eq ch CH_LBRACKET) (eq ch CH_RBRACKET)) (eq ch CH_COLON)))))
 
+  ;; The code point of the whitespace character starting at p + i that the
+  ;; Rust tokenizer rejects (Unicode White_Space other than space, tab, CR,
+  ;; LF: U+000B, U+000C, U+0085, U+00A0, U+1680, U+2000-200A, U+2028,
+  ;; U+2029, U+202F, U+205F, U+3000), or -1.
+  (fn stray_whitespace [p:i32 i:i32 n:i32] -> i32
+    (let b0:i32 (mem.load8 (+ p i)))
+    (let b1:i32 (if (lt (+ i 1) n) (mem.load8 (+ p (+ i 1))) 0))
+    (let b2:i32 (if (lt (+ i 2) n) (mem.load8 (+ p (+ i 2))) 0))
+    (cond
+      ((or (eq b0 11) (eq b0 12)) b0)
+      ((and (eq b0 194) (or (eq b1 133) (eq b1 160))) b1)
+      ((and (eq b0 225) (and (eq b1 154) (eq b2 128))) 5760)
+      ((and (eq b0 226) (and (eq b1 128) (or (and (gte b2 128) (lte b2 138)) (or (eq b2 168) (or (eq b2 169) (eq b2 175))))))
+       (+ 8192 (- b2 128)))
+      ((and (eq b0 226) (and (eq b1 129) (eq b2 159))) 8287)
+      ((and (eq b0 227) (and (eq b1 128) (eq b2 128))) 12288)
+      (else -1)))
+
+  ;; Where a source offset is, as the Rust tokenizer counts: lines from 1,
+  ;; columns from 1 in characters (UTF-8 continuation bytes do not count).
+  (struct LineCol [line:i32 col:i32])
+
+  (fn line_col [src:i32 pos:i32] -> (ptr LineCol)
+    (let lc:(ptr LineCol) (new LineCol))
+    (put lc LineCol.line 1)
+    (put lc LineCol.col 1)
+    (loop i 0 (- pos 1) 1
+      (let c:i32 (mem.load8 (+ src i)))
+      (cond
+        ((eq c CH_NEWLINE) (put lc LineCol.line (+ (get lc LineCol.line) 1)) (put lc LineCol.col 1))
+        ((eq (bitand c 192) 128) (block))
+        (else (put lc LineCol.col (+ (get lc LineCol.col) 1)))))
+    lc)
+
   (fn is_digit [ch:i32] -> bool
     (and (gte ch CH_ZERO) (lte ch CH_NINE)))
 
@@ -78,14 +119,17 @@
   (fn token_at [tok_ptr:i32 idx:i32] -> (ptr Token)
     (ptr.cast Token (+ tok_ptr (* idx (sizeof Token)))))
 
-  (fn write_token [tok_ptr:i32 idx:i32 kind:Kind a:i32 b:i32] -> i32
+  (fn write_token [tok_ptr:i32 idx:i32 kind:Kind a:i32 b:i32 pos:i32] -> i32
     (req (gte tok_ptr 0))
     (req (gte idx 0))
     (ens (eq res (+ idx 1)))
+    ;; a null buffer only counts (count_tokens)
+    (if (eq tok_ptr 0) (return (+ idx 1)) (block))
     (let t:(ptr Token) (call token_at tok_ptr idx))
     (put t Token.kind kind)
     (put t Token.a a)
     (put t Token.b b)
+    (put t Token.pos pos)
     (+ idx 1))
 
   ;; Whether the len bytes at src_ptr + pos spell `word`.
@@ -95,44 +139,82 @@
       (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ (str.ptr word) i))) (return false) (block)))
     true)
 
-  ;; An optional leading '-' then at least one digit.
+  ;; Rust's i64 parse: an optional '+' or '-', then at least one digit, the
+  ;; value within i64.
   (fn is_int_literal [src_ptr:i32 pos:i32 len:i32] -> bool
     (req (gte pos 0))
     (req (gt len 0))
-    (let start:i32 (if (eq (mem.load8 (+ src_ptr pos)) CH_MINUS) 1 0))
+    (let first:i32 (mem.load8 (+ src_ptr pos)))
+    (let start:i32 (if (or (eq first CH_MINUS) (eq first CH_PLUS)) 1 0))
     (if (eq start len) (return false) (block))
     (loop i start (- len 1) 1
       (if (call is_digit (mem.load8 (+ src_ptr (+ pos i)))) (block) (return false)))
+    ;; the magnitude: leading zeros aside, at most 19 digits, and at 19 no
+    ;; more than 9223372036854775807 (...808 when negative)
+    (let d:i32 start)
+    (while (and (lt d (- len 1)) (eq (mem.load8 (+ src_ptr (+ pos d))) CH_ZERO)) (set! d (+ d 1)))
+    (let nd:i32 (- len d))
+    (if (lt nd 19) (return true) (block))
+    (if (gt nd 19) (return false) (block))
+    (let limit:str (if (eq first CH_MINUS) "9223372036854775808" "9223372036854775807"))
+    (loop i 0 18 1
+      (let a:i32 (mem.load8 (+ src_ptr (+ pos (+ d i)))))
+      (let b:i32 (mem.load8 (+ (str.ptr limit) i)))
+      (if (lt a b) (return true) (block))
+      (if (gt a b) (return false) (block)))
     true)
 
   ;; `42i64`, `-7i64`: an int literal followed by the suffix i64.
   (fn is_i64_literal [src_ptr:i32 pos:i32 len:i32] -> bool
     (and (gte len 4)
-         (and (call is_int_literal src_ptr pos (- len 3))
-              (call span_is src_ptr (+ pos (- len 3)) 3 "i64"))))
+         (and (call span_is src_ptr (+ pos (- len 3)) 3 "i64")
+              (call is_int_literal src_ptr pos (- len 3)))))
 
-  ;; `1.5`, `-0.25`: optional sign, digits with exactly one '.', at least one
-  ;; digit. Mirrors the Rust tokenizer's float rule.
+  ;; Rust's rule: the text contains '.', an ASCII digit, and parses as an f64:
+  ;; an optional sign, digits around one '.', at least one digit before the
+  ;; exponent, and an optional exponent e/E, optional sign, digits.
   (fn is_float_literal [src_ptr:i32 pos:i32 len:i32] -> bool
-    (let dots:i32 0)
+    (let i:i32 0)
+    (let c0:i32 (mem.load8 (+ src_ptr pos)))
+    (if (or (eq c0 CH_MINUS) (eq c0 CH_PLUS)) (set! i 1) (block))
     (let digits:i32 0)
-    (let other:i32 0)
-    (loop i (if (eq (mem.load8 (+ src_ptr pos)) CH_MINUS) 1 0) (- len 1) 1
-      (let c:i32 (mem.load8 (+ src_ptr (+ pos i))))
-      (cond
-        ((eq c CH_DOT) (set! dots (+ dots 1)))
-        ((call is_digit c) (set! digits (+ digits 1)))
-        (else (set! other (+ other 1)))))
-    (and (eq dots 1) (and (gt digits 0) (eq other 0))))
+    (let dots:i32 0)
+    (while (and (lt i len) (or (call is_digit (mem.load8 (+ src_ptr (+ pos i)))) (eq (mem.load8 (+ src_ptr (+ pos i))) CH_DOT)))
+      (if (eq (mem.load8 (+ src_ptr (+ pos i))) CH_DOT) (set! dots (+ dots 1)) (set! digits (+ digits 1)))
+      (set! i (+ i 1)))
+    (if (or (neq dots 1) (eq digits 0)) (return false) (block))
+    (if (eq i len) (return true) (block))
+    (let e:i32 (mem.load8 (+ src_ptr (+ pos i))))
+    (if (and (neq e 101) (neq e 69)) (return false) (block))
+    (set! i (+ i 1))
+    (if (and (lt i len) (or (eq (mem.load8 (+ src_ptr (+ pos i))) CH_MINUS) (eq (mem.load8 (+ src_ptr (+ pos i))) CH_PLUS)))
+        (set! i (+ i 1))
+        (block))
+    (if (eq i len) (return false) (block))
+    (loop k i (- len 1) 1
+      (if (call is_digit (mem.load8 (+ src_ptr (+ pos k)))) (block) (return false)))
+    true)
 
+  ;; An int token's or node's value (the low 32 bits), from its text a/b.
+  (fn int_value [src:i32 a:i32 b:i32] -> i32 (call parse_int_literal src a b))
+
+  ;; The low 32 bits of an int literal's value.
   (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
     (req (gte pos 0))
     (req (gt len 0))
-    (let negative:bool (eq (mem.load8 (+ src_ptr pos)) CH_MINUS))
+    (let first:i32 (mem.load8 (+ src_ptr pos)))
     (let value:i32 0)
-    (loop i (if negative 1 0) (- len 1) 1
+    (loop i (if (or (eq first CH_MINUS) (eq first CH_PLUS)) 1 0) (- len 1) 1
       (set! value (+ (* value 10) (- (mem.load8 (+ src_ptr (+ pos i))) CH_ZERO))))
-    (if negative (- 0 value) value))
+    (if (eq first CH_MINUS) (- 0 value) value))
+
+  ;; Whether the byte at p + i is one the string escape \x may name.
+  (fn is_escape [c:i32] -> bool
+    (or (or (eq c 110) (eq c 116)) (or (or (eq c 114) (eq c CH_ZERO)) (or (eq c CH_BACKSLASH) (eq c CH_QUOTE)))))
+
+  ;; How many tokens tokenize writes for this input, so a caller can give it
+  ;; a buffer of exactly that size.
+  (fn count_tokens [input_ptr:i32 input_len:i32] -> i32 (call tokenize input_ptr input_len 0))
 
   ;; Tokenizes input_len bytes at input_ptr into token_out_ptr; returns the
   ;; token count. Comments (;; to the end of the line) are skipped.
@@ -151,34 +233,56 @@
          (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) CH_NEWLINE))
            (set! i (+ i 1)))
          (if (lt i input_len) (set! i (+ i 1)) (block)))
-        ((eq ch CH_LPAREN) (set! count (call write_token token_out_ptr count Kind.lparen 0 0)) (set! i (+ i 1)))
-        ((eq ch CH_RPAREN) (set! count (call write_token token_out_ptr count Kind.rparen 0 0)) (set! i (+ i 1)))
-        ((eq ch CH_LBRACKET) (set! count (call write_token token_out_ptr count Kind.lbracket 0 0)) (set! i (+ i 1)))
-        ((eq ch CH_RBRACKET) (set! count (call write_token token_out_ptr count Kind.rbracket 0 0)) (set! i (+ i 1)))
-        ((eq ch CH_COLON) (set! count (call write_token token_out_ptr count Kind.colon 0 0)) (set! i (+ i 1)))
+        ((eq ch CH_LPAREN) (set! count (call write_token token_out_ptr count Kind.lparen 0 0 i)) (set! i (+ i 1)))
+        ((eq ch CH_RPAREN) (set! count (call write_token token_out_ptr count Kind.rparen 0 0 i)) (set! i (+ i 1)))
+        ((eq ch CH_LBRACKET) (set! count (call write_token token_out_ptr count Kind.lbracket 0 0 i)) (set! i (+ i 1)))
+        ((eq ch CH_RBRACKET) (set! count (call write_token token_out_ptr count Kind.rbracket 0 0 i)) (set! i (+ i 1)))
+        ((eq ch CH_COLON) (set! count (call write_token token_out_ptr count Kind.colon 0 0 i)) (set! i (+ i 1)))
+        ((neq (call stray_whitespace input_ptr i input_len) -1)
+         (return (call write_token token_out_ptr count Kind.bad (enum.ord TokErr.stray_whitespace) (call stray_whitespace input_ptr i input_len) i)))
         ((eq ch CH_QUOTE)
+         (let quote:i32 i)
          (set! i (+ i 1))
          (let str_start:i32 i)
-         ;; a backslash escapes the next byte, so \" does not end the string
+         ;; a backslash escapes the next byte, so \" does not end the string;
+         ;; a newline or the end of input before the closing quote is an error
          (while (and (lt i input_len) (neq (mem.load8 (+ input_ptr i)) CH_QUOTE))
-           (if (eq (mem.load8 (+ input_ptr i)) CH_BACKSLASH) (set! i (+ i 2)) (set! i (+ i 1))))
-         (set! count (call write_token token_out_ptr count Kind.string str_start (- i str_start)))
-         (if (lt i input_len) (set! i (+ i 1)) (block)))
+           (let c:i32 (mem.load8 (+ input_ptr i)))
+           (if (eq c CH_NEWLINE)
+               (return (call write_token token_out_ptr count Kind.bad (enum.ord TokErr.unterminated_string) 0 quote))
+               (block))
+           (if (eq c CH_BACKSLASH)
+               (block
+                 (if (eq (+ i 1) input_len)
+                     (return (call write_token token_out_ptr count Kind.bad (enum.ord TokErr.unterminated_string) 0 quote))
+                     (block))
+                 (if (not (call is_escape (mem.load8 (+ input_ptr (+ i 1)))))
+                     (return (call write_token token_out_ptr count Kind.bad (enum.ord TokErr.unknown_escape) 0 (+ i 1)))
+                     (block))
+                 (set! i (+ i 2)))
+               (set! i (+ i 1))))
+         (if (eq i input_len)
+             (return (call write_token token_out_ptr count Kind.bad (enum.ord TokErr.unterminated_string) 0 quote))
+             (block))
+         (set! count (call write_token token_out_ptr count Kind.string str_start (- i str_start) quote))
+         (set! i (+ i 1)))
         (else
          (let s:i32 i)
-         (while (and (lt i input_len) (not (call is_delim (mem.load8 (+ input_ptr i)))))
+         (while (and (lt i input_len)
+                     (and (not (call is_delim (mem.load8 (+ input_ptr i))))
+                          (eq (call stray_whitespace input_ptr i input_len) -1)))
            (set! i (+ i 1)))
          (let n:i32 (- i s))
          (set! count
                (cond
-                 ((call span_is input_ptr s n "->") (call write_token token_out_ptr count Kind.arrow 0 0))
-                 ((call span_is input_ptr s n "true") (call write_token token_out_ptr count Kind.bool 1 0))
-                 ((call span_is input_ptr s n "false") (call write_token token_out_ptr count Kind.bool 0 0))
+                 ((call span_is input_ptr s n "->") (call write_token token_out_ptr count Kind.arrow 0 0 s))
+                 ((call span_is input_ptr s n "true") (call write_token token_out_ptr count Kind.bool 1 0 s))
+                 ((call span_is input_ptr s n "false") (call write_token token_out_ptr count Kind.bool 0 0 s))
                  ((call is_int_literal input_ptr s n)
-                  (call write_token token_out_ptr count Kind.int (call parse_int_literal input_ptr s n) 0))
-                 ((call is_i64_literal input_ptr s n) (call write_token token_out_ptr count Kind.int64 s n))
-                 ((call is_float_literal input_ptr s n) (call write_token token_out_ptr count Kind.float s n))
-                 (else (call write_token token_out_ptr count Kind.symbol s n)))))))
+                  (call write_token token_out_ptr count Kind.int s n s))
+                 ((call is_i64_literal input_ptr s n) (call write_token token_out_ptr count Kind.int64 s n s))
+                 ((call is_float_literal input_ptr s n) (call write_token token_out_ptr count Kind.float s n s))
+                 (else (call write_token token_out_ptr count Kind.symbol s n s)))))))
     count)
 
   ;; ===== Parser: tokens -> a tree of Nodes =====
@@ -189,13 +293,14 @@
 
   (struct Parser [tokens:i32 count:i32 pos:i32 ast:i32 used:i32])
 
-  (fn new_node [p:(ptr Parser) kind:Kind a:i32 b:i32] -> (ptr Node)
+  (fn new_node [p:(ptr Parser) kind:Kind a:i32 b:i32 pos:i32] -> (ptr Node)
     (let node:(ptr Node) (ptr.cast Node (+ (get p Parser.ast) (get p Parser.used))))
     (put node Node.kind kind)
     (put node Node.a a)
     (put node Node.b b)
     (put node Node.next (ptr.null Node))
     (put node Node.first (ptr.null Node))
+    (put node Node.pos pos)
     (put p Parser.used (+ (get p Parser.used) (sizeof Node)))
     node)
 
@@ -209,7 +314,7 @@
     (let kind:Kind (get t Token.kind))
     (put p Parser.pos (+ (get p Parser.pos) 1))
     (if (and (neq kind Kind.lparen) (neq kind Kind.lbracket))
-        (return (call new_node p kind (get t Token.a) (get t Token.b)))
+        (return (call new_node p kind (get t Token.a) (get t Token.b) (get t Token.pos)))
         (block))
     (let close:Kind (if (eq kind Kind.lparen) Kind.rparen Kind.rbracket))
     (let first:(ptr Node) (ptr.null Node))
@@ -222,7 +327,7 @@
       (set! n (+ n 1)))
     ;; the closing bracket (absent at the end of an unbalanced input)
     (if (lt (get p Parser.pos) (get p Parser.count)) (put p Parser.pos (+ (get p Parser.pos) 1)) (block))
-    (let group:(ptr Node) (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) 0 n))
+    (let group:(ptr Node) (call new_node p (if (eq kind Kind.lparen) Kind.paren Kind.bracket) 0 n (get t Token.pos)))
     (put group Node.first first)
     group)
 
@@ -266,13 +371,13 @@
     (let tok:i32 (mem.alloc 2048))
     (let n:i32 (call tokenize (str.ptr src) (str.len src) tok))
     (if (and (eq n 6)
-             (and (and (eq (call kind_at tok 0) Kind.int) (eq (call a_at tok 0) 42))
-                  (and (and (eq (call kind_at tok 1) Kind.int) (eq (call a_at tok 1) -7))
+             (and (and (eq (call kind_at tok 0) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 0) (call b_at tok 0)) 42))
+                  (and (and (eq (call kind_at tok 1) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 1) (call b_at tok 1)) -7))
                        (and (and (eq (call kind_at tok 2) Kind.bool) (eq (call a_at tok 2) 1))
                             (and (and (eq (call kind_at tok 3) Kind.bool) (eq (call a_at tok 3) 0))
                                  (and (and (eq (call kind_at tok 4) Kind.string)
                                            (call span_is (str.ptr src) (call a_at tok 4) (call b_at tok 4) "hi"))
-                                      (and (eq (call kind_at tok 5) Kind.int) (eq (call a_at tok 5) 99))))))))
+                                      (and (eq (call kind_at tok 5) Kind.int) (eq (call int_value (str.ptr src) (call a_at tok 5) (call b_at tok 5)) 99))))))))
         1
         0))
 
@@ -292,8 +397,8 @@
     (if (and (eq n 5)
              (and (and (eq (get root Node.kind) Kind.paren) (eq (get root Node.b) 3))
                   (and (and (eq (get c0 Node.kind) Kind.symbol) (call span_is (str.ptr src) (get c0 Node.a) (get c0 Node.b) "+"))
-                       (and (and (eq (get c1 Node.kind) Kind.int) (eq (get c1 Node.a) 1))
-                            (and (and (eq (get c2 Node.kind) Kind.int) (eq (get c2 Node.a) 2))
+                       (and (and (eq (get c1 Node.kind) Kind.int) (eq (call int_value (str.ptr src) (get c1 Node.a) (get c1 Node.b)) 1))
+                            (and (and (eq (get c2 Node.kind) Kind.int) (eq (call int_value (str.ptr src) (get c2 Node.a) (get c2 Node.b)) 2))
                                  (eq (get c2 Node.next) (ptr.null Node)))))))
         1
         0))

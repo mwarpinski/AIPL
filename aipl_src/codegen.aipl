@@ -24,6 +24,9 @@
   ;; symbol, string, or i64/float literal (compiler.aipl). A group's
   ;; children start at first_child.
   (fn node_a [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.a)))
+  ;; An int literal's value (its low 32 bits).
+  (fn int_node_value [cg:(ptr Cg) node:(ptr compiler.Node)] -> i32
+    (call compiler.int_value (get cg Cg.src) (call node_a node) (call node_b node)))
   (fn node_b [node:(ptr compiler.Node)] -> i32 (if (eq node (ptr.null compiler.Node)) 0 (get node compiler.Node.b)))
   (fn node_next [node:(ptr compiler.Node)] -> (ptr compiler.Node)
     (if (eq node (ptr.null compiler.Node)) node (get node compiler.Node.next)))
@@ -543,7 +546,9 @@
                      (let b:(ptr compiler.Node) (call first_child binders))
                      (let k:i32 0)
                      (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
-                       (call add_local_if_new cg (call node_a b) (call node_b b) (get (arr.get (ptr Field) (get v VariantInfo.fields) k) Field.ty))
+                       (if (call is_wildcard cg b)
+                           0
+                           (call add_local_if_new cg (call node_a b) (call node_b b) (get (arr.get (ptr Field) (get v VariantInfo.fields) k) Field.ty)))
                        (set! k (+ k 1))
                        (set! b (call node_next b))))
                    (block))
@@ -720,8 +725,9 @@
 ;; Value of an `i64` literal token such as `-7i64`. Digits accumulate
   ;; negatively so that -9223372036854775808i64 does not overflow.
   (fn parse_i64_literal [cg:(ptr Cg) pos:i32 len:i32] -> i64
-    (let neg:bool (eq (mem.load8 (+ (get cg Cg.src) pos)) 45))
-    (let i:i32 (if neg 1 0))
+    (let c0:i32 (mem.load8 (+ (get cg Cg.src) pos)))
+    (let neg:bool (eq c0 45))
+    (let i:i32 (if (or neg (eq c0 43)) 1 0))
     (let v:i64 0i64)
     (while (lt i (- len 3))
       (set! v (- (* v 10i64) (i64.extend_s (- (mem.load8 (+ (get cg Cg.src) (+ pos i))) 48))))
@@ -754,14 +760,17 @@
   ;; both are exact doubles, so one IEEE division is correctly rounded.
   ;; Literals outside that range are compile error 973.
   (fn emit_f64_literal [o:(ptr Out) cg:(ptr Cg) pos:i32 len:i32] -> void
-    (let neg:bool (eq (mem.load8 (+ (get cg Cg.src) pos)) 45))
-    (let i:i32 (if neg 1 0))
+    (let c0:i32 (mem.load8 (+ (get cg Cg.src) pos)))
+    (let neg:bool (eq c0 45))
+    (let i:i32 (if (or neg (eq c0 43)) 1 0))
     (let m:i64 0i64)
     (let sig:i32 0)
     (let frac:i32 0)
     (let seen_dot:bool false)
     (while (lt i len)
       (let c:i32 (mem.load8 (+ (get cg Cg.src) (+ pos i))))
+      ;; an exponent (1.5e3) is not exact by construction
+      (if (or (eq c 101) (eq c 69)) (block (call set_compile_error CgErr.inexact_float_literal) (break)) (block))
       (if (eq c 46)
           (set! seen_dot true)
           (block
@@ -1298,6 +1307,10 @@
     (if (neq (call node_kind arm) compiler.Kind.paren) (return (ptr.null VariantInfo)) (block))
     (call find_variant cg (call first_child arm)))
 
+  ;; A binder written `_`: the field is not read.
+  (fn is_wildcard [cg:(ptr Cg) b:(ptr compiler.Node)] -> bool
+    (and (eq (call node_kind b) compiler.Kind.symbol) (call sym_eq cg (call node_a b) (call node_b b) (str.ptr "_") 1)))
+
   ;; The first expression of a match arm's body: after its head and, for a
   ;; union arm, its [binders].
   (fn arm_body [arm:(ptr compiler.Node)] -> (ptr compiler.Node)
@@ -1821,7 +1834,8 @@
         (block))
     (let kind:compiler.Kind (call node_kind node))
     (cond
-      ((or (eq kind compiler.Kind.int) (eq kind compiler.Kind.bool)) (call emit_i32_const o (call node_a node)))
+      ((eq kind compiler.Kind.int) (call emit_i32_const o (call int_node_value cg node)))
+      ((eq kind compiler.Kind.bool) (call emit_i32_const o (call node_a node)))
       ((eq kind compiler.Kind.int64)
        (call put_byte o OP_I64_CONST)
        (call put_s64 o (call parse_i64_literal cg (call node_a node) (call node_b node))))
@@ -1955,7 +1969,7 @@
             (call emit_local_get o scratch)
             (let v:(ptr VariantInfo) (ptr.null VariantInfo))
             (if (eq (call node_kind head) compiler.Kind.int)
-                (call emit_i32_const o (call node_a head))
+                (call emit_i32_const o (call int_node_value cg head))
                 (block
                   (set! v (call find_variant cg head))
                   (if (eq v (ptr.null VariantInfo)) (call set_compile_error CgErr.unknown_variant) 0)
@@ -1973,10 +1987,13 @@
                   (let k:i32 0)
                   (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
                     (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
-                    (call emit_local_get o scratch)
-                    (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
-                    (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
-                    (call emit_local_set o (call find_local cg (call node_a b) (call node_b b)))
+                    (if (call is_wildcard cg b)
+                        (block)
+                        (block
+                          (call emit_local_get o scratch)
+                          (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
+                          (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
+                          (call emit_local_set o (call find_local cg (call node_a b) (call node_b b)))))
                     (set! k (+ k 1))
                     (set! b (call node_next b))))
                 (block))
@@ -3006,8 +3023,8 @@
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (set! src_len (call buf.len plain))
     ;; Buffers are sized from the input: a token is at least one source byte
-    ;; (12-byte records), an AST node is at most one per token.
-    (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) 12)))
+    ;; (a Token record each), an AST node is at most one per token.
+    (let tok_buf:i32 (call cg_alloc (* (+ (call compiler.count_tokens src_ptr src_len) 1) (sizeof compiler.Token))))
     (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) (sizeof compiler.Node))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
@@ -3320,7 +3337,7 @@
     (let _kw_init:i32 (call init_keywords))
     (let text:str "(module test_mod (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (loop i 0 9 1 (set! z (+ z i))) (+ y z)))")
     (let src:i32 (str.ptr text))
-    (let tok:i32 (mem.alloc (* 12 (+ (str.len text) 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (str.len text) 1))))
     (let n:i32 (call compiler.tokenize src (str.len text) tok))
     (let ast:i32 (mem.alloc (* (sizeof compiler.Node) (+ n 2))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok n ast))

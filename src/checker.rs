@@ -179,6 +179,9 @@ impl TypeChecker {
 
         // First pass: register function signatures
         for f in &module.functions {
+            if self.fn_signatures.contains_key(&f.name) {
+                return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
+            }
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
             self.fn_signatures
                 .insert(f.name.clone(), (param_types, f.return_type.clone()));
@@ -1145,7 +1148,8 @@ impl TypeChecker {
                                     al, ac, tname, member, fields.len(), want.join(" "), names.len()
                                 ));
                             }
-                            for (n, f) in names.iter().zip(fields.iter()) {
+                            // `_` binds nothing: the field is not read
+                            for (n, f) in names.iter().zip(fields.iter()).filter(|(n, _)| n.as_str() != "_") {
                                 if arm_env.contains_key(n) {
                                     return Err(format!("{}:{}: Cannot shadow existing variable '{}' in the {}.{} arm", al, ac, n, tname, member));
                                 }

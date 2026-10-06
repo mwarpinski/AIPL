@@ -533,7 +533,7 @@ impl VM {
                     if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
                         let var = &def.variants[tag];
                         let (offsets, _) = crate::checker::variant_layout(var)?;
-                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets) {
+                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                             let fv = self.load_val_at(cell + off, &f.ty)?;
                             scope.insert(name.clone(), fv);
                         }

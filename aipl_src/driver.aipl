@@ -1,5 +1,6 @@
 ;; The self-hosted toolchain as one program: resolver.aipl flattens a
-;; multi-file program, codegen.aipl compiles it. Compiled to wasm it is a WASI
+;; multi-file program, front.aipl type-checks it (reporting errors in the
+;; user's files, through origins.aipl), codegen.aipl compiles it. Compiled to wasm it is a WASI
 ;; command that compiles AIPL with no Rust involved:
 ;;   aipl compile aipl_src/driver.aipl -o aiplc.wasm
 ;;   wasmtime run --dir . --env AIPL_PATH aiplc.wasm examples/word_count.aipl wc.wasm
@@ -9,6 +10,11 @@
 ;; host_alloc (tests/test_resolver_aipl.rs does both).
 (module driver
   (import resolver)
+  (import front)
+  (import checker)
+  (import origins)
+  (import compiler)
+  (import buf)
   (import codegen)
   (import os)
   (import io)
@@ -18,6 +24,7 @@
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
   ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  ;; status 3: the program does not type-check; "path: line:col: message" is at (addr, len)
   (struct Out [status:i32 addr:i32 len:i32])
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
@@ -26,13 +33,19 @@
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
     (let res:(ptr Out) (new Out))
-    (let flat:(ptr resolver.Out) (call resolver.resolve_file path_addr path_len dirs_addr dirs_len))
-    (put res Out.addr (get flat resolver.Out.addr))
-    (put res Out.len (get flat resolver.Out.len))
-    (if (eq (get flat resolver.Out.ok) 0)
-        (block (put res Out.status 1) (return res))
+    (let out:(ptr buf.Buf) (call buf.make 65536))
+    (let err:(ptr buf.Buf) (call buf.make 256))
+    (let orig:(ptr origins.Origins) (call origins.make))
+    (let gen:(ptr origins.Origins) (call origins.make))
+    (if (not (call resolver.resolve_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) out err orig gen))
+        (block (call put_text res 1 err) (return res))
         (block))
-    (let n:i32 (call codegen.compile_module (get flat resolver.Out.addr) (get flat resolver.Out.len)))
+    (let flat:(ptr str.Bytes) (call buf.bytes out))
+    (let problem:(ptr checker.Problem) (call front.check (get flat str.Bytes.addr) (get flat str.Bytes.len)))
+    (if (neq problem (ptr.null checker.Problem))
+        (block (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
+        (block))
+    (let n:i32 (call codegen.compile_module (get flat str.Bytes.addr) (get flat str.Bytes.len)))
     (if (gt n 0)
         (block
           (put res Out.status 0)
@@ -44,11 +57,46 @@
           (put res Out.len (mem.load32 4))))
     res)
 
+  (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
+    (let t:(ptr str.Bytes) (call buf.bytes b))
+    (put res Out.status status)
+    (put res Out.addr (get t str.Bytes.addr))
+    (put res Out.len (get t str.Bytes.len)))
+
+  ;; "path: line:col: message" for an error at an offset in the flat
+  ;; program: through gen (empty when there were no generics) to the
+  ;; resolver's text, through orig to a file.
+  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (let at:i32 (get pr checker.Problem.at))
+    (let g:(ptr origins.Entry) (call origins.find gen at))
+    (if (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)) (block))
+    (let r:(ptr origins.Entry) (call origins.find orig at))
+    (let b:(ptr buf.Buf) (call buf.make 160))
+    (let path:(ptr str.Bytes) entry)
+    (let line:i32 1)
+    (let col:i32 1)
+    (if (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
+        (block
+          (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
+          (set! path (get f origins.File.path))
+          (let lc:(ptr compiler.LineCol) (call compiler.line_col (get (get f origins.File.text) str.Bytes.addr) (get r origins.Entry.pos)))
+          (set! line (get lc compiler.LineCol.line))
+          (set! col (get lc compiler.LineCol.col)))
+        (block))
+    (call buf.push_bytes b path)
+    (call buf.push_str b ": ")
+    (call buf.push_int b line)
+    (call buf.push_byte b 58)
+    (call buf.push_int b col)
+    (call buf.push_str b ": ")
+    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+    b)
+
   (fn write_err [b:(ptr str.Bytes)] -> void
     (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
 
-  ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, compile, or
-  ;; write error (reported on stderr), 2 on bad usage.
+  ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, type,
+  ;; compile, or write error (reported on stderr), 2 on bad usage.
   (fn main [] -> i32
     (if (neq (call os.arg_count) 3)
         (block (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
@@ -68,7 +116,7 @@
              (call io.println_int "compiled, bytes: " (get res Out.len))
              0)
            (block (call io.write_str 2 "cannot write ") (call write_err out) (call io.eprintln "") 1)))
-      ((eq status 1)
+      ((or (eq status 1) (eq status 3))
        (call write_err (call str.bytes (get res Out.addr) (get res Out.len)))
        (call io.eprintln "")
        1)

@@ -28,6 +28,13 @@
       (if (neq (call byte_at a i) (call byte_at b i)) (return false) (block)))
     true)
 
+  ;; Whether b spells the literal s, without allocating.
+  (fn is [b:(ptr Bytes) s:str] -> bool
+    (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
+    (loop i 0 (- (get b Bytes.len) 1) 1
+      (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
+    true)
+
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:(ptr Bytes) c:i32] -> i32
     (loop i 0 (- (get b Bytes.len) 1) 1
