@@ -329,7 +329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if native {
                     let exe_bytes = aipl_core::native::executable(&wasm, sandbox)?;
                     fs::write(&output, &exe_bytes)?;
-                    // WASI cannot set the execute bit, so the host does (LANGUAGE_GAPS.md 1)
+                    // WASI cannot set the execute bit, so the host does (ROADMAP.md)
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;

@@ -1,4 +1,4 @@
-//! The type checker in AIPL (docs/CHECKER_PLAN.md): each piece checked
+//! The type checker in AIPL (docs/design/CHECKER_PLAN.md): each piece checked
 //! against the Rust front end it mirrors, on the same text.
 
 use aipl_core::checker::TypeChecker;

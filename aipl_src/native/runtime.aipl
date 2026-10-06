@@ -1,5 +1,5 @@
 ;; runtime: the machine code every native executable carries around the
-;; program itself (native backend task NE4 onward, docs/NATIVE_BACKEND_PLAN.md).
+;; program itself (native backend task NE4 onward, docs/design/NATIVE_BACKEND_PLAN.md).
 ;; For now: Linux system calls and the first executable, which prints a
 ;; line and exits. Later tasks add start-up (arguments, linear memory),
 ;; traps, and the WASI functions on top of these system calls.

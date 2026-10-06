@@ -48,7 +48,7 @@
   ;; ===== The compile =====
   ;; What every compile function needs, passed as one value: the source text,
   ;; the locals of the function being compiled, and the module's functions.
-  ;; (The tables are still raw memory; docs/CODEGEN_REWRITE.md CR6.)
+  ;; (The tables are still raw memory; docs/design/CODEGEN_REWRITE.md CR6.)
   (struct Cg [src:i32 locals:(arr (ptr Local)) nlocals:i32 fns:(arr (ptr FnInfo)) nfns:i32
               structs:(arr (ptr StructInfo)) nstructs:i32
               unions:(arr (ptr UnionInfo)) nunions:i32

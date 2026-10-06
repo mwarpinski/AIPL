@@ -8,7 +8,7 @@ toolchain's bytes, but it trusts its input: the parser (`src/parser.rs`)
 and the checker (`src/checker.rs`) that reject bad programs exist only in
 Rust. This plan adds both in AIPL, so `aiplc` rejects what `aipl verify`
 rejects, with the same messages, and the Rust front end can retire
-(PROGRESS.md "Next steps" 9-10).
+(the plan's steps 9-10 at the time; docs/history/WORK_LOG.md).
 
 ## Design
 

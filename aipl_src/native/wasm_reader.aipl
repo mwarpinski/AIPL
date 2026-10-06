@@ -1,5 +1,5 @@
 ;; wasm_reader: decodes a WebAssembly module into typed records (native
-;; backend task NE1, docs/NATIVE_BACKEND_PLAN.md). It reads exactly the forms
+;; backend task NE1, docs/design/NATIVE_BACKEND_PLAN.md). It reads exactly the forms
 ;; AIPL's compilers emit (src/compiler/wasm.rs, aipl_src/codegen.aipl); any
 ;; other encoding is an error naming it and its byte offset, never skipped.
 ;; Function bodies are decoded into locals and instruction records (NE2).

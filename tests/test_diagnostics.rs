@@ -131,7 +131,7 @@ fn test_diagnostic_layout_allows_legitimate_runtime_access() {
     check_ok("(module m (fn f [] -> void (mem.store32 4096 1)))");
 }
 
-/// What the checker accepts must compile (docs/gemini-audit.md found the
+/// What the checker accepts must compile (an external audit on 2026-10-05 found the
 /// first four holes; a sweep of every op over 0-3 operands of each kind
 /// found the rest). Each rejected program, with the message it gets.
 #[test]

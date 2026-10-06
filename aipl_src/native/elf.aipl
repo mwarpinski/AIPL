@@ -1,6 +1,6 @@
 ;; elf: writes a Linux x86-64 executable (ELF64, statically linked, no libc)
 ;; around machine code and data (native backend task NE4,
-;; docs/NATIVE_BACKEND_PLAN.md).
+;; docs/design/NATIVE_BACKEND_PLAN.md).
 ;;
 ;; Layout (all page-aligned, 4 KiB pages):
 ;;   file 0x0000          ELF header + 3 program headers (not loaded)

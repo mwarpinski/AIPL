@@ -2,7 +2,9 @@
 
 **Status: done (NE1–NE18, 2026-10-04).** Kept as the design record; where it differs from the code, the code and AIPL_SPEC.md 6.6 win (the memory cap, for one, is now 32768 pages, 2 GiB, not 64 MiB).
 
-Written 2026-10-02, before any native code exists. This is the plan for step 6 of PROGRESS.md ("Next steps"). Read PROGRESS.md's "Direction" section first; the decisions below follow from it.
+Written 2026-10-02, before any native code exists, as step 6 of the plan of the time (docs/history/WORK_LOG.md, "Next steps"). Read DEVELOPING.md's "Direction" section first; the decisions below follow from it.
+
+Why a native backend at all: on 2026-10-01 (audit task P13) the project had decided on wasm only, since wasm is the semantic reference and wasmtime already runs it at near-native speed. A day later the goals changed: programs ship as single standalone executables, and the toolchain migrates off Rust, which neither a `.wasm` (it needs a runtime installed) nor the 18 MB launcher bundle meets. This plan keeps what P13 valued: the backend translates wasm, not AIPL, so wasm stays the one reference and every native build is tested against wasmtime on the same programs; and it is written in AIPL, after self-hosting.
 
 ## Goal
 
