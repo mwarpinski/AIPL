@@ -1,5 +1,7 @@
 # Freeing memory: allocators in the style of Zig
 
+**Status: done (H0–H5, 2026-10-06).** Kept as the design record and for its measurements.
+
 AIPL's memory only grows: `mem.alloc`, `new`, and `arr.new` take from a
 bump cursor that never moves back, and `std/arena` frees many values at
 once. Long-running programs leak, and growing a `vec`, `buf`, or `strmap`

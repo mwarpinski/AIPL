@@ -1,5 +1,7 @@
 # The type checker in AIPL
 
+**Status: done (CK1–CK11, 2026-10-05).** Kept as the design record. The checker has since gained rules (result payloads must be 32-bit; `sizeof` of any type); AIPL_SPEC.md is current.
+
 The self-hosted toolchain (`aipl_src/driver.aipl`: resolver, generics,
 constants, code generator) compiles any checked program to the Rust
 toolchain's bytes, but it trusts its input: the parser (`src/parser.rs`)

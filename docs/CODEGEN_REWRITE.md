@@ -1,5 +1,7 @@
 # Rewriting the self-hosted code generator on typed data
 
+**Status: done (2026-10-05).** Kept as the design record.
+
 `aipl_src/codegen.aipl` (about 3000 lines) is the self-hosted wasm code
 generator, and everything else trusts it: the AIPL toolchain compiles itself
 with it, and the native backend translates its output. It was written before

@@ -103,14 +103,15 @@ work (`buf.push_byte`, `fs.write`). The test size (199) is not a multiple of
 8, so the padded last byte of each row is checked too.
 
 **binarytrees** (millions of short-lived tree nodes, one long-lived tree).
-AIPL has no general `free`, so at the benchmark's sizes it would run out of
-its 64 MiB. Added `std/arena`: a typed region allocator (`(call (arena.alloc
+AIPL had no general `free` (it has since 2026-10-06, `std/heap`), so at the
+benchmark's sizes it would have run out of its then 64 MiB. Added `std/arena`: a typed region allocator (`(call (arena.alloc
 Node) a)` returns a zeroed `(ptr Node)`, no cast; `arena.reset` frees
 everything at once and its chunks are reused), as the benchmark allows for
 memory pools. Not a like-for-like race: AIPL resets an arena per tree, the C
 version calls malloc and free per node (the classic C entry), and Python
 uses its garbage collector, which is why AIPL under wasmtime beats C here.
-A general per-object free remains a gap. Writing it found a resolver bug,
+Freeing each node through `std/heap` instead takes 1.12 s natively against
+the arena's 0.26 s (docs/HEAP_PLAN.md H5). Writing it found a resolver bug,
 fixed in both resolvers: a module calling its own generic function with its
 own struct (`(alloc Pair)` inside std/arena) left the type argument
 unqualified, so the instance's type no longer matched the struct once the

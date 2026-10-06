@@ -2,7 +2,7 @@
 
 Read this before picking the work back up. It covers what is real, what is partial, how to verify it, and what comes next. Companion documents: [AIPL_SPEC.md](AIPL_SPEC.md) (the language as implemented), [AIPL_Structural_Audit.md](AIPL_Structural_Audit.md) (the ordered task list P1–P14 with agent prompts), [docs/NATIVE_BACKEND_PLAN.md](docs/NATIVE_BACKEND_PLAN.md) (the native backend, tasks NE1–NE18), [LANGUAGE_GAPS.md](LANGUAGE_GAPS.md) (what the language does not do yet).
 
-Last updated 2026-10-04. P1–P14, the pre-native work, the Linux x86-64 native backend (NE1–NE18), and the benchmarks are done and merged to `development`; `main` last received a release on 2026-10-04 (the native backend; the benchmarks are not on `main` yet). The documentation was then brought in line with the code (branch `features/docs-sync`). Branches: tasks merge into `development`; `development` merges into `main` at milestones (`main` replaces `master`). The direction and the next steps are at the end of this file.
+Last updated 2026-10-06. Done and on `main` (2026-10-06): P1–P14, the Linux x86-64 native backend (NE1–NE18), the benchmarks, constants, enums, unions, the type checker in AIPL, the 2 GiB memory cap, contracts and bounds checks in compiled code, locals in registers in native code, and Zig-style allocators. The documentation was then checked against the code again (2026-10-06). Before showing the project publicly, work through [docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md). Branches: tasks merge into `development`; `development` merges into `main` at milestones (`main` replaces `master`). The direction and the next steps are at the end of this file.
 
 ## Environment
 
@@ -14,22 +14,22 @@ Last updated 2026-10-04. P1–P14, the pre-native work, the Linux x86-64 native 
 ## How to verify everything
 
 ```bash
-cargo test                                   # 249 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 286 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
 
-Expected AIPL suite output:
+Expected AIPL suite output (24 groups):
 ```
 [PASS] compiler: tokenizer (2 tests)
 [PASS] compiler: parser (2 tests)
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 [PASS] memory: allocator + arena
 [PASS] file_io: real disk round-trip
-[PASS] std/str: byte slices + parse_int (7 tests)
+[PASS] std/str: byte slices + parse_int (8 tests)
 [PASS] std/fmt: number formatting (14 tests)
 [PASS] resolver: imports in AIPL (3 tests)
-[PASS] std/os: arguments + environment (2 tests)
+[PASS] std/os: arguments + environment (3 tests)
 [PASS] native/wasm_reader: module structure and bodies (5 tests)
 [PASS] native/x64: instruction encodings vs GNU as (9 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
@@ -40,8 +40,10 @@ Expected AIPL suite output:
 [PASS] std/buf: string builder (3 tests)
 [PASS] std/time: durations and the clock (7 tests)
 [PASS] std/arena: typed region allocator (5 tests)
+[PASS] std/heap: general-purpose allocator (8 tests)
+[PASS] std/alloc: any allocator as one value (7 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
-[PASS] consts: constants and enums erased for codegen (4 tests)
+[PASS] consts: constants and enums erased for codegen (5 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.
 ```
@@ -245,7 +247,7 @@ Before the native backend, the language and runtime surface are completed so the
    - C1. **Named constants and enums.** **Done 2026-10-04** (branch `features/consts-enums`), moved ahead of B so the rewrite can use them: `(const NAME:T literal)` and `(enum Name [a b (c 10)])` with `Name.member`, `enum.ord`, `enum.cast` (AIPL_SPEC.md 4.I). Enums are distinct types to the checker (no arithmetic, `eq`/`neq` only) and `i32` at run time. Expanded after generics by `src/consts.rs` in Rust and erased by `aipl_src/consts.aipl` at the start of `codegen.compile_module`, at byte parity; both resolvers qualify them across imports. `tests/test_consts_enums.rs` runs them in the VM, wasm, and natively and checks every rule's message. Found on the way: the wasm backend skipped operator operands when collecting locals, so `(+ 1 (match_result ...))` failed to compile (the VM ran it); `collect_lets` is now an exhaustive pre-order walk matching codegen.aipl. Also: a pointer or enum plus a number now gets the specific message rather than a type mismatch.
    - C2. **Remaining language features.** **Done 2026-10-05** (branch `features/sum-types-unsigned-checked`): unsigned comparisons `ltu lteu gtu gteu` and overflow-checked `checked.add/sub/mul` (AIPL_SPEC.md 8.2; a 864-case differential test against Rust's `checked_*`), and unions with `make` and exhaustive `match` over unions and enums (AIPL_SPEC.md 4.J): a tagged heap cell per value, in the VM, both wasm backends at byte parity, and natively. `tests/test_sum_types.rs` runs them in every backend and checks every rule's message; both resolvers rename arm heads across imports. Found on the way: a name declared with two types in sibling scopes (two blocks, now two arms) compiled to invalid wasm, since both compilers give a name one local per function; the checker now rejects it (one case in `wasm_reader.aipl`, renamed). `compiler.aipl`'s `Node.a` no longer doubles as a child pointer: groups have a typed `first`. Not done: `result` as a union instance (its payloads stay 32-bit), generic unions.
    - D. **External audit fixes** (docs/gemini-audit.md, response at its end). **Done 2026-10-05** (branch `features/audit-fixes`): the checker now rejects everything a backend cannot run (atomics' operands, `thread.join`'s handle, non-`str` `sys.print`, arithmetic and ordering on non-numbers); `mem.free`, the float memory ops, and `(+ str str)` are removed; a Rust-backend miscompilation (value-producing ops used as statements left their value on the stack) is fixed by deriving voidness from the type table; the opcode conformance test checks every op in both positions, validates the wasm, and compares self-hosted bytes. A sweep of about 2,800 operator programs now finds nothing `verify` accepts that a backend rejects.
-9. **The type checker in AIPL** (**done 2026-10-05**, docs/CHECKER_PLAN.md: tokenizer, typed tree, parser, constant expansion, and checker in AIPL at word-for-word message parity with Rust; `aiplc` checks before compiling and reports errors in the user's files), then **contracts compiled into wasm** (audit B5; decide N4, compiled bounds checks, there) so the VM can retire.
+9. **The type checker in AIPL** (**done 2026-10-05**, docs/CHECKER_PLAN.md: tokenizer, typed tree, parser, constant expansion, and checker in AIPL at word-for-word message parity with Rust; `aiplc` checks before compiling and reports errors in the user's files), then **contracts compiled into wasm** (**done 2026-10-05**, docs/CHECKS_PLAN.md, with compiled bounds checks).
 10. **Stage-0 seed and retiring the Rust compiler code.**
 
 Decided 2026-10-05 (the user), to do after the AIPL checker: **raise the memory cap** (**done 2026-10-05**: 32768 pages, 2 GiB, in the VM, both compilers, the launcher, and the native backend, which reserves it as address space; was 64 MiB; 2 GiB is wasm32's natural ceiling for a signed-address design, up to 4 GiB unsigned) since a production language needs it; **native speed: the known fixes** (**done 2026-10-05**: the stack top in a register, about 2x on integer code; the memory size in a register measured no difference and was not kept; locals in registers is the next real gain, a project of its own; docs/BENCHMARKS.md); **more standard library where it shortens real programs** (**done 2026-10-05**: `os.arg_int`, `str.parse_int_or`, `buf.write`/`buf.print`, used by every benchmark; the shared digit printer stayed out of std as contest-specific). Packaging: lean towards embedding the standard library in the compiler binary; **no version number or public release until the language is mature**.
@@ -253,7 +255,6 @@ Decided 2026-10-05 (the user), to do after the AIPL checker: **raise the memory 
 Candidates after these, not yet ordered (from Gemini's planning docs, 2026-10-05, checked against the code; the docs themselves were dropped so this file stays the only plan):
 - **Compiled contracts and array bounds checks** (**done 2026-10-05**, docs/CHECKS_PLAN.md): `req`, `ens` (early returns included), and every `arr.get`/`arr.set` are checked in wasm and native code, at byte parity between the compilers, with the VM's messages (contracts without the position). Cost on the benchmarks: about 20-30% under wasmtime, 45-55% natively on array-bound loops.
 - **Freeing memory, Zig style** (**done 2026-10-06**, docs/HEAP_PLAN.md): `sizeof` of any type; `std/heap` (per-object free with double-free, wrong-size, foreign-pointer, and write-after-free checks, leak counts); `std/alloc` (one `Allocator` type over heap, arena, fixed buffer, and custom allocators; `alloc.default`); `vec`, `map`, `strmap`, `buf` take an allocator and free old storage. Next if allocation speed matters: a faster small-block path (about 4x C's malloc today).
-- **Arena-aware containers.** `vec`, `map`, `strmap`, and `buf` grow by allocating anew and abandoning the old block; letting them take a `(ptr arena.Arena)` would make that memory reclaimable with `arena.reset` (`std/arena` already exists).
 - **Small structs by value.** Today every struct is `(ptr S)` on the heap; a value form for small records (a span, a point) would live in locals. Touches the type system, both compilers, and the native backend's calling convention.
 - **Constraints on generics (traits/interfaces).** A generic may do anything its instances allow and is checked only through them (LANGUAGE_GAPS.md 2); named constraints would let a template be checked once and give dispatch over a set of operations (function-reference tables, as `call_ref` already does).
 - **Generic unions** (`(Option T)`, `(Result T E)`), which would also let `result` become a union and lift its 32-bit payload limit (AIPL_SPEC.md 4.J).
@@ -261,7 +262,7 @@ Candidates after these, not yet ordered (from Gemini's planning docs, 2026-10-05
 
 Explicitly not now, each additive later rather than a rewrite: SIMD, 64-bit memory, exceptions (results cover errors).
 
-Later: language versioning (once packages exist); `inv` contracts; a freeing allocator (N6).
+Later: language versioning (once packages exist); `inv` contracts. (A freeing allocator, N6, is done: docs/HEAP_PLAN.md; containers take any allocator, an arena included.)
 
 ## Completed work log (condensed)
 

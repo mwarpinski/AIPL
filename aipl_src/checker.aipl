@@ -584,11 +584,15 @@
       (ast.Expr.ok [_ val oty]
        (let inner:ast.Type (call infer c val env))
        (if (get c C.failed) (return (call void_t)) (block))
+       (call check_result_payload c inner at)
+       (if (get c C.failed) (return (call void_t)) (block))
        (let et:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
        (call validate_or_fail c et at)
        (make ast.Type.result inner et))
       (ast.Expr.err [_ val oty]
        (let errt:ast.Type (call infer c val env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (call check_result_payload c errt at)
        (if (get c C.failed) (return (call void_t)) (block))
        (let okt:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
        (call validate_or_fail c okt at)
@@ -694,6 +698,17 @@
              (call void_t))))))
 
   (fn placeholder [at:i32] -> ast.Expr (make ast.Expr.lit_int at 0i64))
+
+  ;; checker.rs check_result_payload: a result cell's payload is 32-bit.
+  (fn check_result_payload [c:(ptr C) t:ast.Type at:i32] -> void
+    (let k:i32 (call tag t))
+    (if (and (gte k 1) (lte k 3))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got ")
+          (call ty b t)
+          (call fail c b))
+        (block)))
 
   (fn unknown_struct [c:(ptr C) at:i32 name:(ptr str.Bytes)] -> void
     (let b:(ptr buf.Buf) (call msg c at))

@@ -1530,7 +1530,7 @@ impl Parser {
                         }
                         "mem.free" => {
                             return Err(format!(
-                                "{}:{}: there is no mem.free: memory is never freed. For memory used in phases, allocate from a region and reset it (std/arena)",
+                                "{}:{}: there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena",
                                 span.0, span.1
                             ))
                         }

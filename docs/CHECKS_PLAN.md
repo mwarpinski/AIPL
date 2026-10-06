@@ -1,5 +1,7 @@
 # Contracts and array bounds checks in compiled code
 
+**Status: done (CC1–CC5, 2026-10-05).** Kept as the design record and for its cost measurements; the text below describes the state before the work.
+
 Today `req`/`ens` and array bounds checks run only in the VM: a compiled
 program skips its contracts and reads or writes past the end of an array
 silently (AIPL_SPEC.md 4.E, 7.6; audit D1, B5). This plan makes compiled
