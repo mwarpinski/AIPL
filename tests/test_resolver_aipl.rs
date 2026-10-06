@@ -413,7 +413,9 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
         std::fs::write(&path, src).unwrap();
         let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
         let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
-        let rust = rust.rsplit_once(".aipl: ").map(|(_, m)| m.to_string()).unwrap_or(rust);
+        // both toolchains name the same file, with the same message
+        let (rust_path, rust) = rust.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: Rust names no file in {rust}"));
+        assert!(format!("{rust_path}.aipl").ends_with(file), "{name}: Rust names {rust_path}, expected {file}");
         match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
             wasm_driver::Outcome::TypeError(e) => {
                 let (path_part, msg) = e.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {e}"));

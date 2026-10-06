@@ -78,8 +78,9 @@ more than usual.
   the compiler's own errors now write `(ptr Point)`, `(arr i32)`, `+`.
 - [ ] **More than one error per run.** The checkers stop at the first; an
   agent fixing code wants all of them (or at least one per function).
-- [ ] **Type errors name the file** in the Rust toolchain (`aiplc` already
-  does).
+- [x] **Type errors name the file** in the Rust toolchain (2026-10-06), as
+  `aiplc` already did. The CLI also prints `Error: MESSAGE` plainly instead
+  of in Rust's debug quoting.
 
 ## 3. Claims (every sentence must survive being checked)
 

@@ -455,7 +455,7 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | `aipl test FILE [--func run_all]` | 1-4, 5a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
 | `aipl serve [--addr 127.0.0.1:8080]` | per request | an HTTP server for agents (`src/agent_api/server.rs`): `POST /eval` with JSON `{"source", "fn_name", "args"?}` runs a function in the VM (`args` are integers), `POST /verify` and `POST /compile` take the source as the request body; each answers JSON with `success` and `error`, plus `result` (eval) or `wasm_base64` (compile). Imports resolve against the standard library. Not covered by tests |
 
-Errors are printed as `Error: "MESSAGE"`, the message in Rust debug quoting (inner quotes escaped). `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
+Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1. `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
 
 ### 6.2 What a compiled `.wasm` module looks like
 
@@ -897,7 +897,7 @@ Every parser and checker error is a single line of the form
 <line>:<col>: <message>
 ```
 
-with 1-based line and column of the offending token or the opening `(` of the offending form. Syntax errors, which the resolver finds while reading a file, are prefixed with that file's path (`examples/x.aipl: 3:5: Unknown op/keyword: badop`); type errors are not, so a type error in an imported module gives a position but not the file (the self-hosted `aiplc` names the file for every error, section 6.4). Only the first error is reported. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names neither the function nor the line (`./prog: wasm trap: integer divide by zero`).
+with 1-based line and column of the offending token or the opening `(` of the offending form. Every error found before run time is prefixed with the path of the file it is in (`examples/x.aipl: 3:5: Unknown op/keyword: badop`), whether the resolver, the parser, or the checker finds it, and in both toolchains (section 6.4). An error inside a generic instance names the template's file, or the file that wrote the type argument when the error is at that argument. Only the first error is reported. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names neither the function nor the line (`./prog: wasm trap: integer divide by zero`).
 
 Representative messages, exactly as produced:
 

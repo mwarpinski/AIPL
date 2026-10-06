@@ -605,8 +605,10 @@ fn constant_errors_match_word_for_word() {
 /// Rust's verdict on a flat program: Ok, or the first error without the
 /// file prefix the resolver adds to parse and constant errors.
 fn rust_verdict(flat: &str) -> Result<(), String> {
-    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(|e| e.strip_prefix("m.aipl: ").unwrap_or(&e).to_string())?;
-    TypeChecker::new().check_module(&m)
+    // both name the file; check_text is given text, not a file
+    let strip = |e: String| e.strip_prefix("m.aipl: ").unwrap_or(&e).to_string();
+    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(strip)?;
+    TypeChecker::new().check_module(&m).map_err(strip)
 }
 
 fn aipl_verdict(front: &front::Front, flat: &str) -> Result<(), String> {

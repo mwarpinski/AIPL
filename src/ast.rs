@@ -427,6 +427,31 @@ pub struct Module {
     pub enums: Vec<EnumDef>,
     pub unions: Vec<UnionDef>,
     pub functions: Vec<FnDef>,
+    /// Where each item was written, keyed `"struct NAME"`, `"enum NAME"`,
+    /// `"union NAME"`, or `"fn NAME"`; filled by the resolver so type
+    /// errors can name the file, and empty for a module parsed from one text.
+    #[serde(skip)]
+    pub sources: std::collections::HashMap<String, Source>,
+}
+
+/// The file an item was written in, and the files of type arguments
+/// substituted into a generic instance (by token position).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Source {
+    pub file: std::path::PathBuf,
+    pub foreign: std::collections::HashMap<(u32, u32), std::path::PathBuf>,
+}
+
+impl Source {
+    /// Prefixes an error that starts with `L:C:` with the file that position is in.
+    pub fn name_file(&self, e: String) -> String {
+        let pos = e.split(':').take(2).map(|n| n.trim().parse::<u32>()).collect::<Result<Vec<_>, _>>();
+        let file = match pos.as_deref() {
+            Ok([l, c]) => self.foreign.get(&(*l, *c)).unwrap_or(&self.file),
+            _ => &self.file,
+        };
+        format!("{}: {}", file.display(), e)
+    }
 }
 
 /// A type as AIPL source writes it (`(ptr Point)`, `(arr i64)`), for

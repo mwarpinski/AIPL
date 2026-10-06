@@ -84,6 +84,8 @@ pub struct TypeChecker {
     declared: std::cell::RefCell<HashMap<String, Type>>,
     /// Return type of the function body being checked; None inside contracts.
     return_type: std::cell::RefCell<Option<Type>>,
+    /// The `Module::sources` key of the item being checked, so an error can name its file.
+    item: std::cell::RefCell<String>,
 }
 
 impl Default for TypeChecker {
@@ -102,12 +104,27 @@ impl TypeChecker {
             declared: std::cell::RefCell::new(HashMap::new()),
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
+            item: std::cell::RefCell::new(String::new()),
         }
     }
 
+    /// Checks a module. When the resolver recorded where its items were
+    /// written, an error is prefixed with the file of the item it is in.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
+        self.check_items(module).map_err(|e| match module.sources.get(&*self.item.borrow()) {
+            Some(source) => source.name_file(e),
+            None => e,
+        })
+    }
+
+    fn at_item(&self, kind: &str, name: &str) {
+        *self.item.borrow_mut() = format!("{} {}", kind, name);
+    }
+
+    fn check_items(&mut self, module: &Module) -> Result<(), String> {
         // Register enum definitions (AIPL_SPEC.md 4.I)
         for e in &module.enums {
+            self.at_item("enum", &e.name);
             let (l, c) = e.span;
             if self.enum_defs.contains_key(&e.name) {
                 return Err(format!("{}:{}: Duplicate enum definition '{}'", l, c, e.name));
@@ -134,6 +151,7 @@ impl TypeChecker {
 
         // Register struct definitions
         for s in &module.structs {
+            self.at_item("struct", &s.name);
             if self.struct_defs.contains_key(&s.name) {
                 return Err(format!(
                     "{}:{}: Duplicate struct definition '{}'",
@@ -156,6 +174,7 @@ impl TypeChecker {
 
         // Register union definitions (AIPL_SPEC.md 4.J)
         for u in &module.unions {
+            self.at_item("union", &u.name);
             let (l, c) = u.span;
             if self.union_defs.contains_key(&u.name) {
                 return Err(format!("{}:{}: Duplicate union definition '{}'", l, c, u.name));
@@ -186,11 +205,13 @@ impl TypeChecker {
 
         // Field types may name structs and unions defined later in the module.
         for s in &module.structs {
+            self.at_item("struct", &s.name);
             for f in &s.fields {
                 self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, s.name))?;
             }
         }
         for u in &module.unions {
+            self.at_item("union", &u.name);
             for v in &u.variants {
                 for f in &v.fields {
                     self.validate_type(&f.ty, u.span)
@@ -201,6 +222,7 @@ impl TypeChecker {
 
         // First pass: register function signatures
         for f in &module.functions {
+            self.at_item("fn", &f.name);
             if self.fn_signatures.contains_key(&f.name) {
                 return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
             }
@@ -211,6 +233,7 @@ impl TypeChecker {
 
         // Second pass: type check bodies and verify contracts
         for f in &module.functions {
+            self.at_item("fn", &f.name);
             self.check_fn_def(f)?;
         }
 

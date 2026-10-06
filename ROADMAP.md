@@ -58,7 +58,7 @@ versioning (once packages exist), `inv` contracts.
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
 - **Most runtime errors have no source position.** VM contract failures do (`Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`); compiled ones name the function and contract but not the line; an out-of-bounds index, a bad memory access, or a store into the reserved block names the op and address but not the line.
 - **Compiled traps have no source position.** A crash prints its reason and the functions it happened in (`  at math.div`, `  at main`), but not the line (docs/LAUNCH_CHECKLIST.md 2).
-- **Diagnostics stop at the first error.** In the Rust toolchain syntax errors carry the file path but type errors do not, so an error in an imported module gives a line but not the file; the self-hosted compiler (`aiplc`) names the file for every error. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: RParen`.
+- **Diagnostics stop at the first error.** Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: RParen`.
 
 ### Language
 

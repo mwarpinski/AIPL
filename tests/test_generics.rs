@@ -144,11 +144,11 @@ fn malformed_generics_are_errors() {
     assert!(e.contains("generic name 'get' is a built-in form"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> T x) (fn (f T) [x:T] -> T x))");
     assert!(e.contains("generic 'f' is defined twice"), "{e}");
-    // a type error inside an instance points at the template's source line
+    // a type error inside an instance points at the template's file and line
     let entry = write_program("type_err", &[("main.aipl", "(module m\n  (fn (f T) [x:T] -> T\n    (+ x true))\n  (fn g [] -> i32 (call (f i32) 1)))")]);
     let m = Resolver::resolve(&entry).unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.starts_with("3:"), "{e}");
+    assert!(e.starts_with(&format!("{}: 3:5: ", entry.display())), "{e}");
 }
 
 /// An imported module calling its own generic function with its own struct
