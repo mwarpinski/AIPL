@@ -146,6 +146,7 @@
       (else true)))
 
   (fn is_void [t:ast.Type] -> bool (eq (call tag t) 6))
+  (fn is_i64 [t:ast.Type] -> bool (eq (call tag t) 1))
   (fn is_i32 [t:ast.Type] -> bool (eq (call tag t) 0))
   (fn is_int [t:ast.Type] -> bool (or (eq (call tag t) 0) (eq (call tag t) 1)))
 
@@ -262,6 +263,12 @@
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (loop k 0 (- (arr.len fns) 1) 1
       (let fd:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
+      (if (call (strmap.has (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name))
+          (block
+            (let b:(ptr buf.Buf) (call msg c (get fd ast.FnDef.at)))
+            (call s b "Duplicate function definition '") (call by b (get fd ast.FnDef.name)) (call s b "'")
+            (call fail c b) (return))
+          (block))
       (let sig:(ptr Sig) (new Sig))
       (let ps:(arr (ptr ast.Param)) (get fd ast.FnDef.params))
       (let pts:(arr ast.Type) (arr.new ast.Type (arr.len ps)))
@@ -1196,22 +1203,22 @@
        t1)
       ((call is_arith o) (call infer_arith c env at o args))
       ((or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32))
-       (call one c env at args (call i32_t) (call op_text o " requires 1 argument (ptr: i32)") (call op_text o " requires i32 ptr, got "))
+       (call one c env at args (call i32_t) o true " requires 1 argument (ptr: i32)" " requires i32 ptr, got ")
        (call i32_t))
       ((eq o ast.Op.mem_load64)
-       (call one c env at args (call i32_t) (call text "mem.load64 requires 1 argument (ptr: i32)") (call text "mem.load64 requires i32 ptr, got "))
+       (call one c env at args (call i32_t) o false "mem.load64 requires 1 argument (ptr: i32)" "mem.load64 requires i32 ptr, got ")
        (call i64_t))
       ((or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store32))
-       (call store c env at o args (call i32_t) (call op_text o " requires 2 arguments (ptr: i32, val: i32)") (call op_text o " requires (i32, i32), got ("))
+       (call store c env at o args (call i32_t) true " requires 2 arguments (ptr: i32, val: i32)" " requires (i32, i32), got (")
        (call void_t))
       ((eq o ast.Op.mem_store64)
-       (call store c env at o args (call i64_t) (call text "mem.store64 requires 2 arguments (ptr: i32, val: i64)") (call text "mem.store64 requires (i32, i64), got ("))
+       (call store c env at o args (call i64_t) false "mem.store64 requires 2 arguments (ptr: i32, val: i64)" "mem.store64 requires (i32, i64), got (")
        (call void_t))
       ((eq o ast.Op.mem_alloc)
-       (call one c env at args (call i32_t) (call text "mem.alloc requires 1 argument (size: i32)") (call text "mem.alloc requires i32 size, got "))
+       (call one c env at args (call i32_t) o false "mem.alloc requires 1 argument (size: i32)" "mem.alloc requires i32 size, got ")
        (call i32_t))
       ((eq o ast.Op.mem_grow)
-       (call one c env at args (call i32_t) (call text "mem.grow requires 1 argument (pages: i32)") (call text "mem.grow requires i32 pages, got "))
+       (call one c env at args (call i32_t) o false "mem.grow requires 1 argument (pages: i32)" "mem.grow requires i32 pages, got ")
        (call i32_t))
       ((eq o ast.Op.atomic_add) (call operands c env at "atomic.add" "(atomic.add p v)" args 2) (call i32_t))
       ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
@@ -1258,28 +1265,27 @@
        (if (neq n 0) (block (call op_msg c at o " takes no arguments") (return (call void_t))) (block))
        (call i64_t))
       ((eq o ast.Op.sys_random)
-       (call all_i32 c env at args 2 (call text "sys.random requires 2 arguments (ptr, len)") (call text "sys.random argument ") (call text " must be i32, got "))
+       (call all_i32 c env at args 2 o false "sys.random requires 2 arguments (ptr, len)" "sys.random argument " " must be i32, got ")
        (call i32_t))
       ((eq o ast.Op.sys_exit)
-       (call one c env at args (call i32_t) (call text "sys.exit requires 1 argument (code: i32)") (call text "sys.exit requires i32 code, got "))
+       (call one c env at args (call i32_t) o false "sys.exit requires 1 argument (code: i32)" "sys.exit requires i32 code, got ")
        (call void_t))
       ((or (eq o ast.Op.str_len) (eq o ast.Op.str_ptr))
-       (let name:str (if (eq o ast.Op.str_len) "str.len" "str.ptr"))
-       (let b1:(ptr buf.Buf) (call buf.make 48)) (call s b1 name) (call s b1 " requires 1 argument (s: str)")
-       (let b2:(ptr buf.Buf) (call buf.make 48)) (call s b2 name) (call s b2 " requires str, got ")
-       (call one c env at args (make ast.Type.str) b1 b2)
+       (if (eq o ast.Op.str_len)
+           (call one c env at args (make ast.Type.str) o false "str.len requires 1 argument (s: str)" "str.len requires str, got ")
+           (call one c env at args (make ast.Type.str) o false "str.ptr requires 1 argument (s: str)" "str.ptr requires str, got "))
        (call i32_t))
       ((or (eq o ast.Op.fs_open) (or (eq o ast.Op.fs_read) (eq o ast.Op.fs_write)))
-       (call all_i32 c env at args 3 (call op_text o " requires 3 arguments") (call op_text o " argument ") (call text " must be i32 (pointer/length/fd), got "))
+       (call all_i32 c env at args 3 o true " requires 3 arguments" " argument " " must be i32 (pointer/length/fd), got ")
        (call i32_t))
       ((eq o ast.Op.fs_close)
-       (call one c env at args (call i32_t) (call text "fs.close requires 1 argument") (call text "fs.close requires i32 fd, got "))
+       (call one c env at args (call i32_t) o false "fs.close requires 1 argument" "fs.close requires i32 fd, got ")
        (call i32_t))
       ((or (eq o ast.Op.args_sizes) (or (eq o ast.Op.args_get) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get))))
-       (call all_i32 c env at args 2 (call op_text o " requires 2 arguments (two i32 addresses)") (call op_text o " argument ") (call text " must be an i32 address, got "))
+       (call all_i32 c env at args 2 o true " requires 2 arguments (two i32 addresses)" " argument " " must be an i32 address, got ")
        (call i32_t))
       ((eq o ast.Op.fs_delete)
-       (call all_i32 c env at args 2 (call text "fs.delete requires 2 arguments (path_ptr, path_len)") (call text "fs.delete argument ") (call text " must be i32 (pointer/length), got "))
+       (call all_i32 c env at args 2 o false "fs.delete requires 2 arguments (path_ptr, path_len)" "fs.delete argument " " must be i32 (pointer/length), got ")
        (call i32_t))
       ((eq o ast.Op.thread_spawn) (call infer_spawn c env at args))
       ((eq o ast.Op.thread_join)
@@ -1293,23 +1299,25 @@
            (block))
        (call i32_t))
       ((or (eq o ast.Op.i64_extend_s) (eq o ast.Op.i64_extend_u))
-       (call one c env at args (call i32_t) (call op_text o " requires 1 argument (x: i32)") (call op_text o " requires i32, got "))
+       (call one c env at args (call i32_t) o true " requires 1 argument (x: i32)" " requires i32, got ")
        (call i64_t))
       ((eq o ast.Op.i32_wrap)
-       (call one c env at args (call i64_t) (call text "i32.wrap requires 1 argument (x: i64)") (call text "i32.wrap requires i64, got "))
+       (call one c env at args (call i64_t) o false "i32.wrap requires 1 argument (x: i64)" "i32.wrap requires i64, got ")
        (call i32_t))
       (else
        ;; f64.convert_i64_s, f64.reinterpret_i64: i64 -> f64; f64.sqrt: f64 -> f64;
        ;; i64.trunc_f64_s, i64.reinterpret_f64: f64 -> i64
        (let from:ast.Type (if (or (eq o ast.Op.f64_convert_i64_s) (eq o ast.Op.f64_reinterpret_i64)) (call i64_t) (call f64_t)))
        (let to:ast.Type (if (or (eq o ast.Op.i64_trunc_f64_s) (eq o ast.Op.i64_reinterpret_f64)) (call i64_t) (call f64_t)))
-       (let b1:(ptr buf.Buf) (call op_text o " requires 1 argument (x: ")) (call ty b1 from) (call s b1 ")")
-       (let b2:(ptr buf.Buf) (call op_text o " requires ")) (call ty b2 from) (call s b2 ", got ")
-       (call one c env at args from b1 b2)
+       (if (call is_i64 from)
+           (call one c env at args from o true " requires 1 argument (x: I64)" " requires I64, got ")
+           (call one c env at args from o true " requires 1 argument (x: F64)" " requires F64, got "))
        to)))
 
-  (fn text [x:str] -> (ptr buf.Buf) (let b:(ptr buf.Buf) (call buf.make 64)) (call s b x) b)
-  (fn op_text [o:ast.Op x:str] -> (ptr buf.Buf) (let b:(ptr buf.Buf) (call buf.make 64)) (call s b (call op_debug o)) (call s b x) b)
+  ;; A message's fixed text, after the op's Debug name when `pre`.
+  (fn words [b:(ptr buf.Buf) o:ast.Op pre:bool x:str] -> void
+    (if pre (call s b (call op_debug o)) (block))
+    (call s b x))
 
   (fn op_msg [c:(ptr C) at:i32 o:ast.Op x:str] -> void
     (let b:(ptr buf.Buf) (call msg c at))
@@ -1322,20 +1330,20 @@
     (call fail c b))
 
   ;; One operand of type `want`: arity's message, or mismatch's then the type.
-  (fn one [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) want:ast.Type arity:(ptr buf.Buf) mismatch:(ptr buf.Buf)] -> void
+  (fn one [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) want:ast.Type o:ast.Op pre:bool arity:str mismatch:str] -> void
     (if (neq (arr.len args) 1)
-        (block (let b:(ptr buf.Buf) (call msg c at)) (call by b (call buf.bytes arity)) (call fail c b) (return))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
         (block))
     (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
     (if (get c C.failed) (return) (block))
     (if (not (call teq t want))
-        (block (let b:(ptr buf.Buf) (call msg c at)) (call by b (call buf.bytes mismatch)) (call ty b t) (call fail c b))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre mismatch) (call ty b t) (call fail c b))
         (block)))
 
   ;; mem.store*: (ptr: i32, val: want), both checked before either is reported.
-  (fn store [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr) want:ast.Type arity:(ptr buf.Buf) mismatch:(ptr buf.Buf)] -> void
+  (fn store [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr) want:ast.Type pre:bool arity:str mismatch:str] -> void
     (if (neq (arr.len args) 2)
-        (block (let b:(ptr buf.Buf) (call msg c at)) (call by b (call buf.bytes arity)) (call fail c b) (return))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
         (block))
     (let t1:ast.Type (call infer c (arr.get ast.Expr args 0) env))
     (if (get c C.failed) (return) (block))
@@ -1344,14 +1352,14 @@
     (if (not (and (call is_i32 t1) (call teq t2 want)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call by b (call buf.bytes mismatch)) (call ty b t1) (call s b ", ") (call ty b t2) (call s b ")")
+          (call words b o pre mismatch) (call ty b t1) (call s b ", ") (call ty b t2) (call s b ")")
           (call fail c b))
         (block)))
 
   ;; `count` i32 operands, each checked in turn: "PREFIX i SUFFIX type".
-  (fn all_i32 [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) count:i32 arity:(ptr buf.Buf) prefix:(ptr buf.Buf) suffix:(ptr buf.Buf)] -> void
+  (fn all_i32 [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr) count:i32 o:ast.Op pre:bool arity:str prefix:str suffix:str] -> void
     (if (neq (arr.len args) count)
-        (block (let b:(ptr buf.Buf) (call msg c at)) (call by b (call buf.bytes arity)) (call fail c b) (return))
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
         (block))
     (loop k 0 (- count 1) 1
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
@@ -1359,7 +1367,7 @@
       (if (not (call is_i32 t))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
-            (call by b (call buf.bytes prefix)) (call buf.push_int b k) (call by b (call buf.bytes suffix)) (call ty b t)
+            (call words b o pre prefix) (call buf.push_int b k) (call s b suffix) (call ty b t)
             (call fail c b) (return))
           (block))))
 

@@ -123,6 +123,8 @@
     (req (gte tok_ptr 0))
     (req (gte idx 0))
     (ens (eq res (+ idx 1)))
+    ;; a null buffer only counts (count_tokens)
+    (if (eq tok_ptr 0) (return (+ idx 1)) (block))
     (let t:(ptr Token) (call token_at tok_ptr idx))
     (put t Token.kind kind)
     (put t Token.a a)
@@ -209,6 +211,10 @@
   ;; Whether the byte at p + i is one the string escape \x may name.
   (fn is_escape [c:i32] -> bool
     (or (or (eq c 110) (eq c 116)) (or (or (eq c 114) (eq c CH_ZERO)) (or (eq c CH_BACKSLASH) (eq c CH_QUOTE)))))
+
+  ;; How many tokens tokenize writes for this input, so a caller can give it
+  ;; a buffer of exactly that size.
+  (fn count_tokens [input_ptr:i32 input_len:i32] -> i32 (call tokenize input_ptr input_len 0))
 
   ;; Tokenizes input_len bytes at input_ptr into token_out_ptr; returns the
   ;; token count. Comments (;; to the end of the line) are skipped.

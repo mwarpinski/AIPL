@@ -700,6 +700,7 @@ const FORMS: &[&str] = &[
     "M:(module m (union U [(a p:Nope)]) (fn main [] -> i32 0))",
     "M:(module m (union U [(a p:U)]) (struct S [u:U]) (fn main [] -> i32 0))",
     // functions and contracts
+    "M:(module m (fn f [] -> i32 0) (fn f [x:i32] -> i32 x) (fn main [] -> i32 0))",
     "M:(module m (fn f [x:Nope] -> i32 0) (fn main [] -> i32 0))",
     "M:(module m (fn f [x:(ptr Nope)] -> i32 0) (fn main [] -> i32 0))",
     "M:(module m (fn f [] -> Nope 0) (fn main [] -> i32 0))",

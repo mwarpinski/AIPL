@@ -20,7 +20,7 @@
 
   ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.
   (fn parse [src:i32 len:i32] -> (ptr parser.Parsed)
-    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
     (let n:i32 (call compiler.tokenize src len toks))
     (if (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
         (return (call parser.parse_tokens src toks n))

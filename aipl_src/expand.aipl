@@ -29,7 +29,8 @@
     (let t:(ptr compiler.Token) (call tok x i))
     (call str.bytes (+ (get x X.src) (get t compiler.Token.a)) (get t compiler.Token.b)))
   (fn is_sym [x:(ptr X) i:i32 s:str] -> bool
-    (and (eq (call kind x i) compiler.Kind.symbol) (call str.bytes_eq (call text x i) (call str.from_str s))))
+    (and (eq (call kind x i) compiler.Kind.symbol)
+         (call compiler.span_is (get x X.src) (get (call tok x i) compiler.Token.a) (get (call tok x i) compiler.Token.b) s)))
   (fn is_open [x:(ptr X) i:i32] -> bool
     (or (eq (call kind x i) compiler.Kind.lparen) (eq (call kind x i) compiler.Kind.lbracket)))
   (fn is_close [x:(ptr X) i:i32] -> bool
@@ -126,12 +127,12 @@
     (let tname:str "")
     (let fits:bool false)
     (cond
-      ((call str.bytes_eq ty (call str.from_str "i32"))
+      ((call str.is ty "i32")
        (set! fits (and (eq vk compiler.Kind.int) (and (gte (call i64_of x vi) -2147483648i64) (lte (call i64_of x vi) 2147483647i64)))))
-      ((call str.bytes_eq ty (call str.from_str "i64")) (set! fits (eq vk compiler.Kind.int64)))
-      ((call str.bytes_eq ty (call str.from_str "f64")) (set! fits (eq vk compiler.Kind.float)))
-      ((call str.bytes_eq ty (call str.from_str "bool")) (set! fits (eq vk compiler.Kind.bool)))
-      ((call str.bytes_eq ty (call str.from_str "str")) (set! fits (eq vk compiler.Kind.string)))
+      ((call str.is ty "i64") (set! fits (eq vk compiler.Kind.int64)))
+      ((call str.is ty "f64") (set! fits (eq vk compiler.Kind.float)))
+      ((call str.is ty "bool") (set! fits (eq vk compiler.Kind.bool)))
+      ((call str.is ty "str") (set! fits (eq vk compiler.Kind.string)))
       (else
        (let b:(ptr buf.Buf) (call words))
        (call buf.push_str b "constant '")
@@ -196,6 +197,8 @@
 
   (fn emit_new [x:(ptr X) k:compiler.Kind a:i32 b:i32 pos:i32] -> void
     (let c:i32 (get x X.count))
+    ;; the counting pass (out 0) only counts
+    (if (eq (get x X.out) 0) (block (put x X.count (+ c 1)) (return)) (block))
     (let t:(ptr compiler.Token) (call compiler.token_at (get x X.out) c))
     (put t compiler.Token.kind k)
     (put t compiler.Token.a a)
@@ -288,6 +291,20 @@
       (set! c after))
     (if (lt c (get x X.n)) (call emit x c (call pos x c)) (block)))
 
+  ;; Every item from `first` on, then the module's closing tokens.
+  (fn rewrite_all [x:(ptr X) first:i32] -> void
+    (let n:i32 (get x X.n))
+    (loop k 0 (- first 1) 1 (call emit x k (call pos x k)))
+    (let it:i32 first)
+    (while (and (lt it n) (call is_open x it))
+      (cond
+        ((call is_sym x (+ it 1) "const") (block))
+        ((call is_sym x (+ it 1) "enum") (call copy x it))
+        (else (call rewrite_group x it)))
+      (if (get x X.failed) (break) (block))
+      (set! it (call elem_end x it)))
+    (loop k it (- n 1) 1 (call emit x k (call pos x k))))
+
   ;; ===== Driver =====
 
   ;; Expands the n tokens at toks (from compiler.tokenize over src).
@@ -296,7 +313,7 @@
     (put x X.src src)
     (put x X.toks toks)
     (put x X.n n)
-    (put x X.out (mem.alloc (* (sizeof compiler.Token) (+ (* 5 n) 1))))
+    (put x X.out 0)
     (put x X.count 0)
     (put x X.consts (call (strmap.make i32) 16))
     (put x X.enums (call (strmap.make (ptr (strmap.StrMap i32))) 16))
@@ -321,18 +338,16 @@
     (if (and (eq (call (strmap.count i32) (get x X.consts)) 0) (eq (call (strmap.count (ptr (strmap.StrMap i32))) (get x X.enums)) 0))
         (return r)
         (block))
-    ;; the spare text must not move once tokens point into it
-    (call buf.ensure (get x X.spare) (* 12 n))
-    (loop k 0 (- first 1) 1 (call emit x k (call pos x k)))
-    (set! it first)
-    (while (and (lt it n) (call is_open x it))
-      (cond
-        ((call is_sym x (+ it 1) "const") (block))
-        ((call is_sym x (+ it 1) "enum") (call copy x it))
-        (else (call rewrite_group x it)))
-      (if (get x X.failed) (break) (block))
-      (set! it (call elem_end x it)))
-    (loop k it (- n 1) 1 (call emit x k (call pos x k)))
+    ;; once to count the tokens, then into a buffer of that size
+    (call rewrite_all x first)
+    (if (not (get x X.failed))
+        (block
+          (put x X.out (mem.alloc (* (sizeof compiler.Token) (+ (get x X.count) 1))))
+          (put x X.count 0)
+          (call buf.clear (get x X.spare))
+          (call buf.push_str (get x X.spare) "enum.cast")
+          (call rewrite_all x first))
+        (block))
     (if (get x X.failed)
         (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (put r Expanded.err_at (get x X.err_at)) (return r))
         (block))

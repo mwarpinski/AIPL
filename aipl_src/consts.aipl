@@ -173,7 +173,7 @@
   ;; program with neither is copied unchanged.
   (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
     (let n:i32 (get src str.Bytes.len))
-    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ n 1))))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get src str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))

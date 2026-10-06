@@ -1,0 +1,78 @@
+;; Where the text of a flat program came from. The resolver and the
+;; generics pass print a program spread over several files into one flat
+;; text; each notes, as it prints a token, the buffer it printed into, the
+;; offset there, and the token's origin (a file and an offset in it, or an
+;; offset in the text the pass read). Joining the buffers fixes the offsets,
+;; and `find` maps an offset in the flat text back to the nearest token at
+;; or before it, so an error in the flat program is reported in the user's
+;; file (driver.aipl).
+(module origins
+  (import str)
+  (import buf)
+  (import vec)
+
+  ;; One printed token: buffer (its address, as identity), offset in it,
+  ;; and origin: file (an index into files, or -1 for "the pass's input")
+  ;; and offset.
+  (struct Entry [buffer:i32 at:i32 file:i32 pos:i32])
+  (struct File [path:(ptr str.Bytes) text:(ptr str.Bytes)])
+
+  ;; Entries in the order printed; after `join`, final offsets in order.
+  (struct Origins [entries:(ptr (vec.Vec (ptr Entry))) files:(ptr (vec.Vec (ptr File)))])
+
+  (fn make [] -> (ptr Origins)
+    (let o:(ptr Origins) (new Origins))
+    (put o Origins.entries (call (vec.make (ptr Entry)) 1024))
+    (put o Origins.files (call (vec.make (ptr File)) 8))
+    o)
+
+  ;; Registers a file; its index.
+  (fn add_file [o:(ptr Origins) path:(ptr str.Bytes) text:(ptr str.Bytes)] -> i32
+    (let f:(ptr File) (new File))
+    (put f File.path path)
+    (put f File.text text)
+    (call (vec.push (ptr File)) (get o Origins.files) f)
+    (- (call (vec.len (ptr File)) (get o Origins.files)) 1))
+
+  ;; Notes that the next byte printed into b comes from (file, pos).
+  (fn note [o:(ptr Origins) b:(ptr buf.Buf) file:i32 pos:i32] -> void
+    (if (eq o (ptr.null Origins)) (return) (block))
+    (let e:(ptr Entry) (new Entry))
+    (put e Entry.buffer (ptr.addr b))
+    (put e Entry.at (call buf.len b))
+    (put e Entry.file file)
+    (put e Entry.pos pos)
+    (call (vec.push (ptr Entry)) (get o Origins.entries) e))
+
+  ;; The buffers were joined in this order, starting at these offsets:
+  ;; rewrites each entry's offset as a final one, in final order.
+  (fn join [o:(ptr Origins) parts:(arr (ptr buf.Buf)) bases:(arr i32)] -> void
+    (let es:(ptr (vec.Vec (ptr Entry))) (get o Origins.entries))
+    (let out:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (+ (call (vec.len (ptr Entry)) es) 1)))
+    (loop k 0 (- (arr.len parts) 1) 1
+      (let id:i32 (ptr.addr (arr.get (ptr buf.Buf) parts k)))
+      (loop i 0 (- (call (vec.len (ptr Entry)) es) 1) 1
+        (let e:(ptr Entry) (call (vec.at (ptr Entry)) es i))
+        (if (eq (get e Entry.buffer) id)
+            (block
+              (put e Entry.at (+ (get e Entry.at) (arr.get i32 bases k)))
+              (put e Entry.buffer 0)
+              (call (vec.push (ptr Entry)) out e))
+            (block))))
+    (put o Origins.entries out))
+
+  ;; The entry for the last token at or before offset `at`, or null.
+  (fn find [o:(ptr Origins) at:i32] -> (ptr Entry)
+    (let es:(ptr (vec.Vec (ptr Entry))) (get o Origins.entries))
+    (let lo:i32 0)
+    (let hi:i32 (- (call (vec.len (ptr Entry)) es) 1))
+    (let best:(ptr Entry) (ptr.null Entry))
+    (while (lte lo hi)
+      (let mid:i32 (/ (+ lo hi) 2))
+      (let e:(ptr Entry) (call (vec.at (ptr Entry)) es mid))
+      (if (lte (get e Entry.at) at)
+          (block (set! best e) (set! lo (+ mid 1)))
+          (set! hi (- mid 1))))
+    best)
+
+  (fn file_at [o:(ptr Origins) i:i32] -> (ptr File) (call (vec.at (ptr File)) (get o Origins.files) i)))

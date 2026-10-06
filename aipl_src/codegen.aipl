@@ -3024,7 +3024,7 @@
     (set! src_len (call buf.len plain))
     ;; Buffers are sized from the input: a token is at least one source byte
     ;; (a Token record each), an AST node is at most one per token.
-    (let tok_buf:i32 (call cg_alloc (* (+ src_len 1) (sizeof compiler.Token))))
+    (let tok_buf:i32 (call cg_alloc (* (+ (call compiler.count_tokens src_ptr src_len) 1) (sizeof compiler.Token))))
     (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) (sizeof compiler.Node))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))

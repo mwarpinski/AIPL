@@ -58,7 +58,8 @@
   (fn int_text [p:(ptr P) i:i32] -> (ptr str.Bytes) (call text p i))
 
   (fn is_sym [p:(ptr P) i:i32 s:str] -> bool
-    (and (eq (call kind_at p i) compiler.Kind.symbol) (call str.bytes_eq (call text p i) (call str.from_str s))))
+    (and (eq (call kind_at p i) compiler.Kind.symbol)
+         (call compiler.span_is (get p P.src) (get (call tok p i) compiler.Token.a) (get (call tok p i) compiler.Token.b) s)))
 
   ;; The value of an integer literal's text (an optional sign, then digits;
   ;; the tokenizer has checked it fits in i64).
@@ -238,13 +239,13 @@
 
   (fn scalar_type [s:(ptr str.Bytes)] -> ast.MaybeType
     (let t:ast.MaybeType (make ast.MaybeType.none))
-    (if (call str.bytes_eq s (call str.from_str "i32")) (set! t (make ast.MaybeType.some (make ast.Type.i32))) (block))
-    (if (call str.bytes_eq s (call str.from_str "i64")) (set! t (make ast.MaybeType.some (make ast.Type.i64))) (block))
-    (if (call str.bytes_eq s (call str.from_str "f32")) (set! t (make ast.MaybeType.some (make ast.Type.f32))) (block))
-    (if (call str.bytes_eq s (call str.from_str "f64")) (set! t (make ast.MaybeType.some (make ast.Type.f64))) (block))
-    (if (call str.bytes_eq s (call str.from_str "bool")) (set! t (make ast.MaybeType.some (make ast.Type.bool))) (block))
-    (if (call str.bytes_eq s (call str.from_str "str")) (set! t (make ast.MaybeType.some (make ast.Type.str))) (block))
-    (if (call str.bytes_eq s (call str.from_str "void")) (set! t (make ast.MaybeType.some (make ast.Type.void))) (block))
+    (if (call str.is s "i32") (set! t (make ast.MaybeType.some (make ast.Type.i32))) (block))
+    (if (call str.is s "i64") (set! t (make ast.MaybeType.some (make ast.Type.i64))) (block))
+    (if (call str.is s "f32") (set! t (make ast.MaybeType.some (make ast.Type.f32))) (block))
+    (if (call str.is s "f64") (set! t (make ast.MaybeType.some (make ast.Type.f64))) (block))
+    (if (call str.is s "bool") (set! t (make ast.MaybeType.some (make ast.Type.bool))) (block))
+    (if (call str.is s "str") (set! t (make ast.MaybeType.some (make ast.Type.str))) (block))
+    (if (call str.is s "void") (set! t (make ast.MaybeType.some (make ast.Type.void))) (block))
     t)
 
   (fn is_scalar [s:(ptr str.Bytes)] -> bool
@@ -275,19 +276,19 @@
        (let ctor:(ptr str.Bytes) (call expect_symbol p "type constructor" at))
        (if (get p P.failed) (return (make ast.Type.i32)) (block))
        (cond
-         ((call str.bytes_eq ctor (call str.from_str "result"))
+         ((call str.is ctor "result")
           (let ok_t:ast.Type (call parse_type p))
           (let err_t:ast.Type (call parse_type p))
           (call want p compiler.Kind.rparen)
           (make ast.Type.result ok_t err_t))
-         ((call str.bytes_eq ctor (call str.from_str "arr"))
+         ((call str.is ctor "arr")
           (let elem:ast.Type (call parse_type p))
           (if (eq (call peek p) compiler.Kind.int)
               (call fail_str p at "(arr T) takes no length; an array's length is set by (arr.new T n)")
               (block))
           (call want p compiler.Kind.rparen)
           (make ast.Type.arr elem))
-         ((call str.bytes_eq ctor (call str.from_str "fn"))
+         ((call str.is ctor "fn")
           (call want p compiler.Kind.lbracket)
           (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) 4))
           (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
@@ -297,7 +298,7 @@
           (let ret:ast.Type (call parse_type p))
           (call want p compiler.Kind.rparen)
           (make ast.Type.fn_ (call (to_arr ast.Type) ps) ret))
-         ((call str.bytes_eq ctor (call str.from_str "ptr"))
+         ((call str.is ctor "ptr")
           (let name:(ptr str.Bytes) (call expect_symbol p "struct name in (ptr S)" at))
           (if (and (not (get p P.failed)) (call is_scalar name))
               (block
@@ -741,7 +742,7 @@
           (block))
       (let body:(arr ast.Expr) (call parse_body p))
       (call want p compiler.Kind.rparen)
-      (if (call str.bytes_eq member (call str.from_str "else"))
+      (if (call str.is member "else")
           (block
             (if (and (not (get p P.failed)) (neq binders (arr.null (ptr str.Bytes))))
                 (call fail_str p aat "the else arm of a match binds nothing")
@@ -937,6 +938,6 @@
 
   ;; Tokenizes and parses len bytes at src.
   (fn parse [src:i32 len:i32] -> (ptr Parsed)
-    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ len 1))))
+    (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
     (let n:i32 (call compiler.tokenize src len toks))
     (call parse_tokens src toks n)))
