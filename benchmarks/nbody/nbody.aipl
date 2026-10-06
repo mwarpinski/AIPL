@@ -8,16 +8,10 @@
 (module nbody
   (import io)
   (import os)
-  (import str)
   (import time)
 
   ;; one array per coordinate, five bodies (0 = the Sun)
   (struct Bodies [x:(arr f64) y:(arr f64) z:(arr f64) vx:(arr f64) vy:(arr f64) vz:(arr f64) m:(arr f64)])
-
-  (fn steps_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 1000))
-        1000))
 
   (fn body [b:(ptr Bodies) i:i32 x:f64 y:f64 z:f64 vx:f64 vy:f64 vz:f64 m:f64] -> void
     (arr.set f64 (get b Bodies.x) i x) (arr.set f64 (get b Bodies.y) i y) (arr.set f64 (get b Bodies.z) i z)
@@ -96,7 +90,7 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call steps_wanted))
+    (let n:i32 (call os.arg_int 1 1000))
     (let b:(ptr Bodies) (call system))
     (call io.print_f64 (call energy b) 9)
     (call io.println "")

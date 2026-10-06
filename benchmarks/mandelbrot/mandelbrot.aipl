@@ -6,20 +6,14 @@
 ;;   ./mandelbrot 200 > m.pbm
 (module mandelbrot
   (import os)
-  (import str)
   (import buf)
   (import time)
-
-  (fn size_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 200))
-        200))
 
   (fn to_f64 [n:i32] -> f64 (f64.convert_i64_s (i64.extend_s n)))
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call size_wanted))
+    (let n:i32 (call os.arg_int 1 200))
     (let out:(ptr buf.Buf) (call buf.make (+ 32 (* n (+ (/ n 8) 1)))))
     (call buf.push_str out "P4\n")
     (call buf.push_int out n)
@@ -51,6 +45,6 @@
            (call buf.push_byte out (shl bits (- 8 (% n 8))))
            (set! bits 0) (set! count 0))
           (else (block)))))
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     (call time.report "mandelbrot computed in" started)
     0))

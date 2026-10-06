@@ -7,17 +7,11 @@
 ;;   ./binarytrees 10
 (module binarytrees
   (import os)
-  (import str)
   (import buf)
   (import arena)
   (import time)
 
   (struct Node [left:(ptr Node) right:(ptr Node)])
-
-  (fn depth_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 10))
-        10))
 
   (fn bottom_up [a:(ptr arena.Arena) depth:i32] -> (ptr Node)
     (let n:(ptr Node) (call (arena.alloc Node) a))
@@ -42,7 +36,7 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call depth_wanted))
+    (let n:i32 (call os.arg_int 1 10))
     (let min_depth:i32 4)
     (let max_depth:i32 (if (gt (+ min_depth 2) n) (+ min_depth 2) n))
     (let out:(ptr buf.Buf) (call buf.make 1024))
@@ -62,6 +56,6 @@
       (call line out "\t trees of depth " d checked)
       (set! d (+ d 2)))
     (call line out "long lived tree of depth " max_depth (call check long_lived))
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     (call time.report "binarytrees computed in" started)
     0))

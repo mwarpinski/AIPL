@@ -7,13 +7,7 @@
 (module spectralnorm
   (import io)
   (import os)
-  (import str)
   (import time)
-
-  (fn size_wanted [] -> i32
-    (if (gt (call os.arg_count) 1)
-        (match_result (call str.parse_int (call os.arg 1)) (ok v v) (err e 100))
-        100))
 
   (fn a [i:i32 j:i32] -> f64
     (/ 1.0 (f64.convert_i64_s (i64.extend_s (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ i 1))))))
@@ -41,7 +35,7 @@
 
   (fn main [] -> i32
     (let started:i64 (call time.now))
-    (let n:i32 (call size_wanted))
+    (let n:i32 (call os.arg_int 1 100))
     (let u:(arr f64) (arr.new f64 n))
     (let v:(arr f64) (arr.new f64 n))
     (let tmp:(arr f64) (arr.new f64 n))

@@ -153,7 +153,10 @@ the language; Python uses its built-in integers. What it showed:
   bignums are calls rather than operators, state lives in a struct (no
   globals), and the argument parsing and digit output are repeated from
   spigot. `os.arg_int`, a stdout helper for `buf`, and a shared digit
-  printer would remove about a third.
+  printer would remove about a third. *2026-10-05:* `os.arg_int` and
+  `buf.print` are in the standard library and every benchmark uses them
+  (55 lines fewer across the eight); the digit printer stays in spigot and
+  pidigits, since it prints one contest's output format.
 
 ## Native speed (2026-10-05)
 

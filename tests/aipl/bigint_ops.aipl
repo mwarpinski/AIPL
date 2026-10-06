@@ -91,5 +91,5 @@
       (call buf.push_byte out 32)
       (call buf.push_int out rem)
       (call buf.push_byte out 10))
-    (let _w:i32 (fs.write 1 (get out buf.Buf.data) (call buf.len out)))
+    (call buf.print out)
     0))
