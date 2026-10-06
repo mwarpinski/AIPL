@@ -69,7 +69,7 @@
     (set! failures (+ failures (call report "std/time: durations and the clock (7 tests)" (call time.run_time_tests) 7)))
     (set! failures (+ failures (call report "std/arena: typed region allocator (5 tests)" (call arena.run_arena_tests) 5)))
     (set! failures (+ failures (call report "std/heap: general-purpose allocator (8 tests)" (call heap.run_heap_tests) 8)))
-    (set! failures (+ failures (call report "std/alloc: any allocator as one value (6 tests)" (call alloc.run_alloc_tests) 6)))
+    (set! failures (+ failures (call report "std/alloc: any allocator as one value (7 tests)" (call alloc.run_alloc_tests) 7)))
     (set! failures (+ failures (call report "std/bigint: arbitrary-precision integers (13 tests)" (call bigint.run_bigint_tests) 13)))
     (set! failures (+ failures (call report "consts: constants and enums erased for codegen (5 tests)" (call consts.run_consts_tests) 5)))
     (set! failures (+ failures (call report "thread_sync: 4 threads x 1000 atomic adds = 4000" (call thread_sync.run_thread_tests) 1)))

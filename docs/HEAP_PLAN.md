@@ -40,8 +40,8 @@ allocator, and code says which allocator it uses.
 | H1 | `std/heap`: size classes, free lists, the checks above, `live`/`live_bytes`/`reserved`; typed `create`/`destroy`/`array`/`free_array` | done |
 | H2 | `std/alloc`: the `Allocator` union (heap, arena, fixed buffer), `alloc.default`, typed helpers over any allocator | done |
 | H3 | `vec`, `buf`, `strmap` (and `map`) take an allocator and free old storage when they grow; callers updated, the compiler included | done |
-| H4 | Function references in struct fields (a language change), then `Allocator.custom` | |
-| H5 | Docs (spec, prompt guide, gaps), benchmarks (binarytrees with a heap as well as an arena) | |
+| H4 | `Allocator.custom` (function references in struct fields already worked) | done |
+| H5 | Docs (spec, prompt guide, gaps), binarytrees measured with a heap | done |
 
 ## H1: std/heap
 
@@ -79,3 +79,29 @@ repository pass `(call alloc.default)`. Two things this needed:
 noise (binarytrees 25% faster, knucleotide 6% slower); the compiler
 compiling itself takes about 13% longer and 47 MB instead of 41, since it
 frees little and pays the heap's per-block header and size rounding.
+
+## H4: custom allocators
+
+`(call alloc.custom state (ref my_alloc) (ref my_free))` makes an
+`Allocator` from a program's own functions: `my_alloc [state n] -> i32`
+(8-aligned; checked) and `my_free [state p n]`, with `state` whatever the
+allocator needs (usually a struct's address). `alloc.raw` zeroes what a
+custom allocator returns. Struct fields could already hold function
+references in every backend, so this needed no language change.
+
+## H5: what a heap costs
+
+binarytrees at depth 16, freeing every node through `std/heap` (as the C
+version calls malloc and free) instead of resetting an arena per tree:
+
+| | native | wasm (wasmtime) |
+|---|---|---|
+| arena (the benchmark) | 0.263 s | 0.144 s |
+| heap, each node freed | 1.120 s | 0.647 s |
+| C, malloc/free | 0.24 s | |
+
+Memory stays flat with the heap (freed nodes are reused), but each
+allocation and free pays for the lock (two atomic operations) and the
+checks (three predicate calls on a free, the junk fill and its check).
+A faster path for small blocks (no lock in single-threaded programs,
+checks inlined) is the obvious next step if allocation-heavy code matters.
