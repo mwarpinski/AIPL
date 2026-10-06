@@ -29,28 +29,26 @@ has evidence behind it.
 - [x] **The fuzzer is a tool:** `tools/fuzz.py` (both toolchains on mutated
   repository programs; crashes, hangs, and any disagreement in acceptance,
   bytes, or message). Still to do: a short fixed-seed run in the test suite.
-- [ ] **Remaining fuzz differences** (3,000 cases, seed 11, after the fix:
-  53, none an acceptance bug except the float case below; no crashes or
-  hangs):
-  - *Generics-pass messages* differ in wording and lack a position
-    (`wrong number of type arguments for generic vec.Vec` against Rust's
-    `15:17: generic 'vec.Vec' takes 1 type argument(s) (T), got 3`); Rust
-    also checks generic headers on items that are not `fn`/`struct`.
-    Bring `generics.aipl`'s errors to Rust's text and positions.
-  - *An error inside a type argument* (`(vec.Vec 0palette.Color)`) is
-    reported inside the standard library's template (`vec.aipl` 12:31)
-    instead of where the user wrote it: the generics pass does not record
-    where substituted arguments came from.
-  - *Errors at a closing bracket* (`Unexpected token parsing expression:
-    RParen`, `Expected type constructor, got RParen`) land a few columns
-    early: closing brackets are not recorded in the origin maps (the AST
-    keeps no position for them).
-  - *A missing module* is `cannot find module: X` in AIPL and `Cannot
-    resolve import 'X': no 'X.aipl' found in ...` in Rust. Pick one text.
-  - *Float literals* the self-hosted compiler cannot convert exactly are
-    compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: a real
-    gap between the toolchains. Exact decimal-to-double conversion in AIPL
-    closes it.
+- [x] **Message and position differences** (fixed 2026-10-06). After the
+  malformed-file fix, 53 of 3,000 fuzz cases still differed; now none do
+  apart from float literals (below), on three seeds of 3,000:
+  - the generics pass reports Rust's messages at Rust's positions in the
+    right file (`file: L:C: generic 'vec.Vec' takes 1 type argument(s)
+    (T), got 3`), in Rust's order, and checks generic headers on any item;
+  - a substituted type argument keeps its own position, so an error in it
+    is reported where the user wrote it. This also fixed the *Rust*
+    toolchain, which named the template's file with the user's line and
+    column;
+  - closing brackets are recorded in the position maps (the parse tree now
+    keeps where each `)` is), so errors there land on the right column;
+  - a missing module, a circular import, a bad import path, and two
+    modules with one name have Rust's wording, after the importing file.
+  `tests/test_resolver_aipl.rs` (`malformed_files_are_rejected_like_rust`,
+  now 32 cases) holds all of it.
+- [ ] **Float literals** the self-hosted compiler cannot convert exactly are
+  compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: the one
+  remaining difference the fuzzer finds (about 1 case in 700). Exact
+  decimal-to-double conversion in AIPL closes it.
 - [ ] **Fuzz the VM and compiled programs too:** generated well-typed
   programs (not just mutated text) run in the VM, under `aipl-run`, and
   natively, compared as the differential test does. This is where a

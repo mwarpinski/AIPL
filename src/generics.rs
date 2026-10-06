@@ -67,9 +67,11 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
     let mut i = 0;
     while i < work.len() {
         let file = work[i].0.file.clone();
+        let foreign = std::mem::take(&mut work[i].0.foreign);
         let mut sx = std::mem::replace(&mut work[i].0.sx, Sx::Atom(blank()));
         let mut created = Vec::new();
-        rewrite(&mut sx, &file, &templates, &mut made, &mut created, false)?;
+        rewrite(&mut sx, &file, &foreign, &templates, &mut made, &mut created, false)?;
+        work[i].0.foreign = foreign;
         work[i].0.sx = sx;
         work.extend(created);
         if made.len() > MAX_INSTANCES {
@@ -124,6 +126,7 @@ fn generic_header(item: &Item) -> Result<Option<(String, Vec<String>)>, String> 
 fn rewrite(
     sx: &mut Sx,
     file: &std::path::Path,
+    foreign: &HashMap<(u32, u32), std::path::PathBuf>,
     templates: &HashMap<String, Template>,
     made: &mut HashSet<String>,
     created: &mut Vec<(Item, Kind)>,
@@ -141,7 +144,7 @@ fn rewrite(
     for (k, child) in items.iter_mut().enumerate().skip(start) {
         let child_callee = calls && k == 1;
         let was_app = applies(child.head(), false);
-        rewrite(child, file, templates, made, created, child_callee)?;
+        rewrite(child, file, foreign, templates, made, created, child_callee)?;
         if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put")) {
             generic_field = true;
         }
@@ -155,7 +158,7 @@ fn rewrite(
                 items[2] = Sx::symbol_at(format!("{}.{}", inst, f), &items[2]);
                 items.remove(3);
             }
-            _ => return Err(at(file, &items[2], "a generic struct field is written (get p (Name T...) field)")),
+            _ => return Err(at(foreign.get(&items[2].position()).map(|p| p.as_path()).unwrap_or(file), &items[2], "a generic struct field is written (get p (Name T...) field)")),
         }
     }
     let Some(h) = head else { return Ok(()) };
@@ -166,14 +169,18 @@ fn rewrite(
     let args: Vec<Sx> = sx.items()[1..].to_vec();
     if args.len() != t.params.len() {
         return Err(at(
-            file,
+            foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file),
             sx,
             &format!("generic '{}' takes {} type argument(s) ({}), got {}", h, t.params.len(), t.params.join(" "), args.len()),
         ));
     }
-    let name = format!("{}<{}>", h, args.iter().map(type_name).collect::<Result<Vec<_>, _>>()?.join(","));
+    let named = args
+        .iter()
+        .map(|a| type_name(a).map_err(|e| format!("{}: {}", foreign.get(&a.position()).map(|p| p.as_path()).unwrap_or(file).display(), e)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let name = format!("{}<{}>", h, named.join(","));
     if name.len() > MAX_NAME {
-        return Err(at(file, sx, &format!("generic instance name longer than {} characters: {}", MAX_NAME, RUNAWAY)));
+        return Err(at(foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file), sx, &format!("generic instance name longer than {} characters: {}", MAX_NAME, RUNAWAY)));
     }
     if made.insert(name.clone()) {
         let mut inst = t.item.sx.clone();
@@ -183,7 +190,17 @@ fn rewrite(
         let header = &inst.items()[1];
         let renamed = Sx::symbol_at(name.clone(), header);
         inst.items_mut().unwrap()[1] = renamed;
-        created.push((Item { sx: inst, file: t.item.file.clone() }, if t.is_struct { Kind::StructInstance } else { Kind::FnInstance }));
+        // the arguments' tokens keep their positions, in the files they were written in
+        let mut arg_files = HashMap::new();
+        for a in &args {
+            let mut toks = Vec::new();
+            a.flatten(&mut toks);
+            for t in toks {
+                let pos = (t.line, t.col);
+                arg_files.insert(pos, foreign.get(&pos).cloned().unwrap_or_else(|| file.to_path_buf()));
+            }
+        }
+        created.push((Item { sx: inst, file: t.item.file.clone(), foreign: arg_files }, if t.is_struct { Kind::StructInstance } else { Kind::FnInstance }));
     }
     *sx = Sx::symbol_at(name, sx);
     Ok(())
