@@ -68,6 +68,14 @@
   (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes)
     (call str.bytes (get b Buf.data) (get b Buf.len)))
 
+  ;; Writes the contents to file descriptor fd; the bytes written, or a
+  ;; negative errno (fs.write).
+  (fn write [b:(ptr Buf) fd:i32] -> i32 (fs.write fd (get b Buf.data) (get b Buf.len)))
+
+  ;; Writes the contents to standard output: the usual end of a program that
+  ;; builds its output in a buffer and prints it once.
+  (fn print [b:(ptr Buf)] -> void (let _n:i32 (call write b 1)) (block))
+
   ;; Pass count; test_suite.aipl expects 3.
   (fn run_buf_tests [] -> i32
     (let p:i32 0)
