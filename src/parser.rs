@@ -1368,25 +1368,22 @@ impl Parser {
                             }
                         }
                         "sizeof" => {
-                            let struct_name = match self.next() {
-                                Some(Token {
-                                    kind: TokenKind::Symbol(s),
-                                    ..
-                                }) => s,
-                                Some(tok) => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in sizeof, got {:?}",
-                                        tok.line, tok.col, tok.kind
-                                    ))
+                            // a struct by its bare name, or any type
+                            let ty = match self.peek_kind() {
+                                Some(TokenKind::Symbol(s))
+                                    if !matches!(s.as_str(), "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void")
+                                        && !self.unions.contains(s) =>
+                                {
+                                    let s = s.clone();
+                                    self.next();
+                                    Type::Struct(s)
                                 }
+                                Some(_) => self.parse_type()?,
                                 None => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in sizeof, got EOF",
-                                        span.0, span.1
-                                    ))
+                                    return Err(format!("{}:{}: Expected a type in sizeof, got EOF", span.0, span.1))
                                 }
                             };
-                            Expr::Sizeof { struct_name, span }
+                            Expr::Sizeof { ty, span }
                         }
                         "return" => {
                             let val = if self.peek_kind() == Some(&TokenKind::RParen) {

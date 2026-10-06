@@ -593,13 +593,19 @@ impl VM {
                 self.store_val_at(addr, &field_ty, val_v)?;
                 Ok(Value::Void)
             }
-            Expr::Sizeof { struct_name, .. } => {
-                let def = self
-                    .structs
-                    .get(struct_name)
-                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
-                    .clone();
-                let size = crate::checker::get_struct_size(&def)?;
+            Expr::Sizeof { ty, .. } => {
+                let size = match ty {
+                    Type::Struct(name) if self.enums.contains_key(name) => 4,
+                    Type::Struct(struct_name) => {
+                        let def = self
+                            .structs
+                            .get(struct_name)
+                            .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
+                            .clone();
+                        crate::checker::get_struct_size(&def)?
+                    }
+                    other => crate::checker::type_size_and_align(other)?.0,
+                };
                 Ok(Value::Int(size as i64))
             }
             Expr::ArrNew { elem_ty, size, .. } => {
@@ -661,7 +667,7 @@ impl VM {
                     Value::Int(i) => i,
                     other => return Err(format!("VM: Expected Int index for arr.set, got {:?}", other)),
                 };
-                let val_v = self.eval_expr(val, scope)?;
+                // checked before the value is evaluated, as compiled code does
                 if ptr_val < 4 {
                     return Err(format!("VM: Invalid array pointer {}", ptr_val));
                 }
@@ -672,6 +678,7 @@ impl VM {
                         idx_val, count
                     ));
                 }
+                let val_v = self.eval_expr(val, scope)?;
                 let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
                 let addr = ptr_val + (idx_val as usize) * elem_size;
                 self.check_write("arr.set", addr)?;

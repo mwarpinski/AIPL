@@ -26,19 +26,25 @@ AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| spigot | 10000 digits | 2.068 s (2.3x) | 1.552 s (1.7x) | 0.914 s (1.0x) | 47.222 s (51.7x) |
-| fannkuch | n = 10 | 0.719 s (4.7x) | 0.203 s (1.3x) | 0.153 s (1.0x) | 3.760 s (24.5x) |
-| spectralnorm | n = 1000 | 0.363 s (13.5x) | 0.113 s (4.2x) | 0.027 s (1.0x) | 7.131 s (266.0x) |
-| nbody | 1,000,000 steps | 0.517 s (10.0x) | 0.088 s (1.7x) | 0.052 s (1.0x) | 5.780 s (111.5x) |
-| mandelbrot | 1000 x 1000 | 0.211 s (4.2x) | 0.066 s (1.3x) | 0.050 s (1.0x) | 3.033 s (60.1x) |
-| binarytrees | depth 16 | 0.347 s (1.5x) | 0.184 s (0.8x) | 0.237 s (1.0x) | 1.108 s (4.7x) |
-| knucleotide | fasta 150000 | 0.985 s (20.1x) | 0.520 s (10.6x) | 0.049 s (1.0x) | 0.518 s (10.6x) |
-| pidigits | 10000 digits | 10.188 s (27.2x) | 2.206 s (5.9x) | 0.374 s (1.0x) | 2.090 s (5.6x) |
+| spigot | 10000 digits | 2.725 s (2.9x) | 1.589 s (1.7x) | 0.930 s (1.0x) | 47.599 s (51.2x) |
+| fannkuch | n = 10 | 1.080 s (6.9x) | 0.251 s (1.6x) | 0.157 s (1.0x) | 3.863 s (24.7x) |
+| spectralnorm | n = 1000 | 0.392 s (14.7x) | 0.123 s (4.6x) | 0.027 s (1.0x) | 7.346 s (274.7x) |
+| nbody | 1,000,000 steps | 0.751 s (14.2x) | 0.120 s (2.3x) | 0.053 s (1.0x) | 5.745 s (108.7x) |
+| mandelbrot | 1000 x 1000 | 0.212 s (4.1x) | 0.068 s (1.3x) | 0.051 s (1.0x) | 3.055 s (59.3x) |
+| binarytrees | depth 16 | 0.393 s (1.7x) | 0.197 s (0.8x) | 0.238 s (1.0x) | 1.174 s (4.9x) |
+| knucleotide | fasta 150000 | 1.395 s (26.8x) | 0.734 s (14.1x) | 0.052 s (1.0x) | 0.522 s (10.0x) |
+| pidigits | 10000 digits | 15.652 s (40.2x) | 2.650 s (6.8x) | 0.389 s (1.0x) | 2.155 s (5.5x) |
 
-Updated 2026-10-05 after the native translator kept the top of the value
-stack in a register (see "Native speed" below); the first run (2026-10-04)
-had native at spigot 4.360 s, fannkuch 1.358, nbody 0.794, binarytrees
-0.568, knucleotide 1.411, pidigits 21.059.
+Updated 2026-10-05 after compiled code started checking array indexes and
+`req`/`ens` contracts (docs/CHECKS_PLAN.md); without them (the same day,
+after the native translator kept the top of the value stack in a register,
+see "Native speed" below) native was spigot 2.068 s, fannkuch 0.719,
+spectralnorm 0.363, nbody 0.517, mandelbrot 0.211, binarytrees 0.347,
+knucleotide 0.985, pidigits 10.188, and wasm spigot 1.552, fannkuch 0.203,
+spectralnorm 0.113, nbody 0.088, mandelbrot 0.066, binarytrees 0.184,
+knucleotide 0.520, pidigits 2.206. The first run (2026-10-04) had native
+at spigot 4.360 s, fannkuch 1.358, nbody 0.794, binarytrees 0.568,
+knucleotide 1.411, pidigits 21.059.
 
 ## Notes per benchmark
 
@@ -182,3 +188,38 @@ what sets the pace is that every local variable lives in memory: a loop
 counter or accumulator is stored and reloaded on every iteration. The next
 real gain needs locals in registers (a register allocator, at least for
 each function's hottest locals), a project of its own.
+
+## Locals in registers (2026-10-06)
+
+Each function's four most used locals (a use inside a loop counting 8
+times per level) now live in rbx, r12, r13, and r14, saved on entry and
+restored on return; around a call to an import, whose routine uses those
+registers, they go back to their slots. Native times, before and after
+(with the compiled checks of docs/CHECKS_PLAN.md in both):
+
+| Benchmark | before | after |
+|---|---|---|
+| spigot | 2.725 s | 2.479 s |
+| fannkuch | 1.080 s | 1.019 s |
+| nbody | 0.751 s | 0.697 s |
+| knucleotide | 1.395 s | 1.141 s |
+| pidigits | 15.652 s | 14.213 s |
+
+6-18%, less than expected. Two measurements say where the rest goes:
+
+- **Not the memory bounds checks.** Removing the check on every load and
+  store (unsafely, as a measurement only) gained another 6-14%. Checking
+  through guard pages instead (a reserved region past the memory that
+  faults, as wasmtime does) would get about that, at the cost of a fault
+  handler.
+- **The translation of one instruction at a time.** In `s = s + a[i]` the
+  loop body is about 60 instructions where an optimising compiler emits
+  under 10: each operand passes through rax and the machine stack
+  (`n - 1` is `push rax; mov eax,1; mov rcx,rax; pop rax; sub eax,ecx`).
+  Closing most of the gap to wasmtime needs a translator that tracks
+  where each value on the wasm stack is (a register, a constant, a local)
+  and emits code only when a value is used, as single-pass compilers such
+  as V8's Liftoff do: a rewrite of the instruction translation in
+  lower.aipl, not a tweak. Earlier attempts at pieces of this (constants
+  as immediates, two values in registers) measured no gain on their own
+  while locals were in memory.

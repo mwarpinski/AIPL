@@ -80,6 +80,8 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
 /// What one thread's instance needs: shared by the main thread and every
 /// thread started through `thread-spawn`.
 struct Host {
+    /// a threaded program's memory, for reading a failed check's message
+    shared: Option<SharedMemory>,
     engine: Engine,
     module: Module,
     linker: Linker<WasiP1Ctx>,
@@ -97,14 +99,41 @@ fn wasi(argv: &[String], sandbox: bool) -> Result<WasiP1Ctx, String> {
     Ok(b.build_p1())
 }
 
-/// Turns a finished call into an exit status, reporting traps.
-fn status(r: wasmtime::Result<()>, argv0: &str) -> i32 {
+/// n bytes at `at` of a shared memory, or None past its end.
+fn read_shared(m: &SharedMemory, at: usize, n: usize) -> Option<Vec<u8>> {
+    let cells = m.data().get(at..at.checked_add(n)?)?;
+    // the program has stopped (it trapped); nothing writes these bytes now
+    Some(cells.iter().map(|c| unsafe { *c.get() }).collect())
+}
+
+/// The message a failed check left before trapping (AIPL_SPEC.md 7.9): the
+/// address and length of its text in cells 92 and 96, read with `read`
+/// (offset, length -> bytes, or None past the end of memory).
+fn failure_message(read: &dyn Fn(usize, usize) -> Option<Vec<u8>>) -> Option<String> {
+    let cells = read(92, 8)?;
+    let addr = u32::from_le_bytes(cells[0..4].try_into().unwrap()) as usize;
+    let len = u32::from_le_bytes(cells[4..8].try_into().unwrap()) as usize;
+    if len == 0 || len > 65536 {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&read(addr, len)?).into_owned())
+}
+
+/// Turns a finished call into an exit status, reporting traps: a failed
+/// contract or bounds check by its message, any other trap by its reason.
+fn status(r: wasmtime::Result<()>, argv0: &str, read: &dyn Fn(usize, usize) -> Option<Vec<u8>>) -> i32 {
     match r {
         Ok(()) => 0,
         Err(e) => match e.downcast_ref::<I32Exit>() {
             Some(exit) => exit.0,
             None => {
-                if std::env::var_os("AIPL_BACKTRACE").is_some_and(|v| v != "0") {
+                let failed_check = match e.downcast_ref::<wasmtime::Trap>() {
+                    Some(wasmtime::Trap::UnreachableCodeReached) => failure_message(read),
+                    _ => None,
+                };
+                if let Some(m) = failed_check {
+                    eprintln!("{argv0}: {m}");
+                } else if std::env::var_os("AIPL_BACKTRACE").is_some_and(|v| v != "0") {
                     eprintln!("{argv0}: {e:?}");
                 } else {
                     // the innermost cause: a Trap displays as "wasm trap: <reason>"
@@ -143,12 +172,14 @@ fn run(p: Program) -> i32 {
     };
     let mut store = Store::new(&engine, ctx);
     let host: Arc<OnceLock<Host>> = Arc::new(OnceLock::new());
+    let mut shared: Option<SharedMemory> = None;
     if threaded {
         // every thread instantiates the module again on one shared memory
         let memory = match SharedMemory::new(&engine, MemoryType::shared(16, 32768) /* vm.rs MAX_PAGES: 2 GiB */) {
             Ok(m) => m,
             Err(e) => return fail(e.to_string()),
         };
+        shared = Some(memory.clone());
         if let Err(e) = linker.define(&mut store, "env", "memory", memory) {
             return fail(e.to_string());
         }
@@ -163,7 +194,9 @@ fn run(p: Program) -> i32 {
                     let mut store = Store::new(&host.engine, wasi(&host.argv, host.sandbox)?);
                     let inst = host.linker.instantiate(&mut store, &host.module).map_err(|e| e.to_string())?;
                     let start = inst.get_typed_func::<(i32, i32), ()>(&mut store, "wasi_thread_start").map_err(|e| e.to_string())?;
-                    Ok(status(start.call(&mut store, (tid, start_arg)), &host.argv[0]))
+                    let r = start.call(&mut store, (tid, start_arg));
+                    let mem = host.shared.clone();
+                    Ok(status(r, &host.argv[0], &move |at, n| read_shared(mem.as_ref()?, at, n)))
                 })()
                 .unwrap_or_else(|e| {
                     eprintln!("{}: thread {tid}: {e}", host.argv[0]);
@@ -184,9 +217,18 @@ fn run(p: Program) -> i32 {
         Ok(i) => i,
         Err(e) => return fail(format!("cannot start: {e}")),
     };
-    let _ = host.set(Host { engine: engine.clone(), module: module.clone(), linker: linker.clone(), argv: p.argv.clone(), sandbox: p.sandbox });
+    let _ = host.set(Host { engine: engine.clone(), module: module.clone(), linker: linker.clone(), argv: p.argv.clone(), sandbox: p.sandbox, shared: shared.clone() });
     match instance.get_typed_func::<(), ()>(&mut store, "_start") {
-        Ok(start) => status(start.call(&mut store, ()), &argv0),
+        Ok(start) => {
+            let r = start.call(&mut store, ());
+            match (instance.get_memory(&mut store, "memory"), shared.clone()) {
+                (Some(m), _) => {
+                    let data = m.data(&store).to_vec();
+                    status(r, &argv0, &move |at, n| data.get(at..at.checked_add(n)?).map(|b| b.to_vec()))
+                }
+                (None, mem) => status(r, &argv0, &move |at, n| read_shared(mem.as_ref()?, at, n)),
+            }
+        }
         Err(_) => fail(format!(
             "{} has no _start (compile a module with a zero-argument main)",
             Path::new(&argv0).display()

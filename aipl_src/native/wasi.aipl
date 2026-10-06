@@ -21,6 +21,7 @@
 ;;     (openat2 with RESOLVE_BENEATH): the kernel refuses `..` escapes,
 ;;     absolute paths, and symlinks leading out, as wasmtime's preopens do.
 (module wasi
+  (import alloc)
   (import str)
   (import buf)
   (import vec)
@@ -45,7 +46,7 @@
   (fn make [l:(ptr lower.L)] -> (ptr W)
     (let w:(ptr W) (new W))
     (put w W.region_routine -1)
-    (let fds:(ptr buf.Buf) (call buf.make 256))
+    (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (loop i 0 (- (call fd_slots) 1) 1
       (call push_u32 fds (if (lte i 2) i -1)))
     (put w W.fd_table (call lower.data_bytes l (call buf.bytes fds)))
@@ -57,7 +58,7 @@
     w)
 
   (fn cell [l:(ptr lower.L)] -> i32
-    (let b:(ptr buf.Buf) (call buf.make 8))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 8))
     (loop k 1 8 1 (call buf.push_byte b 0))
     (call lower.data_bytes l (call buf.bytes b)))
 
@@ -69,7 +70,7 @@
 
   ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29).
   (fn errno_bytes [] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make 64))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (loop e 0 63 1
       (call buf.push_byte b
         (cond ((eq e 0) 0)
@@ -173,9 +174,9 @@
   ;; 64 KiB, the most one pipe read returns).
   (fn emit_fd_rw [l:(ptr lower.L) w:(ptr W) reading:bool] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
-    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 4))
-    (let errs:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
-    (let done:(ptr (vec.Vec i32)) (call (vec.make i32) 4))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))
+    (let errs:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (let done:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))
     (call arg c 32 4 0 (call r12))
     (call emit_fd_lookup l w (call r12) (call r12) badf)
     (call arg c 32 4 1 (call r13))
@@ -258,7 +259,7 @@
   ;; fd_close(fd) -> errno. WASI 0-2 only free their slot (see the header).
   (fn emit_fd_close [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
-    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
     (call arg c 32 1 0 (call r12))
     (call emit_fd_lookup l w (call r12) (call rdi) badf)
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
@@ -462,7 +463,7 @@
   ;; rights_inheriting:i64, fdflags, fd_out) -> errno
   (fn emit_path_open [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
-    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
     (call arg c 32 9 0 (call rbx))
     (call emit_fd_lookup l w (call rbx) (call rbx) badf)
     (call arg c 32 9 2 (call r13))
@@ -548,7 +549,7 @@
   ;; way (O_PATH) and the last component removed inside it.
   (fn emit_path_unlink [l:(ptr lower.L) w:(ptr W)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
-    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) 2))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
     (call arg c 32 3 0 (call rbx))
     (call emit_fd_lookup l w (call rbx) (call rbx) badf)
     (call arg c 32 3 1 (call r13))

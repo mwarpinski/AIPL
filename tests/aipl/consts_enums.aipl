@@ -1,6 +1,7 @@
 ;; Constants and enums (AIPL_SPEC.md 4.I) across modules, for
 ;; tests/test_consts_enums.rs and the self-hosted parity tests. main is 2294.
 (module consts_enums
+  (import alloc)
   (import palette)
   (import palette as pal)
   (import vec)
@@ -16,7 +17,7 @@
       (else (* a b))))
   (fn pick [yes:bool] -> (result Op i32) (if yes (ok Op.mul) (err:Op -1)))
   (fn main [] -> i32
-    (let ops:(ptr (vec.Vec Op)) (call (vec.make Op) 2))
+    (let ops:(ptr (vec.Vec Op)) (call (vec.make Op) (call alloc.default) 2))
     (call (vec.push Op) ops Op.sub)
     (match_result (call pick ON)
       (ok o (call (vec.push Op) ops o))

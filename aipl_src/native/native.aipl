@@ -27,6 +27,7 @@
 ;; The start-up stub calls the module's `_start` export and exits with
 ;; status 0, as `aipl-run` does when `_start` returns.
 (module native
+  (import alloc)
   (import str)
   (import buf)
   (import vec)
@@ -268,7 +269,7 @@
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let nimports:i32 (call lower.n_fimports l))
     (let nfuncs:i32 (+ nimports (call (vec.len i32) (get w wasm_reader.Wasm.funcs))))
-    (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (+ nfuncs 1)))
+    (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ nfuncs 1)))
     (let data:(ptr buf.Buf) (get l lower.L.data))
     ;; data: the argv[0] cell, then the trap routine's separators
     (let argv0_cell:i32 (call lower.data_text l ""))
@@ -291,7 +292,7 @@
     ;; the main thread's globals block (8 bytes each, initial values), and
     ;; the thread-id counter (starts at 1)
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
-    (let gb:(ptr buf.Buf) (call buf.make 64))
+    (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
       (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (loop k 0 7 1 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
@@ -362,7 +363,7 @@
     (if (gt n 1) (return "more than one table") (block))
     (let size:i32 (get (get (call (vec.at (ptr wasm_reader.Table)) tables 0) wasm_reader.Table.limits) wasm_reader.Limits.min))
     (if (gt size 65536) (return "a table with more than 65536 entries") (block))
-    (let b:(ptr buf.Buf) (call buf.make (+ 16 (* 16 size))))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 16 (* 16 size))))
     (loop i 1 size 1
       (loop k 1 8 1 (call buf.push_byte b 0))
       (loop k 1 4 1 (call buf.push_byte b 255))

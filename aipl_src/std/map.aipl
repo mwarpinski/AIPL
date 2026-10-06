@@ -1,13 +1,14 @@
 ;; std/map: hash map from i32 keys to values of any type (open addressing,
 ;; linear probing, tombstones; grows at 75% load). Generic in the value type
 ;; (AIPL_SPEC.md 4.H):
-;;   (let m:(ptr (map.Map i32)) (call (map.make i32) 0))
+;;   (let m:(ptr (map.Map i32)) (call (map.make i32) (call alloc.default) 0))
 ;;   (call (map.set i32) m 7 70)
 ;;   (call (map.get_or i32) m 7 0)
 (module map
+  (import alloc)
 
   ;; state per slot: 0 empty, 1 used, 2 deleted
-  (struct (Map V) [keys:(arr i32) vals:(arr V) states:(arr i32) count:i32 used:i32])
+  (struct (Map V) [keys:(arr i32) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator])
 
   ;; murmur3 finalizer: spreads nearby keys across the table
   (fn hash [k:i32] -> i32
@@ -18,18 +19,30 @@
     (^ h (shru h 16)))
 
   (fn (alloc_slots V) [m:(ptr (Map V)) cap:i32] -> void
-    (put m (Map V) keys (arr.new i32 cap))
-    (put m (Map V) vals (arr.new V cap))
-    (put m (Map V) states (arr.new i32 cap))
+    (let a:alloc.Allocator (get m (Map V) allocator))
+    (put m (Map V) keys (call (alloc.array i32) a cap))
+    (put m (Map V) vals (call (alloc.array V) a cap))
+    (put m (Map V) states (call (alloc.array i32) a cap))
     (put m (Map V) count 0)
     (put m (Map V) used 0))
 
-  (fn (make V) [capacity:i32] -> (ptr (Map V))
+  (fn (make V) [a:alloc.Allocator capacity:i32] -> (ptr (Map V))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
-    (let m:(ptr (Map V)) (new (Map V)))
+    (let m:(ptr (Map V)) (call (alloc.create (Map V)) a))
+    (put m (Map V) allocator a)
     (call (alloc_slots V) m cap)
     m)
+
+  ;; Frees the table and the map itself; neither may be used afterwards.
+  (fn (free V) [m:(ptr (Map V))] -> void
+    (call (free_slots V) (get m (Map V) allocator) (get m (Map V) keys) (get m (Map V) vals) (get m (Map V) states))
+    (call (alloc.destroy (Map V)) (get m (Map V) allocator) m))
+
+  (fn (free_slots V) [a:alloc.Allocator keys:(arr i32) vals:(arr V) states:(arr i32)] -> void
+    (call (alloc.free_array i32) a keys)
+    (call (alloc.free_array V) a vals)
+    (call (alloc.free_array i32) a states))
 
   (fn (capacity V) [m:(ptr (Map V))] -> i32 (arr.len (get m (Map V) keys)))
   (fn (count V) [m:(ptr (Map V))] -> i32 (get m (Map V) count))
@@ -60,7 +73,8 @@
     (loop i 0 (- old_cap 1) 1
       (if (eq (arr.get i32 old_states i) 1)
           (call (set V) m (arr.get i32 old_keys i) (arr.get V old_vals i))
-          (block))))
+          (block)))
+    (call (free_slots V) (get m (Map V) allocator) old_keys old_vals old_states))
 
   ;; Adds k -> v, or replaces k's value.
   (fn (set V) [m:(ptr (Map V)) k:i32 v:V] -> void
@@ -100,7 +114,7 @@
   ;; Pass count; test_suite.aipl expects 4.
   (fn run_map_tests [] -> i32
     (let p:i32 0)
-    (let m:(ptr (Map i32)) (call (make i32) 0))
+    (let m:(ptr (Map i32)) (call (make i32) (call alloc.default) 0))
     ;; 2000 keys including 0 and negatives, forcing several resizes
     (loop i -1000 999 1 (call (set i32) m i (* i 2)))
     (if (and (eq (call (count i32) m) 2000) (and (eq (call (get_or i32) m -1000 0) -2000) (and (eq (call (get_or i32) m 0 7) 0) (eq (call (get_or i32) m 5000 -1) -1))))

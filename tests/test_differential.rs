@@ -71,8 +71,18 @@ fn run_wasmtime(wasm: &[u8], fn_name: &str, args: &[i32]) -> Outcome {
             other => panic!("unexpected wasm result type {other:?}"),
         })
         .collect();
-    func.call(&mut store, &params, &mut results)
-        .map_err(|e| format!("wasmtime trap: {e}"))?;
+    if let Err(e) = func.call(&mut store, &params, &mut results) {
+        // a failed compiled check left its message's address and length in
+        // cells 92 and 96
+        let memory = instance.get_memory(&mut store, "memory").expect("memory export");
+        let data = memory.data(&store);
+        let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let (addr, len) = (word(92), word(96));
+        if len > 0 {
+            return Err(format!("compiled check: {}", String::from_utf8_lossy(&data[addr..addr + len])));
+        }
+        return Err(format!("wasmtime trap: {e}"));
+    }
     Ok(match results.first() {
         None => Value::Void,
         Some(Val::I32(v)) => Value::Int(*v as i64),
@@ -87,11 +97,18 @@ fn is_contract_failure(e: &str) -> bool {
     e.starts_with("Pre-condition") || e.starts_with("Post-condition")
 }
 
-/// The VM bounds-checks `arr.get`/`arr.set` against the length header; the
-/// wasm backend does not (AIPL_SPEC.md 4.E). Like contracts, this is a check
-/// the VM adds on top of wasm semantics, so VM-error/wasm-success is accepted.
-fn is_vm_bounds_check(e: &str) -> bool {
-    e.starts_with("Array index out of bounds")
+/// A compiled contract failure reports the VM's message without the
+/// position (` at L:C`) and without the values compiled code cannot show
+/// (floats, strings, results): its fixed part must be the VM's, and each
+/// value it shows must be one the VM shows.
+fn contract_messages_agree(vm: &str, compiled: &str) -> bool {
+    let Some(c) = compiled.strip_prefix("compiled check: ") else { return false };
+    let Some((head, rest)) = vm.split_once("' at ") else { return false };
+    let Some((_, after)) = rest.split_once(": ") else { return false };
+    let vm = format!("{head}': {after}");
+    let (fixed, values) = c.split_once(" with ").unwrap_or((c, ""));
+    let vm_values = vm.strip_prefix(fixed).and_then(|r| r.strip_prefix(" with ")).unwrap_or("");
+    vm.starts_with(fixed) && values.split(", ").filter(|v| !v.is_empty()).all(|v| vm_values.split(", ").any(|w| w == v))
 }
 
 /// Runs `fn_name` with `args` in both backends and asserts agreement. Returns
@@ -104,8 +121,18 @@ fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Ou
             a, b,
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM={a:?} wasmtime={b:?} (fix src/vm.rs)"
         ),
+        // a compiled bounds check reports the VM's message (AIPL_SPEC.md 7.9)
+        (Err(a), Err(b)) if a.starts_with("Array index out of bounds: index ") => assert_eq!(
+            Some(a.as_str()),
+            b.strip_prefix("compiled check: "),
+            "DIVERGENCE in '{fn_name}' with args {args:?}: the messages differ"
+        ),
+        // so does a compiled contract, without the position (AIPL_SPEC.md 4.E)
+        (Err(a), Err(b)) if is_contract_failure(a) => assert!(
+            contract_messages_agree(a, b),
+            "DIVERGENCE in '{fn_name}' with args {args:?}: the messages differ: VM {a:?}, compiled {b:?}"
+        ),
         (Err(_), Err(_)) => {}
-        (Err(e), Ok(_)) if is_contract_failure(e) || is_vm_bounds_check(e) => {}
         (Err(e), Ok(b)) => panic!(
             "DIVERGENCE in '{fn_name}' with args {args:?}: VM errored ({e}) but wasmtime returned {b:?} (fix src/vm.rs)"
         ),
@@ -631,6 +658,10 @@ fn p8_structs_and_arrays() {
   (fn test_sizeof [] -> i32
     (+ (sizeof Point) (+ (sizeof Mixed) (sizeof Floats))))
 
+  ;; any memory type: 8 + 4 + 4 + 8 + 4 + 4 + 4 = 36
+  (fn test_sizeof_types [] -> i32
+    (+ (sizeof i64) (+ (sizeof i32) (+ (sizeof (ptr Point)) (+ (sizeof f64) (+ (sizeof (arr i64)) (+ (sizeof bool) (sizeof str))))))))
+
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32
     (let m:(ptr Mixed) (new Mixed))
@@ -733,6 +764,7 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_point_ops", &[15, 27]), Ok(Value::Int(42)));
     // Point 8; Mixed 24 (bool 4 + pad 4 + i64 8 + i32 4 + pad 4); Floats 16 (f32 4 + pad 4 + f64 8)
     assert_eq!(differential(&module, &wasm, "test_sizeof", &[]), Ok(Value::Int(48)));
+    assert_eq!(differential(&module, &wasm, "test_sizeof_types", &[]), Ok(Value::Int(36)));
     // high word of n << 32 is n; tag read via get and via raw offset 16
     assert_eq!(differential(&module, &wasm, "test_mixed", &[3]), Ok(Value::Int(3 + 7 + 7)));
     assert_eq!(differential(&module, &wasm, "test_floats", &[]), Ok(Value::Int(1)));
@@ -762,7 +794,7 @@ fn p8_structs_and_arrays() {
     // (the VM's bounds check sees no length header there and fires first)
     assert!(differential(&module, &wasm, "test_arr_set_reserved", &[]).is_err());
 
-    // In-bounds index agrees; out-of-bounds index is a VM error (wasm reads past the array).
+    // In-bounds index agrees; out-of-bounds index fails in both, with the same message.
     assert_eq!(differential(&module, &wasm, "test_index_oob", &[2]), Ok(Value::Int(0)));
     for i in [3, -1] {
         let e = differential(&module, &wasm, "test_index_oob", &[i]).unwrap_err();
@@ -925,4 +957,78 @@ fn checked_arithmetic_agrees_with_rust() {
     let m = Parser::parse("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("CheckedAdd is integer arithmetic (i32 or i64), got F64"), "{e}");
+}
+
+const CONTRACTS: &str = r#"
+(module contracts
+  (fn safe_div [num:i32 den:i32] -> i32
+    (req (neq den 0))
+    (/ num den))
+  ;; a bug the ens catches: an early return of x past the limit
+  (fn clamp [x:i64 hi:i64] -> i64
+    (req (gte hi 0i64))
+    (ens (lte res hi))
+    (if (gt x (+ hi 10i64)) (return x) (block))
+    (if (gt x hi) hi x))
+  (fn clamp_i32 [x:i32 hi:i32] -> i32
+    (i32.wrap (call clamp (i64.extend_s x) (i64.extend_s hi))))
+  (fn flag [b:bool s:str f:f64] -> bool
+    (ens res)
+    b)
+  (fn flag_i32 [k:i32] -> i32 (if (call flag (eq k 1) "s, t" 1.5) 1 0))
+  (fn positive [n:i32] -> void
+    (ens (gt n 0))
+    (if (lt n -5) (return) (block))
+    (set! n (+ n 0)))
+  (fn positive_i32 [n:i32] -> i32 (call positive n) 0)
+  (fn nested [a:(arr i32) i:i32] -> i32
+    (req (gt (arr.get i32 a i) 0))
+    i)
+  (fn nested_i32 [i:i32] -> i32
+    (let a:(arr i32) (arr.new i32 2))
+    (arr.set i32 a 0 1)
+    (call nested a i))
+)
+"#;
+
+/// req and ens fail in compiled code as in the VM, with the VM's message
+/// without its position, early returns included.
+#[test]
+fn contracts_fail_in_both() {
+    let (module, wasm) = compile_checked(CONTRACTS);
+    assert_eq!(differential(&module, &wasm, "safe_div", &[10, 2]), Ok(Value::Int(5)));
+    let e = differential(&module, &wasm, "safe_div", &[10, 0]).unwrap_err();
+    assert_eq!(e, "Pre-condition failed in 'safe_div' at 4:10: (req (neq den 0)) with num = 10, den = 0");
+    assert_eq!(
+        run_wasmtime(&wasm, "safe_div", &[10, 0]).unwrap_err(),
+        "compiled check: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0"
+    );
+    assert_eq!(differential(&module, &wasm, "clamp_i32", &[5, 9]), Ok(Value::Int(5)));
+    assert_eq!(differential(&module, &wasm, "clamp_i32", &[12, 9]), Ok(Value::Int(9)));
+    assert!(differential(&module, &wasm, "clamp_i32", &[3, -1]).is_err());
+    assert_eq!(differential(&module, &wasm, "clamp_i32", &[-2147483648, 9]), Ok(Value::Int(-2147483648)));
+    // the early return
+    assert!(differential(&module, &wasm, "clamp_i32", &[30, 9]).is_err());
+    assert_eq!(
+        run_wasmtime(&wasm, "clamp_i32", &[30, 9]).unwrap_err(),
+        "compiled check: Post-condition failed in 'clamp': (ens (lte res hi)) with x = 30i64, hi = 9i64, res = 30i64"
+    );
+    assert_eq!(differential(&module, &wasm, "flag_i32", &[1]), Ok(Value::Int(1)));
+    assert!(differential(&module, &wasm, "flag_i32", &[0]).is_err());
+    assert_eq!(
+        run_wasmtime(&wasm, "flag_i32", &[0]).unwrap_err(),
+        "compiled check: Post-condition failed in 'flag': (ens res) with b = false, res = false"
+    );
+    assert_eq!(differential(&module, &wasm, "positive_i32", &[4]), Ok(Value::Int(0)));
+    for n in [0, -9] {
+        assert!(differential(&module, &wasm, "positive_i32", &[n]).is_err());
+    }
+    assert_eq!(
+        run_wasmtime(&wasm, "positive_i32", &[-9]).unwrap_err(),
+        "compiled check: Post-condition failed in 'positive': (ens (gt n 0)) with n = -9, res = void"
+    );
+    // a contract that itself fails (out of bounds), and one that fails as a contract
+    assert!(differential(&module, &wasm, "nested_i32", &[5]).unwrap_err().starts_with("Array index out of bounds"));
+    assert!(differential(&module, &wasm, "nested_i32", &[1]).unwrap_err().starts_with("Pre-condition failed in 'nested'"));
+    assert_eq!(differential(&module, &wasm, "nested_i32", &[0]), Ok(Value::Int(0)));
 }

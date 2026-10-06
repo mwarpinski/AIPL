@@ -4,11 +4,14 @@
 ;; Scope matches src/compiler/wasm.rs byte-for-byte.
 
 (module codegen
+  (import alloc)
   (import compiler)
   (import consts)
   (import str)
   (import buf)
   (import strmap)
+  (import parser)
+  (import printer)
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [cg:(ptr Cg) pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
@@ -51,7 +54,8 @@
               unions:(arr (ptr UnionInfo)) nunions:i32
               wasi:(arr i32) nimports:i32 labels:(arr Label) nlabels:i32
               uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32
-              strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32])
+              strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32
+              uses_checks:bool checks_base:i32 ens_block:bool src_len:i32])
 
   ;; A string literal's spelling (a span of the source; pos -1 for the
   ;; newline sys.print reserves) and the address of its interned bytes. The
@@ -108,11 +112,15 @@
     (put cg Cg.labels (arr.new Label 255))
     (put cg Cg.nlabels 0)
     (put cg Cg.uses_refs false)
+    (put cg Cg.uses_checks false)
+    (put cg Cg.checks_base 0)
+    (put cg Cg.ens_block false)
+    (put cg Cg.src_len 0)
     (put cg Cg.sigs (arr.new (ptr Sig) 31))
     (put cg Cg.nsigs 0)
     (put cg Cg.strs (arr.new (ptr StrLit) 1364))
     (put cg Cg.nstrs 0)
-    (put cg Cg.blob (call buf.make 4096))
+    (put cg Cg.blob (call buf.make (call alloc.default) 4096))
     (put cg Cg.newline 0)
     cg)
 
@@ -173,7 +181,7 @@
 
   (fn new_keywords [] -> (ptr Keywords)
     (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (strmap.make Kw) 256))
+    (put ks Keywords.map (call (strmap.make Kw) (call alloc.default) 256))
     (put ks Keywords.key (call str.bytes 0 0))
     ks)
 
@@ -590,7 +598,24 @@
     (while (neq bchild (ptr.null compiler.Node))
       (if (call is_contract_head cg bchild) 0 (call collect_locals_walk cg bchild))
       (set! bchild (call node_next bchild)))
+    ;; a function with ens keeps its result in res (wasm.rs), unless a let named it
+    (if (and (call has_ens cg fndef_group) (neq (get entry FnInfo.ret) Ty.void))
+        (call add_local_if_new cg (- (str.ptr "res") (get cg Cg.src)) 3 (get entry FnInfo.ret))
+        0)
     (get cg Cg.nlocals))
+
+  ;; The contract kind of a body item: Kw.req, Kw.ens, or Kw.none (inv too).
+  (fn contract_kind [cg:(ptr Cg) item:(ptr compiler.Node)] -> Kw
+    (if (not (call is_contract_head cg item)) (return Kw.none) (block))
+    (let kw:Kw (call group_head_keyword cg item))
+    (if (or (eq kw Kw.req) (eq kw Kw.ens)) kw Kw.none))
+
+  (fn has_ens [cg:(ptr Cg) fndef_group:(ptr compiler.Node)] -> bool
+    (let item:(ptr compiler.Node) (call nth_child fndef_group 5))
+    (while (neq item (ptr.null compiler.Node))
+      (if (eq (call contract_kind cg item) Kw.ens) (return true) (block))
+      (set! item (call node_next item)))
+    false)
 
   ;; ===== WebAssembly encoding =====
   ;; Opcodes (the 0xFC and 0xFE prefixes take a second, LEB128 opcode),
@@ -636,6 +661,12 @@
   (const OP_I32_LT_U:i32 73)
   (const OP_I32_GT_S:i32 74)
   (const OP_I32_GT_U:i32 75)
+  (const OP_I32_GE_U:i32 79)
+  (const OP_I32_DIV_U:i32 110)
+  (const OP_I32_REM_U:i32 112)
+  (const OP_I64_LT_U:i32 84)
+  (const OP_I64_DIV_U:i32 128)
+  (const OP_I64_REM_U:i32 130)
   (const OP_I32_ADD:i32 106)
   (const OP_I32_SUB:i32 107)
   (const OP_I32_MUL:i32 108)
@@ -952,6 +983,32 @@
     (call put_byte o BLOCK_EMPTY)
     (call put_byte o OP_UNREACHABLE)
     (call put_byte o OP_END))  ;; end
+
+  ;; The bounds check of arr.get/arr.set (wasm.rs emit_bounds_check): with
+  ;; [array index] on the stack, fails through $aipl_oob unless index <
+  ;; length, unsigned; leaves [array index]. The array goes in the store
+  ;; guard's scratch local, the index in the one after it. The `unreachable`
+  ;; after the call (which never returns) tells wasmtime nothing is live
+  ;; past it.
+  (fn emit_bounds_check [cg:(ptr Cg) o:(ptr Out)] -> void
+    (let a:i32 (get cg Cg.nlocals))
+    (let i:i32 (+ a 1))
+    (call emit_local_set o i)
+    (call emit_local_tee o a)
+    (call emit_local_get o i)
+    (call emit_local_get o a)
+    (call emit_i32_const o 4)
+    (call put_byte o OP_I32_SUB)
+    (call emit_memop o OP_I32_LOAD 2)
+    (call put_byte o OP_I32_GE_U)
+    (call put_byte o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o i)
+    (call emit_local_get o a)
+    (call emit_call o (+ (get cg Cg.checks_base) 1))
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END)
+    (call emit_local_get o i))
 
 
 
@@ -1455,7 +1512,7 @@
     (if (or (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536) (gte (get cg Cg.nstrs) 1364))
         (block (call set_compile_error CgErr.too_many_literals) (return 1028))
         (block))
-    (let text:(ptr buf.Buf) (call buf.make (+ len 1)))
+    (let text:(ptr buf.Buf) (call buf.make (call alloc.default) (+ len 1)))
     (let i:i32 0)
     (while (lt i len)
       (let b:i32 (mem.load8 (+ (get cg Cg.src) (+ pos i))))
@@ -1565,6 +1622,8 @@
             ((eq kw Kw.thread_spawn) (call mark_wasi_used cg Wasi.thread_spawn) 0)
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
+            ;; an array index, req, or ens: the module needs the check helpers
+            ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (eq kw Kw.ens))) (put cg Cg.uses_checks true) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -2119,8 +2178,8 @@
 
   (fn compile_op [cg:(ptr Cg) op_id:Kw node:(ptr compiler.Node) o:(ptr Out)] -> void
     (let import_cnt:i32 (get cg Cg.nimports))
-    (let io_a:i32 (+ (get cg Cg.nlocals) 1))
-    (let io_b:i32 (+ (get cg Cg.nlocals) 2))
+    (let io_a:i32 (+ (get cg Cg.nlocals) 2))
+    (let io_b:i32 (+ (get cg Cg.nlocals) 3))
     (let done:bool false)
     (if (call is_checked op_id) (block (call compile_checked cg node o op_id) (set! done true)) (block))
 
@@ -2402,7 +2461,11 @@
           (if (neq (call nth_child node 1) (ptr.null compiler.Node))
               (call compile_expr cg (call nth_child node 1) o)
               (block))
-          (call put_byte o OP_RETURN) (set! done true))
+          (if (get cg Cg.ens_block)
+              ;; to the end of the function's body block, where ens is checked
+              (block (call put_byte o OP_BR) (call put_u32 o (- (get cg Cg.nlabels) 1)))
+              (call put_byte o OP_RETURN))
+          (set! done true))
         (block))
     (if (eq op_id Kw.break) ;; break -> br to the innermost loop exit block
         (block
@@ -2494,10 +2557,15 @@
           (call emit_memop_offset o (call store_opcode ftype) (call mem_align ftype) f_offset)
           (set! done true))
         (block))
-    (if (eq op_id Kw.sizeof) ;; sizeof Struct
+    (if (eq op_id Kw.sizeof) ;; sizeof Struct, or sizeof of any memory type
         (block
           (let snode:(ptr compiler.Node) (call nth_child node 1))
-          (let size:i32 (call get_struct_size cg (call node_a snode) (call node_b snode)))
+          (let is_struct:bool (and (eq (call node_kind snode) compiler.Kind.symbol)
+                                   (and (eq (call ty_of_kw (call classify_keyword cg (call node_a snode) (call node_b snode))) Ty.none)
+                                        (eq (call find_union cg (call node_a snode) (call node_b snode)) (ptr.null UnionInfo)))))
+          (let size:i32 (if is_struct
+                            (call get_struct_size cg (call node_a snode) (call node_b snode))
+                            (call type_size (call elem_type_id cg snode))))
           (call emit_i32_const o size) (set! done true))
         (block))
     (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
@@ -2541,6 +2609,7 @@
           (let idx_node:(ptr compiler.Node) (call nth_child node 3))
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
+          (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
           (call put_byte o OP_I32_MUL)
           (call put_byte o OP_I32_ADD)
@@ -2558,6 +2627,7 @@
           (let val_node:(ptr compiler.Node) (call nth_child node 4))
           (call compile_expr cg ptr_node o)
           (call compile_expr cg idx_node o)
+          (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
           (call put_byte o OP_I32_MUL)
           (call put_byte o OP_I32_ADD)
@@ -2914,9 +2984,22 @@
 
   ;; The body's expressions in order, contracts skipped; every value but a
   ;; non-void function's last is dropped.
+  ;; Every req is checked first; with ens, the body is a block whose end
+  ;; (where return branches to) stores the result in res and checks every
+  ;; ens (wasm.rs).
   (fn compile_function_body [cg:(ptr Cg) entry:(ptr FnInfo) o:(ptr Out)] -> void
     (let ret_type:Ty (get entry FnInfo.ret))
-    (let bchild:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
+    (let fnode:(ptr compiler.Node) (get entry FnInfo.node))
+    (let ens:bool (call has_ens cg fnode))
+    (call emit_contract_checks cg entry o Kw.req)
+    (put cg Cg.ens_block ens)
+    (if ens
+        (block
+          (call put_byte o OP_BLOCK)
+          (call put_byte o (call block_type_byte ret_type))
+          (call label_push cg Label.if_else))
+        0)
+    (let bchild:(ptr compiler.Node) (call nth_child fnode 5))
     (while (neq bchild (ptr.null compiler.Node))
       (if (call is_contract_head cg bchild)
           (block)
@@ -2924,7 +3007,213 @@
             (let keep_value:bool (and (eq (call node_next bchild) (ptr.null compiler.Node)) (neq ret_type Ty.void)))
             (call compile_expr cg bchild o)
             (if (and (not keep_value) (not (call is_void_node cg bchild))) (call put_byte o OP_DROP) (block))))
-      (set! bchild (call node_next bchild))))
+      (set! bchild (call node_next bchild)))
+    (if ens
+        (block
+          (call label_pop cg)
+          (call put_byte o OP_END)
+          (let res:i32 (call find_local cg (- (str.ptr "res") (get cg Cg.src)) 3))
+          (if (neq ret_type Ty.void) (call emit_local_set o res) (block))
+          (call emit_contract_checks cg entry o Kw.ens)
+          (if (neq ret_type Ty.void) (call emit_local_get o res) (block)))
+        (block))
+    (put cg Cg.ens_block false))
+
+  ;; ===== Compiled contracts (wasm.rs contract_messages, emit_contract_check) =====
+
+  ;; One piece of a contract failure's message after its fixed text: text
+  ;; (interned at addr), or a local's value shown as the VM shows it.
+  (enum ItemKind [text int long bool_])
+  (struct Item [kind:ItemKind addr:i32 len:i32 local:i32])
+  (struct Msg [addr:i32 len:i32 items:(arr (ptr Item)) n:i32])
+
+  ;; Interns bytes (not a source spelling) into the literal blob.
+  (fn intern_raw [cg:(ptr Cg) data:i32 len:i32] -> i32
+    (let found:i32 (call find_interned_content cg data len))
+    (if (neq found -1) (return found) (block))
+    (if (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536)
+        (block (call set_compile_error CgErr.too_many_literals) (return 1028))
+        (block))
+    (call append_to_blob cg data len))
+
+  (fn add_item [cg:(ptr Cg) m:(ptr Msg) kind:ItemKind b:(ptr buf.Buf) local:i32] -> void
+    (let it:(ptr Item) (new Item))
+    (put it Item.kind kind)
+    (put it Item.local local)
+    (if (eq kind ItemKind.text)
+        (block
+          (put it Item.addr (call intern_raw cg (get b buf.Buf.data) (call buf.len b)))
+          (put it Item.len (call buf.len b)))
+        (block))
+    (if (eq kind ItemKind.bool_)
+        (block (call intern_raw cg (str.ptr "true") 4) (call intern_raw cg (str.ptr "false") 5) 0)
+        0)
+    (arr.set (ptr Item) (get m Msg.items) (get m Msg.n) it)
+    (put m Msg.n (+ (get m Msg.n) 1)))
+
+  ;; How the VM shows a value of type t, if compiled code can show it the
+  ;; same way (wasm.rs shown_as); ItemKind.text for "it cannot".
+  (fn shown_as [t:Ty] -> ItemKind
+    (cond
+      ((or (eq t Ty.i32) (or (eq t Ty.ptr) (or (eq t Ty.arr) (or (eq t Ty.union) (eq t Ty.fn))))) ItemKind.int)
+      ((eq t Ty.i64) ItemKind.long)
+      ((eq t Ty.bool) ItemKind.bool_)
+      (else ItemKind.text)))
+
+  ;; " with " before the first value shown, ", " before the others.
+  (fn item_head [m:(ptr Msg) name_ptr:i32 name_len:i32] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ name_len 12)))
+    (call buf.push_str b (if (eq (get m Msg.n) 0) " with " ", "))
+    (call buf.push_bytes b (call str.bytes name_ptr name_len))
+    b)
+
+  (fn add_value [cg:(ptr Cg) m:(ptr Msg) name_ptr:i32 name_len:i32 kind:ItemKind local:i32] -> void
+    (let b:(ptr buf.Buf) (call item_head m name_ptr name_len))
+    (call buf.push_str b " = ")
+    (call add_item cg m ItemKind.text b 0)
+    (call add_item cg m kind b local)
+    (if (eq kind ItemKind.long)
+        (block (let sfx:(ptr buf.Buf) (call buf.make (call alloc.default) 4)) (call buf.push_str sfx "i64") (call add_item cg m ItemKind.text sfx 0))
+        (block)))
+
+  ;; The bytes of the expression starting at offset at of the source: up to
+  ;; its closing bracket, or for an atom the next space or bracket.
+  (fn expr_text_len [cg:(ptr Cg) at:i32] -> i32
+    (let src:i32 (get cg Cg.src))
+    (let lim:i32 (get cg Cg.src_len))
+    (let i:i32 at)
+    (let depth:i32 0)
+    (let fin:bool false)
+    (while (and (not fin) (lt i lim))
+      (let c:i32 (mem.load8 (+ src i)))
+      (cond
+        ((eq c 34)
+         (set! i (+ i 1))
+         (while (and (lt i lim) (neq (mem.load8 (+ src i)) 34))
+           (set! i (+ i (if (eq (mem.load8 (+ src i)) 92) 2 1))))
+         (set! i (+ i 1))
+         (set! fin (eq depth 0)))
+        ((eq c 59) (while (and (lt i lim) (neq (mem.load8 (+ src i)) 10)) (set! i (+ i 1))))
+        ((or (eq c 40) (eq c 91)) (set! depth (+ depth 1)) (set! i (+ i 1)))
+        ((or (eq c 41) (eq c 93))
+         (if (eq depth 0)
+             (set! fin true)
+             (block (set! depth (- depth 1)) (set! i (+ i 1)) (set! fin (eq depth 0)))))
+        ((and (eq depth 0) (or (eq c 32) (or (eq c 9) (or (eq c 10) (eq c 13))))) (set! fin true))
+        (else (set! i (+ i 1)))))
+    (- i at))
+
+  ;; The failure message of contract `c` (a req or ens) of function `entry`,
+  ;; its texts interned in the order wasm.rs string_layout interns them.
+  (fn contract_msg [cg:(ptr Cg) entry:(ptr FnInfo) c:(ptr compiler.Node)] -> (ptr Msg)
+    (let src:i32 (get cg Cg.src))
+    (let is_ens:bool (eq (call contract_kind cg c) Kw.ens))
+    (let t:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (call buf.push_str t (if is_ens "Post-condition failed in '" "Pre-condition failed in '"))
+    (call buf.push_bytes t (call str.bytes (+ src (get entry FnInfo.name_pos)) (get entry FnInfo.name_len)))
+    (call buf.push_str t (if is_ens "': (ens " "': (req "))
+    (let e:(ptr compiler.Node) (call nth_child c 1))
+    (let at:i32 (get e compiler.Node.pos))
+    (call printer.print_expr t (call parser.parse_expr_text (+ src at) (call expr_text_len cg at)))
+    (call buf.push_str t ")")
+    (let m:(ptr Msg) (new Msg))
+    (put m Msg.addr (call intern_raw cg (get t buf.Buf.data) (call buf.len t)))
+    (put m Msg.len (call buf.len t))
+    (let np:i32 (get entry FnInfo.nparams))
+    (put m Msg.items (arr.new (ptr Item) (+ (* 3 (+ np 1)) 1)))
+    (put m Msg.n 0)
+    (let pchild:(ptr compiler.Node) (call first_child (call nth_child (get entry FnInfo.node) 2)))
+    (let k:i32 0)
+    (while (neq pchild (ptr.null compiler.Node))
+      (let kind:ItemKind (call shown_as (arr.get Ty (get entry FnInfo.params) (if (gte k 16) 15 k))))
+      (if (neq kind ItemKind.text)
+          (call add_value cg m (+ src (call node_a pchild)) (call node_b pchild) kind k)
+          (block))
+      (set! k (+ k 1))
+      (set! pchild (call node_next (call node_next (call node_next pchild)))))
+    (if is_ens
+        (block
+          (let ret:Ty (get entry FnInfo.ret))
+          (let rkind:ItemKind (call shown_as ret))
+          (cond
+            ((eq ret Ty.void)
+             (let b:(ptr buf.Buf) (call item_head m (str.ptr "res") 3))
+             (call buf.push_str b " = void")
+             (call add_item cg m ItemKind.text b 0))
+            ((neq rkind ItemKind.text)
+             (call add_value cg m (str.ptr "res") 3 rkind (call find_local cg (- (str.ptr "res") src) 3)))
+            (else (block))))
+        (block))
+    m)
+
+  ;; Interns every contract message's texts, function by function (wasm.rs
+  ;; string_layout, after the literals).
+  (fn intern_contract_texts [cg:(ptr Cg)] -> void
+    (loop f 0 (- (get cg Cg.nfns) 1) 1
+      (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
+      (let item:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
+      (while (neq item (ptr.null compiler.Node))
+        (if (neq (call contract_kind cg item) Kw.none) (block (call contract_msg cg entry item) 0) 0)
+        (set! item (call node_next item)))))
+
+  ;; The checks of every contract of kind `kind` (req or ens) of the
+  ;; function, in order (wasm.rs emit_contract_check): unless the condition
+  ;; holds, write the message to fresh memory and trap.
+  (fn emit_contract_checks [cg:(ptr Cg) entry:(ptr FnInfo) o:(ptr Out) kind:Kw] -> void
+    (let base:i32 (get cg Cg.checks_base))
+    (let item:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
+    (while (neq item (ptr.null compiler.Node))
+      (if (eq (call contract_kind cg item) kind)
+          (block
+            (let m:(ptr Msg) (call contract_msg cg entry item))
+            (let max:i32 (get m Msg.len))
+            (loop j 0 (- (get m Msg.n) 1) 1
+              (let it:(ptr Item) (arr.get (ptr Item) (get m Msg.items) j))
+              (set! max (+ max (cond
+                                 ((eq (get it Item.kind) ItemKind.text) (get it Item.len))
+                                 ((eq (get it Item.kind) ItemKind.bool_) 5)
+                                 (else 24)))))
+            (call compile_expr cg (call nth_child item 1) o)
+            (call put_byte o OP_I32_EQZ)
+            (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+            (call emit_i32_const o (get m Msg.addr))
+            (call emit_i32_const o (get m Msg.len))
+            (call emit_i32_const o max)
+            (call emit_call o (+ base 3))
+            (loop j 0 (- (get m Msg.n) 1) 1
+              (let it:(ptr Item) (arr.get (ptr Item) (get m Msg.items) j))
+              (let ik:ItemKind (get it Item.kind))
+              (cond
+                ((eq ik ItemKind.text)
+                 (call emit_i32_const o (get it Item.addr))
+                 (call emit_i32_const o (get it Item.len))
+                 (call emit_call o (+ base 2)))
+                ((eq ik ItemKind.int)
+                 (call emit_local_get o (get it Item.local))
+                 (call put_byte o OP_I64_EXTEND_I32_S)
+                 (call emit_call o base))
+                ((eq ik ItemKind.long)
+                 (call emit_local_get o (get it Item.local))
+                 (call emit_call o base))
+                (else
+                 ;; "true" or "false": address, then length
+                 (call emit_bool_pick o (get it Item.local) (call intern_raw cg (str.ptr "true") 4) (call intern_raw cg (str.ptr "false") 5))
+                 (call emit_bool_pick o (get it Item.local) 4 5)
+                 (call emit_call o (+ base 2)))))
+            (call emit_call o (+ base 4))
+            (call put_byte o OP_UNREACHABLE)
+            (call put_byte o OP_END))
+          (block))
+      (set! item (call node_next item))))
+
+  ;; local ? a : b, as an if with an i32 result.
+  (fn emit_bool_pick [o:(ptr Out) local:i32 a:i32 b:i32] -> void
+    (call emit_local_get o local)
+    (call put_byte o OP_IF) (call put_byte o VT_I32)
+    (call emit_i32_const o a)
+    (call put_byte o OP_ELSE)
+    (call emit_i32_const o b)
+    (call put_byte o OP_END))
 
 
 
@@ -2996,8 +3285,9 @@
     (put s Sig.result (if (eq (get f FnInfo.ret) Ty.void) 0 (call type_id_to_valtype (get f FnInfo.ret))))
     s)
 
-  ;; One function body: the locals (declared ones, the store guard's scratch,
-  ;; and two I/O scratch locals if needed), the code, end.
+  ;; One function body: the locals (declared ones, the store guard's and
+  ;; bounds check's two scratch locals, and two I/O scratch locals if
+  ;; needed), the code, end.
   (fn emit_function [cg:(ptr Cg) entry:(ptr FnInfo) fc:(ptr Out)] -> void
     (let pcount:i32 (get entry FnInfo.nparams))
     (let total_locals:i32 (call collect_locals_for_function cg entry))
@@ -3007,7 +3297,7 @@
     (loop l 0 (- extra 1) 1
       (call put_u32 fc 1)
       (call put_byte fc (call type_id_to_valtype (get (call local_at cg (+ pcount l)) Local.ty))))
-    (call put_u32 fc 1) (call put_byte fc VT_I32)
+    (call put_u32 fc 2) (call put_byte fc VT_I32)
     (if uses_io (block (call put_u32 fc 2) (call put_byte fc VT_I32)) (block))
     (put cg Cg.nlocals total_locals)
     (call compile_function_body cg entry fc)
@@ -3019,13 +3309,14 @@
   (fn compile_module [src_ptr:i32 src_len:i32] -> i32
     (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
-    (let plain:(ptr buf.Buf) (call buf.make (+ src_len 64)))
-    (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make 64)))
+    (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
+    (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make (call alloc.default) 64)))
         (block (call set_compile_error CgErr.unknown_enum_member) (return -1))
         (block))
     (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (set! src_len (call buf.len plain))
+    (put cg Cg.src_len src_len)
     ;; Buffers are sized from the input: a token is at least one source byte
     ;; (a Token record each), an AST node is at most one per token.
     (let tok_buf:i32 (call cg_alloc (* (+ (call compiler.count_tokens src_ptr src_len) 1) (sizeof compiler.Token))))
@@ -3058,7 +3349,15 @@
     ;; generated functions after the module's: a threaded module's start
     ;; function and wasi_thread_start, then _start
     (let extra_fns:i32 (if threaded 2 0))
-    (let n_fns:i32 (+ nfns (+ extra_fns (if auto_start 1 0))))
+    ;; then, in a module with compiled checks, the five check helpers
+    ;; (wasm.rs check_functions)
+    (let uses_checks:bool (get cg Cg.uses_checks))
+    (let before_checks:i32 (+ extra_fns (if auto_start 1 0)))
+    (put cg Cg.checks_base (+ imports (+ nfns before_checks)))
+    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 5 0))))
+    ;; the contract messages go into the literals after the program's own
+    (call intern_contract_texts cg)
+    (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
 
     ;; Output, section scratch, and per-function scratch share one capacity;
     ;; overrunning it is compile error 91.
@@ -3072,7 +3371,7 @@
     ;; Type (1): the WASI imports' types, the functions', the call_ref
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
-    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ extra_fns (if auto_start 1 0))))))
+    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 5 0))))))
     (loop w 0 12 1
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
     (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
@@ -3083,6 +3382,14 @@
           (call emit_func_type sec (call sig_from "ii" 0)))    ;; wasi_thread_start: [i32 i32] -> []
         (block))
     (if auto_start (call emit_func_type sec (call sig_from "" 0)) (block))
+    (if uses_checks
+        (block
+          (call emit_func_type sec (call sig_from "il" 127))    ;; $aipl_dec: [i32 i64] -> [i32]
+          (call emit_func_type sec (call sig_from "ii" 0))      ;; $aipl_oob: [i32 i32] -> []
+          (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_text: [i32 i32 i32] -> [i32]
+          (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_begin: [i32 i32 i32] -> [i32]
+          (call emit_func_type sec (call sig_from "i" 0)))      ;; $aipl_end: [i32] -> []
+        (block))
     (call emit_section o 1 sec)
 
     ;; Import (2): the WASI functions used, in the fixed order; a threaded
@@ -3123,6 +3430,9 @@
         (block (call put_u32 sec generated_types) (call put_u32 sec (+ generated_types 1)))
         (block))
     (if auto_start (call put_u32 sec (+ generated_types extra_fns)) (block))
+    (if uses_checks
+        (loop k 0 4 1 (call put_u32 sec (+ generated_types (+ before_checks k))))
+        (block))
     (call emit_section o 3 sec)
 
     ;; Table (4), only with function refs: one funcref table holding every
@@ -3236,6 +3546,12 @@
           (call emit_call fc (+ imports main_idx))
           (if (neq (get (call func_entry_ptr cg main_idx) FnInfo.ret) Ty.void) (call put_byte fc OP_DROP) (block))
           (call put_byte fc OP_END)
+          (call emit_sized sec fc))
+        (block))
+    (if uses_checks
+        (loop k 0 4 1
+          (let fc:(ptr Out) (call out_at fcode_scratch))
+          (call check_body fc k (get cg Cg.checks_base))
           (call emit_sized sec fc))
         (block))
     (call emit_section o 10 sec)
@@ -3384,4 +3700,143 @@
     (if (gt (call test_compile_compute) 0) (set! passed (+ passed 1)) (block))
     (if (gt (call test_compile_store) 0) (set! passed (+ passed 1)) (block))
     passed)
+
+
+;; ===== Bounds-failure helpers (wasm.rs oob_functions) =====
+  ;; A compiled check's message goes in the reserved runtime block at 128,
+  ;; its address and length in cells 92 and 96 (AIPL_SPEC.md 7.9).
+  (const RT_FAIL_TEXT:i32 128)
+
+  ;; Writes text t at the address local `at_local` holds (or, if it is -1,
+  ;; at `at`), eight bytes per i64.store, the last chunk zero-padded
+  ;; (wasm.rs emit_text_store).
+  (fn emit_text_store [o:(ptr Out) at_local:i32 at:i32 t:str] -> void
+    (let n:i32 (str.len t))
+    (let p:i32 (str.ptr t))
+    (let k:i32 0)
+    (while (lt k n)
+      (let word:i64 0i64)
+      (loop j 0 7 1
+        (if (lt (+ k j) n)
+            (set! word (bitor word (shl (i64.extend_u (mem.load8 (+ p (+ k j)))) (i64.extend_u (* j 8)))))
+            (block)))
+      (if (gte at_local 0) (call emit_local_get o at_local) (call emit_i32_const o at))
+      (call put_byte o OP_I64_CONST)
+      (call put_s64 o word)
+      (call put_byte o OP_I64_STORE)
+      (call put_byte o 0)
+      (call put_u32 o k)
+      (set! k (+ k 8))))
+
+  ;; Check helper k of the five (wasm.rs check_functions); base is $aipl_dec's index.
+  (fn check_body [o:(ptr Out) k:i32 base:i32] -> void
+    (cond
+      ((eq k 0) (call dec_body o))
+      ((eq k 1) (call oob_body o base))
+      ((eq k 2) (call text_body o))
+      ((eq k 3) (call begin_body o (+ base 2)))
+      (else (call end_body o))))
+
+  ;; $aipl_dec(at, v:i64) -> end: v in signed decimal at `at`; the address after it.
+  (fn dec_body [o:(ptr Out)] -> void
+    (call put_u32 o 2) (call put_u32 o 1) (call put_byte o VT_I64) (call put_u32 o 1) (call put_byte o VT_I32)   ;; t:i64 end
+    (call emit_local_get o 1) (call emit_i64_zero o) (call put_byte o OP_I64_LT_S)
+    (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 0) (call emit_i32_const o 45) (call emit_memop o OP_I32_STORE8 0)
+    (call emit_local_get o 0) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 0)
+    (call emit_i64_zero o) (call emit_local_get o 1) (call put_byte o OP_I64_SUB) (call emit_local_set o 1)
+    (call put_byte o OP_END)
+    ;; count the digits
+    (call emit_local_get o 1) (call emit_local_set o 2)
+    (call emit_local_get o 0) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 3)
+    (call put_byte o OP_BLOCK) (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_LOOP) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 2) (call emit_i64_ten o) (call put_byte o OP_I64_LT_U)
+    (call put_byte o OP_BR_IF) (call put_u32 o 1)
+    (call emit_local_get o 2) (call emit_i64_ten o) (call put_byte o OP_I64_DIV_U) (call emit_local_set o 2)
+    (call emit_local_get o 3) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o 3)
+    (call put_byte o OP_BR) (call put_u32 o 0)
+    (call put_byte o OP_END)
+    (call put_byte o OP_END)
+    ;; write them last to first
+    (call emit_local_get o 3) (call emit_local_set o 0)
+    (call put_byte o OP_LOOP) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 0) (call emit_i32_const o 1) (call put_byte o OP_I32_SUB) (call emit_local_tee o 0)
+    (call emit_local_get o 1) (call emit_i64_ten o) (call put_byte o OP_I64_REM_U) (call put_byte o OP_I32_WRAP_I64)
+    (call emit_i32_const o 48) (call put_byte o OP_I32_ADD) (call emit_memop o OP_I32_STORE8 0)
+    (call emit_local_get o 1) (call emit_i64_ten o) (call put_byte o OP_I64_DIV_U) (call emit_local_tee o 1)
+    (call emit_i64_zero o) (call put_byte o OP_I64_NE)
+    (call put_byte o OP_BR_IF) (call put_u32 o 0)
+    (call put_byte o OP_END)
+    (call emit_local_get o 3)
+    (call put_byte o OP_END))
+
+  (fn emit_i64_zero [o:(ptr Out)] -> void (call put_byte o OP_I64_CONST) (call put_s64 o 0i64))
+  (fn emit_i64_ten [o:(ptr Out)] -> void (call put_byte o OP_I64_CONST) (call put_s64 o 10i64))
+
+  ;; $aipl_oob(index, array): the VM's message at RT_FAIL_TEXT, its address
+  ;; and length in cells 92 and 96, then a trap.
+  (fn oob_body [o:(ptr Out) dec_fn:i32] -> void
+    (let prefix:str "Array index out of bounds: index ")
+    (let middle:str " for array of length ")
+    (call put_u32 o 1) (call put_u32 o 1) (call put_byte o VT_I32)   ;; at
+    (call emit_text_store o -1 RT_FAIL_TEXT prefix)
+    (call emit_i32_const o (+ RT_FAIL_TEXT (str.len prefix)))
+    (call emit_local_get o 0) (call put_byte o OP_I64_EXTEND_I32_S)
+    (call emit_call o dec_fn) (call emit_local_set o 2)
+    (call emit_text_store o 2 0 middle)
+    (call emit_local_get o 2) (call emit_i32_const o (str.len middle)) (call put_byte o OP_I32_ADD)
+    (call emit_local_get o 1) (call emit_i32_const o 4) (call put_byte o OP_I32_SUB) (call emit_memop o OP_I32_LOAD 2)
+    (call put_byte o OP_I64_EXTEND_I32_S)
+    (call emit_call o dec_fn) (call emit_local_set o 2)
+    (call emit_i32_const o 92) (call emit_i32_const o RT_FAIL_TEXT) (call emit_memop o OP_I32_STORE 2)
+    (call emit_i32_const o 96) (call emit_local_get o 2) (call emit_i32_const o RT_FAIL_TEXT) (call put_byte o OP_I32_SUB)
+    (call emit_memop o OP_I32_STORE 2)
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END))
+
+  ;; $aipl_text(at, addr, len) -> end: copies len bytes from addr to at.
+  (fn text_body [o:(ptr Out)] -> void
+    (call put_u32 o 0)
+    (call put_byte o OP_BLOCK) (call put_byte o BLOCK_EMPTY)
+    (call put_byte o OP_LOOP) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 2) (call put_byte o OP_I32_EQZ)
+    (call put_byte o OP_BR_IF) (call put_u32 o 1)
+    (call emit_local_get o 0) (call emit_local_get o 1) (call emit_memop o OP_I32_LOAD8_U 0) (call emit_memop o OP_I32_STORE8 0)
+    (loop k 0 1 1 (call emit_local_get o k) (call emit_i32_const o 1) (call put_byte o OP_I32_ADD) (call emit_local_set o k))
+    (call emit_local_get o 2) (call emit_i32_const o 1) (call put_byte o OP_I32_SUB) (call emit_local_set o 2)
+    (call put_byte o OP_BR) (call put_u32 o 0)
+    (call put_byte o OP_END)
+    (call put_byte o OP_END)
+    (call emit_local_get o 0)
+    (call put_byte o OP_END))
+
+  ;; $aipl_begin(addr, len, max) -> end: a message of at most max bytes at
+  ;; the heap cursor (memory grown to hold it), its address in cell 92,
+  ;; starting with the len bytes at addr.
+  (fn begin_body [o:(ptr Out) text_fn:i32] -> void
+    (call put_u32 o 1) (call put_u32 o 2) (call put_byte o VT_I32)   ;; at pages
+    (call emit_i32_const o 0) (call emit_memop o OP_I32_LOAD 2) (call emit_local_set o 3)
+    (call emit_local_get o 3) (call emit_local_get o 2) (call put_byte o OP_I32_ADD)
+    (call emit_i32_const o 65535) (call put_byte o OP_I32_ADD)
+    (call emit_i32_const o 16) (call put_byte o OP_I32_SHR_U)
+    (call put_byte o OP_MEMORY_SIZE) (call put_byte o 0)
+    (call put_byte o OP_I32_SUB) (call emit_local_tee o 4)
+    (call emit_i32_const o 0) (call put_byte o OP_I32_GT_S)
+    (call put_byte o OP_IF) (call put_byte o BLOCK_EMPTY)
+    (call emit_local_get o 4) (call put_byte o OP_MEMORY_GROW) (call put_byte o 0) (call put_byte o OP_DROP)
+    (call put_byte o OP_END)
+    (call emit_i32_const o 92) (call emit_local_get o 3) (call emit_memop o OP_I32_STORE 2)
+    (call emit_local_get o 3) (call emit_local_get o 0) (call emit_local_get o 1)
+    (call emit_call o text_fn)
+    (call put_byte o OP_END))
+
+  ;; $aipl_end(end): the message's length in cell 96, then a trap.
+  (fn end_body [o:(ptr Out)] -> void
+    (call put_u32 o 0)
+    (call emit_i32_const o 96) (call emit_local_get o 0)
+    (call emit_i32_const o 92) (call emit_memop o OP_I32_LOAD 2)
+    (call put_byte o OP_I32_SUB) (call emit_memop o OP_I32_STORE 2)
+    (call put_byte o OP_UNREACHABLE)
+    (call put_byte o OP_END))
 )

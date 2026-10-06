@@ -6,6 +6,7 @@
 ;; "line:col: message" (driver.aipl first maps the offset back to the file
 ;; it came from).
 (module front
+  (import alloc)
   (import compiler)
   (import parser)
   (import expand)
@@ -37,7 +38,7 @@
 
   ;; "line:col: message", counting in the text at src.
   (fn render [src:i32 pr:(ptr checker.Problem)] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make 128))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
     (let lc:(ptr compiler.LineCol) (call compiler.line_col src (get pr checker.Problem.at)))
     (call buf.push_int b (get lc compiler.LineCol.line))
     (call buf.push_byte b 58)

@@ -6,6 +6,7 @@
 ;; words, or -1 if the file cannot be read.
 ;;   cd examples && ../target/debug/aipl eval word_freq.aipl -- input.txt
 (module word_freq
+  (import alloc)
   (import io)
   (import str)
   (import os)
@@ -28,7 +29,7 @@
 
   ;; Word -> count. Keys are slices of `text`, which must outlive the map.
   (fn count_words [text:(ptr str.Bytes)] -> (ptr (strmap.StrMap i32))
-    (let counts:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 64))
+    (let counts:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 64))
     (let n:i32 (get text str.Bytes.len))
     (let start:i32 -1)
     ;; i runs one past the end so a final word is closed too
@@ -59,7 +60,7 @@
         (call compare_bytes (get a Entry.word) (get b Entry.word))))
 
   (fn ranked [counts:(ptr (strmap.StrMap i32))] -> (ptr (vec.Vec (ptr Entry)))
-    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call (strmap.count i32) counts)))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (call (strmap.count i32) counts)))
     (loop i 0 (- (call (strmap.capacity i32) counts) 1) 1
       (if (call (strmap.slot_used i32) counts i)
           (block
@@ -73,7 +74,7 @@
 
   ;; Prints up to `limit` entries as "word count" lines, in one write.
   (fn print_top [entries:(ptr (vec.Vec (ptr Entry))) limit:i32] -> void
-    (let out:(ptr buf.Buf) (call buf.make 256))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let n:i32 (if (lt (call (vec.len (ptr Entry)) entries) limit) (call (vec.len (ptr Entry)) entries) limit))
     (loop i 0 (- n 1) 1
       (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))

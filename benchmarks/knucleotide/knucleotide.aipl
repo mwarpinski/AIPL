@@ -7,6 +7,7 @@
 ;;
 ;;   python3 benchmarks/knucleotide/fasta.py 1000 | ./knucleotide
 (module knucleotide
+  (import alloc)
   (import io)
   (import str)
   (import buf)
@@ -30,7 +31,7 @@
             (while (and (lt i n) (neq (call str.byte_at input i) 10)) (set! i (+ i 1)))
             (set! i (+ i 1)))))
     (while (and (lt i n) (neq (call str.byte_at input i) 10)) (set! i (+ i 1)))
-    (let out:(ptr buf.Buf) (call buf.make (- n i)))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (- n i)))
     (while (lt i n)
       (let c:i32 (call str.byte_at input i))
       (cond
@@ -43,7 +44,7 @@
 
   ;; Counts every k-letter substring.
   (fn count_kmers [seq:(ptr str.Bytes) k:i32] -> (ptr (strmap.StrMap i32))
-    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) 64))
+    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 64))
     (let base:i32 (get seq str.Bytes.addr))
     (loop i 0 (- (get seq str.Bytes.len) k) 1
       (let key:(ptr str.Bytes) (call str.bytes (+ base i) k))
@@ -70,7 +71,7 @@
 
   (fn frequencies [out:(ptr buf.Buf) seq:(ptr str.Bytes) k:i32] -> void
     (let m:(ptr (strmap.StrMap i32)) (call count_kmers seq k))
-    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) 16))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) 16))
     (loop s 0 (- (call (strmap.capacity i32) m) 1) 1
       (if (call (strmap.slot_used i32) m s)
           (block
@@ -100,7 +101,7 @@
   (fn main [] -> i32
     (let started:i64 (call time.now))
     (let seq:(ptr str.Bytes) (call sequence_three (call io.read_stdin)))
-    (let out:(ptr buf.Buf) (call buf.make 1024))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (call frequencies out seq 1)
     (call frequencies out seq 2)
     (call occurrences out seq "GGT")
