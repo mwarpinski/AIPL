@@ -505,6 +505,7 @@ fn self_hosted_bytes_match_std_library() {
         ("std_os", "aipl_src/std/os.aipl"),
         ("std_time", "aipl_src/std/time.aipl"),
         ("std_arena", "aipl_src/std/arena.aipl"),
+        ("std_heap", "aipl_src/std/heap.aipl"),
         ("std_bigint", "aipl_src/std/bigint.aipl"),
         ("wasm_reader", "aipl_src/native/wasm_reader.aipl"),
         ("word_count", "examples/word_count.aipl"),
