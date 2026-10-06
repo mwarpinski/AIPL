@@ -134,7 +134,7 @@ fn cycles_and_missing_modules_are_errors() {
 
 mod wasm_driver {
     use super::*;
-    use wasmtime::{Engine, Instance, Linker, Module as WasmModule, Store, TypedFunc};
+    use wasmtime::{Engine, Linker, Module as WasmModule, Store, TypedFunc};
     use wasmtime_wasi::p1::WasiP1Ctx;
     use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
@@ -163,7 +163,7 @@ mod wasm_driver {
         let inst = linker.instantiate(&mut store, &module).expect("instantiate driver");
         let memory = inst.get_memory(&mut store, "memory").unwrap();
         let alloc: TypedFunc<i32, i32> = inst.get_typed_func(&mut store, "host_alloc").unwrap();
-        let mut put = |store: &mut Store<WasiP1Ctx>, s: &str| -> i32 {
+        let put = |store: &mut Store<WasiP1Ctx>, s: &str| -> i32 {
             let a = alloc.call(&mut *store, s.len() as i32 + 1).unwrap();
             memory.write(&mut *store, a as usize, s.as_bytes()).unwrap();
             a

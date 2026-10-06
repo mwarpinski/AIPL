@@ -1,5 +1,7 @@
 # AIPL (AI Programming Language)
 
+[![CI](https://github.com/mwarpinski/AIPL/actions/workflows/ci.yml/badge.svg)](https://github.com/mwarpinski/AIPL/actions/workflows/ci.yml)
+
 > An unambiguous, statically typed S-expression systems language for AI agents to generate, compiled to WebAssembly + WASI and to native Linux x86-64 executables, with a self-hosted compiler written in AIPL.
 
 ---

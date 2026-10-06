@@ -111,7 +111,7 @@ fn instances_are_ordinary_named_items() {
     for n in ["box.make<i32>", "box.value<i64>", "box.pair<i32,bool>", "box.make<ptr<box.Pair<i32,bool>>>", "twice<i32>"] {
         assert!(names.contains(&n), "{n} missing from {names:?}");
     }
-    assert!(!names.iter().any(|n| *n == "box.make"), "templates are not emitted");
+    assert!(!names.contains(&"box.make"), "templates are not emitted");
     let structs: Vec<&str> = m.structs.iter().map(|s| s.name.as_str()).collect();
     assert!(structs.contains(&"box.Box<ptr<box.Pair<i32,bool>>>"), "{structs:?}");
 }

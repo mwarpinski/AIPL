@@ -1,6 +1,9 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+/// A `match` subject's member: its name, and a union variant's fields.
+type MatchMember<'a> = (String, Option<&'a Vec<StructField>>);
+
 pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     match ty {
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
@@ -81,6 +84,12 @@ pub struct TypeChecker {
     declared: std::cell::RefCell<HashMap<String, Type>>,
     /// Return type of the function body being checked; None inside contracts.
     return_type: std::cell::RefCell<Option<Type>>,
+}
+
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeChecker {
@@ -1140,7 +1149,7 @@ impl TypeChecker {
                 let (l, c) = *span;
                 let vt = self.infer_expr_type(value, env)?;
                 // the members in order, with each union variant's fields
-                let (tname, members): (String, Vec<(String, Option<&Vec<StructField>>)>) = match &vt {
+                let (tname, members): (String, Vec<MatchMember>) = match &vt {
                     Type::Union(u) => (u.clone(), self.union_defs[u].variants.iter().map(|v| (v.name.clone(), Some(&v.fields))).collect()),
                     Type::Enum(e) => (e.clone(), self.enum_defs[e].members.iter().map(|(m, _)| (m.clone(), None)).collect()),
                     other => return Err(format!("{}:{}: match needs a union or enum value, got {:?}", l, c, other)),

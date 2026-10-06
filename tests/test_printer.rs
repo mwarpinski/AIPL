@@ -18,7 +18,7 @@ fn every_repository_program_round_trips_through_the_printer() {
         let Ok(entries) = std::fs::read_dir(root.join(dir)) else { continue };
         for e in entries {
             let p = e.unwrap().path();
-            if p.extension().map_or(false, |x| x == "aipl") && !p.ends_with("hello_browser.aipl") {
+            if p.extension().is_some_and(|x| x == "aipl") && !p.ends_with("hello_browser.aipl") {
                 files.push(p);
             }
         }

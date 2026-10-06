@@ -1501,7 +1501,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Eqz);
 
             let last_ok = ok_body.last();
-            let block_ty = if last_ok.map_or(true, |e| is_void_expr(e, ctx)) {
+            let block_ty = if last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
                 wasm_encoder::BlockType::Empty
             } else {
                 let ty = expr_type(last_ok.unwrap(), ctx);
@@ -1998,7 +1998,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         } else {
             let e = ctx.enums.get(tname).ok_or_else(|| format!("Wasm Codegen: Unknown enum '{}'", tname))?;
             let value = e.members.iter().find(|(m, _)| m == member).ok_or_else(|| format!("Wasm Codegen: Unknown member '{}'", arm.member))?.1;
-            func.instruction(&Instruction::I32Const(value as i32));
+            func.instruction(&Instruction::I32Const(value));
             None
         };
         func.instruction(&Instruction::I32Eq);
@@ -2035,7 +2035,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
-        Expr::Block(exprs, _) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Block(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
         // stack unbalanced relative to this if's declared block type.
@@ -2043,14 +2043,14 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
             is_void_expr(then_branch, ctx) && is_void_expr(else_branch, ctx)
         }
         Expr::While { .. } | Expr::Loop { .. } => true,
-        Expr::Call { func, .. } => ctx.fn_returns.get(func).map_or(false, |t| *t == Type::Void),
+        Expr::Call { func, .. } => ctx.fn_returns.get(func).is_some_and(|t| *t == Type::Void),
         // the op's own type (expr_type's exhaustive table): a new op cannot
         // be left out, as checked.* and sys.time once were
         Expr::Op { .. } => expr_type(expr, ctx) == Type::Void,
         // Same rule as the block type compile_expr gives a match_result.
-        Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::MatchResult { ok_body, .. } => ok_body.last().is_none_or(|e| is_void_expr(e, ctx)),
         // Same rule as the block type compile_match gives a match.
-        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().is_none_or(|e| is_void_expr(e, ctx)),
         Expr::Make { .. } => false,
         Expr::Lit(..)
         | Expr::Var(..)
@@ -2369,6 +2369,9 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     vec![d, o, t, b, e]
 }
 
+/// A contract: whether it is an `ens`, its condition, and its message.
+type ContractCheck<'a> = (bool, &'a Expr, (String, Vec<MsgItem>));
+
 /// One piece of a contract failure's message after its fixed text: literal
 /// text, or the value of a local (by name) shown as the VM shows it.
 enum MsgItem {
@@ -2400,7 +2403,7 @@ fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
 /// text the resolver flattened, which the Rust and AIPL resolvers lay out
 /// differently (and which is not the user's file once there are imports):
 /// with it, the bytes would depend on that layout.
-fn contract_messages(f: &FnDef) -> Vec<(bool, &Expr, (String, Vec<MsgItem>))> {
+fn contract_messages(f: &FnDef) -> Vec<ContractCheck<'_>> {
     let mut out = Vec::new();
     for c in &f.contracts {
         let (is_ens, expr) = match c {

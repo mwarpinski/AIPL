@@ -709,12 +709,11 @@ impl Parser {
             if *kind == TokenKind::RParen {
                 break;
             }
-            if *kind == TokenKind::LParen {
-                if self.is_contract_ahead() {
+            if *kind == TokenKind::LParen
+                && self.is_contract_ahead() {
                     contracts.push(self.parse_contract()?);
                     continue;
                 }
-            }
             body.push(self.parse_expr()?);
         }
 
@@ -1088,8 +1087,8 @@ impl Parser {
                             let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
                                 self.next();
                                 Some(self.parse_type()?)
-                            } else if s.starts_with("ok:") {
-                                Some(parse_scalar_type_str(&s[3..], span)?)
+                            } else if let Some(t) = s.strip_prefix("ok:") {
+                                Some(parse_scalar_type_str(t, span)?)
                             } else {
                                 None
                             };
@@ -1100,8 +1099,8 @@ impl Parser {
                             let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
                                 self.next();
                                 Some(self.parse_type()?)
-                            } else if s.starts_with("err:") {
-                                Some(parse_scalar_type_str(&s[4..], span)?)
+                            } else if let Some(t) = s.strip_prefix("err:") {
+                                Some(parse_scalar_type_str(t, span)?)
                             } else {
                                 None
                             };
