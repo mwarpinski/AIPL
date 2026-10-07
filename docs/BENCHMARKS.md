@@ -89,8 +89,8 @@ inner loop, while AIPL calls a function per entry.
 
 **nbody** (the Sun and the four gas giants, energy printed to nine decimals
 before and after). Ran with the spectralnorm additions (`f64.sqrt`,
-`fmt.f64_fixed`). AIPL float literals have no exponent notation, so the
-benchmark's constants are written out in decimal (the same doubles). All
+`fmt.f64_fixed`). The self-hosted compiler did not read exponent notation when this was
+written, so the benchmark's constants are written out in decimal (the same doubles). All
 four versions print the published values, bit-identical float arithmetic
 in the same operation order. Float code is where the native translator
 trails most (8.6 times wasmtime): every operation moves values from the

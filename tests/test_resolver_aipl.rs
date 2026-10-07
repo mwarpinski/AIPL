@@ -493,6 +493,13 @@ fn malformed_files_are_rejected_like_rust() {
         ("unknown_item", b"(module m\n  (imp buf)\n  (fn main [] -> i32 1))"),
         ("stray_atom_item", b"(module m\n  (import str) 9\n  (fn main [] -> i32 1))"),
         ("broken_import", b"(module m (import broken_dep) (fn main [] -> i32 1))"),
+        // found by tools/fuzz.py once float literals stopped hiding them: the
+        // constants pass goes on past a stray atom (and leaves it alone), and
+        // with generics in the program, unions stay with the structs
+        ("stray_atom_then_enum_error", b"(module m (enum E [a]) i32 (fn main [] -> i32 (enum.ord E.zz)))"),
+        ("missing_module_by_path", b"(module m (import no/such) (fn main [] -> i32 0))"),
+        ("stray_constant_name", b"(module m (const MAX:i32 5) MAX (fn main [] -> i32 0))"),
+        ("union_error_before_struct_error", b"(module m (import vec)\n  (union P [(stop) (step dx:i32 reh)])\n  (struct L [a:Srn:T])\n  (fn main [] -> i32 0))"),
         // the generics pass: Rust's messages, at the right place in the right file
         ("generic_arity", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32 i32)) (call (vec.make i32) (call alloc.default) 1))\n    0))"),
         ("generic_builtin_name", b"(module m\n  (fn (get T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
@@ -520,7 +527,8 @@ fn malformed_files_are_rejected_like_rust() {
             wasm_driver::Outcome::CompileError(c) => panic!("{name}: compile error {c}; Rust says {rust}"),
         };
         let (our_file, our_msg) = ours.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {ours}"));
-        assert_eq!(our_msg, rust_msg, "{name}");
+        // the places searched for a missing module are each toolchain's own paths
+        assert_eq!(our_msg.split(" found in ").next(), rust_msg.split(" found in ").next(), "{name}");
         // the same file is blamed (an import's own error names the import)
         let stem = |f: &str| f.rsplit('/').next().unwrap().to_string();
         assert_eq!(stem(our_file), stem(rust_file), "{name}");

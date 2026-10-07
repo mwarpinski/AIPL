@@ -297,8 +297,11 @@
     (let n:i32 (get x X.n))
     (loop k 0 (- first 1) 1 (call emit x k (call pos x k)))
     (let it:i32 first)
-    (while (and (lt it n) (call is_open x it))
+    ;; a stray atom among the items is copied as it is, as src/consts.rs
+    ;; leaves it, and the items after it are expanded; the parser rejects it
+    (while (and (lt it n) (not (call is_close x it)))
       (cond
+        ((not (call is_open x it)) (call emit x it (call pos x it)))
         ((call is_sym x (+ it 1) "const") (block))
         ((call is_sym x (+ it 1) "enum") (call copy x it))
         (else (call rewrite_group x it)))
@@ -328,9 +331,9 @@
     ;; (module NAME items...): items from token 3
     (let first:i32 3)
     (let it:i32 first)
-    (while (and (lt it n) (call is_open x it))
-      (if (call is_sym x (+ it 1) "const") (call read_const x it) (block))
-      (if (call is_sym x (+ it 1) "enum") (call read_enum x it) (block))
+    (while (and (lt it n) (not (call is_close x it)))
+      (if (and (call is_open x it) (call is_sym x (+ it 1) "const")) (call read_const x it) (block))
+      (if (and (call is_open x it) (call is_sym x (+ it 1) "enum")) (call read_enum x it) (block))
       (if (get x X.failed) (break) (block))
       (set! it (call elem_end x it)))
     (if (get x X.failed)

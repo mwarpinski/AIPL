@@ -401,9 +401,10 @@ fn self_hosted_bytes_match_typed_results_and_escapes() {
 
 /// Float literals: f64.const bytes must equal what Rust's parse::<f64> gives.
 /// 200 pseudo-random literals (deterministic LCG) with up to 16 significant
-/// digits, random sign and decimal point position, all inside the exact range
-/// (mantissa <= 2^53, <= 22 fractional digits), compiled in one module. Literals
-/// outside that range must be compile error 973, never a different rounding.
+/// digits, random sign and decimal point position (std/float's fast path);
+/// then 300 with up to 40 digits and exponents to +-330 (its exact path:
+/// halfway cases, subnormals, infinities), and fixed hard cases, which were
+/// compile error 973 before std/float.
 #[test]
 fn self_hosted_float_literals_match_rust() {
     let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
@@ -429,13 +430,31 @@ fn self_hosted_float_literals_match_rust() {
         src.push_str(&format!("  (fn f{made} [] -> f64 {lit})\n"));
         made += 1;
     }
+    while made < 500 {
+        let ndigits = 1 + next(40) as usize;
+        let digits: String = (0..ndigits).map(|_| char::from(b'0' + next(10) as u8)).collect();
+        let dot = next(ndigits as u64 + 1) as usize;
+        let exp = next(661) as i64 - 330;
+        let sign = if next(2) == 0 { "" } else { "-" };
+        let e = ["e", "E"][next(2) as usize];
+        let lit = format!("{sign}{}.{}{e}{exp}", &digits[..dot], &digits[dot..]);
+        src.push_str(&format!("  (fn f{made} [] -> f64 {lit})\n"));
+        made += 1;
+    }
+    for (k, lit) in [
+        "9007199254740993.0", "9007199254740995.0", "0.00000000000000000000001", "1234567890123456789.0",
+        "1.7976931348623157e308", "1.7976931348623158e308", "1.8e308", "-1.0e400", "1.0e-400",
+        "4.9406564584124654e-324", "2.4703282292062327e-324", "2.4703282292062328e-324",
+        "2.2250738585072011e-308", "2.2250738585072012e-308", "0.1e1", "5.", ".5", "+1.5E+3", "1.e-2",
+        "0.000e99999999999", "123.456e-0", "7.0e22", "7.0e23", "8.988465674311579e307",
+    ]
+    .iter()
+    .enumerate()
+    {
+        src.push_str(&format!("  (fn edge{k} [] -> f64 {lit})\n"));
+    }
     src.push(')');
     assert_self_hosted_matches_rust("float_literals", &src);
-
-    for lit in ["9007199254740993.0", "0.00000000000000000000001", "1234567890123456789.0"] {
-        let err = self_host(&format!("(module m (fn f [] -> f64 {lit}))")).unwrap_err();
-        assert!(err.contains("compile error 973"), "{lit}: {err}");
-    }
 }
 
 /// Typed pointers and arrays (the programs from tests/test_pointers.rs): a

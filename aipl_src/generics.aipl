@@ -413,11 +413,13 @@
     (let fo:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let fi:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
     (let none:(ptr str.Bytes) (call str.bytes 0 -1))
-    ;; concrete structs, then concrete functions
+    ;; concrete structs, then concrete functions; constants, enums, and
+    ;; unions go with the structs, as in generics.rs (the resolver's structs)
     (loop pass 0 1 1
       (loop i 0 (- (call (vec.len (ptr compiler.Node)) items) 1) 1
         (let it:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) items i))
-        (let is_struct:bool (call lit (call head st it) "struct"))
+        (let h:(ptr str.Bytes) (call head st it))
+        (let is_struct:bool (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union")))))
         (if (eq is_struct (eq pass 0))
             (call print_item st it (ptr.null Env) none (if is_struct so fo))
             (block))))

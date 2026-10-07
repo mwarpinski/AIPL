@@ -240,6 +240,8 @@
       (put sig Sig.params pts)
       (put sig Sig.ret (get fd ast.FnDef.ret))
       (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
+    ;; a definition's error is reported alone
+    (if (get c C.failed) (return) (block))
     (loop k 0 (- (arr.len fns) 1) 1
       (call check_fn c (arr.get (ptr ast.FnDef) fns k))
       (if (get c C.failed)

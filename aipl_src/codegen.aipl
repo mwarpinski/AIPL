@@ -12,6 +12,7 @@
   (import strmap)
   (import parser)
   (import printer)
+  (import float)
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [cg:(ptr Cg) pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
@@ -783,41 +784,10 @@
       (set! n (+ n 1)))
     n)
 
-;; 10^n as i64, for 0 <= n <= 18.
-  (fn pow10_i64 [n:i32] -> i64
-    (let v:i64 1i64)
-    (loop i 1 n 1 (set! v (* v 10i64)))
-    v)
-
-  ;; f64.const for a decimal literal such as -2.5, with the bits Rust's
-  ;; parse::<f64> gives. The literal is m / 10^k; with m <= 2^53 and k <= 22
-  ;; both are exact doubles, so one IEEE division is correctly rounded.
-  ;; Literals outside that range are compile error 973.
+  ;; f64.const for a decimal literal such as -2.5 or 1.5e3: the nearest
+  ;; double, as Rust's parse::<f64> gives it (std/float).
   (fn emit_f64_literal [o:(ptr Out) cg:(ptr Cg) pos:i32 len:i32] -> void
-    (let c0:i32 (mem.load8 (+ (get cg Cg.src) pos)))
-    (let neg:bool (eq c0 45))
-    (let i:i32 (if (or neg (eq c0 43)) 1 0))
-    (let m:i64 0i64)
-    (let sig:i32 0)
-    (let frac:i32 0)
-    (let seen_dot:bool false)
-    (while (lt i len)
-      (let c:i32 (mem.load8 (+ (get cg Cg.src) (+ pos i))))
-      ;; an exponent (1.5e3) is not exact by construction
-      (if (or (eq c 101) (eq c 69)) (block (call set_compile_error CgErr.inexact_float_literal) (break)) (block))
-      (if (eq c 46)
-          (set! seen_dot true)
-          (block
-            (set! m (+ (* m 10i64) (i64.extend_s (- c 48))))
-            (if (or (gt sig 0) (neq c 48)) (set! sig (+ sig 1)) (block))
-            (if seen_dot (set! frac (+ frac 1)) (block))))
-      (set! i (+ i 1)))
-    ;; sig <= 18 keeps m from overflowing i64; m <= 2^53 makes it an exact double
-    (if (or (gt sig 18) (or (gt m 9007199254740992i64) (gt frac 22))) (call set_compile_error CgErr.inexact_float_literal) 0)
-    (let p:f64 (f64.convert_i64_s (call pow10_i64 (if (gt frac 18) 18 frac))))
-    (if (gt frac 18) (set! p (* p (f64.convert_i64_s (call pow10_i64 (- frac 18))))) (block))
-    (let v:f64 (/ (f64.convert_i64_s m) p))
-    (if neg (set! v (* v (f64.convert_i64_s -1i64))) (block))
+    (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) len))
     (let bits:i64 (i64.reinterpret_f64 v))
     (call put_byte o OP_F64_CONST)
     (loop b 0 7 1
@@ -1423,7 +1393,6 @@
                (jump_outside_loop 101)
                (too_many_literals 768)
                (unknown_symbol 971)
-               (inexact_float_literal 973)
                (unknown_enum_member 974)
                (unknown_variant 975)      ;; make or match names no variant of a union
                (unknown_form 987)

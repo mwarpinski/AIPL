@@ -1,0 +1,200 @@
+;; std/float: decimal text to the nearest f64, rounding ties to even, as
+;; Rust's str::parse::<f64> (and so the Rust toolchain's float literals)
+;; does. The self-hosted compiler converts its float literals with it.
+;;
+;;   (call float.from_decimal (str.ptr "0.1") (str.len "0.1"))   ;; 0.1
+;;
+;; Most literals take the fast path: when the digits form an integer m of at
+;; most 2^53 and the power of ten p has |p| <= 22, both m and 10^|p| are
+;; exact doubles and one IEEE multiplication or division rounds correctly.
+;; Anything else is computed exactly with std/bigint: the value is N / D
+;; for integers N and D; doubling one of them until 1 <= N / D < 2 gives
+;; the binary exponent, binary long division gives the significand's bits,
+;; and the remainder decides the rounding.
+(module float
+  (import bigint)
+
+  ;; The f64 nearest the decimal number at (addr, len): an optional sign,
+  ;; digits with one '.' and at least one digit, then optionally 'e' or
+  ;; 'E', an optional sign, and digits (compiler.is_float_literal's form).
+  ;; Too large is an infinity and too small a zero, with the sign. The fast
+  ;; path allocates nothing; the exact one, two numbers sized up front.
+  (fn from_decimal [addr:i32 len:i32] -> f64
+    (let i:i32 0)
+    (let c0:i32 (if (gt len 0) (mem.load8 addr) 0))
+    (let neg:bool (eq c0 45))
+    (if (or neg (eq c0 43)) (set! i 1) (block))
+    (let digits_at:i32 i)
+    ;; m: the significant digits while there are at most 18
+    (let m:i64 0i64)
+    (let sig:i32 0)
+    (let frac:i32 0)
+    (let seen_dot:bool false)
+    (while (and (lt i len) (call is_mantissa_char (mem.load8 (+ addr i))))
+      (let c:i32 (mem.load8 (+ addr i)))
+      (if (eq c 46)
+          (set! seen_dot true)
+          (block
+            (if seen_dot (set! frac (+ frac 1)) (block))
+            (if (or (gt sig 0) (neq c 48))
+                (block
+                  (set! sig (+ sig 1))
+                  (if (lte sig 18) (set! m (+ (* m 10i64) (i64.extend_s (- c 48)))) (block)))
+                (block))))
+      (set! i (+ i 1)))
+    (let digits_end:i32 i)
+    ;; the exponent, held at +-100000 (far past where every result is 0 or inf)
+    (let e:i32 0)
+    (if (lt i len)
+        (block
+          (set! i (+ i 1))
+          (let eneg:bool false)
+          (if (and (lt i len) (or (eq (mem.load8 (+ addr i)) 45) (eq (mem.load8 (+ addr i)) 43)))
+              (block (set! eneg (eq (mem.load8 (+ addr i)) 45)) (set! i (+ i 1)))
+              (block))
+          (while (lt i len)
+            (if (lt e 100000) (set! e (+ (* e 10) (- (mem.load8 (+ addr i)) 48))) (block))
+            (set! i (+ i 1)))
+          (if eneg (set! e (- 0 e)) (block)))
+        (block))
+    ;; the value is digits * 10^p; with sig significant digits, it lies in
+    ;; [10^(sig + p - 1), 10^(sig + p))
+    (let p:i32 (- e frac))
+    (let v:f64 0.0)
+    (cond
+      ((eq sig 0) (set! v 0.0))
+      ((and (lte sig 18) (and (lte m 9007199254740992i64) (and (gte p -22) (lte p 22))))
+       (set! v (if (gte p 0)
+                   (* (f64.convert_i64_s m) (call pow10_f64 p))
+                   (/ (f64.convert_i64_s m) (call pow10_f64 (- 0 p))))))
+      ;; at least 10^310 > the largest f64; below 10^-324 < half the smallest
+      ((gt (+ sig p) 310) (set! v (f64.reinterpret_i64 9218868437227405312i64)))
+      ((lt (+ sig p) -324) (set! v 0.0))
+      (else
+       ;; 9 decimal digits fit in a 32-bit limb (10^9 < 2^30); room for the
+       ;; larger of the two numbers, plus the scaling to within 2^60 of it
+       (let limbs:i32 (+ (/ (+ sig (if (lt p 0) (- 0 p) p)) 9) 8))
+       (let n:(ptr bigint.Int) (call bigint.with_capacity limbs))
+       (let chunk:(ptr bigint.Int) (call bigint.with_capacity 4))
+       (call read_digits n chunk addr digits_at digits_end)
+       (set! v (f64.reinterpret_i64 (call nearest_bits n (call bigint.with_capacity limbs) p)))))
+    (if neg (f64.reinterpret_i64 (bitor (i64.reinterpret_f64 v) -9223372036854775808i64)) v))
+
+  (fn is_mantissa_char [c:i32] -> bool (or (eq c 46) (and (gte c 48) (lte c 57))))
+
+  ;; n = the digits in [from, to) as one integer (the '.' skipped), nine at a
+  ;; time through `chunk`.
+  (fn read_digits [n:(ptr bigint.Int) chunk:(ptr bigint.Int) addr:i32 from:i32 to:i32] -> void
+    (let acc:i32 0)
+    (let count:i32 0)
+    (loop i from (- to 1) 1
+      (let c:i32 (mem.load8 (+ addr i)))
+      (if (neq c 46)
+          (block
+            (set! acc (+ (* acc 10) (- c 48)))
+            (set! count (+ count 1))
+            (if (eq count 9)
+                (block (call push_chunk n chunk acc 1000000000) (set! acc 0) (set! count 0))
+                (block)))
+          (block)))
+    (if (gt count 0) (call push_chunk n chunk acc (call pow10_i32 count)) (block)))
+
+  ;; n = n * scale + v
+  (fn push_chunk [n:(ptr bigint.Int) chunk:(ptr bigint.Int) v:i32 scale:i32] -> void
+    (call bigint.mul_small n scale)
+    (call bigint.set_i32 chunk v)
+    (call bigint.add n chunk))
+
+  (fn pow10_i32 [n:i32] -> i32
+    (let v:i32 1)
+    (loop k 1 n 1 (set! v (* v 10)))
+    v)
+
+  ;; 10^n, exact, for 0 <= n <= 22.
+  (fn pow10_f64 [n:i32] -> f64
+    (let v:f64 1.0)
+    (loop k 1 n 1 (set! v (* v 10.0)))
+    v)
+
+  ;; big = big * 10^n
+  (fn mul_pow10 [big:(ptr bigint.Int) n:i32] -> void
+    (let left:i32 n)
+    (while (gte left 9)
+      (call bigint.mul_small big 1000000000)
+      (set! left (- left 9)))
+    (if (gt left 0) (call bigint.mul_small big (call pow10_i32 left)) (block)))
+
+  ;; The bits of the f64 nearest n * 10^p (n > 0, the value in [10^-325,
+  ;; 10^311)); d is a zero with room for 10^-p. Both are used up.
+  (fn nearest_bits [n:(ptr bigint.Int) d:(ptr bigint.Int) p:i32] -> i64
+    (call bigint.set_i32 d 1)
+    (if (gte p 0) (call mul_pow10 n p) (call mul_pow10 d (- 0 p)))
+    ;; scale until 1 <= n / d < 2; the value is then (n / d) * 2^b
+    (let b:i32 0)
+    (while (gt (call bigint.limb_count n) (+ (call bigint.limb_count d) 1))
+      (call bigint.mul_small d 1073741824)
+      (set! b (+ b 30)))
+    (while (gt (call bigint.limb_count d) (+ (call bigint.limb_count n) 1))
+      (call bigint.mul_small n 1073741824)
+      (set! b (- b 30)))
+    (while (lte (call bigint.compare_magnitude d n) 0)
+      (call bigint.mul_small d 2)
+      (set! b (+ b 1)))
+    (while (lt (call bigint.compare_magnitude n d) 0)
+      (call bigint.mul_small n 2)
+      (set! b (- b 1)))
+    (if (gt b 1023) (return 9218868437227405312i64) (block))
+    ;; bits of precision: 53, fewer for a subnormal (below 2^-1022)
+    (let bits:i32 (if (gte b -1022) 53 (+ b 1075)))
+    (if (lt bits 0) (return 0i64) (block))
+    ;; the significand's bits by long division, then the next bit and
+    ;; whether anything remains
+    (let mant:i64 0i64)
+    (loop k 1 bits 1
+      (set! mant (* mant 2i64))
+      (if (gte (call bigint.compare_magnitude n d) 0)
+          (block (call bigint.sub n d) (set! mant (+ mant 1i64)))
+          (block))
+      (call bigint.mul_small n 2))
+    (let half:bool (gte (call bigint.compare_magnitude n d) 0))
+    (if half (call bigint.sub n d) (block))
+    (let rest:bool (not (call bigint.is_zero n)))
+    ;; round half to even
+    (if (and half (or rest (eq (bitand mant 1i64) 1i64))) (set! mant (+ mant 1i64)) (block))
+    (if (lt b -1022)
+        ;; subnormal: the significand is the bits; rounding up to 2^52 makes
+        ;; exactly the smallest normal's bits
+        mant
+        (block
+          (if (eq mant 9007199254740992i64) (block (set! mant 4503599627370496i64) (set! b (+ b 1))) (block))
+          (if (gt b 1023)
+              9218868437227405312i64
+              (bitor (shl (i64.extend_s (+ b 1023)) 52i64) (- mant 4503599627370496i64))))))
+
+  ;; ===== Self-tests (aipl_src/test_suite.aipl) =====
+
+  ;; Whether text converts to exactly the bits of `want` (a literal, which
+  ;; the Rust toolchain converts with Rust's parser).
+  (fn converts [text:str want:f64] -> bool
+    (eq (i64.reinterpret_f64 (call from_decimal (str.ptr text) (str.len text))) (i64.reinterpret_f64 want)))
+
+  (fn run_float_tests [] -> i32
+    (let p:i32 0)
+    (if (call converts "0.1" 0.1) (set! p (+ p 1)) (block))
+    (if (call converts "-2.5" -2.5) (set! p (+ p 1)) (block))
+    (if (call converts "-0.0" -0.0) (set! p (+ p 1)) (block))
+    (if (call converts "1.5e3" 1500.0) (set! p (+ p 1)) (block))
+    ;; 2^53 + 1 is a tie between 2^53 and 2^53 + 2: even wins
+    (if (call converts "9007199254740993.0" 9007199254740992.0) (set! p (+ p 1)) (block))
+    (if (call converts "9007199254740995.0" 9007199254740996.0) (set! p (+ p 1)) (block))
+    ;; the largest and smallest doubles, and past them
+    (if (call converts "1.7976931348623157e308" 1.7976931348623157e308) (set! p (+ p 1)) (block))
+    (if (eq (call from_decimal (str.ptr "1.8e308") (str.len "1.8e308")) (/ 1.0 0.0)) (set! p (+ p 1)) (block))
+    (if (call converts "4.9406564584124654e-324" 4.9406564584124654e-324) (set! p (+ p 1)) (block))
+    ;; exactly half the smallest subnormal rounds to even (0); above it, up
+    (if (call converts "2.4703282292062327e-324" 0.0) (set! p (+ p 1)) (block))
+    (if (call converts "2.4703282292062328e-324" 4.9406564584124654e-324) (set! p (+ p 1)) (block))
+    (if (call converts "2.2250738585072011e-308" 2.2250738585072011e-308) (set! p (+ p 1)) (block))
+    (if (call converts "123456789012345678901234567890.0" 123456789012345678901234567890.0) (set! p (+ p 1)) (block))
+    (if (call converts ".000000000000000000000000000000000001234" .000000000000000000000000000000000001234) (set! p (+ p 1)) (block))
+    p))

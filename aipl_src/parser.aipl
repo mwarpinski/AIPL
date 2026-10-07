@@ -95,89 +95,50 @@
     (call buf.push_str b s)
     (call fail p b))
 
-  ;; Rust's Debug spelling of a string's characters, without the quotes:
-  ;; \" \\ \n \t \r \0, other ASCII controls as \u{..}.
-  (fn push_debug_byte [b:(ptr buf.Buf) c:i32] -> void
-    (cond
-      ((eq c 34) (call buf.push_str b "\\\""))
-      ((eq c 92) (call buf.push_str b "\\\\"))
-      ((eq c 10) (call buf.push_str b "\\n"))
-      ((eq c 9) (call buf.push_str b "\\t"))
-      ((eq c 13) (call buf.push_str b "\\r"))
-      ((eq c 0) (call buf.push_str b "\\0"))
-      ((or (lt c 32) (eq c 127))
-       (call buf.push_str b "\\u{")
-       (call push_hex b c)
-       (call buf.push_byte b 125))
-      (else (call buf.push_byte b c))))
-
-  (fn push_hex [b:(ptr buf.Buf) c:i32] -> void
-    (if (gte c 16) (call push_hex b (shru c 4)) (block))
-    (let d:i32 (bitand c 15))
-    (call buf.push_byte b (if (lt d 10) (+ d 48) (+ d 87))))
-
-  (fn push_debug_bytes [b:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
-    (loop k 0 (- (get s str.Bytes.len) 1) 1 (call push_debug_byte b (call str.byte_at s k))))
-
-  ;; A string literal's characters (its escapes expanded), in Debug spelling.
-  (fn push_debug_string [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+  ;; A string literal as AIPL writes it (src/parser.rs TokenKind's
+  ;; Display): its escapes as written (only \" \\ \n \t \r \0 exist), a raw
+  ;; newline, tab, return, or NUL escaped, other bytes as they are.
+  (fn push_string_text [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+    (call buf.push_byte b 34)
     (let k:i32 0)
     (while (lt k (get raw str.Bytes.len))
       (let c:i32 (call str.byte_at raw k))
-      (if (eq c 92)
-          (block
-            (let e:i32 (call str.byte_at raw (+ k 1)))
-            (call push_debug_byte b (cond ((eq e 110) 10) ((eq e 116) 9) ((eq e 114) 13) ((eq e 48) 0) (else e)))
-            (set! k (+ k 2)))
-          (block (call push_debug_byte b c) (set! k (+ k 1))))))
+      (cond
+        ((eq c 92)
+         (call buf.push_byte b 92)
+         (call buf.push_byte b (call str.byte_at raw (+ k 1)))
+         (set! k (+ k 1)))
+        ((eq c 10) (call buf.push_str b "\\n"))
+        ((eq c 9) (call buf.push_str b "\\t"))
+        ((eq c 13) (call buf.push_str b "\\r"))
+        ((eq c 0) (call buf.push_str b "\\0"))
+        (else (call buf.push_byte b c)))
+      (set! k (+ k 1)))
+    (call buf.push_byte b 34))
 
-  ;; A float literal as Rust's Debug prints its value, for the literals
-  ;; whose shortest spelling is their own digits: sign, digits without
-  ;; leading or trailing zeros, at least one digit on each side of the '.'.
-  ;; (A literal with an exponent, or more digits than an f64 holds, may be
-  ;; spelled differently by Rust; see docs/design/CHECKER_PLAN.md.)
-  (fn push_float_debug [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void
-    (let n:i32 (get t str.Bytes.len))
-    (let k:i32 0)
-    (if (eq (call str.byte_at t 0) 45) (block (call buf.push_byte b 45) (set! k 1)) (block))
-    (if (eq (call str.byte_at t 0) 43) (set! k 1) (block))
-    (let dot:i32 (call str.find_byte t 46))
-    ;; integer part: skip leading zeros, keep one digit
-    (let i:i32 k)
-    (while (and (lt i (- dot 1)) (eq (call str.byte_at t i) 48)) (set! i (+ i 1)))
-    (if (eq i dot) (call buf.push_byte b 48) (loop j i (- dot 1) 1 (call buf.push_byte b (call str.byte_at t j))))
-    (call buf.push_byte b 46)
-    ;; fraction: drop trailing zeros, keep one digit
-    (let last:i32 (- n 1))
-    (while (and (gt last (+ dot 1)) (eq (call str.byte_at t last) 48)) (set! last (- last 1)))
-    (if (gt last dot) (loop j (+ dot 1) last 1 (call buf.push_byte b (call str.byte_at t j))) (call buf.push_byte b 48)))
-
-  ;; Rust's {:?} of token i (src/parser.rs TokenKind).
-  (fn push_token_debug [p:(ptr P) b:(ptr buf.Buf) i:i32] -> void
+  ;; Token i as AIPL source writes it, in quotes (src/parser.rs TokenKind's
+  ;; Display): '(' 'x' '42' '42i64' '1.5e3' (as written) 'true' '"a"'.
+  (fn push_token_text [p:(ptr P) b:(ptr buf.Buf) i:i32] -> void
     (let k:compiler.Kind (call kind_at p i))
     (let t:(ptr compiler.Token) (call tok p i))
+    (call buf.push_byte b 39)
     (cond
-      ((eq k compiler.Kind.lparen) (call buf.push_str b "LParen"))
-      ((eq k compiler.Kind.rparen) (call buf.push_str b "RParen"))
-      ((eq k compiler.Kind.lbracket) (call buf.push_str b "LBracket"))
-      ((eq k compiler.Kind.rbracket) (call buf.push_str b "RBracket"))
-      ((eq k compiler.Kind.colon) (call buf.push_str b "Colon"))
-      ((eq k compiler.Kind.arrow) (call buf.push_str b "Arrow"))
-      ((eq k compiler.Kind.symbol)
-       (call buf.push_str b "Symbol(\"") (call push_debug_bytes b (call text p i)) (call buf.push_str b "\")"))
-      ((eq k compiler.Kind.int)
-       (call buf.push_str b "IntLit(") (call buf.push_i64 b (call i64_value (call int_text p i))) (call buf.push_byte b 41))
+      ((eq k compiler.Kind.lparen) (call buf.push_str b "("))
+      ((eq k compiler.Kind.rparen) (call buf.push_str b ")"))
+      ((eq k compiler.Kind.lbracket) (call buf.push_str b "["))
+      ((eq k compiler.Kind.rbracket) (call buf.push_str b "]"))
+      ((eq k compiler.Kind.colon) (call buf.push_str b ":"))
+      ((eq k compiler.Kind.arrow) (call buf.push_str b "->"))
+      ((eq k compiler.Kind.int) (call buf.push_i64 b (call i64_value (call int_text p i))))
       ((eq k compiler.Kind.int64)
        (let s:(ptr str.Bytes) (call text p i))
-       (call buf.push_str b "Int64Lit(")
        (call buf.push_i64 b (call i64_value (call str.bytes (get s str.Bytes.addr) (- (get s str.Bytes.len) 3))))
-       (call buf.push_byte b 41))
-      ((eq k compiler.Kind.float)
-       (call buf.push_str b "FloatLit(") (call push_float_debug b (call text p i)) (call buf.push_byte b 41))
-      ((eq k compiler.Kind.bool) (call buf.push_str b (if (eq (get t compiler.Token.a) 0) "BoolLit(false)" "BoolLit(true)")))
-      ((eq k compiler.Kind.string)
-       (call buf.push_str b "StringLit(\"") (call push_debug_string b (call text p i)) (call buf.push_str b "\")"))
-      (else (call buf.push_str b "?"))))
+       (call buf.push_str b "i64"))
+      ((eq k compiler.Kind.bool) (call buf.push_str b (if (eq (get t compiler.Token.a) 0) "false" "true")))
+      ((eq k compiler.Kind.string) (call push_string_text b (call text p i)))
+      ;; a symbol or a float literal: as written
+      (else (call buf.push_bytes b (call text p i))))
+    (call buf.push_byte b 39))
 
   ;; "Expected WHAT, got TOKEN" at the token, or "got EOF" at `eof_at`.
   (fn fail_expected [p:(ptr P) i:i32 what:str eof_at:i32] -> void
@@ -185,17 +146,17 @@
     (call buf.push_str b "Expected ")
     (call buf.push_str b what)
     (call buf.push_str b ", got ")
-    (if (gte i 0) (call push_token_debug p b i) (call buf.push_str b "EOF"))
+    (if (gte i 0) (call push_token_text p b i) (call buf.push_str b "EOF"))
     (call fail p b))
 
   (fn kind_name [k:compiler.Kind] -> str
     (cond
-      ((eq k compiler.Kind.lparen) "LParen")
-      ((eq k compiler.Kind.rparen) "RParen")
-      ((eq k compiler.Kind.lbracket) "LBracket")
-      ((eq k compiler.Kind.rbracket) "RBracket")
-      ((eq k compiler.Kind.colon) "Colon")
-      (else "Arrow")))
+      ((eq k compiler.Kind.lparen) "'('")
+      ((eq k compiler.Kind.rparen) "')'")
+      ((eq k compiler.Kind.lbracket) "'['")
+      ((eq k compiler.Kind.rbracket) "']'")
+      ((eq k compiler.Kind.colon) "':'")
+      (else "'->'")))
 
   ;; src/parser.rs expect_kind: the token's index, or -1 after an error.
   (fn expect [p:(ptr P) k:compiler.Kind] -> i32
@@ -445,7 +406,7 @@
         (else
          (let b:(ptr buf.Buf) (call msg p (call tpos p i)))
          (call buf.push_str b "an enum member is a name or (name INTEGER), got ")
-         (call push_token_debug p b i)
+         (call push_token_text p b i)
          (call fail p b)))
       (if (get p P.failed) (break) (block))
       (if (or (lt value -2147483648i64) (gt value 2147483647i64))
@@ -574,7 +535,7 @@
       (else
        (let b:(ptr buf.Buf) (call msg p at))
        (call buf.push_str b "Unexpected token parsing expression: ")
-       (call push_token_debug p b i)
+       (call push_token_text p b i)
        (call fail p b)
        (call placeholder at))))
 
