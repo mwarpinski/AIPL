@@ -104,7 +104,21 @@
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32 cached:bool
              failed:bool msg:(ptr buf.Buf)
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
-             stack_limit_off:i32 stack_exhausted:(ptr Reason)])
+             stack_limit_off:i32 stack_exhausted:(ptr Reason)
+             positions:(ptr (vec.Vec (ptr NPos)))])
+
+  ;; From code offset `code` on, the machine code is at file:line:col (the
+  ;; module's line table, wasm_reader.LinePos); file -1: no position (each
+  ;; function starts with one, so a lookup never reaches the function before).
+  (struct NPos [code:i32 file:i32 line:i32 col:i32])
+
+  (fn note_position [l:(ptr L) file:i32 line:i32 col:i32] -> void
+    (let p:(ptr NPos) (new NPos))
+    (put p NPos.code (call buf.len (get l L.code)))
+    (put p NPos.file file)
+    (put p NPos.line line)
+    (put p NPos.col col)
+    (call (vec.push (ptr NPos)) (get l L.positions) p))
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
     (let l:(ptr L) (new L))
@@ -131,6 +145,7 @@
     (put l L.bad_signature (call reason l "wasm trap: indirect call type mismatch"))
     (put l L.stack_exhausted (call reason l "wasm trap: call stack exhausted"))
     (put l L.stack_limit_off 0)
+    (put l L.positions (call (vec.make (ptr NPos)) (call alloc.default) 256))
     (put l L.table_addr 0)
     (put l L.table_size 0)
     (put l L.canon_types (call canonical_types w))
@@ -375,6 +390,7 @@
     (let t:(ptr wasm_reader.FuncType) (call func_type l w index))
     (let np:i32 (call nparams t))
     (let has_result:bool (gt (call nresults t) 0))
+    (call note_position l -1 0 0)
     ;; prologue: frame, then zeroed locals
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
@@ -417,9 +433,19 @@
     (call (vec.clear (ptr Label)) (get l L.labels))
     (call open_label l 3 (if has_result 1 0))
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
+    ;; the line table's entries take effect where their instruction's code starts
+    (let lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) (call wasm_reader.lines_of w index))
+    (let next:i32 0)
+    (let nlines:i32 (if (eq lines (ptr.null (vec.Vec (ptr wasm_reader.LinePos)))) 0 (call (vec.len (ptr wasm_reader.LinePos)) lines)))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
       (if (get l L.failed) (break) (block))
-      (call instr l w np has_result (call (vec.at (ptr wasm_reader.Instr)) code i))))
+      (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code i))
+      (let at:i32 (+ (get body wasm_reader.Body.head) (get ins wasm_reader.Instr.offset)))
+      (while (and (lt next nlines) (lte (get (call (vec.at (ptr wasm_reader.LinePos)) lines next) wasm_reader.LinePos.at) at))
+        (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines next))
+        (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col))
+        (set! next (+ next 1)))
+      (call instr l w np has_result ins)))
 
   (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
     (let c:(ptr buf.Buf) (get l L.code))

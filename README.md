@@ -62,7 +62,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (292 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+Run the full test suite with `cargo test` (294 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Repository layout
 

@@ -471,6 +471,19 @@ fn self_hosted_float_literals_match_rust() {
     assert_self_hosted_matches_rust("float_literals", &src);
 }
 
+/// The line table (docs/design/LINES_PLAN.md): positions after multi-byte
+/// characters on the same line count characters, not bytes; constants and
+/// enums (reprinted by consts.aipl) keep their positions; a cond clause's
+/// code is at the clause. Both compilers must emit the same section.
+#[test]
+fn self_hosted_line_table_matches_rust() {
+    let src = "(module m (const NN:i32 0) (enum E [a b])
+  (fn f [x:i32] -> i32 (str.len \"héllo wörld\") (/ (str.len \"ü\") x))
+  (fn g [k:E] -> i32 (cond ((eq k E.a) (/ 1 NN)) ((eq k E.b) (call f NN)) (else (% 5 NN))))
+  (fn main [] -> i32 (call g (enum.cast E 1))))";
+    assert_self_hosted_matches_rust("line_table", src);
+}
+
 /// Typed pointers and arrays (the programs from tests/test_pointers.rs): a
 /// linked list through (ptr Node), arrays of pointers and of arrays, arr.len,
 /// casts, and typed nulls.

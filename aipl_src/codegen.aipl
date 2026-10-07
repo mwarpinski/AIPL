@@ -746,12 +746,14 @@
     (put ls Lines.entries (call (vec.make (ptr LEntry)) (call alloc.default) 32))
     ls)
 
-  ;; Whether a frame can point at the opcode: a call, or one that can trap.
+  ;; Whether a frame can point at the opcode: a call, one that can trap, or
+  ;; an `if` (wasmtime reports `if c unreachable end`, a check's trap, at the
+  ;; `if`).
   (fn traps_or_calls [code:i32] -> bool
-    (or (eq code 0) (or (eq code 16) (or (eq code 17)
+    (or (eq code 0) (or (eq code 4) (or (eq code 16) (or (eq code 17)
       (or (and (gte code 40) (lte code 62)) (or (and (gte code 109) (lte code 112))
       (or (and (gte code 127) (lte code 130)) (or (and (gte code 168) (lte code 177))
-      (or (eq code 252) (eq code 254))))))))))
+      (or (eq code 252) (eq code 254)))))))))))
 
   ;; An opcode; first, in a body, the position of the expression it belongs
   ;; to if a frame can point at it and the last entry has another.
@@ -3046,6 +3048,9 @@
     (if (call is_else_clause cg clause)
         (return (call compile_stmt_seq cg (call node_next head) o))
         (block))
+    ;; src/parser.rs rewrites each clause as an if at the clause: its code is
+    ;; at the clause, as there (the line table)
+    (call at_push o (get clause compiler.Node.pos))
     (let body_first:(ptr compiler.Node) (call node_next head))
     (call compile_expr cg head o)
     (let bt:i32 64)
@@ -3059,7 +3064,8 @@
     (call put_op o OP_ELSE)
     (call compile_cond_from cg (call node_next clause) o)
     (call label_pop cg)
-    (call put_op o OP_END))
+    (call put_op o OP_END)
+    (call at_pop o))
 
 
 

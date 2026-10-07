@@ -38,7 +38,9 @@
   ;; index, or memory index; c = a constant (i32/i64 value, f64 bits).
   ;; offset = where the instruction starts within its body.
   (struct Instr [op:i32 a:i32 b:i32 c:i64 offset:i32])
-  (struct Body [locals:(ptr (vec.Vec (ptr Locals))) code:(ptr (vec.Vec (ptr Instr)))])
+  ;; head: the bytes before the first instruction (the locals declaration);
+  ;; an instruction's offset in the body is head + its offset.
+  (struct Body [locals:(ptr (vec.Vec (ptr Locals))) code:(ptr (vec.Vec (ptr Instr))) head:i32])
 
   (struct Wasm [ok:bool error:(ptr str.Bytes)
                 types:(ptr (vec.Vec (ptr FuncType)))
@@ -54,7 +56,23 @@
                 datas:(ptr (vec.Vec (ptr Data)))
                 bodies:(ptr (vec.Vec (ptr Range)))
                 code:(ptr (vec.Vec (ptr Body)))
-                names:(ptr (vec.Vec (ptr FnName)))])
+                names:(ptr (vec.Vec (ptr FnName)))
+                line_files:(ptr (vec.Vec (ptr str.Bytes)))
+                line_fns:(ptr (vec.Vec (ptr FnLines)))])
+
+  ;; The "aipl.lines" custom section (docs/design/LINES_PLAN.md): for a
+  ;; function, from offset `at` in its body the code is at file:line:col
+  ;; (file indexes line_files).
+  (struct LinePos [at:i32 file:i32 line:i32 col:i32])
+  (struct FnLines [index:i32 entries:(ptr (vec.Vec (ptr LinePos)))])
+
+  ;; The function's entries, or null.
+  (fn lines_of [w:(ptr Wasm) index:i32] -> (ptr (vec.Vec (ptr LinePos)))
+    (let fs:(ptr (vec.Vec (ptr FnLines))) (get w Wasm.line_fns))
+    (loop k 0 (- (call (vec.len (ptr FnLines)) fs) 1) 1
+      (let f:(ptr FnLines) (call (vec.at (ptr FnLines)) fs k))
+      (if (eq (get f FnLines.index) index) (return (get f FnLines.entries)) (block)))
+    (ptr.null (vec.Vec (ptr LinePos))))
 
   ;; A function's name from the "name" custom section (index in the
   ;; function index space), for naming functions in a trap's call chain.
@@ -147,7 +165,9 @@
   ;; wasm spec asks of custom sections.
   (fn read_custom [r:(ptr R) w:(ptr Wasm) end:i32] -> void
     (let title:(ptr str.Bytes) (call name r))
-    (if (or (get r R.failed) (not (call str.bytes_eq title (call str.from_str "name")))) (return) (block))
+    (if (get r R.failed) (return) (block))
+    (if (call str.bytes_eq title (call str.from_str "aipl.lines")) (block (call read_lines r w end) (return)) (block))
+    (if (not (call str.bytes_eq title (call str.from_str "name"))) (return) (block))
     (while (lt (get r R.pos) end)
       (let sub:i32 (call byte r))
       (let size:i32 (call u32 r))
@@ -166,6 +186,41 @@
               (call (vec.push (ptr FnName)) (get w Wasm.names) fn_name)))
           (block))
       (put r R.pos sub_end)))
+
+  ;; The line table; a malformed one is left out (the module is still read).
+  (fn read_lines [r:(ptr R) w:(ptr Wasm) end:i32] -> void
+    (let files:i32 (call u32 r))
+    (loop k 1 files 1
+      (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
+      (call (vec.push (ptr str.Bytes)) (get w Wasm.line_files) (call name r)))
+    (let fns:i32 (call u32 r))
+    (loop k 1 fns 1
+      (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
+      (let f:(ptr FnLines) (new FnLines))
+      (put f FnLines.index (call u32 r))
+      (put f FnLines.entries (call (vec.make (ptr LinePos)) (call alloc.default) 16))
+      (let n:i32 (call u32 r))
+      (let at:i32 0)
+      (let line:i32 0)
+      (loop j 1 n 1
+        (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
+        (let e:(ptr LinePos) (new LinePos))
+        (set! at (+ at (call u32 r)))
+        (put e LinePos.at at)
+        (put e LinePos.file (call u32 r))
+        (set! line (+ line (call s32 r)))
+        (put e LinePos.line line)
+        (put e LinePos.col (call u32 r))
+        (call (vec.push (ptr LinePos)) (get f FnLines.entries) e))
+      (call (vec.push (ptr FnLines)) (get w Wasm.line_fns) f))
+    (if (or (get r R.failed) (neq (get r R.pos) end))
+        (block
+          ;; not this section's fault if a later one fails: forget it, go on
+          (call (vec.clear (ptr str.Bytes)) (get w Wasm.line_files))
+          (call (vec.clear (ptr FnLines)) (get w Wasm.line_fns))
+          (call buf.clear (get r R.msg))
+          (put r R.failed false))
+        (block)))
 
   (fn valtype [r:(ptr R)] -> i32
     (let t:i32 (call byte r))
@@ -539,6 +594,7 @@
       (put l Locals.type (call valtype r))
       (call (vec.push (ptr Locals)) (get body Body.locals) l))
     (let code_start:i32 (get r R.pos))
+    (put body Body.head (- code_start start))
     (while (and (lt (get r R.pos) end) (not (get r R.failed)))
       (call (vec.push (ptr Instr)) (get body Body.code) (call read_instr r code_start)))
     (if (and (not (get r R.failed)) (neq (get r R.pos) end))
@@ -564,6 +620,8 @@
     (put w Wasm.bodies (call (vec.make (ptr Range)) (call alloc.default) 64))
     (put w Wasm.code (call (vec.make (ptr Body)) (call alloc.default) 64))
     (put w Wasm.names (call (vec.make (ptr FnName)) (call alloc.default) 64))
+    (put w Wasm.line_files (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+    (put w Wasm.line_fns (call (vec.make (ptr FnLines)) (call alloc.default) 16))
     w)
 
   ;; Decodes `bytes`. On failure, ok is false and error says what and where.
@@ -588,7 +646,8 @@
       (let section_end:i32 (+ (get r R.pos) size))
       (if (gt section_end n) (block (call fail r "section runs past the end of the module") (break)) (block))
       (cond
-        ;; custom sections: only "name" is read (function names); the rest
+        ;; custom sections: "name" (function names) and "aipl.lines" (source
+        ;; positions) are read; the rest
         ;; carry no meaning here
         ((eq id 0) (call read_custom r w section_end) (put r R.pos section_end))
         ((eq id 1) (call read_types r w))

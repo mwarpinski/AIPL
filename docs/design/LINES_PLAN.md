@@ -14,8 +14,9 @@ as `wasm_encoder::Function::byte_len` counts), the code belongs to the
 expression written at `file:line:col`.
 
 **Which instructions are recorded.** Only the ones a frame can point at: an
-instruction that can trap, or a call. By opcode byte: `unreachable` (0x00),
-`call` and `call_indirect` (0x10, 0x11), loads and stores (0x28-0x3E),
+instruction that can trap, a call, or an `if` (wasmtime reports a check's
+`if c unreachable end` at the `if`). By opcode byte: `unreachable` (0x00),
+`if` (0x04), `call` and `call_indirect` (0x10, 0x11), loads and stores (0x28-0x3E),
 integer division and remainder (0x6D-0x70, 0x7F-0x82), float-to-integer
 truncation (0xA8-0xB1), and every 0xFC- and 0xFE-prefixed instruction
 (bulk memory, atomics). Right before emitting one, the compiler records the
@@ -48,6 +49,19 @@ function count, then for each function with entries:
     line delta (signed LEB128, from the previous entry's line, 0 at first)
     column
 ```
+
+## Status
+
+Done 2026-10-07 (LN1-LN5). Two findings changed the design while it was
+built. wasmtime reports the trap of `if c unreachable end` (every compiled
+check) at the `if`, so `if` (0x04) is recorded too. And the two compilers'
+trees differ for `cond`: Rust's parser rewrites each clause as an `if` at
+the clause, so the AIPL code generator attributes each clause's `if` to the
+clause. `tests/test_selfhost.rs` (`self_hosted_line_table_matches_rust`:
+multi-byte characters, constants, enums, `cond`) and
+`tests/test_native.rs` (`traps_name_their_source_positions`, positions
+checked by hand) hold it; the table adds about a fifth to a module (70 KB
+of the self-hosted compiler's 347 KB).
 
 ## Steps
 

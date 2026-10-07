@@ -453,13 +453,14 @@ impl Body {
     }
 }
 
-/// Whether a frame can point at the instruction: a call, or one that can
-/// trap (docs/design/LINES_PLAN.md lists the opcodes).
+/// Whether a frame can point at the instruction: a call, one that can trap,
+/// or an `if` (wasmtime reports `if c unreachable end`, a check's trap, at the
+/// `if`). docs/design/LINES_PLAN.md lists the opcodes.
 fn traps_or_calls(i: &Instruction) -> bool {
     use wasm_encoder::Encode;
     let mut b = Vec::new();
     i.encode(&mut b);
-    matches!(b[0], 0x00 | 0x10 | 0x11 | 0x28..=0x3E | 0x6D..=0x70 | 0x7F..=0x82 | 0xA8..=0xB1 | 0xFC | 0xFE)
+    matches!(b[0], 0x00 | 0x04 | 0x10 | 0x11 | 0x28..=0x3E | 0x6D..=0x70 | 0x7F..=0x82 | 0xA8..=0xB1 | 0xFC | 0xFE)
 }
 
 /// A module without its `aipl.lines` section: for comparing compiles of one

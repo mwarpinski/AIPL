@@ -92,10 +92,16 @@ more than usual.
   then `  ... N more`), the same lines byte for byte, for traps, failed
   contracts, and bounds checks, in threads too. Native code walks its
   frame pointers through a table of function addresses and names.
-- [ ] **Source positions at run time.** Map wasm code offsets back to source
-  lines (a small line table, like DWARF's but simpler) so a trap and a
-  failed compiled contract say `file:line:col`. The VM's runtime errors
-  other than contracts need positions too.
+- [x] **Source positions at run time** (2026-10-07). Both compilers emit a
+  line table (`aipl.lines`, docs/design/LINES_PLAN.md): the position of
+  every call and trapping instruction, byte for byte the same. `aipl-run`
+  and native executables print it in the call chain,
+  `  at math.div (math.aipl:4:5)`, identically. Eight planted bugs
+  (compilers, native lowering and lookup, aipl-run) were each caught; the
+  table adds about a fifth to a module's size.
+- [ ] **The VM's runtime errors need positions too** (contract failures
+  have theirs; a division by zero or bad memory access in `aipl eval` gives
+  only the message).
 - [x] **Types in AIPL syntax** (2026-10-06). Messages said
   `Ptr(Struct("Point"))`, `Array(I32)`, and `Add on ...`; both checkers and
   the compiler's own errors now write `(ptr Point)`, `(arr i32)`, `+`.
