@@ -70,17 +70,17 @@ def run(cmd):
 
 
 def message(out):
-    """An error message without its file path."""
-    # the CLI prints "Error: MESSAGE" last; the message may hold newlines and control characters
+    """An error message without file paths, one line per error."""
+    # the CLI prints "Error: MESSAGE" last; aiplc prints only the errors.
+    # A message may hold control characters, so split on newlines only.
     at = out.rfind("Error: ")
     if at >= 0 and (at == 0 or out[at - 1] == "\n"):
-        line = out[at + len("Error: "):].rstrip("\n")
+        text = out[at + len("Error: "):]
     else:
-        lines = [l for l in out.split("\n") if l.strip()]
-        line = lines[-1] if lines else ""
-    line = line.split(".aipl: ", 1)[-1]
+        text = out
+    lines = [l.split(".aipl: ", 1)[-1] for l in text.split("\n") if l.strip()]
     # the places searched for a missing module are listed in each toolchain's own path form
-    return line.split(" found in ", 1)[0]
+    return "\n".join(l.split(" found in ", 1)[0] for l in lines)
 
 
 def check(case, sources, seed):

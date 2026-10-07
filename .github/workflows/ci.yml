@@ -1,6 +1,8 @@
 # Builds AIPL and runs every test on Linux x86-64 (the native backend's
-# platform): clippy with warnings as errors, the Rust test suite, and the
-# AIPL-native suite. See DEVELOPING.md, "How to verify everything".
+# platform): clippy with warnings as errors, the Rust test suite, the
+# AIPL-native suite, and 500 generated programs run in the VM, as wasm, and
+# natively (tools/run_fuzz.py, fixed seed). See DEVELOPING.md, "How to
+# verify everything".
 name: CI
 
 on:
@@ -26,3 +28,5 @@ jobs:
         run: cargo test --release --no-fail-fast
       - name: AIPL test suite
         run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: Generated programs, VM against compiled code
+        run: python3 tools/run_fuzz.py --cases 500 --seed 1

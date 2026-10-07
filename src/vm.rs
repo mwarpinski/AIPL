@@ -256,6 +256,11 @@ impl VM {
     }
 
     pub fn invoke(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
+        // an argument jumped (`(call f (block (return 1) 2))`): the call never
+        // happens, and the callee must not take the caller's pending jump
+        if self.flow.is_some() {
+            return Ok(Value::Void);
+        }
         let f = self
             .functions
             .get(fn_name)
@@ -346,14 +351,19 @@ impl VM {
                     Err(format!("VM: Variable '{}' not found in scope", name))
                 }
             }
+            // a value that jumped (`(set! x (block (break) 1))`) assigns nothing
             Expr::Let { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
-                scope.insert(name.clone(), v);
+                if self.flow.is_none() {
+                    scope.insert(name.clone(), v);
+                }
                 Ok(Value::Void)
             }
             Expr::Set { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
-                if scope.contains_key(name) {
+                if self.flow.is_some() {
+                    Ok(Value::Void)
+                } else if scope.contains_key(name) {
                     scope.insert(name.clone(), v);
                     Ok(Value::Void)
                 } else {
@@ -449,6 +459,11 @@ impl VM {
                     Some(e) => self.eval_expr(e, scope)?,
                     None => Value::Void,
                 };
+                // a jump inside the value (`(return (block (return 1) 2))`)
+                // has already left: it wins, as in compiled code
+                if self.flow.is_some() {
+                    return Ok(Value::Void);
+                }
                 self.flow = Some(Flow::Return(v));
                 Ok(Value::Void)
             }
