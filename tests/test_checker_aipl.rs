@@ -84,7 +84,7 @@ fn rust_tokens(src: &str) -> Result<Vec<Tok>, String> {
                 TokenKind::BoolLit(b) => ("bool", b.to_string()),
                 TokenKind::StringLit(s) => ("string", s),
                 TokenKind::Int64Lit(i) => ("int64", i.to_string()),
-                TokenKind::FloatLit(f) => ("float", f.to_bits().to_string()),
+                TokenKind::FloatLit(f, _) => ("float", f.to_bits().to_string()),
             };
             Tok { kind: kind.into(), line: t.line, col: t.col, value }
         })
@@ -882,9 +882,9 @@ fn checkers_report_each_failing_function() {
             "(module m\n  (fn a [] -> i32 (while true (+ 1 true)) 0)\n  (fn b [] -> i32 (break) 0)\n  (fn main [] -> i32 0))",
             "2:31: Type mismatch in binary op: i32 vs bool\n3:19: break is only allowed inside a while or loop body",
         ),
-        // a definition's error is the only one
+        // a definition's error is the only one, though later functions fail
         (
-            "(module m\n  (struct S [x:(ptr Nope)])\n  (fn a [] -> i32 (+ 1 true))\n  (fn main [] -> i32 0))",
+            "(module m\n  (struct S [x:(ptr Nope)])\n  (fn a [] -> i32 (+ 1 true))\n  (fn b [] -> i32 zz)\n  (fn main [] -> i32 0))",
             "",
         ),
     ];

@@ -80,7 +80,7 @@ fn read_const(item: &Item) -> Result<(String, TokenKind), String> {
     };
     let fits = match (ty, &value) {
         ("i32", TokenKind::IntLit(v)) => *v >= i32::MIN as i64 && *v <= i32::MAX as i64,
-        ("i64", TokenKind::Int64Lit(_)) | ("f64", TokenKind::FloatLit(_)) => true,
+        ("i64", TokenKind::Int64Lit(_)) | ("f64", TokenKind::FloatLit(..)) => true,
         ("bool", TokenKind::BoolLit(_)) | ("str", TokenKind::StringLit(_)) => true,
         ("i32" | "i64" | "f64" | "bool" | "str", _) => false,
         _ => {

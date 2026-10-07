@@ -602,7 +602,7 @@
           (call buf.push_str e "Cannot resolve import '")
           (call buf.push_bytes e import)
           (call buf.push_str e "': no '")
-          (call buf.push_bytes e (call module_name import))
+          (call buf.push_bytes e import)
           (call buf.push_str e ".aipl' found in ")
           (call buf.push_bytes e (call buf.bytes tried))
           (return false))

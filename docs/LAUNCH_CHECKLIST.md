@@ -28,7 +28,7 @@ has evidence behind it.
   it fails.
 - [x] **The fuzzer is a tool:** `tools/fuzz.py` (both toolchains on mutated
   repository programs; crashes, hangs, and any disagreement in acceptance,
-  bytes, or message). Still to do: a short fixed-seed run in the test suite.
+  bytes, or message). CI runs 3,000 cases with seed 1.
 - [x] **Message and position differences** (fixed 2026-10-06). After the
   malformed-file fix, 53 of 3,000 fuzz cases still differed; now none do
   apart from float literals (below), on three seeds of 3,000:
@@ -45,10 +45,19 @@ has evidence behind it.
     modules with one name have Rust's wording, after the importing file.
   `tests/test_resolver_aipl.rs` (`malformed_files_are_rejected_like_rust`,
   now 32 cases) holds all of it.
-- [ ] **Float literals** the self-hosted compiler cannot convert exactly are
-  compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: the one
-  remaining difference the fuzzer finds (about 1 case in 700). Exact
-  decimal-to-double conversion in AIPL closes it.
+- [x] **Float literals** (2026-10-06). The self-hosted compiler rejected
+  literals it could not convert exactly (compile error 973), about 1 fuzz
+  case in 700. `std/float.from_decimal` now rounds every literal as Rust's
+  parser does (exact big-integer arithmetic where the fast path is not
+  exact); 400,000 literals agree bit for bit, and four planted rounding
+  bugs were each caught. With them out of the way the fuzzer found five
+  more differences, all fixed: after a definition's error checker.aipl
+  went on to report body errors; tokens in messages were Rust's debug
+  form (`FloatLit(6.9e-5)`, `RParen`), now both toolchains write them as
+  the source does (`'6.9e-5'`, `')'`); the constants pass stopped at a
+  stray atom among the items; with generics in the program, unions and
+  enums were ordered after structs; and a missing module imported by path
+  named only its last segment. 50,000 fuzz cases on five seeds agree.
 - [x] **Fuzz the VM and compiled programs too** (2026-10-06):
   `tools/run_fuzz.py` generates well-typed, terminating programs (every
   scalar op, structs, arrays, enums, unions, results, references,
