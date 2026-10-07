@@ -81,8 +81,6 @@ Run the full test suite with `cargo test` (294 tests; the self-hosting tests tak
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
 | `benchmarks/` | Eight benchmark programs, each in AIPL, C, and Python with expected output ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) |
-| `src/agent_api/` | `aipl serve`: `/eval`, `/verify`, `/compile` over HTTP |
-| `web/` | Browser demo: sends source to `aipl serve`, runs the compiled module with WASI shims |
 | `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
 | `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
 

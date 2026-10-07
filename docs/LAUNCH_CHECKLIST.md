@@ -77,9 +77,9 @@ has evidence behind it.
   stack (the main thread's too, so `ulimit -s` does not matter) is 8 MiB
   with a guard page; the VM fails a call past 192 MiB of stack with an
   error naming the function. Limits in AIPL_SPEC.md 7.11.
-- [ ] **`aipl serve` and `web/` are untested** (AIPL_SPEC.md 6.1 says so).
-  Test them, or remove them before the post: a broken demo is worse than
-  none.
+- [x] **`aipl serve` and `web/` are untested** (removed 2026-10-07: the
+  HTTP server for agents and the browser demo, with the `tiny_http` and
+  `serde_json` dependencies; agents use the CLI).
 
 ## 2. When something goes wrong (crash locations and errors)
 
