@@ -142,7 +142,12 @@ fn status(r: wasmtime::Result<()>, argv0: &str, read: &dyn Fn(usize, usize) -> O
                 }
                 if e.downcast_ref::<wasmtime::Trap>().is_some() {
                     if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
-                        eprint!("{}", call_chain(bt.frames().iter().filter_map(|f| f.func_name())));
+                        let lines = LINES.get();
+                        let frames = bt.frames().iter().filter_map(|f| {
+                            let at = lines.and_then(|t| t.find(f.func_index(), f.module_offset()?));
+                            Some((f.func_name()?, at))
+                        });
+                        eprint!("{}", call_chain(frames));
                     }
                 }
                 134
@@ -156,17 +161,136 @@ fn status(r: wasmtime::Result<()>, argv0: &str, read: &dyn Fn(usize, usize) -> O
 /// and `wasi_thread_start`, and the "aipl." check helpers are left out), at
 /// most 32, then "  ... N more". Native executables print the same lines
 /// (aipl_src/native/runtime.aipl emit_backtrace_routine).
-fn call_chain<'a>(names: impl Iterator<Item = &'a str>) -> String {
+fn call_chain<'a>(frames: impl Iterator<Item = (&'a str, Option<String>)>) -> String {
     const SHOWN: usize = 32;
-    let shown: Vec<&str> = names.filter(|n| !(n.starts_with("aipl.") || *n == "_start" || *n == "wasi_thread_start")).collect();
+    let shown: Vec<_> = frames.filter(|(n, _)| !(n.starts_with("aipl.") || *n == "_start" || *n == "wasi_thread_start")).collect();
     let mut out = String::new();
-    for n in shown.iter().take(SHOWN) {
-        out.push_str(&format!("  at {n}\n"));
+    for (n, at) in shown.iter().take(SHOWN) {
+        match at {
+            Some(at) => out.push_str(&format!("  at {n} ({at})\n")),
+            None => out.push_str(&format!("  at {n}\n")),
+        }
     }
     if shown.len() > SHOWN {
         out.push_str(&format!("  ... {} more\n", shown.len() - SHOWN));
     }
     out
+}
+
+/// The module's `aipl.lines` section (docs/design/LINES_PLAN.md): for each
+/// function, where its calls and trapping instructions are in the source.
+static LINES: OnceLock<LineTable> = OnceLock::new();
+
+#[derive(Default)]
+struct LineTable {
+    files: Vec<String>,
+    /// function index -> (module offset of its body, entries (offset in
+    /// the body, file, line, column) by offset)
+    funcs: std::collections::HashMap<u32, (usize, Vec<LineEntry>)>,
+}
+
+/// (offset in the function's body, file, line, column)
+type LineEntry = (u32, u32, u32, u32);
+
+impl LineTable {
+    /// "file:line:col" of the instruction at `module_offset` in function `func`.
+    fn find(&self, func: u32, module_offset: usize) -> Option<String> {
+        let (start, entries) = self.funcs.get(&func)?;
+        let at = module_offset.checked_sub(*start)? as u32;
+        let k = entries.partition_point(|e| e.0 <= at).checked_sub(1)?;
+        let (_, file, line, col) = entries[k];
+        Some(format!("{}:{line}:{col}", self.files.get(file as usize)?))
+    }
+
+    /// Reads the table from a module with `imported` function imports; an
+    /// empty table if the module has none (or it is malformed).
+    fn read(wasm: &[u8], imported: u32) -> LineTable {
+        Self::try_read(wasm, imported).unwrap_or_default()
+    }
+
+    fn try_read(wasm: &[u8], imported: u32) -> Option<LineTable> {
+        fn u(b: &[u8], at: &mut usize) -> Option<u64> {
+            let (mut v, mut shift) = (0u64, 0);
+            loop {
+                let byte = *b.get(*at)?;
+                *at += 1;
+                v |= ((byte & 0x7f) as u64) << shift;
+                if byte & 0x80 == 0 {
+                    return Some(v);
+                }
+                shift += 7;
+                if shift > 63 {
+                    return None;
+                }
+            }
+        }
+        fn s(b: &[u8], at: &mut usize) -> Option<i64> {
+            let (mut v, mut shift) = (0i64, 0);
+            loop {
+                let byte = *b.get(*at)?;
+                *at += 1;
+                v |= ((byte & 0x7f) as i64) << shift;
+                shift += 7;
+                if byte & 0x80 == 0 {
+                    if shift < 64 && byte & 0x40 != 0 {
+                        v |= -1i64 << shift;
+                    }
+                    return Some(v);
+                }
+                if shift > 63 {
+                    return None;
+                }
+            }
+        }
+        let mut bodies: Vec<usize> = Vec::new();
+        let mut table: Option<&[u8]> = None;
+        let mut at = 8;
+        while at < wasm.len() {
+            let id = wasm[at];
+            at += 1;
+            let size = u(wasm, &mut at)? as usize;
+            let end = at.checked_add(size)?;
+            let sec = wasm.get(at..end)?;
+            if id == 10 {
+                let mut p = 0;
+                for _ in 0..u(sec, &mut p)? {
+                    let n = u(sec, &mut p)? as usize;
+                    bodies.push(at + p);
+                    p += n;
+                }
+            } else if id == 0 {
+                let mut p = 0;
+                let n = u(sec, &mut p)? as usize;
+                if sec.get(p..p + n)? == b"aipl.lines" {
+                    table = Some(&sec[p + n..]);
+                }
+            }
+            at = end;
+        }
+        let t = table?;
+        let mut p = 0;
+        let mut out = LineTable::default();
+        for _ in 0..u(t, &mut p)? {
+            let n = u(t, &mut p)? as usize;
+            out.files.push(String::from_utf8_lossy(t.get(p..p + n)?).into_owned());
+            p += n;
+        }
+        for _ in 0..u(t, &mut p)? {
+            let func = u(t, &mut p)? as u32;
+            let start = *bodies.get(func.checked_sub(imported)? as usize)?;
+            let (mut off, mut line) = (0u32, 0i64);
+            let mut entries = Vec::new();
+            for _ in 0..u(t, &mut p)? {
+                off += u(t, &mut p)? as u32;
+                let file = u(t, &mut p)? as u32;
+                line += s(t, &mut p)?;
+                let col = u(t, &mut p)? as u32;
+                entries.push((off, file, line as u32, col));
+            }
+            out.funcs.insert(func, (start, entries));
+        }
+        Some(out)
+    }
 }
 
 fn run(p: Program) -> i32 {
@@ -189,6 +313,8 @@ fn run(p: Program) -> i32 {
         Err(e) => return fail(format!("not a valid module: {e}")),
     };
     let threaded = module.imports().any(|i| i.module() == "wasi" && i.name() == "thread-spawn");
+    let imported = module.imports().filter(|i| matches!(i.ty(), wasmtime::ExternType::Func(_))).count() as u32;
+    let _ = LINES.set(LineTable::read(&p.wasm, imported));
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
     if let Err(e) = wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t) {
         return fail(e.to_string());

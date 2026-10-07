@@ -50,7 +50,9 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
     let flat = aipl_core::selfhost::resolve_with_aipl(entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
     let m = aipl_core::parser::Parser::parse(&flat).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
-    assert!(WasmCompiler::compile(&m).unwrap() == rust_bytes(entry), "AIPL and Rust resolvers disagree:\n{flat}");
+    // positions are in the flat text there: compare without them
+    let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
+    assert!(same(&WasmCompiler::compile(&m).unwrap()) == same(&rust_bytes(entry)), "AIPL and Rust resolvers disagree:\n{flat}");
 }
 
 const BOX: &str = r#"(module box

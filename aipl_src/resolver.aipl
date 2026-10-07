@@ -87,6 +87,9 @@
     (let text:(ptr str.Bytes) (call io.read_path path))
     (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
     (let src:(ptr Src) (new Src))
+    ;; not in the origins until it has read cleanly
+    (put src Src.file -1)
+    (put src Src.origins (ptr.null origins.Origins))
     (put src Src.text text)
     (put src Src.path path)
     (put src Src.error (ptr.null buf.Buf))
@@ -111,6 +114,12 @@
     (put src Src.origins o)
     (put src Src.file (if (eq o (ptr.null origins.Origins)) -1 (call origins.add_file o path text)))
     src)
+
+  ;; Names a loaded file in compiled code's line table (origins.File.name).
+  (fn name_file [src:(ptr Src) name:(ptr str.Bytes)] -> void
+    (if (and (neq src (ptr.null Src)) (and (gte (get src Src.file) 0) (neq (get src Src.origins) (ptr.null origins.Origins))))
+        (put (call origins.file_at (get src Src.origins) (get src Src.file)) origins.File.name name)
+        (block)))
 
   (fn first_child [g:(ptr compiler.Node)] -> (ptr compiler.Node)
     (get g compiler.Node.first))
@@ -596,6 +605,8 @@
                 (block))
             (set! start (+ i 1)))
           (block)))
+    ;; a module's name in compiled code's line table is its import path
+    (call name_file src (call concat import (call str.from_str ".aipl")))
     (if (eq src (ptr.null Src))
         (block
           (let e:(ptr buf.Buf) (call importer_error st importer))
@@ -648,6 +659,8 @@
   (fn resolve_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)
                       orig:(ptr origins.Origins) gen:(ptr origins.Origins)] -> bool
     (let src:(ptr Src) (call load entry orig))
+    ;; the entry file's name in compiled code's line table is its file name
+    (call name_file src (call slice entry (+ (call last_index entry 47) 1) (- (get entry str.Bytes.len) (+ (call last_index entry 47) 1))))
     (let st:(ptr State) (new State))
     (put st State.origins orig)
     (put st State.entry_dir (call dirname entry))

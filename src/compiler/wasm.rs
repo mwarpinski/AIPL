@@ -14,6 +14,8 @@ impl WasmCompiler {
         let mut functions = FunctionSection::new();
         let mut exports = ExportSection::new();
         let mut codes = CodeSection::new();
+        // each function's line table, by function index
+        let mut lines: Vec<(u32, Vec<(u32, Pos)>)> = Vec::new();
 
         let mut imports = ImportSection::new();
         let mut fn_indices: HashMap<String, u32> = HashMap::new();
@@ -138,7 +140,8 @@ impl WasmCompiler {
         }
 
         // 2. Build code section (body compilation)
-        for f in &module.functions {
+        for (fn_i, f) in module.functions.iter().enumerate() {
+            let source = module.sources.get(&format!("fn {}", f.name));
             let mut extra_lets = Vec::new();
             collect_lets(&f.body, &mut extra_lets, &unions);
 
@@ -194,7 +197,7 @@ impl WasmCompiler {
                 None
             };
 
-            let mut func = Function::new(wasm_locals);
+            let mut func = Body::new(wasm_locals);
             let ctx = Ctx {
                 locals: &local_map,
                 addr_scratch,
@@ -218,7 +221,10 @@ impl WasmCompiler {
                 ref_sigs: &ref_sigs,
                 ref_type_base,
                 labels: std::cell::RefCell::new(Vec::new()),
+                source,
+                file_names: &module.file_names,
             };
+            func.at.push(ctx.position(f.span));
 
             // Every statement but the last is executed purely for effect: drop
             // any value it leaves behind so it doesn't corrupt the wasm stack.
@@ -265,7 +271,8 @@ impl WasmCompiler {
                 }
             }
             func.instruction(&Instruction::End);
-            codes.function(&func);
+            codes.function(&func.f);
+            lines.push((import_count + fn_i as u32, func.lines));
         }
 
         // 16 pages (1 MiB) to start, matching the VM, so `mem.grow` reports the
@@ -305,8 +312,8 @@ impl WasmCompiler {
             if !string_blob.is_empty() {
                 data.passive(string_blob.iter().copied());
             }
-            codes.function(&threaded_init_function(string_blob.len() as u32));
-            codes.function(&thread_start_function(worker_type));
+            codes.function(&threaded_init_function(string_blob.len() as u32).f);
+            codes.function(&thread_start_function(worker_type).f);
         } else {
             data.active(0, &wasm_encoder::ConstExpr::i32_const(0), heap_start.to_le_bytes());
             if !string_blob.is_empty() {
@@ -314,17 +321,17 @@ impl WasmCompiler {
             }
         }
         if let (true, Some(m)) = (auto_start, main_fn) {
-            let mut f = Function::new(vec![]);
+            let mut f = Body::new(vec![]);
             f.instruction(&Instruction::Call(import_count + m as u32));
             if module.functions[m].return_type != Type::Void {
                 f.instruction(&Instruction::Drop);
             }
             f.instruction(&Instruction::End);
-            codes.function(&f);
+            codes.function(&f.f);
         }
         if uses_checks {
             for f in check_functions(&check_fns) {
-                codes.function(&f);
+                codes.function(&f.f);
             }
         }
 
@@ -398,6 +405,13 @@ impl WasmCompiler {
         let mut names = wasm_encoder::NameSection::new();
         names.functions(&fn_names);
         wasm_module.section(&names);
+        // where each call and trapping instruction is in the source
+        if lines.iter().any(|(_, l)| !l.is_empty()) {
+            wasm_module.section(&wasm_encoder::CustomSection {
+                name: "aipl.lines".into(),
+                data: std::borrow::Cow::Owned(encode_lines(&lines)),
+            });
+        }
 
         Ok(wasm_module.finish())
     }
@@ -405,6 +419,143 @@ impl WasmCompiler {
 
 /// Bundles the read-only context threaded through codegen so it isn't passed
 /// as four separate parameters everywhere.
+/// A source position in the line table: file name, line, column.
+type Pos = (String, u32, u32);
+
+/// A function body being written, and its line table (AIPL_SPEC.md 6.5,
+/// docs/design/LINES_PLAN.md): before each call or instruction that can
+/// trap, the position of the innermost expression being compiled, unless
+/// the previous entry has it. Compiler-made functions have no positions.
+pub(crate) struct Body {
+    f: Function,
+    /// the expressions being compiled, innermost last
+    at: Vec<Pos>,
+    /// (offset in the body, position)
+    lines: Vec<(u32, Pos)>,
+}
+
+impl Body {
+    fn new<L: IntoIterator<Item = (u32, ValType)>>(locals: L) -> Self
+    where
+        L::IntoIter: ExactSizeIterator,
+    {
+        Body { f: Function::new(locals), at: Vec::new(), lines: Vec::new() }
+    }
+
+    fn instruction(&mut self, i: &Instruction) -> &mut Self {
+        if let Some(p) = self.at.last() {
+            if traps_or_calls(i) && self.lines.last().map(|(_, q)| q) != Some(p) {
+                self.lines.push((self.f.byte_len() as u32, p.clone()));
+            }
+        }
+        self.f.instruction(i);
+        self
+    }
+}
+
+/// Whether a frame can point at the instruction: a call, one that can trap,
+/// or an `if` (wasmtime reports `if c unreachable end`, a check's trap, at the
+/// `if`). docs/design/LINES_PLAN.md lists the opcodes.
+fn traps_or_calls(i: &Instruction) -> bool {
+    use wasm_encoder::Encode;
+    let mut b = Vec::new();
+    i.encode(&mut b);
+    matches!(b[0], 0x00 | 0x04 | 0x10 | 0x11 | 0x28..=0x3E | 0x6D..=0x70 | 0x7F..=0x82 | 0xA8..=0xB1 | 0xFC | 0xFE)
+}
+
+/// A module without its `aipl.lines` section: for comparing compiles of one
+/// program from texts laid out differently (a printed or flattened copy),
+/// whose line tables differ by design.
+pub fn without_lines(wasm: &[u8]) -> Vec<u8> {
+    let leb = |at: &mut usize| {
+        let (mut v, mut shift) = (0usize, 0);
+        loop {
+            let b = wasm[*at];
+            *at += 1;
+            v |= ((b & 0x7f) as usize) << shift;
+            if b & 0x80 == 0 {
+                return v;
+            }
+            shift += 7;
+        }
+    };
+    let mut out = wasm[..8].to_vec();
+    let mut at = 8;
+    while at < wasm.len() {
+        let start = at;
+        let id = wasm[at];
+        at += 1;
+        let size = leb(&mut at);
+        let end = at + size;
+        let mut name_at = at;
+        let is_lines = id == 0 && {
+            let n = leb(&mut name_at);
+            &wasm[name_at..name_at + n] == b"aipl.lines"
+        };
+        if !is_lines {
+            out.extend_from_slice(&wasm[start..end]);
+        }
+        at = end;
+    }
+    out
+}
+
+/// The `aipl.lines` section's contents (docs/design/LINES_PLAN.md).
+fn encode_lines(lines: &[(u32, Vec<(u32, Pos)>)]) -> Vec<u8> {
+    fn u(out: &mut Vec<u8>, mut v: u32) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                return;
+            }
+            out.push(b | 0x80);
+        }
+    }
+    fn s(out: &mut Vec<u8>, mut v: i64) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if (v == 0 && b & 0x40 == 0) || (v == -1 && b & 0x40 != 0) {
+                out.push(b);
+                return;
+            }
+            out.push(b | 0x80);
+        }
+    }
+    let mut files: Vec<&str> = Vec::new();
+    for (_, l) in lines {
+        for (_, (f, _, _)) in l {
+            if !files.contains(&f.as_str()) {
+                files.push(f);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    u(&mut out, files.len() as u32);
+    for f in &files {
+        u(&mut out, f.len() as u32);
+        out.extend_from_slice(f.as_bytes());
+    }
+    let with: Vec<_> = lines.iter().filter(|(_, l)| !l.is_empty()).collect();
+    u(&mut out, with.len() as u32);
+    for (index, l) in with {
+        u(&mut out, *index);
+        u(&mut out, l.len() as u32);
+        let (mut off, mut line) = (0u32, 0u32);
+        for (o, (f, ln, col)) in l {
+            u(&mut out, o - off);
+            u(&mut out, files.iter().position(|g| g == f).unwrap() as u32);
+            s(&mut out, *ln as i64 - line as i64);
+            u(&mut out, *col);
+            off = *o;
+            line = *ln;
+        }
+    }
+    out
+}
+
 struct Ctx<'a> {
     locals: &'a HashMap<String, u32>,
     addr_scratch: u32,
@@ -442,6 +593,18 @@ struct Ctx<'a> {
     /// Enclosing structured instructions that can contain user code,
     /// innermost last, so break/continue can compute their branch depth.
     labels: std::cell::RefCell<Vec<Label>>,
+    /// Where the function's item was written (None for a module parsed from
+    /// one text), and each file's name in the line table.
+    source: Option<&'a Source>,
+    file_names: &'a HashMap<std::path::PathBuf, String>,
+}
+
+impl Ctx<'_> {
+    /// A line-table position: the file the token at `span` was written in.
+    fn position(&self, span: (u32, u32)) -> Pos {
+        let name = self.source.and_then(|s| self.file_names.get(s.file_at(span))).cloned().unwrap_or_default();
+        (name, span.0, span.1)
+    }
 }
 
 /// What a wasm label is for. Blocks emitted around compiler-generated code
@@ -718,13 +881,13 @@ const CHECKED_LOCALS: [&str; 3] = ["#ck_a", "#ck_b", "#ck_r"];
 /// a != 0, r / a must be b (a = -1, b = MIN traps in the division itself).
 /// Both operands are evaluated before any hidden local is written, so a
 /// checked operation nested in an operand cannot clobber them.
-fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+fn compile_checked(op: &OpCode, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     use Instruction::*;
     let local = |n: &str| *ctx.locals.get(n).expect("checked arithmetic locals");
     let (a, b, r) = (local(CHECKED_LOCALS[0]), local(CHECKED_LOCALS[1]), local(CHECKED_LOCALS[2]));
     // The trap is i32.div_s(MIN, -1), which wasm defines to trap with
     // "integer overflow", so every host reports the real reason.
-    let trap_if = |func: &mut Function| {
+    let trap_if = |func: &mut Body| {
         func.instruction(&If(wasm_encoder::BlockType::Empty));
         func.instruction(&I32Const(i32::MIN));
         func.instruction(&I32Const(-1));
@@ -913,7 +1076,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
 /// non-final entry in a block/function body, or any statement in a while/loop
 /// body): the statement runs, and any value it leaves behind is dropped so it
 /// never corrupts the surrounding block's stack balance.
-fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     compile_expr(expr, ctx, func)?;
     if !is_void_expr(expr, ctx) {
         func.instruction(&Instruction::Drop);
@@ -921,7 +1084,16 @@ fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
     Ok(())
 }
 
-fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+/// Compiles one expression, its position the innermost one while it is
+/// compiled (for the line table).
+fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    func.at.push(ctx.position(expr.span()));
+    let r = compile_expr_at(expr, ctx, func);
+    func.at.pop();
+    r
+}
+
+fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     match expr {
         Expr::Lit(lit, _) => match lit {
             Literal::Int(i) => {
@@ -1856,7 +2028,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
 /// A `bool` read from memory is true iff its word is nonzero, as in the VM.
 /// Normalising to 0/1 keeps `and`/`or` (bitwise in wasm) and `eq` correct
 /// when the word was written by something other than `put`/`arr.set`.
-fn normalize_bool(func: &mut Function) {
+fn normalize_bool(func: &mut Body) {
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Ne);
 }
@@ -1866,9 +2038,9 @@ fn normalize_bool(func: &mut Function) {
 /// no net stack effect. memory.grow fails (-1, dropped) past the 32768-page cap,
 /// and the first access beyond the end then traps. The VM's alloc_bytes does
 /// the same.
-fn emit_grow_to_cursor(func: &mut Function) {
+fn emit_grow_to_cursor(func: &mut Body) {
     use Instruction::*;
-    let size_bytes = |func: &mut Function| {
+    let size_bytes = |func: &mut Body| {
         func.instruction(&MemorySize(0));
         func.instruction(&I32Const(16));
         func.instruction(&I32Shl);
@@ -1896,7 +2068,7 @@ fn emit_grow_to_cursor(func: &mut Function) {
 /// cell pointer on the stack. The pointer is pushed twice before the payload is
 /// compiled, so a payload that itself uses the scratch local cannot clobber it.
 /// The VM allocates the same cell in the same order.
-fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let payload_ty = expr_type(inner, ctx);
     if aipl_to_wasm_type(&payload_ty) != ValType::I32 {
         return Err(format!(
@@ -1952,7 +2124,7 @@ fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Str
 /// field. The address is pushed n+2 times at once (the result, the tag store,
 /// one per field), so fields that use the scratch local cannot clobber it.
 /// The cell is fresh heap memory, so the stores need no write-address check.
-fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let def = ctx.unions.get(union_name).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", union_name))?;
     let tag = def.variants.iter().position(|v| v.name == variant).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", variant))?;
     let v = &def.variants[tag];
@@ -1991,13 +2163,13 @@ fn match_type_body<'e>(arms: &'e [MatchArm], else_body: &'e Option<Vec<Expr>>) -
 /// runs. A union arm loads its binders from the cell first. The chain ends
 /// in the else body, or in `unreachable` (only an enum.cast value that is no
 /// member gets there).
-fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, ctx: &Ctx, func: &mut Function) -> Result<(), String> {
+fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let body_of = match_type_body(arms, else_body);
     let block_ty = match body_of.last() {
         Some(e) if !is_void_expr(e, ctx) => wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(e, ctx))),
         _ => wasm_encoder::BlockType::Empty,
     };
-    let compile_body = |body: &[Expr], func: &mut Function| -> Result<(), String> {
+    let compile_body = |body: &[Expr], func: &mut Body| -> Result<(), String> {
         for (i, stmt) in body.iter().enumerate() {
             if i + 1 == body.len() && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
                 compile_expr(stmt, ctx, func)?;
@@ -2105,7 +2277,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
 ///   local.get s ; i32.const 4  ; i32.lt_u              -> addr < 4
 ///   local.get s ; i32.const 64 ; i32.sub ; i32.const (heap_start - 64) ; i32.lt_u
 ///   i32.or ; if unreachable end
-fn emit_write_address_check(func: &mut Function, ctx: &Ctx) {
+fn emit_write_address_check(func: &mut Body, ctx: &Ctx) {
     let scratch = ctx.addr_scratch;
     func.instruction(&Instruction::LocalTee(scratch));
     func.instruction(&Instruction::LocalGet(scratch));
@@ -2135,7 +2307,7 @@ fn emit_write_address_check(func: &mut Function, ctx: &Ctx) {
 /// $aipl_oob never returns; the `unreachable` after it says so, so wasmtime
 /// keeps no values alive across the call (with the call alone, the checks
 /// cost nbody twice as much).
-fn emit_bounds_check(func: &mut Function, ctx: &Ctx) {
+fn emit_bounds_check(func: &mut Body, ctx: &Ctx) {
     use Instruction::*;
     let (a, i) = (ctx.addr_scratch, ctx.index_scratch);
     func.instruction(&LocalSet(i));
@@ -2166,7 +2338,7 @@ const OOB_MIDDLE: &[u8] = b" for array of length ";
 
 /// Writes `text` at the address `addr` pushes, eight bytes per i64.store
 /// (the last chunk zero-padded, so it may write up to 7 bytes past the text).
-fn emit_text_store(f: &mut Function, addr: &Instruction, text: &[u8]) {
+fn emit_text_store(f: &mut Body, addr: &Instruction, text: &[u8]) {
     use Instruction::*;
     for (k, chunk) in text.chunks(8).enumerate() {
         let mut word = [0u8; 8];
@@ -2217,12 +2389,12 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
 ///   allocated, since the program is about to end), stores its address in
 ///   cell 92, and copies the len bytes at addr there.
 /// - $aipl_end(end): stores the message's length in cell 96 and traps.
-fn check_functions(fns: &CheckFns) -> Vec<Function> {
+fn check_functions(fns: &CheckFns) -> Vec<Body> {
     use Instruction::*;
     let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
 
     // $aipl_dec: params at (0), v (1); locals t:i64 (2), end (3)
-    let mut d = Function::new(vec![(1, ValType::I64), (1, ValType::I32)]);
+    let mut d = Body::new(vec![(1, ValType::I64), (1, ValType::I32)]);
     d.instruction(&LocalGet(1));
     d.instruction(&I64Const(0));
     d.instruction(&I64LtS);
@@ -2291,7 +2463,7 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     d.instruction(&End);
 
     // $aipl_oob: params index (0), array (1); local at (2)
-    let mut o = Function::new(vec![(1, ValType::I32)]);
+    let mut o = Body::new(vec![(1, ValType::I32)]);
     emit_text_store(&mut o, &I32Const(RT_FAIL_TEXT), OOB_PREFIX);
     o.instruction(&I32Const(RT_FAIL_TEXT + OOB_PREFIX.len() as i32));
     o.instruction(&LocalGet(0));
@@ -2321,7 +2493,7 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     o.instruction(&End);
 
     // $aipl_text: params at (0), addr (1), len (2)
-    let mut t = Function::new(vec![]);
+    let mut t = Body::new(vec![]);
     t.instruction(&Block(BlockType::Empty));
     t.instruction(&Loop(BlockType::Empty));
     t.instruction(&LocalGet(2));
@@ -2348,7 +2520,7 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     t.instruction(&End);
 
     // $aipl_begin: params addr (0), len (1), max (2); locals at (3), pages (4)
-    let mut b = Function::new(vec![(2, ValType::I32)]);
+    let mut b = Body::new(vec![(2, ValType::I32)]);
     b.instruction(&I32Const(0));
     b.instruction(&I32Load(M4));
     b.instruction(&LocalSet(3));
@@ -2380,7 +2552,7 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     b.instruction(&End);
 
     // $aipl_end: param end (0)
-    let mut e = Function::new(vec![]);
+    let mut e = Body::new(vec![]);
     e.instruction(&I32Const(RT_FAIL_LEN));
     e.instruction(&LocalGet(0));
     e.instruction(&I32Const(RT_FAIL_ADDR));
@@ -2469,7 +2641,21 @@ fn emit_contract_check(
     expr: &Expr,
     msg: &(String, Vec<MsgItem>),
     ctx: &Ctx,
-    func: &mut Function,
+    func: &mut Body,
+    strings: &HashMap<String, u32>,
+) -> Result<(), String> {
+    // the condition and its failure code are at the condition
+    func.at.push(ctx.position(expr.span()));
+    let r = emit_contract_check_at(expr, msg, ctx, func, strings);
+    func.at.pop();
+    r
+}
+
+fn emit_contract_check_at(
+    expr: &Expr,
+    msg: &(String, Vec<MsgItem>),
+    ctx: &Ctx,
+    func: &mut Body,
     strings: &HashMap<String, u32>,
 ) -> Result<(), String> {
     use Instruction::*;
@@ -2628,7 +2814,7 @@ fn heap_start_after(blob_len: usize) -> u32 {
 /// The address of runtime cell `cell` (64..88): the fixed cell, or in a
 /// threaded module the same offset in this thread's scratch block, whose
 /// address is global 0 (64 in the main thread, so its addresses are unchanged).
-fn emit_rt(func: &mut Function, ctx: &Ctx, cell: i32) {
+fn emit_rt(func: &mut Body, ctx: &Ctx, cell: i32) {
     if ctx.threaded {
         func.instruction(&Instruction::GlobalGet(0));
         if cell != RT_IOV0_BUF {
@@ -2651,7 +2837,7 @@ fn round8(n: i32) -> i32 {
 }
 
 /// Rounds the i32 on the stack up to a multiple of 8.
-fn emit_round8(func: &mut Function) {
+fn emit_round8(func: &mut Body) {
     func.instruction(&Instruction::I32Const(7));
     func.instruction(&Instruction::I32Add);
     func.instruction(&Instruction::I32Const(-8));
@@ -2663,9 +2849,9 @@ const RT_INIT_FLAG: i32 = 88;
 /// A threaded module's start function: the first instance to run it copies
 /// the heap cursor and the string literals into the (zeroed) shared memory;
 /// later instances (spawned threads) see the flag and skip it.
-fn threaded_init_function(blob_len: u32) -> Function {
+fn threaded_init_function(blob_len: u32) -> Body {
     use Instruction::*;
-    let mut f = Function::new(vec![]);
+    let mut f = Body::new(vec![]);
     f.instruction(&I32Const(RT_INIT_FLAG));
     f.instruction(&I32Const(0));
     f.instruction(&I32Const(1));
@@ -2691,9 +2877,9 @@ fn threaded_init_function(blob_len: u32) -> Function {
 /// thread record `rec` = [done result fn arg] made by thread.spawn: allocate
 /// this thread's runtime scratch block, run fn(arg) through the table, store
 /// the result, then set done and wake any thread.join waiting on it.
-fn thread_start_function(worker_type: u32) -> Function {
+fn thread_start_function(worker_type: u32) -> Body {
     use Instruction::*;
-    let mut f = Function::new(vec![]);
+    let mut f = Body::new(vec![]);
     let at = |offset: u64| MemArg { offset, align: 2, memory_index: 0 };
     f.instruction(&I32Const(0));
     f.instruction(&I32Const(RT_SCRATCH_SIZE));
@@ -2727,7 +2913,7 @@ const WASI_ROOT_FD: i32 = 4;
 /// Pushes the directory fd for the path in locals (ptr, len): an absolute
 /// path ("/...") resolves in fd 4 with the leading '/' dropped (ptr and len
 /// are adjusted); anything else in fd 3.
-fn emit_path_dir(func: &mut Function, ptr: u32, len: u32) {
+fn emit_path_dir(func: &mut Body, ptr: u32, len: u32) {
     use Instruction::*;
     func.instruction(&LocalGet(ptr));
     func.instruction(&I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
@@ -3013,7 +3199,7 @@ fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
 /// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
 /// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
 /// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
-fn emit_errno_to_result(func: &mut Function, ctx: &Ctx, out_cell: Option<i32>) {
+fn emit_errno_to_result(func: &mut Body, ctx: &Ctx, out_cell: Option<i32>) {
     func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
     func.instruction(&Instruction::I32Const(-1));
     func.instruction(&Instruction::Else);

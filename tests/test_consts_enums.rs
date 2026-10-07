@@ -95,7 +95,9 @@ fn constants_and_enums_agree_in_every_backend() {
     let reparsed = Parser::parse(&printed).unwrap();
     assert_eq!(print_module(&reparsed), printed);
     TypeChecker::new().check_module(&reparsed).unwrap();
-    assert_eq!(WasmCompiler::compile(&reparsed).unwrap(), wasm);
+    // positions are in the printed text there: compare without them
+    let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
+    assert_eq!(same(&WasmCompiler::compile(&reparsed).unwrap()), same(&wasm));
 }
 
 #[test]

@@ -51,3 +51,46 @@ fn resolve_on_this_thread(path: &str) -> Result<String, String> {
     let text = String::from_utf8(vm.read_bytes(addr as usize, len as usize)).map_err(|e| e.to_string())?;
     if ok == 1 { Ok(text) } else { Err(text) }
 }
+
+/// Compiles the program whose entry file is `path` with the self-hosted
+/// toolchain (`driver.compile_file`: resolver, checker, code generator) in
+/// the VM: the module's bytes, or its error. What `aiplc` does natively.
+pub fn compile_with_aipl(path: &Path) -> Result<Vec<u8>, String> {
+    let path = path.to_string_lossy().into_owned();
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || compile_on_this_thread(&path))
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "the compiler thread panicked".to_string())?
+}
+
+fn compile_on_this_thread(path: &str) -> Result<Vec<u8>, String> {
+    let driver_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/driver.aipl");
+    let module = Resolver::resolve(&driver_path).map_err(|e| format!("resolve driver.aipl: {e}"))?;
+    TypeChecker::new().check_module(&module).map_err(|e| format!("check driver.aipl: {e}"))?;
+    let mut vm = VM::new();
+    vm.load_module(module);
+    let int = |v: Value| match v {
+        Value::Int(i) => Ok(i as i32),
+        other => Err(format!("expected Int, got {other:?}")),
+    };
+    let put = |vm: &mut VM, s: &str| -> Result<i32, String> {
+        let addr = int(vm.invoke("host_alloc", vec![Value::Int(s.len() as i64 + 1)])?)?;
+        vm.write_bytes(addr as usize, s.as_bytes());
+        Ok(addr)
+    };
+    let dirs = std_dir();
+    let p = put(&mut vm, path)?;
+    let d = put(&mut vm, &dirs)?;
+    let args = [p, path.len() as i32, d, dirs.len() as i32].map(|v| Value::Int(v as i64)).to_vec();
+    let out = int(vm.invoke("compile_file", args)?)? as usize;
+    // Out [status addr len]: 0 the module, 1 and 3 an error's text, 2 a compile error's code
+    let word = |at: usize| i32::from_le_bytes(vm.read_bytes(at, 4).try_into().unwrap());
+    let (status, addr, len) = (word(out), word(out + 4), word(out + 8));
+    match status {
+        0 => Ok(vm.read_bytes(addr as usize, len as usize)),
+        2 => Err(format!("compile error {len} (see AIPL_SPEC.md 6.4)")),
+        _ => Err(String::from_utf8_lossy(&vm.read_bytes(addr as usize, len as usize)).into_owned()),
+    }
+}

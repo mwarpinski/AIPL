@@ -1982,8 +1982,67 @@ fn traps_print_their_line_and_call_chain() {
             "trap_in_a_thread" => "  at work\n",
             _ => "  at main\n",
         };
-        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{prog}: {reason}\n{chain}"), "{name}");
+        // positions: traps_name_their_source_positions
+        assert_eq!(without_positions(&String::from_utf8_lossy(&o.stderr)), format!("{prog}: {reason}\n{chain}"), "{name}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A call chain without its source positions: "  at f (x.aipl:1:2)" -> "  at f".
+fn without_positions(s: &str) -> String {
+    s.lines()
+        .map(|l| match l.find(" (") {
+            Some(k) if l.starts_with("  at ") && l.ends_with(')') => &l[..k],
+            _ => l,
+        })
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// Each frame of a trap's call chain names where in the source it was, the
+/// same under aipl-run and natively: the trapping expression, then each
+/// call (docs/design/LINES_PLAN.md). The columns were checked by hand.
+#[test]
+fn traps_name_their_source_positions() {
+    let dir = scratch("positions");
+    for (name, chain) in [
+        ("trap_div_by_zero", "  at main (prog.aipl:1:54)\n"),
+        ("trap_load_past_memory", "  at main (prog.aipl:1:65)\n"),
+        ("trap_unlock_a_free_lock", "  at main (prog.aipl:1:56)\n"),
+        // the store guard (wasmtime reports its trap at the if)
+        ("trap_store_into_reserved_block", "  at main (prog.aipl:1:51)\n"),
+        ("trap_index_past_the_end", "  at main (prog.aipl:1:64)\n"),
+        // a contract at its condition, then the call
+        ("trap_failed_req", "  at f (prog.aipl:1:45)\n  at main (prog.aipl:1:77)\n"),
+        ("trap_in_a_thread", "  at work (prog.aipl:1:35)\n"),
+        ("trap_min_div_minus_one", "  at main (prog.aipl:1:55)\n"),
+        ("trap_unaligned_atomic", "  at main (prog.aipl:1:66)\n"),
+        // the second of two identical locks
+        ("trap_lock_twice_waits", "  at main (prog.aipl:1:72)\n"),
+    ] {
+        let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
+        let wasm = to_wasm(src);
+        for (how, o) in [("aipl-run", run_wasm(&dir, &wasm)), ("native", run_native(&dir, &to_native(&wasm).unwrap()))] {
+            let err = String::from_utf8_lossy(&o.stderr).to_string();
+            let got = err.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+            assert_eq!(got, chain, "{name} {how}: {err}");
+        }
+    }
+    // a call whose result goes straight into another call: the caller's frame
+    // is at the inner call, though with no arguments to pop its return
+    // address can be where the outer call's code begins
+    let src = "(module m (fn g [] -> i32 (let z:i32 0) (/ 1 z)) (fn f [x:i32] -> i32 x) (fn main [] -> i32 (call f (call g))))";
+    let wasm = to_wasm(src);
+    let want = format!("  at g (prog.aipl:1:{})\n  at main (prog.aipl:1:{})\n", src.find("(/ 1 z)").unwrap() + 1, src.find("(call g)").unwrap() + 1);
+    for (how, o) in [("aipl-run", run_wasm(&dir, &wasm)), ("native", run_native(&dir, &to_native(&wasm).unwrap()))] {
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert_eq!(err.split_once('\n').map(|(_, r)| r).unwrap_or(""), want, "nested calls {how}: {err}");
+    }
+    // a deep chain: the division, then each recursive call
+    let src = PROGRAMS.iter().find(|(n, _)| *n == "trap_deep_recursion").unwrap().1;
+    let want = "  at down (prog.aipl:1:48)\n".to_string() + &"  at down (prog.aipl:1:61)\n".repeat(31) + "  ... 10 more\n";
+    let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
+    assert_eq!(String::from_utf8_lossy(&o.stderr).split_once('\n').unwrap().1, want);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2009,7 +2068,10 @@ fn running_out_of_stack_traps() {
             let err = String::from_utf8_lossy(&o.stderr);
             assert_eq!(o.status.code(), Some(134), "{name} {how}: {err}");
             assert!(o.stdout.is_empty(), "{name} {how}");
-            let head = format!("{prog}: wasm trap: call stack exhausted\n{}", "  at down\n".repeat(32));
+            // the innermost frame traps in its prologue, before any position;
+            // the others are at the recursive call
+            let col = src.find("(call down").unwrap() + 1;
+            let head = format!("{prog}: wasm trap: call stack exhausted\n  at down\n{}", format!("  at down (prog.aipl:1:{col})\n").repeat(31));
             assert!(err.starts_with(&head), "{name} {how}: {err}");
             let more = err[head.len()..].strip_prefix("  ... ").and_then(|r| r.strip_suffix(" more\n"));
             let more: usize = more.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("{name} {how}: {err}"));
@@ -2174,7 +2236,10 @@ fn checked_arithmetic_matches_natively() {
         match trap {
             Some(reason) => {
                 assert_eq!(native.status.code(), Some(134), "{e}");
-                assert_eq!(String::from_utf8_lossy(&native.stderr), format!("{prog}: wasm trap: {reason}\n  at main\n"), "{e}");
+                // at the checked operation (its column in the one-line source)
+                let col = src.find("(checked.").unwrap() + 1;
+                assert_eq!(String::from_utf8_lossy(&native.stderr), format!("{prog}: wasm trap: {reason}\n  at main (prog.aipl:1:{col})\n"), "{e}");
+                assert_eq!(native.stderr, launched.stderr, "{e}");
             }
             None => assert_eq!(native.status.code(), Some(0), "{e}: {}", String::from_utf8_lossy(&native.stderr)),
         }

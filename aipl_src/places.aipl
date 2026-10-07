@@ -1,0 +1,107 @@
+;; Where compiled code is in the source, for the line table
+;; (docs/design/LINES_PLAN.md): an offset in the text the code generator
+;; compiles, mapped back through the passes that reprinted it (consts.aipl,
+;; then generics.aipl, then the resolver) to a file, a line, and a column,
+;; as src/compiler/wasm.rs takes them from the Rust toolchain's tree.
+(module places
+  (import alloc)
+  (import str)
+  (import vec)
+  (import origins)
+
+  ;; A source text, its name in the line table, and where its lines start
+  ;; (worked out on first use).
+  (struct Text [name:(ptr str.Bytes) text:(ptr str.Bytes) starts:(ptr (vec.Vec i32))])
+
+  ;; consts: consts.aipl's reprinting (no entries: unchanged). gen and orig:
+  ;; the generics pass's and the resolver's (null for one file's text, which
+  ;; is `flat`). files: orig's files, in its order.
+  (struct Places [consts:(ptr origins.Origins) gen:(ptr origins.Origins) orig:(ptr origins.Origins)
+                  flat:(ptr Text) files:(ptr (vec.Vec (ptr Text))) file:i32])
+
+  ;; A resolved position.
+  (struct Place [file:(ptr str.Bytes) line:i32 col:i32])
+
+  (fn text_of [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Text)
+    (let t:(ptr Text) (new Text))
+    (put t Text.name name)
+    (put t Text.text text)
+    (put t Text.starts (ptr.null (vec.Vec i32)))
+    t)
+
+  ;; Positions in one file's text, under that name.
+  (fn single [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Places)
+    (let p:(ptr Places) (new Places))
+    (put p Places.consts (call origins.make))
+    (put p Places.gen (ptr.null origins.Origins))
+    (put p Places.orig (ptr.null origins.Origins))
+    (put p Places.flat (call text_of name text))
+    (put p Places.files (call (vec.make (ptr Text)) (call alloc.default) 1))
+    p)
+
+  ;; Positions in the files the resolver read (orig), through the generics
+  ;; pass's reprinting (gen, possibly without entries).
+  (fn mapped [gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> (ptr Places)
+    (let p:(ptr Places) (call single (call str.from_str "") (call str.from_str "")))
+    (put p Places.gen gen)
+    (put p Places.orig orig)
+    (let fs:(ptr (vec.Vec (ptr origins.File))) (get orig origins.Origins.files))
+    (loop i 0 (- (call (vec.len (ptr origins.File)) fs) 1) 1
+      (let f:(ptr origins.File) (call (vec.at (ptr origins.File)) fs i))
+      (call (vec.push (ptr Text)) (get p Places.files) (call text_of (get f origins.File.name) (get f origins.File.text))))
+    p)
+
+  ;; An offset back through one pass's reprinting: the original offset of the
+  ;; token printed at or before it, or the offset unchanged when the pass
+  ;; printed nothing. Sets p's file to the entry's file (-1: the pass's input).
+  (fn back [p:(ptr Places) o:(ptr origins.Origins) at:i32] -> i32
+    (put p Places.file -1)
+    (if (eq o (ptr.null origins.Origins)) (return at) (block))
+    (let e:(ptr origins.Entry) (call origins.find o at))
+    (if (eq e (ptr.null origins.Entry)) (return at) (block))
+    (put p Places.file (get e origins.Entry.file))
+    (get e origins.Entry.pos))
+
+  ;; The place of offset `at` in the code generator's text.
+  (fn place [p:(ptr Places) at:i32] -> (ptr Place)
+    (let pos:i32 (call back p (get p Places.consts) at))
+    (let t:(ptr Text) (get p Places.flat))
+    (if (neq (get p Places.orig) (ptr.null origins.Origins))
+        (block
+          (set! pos (call back p (get p Places.gen) pos))
+          (set! pos (call back p (get p Places.orig) pos))
+          (if (gte (get p Places.file) 0)
+              (set! t (call (vec.at (ptr Text)) (get p Places.files) (get p Places.file)))
+              (block)))
+        (block))
+    (call locate t pos))
+
+  ;; Line and column (1-based; a column counts characters) of pos in t.
+  (fn locate [t:(ptr Text) pos:i32] -> (ptr Place)
+    (if (eq (get t Text.starts) (ptr.null (vec.Vec i32))) (call find_starts t) (block))
+    (let starts:(ptr (vec.Vec i32)) (get t Text.starts))
+    ;; the last line starting at or before pos
+    (let lo:i32 0)
+    (let hi:i32 (- (call (vec.len i32) starts) 1))
+    (while (lt lo hi)
+      (let mid:i32 (/ (+ (+ lo hi) 1) 2))
+      (if (lte (call (vec.at i32) starts mid) pos) (set! lo mid) (set! hi (- mid 1))))
+    (let start:i32 (call (vec.at i32) starts lo))
+    (let col:i32 1)
+    (let src:i32 (get (get t Text.text) str.Bytes.addr))
+    (loop k start (- pos 1) 1
+      ;; a UTF-8 continuation byte is part of the character before it
+      (if (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1)) (block)))
+    (let r:(ptr Place) (new Place))
+    (put r Place.file (get t Text.name))
+    (put r Place.line (+ lo 1))
+    (put r Place.col col)
+    r)
+
+  (fn find_starts [t:(ptr Text)] -> void
+    (let s:(ptr str.Bytes) (get t Text.text))
+    (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 64))
+    (call (vec.push i32) starts 0)
+    (loop k 0 (- (get s str.Bytes.len) 1) 1
+      (if (eq (mem.load8 (+ (get s str.Bytes.addr) k)) 10) (call (vec.push i32) starts (+ k 1)) (block)))
+    (put t Text.starts starts)))

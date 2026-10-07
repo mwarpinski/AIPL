@@ -376,6 +376,11 @@
     (put ct runtime.ChainTexts.at (call lower.data_text l "  at "))
     (put ct runtime.ChainTexts.dots (call lower.data_text l "  ... "))
     (put ct runtime.ChainTexts.more (call lower.data_text l " more\n"))
+    (put ct runtime.ChainTexts.open (call lower.data_text l " ("))
+    (put ct runtime.ChainTexts.colon (call lower.data_text l ":"))
+    (put ct runtime.ChainTexts.close (call lower.data_text l ")"))
+    (put ct runtime.ChainTexts.positions (call lower.data_text l ""))
+    (loop k 1 12 1 (call buf.push_byte data 0))
     (put l lower.L.backtrace_routine (call buf.len c))
     (call runtime.emit_backtrace_routine c argv0_cell sep nl ct chain_cell)
     (put wr wasi.W.region_routine (call buf.len c))
@@ -408,12 +413,14 @@
     (if (get l lower.L.failed) (return (call failure (call buf.bytes (get l lower.L.msg)))) (block))
     (let code_end:i32 (call buf.len c))
     (let chain:(ptr Chain) (call reserve_chain_table l w nimports nfuncs chain_cell))
+    (let positions:i32 (call reserve_position_table l w (get ct runtime.ChainTexts.positions)))
     ;; every call now knows where its target starts
     (loop i 0 (- (call (vec.len (ptr lower.Fixup)) (get l lower.L.fixups)) 1) 1
       (let f:(ptr lower.Fixup) (call (vec.at (ptr lower.Fixup)) (get l lower.L.fixups) i))
       (call x64.patch_rel32 c (get f lower.Fixup.at) (call (vec.at i32) starts (get f lower.Fixup.func))))
     (call fill_table l w starts)
     (call fill_chain_table l chain starts code_end)
+    (call fill_position_table l positions)
     (let o:(ptr Output) (new Output))
     (put o Output.ok true)
     (put o Output.error (call str.bytes 0 0))
@@ -474,6 +481,46 @@
       (mem.store32 (+ entry 4) (+ code_vaddr end))
       (mem.store32 (+ entry 8) (arr.get i32 (get ch Chain.names) i))
       (mem.store32 (+ entry 12) (arr.get i32 (get ch Chain.lens) i))))
+
+  ;; Puts the line table's file names and room for the position entries in
+  ;; the data, and points `cell` at them: [entries, count, files], files
+  ;; being [address length] per name. Returns the entries' data address;
+  ;; fill_position_table fills them once the code's address is known.
+  (fn reserve_position_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) cell:i32] -> i32
+    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get w wasm_reader.Wasm.line_files))
+    (let nfiles:i32 (call (vec.len (ptr str.Bytes)) names))
+    (let addrs:(arr i32) (arr.new i32 (+ nfiles 1)))
+    (loop k 0 (- nfiles 1) 1 (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at (ptr str.Bytes)) names k))))
+    (while (neq (bitand (call buf.len data) 3) 0) (call buf.push_byte data 0))
+    (let files:i32 (call lower.data_text l ""))
+    (loop k 0 (- nfiles 1) 1
+      (call push_word data (arr.get i32 addrs k))
+      (call push_word data (get (call (vec.at (ptr str.Bytes)) names k) str.Bytes.len)))
+    (let n:i32 (call (vec.len (ptr lower.NPos)) (get l lower.L.positions)))
+    (let entries:i32 (call lower.data_text l ""))
+    (loop k 1 (* 16 n) 1 (call buf.push_byte data 0))
+    (let cell_at:i32 (+ (get data buf.Buf.data) (- cell (call elf.data_vaddr))))
+    (mem.store32 cell_at entries)
+    (mem.store32 (+ cell_at 4) n)
+    (mem.store32 (+ cell_at 8) files)
+    entries)
+
+  (fn push_word [b:(ptr buf.Buf) v:i32] -> void
+    (loop k 0 3 1 (call buf.push_byte b (bitand (shr v (* 8 k)) 255))))
+
+  (fn fill_position_table [l:(ptr lower.L) entries:i32] -> void
+    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
+    (let base:i32 (+ (get data buf.Buf.data) (- entries (call elf.data_vaddr))))
+    (let ps:(ptr (vec.Vec (ptr lower.NPos))) (get l lower.L.positions))
+    (loop k 0 (- (call (vec.len (ptr lower.NPos)) ps) 1) 1
+      (let p:(ptr lower.NPos) (call (vec.at (ptr lower.NPos)) ps k))
+      (let at:i32 (+ base (* 16 k)))
+      (mem.store32 at (+ code_vaddr (get p lower.NPos.code)))
+      (mem.store32 (+ at 4) (get p lower.NPos.file))
+      (mem.store32 (+ at 8) (get p lower.NPos.line))
+      (mem.store32 (+ at 12) (get p lower.NPos.col))))
 
   ;; Reserves the table's entries in the data (empty: address 0, type -1);
   ;; "" or the reason the table cannot be translated.
