@@ -1977,6 +1977,53 @@ fn traps_print_their_line_and_call_chain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Recursion too deep for the stack traps as under aipl-run (its message,
+/// the call chain, exit 134), in the main thread and in a spawned one,
+/// instead of faulting; and how deep a program may go does not depend on
+/// the user's stack ulimit (the main thread runs on its own stack, like a
+/// spawned thread). Found by tools/run_fuzz.py: native executables died
+/// with SIGSEGV and no message.
+#[test]
+fn running_out_of_stack_traps() {
+    let dir = scratch("stack");
+    let prog = dir.join("prog").display().to_string();
+    let down = "(fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))";
+    let in_main = format!("(module m (import io) {down} (fn main [] -> i32 (call io.print_int (call down 10000000)) 0))");
+    let in_thread = format!(
+        "(module m (import io) {down} (fn work [n:i32] -> i32 (call down n))
+           (fn main [] -> i32 (call io.print_int (thread.join (thread.spawn (ref work) 10000000))) 0))"
+    );
+    for (name, src) in [("main", &in_main), ("thread", &in_thread)] {
+        let wasm = to_wasm(src);
+        for (how, o) in [("aipl-run", run_wasm(&dir, &wasm)), ("native", run_native(&dir, &to_native(&wasm).unwrap()))] {
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(134), "{name} {how}: {err}");
+            assert!(o.stdout.is_empty(), "{name} {how}");
+            let head = format!("{prog}: wasm trap: call stack exhausted\n{}", "  at down\n".repeat(32));
+            assert!(err.starts_with(&head), "{name} {how}: {err}");
+            let more = err[head.len()..].strip_prefix("  ... ").and_then(|r| r.strip_suffix(" more\n"));
+            let more: usize = more.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("{name} {how}: {err}"));
+            assert!(more > 20_000, "{name} {how}: only {more} frames");
+        }
+    }
+    // a frame larger than the room left below the limit (40,000 locals):
+    // the check counts the frame, so this traps too instead of faulting
+    let big = exit_with(&[40_000], &[wasm_encoder::Instruction::Call(2), wasm_encoder::Instruction::End]);
+    for (how, o) in [("aipl-run", run_wasm(&dir, &big)), ("native", run_native(&dir, &to_native(&big).unwrap()))] {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(134), "big frames {how}: {err}");
+        assert!(err.starts_with(&format!("{prog}: wasm trap: call stack exhausted\n")), "big frames {how}: {err}");
+    }
+    // 100,000 calls fit natively, even with a 1 MiB stack ulimit
+    let exe = to_native(&to_wasm(&in_main.replace("10000000", "100000"))).unwrap();
+    let path = dir.join("prog");
+    std::fs::write(&path, exe).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), "100000".to_string()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Anything not translated yet is an error naming it, never a wrong program.
 #[test]
 fn unsupported_instructions_and_imports_are_named() {

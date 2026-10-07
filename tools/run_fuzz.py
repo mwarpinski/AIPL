@@ -579,6 +579,8 @@ def kind(msg):
     if "condition failed in" in m:
         # the VM adds the position: "in 'f' at 3:10: (req" -> "in 'f': (req"
         return re.sub(r"' at [0-9]+:[0-9]+: ", "': ", msg)
+    if "stack exhausted" in m:
+        return "call stack exhausted"
     if "unreachable" in m:
         return "unreachable"
     return msg

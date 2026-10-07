@@ -68,6 +68,22 @@
   ;; The stack each spawned thread gets (address space; pages appear on use).
   (fn thread_stack [] -> i32 8388608)
 
+  ;; mprotect(base, 4096, PROT_NONE): the lowest page of a stack faults, so
+  ;; nothing that gets past the stack check writes over the memory below.
+  ;; Clobbers rax rcx rdx rsi rdi r11.
+  (fn emit_guard_page [c:(ptr buf.Buf) base:i32] -> void
+    (call x64.mov_rr c 64 7 base)
+    (call x64.mov_ri32 c 6 4096)
+    (call x64.alu_rr c 32 (call x64.op_xor) 2 2)
+    (call x64.mov_ri32 c 0 10)
+    (call x64.syscall c))
+
+  ;; The stack limit sits this far above a stack's low end: room for the
+  ;; deepest frame's operand stack, the host routines (fd_read and fd_write
+  ;; take 64 KiB), and the trap routines, so running out of stack traps
+  ;; with "call stack exhausted" instead of faulting.
+  (fn stack_margin [] -> i32 262144)
+
   (fn import_stub [l:(ptr lower.L) wr:(ptr wasi.W) th:(ptr Threads) imp:(ptr wasm_reader.Import)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let name:(ptr str.Bytes) (get imp wasm_reader.Import.name))
@@ -122,13 +138,19 @@
     (call x64.alu_ri c 64 (call x64.op_cmp) 0 -4096)
     (let no_stack:i32 (call x64.jcc c (call x64.cc_a)))
     (call x64.mov_rr c 64 rbx 0)
-    ;; the thread's globals at the low end, with their initial values
+    (call emit_guard_page c rbx)
+    (call x64.alu_ri c 64 (call x64.op_add) rbx 4096)
+    ;; the thread's globals at the low end, above the guard page, with their
+    ;; initial values
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get th Threads.globals))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
       (call x64.mov_ri64 c 0 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (call x64.store c 64 (call x64.mem rbx (* 8 i)) 0))
+    ;; and its stack limit, after them
+    (call x64.lea c 64 0 (call x64.mem rbx (call stack_margin)))
+    (call x64.store c 64 (call x64.mem rbx (get l lower.L.stack_limit_off)) 0)
     ;; [tid][start_arg] at the top, the stack pointer below them
-    (call x64.lea c 64 6 (call x64.mem rbx (call thread_stack)))
+    (call x64.lea c 64 6 (call x64.mem rbx (- (call thread_stack) 4096)))
     (call x64.store c 64 (call x64.mem 6 -8) r13)
     (call x64.store c 64 (call x64.mem 6 -16) r12)
     (call x64.alu_ri c 64 (call x64.op_sub) 6 16)
@@ -157,6 +179,33 @@
     (call x64.mov_ri32 c 0 60)
     (call x64.syscall c)
     (call x64.ud2 c))
+
+  ;; The main thread moves to its own stack, the size of a spawned thread's,
+  ;; so the depth at which a program runs out of stack is the same on every
+  ;; machine (the initial stack's size is the user's ulimit), and its limit
+  ;; goes in the globals block. If the stack cannot be mapped, the limit
+  ;; stays 0: no check, as before.
+  (fn emit_main_stack [l:(ptr lower.L) globals_block:i32] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    ;; mmap(0, size, RW, PRIVATE|ANONYMOUS|NORESERVE|STACK, -1, 0)
+    (call x64.alu_rr c 32 (call x64.op_xor) 7 7)
+    (call x64.mov_ri32 c 6 (call thread_stack))
+    (call x64.mov_ri32 c 2 3)
+    (call x64.mov_ri32 c 10 147490)
+    (call x64.mov_ri64 c 8 -1i64)
+    (call x64.alu_rr c 32 (call x64.op_xor) 9 9)
+    (call x64.mov_ri32 c 0 9)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_cmp) 0 -4096)
+    (let no_stack:i32 (call x64.jcc c (call x64.cc_a)))
+    (call x64.mov_rr c 64 3 0)
+    (call emit_guard_page c 3)
+    (call x64.mov_rr c 64 0 3)
+    (call x64.mov_ri32 c 1 globals_block)
+    (call x64.lea c 64 2 (call x64.mem 0 (+ (call stack_margin) 4096)))
+    (call x64.store c 64 (call x64.mem 1 (get l lower.L.stack_limit_off)) 2)
+    (call x64.lea c 64 4 (call x64.mem 0 (call thread_stack)))
+    (call x64.patch_rel32 c no_stack (call buf.len c)))
 
   (fn imports_thread_spawn [l:(ptr lower.L)] -> bool
     (loop i 0 (- (call lower.n_fimports l) 1) 1
@@ -291,14 +340,16 @@
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
       (call (vec.push i32) (get l lower.L.seg_addrs) (call lower.data_bytes l (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))
       (call (vec.push i32) (get l lower.L.seg_lens) (get d wasm_reader.Data.len)))
-    ;; the main thread's globals block (8 bytes each, initial values), and
-    ;; the thread-id counter (starts at 1)
+    ;; the main thread's globals block (8 bytes each, initial values, then
+    ;; the stack limit: lower.L.stack_limit_off), and the thread-id counter
+    ;; (starts at 1)
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
       (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (loop k 0 7 1 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
-    (while (lt (call buf.len gb) 8) (call buf.push_byte gb 0))
+    (put l lower.L.stack_limit_off (call buf.len gb))
+    (loop k 0 7 1 (call buf.push_byte gb 0))
     (let globals_block:i32 (call lower.data_bytes l (call buf.bytes gb)))
     (let th:(ptr Threads) (new Threads))
     (put th Threads.start_fn (get w wasm_reader.Wasm.start))
@@ -342,6 +393,7 @@
     (call x64.mov_ri32 c 6 globals_block)
     (call x64.mov_ri32 c 0 158)
     (call x64.syscall c)
+    (call emit_main_stack l globals_block)
     (if has_memory (call emit_memory_setup l w) (block))
     (if (gte (get w wasm_reader.Wasm.start) 0) (call lower.emit_call l (get w wasm_reader.Wasm.start)) (block))
     (call lower.emit_call l entry_fn)
