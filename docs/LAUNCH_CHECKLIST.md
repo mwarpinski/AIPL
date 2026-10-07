@@ -60,13 +60,14 @@ has evidence behind it.
   `test_control_flow.rs`). Compiled code was right each time. After the
   fixes, 25,000 cases (seeds 5 and 8) agree; four planted bugs (VM, wasm backend, native backend) were each
   caught within 600.
-- [ ] **Running out of stack.** Deep recursion stops `aipl-run` cleanly
-  (`wasm trap: call stack exhausted`, exit 134, about 6,500 frames of a
-  small function), but a native executable dies with a segfault (exit 139,
-  no message), and the VM goes far deeper before aborting on its own stack
-  overflow. Needed: a stack-limit check in native function prologues that
-  traps with the same message, a call-depth limit in the VM, and the limits
-  documented (found by the program fuzzer).
+- [x] **Running out of stack** (2026-10-06; found by the program fuzzer).
+  Deep recursion stopped `aipl-run` cleanly but killed a native executable
+  with a segfault (exit 139, no message), and the VM aborted on its own
+  stack overflow. Now native function prologues check a per-thread stack
+  limit and trap with aipl-run's message and exit status; every native
+  stack (the main thread's too, so `ulimit -s` does not matter) is 8 MiB
+  with a guard page; the VM fails a call past 192 MiB of stack with an
+  error naming the function. Limits in AIPL_SPEC.md 7.11.
 - [ ] **`aipl serve` and `web/` are untested** (AIPL_SPEC.md 6.1 says so).
   Test them, or remove them before the post: a broken demo is worse than
   none.

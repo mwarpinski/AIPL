@@ -42,6 +42,22 @@ pub const HEAP_PTR_ADDR: usize = 0;
 /// runtime block (see AIPL_SPEC.md, Memory layout).
 pub const HEAP_START: u32 = 1024;
 
+/// How much of its thread's stack the VM's calls may use before a call
+/// fails with "Call stack exhausted" instead of overflowing the stack. The
+/// VM runs on threads with at least 256 MiB: the CLI's (1 GiB), test
+/// threads (`.cargo/config.toml`), and those `thread.spawn` starts
+/// (`THREAD_STACK`). A small function's call takes about 5 KiB, so this
+/// allows about 40,000 nested calls of one.
+pub const STACK_BUDGET: usize = 192 << 20;
+const THREAD_STACK: usize = 256 << 20;
+
+/// An address in the caller's stack frame: how deep the stack is.
+#[inline(never)]
+fn stack_position() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
+
 /// A `return`, `break`, or `continue` that is unwinding. eval_expr sets it and
 /// returns Value::Void; statement sequences stop when it is set, loops consume
 /// Break/Continue, and invoke consumes Return. The checker makes these
@@ -84,6 +100,9 @@ pub struct VM {
     /// Bytes `fs.read` on fd 0 returns, if the host set them (`set_stdin`);
     /// otherwise fd 0 is the process's stdin.
     stdin: Option<Arc<Mutex<Vec<u8>>>>,
+    /// The stack position of the outermost call running on this thread, or
+    /// 0 when none is (see STACK_BUDGET).
+    stack_top: usize,
 }
 
 impl Default for VM {
@@ -119,6 +138,7 @@ impl VM {
             args: Arc::new(Vec::new()),
             env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
             stdin: None,
+            stack_top: 0,
         }
     }
 
@@ -143,6 +163,7 @@ impl VM {
             heap_start: self.heap_start,
             args: Arc::clone(&self.args),
             env: Arc::clone(&self.env),
+            stack_top: 0,
             stdin: self.stdin.clone(),
         }
     }
@@ -261,6 +282,23 @@ impl VM {
         if self.flow.is_some() {
             return Ok(Value::Void);
         }
+        let here = stack_position();
+        if self.stack_top == 0 {
+            self.stack_top = here;
+            let r = self.invoke_function(fn_name, args);
+            self.stack_top = 0;
+            return r;
+        }
+        if self.stack_top.saturating_sub(here) > STACK_BUDGET {
+            return Err(format!(
+                "Call stack exhausted calling '{}': calls are nested too deeply (a recursion that does not end?)",
+                fn_name
+            ));
+        }
+        self.invoke_function(fn_name, args)
+    }
+
+    fn invoke_function(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
         let f = self
             .functions
             .get(fn_name)
@@ -1694,7 +1732,7 @@ impl VM {
                 }
                 self.write_bytes(rec, &fields);
                 let mut child = self.spawn_child();
-                let handle = std::thread::spawn(move || {
+                let spawned = std::thread::Builder::new().stack_size(THREAD_STACK).spawn(move || {
                     // a compiled thread allocates its runtime scratch block first
                     child.alloc_bytes(24);
                     let r = child.invoke(&fn_name, vec![Value::Int(arg as i64)]);
@@ -1704,6 +1742,7 @@ impl VM {
                     child.write_bytes(rec, &1i32.to_le_bytes());
                     r
                 });
+                let handle = spawned.map_err(|e| format!("thread.spawn: could not start a thread: {e}"))?;
                 self.thread_handles.insert(rec as i32, handle);
                 Ok(Value::Int(rec as i64))
             }

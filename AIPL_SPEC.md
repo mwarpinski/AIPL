@@ -806,6 +806,18 @@ Lowering (wasm and the self-hosted compiler): `return` is the `return` instructi
 
 A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal because a `block` may end in a value) leaves the whole expression at once in both backends: operands after it are not evaluated.
 
+### 7.11 Recursion depth
+
+Calls nest as deep as the stack allows. Running out of stack stops the program with a message in every backend, never a crash:
+
+| Backend | Room | Nested calls of a small function | Failure |
+|---|---|---|---|
+| `aipl-run` (wasm) | wasmtime's 512 KiB wasm stack | about 32,000 | `prog.wasm: wasm trap: call stack exhausted`, the call chain, exit 134 |
+| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 170,000 | the same, with the program's name |
+| VM | 192 MiB of the thread's stack | about 40,000 | `Call stack exhausted calling 'f': calls are nested too deeply (a recursion that does not end?)` |
+
+A call's room is its frame: a function with many locals or deeply nested expressions gets fewer calls. Code meant to run under `aipl-run` should stay well below 30,000 nested calls; walk long lists and deep structures with `while`. In a native executable, each function's prologue compares the stack pointer, less the frame it is about to push, with a limit 256 KiB above the stack's low end and traps below it, which leaves room for the host routines and the trap's own output.
+
 ---
 
 ## 8. Integer Semantics
@@ -1322,6 +1334,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
+| recursion over a long list or a deep tree (100,000 nodes) | it stops with `call stack exhausted` (section 7.11); iterate with `while` and an explicit cursor or work list |
 | `(and a b c)` with three operands | `and`/`or` take exactly two: `(and a (and b c))`. They short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |

@@ -89,7 +89,9 @@
   ;; data: the data segment being built (loaded at elf.data_vaddr).
   ;; trap_routine: the code position of runtime.emit_trap_routine's code;
   ;; backtrace_routine: runtime.emit_backtrace_routine's (a call, for traps
-  ;; that print their call chain).
+  ;; that print their call chain). stack_limit_off: where the thread's stack
+  ;; limit is in its FS block (after the globals); every function's prologue
+  ;; traps with stack_exhausted rather than run its frame below the limit.
   (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
              fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
              data:(ptr buf.Buf) trap_routine:i32 backtrace_routine:i32
@@ -101,7 +103,8 @@
              shared:bool seg_addrs:(ptr (vec.Vec i32)) seg_lens:(ptr (vec.Vec i32))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32 cached:bool
              failed:bool msg:(ptr buf.Buf)
-             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32])
+             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
+             stack_limit_off:i32 stack_exhausted:(ptr Reason)])
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
     (let l:(ptr L) (new L))
@@ -126,6 +129,8 @@
     (put l L.table_oob (call reason l "wasm trap: undefined element: out of bounds table access"))
     (put l L.null_element (call reason l "wasm trap: uninitialized element"))
     (put l L.bad_signature (call reason l "wasm trap: indirect call type mismatch"))
+    (put l L.stack_exhausted (call reason l "wasm trap: call stack exhausted"))
+    (put l L.stack_limit_off 0)
     (put l L.table_addr 0)
     (put l L.table_size 0)
     (put l L.canon_types (call canonical_types w))
@@ -373,6 +378,18 @@
     ;; prologue: frame, then zeroed locals
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
+    ;; the stack check: trap unless the frame (the locals and up to four
+    ;; saved registers) ends above the thread's limit, which leaves room
+    ;; below it for the operand stack, the host routines, and the trap's own
+    (let frame:i32 32)
+    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+      (set! frame (+ frame (* 8 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count)))))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call x64.fs c)
+    (call x64.load c 64 (call rcx) (call x64.mem (call rcx) (get l L.stack_limit_off)))
+    (call x64.lea c 64 (call rax) (call x64.mem (call rsp) (- 0 frame)))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) (call rcx))
+    (call emit_trap_if l (call x64.cc_b) (get l L.stack_exhausted))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
     (put l L.nlocals 0)
     (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1

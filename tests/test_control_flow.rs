@@ -334,3 +334,19 @@ fn a_call_in_the_loop_bound_runs_once() {
     (+ (* 10 (mem.load32 p)) passes)))"#;
     assert_eq!(run_both(src, "f", 0), 13);
 }
+
+/// Recursion that does not end fails with an error naming the function,
+/// instead of overflowing the VM's own stack (which aborts the process),
+/// as compiled code traps with "call stack exhausted". Deep but finite
+/// recursion still runs.
+#[test]
+fn running_out_of_stack_is_an_error() {
+    let src = "(module m (fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1))))))";
+    assert_eq!(run_both(src, "down", 5000), 5000);
+    let mut vm = VM::new();
+    vm.load_module(Parser::parse(src).unwrap());
+    let e = vm.invoke("down", vec![Value::Int(100_000_000)]).unwrap_err();
+    assert!(e.starts_with("Call stack exhausted calling 'down': "), "{e}");
+    // the VM can run again afterwards
+    assert_eq!(vm.invoke("down", vec![Value::Int(3)]), Ok(Value::Int(3)));
+}
