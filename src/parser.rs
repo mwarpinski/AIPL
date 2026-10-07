@@ -440,6 +440,7 @@ impl Parser {
             unions,
             functions,
             sources: Default::default(),
+            file_names: Default::default(),
         })
     }
 

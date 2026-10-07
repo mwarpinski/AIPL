@@ -16,7 +16,9 @@
   ;; and origin: file (an index into files, or -1 for "the pass's input")
   ;; and offset.
   (struct Entry [buffer:i32 at:i32 file:i32 pos:i32])
-  (struct File [path:(ptr str.Bytes) text:(ptr str.Bytes)])
+  ;; name: the file's name in compiled code's line table (an entry file by
+  ;; its file name, a module by its import path; the path until set).
+  (struct File [path:(ptr str.Bytes) text:(ptr str.Bytes) name:(ptr str.Bytes)])
 
   ;; Entries in the order printed; after `join`, final offsets in order.
   (struct Origins [entries:(ptr (vec.Vec (ptr Entry))) files:(ptr (vec.Vec (ptr File)))])
@@ -32,6 +34,7 @@
     (let f:(ptr File) (new File))
     (put f File.path path)
     (put f File.text text)
+    (put f File.name path)
     (call (vec.push (ptr File)) (get o Origins.files) f)
     (- (call (vec.len (ptr File)) (get o Origins.files)) 1))
 

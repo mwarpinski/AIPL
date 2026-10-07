@@ -32,7 +32,9 @@ fn every_repository_program_round_trips_through_the_printer() {
         assert_eq!(print_module(&reparsed), printed, "{}: printing is not stable", path.display());
         TypeChecker::new().check_module(&reparsed).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         if let Ok(original) = WasmCompiler::compile(&module) {
-            assert_eq!(WasmCompiler::compile(&reparsed).unwrap(), original, "{}: different wasm", path.display());
+            // positions are in the printed text there: compare without them
+            let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
+            assert_eq!(same(&WasmCompiler::compile(&reparsed).unwrap()), same(&original), "{}: different wasm", path.display());
         }
     }
 }

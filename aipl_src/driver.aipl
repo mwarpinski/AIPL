@@ -46,7 +46,7 @@
     (if (neq problem (ptr.null checker.Problem))
         (block (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
         (block))
-    (let n:i32 (call codegen.compile_module (get flat str.Bytes.addr) (get flat str.Bytes.len)))
+    (let n:i32 (call codegen.compile_mapped (get flat str.Bytes.addr) (get flat str.Bytes.len) gen orig))
     (if (gt n 0)
         (block
           (put res Out.status 0)

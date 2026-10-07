@@ -6,24 +6,32 @@ use std::fs;
 use std::path::Path;
 use wasmtime::{Engine, Instance, Linker, Module as WasmModule, Store, TypedFunc};
 
-fn run_self_hosted(src: &str) -> Vec<u8> {
-    self_host(src).unwrap_or_else(|e| panic!("{e}"))
+/// Compiles `src` as the file `name` (its name in the line table, as the
+/// Rust resolver names an entry file).
+fn run_self_hosted(src: &str, name: &str) -> Vec<u8> {
+    self_host_named(src, name).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Runs `codegen.compile_module` over `src` in the VM. Returns the module bytes
 /// or the compile error code it reported (AIPL_SPEC.md 6.4).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
+    self_host_named(src, "")
+}
+
+/// self_host, naming the source file in the line table (codegen.compile_named).
+fn self_host_named(src: &str, name: &str) -> Result<Vec<u8>, String> {
     // The tree-walking VM recurses once per nested AIPL call; give the compile a big stack.
     let src = src.to_string();
+    let name = name.to_string();
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
-        .spawn(move || self_host_on_this_thread(&src))
+        .spawn(move || self_host_on_this_thread(&src, &name))
         .unwrap()
         .join()
         .unwrap()
 }
 
-fn self_host_on_this_thread(src: &str) -> Result<Vec<u8>, String> {
+fn self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
@@ -45,7 +53,13 @@ fn self_host_on_this_thread(src: &str) -> Result<Vec<u8>, String> {
     
     vm.write_bytes(src_ptr as usize, src_bytes);
     
-    let out_len_val = vm.invoke("compile_module", vec![Value::Int(src_ptr as i64), Value::Int(src_bytes.len() as i64)]).expect("compile_module");
+    let name_ptr = match vm.invoke("alloc_src", vec![Value::Int((name.len() + 16) as i64)]).expect("alloc_src") {
+        Value::Int(p) => p as usize,
+        other => panic!("expected Int from alloc_src, got {:?}", other),
+    };
+    vm.write_bytes(name_ptr, name.as_bytes());
+    let args = vec![Value::Int(src_ptr as i64), Value::Int(src_bytes.len() as i64), Value::Int(name_ptr as i64), Value::Int(name.len() as i64)];
+    let out_len_val = vm.invoke("compile_named", args).expect("compile_named");
     let out_len = match out_len_val {
         Value::Int(l) => l as i32,
         other => panic!("expected Int from compile_module, got {:?}", other),
@@ -89,7 +103,7 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             fs::write(&temp_src, &src).unwrap();
 
             let rust_bytes = run_rust_backend(&temp_src);
-            let self_bytes = run_self_hosted(&src);
+            let self_bytes = run_self_hosted(&src, &format!("{}.aipl", test_name));
 
             if rust_bytes != self_bytes {
                 eprintln!("Byte parity mismatch in {}!", test_name);
@@ -830,7 +844,7 @@ fn self_hosted_file_io_runs_under_wasi() {
           (sys.print "Failed to open file")
           0))))
 "#;
-    let wasm_bytes = run_self_hosted(src);
+    let wasm_bytes = run_self_hosted(src, "");
 
     let dir = std::env::temp_dir().join(format!("aipl_selfhost_wasi_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -863,7 +877,7 @@ fn self_hosted_file_io_runs_under_wasi() {
 fn self_hosted_store_guard_traps_on_the_reserved_block() {
     let src = "(module store (fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a)))";
     assert_self_hosted_matches_rust("store", src);
-    let bytes = run_self_hosted(src);
+    let bytes = run_self_hosted(src, "");
     let engine = Engine::default();
     let module = WasmModule::new(&engine, &bytes).unwrap();
     let call = |addr: i32, val: i32| -> Result<i32, wasmtime::Error> {
@@ -905,7 +919,7 @@ fn self_hosted_arrays_and_results_execute() {
     (match_result (call div a b) (ok v v) (err e (* e 100)))))
 "#;
     assert_self_hosted_matches_rust("arrays_results", src);
-    let bytes = run_self_hosted(src);
+    let bytes = run_self_hosted(src, "");
     let engine = Engine::default();
     let module = WasmModule::new(&engine, &bytes).unwrap();
     let call = |name: &str, a: i32, b: i32| -> Result<i32, wasmtime::Error> {
@@ -963,7 +977,7 @@ fn self_hosted_string_literals_past_the_old_area_are_read_only() {
         "(module lits\n  (fn lens [] -> i32 (+ (str.len \"{a}\") (str.len \"{b}\")))\n  (fn first_free [] -> i32 (mem.alloc 0))\n  (fn poke [] -> i32 (mem.store8 (str.ptr \"{b}\") 0) 1))"
     );
     assert_self_hosted_matches_rust("lits", &src);
-    let bytes = run_self_hosted(&src);
+    let bytes = run_self_hosted(&src, "");
     let engine = Engine::default();
     let module = WasmModule::new(&engine, &bytes).unwrap();
     let call = |name: &str| -> Result<i32, wasmtime::Error> {
