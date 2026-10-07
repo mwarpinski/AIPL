@@ -769,7 +769,7 @@ fn thread_programs_match_natively() {
     let thread_trap = "(module m
        (fn worker [z:i32] -> i32 (/ 1 z))
        (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 0)) (sys.exit (thread.join h)) 0))";
-    assert_native_matches("trap_in_a_thread", thread_trap);
+    assert_native_matches("thread_trap_in_worker", thread_trap);
     let exit_in_thread = "(module m
        (fn worker [n:i32] -> i32 (sys.exit n) 0)
        (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 9)) (let r:i32 (thread.join h)) (sys.exit 1) 0))";
@@ -1862,7 +1862,10 @@ fn snapshot(root: &Path) -> Vec<String> {
 fn assert_wasm_native_matches_with(name: &str, wasm: &[u8], io: &Io) {
     let wasm = wasm.to_vec();
     let exe = to_native_with(&wasm, io.sandbox).unwrap_or_else(|e| panic!("{name}: native compile failed: {e}"));
-    let root = scratch(name);
+    // a folder of its own: tests run in parallel, and two may use one
+    // program name (a run once executed another test's program)
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let root = scratch(&format!("{name}_{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let dir = prepare(&root, io);
     let want = run_wasm_with(&dir, &wasm, io);
     let want_files = snapshot(&root);
