@@ -186,8 +186,11 @@ struct LineTable {
     files: Vec<String>,
     /// function index -> (module offset of its body, entries (offset in
     /// the body, file, line, column) by offset)
-    funcs: std::collections::HashMap<u32, (usize, Vec<(u32, u32, u32, u32)>)>,
+    funcs: std::collections::HashMap<u32, (usize, Vec<LineEntry>)>,
 }
+
+/// (offset in the function's body, file, line, column)
+type LineEntry = (u32, u32, u32, u32);
 
 impl LineTable {
     /// "file:line:col" of the instruction at `module_offset` in function `func`.
