@@ -267,6 +267,24 @@ pub const SHORT_CIRCUIT: &str = r#"
       (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
     (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
 
+  ;; a return inside a return's value leaves with the inner value
+  (fn return_in_return [n:i32] -> i32
+    (return (block (if (gt n 0) (return (* n 10)) (block)) -3)))
+
+  ;; a return inside a call's argument: the call never happens, and the
+  ;; caller still returns (the VM's callee once took the return as its own)
+  (fn add_one [x:i32] -> i32 (+ x 1))
+  (fn return_in_argument [n:i32] -> i32
+    (let r:i32 (call add_one (block (if (gt n 0) (return 7) (block)) n)))
+    (+ r 100))
+
+  ;; a break inside a set!'s value assigns nothing
+  (fn break_in_assignment [n:i32] -> i32
+    (let x:i32 5)
+    (loop i 0 n 1
+      (set! x (+ (block (if (eq i 2) (break) (block)) i) 10)))
+    x)
+
   ;; nested, as the checker requires for more than two operands
   (fn in_range [x:i32] -> bool (and (gte x 0) (and (lt x 10) (neq x 5)))))
 "#;
@@ -284,6 +302,13 @@ fn and_or_short_circuit_in_both_backends() {
     // i = 0, 1 run the second operand; i = 2 breaks before it
     assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 9), 201);
     assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 60), -7);
+    // found by tools/run_fuzz.py: the VM disagreed with compiled code on all three
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_return", 4), 40);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_return", 0), -3);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_argument", 1), 7);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_argument", 0), 101);
+    assert_eq!(run_both(SHORT_CIRCUIT, "break_in_assignment", 9), 11);
+    assert_eq!(run_both(SHORT_CIRCUIT, "break_in_assignment", 1), 11);
     assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 5), 0);
     assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 7), 1);
 }

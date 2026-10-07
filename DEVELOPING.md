@@ -61,6 +61,16 @@ messages; failing cases are kept under `target/fuzz/`):
 cargo build --release && python3 tools/fuzz.py --cases 3000
 ```
 
+Fuzzing the three ways of running a program against each other: generated
+programs, well-typed and terminating by construction, run in the VM, as wasm
+under `aipl-run`, and natively, and must print the same output and fail the
+same way (failing cases are kept under `target/run_fuzz/`; CI runs 500 with
+seed 1, and `--show N` prints case N's program):
+
+```bash
+cargo build --release && python3 tools/run_fuzz.py --cases 5000 --seed 7
+```
+
 ## Conventions
 
 - **Branches.** Work happens on `features/<name>`, merged with `--no-ff`

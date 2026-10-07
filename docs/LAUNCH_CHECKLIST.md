@@ -49,11 +49,24 @@ has evidence behind it.
   compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: the one
   remaining difference the fuzzer finds (about 1 case in 700). Exact
   decimal-to-double conversion in AIPL closes it.
-- [ ] **Fuzz the VM and compiled programs too:** generated well-typed
-  programs (not just mutated text) run in the VM, under `aipl-run`, and
-  natively, compared as the differential test does. This is where a
-  reader's "I wrote 20 lines and got a different answer natively" would
-  come from.
+- [x] **Fuzz the VM and compiled programs too** (2026-10-06):
+  `tools/run_fuzz.py` generates well-typed, terminating programs (every
+  scalar op, structs, arrays, enums, unions, results, references,
+  recursion, contracts, raw memory, heap addresses) and compares the VM,
+  `aipl-run`, and native executables; CI runs 500. It found three VM bugs,
+  all a jump inside an operand: `(return (block (return 1) 2))` returned
+  nothing, a `return` in a call's argument was taken by the callee, and a
+  `break` in a `set!`'s value assigned `Void` (regression tests in
+  `test_control_flow.rs`). Compiled code was right each time. After the
+  fixes, 25,000 cases (seeds 5 and 8) agree; four planted bugs (VM, wasm backend, native backend) were each
+  caught within 600.
+- [ ] **Running out of stack.** Deep recursion stops `aipl-run` cleanly
+  (`wasm trap: call stack exhausted`, exit 134, about 6,500 frames of a
+  small function), but a native executable dies with a segfault (exit 139,
+  no message), and the VM goes far deeper before aborting on its own stack
+  overflow. Needed: a stack-limit check in native function prologues that
+  traps with the same message, a call-depth limit in the VM, and the limits
+  documented (found by the program fuzzer).
 - [ ] **`aipl serve` and `web/` are untested** (AIPL_SPEC.md 6.1 says so).
   Test them, or remove them before the post: a broken demo is worse than
   none.
@@ -205,7 +218,7 @@ FAQ or ROADMAP.md.
 ## 8. Right before posting
 
 - [ ] Every box above is ticked or has a stated reason.
-- [ ] `cargo test`, the AIPL suite, the fuzzer (one hour), and the
+- [ ] `cargo test`, the AIPL suite, both fuzzers (an hour each), and the
   benchmarks run clean on a fresh clone, from the README's instructions
   alone.
 - [ ] The documentation check is rerun; the numbers are today's.
