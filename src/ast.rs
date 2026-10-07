@@ -432,6 +432,10 @@ pub struct Module {
     /// errors can name the file, and empty for a module parsed from one text.
     #[serde(skip)]
     pub sources: std::collections::HashMap<String, Source>,
+    /// Each source file's name in compiled code's line table (the resolver's
+    /// FlatProgram::files); empty for a module parsed from one text.
+    #[serde(skip)]
+    pub file_names: std::collections::HashMap<std::path::PathBuf, String>,
 }
 
 /// The file an item was written in, and the files of type arguments
@@ -443,6 +447,11 @@ pub struct Source {
 }
 
 impl Source {
+    /// The file the token at `pos` was written in.
+    pub fn file_at(&self, pos: (u32, u32)) -> &std::path::Path {
+        self.foreign.get(&pos).unwrap_or(&self.file)
+    }
+
     /// Prefixes an error that starts with `L:C:` with the file that position is in.
     pub fn name_file(&self, e: String) -> String {
         let pos = e.split(':').take(2).map(|n| n.trim().parse::<u32>()).collect::<Result<Vec<_>, _>>();

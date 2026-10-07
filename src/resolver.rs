@@ -38,6 +38,9 @@ pub struct FlatProgram {
     pub name: String,
     pub structs: Vec<Item>,
     pub fns: Vec<Item>,
+    /// Each file's name in compiled code's line table (AIPL_SPEC.md 6.5):
+    /// the entry file by its file name, a module by its import path.
+    pub files: HashMap<PathBuf, String>,
 }
 
 struct State<'a> {
@@ -50,6 +53,7 @@ struct State<'a> {
     templates: HashSet<String>,
     /// Module name -> its file: two different files may not share a name.
     names: HashMap<String, PathBuf>,
+    files: HashMap<PathBuf, String>,
 }
 
 /// A parsed `(module name items...)`.
@@ -89,7 +93,7 @@ impl Resolver {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
         let flat = crate::consts::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new() };
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new(), file_names: flat.files.clone() };
         let unions: HashSet<String> = flat
             .structs
             .iter()
@@ -125,13 +129,16 @@ impl Resolver {
             fns: Vec::new(),
             templates: HashSet::new(),
             names: HashMap::new(),
+            files: HashMap::new(),
         };
+        let entry_name = entry_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        st.files.insert(entry_path.to_path_buf(), entry_name);
         for (name, _) in &entry.imports {
             resolve_import(&mut st, name, entry_path)?;
         }
         let name = entry.name.clone();
         emit_module(&mut st, entry, None, entry_path);
-        Ok(FlatProgram { name, structs: st.structs, fns: st.fns })
+        Ok(FlatProgram { name, structs: st.structs, fns: st.fns, files: st.files })
     }
 }
 
@@ -209,6 +216,7 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
         }
     }
     st.names.insert(short, file_path.clone());
+    st.files.entry(file_path.clone()).or_insert_with(|| format!("{name}.aipl"));
     if st.included.contains(&file_path) {
         return Ok(());
     }

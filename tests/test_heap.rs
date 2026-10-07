@@ -53,7 +53,9 @@ fn failures(name: &str, body: &str) -> [String; 3] {
     let wasm_out = run(Command::new(RUNNER).arg(&wasm), &wasm);
     let native_out = run(&mut Command::new(&exe), &exe);
     assert_eq!(wasm_out, native_out, "{name}: aipl-run and native print different chains");
-    assert!(wasm_out.ends_with("\n  at main"), "{name}: {wasm_out}");
+    // the chain ends at main's line that called into the heap (prog.aipl line 5 on)
+    let last = wasm_out.lines().last().unwrap();
+    assert!(last.starts_with("  at main (prog.aipl:") && last.ends_with(')'), "{name}: {wasm_out}");
     let wasm_msg = wasm_out.lines().next().unwrap().to_string();
     let native_msg = native_out.lines().next().unwrap().to_string();
     let _ = std::fs::remove_dir_all(&dir);

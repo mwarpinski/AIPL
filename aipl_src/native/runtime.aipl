@@ -22,6 +22,7 @@
   (fn rdi [] -> i32 7)
   (fn rsi [] -> i32 6)
   (fn rdx [] -> i32 2)
+  (fn rcx [] -> i32 1)
 
   ;; write(fd, addr, len) with constant arguments; the result stays in rax.
   (fn emit_write [c:(ptr buf.Buf) fd:i32 addr:i32 len:i32] -> void
@@ -55,7 +56,9 @@
 
   ;; The texts the call chain needs, as data addresses: "  at ", "  ... ",
   ;; and " more\n".
-  (struct ChainTexts [at:i32 dots:i32 more:i32])
+  ;; The call chain's texts, and the cell of the position table
+  ;; ([entries, count, files]: native.aipl reserve_position_table).
+  (struct ChainTexts [at:i32 dots:i32 more:i32 open:i32 colon:i32 close:i32 positions:i32])
 
   ;; The trap routine with the call chain, the lines aipl-run prints
   ;; (src/bin/aipl_run.rs call_chain): `call` it from the trap's place with
@@ -116,6 +119,7 @@
     (call x64.mov_ri32 c (call rdi) 2)
     (call x64.mov_ri32 c (call rax) (call sys_write))
     (call x64.syscall c)
+    (call emit_position c t)
     (call emit_write c 2 nl 1)
     (call x64.alu_ri c 32 (call x64.op_add) r14 1)
     (let shown:i32 (call x64.jmp c))
@@ -216,6 +220,55 @@
     (call x64.mov_ri32 c (call rax) (call sys_write))
     (call x64.syscall c)
     (call x64.alu_ri c 64 (call x64.op_add) 4 32))
+
+  ;; " (file:line:col)" for the frame whose address is in r12, as aipl-run
+  ;; prints it: the last position entry at or before r12 - 1 (entries are by
+  ;; address, each 16 bytes: [address file line col]), unless it has no
+  ;; file. Clobbers rax rbx rcx rdx rsi rdi r9 r11.
+  (fn emit_position [c:(ptr buf.Buf) t:(ptr ChainTexts)] -> void
+    (let rbx:i32 3) (let r12:i32 12)
+    (call x64.lea c 64 (call rax) (call x64.mem r12 -1))
+    (call x64.mov_ri32 c (call rcx) (get t ChainTexts.positions))
+    (call x64.load c 32 rbx (call x64.mem (call rcx) 0))
+    (call x64.load c 32 (call rcx) (call x64.mem (call rcx) 4))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (let scan:i32 (call buf.len c))
+    (call x64.test_rr c 32 (call rcx) (call rcx))
+    (let ended:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.load c 32 (call rsi) (call x64.mem rbx 0))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) (call rsi))
+    (let past:i32 (call x64.jcc c (call x64.cc_b)))
+    (call x64.mov_rr c 64 (call rdx) rbx)
+    (call x64.alu_ri c 64 (call x64.op_add) rbx 16)
+    (call x64.alu_ri c 32 (call x64.op_sub) (call rcx) 1)
+    (call x64.patch_rel32 c (call x64.jmp c) scan)
+    (call x64.patch_rel32 c ended (call buf.len c))
+    (call x64.patch_rel32 c past (call buf.len c))
+    ;; none found, or one without a file
+    (call x64.test_rr c 64 (call rdx) (call rdx))
+    (let none:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.load c 32 (call rax) (call x64.mem (call rdx) 4))
+    (call x64.test_rr c 32 (call rax) (call rax))
+    (let no_file:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 rbx (call rdx))
+    (call emit_write c 2 (get t ChainTexts.open) 2)
+    ;; the file's name: files table entry [address length]
+    (call x64.mov_ri32 c (call rcx) (get t ChainTexts.positions))
+    (call x64.load c 32 (call rcx) (call x64.mem (call rcx) 8))
+    (call x64.load c 32 (call rax) (call x64.mem rbx 4))
+    (call x64.lea c 64 (call rcx) (call x64.mem_index (call rcx) (call rax) 8 0))
+    (call x64.load c 32 (call rsi) (call x64.mem (call rcx) 0))
+    (call x64.load c 32 (call rdx) (call x64.mem (call rcx) 4))
+    (call emit_write_regs c (call rsi) (call rdx))
+    (call emit_write c 2 (get t ChainTexts.colon) 1)
+    (call x64.load c 32 (call rax) (call x64.mem rbx 8))
+    (call emit_write_decimal c (call rax))
+    (call emit_write c 2 (get t ChainTexts.colon) 1)
+    (call x64.load c 32 (call rax) (call x64.mem rbx 12))
+    (call emit_write_decimal c (call rax))
+    (call emit_write c 2 (get t ChainTexts.close) 1)
+    (call x64.patch_rel32 c none (call buf.len c))
+    (call x64.patch_rel32 c no_file (call buf.len c)))
 
   ;; write(2, addr, len) with the address and length in registers.
   (fn emit_write_regs [c:(ptr buf.Buf) addr:i32 len:i32] -> void

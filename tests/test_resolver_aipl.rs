@@ -35,7 +35,9 @@ fn assert_resolves_like_rust(rel: &str) {
     let m = parse_flat(&flat, &path).unwrap_or_else(|e| panic!("{rel}: flat output does not parse: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{rel}: flat output does not check: {e}"));
     let ours = WasmCompiler::compile(&m).unwrap();
-    assert!(ours == rust_bytes(&path), "{rel}: AIPL resolver output compiles to different bytes than the Rust resolver");
+    // positions are in the flat text there: compare without them
+    let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
+    assert!(same(&ours) == same(&rust_bytes(&path)), "{rel}: AIPL resolver output compiles to different bytes than the Rust resolver");
 }
 
 #[test]

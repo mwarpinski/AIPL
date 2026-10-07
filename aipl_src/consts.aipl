@@ -16,11 +16,13 @@
   (import str)
   (import buf)
   (import strmap)
+  (import origins)
 
   (struct St [text:(ptr str.Bytes)
               consts:(ptr (strmap.StrMap (ptr compiler.Node)))
               enums:(ptr (strmap.StrMap (ptr (strmap.StrMap i32))))
-              err:(ptr buf.Buf) failed:bool])
+              err:(ptr buf.Buf) failed:bool
+             origins:(ptr origins.Origins)])
 
   ;; ===== Trees =====
 
@@ -129,8 +131,11 @@
         (block))
     (call buf.push_bytes out t))
 
+  ;; Each node printed notes where it was (origins, for the line table:
+  ;; places.aipl); a constant's literal is where its name was.
   (fn print [st:(ptr St) n:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let k:compiler.Kind (get n compiler.Node.kind))
+    (if (neq k compiler.Kind.paren) (call origins.note (get st St.origins) out -1 (get n compiler.Node.pos)) (block))
     (cond
       ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call print_group st n out false))
       ((eq k compiler.Kind.symbol) (call print_symbol st n out))
@@ -148,6 +153,7 @@
         (block))
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let is_match:bool (and (gte (get h str.Bytes.len) 0) (call lit h "match")))
+    (call origins.note (get st St.origins) out -1 (get g compiler.Node.pos))
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let i:i32 0)
@@ -159,7 +165,9 @@
       ;; a form's head is a keyword or an op, printed as written
       (cond
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call print_group st c out true))
-        ((and first (and (not square) (and (not arm_head) (call is_symbol c)))) (call buf.push_bytes out (call text st c)))
+        ((and first (and (not square) (and (not arm_head) (call is_symbol c))))
+         (call origins.note (get st St.origins) out -1 (get c compiler.Node.pos))
+         (call buf.push_bytes out (call text st c)))
         (else (call print st c out)))
       (set! i (+ i 1))
       (set! first false)
@@ -172,7 +180,8 @@
   ;; Writes `src` with its constants and enums erased into `out`; false with
   ;; a message in `err` for a use of an enum member that does not exist. A
   ;; program with neither is copied unchanged.
-  (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+  ;; o (null for none) records where each printed token came from in src.
+  (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins)] -> bool
     (let n:i32 (get src str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get src str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
@@ -183,6 +192,7 @@
     (put st St.consts (call (strmap.make (ptr compiler.Node)) (call alloc.default) 16))
     (put st St.enums (call (strmap.make (ptr (strmap.StrMap i32))) (call alloc.default) 16))
     (put st St.err err)
+    (put st St.origins o)
     (put st St.failed false)
     (let item:(ptr compiler.Node) (call nth root 2))
     (let found:bool false)
@@ -213,7 +223,7 @@
   (fn expands_to [src:str want:str] -> bool
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (and (call expand (call str.from_str src) out err)
+    (and (call expand (call str.from_str src) out err (ptr.null origins.Origins))
          (call str.bytes_eq (call buf.bytes out) (call str.from_str want))))
 
   ;; Pass count; test_suite.aipl expects 5.
@@ -236,7 +246,7 @@
     ;; a member that does not exist is an error
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (if (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err))
+    (if (and (not (call expand (call str.from_str "(module m (enum C [a]) (fn f [] -> C C.z))") out err (ptr.null origins.Origins)))
              (call str.bytes_eq (call buf.bytes err) (call str.from_str "no such enum member: C.z")))
         (set! p (+ p 1)) (block))
     p))

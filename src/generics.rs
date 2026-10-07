@@ -45,6 +45,7 @@ enum Kind {
 }
 
 pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
+    let files = prog.files;
     let mut templates: HashMap<String, Template> = HashMap::new();
     let mut work: Vec<(Item, Kind)> = Vec::new();
     for (items, is_struct) in [(prog.structs, true), (prog.fns, false)] {
@@ -61,7 +62,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         }
     }
     if templates.is_empty() {
-        return Ok(regroup(prog.name, work));
+        return Ok(regroup(prog.name, files, work));
     }
     let mut made: HashSet<String> = HashSet::new();
     let mut i = 0;
@@ -79,16 +80,16 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         }
         i += 1;
     }
-    Ok(regroup(prog.name, work))
+    Ok(regroup(prog.name, files, work))
 }
 
-fn regroup(name: String, work: Vec<(Item, Kind)>) -> FlatProgram {
+fn regroup(name: String, files: HashMap<std::path::PathBuf, String>, work: Vec<(Item, Kind)>) -> FlatProgram {
     let mut by_kind: [Vec<Item>; 4] = [vec![], vec![], vec![], vec![]];
     for (item, kind) in work {
         by_kind[kind as usize].push(item);
     }
     let [s, f, si, fi] = by_kind;
-    FlatProgram { name, structs: s.into_iter().chain(si).collect(), fns: f.into_iter().chain(fi).collect() }
+    FlatProgram { name, structs: s.into_iter().chain(si).collect(), fns: f.into_iter().chain(fi).collect(), files }
 }
 
 /// Built-in forms and types: a template with one of these names would be

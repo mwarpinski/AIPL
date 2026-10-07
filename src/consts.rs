@@ -50,7 +50,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         }
         Ok(out)
     };
-    Ok(FlatProgram { name: prog.name, structs: rewrite(prog.structs)?, fns: rewrite(prog.fns)? })
+    Ok(FlatProgram { name: prog.name, structs: rewrite(prog.structs)?, fns: rewrite(prog.fns)?, files: prog.files })
 }
 
 /// `(const NAME : TYPE VALUE)`: the name and the literal, checked against
