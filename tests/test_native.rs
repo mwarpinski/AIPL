@@ -1732,9 +1732,19 @@ impl Io {
     }
 }
 
+/// Writes a program to run at `path`, removing what was there first. The
+/// program run there just before may still count as running for a moment
+/// after it has exited (its memory not yet torn down), and overwriting it
+/// then fails with "Text file busy" (seen on GitHub's runners); a removed
+/// file never blocks, and the new one gets the same name.
+fn write_program(path: &Path, bytes: &[u8]) {
+    let _ = std::fs::remove_file(path);
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn run_wasm_with(dir: &Path, wasm: &[u8], io: &Io) -> Output {
     let path = dir.join("prog");
-    std::fs::write(&path, wasm).unwrap();
+    write_program(&path, wasm);
     let mut cmd = Command::new(RUNNER);
     if io.sandbox {
         cmd.arg("--sandbox");
@@ -1746,7 +1756,7 @@ fn run_wasm_with(dir: &Path, wasm: &[u8], io: &Io) -> Output {
 
 fn run_native_with(dir: &Path, exe: &[u8], io: &Io) -> Output {
     let path = dir.join("prog");
-    std::fs::write(&path, exe).unwrap();
+    write_program(&path, exe);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut cmd = Command::new(&path);
     cmd.current_dir(dir);
@@ -2017,10 +2027,21 @@ fn running_out_of_stack_traps() {
     // 100,000 calls fit natively, even with a 1 MiB stack ulimit
     let exe = to_native(&to_wasm(&in_main.replace("10000000", "100000"))).unwrap();
     let path = dir.join("prog");
-    std::fs::write(&path, exe).unwrap();
+    write_program(&path, &exe);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
-    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).to_string()), (Some(0), "100000".to_string()));
+    // sh's exec of the file this thread just wrote can meet the same "Text
+    // file busy" race run_fresh_executable retries (another test's fork
+    // holding the file open until it execs), so this retries it too
+    let mut o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
+    for _ in 0..100 {
+        if !String::from_utf8_lossy(&o.stderr).contains("busy") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
+    }
+    let shown = (o.status.code(), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string());
+    assert_eq!(shown, (Some(0), "100000".to_string(), String::new()));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
