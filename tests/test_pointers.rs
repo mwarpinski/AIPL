@@ -55,7 +55,7 @@ fn get_through_the_wrong_struct_pointer_is_rejected() {
 #[test]
 fn an_i32_is_not_a_pointer() {
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:i32] -> i32\n    (get p Point.x)))"));
-    assert!(err.starts_with("3:5: get Point.x needs a (ptr Point), got I32"), "{err}");
+    assert!(err.starts_with("3:5: get Point.x needs a (ptr Point), got i32"), "{err}");
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [] -> i32\n    (let p:(ptr Point) 1024)\n    0))"));
     assert!(err.contains("Type mismatch in 'let'"), "{err}");
 }
@@ -71,7 +71,7 @@ fn pointers_have_no_arithmetic_or_ordering() {
 #[test]
 fn arrays_are_typed_by_element_and_distinct_from_pointers() {
     let err = check_err("(module m\n  (fn f [] -> i64\n    (let a:(arr i32) (arr.new i32 3))\n    (arr.get i64 a 0)))");
-    assert!(err.starts_with("4:5: arr.get I64 needs an (arr I64)"), "{err}");
+    assert!(err.starts_with("4:5: arr.get i64 needs an (arr i64)"), "{err}");
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point)] -> i32\n    (arr.len p)))"));
     assert!(err.contains("arr.len needs an (arr T)"), "{err}");
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [a:(arr i32)] -> i32\n    (ptr.addr a)))"));

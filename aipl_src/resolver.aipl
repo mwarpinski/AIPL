@@ -29,7 +29,7 @@
   ;; origins are noted (file is its index there; -1 and null when not mapping).
   ;; error: why the file is not one well-formed (module NAME ...) form,
   ;; "PATH: L:C: message" as src/resolver.rs reports it, or null.
-  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins) error:(ptr buf.Buf)])
+  (struct Src [text:(ptr str.Bytes) root:(ptr compiler.Node) file:i32 origins:(ptr origins.Origins) error:(ptr buf.Buf) path:(ptr str.Bytes)])
 
   ;; One module being emitted. prefix is the import name; imported is false
   ;; for the entry module, whose names stay bare. aliases maps an alias to the
@@ -88,6 +88,7 @@
     (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
     (let src:(ptr Src) (new Src))
     (put src Src.text text)
+    (put src Src.path path)
     (put src Src.error (ptr.null buf.Buf))
     (if (not (call str.valid_utf8 text))
         (block
@@ -240,6 +241,11 @@
     (let src:(ptr Src) (get m Mod.src))
     (call origins.note (get src Src.origins) out (get src Src.file) (get n compiler.Node.pos)))
 
+  ;; Notes where group g's closing bracket came from (an error can point at it).
+  (fn note_close [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (if (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a)) (block)))
+
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (call note m g out)
@@ -265,6 +271,7 @@
       (set! prev_colon colon)
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
+    (call note_close m g out)
     (call buf.push_byte out (if square 93 41)))
 
   ;; A match arm: its head names a member of the matched type, so it is
@@ -470,6 +477,21 @@
                 1)
           (block))))
 
+  ;; The error buffer, started with "IMPORTER: " (resolver.rs prefixes import
+  ;; errors with the importing file).
+  (fn importer_error [st:(ptr State) importer:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (let e:(ptr buf.Buf) (get st State.err))
+    (call buf.push_bytes e importer)
+    (call buf.push_str e ": ")
+    e)
+
+  ;; Adds 'path' to the list of places searched for a module.
+  (fn note_tried [tried:(ptr buf.Buf) path:(ptr str.Bytes)] -> void
+    (if (gt (call buf.len tried) 0) (call buf.push_str tried ", ") (block))
+    (call buf.push_byte tried 39)
+    (call buf.push_bytes tried path)
+    (call buf.push_byte tried 39))
+
   ;; Reports a loaded file's structure error, if it has one.
   (fn malformed [st:(ptr State) src:(ptr Src)] -> bool
     (if (eq (get src Src.error) (ptr.null buf.Buf)) (return false) (block))
@@ -486,7 +508,7 @@
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
       (if (call eq_lit (call head src item) "import")
-          (if (call resolve_module st dir (call text src (call nth item 1))) (block) (return false))
+          (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false))
           (block))
       (set! item (get item compiler.Node.next)))
     true)
@@ -495,10 +517,18 @@
     (call concat (call concat dir name) (call str.from_str ".aipl")))
 
 ;; Two different files may not share a module name; records name -> path.
-  (fn check_name [st:(ptr State) name:(ptr str.Bytes) path:(ptr str.Bytes)] -> bool
+  (fn check_name [st:(ptr State) name:(ptr str.Bytes) path:(ptr str.Bytes) importer:(ptr str.Bytes)] -> bool
     (let seen:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.paths) name (call str.bytes 0 -1)))
     (if (and (gte (get seen str.Bytes.len) 0) (not (call str.bytes_eq seen path)))
-        (return (call fail st "two different modules are named " name))
+        (block
+          (let e:(ptr buf.Buf) (call importer_error st importer))
+          (call buf.push_str e "two different modules are named '")
+          (call buf.push_bytes e name)
+          (call buf.push_str e "': ")
+          (call buf.push_bytes e seen)
+          (call buf.push_str e " and ")
+          (call buf.push_bytes e path)
+          (return false))
         (block))
     (call (strmap.set (ptr str.Bytes)) (get st State.paths) name path)
     true)
@@ -522,23 +552,32 @@
         (else (set! seg_len (+ seg_len 1)))))
     (gt seg_len 0))
 
-  (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) import:(ptr str.Bytes)] -> bool
+  (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) import:(ptr str.Bytes) importer:(ptr str.Bytes)] -> bool
     (if (not (call valid_import_path import))
-        (return (call fail st "not an import path (use names separated by '/'): " import))
+        (block
+          (let pe:(ptr buf.Buf) (call importer_error st importer))
+          (call buf.push_byte pe 39)
+          (call buf.push_bytes pe import)
+          (call buf.push_str pe "' is not an import path: use names separated by '/', e.g. (import native/wasm_reader)")
+          (return false))
         (block))
     (let name:(ptr str.Bytes) (call module_name import))
     ;; an import from the same directory resolves to the same file: search once
     (let key:(ptr str.Bytes) (call concat dir (call concat (call str.from_str "|") import)))
     (let known_path:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.found) key (call str.bytes 0 -1)))
     (if (and (gte (get known_path str.Bytes.len) 0) (call (strmap.has i32) (get st State.done) name))
-        (return (call check_name st name known_path))
+        (return (call check_name st name known_path importer))
         (block))
-    ;; search: importer's directory, entry's directory, standard library
+    ;; search: importer's directory, entry's directory, standard library;
+    ;; `tried` lists the candidates for the error (resolver.rs find_module_file)
+    (let tried:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let path:(ptr str.Bytes) (call with_ext dir import))
+    (call note_tried tried path)
     (let src:(ptr Src) (call load path (get st State.origins)))
-    (if (eq src (ptr.null Src))
+    (if (and (eq src (ptr.null Src)) (not (call str.bytes_eq path (call with_ext (get st State.entry_dir) import))))
         (block
           (set! path (call with_ext (get st State.entry_dir) import))
+          (call note_tried tried path)
           (set! src (call load path (get st State.origins))))
         (block))
     ;; then each library directory, in order
@@ -552,16 +591,35 @@
             (if (gt i start)
                 (block
                   (set! path (call with_ext (call as_dir (call slice dirs start (- i start))) import))
+                  (call note_tried tried path)
                   (set! src (call load path (get st State.origins))))
                 (block))
             (set! start (+ i 1)))
           (block)))
-    (if (eq src (ptr.null Src)) (return (call fail st "cannot find module: " import)) (block))
+    (if (eq src (ptr.null Src))
+        (block
+          (let e:(ptr buf.Buf) (call importer_error st importer))
+          (call buf.push_str e "Cannot resolve import '")
+          (call buf.push_bytes e import)
+          (call buf.push_str e "': no '")
+          (call buf.push_bytes e import)
+          (call buf.push_str e ".aipl' found in ")
+          (call buf.push_bytes e (call buf.bytes tried))
+          (return false))
+        (block))
     (if (call malformed st src) (return false) (block))
     (call (strmap.set (ptr str.Bytes)) (get st State.found) key path)
-    (if (not (call check_name st name path)) (return false) (block))
+    (if (not (call check_name st name path importer)) (return false) (block))
     (if (call (strmap.has i32) (get st State.done) name) (return true) (block))
-    (if (call (strmap.has i32) (get st State.active) name) (return (call fail st "circular import: " name)) (block))
+    (if (call (strmap.has i32) (get st State.active) name)
+        (block
+          (let e:(ptr buf.Buf) (get st State.err))
+          (call buf.push_bytes e path)
+          (call buf.push_str e ": Circular import detected: '")
+          (call buf.push_bytes e path)
+          (call buf.push_str e "' is imported while already being resolved")
+          (return false))
+        (block))
     (call (strmap.set i32) (get st State.active) name 1)
     (if (call resolve_imports st src (call dirname path)) (block) (return false))
     (call emit_module st (call make_mod src name true (get st State.known)))
@@ -581,7 +639,8 @@
   ;; importer's and the entry's directories. Writes the flat source to `out`,
   ;; or an error message to `err` and returns false.
   (fn resolve [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
-    (call resolve_mapped entry std_dir out err (ptr.null origins.Origins) (ptr.null origins.Origins)))
+    ;; positions are tracked anyway, so an error in a generic names its file
+    (call resolve_mapped entry std_dir out err (call origins.make) (ptr.null origins.Origins)))
 
   ;; resolve, noting where every token of the result comes from: `orig`
   ;; maps the resolver's flat text to the files, `gen` maps the result to
@@ -625,8 +684,32 @@
           (arr.set i32 bases 1 fns_at)
           (call origins.join orig parts bases))
         (block))
-    ;; expand generic templates into concrete items (generics.aipl)
-    (call generics.expand_mapped (call buf.bytes flat) out err gen))
+    ;; expand generic templates into concrete items (generics.aipl); an
+    ;; error there is reported in the file it is in, as generics.rs does
+    (let failure:(ptr generics.Failure) (new generics.Failure))
+    (put failure generics.Failure.at -1)
+    (let gen_err:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (if (call generics.expand_mapped (call buf.bytes flat) out gen_err gen failure)
+        true
+        (block
+          (if (and (gte (get failure generics.Failure.at) 0) (neq orig (ptr.null origins.Origins)))
+              (call push_location err orig (get failure generics.Failure.at))
+              (block))
+          (call buf.push_bytes err (call buf.bytes gen_err))
+          false)))
+
+  ;; "PATH: L:C: " for offset `at` of the flat program, through `orig`.
+  (fn push_location [b:(ptr buf.Buf) orig:(ptr origins.Origins) at:i32] -> void
+    (let r:(ptr origins.Entry) (call origins.find orig at))
+    (if (or (eq r (ptr.null origins.Entry)) (lt (get r origins.Entry.file) 0)) (return) (block))
+    (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col (get (get f origins.File.text) str.Bytes.addr) (get r origins.Entry.pos)))
+    (call buf.push_bytes b (get f origins.File.path))
+    (call buf.push_str b ": ")
+    (call buf.push_int b (get lc compiler.LineCol.line))
+    (call buf.push_byte b 58)
+    (call buf.push_int b (get lc compiler.LineCol.col))
+    (call buf.push_str b ": "))
 
   ;; ===== Host interface =====
 

@@ -130,6 +130,9 @@ const PROGRAMS: &[(&str, &str)] = &[
     // compiled bounds checks fail with the VM's message (cells 92/96)
     ("trap_index_past_the_end", "(module m (fn main [] -> i32 (let a:(arr i32) (arr.new i32 5)) (arr.get i32 a 5)))"),
     ("trap_negative_index_store", "(module m (fn main [] -> i32 (let a:(arr i64) (arr.new i64 3)) (arr.set i64 a -2147483648 1i64) 0))"),
+    // a call chain longer than the 32 frames shown, and one in a spawned thread
+    ("trap_deep_recursion", "(module m (fn down [n:i32] -> i32 (if (eq n 0) (/ 1 n) (+ 1 (call down (- n 1))))) (fn main [] -> i32 (call down 40)))"),
+    ("trap_in_a_thread", "(module m (fn work [x:i32] -> i32 (/ 10 x)) (fn main [] -> i32 (thread.join (thread.spawn (ref work) 0))))"),
     // and so do compiled contracts (without the position)
     ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
     (
@@ -247,7 +250,7 @@ fn wasm_programs() -> Vec<(&'static str, Vec<u8>)> {
         ])),
         // f32/f64 loads and stores move bits
         ("float_bits_round_trip", exit_with(&[], &[
-            I::I32Const(64), I::F64Const(1.5f64.into()), I::F64Store(m(3, 0)), I::I32Const(68), I::I32Load(m(2, 0)), I::I32Const(0x3FF8_0000), I::I32Eq,
+            I::I32Const(64), I::F64Const(1.5f64), I::F64Store(m(3, 0)), I::I32Const(68), I::I32Load(m(2, 0)), I::I32Const(0x3FF8_0000), I::I32Eq,
             I::I32Const(32), I::I32Const(0x4049_0FDB), I::I32Store(m(2, 0)),
             I::I32Const(40), I::I32Const(32), I::F32Load(m(2, 0)), I::F32Store(m(2, 0)),
             I::I32Const(40), I::I32Load(m(2, 0)), I::I32Const(0x4049_0FDB), I::I32Eq, I::I32Const(2), I::I32Mul, I::I32Add, I::End,
@@ -368,7 +371,7 @@ fn call_exports(wasm: &[u8], calls: &[(&str, &[i32])]) -> Vec<wasmtime::Val> {
             let result = func.ty(&store).results().next().unwrap_or_else(|| panic!("{f} returns nothing"));
             let mut out = [Val::default_for_ty(&result).unwrap()];
             func.call(&mut store, &params, &mut out).unwrap_or_else(|e| panic!("{f}: {e}"));
-            out[0].clone()
+            out[0]
         })
         .collect()
 }
@@ -1204,7 +1207,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         let mut body = Vec::new();
         for a in f64_edges() {
             for b in f64_edges() {
-                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend([I::F64Const(a), I::F64Const(b), op.clone()]);
                 body.extend(check_result_f64(f(a, b)));
             }
         }
@@ -1215,7 +1218,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         let mut body = Vec::new();
         for a in f64_edges() {
             for b in f64_edges() {
-                body.extend([I::F64Const(a.into()), I::F64Const(b.into()), op.clone()]);
+                body.extend([I::F64Const(a), I::F64Const(b), op.clone()]);
                 body.extend(check_result(f(a, b) as i32));
             }
         }
@@ -1269,7 +1272,7 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
     // f64.sqrt over every edge (negative ones give NaN)
     let mut sqrt = Vec::new();
     for a in f64_edges() {
-        sqrt.extend([I::F64Const(a.into()), I::F64Sqrt]);
+        sqrt.extend([I::F64Const(a), I::F64Sqrt]);
         sqrt.extend(check_result_f64(bb(a).sqrt()));
     }
     sqrt.extend(status_from_checks());
@@ -1280,8 +1283,8 @@ fn float_operator_programs() -> Vec<(String, Vec<u8>)> {
         conv.extend([I::I64Const(a), I::F64ConvertI64S]);
         conv.extend(check_result_f64(a as f64));
     }
-    for a in [0.0f64, -0.0, 0.5, -0.5, 2.75, -2.75, 1e18, -9.2233720368547748e18, 9.2233720368547748e18, 5e-324] {
-        conv.extend([I::F64Const(a.into()), I::I64TruncF64S]);
+    for a in [0.0f64, -0.0, 0.5, -0.5, 2.75, -2.75, 1e18, -9.223_372_036_854_775e18, 9.223_372_036_854_775e18, 5e-324] {
+        conv.extend([I::F64Const(a), I::I64TruncF64S]);
         conv.extend(check_result_i64(a as i64));
     }
     conv.extend(status_from_checks());
@@ -1629,7 +1632,9 @@ fn scratch(name: &str) -> PathBuf {
 /// Parses `src` the way the toolchain does: through the resolver (imports
 /// from the standard library, generics expanded), from a scratch file.
 fn parse_program(src: &str) -> aipl_core::ast::Module {
-    let dir = scratch(&format!("resolve_{:x}", src.len() * 31 + src.bytes().map(|b| b as usize).sum::<usize>()));
+    // a folder of its own: tests run in parallel and may parse the same text
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = scratch(&format!("resolve_{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let path = dir.join("prog.aipl");
     std::fs::write(&path, src).unwrap();
     let m = Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
@@ -1727,9 +1732,19 @@ impl Io {
     }
 }
 
+/// Writes a program to run at `path`, removing what was there first. The
+/// program run there just before may still count as running for a moment
+/// after it has exited (its memory not yet torn down), and overwriting it
+/// then fails with "Text file busy" (seen on GitHub's runners); a removed
+/// file never blocks, and the new one gets the same name.
+fn write_program(path: &Path, bytes: &[u8]) {
+    let _ = std::fs::remove_file(path);
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn run_wasm_with(dir: &Path, wasm: &[u8], io: &Io) -> Output {
     let path = dir.join("prog");
-    std::fs::write(&path, wasm).unwrap();
+    write_program(&path, wasm);
     let mut cmd = Command::new(RUNNER);
     if io.sandbox {
         cmd.arg("--sandbox");
@@ -1741,7 +1756,7 @@ fn run_wasm_with(dir: &Path, wasm: &[u8], io: &Io) -> Output {
 
 fn run_native_with(dir: &Path, exe: &[u8], io: &Io) -> Output {
     let path = dir.join("prog");
-    std::fs::write(&path, exe).unwrap();
+    write_program(&path, exe);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut cmd = Command::new(&path);
     cmd.current_dir(dir);
@@ -1923,9 +1938,11 @@ fn the_harness_tells_programs_apart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The trap programs really trap, natively, with exactly aipl-run's line.
+/// The trap programs really trap, natively, with exactly aipl-run's line
+/// and call chain (the functions the trap happened in, innermost first),
+/// and exit with 134. The exit-status error is not a trap: one line.
 #[test]
-fn traps_print_one_line_and_exit_134() {
+fn traps_print_their_line_and_call_chain() {
     let dir = scratch("traps");
     let prog = dir.join("prog").display().to_string();
     for (name, reason) in [
@@ -1949,12 +1966,82 @@ fn traps_print_one_line_and_exit_134() {
         ("trap_negative_index_store", "Array index out of bounds: index -2147483648 for array of length 3"),
         ("trap_failed_req", "Pre-condition failed in 'f': (req (gt n 0)) with n = -3, ok = true"),
         ("trap_failed_ens_on_return", "Post-condition failed in 'f': (ens (lt res 10i64)) with n = 7i64, res = 14i64"),
+        ("trap_deep_recursion", "wasm trap: integer divide by zero"),
+        ("trap_in_a_thread", "wasm trap: integer divide by zero"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());
         assert_eq!(o.status.code(), Some(134), "{name}");
-        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{prog}: {reason}\n"), "{name}");
+        let deep = "  at down\n".repeat(32) + "  ... 10 more\n";
+        let chain = match name {
+            n if n.starts_with("exit_status") => "",
+            n if n.starts_with("trap_failed") => "  at f\n  at main\n",
+            // 41 calls of down and main: 32 shown
+            "trap_deep_recursion" => deep.as_str(),
+            // a thread's chain starts at its worker
+            "trap_in_a_thread" => "  at work\n",
+            _ => "  at main\n",
+        };
+        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{prog}: {reason}\n{chain}"), "{name}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Recursion too deep for the stack traps as under aipl-run (its message,
+/// the call chain, exit 134), in the main thread and in a spawned one,
+/// instead of faulting; and how deep a program may go does not depend on
+/// the user's stack ulimit (the main thread runs on its own stack, like a
+/// spawned thread). Found by tools/run_fuzz.py: native executables died
+/// with SIGSEGV and no message.
+#[test]
+fn running_out_of_stack_traps() {
+    let dir = scratch("stack");
+    let prog = dir.join("prog").display().to_string();
+    let down = "(fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))";
+    let in_main = format!("(module m (import io) {down} (fn main [] -> i32 (call io.print_int (call down 10000000)) 0))");
+    let in_thread = format!(
+        "(module m (import io) {down} (fn work [n:i32] -> i32 (call down n))
+           (fn main [] -> i32 (call io.print_int (thread.join (thread.spawn (ref work) 10000000))) 0))"
+    );
+    for (name, src) in [("main", &in_main), ("thread", &in_thread)] {
+        let wasm = to_wasm(src);
+        for (how, o) in [("aipl-run", run_wasm(&dir, &wasm)), ("native", run_native(&dir, &to_native(&wasm).unwrap()))] {
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(134), "{name} {how}: {err}");
+            assert!(o.stdout.is_empty(), "{name} {how}");
+            let head = format!("{prog}: wasm trap: call stack exhausted\n{}", "  at down\n".repeat(32));
+            assert!(err.starts_with(&head), "{name} {how}: {err}");
+            let more = err[head.len()..].strip_prefix("  ... ").and_then(|r| r.strip_suffix(" more\n"));
+            let more: usize = more.and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("{name} {how}: {err}"));
+            assert!(more > 20_000, "{name} {how}: only {more} frames");
+        }
+    }
+    // a frame larger than the room left below the limit (40,000 locals):
+    // the check counts the frame, so this traps too instead of faulting
+    let big = exit_with(&[40_000], &[wasm_encoder::Instruction::Call(2), wasm_encoder::Instruction::End]);
+    for (how, o) in [("aipl-run", run_wasm(&dir, &big)), ("native", run_native(&dir, &to_native(&big).unwrap()))] {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(134), "big frames {how}: {err}");
+        assert!(err.starts_with(&format!("{prog}: wasm trap: call stack exhausted\n")), "big frames {how}: {err}");
+    }
+    // 100,000 calls fit natively, even with a 1 MiB stack ulimit
+    let exe = to_native(&to_wasm(&in_main.replace("10000000", "100000"))).unwrap();
+    let path = dir.join("prog");
+    write_program(&path, &exe);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // sh's exec of the file this thread just wrote can meet the same "Text
+    // file busy" race run_fresh_executable retries (another test's fork
+    // holding the file open until it execs), so this retries it too
+    let mut o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
+    for _ in 0..100 {
+        if !String::from_utf8_lossy(&o.stderr).contains("busy") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        o = run_fresh_executable(Command::new("sh").arg("-c").arg("ulimit -s 1024 && exec ./prog").current_dir(&dir), &[]);
+    }
+    let shown = (o.status.code(), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string());
+    assert_eq!(shown, (Some(0), "100000".to_string(), String::new()));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2087,7 +2174,7 @@ fn checked_arithmetic_matches_natively() {
         match trap {
             Some(reason) => {
                 assert_eq!(native.status.code(), Some(134), "{e}");
-                assert_eq!(String::from_utf8_lossy(&native.stderr), format!("{prog}: wasm trap: {reason}\n"), "{e}");
+                assert_eq!(String::from_utf8_lossy(&native.stderr), format!("{prog}: wasm trap: {reason}\n  at main\n"), "{e}");
             }
             None => assert_eq!(native.status.code(), Some(0), "{e}: {}", String::from_utf8_lossy(&native.stderr)),
         }

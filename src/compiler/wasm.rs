@@ -376,6 +376,29 @@ impl WasmCompiler {
         wasm_module.section(&codes);
         wasm_module.section(&data);
 
+        // The name section (a custom section, last): every function's name,
+        // so a trap can say where it happened (AIPL_SPEC.md 6.5). The
+        // generated functions have names starting with "aipl." or WASI's own.
+        let mut fn_names = wasm_encoder::NameMap::new();
+        for (i, f) in module.functions.iter().enumerate() {
+            fn_names.append(import_count + i as u32, &f.name);
+        }
+        if threaded {
+            fn_names.append(init_fn, "aipl.init");
+            fn_names.append(thread_start_fn, "wasi_thread_start");
+        }
+        if auto_start {
+            fn_names.append(start_fn, "_start");
+        }
+        if uses_checks {
+            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end"].iter().enumerate() {
+                fn_names.append(checks_base + k as u32, n);
+            }
+        }
+        let mut names = wasm_encoder::NameSection::new();
+        names.functions(&fn_names);
+        wasm_module.section(&names);
+
         Ok(wasm_module.finish())
     }
 }
@@ -625,7 +648,7 @@ fn arith_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, Str
 
         _ => {
             return Err(format!(
-                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                "Wasm Codegen: {} is not supported for operands of type {}",
                 op, ty
             ))
         }
@@ -677,7 +700,7 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
 
         _ => {
             return Err(format!(
-                "Wasm Codegen: {:?} is not supported for operands of type {:?}",
+                "Wasm Codegen: {} is not supported for operands of type {}",
                 op, ty
             ))
         }
@@ -1109,7 +1132,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                     let ty = expr_type(arg, ctx);
                     if ty != Type::Str {
                         return Err(format!(
-                            "Wasm Codegen: sys.print supports str arguments only in the wasm backend, got {:?}",
+                            "Wasm Codegen: sys.print supports str arguments only in the wasm backend, got {}",
                             ty
                         ));
                     }
@@ -1501,7 +1524,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
             func.instruction(&Instruction::I32Eqz);
 
             let last_ok = ok_body.last();
-            let block_ty = if last_ok.map_or(true, |e| is_void_expr(e, ctx)) {
+            let block_ty = if last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
                 wasm_encoder::BlockType::Empty
             } else {
                 let ty = expr_type(last_ok.unwrap(), ctx);
@@ -1607,7 +1630,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported field type for struct get: {:?}", field_ty)),
+                _ => return Err(format!("Unsupported field type for struct get: {}", field_ty)),
             }
         }
         Expr::PutField {
@@ -1654,7 +1677,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported field type for struct put: {:?}", field_ty)),
+                _ => return Err(format!("Unsupported field type for struct put: {}", field_ty)),
             }
         }
         Expr::Sizeof { ty, .. } => {
@@ -1785,7 +1808,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported elem type for arr.get: {:?}", elem_ty)),
+                _ => return Err(format!("Unsupported elem type for arr.get: {}", elem_ty)),
             }
         }
         Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
@@ -1823,7 +1846,7 @@ fn compile_expr(expr: &Expr, ctx: &Ctx, func: &mut Function) -> Result<(), Strin
                         memory_index: 0,
                     }));
                 }
-                _ => return Err(format!("Unsupported elem type for arr.set: {:?}", elem_ty)),
+                _ => return Err(format!("Unsupported elem type for arr.set: {}", elem_ty)),
             }
         }
     }
@@ -1877,7 +1900,7 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
     let payload_ty = expr_type(inner, ctx);
     if aipl_to_wasm_type(&payload_ty) != ValType::I32 {
         return Err(format!(
-            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {:?}",
+            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {}",
             payload_ty
         ));
     }
@@ -1902,7 +1925,7 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Function) -
 fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
-        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
         ValType::I32 => Instruction::I32Load(m(2)),
         ValType::I64 => Instruction::I64Load(m(3)),
         ValType::F32 => Instruction::F32Load(m(2)),
@@ -1915,7 +1938,7 @@ fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Stri
 fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
-        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {:?}", ty)),
+        _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
         ValType::I32 => Instruction::I32Store(m(2)),
         ValType::I64 => Instruction::I64Store(m(3)),
         ValType::F32 => Instruction::F32Store(m(2)),
@@ -1998,7 +2021,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         } else {
             let e = ctx.enums.get(tname).ok_or_else(|| format!("Wasm Codegen: Unknown enum '{}'", tname))?;
             let value = e.members.iter().find(|(m, _)| m == member).ok_or_else(|| format!("Wasm Codegen: Unknown member '{}'", arm.member))?.1;
-            func.instruction(&Instruction::I32Const(value as i32));
+            func.instruction(&Instruction::I32Const(value));
             None
         };
         func.instruction(&Instruction::I32Eq);
@@ -2035,7 +2058,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
-        Expr::Block(exprs, _) => exprs.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Block(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
         // stack unbalanced relative to this if's declared block type.
@@ -2043,14 +2066,14 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
             is_void_expr(then_branch, ctx) && is_void_expr(else_branch, ctx)
         }
         Expr::While { .. } | Expr::Loop { .. } => true,
-        Expr::Call { func, .. } => ctx.fn_returns.get(func).map_or(false, |t| *t == Type::Void),
+        Expr::Call { func, .. } => ctx.fn_returns.get(func).is_some_and(|t| *t == Type::Void),
         // the op's own type (expr_type's exhaustive table): a new op cannot
         // be left out, as checked.* and sys.time once were
         Expr::Op { .. } => expr_type(expr, ctx) == Type::Void,
         // Same rule as the block type compile_expr gives a match_result.
-        Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::MatchResult { ok_body, .. } => ok_body.last().is_none_or(|e| is_void_expr(e, ctx)),
         // Same rule as the block type compile_match gives a match.
-        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(true, |e| is_void_expr(e, ctx)),
+        Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().is_none_or(|e| is_void_expr(e, ctx)),
         Expr::Make { .. } => false,
         Expr::Lit(..)
         | Expr::Var(..)
@@ -2369,6 +2392,9 @@ fn check_functions(fns: &CheckFns) -> Vec<Function> {
     vec![d, o, t, b, e]
 }
 
+/// A contract: whether it is an `ens`, its condition, and its message.
+type ContractCheck<'a> = (bool, &'a Expr, (String, Vec<MsgItem>));
+
 /// One piece of a contract failure's message after its fixed text: literal
 /// text, or the value of a local (by name) shown as the VM shows it.
 enum MsgItem {
@@ -2400,7 +2426,7 @@ fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
 /// text the resolver flattened, which the Rust and AIPL resolvers lay out
 /// differently (and which is not the user's file once there are imports):
 /// with it, the bytes would depend on that layout.
-fn contract_messages(f: &FnDef) -> Vec<(bool, &Expr, (String, Vec<MsgItem>))> {
+fn contract_messages(f: &FnDef) -> Vec<ContractCheck<'_>> {
     let mut out = Vec::new();
     for c in &f.contracts {
         let (is_ens, expr) = match c {

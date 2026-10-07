@@ -49,7 +49,7 @@ const SPEC_SPECIAL: &[(&str, &str)] = &[
 ];
 
 /// AIPL_SPEC.md fragments that must fail to check, with the documented message.
-const SPEC_INVALID: &[(&str, &str)] = &[("(fn bad ", "If branch type mismatch: then is Void, else is I32")];
+const SPEC_INVALID: &[(&str, &str)] = &[("(fn bad ", "If branch type mismatch: then is void, else is i32")];
 
 fn lisp_blocks(doc: &str) -> Vec<String> {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(doc)).unwrap();

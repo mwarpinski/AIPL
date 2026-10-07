@@ -111,7 +111,7 @@ fn instances_are_ordinary_named_items() {
     for n in ["box.make<i32>", "box.value<i64>", "box.pair<i32,bool>", "box.make<ptr<box.Pair<i32,bool>>>", "twice<i32>"] {
         assert!(names.contains(&n), "{n} missing from {names:?}");
     }
-    assert!(!names.iter().any(|n| *n == "box.make"), "templates are not emitted");
+    assert!(!names.contains(&"box.make"), "templates are not emitted");
     let structs: Vec<&str> = m.structs.iter().map(|s| s.name.as_str()).collect();
     assert!(structs.contains(&"box.Box<ptr<box.Pair<i32,bool>>>"), "{structs:?}");
 }
@@ -144,11 +144,11 @@ fn malformed_generics_are_errors() {
     assert!(e.contains("generic name 'get' is a built-in form"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> T x) (fn (f T) [x:T] -> T x))");
     assert!(e.contains("generic 'f' is defined twice"), "{e}");
-    // a type error inside an instance points at the template's source line
+    // a type error inside an instance points at the template's file and line
     let entry = write_program("type_err", &[("main.aipl", "(module m\n  (fn (f T) [x:T] -> T\n    (+ x true))\n  (fn g [] -> i32 (call (f i32) 1)))")]);
     let m = Resolver::resolve(&entry).unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.starts_with("3:"), "{e}");
+    assert!(e.starts_with(&format!("{}: 3:5: ", entry.display())), "{e}");
 }
 
 /// An imported module calling its own generic function with its own struct

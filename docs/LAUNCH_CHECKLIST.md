@@ -28,34 +28,55 @@ has evidence behind it.
   it fails.
 - [x] **The fuzzer is a tool:** `tools/fuzz.py` (both toolchains on mutated
   repository programs; crashes, hangs, and any disagreement in acceptance,
-  bytes, or message). Still to do: a short fixed-seed run in the test suite.
-- [ ] **Remaining fuzz differences** (3,000 cases, seed 11, after the fix:
-  53, none an acceptance bug except the float case below; no crashes or
-  hangs):
-  - *Generics-pass messages* differ in wording and lack a position
-    (`wrong number of type arguments for generic vec.Vec` against Rust's
-    `15:17: generic 'vec.Vec' takes 1 type argument(s) (T), got 3`); Rust
-    also checks generic headers on items that are not `fn`/`struct`.
-    Bring `generics.aipl`'s errors to Rust's text and positions.
-  - *An error inside a type argument* (`(vec.Vec 0palette.Color)`) is
-    reported inside the standard library's template (`vec.aipl` 12:31)
-    instead of where the user wrote it: the generics pass does not record
-    where substituted arguments came from.
-  - *Errors at a closing bracket* (`Unexpected token parsing expression:
-    RParen`, `Expected type constructor, got RParen`) land a few columns
-    early: closing brackets are not recorded in the origin maps (the AST
-    keeps no position for them).
-  - *A missing module* is `cannot find module: X` in AIPL and `Cannot
-    resolve import 'X': no 'X.aipl' found in ...` in Rust. Pick one text.
-  - *Float literals* the self-hosted compiler cannot convert exactly are
-    compile error 973 (AIPL_SPEC.md 6.4) where Rust compiles them: a real
-    gap between the toolchains. Exact decimal-to-double conversion in AIPL
-    closes it.
-- [ ] **Fuzz the VM and compiled programs too:** generated well-typed
-  programs (not just mutated text) run in the VM, under `aipl-run`, and
-  natively, compared as the differential test does. This is where a
-  reader's "I wrote 20 lines and got a different answer natively" would
-  come from.
+  bytes, or message). CI runs 3,000 cases with seed 1.
+- [x] **Message and position differences** (fixed 2026-10-06). After the
+  malformed-file fix, 53 of 3,000 fuzz cases still differed; now none do
+  apart from float literals (below), on three seeds of 3,000:
+  - the generics pass reports Rust's messages at Rust's positions in the
+    right file (`file: L:C: generic 'vec.Vec' takes 1 type argument(s)
+    (T), got 3`), in Rust's order, and checks generic headers on any item;
+  - a substituted type argument keeps its own position, so an error in it
+    is reported where the user wrote it. This also fixed the *Rust*
+    toolchain, which named the template's file with the user's line and
+    column;
+  - closing brackets are recorded in the position maps (the parse tree now
+    keeps where each `)` is), so errors there land on the right column;
+  - a missing module, a circular import, a bad import path, and two
+    modules with one name have Rust's wording, after the importing file.
+  `tests/test_resolver_aipl.rs` (`malformed_files_are_rejected_like_rust`,
+  now 32 cases) holds all of it.
+- [x] **Float literals** (2026-10-06). The self-hosted compiler rejected
+  literals it could not convert exactly (compile error 973), about 1 fuzz
+  case in 700. `std/float.from_decimal` now rounds every literal as Rust's
+  parser does (exact big-integer arithmetic where the fast path is not
+  exact); 400,000 literals agree bit for bit, and four planted rounding
+  bugs were each caught. With them out of the way the fuzzer found five
+  more differences, all fixed: after a definition's error checker.aipl
+  went on to report body errors; tokens in messages were Rust's debug
+  form (`FloatLit(6.9e-5)`, `RParen`), now both toolchains write them as
+  the source does (`'6.9e-5'`, `')'`); the constants pass stopped at a
+  stray atom among the items; with generics in the program, unions and
+  enums were ordered after structs; and a missing module imported by path
+  named only its last segment. 50,000 fuzz cases on five seeds agree.
+- [x] **Fuzz the VM and compiled programs too** (2026-10-06):
+  `tools/run_fuzz.py` generates well-typed, terminating programs (every
+  scalar op, structs, arrays, enums, unions, results, references,
+  recursion, contracts, raw memory, heap addresses) and compares the VM,
+  `aipl-run`, and native executables; CI runs 500. It found three VM bugs,
+  all a jump inside an operand: `(return (block (return 1) 2))` returned
+  nothing, a `return` in a call's argument was taken by the callee, and a
+  `break` in a `set!`'s value assigned `Void` (regression tests in
+  `test_control_flow.rs`). Compiled code was right each time. After the
+  fixes, 25,000 cases (seeds 5 and 8) agree; four planted bugs (VM, wasm backend, native backend) were each
+  caught within 600.
+- [x] **Running out of stack** (2026-10-06; found by the program fuzzer).
+  Deep recursion stopped `aipl-run` cleanly but killed a native executable
+  with a segfault (exit 139, no message), and the VM aborted on its own
+  stack overflow. Now native function prologues check a per-thread stack
+  limit and trap with aipl-run's message and exit status; every native
+  stack (the main thread's too, so `ulimit -s` does not matter) is 8 MiB
+  with a guard page; the VM fails a call past 192 MiB of stack with an
+  error naming the function. Limits in AIPL_SPEC.md 7.11.
 - [ ] **`aipl serve` and `web/` are untested** (AIPL_SPEC.md 6.1 says so).
   Test them, or remove them before the post: a broken demo is worse than
   none.
@@ -65,25 +86,29 @@ has evidence behind it.
 The pitch is that agents fix code from error messages, so these matter
 more than usual.
 
-- [ ] **Compiled traps name nothing.** `./prog: wasm trap: integer divide by
-  zero` gives no function or line. Emit a wasm name section (function
-  names) in both compilers; have `aipl-run` and the native trap routine
-  print the function, ideally a short stack of them.
+- [x] **Compiled traps name their functions** (2026-10-06). Both compilers
+  emit a wasm name section; `aipl-run` and native executables print the
+  call chain after the reason (`  at math.div`, `  at main`; at most 32,
+  then `  ... N more`), the same lines byte for byte, for traps, failed
+  contracts, and bounds checks, in threads too. Native code walks its
+  frame pointers through a table of function addresses and names.
 - [ ] **Source positions at run time.** Map wasm code offsets back to source
   lines (a small line table, like DWARF's but simpler) so a trap and a
   failed compiled contract say `file:line:col`. The VM's runtime errors
   other than contracts need positions too.
-- [ ] **Types in AIPL syntax.** Messages say `Ptr(Struct("Point"))` and
-  `Array(I32)`; print `(ptr Point)` and `(arr i32)`. Both checkers, word
-  for word.
-- [ ] **More than one error per run.** The checkers stop at the first; an
-  agent fixing code wants all of them (or at least one per function).
-- [ ] **Type errors name the file** in the Rust toolchain (`aiplc` already
-  does).
+- [x] **Types in AIPL syntax** (2026-10-06). Messages said
+  `Ptr(Struct("Point"))`, `Array(I32)`, and `Add on ...`; both checkers and
+  the compiler's own errors now write `(ptr Point)`, `(arr i32)`, `+`.
+- [x] **More than one error per run** (2026-10-06). Both checkers report
+  each failing function's first error, one per line; a syntax error or a
+  definition's error is still reported alone.
+- [x] **Type errors name the file** in the Rust toolchain (2026-10-06), as
+  `aiplc` already did. The CLI also prints `Error: MESSAGE` plainly instead
+  of in Rust's debug quoting.
 
 ## 3. Claims (every sentence must survive being checked)
 
-- [ ] **`Cargo.toml`:** `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
+- [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
   wasmtime; the compiler does not" is false (the CLI runs the native
   backend in wasmtime); the description says the toolchain is "written in
@@ -129,14 +154,14 @@ more than usual.
 - [ ] **Install in two commands.** `cargo install --git ...` at least;
   better, prebuilt `aipl` and `aipl-run` binaries on a GitHub release for
   Linux x86-64 (and macOS/Windows through the launcher).
-- [ ] **CI.** A GitHub Actions workflow running `cargo build`, `cargo test`,
+- [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.
 - [x] **Repository root** (2026-10-06): `attic/` and the stray `out.wasm`
   are gone; the root holds README, LICENSE, the spec, the prompt guide,
   ROADMAP.md, DEVELOPING.md, and the build files.
-- [ ] **`cargo clippy` is clean** (25 style warnings today; a reader running
-  it first should see none).
+- [x] **`cargo clippy` is clean** (2026-10-06, all targets; CI fails on any
+  new warning).
 - [ ] **A showcase.** One program a reader would want to run: the compiler
   compiling itself natively in 0.37 s is a good one; a small, real tool
   (a JSON pretty-printer, a `wc`/`grep` clone, a Markdown-to-HTML
@@ -203,7 +228,7 @@ FAQ or ROADMAP.md.
 ## 8. Right before posting
 
 - [ ] Every box above is ticked or has a stated reason.
-- [ ] `cargo test`, the AIPL suite, the fuzzer (one hour), and the
+- [ ] `cargo test`, the AIPL suite, both fuzzers (an hour each), and the
   benchmarks run clean on a fresh clone, from the README's instructions
   alone.
 - [ ] The documentation check is rerun; the numbers are today's.

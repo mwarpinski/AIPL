@@ -203,7 +203,7 @@ fn f64_fixed_matches_exact_formatting() {
         seed ^= seed << 17;
         seed
     };
-    let mut values: Vec<f64> = vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1e-310, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e300, 123456789.987654321];
+    let mut values: Vec<f64> = vec![0.0, -0.0, 0.5, 1.5, 2.5, -2.5, 0.125, 0.375, 1e-310, 5e-324, f64::MAX, f64::MIN_POSITIVE, 1e300, 123_456_789.987_654_33];
     for _ in 0..20000 {
         let r = next();
         let x = match r % 4 {
@@ -229,6 +229,116 @@ fn f64_fixed_matches_exact_formatting() {
     assert_eq!(format(f64::NEG_INFINITY, 3), "-inf");
     assert_eq!(format(f64::NAN, 3), "nan");
     assert_eq!(format(-f64::NAN, 3), "-nan");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// float.from_decimal against Rust's parse::<f64>, bit for bit, compiled to
+/// wasm: 200,000 literals of four kinds: random digits with exponents to
+/// +-350; exact halfway points between neighbouring doubles (the hardest
+/// case for rounding) and the same with the last digit moved up or down;
+/// Rust's shortest form of random doubles; and 30-digit forms of them.
+#[test]
+fn float_from_decimal_matches_rust_parse() {
+    let dir = scratch("float_parse");
+    let src = dir.join("w.aipl");
+    std::fs::write(
+        &src,
+        "(module w (import float)
+           (fn bits [addr:i32 len:i32] -> i64 (i64.reinterpret_f64 (call float.from_decimal addr len)))
+           (fn alloc [n:i32] -> i32 (mem.alloc n)))",
+    )
+    .unwrap();
+    let (_, wasm) = load(&src);
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &wasm).unwrap();
+    let mut seed: u64 = 0xD1B5_4A32_D192_ED03;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut texts: Vec<String> = Vec::new();
+    while texts.len() < 200_000 {
+        let r = next();
+        match r % 4 {
+            0 => {
+                let n = 1 + (next() % 40) as usize;
+                let digits: String = (0..n).map(|_| char::from(b'0' + (next() % 10) as u8)).collect();
+                let dot = (next() % (n as u64 + 1)) as usize;
+                let exp = (next() % 701) as i64 - 350;
+                texts.push(format!("{}.{}e{exp}", &digits[..dot], &digits[dot..]));
+            }
+            1 => {
+                // the midpoint (2m + 1) * 2^(k - 1) of m * 2^k and (m + 1) * 2^k,
+                // written exactly: as an integer for k >= 1, else as
+                // (2m + 1) * 5^j / 10^j with j = 1 - k <= 27 (fits in u128)
+                let m = (1u64 << 52) | (next() & ((1 << 52) - 1));
+                let k = (next() % 101) as i32 - 26;
+                let odd = 2 * m as u128 + 1;
+                let mut t = if k >= 1 {
+                    format!("{}.0", odd << (k - 1))
+                } else {
+                    let j = (1 - k) as u32;
+                    let digits = (odd * 5u128.pow(j)).to_string();
+                    let point = digits.len() - j as usize;
+                    format!("{}.{}", &digits[..point], &digits[point..])
+                };
+                // and just above or below it
+                match next() % 3 {
+                    0 => t.push('1'),
+                    1 => {
+                        let last = t.pop().unwrap();
+                        if last == '0' {
+                            t.push('0');
+                        } else {
+                            t.push(char::from(last as u8 - 1));
+                            t.push('9');
+                        }
+                    }
+                    _ => {}
+                }
+                texts.push(t);
+            }
+            2 => {
+                // "1e-5" needs a '.': "1.0e-5"
+                let x = f64::from_bits(next() >> 1);
+                let t = format!("{x:e}");
+                if x.is_finite() {
+                    texts.push(if t.contains('.') { t } else { t.replace('e', ".0e") });
+                }
+            }
+            _ => {
+                let x = f64::from_bits(next() >> 1);
+                if x.is_finite() {
+                    texts.push(format!("{x:.30e}"));
+                }
+            }
+        }
+    }
+    // the text must be in is_float_literal's form: one '.', a digit
+    for t in &texts {
+        assert!(t.matches('.').count() == 1 && t.parse::<f64>().is_ok(), "{t}");
+    }
+    // a fresh instance per batch: the exact path allocates and never frees
+    for batch in texts.chunks(10_000) {
+        let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+        let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
+        let inst = linker.instantiate(&mut store, &module).unwrap();
+        let alloc = inst.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+        let bits = inst.get_typed_func::<(i32, i32), i64>(&mut store, "bits").unwrap();
+        let mem = inst.get_memory(&mut store, "memory").unwrap();
+        let at = alloc.call(&mut store, 200).unwrap();
+        for t in batch {
+            for text in [t.clone(), format!("-{t}")] {
+                mem.data_mut(&mut store)[at as usize..at as usize + text.len()].copy_from_slice(text.as_bytes());
+                let got = bits.call(&mut store, (at, text.len() as i32)).unwrap() as u64;
+                let want = text.parse::<f64>().unwrap().to_bits();
+                assert_eq!(got, want, "{text}: got {:e}, want {:e}", f64::from_bits(got), f64::from_bits(want));
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

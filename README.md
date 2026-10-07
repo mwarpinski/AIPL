@@ -1,5 +1,7 @@
 # AIPL (AI Programming Language)
 
+[![CI](https://github.com/mwarpinski/AIPL/actions/workflows/ci.yml/badge.svg)](https://github.com/mwarpinski/AIPL/actions/workflows/ci.yml)
+
 > An unambiguous, statically typed S-expression systems language for AI agents to generate, compiled to WebAssembly + WASI and to native Linux x86-64 executables, with a self-hosted compiler written in AIPL.
 
 ---
@@ -18,7 +20,7 @@
 - **Memory you can free, Zig style.** The built-ins (`new`, `arr.new`, `mem.alloc`) never free; freeable memory comes from an allocator passed explicitly: `std/heap` frees single objects and stops the program on a double free, a wrong-size free, or a write after free; `std/arena` frees a region at once; `std/alloc` makes any of them, or one you write, a single `Allocator` value that the collections take.
 - **Wasm semantics are the spec.** The VM, the WebAssembly backend, and the native backend must agree: `tests/test_differential.rs` runs the same programs in the VM and wasmtime, and `tests/test_native.rs` compares native executables with wasmtime, failing on any divergence.
 - **Real programs when compiled.** Files, stdio, the command line, the environment, clocks, randomness, threads, and exit codes lower to WASI preview1. `aipl compile --exe` produces a standalone executable: on Linux x86-64, native machine code written by a backend in AIPL (no runtime; `word_count` is 57 KB, the compiler itself 910 KB); elsewhere, the module plus a wasmtime launcher ([docs/design/NATIVE_BACKEND_PLAN.md](docs/design/NATIVE_BACKEND_PLAN.md), AIPL_SPEC.md 6.5-6.6).
-- **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language. The type checker is in AIPL too (`checker.aipl`, with `parser.aipl` and `expand.aipl`), giving the same first error as the Rust checker word for word. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that checks and compiles, rebuilds itself to the same bytes, and reports errors in the user's files, with no Rust involved (building it the first time still takes the Rust toolchain).
+- **A self-hosted toolchain.** The import resolver (`aipl_src/resolver.aipl`), tokenizer and parser (`compiler.aipl`), and wasm code generator (`codegen.aipl`) are written in AIPL, and their output is byte-identical to the Rust toolchain's for the whole language. The type checker is in AIPL too (`checker.aipl`, with `parser.aipl` and `expand.aipl`), giving the same errors as the Rust checker word for word. Compiled to wasm, `aipl_src/driver.aipl` is a standalone compiler that checks and compiles, rebuilds itself to the same bytes, and reports errors in the user's files, with no Rust involved (building it the first time still takes the Rust toolchain).
 
 ```lisp
 (module demo
@@ -60,7 +62,7 @@ cargo build --release
 ./aiplc examples/word_count.aipl wc.wasm
 ```
 
-Run the full test suite with `cargo test` (287 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+Run the full test suite with `cargo test` (292 tests; the self-hosting tests take a minute or two because they run the AIPL toolchain in the VM). `python3 tools/bench.py` times the benchmarks against C and Python ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Repository layout
 
@@ -82,7 +84,7 @@ Run the full test suite with `cargo test` (287 tests; the self-hosting tests tak
 | `src/agent_api/` | `aipl serve`: `/eval`, `/verify`, `/compile` over HTTP |
 | `web/` | Browser demo: sends source to `aipl serve`, runs the compiled module with WASI shims |
 | `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
-| `tools/` | Development helpers not used by the build or tests: `fuzz.py` (the two toolchains against each other on mutated programs), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
+| `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
 
 ## Documentation
 

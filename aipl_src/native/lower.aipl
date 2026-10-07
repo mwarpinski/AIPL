@@ -68,8 +68,10 @@
   ;; A call whose 32-bit displacement (at `at`) must point at function `func`.
   (struct Fixup [at:i32 func:i32])
 
-  ;; A trap reason's text in the data segment.
-  (struct Reason [addr:i32 len:i32])
+  ;; A trap reason's text in the data segment; frames: whether the trap
+  ;; prints the call chain after it (a wasm trap does; the exit-status error
+  ;; is not a trap under wasmtime, so it does not).
+  (struct Reason [addr:i32 len:i32 frames:bool])
 
   ;; An open label. kind: 0 block, 1 loop, 2 if, 3 the function body.
   ;; arity: the label's result count (0 or 1). height: the value stack depth
@@ -85,10 +87,14 @@
   ;; fimports: the module's function imports, which are function indices
   ;; 0 .. n-1 (a memory import takes no function index).
   ;; data: the data segment being built (loaded at elf.data_vaddr).
-  ;; trap_routine: the code position of runtime.emit_trap_routine's code.
+  ;; trap_routine: the code position of runtime.emit_trap_routine's code;
+  ;; backtrace_routine: runtime.emit_backtrace_routine's (a call, for traps
+  ;; that print their call chain). stack_limit_off: where the thread's stack
+  ;; limit is in its FS block (after the globals); every function's prologue
+  ;; traps with stack_exhausted rather than run its frame below the limit.
   (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
              fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
-             data:(ptr buf.Buf) trap_routine:i32
+             data:(ptr buf.Buf) trap_routine:i32 backtrace_routine:i32
              div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
              out_of_bounds:(ptr Reason) mem_cell:i32 mem_max:i32
              unaligned:(ptr Reason) wait_unshared:(ptr Reason) bad_conversion:(ptr Reason)
@@ -97,7 +103,8 @@
              shared:bool seg_addrs:(ptr (vec.Vec i32)) seg_lens:(ptr (vec.Vec i32))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32 cached:bool
              failed:bool msg:(ptr buf.Buf)
-             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32])
+             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
+             stack_limit_off:i32 stack_exhausted:(ptr Reason)])
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
     (let l:(ptr L) (new L))
@@ -110,6 +117,7 @@
     (put l L.code (call buf.make (call alloc.default) 4096))
     (put l L.data (call buf.make (call alloc.default) 256))
     (put l L.trap_routine -1)
+    (put l L.backtrace_routine -1)
     (put l L.div_zero (call reason l "wasm trap: integer divide by zero"))
     (put l L.overflow (call reason l "wasm trap: integer overflow"))
     (put l L.unreachable (call reason l "wasm trap: wasm `unreachable` instruction executed"))
@@ -121,6 +129,8 @@
     (put l L.table_oob (call reason l "wasm trap: undefined element: out of bounds table access"))
     (put l L.null_element (call reason l "wasm trap: uninitialized element"))
     (put l L.bad_signature (call reason l "wasm trap: indirect call type mismatch"))
+    (put l L.stack_exhausted (call reason l "wasm trap: call stack exhausted"))
+    (put l L.stack_limit_off 0)
     (put l L.table_addr 0)
     (put l L.table_size 0)
     (put l L.canon_types (call canonical_types w))
@@ -150,6 +160,7 @@
     (let r:(ptr Reason) (new Reason))
     (put r Reason.addr (call data_text l text))
     (put r Reason.len (str.len text))
+    (put r Reason.frames true)
     r)
 
   ;; Traps with reason `r`: unconditionally, from here.
@@ -158,7 +169,10 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (call x64.mov_ri32 c 6 (get r Reason.addr))
     (call x64.mov_ri32 c 2 (get r Reason.len))
-    (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine)))
+    (if (get r Reason.frames)
+        ;; a call, so the routine knows where the trap is
+        (call x64.patch_rel32 c (call x64.call_rel c) (get l L.backtrace_routine))
+        (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine))))
 
   ;; unreachable: a failed contract or bounds check has left its message in
   ;; linear memory, its address and length in cells 92 and 96 (AIPL_SPEC.md
@@ -176,7 +190,7 @@
           (let none:i32 (call x64.jcc c (call x64.cc_e)))
           (call x64.load c 32 6 (call x64.mem (call r15) 92))
           (call x64.lea c 64 6 (call x64.mem_index (call r15) 6 1 0))
-          (call x64.patch_rel32 c (call x64.jmp c) (get l L.trap_routine))
+          (call x64.patch_rel32 c (call x64.call_rel c) (get l L.backtrace_routine))
           (call x64.patch_rel32 c small (call buf.len c))
           (call x64.patch_rel32 c none (call buf.len c)))
         (block))
@@ -364,6 +378,18 @@
     ;; prologue: frame, then zeroed locals
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
+    ;; the stack check: trap unless the frame (the locals and up to four
+    ;; saved registers) ends above the thread's limit, which leaves room
+    ;; below it for the operand stack, the host routines, and the trap's own
+    (let frame:i32 32)
+    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+      (set! frame (+ frame (* 8 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count)))))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call x64.fs c)
+    (call x64.load c 64 (call rcx) (call x64.mem (call rcx) (get l L.stack_limit_off)))
+    (call x64.lea c 64 (call rax) (call x64.mem (call rsp) (- 0 frame)))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) (call rcx))
+    (call emit_trap_if l (call x64.cc_b) (get l L.stack_exhausted))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
     (put l L.nlocals 0)
     (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1

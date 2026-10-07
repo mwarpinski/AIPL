@@ -23,9 +23,13 @@ use std::path::{Path, PathBuf};
 pub struct Resolver;
 
 /// An item of the flat program and the file it came from (for diagnostics).
+/// A generic instance is made from its template's file, but the type
+/// arguments substituted into it were written elsewhere: `foreign` maps
+/// those tokens' positions to their own files.
 pub struct Item {
     pub sx: Sx,
     pub file: PathBuf,
+    pub foreign: HashMap<(u32, u32), PathBuf>,
 }
 
 /// The flat program before parsing: entry module name, then every struct
@@ -85,7 +89,7 @@ impl Resolver {
         let flat = Self::flatten(entry_src, entry_path)?;
         let flat = crate::generics::expand(flat)?;
         let flat = crate::consts::expand(flat)?;
-        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![] };
+        let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new() };
         let unions: HashSet<String> = flat
             .structs
             .iter()
@@ -94,6 +98,14 @@ impl Resolver {
             .collect();
         for item in flat.structs.iter().chain(flat.fns.iter()) {
             let parsed = parse_item(&flat.name, item, &unions)?;
+            let source = Source { file: item.file.clone(), foreign: item.foreign.clone() };
+            let keys = parsed.structs.iter().map(|d| format!("struct {}", d.name))
+                .chain(parsed.enums.iter().map(|d| format!("enum {}", d.name)))
+                .chain(parsed.unions.iter().map(|d| format!("union {}", d.name)))
+                .chain(parsed.functions.iter().map(|d| format!("fn {}", d.name)));
+            for key in keys {
+                module.sources.insert(key, source.clone());
+            }
             module.structs.extend(parsed.structs);
             module.enums.extend(parsed.enums);
             module.unions.extend(parsed.unions);
@@ -130,7 +142,10 @@ fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Resul
     let mut tokens = vec![tok(TokenKind::LParen), tok(TokenKind::Symbol("module".into())), tok(TokenKind::Symbol(module_name.into()))];
     item.sx.flatten(&mut tokens);
     tokens.push(tok(TokenKind::RParen));
-    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| format!("{}: {}", item.file.display(), e))
+    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| {
+        // the error's own "L:C: " says which token, and so which file
+        Source { file: item.file.clone(), foreign: item.foreign.clone() }.name_file(e)
+    })
 }
 
 fn read_module(src: &str) -> Result<ModuleSx, String> {
@@ -262,7 +277,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     let mut out_fns = Vec::new();
     for mut item in module.items {
         names.walk(&mut item, 0);
-        let it = Item { sx: item, file: file.to_path_buf() };
+        let it = Item { sx: item, file: file.to_path_buf(), foreign: HashMap::new() };
         if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
             out_structs.push(it);
         } else {

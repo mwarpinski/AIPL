@@ -42,6 +42,22 @@ pub const HEAP_PTR_ADDR: usize = 0;
 /// runtime block (see AIPL_SPEC.md, Memory layout).
 pub const HEAP_START: u32 = 1024;
 
+/// How much of its thread's stack the VM's calls may use before a call
+/// fails with "Call stack exhausted" instead of overflowing the stack. The
+/// VM runs on threads with at least 256 MiB: the CLI's (1 GiB), test
+/// threads (`.cargo/config.toml`), and those `thread.spawn` starts
+/// (`THREAD_STACK`). A small function's call takes about 5 KiB, so this
+/// allows about 40,000 nested calls of one.
+pub const STACK_BUDGET: usize = 192 << 20;
+const THREAD_STACK: usize = 256 << 20;
+
+/// An address in the caller's stack frame: how deep the stack is.
+#[inline(never)]
+fn stack_position() -> usize {
+    let marker = 0u8;
+    std::hint::black_box(&marker) as *const u8 as usize
+}
+
 /// A `return`, `break`, or `continue` that is unwinding. eval_expr sets it and
 /// returns Value::Void; statement sequences stop when it is set, loops consume
 /// Break/Continue, and invoke consumes Return. The checker makes these
@@ -84,6 +100,15 @@ pub struct VM {
     /// Bytes `fs.read` on fd 0 returns, if the host set them (`set_stdin`);
     /// otherwise fd 0 is the process's stdin.
     stdin: Option<Arc<Mutex<Vec<u8>>>>,
+    /// The stack position of the outermost call running on this thread, or
+    /// 0 when none is (see STACK_BUDGET).
+    stack_top: usize,
+}
+
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VM {
@@ -113,6 +138,7 @@ impl VM {
             args: Arc::new(Vec::new()),
             env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
             stdin: None,
+            stack_top: 0,
         }
     }
 
@@ -137,6 +163,7 @@ impl VM {
             heap_start: self.heap_start,
             args: Arc::clone(&self.args),
             env: Arc::clone(&self.env),
+            stack_top: 0,
             stdin: self.stdin.clone(),
         }
     }
@@ -250,6 +277,28 @@ impl VM {
     }
 
     pub fn invoke(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
+        // an argument jumped (`(call f (block (return 1) 2))`): the call never
+        // happens, and the callee must not take the caller's pending jump
+        if self.flow.is_some() {
+            return Ok(Value::Void);
+        }
+        let here = stack_position();
+        if self.stack_top == 0 {
+            self.stack_top = here;
+            let r = self.invoke_function(fn_name, args);
+            self.stack_top = 0;
+            return r;
+        }
+        if self.stack_top.saturating_sub(here) > STACK_BUDGET {
+            return Err(format!(
+                "Call stack exhausted calling '{}': calls are nested too deeply (a recursion that does not end?)",
+                fn_name
+            ));
+        }
+        self.invoke_function(fn_name, args)
+    }
+
+    fn invoke_function(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
         let f = self
             .functions
             .get(fn_name)
@@ -340,14 +389,19 @@ impl VM {
                     Err(format!("VM: Variable '{}' not found in scope", name))
                 }
             }
+            // a value that jumped (`(set! x (block (break) 1))`) assigns nothing
             Expr::Let { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
-                scope.insert(name.clone(), v);
+                if self.flow.is_none() {
+                    scope.insert(name.clone(), v);
+                }
                 Ok(Value::Void)
             }
             Expr::Set { name, val, .. } => {
                 let v = self.eval_expr(val, scope)?;
-                if scope.contains_key(name) {
+                if self.flow.is_some() {
+                    Ok(Value::Void)
+                } else if scope.contains_key(name) {
                     scope.insert(name.clone(), v);
                     Ok(Value::Void)
                 } else {
@@ -443,6 +497,11 @@ impl VM {
                     Some(e) => self.eval_expr(e, scope)?,
                     None => Value::Void,
                 };
+                // a jump inside the value (`(return (block (return 1) 2))`)
+                // has already left: it wins, as in compiled code
+                if self.flow.is_some() {
+                    return Ok(Value::Void);
+                }
                 self.flow = Some(Flow::Return(v));
                 Ok(Value::Void)
             }
@@ -762,7 +821,7 @@ impl VM {
         let mut mem = self.shared.lock().unwrap();
         let cur: [u8; 4] = mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].try_into().unwrap();
         let allocated_ptr = i32::from_le_bytes(cur);
-        let next = allocated_ptr.wrapping_add(size as i32);
+        let next = allocated_ptr.wrapping_add(size);
         mem.bytes[HEAP_PTR_ADDR..HEAP_PTR_ADDR + 4].copy_from_slice(&next.to_le_bytes());
         let have = mem.bytes.len() as u32;
         if next as u32 > have {
@@ -1046,7 +1105,7 @@ impl VM {
                 }
                 let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
@@ -1062,7 +1121,7 @@ impl VM {
                 }
                 let ptr = i_val as usize;
                 let mem = self.shared.lock().unwrap();
-                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory load out of bounds: ptr {}", i_val));
                 }
                 let bytes: [u8; 8] = mem.bytes[ptr..ptr + 8].try_into().unwrap();
@@ -1083,7 +1142,7 @@ impl VM {
                     _ => return Err("mem.store32 requires Int val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr.checked_add(4).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 4].copy_from_slice(&val.to_le_bytes());
@@ -1104,7 +1163,7 @@ impl VM {
                     _ => return Err("mem.store64 requires Int64 val".to_string()),
                 };
                 let mut mem = self.shared.lock().unwrap();
-                if ptr.checked_add(8).map_or(true, |end| end > mem.bytes.len()) {
+                if ptr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("Memory store out of bounds: ptr {}", i_val));
                 }
                 mem.bytes[ptr..ptr + 8].copy_from_slice(&val.to_le_bytes());
@@ -1289,10 +1348,9 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => {
                         let x32 = x as i32 as u32;
                         let y32 = y as i32 as u32;
-                        if y32 == 0 {
-                            Err("Division by zero".to_string())
-                        } else {
-                            Ok(Value::Int(((x32 / y32) as i32) as i64))
+                        match x32.checked_div(y32) {
+                            None => Err("Division by zero".to_string()),
+                            Some(q) => Ok(Value::Int((q as i32) as i64)),
                         }
                     }
                     (Value::Int64(x), Value::Int64(y)) => {
@@ -1674,7 +1732,7 @@ impl VM {
                 }
                 self.write_bytes(rec, &fields);
                 let mut child = self.spawn_child();
-                let handle = std::thread::spawn(move || {
+                let spawned = std::thread::Builder::new().stack_size(THREAD_STACK).spawn(move || {
                     // a compiled thread allocates its runtime scratch block first
                     child.alloc_bytes(24);
                     let r = child.invoke(&fn_name, vec![Value::Int(arg as i64)]);
@@ -1684,6 +1742,7 @@ impl VM {
                     child.write_bytes(rec, &1i32.to_le_bytes());
                     r
                 });
+                let handle = spawned.map_err(|e| format!("thread.spawn: could not start a thread: {e}"))?;
                 self.thread_handles.insert(rec as i32, handle);
                 Ok(Value::Int(rec as i64))
             }
@@ -1728,7 +1787,7 @@ impl VM {
             // Truncates toward zero; NaN or a result outside i64 is an error where wasm traps.
             OpCode::I64TruncF64S => match self.eval_expr(&args[0], scope)? {
                 Value::Float(x) if x.is_nan() => Err("i64.trunc_f64_s: invalid conversion to integer (NaN)".to_string()),
-                Value::Float(x) if x >= -9223372036854775808.0 && x < 9223372036854775808.0 => Ok(Value::Int64(x.trunc() as i64)),
+                Value::Float(x) if (-9223372036854775808.0..9223372036854775808.0).contains(&x) => Ok(Value::Int64(x.trunc() as i64)),
                 Value::Float(x) => Err(format!("i64.trunc_f64_s: integer overflow converting {}", x)),
                 _ => Err("i64.trunc_f64_s requires Float".to_string()),
             },
@@ -1762,7 +1821,7 @@ impl VM {
                 let mut buf = vec![0u8; len];
                 let filled = File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
                 let mem_len = self.shared.lock().unwrap().bytes.len();
-                if !filled || ptr.checked_add(len).map_or(true, |end| end > mem_len) {
+                if !filled || ptr.checked_add(len).is_none_or(|end| end > mem_len) {
                     return Ok(Value::Int(-1));
                 }
                 self.write_bytes(ptr, &buf);
@@ -1866,7 +1925,7 @@ fn value_str(v: &Value) -> String {
 /// unaligned one, so the VM fails the same way. Blocks from mem.alloc are
 /// always 8-aligned.
 fn check_atomic_alignment(op: &str, ptr: usize) -> Result<(), String> {
-    if ptr % 4 != 0 {
+    if !ptr.is_multiple_of(4) {
         return Err(format!("{} at address {}: atomic operations need a 4-aligned address", op, ptr));
     }
     Ok(())

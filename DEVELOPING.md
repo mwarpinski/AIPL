@@ -17,7 +17,7 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 287 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 292 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -59,6 +59,16 @@ messages; failing cases are kept under `target/fuzz/`):
 
 ```bash
 cargo build --release && python3 tools/fuzz.py --cases 3000
+```
+
+Fuzzing the three ways of running a program against each other: generated
+programs, well-typed and terminating by construction, run in the VM, as wasm
+under `aipl-run`, and natively, and must print the same output and fail the
+same way (failing cases are kept under `target/run_fuzz/`; CI runs 500 with
+seed 1, and `--show N` prints case N's program):
+
+```bash
+cargo build --release && python3 tools/run_fuzz.py --cases 5000 --seed 7
 ```
 
 ## Conventions

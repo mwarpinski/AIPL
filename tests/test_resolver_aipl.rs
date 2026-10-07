@@ -121,9 +121,12 @@ fn cycles_and_missing_modules_are_errors() {
     std::fs::write(dir.join("main.aipl"), "(module main (import a) (fn main [] -> i32 0))").unwrap();
     std::fs::write(dir.join("lost.aipl"), "(module lost (import nowhere) (fn main [] -> i32 0))").unwrap();
     let err = aipl_resolve(&dir.join("main.aipl")).unwrap_err();
-    assert!(err.starts_with("circular import: "), "{err}");
+    assert!(err.contains(".aipl: Circular import detected: '") && err.ends_with(".aipl' is imported while already being resolved"), "{err}");
     let err = aipl_resolve(&dir.join("lost.aipl")).unwrap_err();
-    assert_eq!(err, "cannot find module: nowhere");
+    assert!(err.contains("lost.aipl: Cannot resolve import 'nowhere': no 'nowhere.aipl' found in '"), "{err}");
+    // the same wording as the Rust resolver (the paths searched are listed in each one's own form)
+    let rust = Resolver::resolve(&dir.join("lost.aipl")).unwrap_err();
+    assert_eq!(rust.split(" found in ").next(), err.split(" found in ").next());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -131,7 +134,7 @@ fn cycles_and_missing_modules_are_errors() {
 
 mod wasm_driver {
     use super::*;
-    use wasmtime::{Engine, Instance, Linker, Module as WasmModule, Store, TypedFunc};
+    use wasmtime::{Engine, Linker, Module as WasmModule, Store, TypedFunc};
     use wasmtime_wasi::p1::WasiP1Ctx;
     use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
@@ -160,7 +163,7 @@ mod wasm_driver {
         let inst = linker.instantiate(&mut store, &module).expect("instantiate driver");
         let memory = inst.get_memory(&mut store, "memory").unwrap();
         let alloc: TypedFunc<i32, i32> = inst.get_typed_func(&mut store, "host_alloc").unwrap();
-        let mut put = |store: &mut Store<WasiP1Ctx>, s: &str| -> i32 {
+        let put = |store: &mut Store<WasiP1Ctx>, s: &str| -> i32 {
             let a = alloc.call(&mut *store, s.len() as i32 + 1).unwrap();
             memory.write(&mut *store, a as usize, s.as_bytes()).unwrap();
             a
@@ -373,11 +376,14 @@ fn subdirectory_import_errors() {
     let rust = Resolver::resolve(&dir.join("clash.aipl")).unwrap_err();
     assert!(rust.contains("two different modules are named 'x'"), "{rust}");
     let ours = aipl_resolve(&dir.join("clash.aipl")).unwrap_err();
-    assert_eq!(ours, "two different modules are named x");
+    // Rust's wording, after the importing file; the two paths in each one's own form
+    let wording = |e: &str| e.split_once("clash.aipl: ").map(|(_, m)| m.split(": ").next().unwrap().to_string());
+    assert_eq!(wording(&ours), wording(&rust), "{ours}");
+    assert!(ours.contains("a/x.aipl and ") && ours.ends_with("b/x.aipl"), "{ours}");
     let rust = Resolver::resolve(&dir.join("dots.aipl")).unwrap_err();
     assert!(rust.contains("'../x' is not an import path"), "{rust}");
     let ours = aipl_resolve(&dir.join("dots.aipl")).unwrap_err();
-    assert!(ours.starts_with("not an import path"), "{ours}");
+    assert_eq!(ours, rust);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -407,7 +413,9 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
         std::fs::write(&path, src).unwrap();
         let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
         let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
-        let rust = rust.rsplit_once(".aipl: ").map(|(_, m)| m.to_string()).unwrap_or(rust);
+        // both toolchains name the same file, with the same message
+        let (rust_path, rust) = rust.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: Rust names no file in {rust}"));
+        assert!(format!("{rust_path}.aipl").ends_with(file), "{name}: Rust names {rust_path}, expected {file}");
         match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
             wasm_driver::Outcome::TypeError(e) => {
                 let (path_part, msg) = e.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {e}"));
@@ -417,6 +425,38 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
             _ => panic!("{name}: expected a type error ({rust})"),
         }
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Errors in several functions, in different files, come back one per line,
+/// each naming its own file, the same from both toolchains.
+#[test]
+fn wasm_toolchain_reports_each_failing_function_with_its_file() {
+    let dir = root().join("target").join(format!("aipl_typeerrs_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn f [] -> i32\n    (+ 1 true)))").unwrap();
+    let path = dir.join("main.aipl");
+    std::fs::write(&path, "(module main\n  (import lib)\n  (fn g [] -> i32 zz)\n  (fn main [] -> i32 (call lib.f)))").unwrap();
+    let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+    let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+    let wasm_driver::Outcome::TypeError(ours) = wasm_driver::run(&driver_wasm(), &rel, "aipl_src/std/") else {
+        panic!("expected a type error ({rust})")
+    };
+    // (file, message) per line; the two toolchains spell paths differently
+    let lines = |e: &str| -> Vec<(String, String)> {
+        e.lines()
+            .map(|l| {
+                let (p, m) = l.split_once(".aipl: ").unwrap_or_else(|| panic!("no file in {l}"));
+                (p.rsplit('/').next().unwrap().to_string(), m.to_string())
+            })
+            .collect()
+    };
+    let expected = vec![
+        ("lib".to_string(), "3:5: Type mismatch in binary op: i32 vs bool".to_string()),
+        ("main".to_string(), "3:19: Undefined variable 'zz'".to_string()),
+    ];
+    assert_eq!(lines(&rust), expected, "{rust}");
+    assert_eq!(lines(&ours), expected, "{ours}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -453,6 +493,26 @@ fn malformed_files_are_rejected_like_rust() {
         ("unknown_item", b"(module m\n  (imp buf)\n  (fn main [] -> i32 1))"),
         ("stray_atom_item", b"(module m\n  (import str) 9\n  (fn main [] -> i32 1))"),
         ("broken_import", b"(module m (import broken_dep) (fn main [] -> i32 1))"),
+        // found by tools/fuzz.py once float literals stopped hiding them: the
+        // constants pass goes on past a stray atom (and leaves it alone), and
+        // with generics in the program, unions stay with the structs
+        ("stray_atom_then_enum_error", b"(module m (enum E [a]) i32 (fn main [] -> i32 (enum.ord E.zz)))"),
+        ("missing_module_by_path", b"(module m (import no/such) (fn main [] -> i32 0))"),
+        ("stray_constant_name", b"(module m (const MAX:i32 5) MAX (fn main [] -> i32 0))"),
+        ("union_error_before_struct_error", b"(module m (import vec)\n  (union P [(stop) (step dx:i32 reh)])\n  (struct L [a:Srn:T])\n  (fn main [] -> i32 0))"),
+        // the generics pass: Rust's messages, at the right place in the right file
+        ("generic_arity", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32 i32)) (call (vec.make i32) (call alloc.default) 1))\n    0))"),
+        ("generic_builtin_name", b"(module m\n  (fn (get T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
+        ("generic_lowercase_param", b"(module m\n  (fn (f t) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
+        ("generic_no_params", b"(module m\n  (fn (f) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
+        ("generic_twice", b"(module m\n  (fn (f T) [x:T] -> T x)\n  (fn (f T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
+        ("generic_field_form", b"(module m\n  (struct (B T) [v:T])\n  (fn main [] -> i32 (let b:(ptr (B i32)) (new (B i32))) (get b (B i32) 5)))"),
+        ("not_a_type", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec (ptr))) (ptr.null (vec.Vec i32)))\n    0))"),
+        // an error inside a type argument, reported where the argument is written
+        ("bad_type_argument", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec 0x)) (call (vec.make 0x) (call alloc.default) 1))\n    0))"),
+        // errors at a closing bracket
+        ("if_without_else", b"(module m\n  (fn main [] -> i32\n    (if true 1)))"),
+        ("type_without_constructor", b"(module m\n  (fn main [x:()] -> i32 1))"),
     ];
     let driver = driver_wasm();
     for (name, src) in cases {
@@ -467,7 +527,8 @@ fn malformed_files_are_rejected_like_rust() {
             wasm_driver::Outcome::CompileError(c) => panic!("{name}: compile error {c}; Rust says {rust}"),
         };
         let (our_file, our_msg) = ours.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {ours}"));
-        assert_eq!(our_msg, rust_msg, "{name}");
+        // the places searched for a missing module are each toolchain's own paths
+        assert_eq!(our_msg.split(" found in ").next(), rust_msg.split(" found in ").next(), "{name}");
         // the same file is blamed (an import's own error names the import)
         let stem = |f: &str| f.rsplit('/').next().unwrap().to_string();
         assert_eq!(stem(our_file), stem(rust_file), "{name}");

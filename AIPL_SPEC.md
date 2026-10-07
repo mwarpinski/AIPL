@@ -253,7 +253,7 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 
 ### F. Results
 
-`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. Both backends allocate an 8-byte heap cell `[tag:i32 payload:i32]` (tag 0 = ok, 1 = err) from the heap cursor **before** evaluating the payload, so a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell. Payloads must be 32-bit (`i32`, `bool`, `str`): the wasm backend rejects others with `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got I64`. The VM accepts them, so keep result payloads 32-bit in code meant to compile.
+`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. Both backends allocate an 8-byte heap cell `[tag:i32 payload:i32]` (tag 0 = ok, 1 = err) from the heap cursor **before** evaluating the payload, so a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell. Payloads must be 32-bit (`i32`, `bool`, `str`): the wasm backend rejects others with `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got i64`. The VM accepts them, so keep result payloads 32-bit in code meant to compile.
 
 
 ### G. Function References
@@ -301,7 +301,7 @@ A generic struct or function takes type parameters in its header, and every use 
 
 Generics are expanded before type checking (`src/generics.rs`, `aipl_src/generics.aipl`): each distinct instantiation becomes an ordinary struct or function named `Name<t,...>` (for example `Box<i64>`, `vec.Vec<ptr<Point>>`, `fn<i32,i32->i32>` for a function type argument), made by substituting the arguments for the parameters. The checker, the VM, both code generators, and any future backend only ever see concrete code, and instance names appear as such in diagnostics and wasm exports. Rules:
 
-- A template is checked only through its instances: an error inside a generic body is reported (at the template's own line) when some use instantiates it. A template nobody uses is not checked.
+- A template is checked only through its instances: an error inside a generic body is reported (at the template's own line) when some use instantiates it; an error inside a type argument is reported where the argument is written. A template nobody uses is not checked.
 - Type arguments may be any type, including other instances and function types. Arity is checked: `generic 'Box' takes 1 type argument(s) (T), got 2`.
 - A generic may not be named like a built-in form or type (`get`, `put`, `new`, `i32`, ...), since `(get p (Name T) f)` would be ambiguous.
 - A generic function is applied only where a function is named: `(call (f t...) ...)` and `(ref (f t...))`. Elsewhere `(f ...)` is not an application, so a generic named `make` (as `std/vec`'s is) does not swallow a union's `(make U.v x)`. A generic struct is applied wherever a type goes.
@@ -440,7 +440,7 @@ source.aipl
                                       translates the wasm to an ELF executable
 ```
 
-The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`resolver.aipl`, `generics.aipl`), constants (`expand.aipl`), parsing (`parser.aipl`, into the typed tree of `ast.aipl`), checking (`checker.aipl`), and code generation (`codegen.aipl`). `front.aipl` chains the checking stages; its parser and checker report the same first error as Rust's, word for word (section 6.4).
+The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`resolver.aipl`, `generics.aipl`), constants (`expand.aipl`), parsing (`parser.aipl`, into the typed tree of `ast.aipl`), checking (`checker.aipl`), and code generation (`codegen.aipl`). `front.aipl` chains the checking stages; its parser and checker report the same errors as Rust's, word for word (section 6.4).
 
 ### 6.1 CLI surface (`src/main.rs`)
 
@@ -455,7 +455,7 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | `aipl test FILE [--func run_all]` | 1-4, 5a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
 | `aipl serve [--addr 127.0.0.1:8080]` | per request | an HTTP server for agents (`src/agent_api/server.rs`): `POST /eval` with JSON `{"source", "fn_name", "args"?}` runs a function in the VM (`args` are integers), `POST /verify` and `POST /compile` take the source as the request body; each answers JSON with `success` and `error`, plus `result` (eval) or `wasm_base64` (compile). Imports resolve against the standard library. Not covered by tests |
 
-Errors are printed as `Error: "MESSAGE"`, the message in Rust debug quoting (inner quotes escaped). `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
+Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1. `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
 
 ### 6.2 What a compiled `.wasm` module looks like
 
@@ -477,6 +477,7 @@ A **threaded module** (one that uses `thread.spawn`) differs: it imports its mem
 | Contracts | each `req` is checked at the function's entry; with an `ens`, the body is a `block` that `return` branches to the end of, where the result is kept in a hidden local `res` and each `ens` is checked; a failure writes the message (section 3) through `$aipl_begin`/`$aipl_text`/`$aipl_dec`/`$aipl_end` and traps |
 | Function refs | only when the module uses `ref`/`call_ref`: one extra type per distinct `call_ref` signature after the function types, a funcref table (section id 4) of every function, and an element section (id 9) filling it; `call_ref` is `call_indirect` (section 4.G) |
 | Results and arrays | `ok`/`err` allocate an 8-byte `[tag][payload]` cell; `match_result` tests the tag with `i32.eqz`; `arr.new` writes the count header and returns the address after it (sections 4.E, 4.F) |
+| Names | a `name` custom section, last, naming every function (the generated ones `_start`, `wasi_thread_start`, `aipl.init`, and the `aipl.` check helpers), so traps can print where they happened (section 6.5) |
 | Exports | **every** function in the flat module, under its AIPL name (`add`, `compiler.tokenize`, ...), plus `memory`; `_start` when the module has a zero-argument `main` (section 6.5); `wasi_thread_start` in a threaded module |
 | Function types | params map `i32/bool/str` and every pointer, array, enum, union, result, and function reference to `i32`, `i64 -> i64`, `f32 -> f32`, `f64 -> f64`; a `void` return is an empty result list |
 | Locals | every `let` anywhere in the body (including nested in `if`/`while`/`loop`/`block`) plus every `loop` induction variable becomes one wasm local, allocated after the params; then `res` for a function with `ens`, the two scratch locals, and the two I/O scratch locals |
@@ -496,7 +497,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `ltu lteu gtu gteu` on `i32` / `i64` | Yes | Yes | Yes (`i32.lt_u` ... `i64.ge_u`) | Yes |
 | `checked.add checked.sub checked.mul` on `i32` / `i64` | Yes | Yes, error `Integer overflow in checked.add` | Yes, trap on overflow (section 8.2) | Yes |
 | `i64` literals | Yes | Yes | Yes | Yes |
-| `f64` literals | Yes | Yes | Yes | Yes when the digits form an integer ≤ 2^53 with ≤ 22 after the point (section 6.4); otherwise compile error 973 |
+| `f64` literals | Yes | Yes | Yes | Yes, with Rust's bits for every literal (section 6.4) |
 | `i64.extend_s i64.extend_u i32.wrap` | Yes | Yes | Yes | Yes |
 | `f64.convert_i64_s i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64` | Yes | Yes (`trunc` errors on NaN / out of range) | Yes (`trunc` traps) | Yes |
 | `f64.sqrt` | Yes | Yes (Rust's correctly rounded `sqrt`) | Yes | Yes |
@@ -530,7 +531,7 @@ Rule of thumb for code generators: whatever `aipl verify` accepts runs in the VM
 It infers each expression's static type the way `expr_type` in `src/compiler/wasm.rs` does (`node_type` / `group_type`) and selects `i32.*` / `i64.*` / `f32.*` / `f64.*` instructions, `if` and `match_result` block types, struct field and array element load/store widths, and alignment from it. It runs in the VM today; compiled to wasm it also compiles itself (section 10.6). Limits that differ from the Rust backend:
 
 - **One module, no imports.** `compile_module` itself takes a single import-free source. Imports are flattened first by `aipl_src/resolver.aipl` (section 11), which `aipl compile --self` runs in the VM; `aipl_src/driver.aipl` chains the two (`driver.compile_file`), and its `main`/`_start` make it a command: compiled to wasm, `wasmtime run --dir . --env AIPL_PATH aiplc.wasm IN.aipl OUT.wasm` compiles a multi-file program with no Rust involved (standard library at `$AIPL_STD`, else `aipl_src/std/`); `aipl compile --exe aipl_src/driver.aipl -o aiplc` makes the same command an executable (`./aiplc IN.aipl OUT.wasm`); exit status 0, 1 on a resolve, type, compile, or write error, 2 on bad usage. The driver type-checks before compiling (`front.aipl`), so it rejects every program `aipl verify` rejects, with the same message; it reports the error as `path: line:col: message` in the file the error is in, mapping the flat program back through the resolver's and the generics pass's re-printing (`origins.aipl`; an error inside a generic template is reported at the template). In the VM: `aipl eval aipl_src/driver.aipl -- IN.aipl OUT.wasm`. The byte-parity tests in `tests/test_selfhost.rs` still flatten with the Rust resolver and `src/printer.rs` (`tests/test_printer.rs` checks that round trip), which keeps them independent of the AIPL resolver. A qualified call such as `(call util.f)` resolves only if a function with that exact name is defined in the source given.
-- **Float literals must be exact by construction.** `compile_module` computes an `f64` literal as `m / 10^k`, where `m` is the integer formed by all its digits and `k` is the number of digits after the point, using `f64.convert_i64_s` and one division. That equals Rust's correctly rounded `parse::<f64>` whenever `m ≤ 2^53` and `k ≤ 22`. Anything else (for example `9007199254740993.0`) is compile error 973 rather than a possibly different rounding. Both tokenizers read the same literals (a leading `+`, exponents); an exponent (`1.5e3`) is compile error 973 here, since `m / 10^k` cannot evaluate it exactly.
+- **Float literals get Rust's bits.** `compile_module` converts an `f64` literal with `std/float`'s `from_decimal` (section 12.6), which rounds to the nearest double, ties to even, as Rust's `parse::<f64>` does: one IEEE multiplication or division when the digits form an integer of at most 2^53 and the power of ten is at most 22 either way, and exact big-integer arithmetic (`std/bigint`) otherwise, subnormals, infinities, and halfway cases included. Both tokenizers read the same literals (a leading `+`, exponents such as `1.5e3`).
 
 Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first, `(sizeof compiler.Token)` each), AST `(sizeof compiler.Node) * (tokens + 2)`, and output, section scratch, and function scratch `4 * src_len + 64 KiB` each. Memory is grown with `mem.grow` as needed, so a compile works within the 32768-page limit shared by both backends. Compiling the whole self-hosted toolchain (driver, resolver, checker, codegen, and the standard library it uses), checking included, takes about 47 MB of process memory in the native `aiplc` (2026-10-06).
 
@@ -550,7 +551,6 @@ Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first,
 | 101 | `break` or `continue` with no enclosing loop (the Rust checker rejects this first) |
 | 768 | string literals exceed the self-hosted buffers (64 KiB of literal data or 1364 distinct literals), or the 1 MiB limit both backends share |
 | 971 | a symbol that is not a local or parameter |
-| 973 | a float literal outside the exact range above |
 | 974 | `Name.member` naming a member its enum does not have (`consts.aipl`; the Rust resolver reports it first) |
 | 975 | `make` or a `match` arm naming a variant its union does not have (the Rust checker reports it first) |
 | 987 | a form whose head is not a recognised keyword |
@@ -561,7 +561,15 @@ Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first,
 
 A compiled module runs under `aipl-run` (`src/bin/aipl_run.rs`), the toolchain's native launcher: wasm cannot start itself, so a small Rust program embeds wasmtime, loads the module (compiled by Cranelift at start-up, about 10 ms for a small program), and connects it to the operating system. It contains no compiler logic. On Linux x86-64, `aipl compile --exe` writes native executables instead (section 6.6), which need no launcher.
 
-- **Entry point.** A module with a zero-argument `main` and no `_start` of its own gets an exported `_start` that calls `main` and discards its result, so the module is a WASI command. The exit status is 0 when `_start` returns, or the value given to `sys.exit`, which must be 0-125: as under wasmtime, any other value (including a negative one) is an error reported with status 134, since shells reserve 126 and up. A trap prints one line to stderr, the program as invoked and the reason (`./prog: wasm trap: integer divide by zero`), and exits with 134; `AIPL_BACKTRACE=1` makes `aipl-run` print wasmtime's full report instead. Native executables print the same line. (`main`'s return value is not the exit status: many programs return data.)
+- **Entry point.** A module with a zero-argument `main` and no `_start` of its own gets an exported `_start` that calls `main` and discards its result, so the module is a WASI command. The exit status is 0 when `_start` returns, or the value given to `sys.exit`, which must be 0-125: as under wasmtime, any other value (including a negative one) is an error reported with status 134, since shells reserve 126 and up. A trap (a failed contract or bounds check included) prints the program as invoked and the reason, then its call chain, the functions it happened in, innermost first, and exits with 134:
+
+  ```
+  ./prog: wasm trap: integer divide by zero
+    at math.div
+    at main
+  ```
+
+  The chain comes from the module's name section (section 6.2) and leaves out the generated functions (`_start`, `wasi_thread_start`, and the `aipl.` check helpers) and any without a name; it shows at most 32 frames, then `  ... N more`. A trap in a spawned thread shows that thread's chain. The exit-status error above is not a trap: one line. `AIPL_BACKTRACE=1` makes `aipl-run` print wasmtime's full report instead. Native executables print the same lines, walking their own frame pointers. (`main`'s return value is not the exit status: many programs return data.)
 - **What the program sees.** The real stdin, stdout, and stderr; the command line (argv[0] is the program); the environment; the working directory as preopened fd 3 and `/` as fd 4, so relative and absolute paths both work (section 4.C); and, for a threaded module, the wasi-threads `thread-spawn` import (section 4.D). `--sandbox` grants only the working directory.
 - **`aipl compile --exe --target wasm FILE -o prog`** (the default on platforms without a native backend) writes the launcher followed by the module and a 16-byte trailer: flags (`u32` LE, bit 0 = sandbox), the module's length (`u32` LE), and the magic `AIPLEXE1`. The launcher finds a module appended to its own file and runs it; without one it runs a `.wasm` named on its command line (`aipl-run [--sandbox] prog.wasm ARGS...`). The result is one file with no other dependency, about 18 MB in a release build (the size is wasmtime), built for the host's OS and CPU. The `.wasm` remains the portable form.
 - The launcher is found as `aipl-run` next to the `aipl` binary, or at `$AIPL_RUNNER`. Writing the bundle is done by the Rust CLI only because WASI cannot set a file's executable bit; the format is plain bytes.
@@ -571,7 +579,7 @@ A compiled module runs under `aipl-run` (`src/bin/aipl_run.rs`), the toolchain's
 `aipl compile --exe FILE -o prog` on Linux x86-64 (or `--target native`) writes a native executable: an ELF file of machine code, statically linked, with no libc, launcher, or runtime (`aipl_src/native/`, designed in `docs/design/NATIVE_BACKEND_PLAN.md`). It is made from the same wasm module (`aipl_src/native/native.aipl` translates wasm to x86-64; the CLI runs it in its embedded wasmtime and sets the file's execute bit), so its behaviour is the wasm module's, and every test program is checked to match `aipl-run`'s output, error output, exit status, and files byte for byte (`tests/test_native.rs`).
 
 - **Size and speed.** `word_count` is about 57 KB; the AIPL compiler itself about 910 KB (the launcher build is 18 MB). Start-up is a few milliseconds (no engine to load or compile). The translator is a baseline one-pass compiler: compiling the compiler takes about 25% longer than under wasmtime (0.37 s against 0.30 s, which includes Cranelift's compile), and tight loops run 2-6 times slower than Cranelift's code (docs/BENCHMARKS.md).
-- **Same behaviour as section 6.5:** `_start`/`main`, exit statuses (0-125, otherwise an error with 134), traps as one line with status 134 (`./prog: wasm trap: ...`; WASI functions given a bad pointer report wasmtime's `Pointer out of bounds: Region { start: S, len: L }`), the command line, environment, stdio, fd 3 = working directory, fd 4 = `/` (not with `--sandbox`), threads (one OS thread each), clocks, and randomness.
+- **Same behaviour as section 6.5:** `_start`/`main`, exit statuses (0-125, otherwise an error with 134), traps with their call chain and status 134 (`./prog: wasm trap: ...` and `  at f` lines; WASI functions given a bad pointer report wasmtime's `Pointer out of bounds: Region { start: S, len: L }`), the command line, environment, stdio, fd 3 = working directory, fd 4 = `/` (not with `--sandbox`), threads (one OS thread each), clocks, and randomness.
 - **File access.** Paths resolve beneath their directory descriptor with `openat2(RESOLVE_BENEATH)`, so the kernel refuses `..` escapes, absolute paths under fd 3, and symlinks leading out, as wasmtime's preopens do. File descriptors are numbered as under wasmtime (the lowest free).
 - **Platforms.** Linux x86-64 only; elsewhere `--exe` writes the launcher bundle (section 6.5), and `--target native` is an error. `--target wasm` asks for the bundle on Linux too.
 
@@ -588,7 +596,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 1. `set!` has type void.
 2. `if` whose two branches are both void is void; otherwise both branches must have the same non-void type — an if mixing void and non-void is a type error with a message suggesting `(block ... value)`.
 3. `let` has type void (it declares, it does not yield); a function body's last expression must therefore be a value expression when the return type is non-void.
-4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. A name declared again in a sibling scope (another block, another `match` arm) keeps the type it had: a compiled function has one local per name, so `(block (let y:f64 1.5)) (block (let y:i32 3))` is `'y' is I32 here but F64 elsewhere in this function`.
+4. `let` is block-scoped: a `let` inside if/while/loop/block/match arms is visible only within that construct; shadowing an outer name is a type error. A name declared again in a sibling scope (another block, another `match` arm) keeps the type it had: a compiled function has one local per name, so `(block (let y:f64 1.5)) (block (let y:i32 3))` is `'y' is i32 here but f64 elsewhere in this function`.
 5. `set!` on an undeclared name is a type error (and a VM runtime error); there are no implicit globals.
 6. `match_result` binds its `ok` variable to the result's ok type and its `err` variable to the error type. `(ok v)` takes its ok type from `v` and defaults its error type to `i32`; `(ok:E v)` names the error type, and `(err:T e)` names the ok type (section 7.7).
 
@@ -643,7 +651,7 @@ A function body is a sequence of expressions. The **last** expression's type mus
       1)              ;; type i32
   n)
 ```
-Checker output: `3:5: If branch type mismatch: then is Void, else is I32. If mixing void and non-void, consider wrapping in (block ... value)`.
+Checker output: `3:5: If branch type mismatch: then is void, else is i32. If mixing void and non-void, consider wrapping in (block ... value)`.
 
 ### 7.4 Void statements and void `if`
 
@@ -700,7 +708,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
   (fn main [] -> i32
     (call safe_div 10 0)))
 ```
-`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). Compiled (`aipl compile`, then `aipl run`), it stops with `contracts_demo.wasm: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0` and exit status 134. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to Bool, got I32`.
+`aipl eval contracts_demo.aipl` fails with `Pre-condition failed in 'safe_div' at 3:10: (req (neq den 0)) with num = 10, den = 0`: the contract as source, its position, and the arguments (plus `res` for a failed `ens`). Compiled (`aipl compile`, then `aipl run`), it stops with `contracts_demo.wasm: Pre-condition failed in 'safe_div': (req (neq den 0)) with num = 10, den = 0` and exit status 134. A `req` or `ens` that is not `bool` is rejected at check time: `L:C: Contract expression in 'safe_div' must evaluate to bool, got i32`.
 
 ### 7.7 Results
 
@@ -797,6 +805,18 @@ Lowering (wasm and the self-hosted compiler): `return` is the `return` instructi
 
 A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal because a `block` may end in a value) leaves the whole expression at once in both backends: operands after it are not evaluated.
 
+### 7.11 Recursion depth
+
+Calls nest as deep as the stack allows. Running out of stack stops the program with a message in every backend, never a crash:
+
+| Backend | Room | Nested calls of a small function | Failure |
+|---|---|---|---|
+| `aipl-run` (wasm) | wasmtime's 512 KiB wasm stack | about 32,000 | `prog.wasm: wasm trap: call stack exhausted`, the call chain, exit 134 |
+| native executable | 8 MiB per thread, the main thread's included (its own stack, so `ulimit -s` does not matter), below a guard page | about 170,000 | the same, with the program's name |
+| VM | 192 MiB of the thread's stack | about 40,000 | `Call stack exhausted calling 'f': calls are nested too deeply (a recursion that does not end?)` |
+
+A call's room is its frame: a function with many locals or deeply nested expressions gets fewer calls. Code meant to run under `aipl-run` should stay well below 30,000 nested calls; walk long lists and deep structures with `while`. In a native executable, each function's prologue compares the stack pointer, less the frame it is about to push, with a limit 256 KiB above the stack's low end and traps below it, which leaves room for the host routines and the trap's own output.
+
 ---
 
 ## 8. Integer Semantics
@@ -821,7 +841,7 @@ A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal becaus
 
 ### 8.1 `i64`
 
-`i64` is a first-class declarable type with the same wrapping two's-complement semantics at 64 bits. There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: I32 vs I64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
+`i64` is a first-class declarable type with the same wrapping two's-complement semantics at 64 bits. There is **no implicit widening**: an `i32` and an `i64` never meet in one operation, and the checker rejects `(+ 1 2i64)` with `Type mismatch in binary op: i32 vs i64`. Conversions are explicit ops that map one-to-one onto wasm instructions.
 
 | Form | Meaning | wasm |
 |---|---|---|
@@ -874,7 +894,7 @@ The wasm lowering (`compile_checked` in `src/compiler/wasm.rs`, `codegen.aipl` a
 
 ### 8.3 Type-directed code generation
 
-The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type F64`.
+The wasm backend selects instructions from the static operand type (`i32` / `i64` / `f32` / `f64`), and an `if` whose branches are `i64` or `f64` gets a matching block result type. `f64` arithmetic (`+ - * /`) and comparisons therefore compile and validate. `%`, `divu`, `remu`, shifts, and bitwise ops on floats are rejected at compile time with `Wasm Codegen: <op> is not supported for operands of type f64`.
 
 **Status:** the wrapping rules above for both widths are implemented in `src/vm.rs`, covered by `tests/test_i64.rs` (VM result plus wasm validation), and proven equal across backends by `tests/test_differential.rs`, which executes every case in this section in both the VM and wasmtime and asserts identical results. When the two disagree, wasm is right and the VM is fixed (section 10.4).
 
@@ -888,7 +908,7 @@ Every parser and checker error is a single line of the form
 <line>:<col>: <message>
 ```
 
-with 1-based line and column of the offending token or the opening `(` of the offending form. Syntax errors, which the resolver finds while reading a file, are prefixed with that file's path (`examples/x.aipl: 3:5: Unknown op/keyword: badop`); type errors are not, so a type error in an imported module gives a position but not the file (the self-hosted `aiplc` names the file for every error, section 6.4). Only the first error is reported. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names neither the function nor the line (`./prog: wasm trap: integer divide by zero`).
+with 1-based line and column of the offending token or the opening `(` of the offending form. Every error found before run time is prefixed with the path of the file it is in (`examples/x.aipl: 3:5: Unknown op/keyword: badop`), whether the resolver, the parser, or the checker finds it, and in both toolchains (section 6.4). An error inside a generic instance names the template's file, or the file that wrote the type argument when the error is at that argument. A syntax error, or an error in a definition (struct, enum, union, constant, function signature), is reported alone, since everything after depends on it. Otherwise every function body is checked, and each failing function reports its first error, one per line in source order; both toolchains give the same lines. Contract failures in the VM carry the contract's position (section 7.6); compiled ones name the function and contract but not the position. Other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position, and a compiled trap names the functions on its call chain but not the line (section 6.5).
 
 Representative messages, exactly as produced:
 
@@ -896,54 +916,54 @@ Representative messages, exactly as produced:
 |---|---|
 | missing `)` at end of file | `1:1: this bracket is never closed` (the position of the unclosed bracket) |
 | extra `)` after the module | `3:1: unexpected input after the module's closing ')'` |
-| `if` with no else branch | `1:37: Unexpected token parsing expression: RParen` (the `)` where the else was expected) |
+| `if` with no else branch | `1:37: Unexpected token parsing expression: ')'` (the `)` where the else was expected) |
 | unknown operator | `3:5: Unknown op/keyword: badop` |
 | unterminated string | `4:12: Unterminated string literal` |
-| wrong literal type in `let` | `3:5: Type mismatch in 'let': expected I32, got Bool` |
+| wrong literal type in `let` | `3:5: Type mismatch in 'let': expected i32, got bool` |
 | undefined name | `3:5: Undefined variable 'x'` |
 | `set!` before `let` | `3:5: Undefined variable 'x' in set!` |
-| `if` branches disagree | `3:5: If branch type mismatch: then is Void, else is I32. If mixing void and non-void, consider wrapping in (block ... value)` |
+| `if` branches disagree | `3:5: If branch type mismatch: then is void, else is i32. If mixing void and non-void, consider wrapping in (block ... value)` |
 | `let` of a name already in scope | `3:12: Cannot shadow existing variable 'x'` |
-| function body ends in `let` | `2:3: Function 'f' expects return type I32, but body returned Void` |
-| mixed `i32` / `i64` operands | `3:5: Type mismatch in binary op: I32 vs I64` |
+| function body ends in `let` | `2:3: Function 'f' expects return type i32, but body returned void` |
+| mixed `i32` / `i64` operands | `3:5: Type mismatch in binary op: i32 vs i64` |
 | unknown struct | `3:5: Unknown struct 'P'` |
 | unknown field | `3:5: Struct 'P' has no field 'z'` |
-| wrong `put` value type | `3:5: Type mismatch writing to field 'P.x': expected I32, got Bool` |
+| wrong `put` value type | `3:5: Type mismatch writing to field 'P.x': expected i32, got bool` |
 | struct defined twice in one module | `1:30: Duplicate struct definition 'P'` |
-| `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got Ptr(Struct("Node"))` |
-| an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got I32` |
-| arithmetic on two pointers, `(+ p p)` | `3:5: Add on Ptr(Struct("Point")): pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
+| `get`/`put` through the wrong pointer | `4:5: get Point.x needs a (ptr Point), got (ptr Node)` |
+| an `i32` where a pointer is expected | `3:5: get Point.x needs a (ptr Point), got i32` |
+| arithmetic on two pointers, `(+ p p)` | `3:5: + on (ptr Point): pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast` |
 | a pointer plus a number, `(+ p 4)` | the same message as two pointers |
-| arithmetic on an enum, `(+ k 1)` | `3:5: Add on enum 'Kind': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast Kind n)` |
-| two different enums compared | `3:5: Type mismatch in comparison: Enum("C") vs Enum("D")` |
+| arithmetic on an enum, `(+ k 1)` | `3:5: + on enum 'Kind': enums have no arithmetic; compare them with eq/neq, or convert with (enum.ord x) and (enum.cast Kind n)` |
+| two different enums compared | `3:5: Type mismatch in comparison: C vs D` |
 | an enum member that does not exist | `m.aipl: 3:5: enum 'Kind' has no member 'circle'` |
 | a struct written as a type, `p:Point` | `1:30: 'Point' is a struct, which is only used through a pointer: write (ptr Point)` |
 | a constant reused as a variable | `m.aipl: 3:10: 'MAX' is a constant; it cannot also name a variable, parameter, or field` |
 | a constant whose value does not match its type | `m.aipl: 1:25: constant 'NN' is declared i32 but its value is not an i32 literal` |
-| `arr.get` with the wrong element type | `4:5: arr.get I64 needs an (arr I64), got Array(I32)` |
+| `arr.get` with the wrong element type | `4:5: arr.get i64 needs an (arr i64), got (arr i32)` |
 | `(ptr i32)` | `1:20: (ptr i32) is not a type: ptr points to a struct; for a sequence of i32 use (arr i32)` |
-| `call_ref` signature differs from the reference's type | `3:5: call_ref signature Fn([I32, I32], I64) does not match the function's type Fn([I32, I32], I32)` |
-| wrong `thread.spawn` worker | `1:51: thread.spawn needs a worker of type (fn [i32] -> i32), got Fn([I64], I32)` |
+| `call_ref` signature differs from the reference's type | `3:5: call_ref signature (fn [i32 i32] -> i64) does not match the function's type (fn [i32 i32] -> i32)` |
+| wrong `thread.spawn` worker | `1:51: thread.spawn needs a worker of type (fn [i32] -> i32), got (fn [i64] -> i32)` |
 | array index out of range (runtime, VM) | `Array index out of bounds: index 3 for array of length 3` |
-| 64-bit or float result payload | `1:40: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got I64` |
-| non-bool `if` condition | `3:5: If condition must be Bool, got I32` |
+| 64-bit or float result payload | `1:40: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got i64` |
+| non-bool `if` condition | `3:5: If condition must be bool, got i32` |
 | `break` outside a loop | `3:5: break is only allowed inside a while or loop body` |
-| `return` with the wrong type | `3:5: return value has type Bool, but the function returns I32` |
+| `return` with the wrong type | `3:5: return value has type bool, but the function returns i32` |
 | `cond` without `else` | `1:32: cond needs a final (else ...) clause, as if needs an else branch` |
 | wrong arity | `4:5: Function 'add' expects 2 arguments, got 1` |
-| wrong argument type | `4:5: Arg 1 of 'add' expects I32, got Bool` |
-| body/return mismatch | `2:3: Function 'f' expects return type I32, but body returned Bool` |
+| wrong argument type | `4:5: Arg 1 of 'add' expects i32, got bool` |
+| body/return mismatch | `2:3: Function 'f' expects return type i32, but body returned bool` |
 | an op that does not exist | `3:5: there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena` |
-| non-`str` `sys.print` | `3:5: sys.print prints str values, got I32; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)` |
+| non-`str` `sys.print` | `3:5: sys.print prints str values, got i32; for numbers use io.print_int / io.print_i64 / io.print_f64 (import io)` |
 | `(+ str str)` | `3:5: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)` |
-| arithmetic or ordering on something that is not a number | `3:5: Add needs numbers (i32, i64, f32, f64), got Bool` / `Mod is integer arithmetic (i32 or i64), got F64` / `Lt on Str: only numbers are ordered; bool and str compare only with eq/neq` |
-| wrong operand count or type for an op | `3:5: atomic.cas takes 3 operands, (atomic.cas p expected new); got 2` / `atomic.add operand 2 must be I32, got I64` |
-| non-`bool` contract | `1:50: Contract expression in 'safe_div' must evaluate to Bool, got I32` |
-| store or lock at literal address 0 | `3:5: AtomicLock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
-| literal address in 64-1023 | `3:5: MemStore32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
+| arithmetic or ordering on something that is not a number | `3:5: + needs numbers (i32, i64, f32, f64), got bool` / `% is integer arithmetic (i32 or i64), got f64` / `lt on str: only numbers are ordered; bool and str compare only with eq/neq` |
+| wrong operand count or type for an op | `3:5: atomic.cas takes 3 operands, (atomic.cas p expected new); got 2` / `atomic.add operand 2 must be i32, got i64` |
+| non-`bool` contract | `1:50: Contract expression in 'safe_div' must evaluate to bool, got i32` |
+| store or lock at literal address 0 | `3:5: atomic.lock at address 0: bytes 0-3 are the heap cursor owned by mem.alloc; locking it hangs and storing to it corrupts the allocator. Take memory from (mem.alloc n) instead` |
+| literal address in 64-1023 | `3:5: mem.store32 at literal address 512: bytes 64-1023 are the reserved runtime block. Take memory from (mem.alloc n) instead` |
 | locking a word that is not 0/1 (runtime, VM) | `atomic.lock: word at ptr 1024 holds 1024, which is not a lock state (0 = free, 1 = held); this address is data, not a mutex. Allocate a dedicated lock word with (mem.alloc 4)` |
 
-Type names in messages are the Rust `Debug` spelling, not AIPL syntax: `I32`, `F64`, `Bool`, `Str`, `Void`, `ResultType(I32, I32)`, `Ptr(Struct("Point"))`, `Array(I32)`, `Fn([I32], I32)`. A few messages also give the AIPL spelling of the expected type (`needs a (ptr Point)`).
+Types and ops in messages are written as AIPL source writes them: `i32`, `bool`, `(result i32 i32)`, `(ptr Point)`, `(arr i32)`, `(fn [i32] -> i32)`, an enum or union by its name, and ops as `+`, `lt`, `mem.store32`; both checkers spell them the same.
 
 ---
 
@@ -1055,7 +1075,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (28 files, 287 tests as of 2026-10-06): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (28 files, 292 tests as of 2026-10-06): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -1096,7 +1116,7 @@ To run compiled I/O outside the tests: `aipl run module.wasm` (the working direc
 
 ### 10.6 Self-hosted byte parity (`tests/test_selfhost.rs`)
 
-`self_host(src)` runs `codegen.compile_module` in a fresh VM, validates the output with `wasmparser`, and returns the bytes or the compile error code. `assert_self_hosted_matches_rust` asserts the whole module equals `WasmCompiler::compile` for the same source and prints the first differing function and byte if not. Coverage: minimal, `add`, `i64` (literals at both extremes, unsigned ops, an `i64` struct field after a `bool`, `i64` arrays, `mem.load64`/`store64`), `f32`/`f64` parameters, arithmetic and struct fields, 200 pseudo-random float literals plus out-of-range ones (973), `(ok:T v)` with compound `T`, an escaped quote inside a string, `compute` (loop + call), structs with `bool`/`str` fields, arrays, `sys.print`, results (including `match_result` as a statement), file I/O, repeated string literals with a `str` let plus `mem.alloc`/`mem.grow`/`sys.exit`, a mixed program, void `if` with block-scoped `let`s and an empty `(block)` else, a store, arrays plus results, `aipl_src/memory.aipl`, `aipl_src/compiler.aipl`, and codegen.aipl compiling itself (the longest of these tests: the self-hosted compiler runs in the VM). Behavioural checks run the self-hosted output in wasmtime: the store guard traps on bytes 0-3 and 64-1023 and nowhere else in a module without literals, and also on the literals in a module with 800 bytes of them, whose heap then starts at 1832 in both the VM and wasm; arrays and results compute the same values as the VM and a negative `arr.new` traps; a file write plus `sys.print` under WASI produces the file and the exact stdout. Compile errors 95, 96, and 768 are asserted for a result-typed field, unknown structs, and a 70 000-byte literal (over the self-hosted 64 KiB buffer).
+`self_host(src)` runs `codegen.compile_module` in a fresh VM, validates the output with `wasmparser`, and returns the bytes or the compile error code. `assert_self_hosted_matches_rust` asserts the whole module equals `WasmCompiler::compile` for the same source and prints the first differing function and byte if not. Coverage: minimal, `add`, `i64` (literals at both extremes, unsigned ops, an `i64` struct field after a `bool`, `i64` arrays, `mem.load64`/`store64`), `f32`/`f64` parameters, arithmetic and struct fields, 524 float literals (200 random short ones, 300 random ones with up to 40 digits and exponents to ±330, and hard cases: halfway points, subnormals, infinities), `(ok:T v)` with compound `T`, an escaped quote inside a string, `compute` (loop + call), structs with `bool`/`str` fields, arrays, `sys.print`, results (including `match_result` as a statement), file I/O, repeated string literals with a `str` let plus `mem.alloc`/`mem.grow`/`sys.exit`, a mixed program, void `if` with block-scoped `let`s and an empty `(block)` else, a store, arrays plus results, `aipl_src/memory.aipl`, `aipl_src/compiler.aipl`, and codegen.aipl compiling itself (the longest of these tests: the self-hosted compiler runs in the VM). Behavioural checks run the self-hosted output in wasmtime: the store guard traps on bytes 0-3 and 64-1023 and nowhere else in a module without literals, and also on the literals in a module with 800 bytes of them, whose heap then starts at 1832 in both the VM and wasm; arrays and results compute the same values as the VM and a negative `arr.new` traps; a file write plus `sys.print` under WASI produces the file and the exact stdout. Compile errors 95, 96, and 768 are asserted for a result-typed field, unknown structs, and a 70 000-byte literal (over the self-hosted 64 KiB buffer).
 
 **Bootstrap fixpoint.** `self_hosted_compiler_reproduces_itself_under_wasmtime` compiles the self-hosted compiler with the Rust backend (stage 1), runs that wasm module under wasmtime on its own source, and requires the output (stage 2) to be byte-identical to stage 1. The second compile involves neither the VM nor any Rust compiler code, and takes about 20 ms. Since P9, codegen.aipl itself uses `i64` and `f64` arithmetic (literal parsing, LEB128, float literal bits), so the fixpoint also covers those paths of the self-hosted compiler.
 
@@ -1121,7 +1141,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 
 - `(import name)` finds `name.aipl` by searching, in order: the importing file's directory, the entry file's directory, the standard library (`aipl_src/std/`), then each directory listed in the colon-separated `AIPL_PATH` environment variable. The first match wins, so a local `io.aipl` shadows the standard one. The resolver parses it and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
 - An import may name a file in a subdirectory: `(import native/wasm_reader)` finds `native/wasm_reader.aipl` in the same places, relative to each. The module is named by the last segment (`wasm_reader.decode`), so a sibling inside `native/` that writes `(import wasm_reader)` reaches the same module. Two different files with the same name in one program are an error (`two different modules are named 'x'`). An import path is names separated by `/`: no leading `/`, no `.` or `..`.
-- Resolution is implemented twice: `src/resolver.rs` (used by every `aipl` command) and `aipl_src/resolver.aipl` (used by `aipl compile --self` and by the self-hosted toolchain compiled to wasm). The AIPL resolver produces flat source text: every struct, then every function, imported modules first in resolution order, comments dropped. The host passes the standard library directory; the resolver reads `AIPL_PATH` itself with `std/os`. `tests/test_resolver_aipl.rs` requires both to produce the same compiled bytes for every program with imports in the repository, plus aliases, diamonds, cycles, and missing modules (`circular import: NAME`, `cannot find module: NAME`).
+- Resolution is implemented twice: `src/resolver.rs` (used by every `aipl` command) and `aipl_src/resolver.aipl` (used by `aipl compile --self` and by the self-hosted toolchain compiled to wasm). The AIPL resolver produces flat source text: every struct, then every function, imported modules first in resolution order, comments dropped. The host passes the standard library directory; the resolver reads `AIPL_PATH` itself with `std/os`. `tests/test_resolver_aipl.rs` requires both to produce the same compiled bytes for every program with imports in the repository, plus aliases, diamonds, cycles, and missing modules (`PATH: Circular import detected: ...`, `Cannot resolve import 'NAME': no 'NAME.aipl' found in ...` listing the places searched).
 - Import depth is flattened to one level: a function from a module imported by an import is still `directimport.fn`, not `a.b.fn`. Diamond imports produce one copy. Cycles are an error naming the file.
 - The entry module's own functions keep bare names. In a compiled `.wasm`, exports are `main` and `util.double`.
 - Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
@@ -1262,6 +1282,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `heap` | a general-purpose allocator with per-object free (docs/design/HEAP_PLAN.md): `make [] -> (ptr heap.Heap)`, `(call (heap.create T) h) -> (ptr T)` and `(call (heap.destroy T) h p)`, `(call (heap.array T) h n) -> (arr T)` and `(call (heap.free_array T) h a)`, `raw [h n] -> i32` and `free_raw [h p n]` (n zeroed bytes, 8-aligned), `live [h]` (blocks not freed), `live_bytes [h]`, `reserved [h]`. A double free, a free of memory this heap did not allocate, a free with the wrong size or type, and a write after free (found when the block is reused) stop the program with a contract failure naming the check; freed memory reads as `0xDEADBEEF` words |
 | `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]`, `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `custom [state alloc_fn free_fn]` for a program's own allocator (`alloc_fn [state n] -> i32`, 8-aligned; `free_fn [state p n]`) |
 | `time` | timing code with the monotonic clock: `now [] -> i64` (nanoseconds), `since [start] -> i64`, `push_duration [b ns]` ("850 ns", "12.345 us", "3.071 ms", "4.200 s": three decimals in the largest fitting unit, integer arithmetic), `report [label start]` ("label: 12.345 ms" on stderr, so a program's output stays clean) |
+| `float` | `from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `tests/test_std.rs` compares it with Rust on 400,000 literals |
 | `bigint` | arbitrarily large signed integers, changed in place (reuse numbers rather than making new ones; nothing is freed): `(ptr bigint.Int)` from `from_i32 [v]`, `with_capacity [limbs]`; `set_i32 [a v]`, `assign [dst src]`, `add [a b]`, `sub [a b]`, `add_mul_small [a b m]` (a += b·m), `sub_mul_small [a b m]`, `mul_small [a m]` (\|m\| < 2^31), `div_small [a d] -> i32` (a /= d toward zero, returns the remainder, 0 < d < 2^31), `div_small_quotient [a b] -> i32` (a ≥ 0, b > 0, quotient < 2^31: returns a / b, leaves the remainder in a), `negate [a]`, `compare [a b] -> i32`, `sign [a] -> i32`, `is_zero [a]`, `limb_count [a]`, `push_decimal [out a]` |
 
 Containers are generic (section 4.H): a list of points is `(ptr (vec.Vec (ptr Point)))`, filled with `(call (vec.push (ptr Point)) v p)` and read with `(call (vec.at (ptr Point)) v i)`, with no casts.
@@ -1313,6 +1334,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
 | returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
+| recursion over a long list or a deep tree (100,000 nodes) | it stops with `call stack exhausted` (section 7.11); iterate with `while` and an explicit cursor or work list |
 | `(and a b c)` with three operands | `and`/`or` take exactly two: `(and a (and b c))`. They short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |

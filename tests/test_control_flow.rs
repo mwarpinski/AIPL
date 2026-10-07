@@ -214,9 +214,9 @@ fn misplaced_control_flow_is_rejected() {
     let err = check_err("(module m (fn f [] -> i32 (while (continue) 0) 0))");
     assert!(err.contains("continue is only allowed inside a while or loop body") || err.contains("While condition"), "{err}");
     let err = check_err("(module m\n  (fn f [] -> i32\n    (return true)))");
-    assert!(err.starts_with("3:5: return value has type Bool, but the function returns I32"), "{err}");
+    assert!(err.starts_with("3:5: return value has type bool, but the function returns i32"), "{err}");
     let err = check_err("(module m (fn f [] -> void (return 1)))");
-    assert!(err.contains("return value has type I32, but the function returns Void"), "{err}");
+    assert!(err.contains("return value has type i32, but the function returns void"), "{err}");
     let err = check_err("(module m (fn f [n:i32] -> i32 (req (block (return 1) true)) n))");
     assert!(err.contains("return is not allowed in a contract"), "{err}");
     // return is a statement: it cannot stand in for a value in an if
@@ -267,6 +267,24 @@ pub const SHORT_CIRCUIT: &str = r#"
       (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
     (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
 
+  ;; a return inside a return's value leaves with the inner value
+  (fn return_in_return [n:i32] -> i32
+    (return (block (if (gt n 0) (return (* n 10)) (block)) -3)))
+
+  ;; a return inside a call's argument: the call never happens, and the
+  ;; caller still returns (the VM's callee once took the return as its own)
+  (fn add_one [x:i32] -> i32 (+ x 1))
+  (fn return_in_argument [n:i32] -> i32
+    (let r:i32 (call add_one (block (if (gt n 0) (return 7) (block)) n)))
+    (+ r 100))
+
+  ;; a break inside a set!'s value assigns nothing
+  (fn break_in_assignment [n:i32] -> i32
+    (let x:i32 5)
+    (loop i 0 n 1
+      (set! x (+ (block (if (eq i 2) (break) (block)) i) 10)))
+    x)
+
   ;; nested, as the checker requires for more than two operands
   (fn in_range [x:i32] -> bool (and (gte x 0) (and (lt x 10) (neq x 5)))))
 "#;
@@ -284,6 +302,13 @@ fn and_or_short_circuit_in_both_backends() {
     // i = 0, 1 run the second operand; i = 2 breaks before it
     assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 9), 201);
     assert_eq!(run_both(SHORT_CIRCUIT, "jump_in_operand", 60), -7);
+    // found by tools/run_fuzz.py: the VM disagreed with compiled code on all three
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_return", 4), 40);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_return", 0), -3);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_argument", 1), 7);
+    assert_eq!(run_both(SHORT_CIRCUIT, "return_in_argument", 0), 101);
+    assert_eq!(run_both(SHORT_CIRCUIT, "break_in_assignment", 9), 11);
+    assert_eq!(run_both(SHORT_CIRCUIT, "break_in_assignment", 1), 11);
     assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 5), 0);
     assert_eq!(run_both(SHORT_CIRCUIT, "in_range", 7), 1);
 }
@@ -308,4 +333,20 @@ fn a_call_in_the_loop_bound_runs_once() {
     (loop i 1 (call next_count p) (+ 0 1) (set! passes (+ passes 1)))
     (+ (* 10 (mem.load32 p)) passes)))"#;
     assert_eq!(run_both(src, "f", 0), 13);
+}
+
+/// Recursion that does not end fails with an error naming the function,
+/// instead of overflowing the VM's own stack (which aborts the process),
+/// as compiled code traps with "call stack exhausted". Deep but finite
+/// recursion still runs.
+#[test]
+fn running_out_of_stack_is_an_error() {
+    let src = "(module m (fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1))))))";
+    assert_eq!(run_both(src, "down", 5000), 5000);
+    let mut vm = VM::new();
+    vm.load_module(Parser::parse(src).unwrap());
+    let e = vm.invoke("down", vec![Value::Int(100_000_000)]).unwrap_err();
+    assert!(e.starts_with("Call stack exhausted calling 'down': "), "{e}");
+    // the VM can run again afterwards
+    assert_eq!(vm.invoke("down", vec![Value::Int(3)]), Ok(Value::Int(3)));
 }

@@ -19,7 +19,9 @@ fn scratch(name: &str) -> PathBuf {
 
 /// The failure message of `main` in each backend: the VM's (without its
 /// ` at L:C` position, which compiled messages leave out), aipl-run's, and
-/// the native executable's (each without the `<program>: ` prefix).
+/// the native executable's (each without the `<program>: ` prefix). The two
+/// compiled ones must also print the same call chain after it, ending at
+/// main.
 fn failures(name: &str, body: &str) -> [String; 3] {
     let dir = scratch(name);
     let src = dir.join("prog.aipl");
@@ -31,7 +33,7 @@ fn failures(name: &str, body: &str) -> [String; 3] {
     let vm = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();
     let vm_out = String::from_utf8_lossy(&vm.stdout).to_string() + &String::from_utf8_lossy(&vm.stderr);
     let line = vm_out.lines().find(|l| l.starts_with("Error: ")).unwrap_or_else(|| panic!("{name}: the VM did not fail: {vm_out}"));
-    let msg = line.trim_start_matches("Error: \"").trim_end_matches('"').replace("\\\"", "\"");
+    let msg = line.trim_start_matches("Error: ");
     // drop the position: "... in 'f' at 3:10: (req" -> "... in 'f': (req"
     let (head, rest) = msg.split_once("' at ").unwrap();
     let vm_msg = format!("{head}': {}", rest.split_once(": ").unwrap().1);
@@ -48,8 +50,12 @@ fn failures(name: &str, body: &str) -> [String; 3] {
         let err = String::from_utf8_lossy(&o.stderr).to_string();
         err.trim_end().strip_prefix(&format!("{}: ", prog.display())).unwrap_or(&err).to_string()
     };
-    let wasm_msg = run(Command::new(RUNNER).arg(&wasm), &wasm);
-    let native_msg = run(&mut Command::new(&exe), &exe);
+    let wasm_out = run(Command::new(RUNNER).arg(&wasm), &wasm);
+    let native_out = run(&mut Command::new(&exe), &exe);
+    assert_eq!(wasm_out, native_out, "{name}: aipl-run and native print different chains");
+    assert!(wasm_out.ends_with("\n  at main"), "{name}: {wasm_out}");
+    let wasm_msg = wasm_out.lines().next().unwrap().to_string();
+    let native_msg = native_out.lines().next().unwrap().to_string();
     let _ = std::fs::remove_dir_all(&dir);
     [vm_msg, wasm_msg, native_msg]
 }

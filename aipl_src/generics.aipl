@@ -21,11 +21,18 @@
   (struct Tmpl [node:(ptr compiler.Node) is_struct:bool params:(ptr (vec.Vec (ptr str.Bytes)))])
   ;; parallel lists: parameter names, the argument as code ("(ptr Point)"),
   ;; and as part of an instance name ("ptr<Point>")
-  (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) printed:(ptr (vec.Vec (ptr str.Bytes))) mangled:(ptr (vec.Vec (ptr str.Bytes)))])
+;; args are the argument nodes, read in outer (the environment of the
+  ;; application they come from), so that printing one keeps its position.
+  (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) args:(ptr (vec.Vec (ptr compiler.Node))) outer:(ptr Env)
+               mangled:(ptr (vec.Vec (ptr str.Bytes)))])
   (struct Inst [tmpl:(ptr Tmpl) env:(ptr Env) name:(ptr str.Bytes)])
   (struct St [text:(ptr str.Bytes) templates:(ptr (strmap.StrMap (ptr Tmpl))) made:(ptr (strmap.StrMap i32))
               queue:(ptr (vec.Vec (ptr Inst))) err:(ptr buf.Buf) failed:bool
-              origins:(ptr origins.Origins)])
+              origins:(ptr origins.Origins) failure:(ptr Failure)])
+
+  ;; Where an expansion error is: an offset in the program expanded, or -1
+  ;; for an error with no position (too many instances).
+  (struct Failure [at:i32])
 
   ;; ===== Trees =====
 
@@ -84,11 +91,25 @@
       (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) (get env Env.names) i) name) (return i) (block)))
     -1)
 
-  (fn fail [st:(ptr St) msg:str name:(ptr str.Bytes)] -> void
+  ;; Records the first error: message b, at offset `at` (or -1).
+  (fn fail_at [st:(ptr St) at:i32 b:(ptr buf.Buf)] -> void
     (if (get st St.failed) (return) (block))
     (put st St.failed true)
-    (call buf.push_str (get st St.err) msg)
-    (call buf.push_bytes (get st St.err) name))
+    (if (neq (get st St.failure) (ptr.null Failure)) (put (get st St.failure) Failure.at at) (block))
+    (call buf.push_bytes (get st St.err) (call buf.bytes b)))
+
+  ;; A message buffer starting with `s`.
+  (fn msg [s:str] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_str b s)
+    b)
+
+  ;; "generic 'NAME'..." messages (generics.rs).
+  (fn quoted [b:(ptr buf.Buf) name:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (call buf.push_byte b 39)
+    (call buf.push_bytes b name)
+    (call buf.push_byte b 39)
+    b)
 
   (fn as_bytes [b:(ptr buf.Buf)] -> (ptr str.Bytes) (call buf.bytes b))
 
@@ -102,10 +123,15 @@
           (let k:i32 (call lookup env t))
           (return (if (gte k 0) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) k) t)))
         (block))
-    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return (call text st n)) (block))
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return (call not_a_type st n)) (block))
     (if (call is_app st n false) (return (call instance st n env)) (block))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (let h:(ptr str.Bytes) (call head st n))
+    ;; (fn [..] -> r), or (Name args...) with at least one argument (generics.rs type_name)
+    (if (or (lt (get h str.Bytes.len) 0)
+            (and (not (and (call lit h "fn") (eq (call count_children n) 4))) (lt (call count_children n) 2)))
+        (return (call not_a_type st n))
+        (block))
     (call buf.push_bytes out h)
     (call buf.push_byte out 60)
     (if (and (call lit h "fn") (eq (call count_children n) 4))
@@ -131,6 +157,21 @@
     (call buf.push_byte out 62)
     (call as_bytes out))
 
+  ;; Creates the instances of every template application inside n, innermost
+  ;; first (generics.rs rewrites a node's children before the node).
+  (fn visit_apps [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> void
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return) (block))
+    (let c:(ptr compiler.Node) (call first_child n))
+    (if (call is_app st n false) (set! c (get c compiler.Node.next)) (block))
+    (while (neq c (ptr.null compiler.Node))
+      (call visit_apps st c env)
+      (set! c (get c compiler.Node.next)))
+    (if (call is_app st n false) (block (call instance st n env) 0) 0))
+
+  (fn not_a_type [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
+    (call fail_at st (get n compiler.Node.pos) (call msg "not a type"))
+    (call str.from_str "?"))
+
   ;; The instance name of template application `app` (Name args...), creating
   ;; the instance the first time: its arguments are named first (which may
   ;; create instances of their own), then it is queued.
@@ -138,8 +179,27 @@
     (let h:(ptr str.Bytes) (call head st app))
     (let t:(ptr Tmpl) (call (strmap.get_or (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)))
     (let nargs:i32 (- (call count_children app) 1))
-    (if (neq nargs (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)))
-        (block (call fail st "wrong number of type arguments for generic " h) (return h))
+    ;; generics.rs order: the applications nested in the arguments first,
+    ;; then the argument count, then the arguments' names
+    (let v:(ptr compiler.Node) (get (call first_child app) compiler.Node.next))
+    (while (neq v (ptr.null compiler.Node))
+      (call visit_apps st v env)
+      (set! v (get v compiler.Node.next)))
+    (if (get st St.failed) (return h) (block))
+    (let np:i32 (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)))
+    (if (neq nargs np)
+        (block
+          (let ab:(ptr buf.Buf) (call quoted (call msg "generic ") h))
+          (call buf.push_str ab " takes ")
+          (call buf.push_int ab np)
+          (call buf.push_str ab " type argument(s) (")
+          (loop k 0 (- np 1) 1
+            (if (gt k 0) (call buf.push_byte ab 32) (block))
+            (call buf.push_bytes ab (call (vec.at (ptr str.Bytes)) (get t Tmpl.params) k)))
+          (call buf.push_str ab "), got ")
+          (call buf.push_int ab nargs)
+          (call fail_at st (get app compiler.Node.pos) ab)
+          (return h))
         (block))
     (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
@@ -157,19 +217,18 @@
     (call buf.push_byte out 62)
     (let name:(ptr str.Bytes) (call as_bytes out))
     (if (gt (get name str.Bytes.len) 1024)
-        (block (call fail st "generic instance name longer than 1024 characters: a generic probably instantiates itself with ever larger types: " h) (return h))
+        (block (call fail_at st (get app compiler.Node.pos) (call msg "generic instance name longer than 1024 characters: a generic probably instantiates itself with ever larger types")) (return h))
         (block))
     (if (call (strmap.has i32) (get st St.made) name) (return name) (block))
     (call (strmap.set i32) (get st St.made) name 1)
     (let e:(ptr Env) (new Env))
     (put e Env.names (get t Tmpl.params))
     (put e Env.mangled names)
-    (put e Env.printed (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+    (put e Env.outer env)
+    (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
     (set! a (get (call first_child app) compiler.Node.next))
     (while (neq a (ptr.null compiler.Node))
-      (let pb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
-      (call print st a env pb false)
-      (call (vec.push (ptr str.Bytes)) (get e Env.printed) (call as_bytes pb))
+      (call (vec.push (ptr compiler.Node)) (get e Env.args) a)
       (set! a (get a compiler.Node.next)))
     (let inst:(ptr Inst) (new Inst))
     (put inst Inst.tmpl t)
@@ -191,7 +250,10 @@
       ((eq k compiler.Kind.symbol)
        (let t:(ptr str.Bytes) (call text st n))
        (let i:i32 (call lookup env t))
-       (call buf.push_bytes out (if (gte i 0) (call (vec.at (ptr str.Bytes)) (get env Env.printed) i) t)))
+       ;; a type parameter prints its argument, from where the argument was written
+       (if (gte i 0)
+           (call print st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) out false)
+           (call buf.push_bytes out t)))
       ((or (eq k compiler.Kind.int64) (eq k compiler.Kind.float)) (call buf.push_bytes out (call text st n)))
       ;; an int as written (its value is only the low 32 bits)
       ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
@@ -238,11 +300,12 @@
             (let f:(ptr compiler.Node) (get c compiler.Node.next))
             (if (and (call is_symbol f) (lt (call str.find_byte (call text st f) 46) 0))
                 (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st f)))
-                (call fail st "a generic struct field is written (get p (Name T...) field): " h)))
+                (call fail_at st (get c compiler.Node.pos) (call msg "a generic struct field is written (get p (Name T...) field)"))))
            (else (call print st c env out (call callee_at st g i))))))
       (set! prev_colon colon)
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
+    (if (gte (get g compiler.Node.a) 0) (call origins.note (get st St.origins) out -1 (get g compiler.Node.a)) (block))
     (call buf.push_byte out (if square 93 41)))
 
   (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
@@ -269,40 +332,59 @@
 
   ;; Collects a template from (fn (name T...) ...) / (struct (Name T...) ...);
   ;; false if the item is not one.
+  ;; Any item whose second child is a (NAME ...) group is a template, as in
+  ;; generics.rs generic_header (structs, constants, enums, and unions are
+  ;; struct templates, anything else a function template), with its checks.
   (fn collect [st:(ptr St) item:(ptr compiler.Node)] -> bool
+    (if (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false) (block))
     (let h:(ptr str.Bytes) (call head st item))
-    (if (lt (get h str.Bytes.len) 0) (return false) (block))
-    (if (not (or (call lit h "fn") (call lit h "struct"))) (return false) (block))
     (let header:(ptr compiler.Node) (call nth item 1))
     (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) compiler.Kind.paren)) (return false) (block))
     (let name:(ptr str.Bytes) (call head st header))
+    (if (lt (get name str.Bytes.len) 0) (return false) (block))
     (if (call built_in (call last_part name))
-        (call fail st "generic name is a built-in form; choose another name: " name)
+        (block
+          (let bb:(ptr buf.Buf) (call quoted (call msg "generic name ") (call last_part name)))
+          (call buf.push_str bb " is a built-in form; choose another name")
+          (call fail_at st (get header compiler.Node.pos) bb))
         (block))
     (let t:(ptr Tmpl) (new Tmpl))
     (put t Tmpl.node item)
-    (put t Tmpl.is_struct (call lit h "struct"))
+    (put t Tmpl.is_struct (and (gte (get h str.Bytes.len) 0)
+                               (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))))
     (put t Tmpl.params (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
     (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
     (while (neq p (ptr.null compiler.Node))
       (let pt:(ptr str.Bytes) (if (call is_symbol p) (call text st p) (call str.from_str "")))
       (if (and (gt (get pt str.Bytes.len) 0) (and (gte (call str.byte_at pt 0) 65) (lte (call str.byte_at pt 0) 90)))
           (call (vec.push (ptr str.Bytes)) (get t Tmpl.params) pt)
-          (call fail st "a type parameter is a name starting with an uppercase letter, in generic " name))
+          (call fail_at st (get p compiler.Node.pos) (call msg "a type parameter is a name starting with an uppercase letter, e.g. T")))
       (set! p (get p compiler.Node.next)))
-    (if (call (strmap.has (ptr Tmpl)) (get st St.templates) name) (call fail st "generic defined twice: " name) (block))
+    (if (eq (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)) 0)
+        (block
+          (let nb:(ptr buf.Buf) (call quoted (call msg "generic ") name))
+          (call buf.push_str nb " needs at least one type parameter")
+          (call fail_at st (get header compiler.Node.pos) nb))
+        (block))
+    (if (call (strmap.has (ptr Tmpl)) (get st St.templates) name)
+        (block
+          (let db:(ptr buf.Buf) (call quoted (call msg "generic ") name))
+          (call buf.push_str db " is defined twice")
+          (call fail_at st (get item compiler.Node.pos) db))
+        (block))
     (call (strmap.set (ptr Tmpl)) (get st St.templates) name t)
     true)
 
   ;; Expands the generics of flat program `flat` into `out`; false with a
   ;; message in `err` on a malformed or unbounded use.
   (fn expand [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
-    (call expand_mapped flat out err (ptr.null origins.Origins)))
+    (call expand_mapped flat out err (ptr.null origins.Origins) (ptr.null Failure)))
 
   ;; expand, noting in `gen` (if not null) where each token of the result
   ;; comes from in `flat`; nothing is noted when there are no generics (the
   ;; result is `flat` itself).
-  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins)] -> bool
+  ;; On an error, `failure` (if not null) gets its offset in `flat`.
+  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool
     (let n:i32 (get flat str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get flat str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
@@ -316,11 +398,13 @@
     (put st St.err err)
     (put st St.failed false)
     (put st St.origins gen)
+    (put st St.failure failure)
     (let items:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 64))
     (let item:(ptr compiler.Node) (call nth root 2))
     (while (neq item (ptr.null compiler.Node))
       (if (call collect st item) (block) (call (vec.push (ptr compiler.Node)) items item))
       (set! item (get item compiler.Node.next)))
+    (if (get st St.failed) (return false) (block))
     (if (eq (call (strmap.count (ptr Tmpl)) (get st St.templates)) 0)
         (block (call buf.push_bytes out flat) (return true))
         (block))
@@ -329,18 +413,20 @@
     (let fo:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let fi:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
     (let none:(ptr str.Bytes) (call str.bytes 0 -1))
-    ;; concrete structs, then concrete functions
+    ;; concrete structs, then concrete functions; constants, enums, and
+    ;; unions go with the structs, as in generics.rs (the resolver's structs)
     (loop pass 0 1 1
       (loop i 0 (- (call (vec.len (ptr compiler.Node)) items) 1) 1
         (let it:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) items i))
-        (let is_struct:bool (call lit (call head st it) "struct"))
+        (let h:(ptr str.Bytes) (call head st it))
+        (let is_struct:bool (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union")))))
         (if (eq is_struct (eq pass 0))
             (call print_item st it (ptr.null Env) none (if is_struct so fo))
             (block))))
     ;; then every instance, including those created while printing instances
     (let q:i32 0)
     (while (lt q (call (vec.len (ptr Inst)) (get st St.queue)))
-      (if (gt q 4096) (block (call fail st "more than 4096 generic instances: a generic instantiates itself with ever larger types" none) (break)) (block))
+      (if (gt q 4096) (block (call fail_at st -1 (call msg "more than 4096 generic instances: a generic probably instantiates itself with ever larger types")) (break)) (block))
       (let inst:(ptr Inst) (call (vec.at (ptr Inst)) (get st St.queue) q))
       (let t:(ptr Tmpl) (get inst Inst.tmpl))
       (call print_item st (get t Tmpl.node) (get inst Inst.env) (get inst Inst.name) (if (get t Tmpl.is_struct) si fi))

@@ -1,0 +1,35 @@
+# Builds AIPL and runs every test on Linux x86-64 (the native backend's
+# platform): clippy with warnings as errors, the Rust test suite, the
+# AIPL-native suite, 3,000 mutated programs through both toolchains
+# (tools/fuzz.py), and 500 generated programs run in the VM, as wasm, and
+# natively (tools/run_fuzz.py); the fuzzers with fixed seeds. See DEVELOPING.md, "How to
+# verify everything".
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --release --no-fail-fast
+      - name: AIPL test suite
+        run: ./target/release/aipl test aipl_src/test_suite.aipl
+      - name: Mutated programs, Rust toolchain against the self-hosted one
+        run: python3 tools/fuzz.py --cases 3000 --seed 1
+      - name: Generated programs, VM against compiled code
+        run: python3 tools/run_fuzz.py --cases 500 --seed 1

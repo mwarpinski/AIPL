@@ -30,7 +30,7 @@
   ;; expand.aipl, parser.aipl, then printer.aipl.
   (fn expand_print [src:i32 len:i32 out:i32] -> i32 (call put_parsed src out (call front.parse src len)))
 
-  ;; The whole front end: "ok", or the first error.
+  ;; The whole front end: "ok", or the errors, one per line.
   (fn check_text [src:i32 len:i32 out:i32] -> i32
     (let pr:(ptr checker.Problem) (call front.check src len))
     (if (eq pr (ptr.null checker.Problem))

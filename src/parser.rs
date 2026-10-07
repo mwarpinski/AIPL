@@ -11,9 +11,45 @@ pub enum TokenKind {
     Symbol(String),
     IntLit(i64),
     Int64Lit(i64),
-    FloatLit(f64),
+    /// the value and the literal as written (messages show tokens as written)
+    FloatLit(f64, String),
     StringLit(String),
     BoolLit(bool),
+}
+
+/// A token as AIPL source writes it, for messages: `(`, `->`, `x`, `42`,
+/// `42i64`, `1.5e3` (as written), `true`, `"a\n"` (escapes as AIPL's).
+impl std::fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenKind::LParen => f.write_str("("),
+            TokenKind::RParen => f.write_str(")"),
+            TokenKind::LBracket => f.write_str("["),
+            TokenKind::RBracket => f.write_str("]"),
+            TokenKind::Colon => f.write_str(":"),
+            TokenKind::Arrow => f.write_str("->"),
+            TokenKind::Symbol(s) => f.write_str(s),
+            TokenKind::IntLit(v) => write!(f, "{v}"),
+            TokenKind::Int64Lit(v) => write!(f, "{v}i64"),
+            TokenKind::FloatLit(_, text) => f.write_str(text),
+            TokenKind::BoolLit(b) => write!(f, "{b}"),
+            TokenKind::StringLit(s) => {
+                f.write_str("\"")?;
+                for c in s.chars() {
+                    match c {
+                        '"' => f.write_str("\\\"")?,
+                        '\\' => f.write_str("\\\\")?,
+                        '\n' => f.write_str("\\n")?,
+                        '\t' => f.write_str("\\t")?,
+                        '\r' => f.write_str("\\r")?,
+                        '\0' => f.write_str("\\0")?,
+                        c => write!(f, "{c}")?,
+                    }
+                }
+                f.write_str("\"")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,7 +276,7 @@ impl Parser {
                     {
                         let f = symbol.parse::<f64>().unwrap();
                         tokens.push(Token {
-                            kind: TokenKind::FloatLit(f),
+                            kind: TokenKind::FloatLit(f, symbol.clone()),
                             line: start_line,
                             col: start_col,
                         });
@@ -319,13 +355,13 @@ impl Parser {
                 Ok(tok)
             } else {
                 Err(format!(
-                    "{}:{}: Expected {:?}, got {:?}",
+                    "{}:{}: Expected '{}', got '{}'",
                     tok.line, tok.col, expected, tok.kind
                 ))
             }
         } else {
             Err(format!(
-                "{}:{}: Expected {:?}, got EOF",
+                "{}:{}: Expected '{}', got EOF",
                 pos.0, pos.1, expected
             ))
         }
@@ -341,7 +377,7 @@ impl Parser {
             }) if s == "module" => {}
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected 'module' symbol, got {:?}",
+                    "{}:{}: Expected 'module' symbol, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -355,7 +391,7 @@ impl Parser {
             }) => s,
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected module name, got {:?}",
+                    "{}:{}: Expected module name, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -403,6 +439,7 @@ impl Parser {
             enums,
             unions,
             functions,
+            sources: Default::default(),
         })
     }
 
@@ -469,7 +506,7 @@ impl Parser {
                 None => return Err(format!("{}:{}: this bracket is never closed", open.line, open.col)),
                 Some(t) => {
                     return Err(format!(
-                        "{}:{}: an enum member is a name or (name INTEGER), got {:?}",
+                        "{}:{}: an enum member is a name or (name INTEGER), got '{}'",
                         t.line, t.col, t.kind
                     ))
                 }
@@ -513,7 +550,7 @@ impl Parser {
             }) if s == "struct" => {}
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected 'struct', got {:?}",
+                    "{}:{}: Expected 'struct', got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -527,7 +564,7 @@ impl Parser {
             }) => s,
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected struct name, got {:?}",
+                    "{}:{}: Expected struct name, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -547,7 +584,7 @@ impl Parser {
                 }) => s,
                 Some(tok) => {
                     return Err(format!(
-                        "{}:{}: Expected field name, got {:?}",
+                        "{}:{}: Expected field name, got '{}'",
                         tok.line, tok.col, tok.kind
                     ))
                 }
@@ -585,7 +622,7 @@ impl Parser {
             }) if s == "import" => {}
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected 'import', got {:?}",
+                    "{}:{}: Expected 'import', got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -598,7 +635,7 @@ impl Parser {
             }) => s,
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected module name in import, got {:?}",
+                    "{}:{}: Expected module name in import, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -619,7 +656,7 @@ impl Parser {
                     }) => Some(a),
                     Some(tok) => {
                         return Err(format!(
-                            "{}:{}: Expected alias after 'as', got {:?}",
+                            "{}:{}: Expected alias after 'as', got '{}'",
                             tok.line, tok.col, tok.kind
                         ))
                     }
@@ -647,7 +684,7 @@ impl Parser {
             }) if s == "fn" => {}
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected 'fn', got {:?}",
+                    "{}:{}: Expected 'fn', got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -661,7 +698,7 @@ impl Parser {
             }) => s,
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected fn name, got {:?}",
+                    "{}:{}: Expected fn name, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -682,7 +719,7 @@ impl Parser {
                 }) => s,
                 Some(tok) => {
                     return Err(format!(
-                        "{}:{}: Expected param name, got {:?}",
+                        "{}:{}: Expected param name, got '{}'",
                         tok.line, tok.col, tok.kind
                     ))
                 }
@@ -709,12 +746,11 @@ impl Parser {
             if *kind == TokenKind::RParen {
                 break;
             }
-            if *kind == TokenKind::LParen {
-                if self.is_contract_ahead() {
+            if *kind == TokenKind::LParen
+                && self.is_contract_ahead() {
                     contracts.push(self.parse_contract()?);
                     continue;
                 }
-            }
             body.push(self.parse_expr()?);
         }
 
@@ -748,7 +784,7 @@ impl Parser {
             }) => s,
             Some(tok) => {
                 return Err(format!(
-                    "{}:{}: Expected contract opcode, got {:?}",
+                    "{}:{}: Expected contract opcode, got '{}'",
                     tok.line, tok.col, tok.kind
                 ))
             }
@@ -774,7 +810,7 @@ impl Parser {
     fn expect_symbol(&mut self, what: &str, span: (u32, u32)) -> Result<String, String> {
         match self.next() {
             Some(Token { kind: TokenKind::Symbol(s), .. }) => Ok(s),
-            Some(tok) => Err(format!("{}:{}: Expected {}, got {:?}", tok.line, tok.col, what, tok.kind)),
+            Some(tok) => Err(format!("{}:{}: Expected {}, got '{}'", tok.line, tok.col, what, tok.kind)),
             None => Err(format!("{}:{}: Expected {}, got EOF", span.0, span.1, what)),
         }
     }
@@ -811,7 +847,7 @@ impl Parser {
                     }) => s,
                     Some(tok) => {
                         return Err(format!(
-                            "{}:{}: Expected type constructor, got {:?}",
+                            "{}:{}: Expected type constructor, got '{}'",
                             tok.line, tok.col, tok.kind
                         ))
                     }
@@ -869,7 +905,7 @@ impl Parser {
                 }
             }
             Some(tok) => Err(format!(
-                "{}:{}: Expected type token, got {:?}",
+                "{}:{}: Expected type token, got '{}'",
                 tok.line, tok.col, tok.kind
             )),
             None => Err(format!("{}:{}: Expected type token, got EOF", l, c)),
@@ -896,7 +932,7 @@ impl Parser {
                     self.next();
                     Ok(Expr::Lit(Literal::Int64(val), (tok.line, tok.col)))
                 }
-                TokenKind::FloatLit(val) => {
+                TokenKind::FloatLit(val, _) => {
                     self.next();
                     Ok(Expr::Lit(Literal::Float(val), (tok.line, tok.col)))
                 }
@@ -924,7 +960,7 @@ impl Parser {
                         }) => s,
                         Some(tok) => {
                             return Err(format!(
-                                "{}:{}: Expected operator or keyword in expr, got {:?}",
+                                "{}:{}: Expected operator or keyword in expr, got '{}'",
                                 tok.line, tok.col, tok.kind
                             ))
                         }
@@ -945,7 +981,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected variable name, got {:?}",
+                                        "{}:{}: Expected variable name, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -974,7 +1010,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected variable name, got {:?}",
+                                        "{}:{}: Expected variable name, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1011,7 +1047,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected loop var, got {:?}",
+                                        "{}:{}: Expected loop var, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1064,7 +1100,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected func name in call, got {:?}",
+                                        "{}:{}: Expected func name in call, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1088,8 +1124,8 @@ impl Parser {
                             let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
                                 self.next();
                                 Some(self.parse_type()?)
-                            } else if s.starts_with("ok:") {
-                                Some(parse_scalar_type_str(&s[3..], span)?)
+                            } else if let Some(t) = s.strip_prefix("ok:") {
+                                Some(parse_scalar_type_str(t, span)?)
                             } else {
                                 None
                             };
@@ -1100,8 +1136,8 @@ impl Parser {
                             let explicit_ty = if self.peek_kind() == Some(&TokenKind::Colon) {
                                 self.next();
                                 Some(self.parse_type()?)
-                            } else if s.starts_with("err:") {
-                                Some(parse_scalar_type_str(&s[4..], span)?)
+                            } else if let Some(t) = s.strip_prefix("err:") {
+                                Some(parse_scalar_type_str(t, span)?)
                             } else {
                                 None
                             };
@@ -1177,7 +1213,7 @@ impl Parser {
                                 }) if s == "ok" => {}
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected 'ok' arm in match_result, got {:?}",
+                                        "{}:{}: Expected 'ok' arm in match_result, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1195,7 +1231,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected ok var, got {:?}",
+                                        "{}:{}: Expected ok var, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1223,7 +1259,7 @@ impl Parser {
                                 }) if s == "err" => {}
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected 'err' arm in match_result, got {:?}",
+                                        "{}:{}: Expected 'err' arm in match_result, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1241,7 +1277,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected err var, got {:?}",
+                                        "{}:{}: Expected err var, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1278,7 +1314,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected struct name in new, got {:?}",
+                                        "{}:{}: Expected struct name in new, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1300,7 +1336,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in get, got {:?}",
+                                        "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1337,7 +1373,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in put, got {:?}",
+                                        "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1632,7 +1668,7 @@ impl Parser {
                     Ok(expr)
                 }
                 _ => Err(format!(
-                    "{}:{}: Unexpected token parsing expression: {:?}",
+                    "{}:{}: Unexpected token parsing expression: '{}'",
                     tok.line, tok.col, tok.kind
                 )),
             }

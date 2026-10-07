@@ -174,7 +174,7 @@ fn every_rule_has_its_message() {
         // make
         (format!("{u} (fn f [] -> S (make S.oval 1.0))"), "union 'S' has no variant 'oval'"),
         (format!("{u} (fn f [] -> S (make S.circle))"), "make S.circle takes 1 values (its fields), got 0"),
-        (format!("{u} (fn f [] -> S (make S.sq 1.0))"), "make S.sq: field 'w' is I32, got F64"),
+        (format!("{u} (fn f [] -> S (make S.sq 1.0))"), "make S.sq: field 'w' is i32, got f64"),
         ("(fn f [] -> i32 (make T.a))".into(), "Unknown union 'T' in make"),
         ("(fn f [] -> i32 (make nodot))".into(), "make names a variant as Union.variant, got nodot"),
         // match
@@ -184,20 +184,20 @@ fn every_rule_has_its_message() {
         (format!("{u} (fn f [s:S] -> i32 (match s (S.circle 1) (else 0)))"), "the S.circle arm binds its 1 fields in order: [r], got 0 names"),
         (format!("{u} (fn f [s:S] -> i32 (match s (S.oval 1) (else 0)))"), "S has no member 'oval'"),
         (format!("{u} (union T [(a)]) (fn f [s:S] -> i32 (match s (T.a 1) (else 0)))"), "a match arm on S is (S.member ...), got T.a"),
-        (format!("{u} (fn f [s:S] -> i32 (match s (S.sq [w] w) (else true)))"), "match arm type mismatch: S.sq yields I32, else yields Bool"),
+        (format!("{u} (fn f [s:S] -> i32 (match s (S.sq [w] w) (else true)))"), "match arm type mismatch: S.sq yields i32, else yields bool"),
         (format!("{u} (fn f [s:S r:f64] -> i32 (match s (S.circle [r] 1) (else 0)))"), "Cannot shadow existing variable 'r' in the S.circle arm"),
         ("(enum C [a b]) (fn f [c:C] -> i32 (match c (C.a [x] 1) (else 0)))".into(), "C.a is an enum member; its arm binds nothing"),
-        ("(fn f [x:i32] -> i32 (match x (else 0)))".into(), "match needs a union or enum value, got I32"),
+        ("(fn f [x:i32] -> i32 (match x (else 0)))".into(), "match needs a union or enum value, got i32"),
         (format!("{u} (fn f [s:S] -> i32 (match s (else 0) (S.none 1)))"), "the (else ...) arm of a match comes last"),
         (format!("{u} (fn f [s:S] -> i32 (match s (else [x] 0)))"), "the else arm of a match binds nothing"),
         // union values
-        (format!("{u} (fn f [a:S b:S] -> bool (eq a b))"), "Eq on union 'S': union values do not compare; take them apart with match"),
-        (format!("{u} (fn f [a:S] -> i32 (+ a 1))"), "Add on union 'S': unions have no arithmetic; take them apart with match"),
+        (format!("{u} (fn f [a:S b:S] -> bool (eq a b))"), "eq on union 'S': union values do not compare; take them apart with match"),
+        (format!("{u} (fn f [a:S] -> i32 (+ a 1))"), "+ on union 'S': unions have no arithmetic; take them apart with match"),
         (format!("{u} (fn f [] -> S (ptr.null S))"), "Unknown struct 'S' in (ptr S)"),
         (format!("{u} (fn f [] -> S (enum.cast S 1))"), "'S' is a union, not an enum: its values are made with (make S.variant ...)"),
         // a name keeps one type per function
-        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] x) (else 0)))"), "'x' is I32 here but F64 elsewhere in this function; a name keeps one type per function (rename one)"),
-        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) y))".into(), "'y' is I32 here but F64 elsewhere in this function"),
+        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] x) (else 0)))"), "'x' is i32 here but f64 elsewhere in this function; a name keeps one type per function (rename one)"),
+        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) y))".into(), "'y' is i32 here but f64 elsewhere in this function"),
     ];
     for (i, (body, want)) in cases.iter().enumerate() {
         let src = format!("(module m {body})");
