@@ -24,8 +24,7 @@ against C and Python.
 ## Next, in order
 
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
-   the project publicly: the remaining differences between the two
-   toolchains, source positions and function names in runtime errors,
+   the project publicly: source positions in the VM's runtime errors,
    checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
 2. **The language questions readers will ask:** generic unions
@@ -40,6 +39,10 @@ against C and Python.
 5. **Native speed:** a rewrite of the native backend's instruction
    translation that tracks where each value is (docs/BENCHMARKS.md,
    "Locals in registers"); a faster small-block path in `std/heap`.
+6. **Packages, after the launch:** a package registry with versioned
+   packages, dependency resolution, and lock files (decided 2026-10-07;
+   its command and name are open, e.g. folded into the `aipl` CLI as
+   `aipl add`, `aipl build`). Language versioning comes with it.
 
 Explicitly not now, each additive later rather than a rewrite: SIMD,
 64-bit memory, exceptions (results cover errors). Later: language
