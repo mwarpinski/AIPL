@@ -250,4 +250,4 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 - [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
 
-Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: RParen`.
+Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: ')'`.
