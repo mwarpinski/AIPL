@@ -85,6 +85,32 @@ fn a_trap_is_reported_with_a_failing_status() {
     assert!(full.contains("backtrace") && full.contains("wasm trap: integer divide by zero"), "{full}");
 }
 
+/// The VM reports a runtime error with the call chain compiled code prints:
+/// each frame with its file, line, and column (in a two-file program, and
+/// for a failed contract), after its own wording of the message.
+#[test]
+fn the_vm_prints_the_same_call_chain() {
+    let dir = scratch("vm_chain");
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn ratio [a:i32 b:i32] -> i32\n    (/ a b))\n  (fn pos [n:i32] -> i32 (req (gt n 0)) n))").unwrap();
+    for (main, vm_msg) in [
+        ("(call lib.ratio x (- n n))", "Error: Division by zero"),
+        ("(call lib.pos (- 0 x))", "Error: Pre-condition failed in 'lib.pos' at 4:31: (req (gt n 0)) with n = -6"),
+    ] {
+        let src = format!("(module main\n  (import lib)\n  (fn f [n:i32] -> i32\n    (let x:i32 (+ n 1))\n    {main})\n  (fn main [] -> i32\n    (call f 5)))");
+        std::fs::write(dir.join("main.aipl"), &src).unwrap();
+        let vm = Command::new(AIPL).arg("eval").arg("main.aipl").current_dir(&dir).output().unwrap();
+        let vm_err = String::from_utf8_lossy(&vm.stderr).to_string();
+        let (first, vm_chain) = vm_err.split_once('\n').unwrap_or_else(|| panic!("no chain: {vm_err}"));
+        assert_eq!(first, vm_msg, "{vm_err}");
+        compile(&dir.join("main.aipl"), &dir.join("main.wasm"), &[]);
+        let o = run_in(&dir, &dir.join("main.wasm"), &[], "");
+        let wasm_err = String::from_utf8_lossy(&o.stderr).to_string();
+        let wasm_chain = wasm_err.split_once('\n').unwrap().1;
+        assert_eq!(vm_chain, wasm_chain, "{main}");
+        assert!(vm_chain.starts_with("  at lib.") && vm_chain.ends_with("  at main (main.aipl:7:5)\n"), "{vm_chain}");
+    }
+}
+
 #[test]
 fn threads_run_under_the_runner() {
     let dir = scratch("threads");

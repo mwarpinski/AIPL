@@ -24,8 +24,7 @@ against C and Python.
 ## Next, in order
 
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
-   the project publicly: source positions in the VM's runtime errors,
-   checking every claim, the first five minutes of a new user, and an
+   the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
 2. **The language questions readers will ask:** generic unions
    (`(Option T)`, and `result` as a union without its 32-bit limit);
@@ -57,10 +56,8 @@ versioning (once packages exist), `inv` contracts.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
 - **Two copies drift unless held equal.** The fuzzer (`tools/fuzz.py`) checks the two front ends against each other on mutated programs; it finds no differences on 50,000 cases (2026-10-06), and CI runs 3,000 on every push. Only tests and the fuzzer hold the two equal, so a change to one copy must be made to the other.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
-- **`inv` is never evaluated, and nothing is proven statically (audit B5).** `req` and `ens` run in every backend (since 2026-10-05); a compiled contract message has no position and shows no float or string values.
+- **`inv` is never evaluated, and nothing is proven statically (audit B5).** `req` and `ens` run in every backend (since 2026-10-05); a compiled contract message shows no float or string values, and gives its position in the call chain after it rather than in the message.
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
-- **Most runtime errors have no source position.** VM contract failures do (`Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`); compiled ones name the function and contract but not the line; an out-of-bounds index, a bad memory access, or a store into the reserved block names the op and address but not the line.
-- **The VM's runtime errors have no source position.** A compiled crash prints each frame's file, line, and column (`  at math.div (math.aipl:4:5)`), but in the VM a division by zero or an out-of-bounds access gives only the message (contract failures do give theirs).
 - **Diagnostics report one error per function** (a definition's error alone), not every error in a function. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: ')'`.
 
 ### Language
