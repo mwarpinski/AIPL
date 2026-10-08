@@ -132,6 +132,11 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_negative_index_store", "(module m (fn main [] -> i32 (let a:(arr i64) (arr.new i64 3)) (arr.set i64 a -2147483648 1i64) 0))"),
     // a call chain longer than the 32 frames shown, and one in a spawned thread
     ("trap_deep_recursion", "(module m (fn down [n:i32] -> i32 (if (eq n 0) (/ 1 n) (+ 1 (call down (- n 1))))) (fn main [] -> i32 (call down 40)))"),
+    ("trap_null_get", "(module m (struct P [x:i32]) (fn main [] -> i32 (get (ptr.null P) P.x)))"),
+    ("trap_null_put", "(module m (struct P [x:i32]) (fn main [] -> i32 (put (ptr.null P) P.x 1) 0))"),
+    ("trap_null_array", "(module m (fn main [] -> i32 (arr.len (arr.null i32))))"),
+    // the null check comes before the index is evaluated: nothing is printed
+    ("trap_null_before_index", "(module m (import io) (fn main [] -> i32 (arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))))"),
     ("trap_in_a_thread", "(module m (fn work [x:i32] -> i32 (/ 10 x)) (fn main [] -> i32 (thread.join (thread.spawn (ref work) 0))))"),
     // and so do compiled contracts (without the position)
     ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
@@ -1971,6 +1976,10 @@ fn traps_print_their_line_and_call_chain() {
         ("trap_failed_ens_on_return", "Post-condition failed in 'f': (ens (lt res 10i64)) with n = 7i64, res = 14i64"),
         ("trap_deep_recursion", "wasm trap: integer divide by zero"),
         ("trap_in_a_thread", "wasm trap: integer divide by zero"),
+        ("trap_null_get", "Null pointer dereference"),
+        ("trap_null_put", "Null pointer dereference"),
+        ("trap_null_array", "Null pointer dereference"),
+        ("trap_null_before_index", "Null pointer dereference"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let o = run_native(&dir, &to_native(&to_wasm(src)).unwrap());

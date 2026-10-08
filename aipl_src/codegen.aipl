@@ -1067,6 +1067,19 @@
   ;; guard's scratch local, the index in the one after it. The `unreachable`
   ;; after the call (which never returns) tells wasmtime nothing is live
   ;; past it.
+  ;; With a pointer or array on the stack: if it is null, $aipl_null's
+  ;; message and a trap; the value stays on the stack (wasm.rs emit_null_check).
+  (fn emit_null_check [cg:(ptr Cg) o:(ptr Out)] -> void
+    (let a:i32 (get cg Cg.nlocals))
+    (call emit_local_tee o a)
+    (call put_op o OP_I32_EQZ)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call emit_call o (+ (get cg Cg.checks_base) 5))
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END)
+    (call emit_local_get o a))
+
   (fn emit_bounds_check [cg:(ptr Cg) o:(ptr Out)] -> void
     (let a:i32 (get cg Cg.nlocals))
     (let i:i32 (+ a 1))
@@ -1700,6 +1713,8 @@
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
             ;; an array index, req, or ens: the module needs the check helpers
             ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (eq kw Kw.ens))) (put cg Cg.uses_checks true) 0)
+            ;; and a struct access or arr.len (the null check)
+            ((or (eq kw Kw.get) (or (eq kw Kw.put) (eq kw Kw.arr_len))) (put cg Cg.uses_checks true) 0)
             (else 0))
           (let child:(ptr compiler.Node) (call first_child node))
           (while (neq child (ptr.null compiler.Node)) (call walk_ast_for_wasi cg child) (set! child (call node_next child)))
@@ -2516,6 +2531,7 @@
     (if (eq op_id Kw.arr_len) ;; arr.len -> i32.const 4, i32.sub, i32.load (like str.len)
         (block
           (call compile_expr cg (call nth_child node 1) o)
+          (call emit_null_check cg o)
           (call emit_i32_const o 4)
           (call put_op o OP_I32_SUB)
           (call emit_memop o OP_I32_LOAD 2) (set! done true))
@@ -2619,6 +2635,7 @@
           (let f_offset:i32 (call get_field_offset cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let ftype:Ty (call get_field_type cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (call compile_expr cg ptr_node o)
+          (call emit_null_check cg o)
           (call emit_memop_offset o (call load_opcode ftype) (call mem_align ftype) f_offset)
           (if (eq ftype Ty.bool)
               (call emit_normalize_bool o)
@@ -2636,6 +2653,7 @@
           (let f_offset:i32 (call get_field_offset cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (let ftype:Ty (call get_field_type cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
           (call compile_expr cg ptr_node o)
+          (call emit_null_check cg o)
           (call emit_store_guard cg o (get cg Cg.nlocals))
           (call compile_expr cg val_node o)
           (call emit_memop_offset o (call store_opcode ftype) (call mem_align ftype) f_offset)
@@ -2692,6 +2710,7 @@
           (let ptr_node:(ptr compiler.Node) (call nth_child node 2))
           (let idx_node:(ptr compiler.Node) (call nth_child node 3))
           (call compile_expr cg ptr_node o)
+          (call emit_null_check cg o)
           (call compile_expr cg idx_node o)
           (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
@@ -2710,6 +2729,7 @@
           (let idx_node:(ptr compiler.Node) (call nth_child node 3))
           (let val_node:(ptr compiler.Node) (call nth_child node 4))
           (call compile_expr cg ptr_node o)
+          (call emit_null_check cg o)
           (call compile_expr cg idx_node o)
           (call emit_bounds_check cg o)
           (call emit_i32_const o (call type_size etype))
@@ -3454,12 +3474,12 @@
     ;; generated functions after the module's: a threaded module's start
     ;; function and wasi_thread_start, then _start
     (let extra_fns:i32 (if threaded 2 0))
-    ;; then, in a module with compiled checks, the five check helpers
+    ;; then, in a module with compiled checks, the six check helpers
     ;; (wasm.rs check_functions)
     (let uses_checks:bool (get cg Cg.uses_checks))
     (let before_checks:i32 (+ extra_fns (if auto_start 1 0)))
     (put cg Cg.checks_base (+ imports (+ nfns before_checks)))
-    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 5 0))))
+    (let n_fns:i32 (+ nfns (+ before_checks (if uses_checks 6 0))))
     ;; the contract messages go into the literals after the program's own
     (call intern_contract_texts cg)
     (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
@@ -3476,7 +3496,7 @@
     ;; Type (1): the WASI imports' types, the functions', the call_ref
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
-    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 5 0))))))
+    (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 6 0))))))
     (loop w 0 12 1
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
     (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
@@ -3493,7 +3513,8 @@
           (call emit_func_type sec (call sig_from "ii" 0))      ;; $aipl_oob: [i32 i32] -> []
           (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_text: [i32 i32 i32] -> [i32]
           (call emit_func_type sec (call sig_from "iii" 127))   ;; $aipl_begin: [i32 i32 i32] -> [i32]
-          (call emit_func_type sec (call sig_from "i" 0)))      ;; $aipl_end: [i32] -> []
+          (call emit_func_type sec (call sig_from "i" 0))       ;; $aipl_end: [i32] -> []
+          (call emit_func_type sec (call sig_from "" 0)))       ;; $aipl_null: [] -> []
         (block))
     (call emit_section o 1 sec)
 
@@ -3536,7 +3557,7 @@
         (block))
     (if auto_start (call put_u32 sec (+ generated_types extra_fns)) (block))
     (if uses_checks
-        (loop k 0 4 1 (call put_u32 sec (+ generated_types (+ before_checks k))))
+        (loop k 0 5 1 (call put_u32 sec (+ generated_types (+ before_checks k))))
         (block))
     (call emit_section o 3 sec)
 
@@ -3661,7 +3682,7 @@
           (call emit_sized sec fc))
         (block))
     (if uses_checks
-        (loop k 0 4 1
+        (loop k 0 5 1
           (let fc:(ptr Out) (call out_at fcode_scratch))
           (call check_body fc k (get cg Cg.checks_base))
           (call emit_sized sec fc))
@@ -3692,7 +3713,7 @@
     ;; Name (custom section 0, last): every function's name, so a trap can
     ;; say where it happened (wasm.rs); the generated ones as wasm.rs names them
     (let fnames:(ptr Out) (call out_at fcode_scratch))
-    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 5 0)))))
+    (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 6 0)))))
     (loop f 0 (- nfns 1) 1
       (let fentry:(ptr FnInfo) (call func_entry_ptr cg f))
       (call put_u32 fnames (+ imports f))
@@ -3712,7 +3733,8 @@
           (call put_u32 fnames (+ cb 1)) (call emit_name fnames "aipl.oob")
           (call put_u32 fnames (+ cb 2)) (call emit_name fnames "aipl.text")
           (call put_u32 fnames (+ cb 3)) (call emit_name fnames "aipl.begin")
-          (call put_u32 fnames (+ cb 4)) (call emit_name fnames "aipl.end"))
+          (call put_u32 fnames (+ cb 4)) (call emit_name fnames "aipl.end")
+          (call put_u32 fnames (+ cb 5)) (call emit_name fnames "aipl.null"))
         (block))
     (set! sec (call out_at scratch))
     (call emit_name sec "name")
@@ -3879,14 +3901,26 @@
       (call put_u32 o k)
       (set! k (+ k 8))))
 
-  ;; Check helper k of the five (wasm.rs check_functions); base is $aipl_dec's index.
+  ;; Check helper k of the six (wasm.rs check_functions); base is $aipl_dec's index.
   (fn check_body [o:(ptr Out) k:i32 base:i32] -> void
     (cond
       ((eq k 0) (call dec_body o))
       ((eq k 1) (call oob_body o base))
       ((eq k 2) (call text_body o))
       ((eq k 3) (call begin_body o (+ base 2)))
-      (else (call end_body o))))
+      ((eq k 4) (call end_body o))
+      (else (call null_body o))))
+
+  ;; $aipl_null(): "Null pointer dereference" at RT_FAIL_TEXT, its address
+  ;; and length in cells 92 and 96, then a trap (wasm.rs NULL_TEXT).
+  (fn null_body [o:(ptr Out)] -> void
+    (let text:str "Null pointer dereference")
+    (call put_u32 o 0)
+    (call emit_text_store o -1 RT_FAIL_TEXT text)
+    (call emit_i32_const o 92) (call emit_i32_const o RT_FAIL_TEXT) (call emit_memop o OP_I32_STORE 2)
+    (call emit_i32_const o 96) (call emit_i32_const o (str.len text)) (call emit_memop o OP_I32_STORE 2)
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END))
 
   ;; $aipl_dec(at, v:i64) -> end: v in signed decimal at `at`; the address after it.
   (fn dec_body [o:(ptr Out)] -> void
