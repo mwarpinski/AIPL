@@ -23,7 +23,8 @@
   (import vec)
   (import strmap)
 
-  (struct Sig [params:(arr ast.Type) ret:ast.Type])
+  ;; unsafe_: the function has the (unsafe) clause.
+  (struct Sig [params:(arr ast.Type) ret:ast.Type unsafe_:bool])
 
   (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) types:(ptr (vec.Vec ast.Type))])
 
@@ -36,7 +37,8 @@
              loop_depth:i32
              ret:ast.MaybeType
              err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool
-             problems:(ptr Problem) last_problem:(ptr Problem)])
+             problems:(ptr Problem) last_problem:(ptr Problem)
+             unsafe_depth:i32 in_unsafe_fn:bool])
 
   ;; ===== Messages =====
 
@@ -239,6 +241,7 @@
       (loop j 0 (- (arr.len ps) 1) 1 (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
       (put sig Sig.params pts)
       (put sig Sig.ret (get fd ast.FnDef.ret))
+      (put sig Sig.unsafe_ (get fd ast.FnDef.unsafe_))
       (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     ;; a definition's error is reported alone
     (if (get c C.failed) (return) (block))
@@ -438,6 +441,8 @@
   ;; ===== Functions =====
 
   (fn check_fn [c:(ptr C) f:(ptr ast.FnDef)] -> void
+    (put c C.in_unsafe_fn (get f ast.FnDef.unsafe_))
+    (put c C.unsafe_depth 0)
     (let env:(ptr Env) (call new_env))
     (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
     (let at:i32 (get f ast.FnDef.at))
@@ -579,6 +584,14 @@
        (let t:ast.Type (call infer_seq c body env))
        (call restore env m)
        t)
+      ;; a block in which unchecked operations are allowed
+      (ast.Expr.unsafe_ [_ body]
+       (let m:i32 (call mark env))
+       (put c C.unsafe_depth (+ (get c C.unsafe_depth) 1))
+       (let t:ast.Type (call infer_seq c body env))
+       (put c C.unsafe_depth (- (get c C.unsafe_depth) 1))
+       (call restore env m)
+       t)
       (ast.Expr.new_ [_ name]
        (if (call has_struct c name)
            (make ast.Type.ptr (make ast.Type.struct_ name))
@@ -625,6 +638,11 @@
        (call validate_or_fail c nty at)
        nty)
       (ast.Expr.cast [_ cty addr]
+       (match cty
+         (ast.Type.ptr [_] (call require_unsafe c at "ptr.cast"))
+         (ast.Type.arr [_] (call require_unsafe c at "arr.cast"))
+         (else (block)))
+       (if (get c C.failed) (return (call void_t)) (block))
        (call validate_or_fail c cty at)
        (if (get c C.failed) (return (call void_t)) (block))
        (let t:ast.Type (call infer c addr env))
@@ -643,6 +661,7 @@
        (if (call (strmap.has (ptr Sig)) (get c C.fns) name)
            (block
              (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
+             (call require_unsafe_fn c at name sig)
              (make ast.Type.fn_ (get sig Sig.params) (get sig Sig.ret)))
            (block
              (let b:(ptr buf.Buf) (call msg c at))
@@ -810,6 +829,8 @@
           (call fail c b) (return (call void_t)))
         (block))
     (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) func (ptr.null Sig)))
+    (call require_unsafe_fn c at func sig)
+    (if (get c C.failed) (return (call void_t)) (block))
     (let ps:(arr ast.Type) (get sig Sig.params))
     (if (neq (arr.len args) (arr.len ps))
         (block
@@ -1049,7 +1070,7 @@
       (else (ptr.null Members))))
 
   (fn infer_match [c:(ptr C) env:(ptr Env) at:i32 val:ast.Expr arms:(arr (ptr ast.Arm)) else_body:(arr ast.Expr)] -> ast.Type
-    (let vt:ast.Type (call infer c val env))
+    (unsafe (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
     (let ms:(ptr Members) (call members_of c vt))
     (if (eq ms (ptr.null Members))
@@ -1153,7 +1174,7 @@
             (call by b (call (vec.at (ptr str.Bytes)) arm_names k)) (call s b " yields ") (call ty b tk)
             (call fail c b))
           (block)))
-    t0)
+    t0))
 
   ;; A union arm's binders: one per field, in order; `_` binds nothing.
   (fn bind_fields [c:(ptr C) env:(ptr Env) aat:i32 tname:(ptr str.Bytes) member:(ptr str.Bytes) fs:(arr (ptr ast.Field)) binders:(arr (ptr str.Bytes))] -> void
@@ -1188,7 +1209,36 @@
 
   ;; ===== Operators =====
 
+  ;; Unchecked operations need an unsafe context (checker.rs require_unsafe).
+  (fn is_unsafe_context [c:(ptr C)] -> bool
+    (or (gt (get c C.unsafe_depth) 0) (get c C.in_unsafe_fn)))
+
+  (fn require_unsafe [c:(ptr C) at:i32 what:str] -> void
+    (if (call is_unsafe_context c) (return) (block))
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b what)
+    (call s b " is unchecked: write it inside (unsafe ...), or mark the function (unsafe)")
+    (call fail c b))
+
+  (fn require_unsafe_fn [c:(ptr C) at:i32 name:(ptr str.Bytes) sig:(ptr Sig)] -> void
+    (if (or (not (get sig Sig.unsafe_)) (call is_unsafe_context c)) (return) (block))
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b "'") (call by b name)
+    (call s b "' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)")
+    (call fail c b))
+
+  ;; checker.rs is_unchecked_op
+  (fn is_unchecked_op [o:ast.Op] -> bool
+    (or (or (or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32)) (or (eq o ast.Op.mem_load64) (eq o ast.Op.mem_store8)))
+    (or (or (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)) (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)))
+    (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
+    (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
+    (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
+        (eq o ast.Op.sys_random)))))))
+
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
+    (if (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)) (block))
+    (if (get c C.failed) (return (call void_t)) (block))
     (call check_literal_address c at o args)
     (if (get c C.failed) (return (call void_t)) (block))
     (let n:i32 (arr.len args))
@@ -1577,6 +1627,8 @@
     (put c C.fns (call (strmap.make (ptr Sig)) (call alloc.default) 256))
     (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
     (put c C.loop_depth 0)
+    (put c C.unsafe_depth 0)
+    (put c C.in_unsafe_fn false)
     (put c C.ret (make ast.MaybeType.none))
     (put c C.failed false)
     (put c C.problems (ptr.null Problem))

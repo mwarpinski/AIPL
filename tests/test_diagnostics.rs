@@ -91,30 +91,30 @@ fn check_ok(src: &str) {
 
 #[test]
 fn test_diagnostic_lock_on_heap_cursor_is_rejected() {
-    let err = check_err("(module m\n  (fn f [] -> void\n    (atomic.lock 0)))");
+    let err = check_err("(module m\n  (fn f [] -> void (unsafe)\n    (atomic.lock 0)))");
     assert!(err.starts_with("3:5:"), "got '{err}'");
     assert!(err.contains("heap cursor"), "got '{err}'");
 }
 
 #[test]
 fn test_diagnostic_store_to_heap_cursor_is_rejected() {
-    let err = check_err("(module m\n  (fn f [] -> void\n    (mem.store32 0 42)))");
+    let err = check_err("(module m\n  (fn f [] -> void (unsafe)\n    (mem.store32 0 42)))");
     assert!(err.starts_with("3:5:"), "got '{err}'");
     assert!(err.contains("heap cursor"), "got '{err}'");
 }
 
 #[test]
 fn test_diagnostic_store_into_reserved_block_is_rejected() {
-    let err = check_err("(module m\n  (fn f [] -> void\n    (mem.store32 512 42)))");
+    let err = check_err("(module m\n  (fn f [] -> void (unsafe)\n    (mem.store32 512 42)))");
     assert!(err.starts_with("3:5:"), "got '{err}'");
     assert!(err.contains("reserved runtime block"), "got '{err}'");
-    let err = check_err("(module m\n  (fn f [] -> i32\n    (mem.load32 700)))");
+    let err = check_err("(module m\n  (fn f [] -> i32 (unsafe)\n    (mem.load32 700)))");
     assert!(err.contains("reserved runtime block"), "got '{err}'");
 }
 
 #[test]
 fn test_diagnostic_misaligned_runtime_cell_is_rejected() {
-    let err = check_err("(module m\n  (fn f [] -> void\n    (mem.store32 18 1)))");
+    let err = check_err("(module m\n  (fn f [] -> void (unsafe)\n    (mem.store32 18 1)))");
     assert!(err.contains("4-byte-aligned"), "got '{err}'");
 }
 
@@ -122,13 +122,13 @@ fn test_diagnostic_misaligned_runtime_cell_is_rejected() {
 fn test_diagnostic_layout_allows_legitimate_runtime_access() {
     // Reading the heap cursor, and reading/writing the aligned runtime cells,
     // is exactly what memory.aipl and codegen.aipl do.
-    check_ok("(module m (fn f [] -> i32 (mem.load32 0)))");
-    check_ok("(module m (fn f [] -> void (mem.store32 4 0)))");
-    check_ok("(module m (fn f [] -> i32 (mem.store32 16 (mem.alloc 256)) (mem.load32 16)))");
+    check_ok("(module m (fn f [] -> i32 (unsafe) (mem.load32 0)))");
+    check_ok("(module m (fn f [] -> void (unsafe) (mem.store32 4 0)))");
+    check_ok("(module m (fn f [] -> i32 (unsafe) (mem.store32 16 (mem.alloc 256)) (mem.load32 16)))");
     // Heap addresses from mem.alloc are the normal case.
-    check_ok("(module m (fn f [] -> void (let p:i32 (mem.alloc 4)) (atomic.lock p) (atomic.unlock p)))");
+    check_ok("(module m (fn f [] -> void (unsafe) (let p:i32 (mem.alloc 4)) (atomic.lock p) (atomic.unlock p)))");
     // Literal heap addresses are allowed (discouraged, but not the checker's call).
-    check_ok("(module m (fn f [] -> void (mem.store32 4096 1)))");
+    check_ok("(module m (fn f [] -> void (unsafe) (mem.store32 4096 1)))");
 }
 
 /// What the checker accepts must compile (an external audit on 2026-10-05 found the
@@ -165,7 +165,8 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         ("(mem.store_f32 (mem.alloc 8) 1.5) 0", "there is no mem.store_f32"),
     ];
     for (body, want) in cases {
-        let src = format!("(module m (fn main [] -> i32 {body}))");
+        // in an unsafe function, so the raw ops reach the checks under test
+        let src = format!("(module m (fn main [] -> i32 (unsafe) {body}))");
         let err = match Parser::parse(&src) {
             Err(e) => e,
             Ok(m) => TypeChecker::new().check_module(&m).err().unwrap_or_else(|| panic!("accepted: {src}")),
@@ -174,4 +175,89 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
     }
     // still accepted: eq/neq on bool and str, + - * / and ordering on floats
     check_ok("(module m (fn main [] -> i32 (if (and (eq \"a\" \"a\") (and (neq true false) (lt 1.5 (* 2.0 (- 3.0 (/ 1.0 2.0)))))) 1 0)))");
+}
+
+// ---------------------------------------------------------------------------
+// The unsafe fence (AIPL_SPEC.md 3, "Unchecked operations"). The AIPL checker
+// gives the same messages (tests/test_checker_aipl.rs); these pin what both
+// must say, so dropping the fence from both checkers at once still fails.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_unchecked_operation_needs_an_unsafe_context() {
+    let ops: &[(&str, &str)] = &[
+        ("mem.load8", "(mem.load8 2048)"),
+        ("mem.load32", "(mem.load32 2048)"),
+        ("mem.load64", "(i32.wrap (mem.load64 2048))"),
+        ("mem.store8", "(block (mem.store8 2048 1) 0)"),
+        ("mem.store32", "(block (mem.store32 2048 1) 0)"),
+        ("mem.store64", "(block (mem.store64 2048 1i64) 0)"),
+        ("atomic.add", "(atomic.add 2048 1)"),
+        ("atomic.cas", "(if (atomic.cas 2048 0 1) 1 0)"),
+        ("atomic.lock", "(block (atomic.lock 2048) 0)"),
+        ("atomic.unlock", "(block (atomic.unlock 2048) 0)"),
+        ("thread.spawn", "(thread.spawn (ref w) 0)"),
+        ("thread.join", "(thread.join 0)"),
+        ("fs.open", "(fs.open 2048 4 0)"),
+        ("fs.read", "(fs.read 3 2048 4)"),
+        ("fs.write", "(fs.write 3 2048 4)"),
+        ("fs.delete", "(fs.delete 2048 4)"),
+        ("args.sizes", "(args.sizes 2048 2052)"),
+        ("args.get", "(args.get 2048 2052)"),
+        ("env.sizes", "(env.sizes 2048 2052)"),
+        ("env.get", "(env.get 2048 2052)"),
+        ("sys.random", "(sys.random 2048 4)"),
+        ("ptr.cast", "(if (eq (ptr.cast P 2048) (ptr.null P)) 1 0)"),
+        ("arr.cast", "(arr.len (arr.cast i32 2048))"),
+    ];
+    for (op, body) in ops {
+        let module = |main: &str| {
+            format!("(module m (struct P [x:i32]) (fn w [n:i32] -> i32 n)\n  (fn main [] -> i32 {main}))")
+        };
+        let err = check_err(&module(body));
+        let want = format!("2:{}: {op} is unchecked: write it inside (unsafe ...), or mark the function (unsafe)",
+            21 + body.find(&format!("({op} ")).unwrap() + 1);
+        assert!(err.ends_with(&want), "{body}\n  expected: {want}\n  got: {err}");
+        check_ok(&module(&format!("(unsafe {body})")));
+        check_ok(&module(&format!("(unsafe) {body}")));
+    }
+    // enum.cast is checked (match's unreachable), so it needs no fence
+    check_ok("(module m (enum E [a b]) (fn main [] -> i32 (enum.ord (enum.cast E 1))))");
+}
+
+#[test]
+fn the_fence_covers_exactly_the_unsafe_block_and_the_marked_function() {
+    let raw = "(fn raw [a:i32] -> i32 (unsafe) (mem.load32 a))";
+    // calling or referring to an (unsafe) function needs a context too
+    for (main, at) in [("(call raw 2048)", "(call"), ("(block (let f:(fn [i32] -> i32) (ref raw)) 0)", "(ref")] {
+        let col = 22 + main.find(at).unwrap();
+        let err = check_err(&format!("(module m {raw}\n  (fn main [] -> i32 {main}))"));
+        let want = format!("2:{col}: 'raw' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)");
+        assert!(err.ends_with(&want), "{main}\n  expected: {want}\n  got: {err}");
+    }
+    check_ok(&format!("(module m {raw} (fn main [] -> i32 (unsafe (call raw 2048))))"));
+    check_ok(&format!("(module m {raw} (fn main [] -> i32 (unsafe) (call raw 2048)))"));
+    // the context ends with the block, and does not leak into the next function
+    check_err("(module m (fn main [] -> i32 (unsafe 1) (mem.load32 2048)))");
+    check_err("(module m (fn a [] -> i32 (unsafe) (mem.load32 2048)) (fn b [] -> i32 (mem.load32 2048)))");
+    check_err("(module m (fn a [] -> i32 (unsafe (mem.load32 2048))) (fn b [] -> i32 (mem.load32 2048)))");
+    // nested blocks and the marked function's contracts are inside
+    check_ok("(module m (fn main [] -> i32 (unsafe (if true (mem.load32 2048) 0))))");
+    check_ok("(module m (fn f [a:i32] -> i32 (unsafe) (req (gt (mem.load32 a) 0)) a))");
+    check_err("(module m (fn f [a:i32] -> i32 (req (gt (mem.load32 a) 0)) a))");
+}
+
+#[test]
+fn unsafe_compiles_exactly_as_block_does() {
+    use aipl_core::compiler::wasm::WasmCompiler;
+    // same columns ("block " is padded to the width of "unsafe"), so even the
+    // line table must match
+    let compile = |head: &str| {
+        let src = format!("(module m (fn main [] -> i32 ({head} (let p:i32 (mem.alloc 4)) (mem.store32 p 7) (mem.load32 p))))");
+        let module = Parser::parse(&src).unwrap();
+        let mut c = TypeChecker::new();
+        if head == "unsafe" { c.check_module(&module).unwrap(); }
+        WasmCompiler::compile(&module).unwrap()
+    };
+    assert_eq!(compile("unsafe"), compile("block "));
 }

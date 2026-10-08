@@ -32,7 +32,8 @@ union_def      ::= "(" "union" identifier "[" ( "(" identifier field* ")" )+ "]"
 
 fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type contract* expr* ")" ;
 param          ::= identifier ":" type ;
-contract       ::= "(" ("req" | "ens" | "inv") expr ")" ;
+contract       ::= "(" ("req" | "ens" | "inv") expr ")"
+                 | "(" "unsafe" ")" ;                (* the function is unsafe to call (section 3) *)
 
 type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "result" type type ")"
@@ -55,6 +56,7 @@ expr           ::= literal
                  | "(" "while" expr expr* ")"
                  | "(" "call" fn_name expr* ")"
                  | "(" "block" expr* ")"
+                 | "(" "unsafe" expr+ ")"            (* a block allowing unchecked operations (section 3) *)
                  | "(" "return" [ expr ] ")" | "(" "break" ")" | "(" "continue" ")"
                  | "(" "cond" ( "(" expr expr+ ")" )+ "(" "else" expr+ ")" ")"
                  | "(" ("ok" | "err") [ ":" type ] expr ")"
@@ -136,12 +138,51 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 ### Contracts
 `(req e)` (precondition) and `(ens e)` (postcondition) are `bool` expressions placed before the body; inside `ens`, `res` is the return value. The checker type-checks them; nothing is proven statically. The VM evaluates every `req` before the body and every `ens` after it (including after an early `return`) and fails the call with `Pre-condition failed in 'f' at L:C: (req ...) with x = ...` (or `Post-condition`, which also shows `res`). Compiled code (wasm, and native through it) checks them the same way and stops with the same message, without the position: `Pre-condition failed in 'f': (req ...) with x = ...` (section 7.6). `(inv e)` is parsed and type-checked but never evaluated (audit B5).
 ```lisp
-(fn db_read_slot [ptr:i32 offset:i32] -> i32
-  (req (gt ptr 0))
-  (req (gte offset 0))
+(fn read_slot [slots:(arr i32) i:i32] -> i32
+  (req (gte i 0))
+  (req (lt i (arr.len slots)))
   (ens (gte res 0))
-  (mem.load32 (+ ptr offset)))
+  (arr.get i32 slots i))
 ```
+
+### Unchecked operations and `unsafe`
+
+Some operations reach memory the program has not been handed through a typed pointer or array, or let threads race, and nothing checks them. They are allowed only in an **unsafe context**:
+
+- **Raw memory:** `mem.load8`, `mem.load32`, `mem.load64`, `mem.store8`, `mem.store32`, `mem.store64`.
+- **Casts to a pointer or array:** `ptr.cast`, `arr.cast` (`enum.cast` is checked: a non-member reaches `match`'s `unreachable`).
+- **Atomics and threads:** `atomic.add`, `atomic.cas`, `atomic.lock`, `atomic.unlock`, `thread.spawn`, `thread.join` (AIPL does not check for data races).
+- **Host calls that take raw addresses:** `fs.open`, `fs.read`, `fs.write`, `fs.delete`, `args.sizes`, `args.get`, `env.sizes`, `env.get`, `sys.random`.
+- **Calling, or taking `(ref f)` of, a function marked `(unsafe)`.**
+
+Getting an address as a number (`mem.alloc`, `str.ptr`, `ptr.addr`, `arr.addr`) is checked: a number cannot be read through without one of the operations above.
+
+An unsafe context is the inside of an `(unsafe e...)` block, which is a `block` in every other way (its value is its last expression; its `let`s end with it), or the whole of a function with the `(unsafe)` clause, its contracts included. The two mean different things:
+
+- `(unsafe e...)` says "these operations are correct as used here": the function vouches for them, and its callers need nothing.
+- `(fn f [...] -> T (unsafe) ...)` says "calling `f` can break memory if its arguments are wrong", typically because it takes a raw address. Its callers need an unsafe context.
+
+```lisp
+(module unsafe_demo
+  ;; unsafe to call: writes wherever `at` points
+  (fn put_answer [at:i32] -> void (unsafe)
+    (mem.store32 at 42))
+
+  ;; safe to call: the address is its own fresh memory
+  (fn answer [] -> i32
+    (unsafe
+      (let p:i32 (mem.alloc 4))
+      (call put_answer p)
+      (mem.load32 p)))
+
+  (fn main [] -> i32 (call answer)))    ;; => 42
+```
+
+Outside an unsafe context the checker rejects the operation and says how to allow it: `3:5: mem.store32 is unchecked: write it inside (unsafe ...), or mark the function (unsafe)`, and for a call, `'put_answer' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)`. `unsafe` changes nothing at run time: both forms compile exactly as `block` does.
+
+The standard library uses unchecked operations inside functions that are safe to call (`io.read_file`, `str.byte_at`, `vec.push`, ...); the few that take raw addresses are `(unsafe)`: `str.bytes`, the `fmt.*_to_bytes` writers and `fmt.f64_fixed`, `float.from_decimal`, and `alloc.custom`.
+
+**What this does and does not guarantee.** Code without `unsafe` cannot read or write memory through a raw address, cast an address into a pointer, or start a thread. It can still read freed memory through a pointer it kept after freeing it (use after free; generation checks are planned, docs/design/GENERATIONS_PLAN.md), and it can still hand the standard library a forged descriptor, because the library's structs (`str.Bytes`, `buf.Buf`) keep raw addresses in fields any module can write; visibility (`pub`, ROADMAP.md) will close that. So AIPL is not memory-safe yet; it is safe by default against raw memory access.
 
 ---
 
@@ -224,7 +265,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 | `(arr.get T a i)` | `T` | `a` must be an `(arr T)`; checks `0 <= i < (arr.len a)` (below), then loads at `a + i * sizeof(T)` |
 | `(arr.set T a i v)` | `void` | `a` must be an `(arr T)`; checks the index, then evaluates `v` and stores it at `a + i * sizeof(T)` |
 | `(arr.len a)` | `i32` | the element count stored in the 4 bytes before `a` |
-| `(ptr.null S)` / `(arr.null T)` | `(ptr S)` / `(arr T)` | address 0 |
+| `(ptr.null S)` / `(arr.null T)` | `(ptr S)` / `(arr T)` | address 0; `get`, `put`, and every array operation stop on it (below) |
 | `(ptr.cast S x)` / `(arr.cast T x)` | `(ptr S)` / `(arr T)` | `x` must be `i32`; reinterprets the address (unchecked) |
 | `(ptr.addr p)` / `(arr.addr a)` | `i32` | the address, e.g. for `mem.*` or arithmetic |
 
@@ -233,6 +274,8 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 **Struct names are namespaced like functions** (section 11): inside the module that defines it, a struct is `Node`; an importer writes `compiler.Node` (or `c.Node` after `(import compiler as c)`), in `new`, `sizeof`, `(ptr ...)`, and field references such as `(get p compiler.Node.next)`. Two imported modules may each define a `Node`.
 
 **Bounds checks run everywhere.** Every `arr.get` and `arr.set` checks `0 <= i < n` against the header at `a - 4`, before the value to store is evaluated, and fails with `Array index out of bounds: index I for array of length N`: the VM as an error, compiled code (wasm and native) by writing that message and trapping (section 7.9), which `aipl-run` and native executables print as `<program>: <message>` with exit status 134. The wasm backend uses a second scratch local per function for the index and calls the module's `$aipl_oob` helper on failure. The checks cost about 20-30% under wasmtime and 45-55% natively on array-bound loops (docs/design/CHECKS_PLAN.md).
+
+**Null checks run everywhere.** `get`, `put`, `arr.get`, `arr.set`, and `arr.len` check their pointer or array for null (address 0) right after evaluating it, before the index or the value to store, and fail with `Null pointer dereference`, the same message in the VM and in compiled code, followed by the call chain with positions. Compiled code calls the module's `$aipl_null` helper, which writes the message at 128 and traps. The checks cost 2-8% on most benchmarks, and 22% under wasmtime on nbody, whose inner loop reads and writes `f64` struct fields (docs/BENCHMARKS.md). Before these checks a null `get` silently read the heap cursor at address 0 (they found such a read in the self-hosted toolchain's generics pass).
 
 ```lisp
 (module points
@@ -454,7 +497,7 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | `aipl compile --self FILE [-o out.wasm]` | 1-4, 5b, then `driver.compile_file` in the VM | compiles with the Rust toolchain and with the self-hosted one (`aipl_src/driver.aipl`: resolver, checker, code generator, as `aiplc`) and fails unless the bytes are identical (section 6.4) |
 | `aipl test FILE [--func run_all]` | 1-4, 5a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
 
-Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1. `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
+Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1; a runtime error in `eval` or `test` is followed by its call chain (section 9). `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
 
 ### 6.2 What a compiled `.wasm` module looks like
 
@@ -727,10 +770,10 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.8 Memory
 
-Linear memory is byte-addressed. Both backends start with 16 pages (1 MiB) and grow up to 32768 pages (2 GiB): automatically when an allocation needs it (section 4.A), or explicitly with `mem.grow`. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap. Get memory from `mem.alloc`; never pick an address yourself (section 7.9).
+Linear memory is byte-addressed. Both backends start with 16 pages (1 MiB) and grow up to 32768 pages (2 GiB): automatically when an allocation needs it (section 4.A), or explicitly with `mem.grow`. Loads and stores are little-endian, unaligned access is allowed, and out-of-bounds access is a VM runtime error (`Memory store out of bounds: ptr N`) and a wasm trap. Get memory from `mem.alloc`; never pick an address yourself (section 7.9). Loads and stores on raw addresses are unchecked operations, allowed only in an unsafe context (section 3, "Unchecked operations"); structs, arrays, and the standard library are the checked way to use memory.
 
 ```lisp
-(fn pack_two [] -> i32
+(fn pack_two [] -> i32 (unsafe)
   (let p:i32 (mem.alloc 8))        ;; p == 1024 on a fresh VM or module
   (mem.store32 p 7)
   (mem.store32 (+ p 4) 35)
@@ -908,7 +951,7 @@ Every parser and checker error is a single line of the form
 <line>:<col>: <message>
 ```
 
-with 1-based line and column of the offending token or the opening `(` of the offending form. Every error found before run time is prefixed with the path of the file it is in (`examples/x.aipl: 3:5: Unknown op/keyword: badop`), whether the resolver, the parser, or the checker finds it, and in both toolchains (section 6.4). An error inside a generic instance names the template's file, or the file that wrote the type argument when the error is at that argument. A syntax error, or an error in a definition (struct, enum, union, constant, function signature), is reported alone, since everything after depends on it. Otherwise every function body is checked, and each failing function reports its first error, one per line in source order; both toolchains give the same lines. Contract failures in the VM carry the contract's position (section 7.6); the VM's other runtime errors (division by zero, out-of-bounds memory, unknown thread handle) have **no** position. A compiled trap, under `aipl-run` and natively, prints its call chain with the source position of each frame (`  at f (math.aipl:4:5)`, section 6.5).
+with 1-based line and column of the offending token or the opening `(` of the offending form. Every error found before run time is prefixed with the path of the file it is in (`examples/x.aipl: 3:5: Unknown op/keyword: badop`), whether the resolver, the parser, or the checker finds it, and in both toolchains (section 6.4). An error inside a generic instance names the template's file, or the file that wrote the type argument when the error is at that argument. A syntax error, or an error in a definition (struct, enum, union, constant, function signature), is reported alone, since everything after depends on it. Otherwise every function body is checked, and each failing function reports its first error, one per line in source order; both toolchains give the same lines. A runtime error prints its call chain with the source position of each frame (`  at f (math.aipl:4:5)`): a compiled trap under `aipl-run` and natively (section 6.5), and an error in the VM (`aipl eval`, `aipl test`), whose chain is the same, frame for frame; only the message's wording differs (`Division by zero` against wasmtime's `integer divide by zero`). A VM contract failure also gives the contract's position in its message (section 7.6). A module parsed from one text (not through the resolver) names no file: `  at f (3:5)`.
 
 Representative messages, exactly as produced:
 
@@ -1075,7 +1118,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (28 files, 294 tests as of 2026-10-07): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (28 files, 299 tests as of 2026-10-08): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -1183,23 +1226,25 @@ The `.wasm` exports `gcd`, `main`, and `memory`. Note the `let t` inside the `wh
 
 ### 12.2 Memory as a data structure, both backends
 
+Raw memory, laid out by hand. Every function takes a raw address, which nothing checks, so each is `(unsafe)` to call (section 3); a program would use a struct or `std/vec` instead.
+
 ```lisp
 (module stack_demo
   ;; stack layout: [count:i32][slot0:i32][slot1:i32]...
-  (fn stack_new [cap:i32] -> i32
+  (fn stack_new [cap:i32] -> i32 (unsafe)
     (let s:i32 (mem.alloc (+ 4 (* cap 4))))
     (mem.store32 s 0)
     s)
-  (fn stack_push [s:i32 v:i32] -> void
+  (fn stack_push [s:i32 v:i32] -> void (unsafe)
     (let n:i32 (mem.load32 s))
     (mem.store32 (+ s (+ 4 (* n 4))) v)
     (mem.store32 s (+ n 1)))
-  (fn stack_pop [s:i32] -> i32
+  (fn stack_pop [s:i32] -> i32 (unsafe)
     (req (gt (mem.load32 s) 0))
     (let n:i32 (- (mem.load32 s) 1))
     (mem.store32 s n)
     (mem.load32 (+ s (+ 4 (* n 4)))))
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let s:i32 (call stack_new 4))
     (call stack_push s 10)
     (call stack_push s 32)
@@ -1218,16 +1263,16 @@ The `.wasm` exports `gcd`, `main`, and `memory`. Note the `let t` inside the `wh
 
 ### 12.4 Threads and atomics, both backends
 
-The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32` argument is the natural way to hand it a pointer.
+The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32` argument is the natural way to hand it a pointer. Threads and atomics are unchecked operations (AIPL does not check for data races), so they need an unsafe context (section 3).
 
 ```lisp
 (module counter_demo
-  (fn worker [counter:i32] -> i32
+  (fn worker [counter:i32] -> i32 (unsafe)
     (loop i 1 1000 1
       (atomic.add counter 1))
     0)
 
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let counter:i32 (mem.alloc 4))
     (mem.store32 counter 0)
     (let t1:i32 (thread.spawn (ref worker) counter))
@@ -1240,11 +1285,11 @@ The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32`
 
 ### 12.5 File round-trip, both backends
 
-Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention. `fs.open` flags: `0` read-only, non-zero write/create/truncate. All `fs.*` return `-1` on failure rather than raising. In the VM the path is relative to the process cwd; under WASI it is relative to the preopened directory (fd 3), which `aipl run` and executables built with `aipl compile --exe` set to the working directory.
+Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention, so the `fs.*` operations that take them are unchecked and need an unsafe context (section 3); `std/io` (`io.read_file`, `io.write_file`) is the checked way to use files. `fs.open` flags: `0` read-only, non-zero write/create/truncate. All `fs.*` return `-1` on failure rather than raising. In the VM the path is relative to the process cwd; under WASI it is relative to the preopened directory (fd 3), which `aipl run` and executables built with `aipl compile --exe` set to the working directory.
 
 ```lisp
 (module file_demo
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let path:i32 (mem.alloc 8))
     (let out:i32 (mem.alloc 4))
     (let in:i32 (mem.alloc 4))
@@ -1327,6 +1372,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 
 | Mistake | Correct form |
 |---|---|
+| `(mem.load32 p)`, `(ptr.cast S a)`, or `(thread.spawn ...)` in an ordinary function | wrap it in `(unsafe ...)`, or mark the function `(unsafe)` if wrong arguments could break memory (section 3); usually `new`, arrays, or a std function avoid it |
 | `(f x)` to call a user function | `(call f x)`; bare `(name ...)` is only for built-in ops |
 | `(if c (set! x 1))` with no else | `if` always takes three arguments; for a statement write `(if c (set! x 1) (block))`; both branches must be void or both the same value type |
 | `(let x 5)` | `(let x:i32 5)`; the type annotation is mandatory |

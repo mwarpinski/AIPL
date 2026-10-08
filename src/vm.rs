@@ -49,6 +49,10 @@ pub const HEAP_START: u32 = 1024;
 /// (`THREAD_STACK`). A small function's call takes about 5 KiB, so this
 /// allows about 40,000 nested calls of one.
 pub const STACK_BUDGET: usize = 192 << 20;
+
+/// The error for `get`, `put`, or an array operation on a null pointer or
+/// array, as compiled code reports it (wasm.rs NULL_TEXT).
+pub const NULL_POINTER: &str = "Null pointer dereference";
 const THREAD_STACK: usize = 256 << 20;
 
 /// An address in the caller's stack frame: how deep the stack is.
@@ -103,6 +107,15 @@ pub struct VM {
     /// The stack position of the outermost call running on this thread, or
     /// 0 when none is (see STACK_BUDGET).
     stack_top: usize,
+    /// Where the error being returned happened: the innermost expression it
+    /// came out of, until a function's frame takes it.
+    error_at: Option<(u32, u32)>,
+    /// The frames the last error left, innermost first: each function and
+    /// where in it the error was (call_chain).
+    trace: Vec<(String, Option<(u32, u32)>)>,
+    /// Each function's source file name (Module::sources, file_names), for
+    /// the positions in a call chain.
+    places: Arc<HashMap<String, String>>,
 }
 
 impl Default for VM {
@@ -139,6 +152,9 @@ impl VM {
             env: Arc::new(std::env::vars().map(|(k, v)| format!("{k}={v}")).collect()),
             stdin: None,
             stack_top: 0,
+            error_at: None,
+            trace: Vec::new(),
+            places: Arc::new(HashMap::new()),
         }
     }
 
@@ -164,6 +180,9 @@ impl VM {
             args: Arc::clone(&self.args),
             env: Arc::clone(&self.env),
             stack_top: 0,
+            error_at: None,
+            trace: Vec::new(),
+            places: Arc::clone(&self.places),
             stdin: self.stdin.clone(),
         }
     }
@@ -247,6 +266,16 @@ impl VM {
                 }
             }
         }
+        // each function's file, as compiled code's line table names it
+        let mut places = (*self.places).clone();
+        for f in &module.functions {
+            if let Some(src) = module.sources.get(&format!("fn {}", f.name)) {
+                if let Some(name) = module.file_names.get(src.file_at(f.span)) {
+                    places.insert(f.name.clone(), name.clone());
+                }
+            }
+        }
+        self.places = Arc::new(places);
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -284,6 +313,8 @@ impl VM {
         }
         let here = stack_position();
         if self.stack_top == 0 {
+            self.error_at = None;
+            self.trace.clear();
             self.stack_top = here;
             let r = self.invoke_function(fn_name, args);
             self.stack_top = 0;
@@ -298,7 +329,17 @@ impl VM {
         self.invoke_function(fn_name, args)
     }
 
+    /// Runs a function; an error leaving it adds its frame to the trace.
     fn invoke_function(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let r = self.invoke_body(fn_name, args);
+        if r.is_err() {
+            let at = self.error_at.take();
+            self.trace.push((fn_name.to_string(), at));
+        }
+        r
+    }
+
+    fn invoke_body(&mut self, fn_name: &str, args: Vec<Value>) -> Result<Value, String> {
         let f = self
             .functions
             .get(fn_name)
@@ -324,6 +365,7 @@ impl VM {
             if let Contract::Requires(expr) = contract {
                 let res = self.eval_expr(expr, &mut scope)?;
                 if res != Value::Bool(true) {
+                    self.error_at = Some(expr.span());
                     return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None));
                 }
             }
@@ -348,6 +390,7 @@ impl VM {
                 contract_scope.insert("res".to_string(), last_val.clone());
                 let res = self.eval_expr(expr, &mut contract_scope)?;
                 if res != Value::Bool(true) {
+                    self.error_at = Some(expr.span());
                     return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some(&last_val)));
                 }
             }
@@ -369,8 +412,35 @@ impl VM {
         }
         match self.eval_expr_inner(expr, scope) {
             Err(_) if self.flow.is_some() => Ok(Value::Void),
+            Err(e) => {
+                // the innermost expression the error came out of
+                if self.error_at.is_none() {
+                    self.error_at = Some(expr.span());
+                }
+                Err(e)
+            }
             r => r,
         }
+    }
+
+    /// The call chain of the last error `invoke` returned, as compiled code
+    /// prints it (src/bin/aipl_run.rs call_chain): "  at f (file:line:col)"
+    /// per frame, innermost first, at most 32, then "  ... N more"; a frame
+    /// of a module parsed from one text names no file ("  at f (3:5)").
+    pub fn call_chain(&self) -> String {
+        const SHOWN: usize = 32;
+        let mut out = String::new();
+        for (f, at) in self.trace.iter().take(SHOWN) {
+            match (at, self.places.get(f)) {
+                (Some((l, c)), Some(file)) => out.push_str(&format!("  at {f} ({file}:{l}:{c})\n")),
+                (Some((l, c)), None) => out.push_str(&format!("  at {f} ({l}:{c})\n")),
+                (None, _) => out.push_str(&format!("  at {f}\n")),
+            }
+        }
+        if self.trace.len() > SHOWN {
+            out.push_str(&format!("  ... {} more\n", self.trace.len() - SHOWN));
+        }
+        out
     }
 
     fn eval_expr_inner(&mut self, expr: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
@@ -554,7 +624,7 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 res
             }
-            Expr::Block(exprs, _) => {
+            Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 let last = self.eval_seq(exprs, scope);
                 scope.retain(|k, _| keys_before.contains(k));
@@ -632,6 +702,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for get, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let addr = ptr_val + offset;
                 self.load_val_at(addr, &field_ty)
             }
@@ -646,6 +719,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let addr = ptr_val + offset;
                 self.check_write("put", addr)?;
                 let val_v = self.eval_expr(val, scope)?;
@@ -686,6 +762,10 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for arr.get, got {:?}", other)),
                 };
+                // before the index is evaluated, as compiled code checks
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let idx_val = match self.eval_expr(index, scope)? {
                     Value::Int(i) => i,
                     other => return Err(format!("VM: Expected Int index for arr.get, got {:?}", other)),
@@ -712,6 +792,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int array for arr.len, got {:?}", other)),
                 };
+                if p == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 if p < 4 {
                     return Err(format!("VM: Invalid array pointer {}", p));
                 }
@@ -722,6 +805,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for arr.set, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let idx_val = match self.eval_expr(index, scope)? {
                     Value::Int(i) => i,
                     other => return Err(format!("VM: Expected Int index for arr.set, got {:?}", other)),

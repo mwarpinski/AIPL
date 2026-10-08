@@ -37,6 +37,15 @@ const EXPECTED: &[(&str, i32)] = &[
     ("shapes", 28),
     ("geom", 15),
     ("tokens_demo", 110),
+    ("unsafe_demo", 42),
+    // docs/TOUR.md
+    ("tour_hello", 25),
+    ("tour_types", 43),
+    ("tour_control", 29),
+    ("tour_structs", 33),
+    ("tour_results", 79),
+    ("tour_contracts", 19),
+    ("tour_generics", 13),
 ];
 
 /// README.md and PROMPT_GUIDE_FOR_AIS.md examples whose `main` must fail, as
@@ -95,7 +104,7 @@ fn doc_examples_run_in_both_backends() {
     std::env::set_current_dir(&scratch).unwrap();
 
     let mut seen = Vec::new();
-    for doc in ["PROMPT_GUIDE_FOR_AIS.md", "README.md"] {
+    for doc in ["PROMPT_GUIDE_FOR_AIS.md", "README.md", "docs/TOUR.md"] {
         for src in lisp_blocks(doc) {
             // Resolved from a file, so examples may import the standard library.
             let file = scratch.join("example.aipl");

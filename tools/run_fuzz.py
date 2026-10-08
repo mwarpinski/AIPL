@@ -130,11 +130,12 @@ class Gen:
             return "E." + rng.choice(self.enum_members())
         if t == "U":
             return self.make_union(None, 0)
+        # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
-            return f"(new {t[5:-1]})"
+            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]})"
         if t.startswith("(arr "):
             el = t[5:-1]
-            return f"(arr.new {el} {rng.randint(1, 5)})"
+            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
         if t == R:
             return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err {self.literal('bool')})"
         if t == F:
@@ -419,11 +420,13 @@ class Gen:
 
     def memory_stmt(self, ctx, d):
         m = self.fresh("mem")
-        return (f"(let {m}:i32 (mem.alloc 24)) (mem.store32 {m} {self.expr(ctx, 'i32', d)}) "
+        # raw memory is unchecked, so it sits in an unsafe block (AIPL_SPEC.md 3)
+        return (f"(unsafe (let {m}:i32 (mem.alloc 24)) (mem.store32 {m} {self.expr(ctx, 'i32', d)}) "
                 f"(mem.store64 (+ {m} 8) {self.expr(ctx, 'i64', d)}) (mem.store8 (+ {m} 17) {self.expr(ctx, 'i32', d)}) "
                 + " ".join(self.print_value(t, e) for t, e in [
                     ("i32", f"(mem.load32 {m})"), ("i64", f"(mem.load64 (+ {m} 8))"), ("i32", f"(mem.load8 (+ {m} 17))"),
-                    ("i32", f"(mem.load32 (+ {m} 16))"), ("i32", f"(mem.load8 (+ {m} 3))")]))
+                    ("i32", f"(mem.load32 (+ {m} 16))"), ("i32", f"(mem.load8 (+ {m} 3))")])
+                + ")")
 
     def stmts(self, ctx, d):
         return " ".join(self.stmt(ctx, d) for _ in range(self.rng.randint(1, 3)))
@@ -552,9 +555,14 @@ def run(cmd, cwd):
 
 
 def vm_failure(err):
-    """The VM's error message, or None."""
+    """The VM's error message (without its call chain), or None."""
     m = re.search(r"^Error: (.*)", err, re.M | re.S)
-    return m.group(1).strip() if m else None
+    return m.group(1).split("\n  at ", 1)[0].strip() if m else None
+
+
+def chain(err):
+    """The call chain lines ("  at f (file:line:col)", "  ... N more") of an error."""
+    return [l for l in err.split("\n") if l.startswith("  at ") or l.startswith("  ... ")]
 
 
 def trap_message(err, prog):
@@ -651,6 +659,9 @@ def check(case, seed):
                                     f"compiled code {'fails' if wasm[2] else 'succeeds'} ({wasm[2]})")
                 elif vm[2] is not None and not same_failure(vm[2], wasm[2]):
                     problems.append(f"different failures: VM {vm[2]!r}, compiled {wasm[2]!r}")
+                elif vm[2] is not None and chain(e_err) != chain(w_err):
+                    problems.append("different call chains:\n  VM:       " + "\n            ".join(chain(e_err))
+                                    + "\n  compiled: " + "\n            ".join(chain(w_err)))
                 if vm[1] != wasm[1]:
                     problems.append("different output: " + first_difference(vm[1], wasm[1]))
     if problems:

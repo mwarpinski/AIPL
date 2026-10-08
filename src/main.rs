@@ -248,7 +248,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
-            let res = vm.invoke(&func, vec![])?;
+            // an error is followed by its call chain, as compiled code prints it
+            let res = vm.invoke(&func, vec![]).map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?;
             println!("[AIPL Result]: {:?}", res);
         }
         Commands::Compile { file, output, self_flag, exe, sandbox, target } => {
@@ -341,7 +342,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(1);
                 }
                 Err(e) => {
-                    eprintln!("\n[AIPL Test] Error: {}", e);
+                    eprintln!("\n[AIPL Test] Error: {}\n{}", e, vm.call_chain().trim_end());
                     std::process::exit(1);
                 }
             }

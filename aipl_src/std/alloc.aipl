@@ -36,7 +36,7 @@
                     (fixed f:(ptr Fixed))
                     (custom c:(ptr Custom))])
 
-  (fn custom [state:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] -> Allocator
+  (fn custom [state:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] -> Allocator (unsafe)
     (let c:(ptr Custom) (new Custom))
     (put c Custom.state state)
     (put c Custom.alloc_fn alloc_fn)
@@ -62,13 +62,13 @@
   (struct Shared [a:Allocator])
 
   (fn default [] -> Allocator
-    (if (eq (mem.load32 52) 0)
+    (unsafe (if (eq (mem.load32 52) 0)
         (block
           (let s:(ptr Shared) (new Shared))
           (put s Shared.a (call of_heap (call heap.make)))
           (mem.store32 52 (ptr.addr s)))
         (block))
-    (get (ptr.cast Shared (mem.load32 52)) Shared.a))
+    (get (ptr.cast Shared (mem.load32 52)) Shared.a)))
 
   ;; ===== Raw bytes =====
 
@@ -83,17 +83,17 @@
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
   (fn free_raw [a:Allocator p:i32 n:i32] -> void
-    (match a
+    (unsafe (match a
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))
       (Allocator.fixed [f] (call fixed_free f p n))
-      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.state) p n))))
+      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.state) p n)))))
 
   ;; n bytes from a custom allocator, zeroed here.
   (fn custom_raw [c:(ptr Custom) n:i32] -> i32
-    (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.state) n)))
+    (unsafe (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.state) n)))
     (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
-    p)
+    p))
 
   ;; What a custom allocator returned, which must be 8-aligned.
   (fn custom_result [p:i32] -> i32
@@ -103,11 +103,11 @@
 
   (fn fixed_raw [f:(ptr Fixed) n:i32] -> i32
     (req (call fits f n))
-    (let size:i32 (bitand (+ n 7) -8))
+    (unsafe (let size:i32 (bitand (+ n 7) -8))
     (let p:i32 (+ (get f Fixed.base) (get f Fixed.used)))
     (put f Fixed.used (+ (get f Fixed.used) size))
     (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
-    p)
+    p))
 
   ;; Whether n more bytes fit in the buffer.
   (fn fits [f:(ptr Fixed) n:i32] -> bool
@@ -123,7 +123,7 @@
 
   ;; A zeroed T.
   (fn (create T) [a:Allocator] -> (ptr T)
-    (ptr.cast T (call raw a (sizeof T))))
+    (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
   (fn (destroy T) [a:Allocator p:(ptr T)] -> void
     (call free_raw a (ptr.addr p) (sizeof T)))
@@ -131,9 +131,9 @@
   ;; n zeroed Ts, laid out like (arr.new T n).
   (fn (array T) [a:Allocator n:i32] -> (arr T)
     (req (gte n 0))
-    (let base:i32 (call raw a (checked.add 4 (checked.mul n (sizeof T)))))
+    (unsafe (let base:i32 (call raw a (checked.add 4 (checked.mul n (sizeof T)))))
     (mem.store32 base n)
-    (arr.cast T (+ base 4)))
+    (arr.cast T (+ base 4))))
 
   (fn (free_array T) [a:Allocator xs:(arr T)] -> void
     (call free_raw a (- (arr.addr xs) 4) (+ 4 (* (arr.len xs) (sizeof T)))))
@@ -154,18 +154,18 @@
 
   ;; A custom allocator for the tests: a heap that counts its calls.
   (struct Counting [h:(ptr heap.Heap) allocs:i32 frees:i32])
-  (fn counting_alloc [state:i32 n:i32] -> i32
+  (fn counting_alloc [state:i32 n:i32] -> i32 (unsafe)
     (let k:(ptr Counting) (ptr.cast Counting state))
     (put k Counting.allocs (+ (get k Counting.allocs) 1))
     (call heap.raw (get k Counting.h) n))
-  (fn counting_free [state:i32 p:i32 n:i32] -> void
+  (fn counting_free [state:i32 p:i32 n:i32] -> void (unsafe)
     (let k:(ptr Counting) (ptr.cast Counting state))
     (put k Counting.frees (+ (get k Counting.frees) 1))
     (call heap.free_raw (get k Counting.h) p n))
 
   ;; Pass count; test_suite.aipl expects 7.
   (fn run_alloc_tests [] -> i32
-    (let p:i32 0)
+    (unsafe (let p:i32 0)
     ;; the same code works with every kind of allocator
     (let h:(ptr heap.Heap) (call heap.make))
     (if (and (call round_trip (call of_heap h)) (eq (call heap.live h) 0)) (set! p (+ p 1)) (block))
@@ -196,4 +196,4 @@
     (if (and (call round_trip c) (and (eq (get k Counting.allocs) 2) (eq (get k Counting.frees) 2)))
         (set! p (+ p 1))
         (block))
-    p))
+    p)))

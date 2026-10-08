@@ -92,7 +92,7 @@ fn malformed_pointer_and_array_types_are_rejected() {
 
 #[test]
 fn casts_must_start_from_an_i32() {
-    let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point)] -> (ptr Node)\n    (ptr.cast Node p)))"));
+    let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point)] -> (ptr Node) (unsafe)\n    (ptr.cast Node p)))"));
     assert!(err.contains("cast needs an i32 address"), "{err}");
 }
 
@@ -127,7 +127,7 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
     let src = r#"
 (module arrs
   (struct P [x:i32])
-  (fn f [] -> i32
+  (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) 4))
     (loop i 0 3 1
       (let p:(ptr P) (new P))

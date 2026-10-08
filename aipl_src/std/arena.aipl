@@ -38,7 +38,7 @@
   ;; n zeroed bytes, 8-aligned.
   (fn raw [a:(ptr Arena) n:i32] -> i32
     (req (gt n 0))
-    (let size:i32 (bitand (+ n 7) -8))
+    (unsafe (let size:i32 (bitand (+ n 7) -8))
     (let found:i32 -1)
     (while (eq found -1)
       (let c:(ptr Chunk) (get a Arena.current))
@@ -54,11 +54,11 @@
             (put a Arena.current (get c Chunk.next))
             (put a Arena.used 0))))
     (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ found (* 8 i)) 0i64))
-    found)
+    found))
 
   ;; A zeroed T from the arena.
   (fn (alloc T) [a:(ptr Arena)] -> (ptr T)
-    (ptr.cast T (call raw a (sizeof T))))
+    (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
   ;; Frees everything allocated from the arena (its chunks are reused).
   (fn reset [a:(ptr Arena)] -> void

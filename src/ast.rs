@@ -203,6 +203,10 @@ pub enum Expr {
         span: (u32, u32),
     },
     Block(Vec<Expr>, (u32, u32)),
+    /// `(unsafe e...)`: a block in which the unchecked operations (raw memory,
+    /// casts, atomics, threads, raw-address I/O) and calls to `(unsafe)`
+    /// functions are allowed (AIPL_SPEC.md 3).
+    Unsafe(Vec<Expr>, (u32, u32)),
     NewStruct {
         struct_name: String,
         span: (u32, u32),
@@ -322,7 +326,7 @@ impl Expr {
             Expr::Ok(_, _, span) => *span,
             Expr::Err(_, _, span) => *span,
             Expr::MatchResult { span, .. } => *span,
-            Expr::Block(_, span) => *span,
+            Expr::Block(_, span) | Expr::Unsafe(_, span) => *span,
             Expr::NewStruct { span, .. } => *span,
             Expr::GetField { span, .. } => *span,
             Expr::PutField { span, .. } => *span,
@@ -411,6 +415,10 @@ pub struct FnDef {
     pub contracts: Vec<Contract>,
     pub body: Vec<Expr>,
     pub span: (u32, u32),
+    /// The function has the `(unsafe)` clause: calling it takes an unsafe
+    /// context, and its body is one.
+    #[serde(default)]
+    pub is_unsafe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

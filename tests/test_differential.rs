@@ -306,7 +306,7 @@ fn nested_if_and_block_values() {
 fn memory_round_trip_and_bump_allocator_agree() {
     let src = r#"
     (module m
-      (fn f [] -> i32
+      (fn f [] -> i32 (unsafe)
         (let p:i32 (mem.alloc 8))
         (let q:i32 (mem.alloc 4))
         (mem.store32 p -559038737)
@@ -389,7 +389,7 @@ fn if_with_i64_branches_agrees() {
 fn i64_memory_round_trip_agrees() {
     let src = r#"
     (module m
-      (fn f [] -> i64
+      (fn f [] -> i64 (unsafe)
         (let p:i32 (mem.alloc 8))
         (mem.store64 p -2i64)
         (+ (mem.load64 p) (i64.extend_u (mem.load32 p)))))
@@ -649,21 +649,21 @@ fn p8_structs_and_arrays() {
   (struct Floats [a:f32 b:f64])
   (struct Named [id:i32 name:str])
 
-  (fn test_point_ops [x:i32 y:i32] -> i32
+  (fn test_point_ops [x:i32 y:i32] -> i32 (unsafe)
     (let p:(ptr Point) (new Point))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
 
-  (fn test_sizeof [] -> i32
+  (fn test_sizeof [] -> i32 (unsafe)
     (+ (sizeof Point) (+ (sizeof Mixed) (sizeof Floats))))
 
   ;; any memory type: 8 + 4 + 4 + 8 + 4 + 4 + 4 = 36
-  (fn test_sizeof_types [] -> i32
+  (fn test_sizeof_types [] -> i32 (unsafe)
     (+ (sizeof i64) (+ (sizeof i32) (+ (sizeof (ptr Point)) (+ (sizeof f64) (+ (sizeof (arr i64)) (+ (sizeof bool) (sizeof str))))))))
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
-  (fn test_mixed [n:i32] -> i32
+  (fn test_mixed [n:i32] -> i32 (unsafe)
     (let m:(ptr Mixed) (new Mixed))
     (put m Mixed.flag true)
     (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
@@ -672,12 +672,12 @@ fn p8_structs_and_arrays() {
         (+ (i32.wrap (shr (get m Mixed.val) 32i64)) (+ (get m Mixed.tag) (mem.load32 (+ (ptr.addr m) 16))))
         -1))
 
-  (fn test_floats [] -> i32
+  (fn test_floats [] -> i32 (unsafe)
     (let f:(ptr Floats) (new Floats))
     (put f Floats.b 2.5)
     (if (gt (get f Floats.b) 2.0) 1 0))
 
-  (fn test_array_ops [n:i32] -> i32
+  (fn test_array_ops [n:i32] -> i32 (unsafe)
     (let arr:(arr i32) (arr.new i32 n))
     (loop i 0 (- n 1) 1
       (arr.set i32 arr i (* (+ i 1) 10)))
@@ -687,38 +687,38 @@ fn p8_structs_and_arrays() {
     sum)
 
   ;; header holds the count; the bump cursor advances by 4 + n * 8
-  (fn test_i64_array [n:i32] -> i32
+  (fn test_i64_array [n:i32] -> i32 (unsafe)
     (let a:(arr i64) (arr.new i64 n))
     (arr.set i64 a (- n 1) 5i64)
     (let next:i32 (mem.alloc 4))
     (+ (arr.len a) (+ (- next (arr.addr a)) (i32.wrap (arr.get i64 a (- n 1))))))
 
-  (fn test_index_oob [i:i32] -> i32
+  (fn test_index_oob [i:i32] -> i32 (unsafe)
     (let a:(arr i32) (arr.new i32 3))
     (arr.get i32 a i))
 
-  (fn alloc_four [] -> i32
+  (fn alloc_four [] -> i32 (unsafe)
     (let _p:i32 (mem.alloc 4))
     2)
 
   ;; the size expression allocates; the array must not overlap that block
-  (fn test_size_allocates [] -> i32
+  (fn test_size_allocates [] -> i32 (unsafe)
     (let a:(arr i32) (arr.new i32 (call alloc_four)))
     (- (arr.addr a) (mem.load32 0)))
 
   ;; ok/err take 8 heap bytes in both backends, before the payload runs
-  (fn test_result_heap [] -> i32
+  (fn test_result_heap [] -> i32 (unsafe)
     (let r:(result i32 i32) (ok 5))
     (let e:(result i32 i32) (err 6))
     (mem.alloc 4))
 
-  (fn test_result_payload_allocates [] -> i32
+  (fn test_result_payload_allocates [] -> i32 (unsafe)
     (match_result (ok (arr.new i32 2))
       (ok v (arr.addr v))
       (err e 0)))
 
   ;; AIPL_SPEC.md 4.E example
-  (fn test_points [] -> i32
+  (fn test_points [] -> i32 (unsafe)
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
     (loop i 0 2 1
       (let p:(ptr Point) (new Point))
@@ -732,7 +732,7 @@ fn p8_structs_and_arrays() {
     sum)
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
-  (fn test_bool_word [] -> i32
+  (fn test_bool_word [] -> i32 (unsafe)
     (let p:(ptr Mixed) (new Mixed))
     (mem.store32 (ptr.addr p) 2)
     (let a:(arr bool) (arr.new bool 1))
@@ -741,18 +741,18 @@ fn p8_structs_and_arrays() {
 
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
-  (fn test_str_field [] -> i32
+  (fn test_str_field [] -> i32 (unsafe)
     (let n:(ptr Named) (new Named))
     (put n Named.name "abc")
     (let a:(arr str) (arr.new str 2))
     (arr.set str a 1 (get n Named.name))
     (+ (str.len (arr.get str a 1)) (if (eq (get n Named.name) "abc") 10 0)))
 
-  (fn test_put_reserved [] -> i32
+  (fn test_put_reserved [] -> i32 (unsafe)
     (put (ptr.cast Point (- 600 88)) Point.x 1)
     0)
 
-  (fn test_arr_set_reserved [] -> i32
+  (fn test_arr_set_reserved [] -> i32 (unsafe)
     (arr.set i32 (arr.cast i32 (- 600 88)) 0 1)
     0)
 )
@@ -827,7 +827,7 @@ fn allocation_grows_memory_identically() {
     let src = r#"
 (module grow
   (struct P [x:i32 y:i64])
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 1 3000 1
       (let p:(ptr P) (new P))
@@ -841,11 +841,11 @@ fn allocation_grows_memory_identically() {
     (+ (* 1000 total) (+ (* 100 (mem.load32 (+ big 1999996))) (mem.grow 0))))
   ;; past the 32768-page (2 GiB) cap allocation stops growing and the store
   ;; fails in both; a refused grow is -1 in both
-  (fn too_big [] -> i32
+  (fn too_big [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 2147483000))
     (mem.store32 (+ p 2147482996) 1)
     0)
-  (fn grow_past_cap [] -> i32 (mem.grow 40000)))
+  (fn grow_past_cap [] -> i32 (unsafe) (mem.grow 40000)))
 "#;
     let (module, wasm) = compile_checked(src);
     // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
@@ -863,16 +863,16 @@ fn allocation_grows_memory_identically() {
 fn nested_allocations_do_not_overlap() {
     let src = r#"
 (module nest
-  (fn inner_size [] -> i32
+  (fn inner_size [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 8))
     (mem.store32 p 99)
     8)
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let q:i32 (mem.alloc (call inner_size)))
     (mem.store32 q 7)
     (mem.load32 (- q 8)))
   ;; the same through arr.new's length and a struct inside a result payload
-  (fn arr_len_allocates [] -> i32
+  (fn arr_len_allocates [] -> i32 (unsafe)
     (let a:(arr i32) (arr.new i32 (call inner_size)))
     (arr.set i32 a 0 5)
     (mem.load32 (- (arr.addr a) 12))))

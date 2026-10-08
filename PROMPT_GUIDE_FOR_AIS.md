@@ -18,17 +18,18 @@ RULES:
 6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence.
 7. Loops: (while cond body...) or (loop i start end step body...), where end is INCLUSIVE. (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These are statements: write (if c (return v) (block)), never (if c (return v) x). For 3+ branches use (cond (test body...) ... (else body...)); else is required.
 8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), "s" is str. Never mix i32 and i64 without (i64.extend_s x) / (i32.wrap x).
-9. Memory: (new S) gives a (ptr S); (arr.new T n) gives an (arr T); (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024.
+9. Memory: (new S) gives a (ptr S); (arr.new T n) gives an (arr T); (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024. mem.load*/mem.store* and the casts are unchecked: they need (unsafe ...) (rule 20), so prefer (new S) and (arr.new T n).
 10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Every index is bounds-checked, compiled code included: an index out of range stops the program (`Array index out of bounds: ...`), so check it first where it may be out of range. Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
 11. Results: (ok v) / (err e), consumed with (match_result r (ok v body...) (err e body...)). Keep payloads 32-bit.
-12. There is no string +: build text with (import buf). sys.print takes str values only; print numbers with io.print_int and friends. Arithmetic is for numbers, % and bitwise ops for integers only, and lt/gt order numbers only (bool and str compare with eq/neq). (sys.time) and (sys.monotonic) are i64 nanoseconds; (sys.random ptr len) fills bytes. Threads: (thread.spawn (ref worker) arg) with worker of type (fn [i32] -> i32), (thread.join h) gives its result; atomic.add / atomic.cas / atomic.lock / atomic.unlock on 4-byte words from mem.alloc. Allocation is thread-safe.
+12. There is no string +: build text with (import buf). sys.print takes str values only; print numbers with io.print_int and friends. Arithmetic is for numbers, % and bitwise ops for integers only, and lt/gt order numbers only (bool and str compare with eq/neq). (sys.time) and (sys.monotonic) are i64 nanoseconds; (sys.random ptr len) fills bytes. Threads: (thread.spawn (ref worker) arg) with worker of type (fn [i32] -> i32), (thread.join h) gives its result; atomic.add / atomic.cas / atomic.lock / atomic.unlock on 4-byte words from mem.alloc. Allocation is thread-safe. Threads, atomics, and sys.random need (unsafe ...) (rule 20); os.random_i32 does not.
 13. Function values: (ref f) has type (fn [param types] -> ret); call one with (call_ref (fn [param types] -> ret) g args...). There are no closures.
-14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file, and io.read_path / io.write_path for a path held as (ptr str.Bytes); (import str) gives str.from_str, str.count_lines, str.count_words, str.find_byte, str.bytes_eq; (import fmt) gives fmt.int_to_bytes, fmt.uint_to_bytes, fmt.hex_to_bytes. Collections are generic (rule 16) and take an allocator when made, as in Zig (import alloc; (call alloc.default) is a shared heap): (import vec) gives (vec.Vec T) with (call (vec.make T) (call alloc.default) cap), (call (vec.free T) v) when done, (call (vec.push T) v x), (call (vec.at T) v i), vec.len, vec.pop, vec.set, vec.sort_by with a (fn [T T] -> i32) comparator; (import map) gives (map.Map V) keyed by i32 and (import strmap) gives (strmap.StrMap V) keyed by (ptr str.Bytes), both with make a cap, free, set m k v, get_or m k default, has, remove, count; (import buf) string builder ((call buf.make a cap), buf.free, buf.push_str, buf.push_int, buf.bytes; buf.print writes it to stdout). str.parse_int parses decimal text (str.parse_int_or b default when a fallback will do). (import os) gives os.arg_int i default (argument i as a number, e.g. (call os.arg_int 1 1000)), os.arg_count, os.arg i (0 is the program; len -1 past the end), os.env "NAME" (len -1 if unset), and os.random_i32. io.read_stdin reads all of stdin. Numbers: io.print_i64 / io.println_i64, io.print_f64 x digits / io.println_f64 "label " x digits, buf.push_i64, buf.push_f64, fmt.f64_fixed. (import time) gives time.now (i64 ns), time.since start, time.report "label" start (to stderr). (import heap) frees single objects: (call (heap.create T) h), (call (heap.destroy T) h p), (call (heap.array T) h n), (call (heap.free_array T) h xs); a double free, a wrong size or type, or a write after free stops the program, and heap.live counts what is not freed. (import alloc) wraps any allocator as one value: alloc.of_heap, alloc.of_arena, alloc.fixed, alloc.default, alloc.custom state (ref my_alloc) (ref my_free), with the same create/destroy/array/free_array. (import arena) is a region allocator: (call (arena.alloc T) a), arena.reset frees everything at once. (import bigint) has arbitrary-precision integers changed in place (bigint.from_i32, add, sub, mul_small, div_small, compare, push_decimal). Allocation grows memory by itself (up to 2 GiB); new, arr.new, and mem.alloc are never freed, so data to be freed comes from an allocator.
+14. Use the standard library instead of hand-written loops: (import io) gives io.println, io.eprintln, io.print_int, io.println_int "label " n, io.read_file path -> (ptr str.Bytes) (len -1 on failure), io.write_file, and io.read_path / io.write_path for a path held as (ptr str.Bytes); (import str) gives str.from_str, str.byte_at b i, str.set_byte b i c, str.slice b start len (a view, no copy), str.count_lines, str.count_words, str.find_byte, str.bytes_eq; every index is checked. (fmt.int_to_bytes and the other fmt writers, fmt.f64_fixed, str.bytes, and alloc.custom take raw addresses and are marked (unsafe); use buf instead.) Collections are generic (rule 16) and take an allocator when made, as in Zig (import alloc; (call alloc.default) is a shared heap): (import vec) gives (vec.Vec T) with (call (vec.make T) (call alloc.default) cap), (call (vec.free T) v) when done, (call (vec.push T) v x), (call (vec.at T) v i), vec.len, vec.pop, vec.set, vec.sort_by with a (fn [T T] -> i32) comparator; (import map) gives (map.Map V) keyed by i32 and (import strmap) gives (strmap.StrMap V) keyed by (ptr str.Bytes), both with make a cap, free, set m k v, get_or m k default, has, remove, count; (import buf) string builder ((call buf.make a cap), buf.free, buf.push_str, buf.push_int, buf.bytes; buf.print writes it to stdout). str.parse_int parses decimal text (str.parse_int_or b default when a fallback will do). (import os) gives os.arg_int i default (argument i as a number, e.g. (call os.arg_int 1 1000)), os.arg_count, os.arg i (0 is the program; len -1 past the end), os.env "NAME" (len -1 if unset), and os.random_i32. io.read_stdin reads all of stdin. Numbers: io.print_i64 / io.println_i64, io.print_f64 x digits / io.println_f64 "label " x digits, buf.push_i64, buf.push_f64, fmt.f64_fixed. (import time) gives time.now (i64 ns), time.since start, time.report "label" start (to stderr). (import heap) frees single objects: (call (heap.create T) h), (call (heap.destroy T) h p), (call (heap.array T) h n), (call (heap.free_array T) h xs); a double free, a wrong size or type, or a write after free stops the program, and heap.live counts what is not freed. (import alloc) wraps any allocator as one value: alloc.of_heap, alloc.of_arena, alloc.fixed, alloc.default, alloc.custom state (ref my_alloc) (ref my_free), with the same create/destroy/array/free_array. (import arena) is a region allocator: (call (arena.alloc T) a), arena.reset frees everything at once. (import bigint) has arbitrary-precision integers changed in place (bigint.from_i32, add, sub, mul_small, div_small, compare, push_decimal). Allocation grows memory by itself (up to 2 GiB); new, arr.new, and mem.alloc are never freed, so data to be freed comes from an allocator.
 15. (and a b) and (or a b) short-circuit and take exactly two operands; nest for more: (and a (and b c)). (and (lt i n) (eq (arr.get i32 a i) x)) is a safe bounds guard.
 16. Generics: (struct (Box T) [value:T]) and (fn (make T) [v:T] -> (ptr (Box T)) ...) are templates. Every use names the types: (ptr (Box i32)), (new (Box i32)), (get b (Box i32) value), (put b (Box i32) value 5), (call (make i32) 5), (ref (make i32)). Type parameters start with an uppercase letter; generic names may not be built-in forms like get or put.
 17. Constants and enums: (const PAGE_SIZE:i32 65536) names a literal (capitals; i32 i64 f64 bool str); use PAGE_SIZE anywhere. (enum Kind [red green (blue 10)]) is a new type with members Kind.red (0), Kind.green (1), Kind.blue (10); use Kind as a type ([k:Kind], (arr Kind), struct fields). Enums are not numbers: compare with eq/neq only, convert with (enum.ord k) -> i32 and (enum.cast Kind n). Imported: m.PAGE_SIZE, m.Kind, m.Kind.red. Use these instead of bare numbers or zero-argument functions for fixed values and codes.
 18. Unions: (union Shape [(circle r:f64) (rect w:f64 h:f64) (dot)]) is a type whose value is one variant with that variant's fields. Build one with (make Shape.rect 2.0 3.0) (one value per field, in order); take it apart with (match s (Shape.circle [r] body...) (Shape.rect [w h] body...) (Shape.dot body...)): every variant needs an arm unless the last arm is (else body...), and an else that can never run is an error. Binders are new names for the variant's fields, in order; write _ for a field you do not need. All arms yield the same type. match also works on enums: (match k (Kind.red 1) (else 0)). Union values never compare (no eq) and are never null; use a variant like (none) for "no value". Use a union instead of a struct with a kind field whose other fields mean different things per kind.
 19. Integers: lt/lte/gt/gte are signed; ltu/lteu/gtu/gteu compare i32/i64 as unsigned (sizes, hashes). + - * wrap silently; checked.add / checked.sub / checked.mul stop the program on overflow instead, for values where wrapping would be a wrong answer.
+20. Unchecked operations (mem.load*/mem.store*, ptr.cast, arr.cast, atomic.*, thread.*, fs.*, args.*, env.*, sys.random, and calls to functions marked (unsafe)) are rejected unless written inside (unsafe e...), a block in every other way, or in a function with the (unsafe) clause: (fn f [at:i32] -> void (unsafe) body...), which makes f itself unsafe to call. Wrap the operations in (unsafe ...) when the function is safe for any arguments; add the clause only when wrong arguments could break memory. Most programs need neither: use new, arrays, and the standard library.
 ```
 
 ---
@@ -101,6 +102,7 @@ RULES:
 ### 4. Fallible parsing with results
 ```lisp
 (module parse_demo
+  (import str)
   (fn digit [c:i32] -> (result i32 i32)
     (if (and (gte c 48) (lte c 57))
         (ok (- c 48))
@@ -108,11 +110,11 @@ RULES:
 
   ;; parses the decimal digits of s; -1 on the first non-digit
   (fn parse_uint [s:str] -> i32
-    (let p:i32 (str.ptr s))
+    (let b:(ptr str.Bytes) (call str.from_str s))
     (let n:i32 0)
     (let bad:bool false)
     (loop i 0 (- (str.len s) 1) 1
-      (match_result (call digit (mem.load8 (+ p i)))
+      (match_result (call digit (call str.byte_at b i))
         (ok d (set! n (+ (* n 10) d)))
         (err e (set! bad true))))
     (if bad -1 n))
@@ -125,17 +127,13 @@ RULES:
 ### 5. Printing and files (compiled with WASI)
 ```lisp
 (module io_demo
+  (import io)
+  (import str)
   (fn main [] -> i32
-    (let path:str "note.txt")
-    (let msg:str "hello from AIPL")
-    (let fd:i32 (fs.open (str.ptr path) (str.len path) 1))
-    (if (lt fd 0)
-        (block (sys.print "open failed") -1)
-        (block
-          (let n:i32 (fs.write fd (str.ptr msg) (str.len msg)))
-          (fs.close fd)
-          (sys.print "wrote note.txt")
-          n))))
+    (let n:i32 (call io.write_file "note.txt" (call str.from_str "hello from AIPL")))
+    (if (lt n 0)
+        (block (call io.eprintln "could not write note.txt") -1)
+        (block (call io.println "wrote note.txt") n))))
 ```
 Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`.
 
@@ -248,6 +246,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 - [ ] Fixed values and codes are `const`s and `enum`s, not bare numbers; enums are compared with `eq`/`neq`, never with arithmetic or `lt`.
 - [ ] Data that is one of several shapes is a `union`, built with `make` and read with `match`; each `match` covers every variant or ends in `else`, and every arm yields the same type.
 - [ ] Pointers are `(ptr S)` and arrays `(arr T)`, never `i32`. `get`/`put` match the pointer's struct, `arr.get`/`arr.set` match the array's element type, and nulls are `(ptr.null S)` / `(arr.null T)`.
+- [ ] Raw memory, casts, threads, and atomics sit inside `(unsafe ...)` or an `(unsafe)` function, and only where typed pointers, arrays, or the standard library cannot do the job.
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
 
-Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: RParen`.
+Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: ')'`.

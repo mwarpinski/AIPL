@@ -89,7 +89,7 @@ fn refs_are_not_integers() {
 
 #[test]
 fn thread_spawn_takes_a_worker_of_type_fn_i32_to_i32() {
-    let err = check_err("(module m (fn w [a:i64] -> i32 0) (fn f [] -> i32 (thread.spawn (ref w) 1)))");
+    let err = check_err("(module m (fn w [a:i64] -> i32 (unsafe) 0) (fn f [] -> i32 (unsafe) (thread.spawn (ref w) 1)))");
     assert!(err.contains("thread.spawn needs a worker of type (fn [i32] -> i32)"), "{err}");
 }
 

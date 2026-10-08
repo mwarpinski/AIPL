@@ -62,6 +62,7 @@
                (err at:i32 val:Expr ty:MaybeType)
                (match_result at:i32 val:Expr ok_var:(ptr str.Bytes) ok_body:(arr Expr) err_var:(ptr str.Bytes) err_body:(arr Expr))
                (block at:i32 body:(arr Expr))
+               (unsafe_ at:i32 body:(arr Expr))
                (new_ at:i32 name:(ptr str.Bytes))
                (get_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr)
                (put_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr val:Expr)
@@ -91,8 +92,9 @@
   (struct Variant [name:(ptr str.Bytes) fields:(arr (ptr Field))])
   (struct UnionDef [name:(ptr str.Bytes) variants:(arr (ptr Variant)) at:i32])
   (struct Param [name:(ptr str.Bytes) ty:Type])
+  ;; unsafe_: the (unsafe) clause (src/ast.rs FnDef.is_unsafe).
   (struct FnDef [name:(ptr str.Bytes) params:(arr (ptr Param)) ret:Type
-                 contracts:(arr Contract) body:(arr Expr) at:i32])
+                 contracts:(arr Contract) body:(arr Expr) at:i32 unsafe_:bool])
   (struct Import [name:(ptr str.Bytes) alias:(ptr str.Bytes)])
   (struct Module [name:(ptr str.Bytes) imports:(arr (ptr Import))
                   structs:(arr (ptr StructDef)) enums:(arr (ptr EnumDef))
@@ -106,7 +108,7 @@
       (Expr.let_ [at _ _ _] at) (Expr.set [at _ _] at) (Expr.if_ [at _ _ _] at)
       (Expr.loop [at _ _ _ _ _] at) (Expr.while_ [at _ _] at) (Expr.call [at _ _] at)
       (Expr.op [at _ _] at) (Expr.ok [at _ _] at) (Expr.err [at _ _] at)
-      (Expr.match_result [at _ _ _ _ _] at) (Expr.block [at _] at) (Expr.new_ [at _] at)
+      (Expr.match_result [at _ _ _ _ _] at) (Expr.block [at _] at) (Expr.unsafe_ [at _] at) (Expr.new_ [at _] at)
       (Expr.get_ [at _ _ _] at) (Expr.put_ [at _ _ _ _] at) (Expr.sizeof [at _] at)
       (Expr.arr_new [at _ _] at) (Expr.arr_get [at _ _ _] at) (Expr.arr_set [at _ _ _ _] at)
       (Expr.arr_len [at _] at) (Expr.null [at _] at) (Expr.cast [at _ _] at)

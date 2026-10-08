@@ -189,7 +189,7 @@ fn large_string_literals_compile_and_the_limit_is_a_compile_error() {
 #[test]
 fn fs_open_of_a_missing_file_returns_minus_one_in_both_backends() {
     let src = r#"(module m
-        (fn main [] -> i32
+        (fn main [] -> i32 (unsafe)
           (let p:i32 (mem.alloc 8))
           (mem.store8 p 122) (mem.store8 (+ p 1) 122)      ;; "zz"
           (fs.open p 2 0)))"#;
@@ -207,7 +207,7 @@ fn fs_write_then_read_round_trip_agrees_byte_for_byte() {
     // the read bytes plus 1000 * bytes_read. Same value in both backends, and
     // the wasm side's file lands in the preopened directory.
     let src = r#"(module m
-        (fn main [] -> i32
+        (fn main [] -> i32 (unsafe)
           (let path:i32 (mem.alloc 8))
           (mem.store8 path 116) (mem.store8 (+ path 1) 46) (mem.store8 (+ path 2) 98)
           (mem.store8 (+ path 3) 105) (mem.store8 (+ path 4) 110)          ;; "t.bin"
@@ -330,9 +330,9 @@ fn str_ptr_and_escapes_agree_between_backends() {
     // str.ptr gives a readable pointer in both backends (different addresses,
     // same bytes); "\n" is one byte; a str variable works like a literal.
     let src = r#"(module m
-        (fn first_byte [] -> i32 (mem.load8 (str.ptr "Hello")))
-        (fn escape_len [] -> i32 (str.len "a\nb\t\"q\"\\"))
-        (fn via_var [] -> i32 (let s:str "wxyz") (+ (str.len s) (mem.load8 (+ (str.ptr s) 3)))))"#;
+        (fn first_byte [] -> i32 (unsafe) (mem.load8 (str.ptr "Hello")))
+        (fn escape_len [] -> i32 (unsafe) (str.len "a\nb\t\"q\"\\"))
+        (fn via_var [] -> i32 (unsafe) (let s:str "wxyz") (+ (str.len s) (mem.load8 (+ (str.ptr s) 3)))))"#;
     let (m, wasm) = compile(src);
     let dir = scratch_dir("strptr");
     let mut w = instantiate(&wasm, &dir);
@@ -354,7 +354,7 @@ fn str_ptr_and_escapes_agree_between_backends() {
 fn fs_write_to_fd_1_is_stdout_in_both_backends() {
     // Printing without a string value: format bytes in memory, write to fd 1.
     let src = r#"(module m
-        (fn main [] -> i32
+        (fn main [] -> i32 (unsafe)
           (let b:i32 (mem.alloc 4))
           (mem.store8 b 79) (mem.store8 (+ b 1) 75) (mem.store8 (+ b 2) 10)   ;; "OK\n"
           (fs.write 1 b 3)))"#;
@@ -438,7 +438,7 @@ fn command_line_and_environment_agree_in_both_backends() {
 /// one and the VM fails with an error, rather than either silently working.
 #[test]
 fn misaligned_args_out_parameters_fail_in_both_backends() {
-    let src = "(module m (fn f [] -> i32 (let p:i32 (mem.alloc 16)) (args.sizes (+ p 1) (+ p 8))))";
+    let src = "(module m (fn f [] -> i32 (unsafe) (let p:i32 (mem.alloc 16)) (args.sizes (+ p 1) (+ p 8))))";
     let (module, wasm) = compile(src);
     let mut w = instantiate(&wasm, &std::env::temp_dir());
     assert!(call_i32(&mut w, "f").is_err());
@@ -487,20 +487,20 @@ fn stdin_clocks_random_and_absolute_paths() {
   (import io)
   (import str)
   (import os)
-  (fn stdin_words [] -> i32 (call str.count_words (call io.read_stdin)))
-  (fn clocks [] -> i32
+  (fn stdin_words [] -> i32 (unsafe) (call str.count_words (call io.read_stdin)))
+  (fn clocks [] -> i32 (unsafe)
     (let t0:i64 (sys.monotonic))
     (let t1:i64 (sys.monotonic))
     ;; after 2020-01-01 and monotonic never goes back
     (+ (if (gt (sys.time) 1577836800000000000i64) 10 0) (if (gte t1 t0) 1 0)))
-  (fn random [] -> i32
+  (fn random [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 64))
     (let ok:i32 (sys.random p 64))
     ;; 64 random bytes are not all zero
     (let nonzero:i32 0)
     (loop i 0 63 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
     (+ (* 10 ok) nonzero))
-  (fn absolute [] -> i32
+  (fn absolute [] -> i32 (unsafe)
     (let path:(ptr str.Bytes) (call str.from_str "{abs}"))
     (let wrote:i32 (call io.write_path path (call str.from_str "absolute ok")))
     (let back:(ptr str.Bytes) (call io.read_path path))

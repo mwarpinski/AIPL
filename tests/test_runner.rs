@@ -85,6 +85,62 @@ fn a_trap_is_reported_with_a_failing_status() {
     assert!(full.contains("backtrace") && full.contains("wasm trap: integer divide by zero"), "{full}");
 }
 
+/// The VM reports a runtime error with the call chain compiled code prints:
+/// each frame with its file, line, and column (in a two-file program, and
+/// for a failed contract), after its own wording of the message.
+#[test]
+fn the_vm_prints_the_same_call_chain() {
+    let dir = scratch("vm_chain");
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn ratio [a:i32 b:i32] -> i32\n    (/ a b))\n  (fn pos [n:i32] -> i32 (req (gt n 0)) n))").unwrap();
+    for (main, vm_msg) in [
+        ("(call lib.ratio x (- n n))", "Error: Division by zero"),
+        ("(call lib.pos (- 0 x))", "Error: Pre-condition failed in 'lib.pos' at 4:31: (req (gt n 0)) with n = -6"),
+    ] {
+        let src = format!("(module main\n  (import lib)\n  (fn f [n:i32] -> i32\n    (let x:i32 (+ n 1))\n    {main})\n  (fn main [] -> i32\n    (call f 5)))");
+        std::fs::write(dir.join("main.aipl"), &src).unwrap();
+        let vm = Command::new(AIPL).arg("eval").arg("main.aipl").current_dir(&dir).output().unwrap();
+        let vm_err = String::from_utf8_lossy(&vm.stderr).to_string();
+        let (first, vm_chain) = vm_err.split_once('\n').unwrap_or_else(|| panic!("no chain: {vm_err}"));
+        assert_eq!(first, vm_msg, "{vm_err}");
+        compile(&dir.join("main.aipl"), &dir.join("main.wasm"), &[]);
+        let o = run_in(&dir, &dir.join("main.wasm"), &[], "");
+        let wasm_err = String::from_utf8_lossy(&o.stderr).to_string();
+        let wasm_chain = wasm_err.split_once('\n').unwrap().1;
+        assert_eq!(vm_chain, wasm_chain, "{main}");
+        assert!(vm_chain.starts_with("  at lib.") && vm_chain.ends_with("  at main (main.aipl:7:5)\n"), "{vm_chain}");
+    }
+}
+
+/// A null pointer or array stops the program with the same message in the
+/// VM and compiled, before anything else in the expression runs (here, an
+/// index that would print).
+#[test]
+fn null_pointers_stop_the_vm_and_compiled_code_alike() {
+    let dir = scratch("null");
+    for body in [
+        "(get (ptr.null P) P.x)",
+        "(block (put (ptr.null P) P.x 1) 0)",
+        "(arr.len (arr.null i32))",
+        "(arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))",
+        "(block (arr.set i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0) 5) 0)",
+    ] {
+        let src = format!("(module t (import io) (struct P [x:i32])\n  (fn main [] -> i32\n    {body}))");
+        std::fs::write(dir.join("t.aipl"), &src).unwrap();
+        let vm = Command::new(AIPL).arg("eval").arg("t.aipl").current_dir(&dir).output().unwrap();
+        let vm_err = String::from_utf8_lossy(&vm.stderr).to_string();
+        // at the form that dereferences (the body starts in column 5)
+        let at = ["(get", "(put", "(arr."].iter().filter_map(|f| body.find(f)).min().unwrap();
+        let chain = format!("  at main (t.aipl:3:{})\n", 5 + at);
+        assert_eq!(vm_err, format!("Error: Null pointer dereference\n{chain}"), "{body}");
+        assert!(!String::from_utf8_lossy(&vm.stdout).contains("never"), "{body}");
+        compile(&dir.join("t.aipl"), &dir.join("t.wasm"), &[]);
+        let o = run_in(&dir, &dir.join("t.wasm"), &[], "");
+        let program = dir.join("t.wasm").display().to_string();
+        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{program}: Null pointer dereference\n{chain}"), "{body}");
+        assert_eq!(stdout(&o), "", "{body}");
+    }
+}
+
 #[test]
 fn threads_run_under_the_runner() {
     let dir = scratch("threads");
@@ -92,8 +148,8 @@ fn threads_run_under_the_runner() {
         dir.join("th.aipl"),
         r#"(module th
   (import io)
-  (fn work [c:i32] -> i32 (loop i 1 1000 1 (let _o:i32 (atomic.add c 1))) 0)
-  (fn main [] -> i32
+  (fn work [c:i32] -> i32 (unsafe) (loop i 1 1000 1 (let _o:i32 (atomic.add c 1))) 0)
+  (fn main [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
     (let a:i32 (thread.spawn (ref work) c))
     (let b:i32 (thread.spawn (ref work) c))
@@ -179,7 +235,7 @@ fn standalone_executables_for(target: &str) {
     assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n  at main (t.aipl:1:30)\n", trapper.display()));
     std::fs::write(
         dir.join("th.aipl"),
-        "(module th (import io) (fn sq [x:i32] -> i32 (* x x)) (fn main [] -> i32 (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
+        "(module th (import io) (fn sq [x:i32] -> i32 (unsafe) (* x x)) (fn main [] -> i32 (unsafe) (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
     )
     .unwrap();
     let threaded = dir.join("threaded");

@@ -125,8 +125,8 @@ impl WasmCompiler {
             types.ty().function(vec![], vec![]);
             functions.function(base);
         }
-        // A module with compiled checks (an array index, a req or ens) ends
-        // with the five check helpers (`check_functions`), after every other
+        // A module with compiled checks (an array or struct access, a req or ens) ends
+        // with the six check helpers (`check_functions`), after every other
         // function, each with its own type.
         let uses_checks = module_uses_checks(module);
         let checks_base = start_fn + if auto_start { 1 } else { 0 };
@@ -398,7 +398,7 @@ impl WasmCompiler {
             fn_names.append(start_fn, "_start");
         }
         if uses_checks {
-            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end"].iter().enumerate() {
+            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end", "aipl.null"].iter().enumerate() {
                 fn_names.append(checks_base + k as u32, n);
             }
         }
@@ -668,7 +668,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Let { .. } | Expr::Set { .. } => Type::Void,
         Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
-        Expr::Block(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Loop { .. } | Expr::While { .. } => Type::Void,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
         Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
@@ -1002,7 +1002,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
                 collect_lets(std::slice::from_ref(cond.as_ref()), lets, unions);
                 collect_lets(body, lets, unions);
             }
-            Expr::Block(body, _) => collect_lets(body, lets, unions),
+            Expr::Block(body, _) | Expr::Unsafe(body, _) => collect_lets(body, lets, unions),
             // Every arm's binders first (a union arm binds its variant's
             // fields, typed as declared), then the value, the arm bodies, and
             // the else body.
@@ -1600,7 +1600,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
             }
         },
-        Expr::Block(exprs, _) => {
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
             let len = exprs.len();
             for (i, e) in exprs.iter().enumerate() {
                 if i + 1 == len {
@@ -1770,6 +1770,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
+            emit_null_check(func, ctx);
             match field_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
@@ -1818,6 +1819,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
             compile_expr(ptr, ctx, func)?;
+            emit_null_check(func, ctx);
             emit_write_address_check(func, ctx);
             compile_expr(val, ctx, func)?;
             match field_ty {
@@ -1940,6 +1942,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         }
         Expr::ArrLen { arr, .. } => {
             compile_expr(arr, ctx, func)?;
+            emit_null_check(func, ctx);
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Sub);
             func.instruction(&Instruction::I32Load(M4));
@@ -1947,6 +1950,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
             compile_expr(ptr, ctx, func)?;
+            emit_null_check(func, ctx);
             compile_expr(index, ctx, func)?;
             emit_bounds_check(func, ctx);
             func.instruction(&Instruction::I32Const(elem_size as i32));
@@ -1986,6 +1990,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
             let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
             compile_expr(ptr, ctx, func)?;
+            emit_null_check(func, ctx);
             compile_expr(index, ctx, func)?;
             emit_bounds_check(func, ctx);
             func.instruction(&Instruction::I32Const(elem_size as i32));
@@ -2230,7 +2235,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
-        Expr::Block(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
         // stack unbalanced relative to this if's declared block type.
@@ -2307,6 +2312,19 @@ fn emit_write_address_check(func: &mut Body, ctx: &Ctx) {
 /// $aipl_oob never returns; the `unreachable` after it says so, so wasmtime
 /// keeps no values alive across the call (with the call alone, the checks
 /// cost nbody twice as much).
+/// With a pointer or array on the stack: if it is null, the failure
+/// message ($aipl_null) and a trap; the value stays on the stack.
+fn emit_null_check(func: &mut Body, ctx: &Ctx) {
+    use Instruction::*;
+    func.instruction(&LocalTee(ctx.addr_scratch));
+    func.instruction(&I32Eqz);
+    func.instruction(&If(BlockType::Empty));
+    func.instruction(&Call(ctx.checks.null));
+    func.instruction(&Unreachable);
+    func.instruction(&End);
+    func.instruction(&LocalGet(ctx.addr_scratch));
+}
+
 fn emit_bounds_check(func: &mut Body, ctx: &Ctx) {
     use Instruction::*;
     let (a, i) = (ctx.addr_scratch, ctx.index_scratch);
@@ -2335,6 +2353,8 @@ const RT_FAIL_ADDR: i32 = 92;
 const RT_FAIL_LEN: i32 = 96;
 const OOB_PREFIX: &[u8] = b"Array index out of bounds: index ";
 const OOB_MIDDLE: &[u8] = b" for array of length ";
+/// The VM's message for a null pointer or array (vm.rs NULL_POINTER).
+const NULL_TEXT: &[u8] = b"Null pointer dereference";
 
 /// Writes `text` at the address `addr` pushes, eight bytes per i64.store
 /// (the last chunk zero-padded, so it may write up to 7 bytes past the text).
@@ -2356,11 +2376,12 @@ pub struct CheckFns {
     text: u32,
     begin: u32,
     end: u32,
+    null: u32,
 }
 
 impl CheckFns {
     fn at(base: u32) -> CheckFns {
-        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4 }
+        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4, null: base + 5 }
     }
 }
 
@@ -2373,6 +2394,7 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32], vec![]),
+        (vec![], vec![]),
     ]
 }
 
@@ -2389,6 +2411,8 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
 ///   allocated, since the program is about to end), stores its address in
 ///   cell 92, and copies the len bytes at addr there.
 /// - $aipl_end(end): stores the message's length in cell 96 and traps.
+/// - $aipl_null(): writes "Null pointer dereference" at RT_FAIL_TEXT, stores
+///   its address and length in cells 92 and 96, and traps.
 fn check_functions(fns: &CheckFns) -> Vec<Body> {
     use Instruction::*;
     let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
@@ -2561,7 +2585,19 @@ fn check_functions(fns: &CheckFns) -> Vec<Body> {
     e.instruction(&I32Store(M4));
     e.instruction(&Unreachable);
     e.instruction(&End);
-    vec![d, o, t, b, e]
+
+    // $aipl_null
+    let mut n = Body::new(vec![]);
+    emit_text_store(&mut n, &I32Const(RT_FAIL_TEXT), NULL_TEXT);
+    n.instruction(&I32Const(RT_FAIL_ADDR));
+    n.instruction(&I32Const(RT_FAIL_TEXT));
+    n.instruction(&I32Store(M4));
+    n.instruction(&I32Const(RT_FAIL_LEN));
+    n.instruction(&I32Const(NULL_TEXT.len() as i32));
+    n.instruction(&I32Store(M4));
+    n.instruction(&Unreachable);
+    n.instruction(&End);
+    vec![d, o, t, b, e, n]
 }
 
 /// A contract: whether it is an `ens`, its condition, and its message.
@@ -3064,7 +3100,7 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(a, visit);
             }
         }
-        Expr::Block(exprs, _) => {
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
             for e in exprs {
                 walk_expr(e, visit);
             }
@@ -3125,15 +3161,15 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
     }
 }
 
-/// Whether the module has compiled checks (a req or ens, or an array index
-/// anywhere, contracts included), so it needs the check helpers.
+/// Whether the module has compiled checks (a req or ens, or an array or
+/// struct access anywhere, contracts included), so it needs the check helpers.
 fn module_uses_checks(module: &Module) -> bool {
     let mut found = module
         .functions
         .iter()
         .any(|f| f.contracts.iter().any(|c| matches!(c, Contract::Requires(_) | Contract::Ensures(_))));
     walk_module(module, &mut |e| {
-        if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. }) {
+        if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. } | Expr::ArrLen { .. } | Expr::GetField { .. } | Expr::PutField { .. }) {
             found = true;
         }
     });

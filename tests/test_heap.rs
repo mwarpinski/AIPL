@@ -27,7 +27,7 @@ fn failures(name: &str, body: &str) -> [String; 3] {
     let src = dir.join("prog.aipl");
     std::fs::write(
         &src,
-        format!("(module prog (import heap)\n  (struct P [a:i32 b:i32])\n  (struct Q [a:i64 b:i64])\n  (fn main [] -> i32\n{body}\n    0))"),
+        format!("(module prog (import heap)\n  (struct P [a:i32 b:i32])\n  (struct Q [a:i64 b:i64])\n  (fn main [] -> i32 (unsafe)\n{body}\n    0))"),
     )
     .unwrap();
     let vm = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();

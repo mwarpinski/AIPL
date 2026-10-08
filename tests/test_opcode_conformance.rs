@@ -104,12 +104,13 @@ const ALL_OPCODES: &[OpCode] = {
 };
 
 /// Functions a case may call.
+// every op, unchecked ones included, so the functions are (unsafe)
 const HELPERS: &str = "(fn helper [a:i32] -> i32 a)
-  (fn locked [] -> i32 (let m:i32 (mem.alloc 4)) (atomic.lock m) m)";
+  (fn locked [] -> i32 (unsafe) (let m:i32 (mem.alloc 4)) (atomic.lock m) m)";
 
 /// `value_N` returns the op's value; `stmt_N` evaluates it as a statement.
 fn functions(i: usize, ty: &str, expr: &str) -> String {
-    format!("(fn value_{i} [] -> {ty} {expr})\n  (fn stmt_{i} [] -> i32 {expr} 0)")
+    format!("(fn value_{i} [] -> {ty} (unsafe) {expr})\n  (fn stmt_{i} [] -> i32 (unsafe) {expr} 0)")
 }
 
 fn validate(bytes: &[u8]) -> Result<(), String> {

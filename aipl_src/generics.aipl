@@ -58,21 +58,23 @@
     (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) compiler.Kind.symbol)))
 
   (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
-    (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b)))
+    (unsafe (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
 
   (fn lit [b:(ptr str.Bytes) s:str] -> bool
     (call str.bytes_eq b (call str.from_str s)))
 
   ;; The head symbol of a (...) group, or len -1.
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
-    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
+    (unsafe (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
     (let h:(ptr compiler.Node) (call first_child g))
-    (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
+    (if (and (neq h (ptr.null compiler.Node)) (call is_symbol h)) (call text st h) (call str.bytes 0 -1))))
 
   ;; A (...) group applying a template: a struct template anywhere, a
   ;; function template only as a callee (child 1 of call or ref), so that
   ;; (make U.v x) stays a union constructor even beside a generic `make`.
   (fn is_app [st:(ptr St) n:(ptr compiler.Node) callee:bool] -> bool
+    ;; n is null for a missing child: (get p) has no third
+    (if (eq n (ptr.null compiler.Node)) (return false) (block))
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
     (let h:(ptr str.Bytes) (call head st n))
     (if (lt (get h str.Bytes.len) 0) (return false) (block))
@@ -244,7 +246,7 @@
     (call origins.note (get st St.origins) out -1 (get n compiler.Node.pos)))
 
   (fn print_atom [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
-    (let k:compiler.Kind (get n compiler.Node.kind))
+    (unsafe (let k:compiler.Kind (get n compiler.Node.kind))
     (call note st n out)
     (cond
       ((eq k compiler.Kind.symbol)
@@ -264,13 +266,13 @@
        (call buf.push_byte out 34))
       ((eq k compiler.Kind.colon) (call buf.push_byte out 58))
       ((eq k compiler.Kind.arrow) (call buf.push_str out "->"))
-      (else (block))))
+      (else (block)))))
 
   (fn print [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf) callee:bool] -> void
-    (let k:compiler.Kind (get n compiler.Node.kind))
+    (unsafe (let k:compiler.Kind (get n compiler.Node.kind))
     (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (block (call print_atom st n env out) (return)) (block))
     (if (call is_app st n callee) (block (call note st n out) (call buf.push_bytes out (call instance st n env)) (return)) (block))
-    (call print_group st n env (call str.bytes 0 -1) out))
+    (call print_group st n env (call str.bytes 0 -1) out)))
 
   ;; Children separated by spaces, except none around ':'. A non-empty
   ;; `rename` replaces child 1 (an instance's header). (get p (Name T) f) and
@@ -320,10 +322,10 @@
 
 ;; The part of a qualified name after its last '.'.
   (fn last_part [n:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (let dot:i32 -1)
+    (unsafe (let dot:i32 -1)
     (loop i 0 (- (get n str.Bytes.len) 1) 1
       (if (eq (call str.byte_at n i) 46) (set! dot i) (block)))
-    (call str.bytes (+ (get n str.Bytes.addr) (+ dot 1)) (- (get n str.Bytes.len) (+ dot 1))))
+    (call str.bytes (+ (get n str.Bytes.addr) (+ dot 1)) (- (get n str.Bytes.len) (+ dot 1)))))
 
   ;; Built-in forms and types (generics.rs BUILT_IN): a template with one of
   ;; these names would be indistinguishable from the form itself.
@@ -385,7 +387,7 @@
   ;; result is `flat` itself).
   ;; On an error, `failure` (if not null) gets its offset in `flat`.
   (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool
-    (let n:i32 (get flat str.Bytes.len))
+    (unsafe (let n:i32 (get flat str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get flat str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
@@ -444,4 +446,4 @@
       (call buf.push_bytes out (call as_bytes (arr.get (ptr buf.Buf) parts k))))
     (call buf.push_byte out 41)
     (if (neq gen (ptr.null origins.Origins)) (call origins.join gen parts bases) (block))
-    true))
+    true)))

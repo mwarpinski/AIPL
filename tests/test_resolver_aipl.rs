@@ -100,7 +100,7 @@ fn aliases_do_not_rename_op_heads() {
     std::fs::write(dir.join("lib.aipl"), "(module lib (const LIMIT:i32 16) (enum Color [red (green 5)]) (fn f [c:Color] -> i32 (enum.ord c)))").unwrap();
     std::fs::write(
         dir.join("main.aipl"),
-        "(module main (import lib as mem)\n  (fn main [] -> i32 (let p:i32 (mem.alloc mem.LIMIT)) (mem.store32 p (call mem.f mem.Color.green)) (mem.load32 p)))",
+        "(module main (import lib as mem)\n  (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc mem.LIMIT)) (mem.store32 p (call mem.f mem.Color.green)) (mem.load32 p)))",
     )
     .unwrap();
     let m = Resolver::resolve(&dir.join("main.aipl")).unwrap();
