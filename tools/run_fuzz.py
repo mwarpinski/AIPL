@@ -130,11 +130,12 @@ class Gen:
             return "E." + rng.choice(self.enum_members())
         if t == "U":
             return self.make_union(None, 0)
+        # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
-            return f"(new {t[5:-1]})"
+            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]})"
         if t.startswith("(arr "):
             el = t[5:-1]
-            return f"(arr.new {el} {rng.randint(1, 5)})"
+            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
         if t == R:
             return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err {self.literal('bool')})"
         if t == F:

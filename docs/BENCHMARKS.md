@@ -46,6 +46,12 @@ knucleotide 0.520, pidigits 2.206. The first run (2026-10-04) had native
 at spigot 4.360 s, fannkuch 1.358, nbody 0.794, binarytrees 0.568,
 knucleotide 1.411, pidigits 21.059.
 
+**Null checks** (2026-10-08): every `get`, `put`, and array operation now
+checks for a null pointer. Measured before and after (best of 3 to 5 runs):
+binarytrees native +5%, wasm +7%; nbody native +6%, wasm +22% (its inner
+loop is struct-field reads and writes); spectralnorm +2% and +3%; fannkuch
++8% and +6%. The table above predates them.
+
 ## Notes per benchmark
 
 **spigot** (pi by the Rabinowitz-Wagon spigot: integers and one array, no

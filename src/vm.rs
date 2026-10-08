@@ -49,6 +49,10 @@ pub const HEAP_START: u32 = 1024;
 /// (`THREAD_STACK`). A small function's call takes about 5 KiB, so this
 /// allows about 40,000 nested calls of one.
 pub const STACK_BUDGET: usize = 192 << 20;
+
+/// The error for `get`, `put`, or an array operation on a null pointer or
+/// array, as compiled code reports it (wasm.rs NULL_TEXT).
+pub const NULL_POINTER: &str = "Null pointer dereference";
 const THREAD_STACK: usize = 256 << 20;
 
 /// An address in the caller's stack frame: how deep the stack is.
@@ -698,6 +702,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for get, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let addr = ptr_val + offset;
                 self.load_val_at(addr, &field_ty)
             }
@@ -712,6 +719,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let addr = ptr_val + offset;
                 self.check_write("put", addr)?;
                 let val_v = self.eval_expr(val, scope)?;
@@ -752,6 +762,10 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for arr.get, got {:?}", other)),
                 };
+                // before the index is evaluated, as compiled code checks
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let idx_val = match self.eval_expr(index, scope)? {
                     Value::Int(i) => i,
                     other => return Err(format!("VM: Expected Int index for arr.get, got {:?}", other)),
@@ -778,6 +792,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int array for arr.len, got {:?}", other)),
                 };
+                if p == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 if p < 4 {
                     return Err(format!("VM: Invalid array pointer {}", p));
                 }
@@ -788,6 +805,9 @@ impl VM {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for arr.set, got {:?}", other)),
                 };
+                if ptr_val == 0 {
+                    return Err(NULL_POINTER.to_string());
+                }
                 let idx_val = match self.eval_expr(index, scope)? {
                     Value::Int(i) => i,
                     other => return Err(format!("VM: Expected Int index for arr.set, got {:?}", other)),

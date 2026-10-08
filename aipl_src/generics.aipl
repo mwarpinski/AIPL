@@ -67,12 +67,14 @@
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
     (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
     (let h:(ptr compiler.Node) (call first_child g))
-    (if (call is_symbol h) (call text st h) (call str.bytes 0 -1)))
+    (if (and (neq h (ptr.null compiler.Node)) (call is_symbol h)) (call text st h) (call str.bytes 0 -1)))
 
   ;; A (...) group applying a template: a struct template anywhere, a
   ;; function template only as a callee (child 1 of call or ref), so that
   ;; (make U.v x) stays a union constructor even beside a generic `make`.
   (fn is_app [st:(ptr St) n:(ptr compiler.Node) callee:bool] -> bool
+    ;; n is null for a missing child: (get p) has no third
+    (if (eq n (ptr.null compiler.Node)) (return false) (block))
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
     (let h:(ptr str.Bytes) (call head st n))
     (if (lt (get h str.Bytes.len) 0) (return false) (block))

@@ -111,6 +111,36 @@ fn the_vm_prints_the_same_call_chain() {
     }
 }
 
+/// A null pointer or array stops the program with the same message in the
+/// VM and compiled, before anything else in the expression runs (here, an
+/// index that would print).
+#[test]
+fn null_pointers_stop_the_vm_and_compiled_code_alike() {
+    let dir = scratch("null");
+    for body in [
+        "(get (ptr.null P) P.x)",
+        "(block (put (ptr.null P) P.x 1) 0)",
+        "(arr.len (arr.null i32))",
+        "(arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))",
+        "(block (arr.set i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0) 5) 0)",
+    ] {
+        let src = format!("(module t (import io) (struct P [x:i32])\n  (fn main [] -> i32\n    {body}))");
+        std::fs::write(dir.join("t.aipl"), &src).unwrap();
+        let vm = Command::new(AIPL).arg("eval").arg("t.aipl").current_dir(&dir).output().unwrap();
+        let vm_err = String::from_utf8_lossy(&vm.stderr).to_string();
+        // at the form that dereferences (the body starts in column 5)
+        let at = ["(get", "(put", "(arr."].iter().filter_map(|f| body.find(f)).min().unwrap();
+        let chain = format!("  at main (t.aipl:3:{})\n", 5 + at);
+        assert_eq!(vm_err, format!("Error: Null pointer dereference\n{chain}"), "{body}");
+        assert!(!String::from_utf8_lossy(&vm.stdout).contains("never"), "{body}");
+        compile(&dir.join("t.aipl"), &dir.join("t.wasm"), &[]);
+        let o = run_in(&dir, &dir.join("t.wasm"), &[], "");
+        let program = dir.join("t.wasm").display().to_string();
+        assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{program}: Null pointer dereference\n{chain}"), "{body}");
+        assert_eq!(stdout(&o), "", "{body}");
+    }
+}
+
 #[test]
 fn threads_run_under_the_runner() {
     let dir = scratch("threads");

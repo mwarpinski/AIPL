@@ -224,7 +224,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 | `(arr.get T a i)` | `T` | `a` must be an `(arr T)`; checks `0 <= i < (arr.len a)` (below), then loads at `a + i * sizeof(T)` |
 | `(arr.set T a i v)` | `void` | `a` must be an `(arr T)`; checks the index, then evaluates `v` and stores it at `a + i * sizeof(T)` |
 | `(arr.len a)` | `i32` | the element count stored in the 4 bytes before `a` |
-| `(ptr.null S)` / `(arr.null T)` | `(ptr S)` / `(arr T)` | address 0 |
+| `(ptr.null S)` / `(arr.null T)` | `(ptr S)` / `(arr T)` | address 0; `get`, `put`, and every array operation stop on it (below) |
 | `(ptr.cast S x)` / `(arr.cast T x)` | `(ptr S)` / `(arr T)` | `x` must be `i32`; reinterprets the address (unchecked) |
 | `(ptr.addr p)` / `(arr.addr a)` | `i32` | the address, e.g. for `mem.*` or arithmetic |
 
@@ -233,6 +233,8 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 **Struct names are namespaced like functions** (section 11): inside the module that defines it, a struct is `Node`; an importer writes `compiler.Node` (or `c.Node` after `(import compiler as c)`), in `new`, `sizeof`, `(ptr ...)`, and field references such as `(get p compiler.Node.next)`. Two imported modules may each define a `Node`.
 
 **Bounds checks run everywhere.** Every `arr.get` and `arr.set` checks `0 <= i < n` against the header at `a - 4`, before the value to store is evaluated, and fails with `Array index out of bounds: index I for array of length N`: the VM as an error, compiled code (wasm and native) by writing that message and trapping (section 7.9), which `aipl-run` and native executables print as `<program>: <message>` with exit status 134. The wasm backend uses a second scratch local per function for the index and calls the module's `$aipl_oob` helper on failure. The checks cost about 20-30% under wasmtime and 45-55% natively on array-bound loops (docs/design/CHECKS_PLAN.md).
+
+**Null checks run everywhere.** `get`, `put`, `arr.get`, `arr.set`, and `arr.len` check their pointer or array for null (address 0) right after evaluating it, before the index or the value to store, and fail with `Null pointer dereference`, the same message in the VM and in compiled code, followed by the call chain with positions. Compiled code calls the module's `$aipl_null` helper, which writes the message at 128 and traps. The checks cost 2-8% on most benchmarks, and 22% under wasmtime on nbody, whose inner loop reads and writes `f64` struct fields (docs/BENCHMARKS.md). Before these checks a null `get` silently read the heap cursor at address 0 (they found such a read in the self-hosted toolchain's generics pass).
 
 ```lisp
 (module points
