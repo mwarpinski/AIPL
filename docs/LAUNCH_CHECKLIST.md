@@ -155,7 +155,7 @@ more than usual.
   commands to try; honest status (what works, what does not, a link to
   ROADMAP.md); how it is built and tested. Move the repository
   layout table to a contributor doc.
-- [ ] **An FAQ** answering the predictable first comments: why
+- [x] **An FAQ** (docs/FAQ.md, 2026-10-08) answering the predictable first comments: why
   S-expressions; why so verbose (`(call (vec.push i32) v x)`); why not
   just use Rust, Zig, or Python; why WebAssembly; is it really
   self-hosted; was it written by AI; is it memory-safe; how fast is it.
@@ -174,7 +174,8 @@ more than usual.
   compiling itself natively in 0.37 s is a good one; a small, real tool
   (a JSON pretty-printer, a `wc`/`grep` clone, a Markdown-to-HTML
   converter) would be better, written the way an agent would write it.
-- [ ] **A ten-minute tour** for humans: the spec is 1,350 lines and the
+- [x] **A ten-minute tour** (docs/TOUR.md, 2026-10-08; its examples are run by
+  tests/test_doc_examples.rs) for humans: the spec is 1,350 lines and the
   prompt guide is written for models. One page that walks through a
   program, the types, contracts, and compiling it.
 

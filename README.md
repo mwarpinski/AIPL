@@ -175,6 +175,10 @@ independent implementations against each other.
 
 ## Documentation
 
+- [docs/TOUR.md](docs/TOUR.md): a ten-minute tour of the language, for
+  people.
+- [docs/FAQ.md](docs/FAQ.md): why S-expressions, why so verbose, why not an
+  existing language, and the other questions people ask first.
 - [AIPL_SPEC.md](AIPL_SPEC.md): the language as implemented, with its
   pitfalls for code generators.
 - [PROMPT_GUIDE_FOR_AIS.md](PROMPT_GUIDE_FOR_AIS.md): a compact guide to
