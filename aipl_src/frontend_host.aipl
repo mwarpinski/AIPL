@@ -13,11 +13,11 @@
   (import str)
 
   (fn put_result [out:i32 ok:bool b:(ptr buf.Buf)] -> i32
-    (let bs:(ptr str.Bytes) (call buf.bytes b))
+    (unsafe (let bs:(ptr str.Bytes) (call buf.bytes b))
     (mem.store32 out (if ok 1 0))
     (mem.store32 (+ out 4) (get bs str.Bytes.addr))
     (mem.store32 (+ out 8) (get bs str.Bytes.len))
-    0)
+    0))
 
   (fn put_parsed [src:i32 out:i32 r:(ptr parser.Parsed)] -> i32
     (if (get r parser.Parsed.ok)

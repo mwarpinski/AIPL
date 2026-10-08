@@ -71,11 +71,20 @@ these.
 
 ### Is it memory-safe?
 
-No. Array indexes are bounds-checked, pointers are typed, contracts run on
-every call, writes to the runtime's reserved memory are rejected, and the
-standard heap stops the program on a double free or a write after free. But
-raw memory operations on computed addresses (`mem.load32`, `mem.store32`)
-and pointer casts are unchecked, and so are reads of freed heap memory.
+Not yet. What holds now: array indexes are bounds-checked, pointers are
+typed and checked for null, contracts run on every call, and the standard
+heap stops the program on a double free or a write after free. The
+operations nothing checks (raw `mem.load32`/`mem.store32`, casts to
+pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
+as in Rust, so a program without `unsafe` cannot reach memory through a
+raw address.
+
+Two gaps remain. A pointer kept after its object is freed can still read
+the freed memory; generation checks (each object and each pointer carries a
+number, compared on every access) are planned
+([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)). And the
+standard library's structs, such as `str.Bytes`, keep raw addresses in
+fields that any module can write; module visibility will close that.
 
 ### How fast is it?
 

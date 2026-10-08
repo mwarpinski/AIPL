@@ -27,8 +27,8 @@
   (fn kind [x:(ptr X) i:i32] -> compiler.Kind
     (if (and (gte i 0) (lt i (get x X.n))) (get (call tok x i) compiler.Token.kind) compiler.Kind.none))
   (fn text [x:(ptr X) i:i32] -> (ptr str.Bytes)
-    (let t:(ptr compiler.Token) (call tok x i))
-    (call str.bytes (+ (get x X.src) (get t compiler.Token.a)) (get t compiler.Token.b)))
+    (unsafe (let t:(ptr compiler.Token) (call tok x i))
+    (call str.bytes (+ (get x X.src) (get t compiler.Token.a)) (get t compiler.Token.b))))
   (fn is_sym [x:(ptr X) i:i32 s:str] -> bool
     (and (eq (call kind x i) compiler.Kind.symbol)
          (call compiler.span_is (get x X.src) (get (call tok x i) compiler.Token.a) (get (call tok x i) compiler.Token.b) s)))
@@ -80,9 +80,9 @@
 
   ;; The name after the last '.'.
   (fn base [s:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (let d:i32 -1)
+    (unsafe (let d:i32 -1)
     (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
-    (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1))))
+    (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1)))))
 
   ;; At least two characters of A-Z, 0-9, _, starting with A-Z.
   (fn well_formed [s:(ptr str.Bytes)] -> bool
@@ -222,7 +222,7 @@
   ;; One element: a constant's literal, an enum member's (enum.cast E v),
   ;; a group rewritten, or the token itself.
   (fn rewrite [x:(ptr X) i:i32 next_is_colon:bool] -> void
-    (cond
+    (unsafe (cond
       ((call is_open x i) (call rewrite_group x i))
       ((eq (call kind x i) compiler.Kind.symbol)
        (let s:(ptr str.Bytes) (call text x i))
@@ -267,7 +267,7 @@
              (call emit_new x compiler.Kind.int (call spare_text x vstart) (- (call buf.len (get x X.spare)) vstart) at)
              (call emit_new x compiler.Kind.rparen 0 0 at))
            (call emit x i (call pos x i))))
-      (else (call emit x i (call pos x i)))))
+      (else (call emit x i (call pos x i))))))
 
   ;; A group, each child rewritten; in a (match v arms...), each arm's head
   ;; is a name for the checker and stays as written.

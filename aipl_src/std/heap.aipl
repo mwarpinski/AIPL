@@ -83,7 +83,7 @@
   (fn raw [h:(ptr Heap) n:i32] -> i32
     (req (gt n 0))
     (req (lte n 1879048184))
-    (atomic.lock (ptr.addr h))
+    (unsafe (atomic.lock (ptr.addr h))
     (let c:i32 (call class_of n))
     (let size:i32 (call class_size c))
     (let p:i32 (arr.get i32 (get h Heap.heads) c))
@@ -98,7 +98,7 @@
     (put h Heap.nlive (+ (get h Heap.nlive) 1))
     (put h Heap.live_bytes (+ (get h Heap.live_bytes) n))
     (atomic.unlock (ptr.addr h))
-    p)
+    p))
 
   ;; A new block of `size` bytes (after its header) from the current chunk,
   ;; or from a new one.
@@ -116,12 +116,12 @@
     p)
 
   ;; A freed block handed out again: it must still hold the junk pattern.
-  (fn reuse [h:(ptr Heap) p:i32] -> void
+  (fn reuse [h:(ptr Heap) p:i32] -> void (unsafe)
     (req (not (call written_after_free p))))
 
   ;; Whether freed block p (its first 8 bytes are the free list link) has
   ;; been written since it was freed.
-  (fn written_after_free [p:i32] -> bool
+  (fn written_after_free [p:i32] -> bool (unsafe)
     (let end:i32 (+ p (bitand (+ (mem.load32 (- p 4)) 7) -8)))
     (let q:i32 (+ p 8))
     (while (lt q end)
@@ -130,7 +130,7 @@
     false)
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
-  (fn free_raw [h:(ptr Heap) p:i32 n:i32] -> void
+  (fn free_raw [h:(ptr Heap) p:i32 n:i32] -> void (unsafe)
     (req (call not_freed_already h p))
     (req (call allocated_by h p))
     (req (call size_matches p n))
@@ -150,34 +150,34 @@
     (atomic.unlock (ptr.addr h)))
 
   ;; The checks of free_raw, named for the failure they catch.
-  (fn not_freed_already [h:(ptr Heap) p:i32] -> bool
+  (fn not_freed_already [h:(ptr Heap) p:i32] -> bool (unsafe)
     (if (or (lt p 1032) (neq (bitand p 7) 0)) (return true) (block))
     (neq (mem.load32 (- p 8)) (^ (ptr.addr h) FREED)))
-  (fn allocated_by [h:(ptr Heap) p:i32] -> bool
+  (fn allocated_by [h:(ptr Heap) p:i32] -> bool (unsafe)
     (if (or (lt p 1032) (neq (bitand p 7) 0)) (return false) (block))
     (eq (mem.load32 (- p 8)) (^ (ptr.addr h) LIVE)))
-  (fn size_matches [p:i32 n:i32] -> bool
+  (fn size_matches [p:i32 n:i32] -> bool (unsafe)
     (eq (mem.load32 (- p 4)) n))
 
   ;; ===== Typed =====
 
   ;; A zeroed T.
   (fn (create T) [h:(ptr Heap)] -> (ptr T)
-    (ptr.cast T (call raw h (sizeof T))))
+    (unsafe (ptr.cast T (call raw h (sizeof T)))))
 
   (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void
-    (call free_raw h (ptr.addr p) (sizeof T)))
+    (unsafe (call free_raw h (ptr.addr p) (sizeof T))))
 
   ;; n zeroed Ts, laid out like (arr.new T n): the length in the 4 bytes
   ;; before the first element.
   (fn (array T) [h:(ptr Heap) n:i32] -> (arr T)
     (req (gte n 0))
-    (let base:i32 (call raw h (checked.add 4 (checked.mul n (sizeof T)))))
+    (unsafe (let base:i32 (call raw h (checked.add 4 (checked.mul n (sizeof T)))))
     (mem.store32 base n)
-    (arr.cast T (+ base 4)))
+    (arr.cast T (+ base 4))))
 
   (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void
-    (call free_raw h (- (arr.addr a) 4) (+ 4 (* (arr.len a) (sizeof T)))))
+    (unsafe (call free_raw h (- (arr.addr a) 4) (+ 4 (* (arr.len a) (sizeof T))))))
 
   ;; ===== Accounting =====
 
@@ -192,7 +192,7 @@
 
   ;; Pass count; test_suite.aipl expects 8.
   (fn run_heap_tests [] -> i32
-    (let p:i32 0)
+    (unsafe (let p:i32 0)
     ;; size classes: every size fits its class, and the class below is too small
     (let classes_ok:bool true)
     (loop n 1 5000 1
@@ -235,4 +235,4 @@
       (let b:i32 (call raw h 1024))
       (call free_raw h b 1024))
     (if (eq (call reserved h) before) (set! p (+ p 1)) (block))
-    p))
+    p)))

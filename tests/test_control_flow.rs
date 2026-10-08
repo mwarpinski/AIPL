@@ -38,13 +38,13 @@ fn check_err(src: &str) -> String {
 pub const PROGRAM: &str = r#"
 (module flow
   ;; early return inside a loop: index of the first multiple of 7 at or above n
-  (fn first_mult7 [n:i32] -> i32
+  (fn first_mult7 [n:i32] -> i32 (unsafe)
     (loop i n (+ n 100) 1
       (if (eq (% i 7) 0) (return i) (block)))
     -1)
 
   ;; break inside a nested if: sum 1.. until the total passes n
-  (fn sum_until [n:i32] -> i32
+  (fn sum_until [n:i32] -> i32 (unsafe)
     (let total:i32 0)
     (let i:i32 0)
     (while true
@@ -55,7 +55,7 @@ pub const PROGRAM: &str = r#"
     total)
 
   ;; continue in a counted loop still applies the step: sum of odd i in 0..n
-  (fn sum_odd [n:i32] -> i32
+  (fn sum_odd [n:i32] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 0 n 1
       (if (eq (% i 2) 0) (continue) (block))
@@ -63,7 +63,7 @@ pub const PROGRAM: &str = r#"
     total)
 
   ;; continue in a while loop goes back to the condition
-  (fn count_nonzero_digits [n:i32] -> i32
+  (fn count_nonzero_digits [n:i32] -> i32 (unsafe)
     (let v:i32 n)
     (let count:i32 0)
     (while (gt v 0)
@@ -74,7 +74,7 @@ pub const PROGRAM: &str = r#"
     count)
 
   ;; break and continue in nested loops target the innermost loop
-  (fn nested [n:i32] -> i32
+  (fn nested [n:i32] -> i32 (unsafe)
     (let hits:i32 0)
     (loop i 1 n 1
       (loop j 1 n 1
@@ -84,9 +84,9 @@ pub const PROGRAM: &str = r#"
     hits)
 
   ;; return from inside match_result inside a loop
-  (fn parse_digit [c:i32] -> (result i32 i32)
+  (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
     (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
-  (fn first_non_digit [n:i32] -> i32
+  (fn first_non_digit [n:i32] -> i32 (unsafe)
     (loop i 0 n 1
       (match_result (call parse_digit (+ 46 i))
         (ok d (block))
@@ -94,7 +94,7 @@ pub const PROGRAM: &str = r#"
     0)
 
   ;; cond with several clauses and multi-expression bodies, as a value
-  (fn classify [n:i32] -> i32
+  (fn classify [n:i32] -> i32 (unsafe)
     (cond
       ((lt n 0) -1)
       ((eq n 0) 0)
@@ -102,7 +102,7 @@ pub const PROGRAM: &str = r#"
       (else 100)))
 
   ;; cond as a statement
-  (fn bucket_sum [n:i32] -> i32
+  (fn bucket_sum [n:i32] -> i32 (unsafe)
     (let small:i32 0)
     (let big:i32 0)
     (loop i 0 n 1
@@ -112,13 +112,13 @@ pub const PROGRAM: &str = r#"
     (+ (* small 1000) big))
 
   ;; a body may end in (return v); void functions use (return)
-  (fn ends_in_return [n:i32] -> i32
+  (fn ends_in_return [n:i32] -> i32 (unsafe)
     (let x:i32 (* n 3))
     (return (+ x 1)))
-  (fn bump [p:i32] -> void
+  (fn bump [p:i32] -> void (unsafe)
     (if (lt p 0) (return) (block))
     (mem.store32 p (+ (mem.load32 p) 1)))
-  (fn uses_void_return [n:i32] -> i32
+  (fn uses_void_return [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (mem.store32 p n)
     (call bump p)
@@ -127,7 +127,7 @@ pub const PROGRAM: &str = r#"
 
   ;; loop end and step are evaluated once, before the first pass; the body
   ;; may still set! the variable
-  (fn moving_bounds [n:i32] -> i32
+  (fn moving_bounds [n:i32] -> i32 (unsafe)
     (let limit:i32 n)
     (let count:i32 0)
     (loop i 0 limit 1
@@ -239,12 +239,12 @@ fn malformed_cond_is_rejected() {
 pub const SHORT_CIRCUIT: &str = r#"
 (module sc
   ;; a zero divisor would trap if the second operand ran
-  (fn safe_ratio_is_two [d:i32] -> bool (and (neq d 0) (eq (/ 10 d) 2)))
-  (fn zero_or_divides [d:i32] -> bool (or (eq d 0) (eq (% 10 d) 0)))
+  (fn safe_ratio_is_two [d:i32] -> bool (unsafe) (and (neq d 0) (eq (/ 10 d) 2)))
+  (fn zero_or_divides [d:i32] -> bool (unsafe) (or (eq d 0) (eq (% 10 d) 0)))
 
   ;; side effects: count how often each second operand runs
-  (fn bump [p:i32] -> bool (mem.store32 p (+ (mem.load32 p) 1)) true)
-  (fn side_effects [n:i32] -> i32
+  (fn bump [p:i32] -> bool (unsafe) (mem.store32 p (+ (mem.load32 p) 1)) true)
+  (fn side_effects [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (loop i 0 (- n 1) 1
       (let a:bool (and (lt i 3) (call bump p)))
@@ -254,39 +254,39 @@ pub const SHORT_CIRCUIT: &str = r#"
   ;; break inside the second operand: the and's own if is one more label
   ;; the first i in 0..n above 3, found by breaking out of the loop from
   ;; inside the and's second operand
-  (fn first_index_over [n:i32] -> i32
+  (fn first_index_over [n:i32] -> i32 (unsafe)
     (let found:i32 -1)
     (loop i 0 n 1
       (if (and (gt i 3) (block (set! found i) (break) true)) (block) (block)))
     found)
 
   ;; break and return inside arithmetic operands: later operands must not run
-  (fn jump_in_operand [n:i32] -> i32
+  (fn jump_in_operand [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (loop i 0 n 1
       (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
     (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
 
   ;; a return inside a return's value leaves with the inner value
-  (fn return_in_return [n:i32] -> i32
+  (fn return_in_return [n:i32] -> i32 (unsafe)
     (return (block (if (gt n 0) (return (* n 10)) (block)) -3)))
 
   ;; a return inside a call's argument: the call never happens, and the
   ;; caller still returns (the VM's callee once took the return as its own)
-  (fn add_one [x:i32] -> i32 (+ x 1))
-  (fn return_in_argument [n:i32] -> i32
+  (fn add_one [x:i32] -> i32 (unsafe) (+ x 1))
+  (fn return_in_argument [n:i32] -> i32 (unsafe)
     (let r:i32 (call add_one (block (if (gt n 0) (return 7) (block)) n)))
     (+ r 100))
 
   ;; a break inside a set!'s value assigns nothing
-  (fn break_in_assignment [n:i32] -> i32
+  (fn break_in_assignment [n:i32] -> i32 (unsafe)
     (let x:i32 5)
     (loop i 0 n 1
       (set! x (+ (block (if (eq i 2) (break) (block)) i) 10)))
     x)
 
   ;; nested, as the checker requires for more than two operands
-  (fn in_range [x:i32] -> bool (and (gte x 0) (and (lt x 10) (neq x 5)))))
+  (fn in_range [x:i32] -> bool (unsafe) (and (gte x 0) (and (lt x 10) (neq x 5)))))
 "#;
 
 #[test]
@@ -326,8 +326,8 @@ fn and_or_take_exactly_two_operands() {
 #[test]
 fn a_call_in_the_loop_bound_runs_once() {
     let src = r#"(module m
-  (fn next_count [p:i32] -> i32 (mem.store32 p (+ (mem.load32 p) 1)) 3)
-  (fn f [n:i32] -> i32
+  (fn next_count [p:i32] -> i32 (unsafe) (mem.store32 p (+ (mem.load32 p) 1)) 3)
+  (fn f [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (let passes:i32 0)
     (loop i 1 (call next_count p) (+ 0 1) (set! passes (+ passes 1)))

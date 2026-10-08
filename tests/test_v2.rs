@@ -7,7 +7,7 @@ use aipl_core::vm::{Value, VM};
 fn test_v2_memory_load_store() {
     let src = r#"
     (module test_mem
-      (fn test_store_and_load [] -> i32
+      (fn test_store_and_load [] -> i32 (unsafe)
         (let ptr:i32 (mem.alloc 16))
         (mem.store32 ptr 98765)
         (mem.load32 ptr)))
@@ -49,7 +49,7 @@ fn test_v2_bitwise_operators() {
 fn test_v2_atomic_concurrency() {
     let src = r#"
     (module test_atomics
-      (fn test_mutex [] -> i32
+      (fn test_mutex [] -> i32 (unsafe)
         (let mutex_ptr:i32 (mem.alloc 4))
         (let data_ptr:i32 (mem.alloc 4))
         (atomic.lock mutex_ptr)

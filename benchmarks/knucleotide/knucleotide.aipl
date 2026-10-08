@@ -25,7 +25,7 @@
     (let found:bool false)
     ;; find the header line
     (while (and (not found) (lt i n))
-      (if (and (lte (+ i 6) n) (call str.bytes_eq (call str.bytes (+ (get input str.Bytes.addr) i) 6) marker))
+      (if (and (lte (+ i 6) n) (call str.bytes_eq (call str.slice input i 6) marker))
           (set! found true)
           (block
             (while (and (lt i n) (neq (call str.byte_at input i) 10)) (set! i (+ i 1)))
@@ -45,9 +45,8 @@
   ;; Counts every k-letter substring.
   (fn count_kmers [seq:(ptr str.Bytes) k:i32] -> (ptr (strmap.StrMap i32))
     (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 64))
-    (let base:i32 (get seq str.Bytes.addr))
     (loop i 0 (- (get seq str.Bytes.len) k) 1
-      (let key:(ptr str.Bytes) (call str.bytes (+ base i) k))
+      (let key:(ptr str.Bytes) (call str.slice seq i k))
       (call (strmap.set i32) m key (+ 1 (call (strmap.get_or i32) m key 0))))
     m)
 

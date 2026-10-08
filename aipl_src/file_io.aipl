@@ -13,21 +13,21 @@
   (fn fs_open [path_ptr:i32 path_len:i32 flags:i32] -> i32
     (req (gte path_ptr 0))
     (req (gt path_len 0))
-    (fs.open path_ptr path_len flags))
+    (unsafe (fs.open path_ptr path_len flags)))
 
   ;; Reads up to max_len bytes from fd into linear memory at buf_ptr. Returns
   ;; the number of bytes actually read, or -1 on error.
   (fn fs_read [fd:i32 buf_ptr:i32 max_len:i32] -> i32
     (req (gte buf_ptr 0))
     (req (gt max_len 0))
-    (fs.read fd buf_ptr max_len))
+    (unsafe (fs.read fd buf_ptr max_len)))
 
   ;; Writes len bytes from linear memory at buf_ptr to fd. Returns the number
   ;; of bytes actually written, or -1 on error.
   (fn fs_write [fd:i32 buf_ptr:i32 len:i32] -> i32
     (req (gte buf_ptr 0))
     (req (gt len 0))
-    (fs.write fd buf_ptr len))
+    (unsafe (fs.write fd buf_ptr len)))
 
   ;; Closes fd. Returns 0 on success, -1 on error.
   (fn fs_close [fd:i32] -> i32
@@ -37,7 +37,7 @@
   (fn fs_delete [path_ptr:i32 path_len:i32] -> i32
     (req (gte path_ptr 0))
     (req (gt path_len 0))
-    (fs.delete path_ptr path_len))
+    (unsafe (fs.delete path_ptr path_len)))
 
   ;; High-level: open (create/truncate), write len bytes from buf_ptr, close.
   ;; Returns bytes written, or -1 if the file couldn't be opened.
@@ -74,7 +74,7 @@
   ;; file - a genuine round trip through the OS filesystem, not a
   ;; self-fulfilling count-echo, and it cleans up after itself.
   (fn run_file_io_tests [] -> i32
-    (let path:i32 (mem.alloc 32))
+    (unsafe (let path:i32 (mem.alloc 32))
     (let payload:i32 (mem.alloc 32))
     (let readbuf:i32 (mem.alloc 64))
     (mem.store8 (+ path 0) 97) (mem.store8 (+ path 1) 105) (mem.store8 (+ path 2) 112)
@@ -108,4 +108,4 @@
 
     (if (and (eq written 17) (and (eq read_n 17) (eq mismatch 0)))
         1
-        0)))
+        0))))

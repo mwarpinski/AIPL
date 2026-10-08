@@ -41,11 +41,11 @@
   (struct Output [ok:bool error:(ptr str.Bytes) exe:(ptr str.Bytes)])
 
   (fn failure [msg:(ptr str.Bytes)] -> (ptr Output)
-    (let o:(ptr Output) (new Output))
+    (unsafe (let o:(ptr Output) (new Output))
     (put o Output.ok false)
     (put o Output.error msg)
     (put o Output.exe (call str.bytes 0 0))
-    o)
+    o))
 
   ;; The export named `name` of kind function, or -1.
   (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32
@@ -310,7 +310,7 @@
   ;; `sandbox`: the program may use only the working directory (no `/`
   ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
   (fn compile_with [wasm:(ptr str.Bytes) sandbox:bool] -> (ptr Output)
-    (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
+    (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))
     (if (gt (str.len mem_problem) 0) (return (call failure (call str.from_str mem_problem))) (block))
@@ -425,7 +425,7 @@
     (put o Output.ok true)
     (put o Output.error (call str.bytes 0 0))
     (put o Output.exe (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
-    o)
+    o))
 
 ;; ===== The call chain's function table (runtime.emit_backtrace_routine) =====
 
@@ -435,16 +435,16 @@
   ;; Whether a function's frame is shown in a call chain: it has a name, and
   ;; is not generated (aipl-run's call_chain rule).
   (fn shown [n:(ptr str.Bytes)] -> bool
-    (let len:i32 (get n str.Bytes.len))
+    (unsafe (let len:i32 (get n str.Bytes.len))
     (and (gt len 0)
          (not (or (and (gte len 5) (call str.bytes_eq (call str.bytes (get n str.Bytes.addr) 5) (call str.from_str "aipl.")))
-                  (or (call str.bytes_eq n (call str.from_str "_start")) (call str.bytes_eq n (call str.from_str "wasi_thread_start")))))))
+                  (or (call str.bytes_eq n (call str.from_str "_start")) (call str.bytes_eq n (call str.from_str "wasi_thread_start"))))))))
 
   ;; Puts each defined function's name, and room for the table, in the data,
   ;; and points `cell` at it. The entries are filled once the code's address
   ;; is known (fill_chain_table): the data must be complete before then.
   (fn reserve_chain_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) nimports:i32 nfuncs:i32 cell:i32] -> (ptr Chain)
-    (let ch:(ptr Chain) (new Chain))
+    (unsafe (let ch:(ptr Chain) (new Chain))
     (put ch Chain.first nimports)
     (put ch Chain.last (- nfuncs 1))
     (put ch Chain.names (arr.new i32 (+ nfuncs 1)))
@@ -467,11 +467,11 @@
     (let cell_at:i32 (+ (get (get l lower.L.data) buf.Buf.data) (- cell (call elf.data_vaddr))))
     (mem.store32 cell_at (get ch Chain.addr))
     (mem.store32 (+ cell_at 4) n)
-    ch)
+    ch))
 
   ;; Fills the entries: each defined function's code [start, end) and name.
   (fn fill_chain_table [l:(ptr lower.L) ch:(ptr Chain) starts:(ptr (vec.Vec i32)) code_end:i32] -> void
-    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- (get ch Chain.addr) (call elf.data_vaddr))))
     (loop i (get ch Chain.first) (get ch Chain.last) 1
@@ -480,14 +480,14 @@
       (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts i)))
       (mem.store32 (+ entry 4) (+ code_vaddr end))
       (mem.store32 (+ entry 8) (arr.get i32 (get ch Chain.names) i))
-      (mem.store32 (+ entry 12) (arr.get i32 (get ch Chain.lens) i))))
+      (mem.store32 (+ entry 12) (arr.get i32 (get ch Chain.lens) i)))))
 
   ;; Puts the line table's file names and room for the position entries in
   ;; the data, and points `cell` at them: [entries, count, files], files
   ;; being [address length] per name. Returns the entries' data address;
   ;; fill_position_table fills them once the code's address is known.
   (fn reserve_position_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) cell:i32] -> i32
-    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let names:(ptr (vec.Vec (ptr str.Bytes))) (get w wasm_reader.Wasm.line_files))
     (let nfiles:i32 (call (vec.len (ptr str.Bytes)) names))
     (let addrs:(arr i32) (arr.new i32 (+ nfiles 1)))
@@ -504,13 +504,13 @@
     (mem.store32 cell_at entries)
     (mem.store32 (+ cell_at 4) n)
     (mem.store32 (+ cell_at 8) files)
-    entries)
+    entries))
 
   (fn push_word [b:(ptr buf.Buf) v:i32] -> void
     (loop k 0 3 1 (call buf.push_byte b (bitand (shr v (* 8 k)) 255))))
 
   (fn fill_position_table [l:(ptr lower.L) entries:i32] -> void
-    (let data:(ptr buf.Buf) (get l lower.L.data))
+    (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- entries (call elf.data_vaddr))))
     (let ps:(ptr (vec.Vec (ptr lower.NPos))) (get l lower.L.positions))
@@ -520,7 +520,7 @@
       (mem.store32 at (+ code_vaddr (get p lower.NPos.code)))
       (mem.store32 (+ at 4) (get p lower.NPos.file))
       (mem.store32 (+ at 8) (get p lower.NPos.line))
-      (mem.store32 (+ at 12) (get p lower.NPos.col))))
+      (mem.store32 (+ at 12) (get p lower.NPos.col)))))
 
   ;; Reserves the table's entries in the data (empty: address 0, type -1);
   ;; "" or the reason the table cannot be translated.
@@ -552,7 +552,7 @@
   ;; Writes each element segment's functions into the table: code address
   ;; (now that the layout is known) and canonical type.
   (fn fill_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) starts:(ptr (vec.Vec i32))] -> void
-    (if (eq (get l lower.L.table_size) 0) (return) (block))
+    (unsafe (if (eq (get l lower.L.table_size) 0) (return) (block))
     (let data:(ptr buf.Buf) (get l lower.L.data))
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- (get l lower.L.table_addr) (call elf.data_vaddr))))
@@ -566,7 +566,7 @@
         (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts f)))
         (mem.store32 (+ entry 4) 0)
         (let ti:i32 (call type_index_of l w f))
-        (mem.store32 (+ entry 8) (call (vec.at i32) (get l lower.L.canon_types) ti)))))
+        (mem.store32 (+ entry 8) (call (vec.at i32) (get l lower.L.canon_types) ti))))))
 
   ;; The type index of function `f` (imports first).
   (fn type_index_of [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) f:i32] -> i32
@@ -578,11 +578,11 @@
   ;; For hosts (tests, the driver): compile the `len` bytes at `addr`.
   ;; Returns the Output's address.
   (fn compile_at [addr:i32 len:i32] -> (ptr Output)
-    (call compile (call str.bytes addr len)))
+    (unsafe (call compile (call str.bytes addr len))))
 
   ;; compile_at with sandbox (only the working directory).
   (fn compile_sandboxed_at [addr:i32 len:i32] -> (ptr Output)
-    (call compile_with (call str.bytes addr len) true))
+    (unsafe (call compile_with (call str.bytes addr len) true)))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 )

@@ -357,17 +357,17 @@ fn self_hosted_bytes_match_i64() {
     let src = r#"
 (module i64demo
   (struct Acc [flag:bool total:i64 n:i32])
-  (fn add [a:i64 b:i64] -> i64 (+ a b))
-  (fn mix [x:i32] -> i64
+  (fn add [a:i64 b:i64] -> i64 (unsafe) (+ a b))
+  (fn mix [x:i32] -> i64 (unsafe)
     (let big:i64 9223372036854775807i64)
     (let neg:i64 -9223372036854775808i64)
     (let a:i64 (i64.extend_s x))
     (if (gt a 100i64)
         (bitand (shl a 3i64) big)
         (- (divu a 7i64) (remu neg 3i64))))
-  (fn cmp [a:i64 b:i64] -> i32
+  (fn cmp [a:i64 b:i64] -> i32 (unsafe)
     (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
-  (fn acc [n:i32] -> i64
+  (fn acc [n:i32] -> i64 (unsafe)
     (let s:(ptr Acc) (new Acc))
     (put s Acc.total 0i64)
     (loop i 1 n 1
@@ -379,7 +379,7 @@ fn self_hosted_bytes_match_i64() {
     assert_self_hosted_matches_rust("i64", src);
     assert_self_hosted_matches_rust(
         "i64_mem",
-        "(module s64 (fn f [p:i32 v:i64] -> i64 (mem.store64 p v) (mem.load64 p)))",
+        "(module s64 (fn f [p:i32 v:i64] -> i64 (unsafe) (mem.store64 p v) (mem.load64 p)))",
     );
 }
 
@@ -509,7 +509,7 @@ fn self_hosted_bytes_match_pointers() {
     assert_self_hosted_matches_rust("pointers_1", r#"
 (module arrs
   (struct P [x:i32])
-  (fn f [] -> i32
+  (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) 4))
     (loop i 0 3 1
       (let p:(ptr P) (new P))
@@ -587,7 +587,7 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
     std::fs::write(&path, r#"(module surface
   (import io)
   (import os)
-  (fn main [] -> i64
+  (fn main [] -> i64 (unsafe)
     (let b:(ptr str.Bytes) (call io.read_stdin))
     (let p:i32 (mem.alloc 8))
     (let ok:i32 (sys.random p 8))
@@ -636,8 +636,8 @@ fn self_hosted_bytes_match_past_the_old_table_limits() {
 fn self_hosted_bytes_match_args_and_env() {
     assert_self_hosted_matches_rust("argsenv", r#"
 (module argsenv
-  (fn only_env [p:i32] -> i32 (env.sizes p (+ p 4)))
-  (fn all [p:i32] -> i32
+  (fn only_env [p:i32] -> i32 (unsafe) (env.sizes p (+ p 4)))
+  (fn all [p:i32] -> i32 (unsafe)
     (sys.print "x")
     (let a:i32 (args.sizes p (+ p 4)))
     (let b:i32 (args.get (+ p 8) (+ p 64)))
@@ -647,7 +647,7 @@ fn self_hosted_bytes_match_args_and_env() {
     (fs.delete p 1)
     (if (lt a 0) (sys.exit 1) (block))
     (+ a (+ b (+ c (+ (fs.read fd p 1) (fs.write fd p 1)))))))"#);
-    assert_self_hosted_matches_rust("envonly", "(module envonly (fn f [p:i32] -> i32 (env.get p (+ p 4))))");
+    assert_self_hosted_matches_rust("envonly", "(module envonly (fn f [p:i32] -> i32 (unsafe) (env.get p (+ p 4))))");
 }
 
 /// Function references (P10): ref, call_ref through params, arrays, and struct
@@ -685,13 +685,13 @@ fn self_hosted_bytes_match_control_flow() {
     assert_self_hosted_matches_rust("control_flow", r#"
 (module flow
   ;; early return inside a loop: index of the first multiple of 7 at or above n
-  (fn first_mult7 [n:i32] -> i32
+  (fn first_mult7 [n:i32] -> i32 (unsafe)
     (loop i n (+ n 100) 1
       (if (eq (% i 7) 0) (return i) (block)))
     -1)
 
   ;; break inside a nested if: sum 1.. until the total passes n
-  (fn sum_until [n:i32] -> i32
+  (fn sum_until [n:i32] -> i32 (unsafe)
     (let total:i32 0)
     (let i:i32 0)
     (while true
@@ -702,7 +702,7 @@ fn self_hosted_bytes_match_control_flow() {
     total)
 
   ;; continue in a counted loop still applies the step: sum of odd i in 0..n
-  (fn sum_odd [n:i32] -> i32
+  (fn sum_odd [n:i32] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 0 n 1
       (if (eq (% i 2) 0) (continue) (block))
@@ -710,7 +710,7 @@ fn self_hosted_bytes_match_control_flow() {
     total)
 
   ;; continue in a while loop goes back to the condition
-  (fn count_nonzero_digits [n:i32] -> i32
+  (fn count_nonzero_digits [n:i32] -> i32 (unsafe)
     (let v:i32 n)
     (let count:i32 0)
     (while (gt v 0)
@@ -721,7 +721,7 @@ fn self_hosted_bytes_match_control_flow() {
     count)
 
   ;; break and continue in nested loops target the innermost loop
-  (fn nested [n:i32] -> i32
+  (fn nested [n:i32] -> i32 (unsafe)
     (let hits:i32 0)
     (loop i 1 n 1
       (loop j 1 n 1
@@ -731,9 +731,9 @@ fn self_hosted_bytes_match_control_flow() {
     hits)
 
   ;; return from inside match_result inside a loop
-  (fn parse_digit [c:i32] -> (result i32 i32)
+  (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
     (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
-  (fn first_non_digit [n:i32] -> i32
+  (fn first_non_digit [n:i32] -> i32 (unsafe)
     (loop i 0 n 1
       (match_result (call parse_digit (+ 46 i))
         (ok d (block))
@@ -741,7 +741,7 @@ fn self_hosted_bytes_match_control_flow() {
     0)
 
   ;; cond with several clauses and multi-expression bodies, as a value
-  (fn classify [n:i32] -> i32
+  (fn classify [n:i32] -> i32 (unsafe)
     (cond
       ((lt n 0) -1)
       ((eq n 0) 0)
@@ -749,7 +749,7 @@ fn self_hosted_bytes_match_control_flow() {
       (else 100)))
 
   ;; cond as a statement
-  (fn bucket_sum [n:i32] -> i32
+  (fn bucket_sum [n:i32] -> i32 (unsafe)
     (let small:i32 0)
     (let big:i32 0)
     (loop i 0 n 1
@@ -759,13 +759,13 @@ fn self_hosted_bytes_match_control_flow() {
     (+ (* small 1000) big))
 
   ;; a body may end in (return v); void functions use (return)
-  (fn ends_in_return [n:i32] -> i32
+  (fn ends_in_return [n:i32] -> i32 (unsafe)
     (let x:i32 (* n 3))
     (return (+ x 1)))
-  (fn bump [p:i32] -> void
+  (fn bump [p:i32] -> void (unsafe)
     (if (lt p 0) (return) (block))
     (mem.store32 p (+ (mem.load32 p) 1)))
-  (fn uses_void_return [n:i32] -> i32
+  (fn uses_void_return [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (mem.store32 p n)
     (call bump p)
@@ -773,7 +773,7 @@ fn self_hosted_bytes_match_control_flow() {
     (mem.load32 p))
 
   ;; loop bound and step are evaluated every iteration, and the body may set! the variable
-  (fn moving_bounds [n:i32] -> i32
+  (fn moving_bounds [n:i32] -> i32 (unsafe)
     (let limit:i32 n)
     (let count:i32 0)
     (loop i 0 limit 1
@@ -788,7 +788,7 @@ fn self_hosted_bytes_match_control_flow() {
 fn self_hosted_bytes_match_file_io() {
     let src = r#"
 (module test_io
-  (fn write_and_read [] -> i32
+  (fn write_and_read [] -> i32 (unsafe)
     (let fd:i32 (fs.open (str.ptr "test.txt") (str.len "test.txt") 1))
     (if (gte fd 0)
         (block
@@ -845,7 +845,7 @@ fn self_hosted_file_io_runs_under_wasi() {
 
     let src = r#"
 (module file_io_run
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let fd:i32 (fs.open (str.ptr "hello.txt") (str.len "hello.txt") 1))
     (if (gte fd 0)
         (block
@@ -888,7 +888,7 @@ fn self_hosted_file_io_runs_under_wasi() {
 /// (AIPL_SPEC.md 7.9): stores to bytes 0-3 or 64-1023 trap, others go through.
 #[test]
 fn self_hosted_store_guard_traps_on_the_reserved_block() {
-    let src = "(module store (fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a)))";
+    let src = "(module store (fn add [a:i32 b:i32] -> i32 (unsafe) (mem.store32 a b) (mem.load32 a)))";
     assert_self_hosted_matches_rust("store", src);
     let bytes = run_self_hosted(src, "");
     let engine = Engine::default();
@@ -987,7 +987,7 @@ fn self_hosted_string_literals_past_the_old_area_are_read_only() {
     let a = "a".repeat(400);
     let b = "b".repeat(400);
     let src = format!(
-        "(module lits\n  (fn lens [] -> i32 (+ (str.len \"{a}\") (str.len \"{b}\")))\n  (fn first_free [] -> i32 (mem.alloc 0))\n  (fn poke [] -> i32 (mem.store8 (str.ptr \"{b}\") 0) 1))"
+        "(module lits\n  (fn lens [] -> i32 (unsafe) (+ (str.len \"{a}\") (str.len \"{b}\")))\n  (fn first_free [] -> i32 (unsafe) (mem.alloc 0))\n  (fn poke [] -> i32 (unsafe) (mem.store8 (str.ptr \"{b}\") 0) 1))"
     );
     assert_self_hosted_matches_rust("lits", &src);
     let bytes = run_self_hosted(&src, "");
@@ -1193,19 +1193,19 @@ fn self_hosted_bytes_match_sum_types() {
   (union List [(nil) (cons head:i32 tail:List)])
   (enum Color [red green (blue 10)])
   (struct Holder [s:Shape c:Color])
-  (fn area [s:Shape] -> i64
+  (fn area [s:Shape] -> i64 (unsafe)
     (match s
       (Shape.circle [r] (i64.trunc_f64_s (* r r)))
       (Shape.rect [w h] (i64.extend_s (* w h)))
       (Shape.big [n flag] (if flag n 0i64))
       (Shape.empty -1i64)))
-  (fn sum [l:List] -> i32
+  (fn sum [l:List] -> i32 (unsafe)
     (match l (List.nil 0) (List.cons [x rest] (+ x (call sum rest)))))
-  (fn code [c:Color] -> i32 (match c (Color.red 1) (Color.blue 3) (else 2)))
-  (fn always [c:Color] -> i32 (match c (else 7)))
-  (fn effect [s:Shape] -> void
+  (fn code [c:Color] -> i32 (unsafe) (match c (Color.red 1) (Color.blue 3) (else 2)))
+  (fn always [c:Color] -> i32 (unsafe) (match c (else 7)))
+  (fn effect [s:Shape] -> void (unsafe)
     (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
-  (fn main [] -> i32
+  (fn main [] -> i32 (unsafe)
     (let h:(ptr Holder) (new Holder))
     (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
     (put h Holder.c Color.blue)

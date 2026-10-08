@@ -56,7 +56,7 @@
   ;; ===== Byte-string helpers =====
 
   (fn slice [t:(ptr str.Bytes) start:i32 len:i32] -> (ptr str.Bytes)
-    (call str.bytes (+ (get t str.Bytes.addr) start) len))
+    (unsafe (call str.bytes (+ (get t str.Bytes.addr) start) len)))
 
   (fn concat [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> (ptr str.Bytes)
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get a str.Bytes.len) (get b str.Bytes.len))))
@@ -148,7 +148,7 @@
   ;; Roles: 0 none, 1 function name, 2 struct name, 3 field reference S.f.
 
   (fn rename [m:(ptr Mod) t:(ptr str.Bytes) role:i32] -> (ptr str.Bytes)
-    (if (eq role 0) (return (call rename_decl m t)) (block))
+    (unsafe (if (eq role 0) (return (call rename_decl m t)) (block))
     (let len:i32 (get t str.Bytes.len))
     (if (eq role 3)
         (block
@@ -172,13 +172,13 @@
     (if (and (get m Mod.imported) (or (call (strmap.has i32) own t)
                                       (and (eq role 2) (call (strmap.has i32) (get m Mod.decls) t))))
         (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
-        t))
+        t)))
 
   ;; A name in any position (resolver.rs rename_decl): one of this module's
   ;; constants or enums (MAX, Color), an enum member (Color.red), or an
   ;; alias-qualified name (c.MAX, c.Color.red). Anything else is unchanged.
   (fn rename_decl [m:(ptr Mod) t:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (let len:i32 (get t str.Bytes.len))
+    (unsafe (let len:i32 (get t str.Bytes.len))
     (let dot:i32 (call str.find_byte t 46))
     (if (and (gte dot 0) (call (strmap.has (ptr str.Bytes)) (get m Mod.aliases) (call slice t 0 dot)))
         (return (call concat (call (strmap.get_or (ptr str.Bytes)) (get m Mod.aliases) (call slice t 0 dot) (call str.bytes 0 -1))
@@ -189,7 +189,7 @@
     (if (or (call (strmap.has i32) (get m Mod.decls) t)
             (and (gte last 0) (call (strmap.has i32) (get m Mod.decls) (call slice t 0 last))))
         (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
-        t))
+        t)))
 
   ;; Which role child i of group g plays, from the group's head symbol.
   (fn child_role [m:(ptr Mod) g:(ptr compiler.Node) i:i32] -> i32
@@ -229,7 +229,7 @@
   ;; of this module's own, or another module's through an alias or by its
   ;; canonical name (resolver.rs template_ref). len -1 if h is not a template.
   (fn template_ref [m:(ptr Mod) h:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (if (call (strmap.has i32) (get m Mod.templates) h)
+    (unsafe (if (call (strmap.has i32) (get m Mod.templates) h)
         (return (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) h) h))
         (block))
     (let dot:i32 (call str.find_byte h 46))
@@ -239,7 +239,7 @@
                                               (call slice h dot (- (get h str.Bytes.len) dot))))
           (if (call (strmap.has i32) (get m Mod.known) c) (return c) (block)))
         (block))
-    (if (call (strmap.has i32) (get m Mod.known) h) h (call str.bytes 0 -1)))
+    (if (call (strmap.has i32) (get m Mod.known) h) h (call str.bytes 0 -1))))
 
   ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
   ;; group whose head names a generic template prints its canonical name,
@@ -256,7 +256,7 @@
     (if (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a)) (block)))
 
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
-    (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
+    (unsafe (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (call note m g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
@@ -281,7 +281,7 @@
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
     (call note_close m g out)
-    (call buf.push_byte out (if square 93 41)))
+    (call buf.push_byte out (if square 93 41))))
 
   ;; A match arm: its head names a member of the matched type, so it is
   ;; renamed like any name ((Shape.circle [r] ...) in module m is
@@ -332,9 +332,9 @@
 
   ;; Whether token i is the symbol `lit`.
   (fn symbol_is [src:i32 toks:i32 i:i32 lit:str] -> bool
-    (let t:(ptr compiler.Token) (call compiler.token_at toks i))
+    (unsafe (let t:(ptr compiler.Token) (call compiler.token_at toks i))
     (and (eq (get t compiler.Token.kind) compiler.Kind.symbol)
-         (call eq_lit (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)) lit)))
+         (call eq_lit (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)) lit))))
 
   ;; The index after the form starting at token i (brackets known to balance).
   (fn skip_form [toks:i32 i:i32] -> i32
@@ -527,7 +527,7 @@
 
 ;; Two different files may not share a module name; records name -> path.
   (fn check_name [st:(ptr State) name:(ptr str.Bytes) path:(ptr str.Bytes) importer:(ptr str.Bytes)] -> bool
-    (let seen:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.paths) name (call str.bytes 0 -1)))
+    (unsafe (let seen:(ptr str.Bytes) (call (strmap.get_or (ptr str.Bytes)) (get st State.paths) name (call str.bytes 0 -1)))
     (if (and (gte (get seen str.Bytes.len) 0) (not (call str.bytes_eq seen path)))
         (block
           (let e:(ptr buf.Buf) (call importer_error st importer))
@@ -540,7 +540,7 @@
           (return false))
         (block))
     (call (strmap.set (ptr str.Bytes)) (get st State.paths) name path)
-    true)
+    true))
 
   ;; A module's name: the last segment of its import path
   ;; ((import native/wasm_reader) is the module wasm_reader), as resolver.rs.
@@ -562,7 +562,7 @@
     (gt seg_len 0))
 
   (fn resolve_module [st:(ptr State) dir:(ptr str.Bytes) import:(ptr str.Bytes) importer:(ptr str.Bytes)] -> bool
-    (if (not (call valid_import_path import))
+    (unsafe (if (not (call valid_import_path import))
         (block
           (let pe:(ptr buf.Buf) (call importer_error st importer))
           (call buf.push_byte pe 39)
@@ -636,7 +636,7 @@
     (call emit_module st (call make_mod src name true (get st State.known)))
     (call (strmap.remove i32) (get st State.active) name)
     (call (strmap.set i32) (get st State.done) name 1)
-    true)
+    true))
 
   ;; The library directories to search, colon-separated: std_dir, then AIPL_PATH.
   (fn library_dirs [std_dir:(ptr str.Bytes)] -> (ptr str.Bytes)
@@ -732,7 +732,7 @@
   ;; directory at (std_addr, std_len). The Out holds the flat source (ok 1)
   ;; or the error (ok 0).
   (fn resolve_file [path_addr:i32 path_len:i32 std_addr:i32 std_len:i32] -> (ptr Out)
-    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let ok:bool (call resolve (call str.bytes path_addr path_len) (call str.bytes std_addr std_len) out err))
     (let res:(ptr Out) (new Out))
@@ -740,7 +740,7 @@
     (put res Out.ok (if ok 1 0))
     (put res Out.addr (get b str.Bytes.addr))
     (put res Out.len (get b str.Bytes.len))
-    res)
+    res))
 
   ;; Pass count; test_suite.aipl expects 3. Paths are relative to the
   ;; repository root, where the suite runs.

@@ -175,7 +175,7 @@ fn f64_fixed_matches_exact_formatting() {
     std::fs::write(
         &src,
         "(module w (import fmt)
-           (fn fmt_at [lo:i32 hi:i32 d:i32 out:i32] -> i32
+           (fn fmt_at [lo:i32 hi:i32 d:i32 out:i32] -> i32 (unsafe)
              (call fmt.f64_fixed (f64.reinterpret_i64 (bitor (i64.extend_u lo) (shl (i64.extend_s hi) 32i64))) d out))
            (fn alloc [n:i32] -> i32 (mem.alloc n)))",
     )
@@ -244,7 +244,7 @@ fn float_from_decimal_matches_rust_parse() {
     std::fs::write(
         &src,
         "(module w (import float)
-           (fn bits [addr:i32 len:i32] -> i64 (i64.reinterpret_f64 (call float.from_decimal addr len)))
+           (fn bits [addr:i32 len:i32] -> i64 (unsafe) (i64.reinterpret_f64 (call float.from_decimal addr len)))
            (fn alloc [n:i32] -> i32 (mem.alloc n)))",
     )
     .unwrap();

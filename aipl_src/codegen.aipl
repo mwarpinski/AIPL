@@ -19,10 +19,10 @@
 
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [cg:(ptr Cg) pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
-    (if (neq len lit_len) (return false) (block))
+    (unsafe (if (neq len lit_len) (return false) (block))
     (loop i 0 (- len 1) 1
       (if (neq (mem.load8 (+ (get cg Cg.src) (+ pos i))) (mem.load8 (+ lit_ptr i))) (return false) (block)))
-    true)
+    true))
 
   ;; ===== Node accessors (see compiler.aipl for the tree layout) =====
   (fn node_kind [node:(ptr compiler.Node)] -> compiler.Kind
@@ -168,9 +168,9 @@
   ;; Builds the keyword map once (cell 16) and clears the error flag (cell 4);
   ;; everything else a compile needs is in its Cg.
   (fn codegen_init [] -> i32
-    (if (eq (mem.load32 16) 0) (mem.store32 16 (ptr.addr (call new_keywords))) (block))
+    (unsafe (if (eq (mem.load32 16) 0) (mem.store32 16 (ptr.addr (call new_keywords))) (block))
     (mem.store32 4 0)
-    0)
+    0))
 
   ;; ===== Keywords =====
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
@@ -182,13 +182,13 @@
   ;; so that a lookup allocates nothing.
   (struct Keywords [map:(ptr (strmap.StrMap Kw)) key:(ptr str.Bytes)])
 
-  (fn keywords [] -> (ptr Keywords) (ptr.cast Keywords (mem.load32 16)))
+  (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
-    (let ks:(ptr Keywords) (new Keywords))
+    (unsafe (let ks:(ptr Keywords) (new Keywords))
     (put ks Keywords.map (call (strmap.make Kw) (call alloc.default) 256))
     (put ks Keywords.key (call str.bytes 0 0))
-    ks)
+    ks))
 
   (fn reg [m:(ptr (strmap.StrMap Kw)) word:str k:Kw] -> void
     (call (strmap.set Kw) m (call str.from_str word) k))
@@ -293,6 +293,8 @@
     (call reg m "while" Kw.while)
     (call reg m "call" Kw.call)
     (call reg m "block" Kw.block)
+    ;; (unsafe e...) compiles as a block; the (unsafe) clause, as an empty one
+    (call reg m "unsafe" Kw.block)
     (call reg m "req" Kw.req)
     (call reg m "ens" Kw.ens)
     (call reg m "inv" Kw.inv)
@@ -834,8 +836,8 @@
   (fn advance [o:(ptr Out) n:i32] -> void (put o Out.pos (+ (get o Out.pos) n)))
 
   (fn put_byte [o:(ptr Out) b:i32] -> void
-    (mem.store8 (call cursor o) b)
-    (put o Out.pos (+ (get o Out.pos) 1)))
+    (unsafe (mem.store8 (call cursor o) b)
+    (put o Out.pos (+ (get o Out.pos) 1))))
 
   ;; LEB128 immediates.
   (fn put_u32 [o:(ptr Out) v:i32] -> void (call advance o (call compiler.encode_u32 (call cursor o) v)))
@@ -844,7 +846,7 @@
 
   ;; ===== Low-level WASM instruction emitters =====
   (fn encode_s32 [ptr:i32 val:i32] -> i32
-    (let bytes_written:i32 0)
+    (unsafe (let bytes_written:i32 0)
     (let value:i32 val)
     (let more:bool true)
     (while more
@@ -862,23 +864,23 @@
       (mem.store8 (+ ptr bytes_written) byte_out)
       (set! bytes_written (+ bytes_written 1))
       (if done_now (set! more false) (set! more true)))
-    bytes_written)
+    bytes_written))
 
 ;; Value of an `i64` literal token such as `-7i64`. Digits accumulate
   ;; negatively so that -9223372036854775808i64 does not overflow.
   (fn parse_i64_literal [cg:(ptr Cg) pos:i32 len:i32] -> i64
-    (let c0:i32 (mem.load8 (+ (get cg Cg.src) pos)))
+    (unsafe (let c0:i32 (mem.load8 (+ (get cg Cg.src) pos)))
     (let neg:bool (eq c0 45))
     (let i:i32 (if (or neg (eq c0 43)) 1 0))
     (let v:i64 0i64)
     (while (lt i (- len 3))
       (set! v (- (* v 10i64) (i64.extend_s (- (mem.load8 (+ (get cg Cg.src) (+ pos i))) 48))))
       (set! i (+ i 1)))
-    (if neg v (- 0i64 v)))
+    (if neg v (- 0i64 v))))
 
   ;; Signed LEB128 of a 64-bit value (the i64.const immediate).
   (fn encode_s64 [ptr:i32 val:i64] -> i32
-    (let v:i64 val)
+    (unsafe (let v:i64 val)
     (let n:i32 0)
     (let more:bool true)
     (while more
@@ -889,16 +891,16 @@
           (set! b (bitor b 128)))
       (mem.store8 (+ ptr n) b)
       (set! n (+ n 1)))
-    n)
+    n))
 
   ;; f64.const for a decimal literal such as -2.5 or 1.5e3: the nearest
   ;; double, as Rust's parse::<f64> gives it (std/float).
   (fn emit_f64_literal [o:(ptr Out) cg:(ptr Cg) pos:i32 len:i32] -> void
-    (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) len))
+    (unsafe (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) len))
     (let bits:i64 (i64.reinterpret_f64 v))
     (call put_op o OP_F64_CONST)
     (loop b 0 7 1
-      (call put_byte o (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64)))))
+      (call put_byte o (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64))))))
 
 
 
@@ -1273,10 +1275,10 @@
   ;; ===== Struct table & resolution =====
   ;; Index of the last `target` byte in the span, or -1.
   (fn find_last_char [cg:(ptr Cg) pos:i32 len:i32 target:i32] -> i32
-    (let found:i32 -1)
+    (unsafe (let found:i32 -1)
     (loop i 0 (- len 1) 1
       (if (eq (mem.load8 (+ (get cg Cg.src) (+ pos i))) target) (set! found i) (block)))
-    found)
+    found))
 
   ;; Records every (struct ...) of the module with its layout; returns the
   ;; count. Past 255 structs or 64 fields: compile error 94.
@@ -1521,18 +1523,18 @@
 
   ;; Records the first error only: later errors are usually consequences of it.
   (fn set_compile_error [e:CgErr] -> i32
-    (if (eq (mem.load32 4) 0) (mem.store32 4 (enum.ord e)) (block))
-    0)
+    (unsafe (if (eq (mem.load32 4) 0) (mem.store32 4 (enum.ord e)) (block))
+    0))
 
   (fn has_compile_error [] -> bool
-    (neq (mem.load32 4) 0))
+    (unsafe (neq (mem.load32 4) 0)))
 
   ;; mem.alloc that grows linear memory to cover the new block. mem.alloc only
   ;; moves the cursor; without this a large compile walks off the end of
   ;; memory. Sets compile error 90 if the 32768-page cap would be exceeded.
   ;; Sizes compare unsigned: 32768 pages is 2^31 bytes.
   (fn cg_alloc [n:i32] -> i32
-    (let p:i32 (mem.alloc n))
+    (unsafe (let p:i32 (mem.alloc n))
     (let end:i32 (mem.load32 0))
     (let have:i32 (* (mem.grow 0) 65536))
     (if (gtu end have)
@@ -1540,7 +1542,7 @@
             (call set_compile_error CgErr.memory_cap)
             0)
         0)
-    p)
+    p))
 
   (fn alloc_src [len:i32] -> i32
     (mem.alloc len))
@@ -1557,7 +1559,7 @@
 
   ;; The address of interned bytes equal to the n bytes at `bytes`, or -1.
   (fn find_interned_content [cg:(ptr Cg) bytes:i32 n:i32] -> i32
-    (let blob:i32 (get (get cg Cg.blob) buf.Buf.data))
+    (unsafe (let blob:i32 (get (get cg Cg.blob) buf.Buf.data))
     (let off:i32 0)
     (let end:i32 (call buf.len (get cg Cg.blob)))
     (while (lt off end)
@@ -1566,12 +1568,12 @@
           (return (+ 1028 off))
           (block))
       (set! off (+ off (+ 4 k))))
-    -1)
+    -1))
 
   (fn bytes_equal [a:i32 b:i32 n:i32] -> bool
-    (loop i 0 (- n 1) 1
+    (unsafe (loop i 0 (- n 1) 1
       (if (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false) (block)))
-    true)
+    true))
 
   (fn add_str_entry [cg:(ptr Cg) pos:i32 len:i32 addr:i32] -> void
     (let e:(ptr StrLit) (new StrLit))
@@ -1583,20 +1585,20 @@
 
   ;; Appends [len u32 LE][bytes] to the blob; returns the bytes' address.
   (fn append_to_blob [cg:(ptr Cg) bytes:i32 n:i32] -> i32
-    (let blob:(ptr buf.Buf) (get cg Cg.blob))
+    (unsafe (let blob:(ptr buf.Buf) (get cg Cg.blob))
     (let addr:i32 (+ 1028 (call buf.len blob)))
     (call buf.push_byte blob (bitand n 255))
     (call buf.push_byte blob (bitand (shr n 8) 255))
     (call buf.push_byte blob (bitand (shr n 16) 255))
     (call buf.push_byte blob (bitand (shr n 24) 255))
     (loop i 0 (- n 1) 1 (call buf.push_byte blob (mem.load8 (+ bytes i))))
-    addr)
+    addr))
 
   ;; Interns the literal spelled by this span (escapes decoded) by content,
   ;; as wasm.rs string_layout does; returns its address. Past 64 KiB of
   ;; literals or 1364 spellings: compile error 768.
   (fn intern_string [cg:(ptr Cg) pos:i32 len:i32] -> i32
-    (let existing:i32 (call find_interned_string cg pos len))
+    (unsafe (let existing:i32 (call find_interned_string cg pos len))
     (if (neq existing -1) (return existing) (block))
     (if (or (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536) (gte (get cg Cg.nstrs) 1364))
         (block (call set_compile_error CgErr.too_many_literals) (return 1028))
@@ -1624,11 +1626,11 @@
     (let addr:i32 (call find_interned_content cg data (call buf.len text)))
     (if (eq addr -1) (set! addr (call append_to_blob cg data (call buf.len text))) (block))
     (call add_str_entry cg pos len addr)
-    addr)
+    addr))
 
   ;; The newline sys.print writes after each argument, interned once.
   (fn intern_newline [cg:(ptr Cg)] -> i32
-    (if (eq (get cg Cg.newline) 0)
+    (unsafe (if (eq (get cg Cg.newline) 0)
         (block
           (let nl:i32 (mem.alloc 8))
           (mem.store8 nl 10)
@@ -1636,13 +1638,13 @@
           (call add_str_entry cg -1 1 addr)
           (put cg Cg.newline addr))
         (block))
-    (get cg Cg.newline))
+    (get cg Cg.newline)))
 
   ;; A wasm name: its length (LEB128), then its bytes. Returns the byte count.
   (fn emit_name [o:(ptr Out) s:str] -> void
-    (call put_u32 o (str.len s))
+    (unsafe (call put_u32 o (str.len s))
     (loop i 0 (- (str.len s) 1) 1
-      (call put_byte o (mem.load8 (+ (str.ptr s) i)))))
+      (call put_byte o (mem.load8 (+ (str.ptr s) i))))))
 
 
 
@@ -2935,7 +2937,7 @@
 
 
   (fn compile_call [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
-    (let fname_node:(ptr compiler.Node) (call nth_child node 1))
+    (unsafe (let fname_node:(ptr compiler.Node) (call nth_child node 1))
     (let arg:(ptr compiler.Node) (call node_next (call node_next (call first_child node))))
     (while (neq arg (ptr.null compiler.Node))
       (call compile_expr cg arg o)
@@ -2947,7 +2949,7 @@
           (mem.store32 48 (call node_b fname_node))
           (call set_compile_error CgErr.undefined_function)
           (block))
-        (call emit_call o (+ (get cg Cg.nimports) fidx))))
+        (call emit_call o (+ (get cg Cg.nimports) fidx)))))
 
 
 
@@ -3170,10 +3172,10 @@
 
   ;; " with " before the first value shown, ", " before the others.
   (fn item_head [m:(ptr Msg) name_ptr:i32 name_len:i32] -> (ptr buf.Buf)
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ name_len 12)))
+    (unsafe (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ name_len 12)))
     (call buf.push_str b (if (eq (get m Msg.n) 0) " with " ", "))
     (call buf.push_bytes b (call str.bytes name_ptr name_len))
-    b)
+    b))
 
   (fn add_value [cg:(ptr Cg) m:(ptr Msg) name_ptr:i32 name_len:i32 kind:ItemKind local:i32] -> void
     (let b:(ptr buf.Buf) (call item_head m name_ptr name_len))
@@ -3187,7 +3189,7 @@
   ;; The bytes of the expression starting at offset at of the source: up to
   ;; its closing bracket, or for an atom the next space or bracket.
   (fn expr_text_len [cg:(ptr Cg) at:i32] -> i32
-    (let src:i32 (get cg Cg.src))
+    (unsafe (let src:i32 (get cg Cg.src))
     (let lim:i32 (get cg Cg.src_len))
     (let i:i32 at)
     (let depth:i32 0)
@@ -3209,12 +3211,12 @@
              (block (set! depth (- depth 1)) (set! i (+ i 1)) (set! fin (eq depth 0)))))
         ((and (eq depth 0) (or (eq c 32) (or (eq c 9) (or (eq c 10) (eq c 13))))) (set! fin true))
         (else (set! i (+ i 1)))))
-    (- i at))
+    (- i at)))
 
   ;; The failure message of contract `c` (a req or ens) of function `entry`,
   ;; its texts interned in the order wasm.rs string_layout interns them.
   (fn contract_msg [cg:(ptr Cg) entry:(ptr FnInfo) c:(ptr compiler.Node)] -> (ptr Msg)
-    (let src:i32 (get cg Cg.src))
+    (unsafe (let src:i32 (get cg Cg.src))
     (let is_ens:bool (eq (call contract_kind cg c) Kw.ens))
     (let t:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
     (call buf.push_str t (if is_ens "Post-condition failed in '" "Pre-condition failed in '"))
@@ -3252,7 +3254,7 @@
              (call add_value cg m (str.ptr "res") 3 rkind (call find_local cg (- (str.ptr "res") src) 3)))
             (else (block))))
         (block))
-    m)
+    m))
 
   ;; Interns every contract message's texts, function by function (wasm.rs
   ;; string_layout, after the literals).
@@ -3333,8 +3335,8 @@
 
   ;; Appends the bytes src has written.
   (fn copy_out [dst:(ptr Out) src:(ptr Out)] -> void
-    (loop i 0 (- (get src Out.pos) 1) 1
-      (call put_byte dst (mem.load8 (+ (get src Out.base) i)))))
+    (unsafe (loop i 0 (- (get src Out.pos) 1) 1
+      (call put_byte dst (mem.load8 (+ (get src Out.base) i))))))
 
   ;; A size-prefixed copy of what sub has written (a function body).
   (fn emit_sized [o:(ptr Out) sub:(ptr Out)] -> void
@@ -3362,7 +3364,7 @@
   ;; A signature from a pattern of parameter types, i for i32 and l for i64,
   ;; and a result value type (0 for none).
   (fn sig_from [params:str result:i32] -> (ptr Sig)
-    (let s:(ptr Sig) (new Sig))
+    (unsafe (let s:(ptr Sig) (new Sig))
     (let n:i32 (str.len params))
     (put s Sig.params (arr.new i32 (if (eq n 0) 1 n)))
     (loop i 0 (- n 1) 1
@@ -3370,7 +3372,7 @@
     (put s Sig.nparams n)
     (put s Sig.has_result (neq result 0))
     (put s Sig.result result)
-    s)
+    s))
 
   ;; The types of the WASI functions (wasm.rs Wasi::sig).
   (fn wasi_sig [w:Wasi] -> (ptr Sig)
@@ -3423,7 +3425,7 @@
 
   ;; One file's text, named (name_ptr, name_len) in the line table.
   (fn compile_named [src_ptr:i32 src_len:i32 name_ptr:i32 name_len:i32] -> i32
-    (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len))))
+    (unsafe (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len)))))
 
   ;; The flat program the resolver (orig) and the generics pass (gen)
   ;; printed: the line table names the files they read.
@@ -3431,7 +3433,7 @@
     (call compile_at src_ptr src_len (call places.mapped gen orig)))
 
   (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
-    (let _init:i32 (call init_keywords))
+    (unsafe (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
     (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
     (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make (call alloc.default) 64) (get where places.Places.consts)))
@@ -3752,7 +3754,7 @@
 
     (if (gt (get o Out.pos) cap) (call set_compile_error CgErr.output_full) 0)
     (mem.store32 60 out)
-    (if (call has_compile_error) -1 (get o Out.pos)))
+    (if (call has_compile_error) -1 (get o Out.pos))))
 
 ;; ===== Threaded modules: generated functions (wasm.rs threaded_init_function, thread_start_function) =====
 
@@ -3851,10 +3853,10 @@
   ;; starts with the wasm magic and version, else -1. Byte-for-byte
   ;; agreement with the Rust backend is checked by tests/test_selfhost.rs.
   (fn compiles [text:str] -> i32
-    (let len:i32 (call compile_module (str.ptr text) (str.len text)))
+    (unsafe (let len:i32 (call compile_module (str.ptr text) (str.len text)))
     (if (or (lte len 0) (call has_compile_error)) (return -1) (block))
     (let out:i32 (mem.load32 60))
-    (if (and (eq (mem.load32 out) 1836278016) (eq (mem.load32 (+ out 4)) 1)) len -1))
+    (if (and (eq (mem.load32 out) 1836278016) (eq (mem.load32 (+ out 4)) 1)) len -1)))
 
   (fn test_compile_add [] -> i32
     (call compiles "(module add (fn add [a:i32 b:i32] -> i32 (+ a b)))"))
@@ -3884,7 +3886,7 @@
   ;; at `at`), eight bytes per i64.store, the last chunk zero-padded
   ;; (wasm.rs emit_text_store).
   (fn emit_text_store [o:(ptr Out) at_local:i32 at:i32 t:str] -> void
-    (let n:i32 (str.len t))
+    (unsafe (let n:i32 (str.len t))
     (let p:i32 (str.ptr t))
     (let k:i32 0)
     (while (lt k n)
@@ -3899,7 +3901,7 @@
       (call put_op o OP_I64_STORE)
       (call put_byte o 0)
       (call put_u32 o k)
-      (set! k (+ k 8))))
+      (set! k (+ k 8)))))
 
   ;; Check helper k of the six (wasm.rs check_functions); base is $aipl_dec's index.
   (fn check_body [o:(ptr Out) k:i32 base:i32] -> void

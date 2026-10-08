@@ -624,7 +624,7 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 res
             }
-            Expr::Block(exprs, _) => {
+            Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 let last = self.eval_seq(exprs, scope);
                 scope.retain(|k, _| keys_before.contains(k));

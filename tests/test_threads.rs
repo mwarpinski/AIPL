@@ -88,12 +88,12 @@ const THREADS: &str = r#"
   (struct Job [counter:i32 lock:i32 plain:i32])
 
   ;; 1000 atomic increments of the shared counter
-  (fn add_worker [counter:i32] -> i32
+  (fn add_worker [counter:i32] -> i32 (unsafe)
     (loop i 1 1000 1
       (let _old:i32 (atomic.add counter 1)))
     0)
 
-  (fn atomic_counter [] -> i32
+  (fn atomic_counter [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
     (let hs:(arr i32) (arr.new i32 4))
     (loop t 0 3 1
@@ -103,14 +103,14 @@ const THREADS: &str = r#"
     (mem.load32 c))
 
   ;; join returns each worker's result
-  (fn square [x:i32] -> i32 (* x x))
-  (fn join_results [] -> i32
+  (fn square [x:i32] -> i32 (unsafe) (* x x))
+  (fn join_results [] -> i32 (unsafe)
     (let a:i32 (thread.spawn (ref square) 3))
     (let b:i32 (thread.spawn (ref square) 4))
     (+ (thread.join a) (thread.join b)))
 
   ;; a lock protects a non-atomic read-modify-write
-  (fn locked_worker [job_addr:i32] -> i32
+  (fn locked_worker [job_addr:i32] -> i32 (unsafe)
     (let job:(ptr Job) (ptr.cast Job job_addr))
     (let lock:i32 (+ job_addr 4))
     (loop i 1 1000 1
@@ -118,7 +118,7 @@ const THREADS: &str = r#"
       (put job Job.plain (+ (get job Job.plain) 1))
       (atomic.unlock lock))
     0)
-  (fn mutex_counter [] -> i32
+  (fn mutex_counter [] -> i32 (unsafe)
     (let job:(ptr Job) (new Job))
     (let hs:(arr i32) (arr.new i32 4))
     (loop t 0 3 1
@@ -128,7 +128,7 @@ const THREADS: &str = r#"
     (get job Job.plain))
 
   ;; concurrent allocation: every block keeps the value its thread wrote
-  (fn alloc_worker [tag:i32] -> i32
+  (fn alloc_worker [tag:i32] -> i32 (unsafe)
     (let blocks:(arr i32) (arr.new i32 500))
     (loop i 0 499 1
       (let p:i32 (mem.alloc 8))
@@ -140,7 +140,7 @@ const THREADS: &str = r#"
       (let p:i32 (arr.get i32 blocks i))
       (if (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i)) (block) (set! ok 0)))
     ok)
-  (fn concurrent_alloc [] -> i32
+  (fn concurrent_alloc [] -> i32 (unsafe)
     (let hs:(arr i32) (arr.new i32 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref alloc_worker) (+ t 100))))
@@ -150,11 +150,11 @@ const THREADS: &str = r#"
     good)
 
   ;; printing from several threads: each thread's text arrives intact
-  (fn print_worker [n:i32] -> i32
+  (fn print_worker [n:i32] -> i32 (unsafe)
     (loop i 1 50 1
       (if (eq n 1) (sys.print "one one one one one one") (sys.print "two two two two two two")))
     0)
-  (fn concurrent_print [] -> i32
+  (fn concurrent_print [] -> i32 (unsafe)
     ;; leave the heap cursor unaligned: each thread's scratch block must still
     ;; be aligned for WASI's out-parameters
     (let _odd:i32 (mem.alloc 5))
@@ -209,29 +209,29 @@ fn concurrent_printing_keeps_text_intact() {
 /// Atomics work in any module, threaded or not.
 const ATOMICS: &str = r#"
 (module atomics
-  (fn add_returns_previous [] -> i32
+  (fn add_returns_previous [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (mem.store32 p 40)
     (let old:i32 (atomic.add p 2))
     (+ (* 100 old) (mem.load32 p)))
-  (fn cas [] -> i32
+  (fn cas [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (mem.store32 p 5)
     (let a:bool (atomic.cas p 5 9))
     (let b:bool (atomic.cas p 5 7))
     (+ (if a 10 0) (+ (if b 1 0) (* 100 (mem.load32 p)))))
-  (fn lock_unlock [] -> i32
+  (fn lock_unlock [] -> i32 (unsafe)
     (let l:i32 (mem.alloc 4))
     (atomic.lock l)
     (let held:i32 (mem.load32 l))
     (atomic.unlock l)
     (+ (* 10 held) (mem.load32 l)))
   ;; an unaligned atomic address fails in both backends
-  (fn unaligned_add [] -> i32
+  (fn unaligned_add [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 8))
     (atomic.add (+ p 2) 1))
   ;; unlocking a word that is not a held lock fails in both backends
-  (fn bad_unlock [] -> i32
+  (fn bad_unlock [] -> i32 (unsafe)
     (let l:i32 (mem.alloc 4))
     (atomic.unlock l)
     1))

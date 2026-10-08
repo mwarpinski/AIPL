@@ -86,6 +86,12 @@ pub struct TypeChecker {
     return_type: std::cell::RefCell<Option<Type>>,
     /// The `Module::sources` key of the item being checked, so an error can name its file.
     item: std::cell::RefCell<String>,
+    /// Functions with the `(unsafe)` clause.
+    unsafe_fns: std::collections::HashSet<String>,
+    /// Whether the code being checked may use unchecked operations: inside an
+    /// `(unsafe ...)` block (depth > 0) or an `(unsafe)` function.
+    unsafe_depth: std::cell::Cell<u32>,
+    in_unsafe_fn: std::cell::Cell<bool>,
 }
 
 impl Default for TypeChecker {
@@ -105,6 +111,9 @@ impl TypeChecker {
             loop_depth: std::cell::Cell::new(0),
             return_type: std::cell::RefCell::new(None),
             item: std::cell::RefCell::new(String::new()),
+            unsafe_fns: std::collections::HashSet::new(),
+            unsafe_depth: std::cell::Cell::new(0),
+            in_unsafe_fn: std::cell::Cell::new(false),
         }
     }
 
@@ -242,6 +251,9 @@ impl TypeChecker {
             if self.fn_signatures.contains_key(&f.name) {
                 return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
             }
+            if f.is_unsafe {
+                self.unsafe_fns.insert(f.name.clone());
+            }
             let param_types: Vec<Type> = f.params.iter().map(|(_, t)| t.clone()).collect();
             self.fn_signatures
                 .insert(f.name.clone(), (param_types, f.return_type.clone()));
@@ -347,6 +359,8 @@ impl TypeChecker {
     }
 
     fn check_fn_def(&self, f: &FnDef) -> Result<(), String> {
+        self.in_unsafe_fn.set(f.is_unsafe);
+        self.unsafe_depth.set(0);
         let mut env = HashMap::new();
         self.declared.borrow_mut().clear();
         for (param_name, param_ty) in &f.params {
@@ -413,6 +427,26 @@ impl TypeChecker {
         }
 
         Ok(())
+    }
+
+    /// Unchecked operations need an unsafe context: an `(unsafe ...)` block,
+    /// or a function with the `(unsafe)` clause.
+    fn is_unsafe_context(&self) -> bool {
+        self.unsafe_depth.get() > 0 || self.in_unsafe_fn.get()
+    }
+
+    fn require_unsafe(&self, what: &str, l: u32, c: u32) -> Result<(), String> {
+        if self.is_unsafe_context() {
+            return Ok(());
+        }
+        Err(format!("{}:{}: {} is unchecked: write it inside (unsafe ...), or mark the function (unsafe)", l, c, what))
+    }
+
+    fn require_unsafe_fn(&self, name: &str, l: u32, c: u32) -> Result<(), String> {
+        if !self.unsafe_fns.contains(name) || self.is_unsafe_context() {
+            return Ok(());
+        }
+        Err(format!("{}:{}: '{}' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)", l, c, name))
     }
 
     fn infer_expr_type(&self, expr: &Expr, env: &mut HashMap<String, Type>) -> Result<Type, String> {
@@ -533,6 +567,7 @@ impl TypeChecker {
                     .fn_signatures
                     .get(func)
                     .ok_or_else(|| format!("{}:{}: Call to unknown function '{}'", l, c, func))?;
+                self.require_unsafe_fn(func, l, c)?;
                 if args.len() != param_types.len() {
                     return Err(format!(
                         "{}:{}: Function '{}' expects {} arguments, got {}",
@@ -551,6 +586,9 @@ impl TypeChecker {
                 Ok(ret_type.clone())
             }
             Expr::Op { op, args, .. } => {
+                if is_unchecked_op(op) {
+                    self.require_unsafe(crate::printer::op_name(op), l, c)?;
+                }
                 check_literal_address(op, args, l, c)?;
                 match op {
                 OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
@@ -967,6 +1005,18 @@ impl TypeChecker {
                 }
                 Ok(last_ty)
             }
+            // a block in which unchecked operations are allowed
+            Expr::Unsafe(exprs, _) => {
+                let mut local_env = env.clone();
+                let mut last_ty = Type::Void;
+                self.unsafe_depth.set(self.unsafe_depth.get() + 1);
+                let r = exprs.iter().try_for_each(|e| {
+                    last_ty = self.infer_expr_type(e, &mut local_env)?;
+                    Ok::<(), String>(())
+                });
+                self.unsafe_depth.set(self.unsafe_depth.get() - 1);
+                r.map(|_| last_ty)
+            }
             Expr::NewStruct { struct_name, span } => {
                 if !self.struct_defs.contains_key(struct_name) {
                     return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
@@ -1118,6 +1168,11 @@ impl TypeChecker {
                 Ok(ty.clone())
             }
             Expr::Cast { ty, addr, span } => {
+                match ty {
+                    Type::Ptr(_) => self.require_unsafe("ptr.cast", span.0, span.1)?,
+                    Type::Array(_) => self.require_unsafe("arr.cast", span.0, span.1)?,
+                    _ => {}
+                }
                 self.validate_type(ty, *span)?;
 
                 let t = self.infer_expr_type(addr, env)?;
@@ -1130,7 +1185,10 @@ impl TypeChecker {
                 Ok(ty.clone())
             }
             Expr::Ref { name, span } => match self.fn_signatures.get(name) {
-                Some((params, ret)) => Ok(Type::Fn(params.clone(), Box::new(ret.clone()))),
+                Some((params, ret)) => {
+                    self.require_unsafe_fn(name, span.0, span.1)?;
+                    Ok(Type::Fn(params.clone(), Box::new(ret.clone())))
+                }
                 None => Err(format!("{}:{}: Undefined function '{}' in ref", span.0, span.1, name)),
             },
             Expr::CallRef { sig, func, args, span } => {
@@ -1344,4 +1402,20 @@ fn check_literal_address(op: &OpCode, args: &[Expr], l: u32, c: u32) -> Result<(
         ));
     }
     Ok(())
+}
+
+/// The operations a program can use to touch memory it does not own or to
+/// race with itself: raw loads and stores, atomics, threads, and the I/O and
+/// system calls that take raw addresses. They need an unsafe context.
+pub fn is_unchecked_op(op: &OpCode) -> bool {
+    use OpCode::*;
+    matches!(
+        op,
+        MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64
+            | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
+            | ThreadSpawn | ThreadJoin
+            | FsOpen | FsRead | FsWrite | FsDelete
+            | ArgsSizes | ArgsGet | EnvSizes | EnvGet
+            | SysRandom
+    )
 }

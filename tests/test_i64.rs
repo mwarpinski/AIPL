@@ -126,7 +126,7 @@ fn i64_conversions() {
 fn i64_memory_round_trip() {
     let src = r#"
     (module m
-      (fn f [] -> i64
+      (fn f [] -> i64 (unsafe)
         (let p:i32 (mem.alloc 8))
         (mem.store64 p 1311768467294899696i64)   ;; 0x1234567890ABCDF0
         (mem.load64 p)))
@@ -136,7 +136,7 @@ fn i64_memory_round_trip() {
     // Low 32 bits of a little-endian i64 store are readable with load32.
     let src = r#"
     (module m
-      (fn f [] -> i32
+      (fn f [] -> i32 (unsafe)
         (let p:i32 (mem.alloc 8))
         (mem.store64 p 4294967301i64)
         (mem.load32 p)))

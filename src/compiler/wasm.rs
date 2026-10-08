@@ -668,7 +668,7 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Let { .. } | Expr::Set { .. } => Type::Void,
         Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
-        Expr::Block(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Loop { .. } | Expr::While { .. } => Type::Void,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
         Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
@@ -1002,7 +1002,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
                 collect_lets(std::slice::from_ref(cond.as_ref()), lets, unions);
                 collect_lets(body, lets, unions);
             }
-            Expr::Block(body, _) => collect_lets(body, lets, unions),
+            Expr::Block(body, _) | Expr::Unsafe(body, _) => collect_lets(body, lets, unions),
             // Every arm's binders first (a union arm binds its variant's
             // fields, typed as declared), then the value, the arm bodies, and
             // the else body.
@@ -1600,7 +1600,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
             }
         },
-        Expr::Block(exprs, _) => {
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
             let len = exprs.len();
             for (i, e) in exprs.iter().enumerate() {
                 if i + 1 == len {
@@ -2235,7 +2235,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
 fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
     match expr {
         Expr::Set { .. } | Expr::Let { .. } | Expr::PutField { .. } | Expr::ArrSet { .. } => true,
-        Expr::Block(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().is_none_or(|e| is_void_expr(e, ctx)),
         // An if/else is void only if BOTH branches are void - if they disagreed,
         // whichever branch actually produced a value would leave the wasm value
         // stack unbalanced relative to this if's declared block type.
@@ -3100,7 +3100,7 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(a, visit);
             }
         }
-        Expr::Block(exprs, _) => {
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => {
             for e in exprs {
                 walk_expr(e, visit);
             }

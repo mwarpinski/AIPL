@@ -94,9 +94,9 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_min_div_minus_one", "(module m (fn main [] -> i32 (let z:i32 -1) (sys.exit (/ -2147483648 z)) 0))"),
     // NE8: linear memory without allocation (allocation is atomic: NE9)
     ("string_length_from_data", "(module m (fn main [] -> i32 (sys.exit (str.len \"hello\")) 0))"),
-    ("string_bytes_from_data", "(module m (fn main [] -> i32 (sys.exit (mem.load8 (+ (str.ptr \"AIPL\") 1))) 0))"),
-    ("heap_cursor_from_data", "(module m (fn main [] -> i32 (let a:i32 0) (sys.exit (- (mem.load32 a) 1000)) 0))"),
-    ("store_then_load", "(module m (fn main [] -> i32 (mem.store32 8192 77) (mem.store8 8193 1) (sys.exit (- (mem.load32 8192) 256)) 0))"),
+    ("string_bytes_from_data", "(module m (fn main [] -> i32 (unsafe) (sys.exit (mem.load8 (+ (str.ptr \"AIPL\") 1))) 0))"),
+    ("heap_cursor_from_data", "(module m (fn main [] -> i32 (unsafe) (let a:i32 0) (sys.exit (- (mem.load32 a) 1000)) 0))"),
+    ("store_then_load", "(module m (fn main [] -> i32 (unsafe) (mem.store32 8192 77) (mem.store8 8193 1) (sys.exit (- (mem.load32 8192) 256)) 0))"),
     (
         "grow_to_the_cap",
         "(module m (fn main [] -> i32
@@ -105,27 +105,27 @@ const PROGRAMS: &[(&str, &str)] = &[
     ),
     (
         "top_of_grown_memory",
-        "(module m (fn main [] -> i32 (let _g:i32 (mem.grow 1008)) (let top:i32 (- (* 1024 65536) 4))
+        "(module m (fn main [] -> i32 (unsafe) (let _g:i32 (mem.grow 1008)) (let top:i32 (- (* 1024 65536) 4))
            (mem.store32 top 9) (sys.exit (mem.load32 top)) 0))",
     ),
-    ("last_word_of_initial_memory", "(module m (fn main [] -> i32 (let a:i32 (- (* 16 65536) 4)) (sys.exit (+ 3 (mem.load32 a))) 0))"),
-    ("trap_load_past_memory", "(module m (fn main [] -> i32 (let a:i32 (* 16 65536)) (sys.exit (mem.load32 a)) 0))"),
-    ("trap_store_past_memory", "(module m (fn main [] -> i32 (let a:i32 (- (* 16 65536) 2)) (mem.store32 a 1) 0))"),
-    ("trap_negative_address", "(module m (fn main [] -> i32 (let a:i32 -8) (sys.exit (mem.load8 a)) 0))"),
+    ("last_word_of_initial_memory", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (- (* 16 65536) 4)) (sys.exit (+ 3 (mem.load32 a))) 0))"),
+    ("trap_load_past_memory", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (* 16 65536)) (sys.exit (mem.load32 a)) 0))"),
+    ("trap_store_past_memory", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (- (* 16 65536) 2)) (mem.store32 a 1) 0))"),
+    ("trap_negative_address", "(module m (fn main [] -> i32 (unsafe) (let a:i32 -8) (sys.exit (mem.load8 a)) 0))"),
     // NE9: allocation and atomics
-    ("heap_cursor_advances", "(module m (fn main [] -> i32 (let a:i32 (mem.alloc 16)) (let b:i32 (mem.alloc 4)) (sys.exit (- (mem.load32 0) a)) 0))"),
+    ("heap_cursor_advances", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (mem.alloc 16)) (let b:i32 (mem.alloc 4)) (sys.exit (- (mem.load32 0) a)) 0))"),
     (
         "lock_round_trip",
-        "(module m (fn main [] -> i32 (let m:i32 (mem.alloc 4)) (let d:i32 (mem.alloc 4)) (atomic.lock m) (mem.store32 d 41)
+        "(module m (fn main [] -> i32 (unsafe) (let m:i32 (mem.alloc 4)) (let d:i32 (mem.alloc 4)) (atomic.lock m) (mem.store32 d 41)
            (let _o:i32 (atomic.add d 1)) (atomic.unlock m) (atomic.lock m) (atomic.unlock m) (sys.exit (mem.load32 d)) 0))",
     ),
-    ("trap_unaligned_atomic", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 2) 1)) 0))"),
-    ("trap_unaligned_before_bounds", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000002) 1)) 0))"),
-    ("trap_atomic_past_memory", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000000) 1)) 0))"),
-    ("trap_unlock_a_free_lock", "(module m (fn main [] -> i32 (let l:i32 (mem.alloc 4)) (atomic.unlock l) 0))"),
-    ("trap_lock_twice_waits", "(module m (fn main [] -> i32 (let l:i32 (mem.alloc 4)) (atomic.lock l) (atomic.lock l) 0))"),
-    ("trap_lock_a_non_lock_word", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p) 0))"),
-    ("trap_store_into_reserved_block", "(module m (fn main [] -> i32 (let a:i32 (* 8 64)) (mem.store32 a 7) 0))"),
+    ("trap_unaligned_atomic", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 2) 1)) 0))"),
+    ("trap_unaligned_before_bounds", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000002) 1)) 0))"),
+    ("trap_atomic_past_memory", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 8)) (sys.exit (atomic.add (+ p 1000000000) 1)) 0))"),
+    ("trap_unlock_a_free_lock", "(module m (fn main [] -> i32 (unsafe) (let l:i32 (mem.alloc 4)) (atomic.unlock l) 0))"),
+    ("trap_lock_twice_waits", "(module m (fn main [] -> i32 (unsafe) (let l:i32 (mem.alloc 4)) (atomic.lock l) (atomic.lock l) 0))"),
+    ("trap_lock_a_non_lock_word", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p) 0))"),
+    ("trap_store_into_reserved_block", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (* 8 64)) (mem.store32 a 7) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
     // compiled bounds checks fail with the VM's message (cells 92/96)
     ("trap_index_past_the_end", "(module m (fn main [] -> i32 (let a:(arr i32) (arr.new i32 5)) (arr.get i32 a 5)))"),
@@ -137,7 +137,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_null_array", "(module m (fn main [] -> i32 (arr.len (arr.null i32))))"),
     // the null check comes before the index is evaluated: nothing is printed
     ("trap_null_before_index", "(module m (import io) (fn main [] -> i32 (arr.get i32 (arr.null i32) (block (call io.println_int \"never \" 1) 0))))"),
-    ("trap_in_a_thread", "(module m (fn work [x:i32] -> i32 (/ 10 x)) (fn main [] -> i32 (thread.join (thread.spawn (ref work) 0))))"),
+    ("trap_in_a_thread", "(module m (fn work [x:i32] -> i32 (unsafe) (/ 10 x)) (fn main [] -> i32 (unsafe) (thread.join (thread.spawn (ref work) 0))))"),
     // and so do compiled contracts (without the position)
     ("trap_failed_req", "(module m (fn f [n:i32 ok:bool] -> i32 (req (gt n 0)) n) (fn main [] -> i32 (call f -3 true)))"),
     (
@@ -341,7 +341,8 @@ fn assert_functions_give(name: &str, src: &str, drop: &[&str], calls: &[(&str, &
     }
     let printed = aipl_core::printer::print_module(&module);
     let end = printed.rfind(')').unwrap();
-    let program = format!("{}\n(fn main [] -> i32 (let bad:i32 0)\n{checks}(sys.exit bad) 0))", &printed[..end]);
+    // unsafe: it calls whatever it is given, (unsafe) functions included
+    let program = format!("{}\n(fn main [] -> i32 (unsafe) (let bad:i32 0)\n{checks}(sys.exit bad) 0))", &printed[..end]);
     let dir = scratch(&format!("{name}_expected"));
     let status = run_wasm(&dir, &to_wasm(&program)).status.code();
     let _ = std::fs::remove_dir_all(&dir);
@@ -487,13 +488,13 @@ fn wasi_programs_match_natively() {
             "(module m (import io) (fn main [] -> i32 (call io.println_int \"n: \" -2147483648) (call io.println_int \"m: \" 42) (call io.print_int 7) (call io.println \"\") 0))".into(),
             Io::default(),
         ),
-        ("raw_write_to_fd_1", "(module m (fn main [] -> i32 (sys.exit (fs.write 1 (str.ptr \"raw\\n\") 4)) 0))".into(), Io::default()),
-        ("write_to_stderr", "(module m (fn main [] -> i32 (sys.exit (fs.write 2 (str.ptr \"err\\n\") 4)) 0))".into(), Io::default()),
-        ("write_to_a_bad_fd", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.write 9 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
-        ("write_to_a_huge_fd", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.write 70000 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
+        ("raw_write_to_fd_1", "(module m (fn main [] -> i32 (unsafe) (sys.exit (fs.write 1 (str.ptr \"raw\\n\") 4)) 0))".into(), Io::default()),
+        ("write_to_stderr", "(module m (fn main [] -> i32 (unsafe) (sys.exit (fs.write 2 (str.ptr \"err\\n\") 4)) 0))".into(), Io::default()),
+        ("write_to_a_bad_fd", "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (fs.write 9 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
+        ("write_to_a_huge_fd", "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (fs.write 70000 (str.ptr \"x\") 1))) 0))".into(), Io::default()),
         (
             "close_stderr_then_write",
-            "(module m (fn main [] -> i32 (let r:i32 (fs.close 2)) (sys.exit (+ (* 10 (+ r 1)) (+ 2 (fs.write 2 (str.ptr \"x\") 1)))) 0))".into(),
+            "(module m (fn main [] -> i32 (unsafe) (let r:i32 (fs.close 2)) (sys.exit (+ (* 10 (+ r 1)) (+ 2 (fs.write 2 (str.ptr \"x\") 1)))) 0))".into(),
             Io::default(),
         ),
         (
@@ -539,7 +540,7 @@ fn wasi_programs_match_natively() {
             "clocks",
             // compared through their 32-bit halves (i64 comparisons are NE12):
             // 2020-01-01 in nanoseconds has high word 367368757
-            "(module m (import io) (fn main [] -> i32
+            "(module m (import io) (fn main [] -> i32 (unsafe)
                (let p:i32 (mem.alloc 32))
                (mem.store64 p (sys.monotonic)) (mem.store64 (+ p 8) (sys.monotonic)) (mem.store64 (+ p 16) (sys.time))
                (let hi0:i32 (mem.load32 (+ p 4))) (let hi1:i32 (mem.load32 (+ p 12)))
@@ -550,7 +551,7 @@ fn wasi_programs_match_natively() {
         ),
         (
             "random",
-            "(module m (import io) (import os) (fn main [] -> i32
+            "(module m (import io) (import os) (fn main [] -> i32 (unsafe)
                (let p:i32 (mem.alloc 4096)) (let ok:i32 (sys.random p 4096))
                (let nonzero:i32 0)
                (loop i 0 4095 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1)) (block)))
@@ -563,33 +564,33 @@ fn wasi_programs_match_natively() {
         // the raw counts and sizes (each string counts its NUL)
         (
             "raw_argument_and_environment_sizes",
-            "(module m (import io) (fn main [] -> i32 (let p:i32 (mem.alloc 16))
+            "(module m (import io) (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 16))
                (let a:i32 (args.sizes p (+ p 4))) (call io.println_int \"argc: \" (mem.load32 p)) (call io.println_int \"argv bytes: \" (mem.load32 (+ p 4)))
                (let e:i32 (env.sizes (+ p 8) (+ p 12))) (call io.println_int \"envc: \" (mem.load32 (+ p 8))) (call io.println_int \"env bytes: \" (mem.load32 (+ p 12)))
                0))".into(),
             Io { args: vec!["x".into(), "".into(), "yz".into()], env: env(&[("A", "1"), ("BB", "")]), ..Io::default() },
         ),
         // a buffer ending exactly at the end of memory is fine
-        ("random_up_to_the_end", "(module m (fn main [] -> i32 (sys.exit (+ 10 (sys.random (- (* 16 65536) 8) 8))) 0))".into(), Io::default()),
+        ("random_up_to_the_end", "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (sys.random (- (* 16 65536) 8) 8))) 0))".into(), Io::default()),
         // bad pointers trap with wasmtime's words, start and length included
-        ("trap_random_out_of_bounds", "(module m (fn main [] -> i32 (sys.exit (sys.random 2000000000 8)) 0))".into(), Io::default()),
-        ("trap_random_straddles_the_end", "(module m (fn main [] -> i32 (sys.exit (sys.random (- (* 16 65536) 4) 8)) 0))".into(), Io::default()),
-        ("trap_write_buffer_out_of_bounds", "(module m (fn main [] -> i32 (sys.exit (fs.write 1 2000000000 4)) 0))".into(), Io::default()),
+        ("trap_random_out_of_bounds", "(module m (fn main [] -> i32 (unsafe) (sys.exit (sys.random 2000000000 8)) 0))".into(), Io::default()),
+        ("trap_random_straddles_the_end", "(module m (fn main [] -> i32 (unsafe) (sys.exit (sys.random (- (* 16 65536) 4) 8)) 0))".into(), Io::default()),
+        ("trap_write_buffer_out_of_bounds", "(module m (fn main [] -> i32 (unsafe) (sys.exit (fs.write 1 2000000000 4)) 0))".into(), Io::default()),
         // wasmtime reads first: nothing read is no error; otherwise the region is what was read
-        ("read_outside_memory_with_no_input", "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 4294967295 4))) 0))".into(), Io::default()),
+        ("read_outside_memory_with_no_input", "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (fs.read 0 4294967295 4))) 0))".into(), Io::default()),
         (
             "trap_read_outside_memory",
-            "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 4294967290 100))) 0))".into(),
+            "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (fs.read 0 4294967290 100))) 0))".into(),
             Io { stdin: b"abcdefgh".to_vec(), ..Io::default() },
         ),
         (
             "trap_read_straddling_the_end",
-            "(module m (fn main [] -> i32 (sys.exit (+ 10 (fs.read 0 (- (* 16 65536) 2) 100))) 0))".into(),
+            "(module m (fn main [] -> i32 (unsafe) (sys.exit (+ 10 (fs.read 0 (- (* 16 65536) 2) 100))) 0))".into(),
             Io { stdin: b"abcdefgh".to_vec(), ..Io::default() },
         ),
-        ("trap_args_misaligned", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes (+ p 1) (+ p 8))) 0))".into(), Io::default()),
-        ("trap_args_size_written_first", "(module m (fn main [] -> i32 (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes 2000000000 (+ p 2))) 0))".into(), Io::default()),
-        ("trap_env_bounds_before_alignment", "(module m (fn main [] -> i32 (sys.exit (env.sizes 8192 2000000001)) 0))".into(), Io::default()),
+        ("trap_args_misaligned", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes (+ p 1) (+ p 8))) 0))".into(), Io::default()),
+        ("trap_args_size_written_first", "(module m (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc 16)) (sys.exit (args.sizes 2000000000 (+ p 2))) 0))".into(), Io::default()),
+        ("trap_env_bounds_before_alignment", "(module m (fn main [] -> i32 (unsafe) (sys.exit (env.sizes 8192 2000000001)) 0))".into(), Io::default()),
     ];
     for (name, src, io) in cases {
         assert_wasm_native_matches_with(name, &to_wasm(&src), &io);
@@ -613,7 +614,7 @@ fn file_programs_match_natively() {
     // the run directory both builds use (see assert_wasm_native_matches_with)
     let run_dir = |name: &str| scratch_path(name).join("run").display().to_string();
     let word_count = include_str!("../examples/word_count.aipl");
-    let probe = |body: &str| format!("(module m (import io) (import str) (fn main [] -> i32 {body} 0))");
+    let probe = |body: &str| format!("(module m (import io) (import str) (fn main [] -> i32 (unsafe) {body} 0))");
     let open_report = |path: &str, write: bool| {
         format!(
             "(call io.println_int \"{path}: \" (fs.open (str.ptr \"{path}\") {} {}))",
@@ -754,11 +755,11 @@ fn thread_programs_match_natively() {
     // threads really run at once: each side waits for the other to start, so
     // this finishes only if both run concurrently (else the time limit fails it)
     let handshake = "(module m
-       (fn worker [flags:i32] -> i32
+       (fn worker [flags:i32] -> i32 (unsafe)
          (let _a:i32 (atomic.add flags 1))
          (while (eq (atomic.add (+ flags 4) 0) 0) (block))
          7)
-       (fn main [] -> i32
+       (fn main [] -> i32 (unsafe)
          (let f:i32 (mem.alloc 8))
          (let h:i32 (thread.spawn (ref worker) f))
          (while (eq (atomic.add f 0) 0) (block))
@@ -772,12 +773,12 @@ fn thread_programs_match_natively() {
     assert_eq!(out.status.code(), Some(7));
     // a trap in a spawned thread ends the whole program, with its message
     let thread_trap = "(module m
-       (fn worker [z:i32] -> i32 (/ 1 z))
-       (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 0)) (sys.exit (thread.join h)) 0))";
+       (fn worker [z:i32] -> i32 (unsafe) (/ 1 z))
+       (fn main [] -> i32 (unsafe) (let h:i32 (thread.spawn (ref worker) 0)) (sys.exit (thread.join h)) 0))";
     assert_native_matches("thread_trap_in_worker", thread_trap);
     let exit_in_thread = "(module m
-       (fn worker [n:i32] -> i32 (sys.exit n) 0)
-       (fn main [] -> i32 (let h:i32 (thread.spawn (ref worker) 9)) (let r:i32 (thread.join h)) (sys.exit 1) 0))";
+       (fn worker [n:i32] -> i32 (unsafe) (sys.exit n) 0)
+       (fn main [] -> i32 (unsafe) (let h:i32 (thread.spawn (ref worker) 9)) (let r:i32 (thread.join h)) (sys.exit 1) 0))";
     assert_native_matches("exit_in_a_thread", exit_in_thread);
     // waits and wakes on shared memory directly: a wait that times out (2),
     // one whose word differs (1), and a notify nobody waits for (0)
@@ -802,8 +803,8 @@ fn thread_programs_match_natively() {
     // the main thread of a threaded module uses its globals too (printing
     // goes through its runtime scratch block)
     let main_prints = "(module m (import io)
-       (fn sq [x:i32] -> i32 (* x x))
-       (fn main [] -> i32
+       (fn sq [x:i32] -> i32 (unsafe) (* x x))
+       (fn main [] -> i32 (unsafe)
          (call io.println \"before\")
          (let h:i32 (thread.spawn (ref sq) 6))
          (call io.println_int \"joined: \" (thread.join h))
@@ -812,10 +813,10 @@ fn thread_programs_match_natively() {
     // concurrent memory.grow: 8 threads x 50 one-page grows; every grow
     // returns a different old size, so they sum to 16 + 17 + ... + 415
     let growers = "(module m
-       (fn grower [total:i32] -> i32
+       (fn grower [total:i32] -> i32 (unsafe)
          (loop i 1 50 1 (let _a:i32 (atomic.add total (mem.grow 1))))
          0)
-       (fn main [] -> i32
+       (fn main [] -> i32 (unsafe)
          (let total:i32 (mem.alloc 8))
          (let hs:(arr i32) (arr.new i32 8))
          (loop i 0 7 1 (arr.set i32 hs i (thread.spawn (ref grower) total)))
@@ -832,8 +833,8 @@ fn thread_programs_match_natively() {
     assert_eq!(run_native(&scratch("global_checked"), &to_native(&wasm).unwrap()).status.code(), Some(42));
     // many threads, each joined, results summed
     let many = "(module m
-       (fn sq [x:i32] -> i32 (* x x))
-       (fn main [] -> i32
+       (fn sq [x:i32] -> i32 (unsafe) (* x x))
+       (fn main [] -> i32 (unsafe)
          (let hs:(arr i32) (arr.new i32 40))
          (loop i 0 39 1 (arr.set i32 hs i (thread.spawn (ref sq) i)))
          (let sum:i32 0)
@@ -846,7 +847,7 @@ fn thread_programs_match_natively() {
     module.functions.retain(|f| f.name != "main");
     let printed = aipl_core::printer::print_module(&module);
     let end = printed.rfind(')').unwrap();
-    let program = format!("{}\n(fn main [] -> i32 (sys.exit (call concurrent_print)) 0))", &printed[..end]);
+    let program = format!("{}\n(fn main [] -> i32 (unsafe) (sys.exit (call concurrent_print)) 0))", &printed[..end]);
     let wasm = to_wasm(&program);
     let exe = to_native(&wasm).unwrap();
     let dir = scratch("concurrent_print");
@@ -1343,30 +1344,30 @@ fn i64_programs_match_natively() {
     assert_functions_match(
         "i64_cases",
         "(module m
-           (fn mul_wraps [] -> i64 (* 4294967296i64 2147483648i64))
-           (fn add_overflows [] -> i64 (+ 9223372036854775807i64 1i64))
-           (fn past_32_bits [] -> i64 (+ 2147483647i64 1i64))
-           (fn div [] -> i64 (/ -7i64 2i64))
-           (fn rem [] -> i64 (% -7i64 2i64))
-           (fn divu [] -> i64 (divu -1i64 2i64))
-           (fn remu [] -> i64 (remu -1i64 2i64))
-           (fn shl_masked [] -> i64 (shl 1i64 65i64))
-           (fn shr_arith [] -> i64 (shr -8i64 1i64))
-           (fn shru_logical [] -> i64 (shru -8i64 1i64))
-           (fn lt_neg [] -> bool (lt -1i64 0i64))
-           (fn eq_five [] -> bool (eq 5i64 5i64))
-           (fn big_compare [] -> bool (gt 4294967296i64 4294967295i64))
-           (fn extend_s [] -> i64 (i64.extend_s -1))
-           (fn extend_u [] -> i64 (i64.extend_u -1))
-           (fn wrap [] -> i32 (i32.wrap 4294967301i64))
-           (fn wrap_sum [] -> i32 (i32.wrap (+ (i64.extend_s 2147483647) 1i64)))
-           (fn memory_round_trip [] -> i64 (let p:i32 (mem.alloc 8)) (mem.store64 p 1311768467294899696i64) (mem.load64 p))
-           (fn add64 [a:i64 b:i64] -> i64 (+ a b))
-           (fn calls [] -> i64 (call add64 4294967296i64 4294967296i64))
-           (fn accumulate [] -> i64 (let s:i64 0i64) (loop i 1 10 1 (set! s (+ s 1000000000i64))) s)
-           (fn if_branches [n:i32] -> i64 (if (gt n 0) 4294967296i64 -4294967296i64))
-           (fn param_order [a:i64 b:i64 c:i32] -> i64 (- (* a 3i64) (+ b (i64.extend_s c))))
-           (fn uses_param_order [] -> i64 (call param_order 5000000000i64 7i64 -3)))",
+           (fn mul_wraps [] -> i64 (unsafe) (* 4294967296i64 2147483648i64))
+           (fn add_overflows [] -> i64 (unsafe) (+ 9223372036854775807i64 1i64))
+           (fn past_32_bits [] -> i64 (unsafe) (+ 2147483647i64 1i64))
+           (fn div [] -> i64 (unsafe) (/ -7i64 2i64))
+           (fn rem [] -> i64 (unsafe) (% -7i64 2i64))
+           (fn divu [] -> i64 (unsafe) (divu -1i64 2i64))
+           (fn remu [] -> i64 (unsafe) (remu -1i64 2i64))
+           (fn shl_masked [] -> i64 (unsafe) (shl 1i64 65i64))
+           (fn shr_arith [] -> i64 (unsafe) (shr -8i64 1i64))
+           (fn shru_logical [] -> i64 (unsafe) (shru -8i64 1i64))
+           (fn lt_neg [] -> bool (unsafe) (lt -1i64 0i64))
+           (fn eq_five [] -> bool (unsafe) (eq 5i64 5i64))
+           (fn big_compare [] -> bool (unsafe) (gt 4294967296i64 4294967295i64))
+           (fn extend_s [] -> i64 (unsafe) (i64.extend_s -1))
+           (fn extend_u [] -> i64 (unsafe) (i64.extend_u -1))
+           (fn wrap [] -> i32 (unsafe) (i32.wrap 4294967301i64))
+           (fn wrap_sum [] -> i32 (unsafe) (i32.wrap (+ (i64.extend_s 2147483647) 1i64)))
+           (fn memory_round_trip [] -> i64 (unsafe) (let p:i32 (mem.alloc 8)) (mem.store64 p 1311768467294899696i64) (mem.load64 p))
+           (fn add64 [a:i64 b:i64] -> i64 (unsafe) (+ a b))
+           (fn calls [] -> i64 (unsafe) (call add64 4294967296i64 4294967296i64))
+           (fn accumulate [] -> i64 (unsafe) (let s:i64 0i64) (loop i 1 10 1 (set! s (+ s 1000000000i64))) s)
+           (fn if_branches [n:i32] -> i64 (unsafe) (if (gt n 0) 4294967296i64 -4294967296i64))
+           (fn param_order [a:i64 b:i64 c:i32] -> i64 (unsafe) (- (* a 3i64) (+ b (i64.extend_s c))))
+           (fn uses_param_order [] -> i64 (unsafe) (call param_order 5000000000i64 7i64 -3)))",
         &[],
         &[
             ("mul_wraps", &[]), ("add_overflows", &[]), ("past_32_bits", &[]), ("div", &[]), ("rem", &[]), ("divu", &[]),
@@ -2019,18 +2020,18 @@ fn traps_name_their_source_positions() {
     let dir = scratch("positions");
     for (name, chain) in [
         ("trap_div_by_zero", "  at main (prog.aipl:1:54)\n"),
-        ("trap_load_past_memory", "  at main (prog.aipl:1:65)\n"),
-        ("trap_unlock_a_free_lock", "  at main (prog.aipl:1:56)\n"),
+        ("trap_load_past_memory", "  at main (prog.aipl:1:74)\n"),
+        ("trap_unlock_a_free_lock", "  at main (prog.aipl:1:65)\n"),
         // the store guard (wasmtime reports its trap at the if)
-        ("trap_store_into_reserved_block", "  at main (prog.aipl:1:51)\n"),
+        ("trap_store_into_reserved_block", "  at main (prog.aipl:1:60)\n"),
         ("trap_index_past_the_end", "  at main (prog.aipl:1:64)\n"),
         // a contract at its condition, then the call
         ("trap_failed_req", "  at f (prog.aipl:1:45)\n  at main (prog.aipl:1:77)\n"),
-        ("trap_in_a_thread", "  at work (prog.aipl:1:35)\n"),
+        ("trap_in_a_thread", "  at work (prog.aipl:1:44)\n"),
         ("trap_min_div_minus_one", "  at main (prog.aipl:1:55)\n"),
-        ("trap_unaligned_atomic", "  at main (prog.aipl:1:66)\n"),
+        ("trap_unaligned_atomic", "  at main (prog.aipl:1:75)\n"),
         // the second of two identical locks
-        ("trap_lock_twice_waits", "  at main (prog.aipl:1:72)\n"),
+        ("trap_lock_twice_waits", "  at main (prog.aipl:1:81)\n"),
     ] {
         let src = PROGRAMS.iter().find(|(n, _)| *n == name).unwrap().1;
         let wasm = to_wasm(src);
@@ -2071,8 +2072,8 @@ fn running_out_of_stack_traps() {
     let down = "(fn down [n:i32] -> i32 (if (eq n 0) 0 (+ 1 (call down (- n 1)))))";
     let in_main = format!("(module m (import io) {down} (fn main [] -> i32 (call io.print_int (call down 10000000)) 0))");
     let in_thread = format!(
-        "(module m (import io) {down} (fn work [n:i32] -> i32 (call down n))
-           (fn main [] -> i32 (call io.print_int (thread.join (thread.spawn (ref work) 10000000))) 0))"
+        "(module m (import io) {down} (fn work [n:i32] -> i32 (unsafe) (call down n))
+           (fn main [] -> i32 (unsafe) (call io.print_int (thread.join (thread.spawn (ref work) 10000000))) 0))"
     );
     for (name, src) in [("main", &in_main), ("thread", &in_thread)] {
         let wasm = to_wasm(src);
