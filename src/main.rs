@@ -1,4 +1,3 @@
-use aipl_core::agent_api::server::AgentServer;
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
@@ -68,11 +67,6 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "run_all")]
         func: String,
-    },
-    /// Serve /eval, /verify and /compile over HTTP for agents (JSON responses)
-    Serve {
-        #[arg(short, long, default_value = "127.0.0.1:8080")]
-        addr: String,
     },
 }
 
@@ -351,9 +345,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(1);
                 }
             }
-        }
-        Commands::Serve { addr } => {
-            AgentServer::start(&addr)?;
         }
     }
 

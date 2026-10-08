@@ -451,9 +451,8 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | `aipl compile FILE [-o out.wasm]` | 1-4, 5b | `[AIPL Compiler] Successfully compiled 'FILE' -> 'out.wasm' (N bytes)` |
 | `aipl compile --exe [--sandbox] [--target native\|wasm] FILE -o prog` | 1-4, 5b, then 6 for native | a standalone executable `prog`: native machine code on Linux x86-64 (section 6.6), else the launcher bundle (section 6.5) |
 | `aipl run [--sandbox] prog.wasm [-- ARGS...]` | the `aipl-run` launcher | runs a compiled module natively (section 6.5); exits with its status |
-| `aipl compile --self FILE [-o out.wasm]` | 1-4, 5b, then `resolver.resolve_file` and `codegen.compile_module` in the VM | compiles with the Rust toolchain and with the self-hosted one (AIPL resolver and AIPL codegen) and fails unless the bytes are identical (section 6.4) |
+| `aipl compile --self FILE [-o out.wasm]` | 1-4, 5b, then `driver.compile_file` in the VM | compiles with the Rust toolchain and with the self-hosted one (`aipl_src/driver.aipl`: resolver, checker, code generator, as `aiplc`) and fails unless the bytes are identical (section 6.4) |
 | `aipl test FILE [--func run_all]` | 1-4, 5a | `[AIPL Test] All groups passed.` and exit 0; otherwise `N group(s) failed.` and exit 1 |
-| `aipl serve [--addr 127.0.0.1:8080]` | per request | an HTTP server for agents (`src/agent_api/server.rs`): `POST /eval` with JSON `{"source", "fn_name", "args"?}` runs a function in the VM (`args` are integers), `POST /verify` and `POST /compile` take the source as the request body; each answers JSON with `success` and `error`, plus `result` (eval) or `wasm_base64` (compile). Imports resolve against the standard library. Not covered by tests |
 
 Errors are printed to stderr as `Error: MESSAGE`, and the exit status is 1. `eval` and `test` only invoke zero-argument functions. To exercise a function that takes parameters, wrap it in a zero-arg driver or write a Rust test (section 10.2).
 

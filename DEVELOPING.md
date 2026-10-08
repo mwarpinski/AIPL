@@ -7,6 +7,26 @@ implemented; [docs/design/](docs/design/) holds the design records of the
 larger pieces of work, and [docs/history/](docs/history/) the dated work log
 and the 2026-10 audit.
 
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `src/parser.rs`, `checker.rs`, `resolver.rs` | Rust bootstrap front end: S-expressions → AST, type checker, import flattening |
+| `src/vm.rs` | Reference interpreter (contracts, real threads and atomics, `std::fs` I/O) |
+| `src/compiler/wasm.rs` | Rust wasm backend, the byte-for-byte reference for the self-hosted one |
+| `src/generics.rs` | Generic template expansion (twin of `aipl_src/generics.aipl`) |
+| `src/bin/aipl_run.rs` | `aipl-run`, the launcher: wasmtime plus WASI, the native part of `aipl compile --exe` executables |
+| `aipl_src/resolver.aipl`, `generics.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, generics expansion, tokenizer and parser, wasm code generator, and the command that chains them |
+| `aipl_src/native/` | The Linux x86-64 backend: `native` (wasm in, executable out), `wasm_reader`, `lower` (wasm to machine code), `x64` (encoder), `elf`, `runtime` (start-up, traps), `wasi` (the WASI functions as system calls) |
+| `src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers); found by `(import io)` from anywhere |
+| `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
+| `aipl_src/test_suite.aipl` | AIPL-native test entry point |
+| `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
+| `benchmarks/` | Eight benchmark programs, each in AIPL, C, and Python with expected output ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) |
+| `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
+| `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
+
 ## Environment
 
 - Linux, Rust via `cargo`. Everything builds and tests with plain `cargo build` / `cargo test` from the repo root.
