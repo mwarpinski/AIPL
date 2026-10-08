@@ -20,7 +20,6 @@ use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 /// Module name -> value `main` returns, as stated in the docs. Modules without
 /// a `main` (library-style examples) are checked and compiled only.
 const EXPECTED: &[(&str, i32)] = &[
-    ("demo", 21),
     ("search", 49),
     ("list_demo", 55),
     ("parse_demo", 1233),
@@ -39,6 +38,11 @@ const EXPECTED: &[(&str, i32)] = &[
     ("geom", 15),
     ("tokens_demo", 110),
 ];
+
+/// README.md and PROMPT_GUIDE_FOR_AIS.md examples whose `main` must fail, as
+/// the document shows it failing: the VM's message contains the text, and
+/// compiled code traps.
+const FAILING: &[(&str, &str)] = &[("gcd", "Pre-condition failed in 'gcd' at 6:10: (req (and (gt a 0) (gt b 0))) with a = 10, b = 0")];
 
 /// AIPL_SPEC.md modules that cannot simply run in both backends, and why.
 const SPEC_SPECIAL: &[(&str, &str)] = &[
@@ -68,6 +72,19 @@ fn run_wasm(wasm: &[u8], dir: &Path) -> i32 {
     main.call(&mut store, ()).unwrap()
 }
 
+/// Whether the module's main traps when compiled.
+fn wasm_traps(wasm: &[u8], dir: &Path) -> bool {
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let ctx = WasiCtxBuilder::new().preopened_dir(dir, ".", FsPerms::ReadWrite).unwrap().build_p1();
+    let mut store = Store::new(&engine, ctx);
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main: TypedFunc<(), i32> = instance.get_typed_func(&mut store, "main").unwrap();
+    main.call(&mut store, ()).is_err()
+}
+
 #[test]
 fn doc_examples_run_in_both_backends() {
     let scratch = std::env::temp_dir().join(format!("aipl_doc_examples_{}", std::process::id()));
@@ -86,6 +103,15 @@ fn doc_examples_run_in_both_backends() {
             let module = Resolver::resolve(&file).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
             TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
             let wasm = WasmCompiler::compile(&module).unwrap_or_else(|e| panic!("{doc}: {e}\n{src}"));
+            if let Some(&(_, msg)) = FAILING.iter().find(|(n, _)| *n == module.name) {
+                let mut vm = VM::new();
+                vm.load_module(module.clone());
+                let e = vm.invoke("main", vec![]).unwrap_err();
+                assert!(e.contains(msg), "{doc}: module {}: expected `{msg}`, got `{e}`", module.name);
+                assert!(wasm_traps(&wasm, &scratch), "{doc}: module {} must trap when compiled", module.name);
+                seen.push(module.name.clone());
+                continue;
+            }
             let Some(&(_, want)) = EXPECTED.iter().find(|(n, _)| *n == module.name) else {
                 assert!(!module.functions.iter().any(|f| f.name == "main"), "{doc}: add '{}' to EXPECTED", module.name);
                 continue;
@@ -167,7 +193,7 @@ fn doc_examples_run_in_both_backends() {
 
     std::env::set_current_dir(prev).unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
-    for (name, _) in EXPECTED {
+    for name in EXPECTED.iter().map(|(n, _)| n).chain(FAILING.iter().map(|(n, _)| n)) {
         assert!(seen.iter().any(|s| s == name), "documented example '{name}' not found in the docs");
     }
 }
