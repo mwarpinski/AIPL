@@ -552,9 +552,14 @@ def run(cmd, cwd):
 
 
 def vm_failure(err):
-    """The VM's error message, or None."""
+    """The VM's error message (without its call chain), or None."""
     m = re.search(r"^Error: (.*)", err, re.M | re.S)
-    return m.group(1).strip() if m else None
+    return m.group(1).split("\n  at ", 1)[0].strip() if m else None
+
+
+def chain(err):
+    """The call chain lines ("  at f (file:line:col)", "  ... N more") of an error."""
+    return [l for l in err.split("\n") if l.startswith("  at ") or l.startswith("  ... ")]
 
 
 def trap_message(err, prog):
@@ -651,6 +656,9 @@ def check(case, seed):
                                     f"compiled code {'fails' if wasm[2] else 'succeeds'} ({wasm[2]})")
                 elif vm[2] is not None and not same_failure(vm[2], wasm[2]):
                     problems.append(f"different failures: VM {vm[2]!r}, compiled {wasm[2]!r}")
+                elif vm[2] is not None and chain(e_err) != chain(w_err):
+                    problems.append("different call chains:\n  VM:       " + "\n            ".join(chain(e_err))
+                                    + "\n  compiled: " + "\n            ".join(chain(w_err)))
                 if vm[1] != wasm[1]:
                     problems.append("different output: " + first_difference(vm[1], wasm[1]))
     if problems:

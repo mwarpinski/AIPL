@@ -144,8 +144,8 @@ In order ([ROADMAP.md](ROADMAP.md) has the details and everything else that
 is missing):
 
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
-   positions in the interpreter's runtime errors, and the experiment
-   measuring how well agents write AIPL.
+   easier installation, a showcase program, and the experiment measuring
+   how well agents write AIPL.
 2. **The language:** option types and generic unions, constraints on
    generics, visibility (`pub`), small structs by value.
 3. **The standard library:** JSON, directories, running processes, then
@@ -162,7 +162,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **294 Rust tests** and an AIPL test suite, run on every push by CI.
+- **295 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

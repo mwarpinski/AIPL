@@ -99,9 +99,10 @@ more than usual.
   `  at math.div (math.aipl:4:5)`, identically. Eight planted bugs
   (compilers, native lowering and lookup, aipl-run) were each caught; the
   table adds about a fifth to a module's size.
-- [ ] **The VM's runtime errors need positions too** (contract failures
-  have theirs; a division by zero or bad memory access in `aipl eval` gives
-  only the message).
+- [x] **The VM's runtime errors need positions too** (2026-10-08): `aipl
+  eval` and `aipl test` print the same call chain as compiled code, frame
+  for frame; the program fuzzer now requires the VM's chain to equal
+  compiled code's (a planted bug: 101 of 1,000 cases caught).
 - [x] **Types in AIPL syntax** (2026-10-06). Messages said
   `Ptr(Struct("Point"))`, `Array(I32)`, and `Add on ...`; both checkers and
   the compiler's own errors now write `(ptr Point)`, `(arr i32)`, `+`.
