@@ -33,7 +33,7 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
-    (let res:(ptr Out) (new Out))
+    (unsafe (let res:(ptr Out) (new Out))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
@@ -56,7 +56,7 @@
           (put res Out.status 2)
           (put res Out.addr 0)
           (put res Out.len (mem.load32 4))))
-    res)
+    res))
 
   (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
     (let t:(ptr str.Bytes) (call buf.bytes b))
@@ -104,12 +104,12 @@
     b)
 
   (fn write_err [b:(ptr str.Bytes)] -> void
-    (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len))))
 
   ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, type,
   ;; compile, or write error (reported on stderr), 2 on bad usage.
   (fn main [] -> i32
-    (if (neq (call os.arg_count) 3)
+    (unsafe (if (neq (call os.arg_count) 3)
         (block (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
         (block))
     (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
@@ -136,7 +136,7 @@
        (call io.write_str 2 "compile error ")
        (fs.write 2 digits (call fmt.int_to_bytes (get res Out.len) digits))
        (call io.eprintln " (AIPL_SPEC.md 6.4)")
-       1)))
+       1))))
 
   ;; WASI command entry point: runs main and exits with its status.
   (fn _start [] -> void

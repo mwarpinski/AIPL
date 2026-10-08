@@ -104,7 +104,7 @@
 
   ;; ===== Self-tests =====
 
-  (fn at8 [b:(ptr buf.Buf) i:i32] -> i32 (mem.load8 (+ (get b buf.Buf.data) i)))
+  (fn at8 [b:(ptr buf.Buf) i:i32] -> i32 (unsafe (mem.load8 (+ (get b buf.Buf.data) i))))
   (fn at32 [b:(ptr buf.Buf) i:i32] -> i32
     (bitor (call at8 b i) (bitor (shl (call at8 b (+ i 1)) 8) (bitor (shl (call at8 b (+ i 2)) 16) (shl (call at8 b (+ i 3)) 24)))))
 

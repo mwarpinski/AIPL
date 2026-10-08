@@ -4,7 +4,7 @@
   ;; `len` bytes starting at address `addr`. A failed read has len -1.
   (struct Bytes [addr:i32 len:i32])
 
-  (fn bytes [addr:i32 len:i32] -> (ptr Bytes)
+  (fn bytes [addr:i32 len:i32] -> (ptr Bytes) (unsafe)
     (let b:(ptr Bytes) (new Bytes))
     (put b Bytes.addr addr)
     (put b Bytes.len len)
@@ -12,11 +12,21 @@
 
   ;; The bytes of a string (the VM copies them into the heap; wasm does not).
   (fn from_str [s:str] -> (ptr Bytes)
-    (call bytes (str.ptr s) (str.len s)))
+    (unsafe (call bytes (str.ptr s) (str.len s))))
 
   (fn byte_at [b:(ptr Bytes) i:i32] -> i32
     (req (and (gte i 0) (lt i (get b Bytes.len))))
-    (mem.load8 (+ (get b Bytes.addr) i)))
+    (unsafe (mem.load8 (+ (get b Bytes.addr) i))))
+
+  ;; Bytes start .. start + len - 1 of b, as a view of the same memory.
+  (fn slice [b:(ptr Bytes) start:i32 len:i32] -> (ptr Bytes)
+    (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (get b Bytes.len)))))
+    (unsafe (call bytes (+ (get b Bytes.addr) start) len)))
+
+  ;; Sets byte i of b to c (its low 8 bits).
+  (fn set_byte [b:(ptr Bytes) i:i32 c:i32] -> void
+    (req (and (gte i 0) (lt i (get b Bytes.len))))
+    (unsafe (mem.store8 (+ (get b Bytes.addr) i) c)))
 
   ;; ASCII whitespace: space, \t \n \v \f \r.
   (fn is_space [c:i32] -> bool
@@ -30,10 +40,10 @@
 
   ;; Whether b spells the literal s, without allocating.
   (fn is [b:(ptr Bytes) s:str] -> bool
-    (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
+    (unsafe (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
-    true)
+    true))
 
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:(ptr Bytes) c:i32] -> i32
@@ -49,9 +59,9 @@
 
   ;; Newlines, plus one for a final line without a newline.
   (fn count_lines [b:(ptr Bytes)] -> i32
-    (let len:i32 (get b Bytes.len))
+    (unsafe (let len:i32 (get b Bytes.len))
     (let n:i32 (call count_byte b 10))
-    (if (and (gt len 0) (neq (mem.load8 (+ (get b Bytes.addr) (- len 1))) 10)) (+ n 1) n))
+    (if (and (gt len 0) (neq (mem.load8 (+ (get b Bytes.addr) (- len 1))) 10)) (+ n 1) n)))
 
   ;; Runs of non-whitespace bytes.
   (fn count_words [b:(ptr Bytes)] -> i32
@@ -69,7 +79,7 @@
   ;; is the index of the first byte that is not part of a number (0 for an
   ;; empty input or a lone '-'). Values outside i32 wrap.
   (fn parse_int [b:(ptr Bytes)] -> (result i32 i32)
-    (let len:i32 (get b Bytes.len))
+    (unsafe (let len:i32 (get b Bytes.len))
     (let neg:bool (and (gt len 0) (eq (mem.load8 (get b Bytes.addr)) 45)))
     (let start:i32 (if neg 1 0))
     (if (lte len start) (return (err 0)) (block))
@@ -78,7 +88,7 @@
       (let c:i32 (call byte_at b i))
       (if (or (lt c 48) (gt c 57)) (return (err i)) (block))
       (set! n (- (* n 10) (- c 48))))
-    (ok (if neg n (- 0 n))))
+    (ok (if neg n (- 0 n)))))
 
   ;; b as a decimal i32 (parse_int), or `default` if it is not one.
   (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32
@@ -109,7 +119,7 @@
     true)
 
   (fn run_str_tests [] -> i32
-    (let ab:(ptr Bytes) (call from_str "a b\nc"))
+    (unsafe (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
     (if (and (call is_space 9) (and (call is_space 32) (not (call is_space 97)))) (set! p (+ p 1)) (block))
     (if (and (call bytes_eq ab (call from_str "a b\nc")) (not (call bytes_eq ab (call from_str "a b")))) (set! p (+ p 1)) (block))
@@ -136,4 +146,4 @@
                                  (not (call valid_utf8 (call bytes (+ u 5) 3))))))))
         (set! p (+ p 1))
         (block))
-    p))
+    p)))

@@ -18,8 +18,7 @@
 ;;   (call x64.alu_ri c 32 (call x64.op_add) 0 1)  ;; add eax, 1
 ;;   (call x64.ret c)
 (module x64
-  (import alloc)
-  (import str)
+  (import alloc) (import str)
   (import buf)
 
   ;; [base + index * scale + disp]. index -1 = no index. base is required
@@ -330,10 +329,10 @@
   ;; position `target`, forward or backward.
   (fn patch_rel32 [c:(ptr buf.Buf) at:i32 target:i32] -> void
     (req (and (gte at 0) (lte (+ at 4) (call buf.len c))))
-    (let rel:i32 (- target (+ at 4)))
+    (unsafe (let rel:i32 (- target (+ at 4)))
     (let p:i32 (+ (get c buf.Buf.data) at))
     (loop k 0 3 1
-      (mem.store8 (+ p k) (bitand (shru rel (* 8 k)) 255))))
+      (mem.store8 (+ p k) (bitand (shru rel (* 8 k)) 255)))))
 
   ;; call r (indirect)
   (fn call_r [c:(ptr buf.Buf) r:i32] -> void
@@ -348,18 +347,18 @@
 
   ;; The buffer as lowercase hex, two digits per byte, no separators.
   (fn hex [c:(ptr buf.Buf)] -> (ptr str.Bytes)
-    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 2 (* 2 (call buf.len c)))))
+    (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 2 (* 2 (call buf.len c)))))
     (loop i 0 (- (call buf.len c) 1) 1
       (let v:i32 (mem.load8 (+ (get c buf.Buf.data) i)))
       (call buf.push_byte out (call hex_digit (shru v 4)))
       (call buf.push_byte out (call hex_digit (bitand v 15))))
-    (call buf.bytes out))
+    (call buf.bytes out)))
 
   (fn hex_digit [d:i32] -> i32 (if (lt d 10) (+ 48 d) (+ 87 d)))
 
   ;; 1 if the buffer holds exactly `expected` (hex), else prints both and 0.
   (fn check [name:str c:(ptr buf.Buf) expected:str] -> i32
-    (let got:(ptr str.Bytes) (call hex c))
+    (unsafe (let got:(ptr str.Bytes) (call hex c))
     (if (call str.bytes_eq got (call str.from_str expected))
         1
         (block
@@ -372,7 +371,7 @@
           (call buf.push_str c expected)
           (call buf.push_byte c 10)
           (fs.write 1 (get c buf.Buf.data) (call buf.len c))
-          0)))
+          0))))
 
   ;; X64_TESTS_BEGIN
   ;; Test vectors are GNU as (binutils) output for the same instruction

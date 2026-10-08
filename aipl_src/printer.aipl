@@ -99,6 +99,7 @@
       (call print_type b (get prm ast.Param.ty)))
     (call s b "] -> ")
     (call print_type b (get f ast.FnDef.ret))
+    (if (get f ast.FnDef.unsafe_) (call s b "\n    (unsafe)") (block))
     (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
     (loop j 0 (- (arr.len cs) 1) 1
       (call s b "\n    (")
@@ -191,6 +192,7 @@
        (call s b " (err ") (call by b err_var) (call with_body b err_body)
        (call s b ")"))
       (ast.Expr.block [_ body] (call s b "(block") (call with_body b body))
+      (ast.Expr.unsafe_ [_ body] (call s b "(unsafe") (call with_body b body))
       (ast.Expr.new_ [_ name] (call s b "(new ") (call by b name) (call s b ")"))
       (ast.Expr.get_ [_ sname fname ptr]
        (call s b "(get ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname) (call s b ")"))

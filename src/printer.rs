@@ -39,6 +39,9 @@ pub fn print_module(m: &Module) -> String {
     for f in &m.functions {
         let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}:{}", n, type_str(t))).collect();
         out.push_str(&format!("  (fn {} [{}] -> {}", f.name, params.join(" "), type_str(&f.return_type)));
+        if f.is_unsafe {
+            out.push_str("\n    (unsafe)");
+        }
         for c in &f.contracts {
             let (kw, e) = match c {
                 Contract::Requires(e) => ("req", e),
@@ -232,6 +235,7 @@ pub fn expr_str(e: &Expr) -> String {
             with_body(format!("err {}", err_var), err_body)
         ),
         Expr::Block(body, _) => with_body("block".to_string(), body),
+        Expr::Unsafe(body, _) => with_body("unsafe".to_string(), body),
         Expr::NewStruct { struct_name, .. } => format!("(new {})", struct_name),
         Expr::GetField { struct_name, field_name, ptr, .. } => {
             format!("(get {} {}.{})", expr_str(ptr), struct_name, field_name)

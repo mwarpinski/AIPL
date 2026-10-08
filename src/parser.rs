@@ -742,6 +742,7 @@ impl Parser {
 
         let mut contracts = Vec::new();
         let mut body = Vec::new();
+        let mut is_unsafe = false;
 
         while let Some(kind) = self.peek_kind() {
             if *kind == TokenKind::RParen {
@@ -752,6 +753,12 @@ impl Parser {
                     contracts.push(self.parse_contract()?);
                     continue;
                 }
+            // the clause (unsafe), which an (unsafe e...) block is not
+            if self.is_unsafe_clause_ahead() {
+                self.pos += 3;
+                is_unsafe = true;
+                continue;
+            }
             body.push(self.parse_expr()?);
         }
 
@@ -762,8 +769,15 @@ impl Parser {
             return_type,
             contracts,
             body,
+            is_unsafe,
             span,
         })
+    }
+
+    fn is_unsafe_clause_ahead(&self) -> bool {
+        matches!(self.tokens.get(self.pos).map(|t| &t.kind), Some(TokenKind::LParen))
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Symbol(s)) if s == "unsafe")
+            && matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::RParen))
     }
 
     fn is_contract_ahead(&self) -> bool {
@@ -1194,7 +1208,7 @@ impl Parser {
                             }
                             Expr::Match { value: Box::new(value), arms, else_body, span }
                         }
-                        "block" => {
+                        "block" | "unsafe" => {
                             let mut body = Vec::new();
                             while let Some(kind) = self.peek_kind() {
                                 if *kind == TokenKind::RParen {
@@ -1202,7 +1216,7 @@ impl Parser {
                                 }
                                 body.push(self.parse_expr()?);
                             }
-                            Expr::Block(body, span)
+                            if head == "unsafe" { Expr::Unsafe(body, span) } else { Expr::Block(body, span) }
                         }
                         "match_result" => {
                             let res_expr = self.parse_expr()?;

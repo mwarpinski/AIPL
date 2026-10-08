@@ -110,7 +110,7 @@
 
   ;; Pass count; test_suite.aipl expects 4.
   (fn run_strmap_tests [] -> i32
-    (let p:i32 0)
+    (unsafe (let p:i32 0)
     ;; word frequencies of a small text, splitting on spaces by hand
     (let text:(ptr str.Bytes) (call str.from_str "the cat and the hat and the bat"))
     (let m:(ptr (StrMap i32)) (call (make i32) (call alloc.default) 0))
@@ -151,4 +151,4 @@
     (if (eq (get (call (get_or (ptr str.Bytes)) names (call str.from_str "k") (call str.bytes 0 -1)) str.Bytes.len) 5)
         (set! p (+ p 1))
         (block))
-    p))
+    p)))

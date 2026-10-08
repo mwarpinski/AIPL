@@ -29,7 +29,7 @@
 
   ;; Makes room for `extra` more bytes, doubling the storage as needed.
   (fn ensure [b:(ptr Buf) extra:i32] -> void
-    (let need:i32 (+ (get b Buf.len) extra))
+    (unsafe (let need:i32 (+ (get b Buf.len) extra))
     (if (lte need (get b Buf.cap)) (return) (block))
     (let cap:i32 (* 2 (get b Buf.cap)))
     (while (lt cap need) (set! cap (* cap 2)))
@@ -38,49 +38,49 @@
       (mem.store8 (+ data i) (mem.load8 (+ (get b Buf.data) i))))
     (call alloc.free_raw (get b Buf.allocator) (get b Buf.data) (get b Buf.cap))
     (put b Buf.data data)
-    (put b Buf.cap cap))
+    (put b Buf.cap cap)))
 
   (fn push_byte [b:(ptr Buf) c:i32] -> void
-    (call ensure b 1)
+    (unsafe (call ensure b 1)
     (mem.store8 (+ (get b Buf.data) (get b Buf.len)) c)
-    (put b Buf.len (+ (get b Buf.len) 1)))
+    (put b Buf.len (+ (get b Buf.len) 1))))
 
   (fn push_bytes [b:(ptr Buf) s:(ptr str.Bytes)] -> void
-    (let n:i32 (get s str.Bytes.len))
+    (unsafe (let n:i32 (get s str.Bytes.len))
     (call ensure b n)
     (let at:i32 (+ (get b Buf.data) (get b Buf.len)))
     (loop i 0 (- n 1) 1
       (mem.store8 (+ at i) (call str.byte_at s i)))
-    (put b Buf.len (+ (get b Buf.len) n)))
+    (put b Buf.len (+ (get b Buf.len) n))))
 
   (fn push_str [b:(ptr Buf) s:str] -> void
     (call push_bytes b (call str.from_str s)))
 
   ;; Decimal, with '-' when negative.
   (fn push_int [b:(ptr Buf) n:i32] -> void
-    (call ensure b 11)
+    (unsafe (call ensure b 11)
     (let k:i32 (call fmt.int_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
-    (put b Buf.len (+ (get b Buf.len) k)))
+    (put b Buf.len (+ (get b Buf.len) k))))
 
   ;; An i64 in decimal, with '-' when negative.
   (fn push_i64 [b:(ptr Buf) n:i64] -> void
-    (call ensure b 21)
+    (unsafe (call ensure b 21)
     (let k:i32 (call fmt.int64_to_bytes n (+ (get b Buf.data) (get b Buf.len))))
-    (put b Buf.len (+ (get b Buf.len) k)))
+    (put b Buf.len (+ (get b Buf.len) k))))
 
   ;; An f64 with `digits` decimals (fmt.f64_fixed: exact, ties to even).
   (fn push_f64 [b:(ptr Buf) x:f64 digits:i32] -> void
     (req (and (gte digits 0) (lte digits 40)))
-    (call ensure b (+ 312 digits))
+    (unsafe (call ensure b (+ 312 digits))
     (let k:i32 (call fmt.f64_fixed x digits (+ (get b Buf.data) (get b Buf.len))))
-    (put b Buf.len (+ (get b Buf.len) k)))
+    (put b Buf.len (+ (get b Buf.len) k))))
 
   (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes)
-    (call str.bytes (get b Buf.data) (get b Buf.len)))
+    (unsafe (call str.bytes (get b Buf.data) (get b Buf.len))))
 
   ;; Writes the contents to file descriptor fd; the bytes written, or a
   ;; negative errno (fs.write).
-  (fn write [b:(ptr Buf) fd:i32] -> i32 (fs.write fd (get b Buf.data) (get b Buf.len)))
+  (fn write [b:(ptr Buf) fd:i32] -> i32 (unsafe (fs.write fd (get b Buf.data) (get b Buf.len))))
 
   ;; Writes the contents to standard output: the usual end of a program that
   ;; builds its output in a buffer and prints it once.

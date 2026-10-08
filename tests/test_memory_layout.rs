@@ -23,7 +23,7 @@ fn fresh_vm_has_cursor_1024_at_address_0_and_alloc_advances_it() {
     let vm = VM::new();
     assert_eq!(vm.read_bytes(0, 4), 1024u32.to_le_bytes().to_vec());
     let v = vm_run(
-        "(module m (fn f [] -> i32 (let a:i32 (mem.alloc 16)) (let b:i32 (mem.alloc 4)) (+ (* a 100000) (+ (* b 10) (- (mem.load32 0) b)))))",
+        "(module m (fn f [] -> i32 (unsafe) (let a:i32 (mem.alloc 16)) (let b:i32 (mem.alloc 4)) (+ (* a 100000) (+ (* b 10) (- (mem.load32 0) b)))))",
         "f",
     )
     .unwrap();
@@ -60,7 +60,7 @@ fn locking_a_word_that_is_not_a_lock_errors_instead_of_hanging() {
     // Computed address, so the checker cannot see it. Before the fix this spun
     // forever; now the VM notices the word holds 1024 (not 0 or 1) and fails.
     let err = vm_run(
-        "(module m (fn f [] -> void (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p)))",
+        "(module m (fn f [] -> void (unsafe) (let p:i32 (mem.alloc 4)) (mem.store32 p 1024) (atomic.lock p)))",
         "f",
     )
     .unwrap_err();
@@ -74,7 +74,7 @@ fn locking_the_heap_cursor_through_a_computed_address_errors() {
     // The write-address check fires first (address 0 is the heap cursor); the
     // lock-state check is the backstop for non-reserved data words (tested above).
     let err = vm_run(
-        "(module m (fn f [] -> void (let p:i32 (mem.alloc 4)) (atomic.lock (- p p))))",
+        "(module m (fn f [] -> void (unsafe) (let p:i32 (mem.alloc 4)) (atomic.lock (- p p))))",
         "f",
     )
     .unwrap_err();
@@ -84,7 +84,7 @@ fn locking_the_heap_cursor_through_a_computed_address_errors() {
 #[test]
 fn unlocking_a_free_or_non_lock_word_errors() {
     let err = vm_run(
-        "(module m (fn f [] -> void (let p:i32 (mem.alloc 4)) (atomic.unlock p)))",
+        "(module m (fn f [] -> void (unsafe) (let p:i32 (mem.alloc 4)) (atomic.unlock p)))",
         "f",
     )
     .unwrap_err();
@@ -94,7 +94,7 @@ fn unlocking_a_free_or_non_lock_word_errors() {
 #[test]
 fn a_real_lock_round_trip_still_works() {
     let v = vm_run(
-        "(module m (fn f [] -> i32 (let m:i32 (mem.alloc 4)) (let d:i32 (mem.alloc 4)) (atomic.lock m) (mem.store32 d 41) (atomic.add d 1) (atomic.unlock m) (atomic.lock m) (atomic.unlock m) (mem.load32 d)))",
+        "(module m (fn f [] -> i32 (unsafe) (let m:i32 (mem.alloc 4)) (let d:i32 (mem.alloc 4)) (atomic.lock m) (mem.store32 d 41) (atomic.add d 1) (atomic.unlock m) (atomic.lock m) (atomic.unlock m) (mem.load32 d)))",
         "f",
     )
     .unwrap();
@@ -146,7 +146,7 @@ fn both(src: &str) -> (Result<Value, String>, Result<(), String>) {
 #[test]
 fn computed_store_into_reserved_block_fails_in_both_backends() {
     // (* 8 64) == 512 at runtime; not a literal, so only the runtime check sees it.
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let a:i32 (* 8 64)) (mem.store32 a 7) (mem.load32 a)))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let a:i32 (* 8 64)) (mem.store32 a 7) (mem.load32 a)))");
     let e = vm.unwrap_err();
     assert!(e.contains("reserved runtime block") && e.contains("address 512"), "got {e}");
     let t = wt.unwrap_err();
@@ -155,7 +155,7 @@ fn computed_store_into_reserved_block_fails_in_both_backends() {
 
 #[test]
 fn computed_store_to_heap_cursor_fails_in_both_backends() {
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let p:i32 (mem.alloc 4)) (mem.store8 (- p p) 1) 0))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let p:i32 (mem.alloc 4)) (mem.store8 (- p p) 1) 0))");
     let e = vm.unwrap_err();
     assert!(e.contains("heap cursor") && e.contains("address 0"), "got {e}");
     assert!(wt.unwrap_err().contains("nreachable"));
@@ -163,9 +163,9 @@ fn computed_store_to_heap_cursor_fails_in_both_backends() {
 
 #[test]
 fn computed_store64_at_boundary_1023_fails_and_1024_succeeds() {
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let a:i32 (- (mem.alloc 0) 1)) (mem.store64 a 1i64) 0))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let a:i32 (- (mem.alloc 0) 1)) (mem.store64 a 1i64) 0))");
     assert!(vm.is_err() && wt.is_err(), "1023 is reserved");
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let a:i32 (mem.alloc 8)) (mem.store64 a 1i64) (mem.load32 a)))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let a:i32 (mem.alloc 8)) (mem.store64 a 1i64) (mem.load32 a)))");
     assert_eq!(vm.unwrap(), Value::Int(1));
     assert!(wt.is_ok(), "1024 is heap");
 }
@@ -173,7 +173,7 @@ fn computed_store64_at_boundary_1023_fails_and_1024_succeeds() {
 #[test]
 fn computed_writes_to_runtime_cells_and_heap_are_allowed_in_both_backends() {
     // cell 16 via arithmetic, and a heap word from mem.alloc
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let c:i32 (* 4 4)) (mem.store32 c 99) (let p:i32 (mem.alloc 4)) (mem.store32 p (mem.load32 c)) (mem.load32 p)))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let c:i32 (* 4 4)) (mem.store32 c 99) (let p:i32 (mem.alloc 4)) (mem.store32 p (mem.load32 c)) (mem.load32 p)))");
     assert_eq!(vm.unwrap(), Value::Int(99));
     assert!(wt.is_ok());
 }
@@ -181,7 +181,7 @@ fn computed_writes_to_runtime_cells_and_heap_are_allowed_in_both_backends() {
 #[test]
 fn computed_reads_from_the_reserved_block_are_not_checked() {
     // Reads are harmless (the block is zero) and are deliberately unchecked.
-    let (vm, wt) = both("(module m (fn f [] -> i32 (let a:i32 (* 8 64)) (mem.load32 a)))");
+    let (vm, wt) = both("(module m (fn f [] -> i32 (unsafe) (let a:i32 (* 8 64)) (mem.load32 a)))");
     assert_eq!(vm.unwrap(), Value::Int(0));
     assert!(wt.is_ok());
 }
@@ -190,7 +190,7 @@ fn computed_reads_from_the_reserved_block_are_not_checked() {
 fn computed_atomic_ops_on_reserved_block_fail_in_vm() {
     // Atomics are VM-only, so there is no wasm side to compare here.
     for op in ["(atomic.add a 1)", "(atomic.cas a 0 1)", "(atomic.lock a)", "(atomic.unlock a)"] {
-        let src = format!("(module m (fn f [] -> i32 (let a:i32 (* 8 64)) {op} 0))");
+        let src = format!("(module m (fn f [] -> i32 (unsafe) (let a:i32 (* 8 64)) {op} 0))");
         let e = vm_run(&src, "f").unwrap_err();
         assert!(e.contains("reserved runtime block"), "{op}: got {e}");
     }

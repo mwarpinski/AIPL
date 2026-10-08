@@ -19,7 +19,7 @@
   ;; 'E', an optional sign, and digits (compiler.is_float_literal's form).
   ;; Too large is an infinity and too small a zero, with the sign. The fast
   ;; path allocates nothing; the exact one, two numbers sized up front.
-  (fn from_decimal [addr:i32 len:i32] -> f64
+  (fn from_decimal [addr:i32 len:i32] -> f64 (unsafe)
     (let i:i32 0)
     (let c0:i32 (if (gt len 0) (mem.load8 addr) 0))
     (let neg:bool (eq c0 45))
@@ -84,7 +84,7 @@
 
   ;; n = the digits in [from, to) as one integer (the '.' skipped), nine at a
   ;; time through `chunk`.
-  (fn read_digits [n:(ptr bigint.Int) chunk:(ptr bigint.Int) addr:i32 from:i32 to:i32] -> void
+  (fn read_digits [n:(ptr bigint.Int) chunk:(ptr bigint.Int) addr:i32 from:i32 to:i32] -> void (unsafe)
     (let acc:i32 0)
     (let count:i32 0)
     (loop i from (- to 1) 1
@@ -176,10 +176,10 @@
   ;; Whether text converts to exactly the bits of `want` (a literal, which
   ;; the Rust toolchain converts with Rust's parser).
   (fn converts [text:str want:f64] -> bool
-    (eq (i64.reinterpret_f64 (call from_decimal (str.ptr text) (str.len text))) (i64.reinterpret_f64 want)))
+    (unsafe (eq (i64.reinterpret_f64 (call from_decimal (str.ptr text) (str.len text))) (i64.reinterpret_f64 want))))
 
   (fn run_float_tests [] -> i32
-    (let p:i32 0)
+    (unsafe (let p:i32 0)
     (if (call converts "0.1" 0.1) (set! p (+ p 1)) (block))
     (if (call converts "-2.5" -2.5) (set! p (+ p 1)) (block))
     (if (call converts "-0.0" -0.0) (set! p (+ p 1)) (block))
@@ -197,4 +197,4 @@
     (if (call converts "2.2250738585072011e-308" 2.2250738585072011e-308) (set! p (+ p 1)) (block))
     (if (call converts "123456789012345678901234567890.0" 123456789012345678901234567890.0) (set! p (+ p 1)) (block))
     (if (call converts ".000000000000000000000000000000000001234" .000000000000000000000000000000000001234) (set! p (+ p 1)) (block))
-    p))
+    p)))

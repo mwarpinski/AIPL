@@ -152,13 +152,13 @@
 
   ;; A length-prefixed name, as a slice of the module.
   (fn name [r:(ptr R)] -> (ptr str.Bytes)
-    (let n:i32 (call u32 r))
+    (unsafe (let n:i32 (call u32 r))
     (let start:i32 (get r R.pos))
     (if (gt (+ start n) (get (get r R.b) str.Bytes.len))
         (block (call fail r "name runs past the end of the module") (return (call str.bytes 0 0)))
         (block))
     (put r R.pos (+ start n))
-    (call str.bytes (+ (get (get r R.b) str.Bytes.addr) start) n))
+    (call str.bytes (+ (get (get r R.b) str.Bytes.addr) start) n)))
 
   ;; A custom section ending at `end`: the function names of a "name"
   ;; section (subsection 1). A malformed name section is ignored, as the
@@ -603,7 +603,7 @@
     body)
 
   (fn empty_module [] -> (ptr Wasm)
-    (let w:(ptr Wasm) (new Wasm))
+    (unsafe (let w:(ptr Wasm) (new Wasm))
     (put w Wasm.ok false)
     (put w Wasm.error (call str.bytes 0 0))
     (put w Wasm.types (call (vec.make (ptr FuncType)) (call alloc.default) 16))
@@ -622,7 +622,7 @@
     (put w Wasm.names (call (vec.make (ptr FnName)) (call alloc.default) 64))
     (put w Wasm.line_files (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
     (put w Wasm.line_fns (call (vec.make (ptr FnLines)) (call alloc.default) 16))
-    w)
+    w))
 
   ;; Decodes `bytes`. On failure, ok is false and error says what and where.
   (fn decode [bytes:(ptr str.Bytes)] -> (ptr Wasm)
@@ -805,7 +805,7 @@
 
   ;; The summary of the module at (addr, len).
   (fn summarize [addr:i32 len:i32] -> (ptr str.Bytes)
-    (call summary (call decode (call str.bytes addr len))))
+    (unsafe (call summary (call decode (call str.bytes addr len)))))
 
   ;; ===== Self-test =====
 
@@ -813,7 +813,7 @@
 
   ;; Pass count; test_suite.aipl expects 4.
   (fn run_reader_tests [] -> i32
-    (let p:i32 0)
+    (unsafe (let p:i32 0)
     ;; header only: an empty, valid module
     (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_byte m 0) (call buf.push_str m "asm") (call buf.push_byte m 1) (call buf.push_byte m 0) (call buf.push_byte m 0) (call buf.push_byte m 0)
@@ -875,4 +875,4 @@
               (set! p (+ p 1))
               (block)))
         (block))
-    p))
+    p)))

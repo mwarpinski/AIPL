@@ -420,11 +420,13 @@ class Gen:
 
     def memory_stmt(self, ctx, d):
         m = self.fresh("mem")
-        return (f"(let {m}:i32 (mem.alloc 24)) (mem.store32 {m} {self.expr(ctx, 'i32', d)}) "
+        # raw memory is unchecked, so it sits in an unsafe block (AIPL_SPEC.md 3)
+        return (f"(unsafe (let {m}:i32 (mem.alloc 24)) (mem.store32 {m} {self.expr(ctx, 'i32', d)}) "
                 f"(mem.store64 (+ {m} 8) {self.expr(ctx, 'i64', d)}) (mem.store8 (+ {m} 17) {self.expr(ctx, 'i32', d)}) "
                 + " ".join(self.print_value(t, e) for t, e in [
                     ("i32", f"(mem.load32 {m})"), ("i64", f"(mem.load64 (+ {m} 8))"), ("i32", f"(mem.load8 (+ {m} 17))"),
-                    ("i32", f"(mem.load32 (+ {m} 16))"), ("i32", f"(mem.load8 (+ {m} 3))")]))
+                    ("i32", f"(mem.load32 (+ {m} 16))"), ("i32", f"(mem.load8 (+ {m} 3))")])
+                + ")")
 
     def stmts(self, ctx, d):
         return " ".join(self.stmt(ctx, d) for _ in range(self.rng.randint(1, 3)))

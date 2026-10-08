@@ -78,7 +78,7 @@
 
   ;; Line and column (1-based; a column counts characters) of pos in t.
   (fn locate [t:(ptr Text) pos:i32] -> (ptr Place)
-    (if (eq (get t Text.starts) (ptr.null (vec.Vec i32))) (call find_starts t) (block))
+    (unsafe (if (eq (get t Text.starts) (ptr.null (vec.Vec i32))) (call find_starts t) (block))
     (let starts:(ptr (vec.Vec i32)) (get t Text.starts))
     ;; the last line starting at or before pos
     (let lo:i32 0)
@@ -96,12 +96,12 @@
     (put r Place.file (get t Text.name))
     (put r Place.line (+ lo 1))
     (put r Place.col col)
-    r)
+    r))
 
   (fn find_starts [t:(ptr Text)] -> void
-    (let s:(ptr str.Bytes) (get t Text.text))
+    (unsafe (let s:(ptr str.Bytes) (get t Text.text))
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 64))
     (call (vec.push i32) starts 0)
     (loop k 0 (- (get s str.Bytes.len) 1) 1
       (if (eq (mem.load8 (+ (get s str.Bytes.addr) k)) 10) (call (vec.push i32) starts (+ k 1)) (block)))
-    (put t Text.starts starts)))
+    (put t Text.starts starts))))

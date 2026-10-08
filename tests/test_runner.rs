@@ -148,8 +148,8 @@ fn threads_run_under_the_runner() {
         dir.join("th.aipl"),
         r#"(module th
   (import io)
-  (fn work [c:i32] -> i32 (loop i 1 1000 1 (let _o:i32 (atomic.add c 1))) 0)
-  (fn main [] -> i32
+  (fn work [c:i32] -> i32 (unsafe) (loop i 1 1000 1 (let _o:i32 (atomic.add c 1))) 0)
+  (fn main [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
     (let a:i32 (thread.spawn (ref work) c))
     (let b:i32 (thread.spawn (ref work) c))
@@ -235,7 +235,7 @@ fn standalone_executables_for(target: &str) {
     assert_eq!(String::from_utf8_lossy(&o.stderr), format!("{}: wasm trap: integer divide by zero\n  at main (t.aipl:1:30)\n", trapper.display()));
     std::fs::write(
         dir.join("th.aipl"),
-        "(module th (import io) (fn sq [x:i32] -> i32 (* x x)) (fn main [] -> i32 (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
+        "(module th (import io) (fn sq [x:i32] -> i32 (unsafe) (* x x)) (fn main [] -> i32 (unsafe) (call io.println_int \"joined: \" (thread.join (thread.spawn (ref sq) 9))) 0))",
     )
     .unwrap();
     let threaded = dir.join("threaded");

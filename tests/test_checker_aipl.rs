@@ -299,8 +299,8 @@ const EVERY_FORM: &str = r#"(module every
   (enum Color [red (green 5) blue])
   (union Shape [(circle r:f64) (rect w:i32 h:i32) (dot)])
   (struct P [x:i32 next:(ptr P) items:(arr i64) f:(fn [i32] -> bool) r:(result i32 str) c:Color s:Shape])
-  (fn helper [n:i32] -> bool (gt n 0))
-  (fn every [a:i32 b:i64 c:f64 d:bool e:str p:(ptr P) xs:(arr i32)] -> i32
+  (fn helper [n:i32] -> bool (unsafe) (gt n 0))
+  (fn every [a:i32 b:i64 c:f64 d:bool e:str p:(ptr P) xs:(arr i32)] -> i32 (unsafe)
     (req (gte a 0))
     (ens (gte res 0))
     (inv true)
@@ -356,8 +356,8 @@ const EVERY_FORM: &str = r#"(module every
     (if (eq n 0) (sys.exit 0) (block))
     (call out.println "x")
     0)
-  (fn w [x:i32] -> i32 x)
-  (fn nothing [] -> void (return)))"#;
+  (fn w [x:i32] -> i32 (unsafe) x)
+  (fn nothing [] -> void (unsafe) (return)))"#;
 
 /// The same source parsed directly by both parsers (no resolver), printed by
 /// both printers: the same text, for the corpus above and for every
@@ -500,7 +500,7 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32 (ref 5)))",
     "(module m (fn f [] -> i32 (call_ref 5)))",
     "(module m (fn f [] -> i32 (ptr.null 5)))",
-    "(module m (fn f [] -> i32 (ptr.cast 5 1)))",
+    "(module m (fn f [] -> i32 (unsafe) (ptr.cast 5 1)))",
     "(module m (fn f [] -> i32 (enum.cast 5 1)))",
     "(module m (fn f [] -> i32 (arr.new)))",
     "(module m (fn f [] -> i32 (arr.null)))",
@@ -675,6 +675,25 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// form, and definitions; full modules or bodies of `main` (wrapped with
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
+    // the unsafe fence: unchecked operations need an unsafe context
+    "(mem.load32 2048)",
+    "(unsafe (mem.load32 2048))",
+    "(unsafe 1 (unsafe (mem.load32 2048)))",
+    "(block (unsafe 1) (mem.load32 2048))",
+    "(let q:(ptr P) (ptr.cast P 2048)) 0",
+    "(unsafe (let q:(ptr P) (ptr.cast P 2048)) 0)",
+    "(arr.len (arr.cast i32 2048))",
+    "(enum.ord (enum.cast E 1))",
+    "(thread.join 0)",
+    "(atomic.add 2048 1)",
+    "(block (sys.random 2048 4) 0)",
+    "(unsafe (if true (mem.store32 2048 1) (block)) 0)",
+    "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (call raw 2048)))",
+    "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (unsafe (call raw 2048))))",
+    "M:(module m (fn raw [a:i32] -> i32 (unsafe) (mem.load32 a)) (fn main [] -> i32 (unsafe) (call raw 2048)))",
+    "M:(module m (fn raw [a:i32] -> i32 (unsafe) a) (fn main [] -> i32 (let f:(fn [i32] -> i32) (ref raw)) 0))",
+    "M:(module m (fn raw [a:i32] -> i32 (unsafe) (req (gt (mem.load32 a) 0)) a) (fn main [] -> i32 0))",
+    "M:(module m (fn safe [a:i32] -> i32 (req (gt (mem.load32 a) 0)) a) (fn main [] -> i32 0))",
     // registration
     "M:(module m (enum E [a]) (enum E [b]) (fn main [] -> i32 0))",
     "M:(module m (struct E [x:i32]) (enum E [a]) (fn main [] -> i32 0))",
