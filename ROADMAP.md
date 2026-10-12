@@ -27,8 +27,8 @@ against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** constraints on generics, so a template is checked once and `map` takes
-   any key; visibility (which also stops safe code forging the standard
+2. **The language questions readers will ask:** interfaces and constraints on generics, so a template is checked once and `map` takes
+   any key (docs/design/CONSTRAINTS_PLAN.md, agreed); visibility (which also stops safe code forging the standard
    library's raw-address fields); small structs by value; generation checks
    against use after free (docs/design/GENERATIONS_PLAN.md).
 3. **The standard library:** a data format (JSON), directories and file
@@ -64,7 +64,7 @@ versioning (once packages exist), `inv` contracts.
 ### Language
 
 - **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
-- **Generics are explicit templates, not checked as such.** Every use names its type arguments (no inference), and a template is type-checked only through its instances, so an unused generic can hide errors. There are no constraints or interfaces: a generic body may do anything with `T` that its instances' types allow. `std/map` keys are `i32` only (no generic hashing yet).
+- **Generics are explicit templates, not checked as such.** Every use names its type arguments (no inference), and a template is type-checked only through its instances, so an unused generic can hide errors. There are no constraints or interfaces: a generic body may do anything with `T` that its instances' types allow. `std/map` keys are `i32` only (no generic hashing yet). The agreed fix, interfaces with one implementation per type and templates checked once with sealed type parameters, is planned in docs/design/CONSTRAINTS_PLAN.md.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
 - **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
