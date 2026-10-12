@@ -211,7 +211,9 @@ FAQ or ROADMAP.md.
   `result` payloads of any type (the 32-bit limit is gone; `result` stays
   its own form). AIPL_SPEC.md 4.F and 4.J.
 - [ ] **Interfaces or constraints on generics**, so `map` takes any key and
-  a template is checked once.
+  a template is checked once. Design agreed 2026-10-12 (Rust-style
+  interfaces, explicit calls, one implementation per type, templates
+  checked once): docs/design/CONSTRAINTS_PLAN.md, stages IC1–IC5.
 - [ ] **Closures** (or a clear statement that function references plus an
   argument are the design).
 - [ ] **Visibility** (`pub`), so a module's helpers are private.
