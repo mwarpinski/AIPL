@@ -675,6 +675,9 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// form, and definitions; full modules or bodies of `main` (wrapped with
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
+    // result payloads: any type but void
+    "M:(module m (fn g [] -> void (block)) (fn main [] -> i32 (match_result (ok (call g)) (ok a 0) (err b 0))))",
+    "M:(module m (fn main [] -> i32 (match_result (err:f64 5i64) (ok a (i32.wrap (i64.trunc_f64_s a))) (err b (i32.wrap b)))))",
     // the unsafe fence: unchecked operations need an unsafe context
     "(mem.load32 2048)",
     "(unsafe (mem.load32 2048))",

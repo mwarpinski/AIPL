@@ -160,15 +160,17 @@ impl WasmCompiler {
                 local_types.insert(p_name.clone(), p_ty.clone());
             }
 
-            let mut wasm_locals = Vec::new();
+            let mut order = Vec::new();
             for (l_name, l_ty) in &extra_lets {
                 if !local_map.contains_key(l_name) {
                     local_map.insert(l_name.clone(), current_idx);
                     local_types.insert(l_name.clone(), l_ty.clone());
-                    wasm_locals.push((1, aipl_to_wasm_type(l_ty)));
+                    order.push(l_name);
                     current_idx += 1;
                 }
             }
+            binder_types(&f.body, &mut local_types, &fn_returns, &fn_types, &structs);
+            let mut wasm_locals: Vec<(u32, ValType)> = order.iter().map(|n| (1, aipl_to_wasm_type(&local_types[*n]))).collect();
 
             // A function with `ens` keeps its result in `res` for the checks
             // (a hidden local after the lets, unless a let already named it).
@@ -657,6 +659,20 @@ fn wasm_signature(sig: &Type) -> (Vec<ValType>, Vec<ValType>) {
 /// so the fallbacks here (`I32`) are only reached for constructs the checker
 /// treats as untyped (e.g. `arr.get`), never for well-typed numeric code.
 fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
+    type_in(expr, &Typing { local_types: ctx.local_types, fn_returns: ctx.fn_returns, fn_types: ctx.fn_types, structs: ctx.structs })
+}
+
+/// What expr_type reads: available before a function's Ctx exists, while
+/// its locals' types are still being worked out (binder_types).
+struct Typing<'a> {
+    local_types: &'a HashMap<String, Type>,
+    fn_returns: &'a HashMap<String, Type>,
+    fn_types: &'a HashMap<String, Type>,
+    structs: &'a HashMap<String, StructDef>,
+}
+
+fn type_in(expr: &Expr, ctx: &Typing) -> Type {
+    let expr_type = type_in;
     match expr {
         Expr::Lit(lit, _) => match lit {
             Literal::Int(_) => Type::I32,
@@ -671,7 +687,8 @@ fn expr_type(expr: &Expr, ctx: &Ctx) -> Type {
         Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Loop { .. } | Expr::While { .. } => Type::Void,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
-        Expr::Ok(inner, _, _) | Expr::Err(inner, _, _) => expr_type(inner, ctx),
+        Expr::Ok(inner, other, _) => Type::ResultType(Box::new(expr_type(inner, ctx)), Box::new(other.clone().unwrap_or(Type::I32))),
+        Expr::Err(inner, other, _) => Type::ResultType(Box::new(other.clone().unwrap_or(Type::I32)), Box::new(expr_type(inner, ctx))),
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
@@ -1685,6 +1702,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             err_body,
             ..
         } => {
+            let (ok_ty, err_ty) = result_sides(expr_type(expr, ctx));
             compile_expr(expr, ctx, func)?;
             func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -1708,11 +1726,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
 
             if let Some(&ok_idx) = ctx.locals.get(ok_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-                    offset: 4,
-                    align: 2,
-                    memory_index: 0,
-                }));
+                func.instruction(&load_instruction(&in_cell(&ok_ty), crate::checker::result_cell_layout(&ok_ty).0 as u64)?);
                 func.instruction(&Instruction::LocalSet(ok_idx));
             }
             for (i, stmt) in ok_body.iter().enumerate() {
@@ -1727,11 +1741,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
 
             if let Some(&err_idx) = ctx.locals.get(err_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-                    offset: 4,
-                    align: 2,
-                    memory_index: 0,
-                }));
+                func.instruction(&load_instruction(&in_cell(&err_ty), crate::checker::result_cell_layout(&err_ty).0 as u64)?);
                 func.instruction(&Instruction::LocalSet(err_idx));
             }
             for (i, stmt) in err_body.iter().enumerate() {
@@ -2068,21 +2078,17 @@ fn emit_grow_to_cursor(func: &mut Body) {
     func.instruction(&End);
 }
 
-/// `ok`/`err`: allocate an 8-byte cell `[tag:i32 payload:i32]` (tag 0 = ok,
-/// 1 = err) from the heap cursor before evaluating the payload, and leave the
-/// cell pointer on the stack. The pointer is pushed twice before the payload is
-/// compiled, so a payload that itself uses the scratch local cannot clobber it.
-/// The VM allocates the same cell in the same order.
+/// `ok`/`err`: allocate a cell `[tag:i32 payload]` (tag 0 = ok, 1 = err;
+/// checker::result_cell_layout: the payload at 4 in 8 bytes, or a 64-bit one
+/// at 8 in 16) from the heap cursor before evaluating the payload, and leave
+/// the cell pointer on the stack. The pointer is pushed twice before the
+/// payload is compiled, so a payload that itself uses the scratch local
+/// cannot clobber it. The VM allocates the same cell in the same order.
 fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let payload_ty = expr_type(inner, ctx);
-    if aipl_to_wasm_type(&payload_ty) != ValType::I32 {
-        return Err(format!(
-            "Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got {}",
-            payload_ty
-        ));
-    }
+    let (offset, size) = crate::checker::result_cell_layout(&payload_ty);
     func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(8));
+    func.instruction(&Instruction::I32Const(size));
     func.instruction(&Instruction::I32AtomicRmwAdd(M4));
     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
     emit_grow_to_cursor(func);
@@ -2094,8 +2100,54 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Re
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     compile_expr(inner, ctx, func)?;
-    func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
+    func.instruction(&store_instruction(&in_cell(&payload_ty), offset as u64)?);
     Ok(())
+}
+
+/// The ok and err payload types of a result-typed expression (i32 for
+/// anything else, which the checker has ruled out).
+fn result_sides(ty: Type) -> (Type, Type) {
+    match ty {
+        Type::ResultType(a, b) => (*a, *b),
+        _ => (Type::I32, Type::I32),
+    }
+}
+
+/// How a payload of type `ty` sits in a result cell: a result payload is
+/// the address of its own cell.
+fn in_cell(ty: &Type) -> Type {
+    if matches!(ty, Type::ResultType(..)) { Type::I32 } else { ty.clone() }
+}
+
+/// Gives each match_result binder its payload's type, which collect_lets
+/// cannot know: the matched expression's type, worked out in source order
+/// so a binder can be matched again inside its arm. A binder named before
+/// by a let keeps its type, which the checker makes the same.
+fn binder_types(
+    body: &[Expr],
+    local_types: &mut HashMap<String, Type>,
+    fn_returns: &HashMap<String, Type>,
+    fn_types: &HashMap<String, Type>,
+    structs: &HashMap<String, StructDef>,
+) {
+    let mut found = Vec::new();
+    for e in body {
+        walk_expr(e, &mut |x| {
+            if let Expr::MatchResult { expr, ok_var, err_var, .. } = x {
+                found.push((expr.as_ref().clone(), ok_var.clone(), err_var.clone()));
+            }
+        });
+    }
+    let mut set = std::collections::HashSet::new();
+    for (scrutinee, ok_var, err_var) in found {
+        let ty = type_in(&scrutinee, &Typing { local_types, fn_returns, fn_types, structs });
+        let (ok_ty, err_ty) = result_sides(ty);
+        for (name, t) in [(ok_var, ok_ty), (err_var, err_ty)] {
+            if set.insert(name.clone()) {
+                local_types.insert(name, t);
+            }
+        }
+    }
 }
 
 /// The load of a memory value of type `ty` at `offset` from the address on the stack.

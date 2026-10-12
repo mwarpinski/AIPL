@@ -276,13 +276,21 @@
 
   ;; Children separated by spaces, except none around ':'. A non-empty
   ;; `rename` replaces child 1 (an instance's header). (get p (Name T) f) and
-  ;; (put p (Name T) f v) print as (get p Name<T>.f).
+  ;; (put p (Name T) f v) print as (get p Name<T>.f); a generic union's
+  ;; (make (Name T) v x) as (make Name<T>.v x), and its arm ((Name T) v ...)
+  ;; as (Name<T>.v ...).
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let h:(ptr str.Bytes) (call head st g))
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
                                  (and (or (call lit h "get") (call lit h "put"))
                                       (call is_app st (call nth g 2) false))))
+    ;; the child the variant name joins, or -1
+    (let variant_at:i32 (cond
+                          (square -1)
+                          ((call is_app st (call first_child g) false) 0)
+                          ((and (gte (get h str.Bytes.len) 0) (and (call lit h "make") (call is_app st (call nth g 1) false))) 1)
+                          (else -1)))
     (call note st g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
@@ -291,8 +299,9 @@
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (cond
-        ;; the field name was printed with its instance
+        ;; the field or variant name was printed with its instance
         ((and generic_field (eq i 3)) (block))
+        ((and (gte variant_at 0) (eq i (+ variant_at 1))) (block))
         (else
          (if (or prev_colon colon) (block) (call buf.push_byte out 32))
          (cond
@@ -303,6 +312,15 @@
             (if (and (call is_symbol f) (lt (call str.find_byte (call text st f) 46) 0))
                 (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st f)))
                 (call fail_at st (get c compiler.Node.pos) (call msg "a generic struct field is written (get p (Name T...) field)"))))
+           ((eq i variant_at)
+            (call buf.push_bytes out (call instance st c env))
+            (let v:(ptr compiler.Node) (get c compiler.Node.next))
+            (if (and (call is_symbol v) (lt (call str.find_byte (call text st v) 46) 0))
+                (block (call buf.push_byte out 46) (call buf.push_bytes out (call text st v)))
+                (call fail_at st (get c compiler.Node.pos)
+                  (call msg (if (eq variant_at 0)
+                                "a generic union arm is written ((Name T...) variant [binders] body...)"
+                                "a generic union variant is written (make (Name T...) variant fields...)")))))
            (else (call print st c env out (call callee_at st g i))))))
       (set! prev_colon colon)
       (set! i (+ i 1))

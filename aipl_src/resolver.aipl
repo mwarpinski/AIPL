@@ -431,11 +431,12 @@
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
       (let name:(ptr compiler.Node) (call nth item 1))
-      ;; a template (fn (NAME T...) ...): its name is the header's head
+      ;; a template (fn (NAME T...) ...), (union (NAME T...) ...): its name is
+      ;; the header's head (resolver.rs item_name, any item)
       (if (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) compiler.Kind.paren))
           (block
             (let tname:(ptr compiler.Node) (call first_child name))
-            (if (and (call is_symbol tname) (or (call eq_lit h "fn") (call eq_lit h "struct")))
+            (if (call is_symbol tname)
                 (block
                   (call (strmap.set i32) (get m Mod.templates) (call text src tname) 1)
                   (set! name tname))

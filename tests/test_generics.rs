@@ -180,3 +180,82 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
     assert_eq!(run_both(&entry, "main"), 56);
     assert_aipl_resolver_agrees(&entry);
 }
+
+/// Generic unions (AIPL_SPEC.md 4.J): `(union (Name T...) [...])`, built with
+/// `(make (Name t...) variant ...)` and taken apart with the arm
+/// `((Name t...) variant [binders] ...)`; across an import and an alias,
+/// recursive, with 64-bit and float fields, and std/option.
+const UNIONS: &str = r#"(module main
+  (import option)
+  (import shapes as sh)
+  (union (List T) [(cons head:T tail:(List T)) (nil)])
+
+  (fn (sum T) [l:(List T) f:(fn [T] -> i64)] -> i64
+    (match l
+      ((List T) cons [h t] (+ (call_ref (fn [T] -> i64) f h) (call (sum T) t f)))
+      ((List T) nil 0i64)))
+  (fn id [x:i64] -> i64 x)
+  (fn tenth [x:f64] -> i64 (i64.trunc_f64_s (* x 10.0)))
+
+  (fn lists [] -> i32
+    (let a:(List i64) (make (List i64) cons 40i64 (make (List i64) cons 2i64 (make (List i64) nil))))
+    (let b:(List f64) (make (List f64) cons 0.5 (make (List f64) nil)))
+    (i32.wrap (+ (call (sum i64) a (ref id)) (call (sum f64) b (ref tenth)))))
+
+  (fn options [] -> i32
+    (let some:(option.Option i32) (make (option.Option i32) some 7))
+    (let none:(option.Option i32) (make (option.Option i32) none))
+    (+ (call (option.unwrap_or i32) some 0)
+       (+ (call (option.unwrap_or i32) none 30)
+          (if (call (option.is_none i32) none) 100 0))))
+
+  (fn imported [] -> i32
+    (let e:(sh.Either i32 (ptr sh.Point)) (call sh.right_point 5))
+    (match e
+      ((sh.Either i32 (ptr sh.Point)) left [n] n)
+      ((sh.Either i32 (ptr sh.Point)) right [p] (get p sh.Point.x))))
+
+  (fn nested [] -> i32
+    (let o:(option.Option (option.Option bool)) (make (option.Option (option.Option bool)) some (make (option.Option bool) some true)))
+    (match o
+      ((option.Option (option.Option bool)) some [inner]
+        (match inner ((option.Option bool) some [b] (if b 1 2)) (else 3)))
+      (else 4))))"#;
+
+const SHAPES: &str = r#"(module shapes
+  (struct Point [x:i32 y:i32])
+  (union (Either L R) [(left value:L) (right value:R)])
+  (fn right_point [x:i32] -> (Either i32 (ptr Point))
+    (let p:(ptr Point) (new Point))
+    (put p Point.x x)
+    (make (Either i32 (ptr Point)) right p)))"#;
+
+#[test]
+fn generic_unions_work_in_both_backends() {
+    let entry = write_program("unions", &[("main.aipl", UNIONS), ("shapes.aipl", SHAPES)]);
+    assert_eq!(run_both(&entry, "lists"), 47);
+    assert_eq!(run_both(&entry, "options"), 137);
+    assert_eq!(run_both(&entry, "imported"), 5);
+    assert_eq!(run_both(&entry, "nested"), 1);
+    let m = Resolver::resolve(&entry).unwrap();
+    let unions: Vec<&str> = m.unions.iter().map(|u| u.name.as_str()).collect();
+    for n in ["List<i64>", "List<f64>", "option.Option<i32>", "option.Option<option.Option<bool>>", "shapes.Either<i32,ptr<shapes.Point>>"] {
+        assert!(unions.contains(&n), "{n} missing from {unions:?}");
+    }
+    assert_aipl_resolver_agrees(&entry);
+}
+
+#[test]
+fn malformed_generic_union_forms_are_errors_in_both_resolvers() {
+    for (src, want) in [
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [] -> (O i32) (make (O i32))))", "a generic union variant is written (make (Name T...) variant fields...)"),
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [] -> (O i32) (make (O i32) O.some 1)))", "a generic union variant is written (make (Name T...) variant fields...)"),
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [o:(O i32)] -> i32 (match o ((O i32) [v] v) (else 0))))", "a generic union arm is written ((Name T...) variant [binders] body...)"),
+    ] {
+        let entry = write_program("union_err", &[("main.aipl", src)]);
+        let rust = Resolver::resolve(&entry).expect_err("the Rust resolver accepted it");
+        assert!(rust.contains(want), "{src}\n  rust: {rust}");
+        let aipl = aipl_core::selfhost::resolve_with_aipl(&entry).expect_err("the AIPL resolver accepted it");
+        assert_eq!(aipl, rust, "{src}");
+    }
+}

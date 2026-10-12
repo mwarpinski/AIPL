@@ -13,7 +13,8 @@ note. References such as "audit D3" and "P12" are to
 Wasm semantics as the specification, with the VM held to them by
 differential testing; i32/i64 wrapping arithmetic, unsigned comparisons,
 and checked arithmetic; structs, arrays, strict pointer types, function
-references, generics, constants, enums, and unions with `match`; threads
+references, generics, constants, enums, and unions with `match` (generic
+ones too, and `std/option`); results with payloads of any type; threads
 and atomics; contracts and array bounds checks in every backend; WASI I/O
 and a standard library with generic collections and Zig-style allocators;
 a self-hosted toolchain (resolver, generics, type checker, code generator)
@@ -26,9 +27,7 @@ against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** generic unions
-   (`(Option T)`, and `result` as a union without its 32-bit limit);
-   constraints on generics, so a template is checked once and `map` takes
+2. **The language questions readers will ask:** constraints on generics, so a template is checked once and `map` takes
    any key; visibility (which also stops safe code forging the standard
    library's raw-address fields); small structs by value; generation checks
    against use after free (docs/design/GENERATIONS_PLAN.md).
@@ -71,7 +70,7 @@ versioning (once packages exist), `inv` contracts.
 - **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
 - **Constants are literals only.** `(const NAME:T literal)` (AIPL_SPEC.md 4.I) takes no expressions, not even another constant, and has no `f32` form. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
 - **No 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load). Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
-- **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, no generic unions (`(Option T)`), and no nested patterns (a `match` arm binds one level of fields; match again on a field). `result` is still its own 8-byte form with 32-bit payloads, not a union. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
+- **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, and no nested patterns (a `match` arm binds one level of fields; match again on a field). Generic unions and `std/option` exist (AIPL_SPEC.md 4.J); `result` stays its own form, beside them, with payloads of any type. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
 - **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), no float loads or stores on raw memory (keep floats in struct fields or `(arr f64)`, or move bits with `mem.load64` and `f64.reinterpret_i64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 - **Friction for code generators** (audit D3). The pitfalls table (AIPL_SPEC.md 13) is long because the chosen spelling is often not what generators write first: `if` always needs an else (the repository has hundreds of empty `(block)` branches), `loop` includes its end bound, `and`/`or` take exactly two operands, and there is no implicit widening. Each is deliberate; each should be measured against what agents actually produce (docs/LAUNCH_CHECKLIST.md 5).

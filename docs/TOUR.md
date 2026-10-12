@@ -155,7 +155,10 @@ A union is a value that is exactly one of several variants, each with its
 own fields. `make` builds one; `match` takes it apart, and must handle every
 variant (or end with `else`). A `(result T E)` is either `(ok value)` or
 `(err error)`, read with `match_result`. There are no exceptions: a
-function that can fail says so in its type.
+function that can fail says so in its type. A union can be generic, like
+`std/option`'s `(option.Option T)`, for a value that may be missing:
+`(make (option.Option i32) some 5)`, matched with
+`((option.Option i32) some [v] ...)`.
 
 ## 6. Contracts
 

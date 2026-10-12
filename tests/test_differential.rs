@@ -802,21 +802,48 @@ fn p8_structs_and_arrays() {
     }
 }
 
+/// Result payloads of any type (AIPL_SPEC.md 4.F): a 64-bit one sits at 8
+/// in a 16-byte cell, anything else at 4 in an 8-byte one, the same in both
+/// backends; only a void payload is rejected.
 #[test]
-fn p8_non_32_bit_result_payloads_are_rejected() {
-    // the checker rejects them, so verify never accepts what cannot compile
-    for (src, at) in [
-        ("(module m (fn f [] -> (result i64 i32) (ok 1i64)))", "1:40:"),
-        ("(module m (fn f [] -> (result i32 f64) (err 1.5)))", "1:40:"),
-    ] {
-        let module = Parser::parse(src).expect("parses");
-        let err = TypeChecker::new().check_module(&module).unwrap_err();
-        assert!(err.starts_with(at) && err.contains("result payloads must be 32-bit"), "got {err}");
-    }
-    // and the wasm backend still refuses them if handed one unchecked
-    let module = Parser::parse("(module m (fn f [] -> (result i64 i32) (ok 1i64)))").unwrap();
-    let err = WasmCompiler::compile(&module).unwrap_err();
-    assert!(err.contains("result payloads must be 32-bit"), "got {err}");
+fn results_carry_payloads_of_any_type() {
+    let src = r#"
+(module m
+  (fn big [n:i32] -> (result i64 str)
+    (if (gt n 0) (ok:str (* 3000000000i64 (i64.extend_s n))) (err:i64 "not positive")))
+  (fn half [x:f64] -> (result f64 i64)
+    (if (gt x 0.0) (ok:i64 (/ x 2.0)) (err:f64 -7i64)))
+  (fn nested [] -> (result (result i64 bool) i32) (ok (ok:bool 5i64)))
+  (fn wide [n:i32] -> i32
+    (match_result (call big n) (ok v (i32.wrap (/ v 1000i64))) (err e (str.len e))))
+  (fn float [] -> i32
+    (match_result (call half 5.0) (ok h (i32.wrap (i64.trunc_f64_s (* h 10.0)))) (err e (i32.wrap e))))
+  (fn inner [] -> i32
+    (match_result (call nested)
+      (ok r (match_result r (ok w (i32.wrap w)) (err b (if b 1 0))))
+      (err e e)))
+  (fn cells [] -> i32 (unsafe
+    (let before:i32 (mem.load32 0))
+    (let a:(result i64 str) (call big 1))
+    (let b:(result i32 i32) (ok 1))
+    (let c:(result f64 i64) (call half -1.0))
+    (let d:(result f64 i64) (call half 5.0))
+    (- (mem.load32 0) before))))
+"#;
+    let module = Parser::parse(src).expect("parses");
+    TypeChecker::new().check_module(&module).expect("checks");
+    let wasm = WasmCompiler::compile(&module).expect("compiles");
+    assert_eq!(differential(&module, &wasm, "wide", &[2]), Ok(Value::Int(6_000_000)));
+    assert_eq!(differential(&module, &wasm, "wide", &[0]), Ok(Value::Int(12)));
+    assert_eq!(differential(&module, &wasm, "float", &[]), Ok(Value::Int(25)));
+    assert_eq!(differential(&module, &wasm, "inner", &[]), Ok(Value::Int(5)));
+    // i64, i32, i64 and f64 payloads: 16 + 8 + 16 + 16 bytes
+    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(56)));
+
+    let err = TypeChecker::new()
+        .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok (call g))))").unwrap())
+        .unwrap_err();
+    assert!(err.ends_with("1:60: a result payload must be a value, got void"), "got {err}");
 }
 
 // Allocation grows memory: new, arr.new, ok/err cells, and mem.alloc past the
