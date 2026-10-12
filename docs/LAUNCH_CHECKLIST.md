@@ -206,8 +206,10 @@ is a small, honest experiment:
 Not all need building before a post; each needs an honest answer in the
 FAQ or ROADMAP.md.
 
-- [ ] **Option types / generic unions** (`(Option T)`, a real `Result`): the
-  most visible missing feature for a statically typed language.
+- [x] **Option types / generic unions** (done 2026-10-12): generic unions
+  (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
+  `result` payloads of any type (the 32-bit limit is gone; `result` stays
+  its own form). AIPL_SPEC.md 4.F and 4.J.
 - [ ] **Interfaces or constraints on generics**, so `map` takes any key and
   a template is checked once.
 - [ ] **Closures** (or a clear statement that function references plus an

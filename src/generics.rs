@@ -4,11 +4,15 @@
 //!
 //! A template is `(struct (Name T...) [fields])` or `(fn (name T...) ...)`.
 //! A use names every type argument: `(Name i32)` in a type, `(new (Name i32))`,
-//! `(get p (Name i32) field)`, `(call (name i32) args...)`, `(ref (name i32))`.
+//! `(get p (Name i32) field)`, `(call (name i32) args...)`, `(ref (name i32))`,
+//! and for a generic union `(make (Name i32) variant args...)` and the match
+//! arm `((Name i32) variant [binders] body...)`.
 //! Each distinct instantiation becomes an ordinary item named
 //! `Name<arg,...>` (e.g. `Vec<i32>`, `Map<i32,ptr<Point>>`), made by
 //! substituting the arguments for the parameters; `(get p (Name i32) f)`
-//! becomes `(get p Name<i32>.f)`. Templates themselves are dropped, so the
+//! becomes `(get p Name<i32>.f)`, `(make (Name i32) v x)` becomes
+//! `(make Name<i32>.v x)`, and the arm `((Name i32) v ...)` becomes
+//! `(Name<i32>.v ...)`. Templates themselves are dropped, so the
 //! checker and the code generators only see concrete code.
 //!
 //! Order (both implementations must agree, for byte parity): the program's
@@ -138,16 +142,37 @@ fn rewrite(
     let applies = |h: Option<&str>, callee: bool| h.and_then(|h| templates.get(h)).is_some_and(|t| t.is_struct || callee);
     let is_app = applies(head.as_deref(), callee);
     let calls = matches!(head.as_deref(), Some("call" | "ref"));
+    let paren = sx.is_paren();
     let items = sx.items_mut().unwrap();
     // the head of an application is the template's name, not something to rewrite
     let start = if is_app { 1 } else { 0 };
     let mut generic_field = false;
+    // (make (Name T) v ...) and an arm ((Name T) v ...): the instance and the
+    // variant become one name, Name<T>.v
+    let mut variant_at = None;
     for (k, child) in items.iter_mut().enumerate().skip(start) {
         let child_callee = calls && k == 1;
         let was_app = applies(child.head(), false);
         rewrite(child, file, foreign, templates, made, created, child_callee)?;
         if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put")) {
             generic_field = true;
+        }
+        if was_app && paren && ((k == 0 && head.is_none()) || (k == 1 && head.as_deref() == Some("make"))) {
+            variant_at = Some(k);
+        }
+    }
+    if let Some(k) = variant_at {
+        let variant = items.get(k + 1).and_then(|v| v.symbol()).map(|v| v.to_string());
+        let inst = items[k].symbol().unwrap().to_string();
+        match variant {
+            Some(v) if !v.contains('.') => {
+                items[k] = Sx::symbol_at(format!("{}.{}", inst, v), &items[k]);
+                items.remove(k + 1);
+            }
+            _ => {
+                let form = if k == 0 { "a generic union arm is written ((Name T...) variant [binders] body...)" } else { "a generic union variant is written (make (Name T...) variant fields...)" };
+                return Err(at(foreign.get(&items[k].position()).map(|p| p.as_path()).unwrap_or(file), &items[k], form));
+            }
         }
     }
     // (get p (Name T) field) -> (get p Name<T>.field), and the same for put

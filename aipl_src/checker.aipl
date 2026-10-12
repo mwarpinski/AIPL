@@ -693,14 +693,12 @@
 
   (fn placeholder [at:i32] -> ast.Expr (make ast.Expr.lit_int at 0i64))
 
-  ;; checker.rs check_result_payload: a result cell's payload is 32-bit.
+  ;; checker.rs check_result_payload: a result's payload is a value.
   (fn check_result_payload [c:(ptr C) t:ast.Type at:i32] -> void
-    (let k:i32 (call tag t))
-    (if (and (gte k 1) (lte k 3))
+    (if (eq (call tag t) 6)
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got ")
-          (call ty b t)
+          (call s b "a result payload must be a value, got void")
           (call fail c b))
         (block)))
 

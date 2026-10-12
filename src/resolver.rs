@@ -420,6 +420,8 @@ impl Names<'_> {
                             for (j, part) in arm.iter_mut().enumerate() {
                                 match part {
                                     Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => *s = self.rename(s, 0),
+                                    // a generic union's arm: ((Name T...) variant ...)
+                                    Sx::List { .. } if j == 0 => self.walk(part, 0),
                                     _ if j == 0 => {}
                                     _ => self.walk(part, 0),
                                 }

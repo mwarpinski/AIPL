@@ -334,6 +334,48 @@ fn self_hosted_bytes_match_match_result() {
     assert_self_hosted_matches_rust("match_result", src);
 }
 
+/// Payloads of every width, and every way a match_result binder's type is
+/// found (codegen.aipl result_side): a let, a parameter, a call, call_ref,
+/// ok/err themselves (with and without `:T`), if, block, unsafe, cond,
+/// match, and a nested match_result.
+#[test]
+fn self_hosted_bytes_match_wide_results() {
+    let src = r#"
+(module wide_results
+  (union U [(one) (two)])
+  (fn big [n:i32] -> (result i64 f64)
+    (if (gt n 0) (ok:f64 (i64.extend_s n)) (err:i64 1.5)))
+  (fn nested [] -> (result (result f64 bool) i64) (ok:i64 (ok:bool 2.5)))
+  (fn from_let [] -> i64
+    (let r:(result i64 f64) (call big 3))
+    (match_result r (ok a a) (err b (i64.trunc_f64_s b))))
+  (fn from_param [r:(result f64 i32)] -> f64
+    (match_result r (ok c c) (err d 0.0)))
+  (fn from_ref [] -> i64
+    (let g:(fn [i32] -> (result i64 f64)) (ref big))
+    (match_result (call_ref (fn [i32] -> (result i64 f64)) g 1) (ok a a) (err b 0i64)))
+  (fn from_literals [] -> i64
+    (let s:i64 0i64)
+    (match_result (ok 7i64) (ok e1 (set! s e1)) (err e2 (set! s (i64.extend_s e2))))
+    (match_result (err:f64 7i64) (ok e3 (set! s (i64.trunc_f64_s e3))) (err e4 (set! s e4)))
+    (match_result (ok:f64 1i64) (ok e5 (set! s e5)) (err e6 (set! s (i64.trunc_f64_s e6))))
+    s)
+  (fn from_forms [k:i32 u:U] -> i64
+    (let t:i64 0i64)
+    (match_result (if (gt k 0) (call big k) (call big 0)) (ok f1 (set! t f1)) (err f2 (set! t 1i64)))
+    (match_result (block (call big k)) (ok f3 (set! t f3)) (err f4 (set! t 2i64)))
+    (match_result (unsafe (call big k)) (ok f5 (set! t f5)) (err f6 (set! t 3i64)))
+    (match_result (cond ((gt k 1) (call big k)) (else (call big 1))) (ok f7 (set! t f7)) (err f8 (set! t 4i64)))
+    (match_result (match u (U.one (call big 1)) (U.two (call big 2))) (ok f9 (set! t f9)) (err f10 (set! t 5i64)))
+    t)
+  (fn from_nested [] -> f64
+    (match_result (call nested)
+      (ok r (match_result r (ok x x) (err y (if y 1.0 0.0))))
+      (err z 0.0))))
+"#;
+    assert_self_hosted_matches_rust("wide_results", src);
+}
+
 #[test]
 fn self_hosted_bytes_match_strings_alloc_grow_exit() {
     let src = r#"

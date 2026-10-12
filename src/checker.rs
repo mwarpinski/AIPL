@@ -12,17 +12,20 @@ pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     }
 }
 
-/// A result cell holds a 32-bit payload, so a 64-bit or float value cannot be
-/// one (the wasm backend's rule; checked here so `verify` rejects what no
-/// backend compiles).
+/// A result's payload is a value of any type but `void`.
 fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
-    if matches!(t, Type::I64 | Type::F32 | Type::F64) {
-        return Err(format!(
-            "{}:{}: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got {}",
-            l, c, t
-        ));
+    if *t == Type::Void {
+        return Err(format!("{}:{}: a result payload must be a value, got void", l, c));
     }
     Ok(())
+}
+
+/// Where a result cell keeps its payload, and the cell's size: like a union
+/// variant with one field (AIPL_SPEC.md 4.F), after the 4-byte tag, so a
+/// 64-bit payload sits at 8 in a 16-byte cell and any other at 4 in an
+/// 8-byte one.
+pub fn result_cell_layout(payload: &Type) -> (u32, i32) {
+    if matches!(payload, Type::I64 | Type::F64) { (8, 16) } else { (4, 8) }
 }
 
 pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
@@ -92,6 +95,10 @@ pub struct TypeChecker {
     /// `(unsafe ...)` block (depth > 0) or an `(unsafe)` function.
     unsafe_depth: std::cell::Cell<u32>,
     in_unsafe_fn: std::cell::Cell<bool>,
+    /// The type of each `ok`/`err` payload, by the payload's address: the VM
+    /// lays out a result cell before it evaluates the payload, so it needs
+    /// the payload's size from here (payload_types).
+    payloads: std::cell::RefCell<HashMap<usize, Type>>,
 }
 
 impl Default for TypeChecker {
@@ -114,7 +121,17 @@ impl TypeChecker {
             unsafe_fns: std::collections::HashSet::new(),
             unsafe_depth: std::cell::Cell::new(0),
             in_unsafe_fn: std::cell::Cell::new(false),
+            payloads: std::cell::RefCell::new(HashMap::new()),
         }
+    }
+
+    /// The type of every `ok`/`err` payload in `module`, keyed by the
+    /// payload expression's address (stable while the module's boxes live).
+    /// Payloads in functions that do not check are left out.
+    pub fn payload_types(module: &Module) -> HashMap<usize, Type> {
+        let mut checker = TypeChecker::new();
+        let _ = checker.check_module(module);
+        checker.payloads.into_inner()
     }
 
     /// Checks a module. Definitions and signatures stop at the first error
@@ -946,6 +963,7 @@ impl TypeChecker {
             Expr::Ok(val, extra_ty, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
+                self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
                 let err_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
@@ -953,6 +971,7 @@ impl TypeChecker {
             Expr::Err(err, extra_ty, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
+                self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
                 let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&ok_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))

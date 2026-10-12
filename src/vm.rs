@@ -116,6 +116,10 @@ pub struct VM {
     /// Each function's source file name (Module::sources, file_names), for
     /// the positions in a call chain.
     places: Arc<HashMap<String, String>>,
+    /// The type of each `ok`/`err` payload, by the payload expression's
+    /// address (TypeChecker::payload_types): a result cell's size depends on
+    /// it and is claimed before the payload runs.
+    payloads: Arc<HashMap<usize, Type>>,
 }
 
 impl Default for VM {
@@ -155,6 +159,7 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::new(HashMap::new()),
+            payloads: Arc::new(HashMap::new()),
         }
     }
 
@@ -183,6 +188,7 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::clone(&self.places),
+            payloads: Arc::clone(&self.payloads),
             stdin: self.stdin.clone(),
         }
     }
@@ -276,6 +282,10 @@ impl VM {
             }
         }
         self.places = Arc::new(places);
+        // the payloads' boxes keep their addresses when the functions move below
+        let mut payloads = (*self.payloads).clone();
+        payloads.extend(crate::checker::TypeChecker::payload_types(&module));
+        self.payloads = Arc::new(payloads);
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -834,11 +844,16 @@ impl VM {
     }
 
     fn eval_result_cell(&mut self, tag: i32, payload: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
-        let cell = self.alloc_bytes(8) as u32 as usize;
+        let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
+        let (offset, size) = crate::checker::result_cell_layout(&ty);
+        let cell = self.alloc_bytes(size as usize) as u32 as usize;
         self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
         let inner = self.eval_expr(payload, scope)?;
-        if let Value::Int(_) | Value::Bool(_) = inner {
-            self.store_val_at(cell + 4, &Type::I32, inner.clone())?;
+        let at = cell + offset as usize;
+        match (&ty, &inner) {
+            (Type::I64 | Type::F64 | Type::F32, _) => self.store_val_at(at, &ty, inner.clone())?,
+            (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
+            _ => {}
         }
         Ok(inner)
     }
