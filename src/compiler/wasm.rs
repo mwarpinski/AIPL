@@ -771,6 +771,9 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsWrite
             | OpCode::FsClose
             | OpCode::FsDelete
+            | OpCode::FsOpendir
+            | OpCode::FsReaddir
+            | OpCode::FsStat
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -1548,6 +1551,57 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_expr(&args[0], ctx, func)?;
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::Call(host));
+                emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::FsOpendir => {
+                // (fs.opendir ptr len) -> path_open with DIRECTORY and the
+                // readdir right; the new fd, or -1. Mirrors vm.rs FsOpendir.
+                let path_open = wasi_index(ctx, Wasi::PathOpen)?;
+                let (io_a, _) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::I32Const(0)); // dirflags
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::I32Const(WASI_OFLAGS_DIRECTORY));
+                func.instruction(&Instruction::I64Const(WASI_RIGHT_FD_READDIR));
+                func.instruction(&Instruction::I64Const(0)); // rights_inheriting
+                func.instruction(&Instruction::I32Const(0)); // fdflags
+                emit_rt(func, ctx, RT_OPENED_FD);
+                func.instruction(&Instruction::Call(path_open));
+                emit_errno_to_result(func, ctx, Some(RT_OPENED_FD));
+            }
+            OpCode::FsReaddir => {
+                // (fs.readdir fd buf len cookie) -> fd_readdir, its operands
+                // in its order; the bytes used, or -1
+                let readdir = wasi_index(ctx, Wasi::FdReaddir)?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                emit_rt(func, ctx, RT_NBYTES);
+                func.instruction(&Instruction::Call(readdir));
+                emit_errno_to_result(func, ctx, Some(RT_NBYTES));
+            }
+            OpCode::FsStat => {
+                // (fs.stat ptr len out) -> path_filestat_get following
+                // symlinks; 0, or -1
+                let stat = wasi_index(ctx, Wasi::PathFilestatGet)?;
+                let (io_a, io_b) = io_locals(ctx)?;
+                compile_expr(&args[0], ctx, func)?;
+                compile_expr(&args[1], ctx, func)?;
+                compile_expr(&args[2], ctx, func)?;
+                func.instruction(&Instruction::LocalSet(io_b)); // out
+                func.instruction(&Instruction::LocalSet(io_a)); // len
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch)); // ptr
+                emit_path_dir(func, ctx.addr_scratch, io_a);
+                func.instruction(&Instruction::I32Const(WASI_LOOKUP_SYMLINK_FOLLOW));
+                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+                func.instruction(&Instruction::LocalGet(io_a));
+                func.instruction(&Instruction::LocalGet(io_b));
+                func.instruction(&Instruction::Call(stat));
                 emit_errno_to_result(func, ctx, None);
             }
             OpCode::FsDelete => {
@@ -3025,6 +3079,9 @@ const WASI_OFLAGS_CREAT: i32 = 1 << 0;
 const WASI_OFLAGS_TRUNC: i32 = 1 << 3;
 const WASI_RIGHT_FD_READ: i64 = 1 << 1;
 const WASI_RIGHT_FD_WRITE: i64 = 1 << 6;
+const WASI_RIGHT_FD_READDIR: i64 = 1 << 14;
+const WASI_OFLAGS_DIRECTORY: i32 = 1 << 1;
+const WASI_LOOKUP_SYMLINK_FOLLOW: i32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Wasi {
@@ -3046,6 +3103,8 @@ enum Wasi {
     ThreadSpawn,
     ClockTimeGet,
     RandomGet,
+    FdReaddir,
+    PathFilestatGet,
 }
 
 impl Wasi {
@@ -3070,6 +3129,8 @@ impl Wasi {
             Wasi::ThreadSpawn => "thread-spawn",
             Wasi::ClockTimeGet => "clock_time_get",
             Wasi::RandomGet => "random_get",
+            Wasi::FdReaddir => "fd_readdir",
+            Wasi::PathFilestatGet => "path_filestat_get",
         }
     }
 
@@ -3086,6 +3147,8 @@ impl Wasi {
             Wasi::ThreadSpawn => (vec![I32], vec![I32]),
             Wasi::ClockTimeGet => (vec![I32, I64, I32], vec![I32]),
             Wasi::RandomGet => (vec![I32, I32], vec![I32]),
+            Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
+            Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
         }
     }
 
@@ -3097,6 +3160,9 @@ impl Wasi {
             OpCode::FsClose => Some(Wasi::FdClose),
             OpCode::SysExit => Some(Wasi::ProcExit),
             OpCode::FsDelete => Some(Wasi::PathUnlinkFile),
+            OpCode::FsOpendir => Some(Wasi::PathOpen),
+            OpCode::FsReaddir => Some(Wasi::FdReaddir),
+            OpCode::FsStat => Some(Wasi::PathFilestatGet),
             OpCode::ArgsSizes => Some(Wasi::ArgsSizesGet),
             OpCode::ArgsGet => Some(Wasi::ArgsGet),
             OpCode::EnvSizes => Some(Wasi::EnvironSizesGet),

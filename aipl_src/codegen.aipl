@@ -77,7 +77,10 @@
   ;; wasm.rs enum Wasi.
   (enum Wasi [(none -1) fd_write fd_read path_open fd_close proc_exit path_unlink_file
               args_sizes_get args_get environ_sizes_get environ_get thread_spawn
-              clock_time_get random_get])
+              clock_time_get random_get fd_readdir path_filestat_get])
+
+  ;; How many WASI functions there are (enum Wasi, none aside).
+  (const NWASI:i32 15)
 
   ;; A struct of the module and its layout (checker.rs get_field_offset):
   ;; fields in declaration order, each aligned to its size.
@@ -118,8 +121,8 @@
     (put cg Cg.nstructs 0)
     (put cg Cg.unions (arr.new (ptr UnionInfo) 255))
     (put cg Cg.nunions 0)
-    (put cg Cg.wasi (arr.new i32 13))
-    (loop w 0 12 1 (arr.set i32 (get cg Cg.wasi) w -1))
+    (put cg Cg.wasi (arr.new i32 NWASI))
+    (loop w 0 (- NWASI 1) 1 (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
     (put cg Cg.labels (arr.new Label 255))
     (put cg Cg.nlabels 0)
@@ -183,7 +186,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
@@ -238,6 +241,9 @@
     (call reg m "fs.write" Kw.fs_write)
     (call reg m "fs.close" Kw.fs_close)
     (call reg m "fs.delete" Kw.fs_delete)
+    (call reg m "fs.opendir" Kw.fs_opendir)
+    (call reg m "fs.readdir" Kw.fs_readdir)
+    (call reg m "fs.stat" Kw.fs_stat)
     (call reg m "%" Kw.rem)
     (call reg m "divu" Kw.divu)
     (call reg m "remu" Kw.remu)
@@ -1762,6 +1768,8 @@
       ((eq w Wasi.environ_get) "environ_get")
       ((eq w Wasi.thread_spawn) "thread-spawn")
       ((eq w Wasi.clock_time_get) "clock_time_get")
+      ((eq w Wasi.fd_readdir) "fd_readdir")
+      ((eq w Wasi.path_filestat_get) "path_filestat_get")
       (else "random_get")))
 
   ;; ===== WASI Import Detection =====
@@ -1773,7 +1781,7 @@
 
   (fn finalize_wasi_indices [cg:(ptr Cg)] -> i32
     (let count:i32 0)
-    (loop i 0 12 1
+    (loop i 0 (- NWASI 1) 1
       (if (eq (arr.get i32 (get cg Cg.wasi) i) 1)
           (block
             (arr.set i32 (get cg Cg.wasi) i count)
@@ -1803,6 +1811,9 @@
             ((eq kw Kw.fs_write) (call mark_wasi_used cg Wasi.fd_write) 0)
             ((eq kw Kw.fs_close) (call mark_wasi_used cg Wasi.fd_close) 0)
             ((eq kw Kw.fs_delete) (call mark_wasi_used cg Wasi.path_unlink_file) 0)
+            ((eq kw Kw.fs_opendir) (call mark_wasi_used cg Wasi.path_open) 0)
+            ((eq kw Kw.fs_readdir) (call mark_wasi_used cg Wasi.fd_readdir) 0)
+            ((eq kw Kw.fs_stat) (call mark_wasi_used cg Wasi.path_filestat_get) 0)
             ((eq kw Kw.args_sizes) (call mark_wasi_used cg Wasi.args_sizes_get) 0)
             ((eq kw Kw.args_get) (call mark_wasi_used cg Wasi.args_get) 0)
             ((eq kw Kw.env_sizes) (call mark_wasi_used cg Wasi.environ_sizes_get) 0)
@@ -1959,6 +1970,7 @@
     (cond
       ((or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.fs_open) (or (eq k Kw.fs_read)
           (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
+      ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
       ((or (eq k Kw.arr_new) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
@@ -2524,6 +2536,53 @@
           (call emit_rt cg o 84)
           (call emit_call o (call get_wasi_index cg Wasi.path_open))
           (call emit_errno_to_result cg o 84)
+          (set! done true))
+        (block))
+    (if (eq op_id Kw.fs_opendir) ;; fs.opendir (path_ptr, path_len): wasm.rs FsOpendir
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.nlocals))
+          (call emit_path_dir o (get cg Cg.nlocals) io_a)
+          (call emit_i32_const o 0) ;; dirflags
+          (call emit_local_get o (get cg Cg.nlocals))
+          (call emit_local_get o io_a)
+          (call emit_i32_const o 2) ;; oflags DIRECTORY
+          (call put_op o OP_I64_CONST) (call put_s32 o 16384) ;; rights: FD_READDIR
+          (call put_op o OP_I64_CONST) (call put_s32 o 0)
+          (call emit_i32_const o 0) ;; fdflags
+          (call emit_rt cg o 84)
+          (call emit_call o (call get_wasi_index cg Wasi.path_open))
+          (call emit_errno_to_result cg o 84)
+          (set! done true))
+        (block))
+    (if (eq op_id Kw.fs_readdir) ;; fs.readdir (fd, buf, len, cookie): fd_readdir's own order
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call compile_expr cg (call nth_child node 4) o)
+          (call emit_rt cg o 80)
+          (call emit_call o (call get_wasi_index cg Wasi.fd_readdir))
+          (call emit_errno_to_result cg o 80)
+          (set! done true))
+        (block))
+    (if (eq op_id Kw.fs_stat) ;; fs.stat (path_ptr, path_len, out): path_filestat_get, following symlinks
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call emit_local_set o io_b)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.nlocals))
+          (call emit_path_dir o (get cg Cg.nlocals) io_a)
+          (call emit_i32_const o 1)
+          (call emit_local_get o (get cg Cg.nlocals))
+          (call emit_local_get o io_a)
+          (call emit_local_get o io_b)
+          (call emit_call o (call get_wasi_index cg Wasi.path_filestat_get))
+          (call emit_errno_to_result cg o -1)
           (set! done true))
         (block))
     (if (eq op_id Kw.fs_read) ;; fs.read (fd, buf_ptr, max_len)
@@ -3471,6 +3530,8 @@
       ((eq w Wasi.path_unlink_file) (call sig_from "iii" 127))
       ((eq w Wasi.clock_time_get) (call sig_from "ili" 127))
       ((eq w Wasi.thread_spawn) (call sig_from "i" 127))
+      ((eq w Wasi.fd_readdir) (call sig_from "iiili" 127))
+      ((eq w Wasi.path_filestat_get) (call sig_from "iiiii" 127))
       ;; random_get, args_sizes_get, args_get, environ_sizes_get, environ_get
       (else (call sig_from "ii" 127))))
 
@@ -3586,7 +3647,7 @@
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
     (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 6 0))))))
-    (loop w 0 12 1
+    (loop w 0 (- NWASI 1) 1
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
     (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
     (loop si 0 (- nsigs 1) 1 (call emit_func_type sec (arr.get (ptr Sig) (get cg Cg.sigs) si)))
@@ -3614,7 +3675,7 @@
           (set! sec (call out_at scratch))
           (call put_u32 sec (if threaded (+ imports 1) imports))
           (let type_idx:i32 0)
-          (loop w 0 12 1
+          (loop w 0 (- NWASI 1) 1
             (let wv:Wasi (enum.cast Wasi w))
             (if (neq (call get_wasi_index cg wv) -1)
                 (block

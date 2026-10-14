@@ -850,6 +850,7 @@
     (call op m "sys.random" ast.Op.sys_random) (call op m "sys.exit" ast.Op.sys_exit)
     (call op m "fs.open" ast.Op.fs_open) (call op m "fs.read" ast.Op.fs_read) (call op m "fs.write" ast.Op.fs_write)
     (call op m "fs.close" ast.Op.fs_close) (call op m "fs.delete" ast.Op.fs_delete)
+    (call op m "fs.opendir" ast.Op.fs_opendir) (call op m "fs.readdir" ast.Op.fs_readdir) (call op m "fs.stat" ast.Op.fs_stat)
     (call op m "args.sizes" ast.Op.args_sizes) (call op m "args.get" ast.Op.args_get)
     (call op m "env.sizes" ast.Op.env_sizes) (call op m "env.get" ast.Op.env_get)
     (call op m "thread.spawn" ast.Op.thread_spawn) (call op m "thread.join" ast.Op.thread_join)

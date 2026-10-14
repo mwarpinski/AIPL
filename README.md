@@ -151,8 +151,8 @@ is missing):
    easier installation, a showcase program, and the experiment measuring
    how well agents write AIPL.
 2. **The language:** small structs by value (plan first).
-3. **The standard library:** JSON, directories, running processes, then
-   networking.
+3. **The standard library:** networking and starting processes, once WASI
+   can.
 4. **Retiring the Rust compiler:** rebuilding the toolchain from a
    checked-in compiled seed, so Rust is needed only for the launcher.
 5. **Faster native code:** a translator that keeps values in registers.
@@ -165,7 +165,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **315 Rust tests** and an AIPL test suite, run on every push by CI.
+- **318 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

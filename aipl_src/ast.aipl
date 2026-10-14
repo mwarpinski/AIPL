@@ -33,7 +33,7 @@
             fs_open fs_read fs_write fs_close fs_delete args_sizes args_get env_sizes env_get
             thread_spawn thread_join i64_extend_s i64_extend_u i32_wrap
             f64_convert_i64_s f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
-            str_len str_ptr] (pub))
+            str_len str_ptr fs_opendir fs_readdir fs_stat] (pub))
 
   ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32.
   (enum AddrKind [ptr arr enum_] (pub))

@@ -712,7 +712,9 @@ impl Names<'_> {
                     // the head of each is a member's name, even one a template
                     // of this module also has
                     if matches!(head.as_deref(), Some("union" | "enum")) && i == 2 && !child.is_paren() {
-                        for member in child.items_mut().unwrap() {
+                        // anything but a [...] list is the parser's error to report
+                        let Some(members) = child.items_mut() else { continue };
+                        for member in members {
                             match member.items_mut() {
                                 Some(parts) => {
                                     for part in parts.iter_mut().skip(1) {

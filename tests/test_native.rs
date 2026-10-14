@@ -688,6 +688,34 @@ fn file_programs_match_natively() {
             },
         ),
         (
+            "stat_and_opendir_stay_inside",
+            probe(
+                "(call io.println_int \"stat file: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))
+                 (call io.println_int \"stat escape: \" (fs.stat (str.ptr \"../run/c.txt\") 12 (mem.alloc 64)))
+                 (call io.println_int \"stat through link: \" (fs.stat (str.ptr \"out/run/c.txt\") 13 (mem.alloc 64)))
+                 (call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
+                 (call io.println_int \"opendir sub: \" (if (gte (fs.opendir (str.ptr \"sub\") 3) 0) 1 0))
+                 (call io.println_int \"opendir file: \" (fs.opendir (str.ptr \"c.txt\") 5))
+                 (call io.println_int \"opendir escape: \" (fs.opendir (str.ptr \"..\") 2))
+                 (call io.println_int \"opendir through link: \" (fs.opendir (str.ptr \"out\") 3))
+                 (call io.println_int \"readdir bad fd: \" (fs.readdir 99 (mem.alloc 64) 64 0i64))",
+            ),
+            Io {
+                files: vec![file("c.txt", b"c"), file("sub/b.txt", b"b")],
+                symlinks: vec![("out".into(), "..".into())],
+                ..Io::default()
+            },
+        ),
+        (
+            "stat_and_opendir_sandboxed",
+            probe(
+                "(call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
+                 (call io.println_int \"opendir absolute: \" (fs.opendir (str.ptr \"/etc\") 4))
+                 (call io.println_int \"stat inside: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))",
+            ),
+            Io { files: vec![file("c.txt", b"c")], sandbox: true, ..Io::default() },
+        ),
+        (
             "read_only_descriptor",
             probe(
                 "(let fd:i32 (fs.open (str.ptr \"data.txt\") 8 0))
@@ -2262,4 +2290,59 @@ fn checked_arithmetic_matches_natively() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// std/fs over fs.opendir, fs.readdir, and fs.stat: a directory of 300
+/// files with long names (many readdir calls, entries cut at a buffer's
+/// end), a subdirectory, file information, and a missing path. aipl-run
+/// (wasmtime), the native executable, and the VM print the same.
+#[test]
+fn directories_and_file_information_match_natively() {
+    let src = r#"(module m
+  (import fs)
+  (import io)
+  (import alloc)
+  (import vec)
+  (import str)
+  (import option)
+  (fn show [path:str] -> void
+    (match (call fs.info path)
+      ((option.Option (ptr fs.Info)) some [i]
+        (call io.write_str 1 path)
+        (call io.write_str 1 (match (get i fs.Info.kind) (fs.Kind.file " file ") (fs.Kind.directory " directory ") (fs.Kind.other " other ")))
+        (call io.println_i64 "" (get i fs.Info.size)))
+      ((option.Option (ptr fs.Info)) none (call io.write_str 1 path) (call io.println " missing"))))
+  (fn main [] -> i32
+    (match (call fs.list (call alloc.default) "big")
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
+        (call io.println_int "names " (call (vec.len (ptr str.Bytes)) names))
+        (loop i 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 37
+          (let n:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names i))
+          (call io.println_int "  length " (get n str.Bytes.len))
+          (call io.println_int "  first byte " (call str.byte_at n 0))
+          (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))))
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (call io.println "no listing")))
+    (call show "big/f007")
+    (call show "big/sub")
+    (call show "nowhere")
+    (if (call (option.is_none (ptr (vec.Vec (ptr str.Bytes)))) (call fs.list (call alloc.default) "nowhere")) 0 1)))"#;
+    let mut files = Vec::new();
+    for k in 0..300 {
+        files.push((format!("big/f{:03}{}", (k * 7919) % 1000, "n".repeat(k % 120)), vec![b'x'; k]));
+    }
+    files.push(("big/f007".to_string(), b"seven".to_vec()));
+    files.push(("big/sub/inner".to_string(), b"in".to_vec()));
+    let io = Io { files, ..Io::default() };
+    let wasm = to_wasm(src);
+    assert_wasm_native_matches_with("fs_listing", &wasm, &io);
+    // and the VM, from the same files
+    let root = scratch("fs_listing_vm");
+    let dir = prepare(&root, &io);
+    std::fs::write(dir.join("m.aipl"), src).unwrap();
+    let vm = Command::new(env!("CARGO_BIN_EXE_aipl")).args(["eval", "m.aipl"]).current_dir(&dir).output().unwrap();
+    let vm_out: String = String::from_utf8_lossy(&vm.stdout).lines().filter(|l| !l.starts_with("[AIPL")).map(|l| format!("{l}\n")).collect();
+    let wasm_out = String::from_utf8_lossy(&run_wasm_with(&dir, &wasm, &io).stdout).to_string();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(wasm_out.contains("names 302\n") && wasm_out.contains("big/f007 file 5\n") && wasm_out.contains("big/sub directory") && wasm_out.contains("nowhere missing"), "{wasm_out}");
+    assert_eq!(vm_out, wasm_out, "the VM differs from aipl-run");
 }

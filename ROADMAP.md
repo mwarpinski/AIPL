@@ -18,7 +18,8 @@ references, generics checked once with interfaces and `where` clauses
 unions with `match` (generic ones too, and `std/option`); results with
 payloads of any type; threads
 and atomics; contracts and array bounds checks in every backend; WASI I/O
-and a standard library with generic collections and Zig-style allocators;
+and a standard library with generic collections, Zig-style allocators,
+JSON, and directory listing and file information;
 a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
 x86-64 executables from a backend written in AIPL; eight benchmarks
@@ -31,8 +32,8 @@ against C and Python.
    experiment measuring how well AI agents write AIPL.
 2. **The language questions readers will ask:** small structs by value; generation checks
    against use after free (docs/design/GENERATIONS_PLAN.md).
-3. **The standard library:** a data format (JSON), directories and file
-   information, running processes; networking later.
+3. **The standard library:** networking, once WASI has listening sockets;
+   starting processes, once WASI can (preview 1 cannot).
 4. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
    from a checked-in `aiplc.wasm`, leaving Rust only in the launcher for
    platforms without a native backend (DEVELOPING.md, "Direction").
@@ -86,11 +87,11 @@ versioning (once packages exist), `inv` contracts.
 ### Strings and I/O
 
 - **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05): text is built with `std/buf`.
-- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact); still missing are parsing floats from text, shortest round-trip float printing, and sets.
+- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact) or, in `std/json`, as the shortest digits that read back, and `float.from_decimal` parses them; still missing are a shortest-digits printer outside JSON, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
 - **Three kinds of text** (audit D7): `str` (an immutable literal), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by hand (`str.from_str`, `buf.bytes`).
-- **No dates or time zones, no sockets, no directory listing or file metadata.** The runtime surface is preopened files, stdio, args, environment, two clocks, and randomness (WASI preview1 has no listening sockets).
+- **No dates or time zones, no sockets, no starting processes.** The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
 
 ### Concurrency
 
