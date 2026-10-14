@@ -18,19 +18,23 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 ## 2. Updated Formal Grammar (EBNF)
 
 ```ebnf
-program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def )* ")" ;
+program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def | interface_def | impl_def )* ")" ;
 import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
 import_path    ::= identifier ( "/" identifier )* ;
-struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" ")" ;
+struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" where* ")" ;
 field          ::= identifier ":" type ;
 generic_head   ::= "(" identifier type_param+ ")" ;
 type_param     ::= identifier ;                     (* starts with an uppercase letter *)
 
 enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" ")" ;
 const_def      ::= "(" "const" identifier ":" type literal ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
-union_def      ::= "(" "union" identifier "[" ( "(" identifier field* ")" )+ "]" ")" ;
+union_def      ::= "(" "union" ( identifier | generic_head ) "[" ( "(" identifier field* ")" )+ "]" where* ")" ;
 
-fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type contract* expr* ")" ;
+fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type where* contract* expr* ")" ;
+where          ::= "(" "where" "(" ( identifier | "struct" ) type_param ")" ")" ;   (* generics only (section 4.H) *)
+interface_def  ::= "(" "interface" "(" identifier type_param ")" fn_sig+ ")" ;
+fn_sig         ::= "(" "fn" identifier "[" param* "]" "->" type contract* ")" ;   (* no body *)
+impl_def       ::= "(" "impl" "(" identifier type ")" fn_def+ ")" ;
 param          ::= identifier ":" type ;
 contract       ::= "(" ("req" | "ens" | "inv") expr ")"
                  | "(" "unsafe" ")" ;                (* the function is unsafe to call (section 3) *)
@@ -45,7 +49,7 @@ type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | identifier ;                       (* an enum or a union, e.g. Color, Shape *)
 struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
-fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic *)
+fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic, or names an interface's function: (Hash.hash i32) *)
 
 expr           ::= literal
                  | identifier
@@ -348,12 +352,82 @@ A generic struct or function takes type parameters in its header, and every use 
 
 Generics are expanded before type checking (`src/generics.rs`, `aipl_src/generics.aipl`): each distinct instantiation becomes an ordinary struct, union, or function named `Name<t,...>` (for example `Box<i64>`, `vec.Vec<ptr<Point>>`, `fn<i32,i32->i32>` for a function type argument), made by substituting the arguments for the parameters. The checker, the VM, both code generators, and any future backend only ever see concrete code, and instance names appear as such in diagnostics and wasm exports. Rules:
 
-- A template is checked only through its instances: an error inside a generic body is reported (at the template's own line) when some use instantiates it; an error inside a type argument is reported where the argument is written. A template nobody uses is not checked.
+- A template is checked once, by itself, with its type parameters sealed (below), whether or not anything uses it: an error inside a generic body is reported at the template's own line, and holds for every type argument its clauses allow. An error inside a type argument is reported where the argument is written.
 - Type arguments may be any type, including other instances and function types. Arity is checked: `generic 'Box' takes 1 type argument(s) (T), got 2`.
 - A generic may not be named like a built-in form or type (`get`, `put`, `new`, `i32`, ...), since `(get p (Name T) f)` would be ambiguous.
 - A generic function is applied only where a function is named: `(call (f t...) ...)` and `(ref (f t...))`. Elsewhere `(f ...)` is not an application, so a generic named `make` (as `std/vec`'s is) does not swallow a union's `(make U.v x)`. A generic struct is applied wherever a type goes.
 - A generic whose instances keep growing (`(fn (f T) ... (call (f (ptr T)) ...))`) is an error once an instance name passes 1024 characters.
 - Imports qualify generics like everything else: `vec.Vec` from another module, `(vec.Vec i32)`, `(call (vec.push i32) v 5)`; aliases work (`(import vec as v)`, `(v.Vec i32)`).
+
+#### Interfaces, implementations, and where clauses
+
+An interface names functions a type can have; an implementation provides them for one type; a template asks for them with a `where` clause. `std/cmp` defines `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`, which returns -1, 0, or 1), and `(cmp.Hash T)` (`hash` and `same`), implemented for the built-in types, and `std/map` is keyed by any type with `cmp.Hash`. (docs/design/CONSTRAINTS_PLAN.md has the design and the alternatives.)
+
+```lisp
+(module interface_demo
+  (import cmp)
+  (import map)
+  (import alloc)
+  (struct Point [x:i32 y:i32])
+
+  ;; points equal field by field hash alike
+  (impl (cmp.Hash (ptr Point))
+    (fn hash [k:(ptr Point)] -> i32 (+ (* 31 (get k Point.x)) (get k Point.y)))
+    (fn same [a:(ptr Point) b:(ptr Point)] -> bool
+      (and (eq (get a Point.x) (get b Point.x)) (eq (get a Point.y) (get b Point.y)))))
+
+  (fn point [x:i32 y:i32] -> (ptr Point)
+    (let p:(ptr Point) (new Point))
+    (put p Point.x x)
+    (put p Point.y y)
+    p)
+
+  ;; the largest element, for any T with an order
+  (fn (largest T) [xs:(arr T)] -> T (where (cmp.Ord T))
+    (req (gt (arr.len xs) 0))
+    (let best:T (arr.get T xs 0))
+    (loop i 1 (- (arr.len xs) 1) 1
+      (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
+    best)
+
+  (fn main [] -> i32
+    (let seen:(ptr (map.Map (ptr Point) i32)) (call (map.make (ptr Point) i32) (call alloc.default) 0))
+    (call (map.set (ptr Point) i32) seen (call point 1 2) 10)
+    (call (map.set (ptr Point) i32) seen (call point 1 2) 20)     ;; the same point: replaces 10
+    (let xs:(arr i64) (arr.new i64 3))
+    (arr.set i64 xs 1 7i64)
+    (+ (call (map.get_or (ptr Point) i32) seen (call point 1 2) 0)
+       (+ (call (map.count (ptr Point) i32) seen) (i32.wrap (call (largest i64) xs))))))   ;; 20 + 1 + 7 => 28
+```
+
+| Form | Meaning |
+|---|---|
+| `(interface (Name T) (fn f [params] -> type contracts...)...)` | an interface: one type parameter, at least one function, each a signature with optional `req`/`ens` and no body |
+| `(impl (Name t) (fn f [params] -> type body...)...)` | the interface's functions for type `t`: exactly its functions, each with the interface's parameter names and types (with `t` for the parameter) |
+| `(call (Name.f t) args...)`, `(ref (Name.f t))` | calling, or referring to, `t`'s implementation of `f`; from another module `(cmp.Hash.hash i32)`, through an alias `(c.Hash.hash i32)` |
+| `(where (Name T))` | in a generic function, struct, or union, right after its signature (a function's return type, a struct's fields, a union's variants): every use needs an implementation of `Name` for its `T`, and the template may call `Name`'s functions for `T` |
+| `(where (struct T))` | `T` is a struct, used as `(ptr T)`, `(new T)`; without it a type parameter is a value |
+
+Rules (both expanders, with the same messages):
+
+- **One implementation per type.** A type has at most one implementation of an interface in the whole program (`a second implementation of cmp.Hash<i32>: a type has at most one implementation of each interface`), so two maps keyed by the same type cannot hash it two ways.
+- **Where it may be written.** In the interface's module or in the module that defines the type (for `(ptr geo.Point)`, `geo`); for a built-in type only in the interface's module (`this implementation must be in the module that defines cmp.Eq, since f64 is built in`). Implementations are for concrete types; there are no generic implementations, defaults, or automatically derived ones.
+- **Contracts are inherited.** Each implementation's function runs the interface's `req`/`ens` before its own, and a failure is reported where the interface wrote it.
+- **Nothing is inferred.** A call names the interface and the type. An implementation's functions are ordinary functions named `Interface<type>.f` (`cmp.Hash<i32>.hash`): calling one costs a direct call.
+- **No floats in std/cmp.** NaN is not equal to itself, so equality and hashing on `f32`/`f64` would break the law every map relies on; a program that needs float keys wraps them and decides what NaN means.
+
+#### Kinds, and checking a template once
+
+Inside a template, a type parameter is sealed: it supports only what every type of its kind supports, plus the functions its `where` clauses grant. Before expanding, both toolchains make each template once at placeholders for its type parameters and type-check that, so the template is proven for every type argument its clauses allow; nothing is compiled from these instances.
+
+| Kind | Arguments | A sealed parameter supports |
+|---|---|---|
+| value (default) | anything that can be stored: numbers, `bool`, `str`, pointers, arrays, function references, enums, unions | `let`, parameters, results, struct and variant fields, `(arr T)`, `(sizeof T)`, `arr.cast` |
+| struct (`(where (struct T))`) | a struct, generic ones included | `(ptr T)`, `(new T)`, `(sizeof T)`, `(ptr.null T)`, `ptr.cast` |
+
+Anything else on a parameter is an error that names the clause to add: `eq on T: a type parameter has no equality of its own; add (where (cmp.Eq T)) and call (cmp.Eq.same T)`, likewise for order (`cmp.Ord`), arithmetic, `match`, `enum.ord`, and using a value parameter as a struct (`T is a type parameter that is not a struct: to use it as one, add (where (struct T))`). Calling a template that asks for more than the caller's clauses give is caught the same way: `vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g`.
+
+What can still fail where a template is used is the use itself: a missing implementation (`has<ptr<P>> needs (cmp.Eq (ptr P)): write (impl (cmp.Eq (ptr P)) ...)`), a type of the wrong kind (`vec.Vec<Point>: T is a value type, and Point is a struct, used only through a pointer: write (ptr Point)`; `option.Option<void>: T is a value type, and void cannot be stored`; `alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one`), and an instance that grows without bound.
 
 ### I. Constants and Enums
 
@@ -1154,7 +1228,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (28 files, 302 tests as of 2026-10-12): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (29 files, 309 tests as of 2026-10-14): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_interfaces.rs` (interfaces, implementations, where clauses, and templates checked once, in both backends and both toolchains, message for message), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -1355,8 +1429,8 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix), and for `i64`: `uint64_to_bytes`, `int64_to_bytes`: each writes ASCII at `out` and returns the count (at most 10, 11, 8, 20, and 21 bytes); `f64_fixed [x digits out]` writes `x` with `digits` decimals exactly as C's `printf("%.*f")` (the exact decimal value of the double, rounded half to even; `inf`, `nan`, a `-` for any negative sign bit; at most 312 + digits bytes) |
 | `io` | `read_stdin [] -> (ptr str.Bytes)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `print_i64 [n:i64]`, `println_i64 [label n:i64]`, `print_f64 [x digits]`, `println_f64 [label x digits]`, `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `read_fd [fd] -> (ptr str.Bytes)` (reads an open descriptor to its end), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `(ptr str.Bytes)` |
 | `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `clear`, `index_of`, `sort_by [v cmp:(fn [T T] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
-| `map` | generic hash map `(map.Map V)` from `i32` keys: `(call (map.make V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `has`, `remove -> bool`, `count`; iterate with `(loop i 0 (- (call (map.capacity V) m) 1) 1 (if (call (map.slot_used V) m i) ... (block)))` reading `slot_key` / `slot_val` |
-| `strmap` | generic hash map `(strmap.StrMap V)` from byte strings (symbol tables, word counts): the same API as `map` with keys of type `(ptr str.Bytes)`; the map keeps the key pointer, so a key's bytes must not change while it is stored |
+| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `(ptr str.Bytes)` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `(ptr str.Bytes)` key is kept as the pointer, so its bytes must not change while it is stored |
+| `cmp` | the interfaces `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`: -1, 0, or 1), and `(cmp.Hash T)` (`hash`, `same`), implemented for `i32`, `i64`, `bool` (Eq), `str` (bytewise), and `(ptr str.Bytes)` (Hash, by contents); none for floats (section 4.H) |
 | `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (ptr str.Bytes)` (`len` -1 past the end), `arg_int [i default] -> i32` (argument `i` as a number, or `default` if it is missing or not one: `(call os.arg_int 1 1000)`), `env [name:str] -> (ptr str.Bytes)` (`len` -1 if unset), each fetching a fresh copy; `random_i32 [] -> i32` from the OS generator |
 | `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (also ends any view of it), `push_byte`, `push_str [b s:str]`, `push_bytes [b (ptr str.Bytes)]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `clear`, `bytes [b] -> (ptr str.Bytes)` (a view of the contents; take it after building), `write [b fd] -> i32`, `print [b]` (the contents to standard output) |
 | `arena` | a region allocator (frees everything at once; for single objects see `heap`): `make [chunk_size] -> (ptr arena.Arena)`, `(call (arena.alloc T) a) -> (ptr T)` (zeroed, like `new`, no cast), `raw [a n] -> i32` (n zeroed bytes, 8-aligned), `reset [a]` (frees everything from `a`; its chunks are reused), `reserved [a]`; never fails while memory remains (a full chunk moves on to another) |
@@ -1438,9 +1512,11 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(make Option.some 5)` or `(make (Option i32).some 5)` for a generic union | the type with its arguments, then the variant: `(make (option.Option i32) some 5)`, and the arm `((option.Option i32) some [v] ...)` (section 4.J) |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
 | `(sys.print n)` with an `i32` | `sys.print` prints `str` only (a checker error); use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |
-| hand-writing digit formatting, file-reading loops, byte counting, growable arrays, hash tables, or string building | the standard library (section 12.6): `io`, `str`, `fmt`, `vec`, `map`, `strmap`, `buf`, `os` |
+| hand-writing digit formatting, file-reading loops, byte counting, growable arrays, hash tables, or string building | the standard library (section 12.6): `io`, `str`, `fmt`, `vec`, `map`, `buf`, `os` |
+| `(eq a b)` or `(lt a b)` on a type parameter `T` | ask for it: `(where (cmp.Eq T))` and `(call (cmp.Eq.same T) a b)`, or `(cmp.Ord T)` and `cmp.Ord.compare` (section 4.H) |
+| `(vec.Vec Point)` with `Point` a struct | a struct is a value only through a pointer: `(vec.Vec (ptr Point))` |
 | `(mem.free p)`, or reusing `mem.alloc` memory by hand | there is no `mem.free`; allocate what will be freed from `std/heap` (`(call (heap.create T) h)`, `(call (heap.destroy T) h p)`) or an `std/arena`, or through `std/alloc` |
-| `(call (vec.make i32) 16)` | collections take an allocator first: `(call (vec.make i32) (call alloc.default) 16)`, likewise `map.make`, `strmap.make`, `buf.make` (`(import alloc)`) |
+| `(call (vec.make i32) 16)` | collections take an allocator first: `(call (vec.make i32) (call alloc.default) 16)`, likewise `(map.make K V)`, `buf.make` (`(import alloc)`) |
 | `(call vec.push v x)` on a generic container | name the element type: `(call (vec.push i32) v x)`; the container's type is `(ptr (vec.Vec i32))` (section 4.H) |
 | `(get b Box.value)` on a generic struct | name the instance: `(get b (Box i32) value)` |
 | calling `mem.grow` before allocating | not needed: allocation grows memory itself (up to 32768 pages, 2 GiB) |

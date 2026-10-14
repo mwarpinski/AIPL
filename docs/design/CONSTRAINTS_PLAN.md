@@ -1,6 +1,6 @@
 # Interfaces, constraints, and checking templates once
 
-**Status: planned (IC1–IC5), agreed 2026-10-12.** Nothing here is built yet.
+**Status: done (IC1–IC5, 2026-10-14).** Kept as the design record; the spec (AIPL_SPEC.md 4.H) describes the result. Two details settled while building it: a template's `where` clauses come right after its signature, and an implementation's functions must use the interface's parameter names (its contracts refer to them).
 
 ## The two problems
 

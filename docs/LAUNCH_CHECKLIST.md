@@ -210,10 +210,11 @@ FAQ or ROADMAP.md.
   (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
   `result` payloads of any type (the 32-bit limit is gone; `result` stays
   its own form). AIPL_SPEC.md 4.F and 4.J.
-- [ ] **Interfaces or constraints on generics**, so `map` takes any key and
-  a template is checked once. Design agreed 2026-10-12 (Rust-style
-  interfaces, explicit calls, one implementation per type, templates
-  checked once): docs/design/CONSTRAINTS_PLAN.md, stages IC1–IC5.
+- [x] **Interfaces or constraints on generics** (done 2026-10-14): interfaces
+  with one implementation per type, explicit calls, `where` clauses, and
+  templates checked once with sealed type parameters; `std/cmp`, and one
+  `(map.Map K V)` for any hashable key. AIPL_SPEC.md 4.H,
+  docs/design/CONSTRAINTS_PLAN.md.
 - [ ] **Closures** (or a clear statement that function references plus an
   argument are the design).
 - [ ] **Visibility** (`pub`), so a module's helpers are private.

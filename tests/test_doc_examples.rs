@@ -39,6 +39,7 @@ const EXPECTED: &[(&str, i32)] = &[
     ("tokens_demo", 110),
     ("unsafe_demo", 42),
     ("option_demo", 23),
+    ("interface_demo", 28),
     // docs/TOUR.md
     ("tour_hello", 25),
     ("tour_types", 43),
