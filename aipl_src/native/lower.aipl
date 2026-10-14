@@ -101,7 +101,7 @@
              (pub shared:bool) (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              vk:(ptr (vec.Vec i32)) vv:(ptr (vec.Vec i64)) np:i32 oa:(ptr Op) ob:(ptr Op)
-             taken:i32 taken_x:i32
+             taken:i32 taken_x:i32 next_op:i32 next_a:i32
              (pub failed:bool) (read msg:(ptr buf.Buf))
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
              (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
@@ -248,7 +248,9 @@
   ;; A value taken off the stack. kind: 0 on the machine stack (taken from
   ;; below the virtual part; not popped yet), 1 a register (val), 2 an i32
   ;; constant, 3 local val, 4 an i64 constant (or f64 bits), 5 a float in
-  ;; xmm register val (xmm2-xmm15; its bits, as a slot holds them).
+  ;; xmm register val (xmm2-xmm15; its bits, as a slot holds them), 6 a
+  ;; comparison's result in the flags (val: the condition), made only when
+  ;; the next instruction (if, br_if, eqz) takes it.
   (struct Op [kind:i32 val:i64])
 
   (fn r10 [] -> i32 10)
@@ -341,6 +343,10 @@
       ((eq kind 2) (call x64.mov_ri32 c (call r11) (i32.wrap val)) (call x64.push c (call r11)))
       ((eq kind 4) (call x64.mov_ri64 c (call r11) val) (call x64.push c (call r11)))
       ((eq kind 5) (call x64.movq_rx c (call r11) (i32.wrap val)) (call x64.push c (call r11)))
+      ((eq kind 6)
+       (call x64.setcc c (i32.wrap val) (call r11))
+       (call x64.movzx8 c (call r11) (call r11))
+       (call x64.push c (call r11)))
       (else
        (let lr:i32 (call reg_of l (i32.wrap val)))
        (if (gte lr 0)
@@ -386,6 +392,7 @@
       ((eq k 2) (call x64.mov_ri32 c reg (i32.wrap (get o Op.val))))
       ((eq k 4) (call x64.mov_ri64 c reg (get o Op.val)))
       ((eq k 5) (call x64.movq_rx c reg (call op_reg o)))
+      ((eq k 6) (call x64.setcc c (call op_reg o) reg) (call x64.movzx8 c reg reg))
       (else
        (let lr:i32 (call reg_of l (call op_reg o)))
        (if (gte lr 0)
@@ -607,6 +614,14 @@
         (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines next))
         (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col))
         (set! next (+ next 1)))
+      ;; one instruction of lookahead (a comparison a branch takes, a
+      ;; result a local.set takes)
+      (if (lt (+ i 1) (call (vec.len (ptr wasm_reader.Instr)) code))
+          (block
+            (let nx:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code (+ i 1)))
+            (put l L.next_op (get nx wasm_reader.Instr.op))
+            (put l L.next_a (get nx wasm_reader.Instr.a)))
+          (block (put l L.next_op -1) (put l L.next_a -1)))
       (call instr l w np has_result ins)))
 
   (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
@@ -773,6 +788,15 @@
   ;; A block type byte's result count: 0x40 none, a value type one.
   (fn arity_of [bt:i32] -> i32 (if (eq bt 64) 0 1))
 
+;; Takes a branch's condition: its condition code if it is in the flags,
+  ;; else -1 with the value in r10.
+  (fn take_condition [l:(ptr L)] -> i32
+    (let o:(ptr Op) (get l L.oa))
+    (call vpop l o)
+    (if (eq (get o Op.kind) 6) (return (call op_reg o)) (block))
+    (call load_op l o (call r10))
+    -1)
+
   ;; Jumps to `lab` from the current depth: drops the values above the
   ;; label's height, keeping its result (a loop's branch carries none).
   (fn emit_branch [l:(ptr L) lab:(ptr Label)] -> void
@@ -804,12 +828,12 @@
       ((eq op 4)
        (if live
            (block
-             ;; the condition in r10, then the stack in memory
-             (call pop_to l (call r10))
+             ;; the condition (in the flags, or in r10), then the stack in memory
+             (let cc:i32 (call take_condition l))
              (call adjust l -1)
              (call flush l)
-             (call x64.test_rr c 32 (call r10) (call r10))
-             (let at:i32 (call x64.jcc c (call x64.cc_e)))
+             (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
+             (let at:i32 (call x64.jcc c (^ cc 1)))
              (put (call open_label l 2 (call arity_of a)) Label.else_at at))
            (let _d:(ptr Label) (call open_label l 2 (call arity_of a))))
        true)
@@ -855,11 +879,11 @@
        (call go_dead l)
        true)
       ((eq op 13)
-       (call pop_to l (call r10))
+       (let cc:i32 (call take_condition l))
        (call adjust l -1)
        (call flush l)
-       (call x64.test_rr c 32 (call r10) (call r10))
-       (let skip:i32 (call x64.jcc c (call x64.cc_e)))
+       (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
+       (let skip:i32 (call x64.jcc c (^ cc 1)))
        (call emit_branch l (call label_at l a))
        (call x64.patch_rel32 c skip (call buf.len c))
        true)
@@ -1351,12 +1375,19 @@
       ;; add sub and or xor
       ((or (or (eq op 124) (eq op 125)) (and (gte op 131) (lte op 133))) (call binop l 64 (call alu64_of op)) true)
       ((eq op 126) (call binop l 64 -1) true)
+      ;; by a constant: the immediate form
+      ((and (and (gte op 134) (lte op 136)) (call top_is_const l))
+       (call shift_by_const l 64 (cond ((eq op 134) (call x64.sh_shl)) ((eq op 135) (call x64.sh_sar)) (else (call x64.sh_shr))))
+       true)
       ;; shl shr_s shr_u: x86 masks a 64-bit count to 6 bits, as wasm does
       ((and (gte op 134) (lte op 136))
        (call keep_top l 2)
        (call pop_operands l)
        (call x64.shift_cl c 64 (cond ((eq op 134) (call x64.sh_shl)) ((eq op 135) (call x64.sh_sar)) (else (call x64.sh_shr))) (call rax))
        (call push_rax l)
+       true)
+      ((and (and (gte op 127) (lte op 130)) (call safe_divisor l 64))
+       (call divide_by_const l 64 (or (eq op 127) (eq op 129)) (or (eq op 129) (eq op 130)))
        true)
       ;; div_s: traps on zero and on INT64_MIN / -1
       ((eq op 127)
@@ -1427,12 +1458,19 @@
       ;; add sub and or xor
       ((or (or (eq op 106) (eq op 107)) (and (gte op 113) (lte op 115))) (call binop l 32 (call alu_of op)) true)
       ((eq op 108) (call binop l 32 -1) true)
+      ((and (and (gte op 116) (lte op 118)) (call top_is_const l))
+       (call shift_by_const l 32 (cond ((eq op 116) (call x64.sh_shl)) ((eq op 117) (call x64.sh_sar)) (else (call x64.sh_shr))))
+       true)
       ;; shl shr_s shr_u: x86 masks a 32-bit shift count to 5 bits, as wasm does
       ((and (gte op 116) (lte op 118))
        (call keep_top l 2)
        (call pop_operands l)
        (call x64.shift_cl c 32 (cond ((eq op 116) (call x64.sh_shl)) ((eq op 117) (call x64.sh_sar)) (else (call x64.sh_shr))) (call rax))
        (call push_rax l)
+       true)
+      ;; by a constant other than 0 and -1: no checks
+      ((and (and (gte op 109) (lte op 112)) (call safe_divisor l 32))
+       (call divide_by_const l 32 (or (eq op 109) (eq op 111)) (or (eq op 111) (eq op 112)))
        true)
       ;; div_s: traps on b = 0, and on INT_MIN / -1 (the quotient overflows)
       ((eq op 109)
@@ -1498,7 +1536,7 @@
       ((eq k 4) (or (eq sz 32) (and (gte (get o Op.val) -2147483648i64) (lte (get o Op.val) 2147483647i64))))
       (else false)))
 
-  ;; Takes operands b then a; a lands in a register of its own (dst, which
+  ;; With operands b then a taken (L.ob, L.oa): a lands in a register of its own (dst, which
   ;; the result reuses), b where it is: src a register, or -1 with b a
   ;; constant that fits as an immediate. Sets L.oa (a) and L.ob (b); returns
   ;; dst and leaves src in b's val with kind 1 (or b as it is, for -1).
@@ -1506,8 +1544,6 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (let a:(ptr Op) (get l L.oa))
     (let b:(ptr Op) (get l L.ob))
-    (call vpop l b)
-    (call vpop l a)
     (if (eq (get b Op.kind) 0)
         ;; both on the machine stack: b on top
         (block
@@ -1535,44 +1571,137 @@
   ;; a op b for add sub and or xor (alu), or imul (alu -1).
   (fn binop [l:(ptr L) sz:i32 alu:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
-    (let dst:i32 (call operands l sz true))
+    (let a:(ptr Op) (get l L.oa))
     (let b:(ptr Op) (get l L.ob))
+    (call vpop l b)
+    (call vpop l a)
+    (let lr:i32 (if (eq (get a Op.kind) 3) (call reg_of l (call op_reg a)) -1))
     (cond
-      ((eq (get b Op.kind) 1)
-       (if (lt alu 0) (call x64.imul_rr c sz dst (call op_reg b)) (call x64.alu_rr c sz alu dst (call op_reg b))))
-      ((lt alu 0)
-       (call x64.mov_ri64 c (call r11) (get b Op.val))
-       (call x64.imul_rr c sz dst (call r11)))
-      (else (call x64.alu_ri c sz alu dst (i32.wrap (get b Op.val)))))
-    (call push_reg l dst))
+      ;; local = local op b, the local in a register and nowhere else on the
+      ;; stack: in place, and the local.set (or tee) that follows finds the
+      ;; local's own value
+      ((and (gte lr 0)
+            (and (or (eq (get l L.next_op) 33) (eq (get l L.next_op) 34))
+                 (and (eq (get l L.next_a) (call op_reg a)) (lt (call find_local l (call op_reg a)) 0))))
+       (call apply_alu l sz alu lr b)
+       (call vpush l 3 (get a Op.val)))
+      ;; local + constant, local - constant into a new register: lea
+      ((and (gte lr 0) (call lea_ok b sz alu))
+       (let d:i32 (call scratch l 0))
+       (let k:i32 (i32.wrap (get b Op.val)))
+       (call x64.lea c sz d (call x64.mem lr (if (eq alu (call x64.op_add)) k (- 0 k))))
+       (call push_reg l d))
+      (else
+       (let dst:i32 (call operands l sz true))
+       (call apply_alu l sz alu dst b)
+       (call push_reg l dst))))
 
-  ;; 1 if a cc b, else 0.
+  ;; dst op= b (b a register, as `operands` leaves it, or a constant).
+  (fn apply_alu [l:(ptr L) sz:i32 alu:i32 dst:i32 b:(ptr Op)] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((call immediate_ok b sz)
+       (if (lt alu 0)
+           (block (call x64.mov_ri64 c (call r11) (get b Op.val)) (call x64.imul_rr c sz dst (call r11)))
+           (call x64.alu_ri c sz alu dst (i32.wrap (get b Op.val)))))
+      (else
+       (let src:i32 (call read_reg l b (call r11)))
+       (if (lt alu 0) (call x64.imul_rr c sz dst src) (call x64.alu_rr c sz alu dst src)))))
+
+  ;; Whether `lea d, [local + k]` computes a + b (alu add) or a - b (sub)
+  ;; for constant b: k must fit 32 bits signed (negated, for sub, in 64 bits).
+  (fn lea_ok [b:(ptr Op) sz:i32 alu:i32] -> bool
+    (if (not (call immediate_ok b sz)) (return false) (block))
+    (cond
+      ((eq alu (call x64.op_add)) true)
+      ((eq alu (call x64.op_sub)) (or (eq sz 32) (neq (get b Op.val) -2147483648i64)))
+      (else false)))
+
+  ;; Whether the next instruction takes a comparison from the flags.
+  (fn flags_taken [l:(ptr L)] -> bool
+    (let n:i32 (get l L.next_op))
+    (or (eq n 4) (or (eq n 13) (eq n 69))))
+
+  ;; 1 if a cc b, else 0; or the flags, for an if, br_if, or eqz next.
   (fn compare [l:(ptr L) sz:i32 cc:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
+    (call vpop l (get l L.ob))
+    (call vpop l (get l L.oa))
     (let lhs:i32 (call operands l sz false))
     (let b:(ptr Op) (get l L.ob))
     (if (eq (get b Op.kind) 1)
         (call x64.alu_rr c sz (call x64.op_cmp) lhs (call op_reg b))
         (call x64.alu_ri c sz (call x64.op_cmp) lhs (i32.wrap (get b Op.val))))
-    ;; the result in lhs if it is a value register (not a local's), else a new one
-    (let dst:i32 (if (call is_pool lhs) lhs (call scratch l 0)))
-    (call x64.setcc c cc dst)
-    (call x64.movzx8 c dst dst)
+    (call push_condition l cc lhs))
+
+  ;; The result of a comparison whose flags hold condition cc: left in the
+  ;; flags when the next instruction takes it, else 0 or 1 in a register
+  ;; (`hint`, if it is a value register).
+  (fn push_condition [l:(ptr L) cc:i32 hint:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (if (call flags_taken l)
+        (call vpush l 6 (i64.extend_s cc))
+        (block
+          (let dst:i32 (if (call is_pool hint) hint (call scratch l 0)))
+          (call x64.setcc c cc dst)
+          (call x64.movzx8 c dst dst)
+          (call push_reg l dst))))
+
+;; Whether the top value is a constant.
+  (fn top_is_const [l:(ptr L)] -> bool
+    (let n:i32 (call vlen l))
+    (if (eq n 0) (return false) (block))
+    (let k:i32 (call (vec.at i32) (get l L.vk) (- n 1)))
+    (or (eq k 2) (eq k 4)))
+
+  ;; The top value, a constant, as an sz-bit number (sign-extended).
+  (fn top_const [l:(ptr L) sz:i32] -> i64
+    (let v:i64 (call (vec.at i64) (get l L.vv) (- (call vlen l) 1)))
+    (if (eq sz 32) (i64.extend_s (i32.wrap v)) v))
+
+  ;; Whether the top value is a constant divisor that is neither 0 nor -1:
+  ;; a division by it needs neither check.
+  (fn safe_divisor [l:(ptr L) sz:i32] -> bool
+    (if (not (call top_is_const l)) (return false) (block))
+    (let v:i64 (call top_const l sz))
+    (and (neq v 0i64) (neq v -1i64)))
+
+  ;; a / b or a % b (rem) for a constant b that is neither 0 nor -1, which
+  ;; can neither trap nor overflow.
+  (fn divide_by_const [l:(ptr L) sz:i32 signed:bool rem:bool] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call keep_top l 2)
+    (call pop_operands l)
+    (if signed
+        (block (if (eq sz 64) (call x64.cqo c) (call x64.cdq c)) (call x64.idiv_r c sz (call rcx)))
+        (block (call x64.alu_rr c 32 (call x64.op_xor) 2 2) (call x64.div_r c sz (call rcx))))
+    (call push_reg l (if rem 2 (call rax))))
+
+  ;; a shifted by the constant on top (masked as wasm masks it).
+  (fn shift_by_const [l:(ptr L) sz:i32 kind:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call vpop l (get l L.ob))
+    (call vpop l (get l L.oa))
+    ;; the count first: operands loads a constant too wide for an immediate
+    (let count:i32 (bitand (i32.wrap (get (get l L.ob) Op.val)) (- sz 1)))
+    (let dst:i32 (call operands l sz true))
+    (call x64.shift_ri c sz kind dst count)
     (call push_reg l dst))
 
-  (fn is_pool [r:i32] -> bool (or (or (lte r 2) (or (eq r 6) (eq r 7))) (or (eq r 8) (eq r 9))))
+  (fn is_pool [r:i32] -> bool (or (or (and (gte r 0) (lte r 2)) (or (eq r 6) (eq r 7))) (or (eq r 8) (eq r 9))))
 
   (fn eqz [l:(ptr L)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (let o:(ptr Op) (get l L.oa))
     (call vpop l o)
+    ;; a comparison in the flags: the opposite condition
+    (if (eq (get o Op.kind) 6)
+        (block (call push_condition l (^ (call op_reg o) 1) -1) (return))
+        (block))
     (let r:i32 (if (eq (get o Op.kind) 0) (call scratch l 0) -1))
     (if (gte r 0) (call x64.pop c r) (set! r (call read_reg l o (call r11))))
     (call x64.test_rr c 32 r r)
-    (let dst:i32 (if (call is_pool r) r (call scratch l 0)))
-    (call x64.setcc c (call x64.cc_e) dst)
-    (call x64.movzx8 c dst dst)
-    (call push_reg l dst))
+    (call push_condition l (call x64.cc_e) r))
 
   ;; i64.extend_i32_s (signed) / _u. A constant stays one.
   (fn extend [l:(ptr L) signed:bool] -> void

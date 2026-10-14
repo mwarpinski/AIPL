@@ -241,16 +241,16 @@ docs/design/NATIVE_SPEED_PLAN.md, stage by stage. Native times, best of
 five, with wasmtime's alongside (`python3 tools/bench.py --runs 5
 --no-python`); F0 is the baseline, null checks included.
 
-| Benchmark | F0 | F1 | F1, floats | wasm (wasmtime) | native / wasm, F0 → now |
-|---|---|---|---|---|---|
-| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.163 s | 1.9x → 1.5x |
-| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.269 s | 4.2x → 2.8x |
-| knucleotide | 1.207 s | 1.068 s | 1.046 s | 0.637 s | 1.9x → 1.6x |
-| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.070 s | 3.0x → 2.1x |
-| nbody | 0.761 s | 0.563 s | 0.496 s | 0.148 s | 5.2x → 3.4x |
-| pidigits | 15.559 s | 9.904 s | 9.819 s | 2.726 s | 5.7x → 3.6x |
-| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.128 s | 3.1x → 2.0x |
-| spigot | 2.632 s | 1.713 s | 1.674 s | 1.599 s | 1.6x → 1.05x |
+| Benchmark | F0 | F1 | F1, floats | F2 | wasm (wasmtime) | native / wasm, F0 → now |
+|---|---|---|---|---|---|---|
+| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.212 s | 0.159 s | 1.9x → 1.3x |
+| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.691 s | 0.269 s | 4.2x → 2.6x |
+| knucleotide | 1.207 s | 1.068 s | 1.046 s | 1.007 s | 0.660 s | 1.9x → 1.5x |
+| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.143 s | 0.071 s | 3.0x → 2.0x |
+| nbody | 0.761 s | 0.563 s | 0.496 s | 0.418 s | 0.148 s | 5.2x → 2.8x |
+| pidigits | 15.559 s | 9.904 s | 9.819 s | 8.734 s | 2.734 s | 5.7x → 3.2x |
+| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.260 s | 0.128 s | 3.1x → 2.0x |
+| spigot | 2.632 s | 1.713 s | 1.674 s | 1.459 s | 1.597 s | 1.6x → 0.91x |
 
 **F1, the value stack.** The upper part of the wasm value stack is
 virtual: constants, locals, and values in seven registers, used where they
@@ -258,3 +258,10 @@ are; only control flow, calls, and the rarer instructions put values in
 memory. Integer code gains 12-36%. The float benchmarks (mandelbrot,
 spectralnorm) did not move until float values got registers of their own
 too (xmm2-xmm15, "F1, floats"): 12-32% on the three float benchmarks.
+
+**F2, instruction selection.** A comparison an `if`, `br_if`, or `eqz`
+takes next stays in the flags (`cmp; jl` instead of `cmp; setl; movzx;
+test; je`); `local = local op x` works on the local's register in place;
+`local ± constant` is one `lea`; shifts by a constant use the immediate
+form; a division by a constant other than 0 and -1 skips its checks.
+5-17%; spigot is now faster natively than under wasmtime.
