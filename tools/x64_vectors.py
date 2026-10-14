@@ -97,13 +97,15 @@ def tls():
         p=P(r)
         o+=[f"mov {R64[r]}, qword ptr fs:[{R64[p]}+8]", f"mov qword ptr fs:[{R64[p]}+16], {R64[r]}", f"mov {R32[r]}, dword ptr fs:[{R64[p]}]"]
     return o
+def rip():
+    return ["lea rax, [rip+0]", "lea r8, [rip+0]", "lea r15, [rip+0]"]
 def assemble(lines):
     d=tempfile.mkdtemp()
     open(f"{d}/a.s","w").write(".intel_syntax noprefix\n"+"\n".join(lines)+"\n")
     subprocess.run(["as",f"{d}/a.s","-o",f"{d}/a.o"],check=True)
     subprocess.run(["objcopy","-O","binary","-j",".text",f"{d}/a.o",f"{d}/a.bin"],check=True)
     return open(f"{d}/a.bin","rb").read().hex()
-GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control), ("strings", strings), ("sse", sse), ("tls", tls)]
+GROUPS = [("moves", moves), ("alu", alu), ("muldiv", muldiv), ("memory", memory), ("atomics", atomics), ("control", control), ("strings", strings), ("sse", sse), ("tls", tls), ("rip", rip)]
 
 if __name__ == "__main__":
     wanted = sys.argv[1:]

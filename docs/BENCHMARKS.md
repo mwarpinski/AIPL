@@ -241,16 +241,16 @@ docs/design/NATIVE_SPEED_PLAN.md, stage by stage. Native times, best of
 five, with wasmtime's alongside (`python3 tools/bench.py --runs 5
 --no-python`); F0 is the baseline, null checks included.
 
-| Benchmark | F0 | F1 | F1, floats | F2 | wasm (wasmtime) | native / wasm, F0 → now |
-|---|---|---|---|---|---|---|
-| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.212 s | 0.159 s | 1.9x → 1.3x |
-| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.691 s | 0.269 s | 4.2x → 2.6x |
-| knucleotide | 1.207 s | 1.068 s | 1.046 s | 1.007 s | 0.660 s | 1.9x → 1.5x |
-| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.143 s | 0.071 s | 3.0x → 2.0x |
-| nbody | 0.761 s | 0.563 s | 0.496 s | 0.418 s | 0.148 s | 5.2x → 2.8x |
-| pidigits | 15.559 s | 9.904 s | 9.819 s | 8.734 s | 2.734 s | 5.7x → 3.2x |
-| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.260 s | 0.128 s | 3.1x → 2.0x |
-| spigot | 2.632 s | 1.713 s | 1.674 s | 1.459 s | 1.597 s | 1.6x → 0.91x |
+| Benchmark | F0 | F1 | F1, floats | F2 | F4 | wasm (wasmtime) | native / wasm, F0 → now |
+|---|---|---|---|---|---|---|---|
+| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.212 s | 0.184 s | 0.163 s | 1.9x → 1.13x |
+| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.691 s | 0.492 s | 0.268 s | 4.2x → 1.84x |
+| knucleotide | 1.207 s | 1.068 s | 1.046 s | 1.007 s | 0.816 s | 0.647 s | 1.9x → 1.26x |
+| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.143 s | 0.145 s | 0.070 s | 3.0x → 2.07x |
+| nbody | 0.761 s | 0.563 s | 0.496 s | 0.418 s | 0.324 s | 0.146 s | 5.2x → 2.22x |
+| pidigits | 15.559 s | 9.904 s | 9.819 s | 8.734 s | 5.757 s | 2.727 s | 5.7x → 2.11x |
+| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.260 s | 0.259 s | 0.127 s | 3.1x → 2.04x |
+| spigot | 2.632 s | 1.713 s | 1.674 s | 1.459 s | 1.471 s | 1.599 s | 1.6x → 0.92x |
 
 **F1, the value stack.** The upper part of the wasm value stack is
 virtual: constants, locals, and values in seven registers, used where they
@@ -265,3 +265,12 @@ test; je`); `local = local op x` works on the local's register in place;
 `local ± constant` is one `lea`; shifts by a constant use the immediate
 form; a division by a constant other than 0 and -1 skips its checks.
 5-17%; spigot is now faster natively than under wasmtime.
+
+**F4, guard pages** (ahead of F3, being independent of it). Linear memory
+is an 8 GiB reservation with no access past its current size, so a load
+or store needs no check: one outside the memory faults, and a SIGSEGV
+handler makes the faulting code call the trap routine, which prints the
+same message and call chain as before. With it, multiplication by a
+power of two became a shift. 13-34% on the memory-bound benchmarks, more
+than the 6-14% measured for removing the check on 2026-10-06: the rest of
+each access has since become cheaper, so the check was a larger share.

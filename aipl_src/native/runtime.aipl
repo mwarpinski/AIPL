@@ -288,4 +288,82 @@
     (call emit_write c 1 (call elf.data_vaddr) (call buf.len data))
     (call emit_exit c 7)
     (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0)))
+
+  ;; ===== Memory faults (docs/design/NATIVE_SPEED_PLAN.md F4) =====
+
+  ;; The SIGSEGV handler (installed with SA_SIGINFO): a fault inside the
+  ;; reserved 8 GiB of linear memory (base in base_cell; every 32-bit
+  ;; address plus every offset lands there) is a wasm out-of-bounds access,
+  ;; so the handler makes the interrupted code `call` the call-chain routine
+  ;; with the reason, as the explicit check did: it pushes the faulting
+  ;; instruction's address + 1 (the routine looks up return address - 1)
+  ;; on the interrupted stack (in its red zone, below the signal frame's
+  ;; reach), and returns to it there. Any other fault restores the default
+  ;; action, so it recurs and ends the process as before. The kernel passes
+  ;; rsi = siginfo (si_addr at 16), rdx = ucontext (registers from 40:
+  ;; rsi 112, rdx 136, rsp 160, rip 168).
+  (fn emit_fault_handler [c:(ptr buf.Buf) base_cell:i32 reason_addr:i32 reason_len:i32 backtrace_at:i32] -> void (pub)
+    (let rcx:i32 1) (let r8:i32 8) (let r10:i32 10) (let rsp:i32 4)
+    (call x64.load c 64 (call rax) (call x64.mem (call rsi) 16))
+    (call x64.mov_ri32 c rcx base_cell)
+    (call x64.load c 64 rcx (call x64.mem rcx 0))
+    (call x64.test_rr c 64 rcx rcx)
+    (let no_memory:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rax) rcx)
+    (call x64.mov_ri64 c r8 8589934592i64)
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) r8)
+    (let outside:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.load c 64 rcx (call x64.mem (call rdx) 160))
+    (call x64.alu_ri c 64 (call x64.op_sub) rcx 8)
+    (call x64.load c 64 (call rax) (call x64.mem (call rdx) 168))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rax) 1)
+    (call x64.store c 64 (call x64.mem rcx 0) (call rax))
+    (call x64.store c 64 (call x64.mem (call rdx) 160) rcx)
+    (call x64.patch_rel32 c (call x64.lea_rip c (call rax)) backtrace_at)
+    (call x64.store c 64 (call x64.mem (call rdx) 168) (call rax))
+    (call x64.mov_ri32 c (call rax) reason_addr)
+    (call x64.store c 64 (call x64.mem (call rdx) 112) (call rax))
+    (call x64.mov_ri32 c (call rax) reason_len)
+    (call x64.store c 64 (call x64.mem (call rdx) 136) (call rax))
+    (call x64.ret c)
+    ;; not linear memory: rt_sigaction(SIGSEGV, {SIG_DFL}, 0, 8)
+    (call x64.patch_rel32 c no_memory (call buf.len c))
+    (call x64.patch_rel32 c outside (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_sub) rsp 32)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (loop k 0 3 1 (call x64.store c 64 (call x64.mem rsp (* 8 k)) (call rax)))
+    (call x64.mov_ri32 c (call rdi) 11)
+    (call x64.mov_rr c 64 (call rsi) rsp)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c r10 8)
+    (call x64.mov_ri32 c (call rax) 13)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) rsp 32)
+    (call x64.ret c))
+
+  ;; The handler's return: rt_sigreturn (the kernel needs SA_RESTORER).
+  (fn emit_sigreturn [c:(ptr buf.Buf)] -> void (pub)
+    (call x64.mov_ri32 c (call rax) 15)
+    (call x64.syscall c))
+
+  ;; Installs the handler at `handler` (code offsets, found RIP-relative):
+  ;; rt_sigaction(SIGSEGV, {handler, SA_SIGINFO | SA_RESTORER, restorer, 0}, 0, 8).
+  (fn emit_install_fault_handler [c:(ptr buf.Buf) handler:i32 restorer:i32] -> void (pub)
+    (let r10:i32 10) (let rsp:i32 4)
+    (call x64.alu_ri c 64 (call x64.op_sub) rsp 32)
+    (call x64.patch_rel32 c (call x64.lea_rip c (call rax)) handler)
+    (call x64.store c 64 (call x64.mem rsp 0) (call rax))
+    (call x64.mov_ri32 c (call rax) 67108868)
+    (call x64.store c 64 (call x64.mem rsp 8) (call rax))
+    (call x64.patch_rel32 c (call x64.lea_rip c (call rax)) restorer)
+    (call x64.store c 64 (call x64.mem rsp 16) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem rsp 24) (call rax))
+    (call x64.mov_ri32 c (call rdi) 11)
+    (call x64.mov_rr c 64 (call rsi) rsp)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c r10 8)
+    (call x64.mov_ri32 c (call rax) 13)
+    (call x64.syscall c)
+    (call x64.alu_ri c 64 (call x64.op_add) rsp 32))
 )

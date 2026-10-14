@@ -1,6 +1,6 @@
 # Faster native code
 
-**Status: approved 2026-10-14, in progress: F0 and F1 done (docs/BENCHMARKS.md, "The value-tracking translator").** Every decision at the
+**Status: approved 2026-10-14, in progress: F0, F1, F2, and F4 done (docs/BENCHMARKS.md, "The value-tracking translator"); F3 next.** Every decision at the
 end was taken as recommended.
 
 ## The gap

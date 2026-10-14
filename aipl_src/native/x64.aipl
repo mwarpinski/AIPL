@@ -494,9 +494,9 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 9.
+  ;; Pass count; test_suite.aipl expects 10.
   (fn run_x64_tests [] -> i32 (pub)
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (call test_tls))))))))))
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (call test_rip)))))))))))
   ;; X64_TESTS_END
 
   ;; ===== Forms added after NE3 =====
@@ -593,4 +593,23 @@
       (call fs c) (call load c 32 r (call mem (call p r) 0)))
     (call check "tls" c "64488b43086448894310648b0364498b4a086449894a1064418b0a64488b51086448895110648b1164498b5808644989581064418b1864498b6708644989671064418b2764488b6e086448896e10648b2e64498b7508644989751064418b750064488b7c24086448897c2410648b3c24644d8b4308644d89431064458b03644c8b4a08644c894a1064448b0a644d8b5108644d89511064458b11644c8b5808644c89581064448b18644c8b6708644c89671064448b27644d8b6e08644d896e1064458b2e644c8b7508644c89751064448b7500644d8b7c2408644d897c241064458b3c24"))
 
+  ;; ===== RIP-relative addresses (docs/design/NATIVE_SPEED_PLAN.md F4) =====
+
+  ;; lea dst, [rip + disp32]: an address in the code, wherever it is loaded.
+  ;; Returns the displacement's position, for patch_rel32.
+  (fn lea_rip [c:(ptr buf.Buf) dst:i32] -> i32 (pub)
+    (req (call reg_ok dst))
+    (call rex c true dst 0 0 false)
+    (call byte c 141)
+    (call byte c (bitor 5 (shl (bitand dst 7) 3)))
+    (let at:i32 (call buf.len c))
+    (call u32 c 0)
+    at)
+
+  (fn test_rip [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (let _a:i32 (call lea_rip c 0))
+    (let _b:i32 (call lea_rip c 8))
+    (let _d:i32 (call lea_rip c 15))
+    (call check "rip" c "488d05000000004c8d05000000004c8d3d00000000"))
 )

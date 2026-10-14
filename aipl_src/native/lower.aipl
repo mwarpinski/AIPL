@@ -69,7 +69,7 @@
   ;; A trap reason's text in the data segment; frames: whether the trap
   ;; prints the call chain after it (a wasm trap does; the exit-status error
   ;; is not a trap under wasmtime, so it does not).
-  (struct Reason [addr:i32 len:i32 (pub frames:bool)] (pub))
+  (struct Reason [(read addr:i32) (read len:i32) (pub frames:bool)] (pub))
 
   ;; An open label. kind: 0 block, 1 loop, 2 if, 3 the function body.
   ;; arity: the label's result count (0 or 1). height: the value stack depth
@@ -1148,22 +1148,18 @@
     (call x64.mov_ri32 c reg (get l L.mem_cell))
     (call x64.load c 64 reg (call x64.mem reg 0)))
 
-  ;; With the address in ar, zero-extended: traps unless address + offset +
-  ;; width fits the memory's current size, and returns the operand
-  ;; [r15 + ar + offset]. Uses r10 and r11.
+  ;; With the address in ar, zero-extended: the operand [r15 + ar + offset].
+  ;; Nothing is checked here: memory past the current size, up to 8 GiB
+  ;; from r15 (every 32-bit address plus every offset), has no access, so an
+  ;; access outside the memory faults, and the fault handler turns that into
+  ;; the out-of-bounds trap (runtime.emit_fault_handler).
   (fn checked_address [l:(ptr L) ar:i32 offset:i32 width:i32] -> (ptr x64.Mem)
-    (let c:(ptr buf.Buf) (get l L.code))
     ;; an offset past the largest memory (or negative as i32, i.e. 2 GiB and
-    ;; up as u32) can never be in bounds
-    ;; in 64 bits: the maximum, 32768 pages, is 2^31 bytes
+    ;; up as u32) can never be in bounds (in 64 bits: the maximum, 32768
+    ;; pages, is 2^31 bytes)
     (if (or (lt offset 0) (gt (i64.extend_s offset) (* (i64.extend_s (get l L.mem_max)) 65536i64)))
         (block (call emit_trap l (get l L.out_of_bounds)) (call x64.mem_index (call r15) ar 1 0))
-        (block
-          (call x64.lea c 64 (call r11) (call x64.mem ar (+ offset width)))
-          (call load_mem_size l (call r10))
-          (call x64.alu_rr c 64 (call x64.op_cmp) (call r11) (call r10))
-          (call emit_trap_if l (call x64.cc_a) (get l L.out_of_bounds))
-          (call x64.mem_index (call r15) ar 1 offset))))
+        (call x64.mem_index (call r15) ar 1 offset)))
 
   ;; memory.grow: pops a page count, pushes the old size in pages, or -1
   ;; past the maximum or if the pages cannot be made usable. The reserved
@@ -1601,12 +1597,23 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (cond
       ((call immediate_ok b sz)
-       (if (lt alu 0)
-           (block (call x64.mov_ri64 c (call r11) (get b Op.val)) (call x64.imul_rr c sz dst (call r11)))
-           (call x64.alu_ri c sz alu dst (i32.wrap (get b Op.val)))))
+       (let k:i32 (call log2_exact (get b Op.val) sz))
+       (cond
+         ;; times a power of two: a shift (wraps the same way)
+         ((and (lt alu 0) (gte k 0)) (call x64.shift_ri c sz (call x64.sh_shl) dst k))
+         ((lt alu 0) (call x64.mov_ri64 c (call r11) (get b Op.val)) (call x64.imul_rr c sz dst (call r11)))
+         (else (call x64.alu_ri c sz alu dst (i32.wrap (get b Op.val))))))
       (else
        (let src:i32 (call read_reg l b (call r11)))
        (if (lt alu 0) (call x64.imul_rr c sz dst src) (call x64.alu_rr c sz alu dst src)))))
+
+;; k if v (as an sz-bit number) is 2^k with 1 <= k < sz, else -1.
+  (fn log2_exact [v:i64 sz:i32] -> i32
+    (let x:i64 (if (eq sz 32) (i64.extend_u (i32.wrap v)) v))
+    (let k:i32 -1)
+    (loop i 1 (- sz 1) 1
+      (if (eq x (shl 1i64 (i64.extend_s i))) (set! k i) (block)))
+    k)
 
   ;; Whether `lea d, [local + k]` computes a + b (alu add) or a - b (sub)
   ;; for constant b: k must fit 32 bits signed (negated, for sub, in 64 bits).
