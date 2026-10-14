@@ -150,12 +150,12 @@ is missing):
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
    easier installation, a showcase program, and the experiment measuring
    how well agents write AIPL.
-2. **The language:** small structs by value (plan first).
-3. **The standard library:** networking and starting processes, once WASI
+2. **Faster native code:** a translator that keeps values in registers.
+3. **The language:** small structs by value.
+4. **The standard library:** networking and starting processes, once WASI
    can.
-4. **Retiring the Rust compiler:** rebuilding the toolchain from a
+5. **Retiring the Rust compiler:** rebuilding the toolchain from a
    checked-in compiled seed, so Rust is needed only for the launcher.
-5. **Faster native code:** a translator that keeps values in registers.
 6. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
 

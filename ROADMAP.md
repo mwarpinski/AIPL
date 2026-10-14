@@ -30,16 +30,18 @@ against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** small structs by value; generation checks
-   against use after free (docs/design/GENERATIONS_PLAN.md).
-3. **The standard library:** networking, once WASI has listening sockets;
+2. **Native speed:** a single-pass rewrite of the native backend's
+   instruction translation that tracks where each value is, and memory
+   checks by guard pages (docs/design/NATIVE_SPEED_PLAN.md); a faster
+   small-block path in `std/heap`.
+3. **Small structs by value**, then unions, results, and `Option` by
+   value (docs/design/VALUES_PLAN.md); generation checks against use after
+   free (docs/design/GENERATIONS_PLAN.md).
+4. **The standard library:** networking, once WASI has listening sockets;
    starting processes, once WASI can (preview 1 cannot).
-4. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
+5. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
    from a checked-in `aiplc.wasm`, leaving Rust only in the launcher for
    platforms without a native backend (DEVELOPING.md, "Direction").
-5. **Native speed:** a rewrite of the native backend's instruction
-   translation that tracks where each value is (docs/BENCHMARKS.md,
-   "Locals in registers"); a faster small-block path in `std/heap`.
 6. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
