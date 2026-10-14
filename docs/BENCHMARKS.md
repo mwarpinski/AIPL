@@ -234,3 +234,27 @@ registers, they go back to their slots. Native times, before and after
   lower.aipl, not a tweak. Earlier attempts at pieces of this (constants
   as immediates, two values in registers) measured no gain on their own
   while locals were in memory.
+
+## The value-tracking translator (2026-10-14)
+
+docs/design/NATIVE_SPEED_PLAN.md, stage by stage. Native times, best of
+five, with wasmtime's alongside (`python3 tools/bench.py --runs 5
+--no-python`); F0 is the baseline, null checks included.
+
+| Benchmark | F0 | F1 | wasm (wasmtime) | native / wasm, F0 → F1 |
+|---|---|---|---|---|
+| binarytrees | 0.299 s | 0.237 s | 0.160 s | 1.9x → 1.5x |
+| fannkuch | 1.112 s | 0.762 s | 0.266 s | 4.2x → 2.9x |
+| knucleotide | 1.207 s | 1.068 s | 0.657 s | 1.9x → 1.6x |
+| mandelbrot | 0.208 s | 0.209 s | 0.070 s | 3.0x → 3.0x |
+| nbody | 0.761 s | 0.563 s | 0.151 s | 5.2x → 3.7x |
+| pidigits | 15.559 s | 9.904 s | 2.722 s | 5.7x → 3.6x |
+| spectralnorm | 0.391 s | 0.385 s | 0.126 s | 3.1x → 3.1x |
+| spigot | 2.632 s | 1.713 s | 1.592 s | 1.6x → 1.08x |
+
+**F1, the value stack.** The upper part of the wasm value stack is
+virtual: constants, locals, and values in seven registers, used where they
+are; only control flow, calls, and the rarer instructions put values in
+memory. Integer code gains 12-36%. The float benchmarks (mandelbrot,
+spectralnorm) do not move: float arithmetic still goes through rax, rcx,
+and the machine stack, the next stage's target.
