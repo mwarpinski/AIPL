@@ -220,8 +220,12 @@ FAQ or ROADMAP.md.
 - [x] **Visibility** (done 2026-10-14): private by default; `(pub)` items;
   fields private, `(read x:T)`, or `(pub x:T)`; a struct made outside its
   module only if every field is `(pub)`. AIPL_SPEC.md 11.1.
-- [ ] **Standard library breadth:** a data format (JSON), directory listing
-  and file information, running processes; networking later.
+- [x] **Standard library breadth** (done 2026-10-14): `std/json` (strict
+  parsing with error offsets; writing as `JSON.stringify` does, numbers in
+  the shortest digits that read back) and `std/fs` (sorted directory
+  listings, file kind, size, and modification time) over three new WASI
+  ops. Starting processes is left out, as WASI preview 1 cannot; networking
+  later. AIPL_SPEC.md 4.C and 12.6, ROADMAP.md.
 - [ ] **Structs by value and arrays of structs.**
 - [ ] **Faster native code** (docs/BENCHMARKS.md, "Locals in registers": a
   rewrite of the instruction translation is the real gain).

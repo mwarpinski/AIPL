@@ -1282,7 +1282,7 @@
     (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
-        (eq o ast.Op.sys_random)))))))
+        (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))))))))
 
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
     (if (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)) (block))
@@ -1325,6 +1325,9 @@
        (call one c env at args (call i32_t) o false "mem.grow requires 1 argument (pages: i32)" "mem.grow requires i32 pages, got ")
        (call i32_t))
       ((eq o ast.Op.atomic_add) (call operands c env at "atomic.add" "(atomic.add p v)" args 2) (call i32_t))
+      ((eq o ast.Op.fs_opendir) (call operands c env at "fs.opendir" "(fs.opendir ptr len)" args 2) (call i32_t))
+      ((eq o ast.Op.fs_stat) (call operands c env at "fs.stat" "(fs.stat ptr len out)" args 3) (call i32_t))
+      ((eq o ast.Op.fs_readdir) (call readdir_operands c env at args) (call i32_t))
       ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
       ((eq o ast.Op.atomic_lock) (call operands c env at "atomic.lock" "(atomic.lock p)" args 1) (call void_t))
       ((eq o ast.Op.atomic_unlock) (call operands c env at "atomic.unlock" "(atomic.unlock p)" args 1) (call void_t))
@@ -1491,6 +1494,25 @@
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b name) (call s b " operand ") (call buf.push_int b (+ k 1)) (call s b " must be i32, got ") (call ty b t)
+            (call fail c b) (return))
+          (block))))
+
+  ;; fs.readdir's operands (checker.rs expect_operands): three i32, then the
+  ;; i64 cookie.
+  (fn readdir_operands [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr)] -> void
+    (if (neq (arr.len args) 4)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "fs.readdir takes 4 operands, (fs.readdir fd buf len cookie); got ") (call buf.push_int b (arr.len args))
+          (call fail c b) (return))
+        (block))
+    (loop k 0 3 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return) (block))
+      (if (not (if (eq k 3) (eq (call tag t) 1) (call is_i32 t)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "fs.readdir operand ") (call buf.push_int b (+ k 1)) (call s b (if (eq k 3) " must be i64, got " " must be i32, got ")) (call ty b t)
             (call fail c b) (return))
           (block))))
 

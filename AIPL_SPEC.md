@@ -103,7 +103,8 @@ comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "ltu" | "lteu" |
 conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
                  | "f64.convert_i64_s" | "i64.trunc_f64_s" | "f64.reinterpret_i64" | "i64.reinterpret_f64" | "f64.sqrt" ;
 sys_op         ::= "sys.print" | "sys.time" | "sys.monotonic" | "sys.random" | "sys.exit" ;
-fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete" ;
+fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete"
+                 | "fs.opendir" | "fs.readdir" | "fs.stat" ;
 proc_op        ::= "args.sizes" | "args.get" | "env.sizes" | "env.get" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
 str_op         ::= "str.len" | "str.ptr" ;
@@ -158,7 +159,7 @@ Some operations reach memory the program has not been handed through a typed poi
 - **Raw memory:** `mem.load8`, `mem.load32`, `mem.load64`, `mem.store8`, `mem.store32`, `mem.store64`.
 - **Casts to a pointer or array:** `ptr.cast`, `arr.cast` (`enum.cast` is checked: a non-member reaches `match`'s `unreachable`).
 - **Atomics and threads:** `atomic.add`, `atomic.cas`, `atomic.lock`, `atomic.unlock`, `thread.spawn`, `thread.join` (AIPL does not check for data races).
-- **Host calls that take raw addresses:** `fs.open`, `fs.read`, `fs.write`, `fs.delete`, `args.sizes`, `args.get`, `env.sizes`, `env.get`, `sys.random`.
+- **Host calls that take raw addresses:** `fs.open`, `fs.read`, `fs.write`, `fs.delete`, `fs.opendir`, `fs.readdir`, `fs.stat`, `args.sizes`, `args.get`, `env.sizes`, `env.get`, `sys.random`.
 - **Calling, or taking `(ref f)` of, a function marked `(unsafe)`.**
 
 Getting an address as a number (`mem.alloc`, `str.ptr`, `ptr.addr`, `arr.addr`) is checked: a number cannot be read through without one of the operations above.
@@ -219,6 +220,9 @@ Compiled modules import only the host functions they use from `wasi_snapshot_pre
 | `(fs.write fd buf len)` | | `fd_write` with one iovec | bytes written, or `-1` |
 | `(fs.close fd)` | | `fd_close` | `0`, or `-1` |
 | `(fs.delete ptr len)` | | `path_unlink_file` on fd 3 | `0`, or `-1` |
+| `(fs.opendir ptr len)` | `std::fs::read_dir`; the names held from the start, `.` and `..` first, as wasmtime gives them | `path_open` on fd 3 with `oflags = DIRECTORY` and rights `FD_READDIR` | new fd (for `fs.readdir` and `fs.close`), or `-1` |
+| `(fs.readdir fd buf len cookie:i64)` | | `fd_readdir`: WASI dirents (`d_next` u64, `d_ino` u64, `d_namlen` u32, `d_type` u8, 3 bytes, then the name) from the entry `cookie` names (`0` the first, else a `d_next`); the last one may be cut off | bytes written (`len` when more may follow), or `-1` |
+| `(fs.stat ptr len out)` | `std::fs::metadata` | `path_filestat_get` on fd 3, following symbolic links: a 64-byte WASI filestat at `out` (the filetype u8 at 16: 3 a directory, 4 a regular file; the size at 32; access, modification, and change times at 40, 48, 56 in nanoseconds) | `0`, or `-1` |
 | `(sys.exit code)` | returns the error `sys.exit(N) requested` rather than killing the host process | `proc_exit` | never returns |
 | `(sys.time)` | the system clock | `clock_time_get` (realtime) | `i64` nanoseconds since 1970-01-01 UTC |
 | `(sys.monotonic)` | a monotonic clock | `clock_time_get` (monotonic) | `i64` nanoseconds from an arbitrary fixed start; never decreases. Use for durations |
@@ -1186,7 +1190,7 @@ Pattern for a module's own runner: perform real work, then assert on the **conte
   (if (and (gt p2 p1) (and (gt a2 a1) (eq a3 a1))) 1 0))
 ```
 
-Expected terminal output (24 groups; abridged):
+Expected terminal output (29 groups; abridged):
 ```
 [AIPL Test] Running 'run_all' from 'aipl_src/test_suite.aipl'...
 
@@ -1496,6 +1500,8 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (unsafe to call: hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]` (unsafe to call), `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `(custom C) [state:C alloc_fn free_fn]` for a program's own allocator, unsafe to call (`alloc_fn [state:C n] -> i32`, 8-aligned; `free_fn [state:C p n]`; the state keeps its type, typically a pointer to the allocator's struct) |
 | `time` | timing code with the monotonic clock: `now [] -> i64` (nanoseconds), `since [start] -> i64`, `push_duration [b ns]` ("850 ns", "12.345 us", "3.071 ms", "4.200 s": three decimals in the largest fitting unit, integer arithmetic), `report [label start]` ("label: 12.345 ms" on stderr, so a program's output stays clean) |
 | `thread` | `(spawn_with C) [worker:(fn [C] -> i32) ctx:C] -> i32`: runs `worker` on `ctx` on a new thread (unsafe to call, as `thread.spawn` is); `(thread.join h)` gives the result. The worker's context keeps its type, where `thread.spawn` passes an `i32` |
+| `fs` | directories and file information over `fs.opendir`, `fs.readdir`, and `fs.stat`: `list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec (ptr str.Bytes))))` (the names in a directory sorted bytewise, without `.` and `..`, so a listing is the same in every backend; `none` if it cannot be read), `info [path:str] -> (option.Option (ptr fs.Info))` with `(struct Info [(read kind:fs.Kind) (read size:i64) (read modified:i64)])` (`fs.Kind.file`, `directory`, or `other`, after following symbolic links; `modified` in nanoseconds since 1970), and `list_path` / `info_path` for a path held as `(ptr str.Bytes)`. Starting other processes is not provided: WASI has no way to |
+| `json` | JSON (RFC 8259) to and from a `json.Value`, `(union Value [(null) (boolean b:bool) (number n:f64) (text s:(ptr str.Bytes)) (list items:(ptr (vec.Vec Value))) (object fields:(ptr (vec.Vec (ptr json.Field))))])`. `parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result json.Value (ptr json.Error))` is strict: valid UTF-8, no duplicate keys, nesting at most 512 deep, numbers that fit an `f64`, and an `Error` with the byte offset `at` and `what` went wrong. `get [v key:str] -> (option.Option json.Value)` (an object's member), `at [v i]` (a list's element), `count [v]` (elements or members, 0 for other values); `field [a key value] -> (ptr json.Field)` makes a member for building an object (`(read key)`, `(read value)`). `write [b:(ptr buf.Buf) v]` writes the text JavaScript's `JSON.stringify` writes: no spaces, keys in their order, numbers as the shortest digits that read back as the same `f64` (`0.1`, `1e+21`, `5e-324`); writing an infinity or NaN fails its contract. `tests/test_std.rs` compares the numbers with Rust's shortest digits on 20,000 doubles |
 | `option` | `(union (option.Option T) [(some value:T) (none)])`, a value that may be missing (section 4.J): `(make (option.Option i32) some 5)`, `(make (option.Option i32) none)`; `(call (option.is_some T) o)`, `is_none`, `(call (option.unwrap_or T) o fallback)` |
 | `float` | `from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `tests/test_std.rs` compares it with Rust on 400,000 literals |
 | `bigint` | arbitrarily large signed integers, changed in place (reuse numbers rather than making new ones; nothing is freed): `(ptr bigint.Int)` from `from_i32 [v]`, `with_capacity [limbs]`; `set_i32 [a v]`, `assign [dst src]`, `add [a b]`, `sub [a b]`, `add_mul_small [a b m]` (a += b·m), `sub_mul_small [a b m]`, `mul_small [a m]` (\|m\| < 2^31), `div_small [a d] -> i32` (a /= d toward zero, returns the remainder, 0 < d < 2^31), `div_small_quotient [a b] -> i32` (a ≥ 0, b > 0, quotient < 2^31: returns a / b, leaves the remainder in a), `negate [a]`, `compare [a b] -> i32`, `sign [a] -> i32`, `is_zero [a]`, `limb_count [a]`, `push_decimal [out a]` |

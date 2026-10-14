@@ -1,0 +1,141 @@
+;; std/fs: directories and file information (AIPL_SPEC.md 4.C), over
+;; fs.opendir, fs.readdir, and fs.stat:
+;;
+;;   (match (call fs.list (call alloc.default) "data")
+;;     ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names] ...)
+;;     ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none ...))
+;;   (match (call fs.info "data/a.txt")
+;;     ((option.Option (ptr fs.Info)) some [i] (get i fs.Info.size))
+;;     ((option.Option (ptr fs.Info)) none -1i64))
+;;
+;; A directory's names come sorted bytewise, without "." and "..", so a
+;; listing is the same in every backend and on every file system (the order
+;; a directory gives them in is the file system's). A path that cannot be
+;; read gives none.
+(module fs
+  (import alloc)
+  (import str)
+  (import vec)
+  (import option)
+
+  ;; What a path names, after following symbolic links.
+  (enum Kind [file directory other] (pub))
+
+  ;; size in bytes, modified in nanoseconds since 1970 (UTC)
+  (struct Info [(read kind:Kind) (read size:i64) (read modified:i64)] (pub))
+
+  ;; ===== Directories =====
+
+  ;; The names in directory `path`, sorted; the vector and the names come
+  ;; from `a`.
+  (fn list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec (ptr str.Bytes)))) (pub)
+    (unsafe (call list_at a (str.ptr path) (str.len path))))
+
+  ;; list for a path held as bytes.
+  (fn list_path [a:alloc.Allocator path:(ptr str.Bytes)] -> (option.Option (ptr (vec.Vec (ptr str.Bytes)))) (pub)
+    (unsafe (call list_at a (get path str.Bytes.addr) (get path str.Bytes.len))))
+
+  ;; Reads the directory 4096 bytes of WASI dirents at a time, from the
+  ;; cookie after the last whole entry (a dirent: d_next u64, d_ino u64,
+  ;; d_namlen u32, d_type u8, 3 bytes, then the name).
+  (fn list_at [a:alloc.Allocator addr:i32 len:i32] -> (option.Option (ptr (vec.Vec (ptr str.Bytes)))) (unsafe)
+    (let fd:i32 (fs.opendir addr len))
+    (if (lt fd 0) (return (make (option.Option (ptr (vec.Vec (ptr str.Bytes)))) none)) (block))
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 16))
+    (let buf:i32 (call alloc.raw a 4096))
+    (let cookie:i64 0i64)
+    (let ok:bool true)
+    (let more:bool true)
+    (while more
+      (let used:i32 (fs.readdir fd buf 4096 cookie))
+      (if (lt used 0) (block (set! ok false) (break)) (block))
+      (let at:i32 0)
+      (let whole:i32 0)
+      (while (lte (+ at 24) used)
+        (let namlen:i32 (mem.load32 (+ buf (+ at 16))))
+        (if (gt (+ at (+ 24 namlen)) used) (break) (block))
+        (let name:i32 (+ buf (+ at 24)))
+        (if (not (call dot_or_dotdot name namlen))
+            (call (vec.push (ptr str.Bytes)) names (call copy a name namlen))
+            (block))
+        (set! cookie (mem.load64 (+ buf at)))
+        (set! at (+ at (+ 24 namlen)))
+        (set! whole (+ whole 1)))
+      ;; a full buffer means more may follow; one that held no whole entry
+      ;; cannot (a name is at most 255 bytes), so it is an error
+      (set! more (eq used 4096))
+      (if (and more (eq whole 0)) (block (set! ok false) (break)) (block)))
+    (let _c:i32 (fs.close fd))
+    (call alloc.free_raw a buf 4096)
+    (if (not ok) (return (make (option.Option (ptr (vec.Vec (ptr str.Bytes)))) none)) (block))
+    (call (vec.sort_by (ptr str.Bytes)) names (ref by_bytes))
+    (make (option.Option (ptr (vec.Vec (ptr str.Bytes)))) some names))
+
+  (fn dot_or_dotdot [name:i32 n:i32] -> bool (unsafe)
+    (and (gte n 1) (and (lte n 2)
+         (and (eq (mem.load8 name) 46) (or (eq n 1) (eq (mem.load8 (+ name 1)) 46))))))
+
+  ;; n bytes at addr, copied into memory from a.
+  (fn copy [a:alloc.Allocator addr:i32 n:i32] -> (ptr str.Bytes) (unsafe)
+    (let to:i32 (call alloc.raw a (if (gt n 0) n 1)))
+    (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ addr i))))
+    (call str.bytes to n))
+
+  ;; byte order, a prefix first
+  (fn by_bytes [x:(ptr str.Bytes) y:(ptr str.Bytes)] -> i32
+    (let n:i32 (if (lt (get x str.Bytes.len) (get y str.Bytes.len)) (get x str.Bytes.len) (get y str.Bytes.len)))
+    (loop i 0 (- n 1) 1
+      (let d:i32 (- (call str.byte_at x i) (call str.byte_at y i)))
+      (if (neq d 0) (return d) (block)))
+    (- (get x str.Bytes.len) (get y str.Bytes.len)))
+
+  ;; ===== File information =====
+
+  ;; What `path` names: its kind, size, and when it was last modified.
+  (fn info [path:str] -> (option.Option (ptr Info)) (pub)
+    (unsafe (call info_at (str.ptr path) (str.len path))))
+
+  ;; info for a path held as bytes.
+  (fn info_path [path:(ptr str.Bytes)] -> (option.Option (ptr Info)) (pub)
+    (unsafe (call info_at (get path str.Bytes.addr) (get path str.Bytes.len))))
+
+  ;; From a WASI filestat (64 bytes): the filetype at 16 (3 a directory, 4 a
+  ;; regular file), the size at 32, the modification time at 48.
+  (fn info_at [addr:i32 len:i32] -> (option.Option (ptr Info)) (unsafe)
+    (let a:alloc.Allocator (call alloc.default))
+    (let st:i32 (call alloc.raw a 64))
+    (let r:i32 (fs.stat addr len st))
+    (let i:(ptr Info) (new Info))
+    (let filetype:i32 (mem.load8 (+ st 16)))
+    (put i Info.kind (cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other)))
+    (put i Info.size (mem.load64 (+ st 32)))
+    (put i Info.modified (mem.load64 (+ st 48)))
+    (call alloc.free_raw a st 64)
+    (if (lt r 0) (make (option.Option (ptr Info)) none) (make (option.Option (ptr Info)) some i)))
+
+  ;; ===== Tests =====
+
+  ;; Pass count; test_suite.aipl expects 4. Run from the repository root.
+  (fn run_fs_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let a:alloc.Allocator (call alloc.default))
+    ;; the standard library's own directory: sorted, this file among it
+    (match (call list a "aipl_src/std")
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
+        (let sorted:bool true)
+        (let found:bool false)
+        (loop i 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 1
+          (let n:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names i))
+          (if (call str.bytes_eq n (call str.from_str "fs.aipl")) (set! found true) (block))
+          (if (and (gt i 0) (gt (call by_bytes (call (vec.at (ptr str.Bytes)) names (- i 1)) n) 0)) (set! sorted false) (block)))
+        (if (and sorted found) (set! p (+ p 1)) (block)))
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (block)))
+    (if (call (option.is_none (ptr (vec.Vec (ptr str.Bytes)))) (call list a "no/such/directory")) (set! p (+ p 1)) (block))
+    (match (call info "aipl_src/std/fs.aipl")
+      ((option.Option (ptr Info)) some [f]
+        (if (and (eq (get f Info.kind) Kind.file) (and (gt (get f Info.size) 0i64) (gt (get f Info.modified) 0i64))) (set! p (+ p 1)) (block)))
+      ((option.Option (ptr Info)) none (block)))
+    (match (call info "aipl_src/std")
+      ((option.Option (ptr Info)) some [d] (if (eq (get d Info.kind) Kind.directory) (set! p (+ p 1)) (block)))
+      ((option.Option (ptr Info)) none (block)))
+    p))

@@ -132,6 +132,33 @@ fn cycles_and_missing_modules_are_errors() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An enum or union whose members are not a [...] list (found by
+/// tools/fuzz.py: the Rust resolver unwrapped it and panicked) is passed on
+/// for the parser to reject, by both resolvers.
+#[test]
+fn malformed_member_lists_reach_the_parser() {
+    let dir = std::env::temp_dir().join(format!("aipl_members_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, src) in [
+        ("e.aipl", "(module e (enum Color :(ptr x) (pub)) (fn main [] -> i32 0))"),
+        ("u.aipl", "(module u (union Shape dot) (fn main [] -> i32 0))"),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        let rust = std::panic::catch_unwind(|| Resolver::resolve(&path)).unwrap_or_else(|_| panic!("{name}: the Rust resolver panicked"));
+        let rust = rust.map(|_| ()).unwrap_err();
+        // the AIPL resolver may reject it itself, or leave it to the parser
+        let aipl = aipl_resolve(&path).and_then(|flat| parse_flat(&flat, &path).map(|_| String::new())).unwrap_err();
+        // and the message alone: parsing the flat text here does not map positions back, as the CLI does
+        let after_path = |m: &str| {
+            let rest = m.split_once(".aipl: ").map_or(m, |(_, rest)| rest);
+            rest.split_once(": ").filter(|(at, _)| at.bytes().all(|b| b.is_ascii_digit() || b == b':')).map_or(rest, |(_, msg)| msg).to_string()
+        };
+        assert_eq!(after_path(&rust), after_path(&aipl), "{name}: the toolchains reject it differently");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 // ---- The milestone: the self-hosted toolchain compiled to wasm ----
 
 mod wasm_driver {

@@ -348,6 +348,7 @@ const EVERY_FORM: &str = r#"(module every
     (let rnd:i32 (sys.random (mem.alloc 8) 8))
     (let fo:i32 (fs.open (str.ptr e) (str.len e) 0))
     (let fio:i32 (+ (fs.read fo 0 0) (+ (fs.write fo 0 0) (+ (fs.close fo) (fs.delete 0 0)))))
+    (let dir:i32 (+ (fs.opendir (str.ptr e) (str.len e)) (+ (fs.readdir 3 0 0 0i64) (fs.stat (str.ptr e) (str.len e) 0))))
     (let ar:i32 (+ (args.sizes 0 0) (+ (args.get 0 0) (+ (env.sizes 0 0) (env.get 0 0)))))
     (let th:i32 (thread.join (thread.spawn (ref w) 1)))
     (let cv:i64 (+ (i64.extend_s 1) (+ (i64.extend_u 1) (+ (i64.trunc_f64_s 1.5) (i64.reinterpret_f64 (f64.sqrt (f64.convert_i64_s 4i64)))))))
@@ -642,7 +643,7 @@ const HEADER: &str = "(struct P [x:i32 f:f64 n:(ptr P)]) (enum E [a b]) (union U
 #[test]
 fn checkers_agree_on_every_operator_and_operand() {
     let front = front::load();
-    let ops = "+ - * / % ^ shl shr shru bitand bitor mem.load8 mem.load32 mem.load64 mem.store8 mem.store32 mem.store64 mem.alloc mem.grow str.len str.ptr atomic.add atomic.cas atomic.lock atomic.unlock eq neq lt lte ltu lteu gtu gteu gt gte checked.add checked.sub checked.mul and or not sys.print sys.time sys.monotonic sys.random sys.exit fs.open fs.read fs.write fs.close fs.delete args.sizes args.get env.sizes env.get thread.spawn thread.join divu remu i64.extend_s i64.extend_u i32.wrap f64.convert_i64_s f64.sqrt i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64";
+    let ops = "+ - * / % ^ shl shr shru bitand bitor mem.load8 mem.load32 mem.load64 mem.store8 mem.store32 mem.store64 mem.alloc mem.grow str.len str.ptr atomic.add atomic.cas atomic.lock atomic.unlock eq neq lt lte ltu lteu gtu gteu gt gte checked.add checked.sub checked.mul and or not sys.print sys.time sys.monotonic sys.random sys.exit fs.open fs.read fs.write fs.close fs.delete fs.opendir fs.readdir fs.stat args.sizes args.get env.sizes env.get thread.spawn thread.join divu remu i64.extend_s i64.extend_u i32.wrap f64.convert_i64_s f64.sqrt i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64";
     let pool = ["2000", "2000i64", "1.5", "\"s\"", "true", "(ref w)", "(new P)", "(arr.new i32 1)", "E.a", "(make U.w)", "0", "70", "6"];
     let mut programs = Vec::new();
     for op in ops.split_whitespace() {
@@ -657,6 +658,12 @@ fn checkers_agree_on_every_operator_and_operand() {
             }
         }
     }
+    // fs.readdir, the one operator with four operands (the last an i64)
+    for a in pool {
+        programs.push(format!("(fs.readdir {a} 2000 64 0i64)"));
+        programs.push(format!("(fs.readdir 3 2000 64 {a})"));
+    }
+    programs.push("(fs.readdir 3 2000 64 0i64 0)".to_string());
     let (mut agreed, mut rejected) = (0, 0);
     for body in &programs {
         // as a value and as a statement

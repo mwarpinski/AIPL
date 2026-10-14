@@ -537,6 +537,207 @@
     (call patch_all c badf)
     (call emit_return_errno c 8))
 
+  ;; rcx = to if rax = from (for mapping a Linux file type to WASI's).
+  (fn map_value [c:(ptr buf.Buf) from:i32 to:i32] -> void
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call rax) from)
+    (let other:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.mov_ri32 c (call rcx) to)
+    (call x64.patch_rel32 c other (call buf.len c)))
+
+  ;; rcx = n, or less if fewer bytes are left: min(n, r14 - r12) (n a
+  ;; register, or an immediate when reg is -1).
+  (fn emit_room [c:(ptr buf.Buf) reg:i32 imm:i32] -> void
+    (call x64.mov_rr c 64 (call rcx) (call r14))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rcx) (call r12))
+    (if (lt reg 0) (call x64.alu_ri c 64 (call x64.op_cmp) (call rcx) imm) (call x64.alu_rr c 64 (call x64.op_cmp) (call rcx) reg))
+    (let fits:i32 (call x64.jcc c (call x64.cc_be)))
+    (if (lt reg 0) (call x64.mov_ri32 c (call rcx) imm) (call x64.mov_rr c 64 (call rcx) reg))
+    (call x64.patch_rel32 c fits (call buf.len c)))
+
+  ;; fd_readdir(fd, buf, buf_len, cookie:i64, bufused_ptr) -> errno. The
+  ;; directory is read from `cookie` (lseek to a d_off getdents64 gave, 0 for
+  ;; the start); each Linux dirent becomes a WASI one (d_next = d_off, d_ino,
+  ;; d_namlen, d_type), the last cut off when the buffer is full, as WASI
+  ;; allows. Registers: rbx the Linux fd, r13/r14 the buffer and its length,
+  ;; r12 the bytes used, r8 a batch's length, r10 the offset in it, r11 a
+  ;; name's length; rsp+0 the batch (4096 bytes), rsp+4096 a WASI header.
+  (fn emit_fd_readdir [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call arg c 32 5 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 5 1 (call r13))
+    (call arg c 32 5 2 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    (call arg c 32 5 4 (call r9))
+    (call x64.mov_ri32 c (call r8) 4)
+    (call emit_guest_check l w (call r9) (call r8) 4)
+    ;; lseek(fd, cookie, SEEK_SET)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call arg c 64 5 3 (call rsi))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c (call rax) 8)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let seek_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r12) (call r12))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 4128)
+    ;; a batch: getdents64(fd, rsp, 4096); 0 is the end of the directory
+    (let batch:i32 (call buf.len c))
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_ri32 c (call rdx) 4096)
+    (call x64.mov_ri32 c (call rax) 217)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let read_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    (let at_end:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.mov_rr c 64 (call r8) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r10) (call r10))
+    ;; each entry of the batch
+    (let entry:i32 (call buf.len c))
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r10) (call r8))
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_ae)) batch)
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call rsp) (call r10) 1 19))
+    (call emit_strlen c)
+    (call x64.mov_rr c 64 (call r11) (call rdx))
+    ;; the WASI header: d_next, d_ino, d_namlen, d_type, 3 zero bytes
+    (call x64.load c 64 (call rax) (call x64.mem_index (call rsp) (call r10) 1 8))
+    (call x64.store c 64 (call x64.mem (call rsp) 4096) (call rax))
+    (call x64.load c 64 (call rax) (call x64.mem_index (call rsp) (call r10) 1 0))
+    (call x64.store c 64 (call x64.mem (call rsp) 4104) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 4112) (call rax))
+    (call x64.store c 32 (call x64.mem (call rsp) 4112) (call r11))
+    ;; Linux DT_* to WASI's filetype
+    (call x64.load8u c (call rax) (call x64.mem_index (call rsp) (call r10) 1 18))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call map_value c 4 3) (call map_value c 8 4) (call map_value c 10 7)
+    (call map_value c 2 2) (call map_value c 6 1) (call map_value c 12 6)
+    (call x64.store8 c (call x64.mem (call rsp) 4116) (call rcx))
+    ;; the header, then the name, as much as fits
+    (call emit_room c -1 24)
+    (call x64.lea c 64 (call rsi) (call x64.mem (call rsp) 4096))
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r13) 1 0))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rdi) (call r12))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r12) (call rcx))
+    (call x64.rep_movsb c)
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r12) (call r14))
+    (let full1:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call emit_room c (call r11) 0)
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call rsp) (call r10) 1 19))
+    (call x64.lea c 64 (call rdi) (call x64.mem_index (call r15) (call r13) 1 0))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rdi) (call r12))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r12) (call rcx))
+    (call x64.rep_movsb c)
+    (call x64.alu_rr c 64 (call x64.op_cmp) (call r12) (call r14))
+    (let full2:i32 (call x64.jcc c (call x64.cc_ae)))
+    ;; the next Linux entry: its reclen, a u16 at 16
+    (call x64.load c 32 (call rax) (call x64.mem_index (call rsp) (call r10) 1 16))
+    (call x64.alu_ri c 32 (call x64.op_and) (call rax) 65535)
+    (call x64.alu_rr c 64 (call x64.op_add) (call r10) (call rax))
+    (call x64.patch_rel32 c (call x64.jmp c) entry)
+    ;; done: *bufused = r12
+    (call x64.patch_rel32 c at_end (call buf.len c))
+    (call x64.patch_rel32 c full1 (call buf.len c))
+    (call x64.patch_rel32 c full2 (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 4128)
+    (call x64.store c 32 (call x64.mem_index (call r15) (call r9) 1 0) (call r12))
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c read_failed (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 4128)
+    (call x64.patch_rel32 c seek_failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; path_filestat_get(dirfd, flags, path, path_len, out) -> errno. The path
+  ;; is opened beneath dirfd (O_PATH, following symlinks with
+  ;; SYMLINK_FOLLOW), fstatat(fd, "", AT_EMPTY_PATH) reads it, and the Linux
+  ;; stat becomes a WASI filestat: dev, ino, filetype, nlink, size, and the
+  ;; three times in nanoseconds.
+  (fn emit_path_filestat [l:(ptr lower.L) w:(ptr W)] -> void
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let badf:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call arg c 32 5 0 (call rbx))
+    (call emit_fd_lookup l w (call rbx) (call rbx) badf)
+    (call arg c 32 5 2 (call r13))
+    (call arg c 32 5 3 (call r14))
+    (call emit_guest_check l w (call r13) (call r14) 1)
+    (call arg c 32 5 4 (call r9))
+    (call x64.mov_ri32 c (call r8) 64)
+    (call emit_guest_check l w (call r9) (call r8) 8)
+    ;; O_PATH | O_CLOEXEC, and O_NOFOLLOW without SYMLINK_FOLLOW (1)
+    (call x64.mov_ri32 c (call r8) 2621440)
+    (call arg c 32 5 1 (call rax))
+    (call x64.test_ri c 32 (call rax) 1)
+    (let follow:i32 (call x64.jcc c (call x64.cc_ne)))
+    (call x64.alu_ri c 32 (call x64.op_or) (call r8) 131072)
+    (call x64.patch_rel32 c follow (call buf.len c))
+    (call emit_path_to_stack l w)
+    (call x64.mov_rr c 64 (call rdi) (call rbx))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.mov_rr c 64 (call rdx) (call r8))
+    (call emit_openat2 c)
+    (call x64.mov_rr c 64 (call rsp) (call r12))
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let open_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    ;; newfstatat(fd, "", rsp+16, AT_EMPTY_PATH), the "" at rsp; then close
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) 160)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem (call rsp) 0) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.mov_rr c 64 (call rsi) (call rsp))
+    (call x64.lea c 64 (call rdx) (call x64.mem (call rsp) 16))
+    (call x64.mov_ri32 c (call r10) 4096)
+    (call x64.mov_ri32 c (call rax) 262)
+    (call x64.syscall c)
+    (call x64.mov_rr c 64 (call r14) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.mov_ri32 c (call rax) 3)
+    (call x64.syscall c)
+    (call x64.test_rr c 64 (call r14) (call r14))
+    (let stat_failed:i32 (call x64.jcc c (call x64.cc_s)))
+    ;; the WASI filestat at the guest's out
+    (call x64.lea c 64 (call rbx) (call x64.mem_index (call r15) (call r9) 1 0))
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) 16))
+    (call x64.store c 64 (call x64.mem (call rbx) 0) (call rax))
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) 24))
+    (call x64.store c 64 (call x64.mem (call rbx) 8) (call rax))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
+    (call x64.store c 64 (call x64.mem (call rbx) 16) (call rax))
+    (call x64.load c 32 (call rax) (call x64.mem (call rsp) 40))
+    (call x64.alu_ri c 32 (call x64.op_and) (call rax) 61440)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
+    (call map_value c 16384 3) (call map_value c 32768 4) (call map_value c 40960 7)
+    (call map_value c 8192 2) (call map_value c 24576 1) (call map_value c 49152 6)
+    (call x64.store8 c (call x64.mem (call rbx) 16) (call rcx))
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) 32))
+    (call x64.store c 64 (call x64.mem (call rbx) 24) (call rax))
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) 64))
+    (call x64.store c 64 (call x64.mem (call rbx) 32) (call rax))
+    (call emit_time c 88 40) (call emit_time c 104 48) (call emit_time c 120 56)
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 160)
+    (call emit_return_errno c 0)
+    (call x64.patch_rel32 c stat_failed (call buf.len c))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) 160)
+    (call x64.mov_rr c 64 (call rax) (call r14))
+    (call x64.patch_rel32 c open_failed (call buf.len c))
+    (call emit_errno_return l w)
+    (call patch_all c badf)
+    (call emit_return_errno c 8))
+
+  ;; [rbx + to] = seconds * 1e9 + nanoseconds, from the stat at rsp+16 (the
+  ;; seconds at rsp + at, the nanoseconds after them).
+  (fn emit_time [c:(ptr buf.Buf) at:i32 to:i32] -> void
+    (call x64.load c 64 (call rax) (call x64.mem (call rsp) at))
+    (call x64.mov_ri32 c (call rcx) 1000000000)
+    (call x64.imul_rr c 64 (call rax) (call rcx))
+    (call x64.load c 64 (call rcx) (call x64.mem (call rsp) (+ at 8)))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rax) (call rcx))
+    (call x64.store c 64 (call x64.mem (call rbx) to) (call rax)))
+
   ;; r8 |= linux if (reg & wasi) != 0
   (fn map_flag [c:(ptr buf.Buf) reg:i32 wasi:i32 linux:i32] -> void
     (call x64.test_ri c 32 reg wasi)
@@ -639,6 +840,8 @@
       ((call is name "random_get") (call emit_random_get l w) true)
       ((call is name "path_open") (call emit_path_open l w) true)
       ((call is name "path_unlink_file") (call emit_path_unlink l w) true)
+      ((call is name "fd_readdir") (call emit_fd_readdir l w) true)
+      ((call is name "path_filestat_get") (call emit_path_filestat l w) true)
       (else false)))
 
   (fn is [name:(ptr str.Bytes) want:str] -> bool

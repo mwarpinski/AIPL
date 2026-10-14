@@ -103,6 +103,12 @@ pub enum OpCode {
     FsWrite,
     FsClose,
     FsDelete,
+    /// `(fs.opendir ptr len)`: a directory's descriptor, or -1.
+    FsOpendir,
+    /// `(fs.readdir fd buf len cookie)`: WASI directory entries from `cookie` on.
+    FsReaddir,
+    /// `(fs.stat ptr len out)`: a file's WASI filestat (64 bytes at `out`).
+    FsStat,
     /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
     /// argument count and the total bytes of the NUL-terminated arguments;
     /// returns 0, or -1 on failure. std/os wraps the four args/env ops.

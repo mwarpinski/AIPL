@@ -957,6 +957,18 @@ impl TypeChecker {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::FsOpendir => {
+                    self.expect_operands("fs.opendir", "(fs.opendir ptr len)", args, &[Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::FsReaddir => {
+                    self.expect_operands("fs.readdir", "(fs.readdir fd buf len cookie)", args, &[Type::I32, Type::I32, Type::I32, Type::I64], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::FsStat => {
+                    self.expect_operands("fs.stat", "(fs.stat ptr len out)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
@@ -1498,7 +1510,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete
+            | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )
