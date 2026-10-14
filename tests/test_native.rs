@@ -1435,8 +1435,9 @@ fn i64_programs_match_natively() {
     }
 }
 
-const EDGES64: [i64; 16] = [
+const EDGES64: [i64; 17] = [
     0, 1, -1, 2, -7, 31, 32, 63, 64, 65, i64::MAX, i64::MIN, i64::MIN + 1, 4294967296, -4294967297, 0x1234_5678_9ABC_DEF0,
+    0xFFFF_FFFF,
 ];
 
 /// As i32_operator_programs, for the i64 operators: each applies one
@@ -2373,4 +2374,32 @@ fn float_locals_survive_calls_natively() {
         (call io.println_f64 \"pair \" (+ (call inner 1.0 3) (- (call depth 3 2.0) (call inner 2.0 4))) 6)
         0))";
     assert_native_matches("float_locals_survive_calls", src);
+}
+
+/// Six integer locals live in rbx, r12-r14, r8, r9 natively (F3): the ones
+/// in r8 and r9 must survive the instructions that use those registers as
+/// scratch (atomics, memory.grow) and calls to imports (printing), in this
+/// function and in its callers.
+#[test]
+fn register_locals_survive_atomics_grow_and_imports_natively() {
+    let src = "(module m (import io)
+      (fn busy [w:i32] -> i32 (unsafe)
+        (let a:i32 1) (let b:i32 2) (let c:i32 3) (let d:i32 4) (let e:i32 5) (let f:i32 6) (let g:i32 7)
+        (loop i 1 20 1
+          (set! a (+ a i)) (set! b (+ b a)) (set! c (^ c b)) (set! d (+ d c)) (set! e (- e d)) (set! f (+ f e)) (set! g (+ g f))
+          (let _x:i32 (atomic.add w (+ a g)))
+          (if (atomic.cas w 0 1) (set! b (+ b 1)) (set! c (+ c 1)))
+          (if (eq (% i 7) 0) (let _p:i32 (mem.grow 1)) (block))
+          (if (eq (% i 5) 0) (call io.println_int \"i \" (+ a (+ b c))) (block)))
+        (+ a (+ b (+ c (+ d (+ e (+ f (+ g (atomic.add w 0)))))))))
+      (fn caller [] -> i32 (unsafe)
+        (let p:i32 11) (let q:i32 22) (let r:i32 33) (let s:i32 44) (let t:i32 55) (let u:i32 66)
+        (let w:i32 (mem.alloc 8))
+        (loop k 1 3 1
+          (set! p (+ p (call busy w))) (set! q (+ q p)) (set! r (+ r q)) (set! s (^ s r)) (set! t (+ t s)) (set! u (- u t)))
+        (+ p (+ q (+ r (+ s (+ t u))))))
+      (fn main [] -> i32 (unsafe)
+        (call io.println_int \"total \" (call caller))
+        0))";
+    assert_native_matches("register_locals_survive_atomics_grow_and_imports", src);
 }

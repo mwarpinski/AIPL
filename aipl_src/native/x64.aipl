@@ -494,9 +494,9 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 11.
+  ;; Pass count; test_suite.aipl expects 13.
   (fn run_x64_tests [] -> i32 (pub)
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (+ (call test_rip) (call test_movaps))))))))))))
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (+ (call test_rip) (+ (call test_movaps) (+ (call test_nops) (call test_alu_rm))))))))))))))
   ;; X64_TESTS_END
 
   ;; ===== Forms added after NE3 =====
@@ -623,4 +623,62 @@
     (call movaps c 9 10)
     (call movaps c 0 1)
     (call check "movaps" c "440f28c2410f28df450f28ca0f28c1"))
+
+  ;; ===== Padding (NATIVE_SPEED_PLAN.md: loop starts aligned) =====
+
+  ;; One NOP of n bytes (1-9), the forms the processor manuals recommend
+  ;; (test vector checked by decoding it with objdump: each is one nop).
+  (fn nop [c:(ptr buf.Buf) n:i32] -> void (pub)
+    (req (and (gte n 1) (lte n 9)))
+    (if (or (eq n 2) (or (eq n 6) (eq n 9))) (call byte c 102) (block))
+    (cond
+      ((eq n 1) (call byte c 144))
+      ((eq n 2) (call byte c 144))
+      (else
+       (call byte c 15) (call byte c 31)
+       (let m:i32 (if (or (eq n 6) (eq n 9)) (- n 1) n))
+       (cond
+         ((eq m 3) (call byte c 0))
+         ((eq m 4) (call byte c 64) (call byte c 0))
+         ((eq m 5) (call byte c 68) (call byte c 0) (call byte c 0))
+         ((eq m 7) (call byte c 128) (call u32 c 0))
+         (else (call byte c 132) (call byte c 0) (call u32 c 0))))))
+
+  ;; NOPs up to the next multiple of `boundary` (a power of two).
+  (fn align [c:(ptr buf.Buf) boundary:i32] -> void (pub)
+    (let gap:i32 (bitand (- boundary (bitand (call buf.len c) (- boundary 1))) (- boundary 1)))
+    (while (gt gap 0)
+      (let n:i32 (if (gt gap 9) 9 gap))
+      (call nop c n)
+      (set! gap (- gap n))))
+
+  (fn test_nops [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (loop n 1 9 1 (call nop c n))
+    (call check "nops" c "9066900f1f000f1f40000f1f440000660f1f4400000f1f80000000000f1f840000000000660f1f840000000000"))
+
+  ;; ===== Memory operands (NATIVE_SPEED_PLAN.md F2) =====
+
+  ;; add/or/and/sub/xor/cmp dst, [m]
+  (fn alu_rm [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (and (call size_ok sz) (and (call alu_ok op) (call reg_ok dst))))
+    (call rm c sz (+ (* op 8) 3) dst m false))
+
+  ;; imul dst, [m]
+  (fn imul_rm [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (and (call size_ok sz) (call reg_ok dst)))
+    (call rm c sz 4015 dst m false))
+
+  (fn test_alu_rm [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call alu_rm c 32 (call op_add) 0 (call mem 5 -16))
+    (call alu_rm c 64 (call op_or) 6 (call mem 5 24))
+    (call alu_rm c 32 (call op_and) 9 (call mem 5 -8))
+    (call alu_rm c 64 (call op_sub) 12 (call mem 5 -48))
+    (call alu_rm c 32 (call op_xor) 7 (call mem 5 16))
+    (call alu_rm c 32 (call op_cmp) 13 (call mem 5 -40))
+    (call alu_rm c 64 (call op_cmp) 3 (call mem 4 8))
+    (call imul_rm c 64 7 (call mem 5 -16))
+    (call imul_rm c 32 14 (call mem 5 32))
+    (call check "alu_rm" c "0345f0480b751844234df84c2b65d0337d10443b6dd8483b5c2408480faf7df0440faf7520"))
 )

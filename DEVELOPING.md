@@ -54,7 +54,7 @@ Expected AIPL suite output (29 groups):
 [PASS] resolver: imports in AIPL (3 tests)
 [PASS] std/os: arguments + environment (3 tests)
 [PASS] native/wasm_reader: module structure and bodies (5 tests)
-[PASS] native/x64: instruction encodings vs GNU as (11 tests)
+[PASS] native/x64: instruction encodings vs GNU as (13 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
 [PASS] std/vec: generic list + stable sort (7 tests)

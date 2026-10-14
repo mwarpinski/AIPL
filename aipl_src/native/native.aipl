@@ -388,6 +388,9 @@
     (loop k 1 12 1 (call buf.push_byte data 0))
     (put l lower.L.backtrace_routine (call buf.len c))
     (call runtime.emit_backtrace_routine c argv0_cell sep nl ct chain_cell)
+    (let unreachable_at:i32 (call buf.len c))
+    (call lower.emit_unreachable_routine l)
+    (put l lower.L.unreachable_routine unreachable_at)
     (put wr wasi.W.region_routine (call buf.len c))
     (call runtime.emit_region_trap_routine c argv0_cell sep texts)
     ;; the memory fault handler, and the cell holding the memory's base

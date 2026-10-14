@@ -2389,17 +2389,21 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
 ///   local.get s ; i32.const 64 ; i32.sub ; i32.const (heap_start - 64) ; i32.lt_u
 ///   i32.or ; if unreachable end
 fn emit_write_address_check(func: &mut Body, ctx: &Ctx) {
+    // two checks, each its own `if`: a compiler that branches on a single
+    // comparison (the native backend) need not combine two into a value
     let scratch = ctx.addr_scratch;
     func.instruction(&Instruction::LocalTee(scratch));
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(4));
     func.instruction(&Instruction::I32LtU);
+    func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+    func.instruction(&Instruction::Unreachable);
+    func.instruction(&Instruction::End);
     func.instruction(&Instruction::LocalGet(scratch));
     func.instruction(&Instruction::I32Const(64));
     func.instruction(&Instruction::I32Sub);
     func.instruction(&Instruction::I32Const(ctx.heap_start as i32 - 64));
     func.instruction(&Instruction::I32LtU);
-    func.instruction(&Instruction::I32Or);
     func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
     func.instruction(&Instruction::Unreachable);
     func.instruction(&Instruction::End);
