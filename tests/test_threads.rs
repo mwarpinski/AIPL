@@ -257,3 +257,36 @@ fn atomics_agree_without_threads() {
     assert!(vm_run(&m, "bad_unlock").is_err());
     assert!(call("bad_unlock").is_err());
 }
+
+/// std/thread.spawn_with (a typed context instead of thread.spawn's i32) in
+/// the VM and as a threaded module.
+#[test]
+fn spawn_with_passes_a_typed_context() {
+    let src = r#"(module m
+  (import thread)
+  (struct Tally [from:i32 to:i32 sum:i32])
+  (fn add_up [t:(ptr Tally)] -> i32
+    (loop i (get t Tally.from) (get t Tally.to) 1 (put t Tally.sum (+ (get t Tally.sum) i)))
+    (get t Tally.sum))
+  (fn tally [from:i32 to:i32] -> (ptr Tally)
+    (let t:(ptr Tally) (new Tally))
+    (put t Tally.from from)
+    (put t Tally.to to)
+    t)
+  (fn main [] -> i32 (unsafe)
+    (let a:(ptr Tally) (call tally 1 100))
+    (let b:(ptr Tally) (call tally 101 200))
+    (let ha:i32 (call (thread.spawn_with (ptr Tally)) (ref add_up) a))
+    (let hb:i32 (call (thread.spawn_with (ptr Tally)) (ref add_up) b))
+    (+ (+ (thread.join ha) (thread.join hb)) (- (get b Tally.sum) (get a Tally.sum)))))"#;
+    let dir = std::env::temp_dir().join(format!("aipl_spawn_with_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("m.aipl");
+    std::fs::write(&path, src).unwrap();
+    let m = aipl_core::resolver::Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
+    TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("{e}"));
+    let wasm = WasmCompiler::compile(&m).unwrap();
+    // 5050 + 15050, plus 15050 - 5050
+    assert_eq!(vm_run(&m, "main").unwrap(), Value::Int(30100));
+    assert_eq!(run_threaded(&wasm, "main").0.unwrap(), 30100);
+}

@@ -215,8 +215,9 @@ FAQ or ROADMAP.md.
   templates checked once with sealed type parameters; `std/cmp`, and one
   `(map.Map K V)` for any hashable key. AIPL_SPEC.md 4.H,
   docs/design/CONSTRAINTS_PLAN.md.
-- [ ] **Closures** (or a clear statement that function references plus an
-  argument are the design).
+- [x] **Closures** (decided 2026-10-14): none, by design; a callback's data
+  is a typed context passed as its first argument (`vec.sort_by_with`,
+  `thread.spawn_with`, a typed `alloc.custom` state). AIPL_SPEC.md 4.G, FAQ.
 - [ ] **Visibility** (`pub`), so a module's helpers are private.
 - [ ] **Standard library breadth:** a data format (JSON), directory listing
   and file information, running processes; networking later.

@@ -277,11 +277,13 @@
     (let is_match:bool (and (not square) (call eq_lit (call head (get m Mod.src) g) "match")))
     (let gh:(ptr str.Bytes) (call head (get m Mod.src) g))
     (let members:bool (and (not square) (or (call eq_lit gh "interface") (call eq_lit gh "impl"))))
+    (let decl_list:bool (and (not square) (or (call eq_lit gh "union") (call eq_lit gh "enum"))))
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
+        ((and decl_list (and (eq i 2) (eq (get c compiler.Node.kind) compiler.Kind.bracket))) (call emit_decl_members m c out))
         ((and members (and (gte i 2) (call eq_lit (call head (get m Mod.src) c) "fn"))) (call emit_member m c (call eq_lit gh "impl") out))
         ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call note m c out) (call buf.push_bytes out tmpl))
         ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
@@ -293,6 +295,40 @@
       (set! c (get c compiler.Node.next)))
     (call note_close m g out)
     (call buf.push_byte out (if square 93 41))))
+
+  ;; A union's variants or an enum's members, [(circle r:f64) ...]
+  ;; (resolver.rs walk): the head of each is a member's name, even one a
+  ;; template of this module also has.
+  (fn emit_decl_members [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (call note m g out)
+    (call buf.push_byte out 91)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let first:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (if first (block) (call buf.push_byte out 32))
+      (set! first false)
+      (if (eq (get c compiler.Node.kind) compiler.Kind.paren)
+          (block
+            (call note m c out)
+            (call buf.push_byte out 40)
+            (let p:(ptr compiler.Node) (call first_child c))
+            (let i:i32 0)
+            (let prev_colon:bool true)
+            (while (neq p (ptr.null compiler.Node))
+              (let colon:bool (eq (get p compiler.Node.kind) compiler.Kind.colon))
+              (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+              (if (and (eq i 0) (call is_symbol p))
+                  (block (call note m p out) (call buf.push_bytes out (call text (get m Mod.src) p)))
+                  (call emit m p 0 out))
+              (set! prev_colon colon)
+              (set! i (+ i 1))
+              (set! p (get p compiler.Node.next)))
+            (call note_close m c out)
+            (call buf.push_byte out 41))
+          (call emit m c 0 out))
+      (set! c (get c compiler.Node.next)))
+    (call note_close m g out)
+    (call buf.push_byte out 93))
 
   ;; A function of an interface or an implementation (resolver.rs walk): its
   ;; name is the interface's, not this module's; an implementation's is

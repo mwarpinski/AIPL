@@ -86,6 +86,20 @@ number, compared on every access) are planned
 standard library's structs, such as `str.Bytes`, keep raw addresses in
 fields that any module can write; module visibility will close that.
 
+### Does it have closures, or lambdas?
+
+No, by design. A function sees only its parameters: nothing captures the
+variables around it, and there are no global variables. When a callback
+needs data, such as a comparison that sorts by counts kept in a map, the
+data is passed to it as a typed *context*, its first parameter:
+`(call (vec.sort_by_with str (ptr Counts)) words counts (ref by_count))`.
+A closure would have to allocate its captured variables behind the
+program's back, where AIPL allocates only through allocators the program
+names; it would make every function value bigger and every call through
+one slower; and it would add rules about what a capture copies or shares.
+Passing the context costs a parameter, and the reader sees exactly what the
+callback uses. (AIPL_SPEC.md 4.G.)
+
 ### How fast is it?
 
 Not fast yet. On eight benchmarks, native executables take 1.7 to 40 times

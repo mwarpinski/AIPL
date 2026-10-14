@@ -752,6 +752,10 @@ fn thread_programs_match_natively() {
             Some(&[4000, 25, 4000, 4]),
         );
     }
+    // std/thread: spawn_with hands each worker a typed context
+    for round in 0..5 {
+        assert_functions_give(&format!("std_thread_{round}"), include_str!("../aipl_src/std/thread.aipl"), &[], &[("run_thread_tests", &[])], Some(&[2]));
+    }
     // threads really run at once: each side waits for the other to start, so
     // this finishes only if both run concurrently (else the time limit fails it)
     let handshake = "(module m

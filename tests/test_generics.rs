@@ -259,3 +259,34 @@ fn malformed_generic_union_forms_are_errors_in_both_resolvers() {
         assert_eq!(aipl, rust, "{src}");
     }
 }
+
+/// A union's variant or an enum's member may share its name with a generic
+/// function of the same module: in an imported module the member must stay
+/// a member (`(custom c:...)` once became `(alloc.custom c:...)` when
+/// std/alloc's `custom` became generic).
+#[test]
+fn members_named_like_a_template_keep_their_names() {
+    let entry = write_program(
+        "member_names",
+        &[
+            ("main.aipl", "(module main (import lib) (fn main [] -> i32 (call lib.use_both)))"),
+            (
+                "lib.aipl",
+                "(module lib
+                   (union U [(pick n:i32) (none)])
+                   (enum E [red (pick2 5)])
+                   (fn (pick T) [x:T] -> T x)
+                   (fn (pick2 T) [x:T] -> T x)
+                   (fn use_both [] -> i32
+                     (match (make U.pick (call (pick i32) 3))
+                       (U.pick [n] (+ n (enum.ord E.pick2)))
+                       (U.none (call (pick2 i32) 0)))))",
+            ),
+        ],
+    );
+    assert_eq!(run_both(&entry, "main"), 8);
+    // the whole AIPL toolchain (this file's flat-output check cannot expand
+    // enum members), byte for byte
+    let rust = WasmCompiler::compile(&Resolver::resolve(&entry).unwrap()).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
+}
