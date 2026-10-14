@@ -22,7 +22,7 @@
   (import str)
   (import buf)
   (import vec)
-  (import strmap)
+  (import map)
 
   ;; unsafe_: the function has the (unsafe) clause.
   (struct Sig [params:(arr ast.Type) ret:ast.Type unsafe_:bool])
@@ -30,11 +30,11 @@
   (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) types:(ptr (vec.Vec ast.Type))])
 
   (struct C [src:i32
-             structs:(ptr (strmap.StrMap (ptr ast.StructDef)))
-             enums:(ptr (strmap.StrMap (ptr ast.EnumDef)))
-             unions:(ptr (strmap.StrMap (ptr ast.UnionDef)))
-             fns:(ptr (strmap.StrMap (ptr Sig)))
-             declared:(ptr (strmap.StrMap ast.Type))
+             structs:(ptr (map.Map (ptr str.Bytes) (ptr ast.StructDef)))
+             enums:(ptr (map.Map (ptr str.Bytes) (ptr ast.EnumDef)))
+             unions:(ptr (map.Map (ptr str.Bytes) (ptr ast.UnionDef)))
+             fns:(ptr (map.Map (ptr str.Bytes) (ptr Sig)))
+             declared:(ptr (map.Map (ptr str.Bytes) ast.Type))
              loop_depth:i32
              ret:ast.MaybeType
              err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool
@@ -182,27 +182,27 @@
 
   ;; src/checker.rs declare: a name keeps one type per function.
   (fn declare [c:(ptr C) name:(ptr str.Bytes) t:ast.Type at:i32] -> void
-    (let d:(ptr (strmap.StrMap ast.Type)) (get c C.declared))
-    (if (and (call (strmap.has ast.Type) d name) (not (call teq (call (strmap.get_or ast.Type) d name t) t)))
+    (let d:(ptr (map.Map (ptr str.Bytes) ast.Type)) (get c C.declared))
+    (if (and (call (map.has (ptr str.Bytes) ast.Type) d name) (not (call teq (call (map.get_or (ptr str.Bytes) ast.Type) d name t) t)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "'") (call by b name) (call s b "' is ") (call ty b t) (call s b " here but ")
-          (call ty b (call (strmap.get_or ast.Type) d name t))
+          (call ty b (call (map.get_or (ptr str.Bytes) ast.Type) d name t))
           (call s b " elsewhere in this function; a name keeps one type per function (rename one)")
           (call fail c b))
-        (call (strmap.set ast.Type) d name t)))
+        (call (map.set (ptr str.Bytes) ast.Type) d name t)))
 
   ;; ===== Definitions =====
 
-  (fn has_struct [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.StructDef)) (get c C.structs) n))
-  (fn has_enum [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.EnumDef)) (get c C.enums) n))
-  (fn has_union [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (strmap.has (ptr ast.UnionDef)) (get c C.unions) n))
+  (fn has_struct [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (map.has (ptr str.Bytes) (ptr ast.StructDef)) (get c C.structs) n))
+  (fn has_enum [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (map.has (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) n))
+  (fn has_union [c:(ptr C) n:(ptr str.Bytes)] -> bool (call (map.has (ptr str.Bytes) (ptr ast.UnionDef)) (get c C.unions) n))
   (fn struct_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.StructDef)
-    (call (strmap.get_or (ptr ast.StructDef)) (get c C.structs) n (ptr.null ast.StructDef)))
+    (call (map.get_or (ptr str.Bytes) (ptr ast.StructDef)) (get c C.structs) n (ptr.null ast.StructDef)))
   (fn union_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.UnionDef)
-    (call (strmap.get_or (ptr ast.UnionDef)) (get c C.unions) n (ptr.null ast.UnionDef)))
+    (call (map.get_or (ptr str.Bytes) (ptr ast.UnionDef)) (get c C.unions) n (ptr.null ast.UnionDef)))
   (fn enum_def [c:(ptr C) n:(ptr str.Bytes)] -> (ptr ast.EnumDef)
-    (call (strmap.get_or (ptr ast.EnumDef)) (get c C.enums) n (ptr.null ast.EnumDef)))
+    (call (map.get_or (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) n (ptr.null ast.EnumDef)))
 
   (fn lower_start [n:(ptr str.Bytes)] -> bool
     (let c0:i32 (call str.byte_at n 0))
@@ -256,7 +256,7 @@
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (loop k 0 (- (arr.len fns) 1) 1
       (let fd:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
-      (if (call (strmap.has (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name))
+      (if (call (map.has (ptr str.Bytes) (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name))
           (block
             (let b:(ptr buf.Buf) (call msg c (get fd ast.FnDef.at)))
             (call s b "Duplicate function definition '") (call by b (get fd ast.FnDef.name)) (call s b "'")
@@ -269,7 +269,7 @@
       (put sig Sig.params pts)
       (put sig Sig.ret (get fd ast.FnDef.ret))
       (put sig Sig.unsafe_ (get fd ast.FnDef.unsafe_))
-      (call (strmap.set (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
+      (call (map.set (ptr str.Bytes) (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     ;; a definition's error is reported alone
     (if (get c C.failed) (return) (block))
     (loop k 0 (- (arr.len fns) 1) 1
@@ -327,7 +327,7 @@
               (call s b "' and '") (call by b mn) (call s b "' both have the value ") (call buf.push_int b (get mi ast.Member.value))
               (call fail c b) (return))
             (block))))
-    (call (strmap.set (ptr ast.EnumDef)) (get c C.enums) name e))
+    (call (map.set (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) name e))
 
   (fn register_struct [c:(ptr C) sd:(ptr ast.StructDef)] -> void
     (let at:i32 (get sd ast.StructDef.at))
@@ -348,7 +348,7 @@
       (let b:(ptr buf.Buf) (call msg c at))
       (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown name)) (call s b "': ")
       (if (call layout_error b (get fi ast.Field.ty)) (block (call fail c b) (return)) (block)))
-    (call (strmap.set (ptr ast.StructDef)) (get c C.structs) name sd))
+    (call (map.set (ptr str.Bytes) (ptr ast.StructDef)) (get c C.structs) name sd))
 
   (fn register_union [c:(ptr C) u:(ptr ast.UnionDef)] -> void
     (let at:i32 (get u ast.UnionDef.at))
@@ -393,7 +393,7 @@
         (let b:(ptr buf.Buf) (call msg c at))
         (call s b "Field '") (call by b (get fj ast.Field.name)) (call s b "' of variant '") (call by b name) (call s b ".") (call by b vn) (call s b "': ")
         (if (call layout_error b (get fj ast.Field.ty)) (block (call fail c b) (return)) (block))))
-    (call (strmap.set (ptr ast.UnionDef)) (get c C.unions) name u))
+    (call (map.set (ptr str.Bytes) (ptr ast.UnionDef)) (get c C.unions) name u))
 
   ;; src/checker.rs validate_type: null, or the error's message (to which
   ;; callers may add context).
@@ -472,13 +472,13 @@
     (put c C.in_unsafe_fn (get f ast.FnDef.unsafe_))
     (put c C.unsafe_depth 0)
     (let env:(ptr Env) (call new_env))
-    (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
+    (put c C.declared (call (map.make (ptr str.Bytes) ast.Type) (call alloc.default) 32))
     (let at:i32 (get f ast.FnDef.at))
     (let fname:(ptr str.Bytes) (get f ast.FnDef.name))
     (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
     (loop k 0 (- (arr.len ps) 1) 1
       (let prm:(ptr ast.Param) (arr.get (ptr ast.Param) ps k))
-      (call (strmap.set ast.Type) (get c C.declared) (get prm ast.Param.name) (get prm ast.Param.ty))
+      (call (map.set (ptr str.Bytes) ast.Type) (get c C.declared) (get prm ast.Param.name) (get prm ast.Param.ty))
       (let b:(ptr buf.Buf) (call validate c (get prm ast.Param.ty) at))
       (if (neq b (ptr.null buf.Buf))
           (block
@@ -694,9 +694,9 @@
            (block))
        cty)
       (ast.Expr.ref [_ name]
-       (if (call (strmap.has (ptr Sig)) (get c C.fns) name)
+       (if (call (map.has (ptr str.Bytes) (ptr Sig)) (get c C.fns) name)
            (block
-             (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
+             (let sig:(ptr Sig) (call (map.get_or (ptr str.Bytes) (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
              (call require_unsafe_fn c at name sig)
              (make ast.Type.fn_ (get sig Sig.params) (get sig Sig.ret)))
            (block
@@ -862,13 +862,13 @@
     (call void_t))
 
   (fn infer_call [c:(ptr C) env:(ptr Env) at:i32 func:(ptr str.Bytes) args:(arr ast.Expr)] -> ast.Type
-    (if (not (call (strmap.has (ptr Sig)) (get c C.fns) func))
+    (if (not (call (map.has (ptr str.Bytes) (ptr Sig)) (get c C.fns) func))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Call to unknown function '") (call by b func) (call s b "'")
           (call fail c b) (return (call void_t)))
         (block))
-    (let sig:(ptr Sig) (call (strmap.get_or (ptr Sig)) (get c C.fns) func (ptr.null Sig)))
+    (let sig:(ptr Sig) (call (map.get_or (ptr str.Bytes) (ptr Sig)) (get c C.fns) func (ptr.null Sig)))
     (call require_unsafe_fn c at func sig)
     (if (get c C.failed) (return (call void_t)) (block))
     (let ps:(arr ast.Type) (get sig Sig.params))
@@ -1690,11 +1690,11 @@
   (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
     (let c:(ptr C) (new C))
     (put c C.src src)
-    (put c C.structs (call (strmap.make (ptr ast.StructDef)) (call alloc.default) 64))
-    (put c C.enums (call (strmap.make (ptr ast.EnumDef)) (call alloc.default) 16))
-    (put c C.unions (call (strmap.make (ptr ast.UnionDef)) (call alloc.default) 16))
-    (put c C.fns (call (strmap.make (ptr Sig)) (call alloc.default) 256))
-    (put c C.declared (call (strmap.make ast.Type) (call alloc.default) 32))
+    (put c C.structs (call (map.make (ptr str.Bytes) (ptr ast.StructDef)) (call alloc.default) 64))
+    (put c C.enums (call (map.make (ptr str.Bytes) (ptr ast.EnumDef)) (call alloc.default) 16))
+    (put c C.unions (call (map.make (ptr str.Bytes) (ptr ast.UnionDef)) (call alloc.default) 16))
+    (put c C.fns (call (map.make (ptr str.Bytes) (ptr Sig)) (call alloc.default) 256))
+    (put c C.declared (call (map.make (ptr str.Bytes) ast.Type) (call alloc.default) 32))
     (put c C.loop_depth 0)
     (put c C.unsafe_depth 0)
     (put c C.in_unsafe_fn false)

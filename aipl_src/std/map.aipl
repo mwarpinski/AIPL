@@ -1,62 +1,61 @@
-;; std/map: hash map from i32 keys to values of any type (open addressing,
-;; linear probing, tombstones; grows at 75% load). Generic in the value type
-;; (AIPL_SPEC.md 4.H):
-;;   (let m:(ptr (map.Map i32)) (call (map.make i32) (call alloc.default) 0))
-;;   (call (map.set i32) m 7 70)
-;;   (call (map.get_or i32) m 7 0)
+;; std/map: hash map from keys of any type with a cmp.Hash implementation
+;; to values of any type (open addressing, linear probing, tombstones; grows
+;; at 75% load). Generic in both (AIPL_SPEC.md 4.H):
+;;   (let m:(ptr (map.Map i32 str)) (call (map.make i32 str) (call alloc.default) 0))
+;;   (call (map.set i32 str) m 7 "seven")
+;;   (call (map.get_or i32 str) m 7 "")
+;; Keys hash and compare through (cmp.Hash K): i32, i64, str, and
+;; (ptr str.Bytes) (by contents) are implemented in std/cmp; a module
+;; implements it for its own key types. A (ptr str.Bytes) key is kept as the
+;; pointer, so its bytes must not change while it is in the map.
 (module map
   (import alloc)
+  (import cmp)
+  (import str)
 
   ;; state per slot: 0 empty, 1 used, 2 deleted
-  (struct (Map V) [keys:(arr i32) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator])
+  (struct (Map K V) [keys:(arr K) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator]
+    (where (cmp.Hash K)))
 
-  ;; murmur3 finalizer: spreads nearby keys across the table
-  (fn hash [k:i32] -> i32
-    (let h:i32 (^ k (shru k 16)))
-    (set! h (* h -2048144789))
-    (set! h (^ h (shru h 13)))
-    (set! h (* h -1028477387))
-    (^ h (shru h 16)))
+  (fn (alloc_slots K V) [m:(ptr (Map K V)) cap:i32] -> void (where (cmp.Hash K))
+    (let a:alloc.Allocator (get m (Map K V) allocator))
+    (put m (Map K V) keys (call (alloc.array K) a cap))
+    (put m (Map K V) vals (call (alloc.array V) a cap))
+    (put m (Map K V) states (call (alloc.array i32) a cap))
+    (put m (Map K V) count 0)
+    (put m (Map K V) used 0))
 
-  (fn (alloc_slots V) [m:(ptr (Map V)) cap:i32] -> void
-    (let a:alloc.Allocator (get m (Map V) allocator))
-    (put m (Map V) keys (call (alloc.array i32) a cap))
-    (put m (Map V) vals (call (alloc.array V) a cap))
-    (put m (Map V) states (call (alloc.array i32) a cap))
-    (put m (Map V) count 0)
-    (put m (Map V) used 0))
-
-  (fn (make V) [a:alloc.Allocator capacity:i32] -> (ptr (Map V))
+  (fn (make K V) [a:alloc.Allocator capacity:i32] -> (ptr (Map K V)) (where (cmp.Hash K))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
-    (let m:(ptr (Map V)) (call (alloc.create (Map V)) a))
-    (put m (Map V) allocator a)
-    (call (alloc_slots V) m cap)
+    (let m:(ptr (Map K V)) (call (alloc.create (Map K V)) a))
+    (put m (Map K V) allocator a)
+    (call (alloc_slots K V) m cap)
     m)
 
   ;; Frees the table and the map itself; neither may be used afterwards.
-  (fn (free V) [m:(ptr (Map V))] -> void
-    (call (free_slots V) (get m (Map V) allocator) (get m (Map V) keys) (get m (Map V) vals) (get m (Map V) states))
-    (call (alloc.destroy (Map V)) (get m (Map V) allocator) m))
+  (fn (free K V) [m:(ptr (Map K V))] -> void (where (cmp.Hash K))
+    (call (free_slots K V) (get m (Map K V) allocator) (get m (Map K V) keys) (get m (Map K V) vals) (get m (Map K V) states))
+    (call (alloc.destroy (Map K V)) (get m (Map K V) allocator) m))
 
-  (fn (free_slots V) [a:alloc.Allocator keys:(arr i32) vals:(arr V) states:(arr i32)] -> void
-    (call (alloc.free_array i32) a keys)
+  (fn (free_slots K V) [a:alloc.Allocator keys:(arr K) vals:(arr V) states:(arr i32)] -> void
+    (call (alloc.free_array K) a keys)
     (call (alloc.free_array V) a vals)
     (call (alloc.free_array i32) a states))
 
-  (fn (capacity V) [m:(ptr (Map V))] -> i32 (arr.len (get m (Map V) keys)))
-  (fn (count V) [m:(ptr (Map V))] -> i32 (get m (Map V) count))
+  (fn (capacity K V) [m:(ptr (Map K V))] -> i32 (where (cmp.Hash K)) (arr.len (get m (Map K V) keys)))
+  (fn (count K V) [m:(ptr (Map K V))] -> i32 (where (cmp.Hash K)) (get m (Map K V) count))
 
   ;; The slot holding k, else the first reusable slot on k's probe path.
-  (fn (slot_for V) [m:(ptr (Map V)) k:i32] -> i32
-    (let mask:i32 (- (call (capacity V) m) 1))
-    (let i:i32 (bitand (call hash k) mask))
+  (fn (slot_for K V) [m:(ptr (Map K V)) k:K] -> i32 (where (cmp.Hash K))
+    (let mask:i32 (- (call (capacity K V) m) 1))
+    (let i:i32 (bitand (call (cmp.Hash.hash K) k) mask))
     (let tomb:i32 -1)
     (while true
-      (let st:i32 (arr.get i32 (get m (Map V) states) i))
+      (let st:i32 (arr.get i32 (get m (Map K V) states) i))
       (cond
         ((eq st 0) (return (if (neq tomb -1) tomb i)))
-        ((eq st 1) (if (eq (arr.get i32 (get m (Map V) keys) i) k) (return i) (block)))
+        ((eq st 1) (if (call (cmp.Hash.same K) (arr.get K (get m (Map K V) keys) i) k) (return i) (block)))
         ((eq tomb -1) (set! tomb i))
         (else (block)))
       (set! i (bitand (+ i 1) mask)))
@@ -64,76 +63,127 @@
 
   ;; Rehashes into a table twice the size when it is mostly live entries,
   ;; else the same size (just clearing tombstones).
-  (fn (grow V) [m:(ptr (Map V))] -> void
-    (let old_keys:(arr i32) (get m (Map V) keys))
-    (let old_vals:(arr V) (get m (Map V) vals))
-    (let old_states:(arr i32) (get m (Map V) states))
+  (fn (grow K V) [m:(ptr (Map K V))] -> void (where (cmp.Hash K))
+    (let old_keys:(arr K) (get m (Map K V) keys))
+    (let old_vals:(arr V) (get m (Map K V) vals))
+    (let old_states:(arr i32) (get m (Map K V) states))
     (let old_cap:i32 (arr.len old_keys))
-    (call (alloc_slots V) m (if (gt (* 2 (get m (Map V) count)) old_cap) (* 2 old_cap) old_cap))
+    (call (alloc_slots K V) m (if (gt (* 2 (get m (Map K V) count)) old_cap) (* 2 old_cap) old_cap))
     (loop i 0 (- old_cap 1) 1
       (if (eq (arr.get i32 old_states i) 1)
-          (call (set V) m (arr.get i32 old_keys i) (arr.get V old_vals i))
+          (call (set K V) m (arr.get K old_keys i) (arr.get V old_vals i))
           (block)))
-    (call (free_slots V) (get m (Map V) allocator) old_keys old_vals old_states))
+    (call (free_slots K V) (get m (Map K V) allocator) old_keys old_vals old_states))
 
   ;; Adds k -> v, or replaces k's value.
-  (fn (set V) [m:(ptr (Map V)) k:i32 v:V] -> void
-    (if (gte (* 4 (+ (get m (Map V) used) 1)) (* 3 (call (capacity V) m))) (call (grow V) m) (block))
-    (let i:i32 (call (slot_for V) m k))
-    (let st:i32 (arr.get i32 (get m (Map V) states) i))
+  (fn (set K V) [m:(ptr (Map K V)) k:K v:V] -> void (where (cmp.Hash K))
+    (if (gte (* 4 (+ (get m (Map K V) used) 1)) (* 3 (call (capacity K V) m))) (call (grow K V) m) (block))
+    (let i:i32 (call (slot_for K V) m k))
+    (let st:i32 (arr.get i32 (get m (Map K V) states) i))
     (if (neq st 1)
         (block
-          (if (eq st 0) (put m (Map V) used (+ (get m (Map V) used) 1)) (block))
-          (arr.set i32 (get m (Map V) states) i 1)
-          (arr.set i32 (get m (Map V) keys) i k)
-          (put m (Map V) count (+ (get m (Map V) count) 1)))
+          (if (eq st 0) (put m (Map K V) used (+ (get m (Map K V) used) 1)) (block))
+          (arr.set i32 (get m (Map K V) states) i 1)
+          (arr.set K (get m (Map K V) keys) i k)
+          (put m (Map K V) count (+ (get m (Map K V) count) 1)))
         (block))
-    (arr.set V (get m (Map V) vals) i v))
+    (arr.set V (get m (Map K V) vals) i v))
 
   ;; k's value, or `default` when k is absent.
-  (fn (get_or V) [m:(ptr (Map V)) k:i32 default:V] -> V
-    (let i:i32 (call (slot_for V) m k))
-    (if (eq (arr.get i32 (get m (Map V) states) i) 1) (arr.get V (get m (Map V) vals) i) default))
+  (fn (get_or K V) [m:(ptr (Map K V)) k:K default:V] -> V (where (cmp.Hash K))
+    (let i:i32 (call (slot_for K V) m k))
+    (if (eq (arr.get i32 (get m (Map K V) states) i) 1) (arr.get V (get m (Map K V) vals) i) default))
 
-  (fn (has V) [m:(ptr (Map V)) k:i32] -> bool
-    (eq (arr.get i32 (get m (Map V) states) (call (slot_for V) m k)) 1))
+  (fn (has K V) [m:(ptr (Map K V)) k:K] -> bool (where (cmp.Hash K))
+    (eq (arr.get i32 (get m (Map K V) states) (call (slot_for K V) m k)) 1))
 
   ;; Removes k; false if it was absent.
-  (fn (remove V) [m:(ptr (Map V)) k:i32] -> bool
-    (let i:i32 (call (slot_for V) m k))
-    (if (neq (arr.get i32 (get m (Map V) states) i) 1) (return false) (block))
-    (arr.set i32 (get m (Map V) states) i 2)
-    (put m (Map V) count (- (get m (Map V) count) 1))
+  (fn (remove K V) [m:(ptr (Map K V)) k:K] -> bool (where (cmp.Hash K))
+    (let i:i32 (call (slot_for K V) m k))
+    (if (neq (arr.get i32 (get m (Map K V) states) i) 1) (return false) (block))
+    (arr.set i32 (get m (Map K V) states) i 2)
+    (put m (Map K V) count (- (get m (Map K V) count) 1))
     true)
 
-  ;; Iterate with (loop i 0 (- (call (map.capacity V) m) 1) 1 (if (call (map.slot_used V) m i) ...)).
-  (fn (slot_used V) [m:(ptr (Map V)) i:i32] -> bool (eq (arr.get i32 (get m (Map V) states) i) 1))
-  (fn (slot_key V) [m:(ptr (Map V)) i:i32] -> i32 (arr.get i32 (get m (Map V) keys) i))
-  (fn (slot_val V) [m:(ptr (Map V)) i:i32] -> V (arr.get V (get m (Map V) vals) i))
+  ;; Iterate with (loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ...)).
+  (fn (slot_used K V) [m:(ptr (Map K V)) i:i32] -> bool (where (cmp.Hash K)) (eq (arr.get i32 (get m (Map K V) states) i) 1))
+  (fn (slot_key K V) [m:(ptr (Map K V)) i:i32] -> K (where (cmp.Hash K)) (arr.get K (get m (Map K V) keys) i))
+  (fn (slot_val K V) [m:(ptr (Map K V)) i:i32] -> V (where (cmp.Hash K)) (arr.get V (get m (Map K V) vals) i))
 
-  ;; Pass count; test_suite.aipl expects 4.
+  ;; ===== Tests =====
+
+  ;; Pass count; test_suite.aipl expects 8.
   (fn run_map_tests [] -> i32
+    (+ (call i32_cases) (call bytes_cases)))
+
+  ;; i32 keys
+  (fn i32_cases [] -> i32
     (let p:i32 0)
-    (let m:(ptr (Map i32)) (call (make i32) (call alloc.default) 0))
+    (let m:(ptr (Map i32 i32)) (call (make i32 i32) (call alloc.default) 0))
     ;; 2000 keys including 0 and negatives, forcing several resizes
-    (loop i -1000 999 1 (call (set i32) m i (* i 2)))
-    (if (and (eq (call (count i32) m) 2000) (and (eq (call (get_or i32) m -1000 0) -2000) (and (eq (call (get_or i32) m 0 7) 0) (eq (call (get_or i32) m 5000 -1) -1))))
+    (loop i -1000 999 1 (call (set i32 i32) m i (* i 2)))
+    (if (and (eq (call (count i32 i32) m) 2000) (and (eq (call (get_or i32 i32) m -1000 0) -2000) (and (eq (call (get_or i32 i32) m 0 7) 0) (eq (call (get_or i32 i32) m 5000 -1) -1))))
         (set! p (+ p 1))
         (block))
-    (call (set i32) m 7 70)
-    (if (and (eq (call (count i32) m) 2000) (eq (call (get_or i32) m 7 0) 70)) (set! p (+ p 1)) (block))
+    (call (set i32 i32) m 7 70)
+    (if (and (eq (call (count i32 i32) m) 2000) (eq (call (get_or i32 i32) m 7 0) 70)) (set! p (+ p 1)) (block))
     ;; remove every even key, then check membership and the count
     (loop i -1000 999 1
-      (if (eq (% i 2) 0) (call (remove i32) m i) false))
-    (if (and (eq (call (count i32) m) 1000) (and (not (call (has i32) m 10)) (and (call (has i32) m 11) (not (call (remove i32) m 10)))))
+      (if (eq (% i 2) 0) (call (remove i32 i32) m i) false))
+    (if (and (eq (call (count i32 i32) m) 1000) (and (not (call (has i32 i32) m 10)) (and (call (has i32 i32) m 11) (not (call (remove i32 i32) m 10)))))
         (set! p (+ p 1))
         (block))
     ;; iteration sees exactly the live entries
     (let seen:i32 0)
     (let vsum:i32 0)
-    (loop i 0 (- (call (capacity i32) m) 1) 1
-      (if (call (slot_used i32) m i)
-          (block (set! seen (+ seen 1)) (set! vsum (+ vsum (- (call (slot_val i32) m i) (* 2 (call (slot_key i32) m i))))))
+    (loop i 0 (- (call (capacity i32 i32) m) 1) 1
+      (if (call (slot_used i32 i32) m i)
+          (block (set! seen (+ seen 1)) (set! vsum (+ vsum (- (call (slot_val i32 i32) m i) (* 2 (call (slot_key i32 i32) m i))))))
           (block)))
     (if (and (eq seen 1000) (eq vsum 56)) (set! p (+ p 1)) (block))
-    p))
+    p)
+
+  ;; byte-string keys, by their contents
+  (fn bytes_cases [] -> i32
+    (unsafe (let p:i32 0)
+    ;; word frequencies of a small text, splitting on spaces by hand
+    (let text:(ptr str.Bytes) (call str.from_str "the cat and the hat and the bat"))
+    (let m:(ptr (Map (ptr str.Bytes) i32)) (call (make (ptr str.Bytes) i32) (call alloc.default) 0))
+    (let start:i32 0)
+    (loop i 0 (get text str.Bytes.len) 1
+      (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (get text str.Bytes.addr) i)) 32))
+          (block
+            (let w:(ptr str.Bytes) (call str.bytes (+ (get text str.Bytes.addr) start) (- i start)))
+            (call (set (ptr str.Bytes) i32) m w (+ (call (get_or (ptr str.Bytes) i32) m w 0) 1))
+            (set! start (+ i 1)))
+          (block)))
+    (if (and (eq (call (count (ptr str.Bytes) i32) m) 5)
+             (and (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "the") 0) 3)
+                  (and (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "and") 0) 2)
+                       (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "dog") -1) -1))))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call (remove (ptr str.Bytes) i32) m (call str.from_str "cat")) (and (not (call (has (ptr str.Bytes) i32) m (call str.from_str "cat"))) (eq (call (count (ptr str.Bytes) i32) m) 4)))
+        (set! p (+ p 1))
+        (block))
+    ;; 300 distinct generated keys survive resizing
+    (let big:(ptr (Map (ptr str.Bytes) i32)) (call (make (ptr str.Bytes) i32) (call alloc.default) 0))
+    (loop i 0 299 1
+      (let k:i32 (mem.alloc 2))
+      (mem.store8 k (+ 65 (/ i 26)))
+      (mem.store8 (+ k 1) (+ 65 (% i 26)))
+      (call (set (ptr str.Bytes) i32) big (call str.bytes k 2) i))
+    (let ok:bool (eq (call (count (ptr str.Bytes) i32) big) 300))
+    (loop i 0 299 1
+      (let k:i32 (mem.alloc 2))
+      (mem.store8 k (+ 65 (/ i 26)))
+      (mem.store8 (+ k 1) (+ 65 (% i 26)))
+      (if (neq (call (get_or (ptr str.Bytes) i32) big (call str.bytes k 2) -1) i) (set! ok false) (block)))
+    (if ok (set! p (+ p 1)) (block))
+    ;; non-i32 values: a map to byte strings
+    (let names:(ptr (Map (ptr str.Bytes) (ptr str.Bytes))) (call (make (ptr str.Bytes) (ptr str.Bytes)) (call alloc.default) 0))
+    (call (set (ptr str.Bytes) (ptr str.Bytes)) names (call str.from_str "k") (call str.from_str "value"))
+    (if (eq (get (call (get_or (ptr str.Bytes) (ptr str.Bytes)) names (call str.from_str "k") (call str.bytes 0 -1)) str.Bytes.len) 5)
+        (set! p (+ p 1))
+        (block))
+    p)))

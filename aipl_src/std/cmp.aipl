@@ -81,7 +81,7 @@
   (impl (Hash str)
     (fn hash [k:str] -> i32 (unsafe (call fnv (str.ptr k) (str.len k))))
     (fn same [a:str b:str] -> bool (call (Eq.same str) a b)))
-  ;; byte strings by their contents, as std/strmap keys them
+  ;; byte strings by their contents (std/map's word counts and symbol tables)
   (impl (Hash (ptr str.Bytes))
     (fn hash [k:(ptr str.Bytes)] -> i32 (unsafe (call fnv (get k str.Bytes.addr) (get k str.Bytes.len))))
     (fn same [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (call str.bytes_eq a b)))

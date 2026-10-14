@@ -9,7 +9,7 @@
   (import consts)
   (import str)
   (import buf)
-  (import strmap)
+  (import map)
   (import parser)
   (import printer)
   (import float)
@@ -187,24 +187,24 @@
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
-  (struct Keywords [map:(ptr (strmap.StrMap Kw)) key:(ptr str.Bytes)])
+  (struct Keywords [map:(ptr (map.Map (ptr str.Bytes) Kw)) key:(ptr str.Bytes)])
 
   (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
     (unsafe (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (strmap.make Kw) (call alloc.default) 256))
+    (put ks Keywords.map (call (map.make (ptr str.Bytes) Kw) (call alloc.default) 256))
     (put ks Keywords.key (call str.bytes 0 0))
     ks))
 
-  (fn reg [m:(ptr (strmap.StrMap Kw)) word:str k:Kw] -> void
-    (call (strmap.set Kw) m (call str.from_str word) k))
+  (fn reg [m:(ptr (map.Map (ptr str.Bytes) Kw)) word:str k:Kw] -> void
+    (call (map.set (ptr str.Bytes) Kw) m (call str.from_str word) k))
 
   ;; Fills the keyword map once (it also runs codegen_init, every time).
   (fn init_keywords [] -> i32
     (let _init:i32 (call codegen_init))
-    (let m:(ptr (strmap.StrMap Kw)) (get (call keywords) Keywords.map))
-    (if (gt (call (strmap.count Kw) m) 0) (return 0) (block))
+    (let m:(ptr (map.Map (ptr str.Bytes) Kw)) (get (call keywords) Keywords.map))
+    (if (gt (call (map.count (ptr str.Bytes) Kw) m) 0) (return 0) (block))
     (call reg m "+" Kw.add)
     (call reg m "-" Kw.sub)
     (call reg m "*" Kw.mul)
@@ -366,7 +366,7 @@
     (let key:(ptr str.Bytes) (get ks Keywords.key))
     (put key str.Bytes.addr (+ (get cg Cg.src) pos))
     (put key str.Bytes.len len)
-    (call (strmap.get_or Kw) (get ks Keywords.map) key Kw.none))
+    (call (map.get_or (ptr str.Bytes) Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
   ;; A value's static type, as expr_type in wasm.rs computes it. bool, str,

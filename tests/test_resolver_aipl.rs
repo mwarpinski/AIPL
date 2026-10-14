@@ -48,7 +48,7 @@ fn word_count_resolves_like_rust() {
 
 #[test]
 fn std_modules_resolve_like_rust() {
-    for m in ["io", "buf", "strmap", "str", "fmt", "vec", "map"] {
+    for m in ["io", "buf", "cmp", "option", "str", "fmt", "vec", "map"] {
         assert_resolves_like_rust(&format!("aipl_src/std/{m}.aipl"));
     }
 }
