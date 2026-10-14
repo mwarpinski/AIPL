@@ -77,8 +77,12 @@
   ;; jumps to its end. else_at: an if's jump to its else (or end), -1 once
   ;; patched or when there is none. entry_dead: opened in dead code.
   ;; reached: something falls into or branches to its end.
+  ;; cold: an if whose then-branch never reaches its end (a failed check's
+  ;; call and unreachable); the virtual stack at its branch (snap_k, snap_v)
+  ;; is the state at its end, so nothing is flushed for it.
   (struct Label [kind:i32 arity:i32 height:i32 start:i32 fixups:(ptr (vec.Vec i32))
-                 else_at:i32 entry_dead:bool reached:bool])
+                 else_at:i32 entry_dead:bool reached:bool
+                 cold:bool snap_k:(ptr (vec.Vec i32)) snap_v:(ptr (vec.Vec i64))])
 
   ;; The translation state for a whole module: one code buffer, the call
   ;; fix-ups, and the first error (code generation stops at it).
@@ -102,6 +106,7 @@
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              vk:(ptr (vec.Vec i32)) vv:(ptr (vec.Vec i64)) np:i32 oa:(ptr Op) ob:(ptr Op)
              taken:i32 taken_x:i32 next_op:i32 next_a:i32
+             body_code:(ptr (vec.Vec (ptr wasm_reader.Instr))) at:i32
              (pub failed:bool) (read msg:(ptr buf.Buf))
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32 xreg_of:(arr i32) nxregs:i32
              (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
@@ -373,6 +378,24 @@
     (loop i 0 (- (call vlen l) 1) 1
       (call emit_push_value l (call (vec.at i32) (get l L.vk) i) (call (vec.at i64) (get l L.vv) i)))
     (call vclear l))
+
+  ;; Before a call with n arguments: the arguments onto the machine stack.
+  ;; Values below them that are locals or constants stay where they are (a
+  ;; call cannot change its caller's locals: they are in callee-saved
+  ;; registers or frame slots, and an import's routine has them written
+  ;; back and reloaded); anything else below them, and they too, go to the
+  ;; machine stack first.
+  (fn flush_for_call [l:(ptr L) n:i32] -> void
+    (let len:i32 (call vlen l))
+    (let keep:bool (gte len n))
+    (loop i 0 (- (- len n) 1) 1
+      (let k:i32 (call (vec.at i32) (get l L.vk) i))
+      (if (not (or (eq k 3) (or (eq k 2) (eq k 4)))) (set! keep false) (block)))
+    (if (not keep) (block (call flush l) (return)) (block))
+    (loop i (- len n) (- len 1) 1
+      (call emit_push_value l (call (vec.at i32) (get l L.vk) i) (call (vec.at i64) (get l L.vv) i)))
+    (call (vec.truncate i32) (get l L.vk) (- len n))
+    (call (vec.truncate i64) (get l L.vv) (- len n)))
 
   ;; Every value but the top n onto the machine stack: before an instruction
   ;; that uses fixed registers, so only its own operands can be in them.
@@ -670,6 +693,8 @@
         (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines next))
         (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col))
         (set! next (+ next 1)))
+      (put l L.body_code code)
+      (put l L.at i)
       ;; one instruction of lookahead (a comparison a branch takes, a
       ;; result a local.set takes)
       (if (lt (+ i 1) (call (vec.len (ptr wasm_reader.Instr)) code))
@@ -774,7 +799,7 @@
       ((or (eq op 66) (eq op 68)) (call vpush l 4 (get ins wasm_reader.Instr.c)) true)
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
-       (call flush l)
+       (call flush_for_call l (call nparams t))
        ;; an import's routine uses rbx and r12-r14 freely: the locals they
        ;; hold go back to their slots around it
        (let to_import:bool (lt a (call n_fimports l)))
@@ -849,6 +874,7 @@
     (put lab Label.else_at -1)
     (put lab Label.entry_dead (get l L.dead))
     (put lab Label.reached false)
+    (put lab Label.cold false)
     (call (vec.push (ptr Label)) (get l L.labels) lab)
     lab)
 
@@ -860,7 +886,33 @@
   ;; A block type byte's result count: 0x40 none, a value type one.
   (fn arity_of [bt:i32] -> i32 (if (eq bt 64) 0 1))
 
-;; Takes a branch's condition: its condition code if it is in the flags,
+;; Whether the if at the current instruction is cold: no else, its
+  ;; then-branch ends with unreachable, br, or return, and nothing in it
+  ;; branches to the if's own end (so the only way there is not taking it).
+  (fn cold_then [l:(ptr L)] -> bool
+    (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get l L.body_code))
+    (let n:i32 (call (vec.len (ptr wasm_reader.Instr)) code))
+    (let d:i32 0)
+    (let j:i32 (+ (get l L.at) 1))
+    (while (lt j n)
+      (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code j))
+      (let op:i32 (get ins wasm_reader.Instr.op))
+      (cond
+        ((or (eq op 2) (or (eq op 3) (eq op 4))) (set! d (+ d 1)))
+        ((and (eq op 5) (eq d 0)) (return false))
+        ((eq op 11)
+         (if (eq d 0)
+             (block
+               (let prev:i32 (get (call (vec.at (ptr wasm_reader.Instr)) code (- j 1)) wasm_reader.Instr.op))
+               (return (and (gt j (+ (get l L.at) 1)) (or (eq prev 0) (or (eq prev 12) (eq prev 15))))))
+             (set! d (- d 1))))
+        ((and (or (eq op 12) (eq op 13)) (eq (get ins wasm_reader.Instr.a) d)) (return false))
+        ((eq op 14) (return false))
+        (else (block)))
+      (set! j (+ j 1)))
+    false)
+
+  ;; Takes a branch's condition: its condition code if it is in the flags,
   ;; else -1 with the value in r10.
   (fn take_condition [l:(ptr L)] -> i32
     (let o:(ptr Op) (get l L.oa))
@@ -900,13 +952,25 @@
       ((eq op 4)
        (if live
            (block
-             ;; the condition (in the flags, or in r10), then the stack in memory
+             ;; the condition (in the flags, or in r10), then the stack in
+             ;; memory, unless the then-branch never reaches the end
              (let cc:i32 (call take_condition l))
              (call adjust l -1)
-             (call flush l)
+             (let cold:bool (call cold_then l))
+             (if cold (block) (call flush l))
              (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
              (let at:i32 (call x64.jcc c (^ cc 1)))
-             (put (call open_label l 2 (call arity_of a)) Label.else_at at))
+             (let lab:(ptr Label) (call open_label l 2 (call arity_of a)))
+             (put lab Label.else_at at)
+             (if cold
+                 (block
+                   (put lab Label.cold true)
+                   (put lab Label.snap_k (call (vec.make i32) (call alloc.default) (+ (call vlen l) 1)))
+                   (put lab Label.snap_v (call (vec.make i64) (call alloc.default) (+ (call vlen l) 1)))
+                   (loop q 0 (- (call vlen l) 1) 1
+                     (call (vec.push i32) (get lab Label.snap_k) (call (vec.at i32) (get l L.vk) q))
+                     (call (vec.push i64) (get lab Label.snap_v) (call (vec.at i64) (get l L.vv) q))))
+                 (block)))
            (let _d:(ptr Label) (call open_label l 2 (call arity_of a))))
        true)
       ((eq op 5)
@@ -927,8 +991,12 @@
        (put l L.dead (get lab Label.entry_dead))
        true)
       ((eq op 11)
-       (call flush l)
        (let lab:(ptr Label) (call label_at l 0))
+       ;; falling off the function's end: return with the result where it is
+       (if (and live (eq (get lab Label.kind) 3))
+           (block (call emit_return l has_result) (call go_dead l) (set! live false))
+           (block))
+       (call flush l)
        (call (vec.pop (ptr Label)) (get l L.labels))
        (if live (put lab Label.reached true) (block))
        ;; an if without else: its false path goes straight to the end
@@ -942,6 +1010,13 @@
          (call x64.patch_rel32 c (call (vec.at i32) fx k) (call buf.len c)))
        (put l L.depth (+ (get lab Label.height) (get lab Label.arity)))
        (put l L.dead (not (get lab Label.reached)))
+       ;; a cold if's end is reached only by not taking it: the state then
+       (if (and (get lab Label.cold) (not (get l L.dead)))
+           (block
+             (call vclear l)
+             (loop q 0 (- (call (vec.len i32) (get lab Label.snap_k)) 1) 1
+               (call vpush l (call (vec.at i32) (get lab Label.snap_k) q) (call (vec.at i64) (get lab Label.snap_v) q))))
+           (block))
        (if (and (eq (get lab Label.kind) 3) (get lab Label.reached)) (call emit_return l has_result) (block))
        true)
       ((not live) (or (eq op 12) (or (eq op 13) (or (eq op 15) (eq op 0)))))
@@ -1764,12 +1839,54 @@
   ;; can neither trap nor overflow.
   (fn divide_by_const [l:(ptr L) sz:i32 signed:bool rem:bool] -> void
     (let c:(ptr buf.Buf) (get l L.code))
+    (let v:i64 (call top_const l sz))
+    (let k:i32 (call log2_exact v sz))
+    (if (and (gte k 1) (or (not signed) (gt v 0i64)))
+        (block (call divide_by_power l sz signed rem k) (return))
+        (block))
     (call keep_top l 2)
     (call pop_operands l)
     (if signed
         (block (if (eq sz 64) (call x64.cqo c) (call x64.cdq c)) (call x64.idiv_r c sz (call rcx)))
         (block (call x64.alu_rr c 32 (call x64.op_xor) 2 2) (call x64.div_r c sz (call rcx))))
     (call push_reg l (if rem 2 (call rax))))
+
+  ;; a / 2^k or a % 2^k (1 <= k < sz) by shifts and masks, as wasm defines
+  ;; them: signed division rounds toward zero, so a negative a is biased by
+  ;; 2^k - 1 first (its sign, shifted), and the remainder takes a's sign.
+  (fn divide_by_power [l:(ptr L) sz:i32 signed:bool rem:bool k:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (call vpop l (get l L.ob))
+    (call vpop l (get l L.oa))
+    (let dst:i32 (call operands l sz true))
+    (let r11:i32 (call r11))
+    (cond
+      ((and (not signed) (not rem)) (call x64.shift_ri c sz (call x64.sh_shr) dst k))
+      ((not signed)
+       (if (lt k 31)
+           (call x64.alu_ri c sz (call x64.op_and) dst (- (shl 1 k) 1))
+           (block
+             (call x64.mov_ri64 c r11 (- (shl 1i64 (i64.extend_s k)) 1i64))
+             (call x64.alu_rr c sz (call x64.op_and) dst r11))))
+      (else
+       ;; r11 = 2^k - 1 if a < 0, else 0
+       (call x64.mov_rr c 64 r11 dst)
+       (call x64.shift_ri c sz (call x64.sh_sar) r11 (- sz 1))
+       (call x64.shift_ri c sz (call x64.sh_shr) r11 (- sz k))
+       (if (not rem)
+           (block
+             (call x64.alu_rr c sz (call x64.op_add) dst r11)
+             (call x64.shift_ri c sz (call x64.sh_sar) dst k))
+           (block
+             ;; a - ((a + bias) & -2^k)
+             (call x64.alu_rr c sz (call x64.op_add) r11 dst)
+             (if (lt k 31)
+                 (call x64.alu_ri c sz (call x64.op_and) r11 (- 0 (shl 1 k)))
+                 (block
+                   (call x64.mov_ri64 c (call r10) (- 0i64 (shl 1i64 (i64.extend_s k))))
+                   (call x64.alu_rr c sz (call x64.op_and) r11 (call r10))))
+             (call x64.alu_rr c sz (call x64.op_sub) dst r11)))))
+    (call push_reg l dst))
 
   ;; a shifted by the constant on top (masked as wasm masks it).
   (fn shift_by_const [l:(ptr L) sz:i32 kind:i32] -> void
