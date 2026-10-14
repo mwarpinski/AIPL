@@ -239,7 +239,15 @@
                                               (call slice h dot (- (get h str.Bytes.len) dot))))
           (if (call (strmap.has i32) (get m Mod.known) c) (return c) (block)))
         (block))
-    (if (call (strmap.has i32) (get m Mod.known) h) h (call str.bytes 0 -1))))
+    (if (call (strmap.has i32) (get m Mod.known) h) (return h) (block))
+    ;; an interface's function, (Hash.hash K): the interface's name, qualified
+    (let last:i32 (call last_index h 46))
+    (if (gte last 0)
+        (block
+          (let c:(ptr str.Bytes) (call template_ref m (call slice h 0 last)))
+          (if (gte (get c str.Bytes.len) 0) (return (call concat c (call slice h last (- (get h str.Bytes.len) last)))) (block)))
+        (block))
+    (call str.bytes 0 -1)))
 
   ;; Children separated by spaces, except none around ':' (x:i32, ok:T). A
   ;; group whose head names a generic template prints its canonical name,
@@ -267,11 +275,14 @@
     (let i:i32 0)
     (let prev_colon:bool true)
     (let is_match:bool (and (not square) (call eq_lit (call head (get m Mod.src) g) "match")))
+    (let gh:(ptr str.Bytes) (call head (get m Mod.src) g))
+    (let members:bool (and (not square) (or (call eq_lit gh "interface") (call eq_lit gh "impl"))))
     (while (neq c (ptr.null compiler.Node))
       (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
+        ((and members (and (gte i 2) (call eq_lit (call head (get m Mod.src) c) "fn"))) (call emit_member m c (call eq_lit gh "impl") out))
         ((and (eq i 0) (gte (get tmpl str.Bytes.len) 0)) (call note m c out) (call buf.push_bytes out tmpl))
         ;; the head of a (...) form is a keyword or an op (mem.alloc), never renamed
         ((and (eq i 0) (and (not square) (call is_symbol c))) (call note m c out) (call buf.push_bytes out (call text (get m Mod.src) c)))
@@ -282,6 +293,33 @@
       (set! c (get c compiler.Node.next)))
     (call note_close m g out)
     (call buf.push_byte out (if square 93 41))))
+
+  ;; A function of an interface or an implementation (resolver.rs walk): its
+  ;; name is the interface's, not this module's; an implementation's is
+  ;; qualified with this module, so the expander can tell where it was
+  ;; written (the orphan rule).
+  (fn emit_member [m:(ptr Mod) g:(ptr compiler.Node) qualify:bool out:(ptr buf.Buf)] -> void
+    (call note m g out)
+    (call buf.push_byte out 40)
+    (let c:(ptr compiler.Node) (call first_child g))
+    (let i:i32 0)
+    (let prev_colon:bool true)
+    (while (neq c (ptr.null compiler.Node))
+      (let colon:bool (eq (get c compiler.Node.kind) compiler.Kind.colon))
+      (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+      (cond
+        ((and (lt i 2) (call is_symbol c))
+         (call note m c out)
+         (if (and (eq i 1) (and qualify (get m Mod.imported)))
+             (block (call buf.push_bytes out (get m Mod.prefix)) (call buf.push_byte out 46))
+             (block))
+         (call buf.push_bytes out (call text (get m Mod.src) c)))
+        (else (call emit m c 0 out)))
+      (set! prev_colon colon)
+      (set! i (+ i 1))
+      (set! c (get c compiler.Node.next)))
+    (call note_close m g out)
+    (call buf.push_byte out 41))
 
   ;; A match arm: its head names a member of the matched type, so it is
   ;; renamed like any name ((Shape.circle [r] ...) in module m is
@@ -432,11 +470,12 @@
       (let h:(ptr str.Bytes) (call head src item))
       (let name:(ptr compiler.Node) (call nth item 1))
       ;; a template (fn (NAME T...) ...), (union (NAME T...) ...): its name is
-      ;; the header's head (resolver.rs item_name, any item)
+      ;; the header's head (resolver.rs item_name, any item); an interface is
+      ;; named like one, and (impl (Hash i32) ...) only refers to one
       (if (and (neq name (ptr.null compiler.Node)) (eq (get name compiler.Node.kind) compiler.Kind.paren))
           (block
             (let tname:(ptr compiler.Node) (call first_child name))
-            (if (call is_symbol tname)
+            (if (and (call is_symbol tname) (not (call eq_lit h "impl")))
                 (block
                   (call (strmap.set i32) (get m Mod.templates) (call text src tname) 1)
                   (set! name tname))
@@ -466,7 +505,7 @@
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
       (cond
-        ((or (call eq_lit h "struct") (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))))
+        ((or (call eq_lit h "struct") (or (call eq_lit h "const") (or (call eq_lit h "enum") (or (call eq_lit h "union") (call eq_lit h "interface")))))
          (call buf.push_str (get st State.structs_out) "  ")
          (call emit m item 0 (get st State.structs_out))
          (call buf.push_byte (get st State.structs_out) 10))

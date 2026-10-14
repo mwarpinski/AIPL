@@ -51,9 +51,25 @@ enum Kind {
 pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
     let files = prog.files;
     let mut templates: HashMap<String, Template> = HashMap::new();
+    let mut ifaces = Ifaces::default();
     let mut work: Vec<(Item, Kind)> = Vec::new();
     for (items, is_struct) in [(prog.structs, true), (prog.fns, false)] {
         for item in items {
+            // interfaces are with the structs, so every one is known before
+            // the first implementation (with the functions)
+            match item.sx.head() {
+                Some("interface") => {
+                    ifaces.add_interface(item)?;
+                    continue;
+                }
+                Some("impl") => {
+                    for f in ifaces.add_impl(&item)? {
+                        work.push((f, Kind::Fn));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             match generic_header(&item)? {
                 Some((name, params)) => {
                     if templates.contains_key(&name) {
@@ -65,7 +81,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
             }
         }
     }
-    if templates.is_empty() {
+    if templates.is_empty() && ifaces.defs.is_empty() {
         return Ok(regroup(prog.name, files, work));
     }
     let mut made: HashSet<String> = HashSet::new();
@@ -75,7 +91,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
         let foreign = std::mem::take(&mut work[i].0.foreign);
         let mut sx = std::mem::replace(&mut work[i].0.sx, Sx::Atom(blank()));
         let mut created = Vec::new();
-        rewrite(&mut sx, &file, &foreign, &templates, &mut made, &mut created, false)?;
+        rewrite(&mut sx, &file, &foreign, &Known { templates: &templates, ifaces: &ifaces }, &mut made, &mut created, false)?;
         work[i].0.foreign = foreign;
         work[i].0.sx = sx;
         work.extend(created);
@@ -132,12 +148,13 @@ fn rewrite(
     sx: &mut Sx,
     file: &std::path::Path,
     foreign: &HashMap<(u32, u32), std::path::PathBuf>,
-    templates: &HashMap<String, Template>,
+    known: &Known,
     made: &mut HashSet<String>,
     created: &mut Vec<(Item, Kind)>,
     callee: bool,
 ) -> Result<(), String> {
     let Sx::List { .. } = sx else { return Ok(()) };
+    let (templates, ifaces) = (known.templates, known.ifaces);
     let head = sx.head().map(|h| h.to_string());
     let applies = |h: Option<&str>, callee: bool| h.and_then(|h| templates.get(h)).is_some_and(|t| t.is_struct || callee);
     let is_app = applies(head.as_deref(), callee);
@@ -153,7 +170,7 @@ fn rewrite(
     for (k, child) in items.iter_mut().enumerate().skip(start) {
         let child_callee = calls && k == 1;
         let was_app = applies(child.head(), false);
-        rewrite(child, file, foreign, templates, made, created, child_callee)?;
+        rewrite(child, file, foreign, known, made, created, child_callee)?;
         if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put")) {
             generic_field = true;
         }
@@ -185,6 +202,28 @@ fn rewrite(
                 items.remove(3);
             }
             _ => return Err(at(foreign.get(&items[2].position()).map(|p| p.as_path()).unwrap_or(file), &items[2], "a generic struct field is written (get p (Name T...) field)")),
+        }
+    }
+    // (call (Interface.function type) ...): the implementation's function
+    if callee && paren {
+        if let Some((iname, f)) = head.as_deref().and_then(|h| h.rsplit_once('.')) {
+            if let Some(def) = ifaces.defs.get(iname) {
+                let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file);
+                let args = &sx.items()[1..];
+                if args.len() != 1 {
+                    return Err(at(place, sx, "a call to an interface's function names one type: (call (Interface.function type) args...)"));
+                }
+                if !def.fns.iter().any(|g| g.name == f) {
+                    return Err(at(place, sx, &format!("'{}' is not a function of interface {}", f, iname)));
+                }
+                let key = format!("{}<{}>", iname, type_name(&args[0]).map_err(|e| format!("{}: {}", place.display(), e))?);
+                if !ifaces.impls.contains(&key) {
+                    let written = format!("({} {})", iname, render(&args[0]));
+                    return Err(at(place, sx, &format!("no implementation of {}: write (impl {} ...)", written, written)));
+                }
+                *sx = Sx::symbol_at(format!("{}.{}", key, f), sx);
+                return Ok(());
+            }
         }
     }
     let Some(h) = head else { return Ok(()) };
@@ -279,4 +318,226 @@ fn at(file: &std::path::Path, sx: &Sx, msg: &str) -> String {
 
 fn blank() -> Token {
     Token { kind: TokenKind::LParen, line: 0, col: 0 }
+}
+
+// ---------------------------------------------------------------------------
+// Interfaces and implementations (docs/design/CONSTRAINTS_PLAN.md). An
+// interface `(interface (Hash K) (fn hash [k:K] -> i32) ...)` declares
+// functions; an implementation `(impl (Hash i32) (fn hash [k:i32] -> i32
+// body...) ...)` defines them for one type and becomes ordinary functions
+// named `Hash<i32>.hash`, each with the interface's contracts before its own;
+// `(call (Hash.hash i32) x)` calls one. A type has at most one implementation
+// of an interface, written in the interface's module or the type's (the
+// resolver qualifies an implementation's function names with its module).
+// ---------------------------------------------------------------------------
+
+/// What rewrite looks names up in.
+struct Known<'a> {
+    templates: &'a HashMap<String, Template>,
+    ifaces: &'a Ifaces,
+}
+
+#[derive(Default)]
+struct Ifaces {
+    defs: HashMap<String, Interface>,
+    /// `Interface<type>` of every implementation.
+    impls: HashSet<String>,
+}
+
+struct Interface {
+    param: String,
+    fns: Vec<Sig>,
+    file: std::path::PathBuf,
+}
+
+/// A function's name, parameters, return type, and contracts.
+struct Sig {
+    name: String,
+    params: Vec<(String, Sx)>,
+    ret: Sx,
+    contracts: Vec<Sx>,
+}
+
+const BUILT_IN_TYPES: &[&str] = &["i32", "i64", "f32", "f64", "bool", "str", "void"];
+
+impl Ifaces {
+    fn add_interface(&mut self, item: Item) -> Result<(), String> {
+        let file = &item.file;
+        let Some((name, params)) = generic_header(&item)? else {
+            return Err(at(file, &item.sx, "an interface is written (interface (Name T) (fn name [params] -> type) ...)"));
+        };
+        let header = &item.sx.items()[1];
+        if params.len() != 1 {
+            return Err(at(file, header, "an interface takes one type parameter: (interface (Name T) ...)"));
+        }
+        if self.defs.contains_key(&name) {
+            return Err(at(file, &item.sx, &format!("interface '{}' is defined twice", name)));
+        }
+        let members = &item.sx.items()[2..];
+        if members.is_empty() {
+            return Err(at(file, header, "an interface declares at least one function"));
+        }
+        let mut fns: Vec<Sig> = Vec::new();
+        for f in members {
+            let (sig, body) = parse_sig(f, file, "an interface's function is written (fn name [params] -> type contracts...)")?;
+            if let Some(b) = f.items().get(body) {
+                return Err(at(file, b, "an interface's function has no body: its implementations have one"));
+            }
+            if fns.iter().any(|g| g.name == sig.name) {
+                return Err(at(file, &f.items()[1], &format!("'{}' is declared twice in interface {}", sig.name, name)));
+            }
+            fns.push(sig);
+        }
+        let param = params.into_iter().next().unwrap();
+        self.defs.insert(name, Interface { param, fns, file: item.file.clone() });
+        Ok(())
+    }
+
+    /// The functions an implementation becomes, after checking it.
+    fn add_impl(&mut self, item: &Item) -> Result<Vec<Item>, String> {
+        let file = &item.file;
+        let form = "an implementation is written (impl (Interface type) (fn name [params] -> type body...) ...)";
+        let header = item.sx.items().get(1).filter(|h| h.is_paren()).ok_or_else(|| at(file, &item.sx, form))?;
+        let iname = header.head().ok_or_else(|| at(file, header, form))?;
+        let def = self.defs.get(iname).ok_or_else(|| at(file, header, &format!("'{}' is not an interface", iname)))?;
+        let args = &header.items()[1..];
+        if args.len() != 1 {
+            return Err(at(file, header, "an implementation names one type: (impl (Interface type) ...)"));
+        }
+        let ty = &args[0];
+        let key = format!("{}<{}>", iname, type_name(ty).map_err(|e| format!("{}: {}", file.display(), e))?);
+        if self.impls.contains(&key) {
+            return Err(at(file, header, &format!("a second implementation of {}: a type has at most one implementation of each interface", key)));
+        }
+        let subst: HashMap<&str, &Sx> = [(def.param.as_str(), ty)].into_iter().collect();
+        let mut out = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        let mut module = String::new();
+        for f in &item.sx.items()[2..] {
+            let (sig, _) = parse_sig(f, file, "an implementation's function is written (fn name [params] -> type body...)")?;
+            let (m, base) = match sig.name.rsplit_once('.') {
+                Some((m, b)) => (m.to_string(), b.to_string()),
+                None => (String::new(), sig.name.clone()),
+            };
+            module = m;
+            let name_sx = &f.items()[1];
+            let Some(want) = def.fns.iter().find(|g| g.name == base) else {
+                return Err(at(file, name_sx, &format!("'{}' is not a function of interface {}", base, iname)));
+            };
+            if seen.contains(&base) {
+                return Err(at(file, name_sx, &format!("'{}' is defined twice in this implementation", base)));
+            }
+            seen.push(base.clone());
+            // the interface's signature with the type put in
+            let put_in = |t: &Sx| {
+                let mut t = t.clone();
+                substitute(&mut t, &subst);
+                t
+            };
+            let params: Vec<(String, Sx)> = want.params.iter().map(|(n, t)| (n.clone(), put_in(t))).collect();
+            let ret = put_in(&want.ret);
+            let same_type = |a: &Sx, b: &Sx| matches!((type_name(a), type_name(b)), (Ok(x), Ok(y)) if x == y);
+            let matches = sig.params.len() == params.len()
+                && sig.params.iter().zip(&params).all(|((n1, t1), (n2, t2))| n1 == n2 && same_type(t1, t2))
+                && same_type(&sig.ret, &ret);
+            if !matches {
+                let ps: Vec<String> = params.iter().map(|(n, t)| format!("{}:{}", n, render(t))).collect();
+                return Err(at(file, f, &format!("'{}' must be declared as in {}: (fn {} [{}] -> {})", base, iname, base, ps.join(" "), render(&ret))));
+            }
+            // (fn Interface<type>.name [params] -> ret <the interface's contracts> <its own>...)
+            let mut g = f.clone();
+            let parts = g.items_mut().unwrap();
+            parts[1] = Sx::symbol_at(format!("{}.{}", key, base), &parts[1]);
+            let mut foreign = HashMap::new();
+            for (k, c) in want.contracts.iter().enumerate() {
+                if def.file != item.file {
+                    let mut toks = Vec::new();
+                    c.flatten(&mut toks);
+                    for t in toks {
+                        foreign.insert((t.line, t.col), def.file.clone());
+                    }
+                }
+                parts.insert(5 + k, put_in(c));
+            }
+            out.push(Item { sx: g, file: item.file.clone(), foreign });
+        }
+        if let Some(missing) = def.fns.iter().find(|g| !seen.contains(&g.name)) {
+            return Err(at(file, header, &format!("the implementation of {} is missing '{}'", key, missing.name)));
+        }
+        // the orphan rule
+        let module_of = |n: &str| n.rsplit_once('.').map_or(String::new(), |(m, _)| m.to_string());
+        let owner = type_owner(ty);
+        if module != module_of(iname) && owner.as_deref().map(module_of) != Some(module) {
+            let msg = match owner {
+                Some(o) => format!("this implementation must be in the module that defines {} or the one that defines {}", iname, o),
+                None => format!("this implementation must be in the module that defines {}, since {} is built in", iname, render(ty)),
+            };
+            return Err(at(file, header, &msg));
+        }
+        self.impls.insert(key);
+        Ok(out)
+    }
+}
+
+/// `(fn name [p:T ...] -> R contracts... body...)`: the signature, and the
+/// index of the first body item.
+fn parse_sig(f: &Sx, file: &std::path::Path, form: &str) -> Result<(Sig, usize), String> {
+    let items = f.items();
+    let bad = || at(file, f, form);
+    if f.head() != Some("fn") || items.len() < 5 {
+        return Err(bad());
+    }
+    let name = items[1].symbol().ok_or_else(bad)?.to_string();
+    let bracket = matches!(&items[2], Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. });
+    let arrow = matches!(&items[3], Sx::Atom(Token { kind: TokenKind::Arrow, .. }));
+    let ps = items[2].items();
+    if !bracket || !arrow || !ps.len().is_multiple_of(3) {
+        return Err(bad());
+    }
+    let mut params = Vec::new();
+    for c in ps.chunks(3) {
+        match (c[0].symbol(), &c[1]) {
+            (Some(n), Sx::Atom(Token { kind: TokenKind::Colon, .. })) => params.push((n.to_string(), c[2].clone())),
+            _ => return Err(bad()),
+        }
+    }
+    let mut k = 5;
+    while k < items.len() && matches!(items[k].head(), Some("req" | "ens" | "inv")) {
+        k += 1;
+    }
+    Ok((Sig { name, params, ret: items[4].clone(), contracts: items[5..k].to_vec() }, k))
+}
+
+/// The named type a type is about, whose module may implement interfaces
+/// for it: `geo.Point` for `(ptr geo.Point)`, `vec.Vec` for `(vec.Vec i32)`;
+/// none for a built-in type, a result, or a function type.
+fn type_owner(ty: &Sx) -> Option<String> {
+    if let Some(s) = ty.symbol() {
+        return if BUILT_IN_TYPES.contains(&s) { None } else { Some(s.to_string()) };
+    }
+    match ty.head() {
+        Some("ptr" | "arr") => ty.items().get(1).and_then(type_owner),
+        Some("fn" | "result") | None => None,
+        Some(h) => Some(h.to_string()),
+    }
+}
+
+/// A form as AIPL source writes it: `(ptr geo.Point)`, `[k:i32]`.
+fn render(sx: &Sx) -> String {
+    match sx {
+        Sx::Atom(t) => t.kind.to_string(),
+        Sx::List { open, items, close } => {
+            let mut s = open.kind.to_string();
+            let mut prev_colon = true;
+            for i in items {
+                let colon = matches!(i, Sx::Atom(Token { kind: TokenKind::Colon, .. }));
+                if !(prev_colon || colon) {
+                    s.push(' ');
+                }
+                s += &render(i);
+                prev_colon = colon;
+            }
+            s + &close.kind.to_string()
+        }
+    }
 }
