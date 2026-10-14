@@ -77,6 +77,11 @@
   ;; jumps to its end. else_at: an if's jump to its else (or end), -1 once
   ;; patched or when there is none. entry_dead: opened in dead code.
   ;; reached: something falls into or branches to its end.
+  ;; A failed check's code, translated after the rest of its function (out
+  ;; of the hot path's way): the jump to patch, the instructions from..to,
+  ;; and the value stack (depth, virtual part) it starts from.
+  (struct Cold [jump:i32 from:i32 to:i32 depth:i32 snap_k:(ptr (vec.Vec i32)) snap_v:(ptr (vec.Vec i64))])
+
   ;; cold: an if whose then-branch never reaches its end (a failed check's
   ;; call and unreachable); the virtual stack at its branch (snap_k, snap_v)
   ;; is the state at its end, so nothing is flushed for it.
@@ -107,6 +112,7 @@
              vk:(ptr (vec.Vec i32)) vv:(ptr (vec.Vec i64)) np:i32 oa:(ptr Op) ob:(ptr Op)
              taken:i32 taken_x:i32 next_op:i32 next_a:i32
              body_code:(ptr (vec.Vec (ptr wasm_reader.Instr))) at:i32
+             colds:(ptr (vec.Vec (ptr Cold))) skip_to:i32
              (pub failed:bool) (read msg:(ptr buf.Buf))
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32 xreg_of:(arr i32) nxregs:i32
              (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
@@ -146,6 +152,7 @@
     (put l L.vv (call (vec.make i64) (call alloc.default) 16))
     (put l L.oa (new Op))
     (put l L.ob (new Op))
+    (put l L.colds (call (vec.make (ptr Cold)) (call alloc.default) 16))
     (put l L.out_of_bounds (call reason l "wasm trap: out of bounds memory access"))
     (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
     (put l L.wait_unshared (call reason l "wasm trap: atomic wait on non-shared memory"))
@@ -725,8 +732,12 @@
     (let lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) (call wasm_reader.lines_of w index))
     (let next:i32 0)
     (let nlines:i32 (if (eq lines (ptr.null (vec.Vec (ptr wasm_reader.LinePos)))) 0 (call (vec.len (ptr wasm_reader.LinePos)) lines)))
+    (call (vec.clear (ptr Cold)) (get l L.colds))
+    (put l L.skip_to -1)
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
       (if (get l L.failed) (break) (block))
+      ;; a failed check's branch, left for later (out_of_line)
+      (if (lte i (get l L.skip_to)) (continue) (block))
       (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code i))
       (let at:i32 (+ (get body wasm_reader.Body.head) (get ins wasm_reader.Instr.offset)))
       (while (and (lt next nlines) (lte (get (call (vec.at (ptr wasm_reader.LinePos)) lines next) wasm_reader.LinePos.at) at))
@@ -743,7 +754,37 @@
             (put l L.next_op (get nx wasm_reader.Instr.op))
             (put l L.next_a (get nx wasm_reader.Instr.a)))
           (block (put l L.next_op -1) (put l L.next_a -1)))
-      (call instr l w np has_result ins)))
+      (call instr l w np has_result ins))
+    ;; the failed checks' code, after the function's own
+    (loop k 0 (- (call (vec.len (ptr Cold)) (get l L.colds)) 1) 1
+      (let cd:(ptr Cold) (call (vec.at (ptr Cold)) (get l L.colds) k))
+      (call x64.patch_rel32 c (get cd Cold.jump) (call buf.len c))
+      (call vclear l)
+      (loop q 0 (- (call (vec.len i32) (get cd Cold.snap_k)) 1) 1
+        (call vpush l (call (vec.at i32) (get cd Cold.snap_k) q) (call (vec.at i64) (get cd Cold.snap_v) q)))
+      (put l L.depth (get cd Cold.depth))
+      (put l L.dead false)
+      (loop j (get cd Cold.from) (get cd Cold.to) 1
+        (if (get l L.failed) (break) (block))
+        (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code j))
+        (call note_line l lines nlines (+ (get body wasm_reader.Body.head) (get ins wasm_reader.Instr.offset)))
+        (put l L.at j)
+        (let nx:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code (+ j 1)))
+        (put l L.next_op (get nx wasm_reader.Instr.op))
+        (put l L.next_a (get nx wasm_reader.Instr.a))
+        (call instr l w np has_result ins))))
+
+  ;; Notes the source position of the instruction at wasm offset `at` (the
+  ;; last line-table entry at or before it), for code emitted out of order.
+  (fn note_line [l:(ptr L) lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) nlines:i32 at:i32] -> void
+    (let best:i32 -1)
+    (loop q 0 (- nlines 1) 1
+      (if (lte (get (call (vec.at (ptr wasm_reader.LinePos)) lines q) wasm_reader.LinePos.at) at) (set! best q) (block)))
+    (if (lt best 0)
+        (call note_position l -1 0 0)
+        (block
+          (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines best))
+          (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col)))))
 
   (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
@@ -931,7 +972,24 @@
   ;; A block type byte's result count: 0x40 none, a value type one.
   (fn arity_of [bt:i32] -> i32 (if (eq bt 64) 0 1))
 
-;; Whether the if at the current instruction is cold: no else, its
+;; For an if whose then-branch is straight-line code ending in unreachable
+  ;; (a failed check: no blocks, branches, or returns in it), the index of
+  ;; its end; else -1.
+  (fn out_of_line [l:(ptr L)] -> i32
+    (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get l L.body_code))
+    (let n:i32 (call (vec.len (ptr wasm_reader.Instr)) code))
+    (let j:i32 (+ (get l L.at) 1))
+    (while (lt j n)
+      (let op:i32 (get (call (vec.at (ptr wasm_reader.Instr)) code j) wasm_reader.Instr.op))
+      (cond
+        ((eq op 11)
+         (return (if (and (gt j (+ (get l L.at) 1)) (eq (get (call (vec.at (ptr wasm_reader.Instr)) code (- j 1)) wasm_reader.Instr.op) 0)) j -1)))
+        ((or (and (gte op 2) (lte op 5)) (and (gte op 12) (lte op 15))) (return -1))
+        (else (block)))
+      (set! j (+ j 1)))
+    -1)
+
+  ;; Whether the if at the current instruction is cold: no else, its
   ;; then-branch ends with unreachable, br, or return, and nothing in it
   ;; branches to the if's own end (so the only way there is not taking it).
   (fn cold_then [l:(ptr L)] -> bool
@@ -1005,6 +1063,26 @@
              ;; memory, unless the then-branch never reaches the end
              (let cc:i32 (call take_condition l))
              (call adjust l -1)
+             (let out_end:i32 (if (eq a 64) (call out_of_line l) -1))
+             (if (gte out_end 0)
+                 ;; a failed check: a jump to its code, emitted after the
+                 ;; function's (the hot path falls through)
+                 (block
+                   (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
+                   (let cd:(ptr Cold) (new Cold))
+                   (put cd Cold.jump (call x64.jcc c cc))
+                   (put cd Cold.from (+ (get l L.at) 1))
+                   (put cd Cold.to (- out_end 1))
+                   (put cd Cold.depth (get l L.depth))
+                   (put cd Cold.snap_k (call (vec.make i32) (call alloc.default) (+ (call vlen l) 1)))
+                   (put cd Cold.snap_v (call (vec.make i64) (call alloc.default) (+ (call vlen l) 1)))
+                   (loop q 0 (- (call vlen l) 1) 1
+                     (call (vec.push i32) (get cd Cold.snap_k) (call (vec.at i32) (get l L.vk) q))
+                     (call (vec.push i64) (get cd Cold.snap_v) (call (vec.at i64) (get l L.vv) q)))
+                   (call (vec.push (ptr Cold)) (get l L.colds) cd)
+                   (put l L.skip_to out_end)
+                   (return true))
+                 (block))
              (let cold:bool (call cold_then l))
              (if cold (block) (call flush l))
              (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
