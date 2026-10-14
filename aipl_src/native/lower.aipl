@@ -101,6 +101,7 @@
              (pub shared:bool) (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32
              vk:(ptr (vec.Vec i32)) vv:(ptr (vec.Vec i64)) np:i32 oa:(ptr Op) ob:(ptr Op)
+             taken:i32 taken_x:i32
              (pub failed:bool) (read msg:(ptr buf.Buf))
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
              (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
@@ -246,7 +247,8 @@
 
   ;; A value taken off the stack. kind: 0 on the machine stack (taken from
   ;; below the virtual part; not popped yet), 1 a register (val), 2 an i32
-  ;; constant, 3 local val, 4 an i64 constant (or f64 bits).
+  ;; constant, 3 local val, 4 an i64 constant (or f64 bits), 5 a float in
+  ;; xmm register val (xmm2-xmm15; its bits, as a slot holds them).
   (struct Op [kind:i32 val:i64])
 
   (fn r10 [] -> i32 10)
@@ -264,12 +266,17 @@
     (call (vec.push i64) (get l L.vv) val))
 
   ;; Takes the top value into o (kind 0 when the virtual part is empty).
+  ;; Its register stays out of scratch's and scratch_x's hands until the
+  ;; next instruction (L.taken, L.taken_x), so loading one operand cannot
+  ;; overwrite another taken before it.
   (fn vpop [l:(ptr L) o:(ptr Op)] -> void
     (if (eq (call vlen l) 0)
         (block (put o Op.kind 0) (put o Op.val 0i64))
         (block
           (put o Op.kind (call (vec.pop i32) (get l L.vk)))
-          (put o Op.val (call (vec.pop i64) (get l L.vv))))))
+          (put o Op.val (call (vec.pop i64) (get l L.vv)))))
+    (put l L.taken (bitor (get l L.taken) (call op_bit o)))
+    (put l L.taken_x (bitor (get l L.taken_x) (call xmm_bit o))))
 
   (fn vclear [l:(ptr L)] -> void
     (call (vec.clear i32) (get l L.vk))
@@ -296,11 +303,33 @@
   (fn scratch [l:(ptr L) busy:i32] -> i32
     (let r:i32 -1)
     (while (lt r 0)
-      (let u:i32 (bitor busy (call used_regs l)))
+      (let u:i32 (bitor (bitor busy (get l L.taken)) (call used_regs l)))
       (loop k 0 6 1
         (if (and (lt r 0) (eq (bitand u (shl 1 (call pool_reg k))) 0)) (set! r (call pool_reg k)) (block)))
       (if (lt r 0)
           (if (gt (call vlen l) 0) (call spill_bottom l) (block (call fail l "native: out of value registers") (set! r 0)))
+          (block)))
+    r)
+
+;; The xmm registers float values hold.
+  (fn used_xmms [l:(ptr L)] -> i32
+    (let m:i32 0)
+    (loop i 0 (- (call vlen l) 1) 1
+      (if (eq (call (vec.at i32) (get l L.vk) i) 5)
+          (set! m (bitor m (shl 1 (i32.wrap (call (vec.at i64) (get l L.vv) i)))))
+          (block)))
+    m)
+
+  ;; An xmm register (xmm2-xmm15) no value holds and not in `busy`, as
+  ;; scratch does for the others.
+  (fn scratch_x [l:(ptr L) busy:i32] -> i32
+    (let r:i32 -1)
+    (while (lt r 0)
+      (let u:i32 (bitor (bitor busy (get l L.taken_x)) (call used_xmms l)))
+      (loop k 2 15 1
+        (if (and (lt r 0) (eq (bitand u (shl 1 k)) 0)) (set! r k) (block)))
+      (if (lt r 0)
+          (if (gt (call vlen l) 0) (call spill_bottom l) (block (call fail l "native: out of float registers") (set! r 2)))
           (block)))
     r)
 
@@ -311,6 +340,7 @@
       ((eq kind 1) (call x64.push c (i32.wrap val)))
       ((eq kind 2) (call x64.mov_ri32 c (call r11) (i32.wrap val)) (call x64.push c (call r11)))
       ((eq kind 4) (call x64.mov_ri64 c (call r11) val) (call x64.push c (call r11)))
+      ((eq kind 5) (call x64.movq_rx c (call r11) (i32.wrap val)) (call x64.push c (call r11)))
       (else
        (let lr:i32 (call reg_of l (i32.wrap val)))
        (if (gte lr 0)
@@ -355,6 +385,7 @@
       ((eq k 1) (if (neq (call op_reg o) reg) (call x64.mov_rr c 64 reg (call op_reg o)) (block)))
       ((eq k 2) (call x64.mov_ri32 c reg (i32.wrap (get o Op.val))))
       ((eq k 4) (call x64.mov_ri64 c reg (get o Op.val)))
+      ((eq k 5) (call x64.movq_rx c reg (call op_reg o)))
       (else
        (let lr:i32 (call reg_of l (call op_reg o)))
        (if (gte lr 0)
@@ -580,6 +611,8 @@
 
   (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
+    (put l L.taken 0)
+    (put l L.taken_x 0)
     (let op:i32 (get ins wasm_reader.Instr.op))
     (let a:i32 (get ins wasm_reader.Instr.a))
     (cond
@@ -643,8 +676,9 @@
        (let o:(ptr Op) (get l L.oa))
        (call vpop l o)
        (call write_local l a o)
-       ;; the value is the local's now, or a constant
-       (if (or (eq (get o Op.kind) 2) (eq (get o Op.kind) 4))
+       ;; the value is the local's now; a constant or a float in an xmm
+       ;; register stays where it is
+       (if (or (or (eq (get o Op.kind) 2) (eq (get o Op.kind) 4)) (eq (get o Op.kind) 5))
            (call vpush l (get o Op.kind) (get o Op.val))
            (call vpush l 3 (i64.extend_s a)))
        true)
@@ -1196,31 +1230,42 @@
     (cond
       ;; f32 add sub mul div, f64 add sub mul div
       ((or (and (gte op 146) (lte op 149)) (and (gte op 160) (lte op 163)))
-       (call keep_top l 2)
        (let sz:i32 (if (lt op 160) 32 64))
        (let k:i32 (- op (if (lt op 160) 146 160)))
-       (call operands_to_xmm l sz)
+       (let b:(ptr Op) (get l L.ob))
+       (let a:(ptr Op) (get l L.oa))
+       (call vpop l b)
+       (call vpop l a)
+       ;; b first: if it is on the machine stack, so is a, below it; and
+       ;; not into a's register, taken off already
+       (let bx:i32 (call xmm_of l b (call xmm_bit a)))
+       (let ax:i32 (call own_xmm l a (shl 1 bx)))
        (call x64.float_op c sz (cond ((eq k 0) (call x64.f_add)) ((eq k 1) (call x64.f_sub)) ((eq k 2) (call x64.f_mul)) (else (call x64.f_div)))
-             (call xmm0) (call xmm1))
-       (if (eq sz 64) (call x64.movq_rx c (call rax) (call xmm0)) (call x64.movd_rx c (call rax) (call xmm0)))
-       (call push_rax l)
+             ax bx)
+       (call vpush l 5 (i64.extend_s ax))
        true)
       ;; f32 eq ne lt gt le ge (91-96), f64 the same (97-102)
       ((and (gte op 91) (lte op 102))
-       (call keep_top l 2)
        (let sz:i32 (if (lt op 97) 32 64))
        (let k:i32 (- op (if (lt op 97) 91 97)))
-       (call operands_to_xmm l sz)
-       (call float_compare l sz k)
-       (call push_rax l)
+       (let b:(ptr Op) (get l L.ob))
+       (let a:(ptr Op) (get l L.oa))
+       (call vpop l b)
+       (call vpop l a)
+       (let bx:i32 (call xmm_of l b (call xmm_bit a)))
+       (let ax:i32 (call xmm_of l a (shl 1 bx)))
+       (let dst:i32 (call scratch l 0))
+       (call float_compare l sz k ax bx dst)
+       (call push_reg l dst)
        true)
       ;; f64.convert_i64_s
       ((eq op 185)
-       (call keep_top l 1)
-       (call pop_rax l)
-       (call x64.cvtsi2sd c (call xmm0) (call rax))
-       (call x64.movq_rx c (call rax) (call xmm0))
-       (call push_rax l)
+       (let o:(ptr Op) (get l L.oa))
+       (call vpop l o)
+       (let r:i32 (call read_reg l o (call r11)))
+       (let x:i32 (call scratch_x l 0))
+       (call x64.cvtsi2sd c x r)
+       (call vpush l 5 (i64.extend_s x))
        true)
       ;; i64.trunc_f64_s: traps on NaN, and outside [-2^63, 2^63) (after
       ;; truncation, exactly wasm's range: -2^63 is the lowest double that fits)
@@ -1243,46 +1288,55 @@
        true)
       ;; f64.sqrt (sqrtsd rounds correctly, as IEEE 754 and wasm require)
       ((eq op 159)
-       (call keep_top l 1)
-       (call pop_rax l)
-       (call x64.movq_xr c (call xmm0) (call rax))
-       (call x64.sqrtsd c (call xmm0) (call xmm0))
-       (call x64.movq_rx c (call rax) (call xmm0))
-       (call push_rax l)
+       (let o:(ptr Op) (get l L.oa))
+       (call vpop l o)
+       (let x:i32 (call own_xmm l o 0))
+       (call x64.sqrtsd c x x)
+       (call vpush l 5 (i64.extend_s x))
        true)
       ;; i64.reinterpret_f64, f64.reinterpret_i64: the slot already holds the bits
       ((or (eq op 189) (eq op 191)) true)
       (else false)))
 
-  ;; Pops b then a into xmm1 and xmm0 (via rcx and rax).
-  (fn operands_to_xmm [l:(ptr L) sz:i32] -> void
-    (let c:(ptr buf.Buf) (get l L.code))
-    (call pop_operands l)
-    (if (eq sz 64)
-        (block (call x64.movq_xr c (call xmm0) (call rax)) (call x64.movq_xr c (call xmm1) (call rcx)))
-        (block (call x64.movd_xr c (call xmm0) (call rax)) (call x64.movd_xr c (call xmm1) (call rcx)))))
+  ;; The bit of o's xmm register, if o is in one.
+  (fn xmm_bit [o:(ptr Op)] -> i32
+    (if (eq (get o Op.kind) 5) (shl 1 (i32.wrap (get o Op.val))) 0))
 
-  ;; eax = 1 if (xmm0 cmp xmm1) else 0, for k = eq ne lt gt le ge. Any
-  ;; comparison with a NaN is false, except ne, which is true: ucomi sets
-  ;; ZF, PF, and CF when unordered, so eq needs ZF and not PF, ne ZF clear
-  ;; or PF, and the orderings use above / above-or-equal (CF and ZF clear),
-  ;; swapping the operands for lt and le.
-  (fn float_compare [l:(ptr L) sz:i32 k:i32] -> void
+  ;; An xmm register holding float o, to read: its own, or a new one
+  ;; (not in `busy`) loaded from wherever o is.
+  (fn xmm_of [l:(ptr L) o:(ptr Op) busy:i32] -> i32
+    (if (eq (get o Op.kind) 5) (call op_reg o) (call own_xmm l o busy)))
+
+  ;; An xmm register of o's own, to write: its own if o is in one, else a
+  ;; new one (not in `busy`) with o's bits.
+  (fn own_xmm [l:(ptr L) o:(ptr Op) busy:i32] -> i32
+    (let c:(ptr buf.Buf) (get l L.code))
+    (if (eq (get o Op.kind) 5) (return (call op_reg o)) (block))
+    (let x:i32 (call scratch_x l busy))
+    (call x64.movq_xr c x (call read_reg l o (call r11)))
+    x)
+
+  ;; dst = 1 if (a cmp b) else 0, for k = eq ne lt gt le ge. Any comparison
+  ;; with a NaN is false, except ne, which is true: ucomi sets ZF, PF, and
+  ;; CF when unordered, so eq needs ZF and not PF, ne ZF clear or PF, and
+  ;; the orderings use above / above-or-equal (CF and ZF clear), swapping
+  ;; the operands for lt and le. Uses r11.
+  (fn float_compare [l:(ptr L) sz:i32 k:i32 a:i32 b:i32 dst:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (cond
       ((or (eq k 0) (eq k 1))
-       (call x64.ucomi c sz (call xmm0) (call xmm1))
-       (call x64.setcc c (if (eq k 0) (call x64.cc_e) (call x64.cc_ne)) (call rax))
-       (call x64.setcc c (if (eq k 0) (call x64.cc_np) (call x64.cc_p)) (call rcx))
-       (call x64.movzx8 c (call rax) (call rax))
-       (call x64.movzx8 c (call rcx) (call rcx))
-       (call x64.alu_rr c 32 (if (eq k 0) (call x64.op_and) (call x64.op_or)) (call rax) (call rcx)))
+       (call x64.ucomi c sz a b)
+       (call x64.setcc c (if (eq k 0) (call x64.cc_e) (call x64.cc_ne)) dst)
+       (call x64.setcc c (if (eq k 0) (call x64.cc_np) (call x64.cc_p)) (call r11))
+       (call x64.movzx8 c dst dst)
+       (call x64.movzx8 c (call r11) (call r11))
+       (call x64.alu_rr c 32 (if (eq k 0) (call x64.op_and) (call x64.op_or)) dst (call r11)))
       (else
        (if (or (eq k 2) (eq k 4))
-           (call x64.ucomi c sz (call xmm1) (call xmm0))
-           (call x64.ucomi c sz (call xmm0) (call xmm1)))
-       (call x64.setcc c (if (or (eq k 2) (eq k 3)) (call x64.cc_a) (call x64.cc_ae)) (call rax))
-       (call x64.movzx8 c (call rax) (call rax)))))
+           (call x64.ucomi c sz b a)
+           (call x64.ucomi c sz a b))
+       (call x64.setcc c (if (or (eq k 2) (eq k 3)) (call x64.cc_a) (call x64.cc_ae)) dst)
+       (call x64.movzx8 c dst dst))))
 
   ;; ===== i64 (NE12) =====
 
