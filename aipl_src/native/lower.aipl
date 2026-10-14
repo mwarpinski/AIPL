@@ -103,7 +103,7 @@
              vk:(ptr (vec.Vec i32)) vv:(ptr (vec.Vec i64)) np:i32 oa:(ptr Op) ob:(ptr Op)
              taken:i32 taken_x:i32 next_op:i32 next_a:i32
              (pub failed:bool) (read msg:(ptr buf.Buf))
-             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
+             reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32 xreg_of:(arr i32) nxregs:i32
              (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
              (read positions:(ptr (vec.Vec (ptr NPos))))] (pub))
 
@@ -248,7 +248,7 @@
   ;; A value taken off the stack. kind: 0 on the machine stack (taken from
   ;; below the virtual part; not popped yet), 1 a register (val), 2 an i32
   ;; constant, 3 local val, 4 an i64 constant (or f64 bits), 5 a float in
-  ;; xmm register val (xmm2-xmm15; its bits, as a slot holds them), 6 a
+  ;; xmm register val (xmm2-xmm7; its bits, as a slot holds them), 6 a
   ;; comparison's result in the flags (val: the condition), made only when
   ;; the next instruction (if, br_if, eqz) takes it.
   (struct Op [kind:i32 val:i64])
@@ -322,13 +322,13 @@
           (block)))
     m)
 
-  ;; An xmm register (xmm2-xmm15) no value holds and not in `busy`, as
-  ;; scratch does for the others.
+  ;; An xmm register (xmm2-xmm7; xmm8-xmm15 hold float locals) no value
+  ;; holds and not in `busy`, as scratch does for the others.
   (fn scratch_x [l:(ptr L) busy:i32] -> i32
     (let r:i32 -1)
     (while (lt r 0)
       (let u:i32 (bitor (bitor busy (get l L.taken_x)) (call used_xmms l)))
-      (loop k 2 15 1
+      (loop k 2 7 1
         (if (and (lt r 0) (eq (bitand u (shl 1 k)) 0)) (set! r k) (block)))
       (if (lt r 0)
           (if (gt (call vlen l) 0) (call spill_bottom l) (block (call fail l "native: out of float registers") (set! r 2)))
@@ -349,11 +349,13 @@
        (call x64.push c (call r11)))
       (else
        (let lr:i32 (call reg_of l (i32.wrap val)))
-       (if (gte lr 0)
-           (call x64.push c lr)
-           (block
-             (call x64.load c 64 (call r11) (call local_slot (get l L.np) (i32.wrap val)))
-             (call x64.push c (call r11)))))))
+       (let xr:i32 (call xreg_of l (i32.wrap val)))
+       (cond
+         ((gte lr 0) (call x64.push c lr))
+         ((gte xr 0) (call x64.movq_rx c (call r11) xr) (call x64.push c (call r11)))
+         (else
+          (call x64.load c 64 (call r11) (call local_slot (get l L.np) (i32.wrap val)))
+          (call x64.push c (call r11)))))))
 
   ;; Moves the lowest virtual value onto the machine stack.
   (fn spill_bottom [l:(ptr L)] -> void
@@ -395,9 +397,11 @@
       ((eq k 6) (call x64.setcc c (call op_reg o) reg) (call x64.movzx8 c reg reg))
       (else
        (let lr:i32 (call reg_of l (call op_reg o)))
-       (if (gte lr 0)
-           (call x64.mov_rr c 64 reg lr)
-           (call x64.load c 64 reg (call local_slot (get l L.np) (call op_reg o)))))))
+       (let xr:i32 (call xreg_of l (call op_reg o)))
+       (cond
+         ((gte lr 0) (call x64.mov_rr c 64 reg lr))
+         ((gte xr 0) (call x64.movq_rx c reg xr))
+         (else (call x64.load c 64 reg (call local_slot (get l L.np) (call op_reg o))))))))
 
   ;; A register holding o's value, to read (never to write: it may be a
   ;; local's): its own, its local's, or else `into`, loaded.
@@ -477,18 +481,38 @@
   ;; A local used fewer than 3 times (so weighted) keeps its slot. The
   ;; registers a function uses are saved on entry and restored on return;
   ;; a function that calls an import saves all four, since the import's
-  ;; routine uses them freely.
+  ;; routine uses them freely. Float locals (f32, f64) live in xmm8-xmm15
+  ;; instead, chosen the same way, up to eight: saved and restored by the
+  ;; function that uses them, like rbx and r12-r14 (no import routine uses
+  ;; an xmm register). Float values on the stack use xmm2-xmm7.
   (fn alloc_reg [k:i32] -> i32 (cond ((eq k 0) 3) ((eq k 1) 12) ((eq k 2) 13) (else 14)))
 
   ;; The register holding local i, or -1.
   (fn reg_of [l:(ptr L) i:i32] -> i32
     (if (lt i (arr.len (get l L.reg_of))) (arr.get i32 (get l L.reg_of) i) -1))
 
-  (fn choose_registers [l:(ptr L) np:i32 body:(ptr wasm_reader.Body)] -> void
+  ;; The xmm register holding float local i, or -1.
+  (fn xreg_of [l:(ptr L) i:i32] -> i32
+    (if (lt i (arr.len (get l L.xreg_of))) (arr.get i32 (get l L.xreg_of) i) -1))
+
+  ;; Whether a wasm value type is f32 or f64.
+  (fn is_float_type [t:i32] -> bool (or (eq t 124) (eq t 125)))
+
+  (fn choose_registers [l:(ptr L) np:i32 body:(ptr wasm_reader.Body) t:(ptr wasm_reader.FuncType)] -> void
     (let n:i32 (+ np (get l L.nlocals)))
     (let weight:(arr i32) (arr.new i32 (+ n 1)))
     (put l L.reg_of (arr.new i32 (+ n 1)))
-    (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1))
+    (put l L.xreg_of (arr.new i32 (+ n 1)))
+    (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1) (arr.set i32 (get l L.xreg_of) i -1))
+    ;; which locals are floats: the parameters', then the declared groups' types
+    (let float:(arr bool) (arr.new bool (+ n 1)))
+    (loop i 0 (- np 1) 1 (arr.set bool float i (call is_float_type (call (vec.at i32) (get t wasm_reader.FuncType.params) i))))
+    (let at:i32 np)
+    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+      (let grp:(ptr wasm_reader.Locals) (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g))
+      (loop k 1 (get grp wasm_reader.Locals.count) 1
+        (arr.set bool float at (call is_float_type (get grp wasm_reader.Locals.type)))
+        (set! at (+ at 1))))
     ;; per open block: 1 for a loop; the loop depth is their sum
     (let kinds:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 16))
     (let loops:i32 0)
@@ -511,12 +535,12 @@
              (arr.set i32 weight a (+ (arr.get i32 weight a) (shl 1 (* 3 (if (gt loops 4) 4 loops)))))
              (block)))
         (else (block))))
-    ;; the four heaviest, in order
+    ;; the four heaviest integer locals, in order
     (put l L.nregs 0)
     (loop k 0 3 1
       (let best:i32 -1)
       (loop i 0 (- n 1) 1
-        (if (and (lt (call reg_of l i) 0)
+        (if (and (and (lt (call reg_of l i) 0) (not (arr.get bool float i)))
                  (and (gte (arr.get i32 weight i) 3)
                       (or (lt best 0) (gt (arr.get i32 weight i) (arr.get i32 weight best)))))
             (set! best i)
@@ -526,7 +550,22 @@
             (arr.set i32 (get l L.reg_of) best (call alloc_reg k))
             (put l L.nregs (+ k 1)))
           (block)))
-    (put l L.nsaved (if calls_import 4 (get l L.nregs))))
+    (put l L.nsaved (if calls_import 4 (get l L.nregs)))
+    ;; the eight heaviest float locals, in xmm8-xmm15
+    (put l L.nxregs 0)
+    (loop k 0 7 1
+      (let best:i32 -1)
+      (loop i 0 (- n 1) 1
+        (if (and (and (lt (call xreg_of l i) 0) (arr.get bool float i))
+                 (and (gte (arr.get i32 weight i) 3)
+                      (or (lt best 0) (gt (arr.get i32 weight i) (arr.get i32 weight best)))))
+            (set! best i)
+            (block)))
+      (if (gte best 0)
+          (block
+            (arr.set i32 (get l L.xreg_of) best (+ 8 k))
+            (put l L.nxregs (+ k 1)))
+          (block))))
 
   ;; Writes the register-held locals back to their slots (to_slots), or
   ;; reloads them, around code that uses rbx and r12-r14.
@@ -547,6 +586,9 @@
     ;; the caller's values of the registers that held locals
     (loop k 0 (- (get l L.nsaved) 1) 1
       (call x64.load c 64 (call alloc_reg k) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ k 1))))))
+    (loop k 0 (- (get l L.nxregs) 1) 1
+      (call x64.load c 64 (call r11) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ (get l L.nsaved) (+ k 1))))))
+      (call x64.movq_xr c (+ 8 k) (call r11)))
     (call x64.mov_rr c 64 (call rsp) (call rbp))
     (call x64.pop c (call rbp))
     (call x64.ret c))
@@ -562,10 +604,11 @@
     ;; prologue: frame, then zeroed locals
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
-    ;; the stack check: trap unless the frame (the locals and up to four
-    ;; saved registers) ends above the thread's limit, which leaves room
-    ;; below it for the operand stack, the host routines, and the trap's own
-    (let frame:i32 32)
+    ;; the stack check: trap unless the frame (the locals, and up to four
+    ;; saved registers and eight saved xmm registers) ends above the
+    ;; thread's limit, which leaves room below it for the operand stack, the
+    ;; host routines, and the trap's own
+    (let frame:i32 96)
     (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
       (set! frame (+ frame (* 8 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count)))))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
@@ -583,10 +626,23 @@
     ;; the most used locals live in rbx, r12-r14; their old values are saved
     ;; in frame slots after the locals' (counted as locals, so branches
     ;; reset the stack below them), then the locals are loaded
-    (call choose_registers l np body)
+    (call choose_registers l np body t)
     (put l L.frame_locals (get l L.nlocals))
     (loop k 0 (- (get l L.nsaved) 1) 1 (call x64.push c (call alloc_reg k)))
-    (put l L.nlocals (+ (get l L.nlocals) (get l L.nsaved)))
+    (loop k 0 (- (get l L.nxregs) 1) 1
+      (call x64.movq_rx c (call r11) (+ 8 k))
+      (call x64.push c (call r11)))
+    (put l L.nlocals (+ (get l L.nlocals) (+ (get l L.nsaved) (get l L.nxregs))))
+    ;; float locals into their xmm registers: a parameter's bits, or zero
+    (loop i 0 (- (+ np (get l L.frame_locals)) 1) 1
+      (let xi:i32 (call xreg_of l i))
+      (if (gte xi 0)
+          (block
+            (if (lt i np)
+                (call x64.load c 64 (call r11) (call local_slot np i))
+                (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11)))
+            (call x64.movq_xr c xi (call r11)))
+          (block)))
     (loop i 0 (- (+ np (get l L.frame_locals)) 1) 1
       (let ri:i32 (call reg_of l i))
       (if (gte ri 0)
@@ -642,28 +698,44 @@
   (fn write_local [l:(ptr L) i:i32 o:(ptr Op)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (if (and (eq (get o Op.kind) 3) (eq (call op_reg o) i)) (return) (block))
+    (let xr:i32 (call xreg_of l i))
     (let more:bool true)
     (while more
       (let j:i32 (call find_local l i))
       (if (lt j 0)
           (set! more false)
-          (block
-            (let r:i32 (call scratch l (call op_bit o)))
-            ;; scratch may have spilled it
-            (let k:i32 (call find_local l i))
-            (if (gte k 0)
-                (block
-                  (let lr:i32 (call reg_of l i))
-                  (if (gte lr 0)
-                      (call x64.mov_rr c 64 r lr)
-                      (call x64.load c 64 r (call local_slot (get l L.np) i)))
-                  (call (vec.set i32) (get l L.vk) k 1)
-                  (call (vec.set i64) (get l L.vv) k (i64.extend_s r)))
-                (block)))))
+          (if (gte xr 0)
+              ;; a float local's copy: into a float register
+              (block
+                (let x:i32 (call scratch_x l (call xmm_bit o)))
+                (let k2:i32 (call find_local l i))
+                (if (gte k2 0)
+                    (block
+                      (call x64.movaps c x xr)
+                      (call (vec.set i32) (get l L.vk) k2 5)
+                      (call (vec.set i64) (get l L.vv) k2 (i64.extend_s x)))
+                    (block)))
+              (block
+                (let r:i32 (call scratch l (call op_bit o)))
+                ;; scratch may have spilled it
+                (let k:i32 (call find_local l i))
+                (if (gte k 0)
+                    (block
+                      (let lr0:i32 (call reg_of l i))
+                      (if (gte lr0 0)
+                          (call x64.mov_rr c 64 r lr0)
+                          (call x64.load c 64 r (call local_slot (get l L.np) i)))
+                      (call (vec.set i32) (get l L.vk) k 1)
+                      (call (vec.set i64) (get l L.vv) k (i64.extend_s r)))
+                    (block))))))
     (let lr:i32 (call reg_of l i))
-    (if (gte lr 0)
-        (call load_op l o lr)
-        (call x64.store c 64 (call local_slot (get l L.np) i) (call read_reg l o (call r11)))))
+    (cond
+      ((gte lr 0) (call load_op l o lr))
+      ((gte xr 0)
+       (if (eq (get o Op.kind) 5)
+           (call x64.movaps c xr (call op_reg o))
+           (call x64.movq_xr c xr (call read_reg l o (call r11)))))
+      (else (call x64.store c 64 (call local_slot (get l L.np) i) (call read_reg l o (call r11))))))
 
   ;; The index of a virtual value that is local i, or -1.
   (fn find_local [l:(ptr L) i:i32] -> i32
@@ -1259,10 +1331,19 @@
        ;; b first: if it is on the machine stack, so is a, below it; and
        ;; not into a's register, taken off already
        (let bx:i32 (call xmm_of l b (call xmm_bit a)))
-       (let ax:i32 (call own_xmm l a (shl 1 bx)))
-       (call x64.float_op c sz (cond ((eq k 0) (call x64.f_add)) ((eq k 1) (call x64.f_sub)) ((eq k 2) (call x64.f_mul)) (else (call x64.f_div)))
-             ax bx)
-       (call vpush l 5 (i64.extend_s ax))
+       (let fop:i32 (cond ((eq k 0) (call x64.f_add)) ((eq k 1) (call x64.f_sub)) ((eq k 2) (call x64.f_mul)) (else (call x64.f_div))))
+       (let ax0:i32 (if (eq (get a Op.kind) 3) (call xreg_of l (call op_reg a)) -1))
+       (if (and (gte ax0 0)
+                (and (or (eq (get l L.next_op) 33) (eq (get l L.next_op) 34))
+                     (and (eq (get l L.next_a) (call op_reg a)) (lt (call find_local l (call op_reg a)) 0))))
+           ;; local = local op b, in the local's register
+           (block
+             (call x64.float_op c sz fop ax0 bx)
+             (call vpush l 3 (get a Op.val)))
+           (block
+             (let ax:i32 (call own_xmm l a (shl 1 bx)))
+             (call x64.float_op c sz fop ax bx)
+             (call vpush l 5 (i64.extend_s ax))))
        true)
       ;; f32 eq ne lt gt le ge (91-96), f64 the same (97-102)
       ((and (gte op 91) (lte op 102))
@@ -1325,7 +1406,10 @@
   ;; An xmm register holding float o, to read: its own, or a new one
   ;; (not in `busy`) loaded from wherever o is.
   (fn xmm_of [l:(ptr L) o:(ptr Op) busy:i32] -> i32
-    (if (eq (get o Op.kind) 5) (call op_reg o) (call own_xmm l o busy)))
+    (cond
+      ((eq (get o Op.kind) 5) (call op_reg o))
+      ((and (eq (get o Op.kind) 3) (gte (call xreg_of l (call op_reg o)) 0)) (call xreg_of l (call op_reg o)))
+      (else (call own_xmm l o busy))))
 
   ;; An xmm register of o's own, to write: its own if o is in one, else a
   ;; new one (not in `busy`) with o's bits.
@@ -1333,7 +1417,10 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (if (eq (get o Op.kind) 5) (return (call op_reg o)) (block))
     (let x:i32 (call scratch_x l busy))
-    (call x64.movq_xr c x (call read_reg l o (call r11)))
+    (let xr:i32 (if (eq (get o Op.kind) 3) (call xreg_of l (call op_reg o)) -1))
+    (if (gte xr 0)
+        (call x64.movaps c x xr)
+        (call x64.movq_xr c x (call read_reg l o (call r11))))
     x)
 
   ;; dst = 1 if (a cmp b) else 0, for k = eq ne lt gt le ge. Any comparison

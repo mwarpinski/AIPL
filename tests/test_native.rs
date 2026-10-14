@@ -2346,3 +2346,31 @@ fn directories_and_file_information_match_natively() {
     assert!(wasm_out.contains("names 302\n") && wasm_out.contains("big/f007 file 5\n") && wasm_out.contains("big/sub directory") && wasm_out.contains("nowhere missing"), "{wasm_out}");
     assert_eq!(vm_out, wasm_out, "the VM differs from aipl-run");
 }
+
+/// Float locals live in xmm8-xmm15 natively (NATIVE_SPEED_PLAN.md F3): a
+/// caller's must survive callees that use the same registers for their own
+/// (and recursion), and float values on the stack across calls.
+#[test]
+fn float_locals_survive_calls_natively() {
+    let src = "(module m (import io)
+      (fn inner [x:f64 n:i32] -> f64
+        (let a:f64 x) (let b:f64 1.5) (let c:f64 0.25)
+        (loop i 1 n 1 (set! a (+ (* a b) c)) (set! b (- b 0.125)) (set! c (* c 2.0)))
+        (+ a (+ b c)))
+      (fn depth [k:i32 acc:f64] -> f64
+        (let here:f64 (* acc 1.0625))
+        (let r:f64 (if (gt k 0) (call depth (- k 1) (+ here 0.5)) here))
+        (+ r here))
+      (fn outer [] -> f64
+        (let p:f64 3.0) (let q:f64 -2.0) (let s:f64 0.0)
+        (loop i 1 6 1
+          (set! s (+ s (* p (call inner q i))))
+          (set! p (+ p 0.5))
+          (set! q (- q (call inner p 2))))
+        (+ s (+ p (+ q (* 2.0 (call depth 7 1.0))))))
+      (fn main [] -> i32
+        (call io.println_f64 \"outer \" (call outer) 6)
+        (call io.println_f64 \"pair \" (+ (call inner 1.0 3) (- (call depth 3 2.0) (call inner 2.0 4))) 6)
+        0))";
+    assert_native_matches("float_locals_survive_calls", src);
+}
