@@ -22,6 +22,7 @@
 //! is the concrete structs, the struct instances, the concrete functions,
 //! then the function instances.
 
+use crate::checker::shown;
 use crate::parser::{Token, TokenKind};
 use crate::resolver::{item_name, FlatProgram, Item};
 use crate::sexpr::Sx;
@@ -41,6 +42,8 @@ struct Template {
     is_struct: bool,
     /// `(where (Interface T))`: the clause, its interface, and T's index.
     wheres: Vec<(Sx, String, usize)>,
+    /// Per parameter: a struct (`(where (struct T))`), or else a value.
+    struct_kind: Vec<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -52,8 +55,25 @@ enum Kind {
 }
 
 pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
+    expand_with(prog, false).map(|p| p.unwrap())
+}
+
+/// Every template made once at placeholders for its type parameters (an
+/// enum with no members for a value, a struct with no fields for
+/// `(where (struct T))`, named `'template.T`), with the functions its where
+/// clauses grant declared, and every ordinary function cut to its signature:
+/// checking this program checks each template once, for every type
+/// argument its clauses allow (docs/design/CONSTRAINTS_PLAN.md, IC3).
+/// Nothing is compiled from it. None when there are no templates.
+pub fn archetypes(prog: FlatProgram) -> Result<Option<FlatProgram>, String> {
+    expand_with(prog, true)
+}
+
+fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram>, String> {
     let files = prog.files;
     let mut templates: HashMap<String, Template> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut struct_names: HashSet<String> = HashSet::new();
     let mut ifaces = Ifaces::default();
     let mut work: Vec<(Item, Kind)> = Vec::new();
     for (items, is_struct) in [(prog.structs, true), (prog.fns, false)] {
@@ -67,7 +87,7 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
                 }
                 Some("impl") => {
                     for f in ifaces.add_impl(&item)? {
-                        work.push((f, Kind::Fn));
+                        work.push((if archetypes { stub(f) } else { f }, Kind::Fn));
                     }
                     continue;
                 }
@@ -79,38 +99,161 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
                         return Err(at(&item.file, &item.sx, &format!("generic '{}' is defined twice", name)));
                     }
                     let mut item = item;
-                    let wheres = take_wheres(&mut item, &params)?;
-                    templates.insert(name, Template { params, item, is_struct, wheres });
+                    let (wheres, struct_kind) = take_wheres(&mut item, &params)?;
+                    order.push(name.clone());
+                    templates.insert(name, Template { params, item, is_struct, wheres, struct_kind });
                 }
                 None => {
                     if let Some(w) = misplaced_where(&item.sx, 2) {
                         return Err(at(&item.file, w, "only a generic function, struct, or union takes where clauses"));
                     }
+                    if item.sx.head() == Some("struct") {
+                        if let Some(n) = item.sx.items().get(1).and_then(|n| n.symbol()) {
+                            struct_names.insert(n.to_string());
+                        }
+                    }
+                    let item = if archetypes && !is_struct { stub(item) } else { item };
                     work.push((item, if is_struct { Kind::Struct } else { Kind::Fn }))
                 }
             }
         }
     }
-    if templates.is_empty() && ifaces.defs.is_empty() {
-        return Ok(regroup(prog.name, files, work));
+    if archetypes && templates.is_empty() {
+        return Ok(None);
     }
-    let mut made: HashSet<String> = HashSet::new();
+    if templates.is_empty() && ifaces.defs.is_empty() {
+        return Ok(Some(regroup(prog.name, files, work)));
+    }
+    // the placeholders, and the functions each template's where clauses grant
+    let mut apps = Vec::new();
+    if archetypes {
+        for name in &order {
+            let t = &templates[name];
+            let header = &t.item.sx.items()[1];
+            let mut app = vec![Sx::symbol_at(name.clone(), header)];
+            for (k, p) in t.params.iter().enumerate() {
+                let sealed = format!("'{}.{}", name, p);
+                let kind = if t.struct_kind[k] { "struct" } else { "enum" };
+                if t.struct_kind[k] {
+                    struct_names.insert(sealed.clone());
+                }
+                let decl = list(header, vec![Sx::symbol_at(kind.to_string(), header), Sx::symbol_at(sealed.clone(), header), bracket(header, vec![])]);
+                work.push((Item { sx: decl, file: t.item.file.clone(), foreign: HashMap::new() }, Kind::Struct));
+                app.push(Sx::symbol_at(sealed, header));
+            }
+            for (_, iname, k) in &t.wheres {
+                let Some(def) = ifaces.defs.get(iname) else { continue };
+                let sealed = Sx::symbol_at(format!("'{}.{}", name, t.params[*k]), header);
+                let key = format!("{}<{}>", iname, render(&sealed));
+                if !ifaces.impls.insert(key.clone()) {
+                    continue;
+                }
+                let subst: HashMap<&str, &Sx> = [(def.param.as_str(), &sealed)].into_iter().collect();
+                for g in &def.fns {
+                    work.push((Item { sx: declared(&format!("{}.{}", key, g.name), g, &subst, header), file: t.item.file.clone(), foreign: HashMap::new() }, Kind::Fn));
+                }
+            }
+            apps.push((list(header, app), t.item.file.clone(), !t.is_struct));
+        }
+    }
+    let known = Known { templates: &templates, ifaces: &ifaces, struct_names: &struct_names };
+    let mut made = Made::default();
+    for (mut app, file, callee) in apps {
+        let mut created = Vec::new();
+        rewrite(&mut app, &file, &HashMap::new(), &known, &mut made, &mut created, callee)?;
+        work.extend(created);
+    }
     let mut i = 0;
     while i < work.len() {
         let file = work[i].0.file.clone();
         let foreign = std::mem::take(&mut work[i].0.foreign);
         let mut sx = std::mem::replace(&mut work[i].0.sx, Sx::Atom(blank()));
         let mut created = Vec::new();
-        rewrite(&mut sx, &file, &foreign, &Known { templates: &templates, ifaces: &ifaces }, &mut made, &mut created, false)?;
+        rewrite(&mut sx, &file, &foreign, &known, &mut made, &mut created, false)?;
         work[i].0.foreign = foreign;
         work[i].0.sx = sx;
         work.extend(created);
-        if made.len() > MAX_INSTANCES {
+        if made.names.len() > MAX_INSTANCES {
             return Err(format!("more than {} generic instances: {}", MAX_INSTANCES, RUNAWAY));
         }
         i += 1;
     }
-    Ok(regroup(prog.name, files, work))
+    Ok(Some(regroup(prog.name, files, work)))
+}
+
+/// Instances made so far, and which of them are structs.
+#[derive(Default)]
+struct Made {
+    names: HashSet<String>,
+    structs: HashSet<String>,
+}
+
+/// A `(...)` list at the position of `at`.
+fn list(at: &Sx, items: Vec<Sx>) -> Sx {
+    let (line, col) = at.position();
+    Sx::List { open: Token { kind: TokenKind::LParen, line, col }, items, close: Token { kind: TokenKind::RParen, line, col } }
+}
+
+fn bracket(at: &Sx, items: Vec<Sx>) -> Sx {
+    let (line, col) = at.position();
+    Sx::List { open: Token { kind: TokenKind::LBracket, line, col }, items, close: Token { kind: TokenKind::RBracket, line, col } }
+}
+
+/// `(fn name [params] -> R (call name params...))`: a function with the
+/// signature `sig` (its type parameter put in by `subst`) that checks for
+/// any caller and is never run.
+fn declared(name: &str, sig: &Sig, subst: &HashMap<&str, &Sx>, at: &Sx) -> Sx {
+    let put_in = |t: &Sx| {
+        let mut t = t.clone();
+        substitute(&mut t, subst);
+        t
+    };
+    let colon = |at: &Sx| {
+        let (line, col) = at.position();
+        Sx::Atom(Token { kind: TokenKind::Colon, line, col })
+    };
+    let mut params = Vec::new();
+    let mut call = vec![Sx::symbol_at("call".into(), at), Sx::symbol_at(name.into(), at)];
+    for (n, t) in &sig.params {
+        params.extend([Sx::symbol_at(n.clone(), at), colon(at), put_in(t)]);
+        call.push(Sx::symbol_at(n.clone(), at));
+    }
+    let (line, col) = at.position();
+    list(at, vec![
+        Sx::symbol_at("fn".into(), at),
+        Sx::symbol_at(name.into(), at),
+        bracket(at, params),
+        Sx::Atom(Token { kind: TokenKind::Arrow, line, col }),
+        put_in(&sig.ret),
+        list(at, call),
+    ])
+}
+
+/// An ordinary function cut to its signature (and its `(unsafe)` clause),
+/// with a body that calls itself: the archetype check needs only what it
+/// takes and returns. Anything not written as a function is left alone.
+fn stub(mut item: Item) -> Item {
+    let parts = item.sx.items();
+    let ok = item.sx.head() == Some("fn")
+        && parts.len() >= 5
+        && parts[1].symbol().is_some()
+        && matches!(&parts[2], Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. })
+        && parts[2].items().len().is_multiple_of(3);
+    if !ok {
+        return item;
+    }
+    let name = parts[1].clone();
+    let mut call = vec![Sx::symbol_at("call".into(), &name), name.clone()];
+    for c in parts[2].items().chunks(3) {
+        call.push(c[0].clone());
+    }
+    let unsafe_clause = parts.get(5).filter(|u| u.is_paren() && u.items().len() == 1 && u.head() == Some("unsafe")).cloned();
+    let at = item.sx.clone();
+    let parts = item.sx.items_mut().unwrap();
+    parts.truncate(5);
+    parts.extend(unsafe_clause);
+    parts.push(list(&at, call));
+    item
 }
 
 fn regroup(name: String, files: HashMap<std::path::PathBuf, String>, work: Vec<(Item, Kind)>) -> FlatProgram {
@@ -159,7 +302,7 @@ fn rewrite(
     file: &std::path::Path,
     foreign: &HashMap<(u32, u32), std::path::PathBuf>,
     known: &Known,
-    made: &mut HashSet<String>,
+    made: &mut Made,
     created: &mut Vec<(Item, Kind)>,
     callee: bool,
 ) -> Result<(), String> {
@@ -228,8 +371,12 @@ fn rewrite(
                 }
                 let key = format!("{}<{}>", iname, type_name(&args[0]).map_err(|e| format!("{}: {}", place.display(), e))?);
                 if !ifaces.impls.contains(&key) {
-                    let written = format!("({} {})", iname, render(&args[0]));
-                    return Err(at(place, sx, &format!("no implementation of {}: write (impl {} ...)", written, written)));
+                    let written = format!("({} {})", iname, shown(&render(&args[0])));
+                    let fix = match sealed_param(&args[0]) {
+                        Some((owner, p)) => format!("add (where ({} {})) to {}", iname, p, owner),
+                        None => format!("write (impl {} ...)", written),
+                    };
+                    return Err(at(place, sx, &format!("no implementation of {}: {}", written, fix)));
                 }
                 *sx = Sx::symbol_at(format!("{}.{}", key, f), sx);
                 return Ok(());
@@ -257,7 +404,30 @@ fn rewrite(
     if name.len() > MAX_NAME {
         return Err(at(foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file), sx, &format!("generic instance name longer than {} characters: {}", MAX_NAME, RUNAWAY)));
     }
-    if made.insert(name.clone()) {
+    if made.names.insert(name.clone()) {
+        let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file);
+        // each type argument is of its parameter's kind: a struct for
+        // (where (struct T)), else a value that can be stored
+        for (k, arg) in args.iter().enumerate() {
+            let (p, a) = (&t.params[k], shown(&render(arg)));
+            let is_struct = arg.symbol().is_some_and(|s| known.struct_names.contains(s) || made.structs.contains(s));
+            let msg = if t.struct_kind[k] {
+                if is_struct {
+                    continue;
+                }
+                match sealed_param(arg) {
+                    Some((owner, q)) => format!("{}: {} must be a struct, so {} needs (where (struct {}))", shown(&name), p, owner, q),
+                    None => format!("{}: {} must be a struct (where (struct {})), and {} is not one", shown(&name), p, p, a),
+                }
+            } else if is_struct {
+                format!("{}: {} is a value type, and {} is a struct, used only through a pointer: write (ptr {})", shown(&name), p, a, a)
+            } else if arg.symbol() == Some("void") || arg.head() == Some("result") {
+                format!("{}: {} is a value type, and {} cannot be stored", shown(&name), p, a)
+            } else {
+                continue;
+            };
+            return Err(at(place, sx, &msg));
+        }
         // the where clauses: each type argument has the implementations asked for
         for (clause, iname, k) in &t.wheres {
             if !ifaces.defs.contains_key(iname) {
@@ -266,10 +436,16 @@ fn rewrite(
             let arg = &args[*k];
             let key = format!("{}<{}>", iname, named[*k]);
             if !ifaces.impls.contains(&key) {
-                let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file);
-                let wanted = format!("({} {})", iname, render(arg));
-                return Err(at(place, sx, &format!("{} needs {}: write (impl {} ...)", name, wanted, wanted)));
+                let wanted = format!("({} {})", iname, shown(&render(arg)));
+                let fix = match sealed_param(arg) {
+                    Some((owner, q)) => format!("add (where ({} {})) to {}", iname, q, owner),
+                    None => format!("write (impl {} ...)", wanted),
+                };
+                return Err(at(place, sx, &format!("{} needs {}: {}", shown(&name), wanted, fix)));
             }
+        }
+        if t.is_struct && t.item.sx.head() == Some("struct") {
+            made.structs.insert(name.clone());
         }
         let mut inst = t.item.sx.clone();
         let subst: HashMap<&str, &Sx> = t.params.iter().map(|p| p.as_str()).zip(args.iter()).collect();
@@ -358,6 +534,8 @@ fn blank() -> Token {
 struct Known<'a> {
     templates: &'a HashMap<String, Template>,
     ifaces: &'a Ifaces,
+    /// Concrete structs and struct placeholders, for the kinds of type arguments.
+    struct_names: &'a HashSet<String>,
 }
 
 #[derive(Default)]
@@ -568,7 +746,11 @@ fn render(sx: &Sx) -> String {
 /// Takes a template's where clauses out of it: `(where (Interface T))`,
 /// right after its signature (a function's return type, a struct's fields,
 /// a union's variants), T one of its type parameters.
-fn take_wheres(item: &mut Item, params: &[String]) -> Result<Vec<(Sx, String, usize)>, String> {
+/// A template's interface where clauses (the clause, its interface, T's
+/// index), and per parameter whether it is a struct.
+type Wheres = (Vec<(Sx, String, usize)>, Vec<bool>);
+
+fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
     let start = match item.sx.head() {
         Some("fn") => 5,
         Some("struct" | "union") => 3,
@@ -577,6 +759,7 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Vec<(Sx, String, us
     let file = item.file.clone();
     let parts = item.sx.items_mut().unwrap();
     let mut wheres = Vec::new();
+    let mut struct_kind = vec![false; params.len()];
     while start < parts.len() && parts[start].head() == Some("where") {
         let clause = parts.remove(start);
         let req = clause.items().get(1).filter(|_| clause.items().len() == 2);
@@ -586,14 +769,26 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Vec<(Sx, String, us
             Some((iname.to_string(), k))
         });
         let Some((iname, k)) = found else {
-            return Err(at(&file, &clause, "a where clause is written (where (Interface T)), T a type parameter of this generic"));
+            return Err(at(&file, &clause, "a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"));
         };
-        wheres.push((clause, iname, k));
+        // (where (struct T)): T is a struct, used through (ptr T)
+        if iname == "struct" {
+            struct_kind[k] = true;
+        } else {
+            wheres.push((clause, iname, k));
+        }
     }
     if let Some(w) = misplaced_where(&item.sx, 2) {
         return Err(at(&file, w, "where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"));
     }
-    Ok(wheres)
+    Ok((wheres, struct_kind))
+}
+
+/// For a placeholder `'owner.T`: the template it belongs to, and T.
+fn sealed_param(arg: &Sx) -> Option<(String, String)> {
+    let s = arg.symbol()?.strip_prefix('\'')?;
+    let (owner, p) = s.rsplit_once('.')?;
+    Some((owner.to_string(), p.to_string()))
 }
 
 /// The first `(where ...)` among an item's parts from index `from`.

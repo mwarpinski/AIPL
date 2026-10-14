@@ -162,10 +162,10 @@
   ;; ===== Typed =====
 
   ;; A zeroed T.
-  (fn (create T) [h:(ptr Heap)] -> (ptr T)
+  (fn (create T) [h:(ptr Heap)] -> (ptr T) (where (struct T))
     (unsafe (ptr.cast T (call raw h (sizeof T)))))
 
-  (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void
+  (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void (where (struct T))
     (unsafe (call free_raw h (ptr.addr p) (sizeof T))))
 
   ;; n zeroed Ts, laid out like (arr.new T n): the length in the 4 bytes

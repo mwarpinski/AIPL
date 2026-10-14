@@ -698,6 +698,12 @@
   ;; that flat text (empty when there were no generics: the same text).
   (fn resolve_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)
                       orig:(ptr origins.Origins) gen:(ptr origins.Origins)] -> bool
+    (let flat:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+    (and (call flatten_mapped entry std_dir flat err orig) (call expand_generics flat out err orig gen)))
+
+  ;; The flat program before generic expansion (resolver.rs flatten).
+  (fn flatten_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) flat:(ptr buf.Buf) err:(ptr buf.Buf)
+                      orig:(ptr origins.Origins)] -> bool
     (let src:(ptr Src) (call load entry orig))
     ;; the entry file's name in compiled code's line table is its file name
     (call name_file src (call slice entry (+ (call last_index entry 47) 1) (- (get entry str.Bytes.len) (+ (call last_index entry 47) 1))))
@@ -718,7 +724,6 @@
     (if (call resolve_imports st src (call dirname entry)) (block) (return false))
     (let entry_mod:(ptr Mod) (call make_mod src (call str.from_str "") false (get st State.known)))
     (call emit_module st entry_mod)
-    (let flat:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (call buf.push_str flat "(module ")
     (call buf.push_bytes flat (call text src (call nth (get src Src.root) 1)))
     (call buf.push_byte flat 10)
@@ -737,12 +742,26 @@
           (arr.set i32 bases 1 fns_at)
           (call origins.join orig parts bases))
         (block))
-    ;; expand generic templates into concrete items (generics.aipl); an
-    ;; error there is reported in the file it is in, as generics.rs does
+    true)
+
+  ;; Expands the generic templates of a flat program into concrete items
+  ;; (generics.aipl); an error there is reported in the file it is in, as
+  ;; generics.rs does.
+  (fn expand_generics [flat:(ptr buf.Buf) out:(ptr buf.Buf) err:(ptr buf.Buf) orig:(ptr origins.Origins) gen:(ptr origins.Origins)] -> bool
+    (call expand_as flat out err orig gen false))
+
+  ;; Every template once at placeholders for its type parameters, to check
+  ;; (generics.aipl archetypes_mapped); `out` stays empty without templates.
+  (fn archetypes_of [flat:(ptr buf.Buf) out:(ptr buf.Buf) err:(ptr buf.Buf) orig:(ptr origins.Origins) gen:(ptr origins.Origins)] -> bool
+    (call expand_as flat out err orig gen true))
+
+  (fn expand_as [flat:(ptr buf.Buf) out:(ptr buf.Buf) err:(ptr buf.Buf) orig:(ptr origins.Origins) gen:(ptr origins.Origins) archetypes:bool] -> bool
     (let failure:(ptr generics.Failure) (new generics.Failure))
     (put failure generics.Failure.at -1)
     (let gen_err:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
-    (if (call generics.expand_mapped (call buf.bytes flat) out gen_err gen failure)
+    (if (if archetypes
+            (call generics.archetypes_mapped (call buf.bytes flat) out gen_err gen failure)
+            (call generics.expand_mapped (call buf.bytes flat) out gen_err gen failure))
         true
         (block
           (if (and (gte (get failure generics.Failure.at) 0) (neq orig (ptr.null origins.Origins)))

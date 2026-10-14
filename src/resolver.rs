@@ -26,6 +26,7 @@ pub struct Resolver;
 /// A generic instance is made from its template's file, but the type
 /// arguments substituted into it were written elsewhere: `foreign` maps
 /// those tokens' positions to their own files.
+#[derive(Clone)]
 pub struct Item {
     pub sx: Sx,
     pub file: PathBuf,
@@ -34,6 +35,7 @@ pub struct Item {
 
 /// The flat program before parsing: entry module name, then every struct
 /// and every function (imports first, in resolution order).
+#[derive(Clone)]
 pub struct FlatProgram {
     pub name: String,
     pub structs: Vec<Item>,
@@ -91,8 +93,18 @@ impl Resolver {
 
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
+        // every template checked once, at placeholders for its type
+        // parameters (generics::archetypes); nothing is compiled from these
+        if let Some(arch) = crate::generics::archetypes(flat.clone())? {
+            let module = Self::parse_flat(crate::consts::expand(arch)?)?;
+            crate::checker::TypeChecker::new().check_module(&module)?;
+        }
         let flat = crate::generics::expand(flat)?;
-        let flat = crate::consts::expand(flat)?;
+        Self::parse_flat(crate::consts::expand(flat)?)
+    }
+
+    /// Parses each item of an expanded flat program, with its positions.
+    fn parse_flat(flat: FlatProgram) -> Result<Module, String> {
         let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new(), file_names: flat.files.clone() };
         let unions: HashSet<String> = flat
             .structs

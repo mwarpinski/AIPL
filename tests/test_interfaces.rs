@@ -91,7 +91,7 @@ const MAIN: &str = r#"(module main
     (+ (call_ref (fn [str] -> i32) f "abc") (* 10 (call shapes.sides))))
 
   ;; a generic function calling an implementation for its type argument
-  (fn (biggest T) [a:T b:T] -> T
+  (fn (biggest T) [a:T b:T] -> T (where (cmp.Ord T))
     (if (gt (call (cmp.Ord.compare T) a b) 0) a b))
   (fn generic [] -> i32 (call (biggest i32) 4 9)))"#;
 
@@ -212,9 +212,9 @@ fn where_clauses_are_checked_in_both_resolvers() {
          "1:38: where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"),
         // the clause's own form
         ("(module m (import cmp) (fn (f T) [x:T] -> T (where cmp.Eq) x) (fn main [] -> i32 (call (f i32) 1)))",
-         "1:45: a where clause is written (where (Interface T)), T a type parameter of this generic"),
+         "1:45: a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"),
         ("(module m (import cmp) (fn (f T) [x:T] -> T (where (cmp.Eq U)) x) (fn main [] -> i32 (call (f i32) 1)))",
-         "1:45: a where clause is written (where (Interface T)), T a type parameter of this generic"),
+         "1:45: a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"),
         ("(module m (fn (f T) [x:T] -> T (where (Nope T)) x) (fn main [] -> i32 (call (f i32) 1)))",
          "1:32: 'Nope' is not an interface"),
     ];
@@ -225,4 +225,89 @@ fn where_clauses_are_checked_in_both_resolvers() {
         let aipl = aipl_core::selfhost::resolve_with_aipl(&entry).map(|_| ()).expect_err(src);
         assert_eq!(aipl, rust, "{src}");
     }
+}
+
+/// Templates checked once (IC3): every template at placeholders for its
+/// type parameters, so an error in a template is found in the template,
+/// used or not; and each use passes types of the right kind. Both toolchains,
+/// the whole way (the AIPL one is driver.aipl in the VM), with the same
+/// messages.
+#[test]
+fn templates_are_checked_once_in_both_toolchains() {
+    let cases: &[(&str, &str)] = &[
+        (r#"(module m (fn (f T) [a:T b:T] -> bool (eq a b)) (fn main [] -> i32 0))"#, "1:39: eq on T: a type parameter has no equality of its own; add (where (cmp.Eq T)) and call (cmp.Eq.same T)"),
+        (r#"(module m (fn (f T) [a:T b:T] -> bool (lt a b)) (fn main [] -> i32 0))"#, "1:39: lt on T: a type parameter has no order of its own; add (where (cmp.Ord T)) and call (cmp.Ord.compare T)"),
+        (r#"(module m (fn (f T) [a:T] -> T (+ a a)) (fn main [] -> i32 0))"#, "1:32: + on T: a type parameter has no arithmetic"),
+        (r#"(module m (fn (f T) [a:T] -> i32 (match a (else 0))) (fn main [] -> i32 0))"#, "1:34: match on T: a type parameter has no variants or members to match"),
+        (r#"(module m (fn (f T) [a:T] -> i32 (enum.ord a)) (fn main [] -> i32 0))"#, "1:34: enum.ord on T: a type parameter is not an enum"),
+        (r#"(module m (fn (f T) [p:(ptr T)] -> i32 0) (fn main [] -> i32 0))"#, "1:11: T is a type parameter that is not a struct: to use it as one, add (where (struct T)) (parameter 'p' of 'f<T>')"),
+        (r#"(module m (fn (f T) [x:T] -> i32 (where (struct T)) 0) (fn main [] -> i32 0))"#, "1:11: 'T' is a struct, which is only used through a pointer: write (ptr T) (parameter 'x' of 'f<T>')"),
+        (r#"(module m (import vec) (fn (g T) [v:(ptr (vec.Vec T)) x:T] -> i32 (call (vec.index_of T) v x)) (fn main [] -> i32 0))"#, "1:73: vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g"),
+        (r#"(module m (import cmp) (fn (g T) [a:T] -> bool (call (cmp.Eq.same T) a a)) (fn main [] -> i32 0))"#, "1:54: no implementation of (cmp.Eq T): add (where (cmp.Eq T)) to g"),
+        (r#"(module m (import alloc) (fn (g T) [] -> (ptr T) (call (alloc.create T) (call alloc.default))) (fn main [] -> i32 0))"#, "1:56: alloc.create<T>: T must be a struct, so g needs (where (struct T))"),
+        (r#"(module m (import vec) (struct Point [x:i32]) (fn main [] -> i32 (sizeof (vec.Vec Point))))"#, "1:74: vec.Vec<Point>: T is a value type, and Point is a struct, used only through a pointer: write (ptr Point)"),
+        (r#"(module m (import alloc) (fn main [] -> i32 (sizeof (ptr.null i32)) (i32.wrap 0i64) (let p:(ptr i32) (call (alloc.create i32) (call alloc.default))) 0))"#, "1:108: alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one"),
+        (r#"(module m (import option) (fn main [] -> i32 (let o:(option.Option void) (make (option.Option void) none)) 0))"#, "1:53: option.Option<void>: T is a value type, and void cannot be stored"),
+        (r#"(module m (fn (f T) [] -> (ptr T) (ptr.null T)) (fn main [] -> i32 0))"#, "1:11: T is a type parameter that is not a struct: to use it as one, add (where (struct T)) (return type of 'f<T>')"),
+        (r#"(module m (fn (f T) [a:T] -> i32 (req 5) 0) (fn main [] -> i32 0))"#, "1:39: Contract expression in 'f<T>' must evaluate to bool, got i32"),
+        (r#"(module m (fn (g T) [a:T] -> i32 0) (fn (f T) [a:T] -> i32 (call (g T) 5)) (fn main [] -> i32 0))"#, "1:60: Arg 0 of 'g<T>' expects T, got i32"),
+        (r#"(module m (fn (g T) [a:T] -> i32 0) (fn (f T) [a:T] -> i32 (call (g T))) (fn main [] -> i32 0))"#, "1:60: Function 'g<T>' expects 1 arguments, got 0"),
+        (r#"(module m (union (B T) [(full v:T) (empty)]) (fn (f T) [] -> (B T) (make (B T) full 5)) (fn main [] -> i32 0))"#, "1:68: make B<T>.full: field 'v' is T, got i32"),
+        (r#"(module m (union (B T) [(full v:T) (empty)]) (fn (f T) [b:(B T)] -> i32 (match b ((B T) nope 0) (else 1))) (fn main [] -> i32 0))"#, "1:82: B<T> has no member 'nope'"),
+        (r#"(module m (struct (S T) [v:T]) (fn (f T) [p:(ptr (S T))] -> void (put p (S T) v 5)) (fn main [] -> i32 0))"#, "1:66: Type mismatch writing to field 'S<T>.v': expected T, got i32"),
+        (r#"(module m (fn (u T) [a:T] -> i32 (unsafe) 0) (fn (f T) [a:T] -> i32 (call (u T) a)) (fn main [] -> i32 0))"#, "1:69: 'u<T>' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)"),
+        (r#"(module m (fn (f T) [a:T] -> i32 a) (fn main [] -> i32 0))"#, "1:11: Function 'f<T>' expects return type i32, but body returned T"),
+        (r#"(module m (struct (S T) [v:T v:T]) (fn main [] -> i32 0))"#, "1:11: Duplicate field 'v' in struct 'S<T>'"),
+        (r#"(module m (union (B T) [(full v:T v:T)]) (fn main [] -> i32 0))"#, "1:11: variant 'B<T>.full' has two fields named 'v'"),
+        (r#"(module m (fn (f T) [a:T] -> i32 (let x:T 5) 0) (fn main [] -> i32 0))"#, "1:34: Type mismatch in 'let': expected T, got i32"),
+        (r#"(module m (fn (f T) [a:T] -> T (return 5)) (fn main [] -> i32 0))"#, "1:32: return value has type i32, but the function returns T"),
+        (r#"(module m (union (B T) [(full v:T) (empty)]) (fn (f T) [b:(B T)] -> i32 (match b ((B T) full [v] 0))) (fn main [] -> i32 0))"#, "1:73: match is missing B<T>.empty (add those arms or an else arm)"),
+        (r#"(module m (struct (S T) [v:T]) (fn (f T) [p:(ptr (S T))] -> i32 (get p (S T) w)) (fn main [] -> i32 0))"#, "1:65: Struct 'S<T>' has no field 'w'"),
+    ];
+    std::thread::scope(|scope| {
+        for (k, (src, want)) in cases.iter().enumerate() {
+            scope.spawn(move || {
+                let entry = write_program(&format!("sealed_{k}"), &[("main.aipl", src)]);
+                let rust = Resolver::resolve(&entry).and_then(|m| TypeChecker::new().check_module(&m)).expect_err(src);
+                assert!(rust.ends_with(want), "{src}\n  expected: {want}\n  rust: {rust}");
+                let aipl = aipl_core::selfhost::compile_with_aipl(&entry).map(|_| ()).expect_err(src);
+                assert_eq!(aipl, rust, "{src}");
+            });
+        }
+    });
+}
+
+/// What sealing allows: a template using only what its kinds and where
+/// clauses give it, a recursive generic union, a struct parameter, and a
+/// template never used, all checking in both toolchains and running.
+#[test]
+fn templates_within_their_clauses_check_and_run() {
+    let src = r#"(module main
+  (import cmp)
+  (import alloc)
+  (union (Tree T) [(leaf) (node l:(Tree T) v:T r:(Tree T))])
+  (fn (insert T) [t:(Tree T) x:T] -> (Tree T) (where (cmp.Ord T))
+    (match t
+      ((Tree T) leaf (make (Tree T) node (make (Tree T) leaf) x (make (Tree T) leaf)))
+      ((Tree T) node [l v r]
+        (if (lt (call (cmp.Ord.compare T) x v) 0)
+            (make (Tree T) node (call (insert T) l x) v r)
+            (make (Tree T) node l v (call (insert T) r x))))))
+  (fn (size T) [t:(Tree T)] -> i32
+    (match t ((Tree T) leaf 0) ((Tree T) node [l _ r] (+ 1 (+ (call (size T) l) (call (size T) r))))))
+  (struct Cell [n:i32])
+  (fn (fresh S) [] -> (ptr S) (where (struct S)) (call (alloc.create S) (call alloc.default)))
+  (fn (never_used T) [x:T] -> T x)
+  (fn main [] -> i32
+    (let t:(Tree str) (make (Tree str) leaf))
+    (set! t (call (insert str) t "pear"))
+    (set! t (call (insert str) t "apple"))
+    (set! t (call (insert str) t "fig"))
+    (let c:(ptr Cell) (call (fresh Cell)))
+    (put c Cell.n 40)
+    (+ (get c Cell.n) (call (size str) t))))"#;
+    let entry = write_program("sealed_ok", &[("main.aipl", src)]);
+    assert_eq!(run_both(&entry, "main"), 43);
+    let rust = WasmCompiler::compile(&Resolver::resolve(&entry).unwrap()).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
 }

@@ -122,10 +122,10 @@
   ;; ===== Typed =====
 
   ;; A zeroed T.
-  (fn (create T) [a:Allocator] -> (ptr T)
+  (fn (create T) [a:Allocator] -> (ptr T) (where (struct T))
     (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
-  (fn (destroy T) [a:Allocator p:(ptr T)] -> void
+  (fn (destroy T) [a:Allocator p:(ptr T)] -> void (where (struct T))
     (call free_raw a (ptr.addr p) (sizeof T)))
 
   ;; n zeroed Ts, laid out like (arr.new T n).

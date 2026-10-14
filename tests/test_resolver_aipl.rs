@@ -396,8 +396,10 @@ fn subdirectory_import_errors() {
 fn wasm_toolchain_reports_type_errors_in_the_users_files() {
     let dir = root().join("target").join(format!("aipl_typeerr_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // shapes checks on its own; its template `bad` fails only when instantiated
-    std::fs::write(dir.join("shapes.aipl"), "(module shapes\n  (import vec)\n  (struct Box [w:i32])\n  (fn (first T) [v:(ptr (vec.Vec T))] -> T\n    (call (vec.at T) v 0))\n  (fn (bad T) [x:T] -> i32\n    (+ x 1)))").unwrap();
+    // shapes checks on its own; tmpl's template `bad` does not, whether or
+    // not anything uses it (a template is checked once, sealed)
+    std::fs::write(dir.join("shapes.aipl"), "(module shapes\n  (import vec)\n  (struct Box [w:i32])\n  (fn (first T) [v:(ptr (vec.Vec T))] -> T\n    (call (vec.at T) v 0)))").unwrap();
+    std::fs::write(dir.join("tmpl.aipl"), "(module tmpl\n  (fn (bad T) [x:T] -> i32\n    (+ x 1)))").unwrap();
     std::fs::write(dir.join("broken.aipl"), "(module broken\n  (import shapes)\n  (fn area [b:(ptr shapes.Box)] -> i32\n    (* (get b shapes.Box.w)\n       true)))").unwrap();
     let cases = [
         // in the entry file
@@ -407,7 +409,9 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
         // in an imported module (shapes.area)
         ("uses_area", "(module uses_area\n  (import shapes)\n  (import broken)\n  (fn main [] -> i32 (call broken.area (new shapes.Box))))", "broken.aipl"),
         // inside a generic template, reported at the template
-        ("uses_bad", "(module uses_bad\n  (import shapes)\n  (fn main [] -> i32 (call (shapes.bad bool) true)))", "shapes.aipl"),
+        ("uses_bad", "(module uses_bad\n  (import tmpl)\n  (fn main [] -> i32 (call (tmpl.bad bool) true)))", "tmpl.aipl"),
+        // and the same without a use
+        ("imports_bad", "(module imports_bad\n  (import tmpl)\n  (fn main [] -> i32 0))", "tmpl.aipl"),
     ];
     let driver = driver_wasm();
     for (name, src, file) in cases {
