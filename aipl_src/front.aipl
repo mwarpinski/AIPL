@@ -13,16 +13,16 @@
   (import checker)
   (import buf)
 
-  (fn check [src:i32 len:i32] -> (ptr checker.Problem)
+  (fn check [src:i32 len:i32] -> (ptr checker.Problem) (pub)
     (let r:(ptr parser.Parsed) (call parse src len))
     (if (get r parser.Parsed.ok)
         (call checker.check src (get r parser.Parsed.module))
         (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
 
   ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.
-  (fn parse [src:i32 len:i32] -> (ptr parser.Parsed)
+  (fn parse [src:i32 len:i32] -> (ptr parser.Parsed) (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let n:i32 (call compiler.tokenize src len toks))
+    (let n:i32 (call compiler.strip_marks src toks (call compiler.tokenize src len toks)))
     (if (and (gt n 0) (eq (get (call compiler.token_at toks (- n 1)) compiler.Token.kind) compiler.Kind.bad))
         (return (call parser.parse_tokens src toks n))
         (block))
@@ -38,7 +38,7 @@
 
   ;; "line:col: message" for each error, one per line, counting in the
   ;; text at src.
-  (fn render [src:i32 first:(ptr checker.Problem)] -> (ptr buf.Buf)
+  (fn render [src:i32 first:(ptr checker.Problem)] -> (ptr buf.Buf) (pub)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
     (let pr:(ptr checker.Problem) first)
     (while (neq pr (ptr.null checker.Problem))

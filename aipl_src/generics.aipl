@@ -49,7 +49,7 @@
 
   ;; Where an expansion error is: an offset in the program expanded, or -1
   ;; for an error with no position (too many instances).
-  (struct Failure [at:i32])
+  (struct Failure [(pub at:i32)] (pub))
 
   ;; ===== Trees =====
 
@@ -516,13 +516,13 @@
   ;; comes from in `flat`; nothing is noted when there are no generics (the
   ;; result is `flat` itself).
   ;; On an error, `failure` (if not null) gets its offset in `flat`.
-  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool
+  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
     (call expand_with flat out err gen failure false))
 
   ;; generics.rs archetypes: every template once at placeholders for its
   ;; type parameters, for checking only. Nothing is written to `out` when
   ;; there are no templates.
-  (fn archetypes_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool
+  (fn archetypes_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
     (call expand_with flat out err gen failure true))
 
   (fn expand_with [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure) archetypes:bool] -> bool

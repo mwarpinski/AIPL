@@ -376,6 +376,16 @@ fn self_hosted_bytes_match_wide_results() {
     assert_self_hosted_matches_rust("wide_results", src);
 }
 
+/// Visibility marks in a module compiled on its own: both compilers leave
+/// them out (compiler.aipl strip_marks, parser.rs strip_marks).
+#[test]
+fn self_hosted_bytes_match_with_visibility_marks() {
+    assert_self_hosted_matches_rust(
+        "marks",
+        "(module m (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P)) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
+    );
+}
+
 #[test]
 fn self_hosted_bytes_match_strings_alloc_grow_exit() {
     let src = r#"

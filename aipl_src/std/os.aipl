@@ -36,16 +36,16 @@
     (call str.bytes p n)))
 
   ;; Number of command-line arguments, argv[0] (the program) included.
-  (fn arg_count [] -> i32
+  (fn arg_count [] -> i32 (pub)
     (get (call fetch false) Table.count))
 
   ;; Argument i (0 is the program), or len -1 when there is no argument i.
-  (fn arg [i:i32] -> (ptr str.Bytes)
+  (fn arg [i:i32] -> (ptr str.Bytes) (pub)
     (unsafe (let t:(ptr Table) (call fetch false))
     (if (and (gte i 0) (lt i (get t Table.count))) (call entry t i) (call str.bytes 0 -1))))
 
   ;; The value of environment variable `name`, or len -1 when it is not set.
-  (fn env [name:str] -> (ptr str.Bytes)
+  (fn env [name:str] -> (ptr str.Bytes) (pub)
     (unsafe (let key:(ptr str.Bytes) (call str.from_str name))
     (let klen:i32 (get key str.Bytes.len))
     (let t:(ptr Table) (call fetch true))
@@ -60,12 +60,12 @@
 
   ;; Argument i as a decimal i32, or `default` if there is no argument i or
   ;; it is not a number: (call os.arg_int 1 1000).
-  (fn arg_int [i:i32 default:i32] -> i32
+  (fn arg_int [i:i32 default:i32] -> i32 (pub)
     (if (gte i (call arg_count)) (return default) (block))
     (call str.parse_int_or (call arg i) default))
 
   ;; A random i32 from the operating system's generator (sys.random).
-  (fn random_i32 [] -> i32
+  (fn random_i32 [] -> i32 (pub)
     (unsafe (let p:i32 (mem.alloc 4))
     (if (neq (sys.random p 4) 0) (sys.exit 70) (block))
     (mem.load32 p)))
@@ -73,7 +73,7 @@
   ;; Pass count; expects 3. A variable that is surely unset, an argument
   ;; index past the end, and arg_int's default (past the end, and argument
   ;; 0, the program's name, which is not a number).
-  (fn run_os_tests [] -> i32
+  (fn run_os_tests [] -> i32 (pub)
     (let p:i32 0)
     (if (eq (get (call env "AIPL_OS_TEST_SURELY_UNSET") str.Bytes.len) -1) (set! p (+ p 1)) (block))
     (if (eq (get (call arg (call arg_count)) str.Bytes.len) -1) (set! p (+ p 1)) (block))

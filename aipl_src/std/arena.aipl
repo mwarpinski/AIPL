@@ -16,10 +16,10 @@
   ;; The chunks form a list in the order they were taken; `current` is the
   ;; one being filled, `used` bytes into it.
   (struct Chunk [base:i32 cap:i32 next:(ptr Chunk)])
-  (struct Arena [first:(ptr Chunk) current:(ptr Chunk) used:i32 chunk_size:i32])
+  (struct Arena [first:(ptr Chunk) current:(ptr Chunk) used:i32 chunk_size:i32] (pub))
 
   ;; An arena that takes memory in chunks of at least chunk_size bytes.
-  (fn make [chunk_size:i32] -> (ptr Arena)
+  (fn make [chunk_size:i32] -> (ptr Arena) (pub)
     (req (gt chunk_size 0))
     (let a:(ptr Arena) (new Arena))
     (put a Arena.chunk_size (bitand (+ chunk_size 7) -8))
@@ -36,7 +36,7 @@
     c)
 
   ;; n zeroed bytes, 8-aligned.
-  (fn raw [a:(ptr Arena) n:i32] -> i32
+  (fn raw [a:(ptr Arena) n:i32] -> i32 (pub)
     (req (gt n 0))
     (unsafe (let size:i32 (bitand (+ n 7) -8))
     (let found:i32 -1)
@@ -57,16 +57,16 @@
     found))
 
   ;; A zeroed T from the arena.
-  (fn (alloc T) [a:(ptr Arena)] -> (ptr T) (where (struct T))
+  (fn (alloc T) [a:(ptr Arena)] -> (ptr T) (pub) (where (struct T))
     (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
   ;; Frees everything allocated from the arena (its chunks are reused).
-  (fn reset [a:(ptr Arena)] -> void
+  (fn reset [a:(ptr Arena)] -> void (pub)
     (put a Arena.current (get a Arena.first))
     (put a Arena.used 0))
 
   ;; Bytes the arena holds from the heap (all chunks).
-  (fn reserved [a:(ptr Arena)] -> i32
+  (fn reserved [a:(ptr Arena)] -> i32 (pub)
     (let total:i32 0)
     (let c:(ptr Chunk) (get a Arena.first))
     (while (neq c (ptr.null Chunk))
@@ -77,7 +77,7 @@
   (struct Pair [left:i32 right:i64])
 
   ;; Pass count; test_suite.aipl expects 5.
-  (fn run_arena_tests [] -> i32
+  (fn run_arena_tests [] -> i32 (pub)
     (let p:i32 0)
     (let a:(ptr Arena) (call make 64))
     ;; typed, zeroed, distinct

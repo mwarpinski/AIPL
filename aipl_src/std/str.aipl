@@ -2,69 +2,76 @@
 ;; AIPL over mem.* and str.*, so it behaves the same in the VM and compiled.
 (module str
   ;; `len` bytes starting at address `addr`. A failed read has len -1.
-  (struct Bytes [addr:i32 len:i32])
+  (struct Bytes [(read addr:i32) (read len:i32)] (pub))
 
-  (fn bytes [addr:i32 len:i32] -> (ptr Bytes) (unsafe)
+  (fn bytes [addr:i32 len:i32] -> (ptr Bytes) (pub) (unsafe)
     (let b:(ptr Bytes) (new Bytes))
     (put b Bytes.addr addr)
     (put b Bytes.len len)
     b)
 
+  ;; Points b at len bytes at addr instead, without making a new Bytes (a
+  ;; lookup key reused for every lookup). Unsafe to call, as bytes is: the
+  ;; memory is the caller's word.
+  (fn repoint [b:(ptr Bytes) addr:i32 len:i32] -> void (pub) (unsafe)
+    (put b Bytes.addr addr)
+    (put b Bytes.len len))
+
   ;; The bytes of a string (the VM copies them into the heap; wasm does not).
-  (fn from_str [s:str] -> (ptr Bytes)
+  (fn from_str [s:str] -> (ptr Bytes) (pub)
     (unsafe (call bytes (str.ptr s) (str.len s))))
 
-  (fn byte_at [b:(ptr Bytes) i:i32] -> i32
+  (fn byte_at [b:(ptr Bytes) i:i32] -> i32 (pub)
     (req (and (gte i 0) (lt i (get b Bytes.len))))
     (unsafe (mem.load8 (+ (get b Bytes.addr) i))))
 
   ;; Bytes start .. start + len - 1 of b, as a view of the same memory.
-  (fn slice [b:(ptr Bytes) start:i32 len:i32] -> (ptr Bytes)
+  (fn slice [b:(ptr Bytes) start:i32 len:i32] -> (ptr Bytes) (pub)
     (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (get b Bytes.len)))))
     (unsafe (call bytes (+ (get b Bytes.addr) start) len)))
 
   ;; Sets byte i of b to c (its low 8 bits).
-  (fn set_byte [b:(ptr Bytes) i:i32 c:i32] -> void
+  (fn set_byte [b:(ptr Bytes) i:i32 c:i32] -> void (pub)
     (req (and (gte i 0) (lt i (get b Bytes.len))))
     (unsafe (mem.store8 (+ (get b Bytes.addr) i) c)))
 
   ;; ASCII whitespace: space, \t \n \v \f \r.
-  (fn is_space [c:i32] -> bool
+  (fn is_space [c:i32] -> bool (pub)
     (or (eq c 32) (and (gte c 9) (lte c 13))))
 
-  (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool
+  (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool (pub)
     (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
     (loop i 0 (- (get a Bytes.len) 1) 1
       (if (neq (call byte_at a i) (call byte_at b i)) (return false) (block)))
     true)
 
   ;; Whether b spells the literal s, without allocating.
-  (fn is [b:(ptr Bytes) s:str] -> bool
+  (fn is [b:(ptr Bytes) s:str] -> bool (pub)
     (unsafe (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
 
   ;; Index of the first byte equal to c, or -1.
-  (fn find_byte [b:(ptr Bytes) c:i32] -> i32
+  (fn find_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (eq (call byte_at b i) c) (return i) (block)))
     -1)
 
-  (fn count_byte [b:(ptr Bytes) c:i32] -> i32
+  (fn count_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
     (let n:i32 0)
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (eq (call byte_at b i) c) (set! n (+ n 1)) (block)))
     n)
 
   ;; Newlines, plus one for a final line without a newline.
-  (fn count_lines [b:(ptr Bytes)] -> i32
+  (fn count_lines [b:(ptr Bytes)] -> i32 (pub)
     (unsafe (let len:i32 (get b Bytes.len))
     (let n:i32 (call count_byte b 10))
     (if (and (gt len 0) (neq (mem.load8 (+ (get b Bytes.addr) (- len 1))) 10)) (+ n 1) n)))
 
   ;; Runs of non-whitespace bytes.
-  (fn count_words [b:(ptr Bytes)] -> i32
+  (fn count_words [b:(ptr Bytes)] -> i32 (pub)
     (let words:i32 0)
     (let in_word:bool false)
     (loop i 0 (- (get b Bytes.len) 1) 1
@@ -78,7 +85,7 @@
   ;; Decimal integer with an optional leading '-': (ok n), or (err i) where i
   ;; is the index of the first byte that is not part of a number (0 for an
   ;; empty input or a lone '-'). Values outside i32 wrap.
-  (fn parse_int [b:(ptr Bytes)] -> (result i32 i32)
+  (fn parse_int [b:(ptr Bytes)] -> (result i32 i32) (pub)
     (unsafe (let len:i32 (get b Bytes.len))
     (let neg:bool (and (gt len 0) (eq (mem.load8 (get b Bytes.addr)) 45)))
     (let start:i32 (if neg 1 0))
@@ -91,13 +98,13 @@
     (ok (if neg n (- 0 n)))))
 
   ;; b as a decimal i32 (parse_int), or `default` if it is not one.
-  (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32
+  (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32 (pub)
     (match_result (call parse_int b) (ok n n) (err e default)))
 
   ;; Pass count; test_suite.aipl expects 8.
   ;; Whether b is valid UTF-8 (as Rust's str::from_utf8 decides: no
   ;; overlong forms, no surrogates, nothing past U+10FFFF).
-  (fn valid_utf8 [b:(ptr Bytes)] -> bool
+  (fn valid_utf8 [b:(ptr Bytes)] -> bool (pub)
     (let n:i32 (get b Bytes.len))
     (let i:i32 0)
     (while (lt i n)
@@ -118,7 +125,7 @@
       (set! i (+ i (+ need 1))))
     true)
 
-  (fn run_str_tests [] -> i32
+  (fn run_str_tests [] -> i32 (pub)
     (unsafe (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
     (if (and (call is_space 9) (and (call is_space 32) (not (call is_space 97)))) (set! p (+ p 1)) (block))

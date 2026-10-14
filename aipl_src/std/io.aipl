@@ -4,57 +4,57 @@
   (import str)
   (import fmt)
 
-  (fn write_str [fd:i32 s:str] -> void
+  (fn write_str [fd:i32 s:str] -> void (pub)
     (unsafe (fs.write fd (str.ptr s) (str.len s))))
 
-  (fn println [s:str] -> void
+  (fn println [s:str] -> void (pub)
     (call write_str 1 s)
     (call write_str 1 "\n"))
 
-  (fn eprintln [s:str] -> void
+  (fn eprintln [s:str] -> void (pub)
     (call write_str 2 s)
     (call write_str 2 "\n"))
 
   ;; Decimal, with '-' when negative. Each call allocates 11 bytes (never freed).
-  (fn print_int [n:i32] -> void
+  (fn print_int [n:i32] -> void (pub)
     (unsafe (let buf:i32 (mem.alloc 11))
     (fs.write 1 buf (call fmt.int_to_bytes n buf))))
 
   ;; An i64 in decimal. Each call allocates 21 bytes (never freed).
-  (fn print_i64 [n:i64] -> void
+  (fn print_i64 [n:i64] -> void (pub)
     (unsafe (let buf:i32 (mem.alloc 21))
     (fs.write 1 buf (call fmt.int64_to_bytes n buf))))
 
   ;; label, then the i64 n, then a newline.
-  (fn println_i64 [label:str n:i64] -> void
+  (fn println_i64 [label:str n:i64] -> void (pub)
     (call write_str 1 label)
     (call print_i64 n)
     (call write_str 1 "\n"))
 
   ;; An f64 with `digits` decimals, as printf("%.*f") prints it.
-  (fn print_f64 [x:f64 digits:i32] -> void
+  (fn print_f64 [x:f64 digits:i32] -> void (pub)
     (req (and (gte digits 0) (lte digits 40)))
     (unsafe (let buf:i32 (mem.alloc (+ 312 digits)))
     (fs.write 1 buf (call fmt.f64_fixed x digits buf))))
 
   ;; label, then x with `digits` decimals, then a newline.
-  (fn println_f64 [label:str x:f64 digits:i32] -> void
+  (fn println_f64 [label:str x:f64 digits:i32] -> void (pub)
     (call write_str 1 label)
     (call print_f64 x digits)
     (call write_str 1 "\n"))
 
   ;; label, then n, then a newline: (call io.println_int "lines: " 4) prints "lines: 4".
-  (fn println_int [label:str n:i32] -> void
+  (fn println_int [label:str n:i32] -> void (pub)
     (call write_str 1 label)
     (call print_int n)
     (call write_str 1 "\n"))
 
   ;; The whole file in a fresh buffer, or len -1 if it cannot be opened or read.
-  (fn read_file [path:str] -> (ptr str.Bytes)
+  (fn read_file [path:str] -> (ptr str.Bytes) (pub)
     (call read_path (call str.from_str path)))
 
   ;; read_file for a path held as bytes (e.g. one built at run time).
-  (fn read_path [path:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn read_path [path:(ptr str.Bytes)] -> (ptr str.Bytes) (pub)
     (unsafe (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 0))
     (if (lt fd 0) (return (call str.bytes 0 -1)) (block))
     (let b:(ptr str.Bytes) (call read_fd fd))
@@ -62,11 +62,11 @@
     b))
 
   ;; Everything on standard input, until end of input (len -1 on a read error).
-  (fn read_stdin [] -> (ptr str.Bytes)
+  (fn read_stdin [] -> (ptr str.Bytes) (pub)
     (call read_fd 0))
 
   ;; Reads fd to its end into a fresh buffer that doubles as it fills.
-  (fn read_fd [fd:i32] -> (ptr str.Bytes)
+  (fn read_fd [fd:i32] -> (ptr str.Bytes) (pub)
     (unsafe (let cap:i32 4096)
     (let buf:i32 (mem.alloc cap))
     (let len:i32 0)
@@ -87,11 +87,11 @@
     (call str.bytes buf len)))
 
   ;; Creates or truncates the file; returns bytes written, or -1.
-  (fn write_file [path:str b:(ptr str.Bytes)] -> i32
+  (fn write_file [path:str b:(ptr str.Bytes)] -> i32 (pub)
     (call write_path (call str.from_str path) b))
 
   ;; write_file for a path held as bytes.
-  (fn write_path [path:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32
+  (fn write_path [path:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32 (pub)
     (unsafe (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 1))
     (if (lt fd 0)
         -1
@@ -101,7 +101,7 @@
           n))))
 
   ;; Pass count; test_suite.aipl expects 2. Uses a scratch file in the cwd.
-  (fn run_io_tests [] -> i32
+  (fn run_io_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     (let data:(ptr str.Bytes) (call str.from_str "io\nround trip\n"))
     (let wrote:i32 (call write_file "_io_test.tmp" data))

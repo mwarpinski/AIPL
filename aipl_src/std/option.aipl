@@ -10,21 +10,21 @@
 ;; Use it instead of a sentinel (-1, a null pointer) when "nothing" is a
 ;; possible answer: the checker makes every match handle none.
 (module option
-  (union (Option T) [(some value:T) (none)])
+  (union (Option T) [(some value:T) (none)] (pub))
 
-  (fn (is_some T) [o:(Option T)] -> bool
+  (fn (is_some T) [o:(Option T)] -> bool (pub)
     (match o ((Option T) some [_] true) ((Option T) none false)))
 
-  (fn (is_none T) [o:(Option T)] -> bool
+  (fn (is_none T) [o:(Option T)] -> bool (pub)
     (match o ((Option T) some [_] false) ((Option T) none true)))
 
   ;; The value, or `fallback` for none.
-  (fn (unwrap_or T) [o:(Option T) fallback:T] -> T
+  (fn (unwrap_or T) [o:(Option T) fallback:T] -> T (pub)
     (match o ((Option T) some [v] v) ((Option T) none fallback)))
 
   ;; ===== Tests =====
 
-  (fn run_option_tests [] -> i32
+  (fn run_option_tests [] -> i32 (pub)
     (let p:i32 0)
     (let five:(Option i32) (make (Option i32) some 5))
     (let nothing:(Option i32) (make (Option i32) none))

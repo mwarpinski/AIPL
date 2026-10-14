@@ -14,7 +14,7 @@
       (Op.add [a b] (+ (call eval a) (call eval b)))))
   (fn sides [s:geo.Shape] -> i32
     (match s (geometry.Shape.rect [w h] 4) (geo.Shape.circle [r] 0) (else 1)))
-  (fn main [] -> i32
+  (fn main [] -> i32 (pub)
     (let shapes:(ptr (vec.Vec geometry.Shape)) (call geometry.some))
     (let total:i32 0)
     (loop i 0 (- (call (vec.len geo.Shape) shapes) 1) 1

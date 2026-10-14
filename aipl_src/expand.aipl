@@ -19,7 +19,7 @@
              spare:(ptr buf.Buf) err:(ptr buf.Buf) err_at:i32 failed:bool])
 
   ;; The result: the expanded tokens, or the first error.
-  (struct Expanded [toks:i32 n:i32 ok:bool err:(ptr buf.Buf) err_at:i32])
+  (struct Expanded [(read toks:i32) (read n:i32) (read ok:bool) (read err:(ptr buf.Buf)) (read err_at:i32)] (pub))
 
   ;; ===== Tokens =====
 
@@ -312,7 +312,7 @@
   ;; ===== Driver =====
 
   ;; Expands the n tokens at toks (from compiler.tokenize over src).
-  (fn expand [src:i32 toks:i32 n:i32] -> (ptr Expanded)
+  (fn expand [src:i32 toks:i32 n:i32] -> (ptr Expanded) (pub)
     (let x:(ptr X) (new X))
     (put x X.src src)
     (put x X.toks toks)

@@ -19,9 +19,9 @@
   (import str)
   (import buf)
 
-  (struct Int [limbs:(arr i64) len:i32 neg:bool])
+  (struct Int [limbs:(arr i64) len:i32 neg:bool] (pub))
 
-  (fn with_capacity [limbs:i32] -> (ptr Int)
+  (fn with_capacity [limbs:i32] -> (ptr Int) (pub)
     (let n:(ptr Int) (new Int))
     (let xs:(arr i64) (arr.new i64 (if (lt limbs 4) 4 limbs)))
     (loop i 0 (- (arr.len xs) 1) 1 (arr.set i64 xs i 0i64))
@@ -31,13 +31,13 @@
     n)
 
   ;; A number from any i32.
-  (fn from_i32 [v:i32] -> (ptr Int)
+  (fn from_i32 [v:i32] -> (ptr Int) (pub)
     (let n:(ptr Int) (call with_capacity 4))
     (call set_i32 n v)
     n)
 
   ;; a = v
-  (fn set_i32 [a:(ptr Int) v:i32] -> void
+  (fn set_i32 [a:(ptr Int) v:i32] -> void (pub)
     (loop i 0 (- (get a Int.len) 1) 1 (arr.set i64 (get a Int.limbs) i 0i64))
     (let w:i64 (i64.extend_s v))
     (put a Int.neg (lt w 0i64))
@@ -46,13 +46,13 @@
     (put a Int.len 1)
     (call trim a))
 
-  (fn is_zero [a:(ptr Int)] -> bool (eq (get a Int.len) 0))
+  (fn is_zero [a:(ptr Int)] -> bool (pub) (eq (get a Int.len) 0))
 
   ;; The number of 32-bit limbs in |a| (0 for zero).
-  (fn limb_count [a:(ptr Int)] -> i32 (get a Int.len))
+  (fn limb_count [a:(ptr Int)] -> i32 (pub) (get a Int.len))
 
   ;; -1, 0, or 1.
-  (fn sign [a:(ptr Int)] -> i32
+  (fn sign [a:(ptr Int)] -> i32 (pub)
     (if (call is_zero a) 0 (if (get a Int.neg) -1 1)))
 
   ;; Makes room for `limbs` limbs (new ones zero).
@@ -73,7 +73,7 @@
     (if (eq (get a Int.len) 0) (put a Int.neg false) (block)))
 
   ;; dst = src (dst keeps its own limbs)
-  (fn assign [dst:(ptr Int) src:(ptr Int)] -> void
+  (fn assign [dst:(ptr Int) src:(ptr Int)] -> void (pub)
     (call reserve dst (get src Int.len))
     (let d:(arr i64) (get dst Int.limbs))
     (let s:(arr i64) (get src Int.limbs))
@@ -83,7 +83,7 @@
     (put dst Int.neg (get src Int.neg)))
 
   ;; Compares magnitudes: -1, 0, or 1 as |a| is less than, equal to, or greater than |b|.
-  (fn compare_magnitude [a:(ptr Int) b:(ptr Int)] -> i32
+  (fn compare_magnitude [a:(ptr Int) b:(ptr Int)] -> i32 (pub)
     (if (neq (get a Int.len) (get b Int.len)) (return (if (lt (get a Int.len) (get b Int.len)) -1 1)) (block))
     (let x:(arr i64) (get a Int.limbs))
     (let y:(arr i64) (get b Int.limbs))
@@ -95,7 +95,7 @@
     0)
 
   ;; -1, 0, or 1 as a is less than, equal to, or greater than b.
-  (fn compare [a:(ptr Int) b:(ptr Int)] -> i32
+  (fn compare [a:(ptr Int) b:(ptr Int)] -> i32 (pub)
     (let sa:i32 (call sign a))
     (let sb:i32 (call sign b))
     (if (neq sa sb) (return (if (lt sa sb) -1 1)) (block))
@@ -153,7 +153,7 @@
     true)
 
   ;; a = a + b * m (|m| < 2^31; a and b may be the same number)
-  (fn add_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void
+  (fn add_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void (pub)
     (req (gt m -2147483648))
     (let mm:i64 (i64.extend_s m))
     (let term_neg:bool (if (lt m 0) (not (get b Int.neg)) (get b Int.neg)))
@@ -165,15 +165,15 @@
     (call trim a))
 
   ;; a = a - b * m (|m| < 2^31)
-  (fn sub_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void
+  (fn sub_mul_small [a:(ptr Int) b:(ptr Int) m:i32] -> void (pub)
     (req (gt m -2147483648))
     (call add_mul_small a b (- 0 m)))
 
-  (fn add [a:(ptr Int) b:(ptr Int)] -> void (call add_mul_small a b 1))
-  (fn sub [a:(ptr Int) b:(ptr Int)] -> void (call add_mul_small a b -1))
+  (fn add [a:(ptr Int) b:(ptr Int)] -> void (pub) (call add_mul_small a b 1))
+  (fn sub [a:(ptr Int) b:(ptr Int)] -> void (pub) (call add_mul_small a b -1))
 
   ;; a = a * m (|m| < 2^31)
-  (fn mul_small [a:(ptr Int) m:i32] -> void
+  (fn mul_small [a:(ptr Int) m:i32] -> void (pub)
     (req (gt m -2147483648))
     (call reserve a (+ (get a Int.len) 1))
     (let x:(arr i64) (get a Int.limbs))
@@ -190,7 +190,7 @@
 
   ;; a = a / d rounded toward zero; returns the remainder, which has a's
   ;; sign (as i32 / and %). 0 < d < 2^31.
-  (fn div_small [a:(ptr Int) d:i32] -> i32
+  (fn div_small [a:(ptr Int) d:i32] -> i32 (pub)
     (req (gt d 0))
     (let x:(arr i64) (get a Int.limbs))
     (let dd:i64 (i64.extend_s d))
@@ -220,7 +220,7 @@
   ;; b > 0 and a quotient below 2^31 (pidigits' digit extraction). The
   ;; quotient is estimated in floating point from the top limbs, taken off
   ;; in one multiply-subtract, then corrected (by at most a step or two).
-  (fn div_small_quotient [a:(ptr Int) b:(ptr Int)] -> i32
+  (fn div_small_quotient [a:(ptr Int) b:(ptr Int)] -> i32 (pub)
     (req (gte (call sign a) 0))
     (req (gt (call sign b) 0))
     (let unit:i32 (- (get b Int.len) 1))
@@ -232,11 +232,11 @@
     q)
 
   ;; a = -a
-  (fn negate [a:(ptr Int)] -> void
+  (fn negate [a:(ptr Int)] -> void (pub)
     (if (call is_zero a) (block) (put a Int.neg (not (get a Int.neg)))))
 
   ;; Appends a in decimal (works on a copy).
-  (fn push_decimal [out:(ptr buf.Buf) a:(ptr Int)] -> void
+  (fn push_decimal [out:(ptr buf.Buf) a:(ptr Int)] -> void (pub)
     (if (call is_zero a) (block (call buf.push_byte out 48) (return)) (block))
     (if (get a Int.neg) (call buf.push_byte out 45) (block))
     (let t:(ptr Int) (call with_capacity (get a Int.len)))
@@ -261,7 +261,7 @@
     (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
 
   ;; Pass count; test_suite.aipl expects 13.
-  (fn run_bigint_tests [] -> i32
+  (fn run_bigint_tests [] -> i32 (pub)
     (let p:i32 0)
     (let f:(ptr Int) (call from_i32 1))
     (loop k 1 30 1 (call mul_small f k))

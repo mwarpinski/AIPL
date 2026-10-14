@@ -99,7 +99,7 @@ fn refs_in_an_imported_module_point_at_its_qualified_functions() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("app.aipl"), "(module app (import lib) (fn main [] -> i32 (call lib.run 6)))").unwrap();
-    std::fs::write(dir.join("lib.aipl"), "(module lib (fn sq [x:i32] -> i32 (* x x)) (fn run [x:i32] -> i32 (call_ref (fn [i32] -> i32) (ref sq) x)))").unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib (fn sq [x:i32] -> i32 (* x x)) (fn run [x:i32] -> i32 (pub) (call_ref (fn [i32] -> i32) (ref sq) x)))").unwrap();
     let module = Resolver::resolve(&dir.join("app.aipl")).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     TypeChecker::new().check_module(&module).unwrap();

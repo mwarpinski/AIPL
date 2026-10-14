@@ -27,7 +27,7 @@
 
   ;; A region inside a buffer: [base, base + len), the first `used` bytes
   ;; handed out.
-  (struct Fixed [base:i32 len:i32 used:i32])
+  (struct Fixed [base:i32 len:i32 used:i32] (pub))
 
   ;; A custom allocator's state and functions, for its state's type C.
   (struct (CustomOf C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)])
@@ -35,15 +35,15 @@
   ;; What an Allocator holds for one, whatever C is: the CustomOf<C> cell's
   ;; address, and the two functions that read it back as a CustomOf<C>
   ;; (alloc_through, free_through), which only custom makes.
-  (struct Custom [cell:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)])
+  (struct Custom [cell:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] (pub))
 
   (union Allocator [(heap h:(ptr heap.Heap))
                     (arena r:(ptr arena.Arena))
                     (fixed f:(ptr Fixed))
-                    (custom c:(ptr Custom))])
+                    (custom c:(ptr Custom))] (pub))
 
   ;; Unsafe to call: the allocator's functions hand out raw addresses.
-  (fn (custom C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)] -> Allocator (unsafe)
+  (fn (custom C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)] -> Allocator (pub) (unsafe)
     (let cell:(ptr (CustomOf C)) (new (CustomOf C)))
     (put cell (CustomOf C) state state)
     (put cell (CustomOf C) alloc_fn alloc_fn)
@@ -62,12 +62,13 @@
     (let x:(ptr (CustomOf C)) (ptr.cast (CustomOf C) cell))
     (call_ref (fn [C i32 i32] -> void) (get x (CustomOf C) free_fn) (get x (CustomOf C) state) p n))
 
-  (fn of_heap [h:(ptr heap.Heap)] -> Allocator (make Allocator.heap h))
-  (fn of_arena [r:(ptr arena.Arena)] -> Allocator (make Allocator.arena r))
+  (fn of_heap [h:(ptr heap.Heap)] -> Allocator (pub) (make Allocator.heap h))
+  (fn of_arena [r:(ptr arena.Arena)] -> Allocator (pub) (make Allocator.arena r))
 
   ;; An allocator handing out the len bytes at base (from mem.alloc, or
   ;; from another allocator), 8 bytes at a time.
-  (fn fixed [base:i32 len:i32] -> Allocator
+  ;; Unsafe to call: the allocator hands out whatever memory base names.
+  (fn fixed [base:i32 len:i32] -> Allocator (pub) (unsafe)
     (req (gte len 0))
     (let f:(ptr Fixed) (new Fixed))
     (put f Fixed.base base)
@@ -80,7 +81,7 @@
   ;; holding it. Like any heap it is not safe to use from two threads at once.
   (struct Shared [a:Allocator])
 
-  (fn default [] -> Allocator
+  (fn default [] -> Allocator (pub)
     (unsafe (if (eq (mem.load32 52) 0)
         (block
           (let s:(ptr Shared) (new Shared))
@@ -92,7 +93,7 @@
   ;; ===== Raw bytes =====
 
   ;; n zeroed bytes, 8-aligned.
-  (fn raw [a:Allocator n:i32] -> i32
+  (fn raw [a:Allocator n:i32] -> i32 (pub)
     (req (gt n 0))
     (match a
       (Allocator.heap [h] (call heap.raw h n))
@@ -101,7 +102,8 @@
       (Allocator.custom [c] (call custom_raw c n))))
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
-  (fn free_raw [a:Allocator p:i32 n:i32] -> void
+  ;; Unsafe to call: p must be what raw returned for n bytes.
+  (fn free_raw [a:Allocator p:i32 n:i32] -> void (pub) (unsafe)
     (unsafe (match a
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))
@@ -141,21 +143,21 @@
   ;; ===== Typed =====
 
   ;; A zeroed T.
-  (fn (create T) [a:Allocator] -> (ptr T) (where (struct T))
+  (fn (create T) [a:Allocator] -> (ptr T) (pub) (where (struct T))
     (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
-  (fn (destroy T) [a:Allocator p:(ptr T)] -> void (where (struct T))
-    (call free_raw a (ptr.addr p) (sizeof T)))
+  (fn (destroy T) [a:Allocator p:(ptr T)] -> void (pub) (where (struct T))
+    (unsafe (call free_raw a (ptr.addr p) (sizeof T))))
 
   ;; n zeroed Ts, laid out like (arr.new T n).
-  (fn (array T) [a:Allocator n:i32] -> (arr T)
+  (fn (array T) [a:Allocator n:i32] -> (arr T) (pub)
     (req (gte n 0))
     (unsafe (let base:i32 (call raw a (checked.add 4 (checked.mul n (sizeof T)))))
     (mem.store32 base n)
     (arr.cast T (+ base 4))))
 
-  (fn (free_array T) [a:Allocator xs:(arr T)] -> void
-    (call free_raw a (- (arr.addr xs) 4) (+ 4 (* (arr.len xs) (sizeof T)))))
+  (fn (free_array T) [a:Allocator xs:(arr T)] -> void (pub)
+    (unsafe (call free_raw a (- (arr.addr xs) 4) (+ 4 (* (arr.len xs) (sizeof T))))))
 
   (struct Pair [left:i32 right:i64])
 
@@ -181,7 +183,7 @@
     (call heap.free_raw (get k Counting.h) p n))
 
   ;; Pass count; test_suite.aipl expects 7.
-  (fn run_alloc_tests [] -> i32
+  (fn run_alloc_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     ;; the same code works with every kind of allocator
     (let h:(ptr heap.Heap) (call heap.make))

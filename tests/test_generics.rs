@@ -56,21 +56,21 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
 }
 
 const BOX: &str = r#"(module box
-  (struct (Box T) [value:T next:(ptr (Box T))])
-  (fn (make T) [v:T] -> (ptr (Box T))
+  (struct (Box T) [value:T next:(ptr (Box T))] (pub))
+  (fn (make T) [v:T] -> (ptr (Box T)) (pub)
     (let b:(ptr (Box T)) (new (Box T)))
     (put b (Box T) value v)
     (put b (Box T) next (ptr.null (Box T)))
     b)
-  (fn (value T) [b:(ptr (Box T))] -> T (get b (Box T) value))
+  (fn (value T) [b:(ptr (Box T))] -> T (pub) (get b (Box T) value))
   ;; a generic calling a generic, and a two-parameter struct
-  (struct (Pair A B) [first:A second:B])
+  (struct (Pair A B) [(read first:A) (read second:B)] (pub))
   (fn (pair A B) [a:A b:B] -> (ptr (Pair A B))
     (let p:(ptr (Pair A B)) (new (Pair A B)))
     (put p (Pair A B) first a)
     (put p (Pair A B) second b)
     p)
-  (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B))))
+  (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B)))) (pub)
     (call (make (ptr (Pair A B))) (call (pair A B) a b))))"#;
 
 const MAIN: &str = r#"(module main
@@ -169,8 +169,8 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
                    (struct Item [x:i32 y:i64])
                    (struct (Wrap T) [inner:(ptr T)] (where (struct T)))
                    (fn (make T) [] -> (ptr T) (where (struct T)) (new T))
-                   (fn use_own [] -> i32 (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
-                   (fn nested [] -> i32
+                   (fn use_own [] -> i32 (pub) (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
+                   (fn nested [] -> i32 (pub)
                      (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))
                      (put w (Wrap Item) inner (call (make Item)))
                      (get (get w (Wrap Item) inner) Item.x)))",
@@ -223,9 +223,9 @@ const UNIONS: &str = r#"(module main
       (else 4))))"#;
 
 const SHAPES: &str = r#"(module shapes
-  (struct Point [x:i32 y:i32])
-  (union (Either L R) [(left value:L) (right value:R)])
-  (fn right_point [x:i32] -> (Either i32 (ptr Point))
+  (struct Point [(read x:i32) y:i32] (pub))
+  (union (Either L R) [(left value:L) (right value:R)] (pub))
+  (fn right_point [x:i32] -> (Either i32 (ptr Point)) (pub)
     (let p:(ptr Point) (new Point))
     (put p Point.x x)
     (make (Either i32 (ptr Point)) right p)))"#;
@@ -277,7 +277,7 @@ fn members_named_like_a_template_keep_their_names() {
                    (enum E [red (pick2 5)])
                    (fn (pick T) [x:T] -> T x)
                    (fn (pick2 T) [x:T] -> T x)
-                   (fn use_both [] -> i32
+                   (fn use_both [] -> i32 (pub)
                      (match (make U.pick (call (pick i32) 3))
                        (U.pick [n] (+ n (enum.ord E.pick2)))
                        (U.none (call (pick2 i32) 0)))))",

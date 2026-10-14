@@ -17,11 +17,11 @@
   (import str)
   (import buf)
 
-  (struct Layout [data_vaddr:i32 data_offset:i32 code_vaddr:i32 code_offset:i32])
+  (struct Layout [data_vaddr:i32 data_offset:i32 (read code_vaddr:i32) code_offset:i32] (pub))
 
   (fn page [] -> i32 4096)
   (fn base_vaddr [] -> i32 4194304)   ;; 0x400000, the conventional start
-  (fn data_vaddr [] -> i32 4198400)   ;; 0x401000
+  (fn data_vaddr [] -> i32 (pub) 4198400)   ;; 0x401000
 
   (fn align_page [n:i32] -> i32
     (req (gte n 0))
@@ -31,7 +31,7 @@
   ;; bytes after them. The code starts on the first page past both (past
   ;; data_vaddr's page when both are empty, so the segments never share an
   ;; address; Linux maps nothing for an empty segment).
-  (fn layout [data_len:i32 bss:i32] -> (ptr Layout)
+  (fn layout [data_len:i32 bss:i32] -> (ptr Layout) (pub)
     (req (and (gte data_len 0) (gte bss 0)))
     (let l:(ptr Layout) (new Layout))
     (put l Layout.data_vaddr (call data_vaddr))
@@ -65,7 +65,7 @@
 
   ;; The executable: `code` runs from byte `entry` of the code; `data` is
   ;; loaded at data_vaddr with `bss` zero bytes after it.
-  (fn image [code:(ptr str.Bytes) entry:i32 data:(ptr str.Bytes) bss:i32] -> (ptr buf.Buf)
+  (fn image [code:(ptr str.Bytes) entry:i32 data:(ptr str.Bytes) bss:i32] -> (ptr buf.Buf) (pub)
     (req (and (gte entry 0) (lt entry (get code str.Bytes.len))))
     (let dlen:i32 (get data str.Bytes.len))
     (let clen:i32 (get code str.Bytes.len))
@@ -109,7 +109,7 @@
     (bitor (call at8 b i) (bitor (shl (call at8 b (+ i 1)) 8) (bitor (shl (call at8 b (+ i 2)) 16) (shl (call at8 b (+ i 3)) 24)))))
 
   ;; Pass count; test_suite.aipl expects 4.
-  (fn run_elf_tests [] -> i32
+  (fn run_elf_tests [] -> i32 (pub)
     (let p:i32 0)
     ;; layout: 10 bytes of data and 5000 of bss push the code two pages on
     (let l:(ptr Layout) (call layout 10 5000))
