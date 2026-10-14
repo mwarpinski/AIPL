@@ -1,0 +1,66 @@
+;; std/thread: starting a thread with a typed context (AIPL_SPEC.md 4.D).
+;; thread.spawn hands its worker one i32; spawn_with hands it a value of any
+;; type, typically a pointer to the struct the worker reads and writes:
+;;
+;;   (fn sum_part [p:(ptr Part)] -> i32 ...)
+;;   (let h:i32 (unsafe (call (thread.spawn_with (ptr Part)) (ref sum_part) part)))
+;;   (let total:i32 (unsafe (thread.join h)))
+;;
+;; AIPL has no closures: the context argument is how a worker sees data of
+;; its own. Threads share memory and nothing checks for data races, so
+;; starting one is unsafe (AIPL_SPEC.md 3); guard shared data with atomics or
+;; a lock.
+(module thread
+  (import alloc)
+
+  ;; A worker and its context, handed to the new thread as one address
+  ;; (only spawn_with makes them), and the allocator that frees it.
+  (struct (Job C) [worker:(fn [C] -> i32) ctx:C a:alloc.Allocator])
+
+  ;; Runs (worker ctx) on a new thread; returns its handle for thread.join,
+  ;; which gives the worker's result.
+  (fn (spawn_with C) [worker:(fn [C] -> i32) ctx:C] -> i32 (unsafe)
+    (let a:alloc.Allocator (call alloc.default))
+    (let j:(ptr (Job C)) (call (alloc.create (Job C)) a))
+    (put j (Job C) worker worker)
+    (put j (Job C) ctx ctx)
+    (put j (Job C) a a)
+    (thread.spawn (ref (run C)) (ptr.addr j)))
+
+  ;; On the new thread: the job back from its address, freed, then run.
+  (fn (run C) [job:i32] -> i32 (unsafe)
+    (let j:(ptr (Job C)) (ptr.cast (Job C) job))
+    (let w:(fn [C] -> i32) (get j (Job C) worker))
+    (let c:C (get j (Job C) ctx))
+    (call (alloc.destroy (Job C)) (get j (Job C) a) j)
+    (call_ref (fn [C] -> i32) w c))
+
+  ;; ===== Tests =====
+
+  ;; Sums from..to into sum (each worker its own Part: no sharing).
+  (struct Part [from:i32 to:i32 sum:i32])
+  (fn sum_part [p:(ptr Part)] -> i32
+    (let s:i32 0)
+    (loop i (get p Part.from) (get p Part.to) 1 (set! s (+ s i)))
+    (put p Part.sum s)
+    s)
+
+  (fn part [from:i32 to:i32] -> (ptr Part)
+    (let p:(ptr Part) (new Part))
+    (put p Part.from from)
+    (put p Part.to to)
+    p)
+
+  ;; Pass count; test_suite.aipl expects 2.
+  (fn run_thread_tests [] -> i32
+    (unsafe (let p:i32 0)
+    (let lo:(ptr Part) (call part 1 500))
+    (let hi:(ptr Part) (call part 501 1000))
+    (let a:i32 (call (spawn_with (ptr Part)) (ref sum_part) lo))
+    (let b:i32 (call (spawn_with (ptr Part)) (ref sum_part) hi))
+    (let ra:i32 (thread.join a))
+    (let rb:i32 (thread.join b))
+    ;; each worker's result comes back through join, and through its context
+    (if (eq (+ ra rb) 500500) (set! p (+ p 1)) (block))
+    (if (and (eq (get lo Part.sum) ra) (eq (get hi Part.sum) rb)) (set! p (+ p 1)) (block))
+    p)))

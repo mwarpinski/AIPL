@@ -433,6 +433,22 @@ impl Names<'_> {
                             continue;
                         }
                     }
+                    // a union's variants and an enum's members, [(circle r:f64) ...]:
+                    // the head of each is a member's name, even one a template
+                    // of this module also has
+                    if matches!(head.as_deref(), Some("union" | "enum")) && i == 2 && !child.is_paren() {
+                        for member in child.items_mut().unwrap() {
+                            match member.items_mut() {
+                                Some(parts) => {
+                                    for part in parts.iter_mut().skip(1) {
+                                        self.walk(part, 0);
+                                    }
+                                }
+                                None => self.walk(member, 0),
+                            }
+                        }
+                        continue;
+                    }
                     // the functions of an interface or an implementation: their
                     // names are the interface's, not this module's. An
                     // implementation's are qualified with this module, so the

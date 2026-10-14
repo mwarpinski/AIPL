@@ -19,7 +19,7 @@ and the 2026-10 audit.
 | `aipl_src/resolver.aipl`, `generics.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, generics expansion, tokenizer and parser, wasm code generator, and the command that chains them |
 | `aipl_src/native/` | The Linux x86-64 backend: `native` (wasm in, executable out), `wasm_reader`, `lower` (wasm to machine code), `x64` (encoder), `elf`, `runtime` (start-up, traps), `wasi` (the WASI functions as system calls) |
 | `src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
-| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` (hash map over any `cmp.Hash` key), `cmp` (`Eq`, `Ord`, `Hash` interfaces), `option` (`(option.Option T)`), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers); found by `(import io)` from anywhere |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` (hash map over any `cmp.Hash` key), `cmp` (`Eq`, `Ord`, `Hash` interfaces), `option` (`(option.Option T)`), `thread` (`spawn_with`, a typed context), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
@@ -37,7 +37,7 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 309 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 311 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -57,7 +57,7 @@ Expected AIPL suite output (24 groups):
 [PASS] native/x64: instruction encodings vs GNU as (9 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
-[PASS] std/vec: generic list + stable sort (6 tests)
+[PASS] std/vec: generic list + stable sort (7 tests)
 [PASS] std/map: generic hash map over cmp.Hash keys (8 tests)
 [PASS] std/buf: string builder (3 tests)
 [PASS] std/time: durations and the clock (7 tests)

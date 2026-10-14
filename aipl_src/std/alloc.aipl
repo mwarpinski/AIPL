@@ -8,12 +8,13 @@
 ;;   (call (fill i32) (call alloc.of_heap h) 10 7)             ;; a heap of your own
 ;;   (call (fill i32) (call alloc.of_arena ar) 10 7)           ;; freed by arena.reset
 ;;   (call (fill i32) (call alloc.fixed (mem.alloc 4096) 4096) 10 7)  ;; inside a buffer
-;;   (call (fill i32) (call alloc.custom state (ref my_alloc) (ref my_free)) 10 7)
+;;   (call (fill i32) (call (alloc.custom (ptr Pool)) pool (ref my_alloc) (ref my_free)) 10 7)
 ;;
-;; A custom allocator is a program's own: my_alloc [state n] -> address of
-;; n bytes, 8-aligned; my_free [state p n]. `state` is whatever it needs
-;; (an address, typically of a struct). raw zeroes what it returns, so a
-;; custom allocator need not.
+;; A custom allocator is a program's own: my_alloc [state:C n] -> address
+;; of n bytes, 8-aligned; my_free [state:C p n]. The state is a value of any
+;; type C, typically a pointer to the allocator's own struct, and is passed
+;; to both as that type. raw zeroes what it returns, so a custom allocator
+;; need not.
 ;;
 ;; Make an Allocator once and pass it around: each of_heap, of_arena, and
 ;; fixed makes a small cell that is never freed. What a free does depends
@@ -28,20 +29,38 @@
   ;; handed out.
   (struct Fixed [base:i32 len:i32 used:i32])
 
-  ;; A custom allocator's functions and state.
-  (struct Custom [state:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)])
+  ;; A custom allocator's state and functions, for its state's type C.
+  (struct (CustomOf C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)])
+
+  ;; What an Allocator holds for one, whatever C is: the CustomOf<C> cell's
+  ;; address, and the two functions that read it back as a CustomOf<C>
+  ;; (alloc_through, free_through), which only custom makes.
+  (struct Custom [cell:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)])
 
   (union Allocator [(heap h:(ptr heap.Heap))
                     (arena r:(ptr arena.Arena))
                     (fixed f:(ptr Fixed))
                     (custom c:(ptr Custom))])
 
-  (fn custom [state:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] -> Allocator (unsafe)
+  ;; Unsafe to call: the allocator's functions hand out raw addresses.
+  (fn (custom C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)] -> Allocator (unsafe)
+    (let cell:(ptr (CustomOf C)) (new (CustomOf C)))
+    (put cell (CustomOf C) state state)
+    (put cell (CustomOf C) alloc_fn alloc_fn)
+    (put cell (CustomOf C) free_fn free_fn)
     (let c:(ptr Custom) (new Custom))
-    (put c Custom.state state)
-    (put c Custom.alloc_fn alloc_fn)
-    (put c Custom.free_fn free_fn)
+    (put c Custom.cell (ptr.addr cell))
+    (put c Custom.alloc_fn (ref (alloc_through C)))
+    (put c Custom.free_fn (ref (free_through C)))
     (make Allocator.custom c))
+
+  ;; The custom allocator's own functions, given its CustomOf<C> cell.
+  (fn (alloc_through C) [cell:i32 n:i32] -> i32 (unsafe)
+    (let x:(ptr (CustomOf C)) (ptr.cast (CustomOf C) cell))
+    (call_ref (fn [C i32] -> i32) (get x (CustomOf C) alloc_fn) (get x (CustomOf C) state) n))
+  (fn (free_through C) [cell:i32 p:i32 n:i32] -> void (unsafe)
+    (let x:(ptr (CustomOf C)) (ptr.cast (CustomOf C) cell))
+    (call_ref (fn [C i32 i32] -> void) (get x (CustomOf C) free_fn) (get x (CustomOf C) state) p n))
 
   (fn of_heap [h:(ptr heap.Heap)] -> Allocator (make Allocator.heap h))
   (fn of_arena [r:(ptr arena.Arena)] -> Allocator (make Allocator.arena r))
@@ -87,11 +106,11 @@
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))
       (Allocator.fixed [f] (call fixed_free f p n))
-      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.state) p n)))))
+      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n)))))
 
   ;; n bytes from a custom allocator, zeroed here.
   (fn custom_raw [c:(ptr Custom) n:i32] -> i32
-    (unsafe (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.state) n)))
+    (unsafe (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.cell) n)))
     (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
     p))
 
@@ -154,12 +173,10 @@
 
   ;; A custom allocator for the tests: a heap that counts its calls.
   (struct Counting [h:(ptr heap.Heap) allocs:i32 frees:i32])
-  (fn counting_alloc [state:i32 n:i32] -> i32 (unsafe)
-    (let k:(ptr Counting) (ptr.cast Counting state))
+  (fn counting_alloc [k:(ptr Counting) n:i32] -> i32
     (put k Counting.allocs (+ (get k Counting.allocs) 1))
     (call heap.raw (get k Counting.h) n))
-  (fn counting_free [state:i32 p:i32 n:i32] -> void (unsafe)
-    (let k:(ptr Counting) (ptr.cast Counting state))
+  (fn counting_free [k:(ptr Counting) p:i32 n:i32] -> void (unsafe)
     (put k Counting.frees (+ (get k Counting.frees) 1))
     (call heap.free_raw (get k Counting.h) p n))
 
@@ -192,7 +209,7 @@
     ;; a custom allocator gets every allocation and free
     (let k:(ptr Counting) (new Counting))
     (put k Counting.h (call heap.make))
-    (let c:Allocator (call custom (ptr.addr k) (ref counting_alloc) (ref counting_free)))
+    (let c:Allocator (call (custom (ptr Counting)) k (ref counting_alloc) (ref counting_free)))
     (if (and (call round_trip c) (and (eq (get k Counting.allocs) 2) (eq (get k Counting.frees) 2)))
         (set! p (+ p 1))
         (block))
