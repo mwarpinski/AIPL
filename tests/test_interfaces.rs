@@ -166,3 +166,63 @@ fn malformed_interfaces_and_implementations_are_errors_in_both_resolvers() {
         assert_eq!(aipl, rust, "{src}");
     }
 }
+
+/// Where clauses (IC2): a template asks for implementations, and every use
+/// of it is checked for them.
+const WHERE: &str = r#"(module main
+  (import cmp)
+  (struct (Set K) [items:(arr K) n:i32] (where (cmp.Eq K)))
+  (fn (contains K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K))
+    (loop i 0 (- (arr.len xs) 1) 1
+      (if (call (cmp.Eq.same K) (arr.get K xs i) x) (return true) (block)))
+    false)
+  (fn (largest T) [xs:(arr T)] -> T (where (cmp.Ord T)) (where (cmp.Eq T)) (req (gt (arr.len xs) 0))
+    (let best:T (arr.get T xs 0))
+    (loop i 1 (- (arr.len xs) 1) 1
+      (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
+    best)
+  (fn main [] -> i32
+    (let xs:(arr i64) (arr.new i64 3))
+    (arr.set i64 xs 1 7i64)
+    (let s:(ptr (Set str)) (new (Set str)))
+    (put s (Set str) n 100)
+    (+ (get s (Set str) n) (+ (if (call (contains i64) xs 7i64) 10 0) (i32.wrap (call (largest i64) xs))))))"#;
+
+#[test]
+fn where_clauses_work_in_both_backends() {
+    let entry = write_program("where", &[("main.aipl", WHERE)]);
+    assert_eq!(run_both(&entry, "main"), 117);
+    assert_aipl_resolver_agrees(&entry);
+}
+
+#[test]
+fn where_clauses_are_checked_in_both_resolvers() {
+    let cases: &[(&str, &str)] = &[
+        // a use without the implementation asked for
+        ("(module m (import cmp) (struct P [x:i32]) (fn (has K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K)) false) (fn main [] -> i32 (if (call (has (ptr P)) (arr.new (ptr P) 1) (ptr.null P)) 1 0)))",
+         "1:135: has<ptr<P>> needs (cmp.Eq (ptr P)): write (impl (cmp.Eq (ptr P)) ...)"),
+        ("(module m (import cmp) (struct P [x:i32]) (struct (S K) [k:K] (where (cmp.Hash K))) (fn main [] -> i32 (sizeof (S (ptr P)))))",
+         "1:112: S<ptr<P>> needs (cmp.Hash (ptr P)): write (impl (cmp.Hash (ptr P)) ...)"),
+        // where clauses only on templates, and right after the signature
+        ("(module m (import cmp) (fn f [x:i32] -> i32 (where (cmp.Eq i32)) x) (fn main [] -> i32 0))",
+         "1:45: only a generic function, struct, or union takes where clauses"),
+        ("(module m (import cmp) (fn (f T) [x:T] -> T (req true) (where (cmp.Eq T)) x) (fn main [] -> i32 (call (f i32) 1)))",
+         "1:56: where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"),
+        ("(module m (import cmp) (struct (S K) (where (cmp.Eq K)) [k:K]) (fn main [] -> i32 0))",
+         "1:38: where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"),
+        // the clause's own form
+        ("(module m (import cmp) (fn (f T) [x:T] -> T (where cmp.Eq) x) (fn main [] -> i32 (call (f i32) 1)))",
+         "1:45: a where clause is written (where (Interface T)), T a type parameter of this generic"),
+        ("(module m (import cmp) (fn (f T) [x:T] -> T (where (cmp.Eq U)) x) (fn main [] -> i32 (call (f i32) 1)))",
+         "1:45: a where clause is written (where (Interface T)), T a type parameter of this generic"),
+        ("(module m (fn (f T) [x:T] -> T (where (Nope T)) x) (fn main [] -> i32 (call (f i32) 1)))",
+         "1:32: 'Nope' is not an interface"),
+    ];
+    for (src, want) in cases {
+        let entry = write_program("where_err", &[("main.aipl", src)]);
+        let rust = Resolver::resolve(&entry).map(|_| ()).expect_err(src);
+        assert!(rust.ends_with(want), "{src}\n  expected: {want}\n  rust: {rust}");
+        let aipl = aipl_core::selfhost::resolve_with_aipl(&entry).map(|_| ()).expect_err(src);
+        assert_eq!(aipl, rust, "{src}");
+    }
+}

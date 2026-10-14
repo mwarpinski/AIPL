@@ -36,8 +36,11 @@ const RUNAWAY: &str = "a generic probably instantiates itself with ever larger t
 
 struct Template {
     params: Vec<String>,
+    /// The template without its where clauses.
     item: Item,
     is_struct: bool,
+    /// `(where (Interface T))`: the clause, its interface, and T's index.
+    wheres: Vec<(Sx, String, usize)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -75,9 +78,16 @@ pub fn expand(prog: FlatProgram) -> Result<FlatProgram, String> {
                     if templates.contains_key(&name) {
                         return Err(at(&item.file, &item.sx, &format!("generic '{}' is defined twice", name)));
                     }
-                    templates.insert(name, Template { params, item, is_struct });
+                    let mut item = item;
+                    let wheres = take_wheres(&mut item, &params)?;
+                    templates.insert(name, Template { params, item, is_struct, wheres });
                 }
-                None => work.push((item, if is_struct { Kind::Struct } else { Kind::Fn })),
+                None => {
+                    if let Some(w) = misplaced_where(&item.sx, 2) {
+                        return Err(at(&item.file, w, "only a generic function, struct, or union takes where clauses"));
+                    }
+                    work.push((item, if is_struct { Kind::Struct } else { Kind::Fn }))
+                }
             }
         }
     }
@@ -248,6 +258,19 @@ fn rewrite(
         return Err(at(foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file), sx, &format!("generic instance name longer than {} characters: {}", MAX_NAME, RUNAWAY)));
     }
     if made.insert(name.clone()) {
+        // the where clauses: each type argument has the implementations asked for
+        for (clause, iname, k) in &t.wheres {
+            if !ifaces.defs.contains_key(iname) {
+                return Err(at(&t.item.file, clause, &format!("'{}' is not an interface", iname)));
+            }
+            let arg = &args[*k];
+            let key = format!("{}<{}>", iname, named[*k]);
+            if !ifaces.impls.contains(&key) {
+                let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file);
+                let wanted = format!("({} {})", iname, render(arg));
+                return Err(at(place, sx, &format!("{} needs {}: write (impl {} ...)", name, wanted, wanted)));
+            }
+        }
         let mut inst = t.item.sx.clone();
         let subst: HashMap<&str, &Sx> = t.params.iter().map(|p| p.as_str()).zip(args.iter()).collect();
         substitute(&mut inst, &subst);
@@ -540,4 +563,40 @@ fn render(sx: &Sx) -> String {
             s + &close.kind.to_string()
         }
     }
+}
+
+/// Takes a template's where clauses out of it: `(where (Interface T))`,
+/// right after its signature (a function's return type, a struct's fields,
+/// a union's variants), T one of its type parameters.
+fn take_wheres(item: &mut Item, params: &[String]) -> Result<Vec<(Sx, String, usize)>, String> {
+    let start = match item.sx.head() {
+        Some("fn") => 5,
+        Some("struct" | "union") => 3,
+        _ => usize::MAX,
+    };
+    let file = item.file.clone();
+    let parts = item.sx.items_mut().unwrap();
+    let mut wheres = Vec::new();
+    while start < parts.len() && parts[start].head() == Some("where") {
+        let clause = parts.remove(start);
+        let req = clause.items().get(1).filter(|_| clause.items().len() == 2);
+        let found = req.filter(|r| r.is_paren() && r.items().len() == 2).and_then(|r| {
+            let iname = r.head()?;
+            let k = params.iter().position(|p| Some(p.as_str()) == r.items()[1].symbol())?;
+            Some((iname.to_string(), k))
+        });
+        let Some((iname, k)) = found else {
+            return Err(at(&file, &clause, "a where clause is written (where (Interface T)), T a type parameter of this generic"));
+        };
+        wheres.push((clause, iname, k));
+    }
+    if let Some(w) = misplaced_where(&item.sx, 2) {
+        return Err(at(&file, w, "where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"));
+    }
+    Ok(wheres)
+}
+
+/// The first `(where ...)` among an item's parts from index `from`.
+fn misplaced_where(sx: &Sx, from: usize) -> Option<&Sx> {
+    sx.items().iter().skip(from).find(|p| p.head() == Some("where"))
 }
