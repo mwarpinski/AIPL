@@ -99,7 +99,7 @@ const SHAPES: &str = r#"(module shapes
   (import cmp)
   (struct Square [side:i32])
   (impl (cmp.Eq (ptr Square)) (fn same [a:(ptr Square) b:(ptr Square)] -> bool (eq (get a Square.side) (get b Square.side))))
-  (fn sides [] -> i32
+  (fn sides [] -> i32 (pub)
     (let s:(ptr Square) (new Square))
     (if (call (cmp.Eq.same (ptr Square)) s s) 4 3)))"#;
 
@@ -159,7 +159,7 @@ fn malformed_interfaces_and_implementations_are_errors_in_both_resolvers() {
         (r#"(module m (import cmp) (import geo) (impl (cmp.Eq (ptr geo.Point)) (fn same [a:(ptr geo.Point) b:(ptr geo.Point)] -> bool true)) (fn main [] -> i32 0))"#, "this implementation must be in the module that defines cmp.Eq or the one that defines geo.Point"),
     ];
     for (src, want) in cases {
-        let entry = write_program("err", &[("main.aipl", src), ("geo.aipl", "(module geo (struct Point [x:i32]))")]);
+        let entry = write_program("err", &[("main.aipl", src), ("geo.aipl", "(module geo (struct Point [x:i32] (pub)))")]);
         let rust = Resolver::resolve(&entry).map(|_| ()).expect_err(src);
         assert!(rust.ends_with(want), "{src}\n  expected: {want}\n  rust: {rust}");
         let aipl = aipl_core::selfhost::resolve_with_aipl(&entry).map(|_| ()).expect_err(src);

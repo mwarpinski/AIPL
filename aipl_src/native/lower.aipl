@@ -66,12 +66,12 @@
   (import elf)
 
   ;; A call whose 32-bit displacement (at `at`) must point at function `func`.
-  (struct Fixup [at:i32 func:i32])
+  (struct Fixup [(read at:i32) (read func:i32)] (pub))
 
   ;; A trap reason's text in the data segment; frames: whether the trap
   ;; prints the call chain after it (a wasm trap does; the exit-status error
   ;; is not a trap under wasmtime, so it does not).
-  (struct Reason [addr:i32 len:i32 frames:bool])
+  (struct Reason [addr:i32 len:i32 (pub frames:bool)] (pub))
 
   ;; An open label. kind: 0 block, 1 loop, 2 if, 3 the function body.
   ;; arity: the label's result count (0 or 1). height: the value stack depth
@@ -92,25 +92,25 @@
   ;; that print their call chain). stack_limit_off: where the thread's stack
   ;; limit is in its FS block (after the globals); every function's prologue
   ;; traps with stack_exhausted rather than run its frame below the limit.
-  (struct L [code:(ptr buf.Buf) fixups:(ptr (vec.Vec (ptr Fixup)))
-             fimports:(ptr (vec.Vec (ptr wasm_reader.Import)))
-             data:(ptr buf.Buf) trap_routine:i32 backtrace_routine:i32
+  (struct L [(read code:(ptr buf.Buf)) (read fixups:(ptr (vec.Vec (ptr Fixup))))
+             (read fimports:(ptr (vec.Vec (ptr wasm_reader.Import))))
+             (read data:(ptr buf.Buf)) (pub trap_routine:i32) (pub backtrace_routine:i32)
              div_zero:(ptr Reason) overflow:(ptr Reason) unreachable:(ptr Reason)
-             out_of_bounds:(ptr Reason) mem_cell:i32 mem_max:i32
+             out_of_bounds:(ptr Reason) (pub mem_cell:i32) (pub mem_max:i32)
              unaligned:(ptr Reason) wait_unshared:(ptr Reason) bad_conversion:(ptr Reason)
-             table_addr:i32 table_size:i32 canon_types:(ptr (vec.Vec i32))
+             (pub table_addr:i32) (pub table_size:i32) (read canon_types:(ptr (vec.Vec i32)))
              table_oob:(ptr Reason) null_element:(ptr Reason) bad_signature:(ptr Reason)
-             shared:bool seg_addrs:(ptr (vec.Vec i32)) seg_lens:(ptr (vec.Vec i32))
+             (pub shared:bool) (read seg_addrs:(ptr (vec.Vec i32))) (read seg_lens:(ptr (vec.Vec i32)))
              labels:(ptr (vec.Vec (ptr Label))) depth:i32 dead:bool nlocals:i32 cached:bool
-             failed:bool msg:(ptr buf.Buf)
+             (pub failed:bool) (read msg:(ptr buf.Buf))
              reg_of:(arr i32) nregs:i32 nsaved:i32 frame_locals:i32
-             stack_limit_off:i32 stack_exhausted:(ptr Reason)
-             positions:(ptr (vec.Vec (ptr NPos)))])
+             (pub stack_limit_off:i32) stack_exhausted:(ptr Reason)
+             (read positions:(ptr (vec.Vec (ptr NPos))))] (pub))
 
   ;; From code offset `code` on, the machine code is at file:line:col (the
   ;; module's line table, wasm_reader.LinePos); file -1: no position (each
   ;; function starts with one, so a lookup never reaches the function before).
-  (struct NPos [code:i32 file:i32 line:i32 col:i32])
+  (struct NPos [(read code:i32) (read file:i32) (read line:i32) (read col:i32)] (pub))
 
   (fn note_position [l:(ptr L) file:i32 line:i32 col:i32] -> void
     (let p:(ptr NPos) (new NPos))
@@ -120,7 +120,7 @@
     (put p NPos.col col)
     (call (vec.push (ptr NPos)) (get l L.positions) p))
 
-  (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L)
+  (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L) (pub)
     (let l:(ptr L) (new L))
     (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) (call alloc.default) 16))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
@@ -160,18 +160,18 @@
     l)
 
   ;; Appends `text` to the data; returns its address once loaded.
-  (fn data_text [l:(ptr L) text:str] -> i32
+  (fn data_text [l:(ptr L) text:str] -> i32 (pub)
     (let at:i32 (+ (call elf.data_vaddr) (call buf.len (get l L.data))))
     (call buf.push_str (get l L.data) text)
     at)
 
   ;; Appends raw bytes to the data; returns their address once loaded.
-  (fn data_bytes [l:(ptr L) b:(ptr str.Bytes)] -> i32
+  (fn data_bytes [l:(ptr L) b:(ptr str.Bytes)] -> i32 (pub)
     (let at:i32 (+ (call elf.data_vaddr) (call buf.len (get l L.data))))
     (call buf.push_bytes (get l L.data) b)
     at)
 
-  (fn reason [l:(ptr L) text:str] -> (ptr Reason)
+  (fn reason [l:(ptr L) text:str] -> (ptr Reason) (pub)
     (let r:(ptr Reason) (new Reason))
     (put r Reason.addr (call data_text l text))
     (put r Reason.len (str.len text))
@@ -212,7 +212,7 @@
     (call emit_trap l (get l L.unreachable)))
 
   ;; Traps with reason `r` when condition `cc` holds (after a compare).
-  (fn emit_trap_if [l:(ptr L) cc:i32 r:(ptr Reason)] -> void
+  (fn emit_trap_if [l:(ptr L) cc:i32 r:(ptr Reason)] -> void (pub)
     (let c:(ptr buf.Buf) (get l L.code))
     ;; jump over the trap on the opposite condition (cc xor 1)
     (let skip:i32 (call x64.jcc c (^ cc 1)))
@@ -252,7 +252,7 @@
         (block)))
 
   ;; `call` to function index `func`, patched once every function is placed.
-  (fn emit_call [l:(ptr L) func:i32] -> void
+  (fn emit_call [l:(ptr L) func:i32] -> void (pub)
     (let f:(ptr Fixup) (new Fixup))
     (put f Fixup.at (call x64.call_rel (get l L.code)))
     (put f Fixup.func func)
@@ -283,7 +283,7 @@
       (if (neq (call (vec.at i32) a i) (call (vec.at i32) b i)) (return false) (block)))
     true)
 
-  (fn n_fimports [l:(ptr L)] -> i32 (call (vec.len (ptr wasm_reader.Import)) (get l L.fimports)))
+  (fn n_fimports [l:(ptr L)] -> i32 (pub) (call (vec.len (ptr wasm_reader.Import)) (get l L.fimports)))
 
   ;; The type of function index `func`.
   (fn func_type [l:(ptr L) w:(ptr wasm_reader.Wasm) func:i32] -> (ptr wasm_reader.FuncType)
@@ -385,7 +385,7 @@
 
   ;; Translates defined function `index` (in the function index space) with
   ;; body `body` and type `t`.
-  (fn function [l:(ptr L) w:(ptr wasm_reader.Wasm) index:i32 body:(ptr wasm_reader.Body)] -> void
+  (fn function [l:(ptr L) w:(ptr wasm_reader.Wasm) index:i32 body:(ptr wasm_reader.Body)] -> void (pub)
     (let c:(ptr buf.Buf) (get l L.code))
     (let t:(ptr wasm_reader.FuncType) (call func_type l w index))
     (let np:i32 (call nparams t))
@@ -887,7 +887,7 @@
           (else 8)))
 
   ;; reg = the memory's current size in bytes (from the size cell); uses rcx.
-  (fn load_mem_size [l:(ptr L) reg:i32] -> void
+  (fn load_mem_size [l:(ptr L) reg:i32] -> void (pub)
     (req (gte (get l L.mem_cell) 0))
     (let c:(ptr buf.Buf) (get l L.code))
     (call x64.mov_ri32 c (call rcx) (get l L.mem_cell))

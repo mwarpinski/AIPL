@@ -6,12 +6,12 @@
   (import str)
   (import buf)
 
-  (fn is_sealed [n:(ptr str.Bytes)] -> bool
+  (fn is_sealed [n:(ptr str.Bytes)] -> bool (pub)
     (and (gt (get n str.Bytes.len) 0) (eq (call str.byte_at n 0) 39)))
 
   ;; t with every placeholder shown as its parameter: vec.Vec<'vec.index_of.T>
   ;; is vec.Vec<T>.
-  (fn shown [t:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn shown [t:(ptr str.Bytes)] -> (ptr str.Bytes) (pub)
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get t str.Bytes.len) 1)))
     (let n:i32 (get t str.Bytes.len))
     (let i:i32 0)

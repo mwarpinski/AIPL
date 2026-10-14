@@ -863,12 +863,12 @@
   ;; ===== Entry =====
 
   ;; The result of a parse: the module, or the first error's message.
-  (struct Parsed [module:(ptr ast.Module) ok:bool err:(ptr buf.Buf) err_at:i32])
+  (struct Parsed [(pub module:(ptr ast.Module)) (pub ok:bool) (pub err:(ptr buf.Buf)) (pub err_at:i32)] (pub))
 
   ;; Parses the n tokens at toks (from compiler.tokenize over src). A bad
   ;; token (always last) is the tokenizer's error, reported first, as Rust's
   ;; tokenizer fails before its parser runs.
-  (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed)
+  (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed) (pub)
     (let p:(ptr P) (new P))
     (put p P.src src)
     (put p P.toks toks)
@@ -907,7 +907,7 @@
     (call fail p b))
 
   ;; The message for a bad token from compiler.tokenize over src (no position).
-  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void
+  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void (pub)
     (unsafe (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (match why
       (compiler.TokErr.unterminated_string (call buf.push_str b "Unterminated string literal"))
@@ -930,7 +930,7 @@
   ;; it is ignored), for codegen.aipl's contract messages. The program's
   ;; unions are not known here, so a union named in a type parses as a
   ;; struct's name, which prints the same.
-  (fn parse_expr_text [src:i32 len:i32] -> ast.Expr
+  (fn parse_expr_text [src:i32 len:i32] -> ast.Expr (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
     (let n:i32 (call compiler.tokenize src len toks))
     (let p:(ptr P) (new P))
@@ -945,7 +945,7 @@
     (call parse_expr p))
 
   ;; Tokenizes and parses len bytes at src.
-  (fn parse [src:i32 len:i32] -> (ptr Parsed)
+  (fn parse [src:i32 len:i32] -> (ptr Parsed) (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let n:i32 (call compiler.tokenize src len toks))
+    (let n:i32 (call compiler.strip_marks src toks (call compiler.tokenize src len toks)))
     (call parse_tokens src toks n)))

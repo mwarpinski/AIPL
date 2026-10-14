@@ -79,12 +79,14 @@ pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
 as in Rust, so a program without `unsafe` cannot reach memory through a
 raw address.
 
-Two gaps remain. A pointer kept after its object is freed can still read
-the freed memory; generation checks (each object and each pointer carries a
+Module visibility closes a second door: the standard library keeps its raw
+addresses in fields other modules may only read, such as `str.Bytes`'s
+address and length, so safe code cannot forge one.
+
+One gap remains: a pointer kept after its object is freed can still read
+the freed memory. Generation checks (each object and each pointer carries a
 number, compared on every access) are planned
-([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)). And the
-standard library's structs, such as `str.Bytes`, keep raw addresses in
-fields that any module can write; module visibility will close that.
+([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)).
 
 ### Does it have closures, or lambdas?
 

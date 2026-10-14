@@ -104,7 +104,7 @@ fn casts_must_start_from_an_i32() {
 fn typed_linked_list_runs_in_both_backends() {
     let src = r#"
 (module list
-  (struct Node [val:i32 next:(ptr Node)])
+  (struct Node [(read val:i32) next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
     (let n:(ptr Node) (new Node))
     (put n Node.val v)
@@ -188,16 +188,16 @@ fn two_imported_modules_may_each_define_the_same_struct_name() {
     (+ (get p geo.Node.x) (get q l.Node.val))))"#),
         ("geo", r#"
 (module geo
-  (struct Node [x:i32 y:i32])
-  (fn make [x:i32] -> (ptr Node)
+  (struct Node [(read x:i32) y:i32] (pub))
+  (fn make [x:i32] -> (ptr Node) (pub)
     (let n:(ptr Node) (new Node))
     (put n Node.x (call ident x))
     n)
   (fn ident [v:i32] -> i32 v))"#),
         ("list", r#"
 (module list
-  (struct Node [val:i32 next:(ptr Node)])
-  (fn make [v:i32] -> (ptr Node)
+  (struct Node [(read val:i32) next:(ptr Node)] (pub))
+  (fn make [v:i32] -> (ptr Node) (pub)
     (let n:(ptr Node) (new Node))
     (put n Node.val v)
     (put n Node.next (ptr.null Node))

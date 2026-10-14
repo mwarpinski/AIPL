@@ -133,10 +133,9 @@ aipl compile --exe aipl_src/driver.aipl -o aiplc
 AIPL is **not** memory-safe yet. Raw memory operations (`mem.load32` on a
 computed address), casts to pointers, threads, and atomics are allowed only
 inside `(unsafe ...)`, so code without it cannot read or write through a
-raw address. Two gaps remain: a pointer kept after its object is freed can
-still read the freed memory (generation checks will close that), and the
-standard library's descriptors keep raw addresses in fields any module can
-write (visibility will close that).
+raw address, and module visibility keeps it from forging the standard
+library's descriptors. One gap remains: a pointer kept after its object is
+freed can still read the freed memory (generation checks will close that).
 
 It is also not fast yet. On eight benchmarks, native code takes 1.7 to 40
 times as long as C compiled with `gcc -O2`, and WebAssembly under wasmtime
@@ -151,7 +150,7 @@ is missing):
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
    easier installation, a showcase program, and the experiment measuring
    how well agents write AIPL.
-2. **The language:** visibility (`pub`), small structs by value.
+2. **The language:** small structs by value (plan first).
 3. **The standard library:** JSON, directories, running processes, then
    networking.
 4. **Retiring the Rust compiler:** rebuilding the toolchain from a
@@ -166,7 +165,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **311 Rust tests** and an AIPL test suite, run on every push by CI.
+- **315 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

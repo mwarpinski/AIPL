@@ -14,7 +14,7 @@
   (import str)
 
   ;; state per slot: 0 empty, 1 used, 2 deleted
-  (struct (Map K V) [keys:(arr K) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator]
+  (struct (Map K V) [keys:(arr K) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator] (pub)
     (where (cmp.Hash K)))
 
   (fn (alloc_slots K V) [m:(ptr (Map K V)) cap:i32] -> void (where (cmp.Hash K))
@@ -25,7 +25,7 @@
     (put m (Map K V) count 0)
     (put m (Map K V) used 0))
 
-  (fn (make K V) [a:alloc.Allocator capacity:i32] -> (ptr (Map K V)) (where (cmp.Hash K))
+  (fn (make K V) [a:alloc.Allocator capacity:i32] -> (ptr (Map K V)) (pub) (where (cmp.Hash K))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
     (let m:(ptr (Map K V)) (call (alloc.create (Map K V)) a))
@@ -34,7 +34,7 @@
     m)
 
   ;; Frees the table and the map itself; neither may be used afterwards.
-  (fn (free K V) [m:(ptr (Map K V))] -> void (where (cmp.Hash K))
+  (fn (free K V) [m:(ptr (Map K V))] -> void (pub) (where (cmp.Hash K))
     (call (free_slots K V) (get m (Map K V) allocator) (get m (Map K V) keys) (get m (Map K V) vals) (get m (Map K V) states))
     (call (alloc.destroy (Map K V)) (get m (Map K V) allocator) m))
 
@@ -43,8 +43,8 @@
     (call (alloc.free_array V) a vals)
     (call (alloc.free_array i32) a states))
 
-  (fn (capacity K V) [m:(ptr (Map K V))] -> i32 (where (cmp.Hash K)) (arr.len (get m (Map K V) keys)))
-  (fn (count K V) [m:(ptr (Map K V))] -> i32 (where (cmp.Hash K)) (get m (Map K V) count))
+  (fn (capacity K V) [m:(ptr (Map K V))] -> i32 (pub) (where (cmp.Hash K)) (arr.len (get m (Map K V) keys)))
+  (fn (count K V) [m:(ptr (Map K V))] -> i32 (pub) (where (cmp.Hash K)) (get m (Map K V) count))
 
   ;; The slot holding k, else the first reusable slot on k's probe path.
   (fn (slot_for K V) [m:(ptr (Map K V)) k:K] -> i32 (where (cmp.Hash K))
@@ -76,7 +76,7 @@
     (call (free_slots K V) (get m (Map K V) allocator) old_keys old_vals old_states))
 
   ;; Adds k -> v, or replaces k's value.
-  (fn (set K V) [m:(ptr (Map K V)) k:K v:V] -> void (where (cmp.Hash K))
+  (fn (set K V) [m:(ptr (Map K V)) k:K v:V] -> void (pub) (where (cmp.Hash K))
     (if (gte (* 4 (+ (get m (Map K V) used) 1)) (* 3 (call (capacity K V) m))) (call (grow K V) m) (block))
     (let i:i32 (call (slot_for K V) m k))
     (let st:i32 (arr.get i32 (get m (Map K V) states) i))
@@ -90,15 +90,15 @@
     (arr.set V (get m (Map K V) vals) i v))
 
   ;; k's value, or `default` when k is absent.
-  (fn (get_or K V) [m:(ptr (Map K V)) k:K default:V] -> V (where (cmp.Hash K))
+  (fn (get_or K V) [m:(ptr (Map K V)) k:K default:V] -> V (pub) (where (cmp.Hash K))
     (let i:i32 (call (slot_for K V) m k))
     (if (eq (arr.get i32 (get m (Map K V) states) i) 1) (arr.get V (get m (Map K V) vals) i) default))
 
-  (fn (has K V) [m:(ptr (Map K V)) k:K] -> bool (where (cmp.Hash K))
+  (fn (has K V) [m:(ptr (Map K V)) k:K] -> bool (pub) (where (cmp.Hash K))
     (eq (arr.get i32 (get m (Map K V) states) (call (slot_for K V) m k)) 1))
 
   ;; Removes k; false if it was absent.
-  (fn (remove K V) [m:(ptr (Map K V)) k:K] -> bool (where (cmp.Hash K))
+  (fn (remove K V) [m:(ptr (Map K V)) k:K] -> bool (pub) (where (cmp.Hash K))
     (let i:i32 (call (slot_for K V) m k))
     (if (neq (arr.get i32 (get m (Map K V) states) i) 1) (return false) (block))
     (arr.set i32 (get m (Map K V) states) i 2)
@@ -106,14 +106,14 @@
     true)
 
   ;; Iterate with (loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ...)).
-  (fn (slot_used K V) [m:(ptr (Map K V)) i:i32] -> bool (where (cmp.Hash K)) (eq (arr.get i32 (get m (Map K V) states) i) 1))
-  (fn (slot_key K V) [m:(ptr (Map K V)) i:i32] -> K (where (cmp.Hash K)) (arr.get K (get m (Map K V) keys) i))
-  (fn (slot_val K V) [m:(ptr (Map K V)) i:i32] -> V (where (cmp.Hash K)) (arr.get V (get m (Map K V) vals) i))
+  (fn (slot_used K V) [m:(ptr (Map K V)) i:i32] -> bool (pub) (where (cmp.Hash K)) (eq (arr.get i32 (get m (Map K V) states) i) 1))
+  (fn (slot_key K V) [m:(ptr (Map K V)) i:i32] -> K (pub) (where (cmp.Hash K)) (arr.get K (get m (Map K V) keys) i))
+  (fn (slot_val K V) [m:(ptr (Map K V)) i:i32] -> V (pub) (where (cmp.Hash K)) (arr.get V (get m (Map K V) vals) i))
 
   ;; ===== Tests =====
 
   ;; Pass count; test_suite.aipl expects 8.
-  (fn run_map_tests [] -> i32
+  (fn run_map_tests [] -> i32 (pub)
     (+ (call i32_cases) (call bytes_cases)))
 
   ;; i32 keys

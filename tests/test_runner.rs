@@ -91,10 +91,10 @@ fn a_trap_is_reported_with_a_failing_status() {
 #[test]
 fn the_vm_prints_the_same_call_chain() {
     let dir = scratch("vm_chain");
-    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn ratio [a:i32 b:i32] -> i32\n    (/ a b))\n  (fn pos [n:i32] -> i32 (req (gt n 0)) n))").unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn ratio [a:i32 b:i32] -> i32 (pub)\n    (/ a b))\n  (fn pos [n:i32] -> i32 (pub) (req (gt n 0)) n))").unwrap();
     for (main, vm_msg) in [
         ("(call lib.ratio x (- n n))", "Error: Division by zero"),
-        ("(call lib.pos (- 0 x))", "Error: Pre-condition failed in 'lib.pos' at 4:31: (req (gt n 0)) with n = -6"),
+        ("(call lib.pos (- 0 x))", "Error: Pre-condition failed in 'lib.pos' at 4:37: (req (gt n 0)) with n = -6"),
     ] {
         let src = format!("(module main\n  (import lib)\n  (fn f [n:i32] -> i32\n    (let x:i32 (+ n 1))\n    {main})\n  (fn main [] -> i32\n    (call f 5)))");
         std::fs::write(dir.join("main.aipl"), &src).unwrap();

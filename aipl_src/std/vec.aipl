@@ -10,9 +10,9 @@
   (import cmp)
   (import alloc)
 
-  (struct (Vec T) [items:(arr T) len:i32 allocator:alloc.Allocator])
+  (struct (Vec T) [items:(arr T) (read len:i32) allocator:alloc.Allocator] (pub))
 
-  (fn (make T) [a:alloc.Allocator capacity:i32] -> (ptr (Vec T))
+  (fn (make T) [a:alloc.Allocator capacity:i32] -> (ptr (Vec T)) (pub)
     (req (gte capacity 0))
     (let cap:i32 (if (lt capacity 4) 4 capacity))
     (let v:(ptr (Vec T)) (call (alloc.create (Vec T)) a))
@@ -22,25 +22,25 @@
     v)
 
   ;; Frees the storage and the vec itself; neither may be used afterwards.
-  (fn (free T) [v:(ptr (Vec T))] -> void
+  (fn (free T) [v:(ptr (Vec T))] -> void (pub)
     (let a:alloc.Allocator (get v (Vec T) allocator))
     (call (alloc.free_array T) a (get v (Vec T) items))
     (call (alloc.destroy (Vec T)) a v))
 
-  (fn (len T) [v:(ptr (Vec T))] -> i32
+  (fn (len T) [v:(ptr (Vec T))] -> i32 (pub)
     (get v (Vec T) len))
 
   ;; Element i.
-  (fn (at T) [v:(ptr (Vec T)) i:i32] -> T
+  (fn (at T) [v:(ptr (Vec T)) i:i32] -> T (pub)
     (req (and (gte i 0) (lt i (get v (Vec T) len))))
     (arr.get T (get v (Vec T) items) i))
 
-  (fn (set T) [v:(ptr (Vec T)) i:i32 x:T] -> void
+  (fn (set T) [v:(ptr (Vec T)) i:i32 x:T] -> void (pub)
     (req (and (gte i 0) (lt i (get v (Vec T) len))))
     (arr.set T (get v (Vec T) items) i x))
 
   ;; Appends x, doubling the storage when full.
-  (fn (push T) [v:(ptr (Vec T)) x:T] -> void
+  (fn (push T) [v:(ptr (Vec T)) x:T] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (let items:(arr T) (get v (Vec T) items))
     (if (eq n (arr.len items))
@@ -55,18 +55,23 @@
     (put v (Vec T) len (+ n 1)))
 
   ;; Removes and returns the last element.
-  (fn (pop T) [v:(ptr (Vec T))] -> T
+  (fn (pop T) [v:(ptr (Vec T))] -> T (pub)
     (req (gt (get v (Vec T) len) 0))
     (let n:i32 (- (get v (Vec T) len) 1))
     (put v (Vec T) len n)
     (arr.get T (get v (Vec T) items) n))
 
-  (fn (clear T) [v:(ptr (Vec T))] -> void
+  ;; Keeps the first n elements.
+  (fn (truncate T) [v:(ptr (Vec T)) n:i32] -> void (pub)
+    (req (and (gte n 0) (lte n (get v (Vec T) len))))
+    (put v (Vec T) len n))
+
+  (fn (clear T) [v:(ptr (Vec T))] -> void (pub)
     (put v (Vec T) len 0))
 
   ;; Index of the first element equal to x (eq: same value, or same address
   ;; for pointers), or -1.
-  (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32 (where (cmp.Eq T))
+  (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32 (pub) (where (cmp.Eq T))
     (loop i 0 (- (get v (Vec T) len) 1) 1
       (if (call (cmp.Eq.same T) (arr.get T (get v (Vec T) items) i) x) (return i) (block)))
     -1)
@@ -74,12 +79,12 @@
   (fn min_i32 [a:i32 b:i32] -> i32 (if (lt a b) a b))
 
   ;; -1, 0, 1 as a < b, a = b, a > b (no subtraction, so no overflow).
-  (fn cmp_i32 [a:i32 b:i32] -> i32
+  (fn cmp_i32 [a:i32 b:i32] -> i32 (pub)
     (cond ((lt a b) -1) ((gt a b) 1) (else 0)))
 
   ;; Stable sort by cmp: a negative result puts a before b, positive puts b
   ;; before a, zero keeps their order. Bottom-up merge sort, O(n log n).
-  (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32)] -> void
+  (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32)] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))
     (let src:(arr T) (get v (Vec T) items))
@@ -124,7 +129,7 @@
   ;; map of counts, say (AIPL_SPEC.md 4.G). The same merge sort as sort_by,
   ;; kept as its own copy: sort_by on top of this would cost an extra
   ;; indirect call per comparison (9% on a million i32s).
-  (fn (sort_by_with T C) [v:(ptr (Vec T)) ctx:C cmp:(fn [C T T] -> i32)] -> void
+  (fn (sort_by_with T C) [v:(ptr (Vec T)) ctx:C cmp:(fn [C T T] -> i32)] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))
     (let src:(arr T) (get v (Vec T) items))
@@ -165,7 +170,7 @@
     (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
   ;; Ascending.
-  (fn sort_i32 [v:(ptr (Vec i32))] -> void
+  (fn sort_i32 [v:(ptr (Vec i32))] -> void (pub)
     (call (sort_by i32) v (ref cmp_i32)))
 
   ;; for the stability test: compares only the tens digit and up
@@ -177,7 +182,7 @@
   (fn by_x [a:(ptr Point) b:(ptr Point)] -> i32 (call cmp_i32 (get a Point.x) (get b Point.x)))
 
   ;; Pass count; test_suite.aipl expects 7.
-  (fn run_vec_tests [] -> i32
+  (fn run_vec_tests [] -> i32 (pub)
     (let p:i32 0)
     (let v:(ptr (Vec i32)) (call (make i32) (call alloc.default) 0))
     (loop i 0 999 1 (call (push i32) v (* i 3)))

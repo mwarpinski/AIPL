@@ -181,7 +181,7 @@
   ;; a message in `err` for a use of an enum member that does not exist. A
   ;; program with neither is copied unchanged.
   ;; o (null for none) records where each printed token came from in src.
-  (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins)] -> bool
+  (fn expand [src:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) o:(ptr origins.Origins)] -> bool (pub)
     (let n:i32 (get src str.Bytes.len))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get src str.Bytes.addr) n) 1))))
     (let count:i32 (call compiler.tokenize (get src str.Bytes.addr) n tok))
@@ -227,7 +227,7 @@
          (call str.bytes_eq (call buf.bytes out) (call str.from_str want))))
 
   ;; Pass count; test_suite.aipl expects 5.
-  (fn run_consts_tests [] -> i32
+  (fn run_consts_tests [] -> i32 (pub)
     (let p:i32 0)
     ;; nothing to erase: copied unchanged
     (if (call expands_to "(module m (fn f [] -> i32 1))" "(module m (fn f [] -> i32 1))") (set! p (+ p 1)) (block))

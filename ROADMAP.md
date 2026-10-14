@@ -29,8 +29,7 @@ against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** visibility (which also stops safe code forging the standard
-   library's raw-address fields); small structs by value; generation checks
+2. **The language questions readers will ask:** small structs by value; generation checks
    against use after free (docs/design/GENERATIONS_PLAN.md).
 3. **The standard library:** a data format (JSON), directories and file
    information, running processes; networking later.
@@ -80,7 +79,7 @@ versioning (once packages exist), `inv` contracts.
 ### Memory
 
 - **The built-ins never free.** `mem.alloc`, `new`, `arr.new`, `make`, and result cells come from a bump cursor that only grows. Freeable memory comes from the standard library (docs/design/HEAP_PLAN.md): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take. A heap's memory is reused but never returned to the system. Freeing object by object costs about 4x C's malloc/free on binarytrees.
-- **Not memory-safe yet.** Bounds checks, null checks, contracts, and the reserved-block guard run in every backend, and the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`, threads, atomics) are fenced inside `(unsafe ...)` (AIPL_SPEC.md 3). Two gaps remain: reading freed heap memory through a kept pointer (it holds a junk pattern, not old data; generation checks are planned in docs/design/GENERATIONS_PLAN.md), and forging a standard-library descriptor such as `str.Bytes`, whose fields hold raw addresses (closed by visibility).
+- **Not memory-safe yet.** Bounds checks, null checks, contracts, and the reserved-block guard run in every backend, and the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`, threads, atomics) are fenced inside `(unsafe ...)` (AIPL_SPEC.md 3). Module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. One gap remains: reading freed heap memory through a kept pointer (it holds a junk pattern, not old data; generation checks are planned in docs/design/GENERATIONS_PLAN.md).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 

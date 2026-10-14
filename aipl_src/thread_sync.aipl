@@ -49,7 +49,7 @@
   ;; atomic.add is genuinely atomic - if any of those were faked, concurrent
   ;; increments would very likely lose updates under real OS scheduling and
   ;; the total would come out wrong.
-  (fn run_thread_tests [] -> i32
+  (fn run_thread_tests [] -> i32 (pub)
     (unsafe (let counter:i32 (mem.alloc 4))
     (mem.store32 counter 0)
     (let worker:(fn [i32] -> i32) (ref worker_increment))

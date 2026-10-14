@@ -13,13 +13,13 @@
   (import buf)
 
   ;; Now, in nanoseconds since an arbitrary start (only differences matter).
-  (fn now [] -> i64 (sys.monotonic))
+  (fn now [] -> i64 (pub) (sys.monotonic))
 
   ;; Nanoseconds since `start` (a value from now).
-  (fn since [start:i64] -> i64 (- (sys.monotonic) start))
+  (fn since [start:i64] -> i64 (pub) (- (sys.monotonic) start))
 
   ;; Appends a duration: "850 ns", "12.345 us", "3.071 ms", "4.200 s".
-  (fn push_duration [b:(ptr buf.Buf) ns:i64] -> void
+  (fn push_duration [b:(ptr buf.Buf) ns:i64] -> void (pub)
     (if (lt ns 1000i64)
         (block (call buf.push_i64 b ns) (call buf.push_str b " ns") (return))
         (block))
@@ -35,7 +35,7 @@
 
   ;; Writes "label: <duration since start>" and a newline to stderr (so a
   ;; program's own output stays clean).
-  (fn report [label:str start:i64] -> void
+  (fn report [label:str start:i64] -> void (pub)
     (let ns:i64 (call since start))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call buf.push_str b label)
@@ -51,7 +51,7 @@
     (call str.bytes_eq (call buf.bytes b) (call str.from_str want)))
 
   ;; Pass count; test_suite.aipl expects 7.
-  (fn run_time_tests [] -> i32
+  (fn run_time_tests [] -> i32 (pub)
     (let p:i32 0)
     (if (call formats 0i64 "0 ns") (set! p (+ p 1)) (block))
     (if (call formats 999i64 "999 ns") (set! p (+ p 1)) (block))

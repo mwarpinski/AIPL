@@ -162,8 +162,8 @@
   (fn mark [e:(ptr Env)] -> i32 (call (vec.len (ptr str.Bytes)) (get e Env.names)))
 
   (fn restore [e:(ptr Env) m:i32] -> void
-    (put (get e Env.names) (vec.Vec (ptr str.Bytes)) len m)
-    (put (get e Env.types) (vec.Vec ast.Type) len m))
+    (call (vec.truncate (ptr str.Bytes)) (get e Env.names) m)
+    (call (vec.truncate ast.Type) (get e Env.types) m))
 
   (fn bind [e:(ptr Env) name:(ptr str.Bytes) t:ast.Type] -> void
     (call (vec.push (ptr str.Bytes)) (get e Env.names) name)
@@ -1683,11 +1683,11 @@
   ;; ===== Entry =====
 
   ;; An error: where, the message, and the next error (null for the last).
-  (struct Problem [at:i32 text:(ptr buf.Buf) next:(ptr Problem)])
+  (struct Problem [(read at:i32) (read text:(ptr buf.Buf)) (read next:(ptr Problem))] (pub))
 
   ;; Checks a parsed module: null if it type-checks, else its errors (a
   ;; definition's error alone, or each failing function's first error).
-  (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem)
+  (fn check [src:i32 m:(ptr ast.Module)] -> (ptr Problem) (pub)
     (let c:(ptr C) (new C))
     (put c C.src src)
     (put c C.structs (call (map.make (ptr str.Bytes) (ptr ast.StructDef)) (call alloc.default) 64))
@@ -1705,7 +1705,7 @@
     (call check_module c m)
     (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (get c C.problems)))
 
-  (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem)
+  (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem) (pub)
     (let pr:(ptr Problem) (new Problem))
     (put pr Problem.at at)
     (put pr Problem.text text)

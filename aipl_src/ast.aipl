@@ -18,11 +18,11 @@
                (arr elem:Type)
                (fn_ params:(arr Type) ret:Type)
                (enum_ name:(ptr str.Bytes))
-               (union_ name:(ptr str.Bytes))])
+               (union_ name:(ptr str.Bytes))] (pub))
 
   ;; An optional type or expression (src/ast.rs Option<Type>, Option<Box<Expr>>).
-  (union MaybeType [(none) (some t:Type)])
-  (union MaybeExpr [(none) (some e:Expr)])
+  (union MaybeType [(none) (some t:Type)] (pub))
+  (union MaybeExpr [(none) (some e:Expr)] (pub))
 
   ;; The built-in operators, in src/ast.rs OpCode order.
   (enum Op [add sub mul div mod divu remu bitxor shl shr shru bitand bitor
@@ -33,14 +33,14 @@
             fs_open fs_read fs_write fs_close fs_delete args_sizes args_get env_sizes env_get
             thread_spawn thread_join i64_extend_s i64_extend_u i32_wrap
             f64_convert_i64_s f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
-            str_len str_ptr])
+            str_len str_ptr] (pub))
 
   ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32.
-  (enum AddrKind [ptr arr enum_])
+  (enum AddrKind [ptr arr enum_] (pub))
 
   ;; One arm of a match (src/ast.rs MatchArm). binders is null for an arm
   ;; written without brackets.
-  (struct Arm [member:(ptr str.Bytes) binders:(arr (ptr str.Bytes)) body:(arr Expr) at:i32])
+  (struct Arm [(pub member:(ptr str.Bytes)) (pub binders:(arr (ptr str.Bytes))) (pub body:(arr Expr)) (pub at:i32)] (pub))
 
   ;; An expression, one variant per form of src/ast.rs Expr. A float
   ;; literal keeps its text; a string literal its text between the quotes,
@@ -80,28 +80,28 @@
                (continue_ at:i32)
                (ref at:i32 name:(ptr str.Bytes))
                (call_ref at:i32 sig:Type func:Expr args:(arr Expr))
-               (addr at:i32 val:Expr kind:AddrKind)])
+               (addr at:i32 val:Expr kind:AddrKind)] (pub))
 
-  (union Contract [(requires e:Expr) (ensures e:Expr) (invariant e:Expr)])
+  (union Contract [(requires e:Expr) (ensures e:Expr) (invariant e:Expr)] (pub))
 
-  (struct Field [name:(ptr str.Bytes) ty:Type])
-  (struct StructDef [name:(ptr str.Bytes) fields:(arr (ptr Field)) at:i32])
+  (struct Field [(pub name:(ptr str.Bytes)) (pub ty:Type)] (pub))
+  (struct StructDef [(pub name:(ptr str.Bytes)) (pub fields:(arr (ptr Field))) (pub at:i32)] (pub))
   ;; members are names with their values (src/ast.rs EnumDef)
-  (struct Member [name:(ptr str.Bytes) value:i32])
-  (struct EnumDef [name:(ptr str.Bytes) members:(arr (ptr Member)) at:i32])
-  (struct Variant [name:(ptr str.Bytes) fields:(arr (ptr Field))])
-  (struct UnionDef [name:(ptr str.Bytes) variants:(arr (ptr Variant)) at:i32])
-  (struct Param [name:(ptr str.Bytes) ty:Type])
+  (struct Member [(pub name:(ptr str.Bytes)) (pub value:i32)] (pub))
+  (struct EnumDef [(pub name:(ptr str.Bytes)) (pub members:(arr (ptr Member))) (pub at:i32)] (pub))
+  (struct Variant [(pub name:(ptr str.Bytes)) (pub fields:(arr (ptr Field)))] (pub))
+  (struct UnionDef [(pub name:(ptr str.Bytes)) (pub variants:(arr (ptr Variant))) (pub at:i32)] (pub))
+  (struct Param [(pub name:(ptr str.Bytes)) (pub ty:Type)] (pub))
   ;; unsafe_: the (unsafe) clause (src/ast.rs FnDef.is_unsafe).
-  (struct FnDef [name:(ptr str.Bytes) params:(arr (ptr Param)) ret:Type
-                 contracts:(arr Contract) body:(arr Expr) at:i32 unsafe_:bool])
-  (struct Import [name:(ptr str.Bytes) alias:(ptr str.Bytes)])
-  (struct Module [name:(ptr str.Bytes) imports:(arr (ptr Import))
-                  structs:(arr (ptr StructDef)) enums:(arr (ptr EnumDef))
-                  unions:(arr (ptr UnionDef)) fns:(arr (ptr FnDef))])
+  (struct FnDef [(pub name:(ptr str.Bytes)) (pub params:(arr (ptr Param))) (pub ret:Type)
+                 (pub contracts:(arr Contract)) (pub body:(arr Expr)) (pub at:i32) (pub unsafe_:bool)] (pub))
+  (struct Import [(pub name:(ptr str.Bytes)) (pub alias:(ptr str.Bytes))] (pub))
+  (struct Module [(pub name:(ptr str.Bytes)) (pub imports:(arr (ptr Import)))
+                  (pub structs:(arr (ptr StructDef))) (pub enums:(arr (ptr EnumDef)))
+                  (pub unions:(arr (ptr UnionDef))) (pub fns:(arr (ptr FnDef)))] (pub))
 
   ;; Where an expression starts.
-  (fn at [e:Expr] -> i32
+  (fn at [e:Expr] -> i32 (pub)
     (match e
       (Expr.lit_int [at _] at) (Expr.lit_i64 [at _] at) (Expr.lit_float [at _] at)
       (Expr.lit_bool [at _] at) (Expr.lit_str [at _] at) (Expr.var [at _] at)

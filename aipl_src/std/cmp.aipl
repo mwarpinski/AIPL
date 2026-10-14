@@ -12,16 +12,16 @@
 (module cmp
   (import str)
 
-  (interface (Eq T)
+  (interface (Eq T) (pub)
     (fn same [a:T b:T] -> bool))
 
-  (interface (Ord T)
+  (interface (Ord T) (pub)
     ;; negative, zero, or positive: -1, 0, or 1
     (fn compare [a:T b:T] -> i32
       (ens (and (gte res -1) (lte res 1)))))
 
   ;; Keys that are equal (same) must hash alike.
-  (interface (Hash T)
+  (interface (Hash T) (pub)
     (fn hash [k:T] -> i32)
     (fn same [a:T b:T] -> bool))
 
@@ -88,7 +88,7 @@
 
   ;; ===== Tests =====
 
-  (fn run_cmp_tests [] -> i32
+  (fn run_cmp_tests [] -> i32 (pub)
     (let p:i32 0)
     (if (call (Eq.same i32) 3 3) (set! p (+ p 1)) (block))
     (if (not (call (Eq.same str) "ab" "abc")) (set! p (+ p 1)) (block))

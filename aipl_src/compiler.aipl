@@ -10,20 +10,20 @@
   ;; for the absence of a node.
   ;; bad is the token for text the Rust tokenizer rejects (TokErr says why);
   ;; tokenizing stops there, so it is always the last token.
-  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float bad (paren 20) (bracket 21)])
+  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float bad (paren 20) (bracket 21)] (pub))
 
-  (enum TokErr [unterminated_string unknown_escape stray_whitespace])
+  (enum TokErr [unterminated_string unknown_escape stray_whitespace] (pub))
 
   ;; pos is the source offset the token starts at (a string's opening quote).
-  (struct Token [kind:Kind a:i32 b:i32 pos:i32])
+  (struct Token [(pub kind:Kind) (pub a:i32) (pub b:i32) (pub pos:i32)] (pub))
   ;; An atom's a and b are its token's (a value, or a span of the source); a
   ;; group's a is where its closing bracket starts (-1 if the input ends
   ;; first), b its child count, and first its first child. next links
   ;; siblings; pos is where the atom or the group's opening bracket starts.
-  (struct Node [kind:Kind a:i32 b:i32 next:(ptr Node) first:(ptr Node) pos:i32])
+  (struct Node [(read kind:Kind) (read a:i32) (read b:i32) (read next:(ptr Node)) (read first:(ptr Node)) (read pos:i32)] (pub))
 
 ;; Unsigned LEB128 of val at ptr (val read as unsigned); returns the byte count.
-  (fn encode_u32 [ptr:i32 val:i32] -> i32
+  (fn encode_u32 [ptr:i32 val:i32] -> i32 (pub)
     (req (gte ptr 0))
     (ens (gt res 0))
     (unsafe (let n:i32 0)
@@ -37,7 +37,7 @@
     n))
 
   ;; Wasm header: magic "\0asm" then version 1, as two little-endian words.
-  (fn emit_header [ptr:i32] -> i32
+  (fn emit_header [ptr:i32] -> i32 (pub)
     (req (gte ptr 0))
     (ens (eq res 8))
     (unsafe (mem.store32 ptr 1836278016)
@@ -98,9 +98,9 @@
 
   ;; Where a source offset is, as the Rust tokenizer counts: lines from 1,
   ;; columns from 1 in characters (UTF-8 continuation bytes do not count).
-  (struct LineCol [line:i32 col:i32])
+  (struct LineCol [(read line:i32) (read col:i32)] (pub))
 
-  (fn line_col [src:i32 pos:i32] -> (ptr LineCol)
+  (fn line_col [src:i32 pos:i32] -> (ptr LineCol) (pub)
     (unsafe (let lc:(ptr LineCol) (new LineCol))
     (put lc LineCol.line 1)
     (put lc LineCol.col 1)
@@ -117,7 +117,7 @@
 
   ;; Token records are packed back to back in one buffer; this is the one
   ;; place that turns an index into a record address.
-  (fn token_at [tok_ptr:i32 idx:i32] -> (ptr Token)
+  (fn token_at [tok_ptr:i32 idx:i32] -> (ptr Token) (pub)
     (unsafe (ptr.cast Token (+ tok_ptr (* idx (sizeof Token))))))
 
   (fn write_token [tok_ptr:i32 idx:i32 kind:Kind a:i32 b:i32 pos:i32] -> i32
@@ -134,11 +134,66 @@
     (+ idx 1))
 
   ;; Whether the len bytes at src_ptr + pos spell `word`.
-  (fn span_is [src_ptr:i32 pos:i32 len:i32 word:str] -> bool
+  (fn span_is [src_ptr:i32 pos:i32 len:i32 word:str] -> bool (pub)
     (unsafe (if (neq len (str.len word)) (return false) (block))
     (loop i 0 (- len 1) 1
       (if (neq (mem.load8 (+ src_ptr (+ pos i))) (mem.load8 (+ (str.ptr word) i))) (return false) (block)))
     true))
+
+  ;; Visibility marks left out of the n tokens at toks, in place (parser.rs
+  ;; strip_marks): (pub), and the "(pub" / "(read" and matching ")" of a
+  ;; field (pub x:T) / (read x:T). They matter only between modules, which
+  ;; the resolver checks before it takes them out. Returns the new count.
+  (fn strip_marks [src:i32 toks:i32 n:i32] -> i32 (pub)
+    (unsafe (let opens:i32 (mem.alloc (* 4 (+ n 1))))
+    (let depth:i32 0)
+    (let out:i32 0)
+    (let i:i32 0)
+    (while (lt i n)
+      (let t:(ptr Token) (call token_at toks i))
+      (let k:Kind (get t Token.kind))
+      (let drop:i32 0)
+      (cond
+        ((and (eq k Kind.lparen) (and (call sym_at src toks n (+ i 1) "pub") (call kind_is toks n (+ i 2) Kind.rparen)))
+         (set! drop 3))
+        ((and (eq k Kind.lparen)
+              (and (or (call sym_at src toks n (+ i 1) "pub") (call sym_at src toks n (+ i 1) "read"))
+                   (and (call kind_is toks n (+ i 2) Kind.symbol) (call kind_is toks n (+ i 3) Kind.colon))))
+         (mem.store32 (+ opens (* 4 depth)) 1)
+         (set! depth (+ depth 1))
+         (set! drop 2))
+        ((or (eq k Kind.lparen) (eq k Kind.lbracket))
+         (mem.store32 (+ opens (* 4 depth)) 0)
+         (set! depth (+ depth 1)))
+        ((or (eq k Kind.rparen) (eq k Kind.rbracket))
+         (if (gt depth 0)
+             (block
+               (set! depth (- depth 1))
+               (if (eq (mem.load32 (+ opens (* 4 depth))) 1) (set! drop 1) (block)))
+             (block)))
+        (else (block)))
+      (if (eq drop 0)
+          (block
+            (if (neq out i)
+                (block
+                  (let d:(ptr Token) (call token_at toks out))
+                  (put d Token.kind (get t Token.kind))
+                  (put d Token.a (get t Token.a))
+                  (put d Token.b (get t Token.b))
+                  (put d Token.pos (get t Token.pos)))
+                (block))
+            (set! out (+ out 1))
+            (set! i (+ i 1)))
+          (set! i (+ i drop))))
+    out))
+
+  (fn kind_is [toks:i32 n:i32 i:i32 k:Kind] -> bool
+    (and (lt i n) (eq (get (call token_at toks i) Token.kind) k)))
+
+  (fn sym_at [src:i32 toks:i32 n:i32 i:i32 word:str] -> bool
+    (and (lt i n)
+         (and (eq (get (call token_at toks i) Token.kind) Kind.symbol)
+              (call span_is src (get (call token_at toks i) Token.a) (get (call token_at toks i) Token.b) word))))
 
   ;; Rust's i64 parse: an optional '+' or '-', then at least one digit, the
   ;; value within i64.
@@ -197,7 +252,7 @@
     true))
 
   ;; An int token's or node's value (the low 32 bits), from its text a/b.
-  (fn int_value [src:i32 a:i32 b:i32] -> i32 (call parse_int_literal src a b))
+  (fn int_value [src:i32 a:i32 b:i32] -> i32 (pub) (call parse_int_literal src a b))
 
   ;; The low 32 bits of an int literal's value.
   (fn parse_int_literal [src_ptr:i32 pos:i32 len:i32] -> i32
@@ -215,11 +270,11 @@
 
   ;; How many tokens tokenize writes for this input, so a caller can give it
   ;; a buffer of exactly that size.
-  (fn count_tokens [input_ptr:i32 input_len:i32] -> i32 (call tokenize input_ptr input_len 0))
+  (fn count_tokens [input_ptr:i32 input_len:i32] -> i32 (pub) (call tokenize input_ptr input_len 0))
 
   ;; Tokenizes input_len bytes at input_ptr into token_out_ptr; returns the
   ;; token count. Comments (;; to the end of the line) are skipped.
-  (fn tokenize [input_ptr:i32 input_len:i32 token_out_ptr:i32] -> i32
+  (fn tokenize [input_ptr:i32 input_len:i32 token_out_ptr:i32] -> i32 (pub)
     (req (gte input_ptr 0))
     (req (gte input_len 0))
     (req (gte token_out_ptr 0))
@@ -337,7 +392,7 @@
 
   ;; The tree of the token_count tokens at token_ptr, with its nodes in the
   ;; buffer at ast_out_ptr.
-  (fn parse_ast [token_ptr:i32 token_count:i32 ast_out_ptr:i32] -> (ptr Node)
+  (fn parse_ast [token_ptr:i32 token_count:i32 ast_out_ptr:i32] -> (ptr Node) (pub)
     (req (gte token_ptr 0))
     (req (gte token_count 0))
     (req (gte ast_out_ptr 0))
@@ -385,7 +440,7 @@
         1
         0))
 
-  (fn run_tokenizer_tests [] -> i32
+  (fn run_tokenizer_tests [] -> i32 (pub)
     (ens (gte res 0))
     (+ (call test_tokenize_signature) (call test_tokenize_literals)))
 
@@ -428,6 +483,6 @@
         1
         0))
 
-  (fn run_parser_tests [] -> i32
+  (fn run_parser_tests [] -> i32 (pub)
     (ens (gte res 0))
     (+ (call test_parse_simple_call) (call test_parse_nested))))

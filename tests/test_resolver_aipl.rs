@@ -80,9 +80,9 @@ fn test_suite_resolves_and_checks() {
 fn aliases_diamonds_and_struct_names() {
     let dir = std::env::temp_dir().join(format!("aipl_p14_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("base.aipl"), "(module base\n  (struct P [x:i32 y:i32])\n  (fn mk [x:i32] -> (ptr P) (let p:(ptr P) (new P)) (put p P.x x) p)\n  (fn px [p:(ptr P)] -> i32 (get p P.x)))").unwrap();
-    std::fs::write(dir.join("left.aipl"), "(module left (import base as b)\n  (fn l [] -> i32 (call b.px (call b.mk 3))))").unwrap();
-    std::fs::write(dir.join("right.aipl"), "(module right (import base)\n  (fn r [] -> i32 (let p:(ptr base.P) (call base.mk 4)) (+ (get p base.P.x) (sizeof base.P))))").unwrap();
+    std::fs::write(dir.join("base.aipl"), "(module base\n  (struct P [(read x:i32) y:i32] (pub))\n  (fn mk [x:i32] -> (ptr P) (pub) (let p:(ptr P) (new P)) (put p P.x x) p)\n  (fn px [p:(ptr P)] -> i32 (pub) (get p P.x)))").unwrap();
+    std::fs::write(dir.join("left.aipl"), "(module left (import base as b)\n  (fn l [] -> i32 (pub) (call b.px (call b.mk 3))))").unwrap();
+    std::fs::write(dir.join("right.aipl"), "(module right (import base)\n  (fn r [] -> i32 (pub) (let p:(ptr base.P) (call base.mk 4)) (+ (get p base.P.x) (sizeof base.P))))").unwrap();
     std::fs::write(dir.join("main.aipl"), "(module main (import left) (import right as rr)\n  (fn main [] -> i32 (+ (call left.l) (call rr.r))))").unwrap();
     assert_resolves_like_rust(dir.join("main.aipl").to_str().unwrap());
     let flat = aipl_resolve(&dir.join("main.aipl")).unwrap();
@@ -97,7 +97,7 @@ fn aliases_diamonds_and_struct_names() {
 fn aliases_do_not_rename_op_heads() {
     let dir = std::env::temp_dir().join(format!("aipl_alias_ops_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("lib.aipl"), "(module lib (const LIMIT:i32 16) (enum Color [red (green 5)]) (fn f [c:Color] -> i32 (enum.ord c)))").unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib (const LIMIT:i32 16 (pub)) (enum Color [red (green 5)] (pub)) (fn f [c:Color] -> i32 (pub) (enum.ord c)))").unwrap();
     std::fs::write(
         dir.join("main.aipl"),
         "(module main (import lib as mem)\n  (fn main [] -> i32 (unsafe) (let p:i32 (mem.alloc mem.LIMIT)) (mem.store32 p (call mem.f mem.Color.green)) (mem.load32 p)))",
@@ -316,7 +316,7 @@ fn wasm_driver_is_a_wasi_command() {
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(work.join("lib")).unwrap();
     std::fs::create_dir_all(work.join("app")).unwrap();
-    std::fs::write(work.join("lib/extra.aipl"), "(module extra (fn seven [] -> i32 7))").unwrap();
+    std::fs::write(work.join("lib/extra.aipl"), "(module extra (fn seven [] -> i32 (pub) 7))").unwrap();
     std::fs::write(work.join("app/main.aipl"), "(module app (import extra) (import str)\n  (fn main [] -> i32 (+ (call extra.seven) (get (call str.from_str \"abc\") str.Bytes.len))))").unwrap();
 
     // word_count, with the standard library at its default location
@@ -352,8 +352,8 @@ fn subdirectory_imports_resolve_like_rust() {
     let dir = std::env::temp_dir().join(format!("aipl_p_subdir_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("lib/deep")).unwrap();
-    std::fs::write(dir.join("lib/deep/thing.aipl"), "(module thing (fn seven [] -> i32 7))").unwrap();
-    std::fs::write(dir.join("lib/util.aipl"), "(module util (import deep/thing) (fn eight [] -> i32 (+ 1 (call thing.seven))))").unwrap();
+    std::fs::write(dir.join("lib/deep/thing.aipl"), "(module thing (fn seven [] -> i32 (pub) 7))").unwrap();
+    std::fs::write(dir.join("lib/util.aipl"), "(module util (import deep/thing) (fn eight [] -> i32 (pub) (+ 1 (call thing.seven))))").unwrap();
     std::fs::write(
         dir.join("main.aipl"),
         "(module main (import lib/util) (import lib/deep/thing as t)\n  (fn main [] -> i32 (+ (call util.eight) (call t.seven))))",
@@ -398,9 +398,9 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
     std::fs::create_dir_all(&dir).unwrap();
     // shapes checks on its own; tmpl's template `bad` does not, whether or
     // not anything uses it (a template is checked once, sealed)
-    std::fs::write(dir.join("shapes.aipl"), "(module shapes\n  (import vec)\n  (struct Box [w:i32])\n  (fn (first T) [v:(ptr (vec.Vec T))] -> T\n    (call (vec.at T) v 0)))").unwrap();
-    std::fs::write(dir.join("tmpl.aipl"), "(module tmpl\n  (fn (bad T) [x:T] -> i32\n    (+ x 1)))").unwrap();
-    std::fs::write(dir.join("broken.aipl"), "(module broken\n  (import shapes)\n  (fn area [b:(ptr shapes.Box)] -> i32\n    (* (get b shapes.Box.w)\n       true)))").unwrap();
+    std::fs::write(dir.join("shapes.aipl"), "(module shapes\n  (import vec)\n  (struct Box [(pub w:i32)] (pub))\n  (fn (first T) [v:(ptr (vec.Vec T))] -> T\n    (call (vec.at T) v 0)))").unwrap();
+    std::fs::write(dir.join("tmpl.aipl"), "(module tmpl\n  (fn (bad T) [x:T] -> i32 (pub)\n    (+ x 1)))").unwrap();
+    std::fs::write(dir.join("broken.aipl"), "(module broken\n  (import shapes)\n  (fn area [b:(ptr shapes.Box)] -> i32 (pub)\n    (* (get b shapes.Box.w)\n       true)))").unwrap();
     let cases = [
         // in the entry file
         ("entry", "(module entry\n  (import shapes)\n  (fn main [] -> i32\n    (let n:i32 1)\n    (set! n \"x\")\n    n))", "entry.aipl"),
@@ -440,7 +440,7 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
 fn wasm_toolchain_reports_each_failing_function_with_its_file() {
     let dir = root().join("target").join(format!("aipl_typeerrs_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn f [] -> i32\n    (+ 1 true)))").unwrap();
+    std::fs::write(dir.join("lib.aipl"), "(module lib\n  (fn f [] -> i32 (pub)\n    (+ 1 true)))").unwrap();
     let path = dir.join("main.aipl");
     std::fs::write(&path, "(module main\n  (import lib)\n  (fn g [] -> i32 zz)\n  (fn main [] -> i32 (call lib.f)))").unwrap();
     let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();

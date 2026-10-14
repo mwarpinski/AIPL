@@ -15,7 +15,7 @@
   (import elf)
 
   (fn sys_write [] -> i32 1)
-  (fn sys_exit_group [] -> i32 231)
+  (fn sys_exit_group [] -> i32 (pub) 231)
 
   ;; Register numbers (x64.aipl order) of the system-call arguments.
   (fn rax [] -> i32 0)
@@ -33,7 +33,7 @@
     (call x64.syscall c))
 
   ;; exit_group(status): ends every thread of the process; does not return.
-  (fn emit_exit [c:(ptr buf.Buf) status:i32] -> void
+  (fn emit_exit [c:(ptr buf.Buf) status:i32] -> void (pub)
     (call x64.mov_ri32 c (call rdi) status)
     (call x64.mov_ri32 c (call rax) (call sys_exit_group))
     (call x64.syscall c)
@@ -45,7 +45,7 @@
   ;; the data address where start-up saved argv[0] (0 if there was none, in
   ;; which case only the reason is printed); `sep` is ": " and `nl` "\n" in
   ;; the data. Never returns; clobbers everything.
-  (fn emit_trap_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32] -> void
+  (fn emit_trap_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32] -> void (pub)
     (let r12:i32 12) (let r13:i32 13)
     (call x64.mov_rr c 64 r12 (call rsi))
     (call x64.mov_rr c 32 r13 (call rdx))
@@ -58,7 +58,7 @@
   ;; and " more\n".
   ;; The call chain's texts, and the cell of the position table
   ;; ([entries, count, files]: native.aipl reserve_position_table).
-  (struct ChainTexts [at:i32 dots:i32 more:i32 open:i32 colon:i32 close:i32 positions:i32])
+  (struct ChainTexts [(pub at:i32) (pub dots:i32) (pub more:i32) (pub open:i32) (pub colon:i32) (pub close:i32) (pub positions:i32)] (pub))
 
   ;; The trap routine with the call chain, the lines aipl-run prints
   ;; (src/bin/aipl_run.rs call_chain): `call` it from the trap's place with
@@ -71,7 +71,7 @@
   ;; `table_cell` is the data address of [table address, entry count], each
   ;; entry [start end name_addr name_len] (32-bit, by start address; name_len
   ;; 0 for a function not shown). Never returns; clobbers everything.
-  (fn emit_backtrace_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32 t:(ptr ChainTexts) table_cell:i32] -> void
+  (fn emit_backtrace_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 nl:i32 t:(ptr ChainTexts) table_cell:i32] -> void (pub)
     (let rbx:i32 3) (let rcx:i32 1) (let rbp:i32 5)
     (let r12:i32 12) (let r13:i32 13) (let r14:i32 14) (let r15:i32 15)
     (call x64.pop c r14)                                  ;; where the trap is
@@ -169,10 +169,10 @@
   ;; (out of bounds) or the alignment (4 or 8). `texts` are the data
   ;; addresses of: the three prefixes (out of bounds, align 4, align 8), ", len: ",
   ;; and " }\n", with their lengths.
-  (struct RegionTexts [oob:i32 oob_len:i32 al4:i32 al4_len:i32 al8:i32 al8_len:i32
-                       mid:i32 mid_len:i32 tail:i32 tail_len:i32])
+  (struct RegionTexts [(pub oob:i32) (pub oob_len:i32) (pub al4:i32) (pub al4_len:i32) (pub al8:i32) (pub al8_len:i32)
+                       (pub mid:i32) (pub mid_len:i32) (pub tail:i32) (pub tail_len:i32)] (pub))
 
-  (fn emit_region_trap_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 t:(ptr RegionTexts)] -> void
+  (fn emit_region_trap_routine [c:(ptr buf.Buf) argv0_cell:i32 sep:i32 t:(ptr RegionTexts)] -> void (pub)
     (let r12:i32 12) (let r13:i32 13) (let r14:i32 14)
     (call x64.mov_rr c 32 r12 (call rsi))
     (call x64.mov_rr c 32 r13 (call rdx))

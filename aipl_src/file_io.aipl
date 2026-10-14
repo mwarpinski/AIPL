@@ -73,7 +73,7 @@
   ;; reads them back, verifies an exact byte-for-byte match, and deletes the
   ;; file - a genuine round trip through the OS filesystem, not a
   ;; self-fulfilling count-echo, and it cleans up after itself.
-  (fn run_file_io_tests [] -> i32
+  (fn run_file_io_tests [] -> i32 (pub)
     (unsafe (let path:i32 (mem.alloc 32))
     (let payload:i32 (mem.alloc 32))
     (let readbuf:i32 (mem.alloc 64))

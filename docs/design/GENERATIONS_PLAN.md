@@ -97,7 +97,7 @@ generation word and the first field in one cache line.
 3. **Tests:** use after free, after reuse, through an array, in a struct
    field, across a thread join; mutation checks on the comparison and on
    the bump; `run_fuzz.py` generating frees.
-4. **Claims:** with visibility done as well (the other gap, ROADMAP.md),
+4. **Claims:** with visibility done (2026-10-14, the other gap),
    code without `unsafe` is memory-safe except for data races between
    threads, which already require `unsafe`. Only then do the README, FAQ
    and spec say "memory-safe".

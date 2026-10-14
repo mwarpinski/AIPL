@@ -364,8 +364,7 @@
   (fn classify_keyword [cg:(ptr Cg) pos:i32 len:i32] -> Kw
     (let ks:(ptr Keywords) (call keywords))
     (let key:(ptr str.Bytes) (get ks Keywords.key))
-    (put key str.Bytes.addr (+ (get cg Cg.src) pos))
-    (put key str.Bytes.len len)
+    (unsafe (call str.repoint key (+ (get cg Cg.src) pos) len))
     (call (map.get_or (ptr str.Bytes) Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
@@ -3517,7 +3516,7 @@
 
   ;; The flat program the resolver (orig) and the generics pass (gen)
   ;; printed: the line table names the files they read.
-  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32
+  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32 (pub)
     (call compile_at src_ptr src_len (call places.mapped gen orig)))
 
   (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
@@ -3535,7 +3534,7 @@
     ;; Buffers are sized from the input: a token is at least one source byte
     ;; (a Token record each), an AST node is at most one per token.
     (let tok_buf:i32 (call cg_alloc (* (+ (call compiler.count_tokens src_ptr src_len) 1) (sizeof compiler.Token))))
-    (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
+    (let tok_cnt:i32 (call compiler.strip_marks src_ptr tok_buf (call compiler.tokenize src_ptr src_len tok_buf)))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) (sizeof compiler.Node))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
 
@@ -3956,7 +3955,7 @@
     (call compiles "(module store (fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a)))"))
 
   ;; Group runner for `aipl test` / test_suite.aipl
-  (fn run_codegen_tests [] -> i32
+  (fn run_codegen_tests [] -> i32 (pub)
     (let passed:i32 0)
     (if (eq (call test_signatures_and_locals) 1) (set! passed (+ passed 1)) (block))
     (if (gt (call test_compile_add) 0) (set! passed (+ passed 1)) (block))
