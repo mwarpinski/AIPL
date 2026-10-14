@@ -12,7 +12,7 @@
   (import str)
   (import buf)
   (import vec)
-  (import strmap)
+  (import map)
   (import time)
 
   (struct Entry [key:(ptr str.Bytes) count:i32])
@@ -43,11 +43,11 @@
     (call buf.bytes out))
 
   ;; Counts every k-letter substring.
-  (fn count_kmers [seq:(ptr str.Bytes) k:i32] -> (ptr (strmap.StrMap i32))
-    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 64))
+  (fn count_kmers [seq:(ptr str.Bytes) k:i32] -> (ptr (map.Map (ptr str.Bytes) i32))
+    (let m:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 64))
     (loop i 0 (- (get seq str.Bytes.len) k) 1
       (let key:(ptr str.Bytes) (call str.slice seq i k))
-      (call (strmap.set i32) m key (+ 1 (call (strmap.get_or i32) m key 0))))
+      (call (map.set (ptr str.Bytes) i32) m key (+ 1 (call (map.get_or (ptr str.Bytes) i32) m key 0))))
     m)
 
   ;; byte order, then length
@@ -69,14 +69,14 @@
   (fn to_f64 [n:i32] -> f64 (f64.convert_i64_s (i64.extend_s n)))
 
   (fn frequencies [out:(ptr buf.Buf) seq:(ptr str.Bytes) k:i32] -> void
-    (let m:(ptr (strmap.StrMap i32)) (call count_kmers seq k))
+    (let m:(ptr (map.Map (ptr str.Bytes) i32)) (call count_kmers seq k))
     (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) 16))
-    (loop s 0 (- (call (strmap.capacity i32) m) 1) 1
-      (if (call (strmap.slot_used i32) m s)
+    (loop s 0 (- (call (map.capacity (ptr str.Bytes) i32) m) 1) 1
+      (if (call (map.slot_used (ptr str.Bytes) i32) m s)
           (block
             (let e:(ptr Entry) (new Entry))
-            (put e Entry.key (call (strmap.slot_key i32) m s))
-            (put e Entry.count (call (strmap.slot_val i32) m s))
+            (put e Entry.key (call (map.slot_key (ptr str.Bytes) i32) m s))
+            (put e Entry.count (call (map.slot_val (ptr str.Bytes) i32) m s))
             (call (vec.push (ptr Entry)) entries e))
           (block)))
     (call (vec.sort_by (ptr Entry)) entries (ref by_count))
@@ -91,8 +91,8 @@
 
   (fn occurrences [out:(ptr buf.Buf) seq:(ptr str.Bytes) fragment:str] -> void
     (let key:(ptr str.Bytes) (call str.from_str fragment))
-    (let m:(ptr (strmap.StrMap i32)) (call count_kmers seq (get key str.Bytes.len)))
-    (call buf.push_int out (call (strmap.get_or i32) m key 0))
+    (let m:(ptr (map.Map (ptr str.Bytes) i32)) (call count_kmers seq (get key str.Bytes.len)))
+    (call buf.push_int out (call (map.get_or (ptr str.Bytes) i32) m key 0))
     (call buf.push_byte out 9)
     (call buf.push_str out fragment)
     (call buf.push_byte out 10))

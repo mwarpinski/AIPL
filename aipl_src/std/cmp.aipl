@@ -1,0 +1,104 @@
+;; std/cmp: equality, order, and hashing as interfaces, so a generic function
+;; can ask for them (docs/design/CONSTRAINTS_PLAN.md).
+;;
+;;   (call (cmp.Eq.same i32) 3 3)                  ;; => true
+;;   (call (cmp.Ord.compare str) "apple" "pear")   ;; => -1
+;;   (call (cmp.Hash.hash i64) 42i64)
+;;
+;; Implemented here for the built-in types; a module implements them for its
+;; own types: (impl (cmp.Eq geo.Point) (fn same [a:geo.Point b:geo.Point] -> bool ...)).
+;; None for f32 or f64: NaN is not equal to itself, so float equality breaks
+;; what every hash map and sort relies on (same x x).
+(module cmp
+  (import str)
+
+  (interface (Eq T)
+    (fn same [a:T b:T] -> bool))
+
+  (interface (Ord T)
+    ;; negative, zero, or positive: -1, 0, or 1
+    (fn compare [a:T b:T] -> i32
+      (ens (and (gte res -1) (lte res 1)))))
+
+  ;; Keys that are equal (same) must hash alike.
+  (interface (Hash T)
+    (fn hash [k:T] -> i32)
+    (fn same [a:T b:T] -> bool))
+
+  ;; ===== Helpers =====
+
+  ;; murmur3's finalizer: spreads nearby numbers across a table
+  (fn mix [k:i32] -> i32
+    (let h:i32 (^ k (shru k 16)))
+    (set! h (* h -2048144789))
+    (set! h (^ h (shru h 13)))
+    (set! h (* h -1028477387))
+    (^ h (shru h 16)))
+
+  ;; FNV-1a over n bytes at addr
+  (fn fnv [addr:i32 n:i32] -> i32 (unsafe)
+    (let h:i32 -2128831035)
+    (loop i 0 (- n 1) 1
+      (set! h (* (^ h (mem.load8 (+ addr i))) 16777619)))
+    h)
+
+  ;; bytewise order of n1 bytes at a1 and n2 at a2; a prefix comes first
+  (fn order_bytes [a1:i32 n1:i32 a2:i32 n2:i32] -> i32 (unsafe)
+    (let n:i32 (if (lt n1 n2) n1 n2))
+    (loop i 0 (- n 1) 1
+      (let x:i32 (mem.load8 (+ a1 i)))
+      (let y:i32 (mem.load8 (+ a2 i)))
+      (if (neq x y) (return (if (lt x y) -1 1)) (block)))
+    (cond ((lt n1 n2) -1) ((gt n1 n2) 1) (else 0)))
+
+  (fn order_i64 [a:i64 b:i64] -> i32 (cond ((lt a b) -1) ((gt a b) 1) (else 0)))
+
+  ;; ===== Eq =====
+
+  (impl (Eq i32) (fn same [a:i32 b:i32] -> bool (eq a b)))
+  (impl (Eq i64) (fn same [a:i64 b:i64] -> bool (eq a b)))
+  (impl (Eq bool) (fn same [a:bool b:bool] -> bool (eq a b)))
+  (impl (Eq str)
+    (fn same [a:str b:str] -> bool
+      (unsafe (eq (call order_bytes (str.ptr a) (str.len a) (str.ptr b) (str.len b)) 0))))
+
+  ;; ===== Ord =====
+
+  (impl (Ord i32) (fn compare [a:i32 b:i32] -> i32 (cond ((lt a b) -1) ((gt a b) 1) (else 0))))
+  (impl (Ord i64) (fn compare [a:i64 b:i64] -> i32 (call order_i64 a b)))
+  (impl (Ord str)
+    (fn compare [a:str b:str] -> i32
+      (unsafe (call order_bytes (str.ptr a) (str.len a) (str.ptr b) (str.len b)))))
+
+  ;; ===== Hash =====
+
+  (impl (Hash i32)
+    (fn hash [k:i32] -> i32 (call mix k))
+    (fn same [a:i32 b:i32] -> bool (eq a b)))
+  (impl (Hash i64)
+    (fn hash [k:i64] -> i32 (call mix (i32.wrap (^ k (shru k 32i64)))))
+    (fn same [a:i64 b:i64] -> bool (eq a b)))
+  (impl (Hash str)
+    (fn hash [k:str] -> i32 (unsafe (call fnv (str.ptr k) (str.len k))))
+    (fn same [a:str b:str] -> bool (call (Eq.same str) a b)))
+  ;; byte strings by their contents (std/map's word counts and symbol tables)
+  (impl (Hash (ptr str.Bytes))
+    (fn hash [k:(ptr str.Bytes)] -> i32 (unsafe (call fnv (get k str.Bytes.addr) (get k str.Bytes.len))))
+    (fn same [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (call str.bytes_eq a b)))
+
+  ;; ===== Tests =====
+
+  (fn run_cmp_tests [] -> i32
+    (let p:i32 0)
+    (if (call (Eq.same i32) 3 3) (set! p (+ p 1)) (block))
+    (if (not (call (Eq.same str) "ab" "abc")) (set! p (+ p 1)) (block))
+    (if (call (Eq.same str) "abc" "abc") (set! p (+ p 1)) (block))
+    (if (eq (call (Ord.compare i64) -5i64 3i64) -1) (set! p (+ p 1)) (block))
+    (if (eq (call (Ord.compare str) "pear" "apple") 1) (set! p (+ p 1)) (block))
+    (if (eq (call (Ord.compare str) "ab" "abc") -1) (set! p (+ p 1)) (block))
+    (if (eq (call (Ord.compare i32) 7 7) 0) (set! p (+ p 1)) (block))
+    ;; equal keys hash alike, and a str and its bytes alike
+    (if (eq (call (Hash.hash i64) 42i64) (call (Hash.hash i64) 42i64)) (set! p (+ p 1)) (block))
+    (if (eq (call (Hash.hash str) "word") (call (Hash.hash (ptr str.Bytes)) (call str.from_str "word"))) (set! p (+ p 1)) (block))
+    (if (call (Hash.same (ptr str.Bytes)) (call str.from_str "x") (call str.from_str "x")) (set! p (+ p 1)) (block))
+    p))

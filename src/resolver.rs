@@ -26,6 +26,7 @@ pub struct Resolver;
 /// A generic instance is made from its template's file, but the type
 /// arguments substituted into it were written elsewhere: `foreign` maps
 /// those tokens' positions to their own files.
+#[derive(Clone)]
 pub struct Item {
     pub sx: Sx,
     pub file: PathBuf,
@@ -34,6 +35,7 @@ pub struct Item {
 
 /// The flat program before parsing: entry module name, then every struct
 /// and every function (imports first, in resolution order).
+#[derive(Clone)]
 pub struct FlatProgram {
     pub name: String,
     pub structs: Vec<Item>,
@@ -91,8 +93,18 @@ impl Resolver {
 
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
+        // every template checked once, at placeholders for its type
+        // parameters (generics::archetypes); nothing is compiled from these
+        if let Some(arch) = crate::generics::archetypes(flat.clone())? {
+            let module = Self::parse_flat(crate::consts::expand(arch)?)?;
+            crate::checker::TypeChecker::new().check_module(&module)?;
+        }
         let flat = crate::generics::expand(flat)?;
-        let flat = crate::consts::expand(flat)?;
+        Self::parse_flat(crate::consts::expand(flat)?)
+    }
+
+    /// Parses each item of an expanded flat program, with its positions.
+    fn parse_flat(flat: FlatProgram) -> Result<Module, String> {
         let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new(), file_names: flat.files.clone() };
         let unions: HashSet<String> = flat
             .structs
@@ -269,7 +281,9 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
                 Some("const" | "enum" | "union") => names.decls.insert(n.to_string()),
                 _ => false,
             };
-            if generic {
+            // an interface is named like a template, (interface (Hash K) ...);
+            // (impl (Hash i32) ...) only refers to one
+            if generic && item.head() != Some("impl") {
                 names.own_templates.insert(n.to_string());
             }
         }
@@ -286,7 +300,7 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     for mut item in module.items {
         names.walk(&mut item, 0);
         let it = Item { sx: item, file: file.to_path_buf(), foreign: HashMap::new() };
-        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
+        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union" | "interface")) {
             out_structs.push(it);
         } else {
             out_fns.push(it);
@@ -379,6 +393,12 @@ impl Names<'_> {
         if self.known_templates.contains(h) {
             return Some(h.to_string());
         }
+        // an interface's function, (Hash.hash K): the interface's name, qualified
+        if let Some((iface, f)) = h.rsplit_once('.') {
+            if let Some(c) = self.template_ref(iface) {
+                return Some(format!("{}.{}", c, f));
+            }
+        }
         None
     }
 
@@ -412,6 +432,26 @@ impl Names<'_> {
                         if head.is_some() {
                             continue;
                         }
+                    }
+                    // the functions of an interface or an implementation: their
+                    // names are the interface's, not this module's. An
+                    // implementation's are qualified with this module, so the
+                    // expander can tell where it was written (the orphan rule).
+                    if matches!(head.as_deref(), Some("interface" | "impl")) && i >= 2 && child.head() == Some("fn") {
+                        let qualify = head.as_deref() == Some("impl");
+                        for (j, part) in child.items_mut().unwrap().iter_mut().enumerate() {
+                            match (j, part) {
+                                (0, _) => {}
+                                (1, Sx::Atom(Token { kind: TokenKind::Symbol(s), .. })) => {
+                                    if let (true, Some(p)) = (qualify, &self.prefix) {
+                                        *s = format!("{}.{}", p, s);
+                                    }
+                                }
+                                (1, _) => {}
+                                (j, part) => self.walk(part, Names::child_role(Some("fn"), j)),
+                            }
+                        }
+                        continue;
                     }
                     // a match arm's head names a member of the matched type:
                     // (Shape.circle [r] ...) in module m is m.Shape.circle

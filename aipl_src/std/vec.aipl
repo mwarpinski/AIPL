@@ -7,6 +7,7 @@
 ;;   (call (vec.at i32) v 0)
 ;;   (call (vec.free i32) v)
 (module vec
+  (import cmp)
   (import alloc)
 
   (struct (Vec T) [items:(arr T) len:i32 allocator:alloc.Allocator])
@@ -65,9 +66,9 @@
 
   ;; Index of the first element equal to x (eq: same value, or same address
   ;; for pointers), or -1.
-  (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32
+  (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32 (where (cmp.Eq T))
     (loop i 0 (- (get v (Vec T) len) 1) 1
-      (if (eq (arr.get T (get v (Vec T) items) i) x) (return i) (block)))
+      (if (call (cmp.Eq.same T) (arr.get T (get v (Vec T) items) i) x) (return i) (block)))
     -1)
 
   (fn min_i32 [a:i32 b:i32] -> i32 (if (lt a b) a b))

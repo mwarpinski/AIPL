@@ -57,7 +57,7 @@
     found))
 
   ;; A zeroed T from the arena.
-  (fn (alloc T) [a:(ptr Arena)] -> (ptr T)
+  (fn (alloc T) [a:(ptr Arena)] -> (ptr T) (where (struct T))
     (unsafe (ptr.cast T (call raw a (sizeof T)))))
 
   ;; Frees everything allocated from the arena (its chunks are reused).

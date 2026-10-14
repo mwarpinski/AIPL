@@ -13,8 +13,10 @@ note. References such as "audit D3" and "P12" are to
 Wasm semantics as the specification, with the VM held to them by
 differential testing; i32/i64 wrapping arithmetic, unsigned comparisons,
 and checked arithmetic; structs, arrays, strict pointer types, function
-references, generics, constants, enums, and unions with `match` (generic
-ones too, and `std/option`); results with payloads of any type; threads
+references, generics checked once with interfaces and `where` clauses
+(`std/cmp`, and one `std/map` for any hashable key), constants, enums, and
+unions with `match` (generic ones too, and `std/option`); results with
+payloads of any type; threads
 and atomics; contracts and array bounds checks in every backend; WASI I/O
 and a standard library with generic collections and Zig-style allocators;
 a self-hosted toolchain (resolver, generics, type checker, code generator)
@@ -27,8 +29,7 @@ against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** interfaces and constraints on generics, so a template is checked once and `map` takes
-   any key (docs/design/CONSTRAINTS_PLAN.md, agreed); visibility (which also stops safe code forging the standard
+2. **The language questions readers will ask:** visibility (which also stops safe code forging the standard
    library's raw-address fields); small structs by value; generation checks
    against use after free (docs/design/GENERATIONS_PLAN.md).
 3. **The standard library:** a data format (JSON), directories and file
@@ -64,7 +65,7 @@ versioning (once packages exist), `inv` contracts.
 ### Language
 
 - **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
-- **Generics are explicit templates, not checked as such.** Every use names its type arguments (no inference), and a template is type-checked only through its instances, so an unused generic can hide errors. There are no constraints or interfaces: a generic body may do anything with `T` that its instances' types allow. `std/map` keys are `i32` only (no generic hashing yet). The agreed fix, interfaces with one implementation per type and templates checked once with sealed type parameters, is planned in docs/design/CONSTRAINTS_PLAN.md.
+- **Generics are explicit.** Every use names its type arguments (no inference), and every call to an interface's function names the interface and the type. Templates are checked once with sealed type parameters (AIPL_SPEC.md 4.H). Not yet: interfaces with several type parameters, generic implementations (`(impl (Hash (ptr T)) ...)`, which need a rule against overlap first), and default functions in an interface.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
 - **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
@@ -86,7 +87,7 @@ versioning (once packages exist), `inv` contracts.
 ### Strings and I/O
 
 - **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05): text is built with `std/buf`.
-- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`, `strmap`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact); still missing are parsing floats from text, shortest round-trip float printing, and sets.
+- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact); still missing are parsing floats from text, shortest round-trip float printing, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
 - **Three kinds of text** (audit D7): `str` (an immutable literal), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by hand (`str.from_str`, `buf.bytes`).

@@ -146,11 +146,11 @@ fn malformed_generics_are_errors() {
     assert!(e.contains("generic name 'get' is a built-in form"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> T x) (fn (f T) [x:T] -> T x))");
     assert!(e.contains("generic 'f' is defined twice"), "{e}");
-    // a type error inside an instance points at the template's file and line
+    // a type error inside a template is found in the template, at its file
+    // and line, whatever it is used with (it is checked once, sealed)
     let entry = write_program("type_err", &[("main.aipl", "(module m\n  (fn (f T) [x:T] -> T\n    (+ x true))\n  (fn g [] -> i32 (call (f i32) 1)))")]);
-    let m = Resolver::resolve(&entry).unwrap();
-    let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.starts_with(&format!("{}: 3:5: ", entry.display())), "{e}");
+    let e = Resolver::resolve(&entry).map(|_| ()).unwrap_err();
+    assert_eq!(e, format!("{}: 3:5: + on T: a type parameter has no arithmetic", entry.display()));
 }
 
 /// An imported module calling its own generic function with its own struct
@@ -167,8 +167,8 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
                 "lib.aipl",
                 "(module lib
                    (struct Item [x:i32 y:i64])
-                   (struct (Wrap T) [inner:(ptr T)])
-                   (fn (make T) [] -> (ptr T) (new T))
+                   (struct (Wrap T) [inner:(ptr T)] (where (struct T)))
+                   (fn (make T) [] -> (ptr T) (where (struct T)) (new T))
                    (fn use_own [] -> i32 (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
                    (fn nested [] -> i32
                      (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))

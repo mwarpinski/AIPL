@@ -1,0 +1,43 @@
+;; Placeholders for type parameters (checker.rs is_sealed, shown): when a
+;; template is checked once, each type parameter becomes a placeholder named
+;; 'template.T (generics.aipl archetypes). Messages show it as T.
+(module names
+  (import alloc)
+  (import str)
+  (import buf)
+
+  (fn is_sealed [n:(ptr str.Bytes)] -> bool
+    (and (gt (get n str.Bytes.len) 0) (eq (call str.byte_at n 0) 39)))
+
+  ;; t with every placeholder shown as its parameter: vec.Vec<'vec.index_of.T>
+  ;; is vec.Vec<T>.
+  (fn shown [t:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get t str.Bytes.len) 1)))
+    (let n:i32 (get t str.Bytes.len))
+    (let i:i32 0)
+    (while (lt i n)
+      (let c:i32 (call str.byte_at t i))
+      (if (neq c 39)
+          (block (call buf.push_byte out c) (set! i (+ i 1)))
+          (block
+            ;; the name runs to a delimiter; only its last part is shown
+            (set! i (+ i 1))
+            (let start:i32 i)
+            (while (and (lt i n) (not (call delimiter (call str.byte_at t i))))
+              (if (eq (call str.byte_at t i) 46) (set! start (+ i 1)) (block))
+              (set! i (+ i 1)))
+            (loop k start (- i 1) 1 (call buf.push_byte out (call str.byte_at t k))))))
+    (call buf.bytes out))
+
+  ;; whitespace, or one of <>,()[]:
+  (fn delimiter [c:i32] -> bool
+    (or (lte c 32) (or (eq c 60) (or (eq c 62) (or (eq c 44) (or (eq c 40) (or (eq c 41) (or (eq c 91) (or (eq c 93) (eq c 58))))))))))
+
+  (fn run_names_tests [] -> i32
+    (let p:i32 0)
+    (if (call str.bytes_eq (call shown (call str.from_str "vec.Vec<'vec.index_of.T>")) (call str.from_str "vec.Vec<T>")) (set! p (+ p 1)) (block))
+    (if (call str.bytes_eq (call shown (call str.from_str "(arr 'f.K)")) (call str.from_str "(arr K)")) (set! p (+ p 1)) (block))
+    (if (call str.bytes_eq (call shown (call str.from_str "Map<'m.Map.K,i32>")) (call str.from_str "Map<K,i32>")) (set! p (+ p 1)) (block))
+    (if (call is_sealed (call str.from_str "'f.T")) (set! p (+ p 1)) (block))
+    (if (not (call is_sealed (call str.from_str "f.T"))) (set! p (+ p 1)) (block))
+    p))

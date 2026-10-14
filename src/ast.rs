@@ -475,7 +475,8 @@ impl Source {
 /// diagnostics; `{:?}` stays Rust's own form.
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::printer::type_str(self))
+        // a placeholder for a type parameter shows as the parameter
+        f.write_str(&crate::checker::shown(&crate::printer::type_str(self)))
     }
 }
 

@@ -1,7 +1,7 @@
 ;; word_freq: the most frequent words of a file (the first command-line
 ;; argument, else input.txt), most frequent first, ties in byte order.
 ;; Shows the collections and function references together: counting in a
-;; strmap, sorting records with vec.sort_by and a comparator. Words are runs
+;; map, sorting records with vec.sort_by and a comparator. Words are runs
 ;; of ASCII letters and digits, lowercased. Returns the number of distinct
 ;; words, or -1 if the file cannot be read.
 ;;   cd examples && ../target/debug/aipl eval word_freq.aipl -- input.txt
@@ -12,7 +12,7 @@
   (import os)
   (import buf)
   (import vec)
-  (import strmap)
+  (import map)
 
   (struct Entry [word:(ptr str.Bytes) count:i32])
 
@@ -27,8 +27,8 @@
       (if (and (gte c 65) (lte c 90)) (call str.set_byte b i (+ c 32)) (block))))
 
   ;; Word -> count. Keys are slices of `text`, which must outlive the map.
-  (fn count_words [text:(ptr str.Bytes)] -> (ptr (strmap.StrMap i32))
-    (let counts:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 64))
+  (fn count_words [text:(ptr str.Bytes)] -> (ptr (map.Map (ptr str.Bytes) i32))
+    (let counts:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 64))
     (let n:i32 (get text str.Bytes.len))
     (let start:i32 -1)
     ;; i runs one past the end so a final word is closed too
@@ -38,7 +38,7 @@
         ((and inside (lt start 0)) (set! start i))
         ((and (not inside) (gte start 0))
          (let w:(ptr str.Bytes) (call str.slice text start (- i start)))
-         (call (strmap.set i32) counts w (+ (call (strmap.get_or i32) counts w 0) 1))
+         (call (map.set (ptr str.Bytes) i32) counts w (+ (call (map.get_or (ptr str.Bytes) i32) counts w 0) 1))
          (set! start -1))
         (else (block))))
     counts)
@@ -58,14 +58,14 @@
         (- (get b Entry.count) (get a Entry.count))
         (call compare_bytes (get a Entry.word) (get b Entry.word))))
 
-  (fn ranked [counts:(ptr (strmap.StrMap i32))] -> (ptr (vec.Vec (ptr Entry)))
-    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (call (strmap.count i32) counts)))
-    (loop i 0 (- (call (strmap.capacity i32) counts) 1) 1
-      (if (call (strmap.slot_used i32) counts i)
+  (fn ranked [counts:(ptr (map.Map (ptr str.Bytes) i32))] -> (ptr (vec.Vec (ptr Entry)))
+    (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (call (map.count (ptr str.Bytes) i32) counts)))
+    (loop i 0 (- (call (map.capacity (ptr str.Bytes) i32) counts) 1) 1
+      (if (call (map.slot_used (ptr str.Bytes) i32) counts i)
           (block
             (let e:(ptr Entry) (new Entry))
-            (put e Entry.word (call (strmap.slot_key i32) counts i))
-            (put e Entry.count (call (strmap.slot_val i32) counts i))
+            (put e Entry.word (call (map.slot_key (ptr str.Bytes) i32) counts i))
+            (put e Entry.count (call (map.slot_val (ptr str.Bytes) i32) counts i))
             (call (vec.push (ptr Entry)) entries e))
           (block)))
     (call (vec.sort_by (ptr Entry)) entries (ref by_count_then_word))

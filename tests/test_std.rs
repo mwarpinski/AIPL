@@ -136,8 +136,11 @@ fn std_io_agrees_in_both_backends() {
 fn std_collections_agree_in_both_backends() {
     // the run_<module>_tests runners plus every helper with i32 params
     assert!(differential_module("vec") >= 20);
-    assert!(differential_module("map") >= 8);
-    assert!(differential_module("strmap") >= 1);
+    // every map function is generic now: its runner and the two groups of
+    // cases it runs (i32 keys, byte-string keys) are what can be called
+    assert!(differential_module("map") >= 3);
+    assert!(differential_module("cmp") >= 1);
+    assert!(differential_module("option") >= 1);
     assert!(differential_module("buf") >= 1);
 }
 

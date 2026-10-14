@@ -127,7 +127,8 @@ module was imported (`tests/test_generics.rs`).
 sequence read from stdin; frequency tables and occurrence counts). Its input
 comes from the Benchmarks Game's fasta generator (`fasta.py`, run by
 `tools/bench.py` through `stdin_cmd`). Ran with no language changes, using
-`std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`.
+`std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`;
+since 2026-10-14 `(map.Map (ptr str.Bytes) i32)`, the one generic map.
 What it showed:
 - **The 64 MiB memory cap.** At the benchmark's usual size (fasta 250000,
   1.25 million letters) both AIPL builds run out of memory: seven maps of up
@@ -141,7 +142,10 @@ What it showed:
   `strmap` hashes and compares keys byte by byte in AIPL, while Python's
   dict is optimised C, and the C version packs each k-mer into a 64-bit
   integer. Faster hashing (word at a time) or an integer-keyed map for short
-  keys would help most.
+  keys would help most. *2026-10-14:* `std/map` replaced `strmap`, and its
+  byte-string hash reads the bytes directly rather than through the
+  bounds-checked `str.byte_at`: native 1.306 s to 1.119 s, wasm 0.684 s to
+  0.579 s (fasta 150000, same machine, back to back).
 
 **pidigits** (pi by Gibbons' unbounded spigot, as in the Benchmarks Game:
 arbitrary-precision integers). C uses GMP, as the Benchmarks Game's C
