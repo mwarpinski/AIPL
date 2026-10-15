@@ -327,3 +327,24 @@ std gained the same way: `fs.info` returns an `fs.Info` value (it made a
 heap cell, never freed, on every call), and `json.write` finds a number's
 shortest digits without one either.
 
+
+## Unions by value (2026-10-15)
+
+docs/design/VALUES_PLAN.md V5: unions that fit are held by value, among
+them `std/alloc`'s `Allocator` (2 numbers, a tag and a shared pointer
+slot, where it was one address), which every container holds and every
+allocation is passed. Best of three, against the table above:
+
+| Benchmark | native | wasm (wasmtime) |
+|---|---|---|
+| binarytrees | 0.137 → 0.137 s | 0.143 → 0.147 s |
+| knucleotide | 0.624 → 0.647 s | 0.566 → 0.581 s |
+| pidigits | 3.602 → 3.689 s | 2.292 → 2.336 s |
+| spigot | 1.355 → 1.381 s | 1.511 → 1.532 s |
+
+The others moved by under 1%. The changes are 0-4%, near the run-to-run
+noise (C's own times moved 1-2% between the two runs), and lean slower
+on the benchmarks that allocate through the library, which now pass an
+allocator as two numbers. What unions by value buy is allocations: an
+`(option.Option T)` returned for a small `T`, or a `Shape` made in a loop,
+takes no memory (`map.find` a million times takes none).

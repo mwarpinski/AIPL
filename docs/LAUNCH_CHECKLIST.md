@@ -237,8 +237,11 @@ FAQ or ROADMAP.md.
   at most 8 scalars, held inline in arrays and structs, in every backend;
   nbody with an `(arr Body)` runs 1.9x faster under wasmtime.
   AIPL_SPEC.md 4.E.
-- [ ] **Unions, results, and `Option` by value** (VALUES_PLAN.md V5), which
-  also removes the allocation behind `map.get_or`.
+- [x] **Unions and `Option` by value** (done 2026-10-15, VALUES_PLAN.md V5):
+  a union that does not contain itself, holds no `str`, and fits in 8
+  slots allocates nothing; `map.find` returns an `Option`. AIPL_SPEC.md 4.J.
+- [ ] **Results by value** (VALUES_PLAN.md V5): needs each `ok`/`err`'s
+  full type inferred from context in both compilers.
 
 ## 7. Documentation: delete, merge, keep
 

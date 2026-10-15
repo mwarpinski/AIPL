@@ -40,10 +40,7 @@ impl WasmCompiler {
 
         let StringLayout { blob: string_blob, addrs: strings, newline_addr, heap_start } = string_layout(module)?;
 
-        let mut structs: HashMap<String, StructDef> = HashMap::new();
-        for s in &module.structs {
-            structs.insert(s.name.clone(), s.clone());
-        }
+        let structs = crate::checker::Structs::new(&module.structs, &module.unions);
         let unions: HashMap<String, UnionDef> = module.unions.iter().map(|u| (u.name.clone(), u.clone())).collect();
         let enums: HashMap<String, EnumDef> = module.enums.iter().map(|e| (e.name.clone(), e.clone())).collect();
 
@@ -258,7 +255,7 @@ impl WasmCompiler {
             // The last statement's value (if any) is the function's implicit
             // return, so it's kept - unless the function is declared void, in
             // which case it must be dropped too.
-            let checks = contract_messages(f);
+            let checks = contract_messages(f, &structs);
             for (is_ens, expr, msg) in &checks {
                 if !is_ens {
                     emit_contract_check(expr, msg, &ctx, &mut func, &strings)?;
@@ -616,7 +613,7 @@ struct Ctx<'a> {
     heap_start: u32,
     /// The module spawns threads: runtime scratch cells are per thread.
     threaded: bool,
-    structs: &'a HashMap<String, StructDef>,
+    structs: &'a crate::checker::Structs,
     unions: &'a HashMap<String, UnionDef>,
     enums: &'a HashMap<String, EnumDef>,
     /// Function name -> its `(fn [...] -> r)` type, for `(ref f)`.
@@ -636,8 +633,12 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     /// A line-table position: the file the token at `span` was written in.
+    /// An expression's position: in its item's file (a generic instance's
+    /// expressions are all the template's; only type arguments come from
+    /// elsewhere, and a position alone cannot tell them apart from a
+    /// template token at the same line and column in another file).
     fn position(&self, span: (u32, u32)) -> Pos {
-        let name = self.source.and_then(|s| self.file_names.get(s.file_at(span))).cloned().unwrap_or_default();
+        let name = self.source.and_then(|s| self.file_names.get(&s.file)).cloned().unwrap_or_default();
         (name, span.0, span.1)
     }
 }
@@ -676,7 +677,7 @@ fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, Strin
 }
 
 /// The wasm params/results of a `(fn [...] -> r)` type.
-fn wasm_signature(sig: &Type, structs: &HashMap<String, StructDef>) -> (Vec<ValType>, Vec<ValType>) {
+fn wasm_signature(sig: &Type, structs: &crate::checker::Structs) -> (Vec<ValType>, Vec<ValType>) {
     match sig {
         Type::Fn(params, ret) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
         _ => (vec![], vec![]),
@@ -698,7 +699,7 @@ fn wasm_signature(sig: &Type, structs: &HashMap<String, StructDef>) -> (Vec<ValT
 
 /// A value of type `ty` as wasm sees it: its scalars and their byte offsets
 /// in its memory layout (one at 0 for a scalar, none for void).
-fn flat(ty: &Type, structs: &HashMap<String, StructDef>) -> Vec<(Type, u32)> {
+fn flat(ty: &Type, structs: &crate::checker::Structs) -> Vec<(Type, u32)> {
     match ty {
         Type::Void => vec![],
         Type::Struct(n) => match structs.get(n) {
@@ -712,26 +713,35 @@ fn flat(ty: &Type, structs: &HashMap<String, StructDef>) -> Vec<(Type, u32)> {
             }
             _ => vec![(ty.clone(), 0)],
         },
+        // a union by value: its slots (checker::SumLayout)
+        Type::Union(n) if structs.is_value_union(n) => {
+            let l = &structs.by_value[n];
+            l.slots.iter().cloned().zip(l.offsets.iter().copied()).collect()
+        }
         _ => vec![(ty.clone(), 0)],
     }
 }
 
-fn is_value_type(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
-    matches!(ty, Type::Struct(n) if structs.get(n).is_some_and(|d| d.is_value))
+fn is_value_type(ty: &Type, structs: &crate::checker::Structs) -> bool {
+    match ty {
+        Type::Struct(n) => structs.get(n).is_some_and(|d| d.is_value),
+        Type::Union(n) => structs.is_value_union(n),
+        _ => false,
+    }
 }
 
 /// How many wasm values (locals, results) a value of type `ty` is.
-fn width(ty: &Type, structs: &HashMap<String, StructDef>) -> u32 {
+fn width(ty: &Type, structs: &crate::checker::Structs) -> u32 {
     flat(ty, structs).len() as u32
 }
 
-fn valtypes(ty: &Type, structs: &HashMap<String, StructDef>) -> Vec<ValType> {
+fn valtypes(ty: &Type, structs: &crate::checker::Structs) -> Vec<ValType> {
     flat(ty, structs).iter().map(|(t, _)| aipl_to_wasm_type(t)).collect()
 }
 
 /// Field `f` of value struct `s`: its first scalar among the struct's, how
 /// many it is, its byte offset, and its type.
-fn field_slots(s: &str, f: &str, structs: &HashMap<String, StructDef>) -> Result<(u32, u32, u32, Type), String> {
+fn field_slots(s: &str, f: &str, structs: &crate::checker::Structs) -> Result<(u32, u32, u32, Type), String> {
     let def = structs.get(s).ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", s))?;
     let mut slot = 0;
     for g in &def.fields {
@@ -892,7 +902,7 @@ fn compile_into_at(expr: &Expr, base: u32, ctx: &Ctx, func: &mut Body) -> Result
 /// The root of a chain of field reads from a value, (get (get e A.f) B.g):
 /// the first expression down the chain that is not such a read, and the
 /// reads from it outward.
-fn value_chain<'e>(expr: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> (&'e Expr, Vec<(&'e String, &'e String)>) {
+fn value_chain<'e>(expr: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &crate::checker::Structs) -> (&'e Expr, Vec<(&'e String, &'e String)>) {
     let mut steps = Vec::new();
     let mut e = expr;
     while let Expr::GetField { struct_name, field_name, ptr, .. } = e {
@@ -908,7 +918,7 @@ fn value_chain<'e>(expr: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap
 
 /// Where the root of a value chain is: a local, memory (a field of a struct
 /// behind a pointer, an array element), or computed (any other expression).
-fn root_in_place(root: &Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> bool {
+fn root_in_place(root: &Expr, ty: &dyn Fn(&Expr) -> Type, structs: &crate::checker::Structs) -> bool {
     match root {
         Expr::Var(..) | Expr::ArrGet { .. } => true,
         Expr::GetField { ptr, .. } => !is_value_type(&ty(ptr), structs),
@@ -919,8 +929,8 @@ fn root_in_place(root: &Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<Stri
 /// The scratch groups of a function's body and contracts (value_groups'
 /// walk, in source order): each node that needs one (by address), with the
 /// type of the value it holds.
-fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>, body_into: bool) -> Vec<(usize, Type)> {
-    fn walk(e: &Expr, into: bool, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>, out: &mut Vec<(usize, Type)>) {
+fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &crate::checker::Structs, body_into: bool) -> Vec<(usize, Type)> {
+    fn walk(e: &Expr, into: bool, ty: &dyn Fn(&Expr) -> Type, structs: &crate::checker::Structs, out: &mut Vec<(usize, Type)>) {
         // a node's own group (an if, match, or with) is keyed 2*address, a
         // chain root's spill group 2*address+1 (a root may have both)
         let key = 2 * (e as *const Expr as usize);
@@ -946,6 +956,11 @@ fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<S
                 if v && !into {
                     out.push((key, t));
                 }
+                // a union by value matched where it is computed spills
+                let vt = ty(value);
+                if matches!(&vt, Type::Union(n) if structs.is_value_union(n)) && !matches!(value.as_ref(), Expr::Var(..)) {
+                    out.push((2 * (value.as_ref() as *const Expr as usize) + 1, vt));
+                }
                 walk(value, false, ty, structs, out);
                 for a in arms {
                     body(&a.body, v, out);
@@ -965,6 +980,12 @@ fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<S
                 body(err_body, v, out);
             }
             Expr::Block(b, _) | Expr::Unsafe(b, _) => body(b, into, out),
+            Expr::Make { union_name, args, .. } if structs.is_value_union(union_name) => {
+                out.push((key, ty(e)));
+                for a in args {
+                    walk(a, false, ty, structs, out);
+                }
+            }
             Expr::With { value, new_val, .. } => {
                 out.push((key, ty(e)));
                 walk(value, false, ty, structs, out);
@@ -1009,7 +1030,7 @@ fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<S
 /// The value structs node `e` stores to memory: a put's or arr.set's value
 /// whose target (after any path) is one, an ok's or err's, a make's fields
 /// that are (in order).
-fn stored_values<'e>(e: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> Vec<&'e Expr> {
+fn stored_values<'e>(e: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &crate::checker::Structs) -> Vec<&'e Expr> {
     let value = |t: &Type| is_value_type(t, structs);
     let follow = |mut t: Type, path: &[(String, String)]| {
         for (st, f) in path {
@@ -1099,7 +1120,7 @@ struct Typing<'a> {
     local_types: &'a HashMap<String, Type>,
     fn_returns: &'a HashMap<String, Type>,
     fn_types: &'a HashMap<String, Type>,
-    structs: &'a HashMap<String, StructDef>,
+    structs: &'a crate::checker::Structs,
 }
 
 fn type_in(expr: &Expr, ctx: &Typing) -> Type {
@@ -2194,6 +2215,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_match_result(expr, None, ctx, func)?;
             }
         }
+        Expr::Make { union_name, variant, args, .. } if ctx.structs.is_value_union(union_name) => compile_value_make(expr, union_name, variant, args, ctx, func)?,
         Expr::Make { union_name, variant, args, .. } => compile_make(union_name, variant, args, ctx, func)?,
         // a value struct: its fields' scalars, in order
         Expr::Record { args, .. } => {
@@ -2623,7 +2645,7 @@ fn binder_types(
     local_types: &mut HashMap<String, Type>,
     fn_returns: &HashMap<String, Type>,
     fn_types: &HashMap<String, Type>,
-    structs: &HashMap<String, StructDef>,
+    structs: &crate::checker::Structs,
 ) {
     let mut found = Vec::new();
     for e in body {
@@ -2777,6 +2799,46 @@ fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func:
     Ok(())
 }
 
+/// `(make U.v args...)` of a union held by value: into its group, the tag,
+/// each field's scalars in their slots (checker::SumLayout), zero in the
+/// slots v does not use; then the group pushed.
+fn compile_value_make(this: &Expr, union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    let g = *ctx.groups.get(&(2 * (this as *const Expr as usize))).ok_or("Wasm Codegen: a value make has no group")?;
+    let def = ctx.unions.get(union_name).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", union_name))?;
+    let tag = def.variants.iter().position(|v| v.name == variant).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", variant))?;
+    let layout = &ctx.structs.by_value[union_name];
+    let map = &layout.variants[tag];
+    func.instruction(&Instruction::I32Const(tag as i32));
+    func.instruction(&Instruction::LocalSet(g));
+    let mut at = 0;
+    for (a, f) in args.iter().zip(&def.variants[tag].fields) {
+        compile_expr(a, ctx, func)?;
+        let w = width(&f.ty, ctx.structs) as usize;
+        for k in (at..at + w).rev() {
+            func.instruction(&Instruction::LocalSet(g + map[k]));
+        }
+        at += w;
+    }
+    for (slot, t) in layout.slots.iter().enumerate().skip(1) {
+        if !map.contains(&(slot as u32)) {
+            emit_zero(func, t);
+            func.instruction(&Instruction::LocalSet(g + slot as u32));
+        }
+    }
+    emit_get_slots(func, g, layout.slots.len() as u32);
+    Ok(())
+}
+
+/// A zero of scalar type t.
+fn emit_zero(func: &mut Body, t: &Type) {
+    func.instruction(&match t {
+        Type::I64 => Instruction::I64Const(0),
+        Type::F32 => Instruction::F32Const(0.0f32.into()),
+        Type::F64 => Instruction::F64Const(0.0f64.into()),
+        _ => Instruction::I32Const(0),
+    });
+}
+
 /// The arm body whose last expression gives a match its type: the first
 /// arm's, or the else body's when there are no arms (the checker has made
 /// every arm agree).
@@ -2801,6 +2863,59 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         _ => wasm_encoder::BlockType::Empty,
     };
     let compile_body = |body: &[Expr], func: &mut Body| -> Result<(), String> { compile_arm(body, block_ty, dest, ctx, func) };
+    // a union by value: the tag and the binders from its slots (a
+    // variable's own locals, else its spill group)
+    let vt = expr_type(value, ctx);
+    if let Type::Union(un) = &vt {
+        if ctx.structs.is_value_union(un) {
+            let base = match value {
+                Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
+                _ => {
+                    let g = *ctx.groups.get(&(2 * (value as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match has no spill group")?;
+                    compile_expr(value, ctx, func)?;
+                    emit_set_slots(func, g, width(&vt, ctx.structs));
+                    g
+                }
+            };
+            let def = ctx.unions.get(un).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", un))?;
+            let layout = &ctx.structs.by_value[un];
+            for arm in arms {
+                let member = &arm.member[arm.member.rfind('.').map_or(0, |d| d + 1)..];
+                let tag = def.variants.iter().position(|v| v.name == member).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", arm.member))?;
+                func.instruction(&Instruction::LocalGet(base));
+                func.instruction(&Instruction::I32Const(tag as i32));
+                func.instruction(&Instruction::I32Eq);
+                func.instruction(&Instruction::If(block_ty));
+                ctx.labels.borrow_mut().push(Label::Plain);
+                let map = &layout.variants[tag];
+                let mut at = 0;
+                for (k, f) in def.variants[tag].fields.iter().enumerate() {
+                    let w = width(&f.ty, ctx.structs) as usize;
+                    if let Some(n) = arm.binders.as_ref().and_then(|b| b.get(k)).filter(|n| n.as_str() != "_") {
+                        let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
+                        for slot in &map[at..at + w] {
+                            func.instruction(&Instruction::LocalGet(base + slot));
+                        }
+                        emit_set_slots(func, idx, w as u32);
+                    }
+                    at += w;
+                }
+                compile_body(&arm.body, func)?;
+                func.instruction(&Instruction::Else);
+            }
+            match else_body {
+                Some(body) => compile_body(body, func)?,
+                None => {
+                    func.instruction(&Instruction::Unreachable);
+                }
+            }
+            for _ in arms {
+                ctx.labels.borrow_mut().pop();
+                func.instruction(&Instruction::End);
+            }
+            return Ok(());
+        }
+    }
     compile_expr(value, ctx, func)?;
     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
     for arm in arms {
@@ -3243,8 +3358,9 @@ enum MsgItem {
 
 /// How the VM shows a value of type `ty` in a contract message, if compiled
 /// code can show it the same way (floats, strings, and results it cannot).
-fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
+fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<MsgItem> {
     match ty {
+        Type::Union(n) if structs.is_value_union(n) => None,
         Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
         Type::I64 => Some(MsgItem::Long(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),
@@ -3260,7 +3376,7 @@ fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
 /// text the resolver flattened, which the Rust and AIPL resolvers lay out
 /// differently (and which is not the user's file once there are imports):
 /// with it, the bytes would depend on that layout.
-fn contract_messages(f: &FnDef) -> Vec<ContractCheck<'_>> {
+fn contract_messages<'f>(f: &'f FnDef, structs: &crate::checker::Structs) -> Vec<ContractCheck<'f>> {
     let mut out = Vec::new();
     for c in &f.contracts {
         let (is_ens, expr) = match c {
@@ -3272,9 +3388,9 @@ fn contract_messages(f: &FnDef) -> Vec<ContractCheck<'_>> {
         let text = format!("{} failed in '{}': ({} {})", kind, f.name, form, crate::printer::expr_str(expr));
         let mut items = Vec::new();
         let mut shown: Vec<(String, Option<MsgItem>)> =
-            f.params.iter().map(|(n, t)| (n.clone(), shown_as(t, n))).collect();
+            f.params.iter().map(|(n, t)| (n.clone(), shown_as(t, n, structs))).collect();
         if is_ens {
-            shown.push(("res".to_string(), if f.return_type == Type::Void { None } else { shown_as(&f.return_type, "res") }));
+            shown.push(("res".to_string(), if f.return_type == Type::Void { None } else { shown_as(&f.return_type, "res", structs) }));
         }
         for (name, item) in shown {
             let sep = if items.is_empty() { " with " } else { ", " };
@@ -3439,8 +3555,9 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
         }
     });
     // then the texts of compiled contract messages, function by function
+    let structs = crate::checker::Structs::new(&module.structs, &module.unions);
     for f in &module.functions {
-        for (_, _, (text, items)) in contract_messages(f) {
+        for (_, _, (text, items)) in contract_messages(f, &structs) {
             intern(&text, &mut blob, &mut addrs);
             for item in &items {
                 match item {

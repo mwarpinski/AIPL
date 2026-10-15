@@ -18,6 +18,9 @@ pub enum Value {
     Array(Vec<Value>),
     /// A value struct: its fields' values, in declaration order.
     Record(Vec<Value>),
+    /// A union held by value (checker::SumLayout): its variant's index and
+    /// that variant's fields' values. A union held by address is an `Int`.
+    Union(usize, Vec<Value>),
     Ok(Box<Value>),
     Err(Box<Value>),
     Void,
@@ -83,7 +86,7 @@ pub struct VM {
     /// Function names in load order: `(ref f)` is f's position here, which is
     /// also its slot in the wasm backend's function table.
     fn_order: Arc<Vec<String>>,
-    structs: Arc<HashMap<String, StructDef>>,
+    structs: Arc<crate::checker::Structs>,
     unions: Arc<HashMap<String, UnionDef>>,
     /// Enum members by enum name, for `match` on an enum value.
     enums: Arc<HashMap<String, EnumDef>>,
@@ -138,7 +141,7 @@ impl VM {
         VM {
             functions: Arc::new(HashMap::new()),
             fn_order: Arc::new(Vec::new()),
-            structs: Arc::new(HashMap::new()),
+            structs: Arc::new(crate::checker::Structs::default()),
             unions: Arc::new(HashMap::new()),
             enums: Arc::new(HashMap::new()),
             flow: None,
@@ -312,16 +315,18 @@ impl VM {
         self.fn_order = Arc::new(order);
         self.functions = Arc::new(f_map);
 
-        let mut s_map = (*self.structs).clone();
+        let mut s_map: HashMap<String, StructDef> = self.structs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         for s in module.structs {
             s_map.insert(s.name.clone(), s);
         }
-        self.structs = Arc::new(s_map);
-
         let mut u_map = (*self.unions).clone();
         for u in module.unions {
             u_map.insert(u.name.clone(), u);
         }
+        // which unions are values depends on them all
+        let all_structs: Vec<StructDef> = s_map.into_values().collect();
+        let all_unions: Vec<UnionDef> = u_map.values().cloned().collect();
+        self.structs = Arc::new(crate::checker::Structs::new(&all_structs, &all_unions));
         self.unions = Arc::new(u_map);
         let mut e_map = (*self.enums).clone();
         for e in module.enums {
@@ -658,6 +663,14 @@ impl VM {
             Expr::Make { union_name, variant, args, .. } => {
                 let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
                 let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
+                // a union by value: its fields, nothing allocated
+                if self.structs.is_value_union(union_name) {
+                    let mut fields = Vec::with_capacity(args.len());
+                    for a in args {
+                        fields.push(self.eval_expr(a, scope)?);
+                    }
+                    return Ok(Value::Union(tag, fields));
+                }
                 let v = &def.variants[tag];
                 let (offsets, size) = crate::checker::variant_layout(v, &self.structs)?;
                 // the cell is claimed before the fields are evaluated, as in the wasm lowering
@@ -687,14 +700,30 @@ impl VM {
                 Ok(Value::Record(fields))
             }
             Expr::Match { value, arms, else_body, .. } => {
-                let v = match self.eval_expr(value, scope)? {
-                    Value::Int(i) => i,
-                    other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
-                };
                 let member = |m: &str| m[m.rfind('.').map_or(0, |d| d + 1)..].to_string();
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
                 let tname = arms.first().map(|a| a.member[..a.member.rfind('.').unwrap_or(0)].to_string()).unwrap_or_default();
                 let mut chosen: Option<&Vec<Expr>> = None;
+                let v = match self.eval_expr(value, scope)? {
+                    Value::Int(i) => i,
+                    // a union by value: the binders from its fields
+                    Value::Union(tag, fields) => {
+                        let def = self.unions.get(&tname).cloned().ok_or_else(|| format!("VM: Unknown union '{}'", tname))?;
+                        if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
+                            for (name, fv) in arm.binders.iter().flatten().zip(fields).filter(|(n, _)| n.as_str() != "_") {
+                                scope.insert(name.clone(), fv);
+                            }
+                            chosen = Some(&arm.body);
+                        }
+                        let res = match chosen.or(else_body.as_ref()) {
+                            Some(body) => self.eval_seq(body, scope),
+                            None => Err("unreachable: match on a value that is none of its type's members".to_string()),
+                        };
+                        scope.retain(|k, _| keys_before.contains(k));
+                        return res;
+                    }
+                    other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
+                };
                 if let Some(def) = self.unions.get(&tname).cloned() {
                     let cell = v as u32 as usize;
                     let tag = match self.load_val_at(cell, &Type::I32)? {
@@ -897,7 +926,7 @@ impl VM {
         let inner = self.eval_expr(payload, scope)?;
         let at = cell + offset as usize;
         match (&ty, &inner) {
-            (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) => self.store_val_at(at, &ty, inner.clone())?,
+            (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) | (Type::Union(_), Value::Union(..)) => self.store_val_at(at, &ty, inner.clone())?,
             (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
             _ => {}
         }
@@ -1004,6 +1033,16 @@ impl VM {
     }
 
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
+        // a union by value: its slots, read and rebuilt
+        if let Type::Union(n) = ty {
+            if let Some(l) = self.structs.by_value.get(n) {
+                let mut slots = Vec::with_capacity(l.slots.len());
+                for (t, off) in l.slots.iter().zip(&l.offsets) {
+                    slots.push(self.load_val_at(addr + *off as usize, t)?);
+                }
+                return Ok(from_scalars(ty, &slots, &self.structs));
+            }
+        }
         // a value struct: its fields, each where the layout puts it
         if let Some(def) = self.value_struct(ty) {
             let mut fields = Vec::with_capacity(def.fields.len());
@@ -1075,6 +1114,15 @@ impl VM {
     }
 
     fn store_val_at(&self, addr: usize, ty: &Type, val: Value) -> Result<(), String> {
+        // a union by value: every slot (zero where its variant has none)
+        if let Type::Union(n) = ty {
+            if let Some(l) = self.structs.by_value.get(n).cloned() {
+                for ((t, off), v) in l.slots.iter().zip(&l.offsets).zip(to_scalars(ty, val, &self.structs)?) {
+                    self.store_val_at(addr + *off as usize, t, v)?;
+                }
+                return Ok(());
+            }
+        }
         if let Some(def) = self.value_struct(ty) {
             let Value::Record(fields) = val else {
                 return Err(format!("VM: Expected a {} value to store, got {:?}", ty, val));
@@ -2141,7 +2189,7 @@ fn contract_failure(
     params: &[(String, Type)],
     scope: &HashMap<String, Value>,
     result: Option<(&Value, &Type)>,
-    structs: &HashMap<String, StructDef>,
+    structs: &crate::checker::Structs,
 ) -> String {
     let (line, col) = expr.span();
     let mut bound: Vec<String> = params
@@ -2158,9 +2206,85 @@ fn contract_failure(
     )
 }
 
+/// A value of type `ty` (checker::scalars) as its scalars, in order: a
+/// value struct's fields', a union by value's slots (zero where its variant
+/// has none), else itself.
+fn to_scalars(ty: &Type, v: Value, structs: &crate::checker::Structs) -> Result<Vec<Value>, String> {
+    match (ty, v) {
+        (Type::Struct(n), Value::Record(fields)) if structs.get(n).is_some_and(|d| d.is_value) => {
+            let mut out = Vec::new();
+            for (f, x) in structs[n].fields.iter().zip(fields) {
+                out.extend(to_scalars(&f.ty, x, structs)?);
+            }
+            Ok(out)
+        }
+        (Type::Union(n), Value::Union(tag, fields)) if structs.is_value_union(n) => {
+            let l = &structs.by_value[n];
+            let mut out: Vec<Value> = l.slots.iter().map(zero_of).collect();
+            out[0] = Value::Int(tag as i64);
+            let mut inner = Vec::new();
+            for (f, x) in structs.unions[n].variants[tag].fields.iter().zip(fields) {
+                inner.extend(to_scalars(&f.ty, x, structs)?);
+            }
+            for (slot, x) in l.variants[tag].iter().zip(inner) {
+                out[*slot as usize] = x;
+            }
+            Ok(out)
+        }
+        (Type::Struct(_) | Type::Union(_), Value::Record(_) | Value::Union(..)) => Err(format!("VM: a {} value does not match its type", ty)),
+        (_, x) => Ok(vec![x]),
+    }
+}
+
+/// A slot's zero.
+fn zero_of(t: &Type) -> Value {
+    match t {
+        Type::I64 => Value::Int64(0),
+        Type::F32 | Type::F64 => Value::Float(0.0),
+        _ => Value::Int(0),
+    }
+}
+
+/// The value of type `ty` whose scalars are `s` (to_scalars undone).
+fn from_scalars(ty: &Type, s: &[Value], structs: &crate::checker::Structs) -> Value {
+    match ty {
+        Type::Struct(n) if structs.get(n).is_some_and(|d| d.is_value) => {
+            let mut at = 0;
+            let mut fields = Vec::new();
+            for f in &structs[n].fields {
+                let w = crate::checker::scalars(&f.ty, structs).len();
+                fields.push(from_scalars(&f.ty, &s[at..at + w], structs));
+                at += w;
+            }
+            Value::Record(fields)
+        }
+        Type::Union(n) if structs.is_value_union(n) => {
+            let l = &structs.by_value[n];
+            let tag = match s[0] {
+                Value::Int(t) => t as usize,
+                _ => 0,
+            };
+            let mut at = 0;
+            let mut fields = Vec::new();
+            for f in &structs.unions[n].variants[tag].fields {
+                let w = crate::checker::scalars(&f.ty, structs).len();
+                let mine: Vec<Value> = l.variants[tag][at..at + w].iter().map(|slot| s[*slot as usize].clone()).collect();
+                fields.push(from_scalars(&f.ty, &mine, structs));
+                at += w;
+            }
+            Value::Union(tag, fields)
+        }
+        Type::Bool => match &s[0] {
+            Value::Int(i) => Value::Bool(*i as i32 != 0),
+            other => other.clone(),
+        },
+        _ => s[0].clone(),
+    }
+}
+
 /// A value of type `ty` as AIPL source would write it (pointers and arrays
 /// as their address, a value struct as the make that builds it).
-fn value_str(v: &Value, ty: &Type, structs: &HashMap<String, StructDef>) -> String {
+fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String {
     match (v, ty) {
         (Value::Int(i), _) => i.to_string(),
         (Value::Int64(i), _) => format!("{i}i64"),
@@ -2173,6 +2297,13 @@ fn value_str(v: &Value, ty: &Type, structs: &HashMap<String, StructDef>) -> Stri
             Some(def) => {
                 let shown: Vec<String> = fields.iter().zip(&def.fields).map(|(x, f)| value_str(x, &f.ty, structs)).collect();
                 format!("(make {} {})", name, shown.join(" "))
+            }
+            None => format!("(make {name})"),
+        },
+        (Value::Union(tag, fields), Type::Union(name)) => match structs.unions.get(name).and_then(|u| u.variants.get(*tag)) {
+            Some(v) => {
+                let shown: Vec<String> = fields.iter().zip(&v.fields).map(|(x, f)| format!(" {}", value_str(x, &f.ty, structs))).collect();
+                format!("(make {}.{}{})", name, v.name, shown.concat())
             }
             None => format!("(make {name})"),
         },

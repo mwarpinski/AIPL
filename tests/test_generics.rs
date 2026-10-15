@@ -290,3 +290,25 @@ fn members_named_like_a_template_keep_their_names() {
     let rust = WasmCompiler::compile(&Resolver::resolve(&entry).unwrap()).unwrap();
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
 }
+
+/// An instance's expressions are the template's, in the template's file,
+/// even where a type argument from another file sits at the same line and
+/// column (the Rust toolchain once named the argument's file in the line
+/// table there). Both toolchains, byte for byte, line table included.
+#[test]
+fn an_instance_keeps_its_template_file_where_positions_coincide() {
+    let lib = "(module lib (fn g [] -> i32 1) (fn (f T) [x:T] -> i32 (pub) (call g)))";
+    let col = lib.find("(call g)").unwrap() + 1;
+    let head = "(module main (import lib) (fn main [] -> i32 (call (lib.f";
+    let main = format!("{head}{}i32) 5)))", " ".repeat(col - 1 - head.len()));
+    assert_eq!(main.find("i32) 5").unwrap() + 1, col);
+    let dir = std::env::temp_dir().join(format!("aipl_coincide_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.aipl"), lib).unwrap();
+    std::fs::write(dir.join("main.aipl"), &main).unwrap();
+    let entry = dir.join("main.aipl");
+    let rust = WasmCompiler::compile(&Resolver::resolve(&entry).unwrap()).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
+    let _ = std::fs::remove_dir_all(&dir);
+}

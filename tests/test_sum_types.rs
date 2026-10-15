@@ -123,22 +123,29 @@ fn every_field_type_round_trips() {
     assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(103));
 }
 
-/// make claims its cell before evaluating the fields: a field that
-/// allocates gets memory after the cell (8 bytes here), in both backends.
+/// make claims a cell union's cell before evaluating the fields: a field
+/// that allocates gets memory after the cell (8 bytes here), in both
+/// backends. U contains itself, so it is a cell; W is held by value
+/// (AIPL_SPEC.md 4.J) and takes no memory.
 #[test]
 fn make_allocates_before_its_fields() {
     let m = check(
         "order",
-        "(module m (union U [(v p:i32)])
+        "(module m (union U [(v p:i32) (more next:U)]) (union W [(v p:i32)])
+           (fn cell [] -> i32
+             (let p0:i32 (mem.alloc 8))
+             (match (make U.v (mem.alloc 8)) (U.v [p1] (- p1 p0)) (U.more [_] 0)))
            (fn main [] -> i32
              (let p0:i32 (mem.alloc 8))
-             (match (make U.v (mem.alloc 8)) (U.v [p1] (- p1 p0)))))",
+             (+ (* 100 (call cell)) (match (make W.v (mem.alloc 8)) (W.v [p1] (- p1 p0))))))",
     )
     .unwrap();
     let mut vm = VM::new();
     vm.load_module(m.clone());
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(16));
-    assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(16));
+    // cell: 16 apart (the 8-byte cell between); W's field lands after main's
+    // block and cell's three (8 each): 32 apart, nothing for W itself
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(1632));
+    assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(1632));
 }
 
 /// Only an enum.cast value that is no member reaches the end of a match

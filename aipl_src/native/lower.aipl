@@ -1010,6 +1010,8 @@
       ((eq op 65) (call vpush l 2 (get ins wasm_reader.Instr.c)) true)
       ;; i64.const, and f64.const (a value's bits; the reader keeps them in c)
       ((or (eq op 66) (eq op 68)) (call vpush l 4 (get ins wasm_reader.Instr.c)) true)
+      ;; f32.const: its bits, as an i32 constant's (a slot holds a float's bits)
+      ((eq op 67) (call vpush l 2 (get ins wasm_reader.Instr.c)) true)
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (let to_import:bool (lt a (call n_fimports l)))
@@ -1057,7 +1059,7 @@
   ;; How a non-control instruction changes the value stack's depth.
   (fn stack_effect [l:(ptr L) w:(ptr wasm_reader.Wasm) op:i32 a:i32] -> i32
     (cond
-      ((or (or (eq op 65) (eq op 66)) (or (eq op 68) (eq op 32))) 1) ;; consts, local.get
+      ((or (or (eq op 65) (eq op 66)) (or (or (eq op 67) (eq op 68)) (eq op 32))) 1) ;; consts, local.get
       ((or (eq op 33) (eq op 26)) -1)                               ;; local.set, drop
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u

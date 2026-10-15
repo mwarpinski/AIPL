@@ -36,7 +36,7 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
 
 /// The programs and the checksum each one's main returns: every form, and
 /// every way through control flow.
-const PROGRAMS: [(&str, i64); 2] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 219)];
+const PROGRAMS: [(&str, i64); 3] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 219), ("tests/aipl/unions_by_value.aipl", 239)];
 
 #[test]
 fn values_programs_run_in_the_vm() {
@@ -274,4 +274,89 @@ fn contract_messages_show_values_as_aipl() {
     assert!(e.ends_with("with w = (make W (make V 1 2.5) 7i64), n = -3"), "{e}");
     let e = vm.invoke("second", vec![]).unwrap_err();
     assert!(e.ends_with("with n = -2, res = (make V -2 0.5)"), "{e}");
+}
+
+/// Which unions are held by value (AIPL_SPEC.md 4.J), and a layout: the
+/// tag, then the slots the variants share by kind (i32, f32, i64, f64).
+#[test]
+fn unions_by_value_are_decided_as_specified() {
+    let m = Resolver::resolve(&root().join("tests/aipl/unions_by_value.aipl")).unwrap();
+    let st = aipl_core::checker::Structs::new(&m.structs, &m.unions);
+    let mut values: Vec<&str> = st.by_value.keys().map(String::as_str).filter(|n| !n.contains('<') || n.contains("Vec2") || n.contains("Shape")).collect();
+    values.sort();
+    // Tagged and Option of Shape hold a whole Shape (8 slots) and a tag: 9;
+    // List and Chain contain themselves, Named a str, Wide needs 9 slots;
+    // HoldsWide holds Wide by address (one slot); Outer holds Inner by value
+    assert_eq!(values, ["HoldsWide", "Inner", "Outer", "Shape", "option.Option<Vec2>"]);
+    assert_eq!(st.by_value["Outer"].slots.len(), 4);
+    use aipl_core::ast::Type::*;
+    let shape = &st.by_value["Shape"];
+    assert_eq!(shape.slots, [I32, I32, F32, F32, I64, F64, F64, F64]);
+    assert_eq!(shape.offsets, [0, 4, 8, 12, 16, 24, 32, 40]);
+    assert_eq!((shape.size, shape.align), (48, 8));
+    // dot; circle (at.x at.y r); rect (w h); big (n color)
+    assert_eq!(shape.variants, [vec![], vec![5, 6, 7], vec![2, 3], vec![4, 1]]);
+}
+
+/// std/map's find returns (option.Option V), a union by value when V fits
+/// (AIPL_SPEC.md 4.J): a million lookups move the heap cursor not at all,
+/// in the VM and under wasmtime (a cell per Option would take 8 MB).
+#[test]
+fn a_million_map_finds_allocate_nothing() {
+    let dir = scratch("finds");
+    let file = dir.join("main.aipl");
+    std::fs::write(
+        &file,
+        "(module main (import map) (import alloc) (import option)
+          (fn main [] -> i32
+            (let m:(ptr (map.Map i32 i64)) (call (map.make i32 i64) (call alloc.default) 16))
+            (loop k 0 99 1 (call (map.set i32 i64) m k (i64.extend_s (* k 3))))
+            (let before:i32 (unsafe (mem.load32 0)))
+            (let sum:i64 0i64)
+            (loop i 1 1000000 1
+              (match (call (map.find i32 i64) m (% i 128))
+                ((option.Option i64) some [v] (set! sum (+ sum v)))
+                ((option.Option i64) none (set! sum (- sum 1i64)))))
+            ;; -1 if the heap cursor moved
+            (if (eq (unsafe (mem.load32 0)) before) (i32.wrap (% sum 1000000i64)) -1)))",
+    )
+    .unwrap();
+    let m = Resolver::resolve(&file).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m.clone());
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(795704));
+    assert_eq!(wasm_main(&aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap()), Ok(795704));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module with a generic function named make (as std/vec and std/map
+/// have) still builds unions with the make form: the template is named
+/// only after call or ref. Both resolvers, and both compilers.
+#[test]
+fn a_template_named_make_leaves_the_make_form_alone() {
+    let dir = scratch("make_named");
+    std::fs::write(
+        dir.join("lib.aipl"),
+        "(module lib
+          (union U [(one n:i32) (two)] (pub))
+          (fn (make T) [x:T] -> U (pub) (make U.one 7))
+          (fn both [] -> i32 (pub)
+            (match (call (make i32) 3) (U.one [n] (match (make U.one n) (U.one [k] (+ k 1)) (U.two 0))) (U.two 0))))",
+    )
+    .unwrap();
+    let entry = dir.join("main.aipl");
+    std::fs::write(&entry, "(module main (import lib) (fn main [] -> i32 (call lib.both)))").unwrap();
+    let m = Resolver::resolve(&entry).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let flat = aipl_core::selfhost::resolve_with_aipl(&entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
+    let again = Resolver::resolve_source(&flat, &entry).unwrap();
+    assert_eq!(print_module(&again), print_module(&m));
+    let mut vm = VM::new();
+    vm.load_module(m.clone());
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(8));
+    let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
+    assert_eq!(wasm_main(&rust), Ok(8));
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
+    let _ = std::fs::remove_dir_all(&dir);
 }
