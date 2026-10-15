@@ -5,13 +5,15 @@
 ;;
 ;; Frame and calling convention (internal to native code; system calls and
 ;; the start-up stub are the only other conventions):
-;;   - The caller pushes the arguments, first argument first, then `call`s.
-;;     The callee returns its result (if any) in rax; the caller then pops
-;;     the arguments and pushes rax.
-;;   - The callee runs `push rbp; mov rbp, rsp`, then pushes one zeroed
-;;     8-byte slot per declared local (wasm locals start at zero).
-;;     Parameter i of n is at [rbp + 16 + 8 * (n - 1 - i)]; declared local j
-;;     at [rbp - 8 * (j + 1)].
+;;   - A defined function with up to six parameters takes them in rdi, rsi,
+;;     rdx, rcx, r10, r11 (arg_reg) and, after `push rbp; mov rbp, rsp`,
+;;     pushes them, so local i (parameters first) is at [rbp - 8 * (i + 1)].
+;;     One with more parameters, and every import's routine, takes them
+;;     pushed by the caller, first argument first: parameter i of n at
+;;     [rbp + 16 + 8 * (n - 1 - i)], declared local j at [rbp - 8 * (j + 1)].
+;;     Declared locals get zeroed 8-byte slots (wasm locals start at zero).
+;;     The result (if any) comes back in rax. rbx, r12-r14, r8, r9 and
+;;     xmm8-xmm15 are callee-saved (they hold locals); the rest are not.
 ;;   - The wasm value stack: its lower part is the machine stack, one
 ;;     8-byte slot per value (an i32 in its low half; the high half is
 ;;     unspecified, so every i32 operation uses 32-bit instructions). Its
@@ -27,8 +29,9 @@
 ;;     cell at mem_cell holds its current size in bytes (a cell, not a
 ;;     register, so threads share it; keeping it in a register for
 ;;     single-threaded code was measured and made no difference, 2026-10-05).
-;;     Every load and store checks address + offset + width against that
-;;     size and traps like wasm.
+;;     Loads and stores are not checked here: past the current size, up to
+;;     8 GiB from r15, memory has no access, and the SIGSEGV handler turns a
+;;     fault there into wasm's out-of-bounds trap (native.aipl, F4).
 ;;   - Atomics (NE9): aligned x86 loads are atomic; store and exchange use
 ;;     xchg (a full barrier, as wasm's sequentially consistent atomics
 ;;     need), add `lock xadd`, compare-exchange `lock cmpxchg`. With

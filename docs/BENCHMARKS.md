@@ -22,29 +22,25 @@ print it on stderr.
 ## Results
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
-2026-10-05.
+2026-10-14 (best of three; after the native rewrite, "The value-tracking
+translator" below).
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| spigot | 10000 digits | 2.725 s (2.9x) | 1.589 s (1.7x) | 0.930 s (1.0x) | 47.599 s (51.2x) |
-| fannkuch | n = 10 | 1.080 s (6.9x) | 0.251 s (1.6x) | 0.157 s (1.0x) | 3.863 s (24.7x) |
-| spectralnorm | n = 1000 | 0.392 s (14.7x) | 0.123 s (4.6x) | 0.027 s (1.0x) | 7.346 s (274.7x) |
-| nbody | 1,000,000 steps | 0.751 s (14.2x) | 0.120 s (2.3x) | 0.053 s (1.0x) | 5.745 s (108.7x) |
-| mandelbrot | 1000 x 1000 | 0.212 s (4.1x) | 0.068 s (1.3x) | 0.051 s (1.0x) | 3.055 s (59.3x) |
-| binarytrees | depth 16 | 0.393 s (1.7x) | 0.197 s (0.8x) | 0.238 s (1.0x) | 1.174 s (4.9x) |
-| knucleotide | fasta 150000 | 1.395 s (26.8x) | 0.734 s (14.1x) | 0.052 s (1.0x) | 0.522 s (10.0x) |
-| pidigits | 10000 digits | 15.652 s (40.2x) | 2.650 s (6.8x) | 0.389 s (1.0x) | 2.155 s (5.5x) |
+| binarytrees | 16 | 0.148 s (0.6x) | 0.150 s (0.6x) | 0.243 s (1.0x) | 1.149 s (4.7x) |
+| fannkuch | 10 | 0.297 s (1.9x) | 0.244 s (1.6x) | 0.154 s (1.0x) | 3.845 s (24.9x) |
+| knucleotide | stdin: fasta.py 150000 | 0.681 s (13.4x) | 0.617 s (12.2x) | 0.051 s (1.0x) | 0.511 s (10.1x) |
+| mandelbrot | 1000 | 0.065 s (1.3x) | 0.069 s (1.4x) | 0.049 s (1.0x) | 3.084 s (62.6x) |
+| nbody | 1000000 | 0.179 s (3.4x) | 0.139 s (2.7x) | 0.052 s (1.0x) | 5.527 s (105.3x) |
+| pidigits | 10000 | 3.775 s (10.0x) | 2.379 s (6.3x) | 0.379 s (1.0x) | 2.121 s (5.6x) |
+| spectralnorm | 1000 | 0.101 s (3.7x) | 0.125 s (4.6x) | 0.027 s (1.0x) | 7.204 s (264.3x) |
+| spigot | 10000 | 1.416 s (1.6x) | 1.576 s (1.7x) | 0.913 s (1.0x) | 46.187 s (50.6x) |
 
-Updated 2026-10-05 after compiled code started checking array indexes and
-`req`/`ens` contracts (docs/design/CHECKS_PLAN.md); without them (the same day,
-after the native translator kept the top of the value stack in a register,
-see "Native speed" below) native was spigot 2.068 s, fannkuch 0.719,
-spectralnorm 0.363, nbody 0.517, mandelbrot 0.211, binarytrees 0.347,
-knucleotide 0.985, pidigits 10.188, and wasm spigot 1.552, fannkuch 0.203,
-spectralnorm 0.113, nbody 0.088, mandelbrot 0.066, binarytrees 0.184,
-knucleotide 0.520, pidigits 2.206. The first run (2026-10-04) had native
-at spigot 4.360 s, fannkuch 1.358, nbody 0.794, binarytrees 0.568,
-knucleotide 1.411, pidigits 21.059.
+Earlier (2026-10-05, before the null checks and the native rewrite):
+native spigot 2.725 s, fannkuch 1.080, spectralnorm 0.392, nbody 0.751,
+mandelbrot 0.212, binarytrees 0.393, knucleotide 1.395, pidigits 15.652;
+wasm spigot 1.589, fannkuch 0.251, spectralnorm 0.123, nbody 0.120,
+mandelbrot 0.068, binarytrees 0.197, knucleotide 0.734, pidigits 2.650.
 
 **Null checks** (2026-10-08): every `get`, `put`, and array operation now
 checks for a null pointer. Measured before and after (best of 3 to 5 runs):
@@ -237,23 +233,25 @@ registers, they go back to their slots. Native times, before and after
 
 ## The value-tracking translator (2026-10-14)
 
-docs/design/NATIVE_SPEED_PLAN.md, stage by stage. Native times, best of
-five, with wasmtime's alongside (`python3 tools/bench.py --runs 5
---no-python`); F0 is the baseline, null checks included.
+docs/design/NATIVE_SPEED_PLAN.md, stage by stage, in the order done (F4
+before F3). Native times, best of five, with wasmtime's alongside
+(`python3 tools/bench.py --runs 5 --no-python`; the last two columns from
+the results table above); F0 is the baseline, null checks included.
 
-| Benchmark | F0 | F1 | F1, floats | F2 | F4 | wasm (wasmtime) | native / wasm, F0 → now |
-|---|---|---|---|---|---|---|---|
-| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.212 s | 0.184 s | 0.163 s | 1.9x → 1.13x |
-| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.691 s | 0.492 s | 0.268 s | 4.2x → 1.84x |
-| knucleotide | 1.207 s | 1.068 s | 1.046 s | 1.007 s | 0.816 s | 0.647 s | 1.9x → 1.26x |
-| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.143 s | 0.145 s | 0.070 s | 3.0x → 2.07x |
-| nbody | 0.761 s | 0.563 s | 0.496 s | 0.418 s | 0.324 s | 0.146 s | 5.2x → 2.22x |
-| pidigits | 15.559 s | 9.904 s | 9.819 s | 8.734 s | 5.757 s | 2.727 s | 5.7x → 2.11x |
-| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.260 s | 0.259 s | 0.127 s | 3.1x → 2.04x |
-| spigot | 2.632 s | 1.713 s | 1.674 s | 1.459 s | 1.471 s | 1.599 s | 1.6x → 0.92x |
+| Benchmark | F0 | F1 | F1, floats | F2 | F4 | F3 | wasm (wasmtime) | native / wasm, F0 → now |
+|---|---|---|---|---|---|---|---|---|
+| binarytrees | 0.299 s | 0.237 s | 0.240 s | 0.212 s | 0.184 s | 0.148 s | 0.150 s | 1.9x → 0.99x |
+| fannkuch | 1.112 s | 0.762 s | 0.765 s | 0.691 s | 0.492 s | 0.297 s | 0.244 s | 4.2x → 1.22x |
+| knucleotide | 1.207 s | 1.068 s | 1.046 s | 1.007 s | 0.816 s | 0.681 s | 0.617 s | 1.9x → 1.10x |
+| mandelbrot | 0.208 s | 0.209 s | 0.147 s | 0.143 s | 0.145 s | 0.065 s | 0.069 s | 3.0x → 0.94x |
+| nbody | 0.761 s | 0.563 s | 0.496 s | 0.418 s | 0.324 s | 0.179 s | 0.139 s | 5.2x → 1.29x |
+| pidigits | 15.559 s | 9.904 s | 9.819 s | 8.734 s | 5.757 s | 3.775 s | 2.379 s | 5.7x → 1.59x |
+| spectralnorm | 0.391 s | 0.385 s | 0.260 s | 0.260 s | 0.259 s | 0.101 s | 0.125 s | 3.1x → 0.81x |
+| spigot | 2.632 s | 1.713 s | 1.674 s | 1.459 s | 1.471 s | 1.416 s | 1.576 s | 1.6x → 0.90x |
 
 **F1, the value stack.** The upper part of the wasm value stack is
-virtual: constants, locals, and values in seven registers, used where they
+virtual: constants, locals, and values in seven registers (five since F3
+gave two to locals), used where they
 are; only control flow, calls, and the rarer instructions put values in
 memory. Integer code gains 12-36%. The float benchmarks (mandelbrot,
 spectralnorm) did not move until float values got registers of their own
@@ -274,3 +272,17 @@ same message and call chain as before. With it, multiplication by a
 power of two became a shift. 13-34% on the memory-bound benchmarks, more
 than the 6-14% measured for removing the check on 2026-10-06: the rest of
 each access has since become cheaper, so the check was a larger share.
+
+**F3, registers and checks** (after F4). Float locals live in xmm8-xmm15
+and integer locals in six registers (rbx, r12-r14, r8, r9); a local in its
+frame slot is used from memory in place; a defined function with up to six
+parameters takes them in registers. The compiled checks (null, bounds,
+store guard, contracts) cost far less: a failed check's `if` keeps the
+value stack in registers (its end is reached only by not taking it), and
+its code moves after the function's, so the hot path is one conditional
+jump it does not take. Division by a power of two is shifts; a `br_if`
+with nothing to drop is one jump; loop starts are aligned to 32 bytes. The
+store guard became two checks, each its own `if`, in both toolchains'
+wasm, which also made wasmtime faster on pidigits (2.6 s to 2.3 s).
+Mandelbrot 2.4x and spectralnorm 2.4x faster than after F4, fannkuch 1.7x,
+pidigits 1.5x.

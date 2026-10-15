@@ -226,11 +226,12 @@ FAQ or ROADMAP.md.
   listings, file kind, size, and modification time) over three new WASI
   ops. Starting processes is left out, as WASI preview 1 cannot; networking
   later. AIPL_SPEC.md 4.C and 12.6, ROADMAP.md.
-- [ ] **Faster native code** (plan approved 2026-10-14,
-  docs/design/NATIVE_SPEED_PLAN.md: a single-pass translator that tracks
-  where each value is, guard pages, arguments in registers; target within
-  2x of wasmtime on every benchmark). Done first, so value structs' several
-  results are built into the new translator once.
+- [x] **Faster native code** (done 2026-10-14,
+  docs/design/NATIVE_SPEED_PLAN.md): a single-pass translator that tracks
+  where each value is, guard pages, locals and arguments in registers,
+  failed checks out of line. Native code went from 1.6-5.7x wasmtime's
+  time to 0.8-1.6x on the eight benchmarks (target: within 2x);
+  docs/BENCHMARKS.md.
 - [ ] **Structs by value and arrays of structs** (plan approved 2026-10-14,
   docs/design/VALUES_PLAN.md: declared, immutable value structs of at most
   8 scalars; then unions, results, and `Option` by value).

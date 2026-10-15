@@ -22,27 +22,26 @@ and a standard library with generic collections, Zig-style allocators,
 JSON, and directory listing and file information;
 a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
-x86-64 executables from a backend written in AIPL; eight benchmarks
-against C and Python.
+x86-64 executables from a backend written in AIPL, whose single-pass
+translator keeps values in registers and checks memory by guard pages
+(0.8-1.6x wasmtime's time on the benchmarks); module visibility; eight
+benchmarks against C and Python.
 
 ## Next, in order
 
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **Native speed:** a single-pass rewrite of the native backend's
-   instruction translation that tracks where each value is, and memory
-   checks by guard pages (docs/design/NATIVE_SPEED_PLAN.md); a faster
-   small-block path in `std/heap`.
-3. **Small structs by value**, then unions, results, and `Option` by
+2. **Small structs by value**, then unions, results, and `Option` by
    value (docs/design/VALUES_PLAN.md); generation checks against use after
    free (docs/design/GENERATIONS_PLAN.md).
-4. **The standard library:** networking, once WASI has listening sockets;
-   starting processes, once WASI can (preview 1 cannot).
-5. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
+3. **The standard library:** networking, once WASI has listening sockets;
+   starting processes, once WASI can (preview 1 cannot); a faster
+   small-block path in `std/heap`.
+4. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
    from a checked-in `aiplc.wasm`, leaving Rust only in the launcher for
    platforms without a native backend (DEVELOPING.md, "Direction").
-6. **Packages, after the launch:** a package registry with versioned
+5. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
    `aipl add`, `aipl build`). Language versioning comes with it.
@@ -69,7 +68,6 @@ versioning (once packages exist), `inv` contracts.
 - **No closures, by design.** `(ref f)` and `call_ref` give references to named functions; nothing captures variables, and a callback's data is a typed context passed as its first argument (`vec.sort_by_with`, `thread.spawn_with`, `alloc.custom`; AIPL_SPEC.md 4.G). Closures would allocate behind the program's back, enlarge every function value, and slow every call through one.
 - **Generics are explicit.** Every use names its type arguments (no inference), and every call to an interface's function names the interface and the type. Templates are checked once with sealed type parameters (AIPL_SPEC.md 4.H). Not yet: interfaces with several type parameters, generic implementations (`(impl (Hash (ptr T)) ...)`, which need a rule against overlap first), and default functions in an interface.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
-- **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
 - **Constants are literals only.** `(const NAME:T literal)` (AIPL_SPEC.md 4.I) takes no expressions, not even another constant, and has no `f32` form. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
 - **No 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load). Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
