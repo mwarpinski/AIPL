@@ -36,7 +36,7 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
 
 /// The programs and the checksum each one's main returns: every form, and
 /// every way through control flow.
-const PROGRAMS: [(&str, i64); 2] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 173)];
+const PROGRAMS: [(&str, i64); 2] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 219)];
 
 #[test]
 fn values_programs_run_in_the_vm() {
@@ -253,4 +253,25 @@ fn values_programs_compile_alike_through_the_self_hosted_toolchain() {
         let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
         assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust, "{path}");
     }
+}
+
+/// A failed contract shows a value struct as the make that builds it (in
+/// the VM; compiled code shows no value structs, AIPL_SPEC.md 7.6).
+#[test]
+fn contract_messages_show_values_as_aipl() {
+    let src = "(module m
+      (struct V [a:i32 b:f64] (value))
+      (struct W [v:V n:i64] (value))
+      (fn f [w:W n:i32] -> i32 (req (gt n 0)) n)
+      (fn g [n:i32] -> V (ens (gt (get res V.a) 0)) (make V n 0.5))
+      (fn first [] -> i32 (call f (make W (make V 1 2.5) 7i64) -3))
+      (fn second [] -> i32 (get (call g -2) V.a)))";
+    let m = Parser::parse(src).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m);
+    let e = vm.invoke("first", vec![]).unwrap_err();
+    assert!(e.ends_with("with w = (make W (make V 1 2.5) 7i64), n = -3"), "{e}");
+    let e = vm.invoke("second", vec![]).unwrap_err();
+    assert!(e.ends_with("with n = -2, res = (make V -2 0.5)"), "{e}");
 }

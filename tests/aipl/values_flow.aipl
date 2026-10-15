@@ -8,6 +8,8 @@
   (struct Seg [a:V2 b:V2 on:bool] (value))
   (struct Box [seg:Seg tag:i64])
   (union Shape [(pt at:V2) (line sg:Seg) (none)])
+  ;; the most a value holds: 8 scalars, of every width
+  (struct Oct [a:i32 b:i64 c:f64 d:i32 e:bool f:i32 g:f64 h:i64] (value))
 
   (fn v [x:i32 y:i32] -> V2 (make V2 x y))
 
@@ -46,6 +48,15 @@
     (+ (get (call pick 3) V2.y) (get (get (make Seg (call v 1 2) (call v 3 4) true) Seg.b) V2.x)))
 
   (fn twice [p:V2] -> V2 (make V2 (* 2 (get p V2.x)) (* 2 (get p V2.y))))
+
+  ;; 8 results; 8 parameters (more than go in registers)
+  (fn oct [n:i32] -> Oct (make Oct n (i64.extend_s (* n 2)) 0.5 (+ n 3) true 7 1.25 9i64))
+
+  (fn oct_sum [o:Oct] -> i32
+    (+ (+ (get o Oct.a) (i32.wrap (get o Oct.b)))
+       (+ (+ (get o Oct.d) (if (get o Oct.e) 1 0))
+          (+ (+ (get o Oct.f) (i32.wrap (get o Oct.h)))
+             (i32.wrap (i64.trunc_f64_s (* 4.0 (+ (get o Oct.c) (get o Oct.g)))))))))
 
   (fn main [] -> i32
     (let total:i32 0)
@@ -89,4 +100,8 @@
       (match_result (call found i)
         (ok w (set! total (+ total (get w V2.x))))
         (err e (block))))                                               ;; +6 = 168
-    (+ total (i32.wrap (get bx Box.tag)))))                             ;; 173
+    ;; the most a value holds, returned and passed, directly and by reference
+    (set! total (+ total (call oct_sum (call oct 3))))                  ;; +39
+    (let g:(fn [i32] -> Oct) (ref oct))
+    (set! total (+ total (get (call_ref (fn [i32] -> Oct) g 3) Oct.f)))  ;; +7
+    (+ total (i32.wrap (get bx Box.tag)))))                             ;; 219

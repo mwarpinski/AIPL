@@ -149,7 +149,8 @@
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
       (call x64.mov_ri64 c 0 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (call x64.store c 64 (call x64.mem rbx (* 8 i)) 0))
-    ;; and its stack limit, after them
+    ;; and its stack limit, after them (then its results area, far below
+    ;; where its stack can reach)
     (call x64.lea c 64 0 (call x64.mem rbx (call stack_margin)))
     (call x64.store c 64 (call x64.mem rbx (get l lower.L.stack_limit_off)) 0)
     ;; [tid][start_arg] at the top, the stack pointer below them
@@ -231,14 +232,6 @@
   ;; The reason a module's memory or data cannot be translated, or "" if
   ;; it can (one memory, its own or imported, with a maximum of at most
   ;; 32768 pages, 2 GiB, and active data segments that fit its initial size).
-;; Whether a function type has several results (a value struct returned,
-  ;; docs/design/VALUES_PLAN.md V3), which the translator does not handle yet.
-  (fn several_results [w:(ptr wasm_reader.Wasm)] -> bool
-    (let ts:(ptr (vec.Vec (ptr wasm_reader.FuncType))) (get w wasm_reader.Wasm.types))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.FuncType)) ts) 1) 1
-      (if (gt (call (vec.len i32) (get (call (vec.at (ptr wasm_reader.FuncType)) ts i) wasm_reader.FuncType.results)) 1) (return true) (block)))
-    false)
-
   (fn memory_problem [w:(ptr wasm_reader.Wasm)] -> str
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (if (eq lim (ptr.null wasm_reader.Limits)) (return "") (block))
@@ -330,9 +323,6 @@
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))
     (if (gt (str.len mem_problem) 0) (return (call failure (call str.from_str mem_problem))) (block))
-    (if (call several_results w)
-        (return (call failure (call str.from_str "a function returns a value struct (several wasm results), which native code does not support yet: build with --target wasm")))
-        (block))
     (let entry_fn:i32 (call export_func w "_start"))
     (if (lt entry_fn 0) (return (call failure (call str.from_str "the module has no _start export"))) (block))
     (let l:(ptr lower.L) (call lower.make w))
@@ -360,15 +350,15 @@
       (call (vec.push i32) (get l lower.L.seg_addrs) (call lower.data_bytes l (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))
       (call (vec.push i32) (get l lower.L.seg_lens) (get d wasm_reader.Data.len)))
     ;; the main thread's globals block (8 bytes each, initial values, then
-    ;; the stack limit: lower.L.stack_limit_off), and the thread-id counter
-    ;; (starts at 1)
+    ;; the stack limit: lower.L.stack_limit_off, then the results area:
+    ;; lower.results_off), and the thread-id counter (starts at 1)
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
       (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (loop k 0 7 1 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
     (put l lower.L.stack_limit_off (call buf.len gb))
-    (loop k 0 7 1 (call buf.push_byte gb 0))
+    (loop k 0 (+ 7 (call lower.results_size)) 1 (call buf.push_byte gb 0))
     (let globals_block:i32 (call lower.data_bytes l (call buf.bytes gb)))
     (let th:(ptr Threads) (new Threads))
     (put th Threads.start_fn (get w wasm_reader.Wasm.start))

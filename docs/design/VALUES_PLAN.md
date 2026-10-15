@@ -1,7 +1,8 @@
 # Small structs by value
 
-**Status: approved 2026-10-14, not started.** Every decision at the end
-was taken as recommended. Built after the native rewrite
+**Status: approved 2026-10-14; V1-V3 done 2026-10-15 (every backend
+runs value structs), V4-V5 to do.** Every decision at the end was taken
+as recommended. Built after the native rewrite
 (docs/design/NATIVE_SPEED_PLAN.md), per decision 6.
 
 ## The gap
@@ -97,8 +98,13 @@ they cannot be changed or compared by address. The backends:
   value in scratch locals, since a wasm store needs its address just
   under its value.
 - **VM:** a value is a `Value::Record` of its fields.
-- **Native:** the translator gains functions with several results
-  (today at most one). This is the part that depends on the
+- **Native:** the translator gains functions with several results. One
+  result still comes back in rax; several go through a results area of
+  8 slots in the thread's FS block (after its stack limit): the callee
+  stores them there just before it returns, and the caller loads them
+  into value registers right after the call. Registers would be faster
+  but run out at 8 results (rax and the other registers a call may
+  change are 7); V4's measurements say whether it matters. This is the part that depends on the
   native rewrite (docs/design/NATIVE_SPEED_PLAN.md): built into the new
   translator once, rather than into the old one and again later.
 - **The self-hosted toolchain** does all of it too, byte for byte, as for
@@ -123,7 +129,7 @@ memory layout that the differential tests check address by address.
 |---|---|---|
 | V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass (done 2026-10-14) |
 | V2 | wasm backend: flattened locals, parameters, multi-value results, scratch locals for branches that yield a value, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_values (done 2026-10-15) |
-| V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator |
+| V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator (done 2026-10-15) |
 | V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md |
 | V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) |
 

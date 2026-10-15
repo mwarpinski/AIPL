@@ -258,24 +258,19 @@ fn target_needs_exe_and_a_known_name() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Value structs build with `--target wasm`; natively (until
-/// docs/design/VALUES_PLAN.md V3) the build fails with a message and leaves
-/// no file where the executable was asked for.
+/// Value structs (docs/design/VALUES_PLAN.md V3) build for both targets,
+/// and both executables run the program to its end (a trap would be status
+/// 134; main's checksum is checked in tests/test_native.rs).
 #[test]
-fn value_structs_need_the_wasm_target_for_now() {
+fn value_structs_build_for_both_targets() {
     let dir = scratch("exe_values");
     let src = root().join("tests/aipl/values_flow.aipl");
-    let bundle = dir.join("flow_bundle");
-    compile(&src, &bundle, &["--exe", "--target=wasm"]);
-    // a trap would be status 134
-    assert_eq!(run_in(&dir, &bundle, &[], "").status.code(), Some(0));
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        let exe = dir.join("flow");
-        let o = Command::new(AIPL).arg("compile").arg(&src).arg("-o").arg(&exe).args(["--exe", "--target=native"]).output().unwrap();
-        assert!(!o.status.success());
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.contains("a function returns a value struct (several wasm results), which native code does not support yet: build with --target wasm"), "{err}");
-        assert!(!exe.exists(), "a file was left at {}", exe.display());
+    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) { &["wasm", "native"] } else { &["wasm"] };
+    for target in targets {
+        let exe = dir.join(format!("flow_{target}"));
+        compile(&src, &exe, &["--exe", &format!("--target={target}")]);
+        assert_kind(&exe, target);
+        assert_eq!(run_in(&dir, &exe, &[], "").status.code(), Some(0), "{target}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

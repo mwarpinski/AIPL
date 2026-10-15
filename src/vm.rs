@@ -391,7 +391,7 @@ impl VM {
                 let res = self.eval_expr(expr, &mut scope)?;
                 if res != Value::Bool(true) {
                     self.error_at = Some(expr.span());
-                    return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None));
+                    return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None, &self.structs));
                 }
             }
         }
@@ -416,7 +416,7 @@ impl VM {
                 let res = self.eval_expr(expr, &mut contract_scope)?;
                 if res != Value::Bool(true) {
                     self.error_at = Some(expr.span());
-                    return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some(&last_val)));
+                    return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some((&last_val, &f.return_type)), &self.structs));
                 }
             }
         }
@@ -2140,15 +2140,16 @@ fn contract_failure(
     fn_name: &str,
     params: &[(String, Type)],
     scope: &HashMap<String, Value>,
-    result: Option<&Value>,
+    result: Option<(&Value, &Type)>,
+    structs: &HashMap<String, StructDef>,
 ) -> String {
     let (line, col) = expr.span();
     let mut bound: Vec<String> = params
         .iter()
-        .filter_map(|(name, _)| scope.get(name).map(|v| format!("{} = {}", name, value_str(v))))
+        .filter_map(|(name, ty)| scope.get(name).map(|v| format!("{} = {}", name, value_str(v, ty, structs))))
         .collect();
-    if let Some(r) = result {
-        bound.push(format!("res = {}", value_str(r)));
+    if let Some((r, ty)) = result {
+        bound.push(format!("res = {}", value_str(r, ty, structs)));
     }
     let with = if bound.is_empty() { String::new() } else { format!(" with {}", bound.join(", ")) };
     format!(
@@ -2157,18 +2158,26 @@ fn contract_failure(
     )
 }
 
-/// A value as AIPL source would write it (pointers and arrays as their address).
-fn value_str(v: &Value) -> String {
-    match v {
-        Value::Int(i) => i.to_string(),
-        Value::Int64(i) => format!("{i}i64"),
-        Value::Float(x) => format!("{x:?}"),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => format!("{s:?}"),
-        Value::Ok(x) => format!("(ok {})", value_str(x)),
-        Value::Err(x) => format!("(err {})", value_str(x)),
-        Value::Void => "void".to_string(),
-        other => format!("{other:?}"),
+/// A value of type `ty` as AIPL source would write it (pointers and arrays
+/// as their address, a value struct as the make that builds it).
+fn value_str(v: &Value, ty: &Type, structs: &HashMap<String, StructDef>) -> String {
+    match (v, ty) {
+        (Value::Int(i), _) => i.to_string(),
+        (Value::Int64(i), _) => format!("{i}i64"),
+        (Value::Float(x), _) => format!("{x:?}"),
+        (Value::Bool(b), _) => b.to_string(),
+        (Value::Str(s), _) => format!("{s:?}"),
+        (Value::Ok(x), Type::ResultType(t, _)) => format!("(ok {})", value_str(x, t, structs)),
+        (Value::Err(x), Type::ResultType(_, e)) => format!("(err {})", value_str(x, e, structs)),
+        (Value::Record(fields), Type::Struct(name)) => match structs.get(name) {
+            Some(def) => {
+                let shown: Vec<String> = fields.iter().zip(&def.fields).map(|(x, f)| value_str(x, &f.ty, structs)).collect();
+                format!("(make {} {})", name, shown.join(" "))
+            }
+            None => format!("(make {name})"),
+        },
+        (Value::Void, _) => "void".to_string(),
+        (other, _) => format!("{other:?}"),
     }
 }
 
