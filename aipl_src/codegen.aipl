@@ -1156,16 +1156,20 @@
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 4)
     (call put_op o OP_I32_LT_U)
+    ;; two checks, each its own if (wasm.rs emit_write_address_check)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END)
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 64)
     (call put_op o OP_I32_SUB)
     (call emit_i32_const o (- (call heap_start cg) 64))
     (call put_op o OP_I32_LT_U)
-    (call put_op o OP_I32_OR)
     (call put_op o OP_IF)
     (call put_byte o BLOCK_EMPTY)
     (call put_op o OP_UNREACHABLE)
-    (call put_op o OP_END))  ;; end
+    (call put_op o OP_END))
 
   ;; The bounds check of arr.get/arr.set (wasm.rs emit_bounds_check): with
   ;; [array index] on the stack, fails through $aipl_oob unless index <

@@ -6,6 +6,7 @@ output as the C reference.
     python3 tools/bench.py              # every benchmark
     python3 tools/bench.py spigot       # one
     python3 tools/bench.py --quick      # each benchmark's test size only
+    python3 tools/bench.py --runs 5 --no-python   # best of 5, without Python
 
 Ways: AIPL native (`aipl compile --exe`), AIPL wasm under the launcher
 (`--target wasm`, wasmtime/Cranelift), C (`gcc -O2`), Python 3. Each time is
@@ -64,7 +65,12 @@ def stdin_for(name, quick):
     return open(p, "rb").read() if os.path.exists(p) else b""
 
 def main():
+    global RUNS
     quick = "--quick" in sys.argv
+    if "--runs" in sys.argv:
+        i = sys.argv.index("--runs")
+        RUNS = int(sys.argv.pop(i + 1))
+        sys.argv.pop(i)
     names = [a for a in sys.argv[1:] if not a.startswith("--")] or sorted(
         n for n in os.listdir(BENCH) if os.path.isdir(os.path.join(BENCH, n)))
     rows = []
@@ -72,6 +78,8 @@ def main():
         test, bench = sizes(name)
         args = test if quick else bench
         cmds = build(name)
+        if "--no-python" in sys.argv:
+            del cmds["Python 3"]
         stdin = stdin_for(name, quick)
         reference = None
         times = {}

@@ -45,9 +45,11 @@ made by translating the WebAssembly to x86-64 machine code.
 ### Why not compile through LLVM or C?
 
 To keep the toolchain small and written in AIPL. The native backend is
-about 4,400 lines of AIPL with no dependencies. LLVM would make the code
-much faster and the toolchain far larger, and could not be self-hosted. A
-faster native translator is on the roadmap instead.
+about 5,800 lines of AIPL with no dependencies: a single-pass translator
+that keeps values in registers, in the manner of V8's Liftoff, whose code
+takes 0.8 to 1.6 times as long as wasmtime's (Cranelift's) on the eight
+benchmarks. LLVM would make the code faster still and the toolchain far
+larger, and could not be self-hosted.
 
 ### Is it really self-hosted?
 

@@ -1,6 +1,6 @@
 # Faster native code
 
-**Status: approved 2026-10-14, in progress (F0).** Every decision at the
+**Status: done 2026-10-14 (F0-F5; docs/BENCHMARKS.md, "The value-tracking translator").** Native code went from 1.6-5.7x wasmtime's time to 0.8-1.6x on the eight benchmarks, beating the target of 2x. Done beyond the plan, once measurements showed where the time went: failed checks out of line, float locals in xmm registers, the store guard split in two in the wasm itself. Not done: several results per function, which value structs need (docs/design/VALUES_PLAN.md, V3). Every decision at the
 end was taken as recommended.
 
 ## The gap
@@ -82,9 +82,10 @@ routines (except where they take arguments); one pass, in AIPL.
 
 ## How it is kept correct
 
-The new translator is written beside the old one (`lower2.aipl`, picked by
-an option while it is built) and replaces it only when everything passes
-with it:
+The translator is changed in place, a stage at a time, and each stage
+must pass before the next starts (the plan first had a second translator
+beside the old one; test_native already compares every native program
+with aipl-run, a stronger reference than the old translator):
 
 - every test in test_native, test_benchmarks, test_native_elf, and the
   doc examples compiled natively;
@@ -92,7 +93,6 @@ with it:
   natively, and compared), for a long run before the switch, with its
   generator extended to stress what the rewrite changes: deep expressions
   (spills), many locals and arguments, branches inside expressions;
-- the old and new translators on the same programs, same output;
 - the encoder's instructions against GNU as (tools/x64_vectors.py) for
   every new form (memory operands, `lea`, fused compares).
 
@@ -108,7 +108,7 @@ in docs/BENCHMARKS.md; a stage that does not pay for itself is reverted.
 | F2 | Fused compare-and-branch, memory operands, immediates, `lea` | loops with comparisons and array reads |
 | F3 | Arguments and results in registers; locals in registers widened; several results (needed by value structs) | call-heavy code: pidigits, binarytrees, spigot |
 | F4 | Guard pages and the fault handler; the explicit check removed | 6-14% on memory-bound loops |
-| F5 | Delete the old translator; update the spec (6.6), BENCHMARKS.md, and the README's numbers | |
+| F5 | Update the spec (6.6), BENCHMARKS.md, and the README's numbers | |
 
 Target: native within 2x of wasmtime on every benchmark (from 5.8x at
 worst). A single-pass compiler's code is typically 1.5-2x slower than an

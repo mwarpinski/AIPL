@@ -11,9 +11,12 @@
 ;; the argv[0] and memory-size cells (8 bytes each), separators, then each
 ;; active data segment's bytes, which start-up copies into linear memory.
 ;;
-;; Linear memory: start-up reserves the module's maximum (mmap with no
-;; access, so it costs address space, not memory), makes the minimum
-;; usable (mprotect), and points r15 at it; memory.grow makes more usable.
+;; Linear memory: start-up reserves 8 GiB (mmap with no access, so it
+;; costs address space, not memory: every 32-bit address plus every
+;; offset falls inside), makes the minimum usable (mprotect), and points
+;; r15 at it; memory.grow makes more usable, up to the module's maximum.
+;; An access outside the usable part faults, and the SIGSEGV handler turns
+;; the fault into the out-of-bounds trap (runtime.emit_fault_handler).
 ;;
 ;; Threads (NE15): a threaded module imports a shared memory, keeps its
 ;; heap and literals in passive data that its start function copies in
@@ -174,6 +177,9 @@
     ;; then it exits (exit: this thread only)
     (call x64.patch_rel32 c child (call buf.len c))
     (if (gte (get th Threads.start_fn) 0) (call lower.emit_call l (get th Threads.start_fn)) (block))
+    ;; wasi_thread_start(tid, start_arg) takes them in registers (lower.arg_reg)
+    (call x64.load c 64 7 (call x64.mem 4 8))
+    (call x64.load c 64 6 (call x64.mem 4 0))
     (call lower.emit_call l (get th Threads.thread_start))
     (call x64.alu_rr c 32 (call x64.op_xor) 7 7)
     (call x64.mov_ri32 c 0 60)
@@ -240,15 +246,14 @@
     "")
 
   ;; Start-up's memory set-up (see the header). Traps if the system refuses.
-  (fn emit_memory_setup [l:(ptr lower.L) w:(ptr wasm_reader.Wasm)] -> void
+  (fn emit_memory_setup [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) base_cell:i32] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (let initial:i32 (* 65536 (get lim wasm_reader.Limits.min)))
     (let refused:(ptr lower.Reason) (call lower.reason l "cannot reserve linear memory"))
-    ;; mmap(0, max bytes, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
-    ;; the length's 32 bits are zero-extended, so 32768 pages is 2^31 bytes
+    ;; mmap(0, 8 GiB, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0)
     (call x64.alu_rr c 32 (call x64.op_xor) 7 7)
-    (call x64.mov_ri32 c 6 (* 65536 (get lim wasm_reader.Limits.max)))
+    (call x64.mov_ri64 c 6 8589934592i64)
     (call x64.alu_rr c 32 (call x64.op_xor) 2 2)
     (call x64.mov_ri32 c 10 16418)
     (call x64.mov_ri64 c 8 -1i64)
@@ -259,6 +264,9 @@
     (call x64.alu_ri c 64 (call x64.op_cmp) 0 -4096)
     (call lower.emit_trap_if l (call x64.cc_a) refused)
     (call x64.mov_rr c 64 15 0)
+    ;; the base, for the fault handler
+    (call x64.mov_ri32 c 1 base_cell)
+    (call x64.store c 64 (call x64.mem 1 0) 15)
     ;; mprotect(base, initial bytes, PROT_READ|PROT_WRITE)
     (call x64.mov_rr c 64 7 15)
     (call x64.mov_ri32 c 6 initial)
@@ -383,8 +391,19 @@
     (loop k 1 12 1 (call buf.push_byte data 0))
     (put l lower.L.backtrace_routine (call buf.len c))
     (call runtime.emit_backtrace_routine c argv0_cell sep nl ct chain_cell)
+    (let unreachable_at:i32 (call buf.len c))
+    (call lower.emit_unreachable_routine l)
+    (put l lower.L.unreachable_routine unreachable_at)
     (put wr wasi.W.region_routine (call buf.len c))
     (call runtime.emit_region_trap_routine c argv0_cell sep texts)
+    ;; the memory fault handler, and the cell holding the memory's base
+    (let base_cell:i32 (call lower.data_text l ""))
+    (loop k 1 8 1 (call buf.push_byte data 0))
+    (let oob:(ptr lower.Reason) (call lower.reason l "wasm trap: out of bounds memory access"))
+    (let handler:i32 (call buf.len c))
+    (call runtime.emit_fault_handler c base_cell (get oob lower.Reason.addr) (get oob lower.Reason.len) (get l lower.L.backtrace_routine))
+    (let restorer:i32 (call buf.len c))
+    (call runtime.emit_sigreturn c)
     ;; start-up: save argv[0] (the initial stack is argc, argv[0], ...), set
     ;; up linear memory, call _start, then exit 0
     (let entry:i32 (call buf.len c))
@@ -399,7 +418,9 @@
     (call x64.mov_ri32 c 0 158)
     (call x64.syscall c)
     (call emit_main_stack l globals_block)
-    (if has_memory (call emit_memory_setup l w) (block))
+    (if has_memory
+        (block (call emit_memory_setup l w base_cell) (call runtime.emit_install_fault_handler c handler restorer))
+        (block))
     (if (gte (get w wasm_reader.Wasm.start) 0) (call lower.emit_call l (get w wasm_reader.Wasm.start)) (block))
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)
@@ -546,7 +567,14 @@
       (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
       (if (gt (+ (get e wasm_reader.Elem.offset) (call (vec.len i32) (get e wasm_reader.Elem.funcs))) size)
           (return "an element segment outside the table")
-          (block)))
+          (block))
+      ;; call_indirect passes arguments as defined functions take them; an
+      ;; import's routine takes them on the stack (AIPL never puts one in
+      ;; a table: references are to its own functions)
+      (loop k 0 (- (call (vec.len i32) (get e wasm_reader.Elem.funcs)) 1) 1
+        (if (lt (call (vec.at i32) (get e wasm_reader.Elem.funcs) k) (call lower.n_fimports l))
+            (return "a table entry that is an imported function")
+            (block))))
     "")
 
   ;; Writes each element segment's functions into the table: code address

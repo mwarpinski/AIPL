@@ -30,7 +30,7 @@
   (struct Data [(read passive:bool) (read offset:i32) (read addr:i32) (read len:i32)] (pub))
   (struct Range [addr:i32 len:i32])
   ;; `count` locals of value type `type`
-  (struct Locals [(read count:i32) type:i32] (pub))
+  (struct Locals [(read count:i32) (read type:i32)] (pub))
   ;; One instruction. op is the opcode byte, or 0xFC00 / 0xFE00 plus the
   ;; sub-opcode for the prefixed ones (memory.init = 0xFC08, atomics 0xFE..).
   ;; Immediates by kind: a = branch depth, function, local, global, data, or

@@ -37,7 +37,7 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 318 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 321 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -54,7 +54,7 @@ Expected AIPL suite output (29 groups):
 [PASS] resolver: imports in AIPL (3 tests)
 [PASS] std/os: arguments + environment (3 tests)
 [PASS] native/wasm_reader: module structure and bodies (5 tests)
-[PASS] native/x64: instruction encodings vs GNU as (9 tests)
+[PASS] native/x64: instruction encodings vs GNU as (13 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
 [PASS] std/vec: generic list + stable sort (7 tests)
