@@ -1296,7 +1296,7 @@ fn self_hosted_bytes_match_wildcard_binders() {
 #[test]
 fn self_hosted_bytes_match_value_structs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in ["values", "values_flow"] {
+    for name in ["values", "values_flow", "unions_by_value"] {
         let module = Resolver::resolve(&root.join(format!("tests/aipl/{name}.aipl"))).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }

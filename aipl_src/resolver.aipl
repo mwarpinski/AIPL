@@ -230,7 +230,7 @@
     (let src:(ptr Src) (get m Mod.src))
     (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (call note m n out) (block))
     (cond
-      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call emit_group m n out))
+      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket)) (call emit_group m n role out))
       ((eq k compiler.Kind.symbol)
        (let renamed:(ptr str.Bytes) (call rename m (call text src n) role))
        (call buf.push_bytes out renamed)
@@ -289,13 +289,16 @@
     (let src:(ptr Src) (get m Mod.src))
     (if (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a)) (block)))
 
-  (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+  (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) own_role:i32 out:(ptr buf.Buf)] -> void
     (unsafe (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (call note m g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
     (let tmpl:(ptr str.Bytes) (call str.bytes 0 -1))
-    (if (and (not square) (call is_symbol c))
+    ;; a template named like the make form (std/vec's make) is named only
+    ;; as a function, after call or ref: anywhere else (make ...) is the form
+    (if (and (and (not square) (call is_symbol c))
+             (or (eq own_role 1) (not (call eq_lit (call text (get m Mod.src) c) "make"))))
         (set! tmpl (call template_ref m (call text (get m Mod.src) c)))
         (block))
     (let i:i32 0)

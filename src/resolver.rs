@@ -721,7 +721,10 @@ impl Names<'_> {
             Sx::Atom(_) => {}
             Sx::List { .. } => {
                 let head = sx.head().map(|h| h.to_string());
-                let template = head.as_deref().and_then(|h| self.template_ref(h));
+                // a template named like the make form (std/vec's make) is
+                // named only as a function, after call or ref: anywhere else
+                // (make ...) is the form
+                let template = head.as_deref().filter(|h| *h != "make" || role == 1).and_then(|h| self.template_ref(h));
                 let field_op = matches!(head.as_deref(), Some("get" | "put" | "with"));
                 // (with v V.f x) makes a value with field f written
                 let put = matches!(head.as_deref(), Some("put" | "with"));

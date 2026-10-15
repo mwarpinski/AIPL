@@ -4,8 +4,193 @@ use std::collections::HashMap;
 /// A `match` subject's member: its name, and a union variant's fields.
 type MatchMember<'a> = (String, Option<&'a Vec<StructField>>);
 
-/// The program's structs, by name: what lays out a value struct held inline.
-pub type Structs = HashMap<String, StructDef>;
+/// The program's structs, by name (what lays out a value struct held
+/// inline), with its unions and which of them are values: what every
+/// layout needs. It reads as the struct map.
+#[derive(Clone, Default, Debug)]
+pub struct Structs {
+    defs: HashMap<String, StructDef>,
+    pub unions: HashMap<String, UnionDef>,
+    /// The unions held by value, with their layouts (AIPL_SPEC.md 4.J): the
+    /// others are heap cells, used by address.
+    pub by_value: HashMap<String, SumLayout>,
+}
+
+impl std::ops::Deref for Structs {
+    type Target = HashMap<String, StructDef>;
+    fn deref(&self) -> &Self::Target {
+        &self.defs
+    }
+}
+
+impl std::ops::DerefMut for Structs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.defs
+    }
+}
+
+/// A union held by value: its scalars (slots), a tag and then the slots its
+/// variants share by kind, each variant's fields taking the first slots of
+/// each kind it needs (i32-sized ones, then f32, i64, f64), so a variant of
+/// one pointer and one of two `f64`s need one i32 slot and two f64 slots in
+/// all. In memory the slots are laid out in that order, each aligned to its
+/// size. A slot a variant does not use holds zero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SumLayout {
+    /// Each slot's type (I32, F32, I64, or F64); slot 0 is the tag.
+    pub slots: Vec<Type>,
+    /// Each slot's offset in memory.
+    pub offsets: Vec<u32>,
+    pub size: usize,
+    pub align: usize,
+    /// Per variant: the slot of each scalar of its fields, in order.
+    pub variants: Vec<Vec<u32>>,
+}
+
+/// The most scalars a value (a value struct, a union by value) may hold.
+pub const MAX_SCALARS: usize = 8;
+
+impl Structs {
+    /// The program's structs and unions; decides which unions are values.
+    pub fn new(structs: &[StructDef], unions: &[UnionDef]) -> Structs {
+        let mut st = Structs {
+            defs: structs.iter().map(|s| (s.name.clone(), s.clone())).collect(),
+            unions: unions.iter().map(|u| (u.name.clone(), u.clone())).collect(),
+            by_value: HashMap::new(),
+        };
+        st.by_value = union_layouts(&st);
+        st
+    }
+
+    pub fn is_value_union(&self, name: &str) -> bool {
+        self.by_value.contains_key(name)
+    }
+}
+
+/// The kind of slot a scalar of type `t` takes: I32 (every 4-byte scalar
+/// but f32: bool, enums, pointers, arrays, function references, unions and
+/// results held by address), F32, I64, or F64.
+pub fn slot_kind(t: &Type) -> Type {
+    match t {
+        Type::I64 => Type::I64,
+        Type::F32 => Type::F32,
+        Type::F64 => Type::F64,
+        _ => Type::I32,
+    }
+}
+
+/// The scalars a value of type `t` is, in order: a value struct's fields'
+/// (flattened), a union by value's slots, else `t` itself.
+pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
+    match t {
+        Type::Struct(n) if st.get(n).is_some_and(|d| d.is_value) => st[n].fields.iter().flat_map(|f| scalars(&f.ty, st)).collect(),
+        Type::Union(n) if st.by_value.contains_key(n) => st.by_value[n].slots.clone(),
+        Type::Void => vec![],
+        _ => vec![t.clone()],
+    }
+}
+
+/// Which unions are values and how they are laid out (AIPL_SPEC.md 4.J): a
+/// union is a value unless a variant holds a str, it contains itself
+/// (through other unions held inline), or it needs more than MAX_SCALARS
+/// slots, counting the unions it holds that are values as their slots and
+/// the others as one (each union is decided after the unions it holds).
+fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
+    // the unions each one holds inline
+    let holds = |u: &UnionDef| -> Vec<String> {
+        u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
+            Type::Union(n) => Some(n.clone()),
+            _ => None,
+        }).collect()
+    };
+    // a union that reaches itself through the unions it holds
+    let reaches_itself = |start: &String| -> bool {
+        let mut todo: Vec<String> = st.unions.get(start).map(holds).unwrap_or_default();
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(n) = todo.pop() {
+            if &n == start {
+                return true;
+            }
+            if seen.contains(&n) {
+                continue;
+            }
+            if let Some(u) = st.unions.get(&n) {
+                todo.extend(holds(u));
+            }
+            seen.push(n);
+        }
+        false
+    };
+    let mut names: Vec<&String> = st.unions.keys().collect();
+    names.sort();
+    let candidates: Vec<String> = names
+        .iter()
+        .filter(|n| !st.unions[**n].variants.iter().any(|v| v.fields.iter().any(|f| f.ty == Type::Str)) && !reaches_itself(n))
+        .map(|n| n.to_string())
+        .collect();
+    fn decide(n: &str, candidates: &[String], st: &mut Structs, decided: &mut Vec<String>) {
+        if decided.iter().any(|d| d == n) {
+            return;
+        }
+        decided.push(n.to_string());
+        let u = st.unions[n].clone();
+        for v in &u.variants {
+            for f in &v.fields {
+                if let Type::Union(m) = &f.ty {
+                    if candidates.contains(m) {
+                        decide(m, candidates, st, decided);
+                    }
+                }
+            }
+        }
+        let layout = sum_layout(&u.variants, st);
+        if layout.slots.len() <= MAX_SCALARS {
+            st.by_value.insert(n.to_string(), layout);
+        }
+    }
+    let mut work = Structs { defs: st.defs.clone(), unions: st.unions.clone(), by_value: HashMap::new() };
+    let mut decided = Vec::new();
+    for n in &candidates {
+        decide(n, &candidates, &mut work, &mut decided);
+    }
+    work.by_value
+}
+
+/// The layout of a sum of variants (each a list of fields) held by value.
+pub fn sum_layout(variants: &[Variant], st: &Structs) -> SumLayout {
+    let kinds = [Type::I32, Type::F32, Type::I64, Type::F64];
+    let per_variant: Vec<Vec<Type>> = variants.iter().map(|v| v.fields.iter().flat_map(|f| scalars(&f.ty, st)).map(|t| slot_kind(&t)).collect()).collect();
+    let counts: Vec<usize> = kinds.iter().map(|k| per_variant.iter().map(|v| v.iter().filter(|t| *t == k).count()).max().unwrap_or(0)).collect();
+    let mut slots = vec![Type::I32];
+    let mut base = Vec::new();
+    for (k, n) in kinds.iter().zip(&counts) {
+        base.push(slots.len() as u32);
+        slots.extend(std::iter::repeat_n(k.clone(), *n));
+    }
+    let variants = per_variant
+        .iter()
+        .map(|v| {
+            let mut used = [0u32; 4];
+            v.iter()
+                .map(|t| {
+                    let k = kinds.iter().position(|x| x == t).unwrap_or(0);
+                    used[k] += 1;
+                    base[k] + used[k] - 1
+                })
+                .collect()
+        })
+        .collect();
+    let (mut offset, mut align) = (0usize, 4usize);
+    let mut offsets = Vec::new();
+    for t in &slots {
+        let a = if matches!(t, Type::I64 | Type::F64) { 8 } else { 4 };
+        align = align.max(a);
+        offset = (offset + a - 1) & !(a - 1);
+        offsets.push(offset as u32);
+        offset += a;
+    }
+    SumLayout { slots, offsets, size: (offset + align - 1) & !(align - 1), align, variants }
+}
 
 /// A type's size and alignment in memory. A value struct is laid out inline
 /// (its fields in order, each aligned to its size; the whole rounded up to
@@ -16,6 +201,7 @@ pub fn type_size_and_align(ty: &Type, structs: &Structs) -> Result<(usize, usize
 
 fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize), String> {
     match ty {
+        Type::Union(n) if structs.by_value.contains_key(n) => Ok((structs.by_value[n].size, structs.by_value[n].align)),
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
@@ -49,15 +235,19 @@ fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
 /// 8-byte one.
 pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
     match payload {
-        Type::Struct(_) => {
-            // a value struct: aligned after the tag, the cell a multiple of 8
-            let (size, align) = type_size_and_align(payload, structs).unwrap_or((4, 4));
-            let offset = (4 + align - 1) & !(align - 1);
-            (offset as u32, ((offset + size + 7) & !7) as i32)
-        }
+        Type::Struct(_) => value_cell(payload, structs),
+        Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
         Type::I64 | Type::F64 => (8, 16),
         _ => (4, 8),
     }
+}
+
+/// A value held in a result cell: aligned after the tag, the cell a
+/// multiple of 8.
+fn value_cell(payload: &Type, structs: &Structs) -> (u32, i32) {
+    let (size, align) = type_size_and_align(payload, structs).unwrap_or((4, 4));
+    let offset = (4 + align - 1) & !(align - 1);
+    (offset as u32, ((offset + size + 7) & !7) as i32)
 }
 
 /// A type parameter's placeholder, when a template is checked once with its
@@ -157,7 +347,7 @@ pub fn get_struct_size(def: &StructDef, structs: &Structs) -> Result<usize, Stri
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
-    struct_defs: HashMap<String, StructDef>,
+    struct_defs: Structs,
     enum_defs: HashMap<String, EnumDef>,
     union_defs: HashMap<String, UnionDef>,
     /// Number of while/loop bodies enclosing the expression being checked.
@@ -192,7 +382,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         TypeChecker {
             fn_signatures: HashMap::new(),
-            struct_defs: HashMap::new(),
+            struct_defs: Structs::default(),
             enum_defs: HashMap::new(),
             union_defs: HashMap::new(),
             declared: std::cell::RefCell::new(HashMap::new()),

@@ -1079,7 +1079,9 @@ fn value_structs_agree() {
   (struct V [a:i32 b:f64 c:bool] (value))
   (struct W [v:V n:i64] (value))
   (struct Holder [w:W k:i32])
-  (union U [(p v:V) (q)])
+  ;; U contains itself, so it is a heap cell; X is held by value
+  (union U [(p v:V) (q) (r next:U)])
+  (union X [(p v:V) (q)])
 
   ;; V 24 (b aligned to 8, rounded to 8), W 32, Holder 40
   (fn sizes [] -> i32 (+ (* 100 (sizeof V)) (+ (* 10 (sizeof W)) (sizeof Holder))))
@@ -1097,10 +1099,12 @@ fn value_structs_agree() {
     (let r:(result V i32) (ok (make V 1 2.0 false)))
     (- (mem.alloc 4) a0))
 
-  ;; a union's cell holding a V: the same
+  ;; a union's cell holding a V: the payload at 8, the cell 32 bytes (a
+  ;; variant's cell is its own size); a union held by value takes none
   (fn union_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
     (let u:U (make U.p (make V 3 1.5 true)))
+    (let x:X (make X.p (make V 3 1.5 true)))
     (- (mem.alloc 4) a0))
 
   ;; elements 24 bytes apart

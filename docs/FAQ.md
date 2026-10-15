@@ -116,7 +116,10 @@ other, the classic bug of changing a copy while meaning the original cannot
 happen. A value struct holds at most eight numbers; larger records belong
 behind pointers. Writing the n-body benchmark with a `Body` value struct
 made it 1.9 times faster under wasmtime (AIPL_SPEC.md 4.E,
-[docs/design/VALUES_PLAN.md](design/VALUES_PLAN.md)).
+[docs/design/VALUES_PLAN.md](design/VALUES_PLAN.md)). Unions, which cannot
+be changed either, are held by value without being declared so whenever
+they fit (they do not contain themselves and need at most eight numbers),
+so returning an `(option.Option i32)` allocates nothing.
 
 ### How fast is it?
 
