@@ -161,7 +161,7 @@ anything changed in place, stay behind pointers.
 
   ;; a digit's value, or the character that was not a digit
   (fn digit [c:i32] -> (result i32 i32)
-    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+    (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
 
   (fn main [] -> i32
     (let a:f64 (+ (call area (make Shape.rect 2.0 3.0)) (call area (make Shape.circle 1.0))))

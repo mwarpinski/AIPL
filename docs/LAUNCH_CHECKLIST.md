@@ -240,8 +240,9 @@ FAQ or ROADMAP.md.
 - [x] **Unions and `Option` by value** (done 2026-10-15, VALUES_PLAN.md V5):
   a union that does not contain itself, holds no `str`, and fits in 8
   slots allocates nothing; `map.find` returns an `Option`. AIPL_SPEC.md 4.J.
-- [ ] **Results by value** (VALUES_PLAN.md V5): needs each `ok`/`err`'s
-  full type inferred from context in both compilers.
+- [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
+  `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
+  side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
 
 ## 7. Documentation: delete, merge, keep
 

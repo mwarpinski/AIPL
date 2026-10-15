@@ -317,8 +317,8 @@ fn self_hosted_bytes_match_match_result() {
 (module test_match
   (fn div [a:i32 b:i32] -> (result i32 i32)
     (if (eq b 0)
-        (err -1)
-        (ok (/ a b))))
+        (err:i32 -1)
+        (ok:i32 (/ a b))))
   (fn test [a:i32 b:i32] -> i32
     (match_result (call div a b)
       (ok v v)
@@ -356,7 +356,7 @@ fn self_hosted_bytes_match_wide_results() {
     (match_result (call_ref (fn [i32] -> (result i64 f64)) g 1) (ok a a) (err b 0i64)))
   (fn from_literals [] -> i64
     (let s:i64 0i64)
-    (match_result (ok 7i64) (ok e1 (set! s e1)) (err e2 (set! s (i64.extend_s e2))))
+    (match_result (ok:i32 7i64) (ok e1 (set! s e1)) (err e2 (set! s (i64.extend_s e2))))
     (match_result (err:f64 7i64) (ok e3 (set! s (i64.trunc_f64_s e3))) (err e4 (set! s e4)))
     (match_result (ok:f64 1i64) (ok e5 (set! s e5)) (err e6 (set! s (i64.trunc_f64_s e6))))
     s)
@@ -785,7 +785,7 @@ fn self_hosted_bytes_match_control_flow() {
 
   ;; return from inside match_result inside a loop
   (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
-    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+    (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
   (fn first_non_digit [n:i32] -> i32 (unsafe)
     (loop i 0 n 1
       (match_result (call parse_digit (+ 46 i))
@@ -863,8 +863,8 @@ fn self_hosted_bytes_match_complex() {
     (put head Node.val n)
     (put head Node.next (ptr.null Node))
     (if (gt (get head Node.val) 10)
-        (ok (get head Node.val))
-        (err -1))))
+        (ok:i32 (get head Node.val))
+        (err:i32 -1))))
 "#;
     assert_self_hosted_matches_rust("complex", src);
 }
@@ -980,7 +980,7 @@ fn self_hosted_arrays_and_results_execute() {
       (set! i (+ i 1)))
     s)
   (fn div [a:i32 b:i32] -> (result i32 i32)
-    (if (eq b 0) (err -1) (ok (/ a b))))
+    (if (eq b 0) (err:i32 -1) (ok:i32 (/ a b))))
   (fn safe_div [a:i32 b:i32] -> i32
     (match_result (call div a b) (ok v v) (err e (* e 100)))))
 "#;
@@ -1160,7 +1160,7 @@ fn self_hosted_bytes_match_consts_and_enums() {
   (struct Node [kind:Kind next:i32])
   (fn kind_of [n:(ptr Node)] -> Kind (get n Node.kind))
   (fn same [a:Kind b:Kind] -> bool (eq a b))
-  (fn bump [k:Kind] -> (result Kind i32) (ok (enum.cast Kind (+ (enum.ord k) 1))))
+  (fn bump [k:Kind] -> (result Kind i32) (ok:i32 (enum.cast Kind (+ (enum.ord k) 1))))
   (fn main [] -> i32
     (let n:(ptr Node) (new Node))
     (put n Node.kind Kind.group)
@@ -1183,7 +1183,7 @@ fn self_hosted_bytes_match_nested_locals() {
     assert_self_hosted_matches_rust(
         "nested_locals",
         "(module nested
-  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok n) (err n)))
+  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok:i32 n) (err:i32 n)))
   (fn main [] -> i32
     (let total:i32 0)
     (loop i 0 (block (let last:i32 3) last) 1
@@ -1296,7 +1296,7 @@ fn self_hosted_bytes_match_wildcard_binders() {
 #[test]
 fn self_hosted_bytes_match_value_structs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for name in ["values", "values_flow", "unions_by_value"] {
+    for name in ["values", "values_flow", "unions_by_value", "results_by_value"] {
         let module = Resolver::resolve(&root.join(format!("tests/aipl/{name}.aipl"))).unwrap_or_else(|e| panic!("{e}"));
         assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
     }

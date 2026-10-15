@@ -1,0 +1,91 @@
+;; Results held by value (AIPL_SPEC.md 4.F): which results are values and
+;; which stay heap cells, and every way one is made, matched, passed, and
+;; returned, in one program whose main returns a checksum.
+;; tests/test_values.rs runs it in every backend.
+(module results_by_value
+  (struct Vec2 [x:f64 y:f64] (value))
+  (union Shape [(dot) (circle r:f64) (box w:i32 h:i32)])
+  (struct Quad [a:f64 b:f64 c:f64 d:f64] (value))
+  (struct Ints [a:i32 b:i32 c:i32 d:i32] (value))
+
+  ;; two slots: the tag and an i32 slot both sides share
+  (fn halve [n:i32] -> (result i32 i32)
+    (if (eq (% n 2) 0) (ok:i32 (/ n 2)) (err:i32 n)))
+
+  ;; a value struct beside an i64: tag, i64, two f64s
+  (fn locate [n:i32] -> (result Vec2 i64)
+    (req (gte n 0))
+    (ens (gte (match_result res (ok v 1) (err e 0)) 0))
+    (if (gt n 100) (return (err:Vec2 (i64.extend_s n))) (block))
+    (ok:i64 (make Vec2 (f64.convert_i64_s (i64.extend_s n)) 0.5)))
+
+  ;; a union held by value as a side
+  (fn shape_of [n:i32] -> (result Shape bool)
+    (cond
+      ((eq n 0) (ok:bool (make Shape.dot)))
+      ((lt n 10) (ok:bool (make Shape.circle (f64.convert_i64_s (i64.extend_s n)))))
+      ((lt n 20) (ok:bool (make Shape.box n 2)))
+      (else (err:Shape false))))
+
+  ;; nine slots: a heap cell (the tag, four f64s, four i32s)
+  (fn wide [ok:bool] -> (result Quad Ints)
+    (if ok (ok:Ints (make Quad 1.0 2.0 3.0 4.0)) (err:Quad (make Ints 9 9 9 0))))
+
+  ;; six slots, a value: Vec2's two f64s beside Shape's tag, two i32s, f64
+  (fn either [ok:bool] -> (result Vec2 Shape)
+    (if ok (ok:Shape (make Vec2 1.0 2.0)) (err:Vec2 (make Shape.circle 3.0))))
+
+  ;; a str side: a heap cell
+  (fn named [n:i32] -> (result i32 str)
+    (if (gt n 0) (ok:str n) (err:i32 "none")))
+
+  ;; a result of a result, both values
+  (fn nested [n:i32] -> (result (result i64 bool) i32)
+    (if (lt n 0) (err:(result i64 bool) n) (ok:i32 (call inner n))))
+
+  (fn inner [n:i32] -> (result i64 bool)
+    (if (eq n 0) (err:i64 true) (ok:bool (i64.extend_s (* n 7)))))
+
+  (fn area [s:Shape] -> f64
+    (match s
+      (Shape.dot 0.0)
+      (Shape.circle [r] (* 3.0 (* r r)))
+      (Shape.box [w h] (f64.convert_i64_s (i64.extend_s (* w h))))))
+
+  (fn main [] -> i32
+    (let total:f64 0.0)
+    ;; a variable, matched in place
+    (let h:(result i32 i32) (call halve 10))
+    (match_result h (ok v (set! total (+ total (f64.convert_i64_s (i64.extend_s v))))) (err e (block)))  ;; 5
+    ;; computed, matched through its spill group
+    (match_result (call halve 7) (ok v (block)) (err e (set! total (+ total (f64.convert_i64_s (i64.extend_s e))))))  ;; +7 = 12
+    (match_result (call locate 4)
+      (ok p (set! total (+ total (+ (get p Vec2.x) (get p Vec2.y)))))   ;; +4.5
+      (err big (set! total -1000.0)))
+    (match_result (call locate 500)
+      (ok p (set! total -1000.0))
+      (err big (set! total (+ total (f64.convert_i64_s (/ big 100i64))))))  ;; +5 = 21.5
+    (loop i 0 21 7
+      (match_result (call shape_of i)
+        (ok s (set! total (+ total (call area s))))                      ;; 0, 3*49=147, 14*2=28
+        (err none (if none (block) (set! total (+ total 1.0))))))        ;; i=21: +1 = 197.5
+    (match_result (call wide true) (ok q (set! total (+ total (get q Quad.b)))) (err ns (block)))  ;; +2
+    (match_result (call wide false) (ok q (block))
+      (err ns (set! total (+ total (f64.convert_i64_s (i64.extend_s (+ (get ns Ints.a) (+ (get ns Ints.b) (get ns Ints.c))))))))) ;; +27 = 226.5
+    (match_result (call either false) (ok pt (block)) (err s (set! total (+ total (call area s)))))  ;; +27
+    (match_result (call either true) (ok pt (set! total (- total (* 13.5 (get pt Vec2.y))))) (err s (block)))  ;; -27: 226.5
+    (match_result (call named 3) (ok n (set! total (+ total (f64.convert_i64_s (i64.extend_s n))))) (err text (block)))  ;; +3
+    (match_result (call named 0) (ok n (block)) (err text (set! total (+ total (f64.convert_i64_s (i64.extend_s (str.len text)))))))  ;; +4 = 233.5
+    (match_result (call nested 2)
+      (ok r (match_result r (ok w (set! total (+ total (f64.convert_i64_s w)))) (err b (block))))  ;; +14
+      (err e (block)))
+    (match_result (call nested 0)
+      (ok r (match_result r (ok w (block)) (err b (if b (set! total (+ total 1.0)) (block)))))  ;; +1
+      (err e (block)))
+    (match_result (call nested -3)
+      (ok r (block))
+      (err e (set! total (+ total (f64.convert_i64_s (i64.extend_s (- 0 e)))))))  ;; +3 = 251.5
+    ;; a result through a value if, held in a variable
+    (let pick:(result i32 i32) (if (gt total 100.0) (ok:i32 9) (err:i32 0)))
+    (match_result pick (ok v (set! total (+ total (f64.convert_i64_s (i64.extend_s v))))) (err e (block)))  ;; +9 = 260.5
+    (i32.wrap (i64.trunc_f64_s (* total 2.0)))))                       ;; 521

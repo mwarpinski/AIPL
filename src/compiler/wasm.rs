@@ -713,9 +713,9 @@ fn flat(ty: &Type, structs: &crate::checker::Structs) -> Vec<(Type, u32)> {
             }
             _ => vec![(ty.clone(), 0)],
         },
-        // a union by value: its slots (checker::SumLayout)
-        Type::Union(n) if structs.is_value_union(n) => {
-            let l = &structs.by_value[n];
+        // a union or result by value: its slots (checker::SumLayout)
+        Type::Union(_) | Type::ResultType(..) if structs.sum_of(ty).is_some() => {
+            let l = structs.sum_of(ty).unwrap_or_else(|| unreachable!());
             l.slots.iter().cloned().zip(l.offsets.iter().copied()).collect()
         }
         _ => vec![(ty.clone(), 0)],
@@ -726,6 +726,7 @@ fn is_value_type(ty: &Type, structs: &crate::checker::Structs) -> bool {
     match ty {
         Type::Struct(n) => structs.get(n).is_some_and(|d| d.is_value),
         Type::Union(n) => structs.is_value_union(n),
+        Type::ResultType(a, b) => structs.result_layout(a, b).is_some(),
         _ => false,
     }
 }
@@ -975,11 +976,20 @@ fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &crate::ch
                 if v && !into {
                     out.push((key, t));
                 }
+                // a result by value matched where it is computed spills
+                let rt = ty(expr);
+                if is_value_type(&rt, structs) && !matches!(expr.as_ref(), Expr::Var(..)) {
+                    out.push((2 * (expr.as_ref() as *const Expr as usize) + 1, rt));
+                }
                 walk(expr, false, ty, structs, out);
                 body(ok_body, v, out);
                 body(err_body, v, out);
             }
             Expr::Block(b, _) | Expr::Unsafe(b, _) => body(b, into, out),
+            Expr::Ok(inner, ..) | Expr::Err(inner, ..) if is_value_type(&ty(e), structs) => {
+                out.push((key, ty(e)));
+                walk(inner, false, ty, structs, out);
+            }
             Expr::Make { union_name, args, .. } if structs.is_value_union(union_name) => {
                 out.push((key, ty(e)));
                 for a in args {
@@ -2203,6 +2213,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
+        Expr::Ok(inner, ..) | Expr::Err(inner, ..) if is_value_type(&expr_type(expr, ctx), ctx.structs) => compile_value_result(expr, inner, ctx, func)?,
         Expr::Ok(inner, ..) => compile_result_cell(0, inner, ctx, func)?,
         Expr::Err(inner, ..) => compile_result_cell(1, inner, ctx, func)?,
         Expr::MatchResult { .. } => {
@@ -2700,16 +2711,46 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
     let Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } = this else {
         return Err("Wasm Codegen: not a match_result".to_string());
     };
-    let (ok_ty, err_ty) = result_sides(expr_type(expr, ctx));
-    compile_expr(expr, ctx, func)?;
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-        offset: 0,
-        align: 2,
-        memory_index: 0,
-    }));
+    let rt = expr_type(expr, ctx);
+    let (ok_ty, err_ty) = result_sides(rt.clone());
+    // a result by value: its tag and binders from its slots (a variable's
+    // own locals, else its spill group)
+    let by_value = ctx.structs.sum_of(&rt);
+    let mut base = 0;
+    if by_value.is_some() {
+        base = match expr.as_ref() {
+            Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
+            _ => {
+                let g = *ctx.groups.get(&(2 * (expr.as_ref() as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match_result has no spill group")?;
+                compile_expr(expr, ctx, func)?;
+                emit_set_slots(func, g, width(&rt, ctx.structs));
+                g
+            }
+        };
+        func.instruction(&Instruction::LocalGet(base));
+    } else {
+        compile_expr(expr, ctx, func)?;
+        func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+        func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+    }
     func.instruction(&Instruction::I32Eqz);
+    let load_binder = |func: &mut Body, side: usize, ty: &Type, idx: u32| -> Result<(), String> {
+        match &by_value {
+            Some(l) => {
+                for slot in &l.variants[side] {
+                    func.instruction(&Instruction::LocalGet(base + slot));
+                }
+                emit_set_slots(func, idx, width(ty, ctx.structs));
+                Ok(())
+            }
+            None => emit_load_binder(func, ctx, ty, crate::checker::result_cell_layout(ty, ctx.structs).0, idx),
+        }
+    };
 
     let last_ok = ok_body.last();
     let block_ty = if dest.is_some() || last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
@@ -2723,14 +2764,14 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
     ctx.labels.borrow_mut().push(Label::Plain);
 
     if let Some(&ok_idx) = ctx.locals.get(ok_var) {
-        emit_load_binder(func, ctx, &ok_ty, crate::checker::result_cell_layout(&ok_ty, ctx.structs).0, ok_idx)?;
+        load_binder(func, 0, &ok_ty, ok_idx)?;
     }
     compile_arm(ok_body, block_ty, dest, ctx, func)?;
 
     func.instruction(&Instruction::Else);
 
     if let Some(&err_idx) = ctx.locals.get(err_var) {
-        emit_load_binder(func, ctx, &err_ty, crate::checker::result_cell_layout(&err_ty, ctx.structs).0, err_idx)?;
+        load_binder(func, 1, &err_ty, err_idx)?;
     }
     compile_arm(err_body, block_ty, dest, ctx, func)?;
 
@@ -2818,6 +2859,30 @@ fn compile_value_make(this: &Expr, union_name: &str, variant: &str, args: &[Expr
             func.instruction(&Instruction::LocalSet(g + map[k]));
         }
         at += w;
+    }
+    for (slot, t) in layout.slots.iter().enumerate().skip(1) {
+        if !map.contains(&(slot as u32)) {
+            emit_zero(func, t);
+            func.instruction(&Instruction::LocalSet(g + slot as u32));
+        }
+    }
+    emit_get_slots(func, g, layout.slots.len() as u32);
+    Ok(())
+}
+
+/// `(ok:E v)` / `(err:T e)` of a result held by value: into its group, the
+/// tag, the payload's scalars in their slots, zero in the others; then the
+/// group pushed (as compile_value_make).
+fn compile_value_result(this: &Expr, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    let g = *ctx.groups.get(&(2 * (this as *const Expr as usize))).ok_or("Wasm Codegen: a value result has no group")?;
+    let tag = if matches!(this, Expr::Ok(..)) { 0 } else { 1 };
+    let layout = ctx.structs.sum_of(&expr_type(this, ctx)).ok_or("Wasm Codegen: not a result by value")?;
+    let map = &layout.variants[tag];
+    func.instruction(&Instruction::I32Const(tag as i32));
+    func.instruction(&Instruction::LocalSet(g));
+    compile_expr(inner, ctx, func)?;
+    for slot in map.iter().rev() {
+        func.instruction(&Instruction::LocalSet(g + slot));
     }
     for (slot, t) in layout.slots.iter().enumerate().skip(1) {
         if !map.contains(&(slot as u32)) {

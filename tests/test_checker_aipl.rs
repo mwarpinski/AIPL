@@ -683,7 +683,7 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
     // result payloads: any type but void
-    "M:(module m (fn g [] -> void (block)) (fn main [] -> i32 (match_result (ok (call g)) (ok a 0) (err b 0))))",
+    "M:(module m (fn g [] -> void (block)) (fn main [] -> i32 (match_result (ok:i32 (call g)) (ok a 0) (err b 0))))",
     "M:(module m (fn main [] -> i32 (match_result (err:f64 5i64) (ok a (i32.wrap (i64.trunc_f64_s a))) (err b (i32.wrap b)))))",
     // the unsafe fence: unchecked operations need an unsafe context
     "(mem.load32 2048)",
@@ -789,17 +789,20 @@ const FORMS: &[&str] = &[
     "(call_ref (fn [i32] -> i32) (ref w) true)",
     "(call_ref (fn [Nope] -> i32) (ref w) 1)",
     // results
+    "(let r:(result i32 i32) (ok:i32 1)) 0",
+    // every ok and err names its result's other side
     "(let r:(result i32 i32) (ok 1)) 0",
+    "(let r:(result i32 i32) (err 1)) 0",
     "(let r:(result bool str) (ok:str true)) 0",
-    "(let r:(result i32 i64) (err 1i64)) 0",
+    "(let r:(result i32 i64) (err:i32 1i64)) 0",
     "(let r:(result i32 i64) (err:bool 1i64)) 0",
     "(let r:(result i32 i32) (ok:Nope 1)) 0",
     "(match_result 5 (ok v v) (err e e))",
-    "(let v:i32 0) (match_result (ok 1) (ok v v) (err e e))",
-    "(let e:i32 0) (match_result (ok 1) (ok v v) (err e e))",
-    "(match_result (ok 1) (ok v v) (err e true))",
-    "(match_result (ok 1) (ok v (block)) (err e (block))) 0",
-    "(match_result (ok 1) (ok v v) (err e (block)))",
+    "(let v:i32 0) (match_result (ok:i32 1) (ok v v) (err e e))",
+    "(let e:i32 0) (match_result (ok:i32 1) (ok v v) (err e e))",
+    "(match_result (ok:i32 1) (ok v v) (err e true))",
+    "(match_result (ok:i32 1) (ok v (block)) (err e (block))) 0",
+    "(match_result (ok:i32 1) (ok v v) (err e (block)))",
     "(let v:bool true) (match_result (ok:i32 1) (ok v2 v2) (err v e3)) ",
     // structs
     "(let p:(ptr Q) (new Q)) 0",
@@ -819,7 +822,7 @@ const FORMS: &[&str] = &[
     "(sizeof (result i32 i32))",
     "(sizeof (ptr Nope))",
     "(sizeof bool)",
-    "(match_result (ok 1i64) (ok v 0) (err e 1))",
+    "(match_result (ok:i32 1i64) (ok v 0) (err e 1))",
     "(match_result (err:i32 2.5) (ok v 0) (err e 1))",
     // arrays
     "(arr.len (arr.new i32 1i64))",

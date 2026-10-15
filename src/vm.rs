@@ -629,12 +629,12 @@ impl VM {
             // A result occupies 8 heap bytes [tag:i32 payload:i32] (tag 0 = ok,
             // 1 = err), allocated before the payload is evaluated, exactly as the
             // wasm backend lays it out, so both backends leave the same heap.
-            Expr::Ok(val, _, _) => {
-                let inner = self.eval_result_cell(0, val, scope)?;
+            Expr::Ok(val, other, _) => {
+                let inner = self.eval_result_cell(0, val, other, scope)?;
                 Ok(Value::Ok(Box::new(inner)))
             }
-            Expr::Err(err, _, _) => {
-                let inner = self.eval_result_cell(1, err, scope)?;
+            Expr::Err(err, other, _) => {
+                let inner = self.eval_result_cell(1, err, other, scope)?;
                 Ok(Value::Err(Box::new(inner)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
@@ -918,8 +918,15 @@ impl VM {
         }
     }
 
-    fn eval_result_cell(&mut self, tag: i32, payload: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
+    /// tag 0 (ok) or 1 (err), the other side's type written as `other`.
+    fn eval_result_cell(&mut self, tag: i32, payload: &Expr, other: &Option<Type>, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
+        // a result held by value: no cell (AIPL_SPEC.md 4.F)
+        let other = other.clone().unwrap_or(Type::I32);
+        let (ok, err) = if tag == 0 { (&ty, &other) } else { (&other, &ty) };
+        if self.structs.result_layout(ok, err).is_some() {
+            return self.eval_expr(payload, scope);
+        }
         let (offset, size) = crate::checker::result_cell_layout(&ty, &self.structs);
         let cell = self.alloc_bytes(size as usize) as u32 as usize;
         self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
@@ -927,6 +934,7 @@ impl VM {
         let at = cell + offset as usize;
         match (&ty, &inner) {
             (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) | (Type::Union(_), Value::Union(..)) => self.store_val_at(at, &ty, inner.clone())?,
+            (Type::ResultType(a, b), Value::Ok(_) | Value::Err(_)) if self.structs.result_layout(a, b).is_some() => self.store_val_at(at, &ty, inner.clone())?,
             (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
             _ => {}
         }
@@ -1033,15 +1041,13 @@ impl VM {
     }
 
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
-        // a union by value: its slots, read and rebuilt
-        if let Type::Union(n) = ty {
-            if let Some(l) = self.structs.by_value.get(n) {
-                let mut slots = Vec::with_capacity(l.slots.len());
-                for (t, off) in l.slots.iter().zip(&l.offsets) {
-                    slots.push(self.load_val_at(addr + *off as usize, t)?);
-                }
-                return Ok(from_scalars(ty, &slots, &self.structs));
+        // a union or result by value: its slots, read and rebuilt
+        if let Some(l) = self.structs.sum_of(ty) {
+            let mut slots = Vec::with_capacity(l.slots.len());
+            for (t, off) in l.slots.iter().zip(&l.offsets) {
+                slots.push(self.load_val_at(addr + *off as usize, t)?);
             }
+            return Ok(from_scalars(ty, &slots, &self.structs));
         }
         // a value struct: its fields, each where the layout puts it
         if let Some(def) = self.value_struct(ty) {
@@ -1114,14 +1120,12 @@ impl VM {
     }
 
     fn store_val_at(&self, addr: usize, ty: &Type, val: Value) -> Result<(), String> {
-        // a union by value: every slot (zero where its variant has none)
-        if let Type::Union(n) = ty {
-            if let Some(l) = self.structs.by_value.get(n).cloned() {
-                for ((t, off), v) in l.slots.iter().zip(&l.offsets).zip(to_scalars(ty, val, &self.structs)?) {
-                    self.store_val_at(addr + *off as usize, t, v)?;
-                }
-                return Ok(());
+        // a union or result by value: every slot (zero where its variant has none)
+        if let Some(l) = self.structs.sum_of(ty) {
+            for ((t, off), v) in l.slots.iter().zip(&l.offsets).zip(to_scalars(ty, val, &self.structs)?) {
+                self.store_val_at(addr + *off as usize, t, v)?;
             }
+            return Ok(());
         }
         if let Some(def) = self.value_struct(ty) {
             let Value::Record(fields) = val else {
@@ -2231,6 +2235,20 @@ fn to_scalars(ty: &Type, v: Value, structs: &crate::checker::Structs) -> Result<
             }
             Ok(out)
         }
+        (Type::ResultType(a, b), v @ (Value::Ok(_) | Value::Err(_))) if structs.result_layout(a, b).is_some() => {
+            let l = structs.result_layout(a, b).unwrap_or_else(|| unreachable!());
+            let (tag, side, x) = match v {
+                Value::Ok(x) => (0, a, *x),
+                Value::Err(x) => (1, b, *x),
+                _ => unreachable!(),
+            };
+            let mut out: Vec<Value> = l.slots.iter().map(zero_of).collect();
+            out[0] = Value::Int(tag as i64);
+            for (slot, s) in l.variants[tag].iter().zip(to_scalars(side, x, structs)?) {
+                out[*slot as usize] = s;
+            }
+            Ok(out)
+        }
         (Type::Struct(_) | Type::Union(_), Value::Record(_) | Value::Union(..)) => Err(format!("VM: a {} value does not match its type", ty)),
         (_, x) => Ok(vec![x]),
     }
@@ -2274,6 +2292,17 @@ fn from_scalars(ty: &Type, s: &[Value], structs: &crate::checker::Structs) -> Va
             }
             Value::Union(tag, fields)
         }
+        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => {
+            let l = structs.result_layout(a, b).unwrap_or_else(|| unreachable!());
+            let tag = match s[0] {
+                Value::Int(t) => t as usize,
+                _ => 0,
+            };
+            let side = if tag == 0 { a } else { b };
+            let mine: Vec<Value> = l.variants[tag].iter().map(|slot| s[*slot as usize].clone()).collect();
+            let x = Box::new(from_scalars(side, &mine, structs));
+            if tag == 0 { Value::Ok(x) } else { Value::Err(x) }
+        }
         Type::Bool => match &s[0] {
             Value::Int(i) => Value::Bool(*i as i32 != 0),
             other => other.clone(),
@@ -2291,8 +2320,8 @@ fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String 
         (Value::Float(x), _) => format!("{x:?}"),
         (Value::Bool(b), _) => b.to_string(),
         (Value::Str(s), _) => format!("{s:?}"),
-        (Value::Ok(x), Type::ResultType(t, _)) => format!("(ok {})", value_str(x, t, structs)),
-        (Value::Err(x), Type::ResultType(_, e)) => format!("(err {})", value_str(x, e, structs)),
+        (Value::Ok(x), Type::ResultType(t, e)) => format!("(ok:{} {})", e, value_str(x, t, structs)),
+        (Value::Err(x), Type::ResultType(t, e)) => format!("(err:{} {})", t, value_str(x, e, structs)),
         (Value::Record(fields), Type::Struct(name)) => match structs.get(name) {
             Some(def) => {
                 let shown: Vec<String> = fields.iter().zip(&def.fields).map(|(x, f)| value_str(x, &f.ty, structs)).collect();

@@ -36,7 +36,12 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
 
 /// The programs and the checksum each one's main returns: every form, and
 /// every way through control flow.
-const PROGRAMS: [(&str, i64); 3] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 219), ("tests/aipl/unions_by_value.aipl", 239)];
+const PROGRAMS: [(&str, i64); 4] = [
+    ("tests/aipl/values.aipl", 649),
+    ("tests/aipl/values_flow.aipl", 219),
+    ("tests/aipl/unions_by_value.aipl", 239),
+    ("tests/aipl/results_by_value.aipl", 521),
+];
 
 #[test]
 fn values_programs_run_in_the_vm() {
@@ -359,4 +364,50 @@ fn a_template_named_make_leaves_the_make_form_alone() {
     assert_eq!(wasm_main(&rust), Ok(8));
     assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Which results are held by value (AIPL_SPEC.md 4.F), and a layout: the
+/// tag, then the slots the two sides share by kind.
+#[test]
+fn results_by_value_are_decided_as_specified() {
+    let m = Resolver::resolve(&root().join("tests/aipl/results_by_value.aipl")).unwrap();
+    let st = aipl_core::checker::Structs::new(&m.structs, &m.unions);
+    use aipl_core::ast::Type::*;
+    let r = |a: aipl_core::ast::Type, b: aipl_core::ast::Type| ResultType(Box::new(a), Box::new(b));
+    let vec2 = Struct("Vec2".into());
+    let shape = Union("Shape".into());
+    // the tag and one shared i32 slot
+    assert_eq!(st.result_layout(&I32, &I32).unwrap().slots, [I32, I32]);
+    // Vec2's two f64s and an i64: tag, i64, f64, f64
+    let l = st.result_layout(&vec2, &I64).unwrap();
+    assert_eq!(l.slots, [I32, I64, F64, F64]);
+    assert_eq!(l.offsets, [0, 8, 16, 24]);
+    assert_eq!(l.variants, [vec![2, 3], vec![1]]);
+    // a union by value as a side; a result of a result
+    assert!(st.result_layout(&shape, &Bool).is_some());
+    assert!(st.result_layout(&r(I64, Bool), &I32).is_some());
+    // Vec2's two f64s beside Shape's slots (tag, two i32s, f64): six
+    assert_eq!(st.result_layout(&vec2, &shape).unwrap().slots.len(), 6);
+    // four f64s beside four i32s: nine, a cell; a str side: a cell
+    assert_eq!(st.result_layout(&Struct("Quad".into()), &Struct("Ints".into())), None);
+    assert_eq!(st.result_layout(&I32, &Str), None);
+}
+
+/// Malformed items the program fuzzer found (tools/fuzz.py): an empty item
+/// (the AIPL resolver crashed) and a colon where a struct's field list goes
+/// (it made the colon an empty list). Both toolchains give the same error.
+#[test]
+fn malformed_items_get_the_same_error_from_both_toolchains() {
+    for (name, src) in [
+        ("empty", "(module m\n  (fn main [] -> i32 0)\n  ()\n)\n"),
+        ("colon", "(module m\n  (struct Out :[b:i32])\n  (fn main [] -> i32 0))\n"),
+    ] {
+        let dir = scratch(&format!("malformed_{name}"));
+        let file = dir.join("m.aipl");
+        std::fs::write(&file, src).unwrap();
+        let rust = Resolver::resolve(&file).map(|_| ()).expect_err(src);
+        let aipl = aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).expect_err(src);
+        assert_eq!(aipl, rust, "{name}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
