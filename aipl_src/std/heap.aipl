@@ -39,9 +39,9 @@
   ;; lock: held while the heap changes (first, so its address is the
   ;; heap's); heads: each size class's first free block (0 for none); new
   ;; blocks come from [cur, end).
-  (struct Heap [lock:i32 heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32])
+  (struct Heap [lock:i32 heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32] (pub))
 
-  (fn make [] -> (ptr Heap)
+  (fn make [] -> (ptr Heap) (pub)
     (let h:(ptr Heap) (new Heap))
     (put h Heap.lock 0)
     (put h Heap.heads (arr.new i32 NCLASSES))
@@ -80,7 +80,7 @@
   ;; ===== Allocating and freeing =====
 
   ;; n zeroed bytes, 8-aligned.
-  (fn raw [h:(ptr Heap) n:i32] -> i32
+  (fn raw [h:(ptr Heap) n:i32] -> i32 (pub)
     (req (gt n 0))
     (req (lte n 1879048184))
     (unsafe (atomic.lock (ptr.addr h))
@@ -130,7 +130,7 @@
     false)
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
-  (fn free_raw [h:(ptr Heap) p:i32 n:i32] -> void (unsafe)
+  (fn free_raw [h:(ptr Heap) p:i32 n:i32] -> void (pub) (unsafe)
     (req (call not_freed_already h p))
     (req (call allocated_by h p))
     (req (call size_matches p n))
@@ -162,36 +162,36 @@
   ;; ===== Typed =====
 
   ;; A zeroed T.
-  (fn (create T) [h:(ptr Heap)] -> (ptr T)
+  (fn (create T) [h:(ptr Heap)] -> (ptr T) (pub) (where (struct T))
     (unsafe (ptr.cast T (call raw h (sizeof T)))))
 
-  (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void
+  (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void (pub) (where (struct T))
     (unsafe (call free_raw h (ptr.addr p) (sizeof T))))
 
   ;; n zeroed Ts, laid out like (arr.new T n): the length in the 4 bytes
   ;; before the first element.
-  (fn (array T) [h:(ptr Heap) n:i32] -> (arr T)
+  (fn (array T) [h:(ptr Heap) n:i32] -> (arr T) (pub)
     (req (gte n 0))
     (unsafe (let base:i32 (call raw h (checked.add 4 (checked.mul n (sizeof T)))))
     (mem.store32 base n)
     (arr.cast T (+ base 4))))
 
-  (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void
+  (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void (pub)
     (unsafe (call free_raw h (- (arr.addr a) 4) (+ 4 (* (arr.len a) (sizeof T))))))
 
   ;; ===== Accounting =====
 
   ;; Blocks allocated and not yet freed (a test can require 0: no leaks).
-  (fn live [h:(ptr Heap)] -> i32 (get h Heap.nlive))
+  (fn live [h:(ptr Heap)] -> i32 (pub) (get h Heap.nlive))
   ;; Bytes asked for in those blocks.
-  (fn live_bytes [h:(ptr Heap)] -> i32 (get h Heap.live_bytes))
+  (fn live_bytes [h:(ptr Heap)] -> i32 (pub) (get h Heap.live_bytes))
   ;; Bytes the heap holds from mem.alloc.
-  (fn reserved [h:(ptr Heap)] -> i32 (get h Heap.reserved))
+  (fn reserved [h:(ptr Heap)] -> i32 (pub) (get h Heap.reserved))
 
   (struct Pair [left:i32 right:i64])
 
   ;; Pass count; test_suite.aipl expects 8.
-  (fn run_heap_tests [] -> i32
+  (fn run_heap_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     ;; size classes: every size fits its class, and the class below is too small
     (let classes_ok:bool true)

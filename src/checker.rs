@@ -12,17 +12,69 @@ pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
     }
 }
 
-/// A result cell holds a 32-bit payload, so a 64-bit or float value cannot be
-/// one (the wasm backend's rule; checked here so `verify` rejects what no
-/// backend compiles).
+/// A result's payload is a value of any type but `void`.
 fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
-    if matches!(t, Type::I64 | Type::F32 | Type::F64) {
-        return Err(format!(
-            "{}:{}: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got {}",
-            l, c, t
-        ));
+    if *t == Type::Void {
+        return Err(format!("{}:{}: a result payload must be a value, got void", l, c));
     }
     Ok(())
+}
+
+/// Where a result cell keeps its payload, and the cell's size: like a union
+/// variant with one field (AIPL_SPEC.md 4.F), after the 4-byte tag, so a
+/// 64-bit payload sits at 8 in a 16-byte cell and any other at 4 in an
+/// 8-byte one.
+pub fn result_cell_layout(payload: &Type) -> (u32, i32) {
+    if matches!(payload, Type::I64 | Type::F64) { (8, 16) } else { (4, 8) }
+}
+
+/// A type parameter's placeholder, when a template is checked once with its
+/// type parameters sealed (generics.rs archetypes): `'vec.index_of.T`, an
+/// enum with no members (a value parameter) or a struct with no fields
+/// (`(where (struct T))`).
+pub fn is_sealed(name: &str) -> bool {
+    name.starts_with('\'')
+}
+
+/// Text with every placeholder shown as the parameter it stands for:
+/// `vec.Vec<'vec.index_of.T>` is `vec.Vec<T>`.
+pub fn shown(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            out.push(c);
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(&n) = chars.peek() {
+            if n.is_whitespace() || "<>,()[]:".contains(n) {
+                break;
+            }
+            name.push(n);
+            chars.next();
+        }
+        out.push_str(name.rsplit('.').next().unwrap_or(""));
+    }
+    out
+}
+
+/// "T is a type parameter that is not a struct", for a struct position.
+fn not_a_struct((l, c): (u32, u32), name: &str) -> String {
+    if is_sealed(name) {
+        let p = shown(name);
+        format!("{}:{}: {} is a type parameter that is not a struct: to use it as one, add (where (struct {}))", l, c, p, p)
+    } else {
+        format!("{}:{}: Unknown struct '{}'", l, c, name)
+    }
+}
+
+/// The parameter a placeholder enum type stands for.
+fn sealed(t: &Type) -> Option<String> {
+    match t {
+        Type::Enum(n) if is_sealed(n) => Some(shown(n)),
+        _ => None,
+    }
 }
 
 pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
@@ -35,7 +87,7 @@ pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Typ
         }
         offset += s;
     }
-    Err(format!("Struct '{}' has no field '{}'", def.name, field_name))
+    Err(format!("Struct '{}' has no field '{}'", shown(&def.name), field_name))
 }
 
 /// Where each field of a union variant lives in its cell: the tag (i32) is
@@ -92,6 +144,10 @@ pub struct TypeChecker {
     /// `(unsafe ...)` block (depth > 0) or an `(unsafe)` function.
     unsafe_depth: std::cell::Cell<u32>,
     in_unsafe_fn: std::cell::Cell<bool>,
+    /// The type of each `ok`/`err` payload, by the payload's address: the VM
+    /// lays out a result cell before it evaluates the payload, so it needs
+    /// the payload's size from here (payload_types).
+    payloads: std::cell::RefCell<HashMap<usize, Type>>,
 }
 
 impl Default for TypeChecker {
@@ -114,7 +170,17 @@ impl TypeChecker {
             unsafe_fns: std::collections::HashSet::new(),
             unsafe_depth: std::cell::Cell::new(0),
             in_unsafe_fn: std::cell::Cell::new(false),
+            payloads: std::cell::RefCell::new(HashMap::new()),
         }
+    }
+
+    /// The type of every `ok`/`err` payload in `module`, keyed by the
+    /// payload expression's address (stable while the module's boxes live).
+    /// Payloads in functions that do not check are left out.
+    pub fn payload_types(module: &Module) -> HashMap<usize, Type> {
+        let mut checker = TypeChecker::new();
+        let _ = checker.check_module(module);
+        checker.payloads.into_inner()
     }
 
     /// Checks a module. Definitions and signatures stop at the first error
@@ -157,7 +223,7 @@ impl TypeChecker {
             if module.structs.iter().any(|s| s.name == e.name) {
                 return Err(format!("{}:{}: '{}' is defined as both a struct and an enum", l, c, e.name));
             }
-            if e.members.is_empty() {
+            if e.members.is_empty() && !is_sealed(&e.name) {
                 return Err(format!("{}:{}: enum '{}' has no members", l, c, e.name));
             }
             for (i, (m, v)) in e.members.iter().enumerate() {
@@ -185,12 +251,12 @@ impl TypeChecker {
             }
             for (i, f) in s.fields.iter().enumerate() {
                 if s.fields[..i].iter().any(|g| g.name == f.name) {
-                    return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, s.name));
+                    return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, shown(&s.name)));
                 }
                 type_size_and_align(&f.ty).map_err(|e| {
                     format!(
                         "{}:{}: Field '{}' in struct '{}': {}",
-                        s.span.0, s.span.1, f.name, s.name, e
+                        s.span.0, s.span.1, f.name, shown(&s.name), e
                     )
                 })?;
             }
@@ -219,7 +285,7 @@ impl TypeChecker {
                 }
                 for (j, f) in v.fields.iter().enumerate() {
                     if v.fields[..j].iter().any(|g| g.name == f.name) {
-                        return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, u.name, v.name, f.name));
+                        return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, shown(&u.name), v.name, f.name));
                     }
                     type_size_and_align(&f.ty)
                         .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
@@ -232,7 +298,7 @@ impl TypeChecker {
         for s in &module.structs {
             self.at_item("struct", &s.name);
             for f in &s.fields {
-                self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, s.name))?;
+                self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, shown(&s.name)))?;
             }
         }
         for u in &module.unions {
@@ -240,7 +306,7 @@ impl TypeChecker {
             for v in &u.variants {
                 for f in &v.fields {
                     self.validate_type(&f.ty, u.span)
-                        .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, u.name, v.name))?;
+                        .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name))?;
                 }
             }
         }
@@ -269,12 +335,13 @@ impl TypeChecker {
         match ty {
             Type::Ptr(inner) => match inner.as_ref() {
                 Type::Struct(name) if self.struct_defs.contains_key(name) => Ok(()),
+                Type::Struct(name) if is_sealed(name) => Err(not_a_struct(span, name)),
                 Type::Struct(name) => Err(format!("{}:{}: Unknown struct '{}' in (ptr {})", span.0, span.1, name, name)),
                 other => Err(format!("{}:{}: ptr must point to a struct, got {}", span.0, span.1, other)),
             },
             Type::Struct(name) => Err(format!(
                 "{}:{}: struct '{}' cannot be used by value; use (ptr {})",
-                span.0, span.1, name, name
+                span.0, span.1, shown(name), shown(name)
             )),
             Type::Array(elem) => {
                 self.validate_type(elem, span)?;
@@ -302,7 +369,7 @@ impl TypeChecker {
             Type::Union(name) => Err(format!("{}:{}: Unknown union '{}'", span.0, span.1, name)),
             Type::Enum(name) if self.struct_defs.contains_key(name) => Err(format!(
                 "{}:{}: '{}' is a struct, which is only used through a pointer: write (ptr {})",
-                span.0, span.1, name, name
+                span.0, span.1, shown(name), shown(name)
             )),
             Type::Enum(name) => Err(format!("{}:{}: Unknown type '{}' (not a scalar type or an enum)", span.0, span.1, name)),
             _ => Ok(()),
@@ -366,11 +433,11 @@ impl TypeChecker {
         for (param_name, param_ty) in &f.params {
             self.declared.borrow_mut().insert(param_name.clone(), param_ty.clone());
             self.validate_type(param_ty, f.span)
-                .map_err(|e| format!("{} (parameter '{}' of '{}')", e, param_name, f.name))?;
+                .map_err(|e| format!("{} (parameter '{}' of '{}')", e, param_name, shown(&f.name)))?;
             env.insert(param_name.clone(), param_ty.clone());
         }
         self.validate_type(&f.return_type, f.span)
-            .map_err(|e| format!("{} (return type of '{}')", e, f.name))?;
+            .map_err(|e| format!("{} (return type of '{}')", e, shown(&f.name)))?;
 
         // Check contracts
         for c in &f.contracts {
@@ -381,7 +448,7 @@ impl TypeChecker {
                         let (l, c_col) = expr.span();
                         return Err(format!(
                             "{}:{}: Contract expression in '{}' must evaluate to bool, got {}",
-                            l, c_col, f.name, cond_ty
+                            l, c_col, shown(&f.name), cond_ty
                         ));
                     }
                 }
@@ -393,7 +460,7 @@ impl TypeChecker {
                         let (l, c_col) = expr.span();
                         return Err(format!(
                             "{}:{}: Ensures contract expression in '{}' must evaluate to bool, got {}",
-                            l, c_col, f.name, cond_ty
+                            l, c_col, shown(&f.name), cond_ty
                         ));
                     }
                 }
@@ -422,7 +489,7 @@ impl TypeChecker {
         if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
             return Err(format!(
                 "{}:{}: Function '{}' expects return type {}, but body returned {}",
-                f.span.0, f.span.1, f.name, f.return_type, last_ty
+                f.span.0, f.span.1, shown(&f.name), f.return_type, last_ty
             ));
         }
 
@@ -446,7 +513,7 @@ impl TypeChecker {
         if !self.unsafe_fns.contains(name) || self.is_unsafe_context() {
             return Ok(());
         }
-        Err(format!("{}:{}: '{}' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)", l, c, name))
+        Err(format!("{}:{}: '{}' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)", l, c, shown(name)))
     }
 
     fn infer_expr_type(&self, expr: &Expr, env: &mut HashMap<String, Type>) -> Result<Type, String> {
@@ -571,7 +638,7 @@ impl TypeChecker {
                 if args.len() != param_types.len() {
                     return Err(format!(
                         "{}:{}: Function '{}' expects {} arguments, got {}",
-                        l, c, func, param_types.len(), args.len()
+                        l, c, shown(func), param_types.len(), args.len()
                     ));
                 }
                 for (i, arg) in args.iter().enumerate() {
@@ -579,7 +646,7 @@ impl TypeChecker {
                     if arg_ty != param_types[i] {
                         return Err(format!(
                             "{}:{}: Arg {} of '{}' expects {}, got {}",
-                            l, c, i, func, param_types[i], arg_ty
+                            l, c, i, shown(func), param_types[i], arg_ty
                         ));
                     }
                 }
@@ -611,6 +678,9 @@ impl TypeChecker {
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
+                    if let Some(p) = sealed(&t1).or(sealed(&t2)) {
+                        return Err(format!("{}:{}: {} on {}: a type parameter has no arithmetic", l, c, op, p));
+                    }
                     // A pointer, function ref, or enum operand gets its own
                     // explanation even when the other operand is a number:
                     // (+ p 4), (+ 1 e).
@@ -728,6 +798,13 @@ impl TypeChecker {
                     }
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
+                    if let Some(p) = sealed(&t1).or(sealed(&t2)) {
+                        return Err(if matches!(op, OpCode::Eq | OpCode::Neq) {
+                            format!("{}:{}: {} on {}: a type parameter has no equality of its own; add (where (cmp.Eq {})) and call (cmp.Eq.same {})", l, c, op, p, p, p)
+                        } else {
+                            format!("{}:{}: {} on {}: a type parameter has no order of its own; add (where (cmp.Ord {})) and call (cmp.Ord.compare {})", l, c, op, p, p, p)
+                        });
+                    }
                     if t1 != t2 {
                         return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}", l, c, t1, t2));
                     }
@@ -880,6 +957,18 @@ impl TypeChecker {
                     }
                     Ok(Type::I32)
                 }
+                OpCode::FsOpendir => {
+                    self.expect_operands("fs.opendir", "(fs.opendir ptr len)", args, &[Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::FsReaddir => {
+                    self.expect_operands("fs.readdir", "(fs.readdir fd buf len cookie)", args, &[Type::I32, Type::I32, Type::I32, Type::I64], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::FsStat => {
+                    self.expect_operands("fs.stat", "(fs.stat ptr len out)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
@@ -946,6 +1035,7 @@ impl TypeChecker {
             Expr::Ok(val, extra_ty, _) => {
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
+                self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
                 let err_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
@@ -953,6 +1043,7 @@ impl TypeChecker {
             Expr::Err(err, extra_ty, _) => {
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
+                self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
                 let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&ok_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
@@ -1019,7 +1110,7 @@ impl TypeChecker {
             }
             Expr::NewStruct { struct_name, span } => {
                 if !self.struct_defs.contains_key(struct_name) {
-                    return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name));
+                    return Err(not_a_struct(*span, struct_name));
                 }
                 Ok(Type::Ptr(Box::new(Type::Struct(struct_name.clone()))))
             }
@@ -1029,14 +1120,12 @@ impl TypeChecker {
                 ptr,
                 span,
             } => {
-                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
-                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
-                })?;
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
                         "{}:{}: get {}.{} needs a (ptr {}), got {}",
-                        span.0, span.1, struct_name, field_name, struct_name, ptr_ty
+                        span.0, span.1, shown(struct_name), field_name, shown(struct_name), ptr_ty
                     ));
                 }
                 let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
@@ -1051,14 +1140,12 @@ impl TypeChecker {
                 val,
                 span,
             } => {
-                let def = self.struct_defs.get(struct_name).ok_or_else(|| {
-                    format!("{}:{}: Unknown struct '{}'", span.0, span.1, struct_name)
-                })?;
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
                         "{}:{}: put {}.{} needs a (ptr {}), got {}",
-                        span.0, span.1, struct_name, field_name, struct_name, ptr_ty
+                        span.0, span.1, shown(struct_name), field_name, shown(struct_name), ptr_ty
                     ));
                 }
                 let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
@@ -1068,7 +1155,7 @@ impl TypeChecker {
                 if val_ty != field_ty {
                     return Err(format!(
                         "{}:{}: Type mismatch writing to field '{}.{}': expected {}, got {}",
-                        span.0, span.1, struct_name, field_name, field_ty, val_ty
+                        span.0, span.1, shown(struct_name), field_name, field_ty, val_ty
                     ));
                 }
                 Ok(Type::Void)
@@ -1078,7 +1165,7 @@ impl TypeChecker {
                     // a bare name: a struct, or an enum (an i32)
                     Type::Struct(name) => {
                         if !self.struct_defs.contains_key(name) && !self.enum_defs.contains_key(name) {
-                            return Err(format!("{}:{}: Unknown struct '{}'", span.0, span.1, name));
+                            return Err(not_a_struct(*span, name));
                         }
                     }
                     _ => {
@@ -1174,6 +1261,9 @@ impl TypeChecker {
                     _ => {}
                 }
                 self.validate_type(ty, *span)?;
+                if let Some(p) = sealed(ty) {
+                    return Err(format!("{}:{}: enum.cast {}: a type parameter is not an enum", span.0, span.1, p));
+                }
 
                 let t = self.infer_expr_type(addr, env)?;
                 if t != Type::I32 {
@@ -1220,18 +1310,18 @@ impl TypeChecker {
                     return Err(format!("{}:{}: Unknown union '{}' in make", l, c, union_name));
                 };
                 let Some(v) = u.variants.iter().find(|v| &v.name == variant) else {
-                    return Err(format!("{}:{}: union '{}' has no variant '{}'", l, c, union_name, variant));
+                    return Err(format!("{}:{}: union '{}' has no variant '{}'", l, c, shown(union_name), variant));
                 };
                 if args.len() != v.fields.len() {
                     return Err(format!(
                         "{}:{}: make {}.{} takes {} values (its fields), got {}",
-                        l, c, union_name, variant, v.fields.len(), args.len()
+                        l, c, shown(union_name), variant, v.fields.len(), args.len()
                     ));
                 }
                 for (a, f) in args.iter().zip(v.fields.iter()) {
                     let at = self.infer_expr_type(a, env)?;
                     if at != f.ty {
-                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}", l, c, union_name, variant, f.name, f.ty, at));
+                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}", l, c, shown(union_name), variant, f.name, f.ty, at));
                     }
                 }
                 Ok(Type::Union(union_name.clone()))
@@ -1239,6 +1329,9 @@ impl TypeChecker {
             Expr::Match { value, arms, else_body, span } => {
                 let (l, c) = *span;
                 let vt = self.infer_expr_type(value, env)?;
+                if let Some(p) = sealed(&vt) {
+                    return Err(format!("{}:{}: match on {}: a type parameter has no variants or members to match", l, c, p));
+                }
                 // the members in order, with each union variant's fields
                 let (tname, members): (String, Vec<MatchMember>) = match &vt {
                     Type::Union(u) => (u.clone(), self.union_defs[u].variants.iter().map(|v| (v.name.clone(), Some(&v.fields))).collect()),
@@ -1252,14 +1345,14 @@ impl TypeChecker {
                     let member = match arm.member.rfind('.') {
                         Some(dot) if arm.member[..dot] == tname => &arm.member[dot + 1..],
                         _ => {
-                            return Err(format!("{}:{}: a match arm on {} is ({}.member ...), got {}", al, ac, tname, tname, arm.member))
+                            return Err(format!("{}:{}: a match arm on {} is ({}.member ...), got {}", al, ac, shown(&tname), shown(&tname), shown(&arm.member)))
                         }
                     };
                     let Some((_, fields)) = members.iter().find(|(m, _)| m == member) else {
-                        return Err(format!("{}:{}: {} has no member '{}'", al, ac, tname, member));
+                        return Err(format!("{}:{}: {} has no member '{}'", al, ac, shown(&tname), member));
                     };
                     if seen.contains(&member) {
-                        return Err(format!("{}:{}: {}.{} is matched twice", al, ac, tname, member));
+                        return Err(format!("{}:{}: {}.{} is matched twice", al, ac, shown(&tname), member));
                     }
                     seen.push(member);
                     let mut arm_env = env.clone();
@@ -1296,7 +1389,7 @@ impl TypeChecker {
                 match else_body {
                     Some(body) => {
                         if seen.len() == members.len() {
-                            return Err(format!("{}:{}: the else arm never runs: every member of {} is matched", l, c, tname));
+                            return Err(format!("{}:{}: the else arm never runs: every member of {} is matched", l, c, shown(&tname)));
                         }
                         let mut else_env = env.clone();
                         let mut t = Type::Void;
@@ -1309,7 +1402,7 @@ impl TypeChecker {
                         let missing: Vec<String> =
                             members.iter().filter(|(m, _)| !seen.contains(&m.as_str())).map(|(m, _)| format!("{}.{}", tname, m)).collect();
                         if !missing.is_empty() {
-                            return Err(format!("{}:{}: match is missing {} (add those arms or an else arm)", l, c, missing.join(", ")));
+                            return Err(format!("{}:{}: match is missing {} (add those arms or an else arm)", l, c, shown(&missing.join(", "))));
                         }
                     }
                 }
@@ -1323,6 +1416,9 @@ impl TypeChecker {
             }
             Expr::Addr { val, kind, span } => {
                 let t = self.infer_expr_type(val, env)?;
+                if let (AddrKind::Enum, Some(p)) = (kind, sealed(&t)) {
+                    return Err(format!("{}:{}: enum.ord on {}: a type parameter is not an enum", span.0, span.1, p));
+                }
                 match (kind, &t) {
                     (AddrKind::Ptr, Type::Ptr(_)) | (AddrKind::Arr, Type::Array(_)) | (AddrKind::Enum, Type::Enum(_)) => Ok(Type::I32),
                     (AddrKind::Ptr, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {}", span.0, span.1, t)),
@@ -1414,7 +1510,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
         MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
-            | FsOpen | FsRead | FsWrite | FsDelete
+            | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

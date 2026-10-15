@@ -136,8 +136,11 @@ fn std_io_agrees_in_both_backends() {
 fn std_collections_agree_in_both_backends() {
     // the run_<module>_tests runners plus every helper with i32 params
     assert!(differential_module("vec") >= 20);
-    assert!(differential_module("map") >= 8);
-    assert!(differential_module("strmap") >= 1);
+    // every map function is generic now: its runner and the two groups of
+    // cases it runs (i32 keys, byte-string keys) are what can be called
+    assert!(differential_module("map") >= 3);
+    assert!(differential_module("cmp") >= 1);
+    assert!(differential_module("option") >= 1);
     assert!(differential_module("buf") >= 1);
 }
 
@@ -394,6 +397,102 @@ fn bigint_matches_python_integers() {
             (LINES, BYTES, FNV),
             "{way}: transcript differs from tools/bigint_vectors.py (diff the two outputs to find the first wrong line)"
         );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// json.write's numbers against Rust's shortest round-trip digits ({:e}),
+/// laid out by ECMAScript's Number::toString (what JSON.stringify writes):
+/// 20,000 finite doubles across the whole range, compiled to wasm.
+#[test]
+fn json_numbers_are_shortest_and_laid_out_as_javascript() {
+    fn js(x: f64) -> String {
+        if x == 0.0 {
+            return "0".into();
+        }
+        let s = format!("{:e}", x.abs());
+        let (mant, exp) = s.split_once('e').unwrap();
+        let mut digits: String = mant.replace('.', "");
+        let (k, n) = (digits.len() as i32, exp.parse::<i32>().unwrap() + 1);
+        // Rust breaks a tie upward; ECMAScript picks the even digit (as V8 and
+        // node do): when x is exactly halfway and the lower candidate also
+        // reads back, that one.
+        let exact = format!("{:.1100e}", x.abs());
+        let (emant, eexp) = exact.split_once('e').unwrap();
+        let edigits: String = emant.replace('.', "");
+        let (ehead, etail) = edigits.split_at(k as usize);
+        let tie = etail.starts_with('5') && etail[1..].bytes().all(|b| b == b'0');
+        let odd = (digits.as_bytes()[k as usize - 1] - b'0') % 2 == 1;
+        if eexp == exp && tie && odd && format!("0.{ehead}e{n}").parse::<f64>().unwrap() == x.abs() {
+            digits = ehead.trim_end_matches('0').to_string();
+        }
+        let k = digits.len() as i32;
+        let body = if k <= n && n <= 21 {
+            format!("{}{}", digits, "0".repeat((n - k) as usize))
+        } else if 0 < n && n <= 21 {
+            format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
+        } else if -6 < n && n <= 0 {
+            format!("0.{}{}", "0".repeat((-n) as usize), digits)
+        } else {
+            let e = n - 1;
+            let m = if k > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+            format!("{}e{}{}", m, if e >= 0 { "+" } else { "-" }, e.abs())
+        };
+        if x < 0.0 { format!("-{body}") } else { body }
+    }
+    let dir = scratch("json_numbers");
+    let src = dir.join("w.aipl");
+    std::fs::write(
+        &src,
+        "(module w (import json) (import buf) (import alloc) (import str)
+           (fn number_at [lo:i32 hi:i32 out:i32] -> i32 (unsafe)
+             (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+             (call json.write b (make json.Value.number (f64.reinterpret_i64 (bitor (i64.extend_u lo) (shl (i64.extend_s hi) 32i64)))))
+             (let t:(ptr str.Bytes) (call buf.bytes b))
+             (loop i 0 (- (get t str.Bytes.len) 1) 1 (mem.store8 (+ out i) (call str.byte_at t i)))
+             (get t str.Bytes.len))
+           (fn alloc [n:i32] -> i32 (mem.alloc n)))",
+    )
+    .unwrap();
+    let (_, wasm) = load(&src);
+    let engine = Engine::default();
+    let module = WasmModule::new(&engine, &wasm).unwrap();
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &module).unwrap();
+    let alloc = inst.get_typed_func::<i32, i32>(&mut store, "alloc").unwrap();
+    let number_at = inst.get_typed_func::<(i32, i32, i32), i32>(&mut store, "number_at").unwrap();
+    let mem = inst.get_memory(&mut store, "memory").unwrap();
+    let out = alloc.call(&mut store, 64).unwrap();
+    let mut write = |x: f64| -> String {
+        let bits = x.to_bits();
+        let n = number_at.call(&mut store, (bits as u32 as i32, (bits >> 32) as u32 as i32, out)).unwrap();
+        String::from_utf8(mem.data(&store)[out as usize..(out + n) as usize].to_vec()).unwrap()
+    };
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut values: Vec<f64> = vec![0.0, -0.0, 0.1, 1e21, 1e-7, 5e-324, f64::MAX, f64::MIN_POSITIVE, 9007199254740992.0, 2.0f64.powi(-1074) * 3.0, 1e15, 123.456];
+    for _ in 0..20000 {
+        let r = next();
+        let x = match r % 4 {
+            0 => f64::from_bits(r >> 1 | (r & 1) << 63),
+            1 => (r % 2_000_000_000) as f64 / 1000.0 - 1e6,
+            // powers of two and their neighbours, where the rounding interval is lopsided
+            2 => f64::from_bits(((r % 2046 + 1) << 52) + (r >> 60) % 2),
+            _ => (r % 1_000_000) as f64 * 1e-12,
+        };
+        if x.is_finite() {
+            values.push(x);
+        }
+    }
+    for x in &values {
+        assert_eq!(write(*x), js(*x), "{x:e} (bits {:016x})", x.to_bits());
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

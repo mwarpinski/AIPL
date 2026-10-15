@@ -300,6 +300,7 @@ impl Parser {
     /// Parses an already-tokenized `(module ...)`. The resolver uses it to
     /// parse each item of a flattened program with its original positions.
     pub fn parse_tokens(tokens: Vec<Token>) -> Result<Module, String> {
+        let tokens = strip_marks(tokens);
         // the unions declared in these tokens: `( union NAME`
         let unions = tokens
             .windows(3)
@@ -314,7 +315,7 @@ impl Parser {
     /// parse_tokens for one item of a larger program, given the program's
     /// union names (the resolver parses items one at a time).
     pub fn parse_tokens_with(tokens: Vec<Token>, unions: std::collections::HashSet<String>) -> Result<Module, String> {
-        let mut parser = Parser { tokens, pos: 0, last_pos: (1, 1), unions };
+        let mut parser = Parser { tokens: strip_marks(tokens), pos: 0, last_pos: (1, 1), unions };
         parser.parse_module()
     }
 
@@ -1644,6 +1645,9 @@ impl Parser {
                                 "fs.write" => OpCode::FsWrite,
                                 "fs.close" => OpCode::FsClose,
                                 "fs.delete" => OpCode::FsDelete,
+                                "fs.opendir" => OpCode::FsOpendir,
+                                "fs.readdir" => OpCode::FsReaddir,
+                                "fs.stat" => OpCode::FsStat,
                                 "args.sizes" => OpCode::ArgsSizes,
                                 "args.get" => OpCode::ArgsGet,
                                 "env.sizes" => OpCode::EnvSizes,
@@ -1704,4 +1708,44 @@ fn parse_scalar_type_str(s: &str, span: (u32, u32)) -> Result<Type, String> {
         "void" => Ok(Type::Void),
         _ => Err(format!("{}:{}: Unknown scalar type: {}", span.0, span.1, s)),
     }
+}
+
+/// Visibility marks (AIPL_SPEC.md 11) left out: `(pub)`, and the `(pub` /
+/// `(read` and matching `)` of a field `(pub x:T)` / `(read x:T)`. They
+/// matter only between modules, which the resolver checks before it takes
+/// them out; a module parsed on its own may still have them.
+/// (compiler.aipl strip_marks does the same for the AIPL toolchain.)
+pub fn strip_marks(tokens: Vec<Token>) -> Vec<Token> {
+    let sym = |t: Option<&Token>, s: &str| matches!(t, Some(Token { kind: TokenKind::Symbol(x), .. }) if x == s);
+    let mut out = Vec::with_capacity(tokens.len());
+    // per open bracket: whether its close is to be left out
+    let mut opens: Vec<bool> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = &tokens[i];
+        match t.kind {
+            TokenKind::LParen if sym(tokens.get(i + 1), "pub") && matches!(tokens.get(i + 2).map(|t| &t.kind), Some(TokenKind::RParen)) => {
+                i += 3;
+                continue;
+            }
+            TokenKind::LParen
+                if (sym(tokens.get(i + 1), "pub") || sym(tokens.get(i + 1), "read"))
+                    && matches!(tokens.get(i + 2).map(|t| &t.kind), Some(TokenKind::Symbol(_)))
+                    && matches!(tokens.get(i + 3).map(|t| &t.kind), Some(TokenKind::Colon)) =>
+            {
+                opens.push(true);
+                i += 2;
+                continue;
+            }
+            TokenKind::LParen | TokenKind::LBracket => opens.push(false),
+            TokenKind::RParen | TokenKind::RBracket if opens.pop() == Some(true) => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        out.push(t.clone());
+        i += 1;
+    }
+    out
 }

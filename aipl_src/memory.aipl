@@ -60,7 +60,7 @@
   ;; advances the shared cursor at address 0 by exactly its size, arena
   ;; allocations live inside the arena's block, arena reset reuses memory,
   ;; and an over-full arena is refused.
-  (fn run_memory_tests [] -> i32
+  (fn run_memory_tests [] -> i32 (pub)
     (unsafe (let before:i32 (mem.load32 0))
     (let p1:i32 (call aipl_heap_alloc 64))
     (let after:i32 (mem.load32 0))

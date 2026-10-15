@@ -19,7 +19,7 @@
   ;; 'E', an optional sign, and digits (compiler.is_float_literal's form).
   ;; Too large is an infinity and too small a zero, with the sign. The fast
   ;; path allocates nothing; the exact one, two numbers sized up front.
-  (fn from_decimal [addr:i32 len:i32] -> f64 (unsafe)
+  (fn from_decimal [addr:i32 len:i32] -> f64 (pub) (unsafe)
     (let i:i32 0)
     (let c0:i32 (if (gt len 0) (mem.load8 addr) 0))
     (let neg:bool (eq c0 45))
@@ -178,7 +178,7 @@
   (fn converts [text:str want:f64] -> bool
     (unsafe (eq (i64.reinterpret_f64 (call from_decimal (str.ptr text) (str.len text))) (i64.reinterpret_f64 want))))
 
-  (fn run_float_tests [] -> i32
+  (fn run_float_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     (if (call converts "0.1" 0.1) (set! p (+ p 1)) (block))
     (if (call converts "-2.5" -2.5) (set! p (+ p 1)) (block))

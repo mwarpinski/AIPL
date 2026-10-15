@@ -26,6 +26,7 @@ pub struct Resolver;
 /// A generic instance is made from its template's file, but the type
 /// arguments substituted into it were written elsewhere: `foreign` maps
 /// those tokens' positions to their own files.
+#[derive(Clone)]
 pub struct Item {
     pub sx: Sx,
     pub file: PathBuf,
@@ -34,6 +35,7 @@ pub struct Item {
 
 /// The flat program before parsing: entry module name, then every struct
 /// and every function (imports first, in resolution order).
+#[derive(Clone)]
 pub struct FlatProgram {
     pub name: String,
     pub structs: Vec<Item>,
@@ -54,6 +56,23 @@ struct State<'a> {
     /// Module name -> its file: two different files may not share a name.
     names: HashMap<String, PathBuf>,
     files: HashMap<PathBuf, String>,
+    vis: Vis,
+}
+
+/// What other modules may use (AIPL_SPEC.md 11): the canonical names of
+/// `(pub)` items, and each struct's fields with their levels.
+#[derive(Default)]
+struct Vis {
+    public: HashSet<String>,
+    fields: HashMap<String, HashMap<String, Level>>,
+}
+
+/// A field's visibility outside its module: none, `(read x:T)`, `(pub x:T)`.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+enum Level {
+    Private,
+    Read,
+    Pub,
 }
 
 /// A parsed `(module name items...)`.
@@ -91,8 +110,18 @@ impl Resolver {
 
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
         let flat = Self::flatten(entry_src, entry_path)?;
+        // every template checked once, at placeholders for its type
+        // parameters (generics::archetypes); nothing is compiled from these
+        if let Some(arch) = crate::generics::archetypes(flat.clone())? {
+            let module = Self::parse_flat(crate::consts::expand(arch)?)?;
+            crate::checker::TypeChecker::new().check_module(&module)?;
+        }
         let flat = crate::generics::expand(flat)?;
-        let flat = crate::consts::expand(flat)?;
+        Self::parse_flat(crate::consts::expand(flat)?)
+    }
+
+    /// Parses each item of an expanded flat program, with its positions.
+    fn parse_flat(flat: FlatProgram) -> Result<Module, String> {
         let mut module = Module { name: flat.name.clone(), imports: vec![], structs: vec![], enums: vec![], unions: vec![], functions: vec![], sources: HashMap::new(), file_names: flat.files.clone() };
         let unions: HashSet<String> = flat
             .structs
@@ -130,6 +159,7 @@ impl Resolver {
             templates: HashSet::new(),
             names: HashMap::new(),
             files: HashMap::new(),
+            vis: Vis::default(),
         };
         let entry_name = entry_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         st.files.insert(entry_path.to_path_buf(), entry_name);
@@ -137,7 +167,7 @@ impl Resolver {
             resolve_import(&mut st, name, entry_path)?;
         }
         let name = entry.name.clone();
-        emit_module(&mut st, entry, None, entry_path);
+        emit_module(&mut st, entry, None, entry_path)?;
         Ok(FlatProgram { name, structs: st.structs, fns: st.fns, files: st.files })
     }
 }
@@ -233,7 +263,7 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
     for (sub, _) in &module.imports {
         resolve_import(st, sub, &file_path)?;
     }
-    emit_module(st, module, Some(module_name(name).to_string()), &file_path);
+    emit_module(st, module, Some(module_name(name).to_string()), &file_path)?;
     st.in_progress.remove(&file_path);
     st.included.insert(file_path);
     Ok(())
@@ -250,8 +280,37 @@ pub fn item_name(item: &Sx) -> Option<(&str, bool)> {
     }
 }
 
-/// Renames the module's items and appends them to the program.
-fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &Path) {
+/// Renames the module's items and appends them to the program, checking
+/// that what it uses of other modules is theirs to give, and taking the
+/// visibility marks out (nothing after the resolver sees them).
+fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &Path) -> Result<(), String> {
+    let mut module = module;
+    let canonical = |n: &str| match &prefix {
+        Some(p) => format!("{}.{}", p, n),
+        None => n.to_string(),
+    };
+    // (pub) and field marks: recorded, then removed
+    let mut own_pub: HashSet<String> = HashSet::new();
+    let mut own_levels: HashMap<String, HashMap<String, Level>> = HashMap::new();
+    for item in module.items.iter_mut() {
+        let public = take_pub(item, file)?;
+        let named = item_name(item).map(|(n, _)| n.to_string());
+        if item.head() == Some("struct") {
+            let levels = take_field_marks(item, file)?;
+            if let Some(n) = &named {
+                st.vis.fields.insert(canonical(n), levels.clone());
+                own_levels.insert(n.clone(), levels);
+            }
+        }
+        if let (true, Some(n)) = (public, named) {
+            st.vis.public.insert(canonical(&n));
+            own_pub.insert(n);
+        }
+    }
+    if prefix.is_some() {
+        check_exposure(&module.items, &own_pub, &own_levels, file)?;
+    }
+    let modules: HashSet<String> = st.names.keys().cloned().collect();
     let mut names = Names {
         prefix: prefix.clone(),
         fns: HashSet::new(),
@@ -260,6 +319,11 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         own_templates: HashSet::new(),
         aliases: module.imports.iter().filter_map(|(m, a)| a.clone().map(|a| (a, module_name(m).to_string()))).collect(),
         known_templates: &st.templates,
+        module: prefix.clone().unwrap_or_else(|| module.name.clone()),
+        modules,
+        vis: &st.vis,
+        file: file.to_path_buf(),
+        err: std::cell::RefCell::new(None),
     };
     for item in &module.items {
         if let Some((n, generic)) = item_name(item) {
@@ -269,7 +333,9 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
                 Some("const" | "enum" | "union") => names.decls.insert(n.to_string()),
                 _ => false,
             };
-            if generic {
+            // an interface is named like a template, (interface (Hash K) ...);
+            // (impl (Hash i32) ...) only refers to one
+            if generic && item.head() != Some("impl") {
                 names.own_templates.insert(n.to_string());
             }
         }
@@ -285,8 +351,11 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     let mut out_fns = Vec::new();
     for mut item in module.items {
         names.walk(&mut item, 0);
+        if let Some(e) = names.err.borrow_mut().take() {
+            return Err(e);
+        }
         let it = Item { sx: item, file: file.to_path_buf(), foreign: HashMap::new() };
-        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union")) {
+        if matches!(it.sx.head(), Some("struct" | "const" | "enum" | "union" | "interface")) {
             out_structs.push(it);
         } else {
             out_fns.push(it);
@@ -295,6 +364,151 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     st.structs.extend(out_structs);
     st.fns.extend(out_fns);
     st.templates.extend(new_templates);
+    Ok(())
+}
+
+const PUB_PLACE: &str = "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)";
+
+/// Takes an item's `(pub)` out; whether it had one, where it belongs.
+fn take_pub(item: &mut Sx, file: &Path) -> Result<bool, String> {
+    let head = item.head().map(str::to_string);
+    let place = match head.as_deref() {
+        Some("fn" | "const") => Some(5),
+        Some("struct" | "union" | "enum") => Some(3),
+        Some("interface") => Some(2),
+        _ => None,
+    };
+    let is_pub = |p: &Sx| p.is_paren() && p.items().len() == 1 && p.head() == Some("pub");
+    let parts = match item.items_mut() {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+    let mut found = false;
+    if let Some(k) = place {
+        if parts.get(k).is_some_and(is_pub) {
+            parts.remove(k);
+            found = true;
+        }
+    }
+    if let Some(p) = parts.iter().skip(1).find(|p| is_pub(p)) {
+        let msg = if head.as_deref() == Some("impl") {
+            "an implementation takes no (pub): it is as visible as its interface and its type"
+        } else {
+            PUB_PLACE
+        };
+        return Err(at_sx(file, p, msg));
+    }
+    Ok(found)
+}
+
+/// A struct's fields with their levels, its `(read x:T)` and `(pub x:T)`
+/// made plain `x:T`.
+fn take_field_marks(item: &mut Sx, file: &Path) -> Result<HashMap<String, Level>, String> {
+    let mut levels = HashMap::new();
+    let Some(list) = item.items_mut().and_then(|p| p.get_mut(2)) else { return Ok(levels) };
+    let Some(entries) = list.items_mut() else { return Ok(levels) };
+    let mut plain = Vec::new();
+    let mut pending = Level::Private;
+    let mut k = 0;
+    for e in std::mem::take(entries) {
+        match e.head() {
+            Some(h @ ("pub" | "read")) => {
+                let parts = e.items();
+                let ok = parts.len() == 4 && parts[1].symbol().is_some() && matches!(&parts[2], Sx::Atom(Token { kind: TokenKind::Colon, .. }));
+                if !ok || k % 3 != 0 {
+                    return Err(at_sx(file, &e, "a field is written x:T, (read x:T), or (pub x:T)"));
+                }
+                let level = if h == "pub" { Level::Pub } else { Level::Read };
+                levels.insert(parts[1].symbol().unwrap().to_string(), level);
+                plain.extend(parts[1..].iter().cloned());
+                k += 3;
+            }
+            _ => {
+                if k % 3 == 0 {
+                    if let Some(n) = e.symbol() {
+                        levels.entry(n.to_string()).or_insert(pending);
+                    }
+                }
+                plain.push(e);
+                k += 1;
+            }
+        }
+        pending = Level::Private;
+    }
+    *entries = plain;
+    Ok(levels)
+}
+
+/// A (pub) item may not show a private type of its module in what it
+/// gives others: a function's parameters and result, a struct's readable
+/// fields, a union's variants, an interface's signatures.
+fn check_exposure(items: &[Sx], own_pub: &HashSet<String>, own_levels: &HashMap<String, HashMap<String, Level>>, file: &Path) -> Result<(), String> {
+    let own_types: HashSet<String> = items
+        .iter()
+        .filter(|i| matches!(i.head(), Some("struct" | "union" | "enum")))
+        .filter_map(|i| item_name(i).map(|(n, _)| n.to_string()))
+        .collect();
+    for item in items {
+        let Some((name, _)) = item_name(item) else { continue };
+        if !own_pub.contains(name) {
+            continue;
+        }
+        let parts = item.items();
+        let mut types: Vec<&Sx> = Vec::new();
+        match item.head() {
+            Some("fn") if parts.len() >= 5 => {
+                types.extend(parts[2].items().chunks(3).filter_map(|c| c.get(2)));
+                types.push(&parts[4]);
+            }
+            Some("struct") => {
+                let levels = own_levels.get(name);
+                for c in parts.get(2).map(|b| b.items()).unwrap_or(&[]).chunks(3) {
+                    let readable = c[0].symbol().and_then(|f| levels.and_then(|l| l.get(f))).is_some_and(|l| *l != Level::Private);
+                    if readable {
+                        types.extend(c.get(2));
+                    }
+                }
+            }
+            Some("union") => {
+                for v in parts.get(2).map(|b| b.items()).unwrap_or(&[]) {
+                    types.extend(v.items().iter().skip(1).collect::<Vec<_>>().chunks(3).filter_map(|c| c.get(2).copied()));
+                }
+            }
+            Some("interface") => {
+                for f in parts.iter().skip(2).filter(|f| f.items().len() >= 5) {
+                    types.extend(f.items()[2].items().chunks(3).filter_map(|c| c.get(2)));
+                    types.push(&f.items()[4]);
+                }
+            }
+            _ => {}
+        }
+        for t in types {
+            if let Some(bad) = private_in(t, &own_types, own_pub) {
+                let msg = format!("'{}' is (pub) but its signature uses '{}', which is private: mark '{}' (pub) too", name, bad.symbol().unwrap_or(""), bad.symbol().unwrap_or(""));
+                return Err(at_sx(file, bad, &msg));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The first name in type `t` of one of this module's types that is not (pub).
+fn private_in<'a>(t: &'a Sx, own_types: &HashSet<String>, own_pub: &HashSet<String>) -> Option<&'a Sx> {
+    match t {
+        Sx::Atom(_) => t.symbol().filter(|s| own_types.contains(*s) && !own_pub.contains(*s)).map(|_| t),
+        Sx::List { items, .. } => {
+            let head_bad = items.first().and_then(|h| h.symbol()).filter(|s| own_types.contains(*s) && !own_pub.contains(*s));
+            if head_bad.is_some() {
+                return items.first();
+            }
+            items.iter().skip(1).find_map(|i| private_in(i, own_types, own_pub))
+        }
+    }
+}
+
+fn at_sx(file: &Path, sx: &Sx, msg: &str) -> String {
+    let (l, c) = sx.position();
+    format!("{}: {}:{}: {}", file.display(), l, c, msg)
 }
 
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
@@ -311,9 +525,70 @@ struct Names<'a> {
     own_templates: HashSet<String>,
     aliases: HashMap<String, String>,
     known_templates: &'a HashSet<String>,
+    /// This module's name, every module's name, and what they give others.
+    module: String,
+    modules: HashSet<String>,
+    vis: &'a Vis,
+    file: PathBuf,
+    /// The first use of something another module keeps private.
+    err: std::cell::RefCell<Option<String>>,
 }
 
 impl Names<'_> {
+    /// The module a canonical name belongs to, if it is another module.
+    fn foreign<'s>(&self, name: &'s str) -> Option<&'s str> {
+        let (m, _) = name.split_once('.')?;
+        (m != self.module && self.modules.contains(m)).then_some(m)
+    }
+
+    fn fail(&self, at: (u32, u32), msg: String) {
+        let mut e = self.err.borrow_mut();
+        if e.is_none() {
+            *e = Some(format!("{}: {}:{}: {}", self.file.display(), at.0, at.1, msg));
+        }
+    }
+
+    /// `name` (canonical) may be used here: it is this module's, or (pub).
+    fn check_item(&self, name: &str, at: (u32, u32)) {
+        if let Some(m) = self.foreign(name) {
+            if !self.vis.public.contains(name) {
+                self.fail(at, format!("'{}' is private to module {}: mark it (pub) there to use it here", name, m));
+            }
+        }
+    }
+
+    /// A constant, enum, union, or one of their members (`m.Color.red`):
+    /// the declaration is the first two parts.
+    fn check_decl(&self, name: &str, at: (u32, u32)) {
+        if self.foreign(name).is_some() {
+            let decl: Vec<&str> = name.splitn(3, '.').take(2).collect();
+            self.check_item(&decl.join("."), at);
+        }
+    }
+
+    /// Made outside its module (`new`, or a struct type argument, which
+    /// lets a template make one): every field must be (pub).
+    fn check_makes(&self, name: &str, at: (u32, u32)) {
+        if let Some(m) = self.foreign(name) {
+            if let Some(fields) = self.vis.fields.get(name) {
+                if fields.values().any(|l| *l != Level::Pub) {
+                    self.fail(at, format!("'{}' has fields private to module {}, so only {} can make one", name, m, m));
+                }
+            }
+        }
+    }
+
+    /// Field `f` of struct `s` (canonical), read (get) or written (put).
+    fn check_field(&self, s: &str, f: &str, put: bool, at: (u32, u32)) {
+        let Some(m) = self.foreign(s) else { return };
+        let level = self.vis.fields.get(s).and_then(|fs| fs.get(f)).copied().unwrap_or(Level::Private);
+        if level == Level::Private {
+            self.fail(at, format!("field '{}' of {} is private to module {}", f, s, m));
+        } else if put && level == Level::Read {
+            self.fail(at, format!("field '{}' of {} is read-only outside module {}", f, s, m));
+        }
+    }
+
     fn rename(&self, t: &str, role: u8) -> String {
         if role == 0 {
             return self.rename_decl(t);
@@ -379,6 +654,12 @@ impl Names<'_> {
         if self.known_templates.contains(h) {
             return Some(h.to_string());
         }
+        // an interface's function, (Hash.hash K): the interface's name, qualified
+        if let Some((iface, f)) = h.rsplit_once('.') {
+            if let Some(c) = self.template_ref(iface) {
+                return Some(format!("{}.{}", c, f));
+            }
+        }
         None
     }
 
@@ -392,18 +673,32 @@ impl Names<'_> {
     }
 
     fn walk(&self, sx: &mut Sx, role: u8) {
+        let at = sx.position();
         match sx {
             Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) => {
                 *s = self.rename(s, role);
+                match role {
+                    1 | 2 => self.check_item(s, at),
+                    // a field reference S.f is checked with its get or put
+                    3 => {}
+                    _ => self.check_decl(s, at),
+                }
             }
             Sx::Atom(_) => {}
             Sx::List { .. } => {
                 let head = sx.head().map(|h| h.to_string());
                 let template = head.as_deref().and_then(|h| self.template_ref(h));
+                let field_op = matches!(head.as_deref(), Some("get" | "put"));
+                let put = head.as_deref() == Some("put");
+                // the struct of a generic field form, (get p (Name T) f)
+                let mut generic_struct: Option<String> = None;
                 let items = sx.items_mut().unwrap();
                 for (i, child) in items.iter_mut().enumerate() {
                     if i == 0 {
                         if let Some(t) = &template {
+                            // a template, or an interface's function (Hash.hash T)
+                            let item = if self.known_templates.contains(t) { t.as_str() } else { t.rsplit_once('.').map_or(t.as_str(), |(i, _)| i) };
+                            self.check_item(item, child.position());
                             *child = Sx::symbol_at(t.clone(), child);
                             continue;
                         }
@@ -413,13 +708,57 @@ impl Names<'_> {
                             continue;
                         }
                     }
+                    // a union's variants and an enum's members, [(circle r:f64) ...]:
+                    // the head of each is a member's name, even one a template
+                    // of this module also has
+                    if matches!(head.as_deref(), Some("union" | "enum")) && i == 2 && !child.is_paren() {
+                        // anything but a [...] list is the parser's error to report
+                        let Some(members) = child.items_mut() else { continue };
+                        for member in members {
+                            match member.items_mut() {
+                                Some(parts) => {
+                                    for part in parts.iter_mut().skip(1) {
+                                        self.walk(part, 0);
+                                    }
+                                }
+                                None => self.walk(member, 0),
+                            }
+                        }
+                        continue;
+                    }
+                    // the functions of an interface or an implementation: their
+                    // names are the interface's, not this module's. An
+                    // implementation's are qualified with this module, so the
+                    // expander can tell where it was written (the orphan rule).
+                    if matches!(head.as_deref(), Some("interface" | "impl")) && i >= 2 && child.head() == Some("fn") {
+                        let qualify = head.as_deref() == Some("impl");
+                        for (j, part) in child.items_mut().unwrap().iter_mut().enumerate() {
+                            match (j, part) {
+                                (0, _) => {}
+                                (1, Sx::Atom(Token { kind: TokenKind::Symbol(s), .. })) => {
+                                    if let (true, Some(p)) = (qualify, &self.prefix) {
+                                        *s = format!("{}.{}", p, s);
+                                    }
+                                }
+                                (1, _) => {}
+                                (j, part) => self.walk(part, Names::child_role(Some("fn"), j)),
+                            }
+                        }
+                        continue;
+                    }
                     // a match arm's head names a member of the matched type:
                     // (Shape.circle [r] ...) in module m is m.Shape.circle
                     if head.as_deref() == Some("match") && i >= 2 {
                         if let Some(arm) = child.items_mut() {
                             for (j, part) in arm.iter_mut().enumerate() {
+                                let part_at = part.position();
                                 match part {
-                                    Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => *s = self.rename(s, 0),
+                                    Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) if j == 0 && s != "else" => {
+                                        *s = self.rename(s, 0);
+                                        self.check_decl(s, part_at);
+                                    }
+                                    // a generic union's arm: ((Name T...) variant ...)
+                                    Sx::List { .. } if j == 0 => self.walk(part, 0),
                                     _ if j == 0 => {}
                                     _ => self.walk(part, 0),
                                 }
@@ -431,6 +770,26 @@ impl Names<'_> {
                     // built from them): `(alloc Pair)` in module m names m.Pair
                     let r = if template.is_some() { 2 } else { Names::child_role(head.as_deref(), i) };
                     self.walk(child, r);
+                    let child_at = child.position();
+                    match (child.symbol(), i) {
+                        // a struct type argument lets the template make one
+                        (Some(n), _) if template.is_some() => self.check_makes(n, child_at),
+                        (Some(n), 1) if head.as_deref() == Some("new") => self.check_makes(n, child_at),
+                        // (get p S.f), (put p S.f v)
+                        (Some(n), 2) if field_op => {
+                            if let Some((st, f)) = n.rsplit_once('.') {
+                                self.check_item(st, child_at);
+                                self.check_field(st, f, put, child_at);
+                            }
+                        }
+                        (None, 2) if field_op => generic_struct = child.head().map(str::to_string),
+                        (Some(f), 3) if field_op => {
+                            if let Some(st) = &generic_struct {
+                                self.check_field(st, f, put, child_at);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }

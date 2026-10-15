@@ -19,7 +19,7 @@ and the 2026-10 audit.
 | `aipl_src/resolver.aipl`, `generics.aipl`, `compiler.aipl`, `codegen.aipl`, `driver.aipl` | Self-hosted import resolver, generics expansion, tokenizer and parser, wasm code generator, and the command that chains them |
 | `aipl_src/native/` | The Linux x86-64 backend: `native` (wasm in, executable out), `wasm_reader`, `lower` (wasm to machine code), `x64` (encoder), `elf`, `runtime` (start-up, traps), `wasi` (the WASI functions as system calls) |
 | `src/native.rs` | Runs the AIPL native backend for `aipl compile --exe` |
-| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` / `strmap` (hash maps), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers); found by `(import io)` from anywhere |
+| `aipl_src/std/` | Standard library: `io` (printing, whole-file read/write), `str` (byte slices, counting, `parse_int`, UTF-8 checking), `fmt` (number formatting, exact float printing), `vec` (growable list, stable sort), `map` (hash map over any `cmp.Hash` key), `cmp` (`Eq`, `Ord`, `Hash` interfaces), `option` (`(option.Option T)`), `thread` (`spawn_with`, a typed context), `buf` (string builder), `os` (command line, environment), `time` (timing), `heap` (general-purpose allocator with checked free), `arena` (region allocator), `alloc` (any allocator as one value), `bigint` (big integers), `float` (decimal text to `f64`), `fs` (directory listing, file information), `json` (parsing and writing JSON); found by `(import io)` from anywhere |
 | `aipl_src/memory.aipl`, `file_io.aipl`, `thread_sync.aipl` | Small verified library modules |
 | `aipl_src/test_suite.aipl` | AIPL-native test entry point |
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
@@ -37,35 +37,40 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 299 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 321 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
 
-Expected AIPL suite output (24 groups):
+Expected AIPL suite output (29 groups):
 ```
 [PASS] compiler: tokenizer (2 tests)
 [PASS] compiler: parser (2 tests)
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 [PASS] memory: allocator + arena
 [PASS] file_io: real disk round-trip
-[PASS] std/str: byte slices + parse_int (8 tests)
+[PASS] std/str: byte slices, parse_int, UTF-8 (9 tests)
 [PASS] std/fmt: number formatting (14 tests)
 [PASS] resolver: imports in AIPL (3 tests)
 [PASS] std/os: arguments + environment (3 tests)
 [PASS] native/wasm_reader: module structure and bodies (5 tests)
-[PASS] native/x64: instruction encodings vs GNU as (9 tests)
+[PASS] native/x64: instruction encodings vs GNU as (13 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
-[PASS] std/vec: generic list + stable sort (6 tests)
-[PASS] std/map: generic i32-keyed hash map (4 tests)
-[PASS] std/strmap: generic byte-string hash map (4 tests)
+[PASS] std/vec: generic list + stable sort (7 tests)
+[PASS] std/map: generic hash map over cmp.Hash keys (8 tests)
 [PASS] std/buf: string builder (3 tests)
 [PASS] std/time: durations and the clock (7 tests)
 [PASS] std/arena: typed region allocator (5 tests)
 [PASS] std/heap: general-purpose allocator (8 tests)
 [PASS] std/alloc: any allocator as one value (7 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
+[PASS] std/option: Option T, a generic union (7 tests)
+[PASS] std/cmp: Eq, Ord, Hash for built-in types (10 tests)
+[PASS] std/thread: spawn_with, a typed context (2 tests)
+[PASS] std/fs: directory listing and file information (4 tests)
+[PASS] std/json: parsing and writing JSON (6 tests)
+[PASS] std/float: decimal text to the nearest f64 (14 tests)
 [PASS] consts: constants and enums erased for codegen (5 tests)
 [PASS] thread_sync: 4 threads x 1000 atomic adds = 4000
 [AIPL Test] All groups passed.

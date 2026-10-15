@@ -16,7 +16,7 @@
       ((eq op Op.sub) (- a b))
       (else (* a b))))
   (fn pick [yes:bool] -> (result Op i32) (if yes (ok Op.mul) (err:Op -1)))
-  (fn main [] -> i32
+  (fn main [] -> i32 (pub)
     (let ops:(ptr (vec.Vec Op)) (call (vec.make Op) (call alloc.default) 2))
     (call (vec.push Op) ops Op.sub)
     (match_result (call pick ON)

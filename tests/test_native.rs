@@ -688,6 +688,34 @@ fn file_programs_match_natively() {
             },
         ),
         (
+            "stat_and_opendir_stay_inside",
+            probe(
+                "(call io.println_int \"stat file: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))
+                 (call io.println_int \"stat escape: \" (fs.stat (str.ptr \"../run/c.txt\") 12 (mem.alloc 64)))
+                 (call io.println_int \"stat through link: \" (fs.stat (str.ptr \"out/run/c.txt\") 13 (mem.alloc 64)))
+                 (call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
+                 (call io.println_int \"opendir sub: \" (if (gte (fs.opendir (str.ptr \"sub\") 3) 0) 1 0))
+                 (call io.println_int \"opendir file: \" (fs.opendir (str.ptr \"c.txt\") 5))
+                 (call io.println_int \"opendir escape: \" (fs.opendir (str.ptr \"..\") 2))
+                 (call io.println_int \"opendir through link: \" (fs.opendir (str.ptr \"out\") 3))
+                 (call io.println_int \"readdir bad fd: \" (fs.readdir 99 (mem.alloc 64) 64 0i64))",
+            ),
+            Io {
+                files: vec![file("c.txt", b"c"), file("sub/b.txt", b"b")],
+                symlinks: vec![("out".into(), "..".into())],
+                ..Io::default()
+            },
+        ),
+        (
+            "stat_and_opendir_sandboxed",
+            probe(
+                "(call io.println_int \"stat absolute: \" (fs.stat (str.ptr \"/etc/hostname\") 13 (mem.alloc 64)))
+                 (call io.println_int \"opendir absolute: \" (fs.opendir (str.ptr \"/etc\") 4))
+                 (call io.println_int \"stat inside: \" (fs.stat (str.ptr \"c.txt\") 5 (mem.alloc 64)))",
+            ),
+            Io { files: vec![file("c.txt", b"c")], sandbox: true, ..Io::default() },
+        ),
+        (
             "read_only_descriptor",
             probe(
                 "(let fd:i32 (fs.open (str.ptr \"data.txt\") 8 0))
@@ -751,6 +779,10 @@ fn thread_programs_match_natively() {
             &[("atomic_counter", &[]), ("join_results", &[]), ("mutex_counter", &[]), ("concurrent_alloc", &[])],
             Some(&[4000, 25, 4000, 4]),
         );
+    }
+    // std/thread: spawn_with hands each worker a typed context
+    for round in 0..5 {
+        assert_functions_give(&format!("std_thread_{round}"), include_str!("../aipl_src/std/thread.aipl"), &[], &[("run_thread_tests", &[])], Some(&[2]));
     }
     // threads really run at once: each side waits for the other to start, so
     // this finishes only if both run concurrently (else the time limit fails it)
@@ -1403,8 +1435,9 @@ fn i64_programs_match_natively() {
     }
 }
 
-const EDGES64: [i64; 16] = [
+const EDGES64: [i64; 17] = [
     0, 1, -1, 2, -7, 31, 32, 63, 64, 65, i64::MAX, i64::MIN, i64::MIN + 1, 4294967296, -4294967297, 0x1234_5678_9ABC_DEF0,
+    0xFFFF_FFFF,
 ];
 
 /// As i32_operator_programs, for the i64 operators: each applies one
@@ -2258,4 +2291,152 @@ fn checked_arithmetic_matches_natively() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// std/fs over fs.opendir, fs.readdir, and fs.stat: a directory of 300
+/// files with long names (many readdir calls, entries cut at a buffer's
+/// end), a subdirectory, file information, and a missing path. aipl-run
+/// (wasmtime), the native executable, and the VM print the same.
+#[test]
+fn directories_and_file_information_match_natively() {
+    let src = r#"(module m
+  (import fs)
+  (import io)
+  (import alloc)
+  (import vec)
+  (import str)
+  (import option)
+  (fn show [path:str] -> void
+    (match (call fs.info path)
+      ((option.Option (ptr fs.Info)) some [i]
+        (call io.write_str 1 path)
+        (call io.write_str 1 (match (get i fs.Info.kind) (fs.Kind.file " file ") (fs.Kind.directory " directory ") (fs.Kind.other " other ")))
+        (call io.println_i64 "" (get i fs.Info.size)))
+      ((option.Option (ptr fs.Info)) none (call io.write_str 1 path) (call io.println " missing"))))
+  (fn main [] -> i32
+    (match (call fs.list (call alloc.default) "big")
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
+        (call io.println_int "names " (call (vec.len (ptr str.Bytes)) names))
+        (loop i 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 37
+          (let n:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names i))
+          (call io.println_int "  length " (get n str.Bytes.len))
+          (call io.println_int "  first byte " (call str.byte_at n 0))
+          (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))))
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (call io.println "no listing")))
+    (call show "big/f007")
+    (call show "big/sub")
+    (call show "nowhere")
+    (if (call (option.is_none (ptr (vec.Vec (ptr str.Bytes)))) (call fs.list (call alloc.default) "nowhere")) 0 1)))"#;
+    let mut files = Vec::new();
+    for k in 0..300 {
+        files.push((format!("big/f{:03}{}", (k * 7919) % 1000, "n".repeat(k % 120)), vec![b'x'; k]));
+    }
+    files.push(("big/f007".to_string(), b"seven".to_vec()));
+    files.push(("big/sub/inner".to_string(), b"in".to_vec()));
+    let io = Io { files, ..Io::default() };
+    let wasm = to_wasm(src);
+    assert_wasm_native_matches_with("fs_listing", &wasm, &io);
+    // and the VM, from the same files
+    let root = scratch("fs_listing_vm");
+    let dir = prepare(&root, &io);
+    std::fs::write(dir.join("m.aipl"), src).unwrap();
+    let vm = Command::new(env!("CARGO_BIN_EXE_aipl")).args(["eval", "m.aipl"]).current_dir(&dir).output().unwrap();
+    let vm_out: String = String::from_utf8_lossy(&vm.stdout).lines().filter(|l| !l.starts_with("[AIPL")).map(|l| format!("{l}\n")).collect();
+    let wasm_out = String::from_utf8_lossy(&run_wasm_with(&dir, &wasm, &io).stdout).to_string();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(wasm_out.contains("names 302\n") && wasm_out.contains("big/f007 file 5\n") && wasm_out.contains("big/sub directory") && wasm_out.contains("nowhere missing"), "{wasm_out}");
+    assert_eq!(vm_out, wasm_out, "the VM differs from aipl-run");
+}
+
+/// Float locals live in xmm8-xmm15 natively (NATIVE_SPEED_PLAN.md F3): a
+/// caller's must survive callees that use the same registers for their own
+/// (and recursion), and float values on the stack across calls.
+#[test]
+fn float_locals_survive_calls_natively() {
+    let src = "(module m (import io)
+      (fn inner [x:f64 n:i32] -> f64
+        (let a:f64 x) (let b:f64 1.5) (let c:f64 0.25)
+        (loop i 1 n 1 (set! a (+ (* a b) c)) (set! b (- b 0.125)) (set! c (* c 2.0)))
+        (+ a (+ b c)))
+      (fn depth [k:i32 acc:f64] -> f64
+        (let here:f64 (* acc 1.0625))
+        (let r:f64 (if (gt k 0) (call depth (- k 1) (+ here 0.5)) here))
+        (+ r here))
+      (fn outer [] -> f64
+        (let p:f64 3.0) (let q:f64 -2.0) (let s:f64 0.0)
+        (loop i 1 6 1
+          (set! s (+ s (* p (call inner q i))))
+          (set! p (+ p 0.5))
+          (set! q (- q (call inner p 2))))
+        (+ s (+ p (+ q (* 2.0 (call depth 7 1.0))))))
+      (fn main [] -> i32
+        (call io.println_f64 \"outer \" (call outer) 6)
+        (call io.println_f64 \"pair \" (+ (call inner 1.0 3) (- (call depth 3 2.0) (call inner 2.0 4))) 6)
+        0))";
+    assert_native_matches("float_locals_survive_calls", src);
+}
+
+/// Six integer locals live in rbx, r12-r14, r8, r9 natively (F3): the ones
+/// in r8 and r9 must survive the instructions that use those registers as
+/// scratch (atomics, memory.grow) and calls to imports (printing), in this
+/// function and in its callers.
+#[test]
+fn register_locals_survive_atomics_grow_and_imports_natively() {
+    let src = "(module m (import io)
+      (fn busy [w:i32] -> i32 (unsafe)
+        (let a:i32 1) (let b:i32 2) (let c:i32 3) (let d:i32 4) (let e:i32 5) (let f:i32 6) (let g:i32 7)
+        (loop i 1 20 1
+          (set! a (+ a i)) (set! b (+ b a)) (set! c (^ c b)) (set! d (+ d c)) (set! e (- e d)) (set! f (+ f e)) (set! g (+ g f))
+          (let _x:i32 (atomic.add w (+ a g)))
+          (if (atomic.cas w 0 1) (set! b (+ b 1)) (set! c (+ c 1)))
+          (if (eq (% i 7) 0) (let _p:i32 (mem.grow 1)) (block))
+          (if (eq (% i 5) 0) (call io.println_int \"i \" (+ a (+ b c))) (block)))
+        (+ a (+ b (+ c (+ d (+ e (+ f (+ g (atomic.add w 0)))))))))
+      (fn caller [] -> i32 (unsafe)
+        (let p:i32 11) (let q:i32 22) (let r:i32 33) (let s:i32 44) (let t:i32 55) (let u:i32 66)
+        (let w:i32 (mem.alloc 8))
+        (loop k 1 3 1
+          (set! p (+ p (call busy w))) (set! q (+ q p)) (set! r (+ r q)) (set! s (^ s r)) (set! t (+ t s)) (set! u (- u t)))
+        (+ p (+ q (+ r (+ s (+ t u))))))
+      (fn main [] -> i32 (unsafe)
+        (call io.println_int \"total \" (call caller))
+        0))";
+    assert_native_matches("register_locals_survive_atomics_grow_and_imports", src);
+}
+
+/// The internal calling convention (F3): up to six arguments in registers,
+/// more on the stack; every type; direct calls and calls through function
+/// references; arguments whose registers must be swapped (computed in one
+/// order, wanted in another); recursion.
+#[test]
+fn calling_convention_matches_natively() {
+    let src = "(module m (import io)
+      (fn zero [] -> i32 7)
+      (fn one [a:i32] -> i32 (* a 3))
+      (fn two [a:i32 b:i32] -> i32 (- (* a 10) b))
+      (fn mixed [a:i64 b:f64 c:i32 d:f64 e:i64 f:i32] -> f64
+        (+ (f64.convert_i64_s (+ a e)) (* b (+ d (f64.convert_i64_s (i64.extend_s (- c f)))))))
+      (fn seven [a:i32 b:i32 c:i32 d:i32 e:i32 f:i32 g:i32] -> i32
+        (+ (* a 1) (+ (* b 2) (+ (* c 3) (+ (* d 4) (+ (* e 5) (+ (* f 6) (* g 7))))))))
+      (fn eight [a:i64 b:f64 c:i32 d:i32 e:i32 f:i32 g:i32 h:f64] -> f64
+        (+ (f64.convert_i64_s a) (+ b (+ (f64.convert_i64_s (i64.extend_s (- (+ c (+ d e)) (+ f g)))) h))))
+      (fn fib [n:i32] -> i32 (if (lt n 2) n (+ (call fib (- n 1)) (call fib (- n 2)))))
+      (fn main [] -> i32
+        (let x:i32 3) (let y:i32 4) (let z:i64 5000000000i64) (let q:f64 1.5)
+        (call io.println_int \"zero \" (call zero))
+        (call io.println_int \"one \" (call one (+ x 1)))
+        (call io.println_int \"two \" (call two (+ x 1) (+ y 2)))
+        (call io.println_int \"two swapped \" (call two (+ y 2) (+ x 1)))
+        (call io.println_f64 \"mixed \" (call mixed z q (+ x y) (* q 2.0) (- z 1i64) (call two x y)) 6)
+        (call io.println_int \"seven \" (call seven 1 x y (+ x y) (call one y) 6 (call two y x)))
+        (call io.println_f64 \"eight \" (call eight z q x y 9 10 11 (- q 3.25)) 6)
+        (call io.println_int \"fib \" (call fib 20))
+        (let r2:(fn [i32 i32] -> i32) (ref two))
+        (let r7:(fn [i32 i32 i32 i32 i32 i32 i32] -> i32) (ref seven))
+        (let r6:(fn [i64 f64 i32 f64 i64 i32] -> f64) (ref mixed))
+        (call io.println_int \"ref two \" (call_ref (fn [i32 i32] -> i32) r2 (+ y 2) (+ x 1)))
+        (call io.println_int \"ref seven \" (call_ref (fn [i32 i32 i32 i32 i32 i32 i32] -> i32) r7 7 6 5 4 3 2 1))
+        (call io.println_f64 \"ref mixed \" (call_ref (fn [i64 f64 i32 f64 i64 i32] -> f64) r6 z q x q z y) 6)
+        0))";
+    assert_native_matches("calling_convention", src);
 }

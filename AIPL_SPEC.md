@@ -18,19 +18,23 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 ## 2. Updated Formal Grammar (EBNF)
 
 ```ebnf
-program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def )* ")" ;
+program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def | interface_def | impl_def )* ")" ;
 import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
 import_path    ::= identifier ( "/" identifier )* ;
-struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" ")" ;
+struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" where* ")" ;
 field          ::= identifier ":" type ;
 generic_head   ::= "(" identifier type_param+ ")" ;
 type_param     ::= identifier ;                     (* starts with an uppercase letter *)
 
 enum_def       ::= "(" "enum" identifier "[" ( identifier | "(" identifier integer ")" )+ "]" ")" ;
 const_def      ::= "(" "const" identifier ":" type literal ")" ;   (* NAME in capitals; i32 i64 f64 bool str *)
-union_def      ::= "(" "union" identifier "[" ( "(" identifier field* ")" )+ "]" ")" ;
+union_def      ::= "(" "union" ( identifier | generic_head ) "[" ( "(" identifier field* ")" )+ "]" where* ")" ;
 
-fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type contract* expr* ")" ;
+fn_def         ::= "(" "fn" ( identifier | generic_head ) "[" param* "]" "->" type where* contract* expr* ")" ;
+where          ::= "(" "where" "(" ( identifier | "struct" ) type_param ")" ")" ;   (* generics only (section 4.H) *)
+interface_def  ::= "(" "interface" "(" identifier type_param ")" fn_sig+ ")" ;
+fn_sig         ::= "(" "fn" identifier "[" param* "]" "->" type contract* ")" ;   (* no body *)
+impl_def       ::= "(" "impl" "(" identifier type ")" fn_def+ ")" ;
 param          ::= identifier ":" type ;
 contract       ::= "(" ("req" | "ens" | "inv") expr ")"
                  | "(" "unsafe" ")" ;                (* the function is unsafe to call (section 3) *)
@@ -45,7 +49,7 @@ type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | identifier ;                       (* an enum or a union, e.g. Color, Shape *)
 struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
-fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic *)
+fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic, or names an interface's function: (Hash.hash i32) *)
 
 expr           ::= literal
                  | identifier
@@ -78,10 +82,12 @@ expr           ::= literal
                  | "(" "enum.cast" identifier expr ")" | "(" "enum.ord" expr ")"
                  | "(" "call_ref" type expr expr* ")"
                  | "(" "make" identifier expr* ")"     (* Union.variant *)
+                 | "(" "make" "(" identifier type+ ")" identifier expr* ")"   (* a generic union's variant (section 4.J) *)
                  | "(" "match" expr match_arm+ ")"
                  | "(" op expr* ")" ;
 
 match_arm      ::= "(" identifier [ "[" identifier* "]" ] expr* ")"   (* Name.member; binders for a union variant *)
+                 | "(" "(" identifier type+ ")" identifier [ "[" identifier* "]" ] expr* ")"   (* a generic union's variant *)
                  | "(" "else" expr* ")" ;                             (* last *)
 
 op             ::= arithmetic_op | bitwise_op | memory_op | atomic_op | comp_op
@@ -97,7 +103,8 @@ comp_op        ::= "eq" | "neq" | "lt" | "lte" | "gt" | "gte" | "ltu" | "lteu" |
 conv_op        ::= "i64.extend_s" | "i64.extend_u" | "i32.wrap"
                  | "f64.convert_i64_s" | "i64.trunc_f64_s" | "f64.reinterpret_i64" | "i64.reinterpret_f64" | "f64.sqrt" ;
 sys_op         ::= "sys.print" | "sys.time" | "sys.monotonic" | "sys.random" | "sys.exit" ;
-fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete" ;
+fs_op          ::= "fs.open" | "fs.read" | "fs.write" | "fs.close" | "fs.delete"
+                 | "fs.opendir" | "fs.readdir" | "fs.stat" ;
 proc_op        ::= "args.sizes" | "args.get" | "env.sizes" | "env.get" ;
 thread_op      ::= "thread.spawn" | "thread.join" ;
 str_op         ::= "str.len" | "str.ptr" ;
@@ -152,7 +159,7 @@ Some operations reach memory the program has not been handed through a typed poi
 - **Raw memory:** `mem.load8`, `mem.load32`, `mem.load64`, `mem.store8`, `mem.store32`, `mem.store64`.
 - **Casts to a pointer or array:** `ptr.cast`, `arr.cast` (`enum.cast` is checked: a non-member reaches `match`'s `unreachable`).
 - **Atomics and threads:** `atomic.add`, `atomic.cas`, `atomic.lock`, `atomic.unlock`, `thread.spawn`, `thread.join` (AIPL does not check for data races).
-- **Host calls that take raw addresses:** `fs.open`, `fs.read`, `fs.write`, `fs.delete`, `args.sizes`, `args.get`, `env.sizes`, `env.get`, `sys.random`.
+- **Host calls that take raw addresses:** `fs.open`, `fs.read`, `fs.write`, `fs.delete`, `fs.opendir`, `fs.readdir`, `fs.stat`, `args.sizes`, `args.get`, `env.sizes`, `env.get`, `sys.random`.
 - **Calling, or taking `(ref f)` of, a function marked `(unsafe)`.**
 
 Getting an address as a number (`mem.alloc`, `str.ptr`, `ptr.addr`, `arr.addr`) is checked: a number cannot be read through without one of the operations above.
@@ -182,7 +189,7 @@ Outside an unsafe context the checker rejects the operation and says how to allo
 
 The standard library uses unchecked operations inside functions that are safe to call (`io.read_file`, `str.byte_at`, `vec.push`, ...); the few that take raw addresses are `(unsafe)`: `str.bytes`, the `fmt.*_to_bytes` writers and `fmt.f64_fixed`, `float.from_decimal`, and `alloc.custom`.
 
-**What this does and does not guarantee.** Code without `unsafe` cannot read or write memory through a raw address, cast an address into a pointer, or start a thread. It can still read freed memory through a pointer it kept after freeing it (use after free; generation checks are planned, docs/design/GENERATIONS_PLAN.md), and it can still hand the standard library a forged descriptor, because the library's structs (`str.Bytes`, `buf.Buf`) keep raw addresses in fields any module can write; visibility (`pub`, ROADMAP.md) will close that. So AIPL is not memory-safe yet; it is safe by default against raw memory access.
+**What this does and does not guarantee.** Code without `unsafe` cannot read or write memory through a raw address, cast an address into a pointer, or start a thread. Nor can it forge the standard library's descriptors: their raw addresses are in fields other modules may only read (section 11.1), and every library function that takes a raw address is unsafe to call. It can still read freed memory through a pointer it kept after freeing it (use after free; generation checks are planned, docs/design/GENERATIONS_PLAN.md). So AIPL is not memory-safe yet; that is the one gap.
 
 ---
 
@@ -213,6 +220,9 @@ Compiled modules import only the host functions they use from `wasi_snapshot_pre
 | `(fs.write fd buf len)` | | `fd_write` with one iovec | bytes written, or `-1` |
 | `(fs.close fd)` | | `fd_close` | `0`, or `-1` |
 | `(fs.delete ptr len)` | | `path_unlink_file` on fd 3 | `0`, or `-1` |
+| `(fs.opendir ptr len)` | `std::fs::read_dir`; the names held from the start, `.` and `..` first, as wasmtime gives them | `path_open` on fd 3 with `oflags = DIRECTORY` and rights `FD_READDIR` | new fd (for `fs.readdir` and `fs.close`), or `-1` |
+| `(fs.readdir fd buf len cookie:i64)` | | `fd_readdir`: WASI dirents (`d_next` u64, `d_ino` u64, `d_namlen` u32, `d_type` u8, 3 bytes, then the name) from the entry `cookie` names (`0` the first, else a `d_next`); the last one may be cut off | bytes written (`len` when more may follow), or `-1` |
+| `(fs.stat ptr len out)` | `std::fs::metadata` | `path_filestat_get` on fd 3, following symbolic links: a 64-byte WASI filestat at `out` (the filetype u8 at 16: 3 a directory, 4 a regular file; the size at 32; access, modification, and change times at 40, 48, 56 in nanoseconds) | `0`, or `-1` |
 | `(sys.exit code)` | returns the error `sys.exit(N) requested` rather than killing the host process | `proc_exit` | never returns |
 | `(sys.time)` | the system clock | `clock_time_get` (realtime) | `i64` nanoseconds since 1970-01-01 UTC |
 | `(sys.monotonic)` | a monotonic clock | `clock_time_get` (monotonic) | `i64` nanoseconds from an arbitrary fixed start; never decreases. Use for durations |
@@ -232,7 +242,7 @@ Paths are `(ptr, len)` byte ranges in linear memory (`(str.ptr s)` / `(str.len s
 | `(atomic.cas p expected new)` | `bool` | if the word at `p` is `expected`, atomically replaces it with `new` and returns `true`; otherwise `false` |
 | `(atomic.lock p)` | `void` | acquires the lock word at `p` (0 free, 1 held), waiting while it is held. A word holding anything else is not a lock: the VM fails with an error and compiled code traps |
 | `(atomic.unlock p)` | `void` | releases the lock at `p` and wakes waiters; the word must be 1 (held), otherwise an error / trap |
-| `(thread.spawn worker arg)` | `i32` | runs `worker(arg)` on a new OS thread; `worker` is a `(fn [i32] -> i32)` reference. Returns a handle |
+| `(thread.spawn worker arg)` | `i32` | runs `worker(arg)` on a new OS thread; `worker` is a `(fn [i32] -> i32)` reference. Returns a handle. To hand a worker data of its own, use `std/thread`'s `(call (thread.spawn_with C) worker ctx)`, with `worker` a `(fn [C] -> i32)`: the context keeps its type |
 | `(thread.join h)` | `i32` | waits for the thread to finish and returns `worker`'s result |
 
 All threads share linear memory and the allocator: `mem.alloc`, `new`, `arr.new`, and result cells claim their blocks with one atomic add on the heap cursor, so threads may allocate freely. Atomic addresses pass the store guard (section 7.9) like stores. A handle is the address of a 16-byte thread record `[done:i32 result:i32 fn:i32 arg:i32]` allocated by `thread.spawn`, identically in both backends; treat it as opaque. Each thread has its own file-descriptor table (stdin/stdout/stderr are shared). Output from concurrent threads may interleave: a `sys.print`'s text and its newline are two writes, so lines from two threads can join; use a lock when whole lines matter.
@@ -296,7 +306,7 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 
 ### F. Results
 
-`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. Both backends allocate an 8-byte heap cell `[tag:i32 payload:i32]` (tag 0 = ok, 1 = err) from the heap cursor **before** evaluating the payload, so a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell. Payloads must be 32-bit (`i32`, `bool`, `str`): the wasm backend rejects others with `Wasm Codegen: result payloads must be 32-bit (i32, bool, str), got i64`. The VM accepts them, so keep result payloads 32-bit in code meant to compile.
+`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). Both backends allocate a heap cell from the heap cursor **before** evaluating the payload, laid out like a union variant with one field: the tag (0 = ok, 1 = err) as an `i32` at offset 0, then the payload, at offset 8 of a 16-byte cell if it is an `i64` or `f64`, otherwise at offset 4 of an 8-byte cell (a result payload is the address of its own cell). So a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell, taking each payload's type from the checker, since it claims the cell before the payload runs. For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
 
 
 ### G. Function References
@@ -314,6 +324,30 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 | `(call_ref (fn [t...] -> r) g args...)` | `r` | calls the function `g` refers to; the written signature must equal `g`'s type, and the arguments must match it |
 
 Function types are strict like pointer types: a reference is never an `i32`, a reference with one signature is never accepted for another, there is no arithmetic on references, and they compare only with `eq`/`neq`. There is no cast to a function type, so every reference names a real function. `call_ref` repeats the signature, as `arr.get` repeats the element type, so the call site states what it calls. References can be parameters, results, `let`s, struct fields, and array elements.
+
+**No closures; a context argument instead.** A function sees only its parameters: there are no anonymous functions, nothing captures the variables of the code around it, and there are no global variables. Data a callback needs is passed to it explicitly, as a typed *context*, its first parameter, which the code calling it passes through. This is a design decision, not a gap: a closure would allocate its captured variables behind the program's back (AIPL allocates only through allocators the program names), make every function value larger and every call through one slower, and add rules for what a capture copies or shares. The standard library follows one convention: a function taking a callback with a context has `_with` in its name and takes the context right before the callback, and the callback takes the context first.
+
+```lisp
+(module context_demo
+  (import vec)
+  (import alloc)
+
+  ;; positions, highest score first: the comparison needs the scores
+  (fn by_score [scores:(arr i32) a:i32 b:i32] -> i32
+    (cond ((gt (arr.get i32 scores a) (arr.get i32 scores b)) -1)
+          ((lt (arr.get i32 scores a) (arr.get i32 scores b)) 1)
+          (else 0)))
+
+  (fn main [] -> i32
+    (let scores:(arr i32) (arr.new i32 3))
+    (arr.set i32 scores 0 40) (arr.set i32 scores 1 90) (arr.set i32 scores 2 60)
+    (let order:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 3))
+    (loop i 0 2 1 (call (vec.push i32) order i))
+    (call (vec.sort_by_with i32 (arr i32)) order scores (ref by_score))
+    (+ (* 100 (call (vec.at i32) order 0)) (+ (* 10 (call (vec.at i32) order 1)) (call (vec.at i32) order 2)))))   ;; 1, 2, 0 => 120
+```
+
+In the library: `vec.sort_by_with` (a comparison with a context; `vec.sort_by` for one without), `thread.spawn_with` (a worker's context, section 4.D), and `alloc.custom` (a custom allocator's state, section 12.6).
 
 At run time a reference is the function's position among the program's functions (after import resolution). The wasm backend emits a funcref table holding every function (min = max = function count) and an active element segment filling it from offset 0, and lowers `call_ref` to `call_indirect` (arguments first, then the reference) with a type index from one extra type per distinct signature, appended after the function types in source order. Table, element section, and extra types are emitted only when the module uses `ref` or `call_ref`, so other programs compile to the same bytes as before. The resolver qualifies `(ref f)` in an imported module like a call, so references work across imports.
 
@@ -341,15 +375,87 @@ A generic struct or function takes type parameters in its header, and every use 
 | `(Name t...)` | the struct instantiated with types `t...`, wherever a struct name goes: `(ptr (Name i32))`, `(new (Name i32))`, `(sizeof (Name i32))`, `(ptr.null (Name i32))`, `(ptr.cast (Name i32) x)` |
 | `(get p (Name t...) field)`, `(put p (Name t...) field v)` | field access on a generic struct (a non-generic struct keeps `(get p S.field)`) |
 | `(call (name t...) args...)`, `(ref (name t...))` | calling, or referencing, the function instantiated with `t...` |
+| `(union (Name T...) [variants])` | a generic union |
+| `(make (Name t...) variant v...)`, the arm `((Name t...) variant [binders] body...)` | building, and matching, a generic union's variant (section 4.J) |
 
-Generics are expanded before type checking (`src/generics.rs`, `aipl_src/generics.aipl`): each distinct instantiation becomes an ordinary struct or function named `Name<t,...>` (for example `Box<i64>`, `vec.Vec<ptr<Point>>`, `fn<i32,i32->i32>` for a function type argument), made by substituting the arguments for the parameters. The checker, the VM, both code generators, and any future backend only ever see concrete code, and instance names appear as such in diagnostics and wasm exports. Rules:
+Generics are expanded before type checking (`src/generics.rs`, `aipl_src/generics.aipl`): each distinct instantiation becomes an ordinary struct, union, or function named `Name<t,...>` (for example `Box<i64>`, `vec.Vec<ptr<Point>>`, `fn<i32,i32->i32>` for a function type argument), made by substituting the arguments for the parameters. The checker, the VM, both code generators, and any future backend only ever see concrete code, and instance names appear as such in diagnostics and wasm exports. Rules:
 
-- A template is checked only through its instances: an error inside a generic body is reported (at the template's own line) when some use instantiates it; an error inside a type argument is reported where the argument is written. A template nobody uses is not checked.
+- A template is checked once, by itself, with its type parameters sealed (below), whether or not anything uses it: an error inside a generic body is reported at the template's own line, and holds for every type argument its clauses allow. An error inside a type argument is reported where the argument is written.
 - Type arguments may be any type, including other instances and function types. Arity is checked: `generic 'Box' takes 1 type argument(s) (T), got 2`.
 - A generic may not be named like a built-in form or type (`get`, `put`, `new`, `i32`, ...), since `(get p (Name T) f)` would be ambiguous.
 - A generic function is applied only where a function is named: `(call (f t...) ...)` and `(ref (f t...))`. Elsewhere `(f ...)` is not an application, so a generic named `make` (as `std/vec`'s is) does not swallow a union's `(make U.v x)`. A generic struct is applied wherever a type goes.
 - A generic whose instances keep growing (`(fn (f T) ... (call (f (ptr T)) ...))`) is an error once an instance name passes 1024 characters.
 - Imports qualify generics like everything else: `vec.Vec` from another module, `(vec.Vec i32)`, `(call (vec.push i32) v 5)`; aliases work (`(import vec as v)`, `(v.Vec i32)`).
+
+#### Interfaces, implementations, and where clauses
+
+An interface names functions a type can have; an implementation provides them for one type; a template asks for them with a `where` clause. `std/cmp` defines `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`, which returns -1, 0, or 1), and `(cmp.Hash T)` (`hash` and `same`), implemented for the built-in types, and `std/map` is keyed by any type with `cmp.Hash`. (docs/design/CONSTRAINTS_PLAN.md has the design and the alternatives.)
+
+```lisp
+(module interface_demo
+  (import cmp)
+  (import map)
+  (import alloc)
+  (struct Point [x:i32 y:i32])
+
+  ;; points equal field by field hash alike
+  (impl (cmp.Hash (ptr Point))
+    (fn hash [k:(ptr Point)] -> i32 (+ (* 31 (get k Point.x)) (get k Point.y)))
+    (fn same [a:(ptr Point) b:(ptr Point)] -> bool
+      (and (eq (get a Point.x) (get b Point.x)) (eq (get a Point.y) (get b Point.y)))))
+
+  (fn point [x:i32 y:i32] -> (ptr Point)
+    (let p:(ptr Point) (new Point))
+    (put p Point.x x)
+    (put p Point.y y)
+    p)
+
+  ;; the largest element, for any T with an order
+  (fn (largest T) [xs:(arr T)] -> T (where (cmp.Ord T))
+    (req (gt (arr.len xs) 0))
+    (let best:T (arr.get T xs 0))
+    (loop i 1 (- (arr.len xs) 1) 1
+      (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
+    best)
+
+  (fn main [] -> i32
+    (let seen:(ptr (map.Map (ptr Point) i32)) (call (map.make (ptr Point) i32) (call alloc.default) 0))
+    (call (map.set (ptr Point) i32) seen (call point 1 2) 10)
+    (call (map.set (ptr Point) i32) seen (call point 1 2) 20)     ;; the same point: replaces 10
+    (let xs:(arr i64) (arr.new i64 3))
+    (arr.set i64 xs 1 7i64)
+    (+ (call (map.get_or (ptr Point) i32) seen (call point 1 2) 0)
+       (+ (call (map.count (ptr Point) i32) seen) (i32.wrap (call (largest i64) xs))))))   ;; 20 + 1 + 7 => 28
+```
+
+| Form | Meaning |
+|---|---|
+| `(interface (Name T) (fn f [params] -> type contracts...)...)` | an interface: one type parameter, at least one function, each a signature with optional `req`/`ens` and no body |
+| `(impl (Name t) (fn f [params] -> type body...)...)` | the interface's functions for type `t`: exactly its functions, each with the interface's parameter names and types (with `t` for the parameter) |
+| `(call (Name.f t) args...)`, `(ref (Name.f t))` | calling, or referring to, `t`'s implementation of `f`; from another module `(cmp.Hash.hash i32)`, through an alias `(c.Hash.hash i32)` |
+| `(where (Name T))` | in a generic function, struct, or union, right after its signature (a function's return type, a struct's fields, a union's variants): every use needs an implementation of `Name` for its `T`, and the template may call `Name`'s functions for `T` |
+| `(where (struct T))` | `T` is a struct, used as `(ptr T)`, `(new T)`; without it a type parameter is a value |
+
+Rules (both expanders, with the same messages):
+
+- **One implementation per type.** A type has at most one implementation of an interface in the whole program (`a second implementation of cmp.Hash<i32>: a type has at most one implementation of each interface`), so two maps keyed by the same type cannot hash it two ways.
+- **Where it may be written.** In the interface's module or in the module that defines the type (for `(ptr geo.Point)`, `geo`); for a built-in type only in the interface's module (`this implementation must be in the module that defines cmp.Eq, since f64 is built in`). Implementations are for concrete types; there are no generic implementations, defaults, or automatically derived ones.
+- **Contracts are inherited.** Each implementation's function runs the interface's `req`/`ens` before its own, and a failure is reported where the interface wrote it.
+- **Nothing is inferred.** A call names the interface and the type. An implementation's functions are ordinary functions named `Interface<type>.f` (`cmp.Hash<i32>.hash`): calling one costs a direct call.
+- **No floats in std/cmp.** NaN is not equal to itself, so equality and hashing on `f32`/`f64` would break the law every map relies on; a program that needs float keys wraps them and decides what NaN means.
+
+#### Kinds, and checking a template once
+
+Inside a template, a type parameter is sealed: it supports only what every type of its kind supports, plus the functions its `where` clauses grant. Before expanding, both toolchains make each template once at placeholders for its type parameters and type-check that, so the template is proven for every type argument its clauses allow; nothing is compiled from these instances.
+
+| Kind | Arguments | A sealed parameter supports |
+|---|---|---|
+| value (default) | anything that can be stored: numbers, `bool`, `str`, pointers, arrays, function references, enums, unions | `let`, parameters, results, struct and variant fields, `(arr T)`, `(sizeof T)`, `arr.cast` |
+| struct (`(where (struct T))`) | a struct, generic ones included | `(ptr T)`, `(new T)`, `(sizeof T)`, `(ptr.null T)`, `ptr.cast` |
+
+Anything else on a parameter is an error that names the clause to add: `eq on T: a type parameter has no equality of its own; add (where (cmp.Eq T)) and call (cmp.Eq.same T)`, likewise for order (`cmp.Ord`), arithmetic, `match`, `enum.ord`, and using a value parameter as a struct (`T is a type parameter that is not a struct: to use it as one, add (where (struct T))`). Calling a template that asks for more than the caller's clauses give is caught the same way: `vec.index_of<T> needs (cmp.Eq T): add (where (cmp.Eq T)) to g`.
+
+What can still fail where a template is used is the use itself: a missing implementation (`has<ptr<P>> needs (cmp.Eq (ptr P)): write (impl (cmp.Eq (ptr P)) ...)`), a type of the wrong kind (`vec.Vec<Point>: T is a value type, and Point is a struct, used only through a pointer: write (ptr Point)`; `option.Option<void>: T is a value type, and void cannot be stored`; `alloc.create<i32>: T must be a struct (where (struct T)), and i32 is not one`), and an instance that grows without bound.
 
 ### I. Constants and Enums
 
@@ -439,6 +545,39 @@ A union value is the address of a heap cell: the variant's index (its position i
 
 `Parser::parse` alone knows the unions of the module it parses; across modules the resolver passes them along. Imports qualify unions like structs and enums: `geom.Shape`, `(make geom.Shape.dot)`, and in an arm `(geom.Shape.circle [r] ...)`, or through an alias `(g.Shape.circle [r] ...)`.
 
+#### Generic unions and `Option`
+
+A union may take type parameters, like a struct (section 4.H). Every use writes the type with its arguments, then the variant: `(make (Name t...) variant v...)` builds one, and the arm `((Name t...) variant [binders] body...)` matches one. `std/option` defines `(union (Option T) [(some value:T) (none)])` with `is_some`, `is_none`, and `unwrap_or`; use it for a value that may be missing, instead of `-1` or a null pointer, so the checker makes every `match` handle `none`.
+
+```lisp
+(module option_demo
+  (import option)
+  (union (Tree T) [(leaf) (node left:(Tree T) value:T right:(Tree T))])
+
+  (fn (count T) [t:(Tree T)] -> i32
+    (match t
+      ((Tree T) leaf 0)
+      ((Tree T) node [l _ r] (+ 1 (+ (call (count T) l) (call (count T) r))))))
+
+  ;; the first index of `want`, or none
+  (fn find [xs:(arr i64) want:i64] -> (option.Option i32)
+    (loop i 0 (- (arr.len xs) 1) 1
+      (if (eq (arr.get i64 xs i) want) (return (make (option.Option i32) some i)) (block)))
+    (make (option.Option i32) none))
+
+  (fn main [] -> i32
+    (let empty:(Tree f64) (make (Tree f64) leaf))
+    (let t:(Tree f64) (make (Tree f64) node empty 1.5 (make (Tree f64) node empty 2.5 empty)))
+    (let xs:(arr i64) (arr.new i64 4))
+    (arr.set i64 xs 3 9i64)
+    (+ (* 10 (call (count f64) t))
+       (match (call find xs 9i64)
+         ((option.Option i32) some [i] i)
+         ((option.Option i32) none -1)))))     ;; 2 nodes, found at 3 => 23
+```
+
+Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union. A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
+
 ---
 
 ## 5. WebAssembly Binary Execution Semantics
@@ -514,7 +653,7 @@ A **threaded module** (one that uses `thread.spawn`) differs: it imports its mem
 | I/O scratch | functions that do I/O, `arr.new`, `atomic.cas/lock/unlock`, or `thread.spawn` get two extra `i32` locals; the WASI lowerings use runtime cells 64-87 for iovecs and out-parameters (section 7.9), or in a threaded module the same offsets in the current thread's scratch block |
 | Heap cursor | the `i32` at address 0; `mem.alloc` compiles to `i32.const 0; <size>; i32.atomic.rmw.add` (the size is evaluated first, then one atomic add claims the block), followed (as for `new`, `arr.new`, and result cells) by a check that grows memory with `memory.grow` when the cursor passes `memory.size` (no locals used) |
 | Loops | `block { loop { ... } }`; a `loop` (counted) also wraps its body in a block so `continue` falls into the step (section 7.10) |
-| Store guard | every `mem.store*`, `put`, and `arr.set` is preceded by a 12-instruction check that traps (`unreachable`) if the address is in bytes 0-3 or between 64 and the heap start (the runtime block and the string literals); each function gets two extra `i32` scratch locals, the first for this check (which `ok`/`err`, `match_result`, and `arr.new` also use) and the second for the index of a bounds check |
+| Store guard | every `mem.store*`, `put`, and `arr.set` is preceded by two checks, each an `if` that traps (`unreachable`), one if the address is in bytes 0-3 and one if it is between 64 and the heap start (the runtime block and the string literals); each function gets two extra `i32` scratch locals, the first for this check (which `ok`/`err`, `match_result`, and `arr.new` also use) and the second for the index of a bounds check |
 | Bounds checks | `arr.get`/`arr.set` compare the index (unsigned) with the length at `a - 4` and on failure call `$aipl_oob`, which writes `Array index out of bounds: ...` and traps (section 4.E) |
 | Contracts | each `req` is checked at the function's entry; with an `ens`, the body is a `block` that `return` branches to the end of, where the result is kept in a hidden local `res` and each `ens` is checked; a failure writes the message (section 3) through `$aipl_begin`/`$aipl_text`/`$aipl_dec`/`$aipl_end` and traps |
 | Function refs | only when the module uses `ref`/`call_ref`: one extra type per distinct `call_ref` signature after the function types, a funcref table (section id 4) of every function, and an element section (id 9) filling it; `call_ref` is `call_indirect` (section 4.G) |
@@ -551,7 +690,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `arr.new`, `arr.get`, `arr.set` | Yes | Yes, bounds-checked | Yes, bounds-checked | Yes |
 | `req`, `ens` contracts | Yes | Yes, checked on every call | Yes, checked on every call (message without the position, section 3) | Yes |
 | `inv` contracts | Yes (type-checked) | not evaluated | not evaluated | not evaluated |
-| `ok`, `err`, `match_result` | Yes | Yes | Yes (8-byte heap cell; 32-bit payloads only) | Yes |
+| `ok`, `err`, `match_result` | Yes | Yes | Yes (heap cell; any payload) | Yes |
 | `sys.print` | Yes, `str` arguments only | Yes | Yes via WASI `fd_write` | Yes |
 | `sys.exit` | Yes | returns the error `sys.exit(N) requested` | Yes via WASI `proc_exit` | Yes |
 | `sys.time`, `sys.monotonic`, `sys.random` | Yes | Yes | Yes via WASI `clock_time_get` / `random_get` | Yes |
@@ -587,7 +726,6 @@ Buffers are sized from the input: tokens exactly (`compiler.count_tokens` first,
 | 94 | more than 255 structs or unions, more than 255 variants in a union, more than 64 fields in a struct or variant, or more than 31 distinct `call_ref` signatures |
 | 95 | a struct field, array element, or `sizeof` type that cannot be stored in memory (`void`, a result) |
 | 96 | unknown struct or field in `new`/`get`/`put`/`sizeof` |
-| 97 | an `ok`/`err` payload that is not 32-bit |
 | 98 | a type the backend cannot lower (an unknown type name, or `void` where a value is needed) |
 | 99 | an operator applied to a type with no wasm instruction for it (e.g. `%` on `f64`, `+` on `str`) |
 | 100 | more than 255 nested blocks, loops, and `if`s in one function |
@@ -621,7 +759,7 @@ A compiled module runs under `aipl-run` (`src/bin/aipl_run.rs`), the toolchain's
 
 `aipl compile --exe FILE -o prog` on Linux x86-64 (or `--target native`) writes a native executable: an ELF file of machine code, statically linked, with no libc, launcher, or runtime (`aipl_src/native/`, designed in `docs/design/NATIVE_BACKEND_PLAN.md`). It is made from the same wasm module (`aipl_src/native/native.aipl` translates wasm to x86-64; the CLI runs it in its embedded wasmtime and sets the file's execute bit), so its behaviour is the wasm module's, and every test program is checked to match `aipl-run`'s output, error output, exit status, and files byte for byte (`tests/test_native.rs`).
 
-- **Size and speed.** `word_count` is about 57 KB; the AIPL compiler itself about 910 KB (the launcher build is 18 MB). Start-up is a few milliseconds (no engine to load or compile). The translator is a baseline one-pass compiler: compiling the compiler takes about 25% longer than under wasmtime (0.37 s against 0.30 s, which includes Cranelift's compile), and tight loops run 2-6 times slower than Cranelift's code (docs/BENCHMARKS.md).
+- **Size and speed.** `word_count` is about 65 KB; the AIPL compiler itself about 1.3 MB (the launcher build is 18 MB). Start-up is a few milliseconds (no engine to load or compile). The translator is a single-pass compiler that tracks where each value is (a register, a constant, a local) and emits code only when a value is used (docs/design/NATIVE_SPEED_PLAN.md): the natively built compiler compiles itself in 0.46 s against 0.53 s under wasmtime (which includes Cranelift's compile), and the eight benchmarks run in 0.8 to 1.6 times wasmtime's time (docs/BENCHMARKS.md). Memory accesses are checked by guard pages: an access outside the memory faults, and the fault becomes wasm's out-of-bounds trap with the same message and call chain.
 - **Same behaviour as section 6.5:** `_start`/`main`, exit statuses (0-125, otherwise an error with 134), traps with their call chain and status 134 (`./prog: wasm trap: ...` and `  at f` lines; WASI functions given a bad pointer report wasmtime's `Pointer out of bounds: Region { start: S, len: L }`), the command line, environment, stdio, fd 3 = working directory, fd 4 = `/` (not with `--sandbox`), threads (one OS thread each), clocks, and randomness.
 - **File access.** Paths resolve beneath their directory descriptor with `openat2(RESOLVE_BENEATH)`, so the kernel refuses `..` escapes, absolute paths under fd 3, and symlinks leading out, as wasmtime's preopens do. File descriptors are numbered as under wasmtime (the lowest free).
 - **Platforms.** Linux x86-64 only; elsewhere `--exe` writes the launcher bundle (section 6.5), and `--target native` is an error. `--target wasm` asks for the bundle on Linux too.
@@ -755,7 +893,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.7 Results
 
-`ok`/`err` build a result value; `match_result` consumes one and binds each arm's variable to the payload type from the result type (rule 6). Representation and the 32-bit payload rule are in section 4.F.
+`ok`/`err` build a result value; `match_result` consumes one and binds each arm's variable to the payload type from the result type (rule 6). Representation is in section 4.F.
 
 ```lisp
 (fn parse_digit [c:i32] -> (result i32 i32)
@@ -812,7 +950,7 @@ Rules that follow from this:
 
 - **Never write to a literal address.** Take memory from `mem.alloc` and pass pointers around. Every module in `aipl_src/` and every test does this; the only fixed addresses in `codegen.aipl` are this layout's own (cells below 64, and the string data at 1024 that it compiles into modules).
 - **The checker enforces the block for literal addresses.** Any `mem.*` or `atomic.*` op whose address is a literal is rejected at check time if it stores to or locks bytes 0-3 (`... bytes 0-3 are the heap cursor owned by mem.alloc ...`), touches bytes 64-1023 (`... bytes 64-1023 are the reserved runtime block ...`), or names a misaligned cell in 4-63. Reading the cursor with `(mem.load32 0)` and using the aligned cells 4-60 is allowed; that is what `memory.aipl` and `codegen.aipl` do. Literal heap addresses (1024 and up) are allowed but discouraged.
-- **Both backends enforce the block for writes at runtime.** Every `mem.store*`, `put`, `arr.set`, and `atomic.*` op checks its address before writing: bytes 0-3, 64-1023, and the string literals (1024 up to the heap start) are refused however the address was computed. A store into a literal fails in the VM with `... bytes 1024-N are the program's string literals, which are read-only ...`. The VM fails with `mem.store32 at address 512: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead`; compiled wasm traps with `unreachable` on exactly the same addresses (the backend emits a 12-instruction check before each store, using the first of the two scratch `i32` locals each function has). This is a shared semantic, not a VM-only guard, so the differential test treats it as agreement. The self-hosted compiler (`codegen.aipl`, `emit_store_guard`) emits the identical bytes, and `tests/test_selfhost.rs` checks that equality directly. Reads are not checked: the block is zero and reading it is harmless.
+- **Both backends enforce the block for writes at runtime.** Every `mem.store*`, `put`, `arr.set`, and `atomic.*` op checks its address before writing: bytes 0-3, 64-1023, and the string literals (1024 up to the heap start) are refused however the address was computed. A store into a literal fails in the VM with `... bytes 1024-N are the program's string literals, which are read-only ...`. The VM fails with `mem.store32 at address 512: bytes 64-1023 are the reserved runtime block; take memory from (mem.alloc n) instead`; compiled wasm traps with `unreachable` on exactly the same addresses (the backend emits two compare-and-trap checks before each store, using the first of the two scratch `i32` locals each function has). This is a shared semantic, not a VM-only guard, so the differential test treats it as agreement. The self-hosted compiler (`codegen.aipl`, `emit_store_guard`) emits the identical bytes, and `tests/test_selfhost.rs` checks that equality directly. Reads are not checked: the block is zero and reading it is harmless.
 - **The VM additionally enforces lock validity.** A lock word is only ever `0` (free) or `1` (held). `atomic.lock` on a word holding anything else fails immediately with `atomic.lock: word at ptr N holds V, which is not a lock state ...` instead of spinning forever, and `atomic.unlock` on a word that is not `1` fails with `... a held lock holds 1 ...`. This is what turns "I locked the heap cursor by accident" from a silent hang into an error, whichever way the address was produced.
 - **Fresh instances agree.** A fresh VM and a fresh wasm instance both return the heap start from the first `mem.alloc` (1024 for a module without string literals), then that plus `size` rounded up to a multiple of 8, and so on: the VM lays out the first loaded module's literals exactly as the wasm backend does (`wasm::string_layout`). This is why memory-heavy programs can be compared across backends (section 10.4).
 - **Threads share the block.** OS threads spawned by `thread.spawn` share the same linear memory and allocator; allocation is atomic, so workers may allocate. In a threaded module, spawned threads use their own copy of cells 64-87 (section 6.2).
@@ -988,7 +1126,7 @@ Representative messages, exactly as produced:
 | `call_ref` signature differs from the reference's type | `3:5: call_ref signature (fn [i32 i32] -> i64) does not match the function's type (fn [i32 i32] -> i32)` |
 | wrong `thread.spawn` worker | `1:51: thread.spawn needs a worker of type (fn [i32] -> i32), got (fn [i64] -> i32)` |
 | array index out of range (runtime, VM) | `Array index out of bounds: index 3 for array of length 3` |
-| 64-bit or float result payload | `1:40: result payloads must be 32-bit (i32, bool, str, or a pointer, array, enum, union, or function reference), got i64` |
+| `void` result payload | `1:60: a result payload must be a value, got void` |
 | non-bool `if` condition | `3:5: If condition must be bool, got i32` |
 | `break` outside a loop | `3:5: break is only allowed inside a while or loop body` |
 | `return` with the wrong type | `3:5: return value has type bool, but the function returns i32` |
@@ -1052,7 +1190,7 @@ Pattern for a module's own runner: perform real work, then assert on the **conte
   (if (and (gt p2 p1) (and (gt a2 a1) (eq a3 a1))) 1 0))
 ```
 
-Expected terminal output (24 groups; abridged):
+Expected terminal output (29 groups; abridged):
 ```
 [AIPL Test] Running 'run_all' from 'aipl_src/test_suite.aipl'...
 
@@ -1118,7 +1256,7 @@ let err = WasmCompiler::compile(&module).unwrap_err();
 assert!(err.contains("sys.print supports str arguments only in the wasm backend"));
 ```
 
-Files today (28 files, 299 tests as of 2026-10-08): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
+Files today (30 files, 315 tests as of 2026-10-14): `tests/test_all.rs` (pipeline smoke), `tests/test_v2.rs` (memory, atomics across real threads, real file I/O, results, imports), `tests/test_diagnostics.rs` (exact `L:C:` prefixes), `tests/test_i64.rs` (64-bit type, VM plus wasm validation), `tests/test_memory_layout.rs` (reserved-block enforcement in both backends), `tests/test_opcode_conformance.rs` (10.3), `tests/test_differential.rs` (10.4), `tests/test_wasi.rs` (10.5), `tests/test_selfhost.rs` (10.6), `tests/test_doc_examples.rs` (10.7), `tests/test_pointers.rs` (strict pointer/array typing, VM/wasm agreement, struct namespacing across imports), `tests/test_std.rs` (every eligible standard-library function in both backends under WASI, plus exact printed output), `tests/test_printer.rs` (source round trip of every repository program), `tests/test_refs.rs` (function references in both backends, signature checks, refs across imports), `tests/test_control_flow.rs` (return/break/continue/cond, short-circuit `and`/`or`, loop bounds evaluated once, in both backends; checker rejections), `tests/test_threads.rs` (threaded modules under a wasi-threads host against the VM), `tests/test_generics.rs` (template expansion in both backends, Rust/AIPL parity, errors), `tests/test_visibility.rs` (what a module gives and keeps, both resolvers, message for message), `tests/test_interfaces.rs` (interfaces, implementations, where clauses, and templates checked once, in both backends and both toolchains, message for message), `tests/test_resolver_aipl.rs` (the AIPL resolver against the Rust one, subdirectory imports), `tests/test_runner.rs` (the `aipl-run` launcher and `aipl compile --exe` executables), `tests/test_benchmarks.rs` (every program in `benchmarks/`, as wasm and natively, against its `expected.txt`), `tests/test_consts_enums.rs` (constants and enums in the VM, wasm, and natively, and every checker rule), `tests/test_sum_types.rs` (unions and `match` in every backend, and the checker's rules), `tests/test_checker_aipl.rs` (the AIPL tokenizer, parser, printer, and checker against the Rust ones, message for message, run compiled to wasm), `tests/test_heap.rs` (`std/heap`'s failure checks: the same message from the VM, `aipl-run`, and native executables), and the native backend's `tests/test_native_reader.rs` (the wasm reader against wasmparser), `tests/test_native_x64.rs` (the encoder against GNU as), `tests/test_native_elf.rs` (runs the first native executable), and `tests/test_native.rs` (the native backend's harness: every program built as wasm and natively, run under `aipl-run` and directly, with identical output, error output, exit status, and files; the AIPL compiler built natively and reproducing itself). `tests/test_differential.rs` also checks that allocation grows memory to the same page count in both backends.
 
 ### 10.3 Opcode conformance contract
 
@@ -1174,7 +1312,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 ```lisp
 ;; util.aipl
 (module util
-  (fn double [x:i32] -> i32 (* x 2)))
+  (fn double [x:i32] -> i32 (pub) (* x 2)))
 
 ;; main.aipl
 (module app
@@ -1190,6 +1328,40 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 - Structs follow the same rule: `(struct Node ...)` in `util` is `util.Node` everywhere outside `util` (`(ptr util.Node)`, `(new util.Node)`, `(get p util.Node.val)`), aliases included, so two imports may each define `Node`. An importer's bare `Node` never reaches into an import.
 - `(ref f)` is rewritten like `(call f ...)`, so a function reference inside an imported module points at the qualified function, including the worker of a `thread.spawn`.
 - Constants and enums follow the struct rule: `util.LIMIT`, `util.Color`, `util.Color.red` outside `util` (and `u.Color.red` through an alias). The head of a form is never renamed, so `(import util as mem)` leaves the op `(mem.alloc n)` alone.
+
+### 11.1 Visibility
+
+Everything a module defines is private to it unless marked `(pub)`: another module may use only what is marked, so a module's interface is exactly what it marks, and its helpers and the fields that hold its invariants cannot be reached from outside.
+
+```lisp
+(module counter
+  ;; others can read n, write nothing, and make a Counter only through start
+  (struct Counter [(read n:i32) step:i32] (pub))
+  (fn start [step:i32] -> (ptr Counter) (pub)
+    (let c:(ptr Counter) (new Counter))
+    (put c Counter.step step)
+    c)
+  (fn tick [c:(ptr Counter)] -> void (pub)
+    (put c Counter.n (+ (get c Counter.n) (get c Counter.step))))
+  (fn helper [] -> i32 0))     ;; private: (call counter.helper) elsewhere is an error
+```
+
+| Mark | Where | Meaning outside the module |
+|---|---|---|
+| `(pub)` | right after the signature: `(fn f [params] -> type (pub) ...)`, `(struct S [fields] (pub))`, `(union U [variants] (pub))`, `(enum E [members] (pub))`, `(const NAME:type value (pub))`, `(interface (Name T) (pub) ...)`; generic ones the same | the item may be named: called, referred to, used as a type, its members and variants used |
+| a field `x:T` | in a struct's field list | private: neither `get` nor `put` |
+| `(read x:T)` | | `get` only |
+| `(pub x:T)` | | `get` and `put` |
+
+Rules (both resolvers, with the same messages):
+
+- **Using a private item** is an error where it is used: `'util.helper' is private to module util: mark it (pub) there to use it here`. Fields: `field 'step' of counter.Counter is private to module counter`, `field 'n' of counter.Counter is read-only outside module counter`.
+- **Making a struct** outside its module, with `(new S)` or by passing `S` itself as a type argument (which lets a template such as `alloc.create` make one), needs every field `(pub)`: `'counter.Counter' has fields private to module counter, so only counter can make one`. Code that may fill a struct only through its module's functions cannot get one any other way.
+- **A (pub) item shows no private type** of its module in what it gives others (a function's parameters and result, a struct's readable fields, a union's variants, an interface's signatures): `'start' is (pub) but its signature uses 'Counter', which is private: mark 'Counter' (pub) too`.
+- **Implementations** take no `(pub)`: an implementation is as visible as its interface and its type (section 4.H).
+- The entry module's marks change nothing (nothing imports it), and a module parsed on its own (`Parser::parse`) ignores them. The resolver checks visibility and leaves the marks out of the flat program, so the checker and the code generators never see them.
+
+This closes what the unsafe fence left open (section 3): the standard library's descriptors keep raw addresses in read-only fields, `(read addr:i32)` in `str.Bytes`, so code outside `std/str` can read a byte string's address and length but not forge them, and cannot make one except through `str.from_str`, `str.slice`, and the other functions there (`str.bytes` and `str.repoint`, which take a raw address, are unsafe to call).
 
 ---
 
@@ -1315,18 +1487,22 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 
 | Module | Contents |
 |---|---|
-| `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)`, `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`), `parse_int_or [b default] -> i32` (the number, or `default`) |
+| `str` | `(struct Bytes [addr:i32 len:i32])`, a byte slice (`len` -1 marks a failed read). `bytes [addr len] -> (ptr Bytes)` and `repoint [b addr len]` (both unsafe to call; `addr` and `len` are read-only outside `str`), `from_str [s:str] -> (ptr Bytes)`, `byte_at`, `is_space [c] -> bool` (space and `\t \n \v \f \r`), `bytes_eq [a b] -> bool`, `find_byte [b c] -> i32` (first index or -1), `count_byte`, `count_lines` (newlines plus an unterminated last line), `count_words` (runs of non-space bytes), `parse_int [b] -> (result i32 i32)` (`(ok n)`, or `(err i)` with the index of the first bad byte; optional leading `-`), `parse_int_or [b default] -> i32` (the number, or `default`) |
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix), and for `i64`: `uint64_to_bytes`, `int64_to_bytes`: each writes ASCII at `out` and returns the count (at most 10, 11, 8, 20, and 21 bytes); `f64_fixed [x digits out]` writes `x` with `digits` decimals exactly as C's `printf("%.*f")` (the exact decimal value of the double, rounded half to even; `inf`, `nan`, a `-` for any negative sign bit; at most 312 + digits bytes) |
 | `io` | `read_stdin [] -> (ptr str.Bytes)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `print_i64 [n:i64]`, `println_i64 [label n:i64]`, `print_f64 [x digits]`, `println_f64 [label x digits]`, `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `read_fd [fd] -> (ptr str.Bytes)` (reads an open descriptor to its end), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `(ptr str.Bytes)` |
-| `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `clear`, `index_of`, `sort_by [v cmp:(fn [T T] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
-| `map` | generic hash map `(map.Map V)` from `i32` keys: `(call (map.make V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `has`, `remove -> bool`, `count`; iterate with `(loop i 0 (- (call (map.capacity V) m) 1) 1 (if (call (map.slot_used V) m i) ... (block)))` reading `slot_key` / `slot_val` |
-| `strmap` | generic hash map `(strmap.StrMap V)` from byte strings (symbol tables, word counts): the same API as `map` with keys of type `(ptr str.Bytes)`; the map keeps the key pointer, so a key's bytes must not change while it is stored |
+| `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `truncate [v n]`, `clear`, `index_of`, `sort_by [v cmp:(fn [T T] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), `(sort_by_with T C) [v ctx:C cmp:(fn [C T T] -> i32)]` (the same, `cmp` given `ctx` first: section 4.G), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
+| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `(ptr str.Bytes)` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `(ptr str.Bytes)` key is kept as the pointer, so its bytes must not change while it is stored |
+| `cmp` | the interfaces `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`: -1, 0, or 1), and `(cmp.Hash T)` (`hash`, `same`), implemented for `i32`, `i64`, `bool` (Eq), `str` (bytewise), and `(ptr str.Bytes)` (Hash, by contents); none for floats (section 4.H) |
 | `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (ptr str.Bytes)` (`len` -1 past the end), `arg_int [i default] -> i32` (argument `i` as a number, or `default` if it is missing or not one: `(call os.arg_int 1 1000)`), `env [name:str] -> (ptr str.Bytes)` (`len` -1 if unset), each fetching a fresh copy; `random_i32 [] -> i32` from the OS generator |
 | `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (also ends any view of it), `push_byte`, `push_str [b s:str]`, `push_bytes [b (ptr str.Bytes)]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `clear`, `bytes [b] -> (ptr str.Bytes)` (a view of the contents; take it after building), `write [b fd] -> i32`, `print [b]` (the contents to standard output) |
 | `arena` | a region allocator (frees everything at once; for single objects see `heap`): `make [chunk_size] -> (ptr arena.Arena)`, `(call (arena.alloc T) a) -> (ptr T)` (zeroed, like `new`, no cast), `raw [a n] -> i32` (n zeroed bytes, 8-aligned), `reset [a]` (frees everything from `a`; its chunks are reused), `reserved [a]`; never fails while memory remains (a full chunk moves on to another) |
 | `heap` | a general-purpose allocator with per-object free (docs/design/HEAP_PLAN.md): `make [] -> (ptr heap.Heap)`, `(call (heap.create T) h) -> (ptr T)` and `(call (heap.destroy T) h p)`, `(call (heap.array T) h n) -> (arr T)` and `(call (heap.free_array T) h a)`, `raw [h n] -> i32` and `free_raw [h p n]` (n zeroed bytes, 8-aligned), `live [h]` (blocks not freed), `live_bytes [h]`, `reserved [h]`. A double free, a free of memory this heap did not allocate, a free with the wrong size or type, and a write after free (found when the block is reused) stop the program with a contract failure naming the check; freed memory reads as `0xDEADBEEF` words |
-| `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]`, `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `custom [state alloc_fn free_fn]` for a program's own allocator (`alloc_fn [state n] -> i32`, 8-aligned; `free_fn [state p n]`) |
+| `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (unsafe to call: hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]` (unsafe to call), `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `(custom C) [state:C alloc_fn free_fn]` for a program's own allocator, unsafe to call (`alloc_fn [state:C n] -> i32`, 8-aligned; `free_fn [state:C p n]`; the state keeps its type, typically a pointer to the allocator's struct) |
 | `time` | timing code with the monotonic clock: `now [] -> i64` (nanoseconds), `since [start] -> i64`, `push_duration [b ns]` ("850 ns", "12.345 us", "3.071 ms", "4.200 s": three decimals in the largest fitting unit, integer arithmetic), `report [label start]` ("label: 12.345 ms" on stderr, so a program's output stays clean) |
+| `thread` | `(spawn_with C) [worker:(fn [C] -> i32) ctx:C] -> i32`: runs `worker` on `ctx` on a new thread (unsafe to call, as `thread.spawn` is); `(thread.join h)` gives the result. The worker's context keeps its type, where `thread.spawn` passes an `i32` |
+| `fs` | directories and file information over `fs.opendir`, `fs.readdir`, and `fs.stat`: `list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec (ptr str.Bytes))))` (the names in a directory sorted bytewise, without `.` and `..`, so a listing is the same in every backend; `none` if it cannot be read), `info [path:str] -> (option.Option (ptr fs.Info))` with `(struct Info [(read kind:fs.Kind) (read size:i64) (read modified:i64)])` (`fs.Kind.file`, `directory`, or `other`, after following symbolic links; `modified` in nanoseconds since 1970), and `list_path` / `info_path` for a path held as `(ptr str.Bytes)`. Starting other processes is not provided: WASI has no way to |
+| `json` | JSON (RFC 8259) to and from a `json.Value`, `(union Value [(null) (boolean b:bool) (number n:f64) (text s:(ptr str.Bytes)) (list items:(ptr (vec.Vec Value))) (object fields:(ptr (vec.Vec (ptr json.Field))))])`. `parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result json.Value (ptr json.Error))` is strict: valid UTF-8, no duplicate keys, nesting at most 512 deep, numbers that fit an `f64`, and an `Error` with the byte offset `at` and `what` went wrong. `get [v key:str] -> (option.Option json.Value)` (an object's member), `at [v i]` (a list's element), `count [v]` (elements or members, 0 for other values); `field [a key value] -> (ptr json.Field)` makes a member for building an object (`(read key)`, `(read value)`). `write [b:(ptr buf.Buf) v]` writes the text JavaScript's `JSON.stringify` writes: no spaces, keys in their order, numbers as the shortest digits that read back as the same `f64` (`0.1`, `1e+21`, `5e-324`); writing an infinity or NaN fails its contract. `tests/test_std.rs` compares the numbers with Rust's shortest digits on 20,000 doubles |
+| `option` | `(union (option.Option T) [(some value:T) (none)])`, a value that may be missing (section 4.J): `(make (option.Option i32) some 5)`, `(make (option.Option i32) none)`; `(call (option.is_some T) o)`, `is_none`, `(call (option.unwrap_or T) o fallback)` |
 | `float` | `from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `tests/test_std.rs` compares it with Rust on 400,000 literals |
 | `bigint` | arbitrarily large signed integers, changed in place (reuse numbers rather than making new ones; nothing is freed): `(ptr bigint.Int)` from `from_i32 [v]`, `with_capacity [limbs]`; `set_i32 [a v]`, `assign [dst src]`, `add [a b]`, `sub [a b]`, `add_mul_small [a b m]` (a += b·m), `sub_mul_small [a b m]`, `mul_small [a m]` (\|m\| < 2^31), `div_small [a d] -> i32` (a /= d toward zero, returns the remainder, 0 < d < 2^31), `div_small_quotient [a b] -> i32` (a ≥ 0, b > 0, quotient < 2^31: returns a / b, leaves the remainder in a), `negate [a]`, `compare [a b] -> i32`, `sign [a] -> i32`, `is_zero [a]`, `limb_count [a]`, `push_decimal [out a]` |
 
@@ -1398,12 +1574,14 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | a program using `thread.spawn` run with the stock `wasmtime` CLI | threaded modules need AIPL's runner (`aipl run`, or `aipl compile --exe`) or another wasi-threads host |
 | `(get p x)` or `(get p Point x)` | the field is one symbol: `(get p Point.x)`; arrays name the element type every time: `(arr.get i32 a i)` |
 | catching a bad index with `arr.get` and carrying on | a bad index stops the program in every backend; check `(lt i (arr.len a))` first where an index may be out of range |
-| `(ok 1i64)` or an `f64` payload | result payloads must be 32-bit (a checker error); return a pointer to a struct holding the value instead |
+| `(make Option.some 5)` or `(make (Option i32).some 5)` for a generic union | the type with its arguments, then the variant: `(make (option.Option i32) some 5)`, and the arm `((option.Option i32) some [v] ...)` (section 4.J) |
 | ending a function in `(let ...)` | `let` is void; end with the value, e.g. the variable name |
 | `(sys.print n)` with an `i32` | `sys.print` prints `str` only (a checker error); use `(call io.print_int n)` or `(call io.println_int "label " n)` from the standard library |
-| hand-writing digit formatting, file-reading loops, byte counting, growable arrays, hash tables, or string building | the standard library (section 12.6): `io`, `str`, `fmt`, `vec`, `map`, `strmap`, `buf`, `os` |
+| hand-writing digit formatting, file-reading loops, byte counting, growable arrays, hash tables, or string building | the standard library (section 12.6): `io`, `str`, `fmt`, `vec`, `map`, `buf`, `os` |
+| `(eq a b)` or `(lt a b)` on a type parameter `T` | ask for it: `(where (cmp.Eq T))` and `(call (cmp.Eq.same T) a b)`, or `(cmp.Ord T)` and `cmp.Ord.compare` (section 4.H) |
+| `(vec.Vec Point)` with `Point` a struct | a struct is a value only through a pointer: `(vec.Vec (ptr Point))` |
 | `(mem.free p)`, or reusing `mem.alloc` memory by hand | there is no `mem.free`; allocate what will be freed from `std/heap` (`(call (heap.create T) h)`, `(call (heap.destroy T) h p)`) or an `std/arena`, or through `std/alloc` |
-| `(call (vec.make i32) 16)` | collections take an allocator first: `(call (vec.make i32) (call alloc.default) 16)`, likewise `map.make`, `strmap.make`, `buf.make` (`(import alloc)`) |
+| `(call (vec.make i32) 16)` | collections take an allocator first: `(call (vec.make i32) (call alloc.default) 16)`, likewise `(map.make K V)`, `buf.make` (`(import alloc)`) |
 | `(call vec.push v x)` on a generic container | name the element type: `(call (vec.push i32) v x)`; the container's type is `(ptr (vec.Vec i32))` (section 4.H) |
 | `(get b Box.value)` on a generic struct | name the instance: `(get b (Box i32) value)` |
 | calling `mem.grow` before allocating | not needed: allocation grows memory itself (up to 32768 pages, 2 GiB) |

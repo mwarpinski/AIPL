@@ -16,11 +16,11 @@
   ;; consts: consts.aipl's reprinting (no entries: unchanged). gen and orig:
   ;; the generics pass's and the resolver's (null for one file's text, which
   ;; is `flat`). files: orig's files, in its order.
-  (struct Places [consts:(ptr origins.Origins) gen:(ptr origins.Origins) orig:(ptr origins.Origins)
-                  flat:(ptr Text) files:(ptr (vec.Vec (ptr Text))) file:i32])
+  (struct Places [(read consts:(ptr origins.Origins)) gen:(ptr origins.Origins) orig:(ptr origins.Origins)
+                  flat:(ptr Text) files:(ptr (vec.Vec (ptr Text))) file:i32] (pub))
 
   ;; A resolved position.
-  (struct Place [file:(ptr str.Bytes) line:i32 col:i32])
+  (struct Place [(read file:(ptr str.Bytes)) (read line:i32) (read col:i32)] (pub))
 
   (fn text_of [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Text)
     (let t:(ptr Text) (new Text))
@@ -30,7 +30,7 @@
     t)
 
   ;; Positions in one file's text, under that name.
-  (fn single [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Places)
+  (fn single [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Places) (pub)
     (let p:(ptr Places) (new Places))
     (put p Places.consts (call origins.make))
     (put p Places.gen (ptr.null origins.Origins))
@@ -41,7 +41,7 @@
 
   ;; Positions in the files the resolver read (orig), through the generics
   ;; pass's reprinting (gen, possibly without entries).
-  (fn mapped [gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> (ptr Places)
+  (fn mapped [gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> (ptr Places) (pub)
     (let p:(ptr Places) (call single (call str.from_str "") (call str.from_str "")))
     (put p Places.gen gen)
     (put p Places.orig orig)
@@ -63,7 +63,7 @@
     (get e origins.Entry.pos))
 
   ;; The place of offset `at` in the code generator's text.
-  (fn place [p:(ptr Places) at:i32] -> (ptr Place)
+  (fn place [p:(ptr Places) at:i32] -> (ptr Place) (pub)
     (let pos:i32 (call back p (get p Places.consts) at))
     (let t:(ptr Text) (get p Places.flat))
     (if (neq (get p Places.orig) (ptr.null origins.Origins))

@@ -155,7 +155,10 @@ A union is a value that is exactly one of several variants, each with its
 own fields. `make` builds one; `match` takes it apart, and must handle every
 variant (or end with `else`). A `(result T E)` is either `(ok value)` or
 `(err error)`, read with `match_result`. There are no exceptions: a
-function that can fail says so in its type.
+function that can fail says so in its type. A union can be generic, like
+`std/option`'s `(option.Option T)`, for a value that may be missing:
+`(make (option.Option i32) some 5)`, matched with
+`((option.Option i32) some [v] ...)`.
 
 ## 6. Contracts
 
@@ -217,8 +220,12 @@ It returns `13`: after sorting, the first element is 10, and there are 3.
 Collections take an allocator when they are made, as in Zig, and are freed
 explicitly; `(call alloc.default)` is a shared general-purpose heap.
 `(ref by_value)` passes a function as a value, here the comparison for
-sorting. The standard library also has hash maps, a string builder, file
-I/O, number formatting, big integers, and timing.
+sorting. A generic function that compares its `T` says so, with
+`(where (cmp.Ord T))` after its signature, and calls
+`(call (cmp.Ord.compare T) a b)`: a template is checked once, on its own,
+so it may use only what its `where` clauses grant. The standard library
+also has hash maps (`(map.Map K V)`, for any key with `cmp.Hash`), a string
+builder, file I/O, number formatting, big integers, and timing.
 
 ## 8. Compiling, and what errors look like
 

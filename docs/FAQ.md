@@ -45,9 +45,11 @@ made by translating the WebAssembly to x86-64 machine code.
 ### Why not compile through LLVM or C?
 
 To keep the toolchain small and written in AIPL. The native backend is
-about 4,400 lines of AIPL with no dependencies. LLVM would make the code
-much faster and the toolchain far larger, and could not be self-hosted. A
-faster native translator is on the roadmap instead.
+about 5,800 lines of AIPL with no dependencies: a single-pass translator
+that keeps values in registers, in the manner of V8's Liftoff, whose code
+takes 0.8 to 1.6 times as long as wasmtime's (Cranelift's) on the eight
+benchmarks. LLVM would make the code faster still and the toolchain far
+larger, and could not be self-hosted.
 
 ### Is it really self-hosted?
 
@@ -79,12 +81,28 @@ pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
 as in Rust, so a program without `unsafe` cannot reach memory through a
 raw address.
 
-Two gaps remain. A pointer kept after its object is freed can still read
-the freed memory; generation checks (each object and each pointer carries a
+Module visibility closes a second door: the standard library keeps its raw
+addresses in fields other modules may only read, such as `str.Bytes`'s
+address and length, so safe code cannot forge one.
+
+One gap remains: a pointer kept after its object is freed can still read
+the freed memory. Generation checks (each object and each pointer carries a
 number, compared on every access) are planned
-([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)). And the
-standard library's structs, such as `str.Bytes`, keep raw addresses in
-fields that any module can write; module visibility will close that.
+([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)).
+
+### Does it have closures, or lambdas?
+
+No, by design. A function sees only its parameters: nothing captures the
+variables around it, and there are no global variables. When a callback
+needs data, such as a comparison that sorts by counts kept in a map, the
+data is passed to it as a typed *context*, its first parameter:
+`(call (vec.sort_by_with str (ptr Counts)) words counts (ref by_count))`.
+A closure would have to allocate its captured variables behind the
+program's back, where AIPL allocates only through allocators the program
+names; it would make every function value bigger and every call through
+one slower; and it would add rules about what a capture copies or shares.
+Passing the context costs a parameter, and the reader sees exactly what the
+callback uses. (AIPL_SPEC.md 4.G.)
 
 ### How fast is it?
 

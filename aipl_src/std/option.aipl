@@ -1,0 +1,40 @@
+;; std/option: a value that may be missing, for any type T.
+;;
+;;   (let o:(option.Option i32) (make (option.Option i32) some 5))
+;;   (let n:(option.Option i32) (make (option.Option i32) none))
+;;   (match o
+;;     ((option.Option i32) some [v] v)
+;;     ((option.Option i32) none 0))
+;;   (call (option.unwrap_or i32) n 0)       ;; => 0
+;;
+;; Use it instead of a sentinel (-1, a null pointer) when "nothing" is a
+;; possible answer: the checker makes every match handle none.
+(module option
+  (union (Option T) [(some value:T) (none)] (pub))
+
+  (fn (is_some T) [o:(Option T)] -> bool (pub)
+    (match o ((Option T) some [_] true) ((Option T) none false)))
+
+  (fn (is_none T) [o:(Option T)] -> bool (pub)
+    (match o ((Option T) some [_] false) ((Option T) none true)))
+
+  ;; The value, or `fallback` for none.
+  (fn (unwrap_or T) [o:(Option T) fallback:T] -> T (pub)
+    (match o ((Option T) some [v] v) ((Option T) none fallback)))
+
+  ;; ===== Tests =====
+
+  (fn run_option_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let five:(Option i32) (make (Option i32) some 5))
+    (let nothing:(Option i32) (make (Option i32) none))
+    (if (call (is_some i32) five) (set! p (+ p 1)) (block))
+    (if (call (is_none i32) nothing) (set! p (+ p 1)) (block))
+    (if (eq (call (unwrap_or i32) five 0) 5) (set! p (+ p 1)) (block))
+    (if (eq (call (unwrap_or i32) nothing -1) -1) (set! p (+ p 1)) (block))
+    ;; 64-bit and float values, and an option of an option
+    (if (eq (call (unwrap_or i64) (make (Option i64) some 5000000000i64) 0i64) 5000000000i64) (set! p (+ p 1)) (block))
+    (if (eq (call (unwrap_or f64) (make (Option f64) none) 2.5) 2.5) (set! p (+ p 1)) (block))
+    (let inner:(Option (Option bool)) (make (Option (Option bool)) some (make (Option bool) none)))
+    (if (call (is_none bool) (call (unwrap_or (Option bool)) inner (make (Option bool) some true))) (set! p (+ p 1)) (block))
+    p))

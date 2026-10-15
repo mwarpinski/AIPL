@@ -3,7 +3,7 @@
 ;; int64, 312 + digits for f64_fixed) and returns the count.
 (module fmt
   ;; Decimal digits of n read as unsigned, so -1 is 4294967295.
-  (fn uint_to_bytes [n:i32 out:i32] -> i32 (unsafe)
+  (fn uint_to_bytes [n:i32 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 10)))
     (let count:i32 1)
     (let v:i32 (divu n 10))
@@ -17,7 +17,7 @@
     count)
 
   ;; Decimal digits of n, with a leading '-' when negative.
-  (fn int_to_bytes [n:i32 out:i32] -> i32 (unsafe)
+  (fn int_to_bytes [n:i32 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 11)))
     (if (lt n 0)
         (block
@@ -26,7 +26,7 @@
         (call uint_to_bytes n out)))
 
   ;; Decimal digits of the i64 n read as unsigned (up to 20).
-  (fn uint64_to_bytes [n:i64 out:i32] -> i32 (unsafe)
+  (fn uint64_to_bytes [n:i64 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 20)))
     (let count:i32 1)
     (let v:i64 (divu n 10i64))
@@ -40,7 +40,7 @@
     count)
 
   ;; Decimal digits of the i64 n, with a leading '-' when negative.
-  (fn int64_to_bytes [n:i64 out:i32] -> i32 (unsafe)
+  (fn int64_to_bytes [n:i64 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 21)))
     (if (lt n 0i64)
         (block
@@ -119,7 +119,7 @@
     (loop i 0 (- (str.len s) 1) 1 (mem.store8 (+ out i) (mem.load8 (+ p i))))
     (str.len s))
 
-  (fn f64_fixed [x:f64 digits:i32 out:i32] -> i32 (unsafe)
+  (fn f64_fixed [x:f64 digits:i32 out:i32] -> i32 (pub) (unsafe)
     (req (and (gte digits 0) (lte digits 40)))
     (let bits:i64 (i64.reinterpret_f64 x))
     (let neg:bool (lt bits 0i64))
@@ -215,7 +215,7 @@
     (if (lt d 10) (+ 48 d) (+ 87 d)))
 
   ;; Lowercase hex digits of n read as unsigned, no prefix, no leading zeros.
-  (fn hex_to_bytes [n:i32 out:i32] -> i32 (unsafe)
+  (fn hex_to_bytes [n:i32 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 8)))
     (let count:i32 1)
     (let v:i32 (shru n 4))
@@ -237,7 +237,7 @@
     true)
 
   ;; Pass count; test_suite.aipl expects 14.
-  (fn run_fmt_tests [] -> i32
+  (fn run_fmt_tests [] -> i32 (pub)
     (unsafe (let b:i32 (mem.alloc 400))
     (let p:i32 0)
     (if (call spells b (call uint_to_bytes 0 b) "0") (set! p (+ p 1)) (block))

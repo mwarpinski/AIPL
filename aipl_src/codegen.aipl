@@ -9,7 +9,7 @@
   (import consts)
   (import str)
   (import buf)
-  (import strmap)
+  (import map)
   (import parser)
   (import printer)
   (import float)
@@ -77,7 +77,10 @@
   ;; wasm.rs enum Wasi.
   (enum Wasi [(none -1) fd_write fd_read path_open fd_close proc_exit path_unlink_file
               args_sizes_get args_get environ_sizes_get environ_get thread_spawn
-              clock_time_get random_get])
+              clock_time_get random_get fd_readdir path_filestat_get])
+
+  ;; How many WASI functions there are (enum Wasi, none aside).
+  (const NWASI:i32 15)
 
   ;; A struct of the module and its layout (checker.rs get_field_offset):
   ;; fields in declaration order, each aligned to its size.
@@ -92,8 +95,15 @@
 
   ;; A local of the function being compiled (parameters first): its name (a
   ;; span of the source) and type. A loop's hidden end and step locals carry
-  ;; the loop variable's name and the type loop_end / loop_step.
-  (struct Local [name_pos:i32 name_len:i32 ty:Ty])
+  ;; the loop variable's name and the type loop_end / loop_step. `from` says
+  ;; where its type is written, for a result's payload types (Desc); `bound`
+  ;; marks a match_result binder already typed (binder_types).
+  (struct Local [name_pos:i32 name_len:i32 ty:Ty from:(ptr Desc) bound:bool])
+
+  ;; Where a type can be read off the source: a type node (`expr` false), or
+  ;; an expression of that type (`expr` true). A null Desc, or a null node,
+  ;; is unknown, read as i32 (wasm.rs result_sides).
+  (struct Desc [node:(ptr compiler.Node) expr:bool])
 
   ;; A function of the module: its name (a span of the source), parameter
   ;; and result types, wasm index, and definition.
@@ -111,8 +121,8 @@
     (put cg Cg.nstructs 0)
     (put cg Cg.unions (arr.new (ptr UnionInfo) 255))
     (put cg Cg.nunions 0)
-    (put cg Cg.wasi (arr.new i32 13))
-    (loop w 0 12 1 (arr.set i32 (get cg Cg.wasi) w -1))
+    (put cg Cg.wasi (arr.new i32 NWASI))
+    (loop w 0 (- NWASI 1) 1 (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
     (put cg Cg.labels (arr.new Label 255))
     (put cg Cg.nlabels 0)
@@ -176,28 +186,28 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
-  (struct Keywords [map:(ptr (strmap.StrMap Kw)) key:(ptr str.Bytes)])
+  (struct Keywords [map:(ptr (map.Map (ptr str.Bytes) Kw)) key:(ptr str.Bytes)])
 
   (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
     (unsafe (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (strmap.make Kw) (call alloc.default) 256))
+    (put ks Keywords.map (call (map.make (ptr str.Bytes) Kw) (call alloc.default) 256))
     (put ks Keywords.key (call str.bytes 0 0))
     ks))
 
-  (fn reg [m:(ptr (strmap.StrMap Kw)) word:str k:Kw] -> void
-    (call (strmap.set Kw) m (call str.from_str word) k))
+  (fn reg [m:(ptr (map.Map (ptr str.Bytes) Kw)) word:str k:Kw] -> void
+    (call (map.set (ptr str.Bytes) Kw) m (call str.from_str word) k))
 
   ;; Fills the keyword map once (it also runs codegen_init, every time).
   (fn init_keywords [] -> i32
     (let _init:i32 (call codegen_init))
-    (let m:(ptr (strmap.StrMap Kw)) (get (call keywords) Keywords.map))
-    (if (gt (call (strmap.count Kw) m) 0) (return 0) (block))
+    (let m:(ptr (map.Map (ptr str.Bytes) Kw)) (get (call keywords) Keywords.map))
+    (if (gt (call (map.count (ptr str.Bytes) Kw) m) 0) (return 0) (block))
     (call reg m "+" Kw.add)
     (call reg m "-" Kw.sub)
     (call reg m "*" Kw.mul)
@@ -231,6 +241,9 @@
     (call reg m "fs.write" Kw.fs_write)
     (call reg m "fs.close" Kw.fs_close)
     (call reg m "fs.delete" Kw.fs_delete)
+    (call reg m "fs.opendir" Kw.fs_opendir)
+    (call reg m "fs.readdir" Kw.fs_readdir)
+    (call reg m "fs.stat" Kw.fs_stat)
     (call reg m "%" Kw.rem)
     (call reg m "divu" Kw.divu)
     (call reg m "remu" Kw.remu)
@@ -357,9 +370,8 @@
   (fn classify_keyword [cg:(ptr Cg) pos:i32 len:i32] -> Kw
     (let ks:(ptr Keywords) (call keywords))
     (let key:(ptr str.Bytes) (get ks Keywords.key))
-    (put key str.Bytes.addr (+ (get cg Cg.src) pos))
-    (put key str.Bytes.len len)
-    (call (strmap.get_or Kw) (get ks Keywords.map) key Kw.none))
+    (unsafe (call str.repoint key (+ (get cg Cg.src) pos) len))
+    (call (map.get_or (ptr str.Bytes) Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
   ;; A value's static type, as expr_type in wasm.rs computes it. bool, str,
@@ -539,7 +551,9 @@
             ((eq kw Kw.let) (let name_node:(ptr compiler.Node) (call nth_child node 1))
                 (let type_node:(ptr compiler.Node) (call nth_child node 3))
                 (let type_id:Ty (call type_node_id cg type_node))
-                (call add_local_if_new cg (call node_a name_node) (call node_b name_node) type_id))
+                (call add_local_if_new cg (call node_a name_node) (call node_b name_node) type_id)
+                (call note_type_node cg name_node type_node)
+                0)
             ((eq kw Kw.loop) (let var_node:(ptr compiler.Node) (call nth_child node 1))
                     (call add_local_if_new cg (call node_a var_node) (call node_b var_node) Ty.i32)
                     (call add_hidden_if_new cg (call node_a var_node) (call node_b var_node) Ty.loop_end)
@@ -579,6 +593,91 @@
           (while (neq child (ptr.null compiler.Node)) (let _w:i32 (call collect_locals_walk cg child)) (set! child (call node_next child)))
           0)))
 
+  ;; The first declaration of a name says where its type is written.
+  (fn note_type_node [cg:(ptr Cg) name_node:(ptr compiler.Node) type_node:(ptr compiler.Node)] -> void
+    (let l:(ptr Local) (call local_at cg (call find_local cg (call node_a name_node) (call node_b name_node))))
+    (if (eq (get l Local.from) (ptr.null Desc)) (put l Local.from (call desc type_node false)) (block)))
+
+  (fn desc [node:(ptr compiler.Node) expr:bool] -> (ptr Desc)
+    (let d:(ptr Desc) (new Desc))
+    (put d Desc.node node)
+    (put d Desc.expr expr)
+    d)
+
+  (fn desc_ty [cg:(ptr Cg) d:(ptr Desc)] -> Ty
+    (cond
+      ((eq d (ptr.null Desc)) Ty.i32)
+      ((eq (get d Desc.node) (ptr.null compiler.Node)) Ty.i32)
+      ((get d Desc.expr) (call node_type cg (get d Desc.node)))
+      (else (call type_node_id cg (get d Desc.node)))))
+
+  ;; Where the ok (side 0) or err (side 1) payload type of the result `d`
+  ;; describes is written (wasm.rs type_in on a result): a (result T E)
+  ;; node's T or E, an ok/err's payload or its `:T`, or the type of
+  ;; whatever a name, call, or branching form stands for.
+  (fn result_side [cg:(ptr Cg) d:(ptr Desc) side:i32] -> (ptr Desc)
+    (if (eq d (ptr.null Desc)) (return d) (block))
+    (let node:(ptr compiler.Node) (get d Desc.node))
+    (if (eq node (ptr.null compiler.Node)) (return (ptr.null Desc)) (block))
+    (if (not (get d Desc.expr))
+        (return (if (and (eq (call node_kind node) compiler.Kind.paren) (eq (call group_head_keyword cg node) Kw.ty_result))
+                    (call desc (call nth_child node (+ 1 side)) false)
+                    (ptr.null Desc)))
+        (block))
+    (if (eq (call node_kind node) compiler.Kind.symbol)
+        (block
+          (let idx:i32 (call find_local cg (call node_a node) (call node_b node)))
+          (return (if (eq idx -1) (ptr.null Desc) (call result_side cg (get (call local_at cg idx) Local.from) side))))
+        (block))
+    (if (neq (call node_kind node) compiler.Kind.paren) (return (ptr.null Desc)) (block))
+    (let kw:Kw (call group_head_keyword cg node))
+    (let typed:bool (eq (call node_kind (call nth_child node 1)) compiler.Kind.colon))
+    (cond
+      ;; (ok v) / (ok:E v), (err e) / (err:T e): the payload on its own side
+      ((or (eq kw Kw.ok) (eq kw Kw.err))
+       (if (eq side (if (eq kw Kw.ok) 0 1))
+           (call desc (call result_payload node) true)
+           (if typed (call desc (call nth_child node 2) false) (ptr.null Desc))))
+      ((eq kw Kw.call)
+       (let fname:(ptr compiler.Node) (call nth_child node 1))
+       (let fidx:i32 (call find_function cg (call node_a fname) (call node_b fname)))
+       (if (eq fidx -1)
+           (ptr.null Desc)
+           (call result_side cg (call desc (call nth_child (get (call func_entry_ptr cg fidx) FnInfo.node) 4) false) side)))
+      ((eq kw Kw.call_ref) (call result_side cg (call desc (call nth_child (call nth_child node 1) 3) false) side))
+      ((eq kw Kw.if) (call result_side cg (call desc (call nth_child node 2) true) side))
+      ((eq kw Kw.block) (call result_side cg (call desc (call last_of (call node_next (call first_child node))) true) side))
+      ((eq kw Kw.cond)
+       (call result_side cg (call desc (call last_of (call node_next (call first_child (call nth_child node 1)))) true) side))
+      ((eq kw Kw.match) (call result_side cg (call desc (call last_of (call arm_body (call nth_child node 2))) true) side))
+      ((eq kw Kw.match_result)
+       (call result_side cg (call desc (call last_of (call node_next (call node_next (call first_child (call nth_child node 2))))) true) side))
+      (else (ptr.null Desc))))
+
+  ;; Types each match_result binder as its payload (wasm.rs binder_types),
+  ;; once every local is known: the matched expression's type, in source
+  ;; order, the first match_result of a name deciding.
+  (fn binder_types [cg:(ptr Cg) node:(ptr compiler.Node)] -> void
+    (if (neq (call node_kind node) compiler.Kind.paren) (return) (block))
+    (if (eq (call group_head_keyword cg node) Kw.match_result)
+        (block
+          (let scrutinee:(ptr Desc) (call desc (call nth_child node 1) true))
+          (loop side 0 1 1
+            (let var:(ptr compiler.Node) (call nth_child (call nth_child node (+ 2 side)) 1))
+            (let l:(ptr Local) (call local_at cg (call find_local cg (call node_a var) (call node_b var))))
+            (if (not (get l Local.bound))
+                (block
+                  (let from:(ptr Desc) (call result_side cg scrutinee side))
+                  (put l Local.bound true)
+                  (put l Local.from from)
+                  (put l Local.ty (call desc_ty cg from)))
+                (block))))
+        (block))
+    (let child:(ptr compiler.Node) (call first_child node))
+    (while (neq child (ptr.null compiler.Node))
+      (call binder_types cg child)
+      (set! child (call node_next child))))
+
   ;; Any body item may be an atom (a bare number, name, or string), which
   ;; has no head: check the kind first.
   (fn is_contract_head [cg:(ptr Cg) group:(ptr compiler.Node)] -> bool
@@ -600,10 +699,15 @@
     (while (neq pchild (ptr.null compiler.Node))
       (let type_node:(ptr compiler.Node) (call node_next (call node_next pchild)))
       (call add_local_if_new cg (call node_a pchild) (call node_b pchild) (call type_node_id cg type_node))
+      (call note_type_node cg pchild type_node)
       (set! pchild (call node_next type_node)))
     (let bchild:(ptr compiler.Node) (call nth_child fndef_group 5))
     (while (neq bchild (ptr.null compiler.Node))
       (if (call is_contract_head cg bchild) 0 (call collect_locals_walk cg bchild))
+      (set! bchild (call node_next bchild)))
+    (set! bchild (call nth_child fndef_group 5))
+    (while (neq bchild (ptr.null compiler.Node))
+      (if (call is_contract_head cg bchild) (block) (call binder_types cg bchild))
       (set! bchild (call node_next bchild)))
     ;; a function with ens keeps its result in res (wasm.rs), unless a let named it
     (if (and (call has_ens cg fndef_group) (neq (get entry FnInfo.ret) Ty.void))
@@ -1052,16 +1156,20 @@
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 4)
     (call put_op o OP_I32_LT_U)
+    ;; two checks, each its own if (wasm.rs emit_write_address_check)
+    (call put_op o OP_IF)
+    (call put_byte o BLOCK_EMPTY)
+    (call put_op o OP_UNREACHABLE)
+    (call put_op o OP_END)
     (call emit_local_get o scratch_idx)
     (call emit_i32_const o 64)
     (call put_op o OP_I32_SUB)
     (call emit_i32_const o (- (call heap_start cg) 64))
     (call put_op o OP_I32_LT_U)
-    (call put_op o OP_I32_OR)
     (call put_op o OP_IF)
     (call put_byte o BLOCK_EMPTY)
     (call put_op o OP_UNREACHABLE)
-    (call put_op o OP_END))  ;; end
+    (call put_op o OP_END))
 
   ;; The bounds check of arr.get/arr.set (wasm.rs emit_bounds_check): with
   ;; [array index] on the stack, fails through $aipl_oob unless index <
@@ -1508,7 +1616,6 @@
                (table_full 94)            ;; 255 structs, 64 fields, or 31 call_ref signatures
                (not_a_memory_type 95)     ;; a field or element type that is not a scalar
                (unknown_struct_or_field 96)
-               (wide_result_payload 97)   ;; an ok/err payload that is not 32-bit
                (unlowerable_type 98)
                (no_instruction_for_type 99) ;; e.g. % on f64, + on str
                (too_deeply_nested 100)    ;; more than 255 nested blocks
@@ -1665,6 +1772,8 @@
       ((eq w Wasi.environ_get) "environ_get")
       ((eq w Wasi.thread_spawn) "thread-spawn")
       ((eq w Wasi.clock_time_get) "clock_time_get")
+      ((eq w Wasi.fd_readdir) "fd_readdir")
+      ((eq w Wasi.path_filestat_get) "path_filestat_get")
       (else "random_get")))
 
   ;; ===== WASI Import Detection =====
@@ -1676,7 +1785,7 @@
 
   (fn finalize_wasi_indices [cg:(ptr Cg)] -> i32
     (let count:i32 0)
-    (loop i 0 12 1
+    (loop i 0 (- NWASI 1) 1
       (if (eq (arr.get i32 (get cg Cg.wasi) i) 1)
           (block
             (arr.set i32 (get cg Cg.wasi) i count)
@@ -1706,6 +1815,9 @@
             ((eq kw Kw.fs_write) (call mark_wasi_used cg Wasi.fd_write) 0)
             ((eq kw Kw.fs_close) (call mark_wasi_used cg Wasi.fd_close) 0)
             ((eq kw Kw.fs_delete) (call mark_wasi_used cg Wasi.path_unlink_file) 0)
+            ((eq kw Kw.fs_opendir) (call mark_wasi_used cg Wasi.path_open) 0)
+            ((eq kw Kw.fs_readdir) (call mark_wasi_used cg Wasi.fd_readdir) 0)
+            ((eq kw Kw.fs_stat) (call mark_wasi_used cg Wasi.path_filestat_get) 0)
             ((eq kw Kw.args_sizes) (call mark_wasi_used cg Wasi.args_sizes_get) 0)
             ((eq kw Kw.args_get) (call mark_wasi_used cg Wasi.args_get) 0)
             ((eq kw Kw.env_sizes) (call mark_wasi_used cg Wasi.environ_sizes_get) 0)
@@ -1862,6 +1974,7 @@
     (cond
       ((or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.fs_open) (or (eq k Kw.fs_read)
           (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
+      ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
       ((or (eq k Kw.arr_new) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
@@ -1892,6 +2005,29 @@
           (block))
       (set! bchild (call node_next bchild)))
     found)
+
+  ;; Where a result cell keeps a payload of type t (checker.rs
+  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit, else at 4
+  ;; in an 8-byte one. A result payload is its cell's address, an i32.
+  (fn payload_offset [t:Ty] -> i32 (if (or (eq t Ty.i64) (eq t Ty.f64)) 8 4))
+
+  ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
+  ;; evaluating the payload, store the tag, then the payload.
+  (fn compile_result_cell [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
+    (let t:Ty (call node_type cg (call result_payload node)))
+    (let at:i32 (call payload_offset t))
+    (call emit_i32_const o 0)
+    (call emit_i32_const o (* 2 at))
+    (call emit_rmw_add o)
+    (call emit_local_set o (get cg Cg.nlocals))
+    (call emit_grow_to_cursor o)
+    (call emit_local_get o (get cg Cg.nlocals))
+    (call emit_i32_const o tag)
+    (call emit_memop o OP_I32_STORE 2)
+    (call emit_local_get o (get cg Cg.nlocals))
+    (call emit_local_get o (get cg Cg.nlocals))
+    (call compile_expr cg (call result_payload node) o)
+    (call emit_memop_offset o (call store_opcode t) (call mem_align t) at))
 
   ;; Payload of (ok v) / (err e), skipping the `: T` of (ok:T v) / (err:T e).
   (fn result_payload [node:(ptr compiler.Node)] -> (ptr compiler.Node)
@@ -1949,8 +2085,8 @@
           (let fidx:i32 (call find_function cg (call node_a fname) (call node_b fname)))
           (if (neq fidx -1) (set! res (get (call func_entry_ptr cg fidx) FnInfo.ret)) (block)))
         (block))
-    ;; ok / err: the payload's type, as expr_type does
-    (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res (call node_type cg (call result_payload node))) (block))
+    ;; ok / err: a result (its cell's address)
+    (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res Ty.result) (block))
     (if (eq kw Kw.get)
         (block
           (let sf_node:(ptr compiler.Node) (call nth_child node 2))
@@ -2041,6 +2177,9 @@
     (let ok_group:(ptr compiler.Node) (call nth_child node 2))
     (let err_group:(ptr compiler.Node) (call nth_child node 3))
     (let scratch:i32 (get cg Cg.nlocals))
+    ;; each side's payload type picks its load and offset (result_cell_layout)
+    (let ok_ty:Ty (call desc_ty cg (call result_side cg (call desc expr_node true) 0)))
+    (let err_ty:Ty (call desc_ty cg (call result_side cg (call desc expr_node true) 1)))
     (call compile_expr cg expr_node o)
     (call emit_local_set o scratch)
     (call emit_local_get o scratch)
@@ -2057,7 +2196,7 @@
     (if (neq ok_var_idx -1)
         (block
           (call emit_local_get o scratch)
-          (call emit_memop_offset o OP_I32_LOAD 2 4)
+          (call emit_memop_offset o (call load_opcode ok_ty) (call mem_align ok_ty) (call payload_offset ok_ty))
           (call emit_local_set o ok_var_idx)
           0)
         0)
@@ -2069,7 +2208,7 @@
     (if (neq err_var_idx -1)
         (block
           (call emit_local_get o scratch)
-          (call emit_memop_offset o OP_I32_LOAD 2 4)
+          (call emit_memop_offset o (call load_opcode err_ty) (call mem_align err_ty) (call payload_offset err_ty))
           (call emit_local_set o err_var_idx)
           0)
         0)
@@ -2403,6 +2542,53 @@
           (call emit_errno_to_result cg o 84)
           (set! done true))
         (block))
+    (if (eq op_id Kw.fs_opendir) ;; fs.opendir (path_ptr, path_len): wasm.rs FsOpendir
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.nlocals))
+          (call emit_path_dir o (get cg Cg.nlocals) io_a)
+          (call emit_i32_const o 0) ;; dirflags
+          (call emit_local_get o (get cg Cg.nlocals))
+          (call emit_local_get o io_a)
+          (call emit_i32_const o 2) ;; oflags DIRECTORY
+          (call put_op o OP_I64_CONST) (call put_s32 o 16384) ;; rights: FD_READDIR
+          (call put_op o OP_I64_CONST) (call put_s32 o 0)
+          (call emit_i32_const o 0) ;; fdflags
+          (call emit_rt cg o 84)
+          (call emit_call o (call get_wasi_index cg Wasi.path_open))
+          (call emit_errno_to_result cg o 84)
+          (set! done true))
+        (block))
+    (if (eq op_id Kw.fs_readdir) ;; fs.readdir (fd, buf, len, cookie): fd_readdir's own order
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call compile_expr cg (call nth_child node 4) o)
+          (call emit_rt cg o 80)
+          (call emit_call o (call get_wasi_index cg Wasi.fd_readdir))
+          (call emit_errno_to_result cg o 80)
+          (set! done true))
+        (block))
+    (if (eq op_id Kw.fs_stat) ;; fs.stat (path_ptr, path_len, out): path_filestat_get, following symlinks
+        (block
+          (call compile_expr cg (call nth_child node 1) o)
+          (call compile_expr cg (call nth_child node 2) o)
+          (call compile_expr cg (call nth_child node 3) o)
+          (call emit_local_set o io_b)
+          (call emit_local_set o io_a)
+          (call emit_local_set o (get cg Cg.nlocals))
+          (call emit_path_dir o (get cg Cg.nlocals) io_a)
+          (call emit_i32_const o 1)
+          (call emit_local_get o (get cg Cg.nlocals))
+          (call emit_local_get o io_a)
+          (call emit_local_get o io_b)
+          (call emit_call o (call get_wasi_index cg Wasi.path_filestat_get))
+          (call emit_errno_to_result cg o -1)
+          (set! done true))
+        (block))
     (if (eq op_id Kw.fs_read) ;; fs.read (fd, buf_ptr, max_len)
         (block
           (call compile_expr cg (call nth_child node 1) o)
@@ -2579,44 +2765,8 @@
           (call put_op o OP_BR)
           (call put_u32 o (call label_depth cg Label.loop_header Label.loop_body)) (set! done true))
         (block))
-    (if (eq op_id Kw.ok) ;; ok
-        (block
-          (if (neq (call type_id_to_valtype (call node_type cg (call result_payload node))) 127)
-              (call set_compile_error CgErr.wide_result_payload)
-              0)
-          (call emit_i32_const o 0)
-          (call emit_i32_const o 8)
-          (call emit_rmw_add o)
-          (call emit_local_set o (get cg Cg.nlocals))
-          (call emit_grow_to_cursor o)
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_i32_const o 0)
-          (call emit_memop o OP_I32_STORE 2)
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call compile_expr cg (call result_payload node) o)
-          (call emit_memop_offset o OP_I32_STORE 2 4)
-          (set! done true))
-        (block))
-    (if (eq op_id Kw.err) ;; err
-        (block
-          (if (neq (call type_id_to_valtype (call node_type cg (call result_payload node))) 127)
-              (call set_compile_error CgErr.wide_result_payload)
-              0)
-          (call emit_i32_const o 0)
-          (call emit_i32_const o 8)
-          (call emit_rmw_add o)
-          (call emit_local_set o (get cg Cg.nlocals))
-          (call emit_grow_to_cursor o)
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_i32_const o 1)
-          (call emit_memop o OP_I32_STORE 2)
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call emit_local_get o (get cg Cg.nlocals))
-          (call compile_expr cg (call result_payload node) o)
-          (call emit_memop_offset o OP_I32_STORE 2 4)
-          (set! done true))
-        (block))
+    (if (eq op_id Kw.ok) (block (call compile_result_cell cg node 0 o) (set! done true)) (block))
+    (if (eq op_id Kw.err) (block (call compile_result_cell cg node 1 o) (set! done true)) (block))
     (if (eq op_id Kw.new) ;; new Struct
         (block
           (let snode:(ptr compiler.Node) (call nth_child node 1))
@@ -3384,6 +3534,8 @@
       ((eq w Wasi.path_unlink_file) (call sig_from "iii" 127))
       ((eq w Wasi.clock_time_get) (call sig_from "ili" 127))
       ((eq w Wasi.thread_spawn) (call sig_from "i" 127))
+      ((eq w Wasi.fd_readdir) (call sig_from "iiili" 127))
+      ((eq w Wasi.path_filestat_get) (call sig_from "iiiii" 127))
       ;; random_get, args_sizes_get, args_get, environ_sizes_get, environ_get
       (else (call sig_from "ii" 127))))
 
@@ -3429,7 +3581,7 @@
 
   ;; The flat program the resolver (orig) and the generics pass (gen)
   ;; printed: the line table names the files they read.
-  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32
+  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32 (pub)
     (call compile_at src_ptr src_len (call places.mapped gen orig)))
 
   (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
@@ -3447,7 +3599,7 @@
     ;; Buffers are sized from the input: a token is at least one source byte
     ;; (a Token record each), an AST node is at most one per token.
     (let tok_buf:i32 (call cg_alloc (* (+ (call compiler.count_tokens src_ptr src_len) 1) (sizeof compiler.Token))))
-    (let tok_cnt:i32 (call compiler.tokenize src_ptr src_len tok_buf))
+    (let tok_cnt:i32 (call compiler.strip_marks src_ptr tok_buf (call compiler.tokenize src_ptr src_len tok_buf)))
     (let ast_buf:i32 (call cg_alloc (* (+ tok_cnt 2) (sizeof compiler.Node))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
 
@@ -3499,7 +3651,7 @@
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
     (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 6 0))))))
-    (loop w 0 12 1
+    (loop w 0 (- NWASI 1) 1
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
     (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
     (loop si 0 (- nsigs 1) 1 (call emit_func_type sec (arr.get (ptr Sig) (get cg Cg.sigs) si)))
@@ -3527,7 +3679,7 @@
           (set! sec (call out_at scratch))
           (call put_u32 sec (if threaded (+ imports 1) imports))
           (let type_idx:i32 0)
-          (loop w 0 12 1
+          (loop w 0 (- NWASI 1) 1
             (let wv:Wasi (enum.cast Wasi w))
             (if (neq (call get_wasi_index cg wv) -1)
                 (block
@@ -3868,7 +4020,7 @@
     (call compiles "(module store (fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a)))"))
 
   ;; Group runner for `aipl test` / test_suite.aipl
-  (fn run_codegen_tests [] -> i32
+  (fn run_codegen_tests [] -> i32 (pub)
     (let passed:i32 0)
     (if (eq (call test_signatures_and_locals) 1) (set! passed (+ passed 1)) (block))
     (if (gt (call test_compile_add) 0) (set! passed (+ passed 1)) (block))

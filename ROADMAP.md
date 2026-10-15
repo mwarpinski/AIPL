@@ -13,34 +13,35 @@ note. References such as "audit D3" and "P12" are to
 Wasm semantics as the specification, with the VM held to them by
 differential testing; i32/i64 wrapping arithmetic, unsigned comparisons,
 and checked arithmetic; structs, arrays, strict pointer types, function
-references, generics, constants, enums, and unions with `match`; threads
+references, generics checked once with interfaces and `where` clauses
+(`std/cmp`, and one `std/map` for any hashable key), constants, enums, and
+unions with `match` (generic ones too, and `std/option`); results with
+payloads of any type; threads
 and atomics; contracts and array bounds checks in every backend; WASI I/O
-and a standard library with generic collections and Zig-style allocators;
+and a standard library with generic collections, Zig-style allocators,
+JSON, and directory listing and file information;
 a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
-x86-64 executables from a backend written in AIPL; eight benchmarks
-against C and Python.
+x86-64 executables from a backend written in AIPL, whose single-pass
+translator keeps values in registers and checks memory by guard pages
+(0.8-1.6x wasmtime's time on the benchmarks); module visibility; eight
+benchmarks against C and Python.
 
 ## Next, in order
 
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **The language questions readers will ask:** generic unions
-   (`(Option T)`, and `result` as a union without its 32-bit limit);
-   constraints on generics, so a template is checked once and `map` takes
-   any key; visibility (which also stops safe code forging the standard
-   library's raw-address fields); small structs by value; generation checks
-   against use after free (docs/design/GENERATIONS_PLAN.md).
-3. **The standard library:** a data format (JSON), directories and file
-   information, running processes; networking later.
+2. **Small structs by value**, then unions, results, and `Option` by
+   value (docs/design/VALUES_PLAN.md); generation checks against use after
+   free (docs/design/GENERATIONS_PLAN.md).
+3. **The standard library:** networking, once WASI has listening sockets;
+   starting processes, once WASI can (preview 1 cannot); a faster
+   small-block path in `std/heap`.
 4. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
    from a checked-in `aiplc.wasm`, leaving Rust only in the launcher for
    platforms without a native backend (DEVELOPING.md, "Direction").
-5. **Native speed:** a rewrite of the native backend's instruction
-   translation that tracks where each value is (docs/BENCHMARKS.md,
-   "Locals in registers"); a faster small-block path in `std/heap`.
-6. **Packages, after the launch:** a package registry with versioned
+5. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
    `aipl add`, `aipl build`). Language versioning comes with it.
@@ -64,14 +65,13 @@ versioning (once packages exist), `inv` contracts.
 
 ### Language
 
-- **Function references but no closures.** `(ref f)` and `call_ref` (P10) give first-class references to named functions; there are no anonymous functions and nothing captures variables, so state goes through an argument (as `thread.spawn`'s `i32` does).
-- **Generics are explicit templates, not checked as such.** Every use names its type arguments (no inference), and a template is type-checked only through its instances, so an unused generic can hide errors. There are no constraints or interfaces: a generic body may do anything with `T` that its instances' types allow. `std/map` keys are `i32` only (no generic hashing yet).
+- **No closures, by design.** `(ref f)` and `call_ref` give references to named functions; nothing captures variables, and a callback's data is a typed context passed as its first argument (`vec.sort_by_with`, `thread.spawn_with`, `alloc.custom`; AIPL_SPEC.md 4.G). Closures would allocate behind the program's back, enlarge every function value, and slow every call through one.
+- **Generics are explicit.** Every use names its type arguments (no inference), and every call to an interface's function names the interface and the type. Templates are checked once with sealed type parameters (AIPL_SPEC.md 4.H). Not yet: interfaces with several type parameters, generic implementations (`(impl (Hash (ptr T)) ...)`, which need a rule against overlap first), and default functions in an interface.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
-- **No visibility.** Every function and struct in every module is addressable by its qualified name.
 - **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
 - **Constants are literals only.** `(const NAME:T literal)` (AIPL_SPEC.md 4.I) takes no expressions, not even another constant, and has no `f32` form. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
 - **No 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load). Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
-- **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, no generic unions (`(Option T)`), and no nested patterns (a `match` arm binds one level of fields; match again on a field). `result` is still its own 8-byte form with 32-bit payloads, not a union. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
+- **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, and no nested patterns (a `match` arm binds one level of fields; match again on a field). Generic unions and `std/option` exist (AIPL_SPEC.md 4.J); `result` stays its own form, beside them, with payloads of any type. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
 - **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), no float loads or stores on raw memory (keep floats in struct fields or `(arr f64)`, or move bits with `mem.load64` and `f64.reinterpret_i64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
 
 - **Friction for code generators** (audit D3). The pitfalls table (AIPL_SPEC.md 13) is long because the chosen spelling is often not what generators write first: `if` always needs an else (the repository has hundreds of empty `(block)` branches), `loop` includes its end bound, `and`/`or` take exactly two operands, and there is no implicit widening. Each is deliberate; each should be measured against what agents actually produce (docs/LAUNCH_CHECKLIST.md 5).
@@ -80,18 +80,18 @@ versioning (once packages exist), `inv` contracts.
 ### Memory
 
 - **The built-ins never free.** `mem.alloc`, `new`, `arr.new`, `make`, and result cells come from a bump cursor that only grows. Freeable memory comes from the standard library (docs/design/HEAP_PLAN.md): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take. A heap's memory is reused but never returned to the system. Freeing object by object costs about 4x C's malloc/free on binarytrees.
-- **Not memory-safe yet.** Bounds checks, null checks, contracts, and the reserved-block guard run in every backend, and the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`, threads, atomics) are fenced inside `(unsafe ...)` (AIPL_SPEC.md 3). Two gaps remain: reading freed heap memory through a kept pointer (it holds a junk pattern, not old data; generation checks are planned in docs/design/GENERATIONS_PLAN.md), and forging a standard-library descriptor such as `str.Bytes`, whose fields hold raw addresses (closed by visibility).
+- **Not memory-safe yet.** Bounds checks, null checks, contracts, and the reserved-block guard run in every backend, and the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`, threads, atomics) are fenced inside `(unsafe ...)` (AIPL_SPEC.md 3). Module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. One gap remains: reading freed heap memory through a kept pointer (it holds a junk pattern, not old data; generation checks are planned in docs/design/GENERATIONS_PLAN.md).
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 
 ### Strings and I/O
 
 - **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05): text is built with `std/buf`.
-- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`, `strmap`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact); still missing are parsing floats from text, shortest round-trip float printing, and sets.
+- **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact) or, in `std/json`, as the shortest digits that read back, and `float.from_decimal` parses them; still missing are a shortest-digits printer outside JSON, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
 - **Three kinds of text** (audit D7): `str` (an immutable literal), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by hand (`str.from_str`, `buf.bytes`).
-- **No dates or time zones, no sockets, no directory listing or file metadata.** The runtime surface is preopened files, stdio, args, environment, two clocks, and randomness (WASI preview1 has no listening sockets).
+- **No dates or time zones, no sockets, no starting processes.** The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
 
 ### Concurrency
 

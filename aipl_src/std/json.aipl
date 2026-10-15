@@ -1,0 +1,538 @@
+;; std/json: JSON text to values and back (RFC 8259).
+;;
+;;   (match_result (call json.parse (call alloc.default) text)
+;;     (ok v (match (call json.get v "name") ...))
+;;     (err e (call io.println_int "bad JSON at " (get e json.Error.at))))
+;;   (call json.write out v)                  ;; compact text into a buf.Buf
+;;
+;; Parsing is strict: UTF-8 text, the RFC's grammar exactly (no trailing
+;; commas, leading zeros, or comments), no key twice in one object, and no
+;; number too large for an f64; anything else is an Error with the byte
+;; offset where it was found. Writing gives what JavaScript's JSON.stringify
+;; gives: the shortest digits that read back as the same f64, laid out as
+;; JavaScript lays out numbers (0.1, 1e+21, 5e-324), strings escaped the same
+;; way. A number that is not finite has no JSON text: writing one stops the
+;; program (a contract), as JSON.stringify's null would hide the mistake.
+;; Values are union cells, which are never freed; their lists and text come
+;; from the allocator given to parse.
+(module json
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import map)
+  (import option)
+  (import float)
+  (import bigint)
+
+  (union Value [(null) (boolean b:bool) (number n:f64) (text s:(ptr str.Bytes))
+                (list items:(ptr (vec.Vec Value))) (object fields:(ptr (vec.Vec (ptr Field))))] (pub))
+
+  ;; A member of an object, in the order written.
+  (struct Field [(read key:(ptr str.Bytes)) (read value:Value)] (pub))
+
+  ;; Where parsing stopped (a byte offset in the text) and why.
+  (struct Error [(read at:i32) (read what:str)] (pub))
+
+  (fn field [a:alloc.Allocator key:(ptr str.Bytes) value:Value] -> (ptr Field) (pub)
+    (let f:(ptr Field) (call (alloc.create Field) a))
+    (put f Field.key key)
+    (put f Field.value value)
+    f)
+
+  ;; ===== Reading values =====
+
+  ;; The value of member `key` of an object; none for any other value.
+  (fn get [v:Value key:str] -> (option.Option Value) (pub)
+    (match v
+      (Value.object [fields]
+        (loop i 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+          (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
+          (if (call str.is (get f Field.key) key) (return (make (option.Option Value) some (get f Field.value))) (block)))
+        (make (option.Option Value) none))
+      (else (make (option.Option Value) none))))
+
+  ;; Element i of a list; none past its end or for any other value.
+  (fn at [v:Value i:i32] -> (option.Option Value) (pub)
+    (match v
+      (Value.list [items]
+        (if (and (gte i 0) (lt i (call (vec.len Value) items)))
+            (make (option.Option Value) some (call (vec.at Value) items i))
+            (make (option.Option Value) none)))
+      (else (make (option.Option Value) none))))
+
+  ;; A list's elements or an object's members; 0 for any other value.
+  (fn count [v:Value] -> i32 (pub)
+    (match v
+      (Value.list [items] (call (vec.len Value) items))
+      (Value.object [fields] (call (vec.len (ptr Field)) fields))
+      (else 0)))
+
+  ;; ===== Parsing =====
+
+  (struct P [text:(ptr str.Bytes) pos:i32 a:alloc.Allocator depth:i32 err:(ptr Error)])
+
+  (fn parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result Value (ptr Error)) (pub)
+    (let p:(ptr P) (new P))
+    (put p P.text text)
+    (put p P.pos 0)
+    (put p P.a a)
+    (put p P.depth 0)
+    (put p P.err (ptr.null Error))
+    (if (not (call str.valid_utf8 text)) (call fail p 0 "the text is not UTF-8") (block))
+    (let v:Value (if (eq (get p P.err) (ptr.null Error)) (call value p) (make Value.null)))
+    (if (eq (get p P.err) (ptr.null Error))
+        (block
+          (call skip_ws p)
+          (if (lt (get p P.pos) (get text str.Bytes.len)) (call fail p (get p P.pos) "unexpected text after the value") (block)))
+        (block))
+    (if (eq (get p P.err) (ptr.null Error)) (ok:(ptr Error) v) (err:Value (get p P.err))))
+
+  ;; The first error wins.
+  (fn fail [p:(ptr P) at:i32 what:str] -> void
+    (if (neq (get p P.err) (ptr.null Error)) (return) (block))
+    (let e:(ptr Error) (new Error))
+    (put e Error.at at)
+    (put e Error.what what)
+    (put p P.err e))
+
+  (fn failed [p:(ptr P)] -> bool (neq (get p P.err) (ptr.null Error)))
+
+  ;; The byte at the position, or -1 at the end.
+  (fn peek [p:(ptr P)] -> i32
+    (if (lt (get p P.pos) (get (get p P.text) str.Bytes.len)) (call str.byte_at (get p P.text) (get p P.pos)) -1))
+
+  (fn next [p:(ptr P)] -> void (put p P.pos (+ (get p P.pos) 1)))
+
+  ;; space, tab, newline, carriage return
+  (fn skip_ws [p:(ptr P)] -> void
+    (while (call is_ws (call peek p)) (call next p)))
+
+  (fn is_ws [c:i32] -> bool (or (eq c 32) (or (eq c 9) (or (eq c 10) (eq c 13)))))
+
+  (fn value [p:(ptr P)] -> Value
+    (if (gt (get p P.depth) 512) (block (call fail p (get p P.pos) "nested too deeply") (return (make Value.null))) (block))
+    (call skip_ws p)
+    (let c:i32 (call peek p))
+    (cond
+      ((eq c 123) (call object p))
+      ((eq c 91) (call list p))
+      ((eq c 34) (let s:(ptr str.Bytes) (call string p)) (make Value.text s))
+      ((eq c 116) (call word p "true" (make Value.boolean true)))
+      ((eq c 102) (call word p "false" (make Value.boolean false)))
+      ((eq c 110) (call word p "null" (make Value.null)))
+      ((or (eq c 45) (call is_digit c)) (call number p))
+      ((eq c -1) (call fail p (get p P.pos) "the text ends where a value should be") (make Value.null))
+      (else (call fail p (get p P.pos) "expected a value") (make Value.null))))
+
+  (fn is_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
+
+  ;; true, false, or null, spelled out.
+  (fn word [p:(ptr P) w:str v:Value] -> Value
+    (let start:i32 (get p P.pos))
+    (let n:i32 (str.len w))
+    (let text:(ptr str.Bytes) (get p P.text))
+    (if (or (gt (+ start n) (get text str.Bytes.len)) (not (call str.is (call str.slice text start n) w)))
+        (block (call fail p start "expected a value") (return (make Value.null)))
+        (block))
+    (put p P.pos (+ start n))
+    v)
+
+  ;; -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
+  (fn number [p:(ptr P)] -> Value
+    (let start:i32 (get p P.pos))
+    (if (eq (call peek p) 45) (call next p) (block))
+    (cond
+      ((eq (call peek p) 48) (call next p))
+      ((call is_digit (call peek p)) (call digits p))
+      (else (call fail p (get p P.pos) "a number needs digits")))
+    (if (and (not (call failed p)) (eq (call peek p) 46))
+        (block
+          (call next p)
+          (if (call is_digit (call peek p)) (call digits p) (call fail p (get p P.pos) "a number needs digits after its '.'")))
+        (block))
+    (if (and (not (call failed p)) (or (eq (call peek p) 101) (eq (call peek p) 69)))
+        (block
+          (call next p)
+          (if (or (eq (call peek p) 43) (eq (call peek p) 45)) (call next p) (block))
+          (if (call is_digit (call peek p)) (call digits p) (call fail p (get p P.pos) "a number needs digits in its exponent")))
+        (block))
+    (if (call failed p) (return (make Value.null)) (block))
+    (let x:f64 (unsafe (call float.from_decimal (+ (get (get p P.text) str.Bytes.addr) start) (- (get p P.pos) start))))
+    (if (call finite x) (make Value.number x) (block (call fail p start "a number too large for an f64") (make Value.null))))
+
+  (fn digits [p:(ptr P)] -> void
+    (while (call is_digit (call peek p)) (call next p)))
+
+  (fn finite [x:f64] -> bool (eq (- x x) 0.0))
+
+  ;; A string's text, its escapes undone, as new bytes.
+  (fn string [p:(ptr P)] -> (ptr str.Bytes)
+    (let out:(ptr buf.Buf) (call buf.make (get p P.a) 16))
+    (call next p)
+    (while true
+      (let c:i32 (call peek p))
+      (cond
+        ((eq c -1) (call fail p (get p P.pos) "the text ends inside a string") (break))
+        ((eq c 34) (call next p) (break))
+        ((lt c 32) (call fail p (get p P.pos) "a control character in a string must be escaped") (break))
+        ((eq c 92) (call escape p out))
+        (else (call buf.push_byte out c) (call next p)))
+      (if (call failed p) (break) (block)))
+    (call buf.bytes out))
+
+  (fn escape [p:(ptr P) out:(ptr buf.Buf)] -> void
+    (let at:i32 (get p P.pos))
+    (call next p)
+    (let e:i32 (call peek p))
+    (call next p)
+    (cond
+      ((or (eq e 34) (or (eq e 92) (eq e 47))) (call buf.push_byte out e))
+      ((eq e 98) (call buf.push_byte out 8))
+      ((eq e 102) (call buf.push_byte out 12))
+      ((eq e 110) (call buf.push_byte out 10))
+      ((eq e 114) (call buf.push_byte out 13))
+      ((eq e 116) (call buf.push_byte out 9))
+      ((eq e 117)
+       (let cp:i32 (call hex4 p))
+       (cond
+         ((call failed p) (block))
+         ;; a high surrogate pairs with a low one: one character beyond U+FFFF
+         ((and (gte cp 55296) (lte cp 56319))
+          (if (and (eq (call peek p) 92) (eq (call byte_after p) 117))
+              (block
+                (call next p) (call next p)
+                (let low:i32 (call hex4 p))
+                (if (and (not (call failed p)) (and (gte low 56320) (lte low 57343)))
+                    (call push_utf8 out (+ 65536 (+ (shl (- cp 55296) 10) (- low 56320))))
+                    (call fail p at "a lone surrogate in a \\u escape")))
+              (call fail p at "a lone surrogate in a \\u escape")))
+         ((and (gte cp 56320) (lte cp 57343)) (call fail p at "a lone surrogate in a \\u escape"))
+         (else (call push_utf8 out cp))))
+      (else (call fail p at "an unknown escape"))))
+
+  (fn byte_after [p:(ptr P)] -> i32
+    (let i:i32 (+ (get p P.pos) 1))
+    (if (lt i (get (get p P.text) str.Bytes.len)) (call str.byte_at (get p P.text) i) -1))
+
+  ;; Four hex digits as a number.
+  (fn hex4 [p:(ptr P)] -> i32
+    (let v:i32 0)
+    (loop k 0 3 1
+      (let c:i32 (call peek p))
+      (let d:i32 (cond ((call is_digit c) (- c 48)) ((and (gte c 97) (lte c 102)) (- c 87)) ((and (gte c 65) (lte c 70)) (- c 55)) (else -1)))
+      (if (lt d 0) (block (call fail p (get p P.pos) "\\u needs four hex digits") (return 0)) (block))
+      (set! v (+ (* v 16) d))
+      (call next p))
+    v)
+
+  (fn push_utf8 [out:(ptr buf.Buf) cp:i32] -> void
+    (cond
+      ((lt cp 128) (call buf.push_byte out cp))
+      ((lt cp 2048)
+       (call buf.push_byte out (bitor 192 (shru cp 6)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))
+      ((lt cp 65536)
+       (call buf.push_byte out (bitor 224 (shru cp 12)))
+       (call buf.push_byte out (bitor 128 (bitand (shru cp 6) 63)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))
+      (else
+       (call buf.push_byte out (bitor 240 (shru cp 18)))
+       (call buf.push_byte out (bitor 128 (bitand (shru cp 12) 63)))
+       (call buf.push_byte out (bitor 128 (bitand (shru cp 6) 63)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))))
+
+  (fn list [p:(ptr P)] -> Value
+    (call next p)
+    (put p P.depth (+ (get p P.depth) 1))
+    (let items:(ptr (vec.Vec Value)) (call (vec.make Value) (get p P.a) 4))
+    (call skip_ws p)
+    (if (eq (call peek p) 93)
+        (call next p)
+        (while true
+          (let v:Value (call value p))
+          (if (call failed p) (break) (block))
+          (call (vec.push Value) items v)
+          (call skip_ws p)
+          (let c:i32 (call peek p))
+          (cond
+            ((eq c 44) (call next p))
+            ((eq c 93) (call next p) (break))
+            (else (call fail p (get p P.pos) "expected ',' or ']'") (break)))))
+    (put p P.depth (- (get p P.depth) 1))
+    (make Value.list items))
+
+  (fn object [p:(ptr P)] -> Value
+    (call next p)
+    (put p P.depth (+ (get p P.depth) 1))
+    (let a:alloc.Allocator (get p P.a))
+    (let fields:(ptr (vec.Vec (ptr Field))) (call (vec.make (ptr Field)) a 4))
+    (let seen:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) a 8))
+    (call skip_ws p)
+    (if (eq (call peek p) 125)
+        (call next p)
+        (while true
+          (call skip_ws p)
+          (if (neq (call peek p) 34) (block (call fail p (get p P.pos) "expected a string key") (break)) (block))
+          (let key_at:i32 (get p P.pos))
+          (let key:(ptr str.Bytes) (call string p))
+          (if (call failed p) (break) (block))
+          (if (call (map.has (ptr str.Bytes) i32) seen key) (block (call fail p key_at "a key appears twice in one object") (break)) (block))
+          (call (map.set (ptr str.Bytes) i32) seen key 1)
+          (call skip_ws p)
+          (if (neq (call peek p) 58) (block (call fail p (get p P.pos) "expected ':'") (break)) (block))
+          (call next p)
+          (let v:Value (call value p))
+          (if (call failed p) (break) (block))
+          (call (vec.push (ptr Field)) fields (call field a key v))
+          (call skip_ws p)
+          (let c:i32 (call peek p))
+          (cond
+            ((eq c 44) (call next p))
+            ((eq c 125) (call next p) (break))
+            (else (call fail p (get p P.pos) "expected ',' or '}'") (break)))))
+    (call (map.free (ptr str.Bytes) i32) seen)
+    (put p P.depth (- (get p P.depth) 1))
+    (make Value.object fields))
+
+  ;; ===== Writing =====
+
+  ;; v as compact JSON text, appended to b.
+  (fn write [b:(ptr buf.Buf) v:Value] -> void (pub)
+    (match v
+      (Value.null (call buf.push_str b "null"))
+      (Value.boolean [x] (call buf.push_str b (if x "true" "false")))
+      (Value.number [n] (call write_number b n))
+      (Value.text [s] (call write_string b s))
+      (Value.list [items]
+        (call buf.push_byte b 91)
+        (loop i 0 (- (call (vec.len Value) items) 1) 1
+          (if (gt i 0) (call buf.push_byte b 44) (block))
+          (call write b (call (vec.at Value) items i)))
+        (call buf.push_byte b 93))
+      (Value.object [fields]
+        (call buf.push_byte b 123)
+        (loop i 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+          (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
+          (if (gt i 0) (call buf.push_byte b 44) (block))
+          (call write_string b (get f Field.key))
+          (call buf.push_byte b 58)
+          (call write b (get f Field.value)))
+        (call buf.push_byte b 125))))
+
+  ;; JSON.stringify's escapes: \" \\ \b \f \n \r \t, other control
+  ;; characters as \u00xx; every other byte as it is.
+  (fn write_string [b:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
+    (call buf.push_byte b 34)
+    (loop i 0 (- (get s str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at s i))
+      (cond
+        ((eq c 34) (call buf.push_str b "\\\""))
+        ((eq c 92) (call buf.push_str b "\\\\"))
+        ((eq c 8) (call buf.push_str b "\\b"))
+        ((eq c 12) (call buf.push_str b "\\f"))
+        ((eq c 10) (call buf.push_str b "\\n"))
+        ((eq c 13) (call buf.push_str b "\\r"))
+        ((eq c 9) (call buf.push_str b "\\t"))
+        ((lt c 32)
+         (call buf.push_str b "\\u00")
+         (call buf.push_byte b (call hex_digit (shru c 4)))
+         (call buf.push_byte b (call hex_digit (bitand c 15))))
+        (else (call buf.push_byte b c))))
+    (call buf.push_byte b 34))
+
+  (fn hex_digit [d:i32] -> i32 (if (lt d 10) (+ d 48) (+ d 87)))
+
+  ;; The shortest decimal that reads back as x, laid out as JavaScript's
+  ;; Number.prototype.toString does.
+  (fn write_number [b:(ptr buf.Buf) x:f64] -> void
+    (req (call finite x))
+    (cond
+      ((eq x 0.0) (call buf.push_byte b 48))
+      ((lt x 0.0) (call buf.push_byte b 45) (call write_positive b (- 0.0 x)))
+      (else (call write_positive b x))))
+
+  (fn write_positive [b:(ptr buf.Buf) x:f64] -> void
+    ;; an integer below 2^53 is its digits
+    (if (and (lt x 9007199254740992.0) (eq x (f64.convert_i64_s (i64.trunc_f64_s x))))
+        (block (call buf.push_i64 b (i64.trunc_f64_s x)) (return))
+        (block))
+    (let d:(ptr Decimal) (call shortest x))
+    (call layout b (get d Decimal.digits) (get d Decimal.n)))
+
+  ;; x = 0.digits * 10^n, with no trailing zero in digits.
+  (struct Decimal [digits:(ptr str.Bytes) n:i32])
+
+  ;; The shortest digits that read back as x (ECMAScript's Number::toString:
+  ;; fewest digits, then the closest to x). x = m * 2^e exactly (m < 2^53);
+  ;; for e < 0 that is m * 5^-e / 10^-e, so the digits are those of m * 5^-e
+  ;; with the point -e places from the right; for e >= 0, of m * 2^e. For
+  ;; p = 1, 2, ... 17 digits the candidates are x's digits cut to p, and one
+  ;; more in the last place: the nearer first (half to even), then the other,
+  ;; which can read back alone when x is a power of two (its lower neighbour
+  ;; is half as far as its upper one).
+  (fn shortest [x:f64] -> (ptr Decimal)
+    (unsafe (let a:alloc.Allocator (call alloc.default))
+    (let bits:i64 (i64.reinterpret_f64 x))
+    (let field:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
+    (let frac:i64 (bitand bits 4503599627370495i64))
+    (let m:i64 (if (eq field 0) frac (bitor frac 4503599627370496i64)))
+    (let e:i32 (if (eq field 0) -1074 (- field 1075)))
+    ;; N = m, in two parts below 2^26 and 2^27
+    (let big:(ptr bigint.Int) (call bigint.from_i32 (i32.wrap (shru m 26i64))))
+    (call bigint.mul_small big 67108864)
+    (call bigint.add big (call bigint.from_i32 (i32.wrap (bitand m 67108863i64))))
+    (let k:i32 (if (lt e 0) (- 0 e) 0))
+    (let twos:i32 (if (lt e 0) 0 e))
+    ;; times 5^k, 13 fives at a time (5^13 < 2^31); or times 2^e
+    (let left:i32 k)
+    (while (gte left 13) (call bigint.mul_small big 1220703125) (set! left (- left 13)))
+    (loop i 1 left 1 (call bigint.mul_small big 5))
+    (set! left twos)
+    (while (gte left 30) (call bigint.mul_small big 1073741824) (set! left (- left 30)))
+    (loop i 1 left 1 (call bigint.mul_small big 2))
+    (let ds:(ptr buf.Buf) (call buf.make a 800))
+    (call bigint.push_decimal ds big)
+    (let all:(ptr str.Bytes) (call buf.bytes ds))
+    (let n_all:i32 (get all str.Bytes.len))
+    (let n:i32 (- n_all k))
+    (let text:(ptr buf.Buf) (call buf.make a 40))
+    (let found:(ptr Decimal) (ptr.null Decimal))
+    (loop p 1 17 1
+      ;; down: the first p digits; up: down plus one in the last place
+      (let down:(arr i32) (arr.new i32 p))
+      (let up:(arr i32) (arr.new i32 p))
+      (loop q 0 (- p 1) 1
+        (let d:i32 (if (lt q n_all) (- (call str.byte_at all q) 48) 0))
+        (arr.set i32 down q d)
+        (arr.set i32 up q d))
+      (let next:i32 (if (lt p n_all) (- (call str.byte_at all p) 48) 0))
+      (let rest:bool false)
+      (loop q (+ p 1) (- n_all 1) 1 (if (neq (call str.byte_at all q) 48) (set! rest true) (block)))
+      (let up_n:i32 n)
+      (let q:i32 (- p 1))
+      (while (and (gte q 0) (eq (arr.get i32 up q) 9)) (arr.set i32 up q 0) (set! q (- q 1)))
+      (if (lt q 0) (block (arr.set i32 up 0 1) (set! up_n (+ n 1))) (arr.set i32 up q (+ (arr.get i32 up q) 1)))
+      (let exact:bool (and (eq next 0) (not rest)))
+      (let nearer_up:bool (or (gt next 5) (and (eq next 5) (or rest (eq (% (arr.get i32 down (- p 1)) 2) 1)))))
+      (cond
+        ((and nearer_up (call reads_back text up p up_n x)) (set! found (call decimal_of a up p up_n)))
+        ((call reads_back text down p n x) (set! found (call decimal_of a down p n)))
+        ((and (not nearer_up) (and (not exact) (call reads_back text up p up_n x))) (set! found (call decimal_of a up p up_n)))
+        (else (block)))
+      (if (neq (ptr.addr found) 0) (break) (block)))
+    found))
+
+  ;; Whether 0.r * 10^n (p digits) reads back as x; text is scratch.
+  (fn reads_back [text:(ptr buf.Buf) r:(arr i32) p:i32 n:i32 x:f64] -> bool
+    (call buf.clear text)
+    (call buf.push_str text "0.")
+    (loop q 0 (- p 1) 1 (call buf.push_byte text (+ 48 (arr.get i32 r q))))
+    (call buf.push_byte text 101)
+    (call buf.push_int text n)
+    (let t:(ptr str.Bytes) (call buf.bytes text))
+    (unsafe (eq (call float.from_decimal (get t str.Bytes.addr) (get t str.Bytes.len)) x)))
+
+  ;; 0.r * 10^n (p digits) as a Decimal, its trailing zeros dropped.
+  (fn decimal_of [a:alloc.Allocator r:(arr i32) p:i32 n:i32] -> (ptr Decimal)
+    (let kept:i32 p)
+    (while (and (gt kept 1) (eq (arr.get i32 r (- kept 1)) 0)) (set! kept (- kept 1)))
+    (let out:(ptr buf.Buf) (call buf.make a 20))
+    (loop q 0 (- kept 1) 1 (call buf.push_byte out (+ 48 (arr.get i32 r q))))
+    (let d:(ptr Decimal) (new Decimal))
+    (put d Decimal.digits (call buf.bytes out))
+    (put d Decimal.n n)
+    d)
+
+  ;; ECMAScript's Number::toString for 0.digits * 10^n (k digits): plain
+  ;; digits up to 21 places, then exponential; small numbers down to 1e-6.
+  (fn layout [b:(ptr buf.Buf) digits:(ptr str.Bytes) n:i32] -> void
+    (let k:i32 (get digits str.Bytes.len))
+    (cond
+      ((and (lte k n) (lte n 21))
+       (call buf.push_bytes b digits)
+       (loop i 1 (- n k) 1 (call buf.push_byte b 48)))
+      ((and (gt n 0) (lte n 21))
+       (call buf.push_bytes b (call str.slice digits 0 n))
+       (call buf.push_byte b 46)
+       (call buf.push_bytes b (call str.slice digits n (- k n))))
+      ((and (gt n -6) (lte n 0))
+       (call buf.push_str b "0.")
+       (loop i 1 (- 0 n) 1 (call buf.push_byte b 48))
+       (call buf.push_bytes b digits))
+      (else
+       (call buf.push_byte b (call str.byte_at digits 0))
+       (if (gt k 1) (block (call buf.push_byte b 46) (call buf.push_bytes b (call str.slice digits 1 (- k 1)))) (block))
+       (call buf.push_byte b 101)
+       (call buf.push_byte b (if (gte (- n 1) 0) 43 45))
+       (call buf.push_int b (if (gte (- n 1) 0) (- n 1) (- 1 n))))))
+
+  ;; ===== Tests =====
+
+  (fn text_of [v:Value] -> (ptr str.Bytes)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call write b v)
+    (call buf.bytes b))
+
+  (fn round_trips [s:str] -> bool
+    (match_result (call parse (call alloc.default) (call str.from_str s))
+      (ok v (call str.is (call text_of v) s))
+      (err e false)))
+
+  (fn fails_at [s:str at:i32] -> bool
+    (match_result (call parse (call alloc.default) (call str.from_str s))
+      (ok v false)
+      (err e (eq (get e Error.at) at))))
+
+  (fn number_is [x:f64 want:str] -> bool
+    (call str.is (call text_of (make Value.number x)) want))
+
+  ;; Pass count; test_suite.aipl expects 6.
+  (fn run_json_tests [] -> i32 (pub)
+    (let p:i32 0)
+    ;; parse and write back, compactly
+    (if (call round_trips "{\"a\":[1,2.5,-300,true,null],\"b\":{\"c\":\"x\\ny\"},\"d\":\"\\u0001\"}") (set! p (+ p 1)) (block))
+    ;; lookups, and escapes undone (\u00e9 is two bytes of UTF-8, a surrogate pair four)
+    (match_result (call parse (call alloc.default) (call str.from_str " { \"k\" : [ 7 , \"\\u00e9\\ud83d\\ude00\" ] } "))
+      (ok v
+        (let list:Value (call (option.unwrap_or Value) (call get v "k") (make Value.null)))
+        (let s:Value (call (option.unwrap_or Value) (call at list 1) (make Value.null)))
+        (let n:i32 (match s (Value.text [t] (get t str.Bytes.len)) (else -1)))
+        (if (and (eq (call count list) 2) (eq n 6)) (set! p (+ p 1)) (block)))
+      (err e (block)))
+    ;; numbers as JavaScript writes them
+    (if (and (call number_is 0.1 "0.1")
+             (and (call number_is 1.0e21 "1e+21")
+                  (and (call number_is 1.0e-7 "1e-7")
+                       (and (call number_is 0.000001 "0.000001")
+                            (and (call number_is 123456789012345680000.0 "123456789012345680000")
+                                 (and (call number_is 5.0e-324 "5e-324")
+                                      (and (call number_is -1.7976931348623157e308 "-1.7976931348623157e+308")
+                                           (and (call number_is -0.0 "0")
+                                                ;; 2^378: its lower neighbour is half as far, so
+                                                ;; the nearer 16 digits do not read back, the other do
+                                                (and (call number_is 6.156563468186638e113 "6.156563468186638e+113")
+                                                     ;; exactly halfway at 17 digits: the even one
+                                                     (call number_is 171510802436849.125 "171510802436849.12"))))))))))
+        (set! p (+ p 1))
+        (block))
+    ;; strictness: each error where it is found
+    (if (and (call fails_at "[1,]" 3)
+             (and (call fails_at "01" 1)
+                  (and (call fails_at "{\"a\":1,\"a\":2}" 7)
+                       (and (call fails_at "\"\\ud800\"" 1)
+                            (and (call fails_at "1e999" 0)
+                                 (call fails_at "[1 2]" 3))))))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call fails_at "" 0) (and (call fails_at "\"tab\there\"" 4) (call fails_at "{\"a\" 1}" 5))) (set! p (+ p 1)) (block))
+    ;; deep nesting stops cleanly
+    (let deep:(ptr buf.Buf) (call buf.make (call alloc.default) 1200))
+    (loop i 1 600 1 (call buf.push_byte deep 91))
+    (if (call fails_at_bytes (call buf.bytes deep) 513) (set! p (+ p 1)) (block))
+    p)
+
+  (fn fails_at_bytes [s:(ptr str.Bytes) at:i32] -> bool
+    (match_result (call parse (call alloc.default) s)
+      (ok v false)
+      (err e (eq (get e Error.at) at)))))

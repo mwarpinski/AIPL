@@ -14,7 +14,7 @@
   (import str)
   (import buf)
   (import vec)
-  (import strmap)
+  (import map)
 
   ;; The forms of src/parser.rs parse_expr that are not operators.
   (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
@@ -22,9 +22,9 @@
               arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
-             unions:(ptr (strmap.StrMap i32))
-             forms:(ptr (strmap.StrMap Form))
-             ops:(ptr (strmap.StrMap i32))
+             unions:(ptr (map.Map (ptr str.Bytes) i32))
+             forms:(ptr (map.Map (ptr str.Bytes) Form))
+             ops:(ptr (map.Map (ptr str.Bytes) i32))
              err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
 
   ;; ===== Tokens =====
@@ -222,7 +222,7 @@
     (if (eq k compiler.Kind.symbol)
         (block
           (let s:(ptr str.Bytes) (call text p (get p P.pos)))
-          (if (and (not (call is_scalar s)) (not (call (strmap.has i32) (get p P.unions) s)))
+          (if (and (not (call is_scalar s)) (not (call (map.has (ptr str.Bytes) i32) (get p P.unions) s)))
               (block (call want_next p) (return (make ast.Type.struct_ s)))
               (block)))
         (block))
@@ -240,7 +240,7 @@
          (ast.MaybeType.none
           (let c0:i32 (call str.byte_at s 0))
           (cond
-            ((call (strmap.has i32) (get p P.unions) s) (make ast.Type.union_ s))
+            ((call (map.has (ptr str.Bytes) i32) (get p P.unions) s) (make ast.Type.union_ s))
             ((not (or (and (gte c0 48) (lte c0 57)) (eq c0 45))) (make ast.Type.enum_ s))
             (else
              (let b:(ptr buf.Buf) (call msg p (call tpos p i)))
@@ -556,7 +556,7 @@
         (block (call fail_expected p hi "operator or keyword in expr" at) (return (call placeholder at)))
         (block))
     (let head:(ptr str.Bytes) (call text p hi))
-    (let form:Form (call (strmap.get_or Form) (get p P.forms) head Form.none))
+    (let form:Form (call (map.get_or (ptr str.Bytes) Form) (get p P.forms) head Form.none))
     (let e:ast.Expr (call parse_form p form head at))
     (call want p compiler.Kind.rparen)
     e)
@@ -664,7 +664,7 @@
        (call fail p b)
        (call placeholder at))
       (else
-       (if (not (call (strmap.has i32) (get p P.ops) head))
+       (if (not (call (map.has (ptr str.Bytes) i32) (get p P.ops) head))
            (block
              (let b:(ptr buf.Buf) (call msg p at))
              (call buf.push_str b "Unknown op/keyword: ")
@@ -672,7 +672,7 @@
              (call fail p b)
              (return (call placeholder at)))
            (block))
-       (let op:ast.Op (enum.cast ast.Op (call (strmap.get_or i32) (get p P.ops) head 0)))
+       (let op:ast.Op (enum.cast ast.Op (call (map.get_or (ptr str.Bytes) i32) (get p P.ops) head 0)))
        (make ast.Expr.op at op (call parse_body p)))))
 
   (fn last_dot [s:(ptr str.Bytes)] -> i32
@@ -805,11 +805,11 @@
 
   ;; ===== Tables =====
 
-  (fn form [m:(ptr (strmap.StrMap Form)) s:str f:Form] -> void
-    (call (strmap.set Form) m (call str.from_str s) f))
+  (fn form [m:(ptr (map.Map (ptr str.Bytes) Form)) s:str f:Form] -> void
+    (call (map.set (ptr str.Bytes) Form) m (call str.from_str s) f))
 
-  (fn form_table [] -> (ptr (strmap.StrMap Form))
-    (let m:(ptr (strmap.StrMap Form)) (call (strmap.make Form) (call alloc.default) 64))
+  (fn form_table [] -> (ptr (map.Map (ptr str.Bytes) Form))
+    (let m:(ptr (map.Map (ptr str.Bytes) Form)) (call (map.make (ptr str.Bytes) Form) (call alloc.default) 64))
     (call form m "let" Form.let_) (call form m "set!" Form.set) (call form m "if" Form.if_)
     (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
@@ -826,12 +826,12 @@
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)
     m)
 
-  (fn op [m:(ptr (strmap.StrMap i32)) s:str o:ast.Op] -> void
-    (call (strmap.set i32) m (call str.from_str s) (enum.ord o)))
+  (fn op [m:(ptr (map.Map (ptr str.Bytes) i32)) s:str o:ast.Op] -> void
+    (call (map.set (ptr str.Bytes) i32) m (call str.from_str s) (enum.ord o)))
 
   ;; Operator spellings (src/parser.rs parse_expr's op table).
-  (fn op_table [] -> (ptr (strmap.StrMap i32))
-    (let m:(ptr (strmap.StrMap i32)) (call (strmap.make i32) (call alloc.default) 128))
+  (fn op_table [] -> (ptr (map.Map (ptr str.Bytes) i32))
+    (let m:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 128))
     (call op m "+" ast.Op.add) (call op m "-" ast.Op.sub) (call op m "*" ast.Op.mul) (call op m "/" ast.Op.div)
     (call op m "%" ast.Op.mod) (call op m "^" ast.Op.bitxor) (call op m "shl" ast.Op.shl) (call op m "shr" ast.Op.shr)
     (call op m "shru" ast.Op.shru) (call op m "bitand" ast.Op.bitand) (call op m "bitor" ast.Op.bitor)
@@ -850,6 +850,7 @@
     (call op m "sys.random" ast.Op.sys_random) (call op m "sys.exit" ast.Op.sys_exit)
     (call op m "fs.open" ast.Op.fs_open) (call op m "fs.read" ast.Op.fs_read) (call op m "fs.write" ast.Op.fs_write)
     (call op m "fs.close" ast.Op.fs_close) (call op m "fs.delete" ast.Op.fs_delete)
+    (call op m "fs.opendir" ast.Op.fs_opendir) (call op m "fs.readdir" ast.Op.fs_readdir) (call op m "fs.stat" ast.Op.fs_stat)
     (call op m "args.sizes" ast.Op.args_sizes) (call op m "args.get" ast.Op.args_get)
     (call op m "env.sizes" ast.Op.env_sizes) (call op m "env.get" ast.Op.env_get)
     (call op m "thread.spawn" ast.Op.thread_spawn) (call op m "thread.join" ast.Op.thread_join)
@@ -863,12 +864,12 @@
   ;; ===== Entry =====
 
   ;; The result of a parse: the module, or the first error's message.
-  (struct Parsed [module:(ptr ast.Module) ok:bool err:(ptr buf.Buf) err_at:i32])
+  (struct Parsed [(pub module:(ptr ast.Module)) (pub ok:bool) (pub err:(ptr buf.Buf)) (pub err_at:i32)] (pub))
 
   ;; Parses the n tokens at toks (from compiler.tokenize over src). A bad
   ;; token (always last) is the tokenizer's error, reported first, as Rust's
   ;; tokenizer fails before its parser runs.
-  (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed)
+  (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed) (pub)
     (let p:(ptr P) (new P))
     (put p P.src src)
     (put p P.toks toks)
@@ -877,11 +878,11 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (strmap.make i32) (call alloc.default) 16))
+    (put p P.unions (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
     ;; the program's unions: `( union NAME`
     (loop k 0 (- n 3) 1
       (if (and (eq (call kind_at p k) compiler.Kind.lparen) (and (call is_sym p (+ k 1) "union") (eq (call kind_at p (+ k 2)) compiler.Kind.symbol)))
-          (call (strmap.set i32) (get p P.unions) (call text p (+ k 2)) 1)
+          (call (map.set (ptr str.Bytes) i32) (get p P.unions) (call text p (+ k 2)) 1)
           (block)))
     (let r:(ptr Parsed) (new Parsed))
     (if (and (gt n 0) (eq (call kind_at p (- n 1)) compiler.Kind.bad))
@@ -907,7 +908,7 @@
     (call fail p b))
 
   ;; The message for a bad token from compiler.tokenize over src (no position).
-  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void
+  (fn push_token_error [b:(ptr buf.Buf) src:i32 t:(ptr compiler.Token)] -> void (pub)
     (unsafe (let why:compiler.TokErr (enum.cast compiler.TokErr (get t compiler.Token.a)))
     (match why
       (compiler.TokErr.unterminated_string (call buf.push_str b "Unterminated string literal"))
@@ -930,7 +931,7 @@
   ;; it is ignored), for codegen.aipl's contract messages. The program's
   ;; unions are not known here, so a union named in a type parses as a
   ;; struct's name, which prints the same.
-  (fn parse_expr_text [src:i32 len:i32] -> ast.Expr
+  (fn parse_expr_text [src:i32 len:i32] -> ast.Expr (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
     (let n:i32 (call compiler.tokenize src len toks))
     (let p:(ptr P) (new P))
@@ -941,11 +942,11 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (strmap.make i32) (call alloc.default) 16))
+    (put p P.unions (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
     (call parse_expr p))
 
   ;; Tokenizes and parses len bytes at src.
-  (fn parse [src:i32 len:i32] -> (ptr Parsed)
+  (fn parse [src:i32 len:i32] -> (ptr Parsed) (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let n:i32 (call compiler.tokenize src len toks))
+    (let n:i32 (call compiler.strip_marks src toks (call compiler.tokenize src len toks)))
     (call parse_tokens src toks n)))

@@ -88,6 +88,9 @@ pub struct VM {
     flow: Option<Flow>,
     pub shared: Arc<Mutex<SharedMemory>>,
     fd_table: HashMap<i32, File>,
+    /// Open directories (fs.opendir): each entry's name and WASI filetype,
+    /// "." and ".." first as wasmtime gives them; a cookie is an index.
+    dirs: HashMap<i32, Vec<(Vec<u8>, u8)>>,
     next_fd: i32,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     /// String literal -> address of its interned bytes, laid out exactly as
@@ -116,6 +119,10 @@ pub struct VM {
     /// Each function's source file name (Module::sources, file_names), for
     /// the positions in a call chain.
     places: Arc<HashMap<String, String>>,
+    /// The type of each `ok`/`err` payload, by the payload expression's
+    /// address (TypeChecker::payload_types): a result cell's size depends on
+    /// it and is claimed before the payload runs.
+    payloads: Arc<HashMap<usize, Type>>,
 }
 
 impl Default for VM {
@@ -144,6 +151,7 @@ impl VM {
                 },
             })),
             fd_table: HashMap::new(),
+            dirs: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
@@ -155,6 +163,7 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::new(HashMap::new()),
+            payloads: Arc::new(HashMap::new()),
         }
     }
 
@@ -173,6 +182,7 @@ impl VM {
             flow: None,
             shared: Arc::clone(&self.shared),
             fd_table: HashMap::new(),
+            dirs: HashMap::new(),
             next_fd: 3,
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
@@ -183,6 +193,7 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::clone(&self.places),
+            payloads: Arc::clone(&self.payloads),
             stdin: self.stdin.clone(),
         }
     }
@@ -243,6 +254,14 @@ impl VM {
     /// Convenience accessor for host code (CLI, agent server, tests) that
     /// needs to seed or inspect linear memory without reaching into the
     /// mutex directly.
+    /// An i32 operand of `op`.
+    fn int_operand(&mut self, e: &Expr, scope: &mut HashMap<String, Value>, op: &str) -> Result<i64, String> {
+        match self.eval_expr(e, scope)? {
+            Value::Int(i) => Ok(i),
+            other => Err(format!("{} requires i32 operands, got {:?}", op, other)),
+        }
+    }
+
     pub fn read_bytes(&self, ptr: usize, len: usize) -> Vec<u8> {
         self.shared.lock().unwrap().bytes[ptr..ptr + len].to_vec()
     }
@@ -276,6 +295,10 @@ impl VM {
             }
         }
         self.places = Arc::new(places);
+        // the payloads' boxes keep their addresses when the functions move below
+        let mut payloads = (*self.payloads).clone();
+        payloads.extend(crate::checker::TypeChecker::payload_types(&module));
+        self.payloads = Arc::new(payloads);
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -834,11 +857,16 @@ impl VM {
     }
 
     fn eval_result_cell(&mut self, tag: i32, payload: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
-        let cell = self.alloc_bytes(8) as u32 as usize;
+        let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
+        let (offset, size) = crate::checker::result_cell_layout(&ty);
+        let cell = self.alloc_bytes(size as usize) as u32 as usize;
         self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
         let inner = self.eval_expr(payload, scope)?;
-        if let Value::Int(_) | Value::Bool(_) = inner {
-            self.store_val_at(cell + 4, &Type::I32, inner.clone())?;
+        let at = cell + offset as usize;
+        match (&ty, &inner) {
+            (Type::I64 | Type::F64 | Type::F32, _) => self.store_val_at(at, &ty, inner.clone())?,
+            (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
+            _ => {}
         }
         Ok(inner)
     }
@@ -1754,11 +1782,74 @@ impl VM {
                     Value::Int(i) => i as i32,
                     _ => return Err("fs.close requires Int fd".to_string()),
                 };
-                if self.fd_table.remove(&fd).is_some() {
+                if self.fd_table.remove(&fd).is_some() || self.dirs.remove(&fd).is_some() {
                     Ok(Value::Int(0))
                 } else {
                     Ok(Value::Int(-1))
                 }
+            }
+            OpCode::FsOpendir => {
+                let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);
+                let path = self.read_bytes(ptr as u32 as usize, len as u32 as usize);
+                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(-1)) };
+                let Ok(rd) = std::fs::read_dir(path) else { return Ok(Value::Int(-1)) };
+                let mut entries = vec![(b".".to_vec(), WASI_DIRECTORY), (b"..".to_vec(), WASI_DIRECTORY)];
+                for e in rd.flatten() {
+                    let kind = e.file_type().map(|t| wasi_filetype(&t)).unwrap_or(0);
+                    entries.push((e.file_name().to_string_lossy().into_owned().into_bytes(), kind));
+                }
+                let fd = self.next_fd;
+                self.next_fd += 1;
+                self.dirs.insert(fd, entries);
+                Ok(Value::Int(fd as i64))
+            }
+            OpCode::FsReaddir => {
+                // WASI dirents from entry `cookie` on: d_next u64, d_ino u64,
+                // d_namlen u32, d_type u8, 3 bytes of padding, the name; the
+                // last one cut off when the buffer is full, as WASI allows
+                let fd = self.int_operand(&args[0], scope, "fs.readdir")? as i32;
+                let buf = self.int_operand(&args[1], scope, "fs.readdir")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "fs.readdir")? as u32 as usize;
+                let cookie = match self.eval_expr(&args[3], scope)? {
+                    Value::Int64(c) | Value::Int(c) => c as u64 as usize,
+                    other => return Err(format!("fs.readdir requires an i64 cookie, got {:?}", other)),
+                };
+                let Some(entries) = self.dirs.get(&fd) else { return Ok(Value::Int(-1)) };
+                let mut out = Vec::new();
+                for (k, (name, kind)) in entries.iter().enumerate().skip(cookie) {
+                    out.extend_from_slice(&((k + 1) as u64).to_le_bytes());
+                    out.extend_from_slice(&0u64.to_le_bytes());
+                    out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                    out.extend_from_slice(&[*kind, 0, 0, 0]);
+                    out.extend_from_slice(name);
+                    if out.len() >= len {
+                        break;
+                    }
+                }
+                out.truncate(len);
+                self.write_bytes(buf, &out);
+                Ok(Value::Int(out.len() as i64))
+            }
+            OpCode::FsStat => {
+                // a WASI filestat: dev, ino, filetype (u8 at 16), nlink, size,
+                // atim, mtim, ctim (nanoseconds), 64 bytes
+                let (ptr, len) = (self.int_operand(&args[0], scope, "fs.stat")?, self.int_operand(&args[1], scope, "fs.stat")?);
+                let out = self.int_operand(&args[2], scope, "fs.stat")? as u32 as usize;
+                let path = self.read_bytes(ptr as u32 as usize, len as u32 as usize);
+                let Ok(path) = std::str::from_utf8(&path) else { return Ok(Value::Int(-1)) };
+                let Ok(md) = std::fs::metadata(path) else { return Ok(Value::Int(-1)) };
+                let ns = |t: std::io::Result<std::time::SystemTime>| {
+                    t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64)
+                };
+                let mut st = vec![0u8; 64];
+                st[16] = wasi_filetype(&md.file_type());
+                st[24..32].copy_from_slice(&1u64.to_le_bytes());
+                st[32..40].copy_from_slice(&md.len().to_le_bytes());
+                st[40..48].copy_from_slice(&ns(md.accessed()).to_le_bytes());
+                st[48..56].copy_from_slice(&ns(md.modified()).to_le_bytes());
+                st[56..64].copy_from_slice(&ns(md.modified()).to_le_bytes());
+                self.write_bytes(out, &st);
+                Ok(Value::Int(0))
             }
             OpCode::ArgsSizes | OpCode::ArgsGet | OpCode::EnvSizes | OpCode::EnvGet => {
                 let mut addr = [0usize; 2];
@@ -2015,4 +2106,27 @@ fn check_atomic_alignment(op: &str, ptr: usize) -> Result<(), String> {
         return Err(format!("{} at address {}: atomic operations need a 4-aligned address", op, ptr));
     }
     Ok(())
+}
+
+const WASI_DIRECTORY: u8 = 3;
+
+/// WASI's filetype for a file type: 0 unknown, 1 block device, 2 character
+/// device, 3 directory, 4 regular file, 6 socket, 7 symbolic link.
+fn wasi_filetype(t: &std::fs::FileType) -> u8 {
+    use std::os::unix::fs::FileTypeExt;
+    if t.is_dir() {
+        3
+    } else if t.is_file() {
+        4
+    } else if t.is_symlink() {
+        7
+    } else if t.is_block_device() {
+        1
+    } else if t.is_char_device() {
+        2
+    } else if t.is_socket() {
+        6
+    } else {
+        0
+    }
 }

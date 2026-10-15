@@ -56,21 +56,21 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
 }
 
 const BOX: &str = r#"(module box
-  (struct (Box T) [value:T next:(ptr (Box T))])
-  (fn (make T) [v:T] -> (ptr (Box T))
+  (struct (Box T) [value:T next:(ptr (Box T))] (pub))
+  (fn (make T) [v:T] -> (ptr (Box T)) (pub)
     (let b:(ptr (Box T)) (new (Box T)))
     (put b (Box T) value v)
     (put b (Box T) next (ptr.null (Box T)))
     b)
-  (fn (value T) [b:(ptr (Box T))] -> T (get b (Box T) value))
+  (fn (value T) [b:(ptr (Box T))] -> T (pub) (get b (Box T) value))
   ;; a generic calling a generic, and a two-parameter struct
-  (struct (Pair A B) [first:A second:B])
+  (struct (Pair A B) [(read first:A) (read second:B)] (pub))
   (fn (pair A B) [a:A b:B] -> (ptr (Pair A B))
     (let p:(ptr (Pair A B)) (new (Pair A B)))
     (put p (Pair A B) first a)
     (put p (Pair A B) second b)
     p)
-  (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B))))
+  (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B)))) (pub)
     (call (make (ptr (Pair A B))) (call (pair A B) a b))))"#;
 
 const MAIN: &str = r#"(module main
@@ -146,11 +146,11 @@ fn malformed_generics_are_errors() {
     assert!(e.contains("generic name 'get' is a built-in form"), "{e}");
     let e = resolve_err("(module m (fn (f T) [x:T] -> T x) (fn (f T) [x:T] -> T x))");
     assert!(e.contains("generic 'f' is defined twice"), "{e}");
-    // a type error inside an instance points at the template's file and line
+    // a type error inside a template is found in the template, at its file
+    // and line, whatever it is used with (it is checked once, sealed)
     let entry = write_program("type_err", &[("main.aipl", "(module m\n  (fn (f T) [x:T] -> T\n    (+ x true))\n  (fn g [] -> i32 (call (f i32) 1)))")]);
-    let m = Resolver::resolve(&entry).unwrap();
-    let e = TypeChecker::new().check_module(&m).unwrap_err();
-    assert!(e.starts_with(&format!("{}: 3:5: ", entry.display())), "{e}");
+    let e = Resolver::resolve(&entry).map(|_| ()).unwrap_err();
+    assert_eq!(e, format!("{}: 3:5: + on T: a type parameter has no arithmetic", entry.display()));
 }
 
 /// An imported module calling its own generic function with its own struct
@@ -167,10 +167,10 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
                 "lib.aipl",
                 "(module lib
                    (struct Item [x:i32 y:i64])
-                   (struct (Wrap T) [inner:(ptr T)])
-                   (fn (make T) [] -> (ptr T) (new T))
-                   (fn use_own [] -> i32 (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
-                   (fn nested [] -> i32
+                   (struct (Wrap T) [inner:(ptr T)] (where (struct T)))
+                   (fn (make T) [] -> (ptr T) (where (struct T)) (new T))
+                   (fn use_own [] -> i32 (pub) (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
+                   (fn nested [] -> i32 (pub)
                      (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))
                      (put w (Wrap Item) inner (call (make Item)))
                      (get (get w (Wrap Item) inner) Item.x)))",
@@ -179,4 +179,114 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
     );
     assert_eq!(run_both(&entry, "main"), 56);
     assert_aipl_resolver_agrees(&entry);
+}
+
+/// Generic unions (AIPL_SPEC.md 4.J): `(union (Name T...) [...])`, built with
+/// `(make (Name t...) variant ...)` and taken apart with the arm
+/// `((Name t...) variant [binders] ...)`; across an import and an alias,
+/// recursive, with 64-bit and float fields, and std/option.
+const UNIONS: &str = r#"(module main
+  (import option)
+  (import shapes as sh)
+  (union (List T) [(cons head:T tail:(List T)) (nil)])
+
+  (fn (sum T) [l:(List T) f:(fn [T] -> i64)] -> i64
+    (match l
+      ((List T) cons [h t] (+ (call_ref (fn [T] -> i64) f h) (call (sum T) t f)))
+      ((List T) nil 0i64)))
+  (fn id [x:i64] -> i64 x)
+  (fn tenth [x:f64] -> i64 (i64.trunc_f64_s (* x 10.0)))
+
+  (fn lists [] -> i32
+    (let a:(List i64) (make (List i64) cons 40i64 (make (List i64) cons 2i64 (make (List i64) nil))))
+    (let b:(List f64) (make (List f64) cons 0.5 (make (List f64) nil)))
+    (i32.wrap (+ (call (sum i64) a (ref id)) (call (sum f64) b (ref tenth)))))
+
+  (fn options [] -> i32
+    (let some:(option.Option i32) (make (option.Option i32) some 7))
+    (let none:(option.Option i32) (make (option.Option i32) none))
+    (+ (call (option.unwrap_or i32) some 0)
+       (+ (call (option.unwrap_or i32) none 30)
+          (if (call (option.is_none i32) none) 100 0))))
+
+  (fn imported [] -> i32
+    (let e:(sh.Either i32 (ptr sh.Point)) (call sh.right_point 5))
+    (match e
+      ((sh.Either i32 (ptr sh.Point)) left [n] n)
+      ((sh.Either i32 (ptr sh.Point)) right [p] (get p sh.Point.x))))
+
+  (fn nested [] -> i32
+    (let o:(option.Option (option.Option bool)) (make (option.Option (option.Option bool)) some (make (option.Option bool) some true)))
+    (match o
+      ((option.Option (option.Option bool)) some [inner]
+        (match inner ((option.Option bool) some [b] (if b 1 2)) (else 3)))
+      (else 4))))"#;
+
+const SHAPES: &str = r#"(module shapes
+  (struct Point [(read x:i32) y:i32] (pub))
+  (union (Either L R) [(left value:L) (right value:R)] (pub))
+  (fn right_point [x:i32] -> (Either i32 (ptr Point)) (pub)
+    (let p:(ptr Point) (new Point))
+    (put p Point.x x)
+    (make (Either i32 (ptr Point)) right p)))"#;
+
+#[test]
+fn generic_unions_work_in_both_backends() {
+    let entry = write_program("unions", &[("main.aipl", UNIONS), ("shapes.aipl", SHAPES)]);
+    assert_eq!(run_both(&entry, "lists"), 47);
+    assert_eq!(run_both(&entry, "options"), 137);
+    assert_eq!(run_both(&entry, "imported"), 5);
+    assert_eq!(run_both(&entry, "nested"), 1);
+    let m = Resolver::resolve(&entry).unwrap();
+    let unions: Vec<&str> = m.unions.iter().map(|u| u.name.as_str()).collect();
+    for n in ["List<i64>", "List<f64>", "option.Option<i32>", "option.Option<option.Option<bool>>", "shapes.Either<i32,ptr<shapes.Point>>"] {
+        assert!(unions.contains(&n), "{n} missing from {unions:?}");
+    }
+    assert_aipl_resolver_agrees(&entry);
+}
+
+#[test]
+fn malformed_generic_union_forms_are_errors_in_both_resolvers() {
+    for (src, want) in [
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [] -> (O i32) (make (O i32))))", "a generic union variant is written (make (Name T...) variant fields...)"),
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [] -> (O i32) (make (O i32) O.some 1)))", "a generic union variant is written (make (Name T...) variant fields...)"),
+        ("(module m (union (O T) [(some v:T) (none)]) (fn f [o:(O i32)] -> i32 (match o ((O i32) [v] v) (else 0))))", "a generic union arm is written ((Name T...) variant [binders] body...)"),
+    ] {
+        let entry = write_program("union_err", &[("main.aipl", src)]);
+        let rust = Resolver::resolve(&entry).expect_err("the Rust resolver accepted it");
+        assert!(rust.contains(want), "{src}\n  rust: {rust}");
+        let aipl = aipl_core::selfhost::resolve_with_aipl(&entry).expect_err("the AIPL resolver accepted it");
+        assert_eq!(aipl, rust, "{src}");
+    }
+}
+
+/// A union's variant or an enum's member may share its name with a generic
+/// function of the same module: in an imported module the member must stay
+/// a member (`(custom c:...)` once became `(alloc.custom c:...)` when
+/// std/alloc's `custom` became generic).
+#[test]
+fn members_named_like_a_template_keep_their_names() {
+    let entry = write_program(
+        "member_names",
+        &[
+            ("main.aipl", "(module main (import lib) (fn main [] -> i32 (call lib.use_both)))"),
+            (
+                "lib.aipl",
+                "(module lib
+                   (union U [(pick n:i32) (none)])
+                   (enum E [red (pick2 5)])
+                   (fn (pick T) [x:T] -> T x)
+                   (fn (pick2 T) [x:T] -> T x)
+                   (fn use_both [] -> i32 (pub)
+                     (match (make U.pick (call (pick i32) 3))
+                       (U.pick [n] (+ n (enum.ord E.pick2)))
+                       (U.none (call (pick2 i32) 0)))))",
+            ),
+        ],
+    );
+    assert_eq!(run_both(&entry, "main"), 8);
+    // the whole AIPL toolchain (this file's flat-output check cannot expand
+    // enum members), byte for byte
+    let rust = WasmCompiler::compile(&Resolver::resolve(&entry).unwrap()).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust);
 }

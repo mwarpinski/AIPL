@@ -23,11 +23,11 @@
 
   ;; [base + index * scale + disp]. index -1 = no index. base is required
   ;; (no absolute or rip-relative forms).
-  (struct Mem [base:i32 index:i32 scale:i32 disp:i32])
+  (struct Mem [base:i32 index:i32 scale:i32 disp:i32] (pub))
 
   ;; ===== Operands =====
 
-  (fn mem [base:i32 disp:i32] -> (ptr Mem)
+  (fn mem [base:i32 disp:i32] -> (ptr Mem) (pub)
     (req (and (gte base 0) (lte base 15)))
     (let m:(ptr Mem) (new Mem))
     (put m Mem.base base)
@@ -37,7 +37,7 @@
     m)
 
   ;; rsp (4) cannot be an index; scale is 1, 2, 4 or 8.
-  (fn mem_index [base:i32 index:i32 scale:i32 disp:i32] -> (ptr Mem)
+  (fn mem_index [base:i32 index:i32 scale:i32 disp:i32] -> (ptr Mem) (pub)
     (req (and (gte base 0) (lte base 15)))
     (req (and (and (gte index 0) (lte index 15)) (neq index 4)))
     (req (or (eq scale 1) (or (eq scale 2) (or (eq scale 4) (eq scale 8)))))
@@ -51,22 +51,22 @@
   ;; Condition codes for jcc and setcc (the low nibble of their opcodes).
   ;; Unsigned: b ae be a. Signed: l ge le g.
   (fn cc_o [] -> i32 0)   (fn cc_no [] -> i32 1)
-  (fn cc_b [] -> i32 2)   (fn cc_ae [] -> i32 3)
-  (fn cc_e [] -> i32 4)   (fn cc_ne [] -> i32 5)
-  (fn cc_be [] -> i32 6)  (fn cc_a [] -> i32 7)
-  (fn cc_s [] -> i32 8)   (fn cc_ns [] -> i32 9)
-  (fn cc_p [] -> i32 10)  (fn cc_np [] -> i32 11)
-  (fn cc_l [] -> i32 12)  (fn cc_ge [] -> i32 13)
-  (fn cc_le [] -> i32 14) (fn cc_g [] -> i32 15)
+  (fn cc_b [] -> i32 (pub) 2)   (fn cc_ae [] -> i32 (pub) 3)
+  (fn cc_e [] -> i32 (pub) 4)   (fn cc_ne [] -> i32 (pub) 5)
+  (fn cc_be [] -> i32 (pub) 6)  (fn cc_a [] -> i32 (pub) 7)
+  (fn cc_s [] -> i32 (pub) 8)   (fn cc_ns [] -> i32 (pub) 9)
+  (fn cc_p [] -> i32 (pub) 10)  (fn cc_np [] -> i32 (pub) 11)
+  (fn cc_l [] -> i32 (pub) 12)  (fn cc_ge [] -> i32 (pub) 13)
+  (fn cc_le [] -> i32 (pub) 14) (fn cc_g [] -> i32 (pub) 15)
 
   ;; ALU operation numbers for alu_rr / alu_ri (the ModRM /digit of the
   ;; immediate forms).
-  (fn op_add [] -> i32 0)
-  (fn op_or [] -> i32 1)
-  (fn op_and [] -> i32 4)
-  (fn op_sub [] -> i32 5)
-  (fn op_xor [] -> i32 6)
-  (fn op_cmp [] -> i32 7)
+  (fn op_add [] -> i32 (pub) 0)
+  (fn op_or [] -> i32 (pub) 1)
+  (fn op_and [] -> i32 (pub) 4)
+  (fn op_sub [] -> i32 (pub) 5)
+  (fn op_xor [] -> i32 (pub) 6)
+  (fn op_cmp [] -> i32 (pub) 7)
 
   ;; ===== Bytes =====
 
@@ -138,19 +138,19 @@
   ;; ===== Moves =====
 
   ;; mov dst, src
-  (fn mov_rr [c:(ptr buf.Buf) sz:i32 dst:i32 src:i32] -> void
+  (fn mov_rr [c:(ptr buf.Buf) sz:i32 dst:i32 src:i32] -> void (pub)
     (req (and (call size_ok sz) (and (call reg_ok dst) (call reg_ok src))))
     (call rr c sz 137 src dst false))
 
   ;; mov dst32, imm32 (clears the upper half)
-  (fn mov_ri32 [c:(ptr buf.Buf) dst:i32 imm:i32] -> void
+  (fn mov_ri32 [c:(ptr buf.Buf) dst:i32 imm:i32] -> void (pub)
     (req (call reg_ok dst))
     (call rex c false 0 0 dst false)
     (call byte c (+ 184 (bitand dst 7)))
     (call u32 c imm))
 
   ;; mov dst64, imm64: the sign-extended 32-bit form when it fits, else movabs
-  (fn mov_ri64 [c:(ptr buf.Buf) dst:i32 imm:i64] -> void
+  (fn mov_ri64 [c:(ptr buf.Buf) dst:i32 imm:i64] -> void (pub)
     (req (call reg_ok dst))
     (if (and (gte imm -2147483648i64) (lte imm 2147483647i64))
         (block
@@ -162,46 +162,46 @@
           (call u64 c imm))))
 
   ;; mov dst, [m]
-  (fn load [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void
+  (fn load [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok dst)))
     (call rm c sz 139 dst m false))
 
   ;; mov [m], src
-  (fn store [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void
+  (fn store [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rm c sz 137 src m false))
 
   ;; mov byte [m], src8 (the low byte of src)
-  (fn store8 [c:(ptr buf.Buf) m:(ptr Mem) src:i32] -> void
+  (fn store8 [c:(ptr buf.Buf) m:(ptr Mem) src:i32] -> void (pub)
     (req (call reg_ok src))
     (call rm c 32 136 src m true))
 
   ;; movzx dst32, byte [m]
-  (fn load8u [c:(ptr buf.Buf) dst:i32 m:(ptr Mem)] -> void
+  (fn load8u [c:(ptr buf.Buf) dst:i32 m:(ptr Mem)] -> void (pub)
     (req (call reg_ok dst))
     (call rm c 32 4022 dst m false))
 
   ;; movzx dst32, src8 (the low byte of src)
-  (fn movzx8 [c:(ptr buf.Buf) dst:i32 src:i32] -> void
+  (fn movzx8 [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub)
     (req (and (call reg_ok dst) (call reg_ok src)))
     (call rr c 32 4022 dst src true))
 
   ;; movsxd dst64, src32 (sign-extend)
-  (fn movsxd [c:(ptr buf.Buf) dst:i32 src:i32] -> void
+  (fn movsxd [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub)
     (req (and (call reg_ok dst) (call reg_ok src)))
     (call rr c 64 99 dst src false))
 
   ;; lea dst, [m]
-  (fn lea [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void
+  (fn lea [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok dst)))
     (call rm c sz 141 dst m false))
 
-  (fn push [c:(ptr buf.Buf) r:i32] -> void
+  (fn push [c:(ptr buf.Buf) r:i32] -> void (pub)
     (req (call reg_ok r))
     (call rex c false 0 0 r false)
     (call byte c (+ 80 (bitand r 7))))
 
-  (fn pop [c:(ptr buf.Buf) r:i32] -> void
+  (fn pop [c:(ptr buf.Buf) r:i32] -> void (pub)
     (req (call reg_ok r))
     (call rex c false 0 0 r false)
     (call byte c (+ 88 (bitand r 7))))
@@ -209,13 +209,13 @@
   ;; ===== Arithmetic =====
 
   ;; add/or/and/sub/xor/cmp dst, src (op from op_add .. op_cmp)
-  (fn alu_rr [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 src:i32] -> void
+  (fn alu_rr [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 src:i32] -> void (pub)
     (req (and (call size_ok sz) (and (call alu_ok op) (and (call reg_ok dst) (call reg_ok src)))))
     (call rr c sz (+ (* op 8) 1) src dst false))
 
   ;; add/or/and/sub/xor/cmp dst, imm (sign-extended to 64 bits when sz = 64).
   ;; 8-bit immediates when they fit; the short eax/rax form otherwise.
-  (fn alu_ri [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 imm:i32] -> void
+  (fn alu_ri [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 imm:i32] -> void (pub)
     (req (and (call size_ok sz) (and (call alu_ok op) (call reg_ok dst))))
     (cond
       ((call fits8 imm) (call rr c sz 131 op dst false) (call byte c imm))
@@ -223,12 +223,12 @@
       (else (call rr c sz 129 op dst false) (call u32 c imm))))
 
   ;; test a, b (flags from a AND b)
-  (fn test_rr [c:(ptr buf.Buf) sz:i32 a:i32 b:i32] -> void
+  (fn test_rr [c:(ptr buf.Buf) sz:i32 a:i32 b:i32] -> void (pub)
     (req (and (call size_ok sz) (and (call reg_ok a) (call reg_ok b))))
     (call rr c sz 133 b a false))
 
   ;; test r, imm32 (short eax/rax form for register 0)
-  (fn test_ri [c:(ptr buf.Buf) sz:i32 r:i32 imm:i32] -> void
+  (fn test_ri [c:(ptr buf.Buf) sz:i32 r:i32 imm:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok r)))
     (if (eq r 0)
         (block (call rex c (eq sz 64) 0 0 0 false) (call byte c 169))
@@ -236,12 +236,12 @@
     (call u32 c imm))
 
   ;; Shift kinds for shift_ri / shift_cl.
-  (fn sh_shl [] -> i32 4)
-  (fn sh_shr [] -> i32 5)
-  (fn sh_sar [] -> i32 7)
+  (fn sh_shl [] -> i32 (pub) 4)
+  (fn sh_shr [] -> i32 (pub) 5)
+  (fn sh_sar [] -> i32 (pub) 7)
 
   ;; shl/shr/sar r, imm (the one-byte form for a count of 1)
-  (fn shift_ri [c:(ptr buf.Buf) sz:i32 kind:i32 r:i32 count:i32] -> void
+  (fn shift_ri [c:(ptr buf.Buf) sz:i32 kind:i32 r:i32 count:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok r)))
     (req (or (eq kind 4) (or (eq kind 5) (eq kind 7))))
     (req (and (gte count 0) (lt count sz)))
@@ -250,67 +250,67 @@
         (block (call rr c sz 193 kind r false) (call byte c count))))
 
   ;; shl/shr/sar r, cl
-  (fn shift_cl [c:(ptr buf.Buf) sz:i32 kind:i32 r:i32] -> void
+  (fn shift_cl [c:(ptr buf.Buf) sz:i32 kind:i32 r:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok r)))
     (req (or (eq kind 4) (or (eq kind 5) (eq kind 7))))
     (call rr c sz 211 kind r false))
 
   ;; imul dst, src
-  (fn imul_rr [c:(ptr buf.Buf) sz:i32 dst:i32 src:i32] -> void
+  (fn imul_rr [c:(ptr buf.Buf) sz:i32 dst:i32 src:i32] -> void (pub)
     (req (and (call size_ok sz) (and (call reg_ok dst) (call reg_ok src))))
     (call rr c sz 4015 dst src false))
 
   ;; div src: unsigned edx:eax / src (rdx:rax for 64); quotient in eax, remainder in edx
-  (fn div_r [c:(ptr buf.Buf) sz:i32 src:i32] -> void
+  (fn div_r [c:(ptr buf.Buf) sz:i32 src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rr c sz 247 6 src false))
 
   ;; idiv src: the signed form of div_r
-  (fn idiv_r [c:(ptr buf.Buf) sz:i32 src:i32] -> void
+  (fn idiv_r [c:(ptr buf.Buf) sz:i32 src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rr c sz 247 7 src false))
 
   ;; cdq: sign-extend eax into edx (before a 32-bit idiv)
-  (fn cdq [c:(ptr buf.Buf)] -> void (call byte c 153))
+  (fn cdq [c:(ptr buf.Buf)] -> void (pub) (call byte c 153))
 
   ;; cqo: sign-extend rax into rdx (before a 64-bit idiv)
-  (fn cqo [c:(ptr buf.Buf)] -> void (call byte c 72) (call byte c 153))
+  (fn cqo [c:(ptr buf.Buf)] -> void (pub) (call byte c 72) (call byte c 153))
 
   ;; setcc dst8: the low byte of dst = 1 if the condition holds, else 0
-  (fn setcc [c:(ptr buf.Buf) cc:i32 dst:i32] -> void
+  (fn setcc [c:(ptr buf.Buf) cc:i32 dst:i32] -> void (pub)
     (req (and (and (gte cc 0) (lte cc 15)) (call reg_ok dst)))
     (call rr c 32 (+ 3984 cc) 0 dst true))
 
   ;; ===== Atomics (memory operand; put `lock` first) =====
 
-  (fn lock [c:(ptr buf.Buf)] -> void (call byte c 240))
+  (fn lock [c:(ptr buf.Buf)] -> void (pub) (call byte c 240))
 
   ;; xadd [m], src: src = old [m], [m] = old + src
-  (fn xadd [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void
+  (fn xadd [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rm c sz 4033 src m false))
 
   ;; xchg [m], src (always locked by the hardware)
-  (fn xchg [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void
+  (fn xchg [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rm c sz 135 src m false))
 
   ;; cmpxchg [m], src: if [m] = eax then [m] = src, else eax = [m]
-  (fn cmpxchg [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void
+  (fn cmpxchg [c:(ptr buf.Buf) sz:i32 m:(ptr Mem) src:i32] -> void (pub)
     (req (and (call size_ok sz) (call reg_ok src)))
     (call rm c sz 4017 src m false))
 
   ;; ===== Control =====
 
   ;; jmp rel32 with a zero displacement; returns the displacement's position
-  (fn jmp [c:(ptr buf.Buf)] -> i32
+  (fn jmp [c:(ptr buf.Buf)] -> i32 (pub)
     (call byte c 233)
     (let at:i32 (call buf.len c))
     (call u32 c 0)
     at)
 
   ;; jcc rel32 (cc from cc_o .. cc_g); returns the displacement's position
-  (fn jcc [c:(ptr buf.Buf) cc:i32] -> i32
+  (fn jcc [c:(ptr buf.Buf) cc:i32] -> i32 (pub)
     (req (and (gte cc 0) (lte cc 15)))
     (call byte c 15)
     (call byte c (+ 128 cc))
@@ -319,7 +319,7 @@
     at)
 
   ;; call rel32; returns the displacement's position
-  (fn call_rel [c:(ptr buf.Buf)] -> i32
+  (fn call_rel [c:(ptr buf.Buf)] -> i32 (pub)
     (call byte c 232)
     (let at:i32 (call buf.len c))
     (call u32 c 0)
@@ -327,7 +327,7 @@
 
   ;; Points the displacement at `at` (from jmp, jcc or call_rel) to buffer
   ;; position `target`, forward or backward.
-  (fn patch_rel32 [c:(ptr buf.Buf) at:i32 target:i32] -> void
+  (fn patch_rel32 [c:(ptr buf.Buf) at:i32 target:i32] -> void (pub)
     (req (and (gte at 0) (lte (+ at 4) (call buf.len c))))
     (unsafe (let rel:i32 (- target (+ at 4)))
     (let p:i32 (+ (get c buf.Buf.data) at))
@@ -335,13 +335,13 @@
       (mem.store8 (+ p k) (bitand (shru rel (* 8 k)) 255)))))
 
   ;; call r (indirect)
-  (fn call_r [c:(ptr buf.Buf) r:i32] -> void
+  (fn call_r [c:(ptr buf.Buf) r:i32] -> void (pub)
     (req (call reg_ok r))
     (call rr c 32 255 2 r false))
 
-  (fn ret [c:(ptr buf.Buf)] -> void (call byte c 195))
-  (fn syscall [c:(ptr buf.Buf)] -> void (call byte c 15) (call byte c 5))
-  (fn ud2 [c:(ptr buf.Buf)] -> void (call byte c 15) (call byte c 11))
+  (fn ret [c:(ptr buf.Buf)] -> void (pub) (call byte c 195))
+  (fn syscall [c:(ptr buf.Buf)] -> void (pub) (call byte c 15) (call byte c 5))
+  (fn ud2 [c:(ptr buf.Buf)] -> void (pub) (call byte c 15) (call byte c 11))
 
   ;; ===== Self-tests =====
 
@@ -494,16 +494,16 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 9.
-  (fn run_x64_tests [] -> i32
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (call test_tls))))))))))
+  ;; Pass count; test_suite.aipl expects 13.
+  (fn run_x64_tests [] -> i32 (pub)
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (+ (call test_rip) (+ (call test_movaps) (+ (call test_nops) (call test_alu_rm))))))))))))))
   ;; X64_TESTS_END
 
   ;; ===== Forms added after NE3 =====
   ;; (Kept below the tests so the test vectors above stay where they are.)
 
   ;; rep movsb: copies rcx bytes from [rsi] to [rdi] (NE8: data segments)
-  (fn rep_movsb [c:(ptr buf.Buf)] -> void (call byte c 243) (call byte c 164))
+  (fn rep_movsb [c:(ptr buf.Buf)] -> void (pub) (call byte c 243) (call byte c 164))
 
   (fn test_strings [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
@@ -524,37 +524,37 @@
     (call byte c (bitor 192 (bitor (shl (bitand reg 7) 3) (bitand rm 7)))))
 
   ;; movq xmm, r64 / movq r64, xmm: a double's bits between the registers
-  (fn movq_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 102 true 110 xmm r))
-  (fn movq_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 102 true 126 xmm r))
+  (fn movq_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (pub) (call sse c 102 true 110 xmm r))
+  (fn movq_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (pub) (call sse c 102 true 126 xmm r))
   ;; movd xmm, r32 / movd r32, xmm: a float's bits
-  (fn movd_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 102 false 110 xmm r))
-  (fn movd_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 102 false 126 xmm r))
+  (fn movd_xr [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (pub) (call sse c 102 false 110 xmm r))
+  (fn movd_rx [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (pub) (call sse c 102 false 126 xmm r))
 
   ;; Arithmetic kinds for float_op: add, sub, mul, div (their opcodes)
-  (fn f_add [] -> i32 88)
-  (fn f_sub [] -> i32 92)
-  (fn f_mul [] -> i32 89)
-  (fn f_div [] -> i32 94)
+  (fn f_add [] -> i32 (pub) 88)
+  (fn f_sub [] -> i32 (pub) 92)
+  (fn f_mul [] -> i32 (pub) 89)
+  (fn f_div [] -> i32 (pub) 94)
 
   ;; addsd/subsd/mulsd/divsd (sz 64) or the ss forms (sz 32): dst op= src
-  (fn float_op [c:(ptr buf.Buf) sz:i32 kind:i32 dst:i32 src:i32] -> void
+  (fn float_op [c:(ptr buf.Buf) sz:i32 kind:i32 dst:i32 src:i32] -> void (pub)
     (req (call size_ok sz))
     (req (or (eq kind 88) (or (eq kind 92) (or (eq kind 89) (eq kind 94)))))
     (call sse c (if (eq sz 64) 242 243) false kind dst src))
 
   ;; ucomisd / ucomiss a, b: flags as an unsigned compare of a with b; an
   ;; unordered result (a NaN) sets ZF, PF, and CF
-  (fn ucomi [c:(ptr buf.Buf) sz:i32 a:i32 b:i32] -> void
+  (fn ucomi [c:(ptr buf.Buf) sz:i32 a:i32 b:i32] -> void (pub)
     (req (call size_ok sz))
     (call sse c (if (eq sz 64) 102 0) false 46 a b))
 
   ;; sqrtsd dst, src: the correctly rounded square root (f64.sqrt)
-  (fn sqrtsd [c:(ptr buf.Buf) dst:i32 src:i32] -> void (call sse c 242 false 81 dst src))
+  (fn sqrtsd [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub) (call sse c 242 false 81 dst src))
 
   ;; cvtsi2sd xmm, r64 (signed integer to double)
-  (fn cvtsi2sd [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (call sse c 242 true 42 xmm r))
+  (fn cvtsi2sd [c:(ptr buf.Buf) xmm:i32 r:i32] -> void (pub) (call sse c 242 true 42 xmm r))
   ;; cvttsd2si r64, xmm (double to signed integer, truncating)
-  (fn cvttsd2si [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (call sse c 242 true 44 r xmm))
+  (fn cvttsd2si [c:(ptr buf.Buf) r:i32 xmm:i32] -> void (pub) (call sse c 242 true 44 r xmm))
 
   ;; Every form over every register pair p(r) (vectors: tools/x64_vectors.py sse)
   (fn test_sse [] -> i32
@@ -583,7 +583,7 @@
 
   ;; The FS segment prefix: the next memory operand is relative to the
   ;; thread's FS base (each thread's own globals block).
-  (fn fs [c:(ptr buf.Buf)] -> void (call byte c 100))
+  (fn fs [c:(ptr buf.Buf)] -> void (pub) (call byte c 100))
 
   (fn test_tls [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
@@ -593,4 +593,92 @@
       (call fs c) (call load c 32 r (call mem (call p r) 0)))
     (call check "tls" c "64488b43086448894310648b0364498b4a086449894a1064418b0a64488b51086448895110648b1164498b5808644989581064418b1864498b6708644989671064418b2764488b6e086448896e10648b2e64498b7508644989751064418b750064488b7c24086448897c2410648b3c24644d8b4308644d89431064458b03644c8b4a08644c894a1064448b0a644d8b5108644d89511064458b11644c8b5808644c89581064448b18644c8b6708644c89671064448b27644d8b6e08644d896e1064458b2e644c8b7508644c89751064448b7500644d8b7c2408644d897c241064458b3c24"))
 
+  ;; ===== RIP-relative addresses (docs/design/NATIVE_SPEED_PLAN.md F4) =====
+
+  ;; lea dst, [rip + disp32]: an address in the code, wherever it is loaded.
+  ;; Returns the displacement's position, for patch_rel32.
+  (fn lea_rip [c:(ptr buf.Buf) dst:i32] -> i32 (pub)
+    (req (call reg_ok dst))
+    (call rex c true dst 0 0 false)
+    (call byte c 141)
+    (call byte c (bitor 5 (shl (bitand dst 7) 3)))
+    (let at:i32 (call buf.len c))
+    (call u32 c 0)
+    at)
+
+  (fn test_rip [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (let _a:i32 (call lea_rip c 0))
+    (let _b:i32 (call lea_rip c 8))
+    (let _d:i32 (call lea_rip c 15))
+    (call check "rip" c "488d05000000004c8d05000000004c8d3d00000000"))
+
+  ;; movaps dst, src: one xmm register to another (float locals in xmm8-15)
+  (fn movaps [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub) (call sse c 0 false 40 dst src))
+
+  (fn test_movaps [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call movaps c 8 2)
+    (call movaps c 3 15)
+    (call movaps c 9 10)
+    (call movaps c 0 1)
+    (call check "movaps" c "440f28c2410f28df450f28ca0f28c1"))
+
+  ;; ===== Padding (NATIVE_SPEED_PLAN.md: loop starts aligned) =====
+
+  ;; One NOP of n bytes (1-9), the forms the processor manuals recommend
+  ;; (test vector checked by decoding it with objdump: each is one nop).
+  (fn nop [c:(ptr buf.Buf) n:i32] -> void (pub)
+    (req (and (gte n 1) (lte n 9)))
+    (if (or (eq n 2) (or (eq n 6) (eq n 9))) (call byte c 102) (block))
+    (cond
+      ((eq n 1) (call byte c 144))
+      ((eq n 2) (call byte c 144))
+      (else
+       (call byte c 15) (call byte c 31)
+       (let m:i32 (if (or (eq n 6) (eq n 9)) (- n 1) n))
+       (cond
+         ((eq m 3) (call byte c 0))
+         ((eq m 4) (call byte c 64) (call byte c 0))
+         ((eq m 5) (call byte c 68) (call byte c 0) (call byte c 0))
+         ((eq m 7) (call byte c 128) (call u32 c 0))
+         (else (call byte c 132) (call byte c 0) (call u32 c 0))))))
+
+  ;; NOPs up to the next multiple of `boundary` (a power of two).
+  (fn align [c:(ptr buf.Buf) boundary:i32] -> void (pub)
+    (let gap:i32 (bitand (- boundary (bitand (call buf.len c) (- boundary 1))) (- boundary 1)))
+    (while (gt gap 0)
+      (let n:i32 (if (gt gap 9) 9 gap))
+      (call nop c n)
+      (set! gap (- gap n))))
+
+  (fn test_nops [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (loop n 1 9 1 (call nop c n))
+    (call check "nops" c "9066900f1f000f1f40000f1f440000660f1f4400000f1f80000000000f1f840000000000660f1f840000000000"))
+
+  ;; ===== Memory operands (NATIVE_SPEED_PLAN.md F2) =====
+
+  ;; add/or/and/sub/xor/cmp dst, [m]
+  (fn alu_rm [c:(ptr buf.Buf) sz:i32 op:i32 dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (and (call size_ok sz) (and (call alu_ok op) (call reg_ok dst))))
+    (call rm c sz (+ (* op 8) 3) dst m false))
+
+  ;; imul dst, [m]
+  (fn imul_rm [c:(ptr buf.Buf) sz:i32 dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (and (call size_ok sz) (call reg_ok dst)))
+    (call rm c sz 4015 dst m false))
+
+  (fn test_alu_rm [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call alu_rm c 32 (call op_add) 0 (call mem 5 -16))
+    (call alu_rm c 64 (call op_or) 6 (call mem 5 24))
+    (call alu_rm c 32 (call op_and) 9 (call mem 5 -8))
+    (call alu_rm c 64 (call op_sub) 12 (call mem 5 -48))
+    (call alu_rm c 32 (call op_xor) 7 (call mem 5 16))
+    (call alu_rm c 32 (call op_cmp) 13 (call mem 5 -40))
+    (call alu_rm c 64 (call op_cmp) 3 (call mem 4 8))
+    (call imul_rm c 64 7 (call mem 5 -16))
+    (call imul_rm c 32 14 (call mem 5 32))
+    (call check "alu_rm" c "0345f0480b751844234df84c2b65d0337d10443b6dd8483b5c2408480faf7df0440faf7520"))
 )

@@ -72,6 +72,9 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         FsWrite => ("i32", "(fs.write 99 (mem.alloc 8) 8)"),
         FsClose => ("i32", "(fs.close 99)"),
         FsDelete => ("i32", "(fs.delete (str.ptr \"no-such-file\") 12)"),
+        FsOpendir => ("i32", "(fs.opendir (str.ptr \"no-such-dir\") 11)"),
+        FsReaddir => ("i32", "(fs.readdir 99 (mem.alloc 64) 64 0i64)"),
+        FsStat => ("i32", "(fs.stat (str.ptr \"no-such-file\") 12 (mem.alloc 64))"),
         ArgsSizes => ("i32", "(args.sizes (mem.alloc 8) (+ (mem.alloc 8) 4))"),
         ArgsGet => ("i32", "(args.get (mem.alloc 8) (mem.alloc 64))"),
         EnvSizes => ("i32", "(env.sizes (mem.alloc 8) (+ (mem.alloc 8) 4))"),
@@ -97,7 +100,7 @@ const ALL_OPCODES: &[OpCode] = {
         Add, Sub, Mul, Div, DivU, Mod, RemU, BitXor, Shl, Shr, ShrU, BitAnd, BitOr, CheckedAdd, CheckedSub, CheckedMul,
         MemLoad8, MemLoad32, MemLoad64, MemStore8, MemStore32, MemStore64, MemAlloc, MemGrow, AtomicAdd, AtomicCas,
         AtomicLock, AtomicUnlock, Eq, Neq, Lt, Lte, Gt, Gte, LtU, LteU, GtU, GteU, And, Or, Not, SysPrint, SysTime,
-        SysMonotonic, SysRandom, SysExit, FsOpen, FsRead, FsWrite, FsClose, FsDelete, ArgsSizes, ArgsGet, EnvSizes,
+        SysMonotonic, SysRandom, SysExit, FsOpen, FsRead, FsWrite, FsClose, FsDelete, FsOpendir, FsReaddir, FsStat, ArgsSizes, ArgsGet, EnvSizes,
         EnvGet, ThreadSpawn, ThreadJoin, I64ExtendS, I64ExtendU, I32Wrap, F64ConvertI64S, F64Sqrt, I64TruncF64S,
         F64ReinterpretI64, I64ReinterpretF64, StrLen, StrPtr,
     ]
