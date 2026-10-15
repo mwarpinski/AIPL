@@ -22,19 +22,23 @@ print it on stderr.
 ## Results
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
-2026-10-14 (best of three; after the native rewrite, "The value-tracking
-translator" below).
+2026-10-15 (best of three; nbody written with value structs, "Value
+structs" below).
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| binarytrees | 16 | 0.148 s (0.6x) | 0.150 s (0.6x) | 0.243 s (1.0x) | 1.149 s (4.7x) |
-| fannkuch | 10 | 0.297 s (1.9x) | 0.244 s (1.6x) | 0.154 s (1.0x) | 3.845 s (24.9x) |
-| knucleotide | stdin: fasta.py 150000 | 0.681 s (13.4x) | 0.617 s (12.2x) | 0.051 s (1.0x) | 0.511 s (10.1x) |
-| mandelbrot | 1000 | 0.065 s (1.3x) | 0.069 s (1.4x) | 0.049 s (1.0x) | 3.084 s (62.6x) |
-| nbody | 1000000 | 0.179 s (3.4x) | 0.139 s (2.7x) | 0.052 s (1.0x) | 5.527 s (105.3x) |
-| pidigits | 10000 | 3.775 s (10.0x) | 2.379 s (6.3x) | 0.379 s (1.0x) | 2.121 s (5.6x) |
-| spectralnorm | 1000 | 0.101 s (3.7x) | 0.125 s (4.6x) | 0.027 s (1.0x) | 7.204 s (264.3x) |
-| spigot | 10000 | 1.416 s (1.6x) | 1.576 s (1.7x) | 0.913 s (1.0x) | 46.187 s (50.6x) |
+| binarytrees | 16 | 0.137 s (0.6x) | 0.143 s (0.6x) | 0.225 s (1.0x) | 1.078 s (4.8x) |
+| fannkuch | 10 | 0.284 s (1.9x) | 0.231 s (1.6x) | 0.146 s (1.0x) | 3.678 s (25.2x) |
+| knucleotide | stdin: fasta.py 150000 | 0.624 s (13.2x) | 0.566 s (11.9x) | 0.047 s (1.0x) | 0.489 s (10.3x) |
+| mandelbrot | 1000 | 0.059 s (1.2x) | 0.067 s (1.4x) | 0.048 s (1.0x) | 2.965 s (61.8x) |
+| nbody | 1000000 | 0.144 s (2.9x) | 0.074 s (1.5x) | 0.050 s (1.0x) | 5.291 s (106.5x) |
+| pidigits | 10000 | 3.602 s (9.7x) | 2.292 s (6.2x) | 0.370 s (1.0x) | 2.021 s (5.5x) |
+| spectralnorm | 1000 | 0.103 s (4.1x) | 0.120 s (4.8x) | 0.025 s (1.0x) | 7.093 s (283.8x) |
+| spigot | 10000 | 1.355 s (1.5x) | 1.511 s (1.7x) | 0.882 s (1.0x) | 45.511 s (51.6x) |
+
+On 2026-10-14, after the native rewrite and before value structs, nbody
+was native 0.179 s and wasm 0.139 s; the other rows were within a few
+percent of today's.
 
 Earlier (2026-10-05, before the null checks and the native rewrite):
 native spigot 2.725 s, fannkuch 1.080, spectralnorm 0.392, nbody 0.751,
@@ -90,7 +94,9 @@ C gains most here: gcc inlines the matrix-entry function and vectorises the
 inner loop, while AIPL calls a function per entry.
 
 **nbody** (the Sun and the four gas giants, energy printed to nine decimals
-before and after). Ran with the spectralnorm additions (`f64.sqrt`,
+before and after). Since 2026-10-15 a body is a value struct, held inline in
+an `(arr Body)` ("Value structs" below); it was seven arrays, one per
+coordinate. Ran with the spectralnorm additions (`f64.sqrt`,
 `fmt.f64_fixed`). The self-hosted compiler did not read exponent notation when this was
 written, so the benchmark's constants are written out in decimal (the same doubles). All
 four versions print the published values, bit-identical float arithmetic
@@ -236,7 +242,8 @@ registers, they go back to their slots. Native times, before and after
 docs/design/NATIVE_SPEED_PLAN.md, stage by stage, in the order done (F4
 before F3). Native times, best of five, with wasmtime's alongside
 (`python3 tools/bench.py --runs 5 --no-python`; the last two columns from
-the results table above); F0 is the baseline, null checks included.
+the results table of 2026-10-14, before value structs); F0 is the baseline,
+null checks included.
 
 | Benchmark | F0 | F1 | F1, floats | F2 | F4 | F3 | wasm (wasmtime) | native / wasm, F0 → now |
 |---|---|---|---|---|---|---|---|---|
@@ -286,3 +293,58 @@ store guard became two checks, each its own `if`, in both toolchains'
 wasm, which also made wasmtime faster on pidigits (2.6 s to 2.3 s).
 Mandelbrot 2.4x and spectralnorm 2.4x faster than after F4, fannkuch 1.7x,
 pidigits 1.5x.
+
+## Value structs (2026-10-15)
+
+docs/design/VALUES_PLAN.md V4: nbody rewritten with value structs, a
+`Vec3` and a `Body` of position, velocity, and mass (seven `f64`s) held
+inline in an `(arr Body)`, where it kept seven `(arr f64)`, one per
+coordinate. Every operation is in the same order, so the output is the
+same to the last bit. Best of five, before and after:
+
+| | native | wasm (wasmtime) | C |
+|---|---|---|---|
+| seven arrays | 0.184 s | 0.141 s | 0.051 s |
+| `(arr Body)` | 0.143 s | 0.076 s | 0.049 s |
+
+Under wasmtime it is 1.9 times as fast, and 1.5 times C. Where the arrays
+version made each body's seven numbers seven separate loads from seven
+arrays (seven bounds checks, seven null checks), the value version reads a
+body with one check and seven loads from one place, and Cranelift keeps
+the numbers in registers.
+
+Native code gains 22%, and now trails wasmtime by 1.9x here, where it is
+within 1.6x on the other benchmarks: a body's seven numbers, the other
+body's, and the intermediate values are far more floats than the eight
+registers native code gives float locals, so the rest live in memory, where
+Cranelift allocates registers for the whole loop. Several results per call
+(how a function returns a value struct natively: through an area in
+memory, not registers) do not matter here, since the inner loop calls no
+function. Closing it means a better register choice for float-heavy loops,
+not anything specific to values.
+
+std gained the same way: `fs.info` returns an `fs.Info` value (it made a
+heap cell, never freed, on every call), and `json.write` finds a number's
+shortest digits without one either.
+
+
+## Unions by value (2026-10-15)
+
+docs/design/VALUES_PLAN.md V5: unions that fit are held by value, among
+them `std/alloc`'s `Allocator` (2 numbers, a tag and a shared pointer
+slot, where it was one address), which every container holds and every
+allocation is passed. Best of three, against the table above:
+
+| Benchmark | native | wasm (wasmtime) |
+|---|---|---|
+| binarytrees | 0.137 → 0.137 s | 0.143 → 0.147 s |
+| knucleotide | 0.624 → 0.647 s | 0.566 → 0.581 s |
+| pidigits | 3.602 → 3.689 s | 2.292 → 2.336 s |
+| spigot | 1.355 → 1.381 s | 1.511 → 1.532 s |
+
+The others moved by under 1%. The changes are 0-4%, near the run-to-run
+noise (C's own times moved 1-2% between the two runs), and lean slower
+on the benchmarks that allocate through the library, which now pass an
+allocator as two numbers. What unions by value buy is allocations: an
+`(option.Option T)` returned for a small `T`, or a `Shape` made in a loop,
+takes no memory (`map.find` a million times takes none).

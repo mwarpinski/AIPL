@@ -4,12 +4,261 @@ use std::collections::HashMap;
 /// A `match` subject's member: its name, and a union variant's fields.
 type MatchMember<'a> = (String, Option<&'a Vec<StructField>>);
 
-pub fn type_size_and_align(ty: &Type) -> Result<(usize, usize), String> {
+/// The program's structs, by name (what lays out a value struct held
+/// inline), with its unions and which of them are values: what every
+/// layout needs. It reads as the struct map.
+#[derive(Clone, Default, Debug)]
+pub struct Structs {
+    defs: HashMap<String, StructDef>,
+    pub unions: HashMap<String, UnionDef>,
+    /// The unions held by value, with their layouts (AIPL_SPEC.md 4.J): the
+    /// others are heap cells, used by address.
+    pub by_value: HashMap<String, SumLayout>,
+}
+
+impl std::ops::Deref for Structs {
+    type Target = HashMap<String, StructDef>;
+    fn deref(&self) -> &Self::Target {
+        &self.defs
+    }
+}
+
+impl std::ops::DerefMut for Structs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.defs
+    }
+}
+
+/// A union held by value: its scalars (slots), a tag and then the slots its
+/// variants share by kind, each variant's fields taking the first slots of
+/// each kind it needs (i32-sized ones, then f32, i64, f64), so a variant of
+/// one pointer and one of two `f64`s need one i32 slot and two f64 slots in
+/// all. In memory the slots are laid out in that order, each aligned to its
+/// size. A slot a variant does not use holds zero.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SumLayout {
+    /// Each slot's type (I32, F32, I64, or F64); slot 0 is the tag.
+    pub slots: Vec<Type>,
+    /// Each slot's offset in memory.
+    pub offsets: Vec<u32>,
+    pub size: usize,
+    pub align: usize,
+    /// Per variant: the slot of each scalar of its fields, in order.
+    pub variants: Vec<Vec<u32>>,
+}
+
+/// The most scalars a value (a value struct, a union by value) may hold.
+pub const MAX_SCALARS: usize = 8;
+
+impl Structs {
+    /// The program's structs and unions; decides which unions are values.
+    pub fn new(structs: &[StructDef], unions: &[UnionDef]) -> Structs {
+        let mut st = Structs {
+            defs: structs.iter().map(|s| (s.name.clone(), s.clone())).collect(),
+            unions: unions.iter().map(|u| (u.name.clone(), u.clone())).collect(),
+            by_value: HashMap::new(),
+        };
+        st.by_value = union_layouts(&st);
+        st
+    }
+
+    pub fn is_value_union(&self, name: &str) -> bool {
+        self.by_value.contains_key(name)
+    }
+
+    /// The layout of `(result ok err)` held by value (AIPL_SPEC.md 4.F): two
+    /// variants, ok and err, sharing slots as a union's do; None (a heap
+    /// cell) when a side is a str or it needs more than MAX_SCALARS slots.
+    pub fn result_layout(&self, ok: &Type, err: &Type) -> Option<SumLayout> {
+        if *ok == Type::Str || *err == Type::Str {
+            return None;
+        }
+        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
+        let l = sum_layout(&[side("ok", ok), side("err", err)], self);
+        (l.slots.len() <= MAX_SCALARS).then_some(l)
+    }
+
+    /// The layout of a union or result type held by value, if it is one.
+    pub fn sum_of(&self, t: &Type) -> Option<SumLayout> {
+        match t {
+            Type::Union(n) => self.by_value.get(n).cloned(),
+            Type::ResultType(a, b) => self.result_layout(a, b),
+            _ => None,
+        }
+    }
+}
+
+/// The kind of slot a scalar of type `t` takes: I32 (every 4-byte scalar
+/// but f32: bool, enums, pointers, arrays, function references, unions and
+/// results held by address), F32, I64, or F64.
+pub fn slot_kind(t: &Type) -> Type {
+    match t {
+        Type::I64 => Type::I64,
+        Type::F32 => Type::F32,
+        Type::F64 => Type::F64,
+        _ => Type::I32,
+    }
+}
+
+/// The scalars a value of type `t` is, in order: a value struct's fields'
+/// (flattened), a union by value's slots, else `t` itself.
+pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
+    match t {
+        Type::Struct(n) if st.get(n).is_some_and(|d| d.is_value) => st[n].fields.iter().flat_map(|f| scalars(&f.ty, st)).collect(),
+        Type::Union(n) if st.by_value.contains_key(n) => st.by_value[n].slots.clone(),
+        Type::ResultType(a, b) => st.result_layout(a, b).map(|l| l.slots).unwrap_or_else(|| vec![t.clone()]),
+        Type::Void => vec![],
+        _ => vec![t.clone()],
+    }
+}
+
+/// Which unions are values and how they are laid out (AIPL_SPEC.md 4.J): a
+/// union is a value unless a variant holds a str, it contains itself
+/// (through other unions held inline), or it needs more than MAX_SCALARS
+/// slots, counting the unions it holds that are values as their slots and
+/// the others as one (each union is decided after the unions it holds).
+fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
+    // the unions each one holds inline
+    let holds = |u: &UnionDef| -> Vec<String> {
+        u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
+            Type::Union(n) => Some(n.clone()),
+            _ => None,
+        }).collect()
+    };
+    // a union that reaches itself through the unions it holds
+    let reaches_itself = |start: &String| -> bool {
+        let mut todo: Vec<String> = st.unions.get(start).map(holds).unwrap_or_default();
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(n) = todo.pop() {
+            if &n == start {
+                return true;
+            }
+            if seen.contains(&n) {
+                continue;
+            }
+            if let Some(u) = st.unions.get(&n) {
+                todo.extend(holds(u));
+            }
+            seen.push(n);
+        }
+        false
+    };
+    let mut names: Vec<&String> = st.unions.keys().collect();
+    names.sort();
+    let candidates: Vec<String> = names
+        .iter()
+        .filter(|n| !st.unions[**n].variants.iter().any(|v| v.fields.iter().any(|f| f.ty == Type::Str)) && !reaches_itself(n))
+        .map(|n| n.to_string())
+        .collect();
+    fn decide(n: &str, candidates: &[String], st: &mut Structs, decided: &mut Vec<String>) {
+        if decided.iter().any(|d| d == n) {
+            return;
+        }
+        decided.push(n.to_string());
+        let u = st.unions[n].clone();
+        for v in &u.variants {
+            for f in &v.fields {
+                if let Type::Union(m) = &f.ty {
+                    if candidates.contains(m) {
+                        decide(m, candidates, st, decided);
+                    }
+                }
+            }
+        }
+        let layout = sum_layout(&u.variants, st);
+        if layout.slots.len() <= MAX_SCALARS {
+            st.by_value.insert(n.to_string(), layout);
+        }
+    }
+    let mut work = Structs { defs: st.defs.clone(), unions: st.unions.clone(), by_value: HashMap::new() };
+    let mut decided = Vec::new();
+    for n in &candidates {
+        decide(n, &candidates, &mut work, &mut decided);
+    }
+    work.by_value
+}
+
+/// The layout of a sum of variants (each a list of fields) held by value.
+pub fn sum_layout(variants: &[Variant], st: &Structs) -> SumLayout {
+    let kinds = [Type::I32, Type::F32, Type::I64, Type::F64];
+    let per_variant: Vec<Vec<Type>> = variants.iter().map(|v| v.fields.iter().flat_map(|f| scalars(&f.ty, st)).map(|t| slot_kind(&t)).collect()).collect();
+    let counts: Vec<usize> = kinds.iter().map(|k| per_variant.iter().map(|v| v.iter().filter(|t| *t == k).count()).max().unwrap_or(0)).collect();
+    let mut slots = vec![Type::I32];
+    let mut base = Vec::new();
+    for (k, n) in kinds.iter().zip(&counts) {
+        base.push(slots.len() as u32);
+        slots.extend(std::iter::repeat_n(k.clone(), *n));
+    }
+    let variants = per_variant
+        .iter()
+        .map(|v| {
+            let mut used = [0u32; 4];
+            v.iter()
+                .map(|t| {
+                    let k = kinds.iter().position(|x| x == t).unwrap_or(0);
+                    used[k] += 1;
+                    base[k] + used[k] - 1
+                })
+                .collect()
+        })
+        .collect();
+    let (mut offset, mut align) = (0usize, 4usize);
+    let mut offsets = Vec::new();
+    for t in &slots {
+        let a = if matches!(t, Type::I64 | Type::F64) { 8 } else { 4 };
+        align = align.max(a);
+        offset = (offset + a - 1) & !(a - 1);
+        offsets.push(offset as u32);
+        offset += a;
+    }
+    SumLayout { slots, offsets, size: (offset + align - 1) & !(align - 1), align, variants }
+}
+
+/// A type's size and alignment in memory. A value struct is laid out inline
+/// (its fields in order, each aligned to its size; the whole rounded up to
+/// its largest alignment).
+pub fn type_size_and_align(ty: &Type, structs: &Structs) -> Result<(usize, usize), String> {
+    layout_at(ty, structs, 0)
+}
+
+fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize), String> {
     match ty {
+        Type::Union(n) if structs.by_value.contains_key(n) => Ok((structs.by_value[n].size, structs.by_value[n].align)),
+        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => {
+            let l = structs.result_layout(a, b).unwrap_or_else(|| unreachable!());
+            Ok((l.size, l.align))
+        }
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
+        Type::Struct(name) if depth < 64 => match structs.get(name) {
+            Some(def) if def.is_value => {
+                let (mut offset, mut max_align) = (0, 1);
+                for f in &def.fields {
+                    let (s, a) = layout_at(&f.ty, structs, depth + 1)?;
+                    max_align = max_align.max(a);
+                    offset = (offset + a - 1) & !(a - 1);
+                    offset += s;
+                }
+                Ok(((offset + max_align - 1) & !(max_align - 1), max_align))
+            }
+            _ => Err(format!("Unsupported type for memory layout: {}", ty)),
+        },
         _ => Err(format!("Unsupported type for memory layout: {}", ty)),
     }
+}
+
+/// An ok or err names its result's other side (AIPL_SPEC.md 4.F).
+const OK_NEEDS_TYPE: &str = "(ok v) must name its result's err type: write (ok:E v) for a (result T E)";
+const ERR_NEEDS_TYPE: &str = "(err e) must name its result's ok type: write (err:T e) for a (result T E)";
+
+/// A type's layout where the language puts it in memory (a field, an array
+/// element, sizeof): never a result, which lives only in locals, parameters,
+/// results, and other results (held by value or not, AIPL_SPEC.md 4.F).
+fn memory_layout(ty: &Type, structs: &Structs) -> Result<(usize, usize), String> {
+    if matches!(ty, Type::ResultType(..)) {
+        return Err(format!("Unsupported type for memory layout: {}", ty));
+    }
+    type_size_and_align(ty, structs)
 }
 
 /// A result's payload is a value of any type but `void`.
@@ -24,8 +273,22 @@ fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
 /// variant with one field (AIPL_SPEC.md 4.F), after the 4-byte tag, so a
 /// 64-bit payload sits at 8 in a 16-byte cell and any other at 4 in an
 /// 8-byte one.
-pub fn result_cell_layout(payload: &Type) -> (u32, i32) {
-    if matches!(payload, Type::I64 | Type::F64) { (8, 16) } else { (4, 8) }
+pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
+    match payload {
+        Type::Struct(_) => value_cell(payload, structs),
+        Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
+        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => value_cell(payload, structs),
+        Type::I64 | Type::F64 => (8, 16),
+        _ => (4, 8),
+    }
+}
+
+/// A value held in a result cell: aligned after the tag, the cell a
+/// multiple of 8.
+fn value_cell(payload: &Type, structs: &Structs) -> (u32, i32) {
+    let (size, align) = type_size_and_align(payload, structs).unwrap_or((4, 4));
+    let offset = (4 + align - 1) & !(align - 1);
+    (offset as u32, ((offset + size + 7) & !7) as i32)
 }
 
 /// A type parameter's placeholder, when a template is checked once with its
@@ -77,10 +340,10 @@ fn sealed(t: &Type) -> Option<String> {
     }
 }
 
-pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Type), String> {
+pub fn get_field_offset(def: &StructDef, field_name: &str, structs: &Structs) -> Result<(usize, Type), String> {
     let mut offset = 0;
     for f in &def.fields {
-        let (s, a) = type_size_and_align(&f.ty)?;
+        let (s, a) = type_size_and_align(&f.ty, structs)?;
         offset = (offset + a - 1) & !(a - 1);
         if f.name == field_name {
             return Ok((offset, f.ty.clone()));
@@ -93,12 +356,12 @@ pub fn get_field_offset(def: &StructDef, field_name: &str) -> Result<(usize, Typ
 /// Where each field of a union variant lives in its cell: the tag (i32) is
 /// at offset 0 and the fields follow from offset 4, laid out like a struct's.
 /// Returns the field offsets and the cell's size.
-pub fn variant_layout(v: &Variant) -> Result<(Vec<usize>, usize), String> {
+pub fn variant_layout(v: &Variant, structs: &Structs) -> Result<(Vec<usize>, usize), String> {
     let mut offset = 4;
     let mut max_align = 4;
     let mut offsets = Vec::new();
     for f in &v.fields {
-        let (s, a) = type_size_and_align(&f.ty)?;
+        let (s, a) = type_size_and_align(&f.ty, structs)?;
         max_align = max_align.max(a);
         offset = (offset + a - 1) & !(a - 1);
         offsets.push(offset);
@@ -107,11 +370,11 @@ pub fn variant_layout(v: &Variant) -> Result<(Vec<usize>, usize), String> {
     Ok((offsets, (offset + max_align - 1) & !(max_align - 1)))
 }
 
-pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
+pub fn get_struct_size(def: &StructDef, structs: &Structs) -> Result<usize, String> {
     let mut offset = 0;
     let mut max_align = 1;
     for f in &def.fields {
-        let (s, a) = type_size_and_align(&f.ty)?;
+        let (s, a) = type_size_and_align(&f.ty, structs)?;
         if a > max_align {
             max_align = a;
         }
@@ -125,7 +388,7 @@ pub fn get_struct_size(def: &StructDef) -> Result<usize, String> {
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
     fn_signatures: HashMap<String, (Vec<Type>, Type)>,
-    struct_defs: HashMap<String, StructDef>,
+    struct_defs: Structs,
     enum_defs: HashMap<String, EnumDef>,
     union_defs: HashMap<String, UnionDef>,
     /// Number of while/loop bodies enclosing the expression being checked.
@@ -160,7 +423,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         TypeChecker {
             fn_signatures: HashMap::new(),
-            struct_defs: HashMap::new(),
+            struct_defs: Structs::default(),
             enum_defs: HashMap::new(),
             union_defs: HashMap::new(),
             declared: std::cell::RefCell::new(HashMap::new()),
@@ -240,7 +503,8 @@ impl TypeChecker {
             self.enum_defs.insert(e.name.clone(), e.clone());
         }
 
-        // Register struct definitions
+        // Register struct definitions (all of them first: a value struct's
+        // layout depends on the value structs in it)
         for s in &module.structs {
             self.at_item("struct", &s.name);
             if self.struct_defs.contains_key(&s.name) {
@@ -253,14 +517,23 @@ impl TypeChecker {
                 if s.fields[..i].iter().any(|g| g.name == f.name) {
                     return Err(format!("{}:{}: Duplicate field '{}' in struct '{}'", s.span.0, s.span.1, f.name, shown(&s.name)));
                 }
-                type_size_and_align(&f.ty).map_err(|e| {
+            }
+            self.struct_defs.insert(s.name.clone(), s.clone());
+        }
+        for s in module.structs.iter().filter(|s| s.is_value) {
+            self.at_item("struct", &s.name);
+            self.check_value_struct(s)?;
+        }
+        for s in &module.structs {
+            self.at_item("struct", &s.name);
+            for f in &s.fields {
+                memory_layout(&f.ty, &self.struct_defs).map_err(|e| {
                     format!(
                         "{}:{}: Field '{}' in struct '{}': {}",
                         s.span.0, s.span.1, f.name, shown(&s.name), e
                     )
                 })?;
             }
-            self.struct_defs.insert(s.name.clone(), s.clone());
         }
 
         // Register union definitions (AIPL_SPEC.md 4.J)
@@ -287,7 +560,7 @@ impl TypeChecker {
                     if v.fields[..j].iter().any(|g| g.name == f.name) {
                         return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, shown(&u.name), v.name, f.name));
                     }
-                    type_size_and_align(&f.ty)
+                    memory_layout(&f.ty, &self.struct_defs)
                         .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
                 }
             }
@@ -328,24 +601,124 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// A value struct's rules (AIPL_SPEC.md 4.E): at least one field; fields
+    /// that are numbers, bools, enums, pointers, arrays, function references,
+    /// or value structs; not containing itself; at most 8 scalars in all.
+    fn check_value_struct(&self, s: &StructDef) -> Result<(), String> {
+        let (l, c) = s.span;
+        let name = shown(&s.name);
+        if s.fields.is_empty() {
+            return Err(format!("{}:{}: value struct '{}' has no fields", l, c, name));
+        }
+        for f in &s.fields {
+            if matches!(f.ty, Type::Str | Type::Union(_) | Type::ResultType(_, _) | Type::Void) {
+                return Err(format!(
+                    "{}:{}: Field '{}' of value struct '{}': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not {}",
+                    l, c, f.name, name, f.ty
+                ));
+            }
+        }
+        // through its value-struct fields, back to itself?
+        let mut stack: Vec<(&str, String)> = s.fields.iter().filter_map(|f| self.value_field(&f.ty).map(|n| (n, f.name.clone()))).collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some((n, first)) = stack.pop() {
+            if n == s.name {
+                return Err(format!("{}:{}: value struct '{}' contains itself (through field '{}'): a value has a fixed size; hold it through a pointer", l, c, name, first));
+            }
+            if !seen.insert(n) {
+                continue;
+            }
+            if let Some(d) = self.struct_defs.get(n) {
+                for f in &d.fields {
+                    if let Some(m) = self.value_field(&f.ty) {
+                        stack.push((m, first.clone()));
+                    }
+                }
+            }
+        }
+        let n = self.scalars(&Type::Struct(s.name.clone()));
+        if n > 8 {
+            return Err(format!(
+                "{}:{}: value struct '{}' holds {} scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer",
+                l, c, name, n
+            ));
+        }
+        Ok(())
+    }
+
+    /// Follows a put or arr.set path from field `first` (of type `ty`): each
+    /// step is a field of the value struct the step before holds. Returns
+    /// the last field and its type.
+    fn walk_path(
+        &self,
+        first: (&String, &String),
+        ty: Type,
+        path: &[(String, String)],
+        form: &str,
+        (l, c): (u32, u32),
+    ) -> Result<((String, String), Type), String> {
+        let (mut at, mut ty) = ((first.0.clone(), first.1.clone()), ty);
+        for (st, f) in path {
+            if ty != Type::Struct(st.clone()) || !self.is_value(st) {
+                return Err(format!(
+                    "{}:{}: {} path: {}.{} is {}, not the value struct {}",
+                    l, c, form, shown(&at.0), at.1, ty, shown(st)
+                ));
+            }
+            let (_offset, next) = get_field_offset(&self.struct_defs[st], f, &self.struct_defs).map_err(|e| format!("{}:{}: {}", l, c, e))?;
+            at = (st.clone(), f.clone());
+            ty = next;
+        }
+        Ok((at, ty))
+    }
+
+    /// The value struct a field of type `t` holds inline, if any.
+    fn value_field<'t>(&self, t: &'t Type) -> Option<&'t str> {
+        match t {
+            Type::Struct(n) if self.struct_defs.get(n).is_some_and(|d| d.is_value) => Some(n.as_str()),
+            _ => None,
+        }
+    }
+
+    /// How many scalars a value is, once its value structs are flattened.
+    fn scalars(&self, t: &Type) -> usize {
+        match t {
+            Type::Struct(n) => match self.struct_defs.get(n) {
+                Some(d) if d.is_value => d.fields.iter().map(|f| self.scalars(&f.ty)).sum(),
+                _ => 1,
+            },
+            _ => 1,
+        }
+    }
+
+    /// Whether `name` is a value struct.
+    fn is_value(&self, name: &str) -> bool {
+        self.struct_defs.get(name).is_some_and(|d| d.is_value)
+    }
+
     /// Every type written in source must be well formed: `(ptr S)` names a
     /// known struct, `(arr T)` holds something with a memory layout, and a
     /// struct is never used by value.
     fn validate_type(&self, ty: &Type, span: (u32, u32)) -> Result<(), String> {
         match ty {
             Type::Ptr(inner) => match inner.as_ref() {
+                Type::Struct(name) if self.is_value(name) => Err(format!(
+                    "{}:{}: '{}' is a value struct, which has no address: write {}, not (ptr {})",
+                    span.0, span.1, shown(name), shown(name), shown(name)
+                )),
                 Type::Struct(name) if self.struct_defs.contains_key(name) => Ok(()),
                 Type::Struct(name) if is_sealed(name) => Err(not_a_struct(span, name)),
                 Type::Struct(name) => Err(format!("{}:{}: Unknown struct '{}' in (ptr {})", span.0, span.1, name, name)),
                 other => Err(format!("{}:{}: ptr must point to a struct, got {}", span.0, span.1, other)),
             },
+            Type::Struct(name) if self.is_value(name) => Ok(()),
             Type::Struct(name) => Err(format!(
                 "{}:{}: struct '{}' cannot be used by value; use (ptr {})",
                 span.0, span.1, shown(name), shown(name)
             )),
             Type::Array(elem) => {
                 self.validate_type(elem, span)?;
-                type_size_and_align(elem)
+                memory_layout(elem, &self.struct_defs)
                     .map(|_| ())
                     .map_err(|_| format!("{}:{}: (arr T) element must be a scalar, (ptr S), or (arr T), got {}", span.0, span.1, elem))
             }
@@ -814,6 +1187,12 @@ impl TypeChecker {
                     if let Type::Union(u) = &t1 {
                         return Err(format!("{}:{}: {} on union '{}': union values do not compare; take them apart with match", l, c, op, u));
                     }
+                    if let Type::Struct(v) = &t1 {
+                        return Err(format!(
+                            "{}:{}: {} on value struct '{}': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same {})",
+                            l, c, op, shown(v), shown(v)
+                        ));
+                    }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {} on {}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
@@ -1033,6 +1412,10 @@ impl TypeChecker {
                 }
             }
             Expr::Ok(val, extra_ty, _) => {
+                // a result's whole type is written where it is made
+                if extra_ty.is_none() {
+                    return Err(format!("{}:{}: {}", l, c, OK_NEEDS_TYPE));
+                }
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
                 self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
@@ -1041,6 +1424,9 @@ impl TypeChecker {
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
             Expr::Err(err, extra_ty, _) => {
+                if extra_ty.is_none() {
+                    return Err(format!("{}:{}: {}", l, c, ERR_NEEDS_TYPE));
+                }
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
                 self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
@@ -1112,6 +1498,12 @@ impl TypeChecker {
                 if !self.struct_defs.contains_key(struct_name) {
                     return Err(not_a_struct(*span, struct_name));
                 }
+                if self.is_value(struct_name) {
+                    return Err(format!(
+                        "{}:{}: '{}' is a value struct: make one with (make {} field-values...), not new",
+                        span.0, span.1, shown(struct_name), shown(struct_name)
+                    ));
+                }
                 Ok(Type::Ptr(Box::new(Type::Struct(struct_name.clone()))))
             }
             Expr::GetField {
@@ -1122,13 +1514,20 @@ impl TypeChecker {
             } => {
                 let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
-                if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
+                if def.is_value {
+                    if ptr_ty != Type::Struct(struct_name.clone()) {
+                        return Err(format!(
+                            "{}:{}: get {}.{} needs a {}, got {}",
+                            span.0, span.1, shown(struct_name), field_name, shown(struct_name), ptr_ty
+                        ));
+                    }
+                } else if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
                         "{}:{}: get {}.{} needs a (ptr {}), got {}",
                         span.0, span.1, shown(struct_name), field_name, shown(struct_name), ptr_ty
                     ));
                 }
-                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                let (_offset, field_ty) = get_field_offset(def, field_name, &self.struct_defs).map_err(|e| {
                     format!("{}:{}: {}", span.0, span.1, e)
                 })?;
                 Ok(field_ty)
@@ -1138,9 +1537,16 @@ impl TypeChecker {
                 field_name,
                 ptr,
                 val,
+                path,
                 span,
             } => {
                 let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
+                if def.is_value {
+                    return Err(format!(
+                        "{}:{}: a value struct's fields do not change: (with v {}.{} x) is a copy with one changed",
+                        span.0, span.1, shown(struct_name), field_name
+                    ));
+                }
                 let ptr_ty = self.infer_expr_type(ptr, env)?;
                 if ptr_ty != Type::Ptr(Box::new(Type::Struct(struct_name.clone()))) {
                     return Err(format!(
@@ -1148,17 +1554,70 @@ impl TypeChecker {
                         span.0, span.1, shown(struct_name), field_name, shown(struct_name), ptr_ty
                     ));
                 }
-                let (_offset, field_ty) = get_field_offset(def, field_name).map_err(|e| {
+                let (_offset, field_ty) = get_field_offset(def, field_name, &self.struct_defs).map_err(|e| {
                     format!("{}:{}: {}", span.0, span.1, e)
                 })?;
+                let (written, field_ty) = self.walk_path((struct_name, field_name), field_ty, path, "put", *span)?;
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != field_ty {
                     return Err(format!(
                         "{}:{}: Type mismatch writing to field '{}.{}': expected {}, got {}",
-                        span.0, span.1, shown(struct_name), field_name, field_ty, val_ty
+                        span.0, span.1, shown(&written.0), written.1, field_ty, val_ty
                     ));
                 }
                 Ok(Type::Void)
+            }
+            Expr::Record { struct_name, args, span } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
+                if !def.is_value {
+                    return Err(format!(
+                        "{}:{}: '{}' is not a value struct: (new {}) makes one behind a pointer",
+                        span.0, span.1, shown(struct_name), shown(struct_name)
+                    ));
+                }
+                if args.len() != def.fields.len() {
+                    let names: Vec<&str> = def.fields.iter().map(|f| f.name.as_str()).collect();
+                    return Err(format!(
+                        "{}:{}: make {} takes {} field value(s) ({}), got {}",
+                        span.0, span.1, shown(struct_name), def.fields.len(), names.join(" "), args.len()
+                    ));
+                }
+                let def = def.clone();
+                for (a, f) in args.iter().zip(&def.fields) {
+                    let t = self.infer_expr_type(a, env)?;
+                    if t != f.ty {
+                        return Err(format!(
+                            "{}:{}: make {}: field '{}' is {}, got {}",
+                            span.0, span.1, shown(struct_name), f.name, f.ty, t
+                        ));
+                    }
+                }
+                Ok(Type::Struct(struct_name.clone()))
+            }
+            Expr::With { struct_name, field_name, value, new_val, span } => {
+                let def = self.struct_defs.get(struct_name).ok_or_else(|| not_a_struct(*span, struct_name))?;
+                if !def.is_value {
+                    return Err(format!(
+                        "{}:{}: with makes a copy of a value struct, and '{}' is not one: change a field with (put p {}.{} x)",
+                        span.0, span.1, shown(struct_name), shown(struct_name), field_name
+                    ));
+                }
+                let (_offset, field_ty) = get_field_offset(def, field_name, &self.struct_defs).map_err(|e| format!("{}:{}: {}", span.0, span.1, e))?;
+                let t = self.infer_expr_type(value, env)?;
+                if t != Type::Struct(struct_name.clone()) {
+                    return Err(format!(
+                        "{}:{}: with {}.{} needs a {}, got {}",
+                        span.0, span.1, shown(struct_name), field_name, shown(struct_name), t
+                    ));
+                }
+                let n = self.infer_expr_type(new_val, env)?;
+                if n != field_ty {
+                    return Err(format!(
+                        "{}:{}: with {}.{}: expected {}, got {}",
+                        span.0, span.1, shown(struct_name), field_name, field_ty, n
+                    ));
+                }
+                Ok(t)
             }
             Expr::Sizeof { ty, span } => {
                 match ty {
@@ -1170,7 +1629,7 @@ impl TypeChecker {
                     }
                     _ => {
                         self.validate_type(ty, *span)?;
-                        if type_size_and_align(ty).is_err() {
+                        if memory_layout(ty, &self.struct_defs).is_err() {
                             return Err(format!(
                                 "{}:{}: sizeof needs a struct or a type that can be stored in memory, got {}",
                                 span.0, span.1, ty
@@ -1219,6 +1678,7 @@ impl TypeChecker {
                 ptr,
                 index,
                 val,
+                path,
                 span,
             } => {
                 self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
@@ -1236,11 +1696,26 @@ impl TypeChecker {
                         span.0, span.1, idx_ty
                     ));
                 }
+                // a path: one field of a value struct element
+                let target = match path.split_first() {
+                    None => elem_ty.clone(),
+                    Some(((st, f), rest)) => {
+                        if *elem_ty != Type::Struct(st.clone()) || !self.is_value(st) {
+                            return Err(format!(
+                                "{}:{}: arr.set path: the elements are {}, not the value struct {}",
+                                span.0, span.1, elem_ty, shown(st)
+                            ));
+                        }
+                        let def = &self.struct_defs[st];
+                        let (_offset, first_ty) = get_field_offset(def, f, &self.struct_defs).map_err(|e| format!("{}:{}: {}", span.0, span.1, e))?;
+                        self.walk_path((st, f), first_ty, rest, "arr.set", *span)?.1
+                    }
+                };
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != *elem_ty {
+                if val_ty != target {
                     return Err(format!(
                         "{}:{}: arr.set value mismatch: expected {}, got {}",
-                        span.0, span.1, elem_ty, val_ty
+                        span.0, span.1, target, val_ty
                     ));
                 }
                 Ok(Type::Void)
@@ -1307,6 +1782,13 @@ impl TypeChecker {
             Expr::Make { union_name, variant, args, span } => {
                 let (l, c) = *span;
                 let Some(u) = self.union_defs.get(union_name) else {
+                    let whole = format!("{}.{}", union_name, variant);
+                    if self.struct_defs.contains_key(&whole) {
+                        return Err(format!(
+                            "{}:{}: '{}' is not a value struct: (new {}) makes one behind a pointer",
+                            l, c, shown(&whole), shown(&whole)
+                        ));
+                    }
                     return Err(format!("{}:{}: Unknown union '{}' in make", l, c, union_name));
                 };
                 let Some(v) = u.variants.iter().find(|v| &v.name == variant) else {

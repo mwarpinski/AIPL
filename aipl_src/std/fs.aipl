@@ -5,8 +5,8 @@
 ;;     ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names] ...)
 ;;     ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none ...))
 ;;   (match (call fs.info "data/a.txt")
-;;     ((option.Option (ptr fs.Info)) some [i] (get i fs.Info.size))
-;;     ((option.Option (ptr fs.Info)) none -1i64))
+;;     ((option.Option fs.Info) some [i] (get i fs.Info.size))
+;;     ((option.Option fs.Info) none -1i64))
 ;;
 ;; A directory's names come sorted bytewise, without "." and "..", so a
 ;; listing is the same in every backend and on every file system (the order
@@ -21,8 +21,9 @@
   ;; What a path names, after following symbolic links.
   (enum Kind [file directory other] (pub))
 
-  ;; size in bytes, modified in nanoseconds since 1970 (UTC)
-  (struct Info [(read kind:Kind) (read size:i64) (read modified:i64)] (pub))
+  ;; size in bytes, modified in nanoseconds since 1970 (UTC); a value
+  ;; (AIPL_SPEC.md 4.E), so nothing is allocated for it
+  (struct Info [(read kind:Kind) (read size:i64) (read modified:i64)] (value) (pub))
 
   ;; ===== Directories =====
 
@@ -92,26 +93,24 @@
   ;; ===== File information =====
 
   ;; What `path` names: its kind, size, and when it was last modified.
-  (fn info [path:str] -> (option.Option (ptr Info)) (pub)
+  (fn info [path:str] -> (option.Option Info) (pub)
     (unsafe (call info_at (str.ptr path) (str.len path))))
 
   ;; info for a path held as bytes.
-  (fn info_path [path:(ptr str.Bytes)] -> (option.Option (ptr Info)) (pub)
+  (fn info_path [path:(ptr str.Bytes)] -> (option.Option Info) (pub)
     (unsafe (call info_at (get path str.Bytes.addr) (get path str.Bytes.len))))
 
   ;; From a WASI filestat (64 bytes): the filetype at 16 (3 a directory, 4 a
   ;; regular file), the size at 32, the modification time at 48.
-  (fn info_at [addr:i32 len:i32] -> (option.Option (ptr Info)) (unsafe)
+  (fn info_at [addr:i32 len:i32] -> (option.Option Info) (unsafe)
     (let a:alloc.Allocator (call alloc.default))
     (let st:i32 (call alloc.raw a 64))
     (let r:i32 (fs.stat addr len st))
-    (let i:(ptr Info) (new Info))
     (let filetype:i32 (mem.load8 (+ st 16)))
-    (put i Info.kind (cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other)))
-    (put i Info.size (mem.load64 (+ st 32)))
-    (put i Info.modified (mem.load64 (+ st 48)))
+    (let i:Info (make Info (cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other))
+                           (mem.load64 (+ st 32)) (mem.load64 (+ st 48))))
     (call alloc.free_raw a st 64)
-    (if (lt r 0) (make (option.Option (ptr Info)) none) (make (option.Option (ptr Info)) some i)))
+    (if (lt r 0) (make (option.Option Info) none) (make (option.Option Info) some i)))
 
   ;; ===== Tests =====
 
@@ -132,10 +131,10 @@
       ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (block)))
     (if (call (option.is_none (ptr (vec.Vec (ptr str.Bytes)))) (call list a "no/such/directory")) (set! p (+ p 1)) (block))
     (match (call info "aipl_src/std/fs.aipl")
-      ((option.Option (ptr Info)) some [f]
+      ((option.Option Info) some [f]
         (if (and (eq (get f Info.kind) Kind.file) (and (gt (get f Info.size) 0i64) (gt (get f Info.modified) 0i64))) (set! p (+ p 1)) (block)))
-      ((option.Option (ptr Info)) none (block)))
+      ((option.Option Info) none (block)))
     (match (call info "aipl_src/std")
-      ((option.Option (ptr Info)) some [d] (if (eq (get d Info.kind) Kind.directory) (set! p (+ p 1)) (block)))
-      ((option.Option (ptr Info)) none (block)))
+      ((option.Option Info) some [d] (if (eq (get d Info.kind) Kind.directory) (set! p (+ p 1)) (block)))
+      ((option.Option Info) none (block)))
     p))

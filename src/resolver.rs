@@ -60,11 +60,13 @@ struct State<'a> {
 }
 
 /// What other modules may use (AIPL_SPEC.md 11): the canonical names of
-/// `(pub)` items, and each struct's fields with their levels.
+/// `(pub)` items, each struct's fields with their levels, and which structs
+/// are value structs.
 #[derive(Default)]
 struct Vis {
     public: HashSet<String>,
     fields: HashMap<String, HashMap<String, Level>>,
+    values: HashSet<String>,
 }
 
 /// A field's visibility outside its module: none, `(read x:T)`, `(pub x:T)`.
@@ -129,8 +131,9 @@ impl Resolver {
             .filter(|i| i.sx.head() == Some("union"))
             .filter_map(|i| i.sx.items().get(1).and_then(|n| n.symbol()).map(String::from))
             .collect();
+        let values: HashSet<String> = flat.structs.iter().filter(|i| is_value_struct(&i.sx)).filter_map(|i| i.sx.items().get(1).and_then(|n| n.symbol()).map(String::from)).collect();
         for item in flat.structs.iter().chain(flat.fns.iter()) {
-            let parsed = parse_item(&flat.name, item, &unions)?;
+            let parsed = parse_item(&flat.name, item, &unions, &values)?;
             let source = Source { file: item.file.clone(), foreign: item.foreign.clone() };
             let keys = parsed.structs.iter().map(|d| format!("struct {}", d.name))
                 .chain(parsed.enums.iter().map(|d| format!("enum {}", d.name)))
@@ -173,13 +176,19 @@ impl Resolver {
 }
 
 /// Parses one item as `(module NAME item)`, prefixing errors with its file.
-fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>) -> Result<Module, String> {
+/// Whether `sx` is `(struct NAME [fields] (value))` (NAME may be a generic
+/// header).
+pub(crate) fn is_value_struct(sx: &Sx) -> bool {
+    sx.head() == Some("struct") && sx.items().get(3).is_some_and(|m| m.is_paren() && m.items().len() == 1 && m.items()[0].symbol() == Some("value"))
+}
+
+fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>, values: &HashSet<String>) -> Result<Module, String> {
     let (line, col) = item.sx.position();
     let tok = |kind| Token { kind, line, col };
     let mut tokens = vec![tok(TokenKind::LParen), tok(TokenKind::Symbol("module".into())), tok(TokenKind::Symbol(module_name.into()))];
     item.sx.flatten(&mut tokens);
     tokens.push(tok(TokenKind::RParen));
-    Parser::parse_tokens_with(tokens, unions.clone()).map_err(|e| {
+    Parser::parse_tokens_with(tokens, unions.clone(), values.clone()).map_err(|e| {
         // the error's own "L:C: " says which token, and so which file
         Source { file: item.file.clone(), foreign: item.foreign.clone() }.name_file(e)
     })
@@ -298,6 +307,9 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         if item.head() == Some("struct") {
             let levels = take_field_marks(item, file)?;
             if let Some(n) = &named {
+                if is_value_struct(item) {
+                    st.vis.values.insert(canonical(n));
+                }
                 st.vis.fields.insert(canonical(n), levels.clone());
                 own_levels.insert(n.clone(), levels);
             }
@@ -329,6 +341,8 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         if let Some((n, generic)) = item_name(item) {
             match item.head() {
                 Some("fn") => names.fns.insert(n.to_string()),
+                // a value struct is also named where types and makes go
+                Some("struct") if is_value_struct(item) => names.structs.insert(n.to_string()) | names.decls.insert(n.to_string()),
                 Some("struct") => names.structs.insert(n.to_string()),
                 Some("const" | "enum" | "union") => names.decls.insert(n.to_string()),
                 _ => false,
@@ -367,13 +381,16 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     Ok(())
 }
 
-const PUB_PLACE: &str = "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)";
+const PUB_PLACE: &str = "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)";
 
 /// Takes an item's `(pub)` out; whether it had one, where it belongs.
 fn take_pub(item: &mut Sx, file: &Path) -> Result<bool, String> {
     let head = item.head().map(str::to_string);
+    // a value struct's (value) is part of its signature
+    let value = head.as_deref() == Some("struct") && is_value_struct(item);
     let place = match head.as_deref() {
         Some("fn" | "const") => Some(5),
+        Some("struct") if value => Some(4),
         Some("struct" | "union" | "enum") => Some(3),
         Some("interface") => Some(2),
         _ => None,
@@ -384,6 +401,11 @@ fn take_pub(item: &mut Sx, file: &Path) -> Result<bool, String> {
         None => return Ok(false),
     };
     let mut found = false;
+    // (struct S [fields] (pub) (value)): (value) is part of the signature
+    let is_value_mark = |p: &Sx| p.is_paren() && p.items().len() == 1 && p.head() == Some("value");
+    if head.as_deref() == Some("struct") && parts.get(3).is_some_and(is_pub) && parts.get(4).is_some_and(is_value_mark) {
+        return Err(at_sx(file, &parts[3], PUB_PLACE));
+    }
     if let Some(k) = place {
         if parts.get(k).is_some_and(is_pub) {
             parts.remove(k);
@@ -663,11 +685,23 @@ impl Names<'_> {
         None
     }
 
+    /// Whether item k of a form with n items is a further step of a field
+    /// path (the value a put or arr.set stores comes last).
+    fn path_step(head: Option<&str>, k: usize, n: usize) -> bool {
+        match head {
+            Some("get") => k >= 3,
+            Some("put") => k >= 3 && k + 1 < n,
+            Some("arr.get") => k >= 4,
+            Some("arr.set") => k >= 4 && k + 1 < n,
+            _ => false,
+        }
+    }
+
     fn child_role(head: Option<&str>, i: usize) -> u8 {
         match (head, i) {
             (Some("fn" | "call" | "ref"), 1) => 1,
             (Some("struct" | "new" | "sizeof" | "ptr" | "ptr.null" | "ptr.cast"), 1) => 2,
-            (Some("get" | "put"), 2) => 3,
+            (Some("get" | "put" | "with"), 2) => 3,
             _ => 0,
         }
     }
@@ -687,9 +721,14 @@ impl Names<'_> {
             Sx::Atom(_) => {}
             Sx::List { .. } => {
                 let head = sx.head().map(|h| h.to_string());
-                let template = head.as_deref().and_then(|h| self.template_ref(h));
-                let field_op = matches!(head.as_deref(), Some("get" | "put"));
-                let put = head.as_deref() == Some("put");
+                // a template named like the make form (std/vec's make) is
+                // named only as a function, after call or ref: anywhere else
+                // (make ...) is the form
+                let template = head.as_deref().filter(|h| *h != "make" || role == 1).and_then(|h| self.template_ref(h));
+                let field_op = matches!(head.as_deref(), Some("get" | "put" | "with"));
+                // (with v V.f x) makes a value with field f written
+                let put = matches!(head.as_deref(), Some("put" | "with"));
+                let n_items = sx.items().len();
                 // the struct of a generic field form, (get p (Name T) f)
                 let mut generic_struct: Option<String> = None;
                 let items = sx.items_mut().unwrap();
@@ -772,9 +811,12 @@ impl Names<'_> {
                     self.walk(child, r);
                     let child_at = child.position();
                     match (child.symbol(), i) {
-                        // a struct type argument lets the template make one
-                        (Some(n), _) if template.is_some() => self.check_makes(n, child_at),
+                        // a struct type argument lets the template make one (with
+                        // `new`); a value struct's does not (a value-kind argument)
+                        (Some(n), _) if template.is_some() && !self.vis.values.contains(n) => self.check_makes(n, child_at),
                         (Some(n), 1) if head.as_deref() == Some("new") => self.check_makes(n, child_at),
+                        // (make V ...) of a value struct
+                        (Some(n), 1) if head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
                         // (get p S.f), (put p S.f v)
                         (Some(n), 2) if field_op => {
                             if let Some((st, f)) = n.rsplit_once('.') {
@@ -783,9 +825,16 @@ impl Names<'_> {
                             }
                         }
                         (None, 2) if field_op => generic_struct = child.head().map(str::to_string),
-                        (Some(f), 3) if field_op => {
+                        (Some(f), 3) if field_op && generic_struct.is_some() => {
                             if let Some(st) = &generic_struct {
                                 self.check_field(st, f, put, child_at);
+                            }
+                        }
+                        // a field path's further steps: (get p S.f V.g),
+                        // (put p S.f V.g x), (arr.get V a i V.f), (arr.set V a i V.f x)
+                        (Some(n), k) if Names::path_step(head.as_deref(), k, n_items) => {
+                            if let Some((st, f)) = n.rsplit_once('.') {
+                                self.check_field(st, f, put || head.as_deref() == Some("arr.set"), child_at);
                             }
                         }
                         _ => {}

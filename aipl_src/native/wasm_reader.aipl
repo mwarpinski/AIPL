@@ -383,7 +383,7 @@
   ;; Immediate kinds: 0 none, 1 one index (a), 2 block type (a), 3 memarg
   ;; (a = align, b = offset), 4 call_indirect (a = type, b = table),
   ;; 5 i32.const, 6 i64.const, 7 f64.const, 8 memory index byte (b),
-  ;; 9 memory.init (a = data, b = memory). -1: not an instruction AIPL emits.
+  ;; 9 memory.init (a = data, b = memory), 10 f32.const (c: its bits). -1: not an instruction AIPL emits.
   (fn plain_kind [op:i32] -> i32
     (cond
       ((or (eq op 0) (or (eq op 5) (or (eq op 11) (or (eq op 15) (eq op 26))))) 0) ;; unreachable else end return drop
@@ -394,7 +394,7 @@
       ((or (and (gte op 40) (lte op 43)) (eq op 45)) 3)                             ;; i32/i64/f32/f64.load, i32.load8_u
       ((and (gte op 54) (lte op 58)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8
       ((or (eq op 63) (eq op 64)) 8)                                                ;; memory.size memory.grow
-      ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7)                                  ;; i32/i64/f64.const
+      ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7) ((eq op 67) 10)                  ;; i32/i64/f64/f32.const
       ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
       ((and (gte op 69) (lte op 79)) 0)
       ;; i64: eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
@@ -445,6 +445,7 @@
       ((eq op 65) "i32.const")
       ((eq op 66) "i64.const")
       ((eq op 68) "f64.const")
+      ((eq op 67) "f32.const")
       ((eq op 69) "i32.eqz")
       ((eq op 70) "i32.eq")
       ((eq op 71) "i32.ne")
@@ -573,6 +574,12 @@
        (loop k 0 7 1
          (set! bits (bitor bits (shl (i64.extend_u (call byte r)) (i64.extend_s (* 8 k))))))
        (put ins Instr.c bits))
+      ((eq kind 10)
+       ;; four little-endian bytes: the f32's bits
+       (let bits32:i64 0i64)
+       (loop k 0 3 1
+         (set! bits32 (bitor bits32 (shl (i64.extend_u (call byte r)) (i64.extend_s (* 8 k))))))
+       (put ins Instr.c bits32))
       ((eq kind 8) (put ins Instr.b (call byte r)))
       ((eq kind 9) (put ins Instr.a (call u32 r)) (put ins Instr.b (call byte r)))
       (else (call fail_op r op at)))

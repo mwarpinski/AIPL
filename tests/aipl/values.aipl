@@ -1,0 +1,75 @@
+;; Value structs (AIPL_SPEC.md 4.E): every form, in one program whose main
+;; returns a checksum. tests/test_values.rs runs it in every backend.
+(module values
+  (import vec)
+  (import alloc)
+
+  (struct Vec3 [x:f64 y:f64 z:f64] (value))
+  (struct Body [pos:Vec3 vel:Vec3 mass:f64] (value))
+  (struct Cell [id:i32 next:(ptr Node) wide:i64] (value))
+  (struct Node [cell:Cell count:i32])
+  (struct (Pair T) [a:T b:T] (value))
+  (enum Dir [north east south west])
+  (struct Step [dir:Dir len:i32 on:bool] (value))
+  (union Shape [(dot) (ball at:Vec3 r:f64)])
+
+  (fn add [a:Vec3 b:Vec3] -> Vec3
+    (make Vec3 (+ (get a Vec3.x) (get b Vec3.x)) (+ (get a Vec3.y) (get b Vec3.y)) (+ (get a Vec3.z) (get b Vec3.z))))
+
+  (fn scale [v:Vec3 k:f64] -> Vec3
+    (make Vec3 (* (get v Vec3.x) k) (* (get v Vec3.y) k) (* (get v Vec3.z) k)))
+
+  (fn sum3 [v:Vec3] -> f64 (+ (get v Vec3.x) (+ (get v Vec3.y) (get v Vec3.z))))
+
+  ;; a value returned through recursion
+  (fn powers [n:i32 acc:Vec3] -> Vec3
+    (if (eq n 0) acc (call powers (- n 1) (call scale acc 2.0))))
+
+  (fn (swap T) [p:(Pair T)] -> (Pair T) (make (Pair T) (get p (Pair T) b) (get p (Pair T) a)))
+
+  (fn radius [s:Shape] -> f64
+    (match s
+      (Shape.dot 0.0)
+      (Shape.ball [at r] (+ r (get at Vec3.z)))))
+
+  (fn found [ok:bool] -> (result Vec3 i32)
+    (if ok (ok:i32 (make Vec3 1.0 2.0 3.0)) (err:Vec3 7)))
+
+  (fn main [] -> i32
+    (let a:Vec3 (make Vec3 1.0 2.0 3.0))
+    (let b:Vec3 (with a Vec3.y 20.0))
+    (let c:Vec3 (call add a b))                          ;; (2 22 6)
+    (let total:f64 (call sum3 c))                        ;; 30
+    ;; an array of bodies, written whole and field by field
+    (let bs:(arr Body) (arr.new Body 4))
+    (arr.set Body bs 0 (make Body a b 2.0))
+    (arr.set Body bs 1 Body.vel Vec3.z 7.5)
+    (arr.set Body bs 2 Body.mass 4.0)
+    (set! total (+ total (arr.get Body bs 0 Body.vel Vec3.y)))     ;; +20
+    (set! total (+ total (get (get (arr.get Body bs 1) Body.vel) Vec3.z)))  ;; +7.5
+    (set! total (+ total (get (arr.get Body bs 2) Body.mass)))     ;; +4
+    ;; a value in a heap struct's field, read and written in place
+    (let n:(ptr Node) (new Node))
+    (put n Node.cell (make Cell 5 n 6000000000i64))
+    (put n Node.cell Cell.id 9)
+    (let cell:Cell (get n Node.cell))
+    (set! total (+ total (f64.convert_i64_s (i64.extend_s (get cell Cell.id)))))  ;; +9
+    (set! total (+ total (f64.convert_i64_s (/ (get n Node.cell Cell.wide) 1000000000i64))))  ;; +6
+    (if (eq (get cell Cell.next) n) (set! total (+ total 1.0)) (block))     ;; +1
+    ;; recursion, generics, a vector of values
+    (set! total (+ total (call sum3 (call powers 3 a))))         ;; +48
+    (let p:(Pair i32) (call (swap i32) (make (Pair i32) 1 2)))
+    (set! total (+ total (f64.convert_i64_s (i64.extend_s (* 10 (get p (Pair i32) a))))))  ;; +20
+    (let v:(ptr (vec.Vec Vec3)) (call (vec.make Vec3) (call alloc.default) 2))
+    (loop i 1 5 1 (call (vec.push Vec3) v (make Vec3 (f64.convert_i64_s (i64.extend_s i)) 0.5 0.0)))
+    (set! total (+ total (call sum3 (call (vec.at Vec3) v 3))))  ;; +4.5
+    ;; a union variant and a result holding values
+    (set! total (+ total (call radius (make Shape.ball c 0.25))))  ;; +6.25
+    (match_result (call found true)
+      (ok w (set! total (+ total (get w Vec3.z))))               ;; +3
+      (err e (set! total (- total 1000.0))))
+    ;; enums and bools in a value
+    (let s:Step (make Step Dir.south 3 true))
+    (if (and (get s Step.on) (eq (get s Step.dir) Dir.south)) (set! total (+ total (f64.convert_i64_s (i64.extend_s (get s Step.len))))) (block))  ;; +3
+    ;; 30 + 20 + 7.5 + 4 + 9 + 6 + 1 + 48 + 20 + 4.5 + 6.25 + 3 + 3 = 162.25
+    (i32.wrap (i64.trunc_f64_s (* total 4.0)))))                 ;; 649

@@ -2178,6 +2178,18 @@ fn unsupported_instructions_and_imports_are_named() {
     assert_eq!(to_native(&m.finish()), Err("import not supported natively yet: wasi_snapshot_preview1.fd_seek".to_string()));
 }
 
+/// Value structs (docs/design/VALUES_PLAN.md V3): functions with several
+/// results (up to 8, of every width), called directly and through a table,
+/// with value parameters in registers and on the stack, natively as under
+/// wasmtime.
+#[test]
+fn value_struct_programs_match_natively() {
+    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl")] {
+        let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
+        assert_functions_match(name, &aipl_core::printer::print_module(&m), &[], &[("main", &[])]);
+    }
+}
+
 /// The native compiler run in the VM produces the same executable as the
 /// compiled one used above.
 #[test]
@@ -2308,11 +2320,11 @@ fn directories_and_file_information_match_natively() {
   (import option)
   (fn show [path:str] -> void
     (match (call fs.info path)
-      ((option.Option (ptr fs.Info)) some [i]
+      ((option.Option fs.Info) some [i]
         (call io.write_str 1 path)
         (call io.write_str 1 (match (get i fs.Info.kind) (fs.Kind.file " file ") (fs.Kind.directory " directory ") (fs.Kind.other " other ")))
         (call io.println_i64 "" (get i fs.Info.size)))
-      ((option.Option (ptr fs.Info)) none (call io.write_str 1 path) (call io.println " missing"))))
+      ((option.Option fs.Info) none (call io.write_str 1 path) (call io.println " missing"))))
   (fn main [] -> i32
     (match (call fs.list (call alloc.default) "big")
       ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]

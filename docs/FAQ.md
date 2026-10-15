@@ -104,13 +104,33 @@ one slower; and it would add rules about what a capture copies or shares.
 Passing the context costs a parameter, and the reader sees exactly what the
 callback uses. (AIPL_SPEC.md 4.G.)
 
+### Are structs values or references?
+
+Either, but each struct is one or the other for good. A plain struct lives
+behind a pointer, `(ptr Node)`, and is changed in place with `put`. A struct
+declared `(value)`, such as `(struct Vec3 [x:f64 y:f64 z:f64] (value))`, is
+a value like a number: copied where it goes, held inline in arrays and in
+other structs, allocating nothing, and never changed (`(with v Vec3.x 1.0)`
+is a copy with one field changed). Since nothing converts one kind into the
+other, the classic bug of changing a copy while meaning the original cannot
+happen. A value struct holds at most eight numbers; larger records belong
+behind pointers. Writing the n-body benchmark with a `Body` value struct
+made it 1.9 times faster under wasmtime (AIPL_SPEC.md 4.E,
+[docs/design/VALUES_PLAN.md](design/VALUES_PLAN.md)). Unions, which cannot
+be changed either, are held by value without being declared so whenever
+they fit (they do not contain themselves and need at most eight numbers),
+so returning an `(option.Option i32)` allocates nothing.
+
 ### How fast is it?
 
-Not fast yet. On eight benchmarks, native executables take 1.7 to 40 times
-as long as C compiled with `gcc -O2`, and WebAssembly run by wasmtime 0.8 to
-14 times as long. The native backend translates one instruction at a time
-and keeps most values in memory. [docs/BENCHMARKS.md](BENCHMARKS.md) has
-every measurement and what each benchmark showed.
+Between C and Python. On eight benchmarks, native executables take 0.6
+to 13 times as long as C compiled with `gcc -O2`, and WebAssembly run by
+wasmtime 0.6 to 12 times as long; the slowest, k-nucleotide and pidigits,
+run a hash map and big integers written in AIPL against C's tuned
+libraries. The native backend
+is a single-pass translator, within 0.9 to 2 times wasmtime's optimising
+compiler. [docs/BENCHMARKS.md](BENCHMARKS.md) has every measurement and
+what each benchmark showed.
 
 ### Can people write it?
 

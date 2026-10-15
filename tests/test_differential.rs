@@ -707,13 +707,15 @@ fn p8_structs_and_arrays() {
     (- (arr.addr a) (mem.load32 0)))
 
   ;; ok/err take 8 heap bytes in both backends, before the payload runs
+  ;; results with a str side are heap cells (a result without is held by
+  ;; value, AIPL_SPEC.md 4.F)
   (fn test_result_heap [] -> i32 (unsafe)
-    (let r:(result i32 i32) (ok 5))
-    (let e:(result i32 i32) (err 6))
+    (let r:(result i32 str) (ok:str 5))
+    (let e:(result str i32) (err:str 6))
     (mem.alloc 4))
 
   (fn test_result_payload_allocates [] -> i32 (unsafe)
-    (match_result (ok (arr.new i32 2))
+    (match_result (ok:str (arr.new i32 2))
       (ok v (arr.addr v))
       (err e 0)))
 
@@ -802,9 +804,11 @@ fn p8_structs_and_arrays() {
     }
 }
 
-/// Result payloads of any type (AIPL_SPEC.md 4.F): a 64-bit one sits at 8
-/// in a 16-byte cell, anything else at 4 in an 8-byte one, the same in both
-/// backends; only a void payload is rejected.
+/// Result payloads of any type (AIPL_SPEC.md 4.F): in a heap cell (a result
+/// with a str side) a 64-bit one sits at 8 in a 16-byte cell, anything else
+/// at 4 in an 8-byte one, the same in both backends; a result without a str
+/// side is held by value and takes no memory; only a void payload is
+/// rejected.
 #[test]
 fn results_carry_payloads_of_any_type() {
     let src = r#"
@@ -813,7 +817,7 @@ fn results_carry_payloads_of_any_type() {
     (if (gt n 0) (ok:str (* 3000000000i64 (i64.extend_s n))) (err:i64 "not positive")))
   (fn half [x:f64] -> (result f64 i64)
     (if (gt x 0.0) (ok:i64 (/ x 2.0)) (err:f64 -7i64)))
-  (fn nested [] -> (result (result i64 bool) i32) (ok (ok:bool 5i64)))
+  (fn nested [] -> (result (result i64 bool) i32) (ok:i32 (ok:bool 5i64)))
   (fn wide [n:i32] -> i32
     (match_result (call big n) (ok v (i32.wrap (/ v 1000i64))) (err e (str.len e))))
   (fn float [] -> i32
@@ -825,7 +829,7 @@ fn results_carry_payloads_of_any_type() {
   (fn cells [] -> i32 (unsafe
     (let before:i32 (mem.load32 0))
     (let a:(result i64 str) (call big 1))
-    (let b:(result i32 i32) (ok 1))
+    (let b:(result i32 i32) (ok:i32 1))
     (let c:(result f64 i64) (call half -1.0))
     (let d:(result f64 i64) (call half 5.0))
     (- (mem.load32 0) before))))
@@ -837,11 +841,11 @@ fn results_carry_payloads_of_any_type() {
     assert_eq!(differential(&module, &wasm, "wide", &[0]), Ok(Value::Int(12)));
     assert_eq!(differential(&module, &wasm, "float", &[]), Ok(Value::Int(25)));
     assert_eq!(differential(&module, &wasm, "inner", &[]), Ok(Value::Int(5)));
-    // i64, i32, i64 and f64 payloads: 16 + 8 + 16 + 16 bytes
-    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(56)));
+    // big's is a cell with an i64 payload (16 bytes); the others are values
+    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(16)));
 
     let err = TypeChecker::new()
-        .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok (call g))))").unwrap())
+        .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
         .unwrap_err();
     assert!(err.ends_with("1:60: a result payload must be a value, got void"), "got {err}");
 }
@@ -861,7 +865,7 @@ fn allocation_grows_memory_identically() {
       (put p P.x i)
       (let a:(arr i32) (arr.new i32 100))
       (arr.set i32 a 99 i)
-      (let r:(result i32 i32) (ok i))
+      (let r:(result i32 i32) (ok:i32 i))
       (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
     (let big:i32 (mem.alloc 2000000))
     (mem.store32 (+ big 1999996) 7)
@@ -875,8 +879,9 @@ fn allocation_grows_memory_identically() {
   (fn grow_past_cap [] -> i32 (unsafe) (mem.grow 40000)))
 "#;
     let (module, wasm) = compile_checked(src);
-    // 51 pages: 1 MiB start + ~1.3 MB of structs/arrays/cells + 2 MB block
-    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
+    // 50 pages: 1 MiB start + ~1.3 MB of structs and arrays + 2 MB block
+    // (the results are held by value)
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 50)));
     assert!(differential(&module, &wasm, "too_big", &[]).is_err());
     assert_eq!(differential(&module, &wasm, "grow_past_cap", &[]), Ok(Value::Int(-1)));
 }
@@ -914,7 +919,7 @@ fn nested_allocations_do_not_overlap() {
 /// collecting locals, so `(+ 1 (match_result ...))` failed to compile with
 /// "Unbound local variable" while the VM ran it.
 const NESTED_LOCALS: &str = "(module nested
-  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok n) (err n)))
+  (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok:i32 n) (err:i32 n)))
   (fn main [] -> i32
     (let total:i32 0)
     (loop i 0 (block (let last:i32 3) last) 1
@@ -1067,4 +1072,76 @@ fn contracts_fail_in_both() {
     assert!(differential(&module, &wasm, "nested_i32", &[5]).unwrap_err().starts_with("Array index out of bounds"));
     assert!(differential(&module, &wasm, "nested_i32", &[1]).unwrap_err().starts_with("Pre-condition failed in 'nested'"));
     assert_eq!(differential(&module, &wasm, "nested_i32", &[0]), Ok(Value::Int(0)));
+}
+
+/// Value structs (AIPL_SPEC.md 4.E) held inline: the same sizes, offsets,
+/// heap use (a result's or a union's cell holding one), and raw words in
+/// both backends, and the same failures reading or writing one through a
+/// null pointer, past an array's end, or into the reserved block.
+#[test]
+fn value_structs_agree() {
+    let src = r#"(module v
+  (struct V [a:i32 b:f64 c:bool] (value))
+  (struct W [v:V n:i64] (value))
+  (struct Holder [w:W k:i32])
+  ;; U contains itself, so it is a heap cell; X is held by value
+  (union U [(p v:V) (q) (r next:U)])
+  (union X [(p v:V) (q)])
+
+  ;; V 24 (b aligned to 8, rounded to 8), W 32, Holder 40
+  (fn sizes [] -> i32 (+ (* 100 (sizeof V)) (+ (* 10 (sizeof W)) (sizeof Holder))))
+
+  ;; written whole, then one field through a path; read as raw words
+  (fn raw [] -> i32 (unsafe)
+    (let h:(ptr Holder) (new Holder))
+    (put h Holder.w (make W (make V 7 2.5 true) 9i64))
+    (put h Holder.w W.v V.a 11)
+    (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
+
+  ;; a result's cell holding a V (a cell: its err side is a str): the
+  ;; payload at 8, the cell 32 bytes
+  (fn result_cell [] -> i32 (unsafe)
+    (let a0:i32 (mem.alloc 4))
+    (let r:(result V str) (ok:str (make V 1 2.0 false)))
+    (- (mem.alloc 4) a0))
+
+  ;; a union's cell holding a V: the payload at 8, the cell 32 bytes (a
+  ;; variant's cell is its own size); a union held by value takes none
+  (fn union_cell [] -> i32 (unsafe)
+    (let a0:i32 (mem.alloc 4))
+    (let u:U (make U.p (make V 3 1.5 true)))
+    (let x:X (make X.p (make V 3 1.5 true)))
+    (- (mem.alloc 4) a0))
+
+  ;; elements 24 bytes apart
+  (fn elements [] -> i32 (unsafe)
+    (let xs:(arr V) (arr.new V 2))
+    (arr.set V xs 1 V.a 5)
+    (mem.load32 (+ (arr.addr xs) 24)))
+
+  (fn read_null [] -> i64 (get (get (ptr.null Holder) Holder.w) W.n))
+
+  (fn read_past [i:i32] -> i32
+    (let xs:(arr V) (arr.new V 2))
+    (get (arr.get V xs i) V.a))
+
+  (fn write_reserved [] -> i32 (unsafe)
+    (put (ptr.cast Holder (- 600 88)) Holder.w (make W (make V 1 1.0 true) 1i64))
+    0)
+)
+"#;
+    let (module, wasm) = compile_checked(src);
+    assert_eq!(differential(&module, &wasm, "sizes", &[]), Ok(Value::Int(2400 + 320 + 40)));
+    // a 11, c true (1), n 9
+    assert_eq!(differential(&module, &wasm, "raw", &[]), Ok(Value::Int(21)));
+    // the 4-byte block rounded to 8, then the 32-byte cell
+    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(40)));
+    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(40)));
+    assert_eq!(differential(&module, &wasm, "elements", &[]), Ok(Value::Int(5)));
+    assert!(differential(&module, &wasm, "read_null", &[]).is_err());
+    assert_eq!(differential(&module, &wasm, "read_past", &[1]), Ok(Value::Int(0)));
+    // out of bounds: both fail, with the same message
+    assert!(differential(&module, &wasm, "read_past", &[2]).is_err());
+    let e = differential(&module, &wasm, "write_reserved", &[]).unwrap_err();
+    assert!(e.contains("reserved runtime block"), "got {e}");
 }

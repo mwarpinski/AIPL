@@ -232,9 +232,17 @@ FAQ or ROADMAP.md.
   failed checks out of line. Native code went from 1.6-5.7x wasmtime's
   time to 0.8-1.6x on the eight benchmarks (target: within 2x);
   docs/BENCHMARKS.md.
-- [ ] **Structs by value and arrays of structs** (plan approved 2026-10-14,
-  docs/design/VALUES_PLAN.md: declared, immutable value structs of at most
-  8 scalars; then unions, results, and `Option` by value).
+- [x] **Structs by value and arrays of structs** (done 2026-10-15,
+  docs/design/VALUES_PLAN.md V1-V4): declared, immutable value structs of
+  at most 8 scalars, held inline in arrays and structs, in every backend;
+  nbody with an `(arr Body)` runs 1.9x faster under wasmtime.
+  AIPL_SPEC.md 4.E.
+- [x] **Unions and `Option` by value** (done 2026-10-15, VALUES_PLAN.md V5):
+  a union that does not contain itself, holds no `str`, and fits in 8
+  slots allocates nothing; `map.find` returns an `Option`. AIPL_SPEC.md 4.J.
+- [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
+  `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
+  side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
 
 ## 7. Documentation: delete, merge, keep
 

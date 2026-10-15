@@ -58,13 +58,28 @@ class Gen:
     def __init__(self, rng):
         self.rng = rng
         self.n = 0
+        # value structs (AIPL_SPEC.md 4.E): scalars, enums, and an earlier
+        # one held inline, at most 8 scalars in all
+        self.values = {}
+        for k in range(rng.choice([0, 1, 1, 2])):
+            fields, width = [], 0
+            for j in range(rng.randint(1, 4)):
+                inner = [v for v in self.values if width + self.width(v) <= 8]
+                ft = rng.choice(inner) if inner and rng.random() < 0.3 else rng.choice(SCALARS + ["E"])
+                if width + self.width(ft) > 8:
+                    break
+                fields.append((f"x{j}", ft))
+                width += self.width(ft)
+            self.values[f"V{k}"] = fields
         nstructs = rng.randint(1, 3)
         self.structs = {}
         for k in range(nstructs):
-            fields = [(f"f{j}", rng.choice(SCALARS + ["E"])) for j in range(rng.randint(1, 4))]
+            fields = [(f"f{j}", rng.choice(SCALARS + ["E"] + list(self.values))) for j in range(rng.randint(1, 4))]
             self.structs[f"S{k}"] = fields
         self.enum = ["a", "b", ("c", rng.choice([2, 5, 10])), "d"]
         self.variants = [("p", [("x", "i32"), ("y", "i64")]), ("q", [("z", "f64")]), ("r", [])]
+        if self.values:
+            self.variants.append(("v", [("w", rng.choice(list(self.values))), ("n", "i32")]))
         # (name, [(param, type)], ret, recursive); a recursive function's
         # first parameter counts down to 0, from at most 3
         self.fns = []
@@ -75,8 +90,17 @@ class Gen:
         self.n += 1
         return f"{base}{self.n}"
 
+    def width(self, t):
+        """How many scalars a value of type t is."""
+        return sum(self.width(ft) for _, ft in self.values[t]) if t in self.values else 1
+
+    def elems(self):
+        return SCALARS + ["E"] + list(self.values)
+
     def any_type(self):
         r = self.rng.random()
+        if self.values and self.rng.random() < 0.12:
+            return self.rng.choice(list(self.values))
         if r < 0.55:
             return self.rng.choice(SCALARS)
         if r < 0.65:
@@ -86,7 +110,7 @@ class Gen:
         if r < 0.84:
             return f"(ptr {self.rng.choice(list(self.structs))})"
         if r < 0.92:
-            return f"(arr {self.rng.choice(SCALARS + ['E'])})"
+            return f"(arr {self.rng.choice(self.elems())})"
         if r < 0.96 or not self.targets():
             return R
         return F
@@ -130,6 +154,8 @@ class Gen:
             return "E." + rng.choice(self.enum_members())
         if t == "U":
             return self.make_union(None, 0)
+        if t in self.values:
+            return f"(make {t} {' '.join(self.literal(ft) for _, ft in self.values[t])})"
         # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
             return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]})"
@@ -137,7 +163,7 @@ class Gen:
             el = t[5:-1]
             return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
         if t == R:
-            return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err {self.literal('bool')})"
+            return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err:i32 {self.literal('bool')})"
         if t == F:
             return f"(ref {rng.choice(self.targets())})"
         raise ValueError(t)
@@ -163,6 +189,9 @@ class Gen:
             "U": [self.make_union, self.call, self.if_expr],
             R: [self.make_result, self.call, self.if_expr],
         }.get(t)
+        if t in self.values:
+            choices = [self.make_value, self.make_value, self.with_expr, self.call, self.if_expr, self.match_expr,
+                       self.cond_expr, self.block_expr, self.struct_get, self.arr_get, self.match_result]
         if choices is None:  # pointers and arrays
             choices = [self.call, self.if_expr]
         for _ in range(4):
@@ -171,6 +200,13 @@ class Gen:
                 return e
         return self.literal(t)
 
+    def make_value(self, ctx, t, d):
+        return f"(make {t} {' '.join(self.expr(ctx, ft, d) for _, ft in self.values[t])})"
+
+    def with_expr(self, ctx, t, d):
+        f, ft = self.rng.choice(self.values[t])
+        return f"(with {self.expr(ctx, t, d)} {t}.{f} {self.expr(ctx, ft, d)})"
+
     def cond_expr(self, ctx, t, d):
         clauses = " ".join(f"({self.expr(ctx, 'bool', d)} {self.expr(ctx, t, d)})" for _ in range(self.rng.randint(1, 3)))
         return f"(cond {clauses} (else {self.expr(ctx, t, d)}))"
@@ -178,7 +214,7 @@ class Gen:
     def make_result(self, ctx, t, d):
         if self.rng.random() < 0.5:
             return f"(ok:bool {self.expr(ctx, 'i32', d)})"
-        return f"(err {self.expr(ctx, 'bool', d)})"
+        return f"(err:i32 {self.expr(ctx, 'bool', d)})"
 
     def match_result(self, ctx, t, d):
         ok_arm, err_arm = ctx.child(), ctx.child()
@@ -192,7 +228,7 @@ class Gen:
         r = self.rng.random()
         if r < 0.4:
             return f"(str.len {self.rng.choice(STRINGS)})"
-        what = self.rng.choice(list(self.structs) + SCALARS + ["E", "(ptr S0)", "(arr i64)"])
+        what = self.rng.choice(list(self.structs) + list(self.values) + SCALARS + ["E", "(ptr S0)", "(arr i64)"])
         return f"(sizeof {what})"
 
     def misc_bool(self, ctx, t, d):
@@ -283,13 +319,26 @@ class Gen:
         return f"(enum.cast E {self.rng.choice(self.enum_values())})"
 
     def struct_get(self, ctx, t, d):
-        options = [(s, f) for s, fs in self.structs.items() for f, ft in fs if ft == t]
-        self.rng.shuffle(options)
-        for s, f in options:
+        reads = []
+        for s, fs in self.structs.items():
             p = self.var_of(ctx, f"(ptr {s})")
-            if p:
-                return f"(get {p} {s}.{f})"
-        return None
+            for f, ft in fs if p else []:
+                if ft == t:
+                    reads.append(f"(get {p} {s}.{f})")
+                # a path: a field of the value held in the field
+                for g, gt in self.values.get(ft, []):
+                    if gt == t:
+                        reads.append(f"(get {p} {s}.{f} {ft}.{g})")
+        # from a value: one held, or computed
+        for v, fs in self.values.items():
+            for f, ft in fs:
+                if ft == t:
+                    reads.append(f"(get {self.expr(ctx, v, d)} {v}.{f})")
+            a = self.var_of(ctx, f"(arr {v})")
+            for f, ft in fs if a else []:
+                if ft == t:
+                    reads.append(f"(arr.get {v} {a} {self.index(ctx, a, d)} {v}.{f})")
+        return self.rng.choice(reads) if reads else None
 
     def index(self, ctx, a, d):
         i = self.expr(ctx, "i32", d)
@@ -405,11 +454,17 @@ class Gen:
             if ptrs:
                 p, s = rng.choice(ptrs)
                 f, ft = rng.choice(self.structs[s])
+                if ft in self.values and rng.random() < 0.5:
+                    g, gt = rng.choice(self.values[ft])
+                    return f"(put {p} {s}.{f} {ft}.{g} {self.expr(ctx, gt, d)})"
                 return f"(put {p} {s}.{f} {self.expr(ctx, ft, d)})"
         if r < 0.9:
             arrs = [(n, vt[5:-1]) for n, (vt, _) in ctx.vars.items() if vt.startswith("(arr ")]
             if arrs:
                 a, el = rng.choice(arrs)
+                if el in self.values and rng.random() < 0.5:
+                    g, gt = rng.choice(self.values[el])
+                    return f"(arr.set {el} {a} {self.index(ctx, a, d)} {el}.{g} {self.expr(ctx, gt, d)})"
                 return f"(arr.set {el} {a} {self.index(ctx, a, d)} {self.expr(ctx, el, d)})"
         if r < 0.92:
             return self.memory_stmt(ctx, d)
@@ -443,18 +498,20 @@ class Gen:
             return self.print_value(t, e)
         v = self.fresh("s")
         out = [f"(let {v}:{t} {e})"]
-        if t == "U":
+        if t in self.values:
+            out += [self.show(ctx, ft, f"(get {v} {t}.{f})") for f, ft in self.values[t]]
+        elif t == "U":
             arms = []
             for name, fields in self.variants:
                 bs = [self.fresh("m") for _ in fields]
-                shown = " ".join(self.print_value(ft, b) for (_, ft), b in zip(fields, bs))
+                shown = " ".join(self.show(ctx, ft, b) for (_, ft), b in zip(fields, bs))
                 bind = f" [{' '.join(bs)}]" if fields else ""
                 arms.append(f'(U.{name}{bind} (sys.print "{self.fresh("u")} {name}") {shown})')
             out.append(f"(match {v} {' '.join(arms)})")
         elif t.startswith("(ptr "):
             s = t[5:-1]
             out.append(self.print_value("i32", f"(ptr.addr {v})"))  # the heap is laid out alike everywhere
-            out += [self.print_value(ft, f"(get {v} {s}.{f})") for f, ft in self.structs[s]]
+            out += [self.show(ctx, ft, f"(get {v} {s}.{f})") for f, ft in self.structs[s]]
         elif t == R:
             x, y = self.fresh("k"), self.fresh("e")
             out.append(f"(match_result {v} (ok {x} {self.print_value('i32', x)}) (err {y} {self.print_value('bool', y)}))")
@@ -465,7 +522,7 @@ class Gen:
             i = self.fresh("i")
             out.append(self.print_value("i32", f"(arr.addr {v})"))
             out.append(self.print_value("i32", f"(arr.len {v})"))
-            out.append(f"(loop {i} 0 (- (arr.len {v}) 1) 1 {self.print_value(el, f'(arr.get {el} {v} {i})')})")
+            out.append(f"(loop {i} 0 (- (arr.len {v}) 1) 1 {self.show(ctx, el, f'(arr.get {el} {v} {i})')})")
         return " ".join(out)
 
     def print_value(self, t, e):
@@ -516,6 +573,8 @@ class Gen:
     def program(self):
         rng = self.rng
         lines = ["(module prog", "  (import io)"]
+        for v, fs in self.values.items():
+            lines.append(f"  (struct {v} [{' '.join(f'{f}:{t}' for f, t in fs)}] (value))")
         for s, fs in self.structs.items():
             lines.append(f"  (struct {s} [{' '.join(f'{f}:{t}' for f, t in fs)}])")
         members = " ".join(m if isinstance(m, str) else f"({m[0]} {m[1]})" for m in self.enum)

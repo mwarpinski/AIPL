@@ -1,7 +1,9 @@
 # Small structs by value
 
-**Status: approved 2026-10-14, not started.** Every decision at the end
-was taken as recommended. Built after the native rewrite
+**Status: approved 2026-10-14; V1-V4 done 2026-10-15 (every backend
+runs value structs; nbody, std, and the docs use them); V5 done
+2026-10-15: unions, `Option`, and results by value (below).** Every decision at the end was taken
+as recommended. Built after the native rewrite
 (docs/design/NATIVE_SPEED_PLAN.md), per decision 6.
 
 ## The gap
@@ -87,11 +89,23 @@ they cannot be changed or compared by address. The backends:
 - **wasm:** a value is its fields, flattened: a `Vec3` local is three wasm
   locals, a `Vec3` parameter three parameters, and a `Vec3` result three
   results (wasm's multi-value, standard since wasm 2.0 and on by default in
-  wasmtime). An `if` or `match` that yields a value uses a block type with
-  several results. In memory a value is laid out inline as above.
+  wasmtime). A block never yields one: an `if`, `cond`, `match`, or
+  `match_result` that yields a value writes it into scratch locals from
+  each branch and pushes them after its end, so only calls have several
+  results, which is all the native backend has to support. `with`, and a
+  field read from a value that is computed rather than held (a call's
+  result), go through scratch locals too. In memory a value is laid out
+  inline as above, and moved one scalar at a time; a store first puts the
+  value in scratch locals, since a wasm store needs its address just
+  under its value.
 - **VM:** a value is a `Value::Record` of its fields.
-- **Native:** the translator gains functions and blocks with several
-  results (today at most one). This is the part that depends on the
+- **Native:** the translator gains functions with several results. One
+  result still comes back in rax; several go through a results area of
+  8 slots in the thread's FS block (after its stack limit): the callee
+  stores them there just before it returns, and the caller loads them
+  into value registers right after the call. Registers would be faster
+  but run out at 8 results (rax and the other registers a call may
+  change are 7); V4's measurements say whether it matters. This is the part that depends on the
   native rewrite (docs/design/NATIVE_SPEED_PLAN.md): built into the new
   translator once, rather than into the old one and again later.
 - **The self-hosted toolchain** does all of it too, byte for byte, as for
@@ -114,11 +128,40 @@ memory layout that the differential tests check address by address.
 
 | Stage | What | Done when |
 |---|---|---|
-| V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass |
-| V2 | wasm backend: flattened locals, parameters, multi-value results and blocks, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_opcode_conformance |
-| V3 | Native: several results per function and per block, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator |
-| V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md |
-| V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) |
+| V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass (done 2026-10-14) |
+| V2 | wasm backend: flattened locals, parameters, multi-value results, scratch locals for branches that yield a value, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_values (done 2026-10-15) |
+| V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator (done 2026-10-15) |
+| V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md (done 2026-10-15: nbody 1.9x faster under wasmtime, 22% natively) |
+| V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) (done 2026-10-15; `map.get` is `map.find`) |
+
+## V5 as built (2026-10-15)
+
+- **Shared slots.** A union by value is its tag, then slots its variants
+  share by kind (i32-sized, f32, i64, f64), each variant taking the first
+  of each kind it needs, rather than every variant's fields in a row:
+  `alloc.Allocator`, four variants of one pointer, is 2 numbers rather
+  than 5. It is in every container and passed to every allocation, and
+  at 5 a call with two more arguments would no longer fit the native
+  backend's six argument registers. Unused slots hold zero.
+- **The rule** (AIPL_SPEC.md 4.J): a union is held by value unless it
+  contains itself, a variant holds a `str` (as for value structs), or it
+  needs more than 8 slots, counting a union it holds as its slots if that
+  one is a value, else one; each union is decided after those it holds.
+- **`map.find`, not `map.get`:** a generic function may not take a
+  built-in form's name. There was in fact no leak behind `map.get_or`; what
+  V5 gives is a lookup returning an `Option` that allocates nothing (the
+  test does a million).
+- **Results by value need their whole type written.** Building one needs
+  its full type, which `(ok v)` did not say (the missing side defaulted to
+  `i32`). Decided 2026-10-15: every `ok` and `err` names its other side,
+  `(ok:E v)` / `(err:T e)`, rather than both compilers inferring it from
+  context; about 60 sites in the repository were annotated. A result is
+  then held by value unless a side is a `str` or it needs more than 8
+  slots, laid out like a two-variant union.
+- Found on the way: a module with a generic function named `make` (as
+  `std/vec` and `std/map` have) could not use the `make` form, and the
+  Rust toolchain named the wrong file in a line table where a type
+  argument and a template token shared a line and column. Both fixed.
 
 ## Alternatives considered
 

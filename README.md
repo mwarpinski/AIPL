@@ -141,7 +141,7 @@ It is not as fast as C. On eight benchmarks, native code takes 0.6 to 13
 times as long as C compiled with `gcc -O2`, and WebAssembly under wasmtime
 0.6 to 12 times as long; the slowest, k-nucleotide and pidigits, run a hash
 map and big integers written in AIPL against C's tuned libraries. Native
-code takes 0.8 to 1.6 times as long as wasmtime's.
+code takes 0.9 to 2 times as long as wasmtime's.
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has every number and why.
 
 ## What is next

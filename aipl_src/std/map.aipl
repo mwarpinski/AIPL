@@ -4,6 +4,8 @@
 ;;   (let m:(ptr (map.Map i32 str)) (call (map.make i32 str) (call alloc.default) 0))
 ;;   (call (map.set i32 str) m 7 "seven")
 ;;   (call (map.get_or i32 str) m 7 "")
+;;   (match (call (map.find i32 i64) m 7)
+;;     ((option.Option i64) some [v] ...) ((option.Option i64) none ...))
 ;; Keys hash and compare through (cmp.Hash K): i32, i64, str, and
 ;; (ptr str.Bytes) (by contents) are implemented in std/cmp; a module
 ;; implements it for its own key types. A (ptr str.Bytes) key is kept as the
@@ -12,6 +14,7 @@
   (import alloc)
   (import cmp)
   (import str)
+  (import option)
 
   ;; state per slot: 0 empty, 1 used, 2 deleted
   (struct (Map K V) [keys:(arr K) vals:(arr V) states:(arr i32) count:i32 used:i32 allocator:alloc.Allocator] (pub)
@@ -94,6 +97,15 @@
     (let i:i32 (call (slot_for K V) m k))
     (if (eq (arr.get i32 (get m (Map K V) states) i) 1) (arr.get V (get m (Map K V) vals) i) default))
 
+  ;; The value for k, or none. An Option is a value when V fits in one
+  ;; (AIPL_SPEC.md 4.J: not a str, at most 7 scalars), so nothing is
+  ;; allocated for it.
+  (fn (find K V) [m:(ptr (Map K V)) k:K] -> (option.Option V) (pub) (where (cmp.Hash K))
+    (let i:i32 (call (slot_for K V) m k))
+    (if (eq (arr.get i32 (get m (Map K V) states) i) 1)
+        (make (option.Option V) some (arr.get V (get m (Map K V) vals) i))
+        (make (option.Option V) none)))
+
   (fn (has K V) [m:(ptr (Map K V)) k:K] -> bool (pub) (where (cmp.Hash K))
     (eq (arr.get i32 (get m (Map K V) states) (call (slot_for K V) m k)) 1))
 
@@ -112,7 +124,7 @@
 
   ;; ===== Tests =====
 
-  ;; Pass count; test_suite.aipl expects 8.
+  ;; Pass count; test_suite.aipl expects 9.
   (fn run_map_tests [] -> i32 (pub)
     (+ (call i32_cases) (call bytes_cases)))
 
@@ -127,6 +139,10 @@
         (block))
     (call (set i32 i32) m 7 70)
     (if (and (eq (call (count i32 i32) m) 2000) (eq (call (get_or i32 i32) m 7 0) 70)) (set! p (+ p 1)) (block))
+    ;; find: some for a key there, none for one not
+    (let found:i32 (match (call (find i32 i32) m 7) ((option.Option i32) some [v] v) ((option.Option i32) none -1)))
+    (let missing:bool (call (option.is_none i32) (call (find i32 i32) m 5000)))
+    (if (and (eq found 70) missing) (set! p (+ p 1)) (block))
     ;; remove every even key, then check membership and the count
     (loop i -1000 999 1
       (if (eq (% i 2) 0) (call (remove i32 i32) m i) false))

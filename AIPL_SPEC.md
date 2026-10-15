@@ -21,7 +21,7 @@ AIPL source is `.aipl` text: a context-free, parenthesis-delimited S-expression 
 program        ::= "(" "module" identifier import* ( struct_def | enum_def | union_def | const_def | fn_def | interface_def | impl_def )* ")" ;
 import         ::= "(" "import" import_path [ "as" identifier ] ")" ;
 import_path    ::= identifier ( "/" identifier )* ;
-struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" where* ")" ;
+struct_def     ::= "(" "struct" ( identifier | generic_head ) "[" field* "]" [ "(" "value" ")" ] where* ")" ;   (* (value): a value struct (section 4.E) *)
 field          ::= identifier ":" type ;
 generic_head   ::= "(" identifier type_param+ ")" ;
 type_param     ::= identifier ;                     (* starts with an uppercase letter *)
@@ -44,11 +44,12 @@ type           ::= "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void"
                  | "(" "ptr" struct_name ")"
                  | "(" "arr" type ")"
                  | "(" "fn" "[" type* "]" "->" type ")"
-                 | "(" struct_name type+ ")"          (* a generic struct instance, used behind ptr *)
+                 | "(" struct_name type+ ")"          (* a generic struct instance: behind ptr, or a value struct's *)
                  | type_param                         (* inside a generic definition *)
-                 | identifier ;                       (* an enum or a union, e.g. Color, Shape *)
+                 | identifier ;                       (* an enum, a union, or a value struct, e.g. Color, Shape, Vec3 *)
 struct_name    ::= identifier                       (* "m.S" for a struct from imported module m *)
 struct_ref     ::= struct_name | "(" struct_name type+ ")" ;
+field_ref      ::= struct_name "." identifier ;
 fn_name        ::= identifier | "(" identifier type+ ")" ;   (* the second form instantiates a generic, or names an interface's function: (Hash.hash i32) *)
 
 expr           ::= literal
@@ -63,17 +64,19 @@ expr           ::= literal
                  | "(" "unsafe" expr+ ")"            (* a block allowing unchecked operations (section 3) *)
                  | "(" "return" [ expr ] ")" | "(" "break" ")" | "(" "continue" ")"
                  | "(" "cond" ( "(" expr expr+ ")" )+ "(" "else" expr+ ")" ")"
-                 | "(" ("ok" | "err") [ ":" type ] expr ")"
+                 | "(" ("ok" | "err") ":" type expr ")"   (* the result's other side: (ok:E v), (err:T e) *)
                  | "(" "match_result" expr "(" "ok" identifier expr* ")" "(" "err" identifier expr* ")" ")"
                  | "(" "new" struct_ref ")"
                  | "(" "get" expr struct_name "." identifier ")"
+                 | "(" "get" expr field_ref field_ref+ ")"   (* a path into value structs held inline (section 4.E) *)
                  | "(" "get" expr "(" struct_name type+ ")" identifier ")"
                  | "(" "put" expr struct_name "." identifier expr ")"
+                 | "(" "put" expr field_ref field_ref+ expr ")"   (* one field of a value struct held in the field *)
                  | "(" "put" expr "(" struct_name type+ ")" identifier expr ")"
                  | "(" "sizeof" ( struct_ref | type ) ")"
                  | "(" "arr.new" type expr ")"
-                 | "(" "arr.get" type expr expr ")"
-                 | "(" "arr.set" type expr expr expr ")"
+                 | "(" "arr.get" type expr expr field_ref* ")"      (* a path reads one field of a value struct element *)
+                 | "(" "arr.set" type expr expr field_ref* expr ")" (* a path writes one *)
                  | "(" "arr.len" expr ")"
                  | "(" "ptr.null" struct_ref ")" | "(" "arr.null" type ")"
                  | "(" "ptr.cast" struct_ref expr ")" | "(" "arr.cast" type expr ")"
@@ -81,7 +84,8 @@ expr           ::= literal
                  | "(" "ref" fn_name ")"
                  | "(" "enum.cast" identifier expr ")" | "(" "enum.ord" expr ")"
                  | "(" "call_ref" type expr expr* ")"
-                 | "(" "make" identifier expr* ")"     (* Union.variant *)
+                 | "(" "make" identifier expr* ")"     (* Union.variant, or a value struct *)
+                 | "(" "with" expr field_ref expr ")"  (* a copy of a value struct with one field changed *)
                  | "(" "make" "(" identifier type+ ")" identifier expr* ")"   (* a generic union's variant (section 4.J) *)
                  | "(" "match" expr match_arm+ ")"
                  | "(" op expr* ")" ;
@@ -263,7 +267,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 - Fields are laid out in declaration order; each offset is rounded up to the field's alignment.
 - The total size is rounded up to the largest field alignment. `(sizeof Point)` is 8, `(sizeof Mixed)` is 24 (`flag` 0, padding, `val` 8, `tag` 16, padding).
 
-**Pointer and array types are strict.** `(ptr S)` and `(arr T)` are distinct from `i32` and from each other: a `(ptr Node)` cannot be passed where a `(ptr Point)` is expected, an `i32` is never accepted as either, and `arr.get` on an `(arr i32)` must say `i32`. Pointers and arrays have no arithmetic and compare only with `eq`/`neq`. The only conversions are the explicit casts below, which are the unchecked points in a program and easy to find. A struct is never a value on its own, only behind `(ptr S)`. Arrays are their own type rather than a `(ptr T)` because `arr.get`, `arr.set`, and `arr.len` read the length header that only `arr.new` writes, so the type guarantees the header exists. None of this exists at run time: every pointer and array is an `i32` address in both backends, and the compiled bytes are the same as for untyped code.
+**Pointer and array types are strict.** `(ptr S)` and `(arr T)` are distinct from `i32` and from each other: a `(ptr Node)` cannot be passed where a `(ptr Point)` is expected, an `i32` is never accepted as either, and `arr.get` on an `(arr i32)` must say `i32`. Pointers and arrays have no arithmetic and compare only with `eq`/`neq`. The only conversions are the explicit casts below, which are the unchecked points in a program and easy to find. A struct is used only behind `(ptr S)`, unless it is declared a value struct (below), which is never behind a pointer. Arrays are their own type rather than a `(ptr T)` because `arr.get`, `arr.set`, and `arr.len` read the length header that only `arr.new` writes, so the type guarantees the header exists. None of this exists at run time: every pointer and array is an `i32` address in both backends, and the compiled bytes are the same as for untyped code.
 
 | Form | Type | Semantics |
 |---|---|---|
@@ -279,7 +283,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 | `(ptr.cast S x)` / `(arr.cast T x)` | `(ptr S)` / `(arr T)` | `x` must be `i32`; reinterprets the address (unchecked) |
 | `(ptr.addr p)` / `(arr.addr a)` | `i32` | the address, e.g. for `mem.*` or arithmetic |
 
-Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, and function references `(fn [...] -> r)` (called with `call_ref`; how `std/alloc`'s custom allocators hold their functions), so arrays of pointers (`(arr (ptr Point))`) and of arrays (`(arr (arr i32))`) work; structs do not nest by value. A `bool` read by `get`/`arr.get` is `true` iff its word is nonzero (wasm emits `i32.const 0; i32.ne` after the load), so a word written raw with `mem.store32` behaves the same in both backends. A `str` field or element holds the address of the string's bytes, as a `str` value does in wasm. When storing one, the VM copies the string into the heap the way `str.ptr` does, so heap addresses after a `str` store differ between the backends while lengths, contents, and `eq` agree. `put` and `arr.set` go through the same reserved-block write guard as `mem.store*` in both backends (section 7.9).
+Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, and function references `(fn [...] -> r)` (called with `call_ref`; how `std/alloc`'s custom allocators hold their functions), so arrays of pointers (`(arr (ptr Point))`) and of arrays (`(arr (arr i32))`) work; so do value structs, held inline (below). A `bool` read by `get`/`arr.get` is `true` iff its word is nonzero (wasm emits `i32.const 0; i32.ne` after the load), so a word written raw with `mem.store32` behaves the same in both backends. A `str` field or element holds the address of the string's bytes, as a `str` value does in wasm. When storing one, the VM copies the string into the heap the way `str.ptr` does, so heap addresses after a `str` store differ between the backends while lengths, contents, and `eq` agree. `put` and `arr.set` go through the same reserved-block write guard as `mem.store*` in both backends (section 7.9).
 
 **Struct names are namespaced like functions** (section 11): inside the module that defines it, a struct is `Node`; an importer writes `compiler.Node` (or `c.Node` after `(import compiler as c)`), in `new`, `sizeof`, `(ptr ...)`, and field references such as `(get p compiler.Node.next)`. Two imported modules may each define a `Node`.
 
@@ -304,9 +308,55 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
     sum))                                 ;; => Int(33) in both backends
 ```
 
+#### Value structs
+
+A struct declared with `(value)` after its fields is a **value struct**: a value, like an `i32`, not a cell behind a pointer. It is copied where it goes (a `let`, an argument, a result, a field or array element holding it), it cannot be changed, only replaced by a copy with one field changed, and nothing is allocated for it. Small records of numbers (a point, a vector, a body's position and velocity, a file's size and time) are what it is for; docs/design/VALUES_PLAN.md gives the reasons for each rule.
+
+```lisp
+(module values_demo
+  (struct Vec2 [x:f64 y:f64] (value))
+  (struct Particle [pos:Vec2 vel:Vec2 alive:bool] (value))
+
+  (fn add [a:Vec2 b:Vec2] -> Vec2
+    (make Vec2 (+ (get a Vec2.x) (get b Vec2.x)) (+ (get a Vec2.y) (get b Vec2.y))))
+
+  (fn main [] -> i32
+    (let ps:(arr Particle) (arr.new Particle 2))       ;; two particles inline: 80 bytes
+    (arr.set Particle ps 0 (make Particle (make Vec2 1.0 2.0) (make Vec2 0.5 0.5) true))
+    (arr.set Particle ps 1 Particle.vel Vec2.y 3.0)     ;; one field, written in place
+    (let p:Particle (arr.get Particle ps 0))
+    (let moved:Particle (with p Particle.pos (call add (get p Particle.pos) (get p Particle.vel))))
+    (let y:f64 (+ (get moved Particle.pos Vec2.y) (arr.get Particle ps 1 Particle.vel Vec2.y)))
+    (i32.wrap (i64.trunc_f64_s (* y 10.0)))))           ;; => 55
+```
+
+| Form | Type | Semantics |
+|---|---|---|
+| `(make V a b ...)` | `V` | a value with every field given, in order (`make V takes 2 field value(s) (x y), got 1`) |
+| `(get v V.f)` | type of `f` | field `f` of the value `v` |
+| `(get e V.f W.g ...)` | type of the last field | a path: field `g` of the value struct held in field `f`, and so on; `e` may be a value or a `(ptr S)` whose field `S.f` holds one |
+| `(with v V.f x)` | `V` | a copy of `v` with field `f` set to `x` (`with V.x: expected i32, got bool`) |
+| `(put p S.f V.g ... x)` | `void` | a path from a pointer struct's field into the value struct it holds: one field written in place |
+| `(arr.get V a i V.f ...)`, `(arr.set V a i V.f ... x)` | | a path from an array element: one field read, or written in place |
+
+The rules, each checked with the message shown:
+
+- At least one field (`value struct 'E' has no fields`), and fields that are numbers, `bool`, enums, `(ptr S)`, `(arr T)`, function references, or other value structs: not `str`, unions, results, or `void` (`Field 's' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not str`).
+- Not containing itself, directly or through other value structs (`value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer`), and at most 8 scalars once the value structs in it are counted (`value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer`).
+- No address: `(ptr V)`, `(new V)`, `ptr.null`, and `ptr.cast` are errors (`'V' is a value struct, which has no address: write V, not (ptr V)`), and a field of one cannot be `put` (`a value struct's fields do not change: (with v V.x x) is a copy with one changed`). A field path writes into a value only where it sits in changeable memory: a pointer struct's field or an array element.
+- No `eq`: values do not compare (`eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)`).
+
+In memory a value struct is laid out inline like any struct (above): its fields in order, each aligned to its own alignment, the whole rounded up to the largest, so `(sizeof Vec2)` is 16 and `(sizeof Particle)` 40 (`alive` at 32, then padding to 8). As a field, element, union field, or result payload it takes that size and alignment. `(make V ...)` and `(with ...)` allocate nothing.
+
+A value struct is a type argument of the value kind (section 4.H): `(vec.Vec Vec2)` keeps its elements inline, and `(where (struct T))` still means a struct used through a pointer (`must be a struct used through a pointer ... is a value struct, which has no address`). `(pub)` comes after `(value)`: `(struct V [fields] (value) (pub))`. Outside its module, `make` needs every field `(pub)`, `with` counts as writing the field it changes, and each step of a path is checked like a `get` or `put` (section 11.1); using a value struct as a type argument is allowed whatever its fields, since a template cannot make one.
+
+Every backend runs value structs with the same results. The VM keeps a value as its fields' values. The wasm backend flattens one into its scalars: a `Particle` local is five wasm locals, a parameter five parameters, a result five results (multi-value). No wasm block yields one: an `if`, `cond`, `match`, or `match_result` that yields a value writes it into scratch locals from each branch and pushes them after its end, and a value stored to memory goes through scratch locals first. Native code returns one result in `rax` and several through an 8-slot area in the thread's block (section 6.6). The self-hosted compiler emits the same bytes as the Rust one.
+
 ### F. Results
 
-`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). Both backends allocate a heap cell from the heap cursor **before** evaluating the payload, laid out like a union variant with one field: the tag (0 = ok, 1 = err) as an `i32` at offset 0, then the payload, at offset 8 of a 16-byte cell if it is an `i64` or `f64`, otherwise at offset 4 of an 8-byte cell (a result payload is the address of its own cell). So a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell, taking each payload's type from the checker, since it claims the cell before the payload runs. For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
+`(ok:E v)` and `(err:T e)` build a value of type `(result T E)`, each naming the side it does not carry, so every result is made with its whole type written (`(ok v) must name its result's err type: write (ok:E v) for a (result T E)`); `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). A result lives only in locals, parameters, results, and other results (never in a struct field or an array).
+
+**Results by value.** Like a union (section 4.J), a result is held by value unless a side is a `str` or it needs more than 8 slots: its tag (0 = ok, 1 = err), then the slots its two sides share by kind, the ok side's scalars and the err side's each taking the first slots of their kinds, unused ones zero. `(result i32 i32)` is 2 slots, `(result Vec2 i64)` 4 (the tag, the `i64`, two `f64`s); building one allocates nothing. Otherwise, a result is a heap cell: both backends allocate it from the heap cursor **before** evaluating the payload, laid out like a union variant with one field: the tag (0 = ok, 1 = err) as an `i32` at offset 0, then the payload, at offset 8 of a 16-byte cell if it is an `i64` or `f64`, otherwise at offset 4 of an 8-byte cell (a result payload is the address of its own cell); a value struct sits inline after the tag, at its alignment (4 or 8), in a cell rounded up to a multiple of 8. So a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell, taking each payload's type from the checker, since it claims the cell before the payload runs. For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
 
 
 ### G. Function References
@@ -541,7 +591,15 @@ Rules the checker enforces:
 - **Binders are new names**, scoped to their arm: they may not shadow a name in scope.
 - **Union values are opaque.** They have no arithmetic and do not compare (`eq`/`neq` included): take them apart with `match`. There is no null union value, and no cast to one; `make` is the only way to build one.
 
-A union value is the address of a heap cell: the variant's index (its position in the declaration, from 0) as an `i32` at offset 0, then the variant's fields laid out like a struct's starting at offset 4 (an `i64` or `f64` field is aligned to 8). Each `make` allocates the variant's exact size, rounded up to 8, and the cell is never changed afterwards. `make` claims the cell before evaluating its fields, in both backends. `match` reads the index and compares it with each arm's in order; a match on an enum compares the value. Only a value built with `(enum.cast Name n)` from a number that is no member can reach the end of a `match` without an `else`: the VM reports `unreachable` and compiled code traps.
+**Unions by value.** Since unions cannot be changed, compared, or addressed, how one is held is invisible to a program, except in the memory it takes. Most unions are held by value, like a value struct (section 4.E): `make` allocates nothing, and a union is copied where it goes, inline in struct fields and arrays. A union is held by value unless:
+
+- it contains itself, directly or through other unions it holds (`List` above): then its size would have no bound;
+- a variant holds a `str`;
+- it needs more than 8 slots. A union by value is its variant's index (the tag, an `i32`), then slots the variants share by kind: the i32-sized slots (every 4-byte scalar but `f32`: `i32`, `bool`, enums, pointers, arrays, function references, unions and results held by address), then the `f32`, `i64`, and `f64` slots, as many of each as the variant needing most has. Each variant's scalars take the first slots of their kind in order: a value struct field its fields' scalars, a union held by value its own slots. So `Shape` above is 3 slots (the tag and two i32 slots, which `circle` and `rect` share), `(option.Option i64)` 2, and `std/alloc`'s `Allocator`, four variants of one pointer each, 2. A union holding another counts the held one's slots if it is held by value, else one; each union is decided after the unions it holds.
+
+In memory a union by value is laid out like a struct of its slots in that order, each aligned to its size, the whole rounded up to its largest; a slot its variant does not use holds zero, so the memory is the same in every backend. `(sizeof Shape)` is 12. Locals, parameters, and results hold one as its slots (several wasm values, as for a value struct).
+
+A union held by address is the address of a heap cell: the variant's index (its position in the declaration, from 0) as an `i32` at offset 0, then the variant's fields laid out like a struct's starting at offset 4 (an `i64` or `f64` field is aligned to 8). Each `make` allocates the variant's exact size, rounded up to 8, and the cell is never changed afterwards. `make` claims the cell before evaluating its fields, in both backends. `match` reads the index and compares it with each arm's in order; a match on an enum compares the value. Only a value built with `(enum.cast Name n)` from a number that is no member can reach the end of a `match` without an `else`: the VM reports `unreachable` and compiled code traps.
 
 `Parser::parse` alone knows the unions of the module it parses; across modules the resolver passes them along. Imports qualify unions like structs and enums: `geom.Shape`, `(make geom.Shape.dot)`, and in an arm `(geom.Shape.circle [r] ...)`, or through an alias `(g.Shape.circle [r] ...)`.
 
@@ -576,7 +634,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
          ((option.Option i32) none -1)))))     ;; 2 nodes, found at 3 => 23
 ```
 
-Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union. A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
+Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union; whether it is held by value is decided per instance (`(option.Option i64)` is 2 slots, `(option.Option str)` is a cell). A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
 
 ---
 
@@ -759,7 +817,7 @@ A compiled module runs under `aipl-run` (`src/bin/aipl_run.rs`), the toolchain's
 
 `aipl compile --exe FILE -o prog` on Linux x86-64 (or `--target native`) writes a native executable: an ELF file of machine code, statically linked, with no libc, launcher, or runtime (`aipl_src/native/`, designed in `docs/design/NATIVE_BACKEND_PLAN.md`). It is made from the same wasm module (`aipl_src/native/native.aipl` translates wasm to x86-64; the CLI runs it in its embedded wasmtime and sets the file's execute bit), so its behaviour is the wasm module's, and every test program is checked to match `aipl-run`'s output, error output, exit status, and files byte for byte (`tests/test_native.rs`).
 
-- **Size and speed.** `word_count` is about 65 KB; the AIPL compiler itself about 1.3 MB (the launcher build is 18 MB). Start-up is a few milliseconds (no engine to load or compile). The translator is a single-pass compiler that tracks where each value is (a register, a constant, a local) and emits code only when a value is used (docs/design/NATIVE_SPEED_PLAN.md): the natively built compiler compiles itself in 0.46 s against 0.53 s under wasmtime (which includes Cranelift's compile), and the eight benchmarks run in 0.8 to 1.6 times wasmtime's time (docs/BENCHMARKS.md). Memory accesses are checked by guard pages: an access outside the memory faults, and the fault becomes wasm's out-of-bounds trap with the same message and call chain.
+- **Size and speed.** `word_count` is about 65 KB; the AIPL compiler itself about 1.3 MB (the launcher build is 18 MB). Start-up is a few milliseconds (no engine to load or compile). The translator is a single-pass compiler that tracks where each value is (a register, a constant, a local) and emits code only when a value is used (docs/design/NATIVE_SPEED_PLAN.md): the natively built compiler compiles itself in 0.46 s against 0.53 s under wasmtime (which includes Cranelift's compile), and the eight benchmarks run in 0.9 to 2 times wasmtime's time, 2 on nbody, whose float-heavy loop has more values than registers (docs/BENCHMARKS.md). Memory accesses are checked by guard pages: an access outside the memory faults, and the fault becomes wasm's out-of-bounds trap with the same message and call chain. A function returns one result in `rax`; several (a value struct, section 4.E) go through 8 slots in the thread's block after its stack limit, stored by the function just before it returns and loaded by the caller right after the call.
 - **Same behaviour as section 6.5:** `_start`/`main`, exit statuses (0-125, otherwise an error with 134), traps with their call chain and status 134 (`./prog: wasm trap: ...` and `  at f` lines; WASI functions given a bad pointer report wasmtime's `Pointer out of bounds: Region { start: S, len: L }`), the command line, environment, stdio, fd 3 = working directory, fd 4 = `/` (not with `--sandbox`), threads (one OS thread each), clocks, and randomness.
 - **File access.** Paths resolve beneath their directory descriptor with `openat2(RESOLVE_BENEATH)`, so the kernel refuses `..` escapes, absolute paths under fd 3, and symlinks leading out, as wasmtime's preopens do. File descriptors are numbered as under wasmtime (the lowest free).
 - **Platforms.** Linux x86-64 only; elsewhere `--exe` writes the launcher bundle (section 6.5), and `--target native` is an error. `--target wasm` asks for the bundle on Linux too.
@@ -897,7 +955,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ```lisp
 (fn parse_digit [c:i32] -> (result i32 i32)
-  (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err -1)))
+  (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 -1)))
 
 (fn digit_or_zero [c:i32] -> i32
   (match_result (call parse_digit c)
@@ -1282,6 +1340,7 @@ Coverage:
 - Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
 - Typing and scoping (P7): one case per rule.
 - Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in both with the same message; and the section 4.E example.
+- Value structs held inline (docs/design/VALUES_PLAN.md): their sizes and offsets, raw words written through a field path, the heap used by a result's and a union's cell holding one, array element spacing, and reads through a null pointer or past an array's end and writes into the reserved block failing in both.
 - Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason, and files that do I/O (`word_count`, `word_freq`) are compared with captured output in `tests/test_wasi.rs` instead. Every example must parse (the stale-file list is empty). The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous; today it compares `accounts`, `math_core`, `matrix_mult`, and `quicksort` over 116 calls. Every example is also compiled by the self-hosted compiler at byte parity (`tests/test_selfhost.rs`).
 - `aipl_src/codegen.aipl`'s `test_signatures_and_locals` is compared under WASI (the module uses `fs.*` and so imports WASI).
 
@@ -1348,7 +1407,7 @@ Everything a module defines is private to it unless marked `(pub)`: another modu
 
 | Mark | Where | Meaning outside the module |
 |---|---|---|
-| `(pub)` | right after the signature: `(fn f [params] -> type (pub) ...)`, `(struct S [fields] (pub))`, `(union U [variants] (pub))`, `(enum E [members] (pub))`, `(const NAME:type value (pub))`, `(interface (Name T) (pub) ...)`; generic ones the same | the item may be named: called, referred to, used as a type, its members and variants used |
+| `(pub)` | right after the signature: `(fn f [params] -> type (pub) ...)`, `(struct S [fields] (pub))`, `(struct S [fields] (value) (pub))`, `(union U [variants] (pub))`, `(enum E [members] (pub))`, `(const NAME:type value (pub))`, `(interface (Name T) (pub) ...)`; generic ones the same | the item may be named: called, referred to, used as a type, its members and variants used |
 | a field `x:T` | in a struct's field list | private: neither `get` nor `put` |
 | `(read x:T)` | | `get` only |
 | `(pub x:T)` | | `get` and `put` |
@@ -1356,7 +1415,7 @@ Everything a module defines is private to it unless marked `(pub)`: another modu
 Rules (both resolvers, with the same messages):
 
 - **Using a private item** is an error where it is used: `'util.helper' is private to module util: mark it (pub) there to use it here`. Fields: `field 'step' of counter.Counter is private to module counter`, `field 'n' of counter.Counter is read-only outside module counter`.
-- **Making a struct** outside its module, with `(new S)` or by passing `S` itself as a type argument (which lets a template such as `alloc.create` make one), needs every field `(pub)`: `'counter.Counter' has fields private to module counter, so only counter can make one`. Code that may fill a struct only through its module's functions cannot get one any other way.
+- **Making a struct** outside its module, with `(new S)` or by passing `S` itself as a type argument (which lets a template such as `alloc.create` make one), needs every field `(pub)`: `'counter.Counter' has fields private to module counter, so only counter can make one`. Code that may fill a struct only through its module's functions cannot get one any other way. A value struct (section 4.E) is the same with `(make V ...)`, and `with` counts as writing the field it changes; but it may be a type argument whatever its fields, since a template cannot make one.
 - **A (pub) item shows no private type** of its module in what it gives others (a function's parameters and result, a struct's readable fields, a union's variants, an interface's signatures): `'start' is (pub) but its signature uses 'Counter', which is private: mark 'Counter' (pub) too`.
 - **Implementations** take no `(pub)`: an implementation is as visible as its interface and its type (section 4.H).
 - The entry module's marks change nothing (nothing imports it), and a module parsed on its own (`Parser::parse`) ignores them. The resolver checks visibility and leaves the marks out of the flat program, so the checker and the code generators never see them.
@@ -1491,7 +1550,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix), and for `i64`: `uint64_to_bytes`, `int64_to_bytes`: each writes ASCII at `out` and returns the count (at most 10, 11, 8, 20, and 21 bytes); `f64_fixed [x digits out]` writes `x` with `digits` decimals exactly as C's `printf("%.*f")` (the exact decimal value of the double, rounded half to even; `inf`, `nan`, a `-` for any negative sign bit; at most 312 + digits bytes) |
 | `io` | `read_stdin [] -> (ptr str.Bytes)` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `print_i64 [n:i64]`, `println_i64 [label n:i64]`, `print_f64 [x digits]`, `println_f64 [label x digits]`, `read_file [path:str] -> (ptr str.Bytes)` (whole file; `len` -1 on failure), `read_fd [fd] -> (ptr str.Bytes)` (reads an open descriptor to its end), `write_file [path:str b:(ptr str.Bytes)] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `(ptr str.Bytes)` |
 | `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `truncate [v n]`, `clear`, `index_of`, `sort_by [v cmp:(fn [T T] -> i32)]` (stable merge sort; `cmp` negative puts the first argument first), `(sort_by_with T C) [v ctx:C cmp:(fn [C T T] -> i32)]` (the same, `cmp` given `ctx` first: section 4.G), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
-| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `(ptr str.Bytes)` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `(ptr str.Bytes)` key is kept as the pointer, so its bytes must not change while it is stored |
+| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `(ptr str.Bytes)` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `find [m k] -> (option.Option V)` (held by value when `V` fits, so a lookup allocates nothing), `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `(ptr str.Bytes)` key is kept as the pointer, so its bytes must not change while it is stored |
 | `cmp` | the interfaces `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`: -1, 0, or 1), and `(cmp.Hash T)` (`hash`, `same`), implemented for `i32`, `i64`, `bool` (Eq), `str` (bytewise), and `(ptr str.Bytes)` (Hash, by contents); none for floats (section 4.H) |
 | `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> (ptr str.Bytes)` (`len` -1 past the end), `arg_int [i default] -> i32` (argument `i` as a number, or `default` if it is missing or not one: `(call os.arg_int 1 1000)`), `env [name:str] -> (ptr str.Bytes)` (`len` -1 if unset), each fetching a fresh copy; `random_i32 [] -> i32` from the OS generator |
 | `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (also ends any view of it), `push_byte`, `push_str [b s:str]`, `push_bytes [b (ptr str.Bytes)]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `clear`, `bytes [b] -> (ptr str.Bytes)` (a view of the contents; take it after building), `write [b fd] -> i32`, `print [b]` (the contents to standard output) |
@@ -1500,7 +1559,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `alloc` | any allocator as one value (docs/design/HEAP_PLAN.md): the union `alloc.Allocator` of a heap, an arena, or a fixed buffer; `of_heap [h]`, `of_arena [r]`, `fixed [base len]` (unsafe to call: hands out those bytes; a free takes back only the most recent allocation), `default []` (one shared heap, made on first use); `raw [a n]`, `free_raw [a p n]` (unsafe to call), `(call (alloc.create T) a)`, `(call (alloc.destroy T) a p)`, `(call (alloc.array T) a n)`, `(call (alloc.free_array T) a xs)`. A free does what the allocator does: a heap reuses and checks, an arena ignores it until `reset` ; `(custom C) [state:C alloc_fn free_fn]` for a program's own allocator, unsafe to call (`alloc_fn [state:C n] -> i32`, 8-aligned; `free_fn [state:C p n]`; the state keeps its type, typically a pointer to the allocator's struct) |
 | `time` | timing code with the monotonic clock: `now [] -> i64` (nanoseconds), `since [start] -> i64`, `push_duration [b ns]` ("850 ns", "12.345 us", "3.071 ms", "4.200 s": three decimals in the largest fitting unit, integer arithmetic), `report [label start]` ("label: 12.345 ms" on stderr, so a program's output stays clean) |
 | `thread` | `(spawn_with C) [worker:(fn [C] -> i32) ctx:C] -> i32`: runs `worker` on `ctx` on a new thread (unsafe to call, as `thread.spawn` is); `(thread.join h)` gives the result. The worker's context keeps its type, where `thread.spawn` passes an `i32` |
-| `fs` | directories and file information over `fs.opendir`, `fs.readdir`, and `fs.stat`: `list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec (ptr str.Bytes))))` (the names in a directory sorted bytewise, without `.` and `..`, so a listing is the same in every backend; `none` if it cannot be read), `info [path:str] -> (option.Option (ptr fs.Info))` with `(struct Info [(read kind:fs.Kind) (read size:i64) (read modified:i64)])` (`fs.Kind.file`, `directory`, or `other`, after following symbolic links; `modified` in nanoseconds since 1970), and `list_path` / `info_path` for a path held as `(ptr str.Bytes)`. Starting other processes is not provided: WASI has no way to |
+| `fs` | directories and file information over `fs.opendir`, `fs.readdir`, and `fs.stat`: `list [a:alloc.Allocator path:str] -> (option.Option (ptr (vec.Vec (ptr str.Bytes))))` (the names in a directory sorted bytewise, without `.` and `..`, so a listing is the same in every backend; `none` if it cannot be read), `info [path:str] -> (option.Option fs.Info)` with `(struct Info [(read kind:fs.Kind) (read size:i64) (read modified:i64)] (value))`, a value struct (section 4.E) (`fs.Kind.file`, `directory`, or `other`, after following symbolic links; `modified` in nanoseconds since 1970), and `list_path` / `info_path` for a path held as `(ptr str.Bytes)`. Starting other processes is not provided: WASI has no way to |
 | `json` | JSON (RFC 8259) to and from a `json.Value`, `(union Value [(null) (boolean b:bool) (number n:f64) (text s:(ptr str.Bytes)) (list items:(ptr (vec.Vec Value))) (object fields:(ptr (vec.Vec (ptr json.Field))))])`. `parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result json.Value (ptr json.Error))` is strict: valid UTF-8, no duplicate keys, nesting at most 512 deep, numbers that fit an `f64`, and an `Error` with the byte offset `at` and `what` went wrong. `get [v key:str] -> (option.Option json.Value)` (an object's member), `at [v i]` (a list's element), `count [v]` (elements or members, 0 for other values); `field [a key value] -> (ptr json.Field)` makes a member for building an object (`(read key)`, `(read value)`). `write [b:(ptr buf.Buf) v]` writes the text JavaScript's `JSON.stringify` writes: no spaces, keys in their order, numbers as the shortest digits that read back as the same `f64` (`0.1`, `1e+21`, `5e-324`); writing an infinity or NaN fails its contract. `tests/test_std.rs` compares the numbers with Rust's shortest digits on 20,000 doubles |
 | `option` | `(union (option.Option T) [(some value:T) (none)])`, a value that may be missing (section 4.J): `(make (option.Option i32) some 5)`, `(make (option.Option i32) none)`; `(call (option.is_some T) o)`, `is_none`, `(call (option.unwrap_or T) o fallback)` |
 | `float` | `from_decimal [addr len] -> f64`: decimal text (an optional sign, digits with one `.`, optionally `e`/`E` and a signed exponent) to the nearest `f64`, ties to even, as Rust's `parse::<f64>`; too large is an infinity, too small a zero. The self-hosted compiler converts its float literals with it; `tests/test_std.rs` compares it with Rust on 400,000 literals |

@@ -12,7 +12,10 @@
 ;;     pushed by the caller, first argument first: parameter i of n at
 ;;     [rbp + 16 + 8 * (n - 1 - i)], declared local j at [rbp - 8 * (j + 1)].
 ;;     Declared locals get zeroed 8-byte slots (wasm locals start at zero).
-;;     The result (if any) comes back in rax. rbx, r12-r14, r8, r9 and
+;;     One result comes back in rax; several (a value struct,
+;;     docs/design/VALUES_PLAN.md V3) in the thread's results area, 8 bytes
+;;     each in order, in its FS block after the stack limit (results_off),
+;;     which the caller reads right after the call. rbx, r12-r14, r8, r9 and
 ;;     xmm8-xmm15 are callee-saved (they hold locals); the rest are not.
 ;;   - The wasm value stack: its lower part is the machine stack, one
 ;;     8-byte slot per value (an i32 in its low half; the high half is
@@ -75,7 +78,8 @@
   (struct Reason [(read addr:i32) (read len:i32) (pub frames:bool)] (pub))
 
   ;; An open label. kind: 0 block, 1 loop, 2 if, 3 the function body.
-  ;; arity: the label's result count (0 or 1). height: the value stack depth
+  ;; arity: the label's result count (0 or 1; the function body's may be
+  ;; more, which only its end and return carry). height: the value stack depth
   ;; when it opened. start: a loop's first instruction. fixups: forward
   ;; jumps to its end. else_at: an if's jump to its else (or end), -1 once
   ;; patched or when there is none. entry_dead: opened in dead code.
@@ -599,6 +603,28 @@
 
   (fn n_fimports [l:(ptr L)] -> i32 (pub) (call (vec.len (ptr wasm_reader.Import)) (get l L.fimports)))
 
+  ;; Where a function's several results are passed: 8 slots of 8 bytes in
+  ;; the thread's FS block, after its stack limit (a value struct is at most
+  ;; 8 scalars).
+  (fn results_off [l:(ptr L)] -> i32 (pub) (+ (get l L.stack_limit_off) 8))
+  (fn results_size [] -> i32 (pub) 64)
+
+  ;; After a call: its n results become the top of the value stack, one in
+  ;; rax, several each in a value register, loaded from the results area.
+  (fn push_results [l:(ptr L) n:i32] -> void
+    (let c:(ptr buf.Buf) (get l L.code))
+    (cond
+      ((eq n 1) (call push_rax l))
+      ((gt n 1)
+       (if (gt n 8) (call fail l "native: more than 8 results") (block))
+       (loop i 0 (- n 1) 1
+         (let r:i32 (call scratch l 0))
+         (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11))
+         (call x64.fs c)
+         (call x64.load c 64 r (call x64.mem (call r11) (+ (call results_off l) (* 8 i))))
+         (call push_reg l r)))
+      (else (block))))
+
   ;; The type of function index `func`.
   (fn func_type [l:(ptr L) w:(ptr wasm_reader.Wasm) func:i32] -> (ptr wasm_reader.FuncType)
     (let nimports:i32 (call n_fimports l))
@@ -739,10 +765,19 @@
               (call x64.load c 64 r (call local_slot l i)))
           (block))))
 
-  ;; Leaves the function: the result (if any) from the stack top into rax.
-  (fn emit_return [l:(ptr L) has_result:bool] -> void
+  ;; Leaves the function: its one result from the stack top into rax, or
+  ;; its several into the results area, the last (the top) first.
+  (fn emit_return [l:(ptr L) nres:i32] -> void
     (let c:(ptr buf.Buf) (get l L.code))
-    (if has_result (call pop_rax l) (block))
+    (if (eq nres 1) (call pop_rax l) (block))
+    (if (gt nres 1)
+        (loop j 1 nres 1
+          (call vpop l (get l L.oa))
+          (let v:i32 (call read_reg l (get l L.oa) (call r10)))
+          (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11))
+          (call x64.fs c)
+          (call x64.store c 64 (call x64.mem (call r11) (+ (call results_off l) (* 8 (- nres j)))) v))
+        (block))
     ;; the caller's values of the registers that held locals
     (loop k 0 (- (get l L.nsaved) 1) 1
       (call x64.load c 64 (call alloc_reg k) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ k 1))))))
@@ -759,7 +794,8 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (let t:(ptr wasm_reader.FuncType) (call func_type l w index))
     (let np:i32 (call nparams t))
-    (let has_result:bool (gt (call nresults t) 0))
+    (let nres:i32 (call nresults t))
+    (if (gt nres 8) (call fail l "native: more than 8 results") (block))
     (put l L.np np)
     (put l L.regcall (call regcall_params np))
     (let declared:i32 0)
@@ -822,7 +858,7 @@
     (put l L.np np)
     (call vclear l)
     (call (vec.clear (ptr Label)) (get l L.labels))
-    (call open_label l 3 (if has_result 1 0))
+    (call open_label l 3 nres)
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
     ;; the line table's entries take effect where their instruction's code starts
     (let lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) (call wasm_reader.lines_of w index))
@@ -850,7 +886,7 @@
             (put l L.next_op (get nx wasm_reader.Instr.op))
             (put l L.next_a (get nx wasm_reader.Instr.a)))
           (block (put l L.next_op -1) (put l L.next_a -1)))
-      (call instr l w np has_result ins))
+      (call instr l w np nres ins))
     ;; the failed checks' code, after the function's own
     (loop k 0 (- (call (vec.len (ptr Cold)) (get l L.colds)) 1) 1
       (let cd:(ptr Cold) (call (vec.at (ptr Cold)) (get l L.colds) k))
@@ -868,7 +904,7 @@
         (let nx:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code (+ j 1)))
         (put l L.next_op (get nx wasm_reader.Instr.op))
         (put l L.next_a (get nx wasm_reader.Instr.a))
-        (call instr l w np has_result ins))))
+        (call instr l w np nres ins))))
 
   ;; Notes the source position of the instruction at wasm offset `at` (the
   ;; last line-table entry at or before it), for code emitted out of order.
@@ -882,14 +918,14 @@
           (let e:(ptr wasm_reader.LinePos) (call (vec.at (ptr wasm_reader.LinePos)) lines best))
           (call note_position l (get e wasm_reader.LinePos.file) (get e wasm_reader.LinePos.line) (get e wasm_reader.LinePos.col)))))
 
-  (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 has_result:bool ins:(ptr wasm_reader.Instr)] -> void
+  (fn instr [l:(ptr L) w:(ptr wasm_reader.Wasm) np:i32 nres:i32 ins:(ptr wasm_reader.Instr)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (put l L.taken 0)
     (put l L.taken_x 0)
     (let op:i32 (get ins wasm_reader.Instr.op))
     (let a:i32 (get ins wasm_reader.Instr.a))
     (cond
-      ((call control l op a has_result) (block))
+      ((call control l op a nres) (block))
       ;; dead code: nothing to emit, nothing to track
       ((get l L.dead) (block))
       ((call plain l w np op a ins) (call adjust l (call stack_effect l w op a)))
@@ -974,6 +1010,8 @@
       ((eq op 65) (call vpush l 2 (get ins wasm_reader.Instr.c)) true)
       ;; i64.const, and f64.const (a value's bits; the reader keeps them in c)
       ((or (eq op 66) (eq op 68)) (call vpush l 4 (get ins wasm_reader.Instr.c)) true)
+      ;; f32.const: its bits, as an i32 constant's (a slot holds a float's bits)
+      ((eq op 67) (call vpush l 2 (get ins wasm_reader.Instr.c)) true)
       ((eq op 16)
        (let t:(ptr wasm_reader.FuncType) (call func_type l w a))
        (let to_import:bool (lt a (call n_fimports l)))
@@ -987,7 +1025,7 @@
        (if (and (not regcall) (gt (call nparams t) 0))
            (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
            (block))
-       (if (gt (call nresults t) 0) (call push_rax l) (block))
+       (call push_results l (call nresults t))
        true)
       ((eq op 17) (call keep_top l 1) (call emit_call_indirect l w a) true)
       ;; global.get / global.set: the thread's globals block (FS-relative)
@@ -1021,7 +1059,7 @@
   ;; How a non-control instruction changes the value stack's depth.
   (fn stack_effect [l:(ptr L) w:(ptr wasm_reader.Wasm) op:i32 a:i32] -> i32
     (cond
-      ((or (or (eq op 65) (eq op 66)) (or (eq op 68) (eq op 32))) 1) ;; consts, local.get
+      ((or (or (eq op 65) (eq op 66)) (or (or (eq op 67) (eq op 68)) (eq op 32))) 1) ;; consts, local.get
       ((or (eq op 33) (eq op 26)) -1)                               ;; local.set, drop
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u
@@ -1126,6 +1164,8 @@
   (fn emit_branch [l:(ptr L) lab:(ptr Label)] -> void
     (let c:(ptr buf.Buf) (get l L.code))
     (let carried:i32 (if (eq (get lab Label.kind) 1) 0 (get lab Label.arity)))
+    ;; (the wasm backend branches with one value at most: no block yields several)
+    (if (gt carried 1) (call fail l "native: a branch carrying several values") (block))
     (if (neq (get l L.depth) (+ (get lab Label.height) carried))
         (block
           ;; raw pops and pushes: the target expects its values in memory
@@ -1141,7 +1181,7 @@
 
   ;; block loop if else end br br_if return unreachable. Returns false for
   ;; any other opcode.
-  (fn control [l:(ptr L) op:i32 a:i32 has_result:bool] -> bool
+  (fn control [l:(ptr L) op:i32 a:i32 nres:i32] -> bool
     (let c:(ptr buf.Buf) (get l L.code))
     (let live:bool (not (get l L.dead)))
     (cond
@@ -1218,7 +1258,7 @@
        (let lab:(ptr Label) (call label_at l 0))
        ;; falling off the function's end: return with the result where it is
        (if (and live (eq (get lab Label.kind) 3))
-           (block (call emit_return l has_result) (call go_dead l) (set! live false))
+           (block (call emit_return l nres) (call go_dead l) (set! live false))
            (block))
        (call flush l)
        (call (vec.pop (ptr Label)) (get l L.labels))
@@ -1241,7 +1281,7 @@
              (loop q 0 (- (call (vec.len i32) (get lab Label.snap_k)) 1) 1
                (call vpush l (call (vec.at i32) (get lab Label.snap_k) q) (call (vec.at i64) (get lab Label.snap_v) q))))
            (block))
-       (if (and (eq (get lab Label.kind) 3) (get lab Label.reached)) (call emit_return l has_result) (block))
+       (if (and (eq (get lab Label.kind) 3) (get lab Label.reached)) (call emit_return l nres) (block))
        true)
       ((not live) (or (eq op 12) (or (eq op 13) (or (eq op 15) (eq op 0)))))
       ((eq op 12)
@@ -1269,7 +1309,7 @@
              (call x64.patch_rel32 c skip (call buf.len c))))
        true)
       ((eq op 15)
-       (call emit_return l has_result)
+       (call emit_return l nres)
        (call go_dead l)
        true)
       ((eq op 0)
@@ -1641,7 +1681,7 @@
     (if (and (not regcall) (gt (call nparams t) 0))
         (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (* 8 (call nparams t)))
         (block))
-    (if (gt (call nresults t) 0) (call push_rax l) (block)))
+    (call push_results l (call nresults t)))
 
   ;; ===== Floats (NE13) =====
 

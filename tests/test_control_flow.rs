@@ -85,7 +85,7 @@ pub const PROGRAM: &str = r#"
 
   ;; return from inside match_result inside a loop
   (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
-    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+    (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
   (fn first_non_digit [n:i32] -> i32 (unsafe)
     (loop i 0 n 1
       (match_result (call parse_digit (+ 46 i))

@@ -1,0 +1,106 @@
+;; Unions held by value (AIPL_SPEC.md 4.J): which unions are values and
+;; which stay heap cells, and every way a union by value is made, matched,
+;; passed, stored, and returned, in one program whose main returns a
+;; checksum. tests/test_values.rs runs it in every backend.
+(module unions_by_value
+  (import option)
+
+  (struct Vec2 [x:f64 y:f64] (value))
+  (struct Box [shape:Shape count:i32])
+  (enum Color [red green blue])
+
+  ;; every kind of slot (eight in all: the tag, an i32, two f32s, an i64,
+  ;; three f64s); a value struct and an enum in a variant
+  (union Shape [(dot) (circle at:Vec2 r:f64) (rect w:f32 h:f32) (big n:i64 color:Color)])
+  ;; a union held in another by value
+  (union Tagged [(plain s:Shape) (count n:i32)])
+  ;; stays a cell: it contains itself
+  (union List [(nil) (cons head:i32 tail:List)])
+  ;; stays a cell: a str
+  (union Named [(name s:str) (anon)])
+  ;; stays a cell: nine slots
+  (union Wide [(nine a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64)])
+  ;; a value: what it holds is a cell (one slot)
+  (union HoldsWide [(w x:Wide) (none)])
+  ;; a cell holding a union by value
+  (union Chain [(link s:Shape next:Chain) (end)])
+  ;; a union holding one declared after it: decided after it (Inner's three
+  ;; slots, then Outer's tag: four)
+  (union Outer [(holds i:Inner) (empty)])
+  (union Inner [(pair n:i32 f:f64)])
+
+  (fn area [s:Shape] -> f64
+    (match s
+      (Shape.dot 0.0)
+      (Shape.circle [at r] (+ (* 3.0 (* r r)) (get at Vec2.x)))
+      (Shape.rect [w h] (* (f64.convert_i64_s (i64.extend_s (i32.wrap (i64.trunc_f64_s (* 1.0 0.0))))) 0.0))
+      (Shape.big [n color] (if (eq color Color.blue) (f64.convert_i64_s n) -1.0))))
+
+  ;; a match whose scrutinee is computed, yielding a union
+  (fn grow [s:Shape] -> Shape
+    (match (call identity s)
+      (Shape.circle [at r] (make Shape.circle at (* r 2.0)))
+      (else s)))
+
+  (fn identity [s:Shape] -> Shape s)
+
+  (fn tagged_area [t:Tagged] -> f64
+    (match t
+      (Tagged.plain [s] (call area s))
+      (Tagged.count [n] (f64.convert_i64_s (i64.extend_s n)))))
+
+  (fn list_sum [l:List] -> i32
+    (match l
+      (List.nil 0)
+      (List.cons [h t] (+ h (call list_sum t)))))
+
+  (fn found [ok:bool] -> (result Shape i32)
+    (if ok (ok:i32 (make Shape.circle (make Vec2 1.0 0.0) 1.0)) (err:Shape 5)))
+
+  (fn main [] -> i32
+    (let total:f64 0.0)
+    (let c:Shape (make Shape.circle (make Vec2 2.0 3.0) 1.0))
+    (set! total (+ total (call area c)))                                      ;; 5
+    (set! total (+ total (call area (call grow c))))                          ;; +14
+    (set! total (+ total (call area (make Shape.big 40i64 Color.blue))))  ;; +40
+    (set! total (+ total (call area (make Shape.dot))))                       ;; +0
+    (set! total (+ total (call tagged_area (make Tagged.plain c))))            ;; +5
+    (set! total (+ total (call tagged_area (make Tagged.count 7))))           ;; +7 = 71
+    ;; in a heap struct's field, and an array
+    (let b:(ptr Box) (new Box))
+    (put b Box.shape (make Shape.big 9i64 Color.blue))
+    (set! total (+ total (call area (get b Box.shape))))                      ;; +9
+    (let shapes:(arr Shape) (arr.new Shape 3))
+    (arr.set Shape shapes 2 c)
+    (set! total (+ total (call area (arr.get Shape shapes 2))))               ;; +5
+    (set! total (+ total (call area (arr.get Shape shapes 0))))               ;; zero: dot, +0 = 85
+    ;; cells: a list, a name, a wide one, and a value holding one
+    (let l:List (make List.cons 3 (make List.cons 4 (make List.nil))))
+    (set! total (+ total (f64.convert_i64_s (i64.extend_s (call list_sum l)))))  ;; +7
+    (let nm:Named (make Named.name "abc"))
+    (match nm (Named.name [text] (set! total (+ total (f64.convert_i64_s (i64.extend_s (str.len text)))))) (Named.anon (block)))  ;; +3
+    (let wd:Wide (make Wide.nine 1i64 2i64 3i64 4i64 5i64 6i64 7i64 8i64))
+    (let hw:HoldsWide (make HoldsWide.w wd))
+    (match hw
+      (HoldsWide.w [x] (match x (Wide.nine [w1 w2 w3 w4 w5 w6 w7 h] (set! total (+ total (f64.convert_i64_s h))))))  ;; +8
+      (HoldsWide.none (block)))
+    (let ch:Chain (make Chain.link (make Shape.big 2i64 Color.blue) (make Chain.end)))
+    (match ch (Chain.link [s n] (set! total (+ total (call area s)))) (Chain.end (block)))  ;; +2 = 105
+    ;; a result holding a union by value
+    (match_result (call found true)
+      (ok s (set! total (+ total (call area s))))                             ;; +4
+      (err e (set! total (- total 100.0))))
+    ;; Option of a value struct, and of a union
+    (let o:(option.Option Vec2) (make (option.Option Vec2) some (make Vec2 0.5 0.25)))
+    (match o
+      ((option.Option Vec2) some [v] (set! total (+ total (* 4.0 (get v Vec2.y)))))  ;; +1
+      ((option.Option Vec2) none (block)))
+    (let os:(option.Option Shape) (make (option.Option Shape) some c))
+    (match os
+      ((option.Option Shape) some [s] (set! total (+ total (call area s))))  ;; +5 = 115
+      ((option.Option Shape) none (block)))
+    (let ou:Outer (make Outer.holds (make Inner.pair 3 1.5)))
+    (match ou
+      (Outer.holds [inner] (match inner (Inner.pair [pn pf] (set! total (+ total (+ (f64.convert_i64_s (i64.extend_s pn)) pf))))))  ;; +4.5
+      (Outer.empty (block)))
+    (i32.wrap (i64.trunc_f64_s (* total 2.0)))))                              ;; 239

@@ -357,11 +357,12 @@
     (if (and (lt x 9007199254740992.0) (eq x (f64.convert_i64_s (i64.trunc_f64_s x))))
         (block (call buf.push_i64 b (i64.trunc_f64_s x)) (return))
         (block))
-    (let d:(ptr Decimal) (call shortest x))
+    (let d:Decimal (call shortest x))
     (call layout b (get d Decimal.digits) (get d Decimal.n)))
 
-  ;; x = 0.digits * 10^n, with no trailing zero in digits.
-  (struct Decimal [digits:(ptr str.Bytes) n:i32])
+  ;; x = 0.digits * 10^n, with no trailing zero in digits (null digits:
+  ;; none found yet).
+  (struct Decimal [digits:(ptr str.Bytes) n:i32] (value))
 
   ;; The shortest digits that read back as x (ECMAScript's Number::toString:
   ;; fewest digits, then the closest to x). x = m * 2^e exactly (m < 2^53);
@@ -371,7 +372,7 @@
   ;; more in the last place: the nearer first (half to even), then the other,
   ;; which can read back alone when x is a power of two (its lower neighbour
   ;; is half as far as its upper one).
-  (fn shortest [x:f64] -> (ptr Decimal)
+  (fn shortest [x:f64] -> Decimal
     (unsafe (let a:alloc.Allocator (call alloc.default))
     (let bits:i64 (i64.reinterpret_f64 x))
     (let field:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
@@ -397,7 +398,7 @@
     (let n_all:i32 (get all str.Bytes.len))
     (let n:i32 (- n_all k))
     (let text:(ptr buf.Buf) (call buf.make a 40))
-    (let found:(ptr Decimal) (ptr.null Decimal))
+    (let found:Decimal (make Decimal (ptr.null str.Bytes) 0))
     (loop p 1 17 1
       ;; down: the first p digits; up: down plus one in the last place
       (let down:(arr i32) (arr.new i32 p))
@@ -420,7 +421,7 @@
         ((call reads_back text down p n x) (set! found (call decimal_of a down p n)))
         ((and (not nearer_up) (and (not exact) (call reads_back text up p up_n x))) (set! found (call decimal_of a up p up_n)))
         (else (block)))
-      (if (neq (ptr.addr found) 0) (break) (block)))
+      (if (neq (get found Decimal.digits) (ptr.null str.Bytes)) (break) (block)))
     found))
 
   ;; Whether 0.r * 10^n (p digits) reads back as x; text is scratch.
@@ -434,15 +435,12 @@
     (unsafe (eq (call float.from_decimal (get t str.Bytes.addr) (get t str.Bytes.len)) x)))
 
   ;; 0.r * 10^n (p digits) as a Decimal, its trailing zeros dropped.
-  (fn decimal_of [a:alloc.Allocator r:(arr i32) p:i32 n:i32] -> (ptr Decimal)
+  (fn decimal_of [a:alloc.Allocator r:(arr i32) p:i32 n:i32] -> Decimal
     (let kept:i32 p)
     (while (and (gt kept 1) (eq (arr.get i32 r (- kept 1)) 0)) (set! kept (- kept 1)))
     (let out:(ptr buf.Buf) (call buf.make a 20))
     (loop q 0 (- kept 1) 1 (call buf.push_byte out (+ 48 (arr.get i32 r q))))
-    (let d:(ptr Decimal) (new Decimal))
-    (put d Decimal.digits (call buf.bytes out))
-    (put d Decimal.n n)
-    d)
+    (make Decimal (call buf.bytes out) n))
 
   ;; ECMAScript's Number::toString for 0.digits * 10^n (k digits): plain
   ;; digits up to 21 places, then exponential; small numbers down to 1e-6.

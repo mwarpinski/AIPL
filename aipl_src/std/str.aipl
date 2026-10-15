@@ -82,20 +82,20 @@
               (block (set! words (+ words 1)) (set! in_word true)))))
     words)
 
-  ;; Decimal integer with an optional leading '-': (ok n), or (err i) where i
+  ;; Decimal integer with an optional leading '-': (ok:i32 n), or (err:i32 i) where i
   ;; is the index of the first byte that is not part of a number (0 for an
   ;; empty input or a lone '-'). Values outside i32 wrap.
   (fn parse_int [b:(ptr Bytes)] -> (result i32 i32) (pub)
     (unsafe (let len:i32 (get b Bytes.len))
     (let neg:bool (and (gt len 0) (eq (mem.load8 (get b Bytes.addr)) 45)))
     (let start:i32 (if neg 1 0))
-    (if (lte len start) (return (err 0)) (block))
+    (if (lte len start) (return (err:i32 0)) (block))
     (let n:i32 0)
     (loop i start (- len 1) 1
       (let c:i32 (call byte_at b i))
-      (if (or (lt c 48) (gt c 57)) (return (err i)) (block))
+      (if (or (lt c 48) (gt c 57)) (return (err:i32 i)) (block))
       (set! n (- (* n 10) (- c 48))))
-    (ok (if neg n (- 0 n)))))
+    (ok:i32 (if neg n (- 0 n)))))
 
   ;; b as a decimal i32 (parse_int), or `default` if it is not one.
   (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32 (pub)

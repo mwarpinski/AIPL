@@ -16,6 +16,7 @@ const LIB: &str = r#"(module lib
   (struct Open [(pub a:i32) (pub b:i32)] (pub))
   (struct Hidden [x:i32])
   (struct (Box T) [(read v:T) q:T] (pub))
+  (struct Pt [(read x:i32) y:i32] (value) (pub))
   (const MAX:i32 9)
   (const LIM:i32 3 (pub))
   (enum Color [red green] (pub))
@@ -29,7 +30,8 @@ const LIB: &str = r#"(module lib
   (fn shown [] -> i32 (pub) 2)
   (fn (gen T) [x:T] -> T x)
   (fn (pgen T) [x:T] -> T (pub) x)
-  (fn make_s [] -> (ptr S) (pub) (new S)))"#;
+  (fn make_s [] -> (ptr S) (pub) (new S))
+  (fn pt [] -> Pt (pub) (make Pt 4 5)))"#;
 
 /// main.aipl (importing lib) with `body` as main's, and lib.aipl.
 fn program(name: &str, lib: &str, body: &str) -> PathBuf {
@@ -53,6 +55,9 @@ fn what_a_module_gives_is_usable_in_both_backends() {
         (r#"(match (make lib.U.a 4) (lib.U.a [n] n) (lib.U.b 0))"#, 4),
         (r#"(call (lib.pgen i32) 3)"#, 3),
         (r#"(call (lib.Len.len i32) 3)"#, 3),
+        // a value struct is a type argument even with private fields: a
+        // template cannot make one (it is not a struct used through a pointer)
+        (r#"(get (call (lib.pgen lib.Pt) (call lib.pt)) lib.Pt.x)"#, 4),
     ];
     for (k, (body, want)) in cases.iter().enumerate() {
         let entry = program(&format!("ok_{k}"), LIB, body);
@@ -89,12 +94,21 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         (LIB, r#"(call (lib.Size.size i32) 3)"#, r#"1:68: 'lib.Size' is private to module lib: mark it (pub) there to use it here"#),
         (LIB, r#"(let b:(ptr (lib.Box i32)) (ptr.null (lib.Box i32))) (get b (lib.Box i32) q)"#, r#"1:135: field 'q' of lib.Box is private to module lib"#),
         (LIB, r#"(let b:(ptr (lib.Box i32)) (ptr.null (lib.Box i32))) (put b (lib.Box i32) v 1) 0"#, r#"1:135: field 'v' of lib.Box is read-only outside module lib"#),
-        (r#"(module lib (fn f [] -> i32 1 (pub)))"#, r#"0"#, r#"1:31: (pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)"#),
+        (r#"(module lib (fn f [] -> i32 1 (pub)))"#, r#"0"#, r#"1:31: (pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)"#),
         (r#"(module lib (import cmp) (impl (cmp.Eq (ptr P)) (pub) (fn same [a:(ptr P) b:(ptr P)] -> bool true)) (struct P [x:i32] (pub)))"#, r#"0"#, r#"1:49: an implementation takes no (pub): it is as visible as its interface and its type"#),
         (r#"(module lib (struct P [(pub x) y:i32] (pub)))"#, r#"0"#, r#"1:24: a field is written x:T, (read x:T), or (pub x:T)"#),
         (r#"(module lib (struct P [x:i32]) (fn f [p:(ptr P)] -> i32 (pub) 0))"#, r#"0"#, r#"1:46: 'f' is (pub) but its signature uses 'P', which is private: mark 'P' (pub) too"#),
         (r#"(module lib (struct P [x:i32]) (struct Q [(read p:(ptr P))] (pub)))"#, r#"0"#, r#"1:56: 'Q' is (pub) but its signature uses 'P', which is private: mark 'P' (pub) too"#),
         (r#"(module lib (enum E [a b]) (union U [(v e:E)] (pub)))"#, r#"0"#, r#"1:43: 'U' is (pub) but its signature uses 'E', which is private: mark 'E' (pub) too"#),
+        // value structs (AIPL_SPEC.md 4.E): make, with, and field paths
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(let v:lib.V (make lib.V 1 2 3)) 0"#, r#"'lib.V' has fields private to module lib, so only lib can make one"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(let v:lib.V (with (call lib.mk) lib.V.y 5)) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(get (call lib.mk) lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(get (call lib.mh) lib.H.v lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(put (call lib.mh) lib.H.v lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(let a:(arr lib.V) (arr.new lib.V 1)) (arr.set lib.V a 0 lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H)))"#, r#"(let a:(arr lib.V) (arr.new lib.V 1)) (arr.get lib.V a 0 lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (struct V [x:i32] (pub) (value)))"#, r#"0"#, r#"1:31: (pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)"#),
     ];
     for (k, (lib, body, want)) in cases.iter().enumerate() {
         let entry = program(&format!("err_{k}"), lib, body);

@@ -124,6 +124,29 @@ the field as `Struct.field`. An `(arr T)` holds values of type `T`, and
 index past the end stops the program with a message, compiled code
 included.
 
+A struct declared `(value)` is a value instead, like a number: no pointer,
+nothing allocated, copied where it goes, never changed in place.
+
+```lisp
+(module tour_values
+  (struct Point [x:i32 y:i32] (value))
+
+  (fn shift [p:Point dx:i32] -> Point
+    (with p Point.x (+ (get p Point.x) dx)))
+
+  (fn main [] -> i32
+    (let ps:(arr Point) (arr.new Point 3))
+    (loop i 0 2 1 (arr.set Point ps i (make Point i (* i 10))))
+    (let q:Point (call shift (arr.get Point ps 2) 5))
+    (+ (get q Point.x) (arr.get Point ps 1 Point.y))))
+```
+
+It returns `17`: the third point shifted is (7, 20), and the second point's
+`y` is 10. `make` gives every field in order, `with` makes a copy with one
+field changed, and the array holds the points themselves, not pointers to
+them. A value struct holds at most eight numbers; larger records, and
+anything changed in place, stay behind pointers.
+
 ## 5. Unions and results
 
 ```lisp
@@ -138,7 +161,7 @@ included.
 
   ;; a digit's value, or the character that was not a digit
   (fn digit [c:i32] -> (result i32 i32)
-    (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err c)))
+    (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
 
   (fn main [] -> i32
     (let a:f64 (+ (call area (make Shape.rect 2.0 3.0)) (call area (make Shape.circle 1.0))))
