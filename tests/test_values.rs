@@ -178,3 +178,36 @@ fn value_structs_as_type_arguments() {
     let err = check_files("pub_place", &[("main.aipl", "(module main (import lib) (fn main [] -> i32 0))"), ("lib.aipl", misplaced)]).unwrap_err();
     assert!(err.contains("(struct S [fields] (value) (pub))"), "{err}");
 }
+
+/// The AIPL resolver (resolver.aipl + generics.aipl) resolves value structs
+/// as the Rust one does: the same program, printed (until the code
+/// generators compile value structs, V2, this compares the printed module).
+#[test]
+fn the_aipl_resolver_agrees_on_value_structs() {
+    let entry = root().join("tests/aipl/values.aipl");
+    let rust = print_module(&Resolver::resolve(&entry).unwrap());
+    let flat = aipl_core::selfhost::resolve_with_aipl(&entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
+    let m = Resolver::resolve_source(&flat, &entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}"));
+    assert_eq!(print_module(&m), rust);
+    // the kinds of type arguments, and malformed forms, in both resolvers
+    for (src, want) in [
+        (
+            "(module m (struct V [x:i32] (value)) (fn (mk T) [] -> (ptr T) (where (struct T)) (new T)) (fn main [] -> i32 (let p:(ptr V) (call (mk V))) 0))",
+            "mk<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address",
+        ),
+        (
+            "(module m (struct (Pair T) [a:T b:T] (value)) (fn main [] -> i32 (get (make (Pair i32) 1 2) (Pair i32))))",
+            "a generic struct field is written (get p (Name T...) field)",
+        ),
+    ] {
+        let dir = scratch("aipl_kinds");
+        let file = dir.join("main.aipl");
+        std::fs::write(&file, src).unwrap();
+        let rust = Resolver::resolve(&file).map(|_| ()).expect_err(src);
+        assert!(rust.contains(want), "{src}\n  rust: {rust}");
+        let aipl = aipl_core::selfhost::resolve_with_aipl(&file).map(|_| ()).expect_err(src);
+        assert_eq!(aipl, rust, "{src}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

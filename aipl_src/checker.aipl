@@ -143,13 +143,30 @@
   (fn is_i32 [t:ast.Type] -> bool (eq (call tag t) 0))
   (fn is_int [t:ast.Type] -> bool (or (eq (call tag t) 0) (eq (call tag t) 1)))
 
-  ;; src/checker.rs type_size_and_align: the error for a type with no memory
-  ;; layout (void, a struct by value, a result), or "".
-  (fn layout_error [b:(ptr buf.Buf) t:ast.Type] -> bool
-    (let k:i32 (call tag t))
-    (if (or (eq k 6) (or (eq k 8) (eq k 9)))
-        (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)
-        false))
+  ;; src/checker.rs type_size_and_align: whether a type has no memory layout
+  ;; (void, a result, a struct by value that is not a value struct), with
+  ;; the message in b (the innermost such type, through value structs).
+  (fn layout_error [c:(ptr C) b:(ptr buf.Buf) t:ast.Type] -> bool (call layout_error_at c b t 0))
+
+  (fn layout_error_at [c:(ptr C) b:(ptr buf.Buf) t:ast.Type depth:i32] -> bool
+    (match t
+      (ast.Type.struct_ [n]
+       (if (and (lt depth 64) (call is_value c n))
+           (block
+             (let fs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
+             (loop k 0 (- (arr.len fs) 1) 1
+               (if (call layout_error_at c b (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) (+ depth 1)) (return true) (block)))
+             false)
+           (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)))
+      (else
+       (let k:i32 (call tag t))
+       (if (or (eq k 6) (eq k 9))
+           (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)
+           false))))
+
+  ;; Whether struct n is a value struct.
+  (fn is_value [c:(ptr C) n:(ptr str.Bytes)] -> bool
+    (and (call has_struct c n) (get (call struct_def c n) ast.StructDef.value)))
 
   ;; ===== Environment =====
 
@@ -218,6 +235,12 @@
     (loop k 0 (- (arr.len ss) 1) 1
       (if (get c C.failed) (return) (block))
       (call register_struct c (arr.get (ptr ast.StructDef) ss k)))
+    (loop k 0 (- (arr.len ss) 1) 1
+      (if (get c C.failed) (return) (block))
+      (if (get (arr.get (ptr ast.StructDef) ss k) ast.StructDef.value) (call check_value_struct c (arr.get (ptr ast.StructDef) ss k)) (block)))
+    (loop k 0 (- (arr.len ss) 1) 1
+      (if (get c C.failed) (return) (block))
+      (call check_layout c (arr.get (ptr ast.StructDef) ss k)))
     (let us:(arr (ptr ast.UnionDef)) (get m ast.Module.unions))
     (loop k 0 (- (arr.len us) 1) 1
       (if (get c C.failed) (return) (block))
@@ -344,11 +367,101 @@
               (let b:(ptr buf.Buf) (call msg c at))
               (call s b "Duplicate field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown name)) (call s b "'")
               (call fail c b) (return))
-            (block)))
-      (let b:(ptr buf.Buf) (call msg c at))
-      (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown name)) (call s b "': ")
-      (if (call layout_error b (get fi ast.Field.ty)) (block (call fail c b) (return)) (block)))
+            (block))))
     (call (map.set (ptr str.Bytes) (ptr ast.StructDef)) (get c C.structs) name sd))
+
+  ;; Every field of struct sd has a memory layout (after all structs are
+  ;; registered: a value struct's depends on the value structs in it).
+  (fn check_layout [c:(ptr C) sd:(ptr ast.StructDef)] -> void
+    (let at:i32 (get sd ast.StructDef.at))
+    (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
+    (loop i 0 (- (arr.len fs) 1) 1
+      (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
+      (let b:(ptr buf.Buf) (call msg c at))
+      (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown (get sd ast.StructDef.name))) (call s b "': ")
+      (if (call layout_error c b (get fi ast.Field.ty)) (block (call fail c b) (return)) (block))))
+
+  ;; src/checker.rs check_value_struct: at least one field; numbers, bools,
+  ;; enums, pointers, arrays, function references, or value structs; not
+  ;; containing itself; at most 8 scalars in all.
+  (fn check_value_struct [c:(ptr C) sd:(ptr ast.StructDef)] -> void
+    (let at:i32 (get sd ast.StructDef.at))
+    (let name:(ptr str.Bytes) (get sd ast.StructDef.name))
+    (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
+    (if (eq (arr.len fs) 0)
+        (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "value struct '") (call by b (call names.shown name)) (call s b "' has no fields") (call fail c b) (return))
+        (block))
+    (loop i 0 (- (arr.len fs) 1) 1
+      (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
+      (let k:i32 (call tag (get fi ast.Field.ty)))
+      (if (or (or (eq k 5) (eq k 13)) (or (eq k 9) (eq k 6)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' of value struct '") (call by b (call names.shown name))
+            (call s b "': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not ") (call ty b (get fi ast.Field.ty))
+            (call fail c b) (return))
+          (block)))
+    ;; through its value-struct fields, back to itself? (the same stack
+    ;; order as src/checker.rs, so the same field is named)
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (let firsts:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (loop i 0 (- (arr.len fs) 1) 1
+      (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
+      (let vn:(ptr str.Bytes) (call value_field c (get fi ast.Field.ty)))
+      (if (neq vn (ptr.null str.Bytes))
+          (block (call (vec.push (ptr str.Bytes)) names vn) (call (vec.push (ptr str.Bytes)) firsts (get fi ast.Field.name)))
+          (block)))
+    (let seen:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 8))
+    (while (gt (call (vec.len (ptr str.Bytes)) names) 0)
+      (let n:(ptr str.Bytes) (call (vec.pop (ptr str.Bytes)) names))
+      (let first:(ptr str.Bytes) (call (vec.pop (ptr str.Bytes)) firsts))
+      (if (call beq n name)
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "value struct '") (call by b (call names.shown name)) (call s b "' contains itself (through field '") (call by b first)
+            (call s b "'): a value has a fixed size; hold it through a pointer")
+            (call fail c b) (return))
+          (block))
+      (if (not (call (map.has (ptr str.Bytes) i32) seen n))
+          (block
+            (call (map.set (ptr str.Bytes) i32) seen n 1)
+            (if (call has_struct c n)
+                (block
+                  (let dfs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
+                  (loop j 0 (- (arr.len dfs) 1) 1
+                    (let m:(ptr str.Bytes) (call value_field c (get (arr.get (ptr ast.Field) dfs j) ast.Field.ty)))
+                    (if (neq m (ptr.null str.Bytes))
+                        (block (call (vec.push (ptr str.Bytes)) names m) (call (vec.push (ptr str.Bytes)) firsts first))
+                        (block))))
+                (block)))
+          (block)))
+    (let total:i32 (call scalars c (make ast.Type.struct_ name)))
+    (if (gt total 8)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "value struct '") (call by b (call names.shown name)) (call s b "' holds ") (call buf.push_int b total)
+          (call s b " scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer")
+          (call fail c b))
+        (block)))
+
+  ;; The value struct a field of type t holds inline, or null.
+  (fn value_field [c:(ptr C) t:ast.Type] -> (ptr str.Bytes)
+    (match t
+      (ast.Type.struct_ [n] (if (call is_value c n) n (ptr.null str.Bytes)))
+      (else (ptr.null str.Bytes))))
+
+  ;; How many scalars a value is, once its value structs are flattened.
+  (fn scalars [c:(ptr C) t:ast.Type] -> i32
+    (match t
+      (ast.Type.struct_ [n]
+       (if (call is_value c n)
+           (block
+             (let fs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
+             (let total:i32 0)
+             (loop k 0 (- (arr.len fs) 1) 1 (set! total (+ total (call scalars c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty)))))
+             total)
+           1))
+      (else 1)))
 
   (fn register_union [c:(ptr C) u:(ptr ast.UnionDef)] -> void
     (let at:i32 (get u ast.UnionDef.at))
@@ -392,7 +505,7 @@
               (block)))
         (let b:(ptr buf.Buf) (call msg c at))
         (call s b "Field '") (call by b (get fj ast.Field.name)) (call s b "' of variant '") (call by b name) (call s b ".") (call by b vn) (call s b "': ")
-        (if (call layout_error b (get fj ast.Field.ty)) (block (call fail c b) (return)) (block))))
+        (if (call layout_error c b (get fj ast.Field.ty)) (block (call fail c b) (return)) (block))))
     (call (map.set (ptr str.Bytes) (ptr ast.UnionDef)) (get c C.unions) name u))
 
   ;; src/checker.rs validate_type: null, or the error's message (to which
@@ -403,6 +516,11 @@
        (match inner
          (ast.Type.struct_ [name]
           (cond
+            ((call is_value c name)
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "'") (call by b (call names.shown name)) (call s b "' is a value struct, which has no address: write ")
+             (call by b (call names.shown name)) (call s b ", not (ptr ") (call by b (call names.shown name)) (call s b ")")
+             b)
             ((call has_struct c name) (ptr.null buf.Buf))
             ((call names.is_sealed name) (call not_a_struct c at name))
             (else
@@ -414,6 +532,7 @@
           (call s b "ptr must point to a struct, got ") (call ty b inner)
           b)))
       (ast.Type.struct_ [sname]
+       (if (call is_value c sname) (return (ptr.null buf.Buf)) (block))
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b "struct '") (call by b (call names.shown sname)) (call s b "' cannot be used by value; use (ptr ") (call by b (call names.shown sname)) (call s b ")")
        b)
@@ -421,7 +540,7 @@
        (let inner_err:(ptr buf.Buf) (call validate c elem at))
        (if (neq inner_err (ptr.null buf.Buf)) (return inner_err) (block))
        (let scratch:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
-       (if (call layout_error scratch elem)
+       (if (call layout_error c scratch elem)
            (block
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "(arr T) element must be a scalar, (ptr S), or (arr T), got ") (call ty b elem)
@@ -621,11 +740,18 @@
        (call restore env m)
        t)
       (ast.Expr.new_ [_ name]
-       (if (call has_struct c name)
-           (make ast.Type.ptr (make ast.Type.struct_ name))
-           (block (call unknown_struct c at name) (call void_t))))
-      (ast.Expr.get_ [_ sname fname ptr] (call infer_field c env at sname fname ptr false (call placeholder at)))
-      (ast.Expr.put_ [_ sname fname ptr val] (call infer_field c env at sname fname ptr true val))
+       (cond
+         ((not (call has_struct c name)) (call unknown_struct c at name) (call void_t))
+         ((call is_value c name)
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "'") (call by b (call names.shown name)) (call s b "' is a value struct: make one with (make ")
+          (call by b (call names.shown name)) (call s b " field-values...), not new")
+          (call fail c b) (call void_t))
+         (else (make ast.Type.ptr (make ast.Type.struct_ name)))))
+      (ast.Expr.get_ [_ sname fname ptr] (call infer_field c env at sname fname ptr false (call placeholder at) (arr.null (ptr ast.Step))))
+      (ast.Expr.put_ [_ sname fname ptr val path] (call infer_field c env at sname fname ptr true val path))
+      (ast.Expr.record [_ sname args] (call infer_record c env at sname args))
+      (ast.Expr.with_ [_ sname fname val nv] (call infer_with c env at sname fname val nv))
       (ast.Expr.sizeof [_ st]
        (match st
          ;; a bare name: a struct, or an enum (an i32)
@@ -653,7 +779,7 @@
            (block))
        (make ast.Type.arr ety))
       (ast.Expr.arr_get [_ ety ptr index] (call infer_arr c env at ety ptr index false (call placeholder at)))
-      (ast.Expr.arr_set [_ ety ptr index val] (call infer_arr c env at ety ptr index true val))
+      (ast.Expr.arr_set [_ ety ptr index val path] (call infer_arr_set c env at ety ptr index val path))
       (ast.Expr.arr_len [_ a]
        (let t:ast.Type (call infer c a env))
        (if (get c C.failed) (return (call void_t)) (block))
@@ -937,43 +1063,199 @@
        (call void_t))))
 
   ;; get / put: the struct, the pointer's type, the field.
-  (fn infer_field [c:(ptr C) env:(ptr Env) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:ast.Expr is_put:bool val:ast.Expr] -> ast.Type
+  (fn infer_field [c:(ptr C) env:(ptr Env) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:ast.Expr is_put:bool val:ast.Expr path:(arr (ptr ast.Step))] -> ast.Type
     (if (not (call has_struct c sname)) (block (call unknown_struct c at sname) (return (call void_t))) (block))
     (let sd:(ptr ast.StructDef) (call struct_def c sname))
-    (let pt:ast.Type (call infer c ptr env))
-    (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq pt (make ast.Type.ptr (make ast.Type.struct_ sname))))
+    (let value:bool (get sd ast.StructDef.value))
+    (if (and is_put value)
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b (if is_put "put " "get ")) (call by b (call names.shown sname)) (call s b ".") (call by b fname)
-          (call s b " needs a (ptr ") (call by b (call names.shown sname)) (call s b "), got ") (call ty b pt)
+          (call s b "a value struct's fields do not change: (with v ") (call by b (call names.shown sname)) (call s b ".") (call by b fname)
+          (call s b " x) is a copy with one changed")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let pt:ast.Type (call infer c ptr env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if value
+        (if (not (call teq pt (make ast.Type.struct_ sname)))
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b "get ") (call by b (call names.shown sname)) (call s b ".") (call by b fname)
+              (call s b " needs a ") (call by b (call names.shown sname)) (call s b ", got ") (call ty b pt)
+              (call fail c b) (return (call void_t)))
+            (block))
+        (if (not (call teq pt (make ast.Type.ptr (make ast.Type.struct_ sname))))
+            (block
+              (let b:(ptr buf.Buf) (call msg c at))
+              (call s b (if is_put "put " "get ")) (call by b (call names.shown sname)) (call s b ".") (call by b fname)
+              (call s b " needs a (ptr ") (call by b (call names.shown sname)) (call s b "), got ") (call ty b pt)
+              (call fail c b) (return (call void_t)))
+            (block)))
+    (let ft0:ast.MaybeType (call field_type c at sname fname))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let ft:ast.Type (match ft0 (ast.MaybeType.some [t] t) (ast.MaybeType.none (call void_t))))
+    (if (not is_put) (return ft) (block))
+    (let w:(ptr Walked) (call walk_path c at sname fname ft path "put"))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq vt (get w Walked.ty)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "Type mismatch writing to field '") (call by b (call names.shown (get w Walked.sname))) (call s b ".") (call by b (get w Walked.fname))
+          (call s b "': expected ") (call ty b (get w Walked.ty)) (call s b ", got ") (call ty b vt)
+          (call fail c b))
+        (block))
+    (call void_t))
+
+  ;; Field fname of struct sname's type, failing with src/checker.rs
+  ;; get_field_offset's message if there is none.
+  (fn field_type [c:(ptr C) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes)] -> ast.MaybeType
+    (let fs:(arr (ptr ast.Field)) (get (call struct_def c sname) ast.StructDef.fields))
+    (loop k 0 (- (arr.len fs) 1) 1
+      (if (call beq (get (arr.get (ptr ast.Field) fs k) ast.Field.name) fname)
+          (return (make ast.MaybeType.some (get (arr.get (ptr ast.Field) fs k) ast.Field.ty)))
+          (block)))
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b "Struct '") (call by b (call names.shown sname)) (call s b "' has no field '") (call by b fname) (call s b "'")
+    (call fail c b)
+    (make ast.MaybeType.none))
+
+  ;; Where a put's or arr.set's path ends: the field, and its type.
+  (struct Walked [sname:(ptr str.Bytes) fname:(ptr str.Bytes) ty:ast.Type])
+
+  ;; src/checker.rs walk_path: from field fname of sname (of type ty), each
+  ;; step a field of the value struct the step before holds.
+  (fn walk_path [c:(ptr C) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ty:ast.Type path:(arr (ptr ast.Step)) form:str] -> (ptr Walked)
+    (let w:(ptr Walked) (new Walked))
+    (put w Walked.sname sname)
+    (put w Walked.fname fname)
+    (put w Walked.ty ty)
+    (if (eq path (arr.null (ptr ast.Step))) (return w) (block))
+    (loop k 0 (- (arr.len path) 1) 1
+      (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
+      (if (not (and (call teq (get w Walked.ty) (make ast.Type.struct_ (get st ast.Step.sname))) (call is_value c (get st ast.Step.sname))))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b form) (call s b " path: ") (call by b (call names.shown (get w Walked.sname))) (call s b ".") (call by b (get w Walked.fname))
+            (call s b " is ") (call ty b (get w Walked.ty)) (call s b ", not the value struct ") (call by b (call names.shown (get st ast.Step.sname)))
+            (call fail c b) (return w))
+          (block))
+      (match (call field_type c at (get st ast.Step.sname) (get st ast.Step.fname))
+        (ast.MaybeType.some [t]
+         (put w Walked.sname (get st ast.Step.sname))
+         (put w Walked.fname (get st ast.Step.fname))
+         (put w Walked.ty t))
+        (ast.MaybeType.none (return w))))
+    w)
+
+  ;; (make S args...) for value struct S.
+  (fn infer_record [c:(ptr C) env:(ptr Env) at:i32 sname:(ptr str.Bytes) args:(arr ast.Expr)] -> ast.Type
+    (if (not (call has_struct c sname)) (block (call unknown_struct c at sname) (return (call void_t))) (block))
+    (let sd:(ptr ast.StructDef) (call struct_def c sname))
+    (if (not (get sd ast.StructDef.value))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "'") (call by b (call names.shown sname)) (call s b "' is not a value struct: (new ") (call by b (call names.shown sname)) (call s b ") makes one behind a pointer")
           (call fail c b) (return (call void_t)))
         (block))
     (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
-    (let found:i32 -1)
-    (loop k 0 (- (arr.len fs) 1) 1
-      (if (and (lt found 0) (call beq (get (arr.get (ptr ast.Field) fs k) ast.Field.name) fname)) (set! found k) (block)))
-    (if (lt found 0)
+    (if (neq (arr.len args) (arr.len fs))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Struct '") (call by b (call names.shown sname)) (call s b "' has no field '") (call by b fname) (call s b "'")
+          (call s b "make ") (call by b (call names.shown sname)) (call s b " takes ") (call buf.push_int b (arr.len fs)) (call s b " field value(s) (")
+          (loop k 0 (- (arr.len fs) 1) 1
+            (if (gt k 0) (call s b " ") (block))
+            (call by b (get (arr.get (ptr ast.Field) fs k) ast.Field.name)))
+          (call s b "), got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
-    (let ft:ast.Type (get (arr.get (ptr ast.Field) fs found) ast.Field.ty))
-    (if (not is_put) (return ft) (block))
-    (let vt:ast.Type (call infer c val env))
-    (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt ft))
+    (loop k 0 (- (arr.len args) 1) 1
+      (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
+      (if (get c C.failed) (return (call void_t)) (block))
+      (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
+      (if (not (call teq t (get f ast.Field.ty)))
+          (block
+            (let b:(ptr buf.Buf) (call msg c at))
+            (call s b "make ") (call by b (call names.shown sname)) (call s b ": field '") (call by b (get f ast.Field.name)) (call s b "' is ")
+            (call ty b (get f ast.Field.ty)) (call s b ", got ") (call ty b t)
+            (call fail c b) (return (call void_t)))
+          (block)))
+    (make ast.Type.struct_ sname))
+
+  ;; (with v S.f x): a copy of value struct v with f replaced.
+  (fn infer_with [c:(ptr C) env:(ptr Env) at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) val:ast.Expr nv:ast.Expr] -> ast.Type
+    (if (not (call has_struct c sname)) (block (call unknown_struct c at sname) (return (call void_t))) (block))
+    (if (not (call is_value c sname))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "Type mismatch writing to field '") (call by b (call names.shown sname)) (call s b ".") (call by b fname)
-          (call s b "': expected ") (call ty b ft) (call s b ", got ") (call ty b vt)
+          (call s b "with makes a copy of a value struct, and '") (call by b (call names.shown sname)) (call s b "' is not one: change a field with (put p ")
+          (call by b (call names.shown sname)) (call s b ".") (call by b fname) (call s b " x)")
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let ft0:ast.MaybeType (call field_type c at sname fname))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let ft:ast.Type (match ft0 (ast.MaybeType.some [t] t) (ast.MaybeType.none (call void_t))))
+    (let t:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq t (make ast.Type.struct_ sname)))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "with ") (call by b (call names.shown sname)) (call s b ".") (call by b fname) (call s b " needs a ") (call by b (call names.shown sname))
+          (call s b ", got ") (call ty b t)
+          (call fail c b) (return (call void_t)))
+        (block))
+    (let n:ast.Type (call infer c nv env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq n ft))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "with ") (call by b (call names.shown sname)) (call s b ".") (call by b fname) (call s b ": expected ") (call ty b ft)
+          (call s b ", got ") (call ty b n)
+          (call fail c b) (return (call void_t)))
+        (block))
+    t)
+
+  ;; arr.set, with an optional path into a value struct element.
+  (fn infer_arr_set [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr val:ast.Expr path:(arr (ptr ast.Step))] -> ast.Type
+    (let r:ast.Type (call infer_arr_parts c env at ety ptr index true false val))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (let target:ast.Type ety)
+    (if (gt (arr.len path) 0)
+        (block
+          (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path 0))
+          (if (not (and (call teq ety (make ast.Type.struct_ (get st ast.Step.sname))) (call is_value c (get st ast.Step.sname))))
+              (block
+                (let b:(ptr buf.Buf) (call msg c at))
+                (call s b "arr.set path: the elements are ") (call ty b ety) (call s b ", not the value struct ") (call by b (call names.shown (get st ast.Step.sname)))
+                (call fail c b) (return (call void_t)))
+              (block))
+          (let ft0:ast.MaybeType (call field_type c at (get st ast.Step.sname) (get st ast.Step.fname)))
+          (if (get c C.failed) (return (call void_t)) (block))
+          (let ft:ast.Type (match ft0 (ast.MaybeType.some [t] t) (ast.MaybeType.none (call void_t))))
+          (let tail:(arr (ptr ast.Step)) (arr.new (ptr ast.Step) (- (arr.len path) 1)))
+          (loop k 1 (- (arr.len path) 1) 1 (arr.set (ptr ast.Step) tail (- k 1) (arr.get (ptr ast.Step) path k)))
+          (let w:(ptr Walked) (call walk_path c at (get st ast.Step.sname) (get st ast.Step.fname) ft tail "arr.set"))
+          (if (get c C.failed) (return (call void_t)) (block))
+          (set! target (get w Walked.ty)))
+        (block))
+    (let vt:ast.Type (call infer c val env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (not (call teq vt target))
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "arr.set value mismatch: expected ") (call ty b target) (call s b ", got ") (call ty b vt)
           (call fail c b))
         (block))
     (call void_t))
 
   ;; arr.get / arr.set.
   (fn infer_arr [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr is_set:bool val:ast.Expr] -> ast.Type
+    (call infer_arr_parts c env at ety ptr index is_set is_set val))
+
+  ;; infer_arr; with_val false: the array and index only (the caller checks
+  ;; arr.set's value against its path).
+  (fn infer_arr_parts [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr is_set:bool with_val:bool val:ast.Expr] -> ast.Type
     (let what:str (if is_set "arr.set" "arr.get"))
     (call validate_or_fail c (make ast.Type.arr ety) at)
     (if (get c C.failed) (return (call void_t)) (block))
@@ -993,7 +1275,7 @@
           (call s b what) (call s b " index must be i32, got ") (call ty b it)
           (call fail c b) (return (call void_t)))
         (block))
-    (if (not is_set) (return ety) (block))
+    (if (not with_val) (return ety) (block))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
     (if (not (call teq vt ety))
@@ -1050,6 +1332,15 @@
   (fn infer_make [c:(ptr C) env:(ptr Env) at:i32 uname:(ptr str.Bytes) variant:(ptr str.Bytes) args:(arr ast.Expr)] -> ast.Type
     (if (not (call has_union c uname))
         (block
+          (let whole:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+          (call by whole uname) (call s whole ".") (call by whole variant)
+          (let wn:(ptr str.Bytes) (call buf.bytes whole))
+          (if (call has_struct c wn)
+              (block
+                (let b2:(ptr buf.Buf) (call msg c at))
+                (call s b2 "'") (call by b2 (call names.shown wn)) (call s b2 "' is not a value struct: (new ") (call by b2 (call names.shown wn)) (call s b2 ") makes one behind a pointer")
+                (call fail c b2) (return (call void_t)))
+              (block))
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Unknown union '") (call by b uname) (call s b "' in make")
           (call fail c b) (return (call void_t)))
@@ -1655,6 +1946,11 @@
       (ast.Type.union_ [u]
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b (call op_debug o)) (call s b " on union '") (call by b u) (call s b "': union values do not compare; take them apart with match")
+       (call fail c b) (return (call void_t)))
+      (ast.Type.struct_ [v]
+       (let b:(ptr buf.Buf) (call msg c at))
+       (call s b (call op_debug o)) (call s b " on value struct '") (call by b (call names.shown v))
+       (call s b "': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same ") (call by b (call names.shown v)) (call s b ")")
        (call fail c b) (return (call void_t)))
       (else (block)))
     (if (and (or (eq k 7) (or (eq k 10) (or (eq k 11) (eq k 12)))) (not equality))

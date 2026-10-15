@@ -9,8 +9,8 @@
 (module ast
   (import str)
 
-  ;; A type, as src/ast.rs Type. A struct is only ever named inside a ptr;
-  ;; a bare name is an enum or a union.
+  ;; A type, as src/ast.rs Type. A struct is named inside a ptr, or on its
+  ;; own for a value struct; any other bare name is an enum or a union.
   (union Type [(i32) (i64) (f32) (f64) (bool) (str) (void)
                (ptr inner:Type)
                (struct_ name:(ptr str.Bytes))
@@ -37,6 +37,10 @@
 
   ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32.
   (enum AddrKind [ptr arr enum_] (pub))
+
+  ;; One step of a put's or arr.set's field path: field fname of struct
+  ;; sname (src/ast.rs PutField.path, ArrSet.path).
+  (struct Step [(pub sname:(ptr str.Bytes)) (pub fname:(ptr str.Bytes))] (pub))
 
   ;; One arm of a match (src/ast.rs MatchArm). binders is null for an arm
   ;; written without brackets.
@@ -65,15 +69,17 @@
                (unsafe_ at:i32 body:(arr Expr))
                (new_ at:i32 name:(ptr str.Bytes))
                (get_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr)
-               (put_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr val:Expr)
+               (put_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) ptr:Expr val:Expr path:(arr (ptr Step)))
                (sizeof at:i32 ty:Type)
                (arr_new at:i32 ty:Type size:Expr)
                (arr_get at:i32 ty:Type ptr:Expr index:Expr)
-               (arr_set at:i32 ty:Type ptr:Expr index:Expr val:Expr)
+               (arr_set at:i32 ty:Type ptr:Expr index:Expr val:Expr path:(arr (ptr Step)))
                (arr_len at:i32 arr:Expr)
                (null at:i32 ty:Type)
                (cast at:i32 ty:Type addr:Expr)
                (make at:i32 uname:(ptr str.Bytes) variant:(ptr str.Bytes) args:(arr Expr))
+               (record at:i32 sname:(ptr str.Bytes) args:(arr Expr))
+               (with_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) val:Expr new:Expr)
                (match_ at:i32 val:Expr arms:(arr (ptr Arm)) else_body:(arr Expr))
                (return_ at:i32 val:MaybeExpr)
                (break_ at:i32)
@@ -85,7 +91,8 @@
   (union Contract [(requires e:Expr) (ensures e:Expr) (invariant e:Expr)] (pub))
 
   (struct Field [(pub name:(ptr str.Bytes)) (pub ty:Type)] (pub))
-  (struct StructDef [(pub name:(ptr str.Bytes)) (pub fields:(arr (ptr Field))) (pub at:i32)] (pub))
+  ;; value: a value struct, (struct S [...] (value)) (src/ast.rs StructDef.is_value).
+  (struct StructDef [(pub name:(ptr str.Bytes)) (pub fields:(arr (ptr Field))) (pub at:i32) (pub value:bool)] (pub))
   ;; members are names with their values (src/ast.rs EnumDef)
   (struct Member [(pub name:(ptr str.Bytes)) (pub value:i32)] (pub))
   (struct EnumDef [(pub name:(ptr str.Bytes)) (pub members:(arr (ptr Member))) (pub at:i32)] (pub))
@@ -109,9 +116,10 @@
       (Expr.loop [at _ _ _ _ _] at) (Expr.while_ [at _ _] at) (Expr.call [at _ _] at)
       (Expr.op [at _ _] at) (Expr.ok [at _ _] at) (Expr.err [at _ _] at)
       (Expr.match_result [at _ _ _ _ _] at) (Expr.block [at _] at) (Expr.unsafe_ [at _] at) (Expr.new_ [at _] at)
-      (Expr.get_ [at _ _ _] at) (Expr.put_ [at _ _ _ _] at) (Expr.sizeof [at _] at)
-      (Expr.arr_new [at _ _] at) (Expr.arr_get [at _ _ _] at) (Expr.arr_set [at _ _ _ _] at)
+      (Expr.get_ [at _ _ _] at) (Expr.put_ [at _ _ _ _ _] at) (Expr.sizeof [at _] at)
+      (Expr.arr_new [at _ _] at) (Expr.arr_get [at _ _ _] at) (Expr.arr_set [at _ _ _ _ _] at)
       (Expr.arr_len [at _] at) (Expr.null [at _] at) (Expr.cast [at _ _] at)
-      (Expr.make [at _ _ _] at) (Expr.match_ [at _ _ _] at) (Expr.return_ [at _] at)
+      (Expr.make [at _ _ _] at) (Expr.record [at _ _] at) (Expr.with_ [at _ _ _ _] at)
+      (Expr.match_ [at _ _ _] at) (Expr.return_ [at _] at)
       (Expr.break_ [at] at) (Expr.continue_ [at] at) (Expr.ref [at _] at)
       (Expr.call_ref [at _ _ _] at) (Expr.addr [at _ _] at))))

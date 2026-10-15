@@ -74,7 +74,7 @@
       (loop j 0 (- (arr.len fs) 1) 1
         (if (gt j 0) (call s b " ") (block))
         (call field b (arr.get (ptr ast.Field) fs j)))
-      (call s b "])\n"))
+      (call s b (if (get st ast.StructDef.value) "] (value))\n" "])\n")))
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (loop k 0 (- (arr.len fns) 1) 1
       (call print_fn b (arr.get (ptr ast.FnDef) fns k)))
@@ -165,6 +165,12 @@
       (call print_expr b (arr.get ast.Expr body j)))
     (call s b ")"))
 
+  ;; A put's or arr.set's field path: ` S.f V.g` (src/printer.rs path_str).
+  (fn print_path [b:(ptr buf.Buf) path:(arr (ptr ast.Step))] -> void
+    (loop k 0 (- (arr.len path) 1) 1
+      (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
+      (call s b " ") (call by b (get st ast.Step.sname)) (call s b ".") (call by b (get st ast.Step.fname))))
+
   (fn print_expr [b:(ptr buf.Buf) e:ast.Expr] -> void (pub)
     (match e
       (ast.Expr.lit_int [_ iv] (call buf.push_i64 b iv))
@@ -196,16 +202,17 @@
       (ast.Expr.new_ [_ name] (call s b "(new ") (call by b name) (call s b ")"))
       (ast.Expr.get_ [_ sname fname ptr]
        (call s b "(get ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname) (call s b ")"))
-      (ast.Expr.put_ [_ sname fname ptr val]
+      (ast.Expr.put_ [_ sname fname ptr val path]
        (call s b "(put ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
+       (call print_path b path)
        (call s b " ") (call print_expr b val) (call s b ")"))
       (ast.Expr.sizeof [_ st] (call s b "(sizeof ") (call print_type b st) (call s b ")"))
       (ast.Expr.arr_new [_ ty size] (call s b "(arr.new ") (call print_type b ty) (call s b " ") (call print_expr b size) (call s b ")"))
       (ast.Expr.arr_get [_ ty ptr index]
        (call s b "(arr.get ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ") (call print_expr b index) (call s b ")"))
-      (ast.Expr.arr_set [_ ty ptr index val]
+      (ast.Expr.arr_set [_ ty ptr index val path]
        (call s b "(arr.set ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ")
-       (call print_expr b index) (call s b " ") (call print_expr b val) (call s b ")"))
+       (call print_expr b index) (call print_path b path) (call s b " ") (call print_expr b val) (call s b ")"))
       (ast.Expr.arr_len [_ a] (call s b "(arr.len ") (call print_expr b a) (call s b ")"))
       (ast.Expr.null [_ ty]
        (match ty
@@ -219,6 +226,10 @@
        (call s b " ") (call print_expr b addr) (call s b ")"))
       (ast.Expr.make [_ uname variant args]
        (call s b "(make ") (call by b uname) (call s b ".") (call by b variant) (call with_body b args))
+      (ast.Expr.record [_ sname args] (call s b "(make ") (call by b sname) (call with_body b args))
+      (ast.Expr.with_ [_ sname fname val nv]
+       (call s b "(with ") (call print_expr b val) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
+       (call s b " ") (call print_expr b nv) (call s b ")"))
       (ast.Expr.match_ [_ val arms else_body]
        (call s b "(match ") (call print_expr b val)
        (loop j 0 (- (arr.len arms) 1) 1

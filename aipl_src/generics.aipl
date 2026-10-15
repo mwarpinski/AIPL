@@ -41,6 +41,7 @@
               ifaces:(ptr (map.Map (ptr str.Bytes) (ptr Iface))) impls:(ptr (map.Map (ptr str.Bytes) i32))
               order:(ptr (vec.Vec (ptr Tmpl))) struct_names:(ptr (map.Map (ptr str.Bytes) i32))
               made_structs:(ptr (map.Map (ptr str.Bytes) i32)) archetypes:bool
+              value_names:(ptr (map.Map (ptr str.Bytes) i32)) made_values:(ptr (map.Map (ptr str.Bytes) i32))
               granted:(ptr (vec.Vec (ptr compiler.Node))) granted_by:(ptr (vec.Vec (ptr Tmpl)))])
 
   ;; An interface (generics.rs Interface): its item, type parameter, and
@@ -269,7 +270,7 @@
             (return name))
           (block)))
     (if (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
-        (call (map.set (ptr str.Bytes) i32) (get st St.made_structs) name 1)
+        (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
         (block))
     (let e:(ptr Env) (new Env))
     (put e Env.names (get t Tmpl.params))
@@ -332,17 +333,32 @@
   ;; (put p (Name T) f v) print as (get p Name<T>.f); a generic union's
   ;; (make (Name T) v x) as (make Name<T>.v x), and its arm ((Name T) v ...)
   ;; as (Name<T>.v ...).
+  ;; resolver.rs is_value_struct: (struct NAME [fields] (value) ...).
+  (fn is_value_item [st:(ptr St) item:(ptr compiler.Node)] -> bool
+    (let mk:(ptr compiler.Node) (call nth item 3))
+    (and (call lit (call head st item) "struct")
+         (and (neq mk (ptr.null compiler.Node))
+              (and (eq (get mk compiler.Node.kind) compiler.Kind.paren)
+                   (and (call lit (call head st mk) "value") (eq (get (call first_child mk) compiler.Node.next) (ptr.null compiler.Node)))))))
+
+  ;; Whether n applies a generic union's template ((Option T)).
+  (fn is_union_app [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (if (not (call is_app st n false)) (return false) (block))
+    (let t:(ptr Tmpl) (call (map.get_or (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
+    (and (neq t (ptr.null Tmpl)) (call lit (call head st (get t Tmpl.node)) "union")))
+
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let h:(ptr str.Bytes) (call head st g))
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
-                                 (and (or (call lit h "get") (call lit h "put"))
+                                 (and (or (call lit h "get") (or (call lit h "put") (call lit h "with")))
                                       (call is_app st (call nth g 2) false))))
-    ;; the child the variant name joins, or -1
+    ;; the child the variant name joins, or -1 (a value struct's make takes
+    ;; its fields, not a variant)
     (let variant_at:i32 (cond
                           (square -1)
                           ((call is_app st (call first_child g) false) 0)
-                          ((and (gte (get h str.Bytes.len) 0) (and (call lit h "make") (call is_app st (call nth g 1) false))) 1)
+                          ((and (gte (get h str.Bytes.len) 0) (and (call lit h "make") (call is_union_app st (call nth g 1)))) 1)
                           (else -1)))
     (call note st g out)
     (call buf.push_byte out (if square 91 40))
@@ -547,6 +563,8 @@
     (put st St.order (call (vec.make (ptr Tmpl)) (call alloc.default) 16))
     (put st St.struct_names (call (map.make (ptr str.Bytes) i32) (call alloc.default) 64))
     (put st St.made_structs (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put st St.value_names (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put st St.made_values (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
     (put st St.archetypes archetypes)
     (put st St.granted (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
     (put st St.granted_by (call (vec.make (ptr Tmpl)) (call alloc.default) 8))
@@ -563,8 +581,9 @@
          (if (neq w (ptr.null compiler.Node))
              (call fail_at st (get w compiler.Node.pos) (call msg "only a generic function, struct, or union takes where clauses"))
              (block))
+         ;; a value struct is a value type argument
          (if (and (call lit ih "struct") (call is_symbol (call nth item 1)))
-             (call (map.set (ptr str.Bytes) i32) (get st St.struct_names) (call text st (call nth item 1)) 1)
+             (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st item) (get st St.value_names) (get st St.struct_names)) (call text st (call nth item 1)) 1)
              (block))
          (call (vec.push (ptr compiler.Node)) items item)))
       (set! item (get item compiler.Node.next)))
@@ -1166,12 +1185,20 @@
              (call buf.push_str b " needs (where (struct ")
              (call buf.push_bytes b (call last_part sym))
              (call buf.push_str b "))"))
-           (block
-             (call buf.push_str b " must be a struct (where (struct ")
-             (call buf.push_bytes b p)
-             (call buf.push_str b ")), and ")
-             (call buf.push_bytes b a)
-             (call buf.push_str b " is not one"))))
+           (if (and (neq sym (ptr.null str.Bytes))
+                    (or (call (map.has (ptr str.Bytes) i32) (get st St.value_names) sym) (call (map.has (ptr str.Bytes) i32) (get st St.made_values) sym)))
+               (block
+                 (call buf.push_str b " must be a struct used through a pointer (where (struct ")
+                 (call buf.push_bytes b p)
+                 (call buf.push_str b ")), and ")
+                 (call buf.push_bytes b a)
+                 (call buf.push_str b " is a value struct, which has no address"))
+               (block
+                 (call buf.push_str b " must be a struct (where (struct ")
+                 (call buf.push_bytes b p)
+                 (call buf.push_str b ")), and ")
+                 (call buf.push_bytes b a)
+                 (call buf.push_str b " is not one")))))
       (is_struct
        (call buf.push_str b " is a value type, and ")
        (call buf.push_bytes b a)
@@ -1280,7 +1307,7 @@
             (return))
           (block)))
     (if (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
-        (call (map.set (ptr str.Bytes) i32) (get st St.made_structs) name 1)
+        (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
         (block))
     (let inst:(ptr Inst) (new Inst))
     (put inst Inst.tmpl t)
