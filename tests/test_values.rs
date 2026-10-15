@@ -34,15 +34,19 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
     Ok(m)
 }
 
-const CHECKSUM: i64 = 649;
+/// The programs and the checksum each one's main returns: every form, and
+/// every way through control flow.
+const PROGRAMS: [(&str, i64); 2] = [("tests/aipl/values.aipl", 649), ("tests/aipl/values_flow.aipl", 173)];
 
 #[test]
-fn values_program_runs_in_the_vm() {
-    let m = Resolver::resolve(&root().join("tests/aipl/values.aipl")).unwrap();
-    TypeChecker::new().check_module(&m).unwrap();
-    let mut vm = VM::new();
-    vm.load_module(m);
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(CHECKSUM));
+fn values_programs_run_in_the_vm() {
+    for (path, sum) in PROGRAMS {
+        let m = Resolver::resolve(&root().join(path)).unwrap();
+        TypeChecker::new().check_module(&m).unwrap();
+        let mut vm = VM::new();
+        vm.load_module(m);
+        assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(sum), "{path}");
+    }
 }
 
 #[test]
@@ -209,5 +213,44 @@ fn the_aipl_resolver_agrees_on_value_structs() {
         let aipl = aipl_core::selfhost::resolve_with_aipl(&file).map(|_| ()).expect_err(src);
         assert_eq!(aipl, rust, "{src}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// main's result under wasmtime, or the error.
+fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+    use wasmtime::{Engine, Linker, Module, Store};
+    use wasmtime_wasi::p1::WasiP1Ctx;
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).map_err(|e| format!("{e:?}"))?;
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
+    let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &module).map_err(|e| format!("{e:?}"))?;
+    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    main.call(&mut store, ()).map_err(|e| format!("{e:?}"))
+}
+
+#[test]
+fn values_programs_run_under_wasmtime() {
+    for (path, sum) in PROGRAMS {
+        let m = Resolver::resolve(&root().join(path)).unwrap();
+        TypeChecker::new().check_module(&m).unwrap();
+        let wasm = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wasm).unwrap_or_else(|e| panic!("{path}: {e}"));
+        assert_eq!(wasm_main(&wasm), Ok(sum as i32), "{path}");
+    }
+}
+
+/// The self-hosted toolchain end to end (aipl_src/driver.aipl, as `aipl
+/// compile --self`), which hands codegen.aipl each file as written, field
+/// paths in reads included: the same bytes as the Rust toolchain.
+#[test]
+fn values_programs_compile_alike_through_the_self_hosted_toolchain() {
+    for (path, _) in PROGRAMS {
+        let entry = root().join(path);
+        let m = Resolver::resolve(&entry).unwrap();
+        TypeChecker::new().check_module(&m).unwrap();
+        let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
+        assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).unwrap(), rust, "{path}");
     }
 }

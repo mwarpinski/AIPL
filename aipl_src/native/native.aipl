@@ -231,6 +231,14 @@
   ;; The reason a module's memory or data cannot be translated, or "" if
   ;; it can (one memory, its own or imported, with a maximum of at most
   ;; 32768 pages, 2 GiB, and active data segments that fit its initial size).
+;; Whether a function type has several results (a value struct returned,
+  ;; docs/design/VALUES_PLAN.md V3), which the translator does not handle yet.
+  (fn several_results [w:(ptr wasm_reader.Wasm)] -> bool
+    (let ts:(ptr (vec.Vec (ptr wasm_reader.FuncType))) (get w wasm_reader.Wasm.types))
+    (loop i 0 (- (call (vec.len (ptr wasm_reader.FuncType)) ts) 1) 1
+      (if (gt (call (vec.len i32) (get (call (vec.at (ptr wasm_reader.FuncType)) ts i) wasm_reader.FuncType.results)) 1) (return true) (block)))
+    false)
+
   (fn memory_problem [w:(ptr wasm_reader.Wasm)] -> str
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (if (eq lim (ptr.null wasm_reader.Limits)) (return "") (block))
@@ -322,6 +330,9 @@
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))
     (if (gt (str.len mem_problem) 0) (return (call failure (call str.from_str mem_problem))) (block))
+    (if (call several_results w)
+        (return (call failure (call str.from_str "a function returns a value struct (several wasm results), which native code does not support yet: build with --target wasm")))
+        (block))
     (let entry_fn:i32 (call export_func w "_start"))
     (if (lt entry_fn 0) (return (call failure (call str.from_str "the module has no _start export"))) (block))
     (let l:(ptr lower.L) (call lower.make w))

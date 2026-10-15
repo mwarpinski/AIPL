@@ -1068,3 +1068,70 @@ fn contracts_fail_in_both() {
     assert!(differential(&module, &wasm, "nested_i32", &[1]).unwrap_err().starts_with("Pre-condition failed in 'nested'"));
     assert_eq!(differential(&module, &wasm, "nested_i32", &[0]), Ok(Value::Int(0)));
 }
+
+/// Value structs (AIPL_SPEC.md 4.E) held inline: the same sizes, offsets,
+/// heap use (a result's or a union's cell holding one), and raw words in
+/// both backends, and the same failures reading or writing one through a
+/// null pointer, past an array's end, or into the reserved block.
+#[test]
+fn value_structs_agree() {
+    let src = r#"(module v
+  (struct V [a:i32 b:f64 c:bool] (value))
+  (struct W [v:V n:i64] (value))
+  (struct Holder [w:W k:i32])
+  (union U [(p v:V) (q)])
+
+  ;; V 24 (b aligned to 8, rounded to 8), W 32, Holder 40
+  (fn sizes [] -> i32 (+ (* 100 (sizeof V)) (+ (* 10 (sizeof W)) (sizeof Holder))))
+
+  ;; written whole, then one field through a path; read as raw words
+  (fn raw [] -> i32 (unsafe)
+    (let h:(ptr Holder) (new Holder))
+    (put h Holder.w (make W (make V 7 2.5 true) 9i64))
+    (put h Holder.w W.v V.a 11)
+    (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
+
+  ;; a result's cell holding a V: the payload at 8, the cell 32 bytes
+  (fn result_cell [] -> i32 (unsafe)
+    (let a0:i32 (mem.alloc 4))
+    (let r:(result V i32) (ok (make V 1 2.0 false)))
+    (- (mem.alloc 4) a0))
+
+  ;; a union's cell holding a V: the same
+  (fn union_cell [] -> i32 (unsafe)
+    (let a0:i32 (mem.alloc 4))
+    (let u:U (make U.p (make V 3 1.5 true)))
+    (- (mem.alloc 4) a0))
+
+  ;; elements 24 bytes apart
+  (fn elements [] -> i32 (unsafe)
+    (let xs:(arr V) (arr.new V 2))
+    (arr.set V xs 1 V.a 5)
+    (mem.load32 (+ (arr.addr xs) 24)))
+
+  (fn read_null [] -> i64 (get (get (ptr.null Holder) Holder.w) W.n))
+
+  (fn read_past [i:i32] -> i32
+    (let xs:(arr V) (arr.new V 2))
+    (get (arr.get V xs i) V.a))
+
+  (fn write_reserved [] -> i32 (unsafe)
+    (put (ptr.cast Holder (- 600 88)) Holder.w (make W (make V 1 1.0 true) 1i64))
+    0)
+)
+"#;
+    let (module, wasm) = compile_checked(src);
+    assert_eq!(differential(&module, &wasm, "sizes", &[]), Ok(Value::Int(2400 + 320 + 40)));
+    // a 11, c true (1), n 9
+    assert_eq!(differential(&module, &wasm, "raw", &[]), Ok(Value::Int(21)));
+    // the 4-byte block rounded to 8, then the 32-byte cell
+    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(40)));
+    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(40)));
+    assert_eq!(differential(&module, &wasm, "elements", &[]), Ok(Value::Int(5)));
+    assert!(differential(&module, &wasm, "read_null", &[]).is_err());
+    assert_eq!(differential(&module, &wasm, "read_past", &[1]), Ok(Value::Int(0)));
+    // out of bounds: both fail, with the same message
+    assert!(differential(&module, &wasm, "read_past", &[2]).is_err());
+    let e = differential(&module, &wasm, "write_reserved", &[]).unwrap_err();
+    assert!(e.contains("reserved runtime block"), "got {e}");
+}

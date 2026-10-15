@@ -50,12 +50,9 @@ impl WasmCompiler {
         // 1. Build type section and function index mapping (after the imports)
         for (i, f) in module.functions.iter().enumerate() {
             let idx = import_count + i as u32;
-            let params: Vec<ValType> = f.params.iter().map(|(_, t)| self::aipl_to_wasm_type(t)).collect();
-            let results: Vec<ValType> = if f.return_type == Type::Void {
-                vec![]
-            } else {
-                vec![self::aipl_to_wasm_type(&f.return_type)]
-            };
+            // a value struct is its scalars (several parameters, several results)
+            let params: Vec<ValType> = f.params.iter().flat_map(|(_, t)| valtypes(t, &structs)).collect();
+            let results: Vec<ValType> = valtypes(&f.return_type, &structs);
 
             types.ty().function(params, results);
             functions.function(idx);
@@ -81,7 +78,7 @@ impl WasmCompiler {
             Expr::Ref { .. } => uses_refs = true,
             Expr::CallRef { sig, .. } => {
                 uses_refs = true;
-                let key = wasm_signature(sig);
+                let key = wasm_signature(sig, &structs);
                 if !ref_sigs.contains(&key) {
                     ref_sigs.push(key);
                 }
@@ -148,9 +145,10 @@ impl WasmCompiler {
             let mut local_map: HashMap<String, u32> = HashMap::new();
             let mut current_idx = 0;
 
-            for (p_name, _) in &f.params {
+            // a value struct parameter is several wasm parameters
+            for (p_name, p_ty) in &f.params {
                 local_map.insert(p_name.clone(), current_idx);
-                current_idx += 1;
+                current_idx += width(p_ty, &structs);
             }
 
             // Static AIPL type of every local, so codegen can pick i32 vs i64
@@ -162,15 +160,18 @@ impl WasmCompiler {
 
             let mut order = Vec::new();
             for (l_name, l_ty) in &extra_lets {
-                if !local_map.contains_key(l_name) {
-                    local_map.insert(l_name.clone(), current_idx);
+                if !local_types.contains_key(l_name) {
                     local_types.insert(l_name.clone(), l_ty.clone());
                     order.push(l_name);
-                    current_idx += 1;
                 }
             }
             binder_types(&f.body, &mut local_types, &fn_returns, &fn_types, &structs);
-            let mut wasm_locals: Vec<(u32, ValType)> = order.iter().map(|n| (1, aipl_to_wasm_type(&local_types[*n]))).collect();
+            // numbered once every type is known (a binder's comes from what it matches)
+            for n in &order {
+                local_map.insert((*n).clone(), current_idx);
+                current_idx += width(&local_types[*n], &structs);
+            }
+            let mut wasm_locals: Vec<(u32, ValType)> = order.iter().flat_map(|n| valtypes(&local_types[*n], &structs)).map(|t| (1, t)).collect();
 
             // A function with `ens` keeps its result in `res` for the checks
             // (a hidden local after the lets, unless a let already named it).
@@ -178,8 +179,8 @@ impl WasmCompiler {
             if has_ens && f.return_type != Type::Void && !local_map.contains_key("res") {
                 local_map.insert("res".to_string(), current_idx);
                 local_types.insert("res".to_string(), f.return_type.clone());
-                wasm_locals.push((1, aipl_to_wasm_type(&f.return_type)));
-                current_idx += 1;
+                wasm_locals.extend(valtypes(&f.return_type, &structs).into_iter().map(|t| (1, t)));
+                current_idx += width(&f.return_type, &structs);
             }
 
             // Two extra i32 locals per function: scratch for write-address
@@ -194,10 +195,33 @@ impl WasmCompiler {
             // nested I/O safe) and then unload them into these.
             let io_locals = if fn_uses_io(&f.body) {
                 wasm_locals.push((2, ValType::I32));
-                Some((current_idx, current_idx + 1))
+                current_idx += 2;
+                Some((current_idx - 2, current_idx - 1))
             } else {
                 None
             };
+
+            // value struct scratch groups (value_groups), after every other local
+            let value_return = has_ens && is_value_type(&f.return_type, &structs);
+            let typing = Typing { local_types: &local_types, fn_returns: &fn_returns, fn_types: &fn_types, structs: &structs };
+            let tyf = |e: &Expr| type_in(e, &typing);
+            let body_refs: Vec<&Expr> = f.body.iter().collect();
+            let mut found = value_groups(&body_refs, &tyf, &structs, value_return);
+            let contract_refs: Vec<&Expr> = f
+                .contracts
+                .iter()
+                .filter_map(|c| match c {
+                    Contract::Requires(e) | Contract::Ensures(e) => Some(e),
+                    _ => None,
+                })
+                .collect();
+            found.extend(value_groups(&contract_refs, &tyf, &structs, false));
+            let mut groups: HashMap<usize, u32> = HashMap::new();
+            for (key, t) in found {
+                groups.insert(key, current_idx);
+                wasm_locals.extend(valtypes(&t, &structs).into_iter().map(|v| (1, v)));
+                current_idx += width(&t, &structs);
+            }
 
             let mut func = Body::new(wasm_locals);
             let ctx = Ctx {
@@ -208,6 +232,7 @@ impl WasmCompiler {
                 ens_block: has_ens,
                 io_locals,
                 local_types: &local_types,
+                groups: &groups,
                 fn_indices: &fn_indices,
                 fn_returns: &fn_returns,
                 strings: &strings,
@@ -240,7 +265,8 @@ impl WasmCompiler {
                 }
             }
             if has_ens {
-                func.instruction(&Instruction::Block(if f.return_type == Type::Void {
+                // a value struct result goes into res, so the block yields nothing
+                func.instruction(&Instruction::Block(if f.return_type == Type::Void || value_return {
                     BlockType::Empty
                 } else {
                     BlockType::Result(aipl_to_wasm_type(&f.return_type))
@@ -249,18 +275,23 @@ impl WasmCompiler {
             }
             let body_len = f.body.len();
             for (i, expr) in f.body.iter().enumerate() {
+                if value_return && i + 1 == body_len {
+                    let res = *ctx.locals.get("res").ok_or("Wasm Codegen: no res")?;
+                    compile_into(expr, res, &ctx, &mut func)?;
+                    continue;
+                }
                 compile_expr(expr, &ctx, &mut func)?;
                 let is_last = i + 1 == body_len;
                 let keep_value = is_last && f.return_type != Type::Void;
                 if !keep_value && !is_void_expr(expr, &ctx) {
-                    func.instruction(&Instruction::Drop);
+                    emit_drops(&mut func, &ctx, &expr_type(expr, &ctx));
                 }
             }
             if has_ens {
                 ctx.labels.borrow_mut().pop();
                 func.instruction(&Instruction::End);
                 let res = ctx.locals.get("res").copied();
-                if let (true, Some(r)) = (f.return_type != Type::Void, res) {
+                if let (true, Some(r)) = (f.return_type != Type::Void && !value_return, res) {
                     func.instruction(&Instruction::LocalSet(r));
                 }
                 for (is_ens, expr, msg) in &checks {
@@ -269,7 +300,7 @@ impl WasmCompiler {
                     }
                 }
                 if let (true, Some(r)) = (f.return_type != Type::Void, res) {
-                    func.instruction(&Instruction::LocalGet(r));
+                    emit_get_slots(&mut func, r, width(&f.return_type, &structs));
                 }
             }
             func.instruction(&Instruction::End);
@@ -325,7 +356,7 @@ impl WasmCompiler {
         if let (true, Some(m)) = (auto_start, main_fn) {
             let mut f = Body::new(vec![]);
             f.instruction(&Instruction::Call(import_count + m as u32));
-            if module.functions[m].return_type != Type::Void {
+            for _ in 0..width(&module.functions[m].return_type, &structs) {
                 f.instruction(&Instruction::Drop);
             }
             f.instruction(&Instruction::End);
@@ -571,6 +602,8 @@ struct Ctx<'a> {
     /// `(a, b)` scratch locals for WASI lowerings; `None` when the function does no I/O.
     io_locals: Option<(u32, u32)>,
     local_types: &'a HashMap<String, Type>,
+    /// Value struct scratch groups (value_groups): key -> first local.
+    groups: &'a HashMap<usize, u32>,
     fn_indices: &'a HashMap<String, u32>,
     fn_returns: &'a HashMap<String, Type>,
     /// Interned string literal -> address of its bytes in the data segment.
@@ -643,13 +676,411 @@ fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, Strin
 }
 
 /// The wasm params/results of a `(fn [...] -> r)` type.
-fn wasm_signature(sig: &Type) -> (Vec<ValType>, Vec<ValType>) {
+fn wasm_signature(sig: &Type, structs: &HashMap<String, StructDef>) -> (Vec<ValType>, Vec<ValType>) {
     match sig {
-        Type::Fn(params, ret) => (
-            params.iter().map(aipl_to_wasm_type).collect(),
-            if **ret == Type::Void { vec![] } else { vec![aipl_to_wasm_type(ret)] },
-        ),
+        Type::Fn(params, ret) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
         _ => (vec![], vec![]),
+    }
+}
+
+// ===== Value structs (AIPL_SPEC.md 4.E; docs/design/VALUES_PLAN.md V2) =====
+//
+// A value struct is its fields' scalars, flattened in declaration order: a
+// local or parameter is that many wasm locals, a result that many results.
+// It is never a block's result: an if or match that yields one stores it
+// in a group of scratch locals (assigned per function, after every other
+// local, by `value_groups`) and pushes them after its end; so do `with`
+// and a field read from a value that is computed (not a local, not in
+// memory). In memory it is laid out as AIPL_SPEC.md 4.E says and moved one
+// scalar at a time: a load pushes each scalar from addr_scratch; a store
+// spills the value to a group first (a wasm store needs its address right
+// under its value), then stores each scalar from there.
+
+/// A value of type `ty` as wasm sees it: its scalars and their byte offsets
+/// in its memory layout (one at 0 for a scalar, none for void).
+fn flat(ty: &Type, structs: &HashMap<String, StructDef>) -> Vec<(Type, u32)> {
+    match ty {
+        Type::Void => vec![],
+        Type::Struct(n) => match structs.get(n) {
+            Some(d) if d.is_value => {
+                let mut out = Vec::new();
+                for f in &d.fields {
+                    let off = crate::checker::get_field_offset(d, &f.name, structs).map(|(o, _)| o as u32).unwrap_or(0);
+                    out.extend(flat(&f.ty, structs).into_iter().map(|(t, o)| (t, off + o)));
+                }
+                out
+            }
+            _ => vec![(ty.clone(), 0)],
+        },
+        _ => vec![(ty.clone(), 0)],
+    }
+}
+
+fn is_value_type(ty: &Type, structs: &HashMap<String, StructDef>) -> bool {
+    matches!(ty, Type::Struct(n) if structs.get(n).is_some_and(|d| d.is_value))
+}
+
+/// How many wasm values (locals, results) a value of type `ty` is.
+fn width(ty: &Type, structs: &HashMap<String, StructDef>) -> u32 {
+    flat(ty, structs).len() as u32
+}
+
+fn valtypes(ty: &Type, structs: &HashMap<String, StructDef>) -> Vec<ValType> {
+    flat(ty, structs).iter().map(|(t, _)| aipl_to_wasm_type(t)).collect()
+}
+
+/// Field `f` of value struct `s`: its first scalar among the struct's, how
+/// many it is, its byte offset, and its type.
+fn field_slots(s: &str, f: &str, structs: &HashMap<String, StructDef>) -> Result<(u32, u32, u32, Type), String> {
+    let def = structs.get(s).ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", s))?;
+    let mut slot = 0;
+    for g in &def.fields {
+        let w = width(&g.ty, structs);
+        if g.name == f {
+            let (off, _) = crate::checker::get_field_offset(def, f, structs)?;
+            return Ok((slot, w, off as u32, g.ty.clone()));
+        }
+        slot += w;
+    }
+    Err(format!("Wasm Codegen: struct '{}' has no field '{}'", s, f))
+}
+
+fn emit_get_slots(func: &mut Body, base: u32, n: u32) {
+    for k in 0..n {
+        func.instruction(&Instruction::LocalGet(base + k));
+    }
+}
+
+fn emit_set_slots(func: &mut Body, base: u32, n: u32) {
+    for k in (0..n).rev() {
+        func.instruction(&Instruction::LocalSet(base + k));
+    }
+}
+
+/// Pushes the value of type `ty` stored `offset` bytes past the address in
+/// addr_scratch, scalar by scalar.
+fn emit_load_scalars(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32) -> Result<(), String> {
+    for (t, o) in flat(ty, ctx.structs) {
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+        func.instruction(&load_instruction(&in_cell(&t), (offset + o) as u64)?);
+        if t == Type::Bool {
+            normalize_bool(func);
+        }
+    }
+    Ok(())
+}
+
+/// With an address on the stack: stores the value struct `val` computes
+/// there, `offset` bytes on. The value goes to its spill group (its
+/// scalars all arrive at once), then the address to addr_scratch (only
+/// now: computing the value may use it), then each scalar is stored.
+fn emit_store_value(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, val: &Expr) -> Result<(), String> {
+    let g = *ctx.groups.get(&(2 * (val as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value store has no group")?;
+    compile_expr(val, ctx, func)?;
+    emit_set_slots(func, g, width(ty, ctx.structs));
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+    for (k, (t, o)) in flat(ty, ctx.structs).iter().enumerate() {
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+        func.instruction(&Instruction::LocalGet(g + k as u32));
+        func.instruction(&store_instruction(&in_cell(t), (offset + o) as u64)?);
+    }
+    Ok(())
+}
+
+/// Drops the value an expression of type `ty` leaves.
+fn emit_drops(func: &mut Body, ctx: &Ctx, ty: &Type) {
+    for _ in 0..width(ty, ctx.structs).max(1) {
+        func.instruction(&Instruction::Drop);
+    }
+}
+
+/// A read from a value, (get v V.f) or a chain of them: from the locals of
+/// a variable, from memory for a value in a struct's field or an array
+/// element, else from the root's spill group.
+fn compile_value_read(top: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    let tyf = |e: &Expr| expr_type(e, ctx);
+    let (root, steps) = value_chain(top, &tyf, ctx.structs);
+    let (mut slot, mut off, mut t) = (0, 0, tyf(root));
+    for (st, f) in steps {
+        let (sl, _, o, ft) = field_slots(st, f, ctx.structs)?;
+        slot += sl;
+        off += o;
+        t = ft;
+    }
+    let n = width(&t, ctx.structs);
+    match root {
+        Expr::Var(name, _) => {
+            let base = *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?;
+            emit_get_slots(func, base + slot, n);
+        }
+        Expr::GetField { struct_name, field_name, ptr, .. } if !is_value_type(&tyf(ptr), ctx.structs) => {
+            let def = ctx.structs.get(struct_name).ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
+            let (foff, _) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
+            compile_expr(ptr, ctx, func)?;
+            emit_null_check(func, ctx);
+            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+            emit_load_scalars(func, ctx, &t, foff as u32 + off)?;
+        }
+        Expr::ArrGet { elem_ty, ptr, index, .. } => {
+            emit_element_address(elem_ty, ptr, index, ctx, func)?;
+            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+            emit_load_scalars(func, ctx, &t, off)?;
+        }
+        _ => {
+            let g = *ctx.groups.get(&(2 * (root as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value read has no group")?;
+            compile_expr(root, ctx, func)?;
+            emit_set_slots(func, g, width(&tyf(root), ctx.structs));
+            emit_get_slots(func, g + slot, n);
+        }
+    }
+    Ok(())
+}
+
+/// arr.get's and arr.set's element address: the array (null-checked), the
+/// index (bounds-checked), times the element's size, added.
+fn emit_element_address(elem_ty: &Type, ptr: &Expr, index: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
+    compile_expr(ptr, ctx, func)?;
+    emit_null_check(func, ctx);
+    compile_expr(index, ctx, func)?;
+    emit_bounds_check(func, ctx);
+    func.instruction(&Instruction::I32Const(elem_size as i32));
+    func.instruction(&Instruction::I32Mul);
+    func.instruction(&Instruction::I32Add);
+    Ok(())
+}
+
+/// Compiles `expr`, a value struct, into the locals from `base`: the
+/// branches of an if or match, and a block's last expression, go there
+/// directly; anything else is pushed and stored.
+fn compile_into(expr: &Expr, base: u32, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    func.at.push(ctx.position(expr.span()));
+    let r = compile_into_at(expr, base, ctx, func);
+    func.at.pop();
+    r
+}
+
+fn compile_into_at(expr: &Expr, base: u32, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    match expr {
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            compile_expr(cond, ctx, func)?;
+            func.instruction(&Instruction::If(BlockType::Empty));
+            with_label(ctx, Label::Plain, || {
+                compile_into(then_branch, base, ctx, func)?;
+                func.instruction(&Instruction::Else);
+                compile_into(else_branch, base, ctx, func)
+            })?;
+            func.instruction(&Instruction::End);
+        }
+        Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) if !exprs.is_empty() => {
+            let last = exprs.len() - 1;
+            for e in &exprs[..last] {
+                compile_stmt(e, ctx, func)?;
+            }
+            compile_into(&exprs[last], base, ctx, func)?;
+        }
+        Expr::Match { value, arms, else_body, .. } => compile_match(value, arms, else_body, Some(base), ctx, func)?,
+        Expr::MatchResult { .. } => compile_match_result(expr, Some(base), ctx, func)?,
+        _ => {
+            compile_expr(expr, ctx, func)?;
+            emit_set_slots(func, base, width(&expr_type(expr, ctx), ctx.structs));
+        }
+    }
+    Ok(())
+}
+
+/// The root of a chain of field reads from a value, (get (get e A.f) B.g):
+/// the first expression down the chain that is not such a read, and the
+/// reads from it outward.
+fn value_chain<'e>(expr: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> (&'e Expr, Vec<(&'e String, &'e String)>) {
+    let mut steps = Vec::new();
+    let mut e = expr;
+    while let Expr::GetField { struct_name, field_name, ptr, .. } = e {
+        if !is_value_type(&ty(ptr), structs) {
+            break;
+        }
+        steps.push((struct_name, field_name));
+        e = ptr;
+    }
+    steps.reverse();
+    (e, steps)
+}
+
+/// Where the root of a value chain is: a local, memory (a field of a struct
+/// behind a pointer, an array element), or computed (any other expression).
+fn root_in_place(root: &Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> bool {
+    match root {
+        Expr::Var(..) | Expr::ArrGet { .. } => true,
+        Expr::GetField { ptr, .. } => !is_value_type(&ty(ptr), structs),
+        _ => false,
+    }
+}
+
+/// The scratch groups of a function's body and contracts (value_groups'
+/// walk, in source order): each node that needs one (by address), with the
+/// type of the value it holds.
+fn value_groups(exprs: &[&Expr], ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>, body_into: bool) -> Vec<(usize, Type)> {
+    fn walk(e: &Expr, into: bool, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>, out: &mut Vec<(usize, Type)>) {
+        // a node's own group (an if, match, or with) is keyed 2*address, a
+        // chain root's spill group 2*address+1 (a root may have both)
+        let key = 2 * (e as *const Expr as usize);
+        let body = |b: &[Expr], into: bool, out: &mut Vec<(usize, Type)>| {
+            for (i, x) in b.iter().enumerate() {
+                walk(x, into && i + 1 == b.len(), ty, structs, out);
+            }
+        };
+        match e {
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                let t = ty(then_branch);
+                let v = is_value_type(&t, structs);
+                if v && !into {
+                    out.push((key, t));
+                }
+                walk(cond, false, ty, structs, out);
+                walk(then_branch, v, ty, structs, out);
+                walk(else_branch, v, ty, structs, out);
+            }
+            Expr::Match { value, arms, else_body, .. } => {
+                let t = ty(e);
+                let v = is_value_type(&t, structs);
+                if v && !into {
+                    out.push((key, t));
+                }
+                walk(value, false, ty, structs, out);
+                for a in arms {
+                    body(&a.body, v, out);
+                }
+                if let Some(b) = else_body {
+                    body(b, v, out);
+                }
+            }
+            Expr::MatchResult { expr, ok_body, err_body, .. } => {
+                let t = ty(e);
+                let v = is_value_type(&t, structs);
+                if v && !into {
+                    out.push((key, t));
+                }
+                walk(expr, false, ty, structs, out);
+                body(ok_body, v, out);
+                body(err_body, v, out);
+            }
+            Expr::Block(b, _) | Expr::Unsafe(b, _) => body(b, into, out),
+            Expr::With { value, new_val, .. } => {
+                out.push((key, ty(e)));
+                walk(value, false, ty, structs, out);
+                walk(new_val, false, ty, structs, out);
+            }
+            Expr::GetField { ptr, .. } if is_value_type(&ty(ptr), structs) => {
+                let (root, _) = value_chain(e, ty, structs);
+                if !root_in_place(root, ty, structs) {
+                    out.push((2 * (root as *const Expr as usize) + 1, ty(root)));
+                    walk(root, false, ty, structs, out);
+                } else {
+                    match root {
+                        Expr::GetField { ptr, .. } => walk(ptr, false, ty, structs, out),
+                        Expr::ArrGet { ptr, index, .. } => {
+                            walk(ptr, false, ty, structs, out);
+                            walk(index, false, ty, structs, out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {
+                // a value struct stored to memory goes through its spill group
+                for v in stored_values(e, ty, structs) {
+                    out.push((2 * (v as *const Expr as usize) + 1, ty(v)));
+                }
+                let mut kids: Vec<&Expr> = Vec::new();
+                children(e, &mut kids);
+                for k in kids {
+                    walk(k, false, ty, structs, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (i, e) in exprs.iter().enumerate() {
+        walk(e, body_into && i + 1 == exprs.len(), ty, structs, &mut out);
+    }
+    out
+}
+
+/// The value structs node `e` stores to memory: a put's or arr.set's value
+/// whose target (after any path) is one, an ok's or err's, a make's fields
+/// that are (in order).
+fn stored_values<'e>(e: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &HashMap<String, StructDef>) -> Vec<&'e Expr> {
+    let value = |t: &Type| is_value_type(t, structs);
+    let follow = |mut t: Type, path: &[(String, String)]| {
+        for (st, f) in path {
+            if let Ok((_, _, _, ft)) = field_slots(st, f, structs) {
+                t = ft;
+            }
+        }
+        t
+    };
+    match e {
+        Expr::PutField { struct_name, field_name, val, path, .. } => {
+            let first = structs.get(struct_name).and_then(|d| crate::checker::get_field_offset(d, field_name, structs).ok()).map(|(_, t)| t).unwrap_or(Type::I32);
+            if value(&follow(first, path)) { vec![val.as_ref()] } else { vec![] }
+        }
+        Expr::ArrSet { elem_ty, val, path, .. } => {
+            if value(&follow(elem_ty.clone(), path)) { vec![val.as_ref()] } else { vec![] }
+        }
+        Expr::Ok(inner, ..) | Expr::Err(inner, ..) => {
+            if value(&ty(inner)) { vec![inner.as_ref()] } else { vec![] }
+        }
+        Expr::Make { args, .. } => args.iter().filter(|a| value(&ty(a))).collect(),
+        _ => vec![],
+    }
+}
+
+/// An expression's direct subexpressions, in source (evaluation) order.
+fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::Lit(..) | Expr::Var(..) | Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Break(_) | Expr::Continue(_) => {}
+        Expr::Let { val, .. } | Expr::Set { val, .. } => out.push(val),
+        Expr::If { cond, then_branch, else_branch, .. } => out.extend([cond.as_ref(), then_branch, else_branch]),
+        Expr::Loop { start, end, step, body, .. } => {
+            out.extend([start.as_ref(), end, step]);
+            out.extend(body.iter());
+        }
+        Expr::While { cond, body, .. } => {
+            out.push(cond);
+            out.extend(body.iter());
+        }
+        Expr::Call { args, .. } | Expr::Op { args, .. } | Expr::Make { args, .. } | Expr::Record { args, .. } => out.extend(args.iter()),
+        Expr::Ok(inner, ..) | Expr::Err(inner, ..) => out.push(inner),
+        Expr::MatchResult { expr, ok_body, err_body, .. } => {
+            out.push(expr);
+            out.extend(ok_body.iter());
+            out.extend(err_body.iter());
+        }
+        Expr::Block(b, _) | Expr::Unsafe(b, _) => out.extend(b.iter()),
+        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
+        Expr::PutField { ptr, val, .. } => out.extend([ptr.as_ref(), val]),
+        Expr::ArrGet { ptr, index, .. } => out.extend([ptr.as_ref(), index]),
+        Expr::ArrSet { ptr, index, val, .. } => out.extend([ptr.as_ref(), index, val]),
+        Expr::With { value, new_val, .. } => out.extend([value.as_ref(), new_val]),
+        Expr::Match { value, arms, else_body, .. } => {
+            out.push(value);
+            for a in arms {
+                out.extend(a.body.iter());
+            }
+            if let Some(b) = else_body {
+                out.extend(b.iter());
+            }
+        }
+        Expr::Return { val, .. } => {
+            if let Some(v) = val {
+                out.push(v);
+            }
+        }
+        Expr::CallRef { func, args, .. } => {
+            out.push(func);
+            out.extend(args.iter());
+        }
     }
 }
 
@@ -1104,7 +1535,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
 fn compile_stmt(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     compile_expr(expr, ctx, func)?;
     if !is_void_expr(expr, ctx) {
-        func.instruction(&Instruction::Drop);
+        emit_drops(func, ctx, &expr_type(expr, ctx));
     }
     Ok(())
 }
@@ -1143,22 +1574,22 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         },
         Expr::Var(name, _) => {
             if let Some(&idx) = ctx.locals.get(name) {
-                func.instruction(&Instruction::LocalGet(idx));
+                emit_get_slots(func, idx, width(&expr_type(expr, ctx), ctx.structs).max(1));
             } else {
                 return Err(format!("Wasm Codegen: Unbound local variable '{}'", name));
             }
         }
-        Expr::Let { name, val, .. } => {
+        Expr::Let { name, val, .. } | Expr::Set { name, val, .. } => {
             compile_expr(val, ctx, func)?;
             if let Some(&idx) = ctx.locals.get(name) {
-                func.instruction(&Instruction::LocalSet(idx));
+                emit_set_slots(func, idx, width(&expr_type(val, ctx), ctx.structs).max(1));
             }
         }
-        Expr::Set { name, val, .. } => {
-            compile_expr(val, ctx, func)?;
-            if let Some(&idx) = ctx.locals.get(name) {
-                func.instruction(&Instruction::LocalSet(idx));
-            }
+        // an if that yields a value struct: through its group
+        Expr::If { then_branch, .. } if is_value_type(&expr_type(then_branch, ctx), ctx.structs) => {
+            let g = *ctx.groups.get(&(2 * (expr as *const Expr as usize))).ok_or("Wasm Codegen: a value if has no group")?;
+            compile_into(expr, g, ctx, func)?;
+            emit_get_slots(func, g, width(&expr_type(then_branch, ctx), ctx.structs));
         }
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
@@ -1753,72 +2184,43 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         }
         Expr::Ok(inner, ..) => compile_result_cell(0, inner, ctx, func)?,
         Expr::Err(inner, ..) => compile_result_cell(1, inner, ctx, func)?,
-        Expr::MatchResult {
-            expr,
-            ok_var,
-            ok_body,
-            err_var,
-            err_body,
-            ..
-        } => {
-            let (ok_ty, err_ty) = result_sides(expr_type(expr, ctx));
-            compile_expr(expr, ctx, func)?;
-            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-                offset: 0,
-                align: 2,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::I32Eqz);
-
-            let last_ok = ok_body.last();
-            let block_ty = if last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
-                wasm_encoder::BlockType::Empty
+        Expr::MatchResult { .. } => {
+            let t = expr_type(expr, ctx);
+            if is_value_type(&t, ctx.structs) {
+                let g = *ctx.groups.get(&(2 * (expr as *const Expr as usize))).ok_or("Wasm Codegen: a value match_result has no group")?;
+                compile_match_result(expr, Some(g), ctx, func)?;
+                emit_get_slots(func, g, width(&t, ctx.structs));
             } else {
-                let ty = expr_type(last_ok.unwrap(), ctx);
-                wasm_encoder::BlockType::Result(aipl_to_wasm_type(&ty))
-            };
-
-            func.instruction(&Instruction::If(block_ty));
-            ctx.labels.borrow_mut().push(Label::Plain);
-
-            if let Some(&ok_idx) = ctx.locals.get(ok_var) {
-                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&load_instruction(&in_cell(&ok_ty), crate::checker::result_cell_layout(&ok_ty, ctx.structs).0 as u64)?);
-                func.instruction(&Instruction::LocalSet(ok_idx));
+                compile_match_result(expr, None, ctx, func)?;
             }
-            for (i, stmt) in ok_body.iter().enumerate() {
-                if i == ok_body.len() - 1 && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
-                    compile_expr(stmt, ctx, func)?;
-                } else {
-                    compile_stmt(stmt, ctx, func)?;
-                }
-            }
-
-            func.instruction(&Instruction::Else);
-
-            if let Some(&err_idx) = ctx.locals.get(err_var) {
-                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&load_instruction(&in_cell(&err_ty), crate::checker::result_cell_layout(&err_ty, ctx.structs).0 as u64)?);
-                func.instruction(&Instruction::LocalSet(err_idx));
-            }
-            for (i, stmt) in err_body.iter().enumerate() {
-                if i == err_body.len() - 1 && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
-                    compile_expr(stmt, ctx, func)?;
-                } else {
-                    compile_stmt(stmt, ctx, func)?;
-                }
-            }
-
-            ctx.labels.borrow_mut().pop();
-            func.instruction(&Instruction::End);
         }
         Expr::Make { union_name, variant, args, .. } => compile_make(union_name, variant, args, ctx, func)?,
-        Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => {
-            return Err(format!("Wasm Codegen: value struct '{}' is not compiled yet", struct_name));
+        // a value struct: its fields' scalars, in order
+        Expr::Record { args, .. } => {
+            for a in args {
+                compile_expr(a, ctx, func)?;
+            }
         }
-        Expr::Match { value, arms, else_body, .. } => compile_match(value, arms, else_body, ctx, func)?,
+        Expr::With { struct_name, field_name, value, new_val, .. } => {
+            let g = *ctx.groups.get(&(2 * (expr as *const Expr as usize))).ok_or("Wasm Codegen: a with has no group")?;
+            let n = width(&expr_type(expr, ctx), ctx.structs);
+            let (slot, w, _, _) = field_slots(struct_name, field_name, ctx.structs)?;
+            compile_expr(value, ctx, func)?;
+            emit_set_slots(func, g, n);
+            compile_expr(new_val, ctx, func)?;
+            emit_set_slots(func, g + slot, w);
+            emit_get_slots(func, g, n);
+        }
+        Expr::Match { value, arms, else_body, .. } => {
+            let t = expr_type(expr, ctx);
+            if is_value_type(&t, ctx.structs) {
+                let g = *ctx.groups.get(&(2 * (expr as *const Expr as usize))).ok_or("Wasm Codegen: a value match has no group")?;
+                compile_match(value, arms, else_body, Some(g), ctx, func)?;
+                emit_get_slots(func, g, width(&t, ctx.structs));
+            } else {
+                compile_match(value, arms, else_body, None, ctx, func)?;
+            }
+        }
         Expr::NewStruct { struct_name, .. } => {
             let def = ctx
                 .structs
@@ -1841,9 +2243,12 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             if def.is_value {
-                return Err(format!("Wasm Codegen: value struct '{}' is not compiled yet", struct_name));
+                return compile_value_read(expr, ctx, func);
             }
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
+            if is_value_type(&field_ty, ctx.structs) {
+                return compile_value_read(expr, ctx, func);
+            }
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             match field_ty {
@@ -1889,17 +2294,24 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             path,
             ..
         } => {
-            if !path.is_empty() {
-                return Err("Wasm Codegen: a put field path is not compiled yet".to_string());
-            }
             let def = ctx
                 .structs
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (offset, field_ty) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
+            // a path: one field of the value held inline, further on
+            let (mut offset, mut field_ty) = (offset, field_ty);
+            for (st, f) in path {
+                let (_, _, o, ft) = field_slots(st, f, ctx.structs)?;
+                offset += o as usize;
+                field_ty = ft;
+            }
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             emit_write_address_check(func, ctx);
+            if is_value_type(&field_ty, ctx.structs) {
+                return emit_store_value(func, ctx, &field_ty, offset as u32, val);
+            }
             compile_expr(val, ctx, func)?;
             match field_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
@@ -1982,6 +2394,12 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         Expr::Return { val, .. } => {
             if let Some(v) = val {
                 compile_expr(v, ctx, func)?;
+                // with ens, a value struct waits in res (the body's block yields nothing)
+                let t = expr_type(v, ctx);
+                if ctx.ens_block && is_value_type(&t, ctx.structs) {
+                    let res = *ctx.locals.get("res").ok_or("Wasm Codegen: no res")?;
+                    emit_set_slots(func, res, width(&t, ctx.structs));
+                }
             }
             if ctx.ens_block {
                 // to the end of the function's body block, where ens is checked
@@ -2008,7 +2426,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_expr(a, ctx, func)?;
             }
             compile_expr(target, ctx, func)?;
-            let key = wasm_signature(sig);
+            let key = wasm_signature(sig, ctx.structs);
             let pos = ctx.ref_sigs.iter().position(|k| *k == key).ok_or("Wasm Codegen: call_ref signature not collected")?;
             func.instruction(&Instruction::CallIndirect { type_index: ctx.ref_type_base + pos as u32, table_index: 0 });
         }
@@ -2027,14 +2445,11 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::I32Load(M4));
         }
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
-            compile_expr(ptr, ctx, func)?;
-            emit_null_check(func, ctx);
-            compile_expr(index, ctx, func)?;
-            emit_bounds_check(func, ctx);
-            func.instruction(&Instruction::I32Const(elem_size as i32));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Add);
+            emit_element_address(elem_ty, ptr, index, ctx, func)?;
+            if is_value_type(elem_ty, ctx.structs) {
+                func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+                return emit_load_scalars(func, ctx, elem_ty, 0);
+            }
             match elem_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
@@ -2067,18 +2482,23 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
         }
         Expr::ArrSet { elem_ty, ptr, index, val, path, .. } => {
-            if !path.is_empty() || matches!(elem_ty, Type::Struct(_)) {
-                return Err("Wasm Codegen: arrays of value structs are not compiled yet".to_string());
-            }
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
-            compile_expr(ptr, ctx, func)?;
-            emit_null_check(func, ctx);
-            compile_expr(index, ctx, func)?;
-            emit_bounds_check(func, ctx);
-            func.instruction(&Instruction::I32Const(elem_size as i32));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Add);
+            emit_element_address(elem_ty, ptr, index, ctx, func)?;
             emit_write_address_check(func, ctx);
+            // a path: one field of the element, further on
+            let (mut offset, mut target) = (0u32, elem_ty.clone());
+            for (st, f) in path {
+                let (_, _, o, ft) = field_slots(st, f, ctx.structs)?;
+                offset += o;
+                target = ft;
+            }
+            if is_value_type(&target, ctx.structs) {
+                return emit_store_value(func, ctx, &target, offset, val);
+            }
+            if !path.is_empty() {
+                compile_expr(val, ctx, func)?;
+                func.instruction(&store_instruction(&target, offset as u64)?);
+                return Ok(());
+            }
             compile_expr(val, ctx, func)?;
             match elem_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
@@ -2171,6 +2591,9 @@ fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Re
 
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
     func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    if is_value_type(&payload_ty, ctx.structs) {
+        return emit_store_value(func, ctx, &payload_ty, offset, inner);
+    }
     compile_expr(inner, ctx, func)?;
     func.instruction(&store_instruction(&in_cell(&payload_ty), offset as u64)?);
     Ok(())
@@ -2248,6 +2671,81 @@ fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Str
     })
 }
 
+/// `(match_result r (ok v ...) (err e ...))`: the cell's tag picks the arm;
+/// its binder is loaded from the cell. With `dest`, a value struct result
+/// goes into the locals from there (compile_into) and the if yields nothing.
+fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    let Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } = this else {
+        return Err("Wasm Codegen: not a match_result".to_string());
+    };
+    let (ok_ty, err_ty) = result_sides(expr_type(expr, ctx));
+    compile_expr(expr, ctx, func)?;
+    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
+    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+    func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        memory_index: 0,
+    }));
+    func.instruction(&Instruction::I32Eqz);
+
+    let last_ok = ok_body.last();
+    let block_ty = if dest.is_some() || last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
+        wasm_encoder::BlockType::Empty
+    } else {
+        let ty = expr_type(last_ok.unwrap(), ctx);
+        wasm_encoder::BlockType::Result(aipl_to_wasm_type(&ty))
+    };
+
+    func.instruction(&Instruction::If(block_ty));
+    ctx.labels.borrow_mut().push(Label::Plain);
+
+    if let Some(&ok_idx) = ctx.locals.get(ok_var) {
+        emit_load_binder(func, ctx, &ok_ty, crate::checker::result_cell_layout(&ok_ty, ctx.structs).0, ok_idx)?;
+    }
+    compile_arm(ok_body, block_ty, dest, ctx, func)?;
+
+    func.instruction(&Instruction::Else);
+
+    if let Some(&err_idx) = ctx.locals.get(err_var) {
+        emit_load_binder(func, ctx, &err_ty, crate::checker::result_cell_layout(&err_ty, ctx.structs).0, err_idx)?;
+    }
+    compile_arm(err_body, block_ty, dest, ctx, func)?;
+
+    ctx.labels.borrow_mut().pop();
+    func.instruction(&Instruction::End);
+    Ok(())
+}
+
+/// A binder of type `ty` loaded from the cell in addr_scratch, `offset`
+/// bytes on, into its local (or locals, for a value struct).
+fn emit_load_binder(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, idx: u32) -> Result<(), String> {
+    if is_value_type(ty, ctx.structs) {
+        emit_load_scalars(func, ctx, ty, offset)?;
+        emit_set_slots(func, idx, width(ty, ctx.structs));
+    } else {
+        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
+        func.instruction(&load_instruction(&in_cell(ty), offset as u64)?);
+        func.instruction(&Instruction::LocalSet(idx));
+    }
+    Ok(())
+}
+
+/// An arm's body: its statements; its last expression left as the block's
+/// value, or into `dest` (compile_into), or dropped for an empty block type.
+fn compile_arm(body: &[Expr], block_ty: BlockType, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    for (i, stmt) in body.iter().enumerate() {
+        if i + 1 == body.len() && dest.is_some() {
+            compile_into(stmt, dest.unwrap_or(0), ctx, func)?;
+        } else if i + 1 == body.len() && !matches!(block_ty, BlockType::Empty) {
+            compile_expr(stmt, ctx, func)?;
+        } else {
+            compile_stmt(stmt, ctx, func)?;
+        }
+    }
+    Ok(())
+}
+
 /// `(make U.v args...)`: claim the variant's cell from the heap cursor before
 /// evaluating the fields (the VM does the same), then store the tag and each
 /// field. The address is pushed n+2 times at once (the result, the tag store,
@@ -2269,6 +2767,10 @@ fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func:
     func.instruction(&Instruction::I32Const(tag as i32));
     func.instruction(&Instruction::I32Store(M4));
     for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
+        if is_value_type(&f.ty, ctx.structs) {
+            emit_store_value(func, ctx, &f.ty, off as u32, a)?;
+            continue;
+        }
         compile_expr(a, ctx, func)?;
         func.instruction(&store_instruction(&f.ty, off as u64)?);
     }
@@ -2292,22 +2794,13 @@ fn match_type_body<'e>(arms: &'e [MatchArm], else_body: &'e Option<Vec<Expr>>) -
 /// runs. A union arm loads its binders from the cell first. The chain ends
 /// in the else body, or in `unreachable` (only an enum.cast value that is no
 /// member gets there).
-fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let body_of = match_type_body(arms, else_body);
     let block_ty = match body_of.last() {
-        Some(e) if !is_void_expr(e, ctx) => wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(e, ctx))),
+        Some(e) if dest.is_none() && !is_void_expr(e, ctx) => wasm_encoder::BlockType::Result(aipl_to_wasm_type(&expr_type(e, ctx))),
         _ => wasm_encoder::BlockType::Empty,
     };
-    let compile_body = |body: &[Expr], func: &mut Body| -> Result<(), String> {
-        for (i, stmt) in body.iter().enumerate() {
-            if i + 1 == body.len() && !matches!(block_ty, wasm_encoder::BlockType::Empty) {
-                compile_expr(stmt, ctx, func)?;
-            } else {
-                compile_stmt(stmt, ctx, func)?;
-            }
-        }
-        Ok(())
-    };
+    let compile_body = |body: &[Expr], func: &mut Body| -> Result<(), String> { compile_arm(body, block_ty, dest, ctx, func) };
     compile_expr(value, ctx, func)?;
     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
     for arm in arms {
@@ -2332,6 +2825,11 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
             let (offsets, _) = crate::checker::variant_layout(v, ctx.structs)?;
             for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                 let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
+                if is_value_type(&f.ty, ctx.structs) {
+                    emit_load_scalars(func, ctx, &f.ty, off as u32)?;
+                    emit_set_slots(func, idx, width(&f.ty, ctx.structs));
+                    continue;
+                }
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
                 func.instruction(&load_instruction(&f.ty, off as u64)?);
                 if f.ty == Type::Bool {

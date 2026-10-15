@@ -87,11 +87,18 @@ they cannot be changed or compared by address. The backends:
 - **wasm:** a value is its fields, flattened: a `Vec3` local is three wasm
   locals, a `Vec3` parameter three parameters, and a `Vec3` result three
   results (wasm's multi-value, standard since wasm 2.0 and on by default in
-  wasmtime). An `if` or `match` that yields a value uses a block type with
-  several results. In memory a value is laid out inline as above.
+  wasmtime). A block never yields one: an `if`, `cond`, `match`, or
+  `match_result` that yields a value writes it into scratch locals from
+  each branch and pushes them after its end, so only calls have several
+  results, which is all the native backend has to support. `with`, and a
+  field read from a value that is computed rather than held (a call's
+  result), go through scratch locals too. In memory a value is laid out
+  inline as above, and moved one scalar at a time; a store first puts the
+  value in scratch locals, since a wasm store needs its address just
+  under its value.
 - **VM:** a value is a `Value::Record` of its fields.
-- **Native:** the translator gains functions and blocks with several
-  results (today at most one). This is the part that depends on the
+- **Native:** the translator gains functions with several results
+  (today at most one). This is the part that depends on the
   native rewrite (docs/design/NATIVE_SPEED_PLAN.md): built into the new
   translator once, rather than into the old one and again later.
 - **The self-hosted toolchain** does all of it too, byte for byte, as for
@@ -114,9 +121,9 @@ memory layout that the differential tests check address by address.
 
 | Stage | What | Done when |
 |---|---|---|
-| V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass |
-| V2 | wasm backend: flattened locals, parameters, multi-value results and blocks, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_opcode_conformance |
-| V3 | Native: several results per function and per block, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator |
+| V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass (done 2026-10-14) |
+| V2 | wasm backend: flattened locals, parameters, multi-value results, scratch locals for branches that yield a value, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_values (done 2026-10-15) |
+| V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator |
 | V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md |
 | V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) |
 

@@ -2176,6 +2176,12 @@ fn unsupported_instructions_and_imports_are_named() {
     let mut m = Module::new();
     m.section(&types).section(&imports).section(&funcs).section(&exports).section(&code);
     assert_eq!(to_native(&m.finish()), Err("import not supported natively yet: wasi_snapshot_preview1.fd_seek".to_string()));
+    // a value struct returned is several results (docs/design/VALUES_PLAN.md V3)
+    let value = "(module m (struct V [a:i32 b:i32] (value)) (fn f [] -> V (make V 1 2)) (fn main [] -> i32 (get (call f) V.a)))";
+    assert_eq!(
+        to_native(&to_wasm(value)),
+        Err("a function returns a value struct (several wasm results), which native code does not support yet: build with --target wasm".to_string())
+    );
 }
 
 /// The native compiler run in the VM produces the same executable as the

@@ -1289,3 +1289,18 @@ fn self_hosted_bytes_match_wildcard_binders() {
   (fn f [u:U] -> i32 (match u (U.a [_ _] 1) (U.b [_ y] y))))",
     );
 }
+
+/// Value structs (AIPL_SPEC.md 4.E): every form (tests/aipl/values.aipl,
+/// imports and generics included) and every way through control flow
+/// (values_flow.aipl), at byte parity.
+#[test]
+fn self_hosted_bytes_match_value_structs() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in ["values", "values_flow"] {
+        let module = Resolver::resolve(&root.join(format!("tests/aipl/{name}.aipl"))).unwrap_or_else(|e| panic!("{e}"));
+        assert_self_hosted_matches_rust(name, &aipl_core::printer::print_module(&module));
+    }
+    // as written, so codegen.aipl sees the cond the printer would make ifs of
+    let flow = fs::read_to_string(root.join("tests/aipl/values_flow.aipl")).unwrap();
+    assert_self_hosted_matches_rust("values_flow_as_written", &flow);
+}
