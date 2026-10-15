@@ -1,6 +1,6 @@
 # Faster native code
 
-**Status: done 2026-10-14 (F0-F5; docs/BENCHMARKS.md, "The value-tracking translator").** Native code went from 1.6-5.7x wasmtime's time to 0.8-1.6x on the eight benchmarks, beating the target of 2x. Done beyond the plan, once measurements showed where the time went: failed checks out of line, float locals in xmm registers, the store guard split in two in the wasm itself. Not done: several results per function, which value structs need (docs/design/VALUES_PLAN.md, V3). Every decision at the
+**Status: done 2026-10-14 (F0-F5; docs/BENCHMARKS.md, "The value-tracking translator").** Native code went from 1.6-5.7x wasmtime's time to 0.8-1.6x on the eight benchmarks, beating the target of 2x. Done beyond the plan, once measurements showed where the time went: failed checks out of line, float locals in xmm registers, the store guard split in two in the wasm itself. Several results per function, which value structs need, came later with VALUES_PLAN.md V3 (2026-10-15): through a per-thread results area rather than registers. Every decision at the
 end was taken as recommended.
 
 ## The gap

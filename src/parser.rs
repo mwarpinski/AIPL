@@ -66,6 +66,47 @@ pub struct Parser {
     /// Names of the program's unions: a bare type name is a union if listed,
     /// otherwise an enum (the checker reports unknown names).
     unions: std::collections::HashSet<String>,
+    /// Names of the program's value structs: a bare type name listed here is
+    /// the struct itself, and `(make NAME ...)` makes one.
+    values: std::collections::HashSet<String>,
+}
+
+/// The value structs declared in `tokens`: `( struct NAME [ ... ] ( value ) )`.
+pub fn value_struct_names(tokens: &[Token]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for i in 0..tokens.len() {
+        let (TokenKind::LParen, Some(TokenKind::Symbol(kw)), Some(TokenKind::Symbol(name)), Some(TokenKind::LBracket)) =
+            (&tokens[i].kind, tokens.get(i + 1).map(|t| &t.kind), tokens.get(i + 2).map(|t| &t.kind), tokens.get(i + 3).map(|t| &t.kind))
+        else {
+            continue;
+        };
+        if kw != "struct" {
+            continue;
+        }
+        // the field list's close, then (value)
+        let mut depth = 0i32;
+        let mut j = i + 3;
+        while j < tokens.len() {
+            match tokens[j].kind {
+                TokenKind::LBracket | TokenKind::LParen => depth += 1,
+                TokenKind::RBracket | TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        if matches!(tokens.get(j + 1).map(|t| &t.kind), Some(TokenKind::LParen))
+            && matches!(tokens.get(j + 2).map(|t| &t.kind), Some(TokenKind::Symbol(v)) if v == "value")
+            && matches!(tokens.get(j + 3).map(|t| &t.kind), Some(TokenKind::RParen))
+        {
+            out.insert(name.clone());
+        }
+    }
+    out
 }
 
 impl Parser {
@@ -309,13 +350,18 @@ impl Parser {
                 _ => None,
             })
             .collect();
-        Self::parse_tokens_with(tokens, unions)
+        let values = value_struct_names(&tokens);
+        Self::parse_tokens_with(tokens, unions, values)
     }
 
     /// parse_tokens for one item of a larger program, given the program's
-    /// union names (the resolver parses items one at a time).
-    pub fn parse_tokens_with(tokens: Vec<Token>, unions: std::collections::HashSet<String>) -> Result<Module, String> {
-        let mut parser = Parser { tokens: strip_marks(tokens), pos: 0, last_pos: (1, 1), unions };
+    /// union and value struct names (the resolver parses items one at a time).
+    pub fn parse_tokens_with(
+        tokens: Vec<Token>,
+        unions: std::collections::HashSet<String>,
+        values: std::collections::HashSet<String>,
+    ) -> Result<Module, String> {
+        let mut parser = Parser { tokens: strip_marks(tokens), pos: 0, last_pos: (1, 1), unions, values };
         parser.parse_module()
     }
 
@@ -605,12 +651,24 @@ impl Parser {
             });
         }
         self.expect_kind(TokenKind::RBracket)?;
+        // (value): a value struct
+        let mut is_value = false;
+        if self.peek_kind() == Some(&TokenKind::LParen) {
+            let open = self.next().unwrap();
+            match self.next() {
+                Some(Token { kind: TokenKind::Symbol(m), .. }) if m == "value" => is_value = true,
+                Some(tok) => return Err(format!("{}:{}: Expected (value) or ')' after a struct's fields, got '{}'", tok.line, tok.col, tok.kind)),
+                None => return Err(format!("{}:{}: Expected (value) or ')' after a struct's fields, got EOF", open.line, open.col)),
+            }
+            self.expect_kind(TokenKind::RParen)?;
+        }
         self.expect_kind(TokenKind::RParen)?;
 
         Ok(StructDef {
             name,
             fields,
             span,
+            is_value,
         })
     }
 
@@ -831,6 +889,45 @@ impl Parser {
         }
     }
 
+    /// A `Struct.field` symbol (split at the last '.': `compiler.Node.next`
+    /// is struct `compiler.Node`, field `next`).
+    fn field_ref(&mut self, form: &str, span: (u32, u32)) -> Result<(String, String), String> {
+        match self.next() {
+            Some(Token { kind: TokenKind::Symbol(s), .. }) => match s.rsplit_once('.') {
+                Some((st, f)) if !st.is_empty() && !f.is_empty() => Ok((st.to_string(), f.to_string())),
+                _ => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", span.0, span.1, form, s)),
+            },
+            Some(tok) => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", tok.line, tok.col, form, tok.kind)),
+            None => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got EOF", span.0, span.1, form)),
+        }
+    }
+
+    /// The rest of a put or arr.set: field references, then the value (the
+    /// last item before the closing parenthesis).
+    fn path_and_value(&mut self, form: &str, span: (u32, u32)) -> Result<(Vec<(String, String)>, Expr), String> {
+        let mut items = Vec::new();
+        while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+            items.push(self.parse_expr()?);
+        }
+        let Some(val) = items.pop() else {
+            return Err(format!("{}:{}: {} needs a value to store", span.0, span.1, form));
+        };
+        let mut path = Vec::new();
+        for item in items {
+            match &item {
+                Expr::Var(name, at) => match name.rsplit_once('.') {
+                    Some((st, f)) if !st.is_empty() && !f.is_empty() => path.push((st.to_string(), f.to_string())),
+                    _ => return Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", at.0, at.1, form, name)),
+                },
+                other => {
+                    let at = other.span();
+                    return Err(format!("{}:{}: {} takes one value to store, after its field path", at.0, at.1, form));
+                }
+            }
+        }
+        Ok((path, val))
+    }
+
     fn parse_type(&mut self) -> Result<Type, String> {
         let (l, c) = self.cur_pos();
         match self.next() {
@@ -848,6 +945,7 @@ impl Parser {
                 "void" => Ok(Type::Void),
                 // any other name is a union or an enum type; the checker reports unknown ones
                 _ if self.unions.contains(&s) => Ok(Type::Union(s)),
+                _ if self.values.contains(&s) => Ok(Type::Struct(s)),
                 _ if !s.is_empty() && !s.starts_with(|ch: char| ch.is_ascii_digit() || ch == '-') => Ok(Type::Enum(s)),
                 _ => Err(format!("{}:{}: Unknown scalar type: {}", line, col, s)),
             },
@@ -1162,14 +1260,21 @@ impl Parser {
                         }
                         "make" => {
                             let target = self.expect_symbol("Union.variant in make", span)?;
-                            let Some(dot) = target.rfind('.') else {
-                                return Err(format!("{}:{}: make names a variant as Union.variant, got {}", span.0, span.1, target));
-                            };
                             let mut args = Vec::new();
-                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
-                                args.push(self.parse_expr()?);
+                            if self.values.contains(&target) {
+                                while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                    args.push(self.parse_expr()?);
+                                }
+                                Expr::Record { struct_name: target, args, span }
+                            } else {
+                                let Some(dot) = target.rfind('.') else {
+                                    return Err(format!("{}:{}: make names a value struct or a union variant (Union.variant), got {}", span.0, span.1, target));
+                                };
+                                while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                    args.push(self.parse_expr()?);
+                                }
+                                Expr::Make { union_name: target[..dot].to_string(), variant: target[dot + 1..].to_string(), args, span }
                             }
-                            Expr::Make { union_name: target[..dot].to_string(), variant: target[dot + 1..].to_string(), args, span }
                         }
                         "match" => {
                             let value = self.parse_expr()?;
@@ -1344,80 +1449,31 @@ impl Parser {
                             Expr::NewStruct { struct_name, span }
                         }
                         "get" => {
-                            let ptr = self.parse_expr()?;
-                            let field_tok = match self.next() {
-                                Some(Token {
-                                    kind: TokenKind::Symbol(s),
-                                    ..
-                                }) => s,
-                                Some(tok) => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
-                                        tok.line, tok.col, tok.kind
-                                    ))
+                            // (get e S.f), or a path (get e S.f V.g ...): one field of a
+                            // value struct held in the field before it
+                            let mut e = self.parse_expr()?;
+                            loop {
+                                let (struct_name, field_name) = self.field_ref("get", span)?;
+                                e = Expr::GetField { struct_name, field_name, ptr: Box::new(e), span };
+                                if matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                    break;
                                 }
-                                None => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in get, got EOF",
-                                        span.0, span.1
-                                    ))
-                                }
-                            };
-                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
-                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
-                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
-                                _ => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in get, got '{}'",
-                                        span.0, span.1, field_tok
-                                    ))
-                                }
-                            };
-                            Expr::GetField {
-                                struct_name: parts[0].to_string(),
-                                field_name: parts[1].to_string(),
-                                ptr: Box::new(ptr),
-                                span,
                             }
+                            e
+                        }
+                        "with" => {
+                            let value = self.parse_expr()?;
+                            let (struct_name, field_name) = self.field_ref("with", span)?;
+                            let new_val = self.parse_expr()?;
+                            Expr::With { struct_name, field_name, value: Box::new(value), new_val: Box::new(new_val), span }
                         }
                         "put" => {
+                            // (put p S.f v), or a path (put p S.f V.g ... v): the last
+                            // item is the value, the dotted names before it the path
                             let ptr = self.parse_expr()?;
-                            let field_tok = match self.next() {
-                                Some(Token {
-                                    kind: TokenKind::Symbol(s),
-                                    ..
-                                }) => s,
-                                Some(tok) => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
-                                        tok.line, tok.col, tok.kind
-                                    ))
-                                }
-                                None => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in put, got EOF",
-                                        span.0, span.1
-                                    ))
-                                }
-                            };
-                            let val = self.parse_expr()?;
-                            // Split at the last '.': `compiler.Node.next` is struct `compiler.Node`, field `next`.
-                            let parts: Vec<&str> = match field_tok.rsplit_once('.') {
-                                Some((st, f)) if !st.is_empty() && !f.is_empty() => vec![st, f],
-                                _ => {
-                                    return Err(format!(
-                                        "{}:{}: Expected 'Struct.field' symbol in put, got '{}'",
-                                        span.0, span.1, field_tok
-                                    ))
-                                }
-                            };
-                            Expr::PutField {
-                                struct_name: parts[0].to_string(),
-                                field_name: parts[1].to_string(),
-                                ptr: Box::new(ptr),
-                                val: Box::new(val),
-                                span,
-                            }
+                            let (struct_name, field_name) = self.field_ref("put", span)?;
+                            let (path, val) = self.path_and_value("put", span)?;
+                            Expr::PutField { struct_name, field_name, ptr: Box::new(ptr), val: Box::new(val), path, span }
                         }
                         "sizeof" => {
                             // a struct by its bare name, or any type
@@ -1560,25 +1616,20 @@ impl Parser {
                             let elem_ty = self.parse_type()?;
                             let ptr = self.parse_expr()?;
                             let index = self.parse_expr()?;
-                            Expr::ArrGet {
-                                elem_ty,
-                                ptr: Box::new(ptr),
-                                index: Box::new(index),
-                                span,
+                            // a path reads one field of a value struct element
+                            let mut e = Expr::ArrGet { elem_ty, ptr: Box::new(ptr), index: Box::new(index), span };
+                            while !matches!(self.peek_kind(), Some(TokenKind::RParen) | None) {
+                                let (struct_name, field_name) = self.field_ref("arr.get", span)?;
+                                e = Expr::GetField { struct_name, field_name, ptr: Box::new(e), span };
                             }
+                            e
                         }
                         "arr.set" => {
                             let elem_ty = self.parse_type()?;
                             let ptr = self.parse_expr()?;
                             let index = self.parse_expr()?;
-                            let val = self.parse_expr()?;
-                            Expr::ArrSet {
-                                elem_ty,
-                                ptr: Box::new(ptr),
-                                index: Box::new(index),
-                                val: Box::new(val),
-                                span,
-                            }
+                            let (path, val) = self.path_and_value("arr.set", span)?;
+                            Expr::ArrSet { elem_ty, ptr: Box::new(ptr), index: Box::new(index), val: Box::new(val), path, span }
                         }
                         "mem.free" => {
                             return Err(format!(

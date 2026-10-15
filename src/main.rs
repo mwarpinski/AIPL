@@ -289,7 +289,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None => aipl_core::native::supported(),
                 };
                 if native {
-                    let exe_bytes = aipl_core::native::executable(&wasm, sandbox)?;
+                    // on failure, no module is left where the executable was asked for
+                    let exe_bytes = aipl_core::native::executable(&wasm, sandbox).inspect_err(|_| {
+                        let _ = fs::remove_file(&output);
+                    })?;
                     fs::write(&output, &exe_bytes)?;
                     // WASI cannot set the execute bit, so the host does (ROADMAP.md)
                     #[cfg(unix)]

@@ -34,7 +34,8 @@ pub fn print_module(m: &Module) -> String {
     }
     for s in &m.structs {
         let fields: Vec<String> = s.fields.iter().map(|f| format!("{}:{}", f.name, type_str(&f.ty))).collect();
-        out.push_str(&format!("  (struct {} [{}])\n", s.name, fields.join(" ")));
+        let mark = if s.is_value { " (value)" } else { "" };
+        out.push_str(&format!("  (struct {} [{}]{})\n", s.name, fields.join(" "), mark));
     }
     for f in &m.functions {
         let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{}:{}", n, type_str(t))).collect();
@@ -125,6 +126,11 @@ fn lit_str(l: &Literal) -> String {
 
 fn join(es: &[Expr]) -> String {
     es.iter().map(expr_str).collect::<Vec<_>>().join(" ")
+}
+
+/// A put's or arr.set's field path: ` S.f V.g`.
+fn path_str(path: &[(String, String)]) -> String {
+    path.iter().map(|(st, f)| format!(" {}.{}", st, f)).collect()
 }
 
 fn with_body(head: String, body: &[Expr]) -> String {
@@ -243,19 +249,20 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::GetField { struct_name, field_name, ptr, .. } => {
             format!("(get {} {}.{})", expr_str(ptr), struct_name, field_name)
         }
-        Expr::PutField { struct_name, field_name, ptr, val, .. } => {
-            format!("(put {} {}.{} {})", expr_str(ptr), struct_name, field_name, expr_str(val))
+        Expr::PutField { struct_name, field_name, ptr, val, path, .. } => {
+            format!("(put {} {}.{}{} {})", expr_str(ptr), struct_name, field_name, path_str(path), expr_str(val))
         }
         Expr::Sizeof { ty, .. } => format!("(sizeof {})", type_str(ty)),
         Expr::ArrNew { elem_ty, size, .. } => format!("(arr.new {} {})", type_str(elem_ty), expr_str(size)),
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             format!("(arr.get {} {} {})", type_str(elem_ty), expr_str(ptr), expr_str(index))
         }
-        Expr::ArrSet { elem_ty, ptr, index, val, .. } => format!(
-            "(arr.set {} {} {} {})",
+        Expr::ArrSet { elem_ty, ptr, index, val, path, .. } => format!(
+            "(arr.set {} {} {}{} {})",
             type_str(elem_ty),
             expr_str(ptr),
             expr_str(index),
+            path_str(path),
             expr_str(val)
         ),
         Expr::ArrLen { arr, .. } => format!("(arr.len {})", expr_str(arr)),
@@ -279,6 +286,10 @@ pub fn expr_str(e: &Expr) -> String {
             with_body(format!("call_ref {} {}", type_str(sig), expr_str(func)), args)
         }
         Expr::Make { union_name, variant, args, .. } => with_body(format!("make {}.{}", union_name, variant), args),
+        Expr::Record { struct_name, args, .. } => with_body(format!("make {}", struct_name), args),
+        Expr::With { struct_name, field_name, value, new_val, .. } => {
+            format!("(with {} {}.{} {})", expr_str(value), struct_name, field_name, expr_str(new_val))
+        }
         Expr::Match { value, arms, else_body, .. } => {
             let mut out = format!("(match {}", expr_str(value));
             for arm in arms {

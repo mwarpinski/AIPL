@@ -257,3 +257,20 @@ fn target_needs_exe_and_a_known_name() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Value structs (docs/design/VALUES_PLAN.md V3) build for both targets,
+/// and both executables run the program to its end (a trap would be status
+/// 134; main's checksum is checked in tests/test_native.rs).
+#[test]
+fn value_structs_build_for_both_targets() {
+    let dir = scratch("exe_values");
+    let src = root().join("tests/aipl/values_flow.aipl");
+    let targets: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) { &["wasm", "native"] } else { &["wasm"] };
+    for target in targets {
+        let exe = dir.join(format!("flow_{target}"));
+        compile(&src, &exe, &["--exe", &format!("--target={target}")]);
+        assert_kind(&exe, target);
+        assert_eq!(run_in(&dir, &exe, &[], "").status.code(), Some(0), "{target}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

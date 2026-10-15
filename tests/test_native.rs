@@ -2178,6 +2178,18 @@ fn unsupported_instructions_and_imports_are_named() {
     assert_eq!(to_native(&m.finish()), Err("import not supported natively yet: wasi_snapshot_preview1.fd_seek".to_string()));
 }
 
+/// Value structs (docs/design/VALUES_PLAN.md V3): functions with several
+/// results (up to 8, of every width), called directly and through a table,
+/// with value parameters in registers and on the stack, natively as under
+/// wasmtime.
+#[test]
+fn value_struct_programs_match_natively() {
+    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl")] {
+        let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
+        assert_functions_match(name, &aipl_core::printer::print_module(&m), &[], &[("main", &[])]);
+    }
+}
+
 /// The native compiler run in the VM produces the same executable as the
 /// compiled one used above.
 #[test]

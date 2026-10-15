@@ -74,6 +74,7 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
     let mut templates: HashMap<String, Template> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     let mut struct_names: HashSet<String> = HashSet::new();
+    let mut value_names: HashSet<String> = HashSet::new();
     let mut ifaces = Ifaces::default();
     let mut work: Vec<(Item, Kind)> = Vec::new();
     for (items, is_struct) in [(prog.structs, true), (prog.fns, false)] {
@@ -109,7 +110,12 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
                     }
                     if item.sx.head() == Some("struct") {
                         if let Some(n) = item.sx.items().get(1).and_then(|n| n.symbol()) {
-                            struct_names.insert(n.to_string());
+                            // a value struct is a value type argument
+                            if crate::resolver::is_value_struct(&item.sx) {
+                                value_names.insert(n.to_string());
+                            } else {
+                                struct_names.insert(n.to_string());
+                            }
                         }
                     }
                     let item = if archetypes && !is_struct { stub(item) } else { item };
@@ -156,7 +162,7 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
             apps.push((list(header, app), t.item.file.clone(), !t.is_struct));
         }
     }
-    let known = Known { templates: &templates, ifaces: &ifaces, struct_names: &struct_names };
+    let known = Known { templates: &templates, ifaces: &ifaces, struct_names: &struct_names, value_names: &value_names };
     let mut made = Made::default();
     for (mut app, file, callee) in apps {
         let mut created = Vec::new();
@@ -186,6 +192,8 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
 struct Made {
     names: HashSet<String>,
     structs: HashSet<String>,
+    /// Instances of generic value structs.
+    values: HashSet<String>,
 }
 
 /// A `(...)` list at the position of `at`.
@@ -323,11 +331,13 @@ fn rewrite(
     for (k, child) in items.iter_mut().enumerate().skip(start) {
         let child_callee = calls && k == 1;
         let was_app = applies(child.head(), false);
+        // a union's variant follows it; a value struct's fields follow its make
+        let union_app = child.head().and_then(|h| templates.get(h)).is_some_and(|t| t.item.sx.head() == Some("union"));
         rewrite(child, file, foreign, known, made, created, child_callee)?;
-        if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put")) {
+        if k == 2 && was_app && matches!(head.as_deref(), Some("get" | "put" | "with")) {
             generic_field = true;
         }
-        if was_app && paren && ((k == 0 && head.is_none()) || (k == 1 && head.as_deref() == Some("make"))) {
+        if was_app && paren && ((k == 0 && head.is_none()) || (k == 1 && head.as_deref() == Some("make") && union_app)) {
             variant_at = Some(k);
         }
     }
@@ -417,6 +427,9 @@ fn rewrite(
                 }
                 match sealed_param(arg) {
                     Some((owner, q)) => format!("{}: {} must be a struct, so {} needs (where (struct {}))", shown(&name), p, owner, q),
+                    None if arg.symbol().is_some_and(|s| known.value_names.contains(s) || made.values.contains(s)) => {
+                        format!("{}: {} must be a struct used through a pointer (where (struct {})), and {} is a value struct, which has no address", shown(&name), p, p, a)
+                    }
                     None => format!("{}: {} must be a struct (where (struct {})), and {} is not one", shown(&name), p, p, a),
                 }
             } else if is_struct {
@@ -445,7 +458,11 @@ fn rewrite(
             }
         }
         if t.is_struct && t.item.sx.head() == Some("struct") {
-            made.structs.insert(name.clone());
+            if crate::resolver::is_value_struct(&t.item.sx) {
+                made.values.insert(name.clone());
+            } else {
+                made.structs.insert(name.clone());
+            }
         }
         let mut inst = t.item.sx.clone();
         let subst: HashMap<&str, &Sx> = t.params.iter().map(|p| p.as_str()).zip(args.iter()).collect();
@@ -536,6 +553,8 @@ struct Known<'a> {
     ifaces: &'a Ifaces,
     /// Concrete structs and struct placeholders, for the kinds of type arguments.
     struct_names: &'a HashSet<String>,
+    /// Concrete value structs (type arguments of the value kind).
+    value_names: &'a HashSet<String>,
 }
 
 #[derive(Default)]

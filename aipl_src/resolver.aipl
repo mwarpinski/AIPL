@@ -199,6 +199,16 @@
         (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) t)
         t)))
 
+  ;; resolver.rs path_step: whether item k of a form with n items is a
+  ;; further step of a field path (a put's or arr.set's value comes last).
+  (fn path_step [h:(ptr str.Bytes) k:i32 n:i32] -> bool
+    (cond
+      ((call eq_lit h "get") (gte k 3))
+      ((call eq_lit h "put") (and (gte k 3) (lt (+ k 1) n)))
+      ((call eq_lit h "arr.get") (gte k 4))
+      ((call eq_lit h "arr.set") (and (gte k 4) (lt (+ k 1) n)))
+      (else false)))
+
   ;; Which role child i of group g plays, from the group's head symbol.
   (fn child_role [m:(ptr Mod) g:(ptr compiler.Node) i:i32] -> i32
     (let h:(ptr str.Bytes) (call head (get m Mod.src) g))
@@ -209,7 +219,7 @@
          ((or (call eq_lit h "struct") (or (call eq_lit h "new") (or (call eq_lit h "sizeof")
             (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (call eq_lit h "ptr.cast")))))) 2)
          (else 0)))
-      ((eq i 2) (if (or (call eq_lit h "get") (call eq_lit h "put")) 3 0))
+      ((eq i 2) (if (or (call eq_lit h "get") (or (call eq_lit h "put") (call eq_lit h "with"))) 3 0))
       (else 0)))
 
   ;; ===== Printing =====
@@ -293,8 +303,10 @@
     (let gh:(ptr str.Bytes) (call head (get m Mod.src) g))
     (let members:bool (and (not square) (or (call eq_lit gh "interface") (call eq_lit gh "impl"))))
     (let decl_list:bool (and (not square) (or (call eq_lit gh "union") (call eq_lit gh "enum"))))
-    (let field_op:bool (and (not square) (or (call eq_lit gh "get") (call eq_lit gh "put"))))
-    (let put:bool (and (not square) (call eq_lit gh "put")))
+    (let field_op:bool (and (not square) (or (call eq_lit gh "get") (or (call eq_lit gh "put") (call eq_lit gh "with")))))
+    ;; (with v V.f x) makes a value with field f written
+    (let put:bool (and (not square) (or (call eq_lit gh "put") (call eq_lit gh "with"))))
+    (let n_items:i32 (call count_kids g))
     (let top:bool (eq g (get m Mod.item)))
     ;; the struct of a generic field form, (get p (Name T) f)
     (let generic_struct:(ptr str.Bytes) (ptr.null str.Bytes))
@@ -328,6 +340,8 @@
                (let sym:(ptr str.Bytes) (call rename m (call text (get m Mod.src) c) role))
                (cond
                  ((and (eq i 1) (call eq_lit gh "new")) (call check_makes m sym c))
+                 ;; (make V ...) of a value struct
+                 ((and (eq i 1) (call eq_lit gh "make")) (call check_makes m sym c))
                  ;; (get p S.f), (put p S.f v)
                  ((and field_op (eq i 2))
                   (let dot:i32 (call last_index sym 46))
@@ -339,6 +353,13 @@
                       (block)))
                  ((and field_op (and (eq i 3) (neq generic_struct (ptr.null str.Bytes))))
                   (call check_field m generic_struct sym put c))
+                 ;; a field path's further steps
+                 ((and (not square) (call path_step gh i n_items))
+                  (let pdot:i32 (call last_index sym 46))
+                  (if (gte pdot 0)
+                      (call check_field m (call slice sym 0 pdot) (call slice sym (+ pdot 1) (- (get sym str.Bytes.len) (+ pdot 1)))
+                            (or put (call eq_lit gh "arr.set")) c)
+                      (block)))
                  (else (block))))
              (if (and field_op (eq i 2))
                  (block
@@ -353,6 +374,16 @@
     (call buf.push_byte out (if square 93 41))))
 
   ;; ===== Visibility (resolver.rs Vis, Names::check_*) =====
+
+  ;; (value): a value struct's mark.
+  (fn is_value_mark [m:(ptr Mod) n:(ptr compiler.Node)] -> bool
+    (and (neq n (ptr.null compiler.Node))
+         (and (eq (get n compiler.Node.kind) compiler.Kind.paren)
+              (and (eq (call count_kids n) 1) (call eq_lit (call head (get m Mod.src) n) "value")))))
+
+  ;; resolver.rs is_value_struct: (struct NAME [fields] (value) ...).
+  (fn is_value_struct [m:(ptr Mod) item:(ptr compiler.Node)] -> bool
+    (and (call eq_lit (call head (get m Mod.src) item) "struct") (call is_value_mark m (call nth item 3))))
 
   (fn is_pub_clause [m:(ptr Mod) n:(ptr compiler.Node)] -> bool
     (and (eq (get n compiler.Node.kind) compiler.Kind.paren)
@@ -494,12 +525,22 @@
   ;; anywhere else is an error.
   (fn take_pub [m:(ptr Mod) item:(ptr compiler.Node)] -> bool
     (let h:(ptr str.Bytes) (call head (get m Mod.src) item))
+    ;; a value struct's (value) is part of its signature
+    (let value:bool (and (call eq_lit h "struct") (call is_value_struct m item)))
     (let place:i32 (cond
                      ((or (call eq_lit h "fn") (call eq_lit h "const")) 5)
+                     ((and (call eq_lit h "struct") value) 4)
                      ((or (call eq_lit h "struct") (or (call eq_lit h "union") (call eq_lit h "enum"))) 3)
                      ((call eq_lit h "interface") 2)
                      (else -1)))
     (if (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    ;; (struct S [fields] (pub) (value))
+    (let third:(ptr compiler.Node) (call nth item 3))
+    (if (and (call eq_lit h "struct")
+             (and (neq third (ptr.null compiler.Node))
+                  (and (call is_pub_clause m third) (call is_value_mark m (call nth item 4)))))
+        (block (call vis_fail m third (call vis_msg "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")) (return false))
+        (block))
     (let at:(ptr compiler.Node) (if (gte place 0) (call nth item place) (ptr.null compiler.Node)))
     (let found:bool (and (neq at (ptr.null compiler.Node)) (call is_pub_clause m at)))
     (let c:(ptr compiler.Node) (get (call first_child item) compiler.Node.next))
@@ -508,7 +549,7 @@
           (block
             (call vis_fail m c (call vis_msg (if (call eq_lit h "impl")
                                                  "an implementation takes no (pub): it is as visible as its interface and its type"
-                                                 "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")))
+                                                 "(pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)")))
             (return false))
           (block))
       (set! c (get c compiler.Node.next)))
@@ -899,7 +940,9 @@
         ((and (call eq_lit h "fn") (call is_symbol name))
          (call (map.set (ptr str.Bytes) i32) (get m Mod.fns) (call text src name) 1))
         ((and (call eq_lit h "struct") (call is_symbol name))
-         (call (map.set (ptr str.Bytes) i32) (get m Mod.structs) (call text src name) 1))
+         (call (map.set (ptr str.Bytes) i32) (get m Mod.structs) (call text src name) 1)
+         ;; a value struct is also named where types and makes go
+         (if (call is_value_struct m item) (call (map.set (ptr str.Bytes) i32) (get m Mod.decls) (call text src name) 1) (block)))
         ((and (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))) (call is_symbol name))
          (call (map.set (ptr str.Bytes) i32) (get m Mod.decls) (call text src name) 1))
         ((call eq_lit h "import")
