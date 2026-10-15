@@ -1,7 +1,7 @@
 # Small structs by value
 
-**Status: approved 2026-10-14; V1-V3 done 2026-10-15 (every backend
-runs value structs), V4-V5 to do.** Every decision at the end was taken
+**Status: approved 2026-10-14; V1-V4 done 2026-10-15 (every backend
+runs value structs; nbody, std, and the docs use them), V5 to do.** Every decision at the end was taken
 as recommended. Built after the native rewrite
 (docs/design/NATIVE_SPEED_PLAN.md), per decision 6.
 
@@ -130,7 +130,7 @@ memory layout that the differential tests check address by address.
 | V1 | Parser, checker, and VM: `(value)`, `make`, `get`, `with`, inline fields and arrays, field paths, the size and recursion rules, with their messages; both toolchains | the checker tests (both toolchains agree on every message) and VM tests pass (done 2026-10-14) |
 | V2 | wasm backend: flattened locals, parameters, multi-value results, scratch locals for branches that yield a value, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_values (done 2026-10-15) |
 | V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator (done 2026-10-15) |
-| V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md |
+| V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md (done 2026-10-15: nbody 1.9x faster under wasmtime, 22% natively) |
 | V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) |
 
 ## Alternatives considered

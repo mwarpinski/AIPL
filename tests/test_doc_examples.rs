@@ -41,11 +41,13 @@ const EXPECTED: &[(&str, i32)] = &[
     ("option_demo", 23),
     ("interface_demo", 28),
     ("context_demo", 120),
+    ("values_demo", 55),
     // docs/TOUR.md
     ("tour_hello", 25),
     ("tour_types", 43),
     ("tour_control", 29),
     ("tour_structs", 33),
+    ("tour_values", 17),
     ("tour_results", 79),
     ("tour_contracts", 19),
     ("tour_generics", 13),

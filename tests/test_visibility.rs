@@ -16,6 +16,7 @@ const LIB: &str = r#"(module lib
   (struct Open [(pub a:i32) (pub b:i32)] (pub))
   (struct Hidden [x:i32])
   (struct (Box T) [(read v:T) q:T] (pub))
+  (struct Pt [(read x:i32) y:i32] (value) (pub))
   (const MAX:i32 9)
   (const LIM:i32 3 (pub))
   (enum Color [red green] (pub))
@@ -29,7 +30,8 @@ const LIB: &str = r#"(module lib
   (fn shown [] -> i32 (pub) 2)
   (fn (gen T) [x:T] -> T x)
   (fn (pgen T) [x:T] -> T (pub) x)
-  (fn make_s [] -> (ptr S) (pub) (new S)))"#;
+  (fn make_s [] -> (ptr S) (pub) (new S))
+  (fn pt [] -> Pt (pub) (make Pt 4 5)))"#;
 
 /// main.aipl (importing lib) with `body` as main's, and lib.aipl.
 fn program(name: &str, lib: &str, body: &str) -> PathBuf {
@@ -53,6 +55,9 @@ fn what_a_module_gives_is_usable_in_both_backends() {
         (r#"(match (make lib.U.a 4) (lib.U.a [n] n) (lib.U.b 0))"#, 4),
         (r#"(call (lib.pgen i32) 3)"#, 3),
         (r#"(call (lib.Len.len i32) 3)"#, 3),
+        // a value struct is a type argument even with private fields: a
+        // template cannot make one (it is not a struct used through a pointer)
+        (r#"(get (call (lib.pgen lib.Pt) (call lib.pt)) lib.Pt.x)"#, 4),
     ];
     for (k, (body, want)) in cases.iter().enumerate() {
         let entry = program(&format!("ok_{k}"), LIB, body);

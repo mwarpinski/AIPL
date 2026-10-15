@@ -48,7 +48,8 @@
   ;; (pub) items, and each struct's fields with their levels (0 private,
   ;; 1 (read x:T), 2 (pub x:T)).
   (struct Vis [public:(ptr (map.Map (ptr str.Bytes) i32))
-               fields:(ptr (map.Map (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))))])
+               fields:(ptr (map.Map (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))))
+               values:(ptr (map.Map (ptr str.Bytes) i32))])
 
   (struct State [entry_dir:(ptr str.Bytes) lib_dirs:(ptr str.Bytes)
                  done:(ptr (map.Map (ptr str.Bytes) i32)) active:(ptr (map.Map (ptr str.Bytes) i32))
@@ -330,8 +331,9 @@
         ((and (eq i 0) (and (not square) (call is_symbol c))) (call note m c out) (call buf.push_bytes out (call text (get m Mod.src) c)))
         ((gte (get tmpl str.Bytes.len) 0)
          (call emit m c 2 out)
-         ;; a struct type argument lets the template make one
-         (if (call is_symbol c) (call check_makes m (call rename m (call text (get m Mod.src) c) 2) c) (block)))
+         ;; a struct type argument lets the template make one (with new); a
+         ;; value struct's does not (a value-kind argument)
+         (if (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c) (block)))
         (else
          (let role:i32 (call child_role m g i))
          (call emit m c role out)
@@ -451,6 +453,10 @@
     (call check_item m (if (lt second 0) name (call slice name 0 (+ (+ first 1) second))) n))
 
   ;; Made outside its module: every field must be (pub).
+  (fn check_type_arg [m:(ptr Mod) name:(ptr str.Bytes) n:(ptr compiler.Node)] -> void
+    (if (call (map.has (ptr str.Bytes) i32) (get (get m Mod.vis) Vis.values) name) (return) (block))
+    (call check_makes m name n))
+
   (fn check_makes [m:(ptr Mod) name:(ptr str.Bytes) n:(ptr compiler.Node)] -> void
     (let fm:(ptr str.Bytes) (call foreign m name))
     (if (lt (get fm str.Bytes.len) 0) (return) (block))
@@ -982,6 +988,9 @@
                   (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
                   (if (gte (get named str.Bytes.len) 0)
                       (block
+                        (if (call is_value_struct m mark)
+                            (call (map.set (ptr str.Bytes) i32) (get vis Vis.values) (call canonical_of m named) 1)
+                            (block))
                         (call (map.set (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (get vis Vis.fields) (call canonical_of m named) levels)
                         (call (map.set (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) own_levels named levels))
                       (block)))
@@ -1228,6 +1237,7 @@
     (let vis:(ptr Vis) (new Vis))
     (put vis Vis.public (call (map.make (ptr str.Bytes) i32) (call alloc.default) 256))
     (put vis Vis.fields (call (map.make (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (call alloc.default) 64))
+    (put vis Vis.values (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
     (put st State.vis vis)
     (if (eq src (ptr.null Src)) (return (call fail st "cannot read entry file: " entry)) (block))
     (if (call malformed st src) (return false) (block))

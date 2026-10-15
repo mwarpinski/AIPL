@@ -60,11 +60,13 @@ struct State<'a> {
 }
 
 /// What other modules may use (AIPL_SPEC.md 11): the canonical names of
-/// `(pub)` items, and each struct's fields with their levels.
+/// `(pub)` items, each struct's fields with their levels, and which structs
+/// are value structs.
 #[derive(Default)]
 struct Vis {
     public: HashSet<String>,
     fields: HashMap<String, HashMap<String, Level>>,
+    values: HashSet<String>,
 }
 
 /// A field's visibility outside its module: none, `(read x:T)`, `(pub x:T)`.
@@ -305,6 +307,9 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         if item.head() == Some("struct") {
             let levels = take_field_marks(item, file)?;
             if let Some(n) = &named {
+                if is_value_struct(item) {
+                    st.vis.values.insert(canonical(n));
+                }
                 st.vis.fields.insert(canonical(n), levels.clone());
                 own_levels.insert(n.clone(), levels);
             }
@@ -803,8 +808,9 @@ impl Names<'_> {
                     self.walk(child, r);
                     let child_at = child.position();
                     match (child.symbol(), i) {
-                        // a struct type argument lets the template make one
-                        (Some(n), _) if template.is_some() => self.check_makes(n, child_at),
+                        // a struct type argument lets the template make one (with
+                        // `new`); a value struct's does not (a value-kind argument)
+                        (Some(n), _) if template.is_some() && !self.vis.values.contains(n) => self.check_makes(n, child_at),
                         (Some(n), 1) if head.as_deref() == Some("new") => self.check_makes(n, child_at),
                         // (make V ...) of a value struct
                         (Some(n), 1) if head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
