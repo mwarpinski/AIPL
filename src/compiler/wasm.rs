@@ -692,10 +692,11 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
+        Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::GetField { struct_name, field_name, .. } => {
             if let Some(def) = ctx.structs.get(struct_name) {
-                if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name) {
+                if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name, ctx.structs) {
                     return field_ty;
                 }
             }
@@ -1047,7 +1048,11 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
                     collect_lets(body, lets, unions);
                 }
             }
-            Expr::Make { args, .. } => collect_lets(args, lets, unions),
+            Expr::Make { args, .. } | Expr::Record { args, .. } => collect_lets(args, lets, unions),
+            Expr::With { value, new_val, .. } => {
+                collect_lets(std::slice::from_ref(value), lets, unions);
+                collect_lets(std::slice::from_ref(new_val), lets, unions);
+            }
             Expr::Op { op: OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul, args, .. } => {
                 for n in CHECKED_LOCALS {
                     lets.push((n.to_string(), Type::I64));
@@ -1780,7 +1785,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
 
             if let Some(&ok_idx) = ctx.locals.get(ok_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&load_instruction(&in_cell(&ok_ty), crate::checker::result_cell_layout(&ok_ty).0 as u64)?);
+                func.instruction(&load_instruction(&in_cell(&ok_ty), crate::checker::result_cell_layout(&ok_ty, ctx.structs).0 as u64)?);
                 func.instruction(&Instruction::LocalSet(ok_idx));
             }
             for (i, stmt) in ok_body.iter().enumerate() {
@@ -1795,7 +1800,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
 
             if let Some(&err_idx) = ctx.locals.get(err_var) {
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&load_instruction(&in_cell(&err_ty), crate::checker::result_cell_layout(&err_ty).0 as u64)?);
+                func.instruction(&load_instruction(&in_cell(&err_ty), crate::checker::result_cell_layout(&err_ty, ctx.structs).0 as u64)?);
                 func.instruction(&Instruction::LocalSet(err_idx));
             }
             for (i, stmt) in err_body.iter().enumerate() {
@@ -1810,13 +1815,16 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::End);
         }
         Expr::Make { union_name, variant, args, .. } => compile_make(union_name, variant, args, ctx, func)?,
+        Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => {
+            return Err(format!("Wasm Codegen: value struct '{}' is not compiled yet", struct_name));
+        }
         Expr::Match { value, arms, else_body, .. } => compile_match(value, arms, else_body, ctx, func)?,
         Expr::NewStruct { struct_name, .. } => {
             let def = ctx
                 .structs
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let size = crate::checker::get_struct_size(def)?;
+            let size = crate::checker::get_struct_size(def, ctx.structs)?;
             func.instruction(&Instruction::I32Const(0));
             func.instruction(&Instruction::I32Const(round8(size as i32)));
             func.instruction(&Instruction::I32AtomicRmwAdd(M4));
@@ -1832,7 +1840,10 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 .structs
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
+            if def.is_value {
+                return Err(format!("Wasm Codegen: value struct '{}' is not compiled yet", struct_name));
+            }
+            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             match field_ty {
@@ -1875,13 +1886,17 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             field_name,
             ptr,
             val,
+            path,
             ..
         } => {
+            if !path.is_empty() {
+                return Err("Wasm Codegen: a put field path is not compiled yet".to_string());
+            }
             let def = ctx
                 .structs
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name)?;
+            let (offset, field_ty) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             emit_write_address_check(func, ctx);
@@ -1926,16 +1941,16 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                         .structs
                         .get(struct_name)
                         .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-                    crate::checker::get_struct_size(def)?
+                    crate::checker::get_struct_size(def, ctx.structs)?
                 }
-                other => crate::checker::type_size_and_align(other)?.0,
+                other => crate::checker::type_size_and_align(other, ctx.structs)?.0,
             };
             func.instruction(&Instruction::I32Const(size as i32));
         }
         Expr::ArrNew { elem_ty, size, .. } => {
             // Same order as the VM: evaluate n, trap if n < 0, then allocate
             // [n:i32][n elements] and return the address just past the header.
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
             compile_expr(size, ctx, func)?;
             func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -2012,7 +2027,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::I32Load(M4));
         }
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             compile_expr(index, ctx, func)?;
@@ -2051,8 +2066,11 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 _ => return Err(format!("Unsupported elem type for arr.get: {}", elem_ty)),
             }
         }
-        Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+        Expr::ArrSet { elem_ty, ptr, index, val, path, .. } => {
+            if !path.is_empty() || matches!(elem_ty, Type::Struct(_)) {
+                return Err("Wasm Codegen: arrays of value structs are not compiled yet".to_string());
+            }
+            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             compile_expr(index, ctx, func)?;
@@ -2140,7 +2158,7 @@ fn emit_grow_to_cursor(func: &mut Body) {
 /// cannot clobber it. The VM allocates the same cell in the same order.
 fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let payload_ty = expr_type(inner, ctx);
-    let (offset, size) = crate::checker::result_cell_layout(&payload_ty);
+    let (offset, size) = crate::checker::result_cell_layout(&payload_ty, ctx.structs);
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Const(size));
     func.instruction(&Instruction::I32AtomicRmwAdd(M4));
@@ -2239,7 +2257,7 @@ fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func:
     let def = ctx.unions.get(union_name).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", union_name))?;
     let tag = def.variants.iter().position(|v| v.name == variant).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", variant))?;
     let v = &def.variants[tag];
-    let (offsets, size) = crate::checker::variant_layout(v)?;
+    let (offsets, size) = crate::checker::variant_layout(v, ctx.structs)?;
     func.instruction(&Instruction::I32Const(0));
     func.instruction(&Instruction::I32Const(round8(size as i32)));
     func.instruction(&Instruction::I32AtomicRmwAdd(M4));
@@ -2311,7 +2329,7 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
         func.instruction(&Instruction::If(block_ty));
         ctx.labels.borrow_mut().push(Label::Plain);
         if let (Some(v), Some(names)) = (fields, &arm.binders) {
-            let (offsets, _) = crate::checker::variant_layout(v)?;
+            let (offsets, _) = crate::checker::variant_layout(v, ctx.structs)?;
             for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                 let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
                 func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
@@ -2357,7 +2375,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         Expr::MatchResult { ok_body, .. } => ok_body.last().is_none_or(|e| is_void_expr(e, ctx)),
         // Same rule as the block type compile_match gives a match.
         Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().is_none_or(|e| is_void_expr(e, ctx)),
-        Expr::Make { .. } => false,
+        Expr::Make { .. } | Expr::Record { .. } | Expr::With { .. } => false,
         Expr::Lit(..)
         | Expr::Var(..)
         | Expr::Ok(..)
@@ -3237,10 +3255,14 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::Make { args, .. } => {
+        Expr::Make { args, .. } | Expr::Record { args, .. } => {
             for a in args {
                 walk_expr(a, visit);
             }
+        }
+        Expr::With { value, new_val, .. } => {
+            walk_expr(value, visit);
+            walk_expr(new_val, visit);
         }
         Expr::Match { value, arms, else_body, .. } => {
             walk_expr(value, visit);

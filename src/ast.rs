@@ -11,7 +11,8 @@ pub enum Type {
     Void,
     /// `(ptr S)`: pointer to a struct; the inner type is always `Struct`.
     Ptr(Box<Type>),
-    /// A struct named in `(ptr S)`. Never a value type on its own.
+    /// A struct: named in `(ptr S)` for a struct behind a pointer, or on its
+    /// own for a value struct (`(struct S [...] (value))`, AIPL_SPEC.md 4.E).
     Struct(String),
     ResultType(Box<Type>, Box<Type>),
     /// `(arr T)`: an `arr.new` array of `T`, whose length sits in the 4 bytes before it.
@@ -223,11 +224,16 @@ pub enum Expr {
         ptr: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(put p S.f V.g ... v)`: stores `v` in field `f` of the struct `p`
+    /// points at, or, with a path, in field `g` of the value struct held
+    /// inline in `f` (and so on): `path` is the fields after the first.
     PutField {
         struct_name: String,
         field_name: String,
         ptr: Box<Expr>,
         val: Box<Expr>,
+        #[serde(default)]
+        path: Vec<(String, String)>,
         span: (u32, u32),
     },
     /// `(sizeof S)` for a struct, or `(sizeof T)` for any type that can be
@@ -247,11 +253,15 @@ pub enum Expr {
         index: Box<Expr>,
         span: (u32, u32),
     },
+    /// `(arr.set T a i v)`, or with a path `(arr.set V a i V.f ... v)`: one
+    /// field of the value struct element (`path` is the fields, in order).
     ArrSet {
         elem_ty: Type,
         ptr: Box<Expr>,
         index: Box<Expr>,
         val: Box<Expr>,
+        #[serde(default)]
+        path: Vec<(String, String)>,
         span: (u32, u32),
     },
     /// `(arr.len a)`: the element count stored before the array.
@@ -268,6 +278,21 @@ pub enum Expr {
     Cast {
         ty: Type,
         addr: Box<Expr>,
+        span: (u32, u32),
+    },
+    /// `(make V args...)`: a value of value struct `V`, one argument per
+    /// field in order.
+    Record {
+        struct_name: String,
+        args: Vec<Expr>,
+        span: (u32, u32),
+    },
+    /// `(with v V.f x)`: a copy of value struct `v` with field `f` replaced.
+    With {
+        struct_name: String,
+        field_name: String,
+        value: Box<Expr>,
+        new_val: Box<Expr>,
         span: (u32, u32),
     },
     /// `(make Name.variant args...)`: a new union value of that variant.
@@ -349,6 +374,7 @@ impl Expr {
             Expr::Break(span) | Expr::Continue(span) => *span,
             Expr::CallRef { span, .. } => *span,
             Expr::Make { span, .. } | Expr::Match { span, .. } => *span,
+            Expr::Record { span, .. } | Expr::With { span, .. } => *span,
         }
     }
 }
@@ -411,6 +437,9 @@ pub struct StructDef {
     pub name: String,
     pub fields: Vec<StructField>,
     pub span: (u32, u32),
+    /// `(value)`: a value struct, held inline and never behind a pointer.
+    #[serde(default)]
+    pub is_value: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

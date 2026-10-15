@@ -178,7 +178,7 @@ fn every_rule_has_its_message() {
         (format!("{u} (fn f [] -> S (make S.circle))"), "make S.circle takes 1 values (its fields), got 0"),
         (format!("{u} (fn f [] -> S (make S.sq 1.0))"), "make S.sq: field 'w' is i32, got f64"),
         ("(fn f [] -> i32 (make T.a))".into(), "Unknown union 'T' in make"),
-        ("(fn f [] -> i32 (make nodot))".into(), "make names a variant as Union.variant, got nodot"),
+        ("(fn f [] -> i32 (make nodot))".into(), "make names a value struct or a union variant (Union.variant), got nodot"),
         // match
         (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [r] 1) (S.sq [w] 2)))"), "match is missing S.none (add those arms or an else arm)"),
         (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [r] 1) (S.sq [w] 2) (S.none 3) (else 4)))"), "the else arm never runs: every member of S is matched"),

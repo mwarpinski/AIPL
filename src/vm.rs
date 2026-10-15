@@ -16,6 +16,8 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Array(Vec<Value>),
+    /// A value struct: its fields' values, in declaration order.
+    Record(Vec<Value>),
     Ok(Box<Value>),
     Err(Box<Value>),
     Void,
@@ -657,7 +659,7 @@ impl VM {
                 let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
                 let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
                 let v = &def.variants[tag];
-                let (offsets, size) = crate::checker::variant_layout(v)?;
+                let (offsets, size) = crate::checker::variant_layout(v, &self.structs)?;
                 // the cell is claimed before the fields are evaluated, as in the wasm lowering
                 let cell = self.alloc_bytes(size) as u32 as usize;
                 self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
@@ -666,6 +668,23 @@ impl VM {
                     self.store_val_at(cell + off, &f.ty, val)?;
                 }
                 Ok(Value::Int(cell as i64))
+            }
+            Expr::Record { args, .. } => {
+                let mut fields = Vec::with_capacity(args.len());
+                for a in args {
+                    fields.push(self.eval_expr(a, scope)?);
+                }
+                Ok(Value::Record(fields))
+            }
+            Expr::With { struct_name, field_name, value, new_val, .. } => {
+                let Value::Record(mut fields) = self.eval_expr(value, scope)? else {
+                    return Err(format!("VM: Expected a {} value for with", struct_name));
+                };
+                let x = self.eval_expr(new_val, scope)?;
+                let def = self.structs.get(struct_name).ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?;
+                let k = def.fields.iter().position(|f| &f.name == field_name).ok_or_else(|| format!("VM: no field '{}'", field_name))?;
+                fields[k] = x;
+                Ok(Value::Record(fields))
             }
             Expr::Match { value, arms, else_body, .. } => {
                 let v = match self.eval_expr(value, scope)? {
@@ -684,7 +703,7 @@ impl VM {
                     };
                     if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
                         let var = &def.variants[tag];
-                        let (offsets, _) = crate::checker::variant_layout(var)?;
+                        let (offsets, _) = crate::checker::variant_layout(var, &self.structs)?;
                         for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
                             let fv = self.load_val_at(cell + off, &f.ty)?;
                             scope.insert(name.clone(), fv);
@@ -710,7 +729,7 @@ impl VM {
                     .get(struct_name)
                     .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                     .clone();
-                let size = crate::checker::get_struct_size(&def)?;
+                let size = crate::checker::get_struct_size(&def, &self.structs)?;
                 let ptr = self.alloc_bytes(size);
                 Ok(Value::Int(ptr as i64))
             }
@@ -720,7 +739,14 @@ impl VM {
                     .get(struct_name)
                     .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                     .clone();
-                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name)?;
+                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name, &self.structs)?;
+                if def.is_value {
+                    let Value::Record(mut fields) = self.eval_expr(ptr, scope)? else {
+                        return Err(format!("VM: Expected a {} value for get", struct_name));
+                    };
+                    let k = def.fields.iter().position(|f| &f.name == field_name).ok_or_else(|| format!("VM: no field '{}'", field_name))?;
+                    return Ok(fields.swap_remove(k));
+                }
                 let ptr_val = match self.eval_expr(ptr, scope)? {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for get, got {:?}", other)),
@@ -731,13 +757,13 @@ impl VM {
                 let addr = ptr_val + offset;
                 self.load_val_at(addr, &field_ty)
             }
-            Expr::PutField { struct_name, field_name, ptr, val, .. } => {
+            Expr::PutField { struct_name, field_name, ptr, val, path, .. } => {
                 let def = self
                     .structs
                     .get(struct_name)
                     .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                     .clone();
-                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name)?;
+                let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name, &self.structs)?;
                 let ptr_val = match self.eval_expr(ptr, scope)? {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
@@ -745,7 +771,7 @@ impl VM {
                 if ptr_val == 0 {
                     return Err(NULL_POINTER.to_string());
                 }
-                let addr = ptr_val + offset;
+                let (addr, field_ty) = self.path_address(ptr_val + offset, field_ty, path)?;
                 self.check_write("put", addr)?;
                 let val_v = self.eval_expr(val, scope)?;
                 self.store_val_at(addr, &field_ty, val_v)?;
@@ -760,9 +786,9 @@ impl VM {
                             .get(struct_name)
                             .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                             .clone();
-                        crate::checker::get_struct_size(&def)?
+                        crate::checker::get_struct_size(&def, &self.structs)?
                     }
-                    other => crate::checker::type_size_and_align(other)?.0,
+                    other => crate::checker::type_size_and_align(other, &self.structs)?.0,
                 };
                 Ok(Value::Int(size as i64))
             }
@@ -772,7 +798,7 @@ impl VM {
                     Value::Int(i) => return Err(format!("Array index out of bounds: invalid array size {}", i)),
                     other => return Err(format!("VM: Expected Int size for arr.new, got {:?}", other)),
                 };
-                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
                 let total_size = 4 + count * elem_size;
                 let raw_ptr = self.alloc_bytes(total_size);
                 // Store element count in the 4 bytes before the base pointer
@@ -803,7 +829,7 @@ impl VM {
                         idx_val, count
                     ));
                 }
-                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
                 let addr = ptr_val + (idx_val as usize) * elem_size;
                 self.load_val_at(addr, elem_ty)
             }
@@ -823,7 +849,7 @@ impl VM {
                 }
                 Ok(Value::Int(self.array_len_at(p)?))
             }
-            Expr::ArrSet { elem_ty, ptr, index, val, .. } => {
+            Expr::ArrSet { elem_ty, ptr, index, val, path, .. } => {
                 let ptr_val = match self.eval_expr(ptr, scope)? {
                     Value::Int(i) => i as u32 as usize,
                     other => return Err(format!("VM: Expected Int pointer for arr.set, got {:?}", other)),
@@ -847,10 +873,17 @@ impl VM {
                     ));
                 }
                 let val_v = self.eval_expr(val, scope)?;
-                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty)?;
-                let addr = ptr_val + (idx_val as usize) * elem_size;
+                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
+                let (addr, ty) = match path.split_first() {
+                    None => (ptr_val + (idx_val as usize) * elem_size, elem_ty.clone()),
+                    Some(((st, f), rest)) => {
+                        let def = self.structs.get(st).ok_or_else(|| format!("VM: Unknown struct '{}'", st))?;
+                        let (off, fty) = crate::checker::get_field_offset(def, f, &self.structs)?;
+                        self.path_address(ptr_val + (idx_val as usize) * elem_size + off, fty, rest)?
+                    }
+                };
                 self.check_write("arr.set", addr)?;
-                self.store_val_at(addr, elem_ty, val_v)?;
+                self.store_val_at(addr, &ty, val_v)?;
                 Ok(Value::Void)
             }
         }
@@ -858,13 +891,13 @@ impl VM {
 
     fn eval_result_cell(&mut self, tag: i32, payload: &Expr, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
-        let (offset, size) = crate::checker::result_cell_layout(&ty);
+        let (offset, size) = crate::checker::result_cell_layout(&ty, &self.structs);
         let cell = self.alloc_bytes(size as usize) as u32 as usize;
         self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
         let inner = self.eval_expr(payload, scope)?;
         let at = cell + offset as usize;
         match (&ty, &inner) {
-            (Type::I64 | Type::F64 | Type::F32, _) => self.store_val_at(at, &ty, inner.clone())?,
+            (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) => self.store_val_at(at, &ty, inner.clone())?,
             (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
             _ => {}
         }
@@ -948,7 +981,38 @@ impl VM {
         allocated_ptr
     }
 
+    /// The definition of value struct `ty`, if it is one.
+    fn value_struct(&self, ty: &Type) -> Option<StructDef> {
+        match ty {
+            Type::Struct(n) => self.structs.get(n).filter(|d| d.is_value).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The address of a put's or arr.set's path from `addr`, the address of
+    /// field `first` of a `first_struct`: each step a field of the value
+    /// struct held there. Returns it with the last field's type.
+    fn path_address(&self, addr: usize, first_ty: Type, path: &[(String, String)]) -> Result<(usize, Type), String> {
+        let (mut addr, mut ty) = (addr, first_ty);
+        for (st, f) in path {
+            let def = self.structs.get(st).ok_or_else(|| format!("VM: Unknown struct '{}'", st))?;
+            let (off, fty) = crate::checker::get_field_offset(def, f, &self.structs)?;
+            addr += off;
+            ty = fty;
+        }
+        Ok((addr, ty))
+    }
+
     fn load_val_at(&self, addr: usize, ty: &Type) -> Result<Value, String> {
+        // a value struct: its fields, each where the layout puts it
+        if let Some(def) = self.value_struct(ty) {
+            let mut fields = Vec::with_capacity(def.fields.len());
+            for f in &def.fields {
+                let (off, fty) = crate::checker::get_field_offset(&def, &f.name, &self.structs)?;
+                fields.push(self.load_val_at(addr + off, &fty)?);
+            }
+            return Ok(Value::Record(fields));
+        }
         let mem = self.shared.lock().unwrap();
         match ty {
             Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
@@ -1011,6 +1075,16 @@ impl VM {
     }
 
     fn store_val_at(&self, addr: usize, ty: &Type, val: Value) -> Result<(), String> {
+        if let Some(def) = self.value_struct(ty) {
+            let Value::Record(fields) = val else {
+                return Err(format!("VM: Expected a {} value to store, got {:?}", ty, val));
+            };
+            for (f, v) in def.fields.iter().zip(fields) {
+                let (off, fty) = crate::checker::get_field_offset(&def, &f.name, &self.structs)?;
+                self.store_val_at(addr + off, &fty, v)?;
+            }
+            return Ok(());
+        }
         let val = match (ty, val) {
             (Type::Str, Value::Str(s)) => Value::Int(self.materialize_str("str store", &s)? as i64),
             (_, v) => v,

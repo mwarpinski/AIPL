@@ -1,0 +1,180 @@
+//! Value structs (AIPL_SPEC.md 4.E, docs/design/VALUES_PLAN.md): the same
+//! result in every backend for tests/aipl/values.aipl, every checker rule
+//! with its message, visibility across modules, the kinds of generic type
+//! arguments, and the printer round trip.
+use aipl_core::checker::TypeChecker;
+use aipl_core::parser::Parser;
+use aipl_core::printer::print_module;
+use aipl_core::resolver::Resolver;
+use aipl_core::vm::{Value, VM};
+use std::path::{Path, PathBuf};
+
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("aipl_values_{}_{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// Resolves and checks the files (name, text), the first the program; the
+/// error if either fails.
+fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Module, String> {
+    let dir = scratch(name);
+    for (f, src) in files {
+        std::fs::write(dir.join(f), src).unwrap();
+    }
+    let m = Resolver::resolve(&dir.join(files[0].0));
+    let _ = std::fs::remove_dir_all(&dir);
+    let m = m?;
+    TypeChecker::new().check_module(&m)?;
+    Ok(m)
+}
+
+const CHECKSUM: i64 = 649;
+
+#[test]
+fn values_program_runs_in_the_vm() {
+    let m = Resolver::resolve(&root().join("tests/aipl/values.aipl")).unwrap();
+    TypeChecker::new().check_module(&m).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(CHECKSUM));
+}
+
+#[test]
+fn printer_round_trips_value_structs() {
+    let m = Resolver::resolve(&root().join("tests/aipl/values.aipl")).unwrap();
+    let printed = print_module(&m);
+    for want in [
+        "(struct Vec3 [x:f64 y:f64 z:f64] (value))",
+        "(arr.set Body bs 1 Body.vel Vec3.z 7.5)",
+        "(put n Node.cell Cell.id 9)",
+        "(with a Vec3.y 20.0)",
+        "(make Vec3 1.0 2.0 3.0)",
+    ] {
+        assert!(printed.contains(want), "missing {want} in\n{printed}");
+    }
+    let reparsed = Parser::parse(&printed).unwrap();
+    assert_eq!(print_module(&reparsed), printed);
+    TypeChecker::new().check_module(&reparsed).unwrap();
+}
+
+/// Every rule of a value struct, with its message (after the position).
+#[test]
+fn value_struct_rules_have_messages() {
+    let header = "(module m\n  (struct V [x:i32 y:i32] (value))\n  (struct P [v:V n:i32])\n  ";
+    let cases: &[(&str, &str)] = &[
+        ("(struct E [] (value)) (fn main [] -> i32 0)", "value struct 'E' has no fields"),
+        ("(struct S [s:str] (value)) (fn main [] -> i32 0)", "Field 's' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not str"),
+        ("(union U [(a)]) (struct S [u:U] (value)) (fn main [] -> i32 0)", "Field 'u' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not U"),
+        ("(struct R [a:i32 r:R] (value)) (fn main [] -> i32 0)", "value struct 'R' contains itself (through field 'r'): a value has a fixed size; hold it through a pointer"),
+        ("(struct A [b:B] (value)) (struct B [a:A] (value)) (fn main [] -> i32 0)", "value struct 'A' contains itself (through field 'b'): a value has a fixed size; hold it through a pointer"),
+        ("(struct Big [a:V b:V c:V d:V e:i32] (value)) (fn main [] -> i32 0)", "value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer"),
+        ("(fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0)", "'V' is a value struct, which has no address: write V, not (ptr V)"),
+        ("(fn main [] -> i32 (let v:V (new V)) 0)", "'V' is a value struct: make one with (make V field-values...), not new"),
+        ("(fn main [] -> i32 (let v:V (make V 1)) 0)", "make V takes 2 field value(s) (x y), got 1"),
+        ("(fn main [] -> i32 (let v:V (make V 1 true)) 0)", "make V: field 'y' is i32, got bool"),
+        ("(fn main [] -> i32 (let v:V (make V 1 2)) (put v V.x 3) 0)", "a value struct's fields do not change: (with v V.x x) is a copy with one changed"),
+        ("(fn main [] -> i32 (let v:V (make V 1 2)) (if (eq v v) 1 0))", "eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)"),
+        ("(fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.z 3)) 0)", "Struct 'V' has no field 'z'"),
+        ("(fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.x true)) 0)", "with V.x: expected i32, got bool"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (let w:V (with p V.x 1)) 0)", "with V.x needs a V, got (ptr P)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (let w:(ptr P) (with p P.n 1)) 0)", "with makes a copy of a value struct, and 'P' is not one: change a field with (put p P.n x)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (get p V.x))", "get V.x needs a V, got (ptr P)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (put p P.n V.x 3) 0)", "put path: P.n is i32, not the value struct V"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (put p P.v V.x true) 0)", "Type mismatch writing to field 'V.x': expected i32, got bool"),
+        ("(fn main [] -> i32 (let a:(arr i32) (arr.new i32 2)) (arr.set i32 a 0 V.x 3) 0)", "arr.set path: the elements are i32, not the value struct V"),
+        ("(fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.x true) 0)", "arr.set value mismatch: expected i32, got bool"),
+        ("(fn main [] -> i32 (make P 1 2))", "make names a value struct or a union variant (Union.variant), got P"),
+        ("(fn main [] -> i32 (let a:V (make V 1 2)) (put (new P) P.v (get a V.x)) 0)", "Type mismatch writing to field 'P.v': expected V, got i32"),
+    ];
+    for (k, (body, want)) in cases.iter().enumerate() {
+        let src = format!("{}{})", header, body);
+        let err = check_files(&format!("rule{k}"), &[("m.aipl", &src)]).expect_err(body);
+        let msg = err.split_once(": ").map(|(_, m)| m).unwrap_or(&err);
+        let msg = msg.split_once(": ").filter(|(at, _)| at.bytes().all(|b| b.is_ascii_digit() || b == b':')).map_or(msg, |(_, m)| m);
+        assert_eq!(msg, *want, "{body}");
+    }
+    // and what is allowed
+    for body in [
+        "(fn main [] -> i32 (let p:(ptr P) (new P)) (get p P.v V.x))",
+        "(fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y))",
+        "(fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V 1 2)) V.x))",
+        "(struct W [a:V b:(ptr P) c:(arr V) d:(fn [V] -> V)] (value)) (fn main [] -> i32 (sizeof W))",
+    ] {
+        let src = format!("{}{})", header, body);
+        check_files("allowed", &[("m.aipl", &src)]).unwrap_or_else(|e| panic!("{body}: {e}"));
+    }
+}
+
+/// Outside its module, a value struct is made only if every field is
+/// (pub); `with` writes, so its field must be (pub); `get` and paths read.
+#[test]
+fn value_structs_across_modules() {
+    let geo = "(module geo
+      (struct Pt [(pub x:i32) (pub y:i32)] (value) (pub))
+      (struct Sealed [(read a:i32) b:i32] (value) (pub))
+      (struct Holder [(pub p:Pt) (pub s:Sealed)] (pub))
+      (fn sealed [n:i32] -> Sealed (pub) (make Sealed n (* n 2)))
+      (fn moved [p:Pt dx:i32] -> Pt (pub) (with p Pt.x (+ (get p Pt.x) dx))))";
+    let main = |body: &str| {
+        format!(
+            "(module main (import geo)
+               (fn main [] -> i32
+                 (let p:geo.Pt (make geo.Pt 3 4))
+                 (let s:geo.Sealed (call geo.sealed 5))
+                 (let h:(ptr geo.Holder) (new geo.Holder))
+                 {body}
+                 0))"
+        )
+    };
+    for ok in [
+        "(let q:geo.Pt (with (call geo.moved p 1) geo.Pt.y 9))",
+        "(let a:i32 (get s geo.Sealed.a))",
+        "(put h geo.Holder.p geo.Pt.x 5)",
+        "(let a:i32 (get h geo.Holder.s geo.Sealed.a))",
+    ] {
+        check_files("vis_ok", &[("main.aipl", &main(ok)), ("geo.aipl", geo)]).unwrap_or_else(|e| panic!("{ok}: {e}"));
+    }
+    for (bad, want) in [
+        ("(let t:geo.Sealed (make geo.Sealed 1 2))", "'geo.Sealed' has fields private to module geo, so only geo can make one"),
+        ("(let t:geo.Sealed (with s geo.Sealed.a 1))", "field 'a' of geo.Sealed is read-only outside module geo"),
+        ("(let b:i32 (get s geo.Sealed.b))", "field 'b' of geo.Sealed is private to module geo"),
+        ("(let b:i32 (get h geo.Holder.s geo.Sealed.b))", "field 'b' of geo.Sealed is private to module geo"),
+        ("(put h geo.Holder.s geo.Sealed.a 1)", "field 'a' of geo.Sealed is read-only outside module geo"),
+    ] {
+        let err = check_files("vis_bad", &[("main.aipl", &main(bad)), ("geo.aipl", geo)]).expect_err(bad);
+        assert!(err.ends_with(want), "{bad}: {err}");
+    }
+}
+
+/// A value struct is a type argument of the value kind, never of the
+/// struct kind (which takes a pointer to it).
+#[test]
+fn value_structs_as_type_arguments() {
+    let ok = "(module m (import vec) (import alloc)
+      (struct V [x:i32 y:i32] (value))
+      (struct (Pair T) [a:T b:T] (value))
+      (fn main [] -> i32
+        (let v:(ptr (vec.Vec V)) (call (vec.make V) (call alloc.default) 2))
+        (call (vec.push V) v (make V 1 2))
+        (let p:(Pair V) (make (Pair V) (make V 3 4) (call (vec.at V) v 0)))
+        (+ (get (get p (Pair V) a) V.x) (sizeof (Pair V)))))";
+    let m = check_files("kinds_ok", &[("m.aipl", ok)]).unwrap();
+    let mut vm = VM::new();
+    vm.load_module(m);
+    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(3 + 16));
+    let bad = "(module m (import alloc)
+      (struct V [x:i32] (value))
+      (fn main [] -> i32 (let p:(ptr V) (call (alloc.create V) (call alloc.default))) 0))";
+    let err = check_files("kinds_bad", &[("m.aipl", bad)]).unwrap_err();
+    assert!(err.ends_with("alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"), "{err}");
+    // (pub) after (value), not before
+    let misplaced = "(module lib (struct V [x:i32] (pub) (value)))";
+    let err = check_files("pub_place", &[("main.aipl", "(module main (import lib) (fn main [] -> i32 0))"), ("lib.aipl", misplaced)]).unwrap_err();
+    assert!(err.contains("(struct S [fields] (value) (pub))"), "{err}");
+}
