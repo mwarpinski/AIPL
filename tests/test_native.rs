@@ -2320,11 +2320,11 @@ fn directories_and_file_information_match_natively() {
   (import option)
   (fn show [path:str] -> void
     (match (call fs.info path)
-      ((option.Option (ptr fs.Info)) some [i]
+      ((option.Option fs.Info) some [i]
         (call io.write_str 1 path)
         (call io.write_str 1 (match (get i fs.Info.kind) (fs.Kind.file " file ") (fs.Kind.directory " directory ") (fs.Kind.other " other ")))
         (call io.println_i64 "" (get i fs.Info.size)))
-      ((option.Option (ptr fs.Info)) none (call io.write_str 1 path) (call io.println " missing"))))
+      ((option.Option fs.Info) none (call io.write_str 1 path) (call io.println " missing"))))
   (fn main [] -> i32
     (match (call fs.list (call alloc.default) "big")
       ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
