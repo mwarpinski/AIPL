@@ -75,7 +75,8 @@ these.
 
 Not yet. What holds now: array indexes are bounds-checked, pointers are
 typed and checked for null, contracts run on every call, and the standard
-heap stops the program on a double free or a write after free. The
+heap stops the program on a double free, a free of the wrong size or type,
+or a write to freed memory (when that memory is handed out again). The
 operations nothing checks (raw `mem.load32`/`mem.store32`, casts to
 pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
 as in Rust, so a program without `unsafe` cannot reach memory through a
@@ -85,9 +86,16 @@ Module visibility closes a second door: the standard library keeps its raw
 addresses in fields other modules may only read, such as `str.Bytes`'s
 address and length, so safe code cannot forge one.
 
-One gap remains: a pointer kept after its object is freed can still read
-the freed memory. Generation checks (each object and each pointer carries a
-number, compared on every access) are planned
+The gap is use after free. A pointer kept after its object is freed (with
+`std/heap`) or its arena is reset (`std/arena`) still works. While the
+memory is free, the heap has filled it with a junk pattern; but once it
+holds another object, the old pointer reads and writes that object, and
+writing an integer where the new object keeps a pointer gives code without
+`unsafe` a pointer to any address in the program's memory. It never
+reaches outside that memory, in any backend (WebAssembly's sandbox, a
+guarded region natively), but inside it nothing is protected. Generation
+checks (each object and each pointer carries a number, compared on every
+access) are planned
 ([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)).
 
 ### Does it have closures, or lambdas?

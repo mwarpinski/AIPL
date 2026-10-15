@@ -130,12 +130,18 @@ aipl compile --exe aipl_src/driver.aipl -o aiplc
   rebuilds itself. Building it the first time still takes the Rust
   toolchain.
 
-AIPL is **not** memory-safe yet. Raw memory operations (`mem.load32` on a
-computed address), casts to pointers, threads, and atomics are allowed only
-inside `(unsafe ...)`, so code without it cannot read or write through a
-raw address, and module visibility keeps it from forging the standard
-library's descriptors. One gap remains: a pointer kept after its object is
-freed can still read the freed memory (generation checks will close that).
+AIPL is **not** memory-safe yet. What holds: array indexes are
+bounds-checked, pointers are typed and checked for null, contracts run on
+every call, and the standard heap checks every free. Raw memory operations
+(`mem.load32` on a computed address), casts to pointers, threads, and
+atomics are allowed only inside `(unsafe ...)`, and module visibility keeps
+code from forging the standard library's descriptors. The gap is use after
+free: a pointer kept after its object is freed, or its arena reset, still
+works, and once that memory holds another object, writing through the old
+pointer can change the new one's fields, pointers included, so code
+without `unsafe` can end up reading and writing any address in the
+program's memory (never outside it). Generation checks will close that
+([docs/design/GENERATIONS_PLAN.md](docs/design/GENERATIONS_PLAN.md)).
 
 It is not as fast as C. On seven of eight benchmarks, native code takes
 1.2 to 14 times as long as C compiled with `gcc -O2`, and WebAssembly
