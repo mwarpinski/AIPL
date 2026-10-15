@@ -124,11 +124,11 @@ so returning an `(option.Option i32)` allocates nothing.
 ### How fast is it?
 
 Between C and Python. On eight benchmarks, native executables take 0.6
-to 13 times as long as C compiled with `gcc -O2`, and WebAssembly run by
+to 14 times as long as C compiled with `gcc -O2`, and WebAssembly run by
 wasmtime 0.6 to 12 times as long; the slowest, k-nucleotide and pidigits,
 run a hash map and big integers written in AIPL against C's tuned
 libraries. The native backend
-is a single-pass translator, within 0.9 to 2 times wasmtime's optimising
+is a single-pass translator, within 0.8 to 1.9 times wasmtime's optimising
 compiler. [docs/BENCHMARKS.md](BENCHMARKS.md) has every measurement and
 what each benchmark showed.
 
