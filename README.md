@@ -137,11 +137,14 @@ raw address, and module visibility keeps it from forging the standard
 library's descriptors. One gap remains: a pointer kept after its object is
 freed can still read the freed memory (generation checks will close that).
 
-It is not as fast as C. On eight benchmarks, native code takes 0.6 to 14
-times as long as C compiled with `gcc -O2`, and WebAssembly under wasmtime
-0.6 to 12 times as long; the slowest, k-nucleotide and pidigits, run a hash
-map and big integers written in AIPL against C's tuned libraries. Native
-code takes 0.8 to 1.9 times as long as wasmtime's.
+It is not as fast as C. On seven of eight benchmarks, native code takes
+1.2 to 14 times as long as C compiled with `gcc -O2`, and WebAssembly
+under wasmtime 1.4 to 12 times as long. The slowest are pidigits, where C
+uses GMP's hand-tuned big integers and AIPL its own, and k-nucleotide,
+where C packs each key into one 64-bit integer and AIPL hashes byte
+strings. The eighth, binarytrees, AIPL runs in 0.6 times C's time, but not
+like for like: it frees each tree at once from an arena, where C frees
+every node. Native code takes 0.8 to 1.9 times as long as wasmtime's.
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has every number and why.
 
 ## What is next

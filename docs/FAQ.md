@@ -47,7 +47,7 @@ made by translating the WebAssembly to x86-64 machine code.
 To keep the toolchain small and written in AIPL. The native backend is
 about 5,800 lines of AIPL with no dependencies: a single-pass translator
 that keeps values in registers, in the manner of V8's Liftoff, whose code
-takes 0.8 to 1.6 times as long as wasmtime's (Cranelift's) on the eight
+takes 0.8 to 1.9 times as long as wasmtime's (Cranelift's) on the eight
 benchmarks. LLVM would make the code faster still and the toolchain far
 larger, and could not be self-hosted.
 
@@ -123,11 +123,14 @@ so returning an `(option.Option i32)` allocates nothing.
 
 ### How fast is it?
 
-Between C and Python. On eight benchmarks, native executables take 0.6
-to 14 times as long as C compiled with `gcc -O2`, and WebAssembly run by
-wasmtime 0.6 to 12 times as long; the slowest, k-nucleotide and pidigits,
-run a hash map and big integers written in AIPL against C's tuned
-libraries. The native backend
+Between C and Python. On seven of eight benchmarks, native executables
+take 1.2 to 14 times as long as C compiled with `gcc -O2`, and
+WebAssembly run by wasmtime 1.4 to 12 times as long. The slowest are
+pidigits (C uses GMP's hand-tuned big integers) and k-nucleotide (C packs
+each key into one 64-bit integer where AIPL hashes byte strings). On the
+eighth, binarytrees, AIPL takes 0.6 times C's time because it frees whole
+trees from an arena while C frees every node, so that one is not a fair
+race. The native backend
 is a single-pass translator, within 0.8 to 1.9 times wasmtime's optimising
 compiler. [docs/BENCHMARKS.md](BENCHMARKS.md) has every measurement and
 what each benchmark showed.

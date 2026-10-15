@@ -38,6 +38,12 @@ included, so the ratios to C are the steadier comparison.
 | spectralnorm | 1000 | 0.107 s (4.0x) | 0.127 s (4.8x) | 0.027 s (1.0x) | 7.289 s (273.7x) |
 | spigot | 10000 | 1.426 s (1.5x) | 1.583 s (1.7x) | 0.931 s (1.0x) | 46.950 s (50.4x) |
 
+Two rows are not like for like: pidigits' C uses GMP (hand-tuned assembly,
+as the Benchmarks Game's C entries do), and binarytrees' AIPL frees each
+tree at once from an arena where C calls malloc and free per node, which
+is why AIPL is faster than C there. knucleotide's C packs each key into a
+64-bit integer, where AIPL hashes byte strings.
+
 Native code takes 0.8 to 1.9 times wasmtime's time: 1.9 on nbody, whose
 float-heavy loop has more values live than native code has registers for
 ("Value structs" below), 1.6 on pidigits, and less than wasmtime's own
