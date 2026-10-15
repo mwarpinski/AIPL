@@ -396,7 +396,7 @@ impl VM {
                 let res = self.eval_expr(expr, &mut scope)?;
                 if res != Value::Bool(true) {
                     self.error_at = Some(expr.span());
-                    return Err(contract_failure("Pre-condition", "req", expr, fn_name, &f.params, &scope, None, &self.structs));
+                    return Err(contract_failure(("Pre-condition", "req"), expr, fn_name, &f.params, &scope, None, &self.structs));
                 }
             }
         }
@@ -421,7 +421,7 @@ impl VM {
                 let res = self.eval_expr(expr, &mut contract_scope)?;
                 if res != Value::Bool(true) {
                     self.error_at = Some(expr.span());
-                    return Err(contract_failure("Post-condition", "ens", expr, fn_name, &f.params, &scope, Some((&last_val, &f.return_type)), &self.structs));
+                    return Err(contract_failure(("Post-condition", "ens"), expr, fn_name, &f.params, &scope, Some((&last_val, &f.return_type)), &self.structs));
                 }
             }
         }
@@ -2185,9 +2185,9 @@ pub fn check_write_address(op: &str, ptr: usize, heap_start: usize) -> Result<()
 
 /// A contract failure as source text with the call's arguments, e.g.
 /// `Pre-condition failed in 'f' at 1:37: (req (gt n 0)) with n = -1`.
+/// `(kind, form)`: ("Pre-condition", "req") or ("Post-condition", "ens").
 fn contract_failure(
-    kind: &str,
-    form: &str,
+    (kind, form): (&str, &str),
     expr: &Expr,
     fn_name: &str,
     params: &[(String, Type)],
