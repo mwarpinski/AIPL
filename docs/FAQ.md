@@ -47,7 +47,7 @@ made by translating the WebAssembly to x86-64 machine code.
 To keep the toolchain small and written in AIPL. The native backend is
 about 5,800 lines of AIPL with no dependencies: a single-pass translator
 that keeps values in registers, in the manner of V8's Liftoff, whose code
-takes 0.8 to 1.6 times as long as wasmtime's (Cranelift's) on the eight
+takes 0.8 to 1.9 times as long as wasmtime's (Cranelift's) on the eight
 benchmarks. LLVM would make the code faster still and the toolchain far
 larger, and could not be self-hosted.
 
@@ -75,7 +75,8 @@ these.
 
 Not yet. What holds now: array indexes are bounds-checked, pointers are
 typed and checked for null, contracts run on every call, and the standard
-heap stops the program on a double free or a write after free. The
+heap stops the program on a double free, a free of the wrong size or type,
+or a write to freed memory (when that memory is handed out again). The
 operations nothing checks (raw `mem.load32`/`mem.store32`, casts to
 pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
 as in Rust, so a program without `unsafe` cannot reach memory through a
@@ -85,9 +86,16 @@ Module visibility closes a second door: the standard library keeps its raw
 addresses in fields other modules may only read, such as `str.Bytes`'s
 address and length, so safe code cannot forge one.
 
-One gap remains: a pointer kept after its object is freed can still read
-the freed memory. Generation checks (each object and each pointer carries a
-number, compared on every access) are planned
+The gap is use after free. A pointer kept after its object is freed (with
+`std/heap`) or its arena is reset (`std/arena`) still works. While the
+memory is free, the heap has filled it with a junk pattern; but once it
+holds another object, the old pointer reads and writes that object, and
+writing an integer where the new object keeps a pointer gives code without
+`unsafe` a pointer to any address in the program's memory. It never
+reaches outside that memory, in any backend (WebAssembly's sandbox, a
+guarded region natively), but inside it nothing is protected. Generation
+checks (each object and each pointer carries a number, compared on every
+access) are planned
 ([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)).
 
 ### Does it have closures, or lambdas?
@@ -123,12 +131,15 @@ so returning an `(option.Option i32)` allocates nothing.
 
 ### How fast is it?
 
-Between C and Python. On eight benchmarks, native executables take 0.6
-to 13 times as long as C compiled with `gcc -O2`, and WebAssembly run by
-wasmtime 0.6 to 12 times as long; the slowest, k-nucleotide and pidigits,
-run a hash map and big integers written in AIPL against C's tuned
-libraries. The native backend
-is a single-pass translator, within 0.9 to 2 times wasmtime's optimising
+Between C and Python. On seven of eight benchmarks, native executables
+take 1.2 to 14 times as long as C compiled with `gcc -O2`, and
+WebAssembly run by wasmtime 1.4 to 12 times as long. The slowest are
+pidigits (C uses GMP's hand-tuned big integers) and k-nucleotide (C packs
+each key into one 64-bit integer where AIPL hashes byte strings). On the
+eighth, binarytrees, AIPL takes 0.6 times C's time because it frees whole
+trees from an arena while C frees every node, so that one is not a fair
+race. The native backend
+is a single-pass translator, within 0.8 to 1.9 times wasmtime's optimising
 compiler. [docs/BENCHMARKS.md](BENCHMARKS.md) has every measurement and
 what each benchmark showed.
 

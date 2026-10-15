@@ -22,23 +22,34 @@ print it on stderr.
 ## Results
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
-2026-10-15 (best of three; nbody written with value structs, "Value
-structs" below).
+2026-10-15, after value structs, unions, and results by value
+(docs/design/VALUES_PLAN.md); best of three. Absolute times on this
+machine vary by about 5% from one run to the next, C's and Python's
+included, so the ratios to C are the steadier comparison.
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| binarytrees | 16 | 0.137 s (0.6x) | 0.143 s (0.6x) | 0.225 s (1.0x) | 1.078 s (4.8x) |
-| fannkuch | 10 | 0.284 s (1.9x) | 0.231 s (1.6x) | 0.146 s (1.0x) | 3.678 s (25.2x) |
-| knucleotide | stdin: fasta.py 150000 | 0.624 s (13.2x) | 0.566 s (11.9x) | 0.047 s (1.0x) | 0.489 s (10.3x) |
-| mandelbrot | 1000 | 0.059 s (1.2x) | 0.067 s (1.4x) | 0.048 s (1.0x) | 2.965 s (61.8x) |
-| nbody | 1000000 | 0.144 s (2.9x) | 0.074 s (1.5x) | 0.050 s (1.0x) | 5.291 s (106.5x) |
-| pidigits | 10000 | 3.602 s (9.7x) | 2.292 s (6.2x) | 0.370 s (1.0x) | 2.021 s (5.5x) |
-| spectralnorm | 1000 | 0.103 s (4.1x) | 0.120 s (4.8x) | 0.025 s (1.0x) | 7.093 s (283.8x) |
-| spigot | 10000 | 1.355 s (1.5x) | 1.511 s (1.7x) | 0.882 s (1.0x) | 45.511 s (51.6x) |
+| binarytrees | 16 | 0.146 s (0.6x) | 0.155 s (0.6x) | 0.241 s (1.0x) | 1.143 s (4.7x) |
+| fannkuch | 10 | 0.298 s (1.9x) | 0.249 s (1.6x) | 0.155 s (1.0x) | 3.802 s (24.6x) |
+| knucleotide | stdin: fasta.py 150000 | 0.679 s (13.5x) | 0.615 s (12.2x) | 0.050 s (1.0x) | 0.517 s (10.3x) |
+| mandelbrot | 1000 | 0.062 s (1.2x) | 0.070 s (1.4x) | 0.051 s (1.0x) | 3.075 s (60.7x) |
+| nbody | 1000000 | 0.151 s (2.9x) | 0.080 s (1.5x) | 0.051 s (1.0x) | 5.553 s (108.0x) |
+| pidigits | 10000 | 3.810 s (10.0x) | 2.397 s (6.3x) | 0.382 s (1.0x) | 2.124 s (5.6x) |
+| spectralnorm | 1000 | 0.107 s (4.0x) | 0.127 s (4.8x) | 0.027 s (1.0x) | 7.289 s (273.7x) |
+| spigot | 10000 | 1.426 s (1.5x) | 1.583 s (1.7x) | 0.931 s (1.0x) | 46.950 s (50.4x) |
 
-On 2026-10-14, after the native rewrite and before value structs, nbody
-was native 0.179 s and wasm 0.139 s; the other rows were within a few
-percent of today's.
+Two rows are not like for like: pidigits' C uses GMP (hand-tuned assembly,
+as the Benchmarks Game's C entries do), and binarytrees' AIPL frees each
+tree at once from an arena where C calls malloc and free per node, which
+is why AIPL is faster than C there. knucleotide's C packs each key into a
+64-bit integer, where AIPL hashes byte strings.
+
+Native code takes 0.8 to 1.9 times wasmtime's time: 1.9 on nbody, whose
+float-heavy loop has more values live than native code has registers for
+("Value structs" below), 1.6 on pidigits, and less than wasmtime's own
+time on binarytrees, mandelbrot, spectralnorm, and spigot. Before value
+structs (2026-10-14), nbody took 0.179 s natively and 0.139 s under
+wasmtime.
 
 Earlier (2026-10-05, before the null checks and the native rewrite):
 native spigot 2.725 s, fannkuch 1.080, spectralnorm 0.392, nbody 0.751,
@@ -50,7 +61,7 @@ mandelbrot 0.068, binarytrees 0.197, knucleotide 0.734, pidigits 2.650.
 checks for a null pointer. Measured before and after (best of 3 to 5 runs):
 binarytrees native +5%, wasm +7%; nbody native +6%, wasm +22% (its inner
 loop is struct-field reads and writes); spectralnorm +2% and +3%; fannkuch
-+8% and +6%. The table above predates them.
++8% and +6%. Every table since includes them.
 
 ## Notes per benchmark
 
@@ -68,6 +79,8 @@ language changes. What it showed:
   re-reads the memory size for its bounds check). The first optimisation
   target, if native speed matters: keep the top of the value stack in
   registers, and the memory size in a register for single-threaded code.
+  *Since the native rewrite (2026-10-14) native code is faster than
+  wasmtime's here ("The value-tracking translator").*
 
 **fannkuch** (fannkuch-redux, single-threaded: permutations of 0..n-1, each
 flipped until 0 comes first). Ran with no language changes. What it showed:
@@ -76,7 +89,8 @@ times): each `arr.get`/`arr.set` is several wasm instructions, every one
 passing its values through the stack in memory, plus a bounds check that
 reloads the memory size. wasmtime keeps them in registers. The same
 optimisations as for spigot (value stack in registers, memory size in a
-register) would matter most here.
+register) would matter most here. *Since the native rewrite, 1.2 times
+wasmtime.*
 
 **spectralnorm** (the power method on A'A, printed to nine decimals). Needed
 two additions, both now in the language and standard library:
@@ -89,7 +103,11 @@ two additions, both now in the language and standard library:
   C's `printf("%.9f")` and Python's format do, using a small
   arbitrary-precision integer; checked against Rust's exact formatting on
   20,000 random doubles. Shortest round-trip printing (`printf("%g")`
-  style) and parsing floats from text remain gaps.
+  style) and parsing floats from text were gaps. *Since then:*
+  `float.from_decimal` parses decimal text (2026-10-06; unsafe to call, as
+  it takes a raw address), and `json.write` prints a number in its
+  shortest round-trip digits (2026-10-14); a general shortest-digits
+  writer in `fmt` is still missing.
 C gains most here: gcc inlines the matrix-entry function and vectorises the
 inner loop, while AIPL calls a function per entry.
 
@@ -101,9 +119,11 @@ coordinate. Ran with the spectralnorm additions (`f64.sqrt`,
 written, so the benchmark's constants are written out in decimal (the same doubles). All
 four versions print the published values, bit-identical float arithmetic
 in the same operation order. Float code is where the native translator
-trails most (8.6 times wasmtime): every operation moves values from the
+trailed most (8.6 times wasmtime): every operation moved values from the
 stack in memory into xmm registers and back, where Cranelift keeps them in
-registers.
+registers. *Since the native rewrite float values live in xmm registers:
+1.3 times wasmtime with the seven arrays, 1.9 with value structs, whose
+inner loop holds more floats at once than there are registers.*
 
 **mandelbrot** (a binary PBM bitmap of the set, 50 iterations per point).
 Ran with no language changes: bit operations and raw byte output already
@@ -118,8 +138,9 @@ everything at once and its chunks are reused), as the benchmark allows for
 memory pools. Not a like-for-like race: AIPL resets an arena per tree, the C
 version calls malloc and free per node (the classic C entry), and Python
 uses its garbage collector, which is why AIPL under wasmtime beats C here.
-Freeing each node through `std/heap` instead takes 1.12 s natively against
-the arena's 0.26 s (docs/design/HEAP_PLAN.md H5). Writing it found a resolver bug,
+Freeing each node through `std/heap` instead took 1.12 s natively against
+the arena's 0.26 s (docs/design/HEAP_PLAN.md H5, measured 2026-10-06, before
+the native rewrite). Writing it found a resolver bug,
 fixed in both resolvers: a module calling its own generic function with its
 own struct (`(alloc Pair)` inside std/arena) left the type argument
 unqualified, so the instance's type no longer matched the struct once the
@@ -130,7 +151,8 @@ sequence read from stdin; frequency tables and occurrence counts). Its input
 comes from the Benchmarks Game's fasta generator (`fasta.py`, run by
 `tools/bench.py` through `stdin_cmd`). Ran with no language changes, using
 `std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`;
-since 2026-10-14 `(map.Map (ptr str.Bytes) i32)`, the one generic map.
+since 2026-10-14 `(map.Map (ptr str.Bytes) i32)`, the one generic map
+(`strmap` is gone).
 What it showed:
 - **The 64 MiB memory cap.** At the benchmark's usual size (fasta 250000,
   1.25 million letters) both AIPL builds run out of memory: seven maps of up
@@ -167,7 +189,7 @@ the language; Python uses its built-in integers. What it showed:
   correct) brought it to 4.0 s, and loops without per-limb bounds checks
   (limbs past the length are kept zero) to about Python's time.
 - **Native is far behind wasm** (about 9x), the baseline translator's cost
-  on tight loops again.
+  on tight loops again. *1.6 times since the native rewrite.*
 - **Length.** The AIPL file is 90 lines against C's 40 and Python's 29:
   bignums are calls rather than operators, state lives in a struct (no
   globals), and the argument parsing and digit output are repeated from
@@ -178,6 +200,10 @@ the language; Python uses its built-in integers. What it showed:
   pidigits, since it prints one contest's output format.
 
 ## Native speed (2026-10-05)
+
+The sections from here on are a log, oldest first: each describes the
+translator and the numbers of its day, and the Results table above is the
+current state.
 
 The two fixes these notes pointed at, measured one at a time (best of 3,
 the compiler compiling itself as a ninth program):
@@ -333,7 +359,8 @@ shortest digits without one either.
 docs/design/VALUES_PLAN.md V5: unions that fit are held by value, among
 them `std/alloc`'s `Allocator` (2 numbers, a tag and a shared pointer
 slot, where it was one address), which every container holds and every
-allocation is passed. Best of three, against the table above:
+allocation is passed. Best of three, against the run made just before it
+with value structs only (both runs on the same machine within the hour):
 
 | Benchmark | native | wasm (wasmtime) |
 |---|---|---|
@@ -348,3 +375,6 @@ on the benchmarks that allocate through the library, which now pass an
 allocator as two numbers. What unions by value buy is allocations: an
 `(option.Option T)` returned for a small `T`, or a `Shape` made in a loop,
 takes no memory (`map.find` a million times takes none).
+
+Results by value (the same day, the last of V5) changed no benchmark's
+time: none of them makes results in a loop.

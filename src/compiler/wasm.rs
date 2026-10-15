@@ -2898,8 +2898,8 @@ fn compile_value_result(this: &Expr, inner: &Expr, ctx: &Ctx, func: &mut Body) -
 fn emit_zero(func: &mut Body, t: &Type) {
     func.instruction(&match t {
         Type::I64 => Instruction::I64Const(0),
-        Type::F32 => Instruction::F32Const(0.0f32.into()),
-        Type::F64 => Instruction::F64Const(0.0f64.into()),
+        Type::F32 => Instruction::F32Const(0.0f32),
+        Type::F64 => Instruction::F64Const(0.0f64),
         _ => Instruction::I32Const(0),
     });
 }

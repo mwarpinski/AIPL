@@ -19,7 +19,23 @@ not remains: keep a pointer, free its object, and use the pointer again.
 `std/heap` already catches a double free and a write after free (when the
 block is handed out again), and a read of freed memory gets the junk
 pattern, not old data. But once the block is reused, the old pointer reads
-and writes the new object, and nothing notices.
+and writes the new object, and nothing notices. That is worse than reading
+stale data: writing an integer where the new object keeps a pointer forges
+a pointer, so code without `unsafe` reaches any address in the program's
+memory. `std/arena` is the same with no checks at all, for every pointer
+into an arena after `reset`:
+
+```lisp
+(let old:(ptr Num) (call (arena.alloc Num) a))
+(call arena.reset a)
+(let b:(ptr Box) (call (arena.alloc Box) a))   ;; the same memory, now a Box
+(put old Num.n 2048)                            ;; writes Box.p: a pointer to address 2048
+(get (get b Box.p) Num.n)                       ;; reads whatever is at 2048
+```
+
+So generations must cover arenas too: `reset` bumps the generation of
+every block it hands out again (or the arena's memory carries generation
+words like the heap's).
 
 ## The idea
 
@@ -95,7 +111,8 @@ generation word and the first field in one cache line.
    native backend's lowering), byte for byte as always, with
    `test_selfhost` and `test_checker_aipl` as the gate.
 3. **Tests:** use after free, after reuse, through an array, in a struct
-   field, across a thread join; mutation checks on the comparison and on
+   field, across a thread join, after an arena's reset (the forged pointer
+   above); mutation checks on the comparison and on
    the bump; `run_fuzz.py` generating frees.
 4. **Claims:** with visibility done (2026-10-14, the other gap),
    code without `unsafe` is memory-safe except for data races between
