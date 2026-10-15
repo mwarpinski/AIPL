@@ -2403,3 +2403,40 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
         0))";
     assert_native_matches("register_locals_survive_atomics_grow_and_imports", src);
 }
+
+/// The internal calling convention (F3): up to six arguments in registers,
+/// more on the stack; every type; direct calls and calls through function
+/// references; arguments whose registers must be swapped (computed in one
+/// order, wanted in another); recursion.
+#[test]
+fn calling_convention_matches_natively() {
+    let src = "(module m (import io)
+      (fn zero [] -> i32 7)
+      (fn one [a:i32] -> i32 (* a 3))
+      (fn two [a:i32 b:i32] -> i32 (- (* a 10) b))
+      (fn mixed [a:i64 b:f64 c:i32 d:f64 e:i64 f:i32] -> f64
+        (+ (f64.convert_i64_s (+ a e)) (* b (+ d (f64.convert_i64_s (i64.extend_s (- c f)))))))
+      (fn seven [a:i32 b:i32 c:i32 d:i32 e:i32 f:i32 g:i32] -> i32
+        (+ (* a 1) (+ (* b 2) (+ (* c 3) (+ (* d 4) (+ (* e 5) (+ (* f 6) (* g 7))))))))
+      (fn eight [a:i64 b:f64 c:i32 d:i32 e:i32 f:i32 g:i32 h:f64] -> f64
+        (+ (f64.convert_i64_s a) (+ b (+ (f64.convert_i64_s (i64.extend_s (- (+ c (+ d e)) (+ f g)))) h))))
+      (fn fib [n:i32] -> i32 (if (lt n 2) n (+ (call fib (- n 1)) (call fib (- n 2)))))
+      (fn main [] -> i32
+        (let x:i32 3) (let y:i32 4) (let z:i64 5000000000i64) (let q:f64 1.5)
+        (call io.println_int \"zero \" (call zero))
+        (call io.println_int \"one \" (call one (+ x 1)))
+        (call io.println_int \"two \" (call two (+ x 1) (+ y 2)))
+        (call io.println_int \"two swapped \" (call two (+ y 2) (+ x 1)))
+        (call io.println_f64 \"mixed \" (call mixed z q (+ x y) (* q 2.0) (- z 1i64) (call two x y)) 6)
+        (call io.println_int \"seven \" (call seven 1 x y (+ x y) (call one y) 6 (call two y x)))
+        (call io.println_f64 \"eight \" (call eight z q x y 9 10 11 (- q 3.25)) 6)
+        (call io.println_int \"fib \" (call fib 20))
+        (let r2:(fn [i32 i32] -> i32) (ref two))
+        (let r7:(fn [i32 i32 i32 i32 i32 i32 i32] -> i32) (ref seven))
+        (let r6:(fn [i64 f64 i32 f64 i64 i32] -> f64) (ref mixed))
+        (call io.println_int \"ref two \" (call_ref (fn [i32 i32] -> i32) r2 (+ y 2) (+ x 1)))
+        (call io.println_int \"ref seven \" (call_ref (fn [i32 i32 i32 i32 i32 i32 i32] -> i32) r7 7 6 5 4 3 2 1))
+        (call io.println_f64 \"ref mixed \" (call_ref (fn [i64 f64 i32 f64 i64 i32] -> f64) r6 z q x q z y) 6)
+        0))";
+    assert_native_matches("calling_convention", src);
+}
