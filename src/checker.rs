@@ -65,6 +65,27 @@ impl Structs {
     pub fn is_value_union(&self, name: &str) -> bool {
         self.by_value.contains_key(name)
     }
+
+    /// The layout of `(result ok err)` held by value (AIPL_SPEC.md 4.F): two
+    /// variants, ok and err, sharing slots as a union's do; None (a heap
+    /// cell) when a side is a str or it needs more than MAX_SCALARS slots.
+    pub fn result_layout(&self, ok: &Type, err: &Type) -> Option<SumLayout> {
+        if *ok == Type::Str || *err == Type::Str {
+            return None;
+        }
+        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
+        let l = sum_layout(&[side("ok", ok), side("err", err)], self);
+        (l.slots.len() <= MAX_SCALARS).then_some(l)
+    }
+
+    /// The layout of a union or result type held by value, if it is one.
+    pub fn sum_of(&self, t: &Type) -> Option<SumLayout> {
+        match t {
+            Type::Union(n) => self.by_value.get(n).cloned(),
+            Type::ResultType(a, b) => self.result_layout(a, b),
+            _ => None,
+        }
+    }
 }
 
 /// The kind of slot a scalar of type `t` takes: I32 (every 4-byte scalar
@@ -85,6 +106,7 @@ pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
     match t {
         Type::Struct(n) if st.get(n).is_some_and(|d| d.is_value) => st[n].fields.iter().flat_map(|f| scalars(&f.ty, st)).collect(),
         Type::Union(n) if st.by_value.contains_key(n) => st.by_value[n].slots.clone(),
+        Type::ResultType(a, b) => st.result_layout(a, b).map(|l| l.slots).unwrap_or_else(|| vec![t.clone()]),
         Type::Void => vec![],
         _ => vec![t.clone()],
     }
@@ -202,6 +224,10 @@ pub fn type_size_and_align(ty: &Type, structs: &Structs) -> Result<(usize, usize
 fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize), String> {
     match ty {
         Type::Union(n) if structs.by_value.contains_key(n) => Ok((structs.by_value[n].size, structs.by_value[n].align)),
+        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => {
+            let l = structs.result_layout(a, b).unwrap_or_else(|| unreachable!());
+            Ok((l.size, l.align))
+        }
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
@@ -221,6 +247,20 @@ fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize
     }
 }
 
+/// An ok or err names its result's other side (AIPL_SPEC.md 4.F).
+const OK_NEEDS_TYPE: &str = "(ok v) must name its result's err type: write (ok:E v) for a (result T E)";
+const ERR_NEEDS_TYPE: &str = "(err e) must name its result's ok type: write (err:T e) for a (result T E)";
+
+/// A type's layout where the language puts it in memory (a field, an array
+/// element, sizeof): never a result, which lives only in locals, parameters,
+/// results, and other results (held by value or not, AIPL_SPEC.md 4.F).
+fn memory_layout(ty: &Type, structs: &Structs) -> Result<(usize, usize), String> {
+    if matches!(ty, Type::ResultType(..)) {
+        return Err(format!("Unsupported type for memory layout: {}", ty));
+    }
+    type_size_and_align(ty, structs)
+}
+
 /// A result's payload is a value of any type but `void`.
 fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
     if *t == Type::Void {
@@ -237,6 +277,7 @@ pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
     match payload {
         Type::Struct(_) => value_cell(payload, structs),
         Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
+        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => value_cell(payload, structs),
         Type::I64 | Type::F64 => (8, 16),
         _ => (4, 8),
     }
@@ -486,7 +527,7 @@ impl TypeChecker {
         for s in &module.structs {
             self.at_item("struct", &s.name);
             for f in &s.fields {
-                type_size_and_align(&f.ty, &self.struct_defs).map_err(|e| {
+                memory_layout(&f.ty, &self.struct_defs).map_err(|e| {
                     format!(
                         "{}:{}: Field '{}' in struct '{}': {}",
                         s.span.0, s.span.1, f.name, shown(&s.name), e
@@ -519,7 +560,7 @@ impl TypeChecker {
                     if v.fields[..j].iter().any(|g| g.name == f.name) {
                         return Err(format!("{}:{}: variant '{}.{}' has two fields named '{}'", l, c, shown(&u.name), v.name, f.name));
                     }
-                    type_size_and_align(&f.ty, &self.struct_defs)
+                    memory_layout(&f.ty, &self.struct_defs)
                         .map_err(|e| format!("{}:{}: Field '{}' of variant '{}.{}': {}", l, c, f.name, u.name, v.name, e))?;
                 }
             }
@@ -677,7 +718,7 @@ impl TypeChecker {
             )),
             Type::Array(elem) => {
                 self.validate_type(elem, span)?;
-                type_size_and_align(elem, &self.struct_defs)
+                memory_layout(elem, &self.struct_defs)
                     .map(|_| ())
                     .map_err(|_| format!("{}:{}: (arr T) element must be a scalar, (ptr S), or (arr T), got {}", span.0, span.1, elem))
             }
@@ -1371,6 +1412,10 @@ impl TypeChecker {
                 }
             }
             Expr::Ok(val, extra_ty, _) => {
+                // a result's whole type is written where it is made
+                if extra_ty.is_none() {
+                    return Err(format!("{}:{}: {}", l, c, OK_NEEDS_TYPE));
+                }
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
                 self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
@@ -1379,6 +1424,9 @@ impl TypeChecker {
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
             Expr::Err(err, extra_ty, _) => {
+                if extra_ty.is_none() {
+                    return Err(format!("{}:{}: {}", l, c, ERR_NEEDS_TYPE));
+                }
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
                 self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
@@ -1581,7 +1629,7 @@ impl TypeChecker {
                     }
                     _ => {
                         self.validate_type(ty, *span)?;
-                        if type_size_and_align(ty, &self.struct_defs).is_err() {
+                        if memory_layout(ty, &self.struct_defs).is_err() {
                             return Err(format!(
                                 "{}:{}: sizeof needs a struct or a type that can be stored in memory, got {}",
                                 span.0, span.1, ty

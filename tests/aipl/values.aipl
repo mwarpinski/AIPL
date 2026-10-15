@@ -33,7 +33,7 @@
       (Shape.ball [at r] (+ r (get at Vec3.z)))))
 
   (fn found [ok:bool] -> (result Vec3 i32)
-    (if ok (ok (make Vec3 1.0 2.0 3.0)) (err:Vec3 7)))
+    (if ok (ok:i32 (make Vec3 1.0 2.0 3.0)) (err:Vec3 7)))
 
   (fn main [] -> i32
     (let a:Vec3 (make Vec3 1.0 2.0 3.0))

@@ -322,7 +322,8 @@
         (else
       (if (or prev_colon colon) (block) (call buf.push_byte out 32))
       (cond
-        ((and top (and (eq i 2) (and (call eq_lit gh "struct") (neq (get c compiler.Node.kind) compiler.Kind.paren)))) (call emit_fields m c out))
+        ;; a struct's field list (a bracket; anything else there is left for the parser to name)
+        ((and top (and (eq i 2) (and (call eq_lit gh "struct") (eq (get c compiler.Node.kind) compiler.Kind.bracket)))) (call emit_fields m c out))
         ((and is_match (and (gte i 2) (eq (get c compiler.Node.kind) compiler.Kind.paren))) (call emit_arm m c out))
         ((and decl_list (and (eq i 2) (eq (get c compiler.Node.kind) compiler.Kind.bracket))) (call emit_decl_members m c out))
         ((and members (and (gte i 2) (call eq_lit (call head (get m Mod.src) c) "fn"))) (call emit_member m c (call eq_lit gh "impl") out))
@@ -543,6 +544,8 @@
                      ((call eq_lit h "interface") 2)
                      (else -1)))
     (if (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    ;; an empty item has none (the structure check names it)
+    (if (eq (call first_child item) (ptr.null compiler.Node)) (return false) (block))
     ;; (struct S [fields] (pub) (value))
     (let third:(ptr compiler.Node) (call nth item 3))
     (if (and (call eq_lit h "struct")

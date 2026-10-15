@@ -163,7 +163,7 @@ class Gen:
             el = t[5:-1]
             return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
         if t == R:
-            return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err {self.literal('bool')})"
+            return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err:i32 {self.literal('bool')})"
         if t == F:
             return f"(ref {rng.choice(self.targets())})"
         raise ValueError(t)
@@ -214,7 +214,7 @@ class Gen:
     def make_result(self, ctx, t, d):
         if self.rng.random() < 0.5:
             return f"(ok:bool {self.expr(ctx, 'i32', d)})"
-        return f"(err {self.expr(ctx, 'bool', d)})"
+        return f"(err:i32 {self.expr(ctx, 'bool', d)})"
 
     def match_result(self, ctx, t, d):
         ok_arm, err_arm = ctx.child(), ctx.child()

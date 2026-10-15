@@ -709,6 +709,8 @@
       (ast.Expr.call [_ func args] (call infer_call c env at func args))
       (ast.Expr.op [_ o args] (call infer_op c env at o args))
       (ast.Expr.ok [_ val oty]
+       ;; a result's whole type is written where it is made
+       (if (call no_type oty) (return (call fail_text c at "(ok v) must name its result's err type: write (ok:E v) for a (result T E)")) (block))
        (let inner:ast.Type (call infer c val env))
        (if (get c C.failed) (return (call void_t)) (block))
        (call check_result_payload c inner at)
@@ -717,6 +719,7 @@
        (call validate_or_fail c et at)
        (make ast.Type.result inner et))
       (ast.Expr.err [_ val oty]
+       (if (call no_type oty) (return (call fail_text c at "(err e) must name its result's ok type: write (err:T e) for a (result T E)")) (block))
        (let errt:ast.Type (call infer c val env))
        (if (get c C.failed) (return (call void_t)) (block))
        (call check_result_payload c errt at)
@@ -862,6 +865,16 @@
              (call void_t))))))
 
   (fn placeholder [at:i32] -> ast.Expr (make ast.Expr.lit_int at 0i64))
+
+  (fn no_type [t:ast.MaybeType] -> bool
+    (match t (ast.MaybeType.some [_] false) (ast.MaybeType.none true)))
+
+  ;; Fails with `text` at `at`; the void type, for an expression that fails.
+  (fn fail_text [c:(ptr C) at:i32 text:str] -> ast.Type
+    (let b:(ptr buf.Buf) (call msg c at))
+    (call s b text)
+    (call fail c b)
+    (call void_t))
 
   ;; checker.rs check_result_payload: a result's payload is a value.
   (fn check_result_payload [c:(ptr C) t:ast.Type at:i32] -> void

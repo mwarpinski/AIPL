@@ -64,7 +64,7 @@ expr           ::= literal
                  | "(" "unsafe" expr+ ")"            (* a block allowing unchecked operations (section 3) *)
                  | "(" "return" [ expr ] ")" | "(" "break" ")" | "(" "continue" ")"
                  | "(" "cond" ( "(" expr expr+ ")" )+ "(" "else" expr+ ")" ")"
-                 | "(" ("ok" | "err") [ ":" type ] expr ")"
+                 | "(" ("ok" | "err") ":" type expr ")"   (* the result's other side: (ok:E v), (err:T e) *)
                  | "(" "match_result" expr "(" "ok" identifier expr* ")" "(" "err" identifier expr* ")" ")"
                  | "(" "new" struct_ref ")"
                  | "(" "get" expr struct_name "." identifier ")"
@@ -354,7 +354,9 @@ Every backend runs value structs with the same results. The VM keeps a value as 
 
 ### F. Results
 
-`(ok v)` and `(err e)` build a value of type `(result T_ok T_err)`; `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). Both backends allocate a heap cell from the heap cursor **before** evaluating the payload, laid out like a union variant with one field: the tag (0 = ok, 1 = err) as an `i32` at offset 0, then the payload, at offset 8 of a 16-byte cell if it is an `i64` or `f64`, otherwise at offset 4 of an 8-byte cell (a result payload is the address of its own cell); a value struct sits inline after the tag, at its alignment (4 or 8), in a cell rounded up to a multiple of 8. So a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell, taking each payload's type from the checker, since it claims the cell before the payload runs. For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
+`(ok:E v)` and `(err:T e)` build a value of type `(result T E)`, each naming the side it does not carry, so every result is made with its whole type written (`(ok v) must name its result's err type: write (ok:E v) for a (result T E)`); `match_result` consumes one. A payload may be of any type but `void` (`a result payload must be a value, got void`). A result lives only in locals, parameters, results, and other results (never in a struct field or an array).
+
+**Results by value.** Like a union (section 4.J), a result is held by value unless a side is a `str` or it needs more than 8 slots: its tag (0 = ok, 1 = err), then the slots its two sides share by kind, the ok side's scalars and the err side's each taking the first slots of their kinds, unused ones zero. `(result i32 i32)` is 2 slots, `(result Vec2 i64)` 4 (the tag, the `i64`, two `f64`s); building one allocates nothing. Otherwise, a result is a heap cell: both backends allocate it from the heap cursor **before** evaluating the payload, laid out like a union variant with one field: the tag (0 = ok, 1 = err) as an `i32` at offset 0, then the payload, at offset 8 of a 16-byte cell if it is an `i64` or `f64`, otherwise at offset 4 of an 8-byte cell (a result payload is the address of its own cell); a value struct sits inline after the tag, at its alignment (4 or 8), in a cell rounded up to a multiple of 8. So a result and any allocation inside its payload land at the same addresses in both. In compiled wasm a result is the `i32` address of that cell; the VM keeps a tagged value but writes the same cell, taking each payload's type from the checker, since it claims the cell before the payload runs. For a value that may be missing rather than failed, use `(option.Option T)` from `std/option` (section 4.J).
 
 
 ### G. Function References
@@ -953,7 +955,7 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ```lisp
 (fn parse_digit [c:i32] -> (result i32 i32)
-  (if (and (gte c 48) (lte c 57)) (ok (- c 48)) (err -1)))
+  (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 -1)))
 
 (fn digit_or_zero [c:i32] -> i32
   (match_result (call parse_digit c)

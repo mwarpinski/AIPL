@@ -60,7 +60,8 @@
               uses_refs:bool sigs:(arr (ptr Sig)) nsigs:i32
               strs:(arr (ptr StrLit)) nstrs:i32 blob:(ptr buf.Buf) newline:i32
               uses_checks:bool checks_base:i32 ens_block:bool src_len:i32
-              places:(ptr places.Places) scratch:i32 groups:(ptr (vec.Vec (ptr Group))) has_values:bool])
+              places:(ptr places.Places) scratch:i32 groups:(ptr (vec.Vec (ptr Group))) has_values:bool
+              results:(ptr (vec.Vec (ptr StructInfo)))])
 
   ;; A string literal's spelling (a span of the source; pos -1 for the
   ;; newline sys.print reserves) and the address of its interned bytes. The
@@ -91,7 +92,7 @@
   ;; first use (`laid`), since a field may hold a struct declared later.
   (struct StructInfo [name_pos:i32 name_len:i32 size:i32 fields:(arr (ptr Field)) nfields:i32
                       node:(ptr compiler.Node) value:bool laid:bool align:i32 width:i32
-                      flat_ty:(arr Ty) flat_off:(arr i32) union_of:(ptr UnionInfo)])
+                      flat_ty:(arr Ty) flat_off:(arr i32) union_of:(ptr UnionInfo) result:bool])
   ;; A field: a value struct one (ty Ty.value) names its struct (vs) and
   ;; starts at scalar `slot` of its struct's.
   (struct Field [name_pos:i32 name_len:i32 offset:i32 ty:Ty vs:(ptr StructInfo) slot:i32])
@@ -106,7 +107,7 @@
   (struct UnionInfo [name_pos:i32 name_len:i32 variants:(arr (ptr VariantInfo)) nvariants:i32
                      value:bool vs:(ptr StructInfo)])
   (struct VariantInfo [name_pos:i32 name_len:i32 size:i32 fields:(arr (ptr Field)) nfields:i32
-                       node:(ptr compiler.Node) slots:(arr i32) nslots:i32])
+                       node:(ptr compiler.Node) slots:(arr i32) nslots:i32 kinds:(ptr (vec.Vec Ty))])
 
   ;; A local of the function being compiled (parameters first): its name (a
   ;; span of the source) and type. A loop's hidden end and step locals carry
@@ -162,6 +163,7 @@
     (put cg Cg.newline 0)
     (put cg Cg.scratch 0)
     (put cg Cg.has_values false)
+    (put cg Cg.results (call (vec.make (ptr StructInfo)) (call alloc.default) 8))
     (put cg Cg.groups (call (vec.make (ptr Group)) (call alloc.default) 16))
     cg)
 
@@ -441,6 +443,8 @@
             (block
               (let head:Kw (call group_head_keyword cg node))
               (if (or (eq head Kw.ty_result) (or (eq head Kw.ty_ptr) (eq head Kw.ty_arr))) (set! t (call ty_of_kw head)) (block))
+              ;; a result held by value (AIPL_SPEC.md 4.F)
+              (if (and (eq head Kw.ty_result) (neq (call result_info cg (call desc node false)) (ptr.null StructInfo))) (set! t Ty.value) (block))
               (if (eq head Kw.fn) (set! t Ty.fn) (block)))
             (block)))
     (if (eq t Ty.none)
@@ -450,6 +454,7 @@
 ;; The value struct a type node names (laid out), or null: only a value
   ;; struct is named bare (a struct behind a pointer is (ptr S)).
   (fn type_node_struct [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr StructInfo)
+    (if (eq (call group_head_keyword cg node) Kw.ty_result) (return (call result_info cg (call desc node false))) (block))
     (if (neq (call node_kind node) compiler.Kind.symbol) (return (ptr.null StructInfo)) (block))
     ;; a union held by value is described as one
     (let un:(ptr UnionInfo) (call find_union cg (call node_a node) (call node_b node)))
@@ -492,9 +497,10 @@
     (not (or (or (eq t Ty.void) (or (eq t Ty.result) (or (eq t Ty.none) (or (eq t Ty.loop_end) (eq t Ty.loop_step)))))
              (or (eq t Ty.ck_a) (or (eq t Ty.ck_b) (eq t Ty.ck_r))))))
   ;; Element type of arr.new/get/set: a memory scalar, else compile error 95.
+  ;; (A result, held by value or not, is never in memory: compile error 95.)
   (fn elem_type_id [cg:(ptr Cg) node:(ptr compiler.Node)] -> Ty
     (let t:Ty (call type_node_id cg node))
-    (if (call is_memory_type t) t (block (call set_compile_error CgErr.not_a_memory_type) Ty.i32)))
+    (if (and (call is_memory_type t) (neq (call group_head_keyword cg node) Kw.ty_result)) t (block (call set_compile_error CgErr.not_a_memory_type) Ty.i32)))
   (fn type_size [t:Ty] -> i32 (if (or (eq t Ty.i64) (eq t Ty.f64)) 8 4))
   (fn mem_align [t:Ty] -> i32 (if (eq (call type_size t) 8) 3 2))
   (fn load_opcode [t:Ty] -> i32 (cond
@@ -1558,7 +1564,7 @@
   ;; A type that cannot be in memory is compile error 95.
   (fn new_field [cg:(ptr Cg) fchild:(ptr compiler.Node) type_node:(ptr compiler.Node)] -> (ptr Field)
     (let ftype:Ty (call type_node_id cg type_node))
-    (if (call is_memory_type ftype) 0 (call set_compile_error CgErr.not_a_memory_type))
+    (if (and (call is_memory_type ftype) (neq (call group_head_keyword cg type_node) Kw.ty_result)) 0 (call set_compile_error CgErr.not_a_memory_type))
     (let f:(ptr Field) (new Field))
     (put f Field.name_pos (call node_a fchild))
     (put f Field.name_len (call node_b fchild))
@@ -1709,6 +1715,110 @@
       (let w:(ptr UnionInfo) (call (vec.at (ptr UnionInfo)) held k))
       (if (arr.get bool cand (call union_index cg w)) (call decide_union cg cand decided w) (block)))
     (if (lte (call union_width cg u) 8) (call build_union cg u) (block)))
+
+;; ===== Results held by value (checker.rs result_layout) =====
+  ;; (result T E) is held by value unless a side is a str or it needs more
+  ;; than 8 slots: two variants, ok and err, sharing slots as a union's do.
+  ;; Described, like a union, by a StructInfo of its slots (result true),
+  ;; its two variants' maps in union_of; one per pair of sides' slot kinds.
+  (fn result_info [cg:(ptr Cg) d:(ptr Desc)] -> (ptr StructInfo)
+    (if (eq d (ptr.null Desc)) (return (ptr.null StructInfo)) (block))
+    (let ok:(ptr Desc) (call result_side cg d 0))
+    (let er:(ptr Desc) (call result_side cg d 1))
+    (let ot:Ty (call desc_ty cg ok))
+    (let et:Ty (call desc_ty cg er))
+    (if (or (eq ot Ty.str) (eq et Ty.str)) (return (ptr.null StructInfo)) (block))
+    (let ok_k:(ptr (vec.Vec Ty)) (call desc_kinds cg ok ot))
+    (let er_k:(ptr (vec.Vec Ty)) (call desc_kinds cg er et))
+    (let rs:(ptr (vec.Vec (ptr StructInfo))) (get cg Cg.results))
+    (loop i 0 (- (call (vec.len (ptr StructInfo)) rs) 1) 1
+      (let si:(ptr StructInfo) (call (vec.at (ptr StructInfo)) rs i))
+      (let vs:(arr (ptr VariantInfo)) (get (get si StructInfo.union_of) UnionInfo.variants))
+      (if (and (call same_kinds (get (arr.get (ptr VariantInfo) vs 0) VariantInfo.kinds) ok_k)
+               (call same_kinds (get (arr.get (ptr VariantInfo) vs 1) VariantInfo.kinds) er_k))
+          (return si)
+          (block)))
+    (let n:i32 1)
+    (loop k 0 3 1 (set! n (+ n (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))))))
+    (if (gt n 8) (return (ptr.null StructInfo)) (block))
+    (put cg Cg.has_values true)
+    (let si:(ptr StructInfo) (call build_sum cg ok_k er_k))
+    (call (vec.push (ptr StructInfo)) rs si)
+    si)
+
+  (fn max_i32 [a:i32 b:i32] -> i32 (if (gt a b) a b))
+
+  (fn count_kind [ks:(ptr (vec.Vec Ty)) kind:Ty] -> i32
+    (let c:i32 0)
+    (loop j 0 (- (call (vec.len Ty) ks) 1) 1 (if (eq (call (vec.at Ty) ks j) kind) (set! c (+ c 1)) (block)))
+    c)
+
+  (fn same_kinds [a:(ptr (vec.Vec Ty)) b:(ptr (vec.Vec Ty))] -> bool
+    (if (neq (call (vec.len Ty) a) (call (vec.len Ty) b)) (return false) (block))
+    (loop j 0 (- (call (vec.len Ty) a) 1) 1 (if (neq (call (vec.at Ty) a j) (call (vec.at Ty) b j)) (return false) (block)))
+    true)
+
+  ;; The slot kinds of a value of type t, described where d says.
+  (fn desc_kinds [cg:(ptr Cg) d:(ptr Desc) t:Ty] -> (ptr (vec.Vec Ty))
+    (let out:(ptr (vec.Vec Ty)) (call (vec.make Ty) (call alloc.default) 8))
+    (let vs:(ptr StructInfo) (if (eq t Ty.value) (call desc_struct cg d) (ptr.null StructInfo)))
+    (if (neq vs (ptr.null StructInfo))
+        (loop k 0 (- (get vs StructInfo.width) 1) 1 (call (vec.push Ty) out (call slot_kind (arr.get Ty (get vs StructInfo.flat_ty) k))))
+        (call (vec.push Ty) out (call slot_kind t)))
+    out)
+
+  ;; The StructInfo of a result's slots, its sides' kinds ok_k and er_k
+  ;; (checker.rs sum_layout).
+  (fn build_sum [cg:(ptr Cg) ok_k:(ptr (vec.Vec Ty)) er_k:(ptr (vec.Vec Ty))] -> (ptr StructInfo)
+    (let si:(ptr StructInfo) (new StructInfo))
+    (put si StructInfo.value true)
+    (put si StructInfo.laid true)
+    (put si StructInfo.result true)
+    (put si StructInfo.fields (arr.new (ptr Field) 1))
+    (put si StructInfo.flat_ty (arr.new Ty 8))
+    (put si StructInfo.flat_off (arr.new i32 8))
+    (let base:(arr i32) (arr.new i32 4))
+    (let n:i32 1)
+    (arr.set Ty (get si StructInfo.flat_ty) 0 Ty.i32)
+    (loop k 0 3 1
+      (arr.set i32 base k n)
+      (loop q 1 (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))) 1
+        (arr.set Ty (get si StructInfo.flat_ty) n (call kind_at k))
+        (set! n (+ n 1))))
+    (let off:i32 0)
+    (let align:i32 4)
+    (loop k 0 (- n 1) 1
+      (let a:i32 (call type_size (arr.get Ty (get si StructInfo.flat_ty) k)))
+      (if (gt a align) (set! align a) (block))
+      (set! off (bitand (+ off (- a 1)) (- 0 a)))
+      (arr.set i32 (get si StructInfo.flat_off) k off)
+      (set! off (+ off a)))
+    (put si StructInfo.width n)
+    (put si StructInfo.align align)
+    (put si StructInfo.size (bitand (+ off (- align 1)) (- 0 align)))
+    (let u:(ptr UnionInfo) (new UnionInfo))
+    (put u UnionInfo.variants (arr.new (ptr VariantInfo) 2))
+    (put u UnionInfo.nvariants 2)
+    (put u UnionInfo.value true)
+    (put u UnionInfo.vs si)
+    (arr.set (ptr VariantInfo) (get u UnionInfo.variants) 0 (call side_slots ok_k base))
+    (arr.set (ptr VariantInfo) (get u UnionInfo.variants) 1 (call side_slots er_k base))
+    (put si StructInfo.union_of u)
+    si)
+
+  ;; A side's scalars to the next free slot of their kind.
+  (fn side_slots [ks:(ptr (vec.Vec Ty)) base:(arr i32)] -> (ptr VariantInfo)
+    (let v:(ptr VariantInfo) (new VariantInfo))
+    (put v VariantInfo.kinds ks)
+    (let used:(arr i32) (arr.new i32 4))
+    (put v VariantInfo.slots (arr.new i32 (+ (call (vec.len Ty) ks) 1)))
+    (put v VariantInfo.nslots (call (vec.len Ty) ks))
+    (loop j 0 (- (call (vec.len Ty) ks) 1) 1
+      (let kind:Ty (call (vec.at Ty) ks j))
+      (let ki:i32 (cond ((eq kind Ty.i32) 0) ((eq kind Ty.f32) 1) ((eq kind Ty.i64) 2) (else 3)))
+      (arr.set i32 (get v VariantInfo.slots) j (+ (arr.get i32 base ki) (arr.get i32 used ki)))
+      (arr.set i32 used ki (+ (arr.get i32 used ki) 1)))
+    v)
 
   (fn union_at [cg:(ptr Cg) i:i32] -> (ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) i))
 
@@ -2141,6 +2251,7 @@
         (block
           (let kw:Kw (call group_head_keyword cg node))
           (cond
+            ((or (eq kw Kw.ok) (eq kw Kw.err)) (put cg Cg.has_values true) 0)
             ((eq kw Kw.sys_print) (call mark_wasi_used cg Wasi.fd_write) 0)
             ((eq kw Kw.sys_exit) (call mark_wasi_used cg Wasi.proc_exit) 0)
             ((eq kw Kw.fs_open) (call mark_wasi_used cg Wasi.path_open) 0)
@@ -2368,6 +2479,7 @@
   ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
   ;; evaluating the payload, store the tag, then the payload.
   (fn compile_result_cell [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
+    (if (call is_value_node cg node) (return (call compile_value_result cg node tag o)) (block))
     (let t:Ty (call node_type cg (call result_payload node)))
     (let vs:(ptr StructInfo) (if (eq t Ty.value) (call node_struct cg (call result_payload node)) (ptr.null StructInfo)))
     (let at:i32 (call cell_offset t vs))
@@ -2386,6 +2498,26 @@
         (block))
     (call compile_expr cg (call result_payload node) o)
     (call emit_memop_offset o (call store_opcode t) (call mem_align t) at))
+
+;; (ok:E v) / (err:T e) of a result held by value (wasm.rs
+  ;; compile_value_result): into its group, the tag, the payload's scalars in
+  ;; their slots, zero in the others; then the group pushed.
+  (fn compile_value_result [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
+    (let g:i32 (call group_slot cg node false))
+    (let vs:(ptr StructInfo) (call node_struct cg node))
+    (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get (get vs StructInfo.union_of) UnionInfo.variants) tag))
+    (call emit_i32_const o tag)
+    (call emit_local_set o g)
+    (call compile_expr cg (call result_payload node) o)
+    (let n:i32 (get v VariantInfo.nslots))
+    (loop q 1 n 1 (call emit_local_set o (+ g (arr.get i32 (get v VariantInfo.slots) (- n q)))))
+    (loop slot 1 (- (get vs StructInfo.width) 1) 1
+      (if (call uses_slot v slot)
+          (block)
+          (block
+            (call emit_zero o (arr.get Ty (get vs StructInfo.flat_ty) slot))
+            (call emit_local_set o (+ g slot)))))
+    (call emit_get_slots o g (get vs StructInfo.width)))
 
   ;; Payload of (ok v) / (err e), skipping the `: T` of (ok:T v) / (err:T e).
   (fn result_payload [node:(ptr compiler.Node)] -> (ptr compiler.Node)
@@ -2446,7 +2578,9 @@
           (if (neq fidx -1) (set! res (get (call func_entry_ptr cg fidx) FnInfo.ret)) (block)))
         (block))
     ;; ok / err: a result (its cell's address)
-    (if (or (eq kw Kw.ok) (eq kw Kw.err)) (set! res Ty.result) (block))
+    (if (or (eq kw Kw.ok) (eq kw Kw.err))
+        (set! res (if (neq (call result_info cg (call desc node true)) (ptr.null StructInfo)) Ty.value Ty.result))
+        (block))
     ;; get: its last field's type (a path names several), as is an arr.get's with a path
     (if (or (eq kw Kw.get) (and (eq kw Kw.arr_get) (neq (call nth_child node 4) (ptr.null compiler.Node))))
         (block
@@ -2500,6 +2634,7 @@
       ((eq kw Kw.match_result) (call body_struct cg (call node_next (call node_next (call first_child (call nth_child node 2))))))
       ((eq kw Kw.match) (call body_struct cg (call arm_body (call nth_child node 2))))
       ((eq kw Kw.make) (call make_struct cg node))
+      ((or (eq kw Kw.ok) (eq kw Kw.err)) (call result_info cg (call desc node true)))
       ((eq kw Kw.with) (call ref_struct cg (call nth_child node 2)))
       ((or (eq kw Kw.get) (and (eq kw Kw.arr_get) (neq (call nth_child node 4) (ptr.null compiler.Node))))
        (let f:(ptr Field) (call ref_field cg (call last_child node)))
@@ -2672,9 +2807,17 @@
       ((eq kw Kw.match_result)
        (let v:bool (call is_value_node cg node))
        (if (and v (not into)) (call add_group cg node false (call node_struct cg node)) (block))
+       ;; a result by value matched where it is computed spills
+       (let rv:(ptr compiler.Node) (call nth_child node 1))
+       (if (and (call is_value_node cg rv) (neq (call node_kind rv) compiler.Kind.symbol))
+           (call add_group cg rv true (call node_struct cg rv))
+           (block))
        (call groups_walk cg (call nth_child node 1) false)
        (call groups_body cg (call node_next (call node_next (call first_child (call nth_child node 2)))) v)
        (call groups_body cg (call node_next (call node_next (call first_child (call nth_child node 3)))) v))
+      ((and (or (eq kw Kw.ok) (eq kw Kw.err)) (call is_value_node cg node))
+       (call add_group cg node false (call node_struct cg node))
+       (call groups_walk cg (call result_payload node) false))
       ((and (eq kw Kw.make) (neq (call make_union cg node) (ptr.null UnionInfo)))
        (call add_group cg node false (get (call make_union cg node) UnionInfo.vs))
        (let a:(ptr compiler.Node) (call nth_child node 2))
@@ -3075,10 +3218,24 @@
     (let err_side:(ptr Desc) (call result_side cg (call desc expr_node true) 1))
     (let ok_ty:Ty (call desc_ty cg ok_side))
     (let err_ty:Ty (call desc_ty cg err_side))
-    (call compile_expr cg expr_node o)
-    (call emit_local_set o scratch)
-    (call emit_local_get o scratch)
-    (call emit_memop o OP_I32_LOAD 2)
+    ;; a result by value: its tag and binders from its slots (a variable's
+    ;; own locals, else its spill group)
+    (let rvs:(ptr StructInfo) (if (call is_value_node cg expr_node) (call node_struct cg expr_node) (ptr.null StructInfo)))
+    (let base:i32 0)
+    (if (neq rvs (ptr.null StructInfo))
+        (block
+          (if (eq (call node_kind expr_node) compiler.Kind.symbol)
+              (set! base (call node_slot cg expr_node))
+              (block
+                (set! base (call group_slot cg expr_node true))
+                (call compile_expr cg expr_node o)
+                (call emit_set_slots o base (get rvs StructInfo.width))))
+          (call emit_local_get o base))
+        (block
+          (call compile_expr cg expr_node o)
+          (call emit_local_set o scratch)
+          (call emit_local_get o scratch)
+          (call emit_memop o OP_I32_LOAD 2)))
     (call put_op o OP_I32_EQZ)
     (let ok_last:(ptr compiler.Node) (call last_child ok_group))
     (let is_void:bool (call is_void_node cg ok_last))
@@ -3086,10 +3243,14 @@
     (if (or is_void (gte dest 0)) (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg ok_last))))
     (call put_op o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
-    (call emit_load_binder cg o (call nth_child ok_group 1) ok_ty (call desc_struct cg ok_side))
+    (if (neq rvs (ptr.null StructInfo))
+        (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
+        (call emit_load_binder cg o (call nth_child ok_group 1) ok_ty (call desc_struct cg ok_side)))
     (call compile_arm_seq cg (call node_next (call node_next (call first_child ok_group))) dest o)
     (call put_op o OP_ELSE)
-    (call emit_load_binder cg o (call nth_child err_group 1) err_ty (call desc_struct cg err_side))
+    (if (neq rvs (ptr.null StructInfo))
+        (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
+        (call emit_load_binder cg o (call nth_child err_group 1) err_ty (call desc_struct cg err_side)))
     (call compile_arm_seq cg (call node_next (call node_next (call first_child err_group))) dest o)
     (call label_pop cg)
     (call put_op o OP_END))
@@ -3108,6 +3269,15 @@
           (call emit_local_get o (get cg Cg.scratch))
           (call emit_memop_offset o (call load_opcode t) (call mem_align t) (call payload_offset t))
           (call emit_local_set o slot))))
+
+;; A match_result binder of a result by value (described by rvs), side 0
+  ;; (ok) or 1 (err), from the slots from `base`.
+  (fn slot_binder [cg:(ptr Cg) o:(ptr Out) var:(ptr compiler.Node) rvs:(ptr StructInfo) side:i32 base:i32] -> void
+    (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
+    (if (eq idx -1) (return) (block))
+    (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get (get rvs StructInfo.union_of) UnionInfo.variants) side))
+    (loop q 0 (- (get v VariantInfo.nslots) 1) 1 (call emit_local_get o (+ base (arr.get i32 (get v VariantInfo.slots) q))))
+    (call emit_set_slots o (call slot_of cg idx) (get v VariantInfo.nslots)))
 
   ;; A match_result arm's body: its last expression left as the if's value,
   ;; or into dest (if not -1).
@@ -3201,7 +3371,7 @@
   (fn matched_union [cg:(ptr Cg) e:(ptr compiler.Node)] -> (ptr UnionInfo)
     (if (not (call is_value_node cg e)) (return (ptr.null UnionInfo)) (block))
     (let vs:(ptr StructInfo) (call node_struct cg e))
-    (if (eq vs (ptr.null StructInfo)) (ptr.null UnionInfo) (get vs StructInfo.union_of)))
+    (if (or (eq vs (ptr.null StructInfo)) (get vs StructInfo.result)) (ptr.null UnionInfo) (get vs StructInfo.union_of)))
 
   ;; (match v arms...) of a union held by value (wasm.rs compile_match): the
   ;; tag and the binders from its slots (a variable's own locals, else its

@@ -2184,7 +2184,7 @@ fn unsupported_instructions_and_imports_are_named() {
 /// wasmtime.
 #[test]
 fn value_struct_programs_match_natively() {
-    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl")] {
+    for (name, path) in [("values", "tests/aipl/values.aipl"), ("values_flow", "tests/aipl/values_flow.aipl"), ("unions_by_value", "tests/aipl/unions_by_value.aipl"), ("results_by_value", "tests/aipl/results_by_value.aipl")] {
         let m = aipl_core::resolver::Resolver::resolve(&root().join(path)).unwrap();
         assert_functions_match(name, &aipl_core::printer::print_module(&m), &[], &[("main", &[])]);
     }

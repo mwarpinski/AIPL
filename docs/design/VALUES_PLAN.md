@@ -1,8 +1,8 @@
 # Small structs by value
 
 **Status: approved 2026-10-14; V1-V4 done 2026-10-15 (every backend
-runs value structs; nbody, std, and the docs use them); V5 done for
-unions and `Option` 2026-10-15, results by value still to do (below).** Every decision at the end was taken
+runs value structs; nbody, std, and the docs use them); V5 done
+2026-10-15: unions, `Option`, and results by value (below).** Every decision at the end was taken
 as recommended. Built after the native rewrite
 (docs/design/NATIVE_SPEED_PLAN.md), per decision 6.
 
@@ -132,7 +132,7 @@ memory layout that the differential tests check address by address.
 | V2 | wasm backend: flattened locals, parameters, multi-value results, scratch locals for branches that yield a value, inline loads and stores; `codegen.aipl` byte for byte | test_selfhost, test_differential, test_values (done 2026-10-15) |
 | V3 | Native: several results per function, in the new translator | test_native, `tools/run_fuzz.py` with value structs in its generator (done 2026-10-15) |
 | V4 | Library and measurements: `benchmarks/nbody` with an `(arr Body)`; `std/time`, `std/fs`, `std/json` use values where they return several numbers; spec, prompt guide, FAQ | benchmarks measured before and after in docs/BENCHMARKS.md (done 2026-10-15: nbody 1.9x faster under wasmtime, 22% natively) |
-| V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) (unions and `Option` done 2026-10-15, as `map.find`; results not yet) |
+| V5 | Unions, results, and `Option` by value when they do not contain themselves and fit; `map.get` | the whole suite, and the leak gone (a test that a million `map.get`s allocate nothing) (done 2026-10-15; `map.get` is `map.find`) |
 
 ## V5 as built (2026-10-15)
 
@@ -151,10 +151,13 @@ memory layout that the differential tests check address by address.
   built-in form's name. There was in fact no leak behind `map.get_or`; what
   V5 gives is a lookup returning an `Option` that allocates nothing (the
   test does a million).
-- **Results are not yet values.** Building one needs its full type, err
-  side included, which an `(ok v)` does not say: both compilers would have
-  to infer it from context (a return type, a `let`'s type, a parameter's).
-  That is its own step.
+- **Results by value need their whole type written.** Building one needs
+  its full type, which `(ok v)` did not say (the missing side defaulted to
+  `i32`). Decided 2026-10-15: every `ok` and `err` names its other side,
+  `(ok:E v)` / `(err:T e)`, rather than both compilers inferring it from
+  context; about 60 sites in the repository were annotated. A result is
+  then held by value unless a side is a `str` or it needs more than 8
+  slots, laid out like a two-variant union.
 - Found on the way: a module with a generic function named `make` (as
   `std/vec` and `std/map` have) could not use the `make` form, and the
   Rust toolchain named the wrong file in a line table where a type
