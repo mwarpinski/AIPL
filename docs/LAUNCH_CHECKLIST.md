@@ -138,11 +138,12 @@ more than usual.
   evidence: VM-against-wasmtime differential testing, byte-for-byte parity
   between two independent compilers, the compiler rebuilding itself,
   mutation-checked tests, the fuzzing run.
-- [ ] **Benchmarks framed honestly** (docs/BENCHMARKS.md already is): native
-  code takes 1.1-40x C's time depending on the benchmark, wasm under
-  wasmtime 0.6-14x; pidigits is
-  against GMP; binarytrees uses an arena where C uses malloc. Lead with
-  what is true, never with the one benchmark AIPL wins.
+- [x] **Benchmarks framed honestly** (done 2026-10-15): README, FAQ, and
+  docs/BENCHMARKS.md give native code as 1.2-14x C's time on seven of the
+  eight benchmarks (wasm under wasmtime 1.4-12x), name pidigits' GMP and
+  knucleotide's packed keys as why those two are slowest, and say
+  binarytrees (0.6x) is not like for like (an arena against malloc and
+  free). None leads with the benchmark AIPL wins.
 - [ ] **Re-run the documentation check** (as on 2026-10-06) right before
   posting; every number in the README (sizes, test counts, timings) must
   be current.
