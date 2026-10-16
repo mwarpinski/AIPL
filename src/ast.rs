@@ -25,6 +25,49 @@ pub enum Type {
     /// AIPL_SPEC.md 4.J): a tagged heap cell, never null; an `i32` address
     /// at run time.
     Union(String),
+    /// `u8`, `i8`, `u16`, `i16`: a storage type, only a struct field's or
+    /// an array element's (AIPL_SPEC.md 4.A): 1 or 2 bytes in memory, read
+    /// as an `i32` (zero- or sign-extended), written from one (its low bits).
+    Narrow(Narrow),
+}
+
+/// The storage types: their width and whether a read sign-extends.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Narrow {
+    U8,
+    I8,
+    U16,
+    I16,
+}
+
+impl Narrow {
+    pub fn from_name(s: &str) -> Option<Narrow> {
+        match s {
+            "u8" => Some(Narrow::U8),
+            "i8" => Some(Narrow::I8),
+            "u16" => Some(Narrow::U16),
+            "i16" => Some(Narrow::I16),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Narrow::U8 => "u8",
+            Narrow::I8 => "i8",
+            Narrow::U16 => "u16",
+            Narrow::I16 => "i16",
+        }
+    }
+    /// Bytes in memory (also the alignment).
+    pub fn size(self) -> usize {
+        match self {
+            Narrow::U8 | Narrow::I8 => 1,
+            Narrow::U16 | Narrow::I16 => 2,
+        }
+    }
+    pub fn signed(self) -> bool {
+        matches!(self, Narrow::I8 | Narrow::I16)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +78,9 @@ pub enum Literal {
     /// A 64-bit integer literal written with an explicit suffix: `42i64`.
     Int64(i64),
     Float(f64),
+    /// `1.5f32`: the value (the decimal rounded to an f64, then to an f32,
+    /// in every toolchain) and the literal as written.
+    Float32(f32, String),
     Bool(bool),
     Str(String),
 }
@@ -60,6 +106,13 @@ pub enum OpCode {
     MemStore8,
     MemStore32,
     MemStore64,
+    /// `(mem.load8_s a)`, `(mem.load16_u a)`, `(mem.load16_s a)`: one or two
+    /// bytes, zero- or sign-extended to an i32; `(mem.store16 a v)`: v's low
+    /// 16 bits (AIPL_SPEC.md 4.A).
+    MemLoad8S,
+    MemLoad16U,
+    MemLoad16S,
+    MemStore16,
     MemAlloc,
     /// `(mem.grow pages)`: grows linear memory by `pages` 64 KiB pages and
     /// returns the previous size in pages, or -1 if the maximum (32768 pages, 2 GiB)
@@ -131,6 +184,20 @@ pub enum OpCode {
     /// `(i32.wrap x)`: i64 -> i32, keeping the low 32 bits (wasm `i32.wrap_i64`).
     I32Wrap,
     F64ConvertI64S,
+    /// The f32 conversions (AIPL_SPEC.md 4.A): f64 -> f32 (round to
+    /// nearest), f32 -> f64 (exact), integer -> float (round to nearest),
+    /// float -> integer (toward zero; NaN or out of range traps), and the
+    /// bit reinterpretations.
+    F32DemoteF64,
+    F64PromoteF32,
+    F32ConvertI32S,
+    F32ConvertI64S,
+    F64ConvertI32S,
+    I32TruncF32S,
+    I32TruncF64S,
+    I64TruncF32S,
+    F32ReinterpretI32,
+    I32ReinterpretF32,
     /// `(f64.sqrt x)`: the square root, correctly rounded (wasm `f64.sqrt`,
     /// IEEE 754); NaN for a negative x, and sqrt(-0.0) is -0.0.
     F64Sqrt,

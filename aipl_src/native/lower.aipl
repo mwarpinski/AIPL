@@ -1064,9 +1064,10 @@
       ((or (eq op 34) (or (eq op 69) (eq op 167))) 0)               ;; local.tee, eqz, wrap
       ((or (eq op 172) (eq op 173)) 0)                              ;; i64.extend_i32_s/u
       ((or (or (eq op 176) (eq op 185)) (or (eq op 189) (eq op 191))) 0) ;; trunc, convert, reinterprets
+      ((call wasm_reader.conversion op) 0)                          ;; the f32 conversions
       ((eq op 159) 0)                                               ;; f64.sqrt
-      ((or (and (gte op 40) (lte op 43)) (or (eq op 45) (eq op 64))) 0) ;; loads, memory.grow
-      ((and (gte op 54) (lte op 58)) -2)                            ;; stores
+      ((or (and (gte op 40) (lte op 47)) (eq op 64)) 0)            ;; loads, memory.grow
+      ((and (gte op 54) (lte op 59)) -2)                            ;; stores
       ((eq op 63) 1)                                                ;; memory.size
       ((eq op 65040) 0)                                             ;; i32.atomic.load
       ((or (eq op 65047) (or (eq op 65096) (eq op 65025))) -2)      ;; atomic.store, cmpxchg, wait32
@@ -1352,19 +1353,22 @@
   (fn memory_op [l:(ptr L) op:i32 align:i32 offset:i32] -> bool
     (let c:(ptr buf.Buf) (get l L.code))
     (cond
-      ;; i32/i64/f32/f64.load, i32.load8_u: the value's bits into a slot
-      ((or (and (gte op 40) (lte op 43)) (eq op 45))
+      ;; i32/i64/f32/f64.load, i32.load8_s/u, i32.load16_s/u: the value's bits into a slot
+      ((and (gte op 40) (lte op 47))
        (call vpop l (get l L.oa))
        (let ar:i32 (call address_reg l (get l L.oa) 0))
        (let at:(ptr x64.Mem) (call checked_address l ar offset (call access_width op)))
        (cond
          ((eq op 45) (call x64.load8u c ar at))
+         ((eq op 44) (call x64.load8s c ar at))
+         ((eq op 47) (call x64.load16u c ar at))
+         ((eq op 46) (call x64.load16s c ar at))
          ((or (eq op 40) (eq op 42)) (call x64.load c 32 ar at))
          (else (call x64.load c 64 ar at)))
        (call push_reg l ar)
        true)
-      ;; i32/i64/f32/f64.store, i32.store8
-      ((and (gte op 54) (lte op 58))
+      ;; i32/i64/f32/f64.store, i32.store8, i32.store16
+      ((and (gte op 54) (lte op 59))
        (let v:(ptr Op) (get l L.ob))
        (let a:(ptr Op) (get l L.oa))
        (call vpop l v)
@@ -1387,6 +1391,7 @@
        (let at:(ptr x64.Mem) (call checked_address l ar offset (call access_width op)))
        (cond
          ((eq op 58) (call x64.store8 c at vr))
+         ((eq op 59) (call x64.store16 c at vr))
          ((or (eq op 54) (eq op 56)) (call x64.store c 32 at vr))
          (else (call x64.store c 64 at vr)))
        true)
@@ -1575,7 +1580,8 @@
     (call checked_address l (call rax) offset 4))
 
   (fn access_width [op:i32] -> i32
-    (cond ((or (eq op 45) (eq op 58)) 1)
+    (cond ((or (eq op 44) (or (eq op 45) (eq op 58))) 1)
+          ((or (eq op 46) (or (eq op 47) (eq op 59))) 2)
           ((or (eq op 40) (or (eq op 42) (or (eq op 54) (eq op 56)))) 4)
           (else 8)))
 
@@ -1768,8 +1774,60 @@
        (call x64.sqrtsd c x x)
        (call vpush l 5 (i64.extend_s x))
        true)
-      ;; i64.reinterpret_f64, f64.reinterpret_i64: the slot already holds the bits
-      ((or (eq op 189) (eq op 191)) true)
+      ;; i64.reinterpret_f64, f64.reinterpret_i64, and the f32 forms: the slot
+      ;; already holds the bits (an i32's upper half is never read)
+      ((or (or (eq op 189) (eq op 191)) (or (eq op 188) (eq op 190))) true)
+      ;; f32.demote_f64, f64.promote_f32
+      ((or (eq op 182) (eq op 187))
+       (call keep_top l 1)
+       (call pop_rax l)
+       (call x64.movq_xr c (call xmm0) (call rax))
+       (if (eq op 182) (call x64.cvtsd2ss c (call xmm0) (call xmm0)) (call x64.cvtss2sd c (call xmm0) (call xmm0)))
+       (call x64.movq_rx c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
+      ;; f32.convert_i32_s, f32.convert_i64_s, f64.convert_i32_s
+      ((or (eq op 178) (or (eq op 180) (eq op 183)))
+       (call keep_top l 1)
+       (call pop_rax l)
+       (call x64.cvtsi2f c (if (eq op 183) 64 32) (if (eq op 180) 64 32) (call xmm0) (call rax))
+       (call x64.movq_rx c (call rax) (call xmm0))
+       (call push_rax l)
+       true)
+      ;; i32.trunc_f32_s, i32.trunc_f64_s, i64.trunc_f32_s: trap on NaN, and
+      ;; when the truncated value is outside the integer's range: x >= 2^(n-1)
+      ;; or x <= lo, lo the highest float below -2^(n-1) that truncates out of
+      ;; range (-2^31-1 for a double to i32; for the rest -2^(n-1) itself fits
+      ;; and the next float below it does not, so x < -2^(n-1))
+      ((or (eq op 168) (or (eq op 170) (eq op 174)))
+       (let fsz:i32 (if (eq op 170) 64 32))
+       (let isz:i32 (if (eq op 174) 64 32))
+       (call keep_top l 1)
+       (call pop_rax l)
+       (call x64.movq_xr c (call xmm0) (call rax))
+       (call x64.ucomi c fsz (call xmm0) (call xmm0))
+       (call emit_trap_if l (call x64.cc_p) (get l L.bad_conversion))
+       ;; 2^31 or 2^63, as a float or a double
+       (call x64.mov_ri64 c (call rcx) (cond ((eq op 168) 1325400064i64) ((eq op 174) 1593835520i64) (else 4746794007248502784i64)))
+       (call x64.movq_xr c (call xmm1) (call rcx))
+       (call x64.ucomi c fsz (call xmm0) (call xmm1))
+       (call emit_trap_if l (call x64.cc_ae) (get l L.overflow))
+       (if (eq op 170)
+           ;; -2^31-1 >= x
+           (block
+             (call x64.mov_ri64 c (call rcx) -4476578029604175872i64)
+             (call x64.movq_xr c (call xmm1) (call rcx))
+             (call x64.ucomi c 64 (call xmm1) (call xmm0))
+             (call emit_trap_if l (call x64.cc_ae) (get l L.overflow)))
+           ;; x < -2^31 or -2^63, as a float
+           (block
+             (call x64.mov_ri64 c (call rcx) (if (eq op 168) 3472883712i64 3741319168i64))
+             (call x64.movq_xr c (call xmm1) (call rcx))
+             (call x64.ucomi c 32 (call xmm0) (call xmm1))
+             (call emit_trap_if l (call x64.cc_b) (get l L.overflow))))
+       (call x64.cvttf2si c fsz isz (call rax) (call xmm0))
+       (call push_rax l)
+       true)
       (else false)))
 
   ;; The bit of o's xmm register, if o is in one.

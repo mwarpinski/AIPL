@@ -1,0 +1,339 @@
+;; std/date: dates and times in UTC, from the system clock or Unix time,
+;; written and read as ISO 8601 (the RFC 3339 profile).
+;;
+;;   (let d:date.Date (call date.now))
+;;   (call io.println (call date.to_str d))           ;; 2026-10-16T09:41:07.25Z
+;;   (match_result (call date.parse (call str.from_str "2026-10-16T11:41:07+02:00"))
+;;     (ok t (call io.println_i64 "unix " (call date.to_unix t)))   ;; 1792143667
+;;     (err at (call io.println_int "bad byte " at)))
+;;
+;; The calendar is the proleptic Gregorian one, years 0000 through 9999.
+;; There are no time zones (an offset in parsed text is applied, to give
+;; UTC) and no leap seconds (every day has 86400 seconds, as in Unix time).
+;; The day arithmetic is Howard Hinnant's days_from_civil / civil_from_days.
+(module date
+  (import alloc)
+  (import str)
+  (import buf)
+
+  ;; One instant in UTC: nano is the nanoseconds past the second.
+  (struct Date [(read year:i32) (read month:i32) (read day:i32)
+                (read hour:i32) (read minute:i32) (read second:i32) (read nano:i32)] (value) (pub))
+
+  ;; Unix seconds of 0000-01-01T00:00:00Z and of 10000-01-01T00:00:00Z.
+  (const FIRST:i64 -62167219200i64)
+  (const END:i64 253402300800i64)
+  (const NS:i64 1000000000i64)
+
+  (fn is_leap [year:i32] -> bool (pub)
+    (and (eq (% year 4) 0) (or (neq (% year 100) 0) (eq (% year 400) 0))))
+
+  (fn days_in_month [year:i32 month:i32] -> i32 (pub)
+    (req (and (gte month 1) (lte month 12)))
+    (cond
+      ((eq month 2) (if (call is_leap year) 29 28))
+      ((or (eq month 4) (or (eq month 6) (or (eq month 9) (eq month 11)))) 30)
+      (else 31)))
+
+  ;; Whether the fields name a real instant in years 0000-9999.
+  (fn valid [year:i32 month:i32 day:i32 hour:i32 minute:i32 second:i32 nano:i32] -> bool (pub)
+    (and (and (gte year 0) (lte year 9999))
+         (and (and (gte month 1) (lte month 12))
+              (and (and (gte day 1) (lte day (call days_in_month year month)))
+                   (and (and (gte hour 0) (lte hour 23))
+                        (and (and (gte minute 0) (lte minute 59))
+                             (and (and (gte second 0) (lte second 59))
+                                  (and (gte nano 0) (lte nano 999999999)))))))))
+
+  (fn make [year:i32 month:i32 day:i32 hour:i32 minute:i32 second:i32 nano:i32] -> Date (pub)
+    (req (call valid year month day hour minute second nano))
+    (make Date year month day hour minute second nano))
+
+  ;; Days since 1970-01-01 of a valid year, month, and day.
+  (fn days_from_civil [year:i32 month:i32 day:i32] -> i64
+    (let y:i64 (i64.extend_s (if (lte month 2) (- year 1) year)))
+    (let era:i64 (/ (if (gte y 0i64) y (- y 399i64)) 400i64))
+    (let yoe:i64 (- y (* era 400i64)))
+    (let mp:i64 (i64.extend_s (if (gt month 2) (- month 3) (+ month 9))))
+    (let doy:i64 (+ (/ (+ (* 153i64 mp) 2i64) 5i64) (i64.extend_s (- day 1))))
+    (let doe:i64 (+ (- (+ (* yoe 365i64) (/ yoe 4i64)) (/ yoe 100i64)) doy))
+    (- (+ (* era 146097i64) doe) 719468i64))
+
+  ;; The date `days` days after 1970-01-01, at midnight.
+  (fn civil_from_days [days:i64] -> Date
+    (let z:i64 (+ days 719468i64))
+    (let era:i64 (/ (if (gte z 0i64) z (- z 146096i64)) 146097i64))
+    (let doe:i64 (- z (* era 146097i64)))
+    (let yoe:i64 (/ (- (+ (- doe (/ doe 1460i64)) (/ doe 36524i64)) (/ doe 146096i64)) 365i64))
+    (let doy:i64 (- doe (- (+ (* 365i64 yoe) (/ yoe 4i64)) (/ yoe 100i64))))
+    (let mp:i64 (/ (+ (* 5i64 doy) 2i64) 153i64))
+    (let d:i32 (i32.wrap (+ (- doy (/ (+ (* 153i64 mp) 2i64) 5i64)) 1i64)))
+    (let m:i32 (i32.wrap (if (lt mp 10i64) (+ mp 3i64) (- mp 9i64))))
+    (let y:i32 (i32.wrap (+ yoe (* era 400i64))))
+    (make Date (if (lte m 2) (+ y 1) y) m d 0 0 0 0))
+
+  ;; The instant `secs` seconds and `nano` nanoseconds after 1970-01-01T00:00:00Z.
+  (fn from_unix_parts [secs:i64 nano:i32] -> Date
+    (req (and (gte secs FIRST) (lt secs END)))
+    (req (and (gte nano 0) (lte nano 999999999)))
+    ;; floor division: an instant before 1970 is in the day before
+    (let days:i64 (/ secs 86400i64))
+    (let rest:i64 (% secs 86400i64))
+    (if (lt rest 0i64) (block (set! days (- days 1i64)) (set! rest (+ rest 86400i64))) (block))
+    (let d:Date (call civil_from_days days))
+    (let s:i32 (i32.wrap rest))
+    (make Date (get d Date.year) (get d Date.month) (get d Date.day) (/ s 3600) (/ (% s 3600) 60) (% s 60) nano))
+
+  ;; Unix time in seconds (in years 0000-9999).
+  (fn from_unix [secs:i64] -> Date (pub) (call from_unix_parts secs 0))
+
+  ;; Unix time in nanoseconds (any i64: years 1677-2262).
+  (fn from_unix_ns [ns:i64] -> Date (pub)
+    (let secs:i64 (/ ns NS))
+    (let rest:i64 (% ns NS))
+    (if (lt rest 0i64) (block (set! secs (- secs 1i64)) (set! rest (+ rest NS))) (block))
+    (call from_unix_parts secs (i32.wrap rest)))
+
+  ;; Now, from the system clock.
+  (fn now [] -> Date (pub) (call from_unix_ns (sys.time)))
+
+  ;; Seconds since 1970-01-01T00:00:00Z (the nanoseconds dropped).
+  (fn to_unix [d:Date] -> i64 (pub)
+    (+ (* (call days_from_civil (get d Date.year) (get d Date.month) (get d Date.day)) 86400i64)
+       (i64.extend_s (+ (* (get d Date.hour) 3600) (+ (* (get d Date.minute) 60) (get d Date.second))))))
+
+  ;; Nanoseconds since 1970-01-01T00:00:00Z; d must be in 1677-09-21
+  ;; through 2262-04-11, the range of an i64 of nanoseconds.
+  (fn to_unix_ns [d:Date] -> i64 (pub)
+    (req (and (gte (call to_unix d) -9223372036i64) (lte (call to_unix d) 9223372035i64)))
+    (+ (* (call to_unix d) NS) (i64.extend_s (get d Date.nano))))
+
+  ;; The day of the week, ISO numbering: 1 Monday through 7 Sunday.
+  (fn weekday [d:Date] -> i32 (pub)
+    (let z:i64 (% (call days_from_civil (get d Date.year) (get d Date.month) (get d Date.day)) 7i64))
+    ;; 1970-01-01 was a Thursday (4)
+    (+ (i32.wrap (% (+ (+ z 7i64) 3i64) 7i64)) 1))
+
+  ;; The day of the year, 1 through 366.
+  (fn day_of_year [d:Date] -> i32 (pub)
+    (i32.wrap (+ (- (call days_from_civil (get d Date.year) (get d Date.month) (get d Date.day))
+                    (call days_from_civil (get d Date.year) 1 1))
+                 1i64)))
+
+  ;; d moved by `secs` seconds (negative: earlier); the result must stay in
+  ;; years 0000-9999.
+  (fn add_seconds [d:Date secs:i64] -> Date (pub)
+    (call from_unix_parts (+ (call to_unix d) secs) (get d Date.nano)))
+
+  (fn add_days [d:Date days:i32] -> Date (pub)
+    (call add_seconds d (* (i64.extend_s days) 86400i64)))
+
+  ;; ===== ISO 8601 text =====
+
+  (fn push_digits [b:(ptr buf.Buf) n:i32 width:i32] -> void
+    (let p:i32 1)
+    (loop k 2 width 1 (set! p (* p 10)))
+    (while (gt p 0)
+      (call buf.push_byte b (+ 48 (% (/ n p) 10)))
+      (set! p (/ p 10))))
+
+  ;; Appends d as YYYY-MM-DDTHH:MM:SSZ, with the fraction of the second
+  ;; before the Z when there is one (to the last nonzero digit, at most 9).
+  (fn push_iso [b:(ptr buf.Buf) d:Date] -> void (pub)
+    (call push_digits b (get d Date.year) 4)
+    (call buf.push_byte b 45)
+    (call push_digits b (get d Date.month) 2)
+    (call buf.push_byte b 45)
+    (call push_digits b (get d Date.day) 2)
+    (call buf.push_byte b 84)
+    (call push_digits b (get d Date.hour) 2)
+    (call buf.push_byte b 58)
+    (call push_digits b (get d Date.minute) 2)
+    (call buf.push_byte b 58)
+    (call push_digits b (get d Date.second) 2)
+    (let ns:i32 (get d Date.nano))
+    (if (gt ns 0)
+        (block
+          (let width:i32 9)
+          (while (eq (% ns 10) 0) (set! ns (/ ns 10)) (set! width (- width 1)))
+          (call buf.push_byte b 46)
+          (call push_digits b ns width))
+        (block))
+    (call buf.push_byte b 90))
+
+  ;; Appends d's date alone, YYYY-MM-DD.
+  (fn push_iso_date [b:(ptr buf.Buf) d:Date] -> void (pub)
+    (call push_digits b (get d Date.year) 4)
+    (call buf.push_byte b 45)
+    (call push_digits b (get d Date.month) 2)
+    (call buf.push_byte b 45)
+    (call push_digits b (get d Date.day) 2))
+
+  ;; d as ISO 8601 text (push_iso), a new str.
+  (fn to_str [d:Date] -> str (pub)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call push_iso b d)
+    (let s:str (call buf.to_str b))
+    (call buf.free b)
+    s)
+
+  ;; The number in the `n` digits at i of t, or -1 if one is not a digit
+  ;; (or t ends first).
+  (fn digits [t:(ptr str.Bytes) i:i32 n:i32] -> i32
+    (if (gt (+ i n) (get t str.Bytes.len)) (return -1) (block))
+    (let v:i32 0)
+    (loop k 0 (- n 1) 1
+      (let c:i32 (call str.byte_at t (+ i k)))
+      (if (or (lt c 48) (gt c 57)) (return -1) (block))
+      (set! v (+ (* v 10) (- c 48))))
+    v)
+
+  ;; Whether byte i of t is c.
+  (fn byte_is [t:(ptr str.Bytes) i:i32 c:i32] -> bool
+    (and (lt i (get t str.Bytes.len)) (eq (call str.byte_at t i) c)))
+
+  ;; Reads RFC 3339 text: YYYY-MM-DD alone (midnight UTC), or
+  ;; YYYY-MM-DDTHH:MM:SS, an optional fraction of the second (1-9 digits
+  ;; after a '.'), and the offset from UTC, Z or +HH:MM or -HH:MM, which is
+  ;; applied. 't', 'z', and a space for the T are accepted, as RFC 3339
+  ;; allows. A time without an offset is an error rather than a guess. The
+  ;; error is the index of the first byte that does not fit (the length,
+  ;; when the text ends too soon).
+  (fn parse [t:(ptr str.Bytes)] -> (result Date i32) (pub)
+    (let n:i32 (get t str.Bytes.len))
+    (let year:i32 (call digits t 0 4))
+    (if (lt year 0) (return (err:Date (call bad_digit t 0 4))) (block))
+    (if (not (call byte_is t 4 45)) (return (err:Date (call min_at n 4))) (block))
+    (let month:i32 (call digits t 5 2))
+    (if (or (lt month 1) (gt month 12)) (return (err:Date (call bad_digit t 5 2))) (block))
+    (if (not (call byte_is t 7 45)) (return (err:Date (call min_at n 7))) (block))
+    (let day:i32 (call digits t 8 2))
+    (if (or (lt day 1) (gt day (call days_in_month year month))) (return (err:Date (call bad_digit t 8 2))) (block))
+    (if (eq n 10) (return (ok:i32 (make Date year month day 0 0 0 0))) (block))
+    (if (not (or (call byte_is t 10 84) (or (call byte_is t 10 116) (call byte_is t 10 32)))) (return (err:Date 10)) (block))
+    (let hour:i32 (call digits t 11 2))
+    (if (or (lt hour 0) (gt hour 23)) (return (err:Date (call bad_digit t 11 2))) (block))
+    (if (not (call byte_is t 13 58)) (return (err:Date (call min_at n 13))) (block))
+    (let minute:i32 (call digits t 14 2))
+    (if (or (lt minute 0) (gt minute 59)) (return (err:Date (call bad_digit t 14 2))) (block))
+    (if (not (call byte_is t 16 58)) (return (err:Date (call min_at n 16))) (block))
+    (let second:i32 (call digits t 17 2))
+    (if (or (lt second 0) (gt second 59)) (return (err:Date (call bad_digit t 17 2))) (block))
+    (let i:i32 19)
+    (let nano:i32 0)
+    (if (call byte_is t i 46)
+        (block
+          (set! i (+ i 1))
+          (let start:i32 i)
+          (while (and (lt i n) (and (gte (call str.byte_at t i) 48) (lte (call str.byte_at t i) 57)))
+            (if (lt (- i start) 9) (set! nano (+ (* nano 10) (- (call str.byte_at t i) 48))) (block))
+            (set! i (+ i 1)))
+          (if (or (eq i start) (gt (- i start) 9)) (return (err:Date (if (eq i start) (call min_at n i) (+ start 9)))) (block))
+          (loop k (- i start) 8 1 (set! nano (* nano 10))))
+        (block))
+    ;; the offset: Z, or a sign and HH:MM, which is subtracted to give UTC
+    (let off:i32 0)
+    (cond
+      ((or (call byte_is t i 90) (call byte_is t i 122)) (set! i (+ i 1)))
+      ((or (call byte_is t i 43) (call byte_is t i 45))
+       (let sign:i32 (if (call byte_is t i 43) 1 -1))
+       (let oh:i32 (call digits t (+ i 1) 2))
+       (if (or (lt oh 0) (gt oh 23)) (return (err:Date (call bad_digit t (+ i 1) 2))) (block))
+       (if (not (call byte_is t (+ i 3) 58)) (return (err:Date (call min_at n (+ i 3)))) (block))
+       (let om:i32 (call digits t (+ i 4) 2))
+       (if (or (lt om 0) (gt om 59)) (return (err:Date (call bad_digit t (+ i 4) 2))) (block))
+       (set! off (* sign (+ (* oh 60) om)))
+       (set! i (+ i 6)))
+      (else (return (err:Date (call min_at n i)))))
+    (if (neq i n) (return (err:Date i)) (block))
+    (let secs:i64 (- (call to_unix (make Date year month day hour minute second 0)) (i64.extend_s (* off 60))))
+    ;; an offset can carry the instant out of years 0000-9999
+    (if (or (lt secs FIRST) (gte secs END)) (return (err:Date (- i 6))) (block))
+    (ok:i32 (call from_unix_parts secs nano)))
+
+  (fn min_at [n:i32 i:i32] -> i32 (if (lt n i) n i))
+
+  ;; The index of the first non-digit in the n bytes at i (or the length,
+  ;; if t ends first); the first of them when all are digits but the value
+  ;; is out of range.
+  (fn bad_digit [t:(ptr str.Bytes) i:i32 n:i32] -> i32
+    (loop k 0 (- n 1) 1
+      (if (gte (+ i k) (get t str.Bytes.len)) (return (+ i k)) (block))
+      (let c:i32 (call str.byte_at t (+ i k)))
+      (if (or (lt c 48) (gt c 57)) (return (+ i k)) (block)))
+    i)
+
+  ;; ===== Tests =====
+
+  (fn parses_to [text:str unix:i64 nano:i32] -> bool
+    (match_result (call parse (call str.from_str text))
+      (ok d (and (eq (call to_unix d) unix) (eq (get d Date.nano) nano)))
+      (err e false)))
+
+  (fn fails_at [text:str at:i32] -> bool
+    (match_result (call parse (call str.from_str text))
+      (ok d false)
+      (err e (eq e at))))
+
+  (fn writes [d:Date text:str] -> bool (call str.same (call to_str d) text))
+
+  ;; Pass count; test_suite.aipl expects 8.
+  (fn run_date_tests [] -> i32 (pub)
+    (let p:i32 0)
+    ;; Unix time round-trips, before and after 1970
+    (let d:Date (call from_unix 1792143667i64))
+    (if (and (eq (get d Date.year) 2026) (and (eq (get d Date.month) 10) (and (eq (get d Date.day) 16)
+             (and (eq (get d Date.hour) 9) (and (eq (get d Date.minute) 41) (eq (get d Date.second) 7))))))
+        (set! p (+ p 1))
+        (block))
+    (let ok:bool true)
+    (loop k -700 2900 1
+      (let s:i64 (* (i64.extend_s k) 86399999i64))
+      (if (neq (call to_unix (call from_unix s)) s) (set! ok false) (block)))
+    (if (and ok (and (eq (call to_unix (call from_unix FIRST)) FIRST) (eq (call to_unix (call from_unix (- END 1i64))) (- END 1i64))))
+        (set! p (+ p 1))
+        (block))
+    ;; nanoseconds before 1970 floor to the earlier second
+    (let e:Date (call from_unix_ns -1i64))
+    (if (and (eq (get e Date.year) 1969) (and (eq (get e Date.second) 59) (and (eq (get e Date.nano) 999999999)
+             (eq (call to_unix_ns e) -1i64))))
+        (set! p (+ p 1))
+        (block))
+    ;; calendar facts: leap years, weekdays, day of the year
+    (if (and (call is_leap 2000) (and (not (call is_leap 1900)) (and (call is_leap 2024)
+             (and (eq (call weekday (call make 1970 1 1 0 0 0 0)) 4)
+                  (and (eq (call weekday (call make 2026 10 18 0 0 0 0)) 7)
+                       (and (eq (call weekday (call make 1600 3 1 0 0 0 0)) 3)
+                            (and (eq (call day_of_year (call make 2024 12 31 0 0 0 0)) 366)
+                                 (eq (call days_in_month 2023 2) 28))))))))
+        (set! p (+ p 1))
+        (block))
+    ;; writing
+    (if (and (call writes (call from_unix 0i64) "1970-01-01T00:00:00Z")
+             (and (call writes (call make 2026 10 16 9 41 7 250000000) "2026-10-16T09:41:07.25Z")
+                  (and (call writes (call make 0 1 1 0 0 0 1) "0000-01-01T00:00:00.000000001Z")
+                       (call writes (call add_days (call make 2024 2 28 23 0 0 0) 1) "2024-02-29T23:00:00Z"))))
+        (set! p (+ p 1))
+        (block))
+    ;; reading, with offsets applied
+    (if (and (call parses_to "2026-10-16T11:41:07+02:00" 1792143667i64 0)
+             (and (call parses_to "2026-10-16t09:41:07.25z" 1792143667i64 250000000)
+                  (and (call parses_to "2026-10-16 04:11:07-05:30" 1792143667i64 0)
+                       (and (call parses_to "1969-12-31" -86400i64 0)
+                            (call parses_to "2000-02-29T00:00:00.123456789Z" 951782400i64 123456789)))))
+        (set! p (+ p 1))
+        (block))
+    ;; errors at the first byte that does not fit
+    (if (and (call fails_at "2026-13-01" 5)
+             (and (call fails_at "2023-02-29" 8)
+                  (and (call fails_at "2026-10-16T09:41:07" 19)
+                       (and (call fails_at "2026-10-16T09:41" 16)
+                            (and (call fails_at "2026-10-16T09:41:07.Z" 20)
+                                 (and (call fails_at "2026-1x-16" 6)
+                                      (call fails_at "2026-10-16T09:41:07Zjunk" 20)))))))
+        (set! p (+ p 1))
+        (block))
+    ;; write then read gives the instant back
+    (let r:Date (call make 1999 12 31 23 59 59 999))
+    (if (call parses_to (call to_str r) (call to_unix r) 999) (set! p (+ p 1)) (block))
+    p))

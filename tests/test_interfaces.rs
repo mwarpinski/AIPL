@@ -280,16 +280,21 @@ fn templates_are_checked_once_in_both_toolchains() {
 /// (where (plain T)): a type argument holding a pointer or an array, at
 /// any depth, is refused in both toolchains with the same message; plain
 /// ones (scalars, str, enums, function references, and value
-/// structs and unions of plain fields) are accepted and run.
+/// structs and unions of plain fields, generic ones too) are accepted and run.
 #[test]
 fn plain_type_arguments_are_checked_in_both_toolchains() {
-    let header = "(module m (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
+    let header = "(module m (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (struct (Pair A B) [a:A b:B] (value)) (struct (Wrap T) [p:(Pair T i32)] (value)) (union (Opt T) [(none) (some v:T)]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
     let refused: &[(&str, &str)] = &[
         ("(ptr Box)", "(call (need (ptr Box)) (new Box))"),
         ("(arr i32)", "(call (need (arr i32)) (arr.new i32 1))"),
         ("Holds", "(call (need Holds) (make Holds (new Box)))"),
         ("Deep", "(call (need Deep) (make Deep (make Holds (new Box))))"),
         ("U", "(call (need U) (make U.b))"),
+        // generic instances are looked into, at any depth
+        ("Pair<ptr<Box>,i32>", "(call (need (Pair (ptr Box) i32)) (make (Pair (ptr Box) i32) (new Box) 1))"),
+        ("Wrap<arr<i32>>", "(call (need (Wrap (arr i32))) (make (Wrap (arr i32)) (make (Pair (arr i32) i32) (arr.new i32 1) 1)))"),
+        ("Opt<ptr<Box>>", "(call (need (Opt (ptr Box))) (make (Opt (ptr Box)) none))"),
+        ("Opt<Wrap<Pair<i32,arr<f64>>>>", "(call (need (Opt (Wrap (Pair i32 (arr f64))))) (make (Opt (Wrap (Pair i32 (arr f64)))) none))"),
     ];
     for (k, (ty, call)) in refused.iter().enumerate() {
         let src = format!("{header} (fn main [] -> i32 {call}))");
@@ -313,6 +318,13 @@ fn plain_type_arguments_are_checked_in_both_toolchains() {
     );
     let entry = write_program("plain_yes", &[("main.aipl", &src)]);
     assert_eq!(run_both(&entry, "main"), 42);
+    assert_aipl_resolver_agrees(&entry);
+    // and generic ones whose fields, with the arguments put in, are plain
+    let src = format!(
+        "{header} (fn main [] -> i32 (+ (call (need (Pair i32 f64)) (make (Pair i32 f64) 1 2.0)) (+ (call (need (Wrap f64)) (make (Wrap f64) (make (Pair f64 i32) 1.0 2))) (call (need (Opt (Pair i32 i32))) (make (Opt (Pair i32 i32)) none))))))"
+    );
+    let entry = write_program("plain_generic_yes", &[("main.aipl", &src)]);
+    assert_eq!(run_both(&entry, "main"), 21);
     assert_aipl_resolver_agrees(&entry);
 }
 

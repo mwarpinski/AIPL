@@ -87,13 +87,14 @@ fn rust_tokens(src: &str) -> Result<Vec<Tok>, String> {
                 TokenKind::StringLit(s) => ("string", s),
                 TokenKind::Int64Lit(i) => ("int64", i.to_string()),
                 TokenKind::FloatLit(f, _) => ("float", f.to_bits().to_string()),
+                TokenKind::Float32Lit(f, _) => ("float32", f.to_bits().to_string()),
             };
             Tok { kind: kind.into(), line: t.line, col: t.col, value }
         })
         .collect())
 }
 
-const KINDS: [&str; 13] = ["lparen", "rparen", "lbracket", "rbracket", "colon", "arrow", "symbol", "int", "bool", "string", "int64", "float", "bad"];
+const KINDS: [&str; 14] = ["lparen", "rparen", "lbracket", "rbracket", "colon", "arrow", "symbol", "int", "bool", "string", "int64", "float", "bad", "float32"];
 
 /// compiler.tokenize's tokens; a bad token (always last) becomes Err with
 /// its position and TokErr.
@@ -120,6 +121,7 @@ fn aipl_tokens(vm: &mut VM, src: &str) -> Result<Vec<Tok>, String> {
             "string" => unescape(&span(a, b)),
             "int64" => span(a, b - 3).parse::<i64>().unwrap().to_string(),
             "float" => span(a, b).parse::<f64>().unwrap().to_bits().to_string(),
+            "float32" => (span(a, b - 3).parse::<f64>().unwrap() as f32).to_bits().to_string(),
             "bad" => return Err(format!("{line}:{col} {}", ["unterminated_string", "unknown_escape", "stray_whitespace"][a as usize])),
             _ => String::new(),
         };
@@ -148,6 +150,7 @@ const TRICKY: &[&str] = &[
     "9223372036854775807 9223372036854775808 -9223372036854775808 -9223372036854775809 00000000000000000000001",
     "5i64 -5i64 +5i64 i64 -i64 9223372036854775807i64 9223372036854775808i64 1.5i64",
     "1.5 -0.25 +2.0 .5 5. 1.5e3 1.5E-3 2.e+10 1e5 1.5e 1.5.3 - + -. . e.5",
+    "1.5f32 -0.1f32 .5f32 5.f32 1.0e10f32 3.4028236e38f32 1e5f32 1f32 f32 .f32 1.5f64 1.5F32 1.5f32x",
     "-> true false truex ->x a.b.c x:i32 [a b] ;; comment\n(x)",
     "\"a\\nb\\t\\\"q\\\\\" \"\" \"é ü 日本\" (é) x\r\ny",
     "\"unterminated",
@@ -590,7 +593,19 @@ fn constant_errors_match_word_for_word() {
         "(const NN:str 1)",
         "(const NN:f32 1.0)",
         "(const NN:(arr i32) 1)",
-        "(const NN:i32 (+ 1 2))",
+        // constant expressions
+        "(const NN:i32 (+ 1 MM))",
+        "(const NN:i32 (/ 1 0))",
+        "(const NN:i32 (+ 1 2i64))",
+        "(const NN:i32 (+ NN 1))",
+        "(const NN:i32 (+ MM 1)) (const MM:i32 (* NN 2))",
+        "(const NN:i32 (not 1))",
+        "(const NN:i32 (+ 1))",
+        "(const NN:i64 (+ 1 2))",
+        "(const NN:i32 (+ 1 \"a\"))",
+        "(const NN:i32 (foo 1 2))",
+        "(const NN:i32 (/ -2147483648 -1))",
+        "(const NN:f64 (% 1.0 2.0))",
         "(const NN:i32 1) (fn f [NN:i32] -> i32 0)",
         "(const NN:i32 1) (fn f [] -> i32 (let NN:i32 2) 0)",
         "(const NN:i32 1) (struct S [NN:i32])",

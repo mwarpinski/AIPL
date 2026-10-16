@@ -1,0 +1,20 @@
+(module f32_traps
+  (import io)
+  (import os)
+  (fn main [] -> i32
+    (let m:i32 (call os.arg_int 1 0))
+    (cond
+      ((eq m 1) (call io.println_int "" (i32.trunc_f32_s (/ 0.0f32 0.0f32))))
+      ((eq m 2) (call io.println_int "" (i32.trunc_f64_s 2147483648.0)))
+      ((eq m 3) (call io.println_int "" (i32.trunc_f64_s -2147483648.9)))
+      ((eq m 4) (call io.println_int "" (i32.trunc_f64_s -2147483649.0)))
+      ((eq m 5) (call io.println_int "" (i32.trunc_f32_s -2147483648.0f32)))
+      ((eq m 6) (call io.println_int "" (i32.trunc_f32_s 2147483648.0f32)))
+      ((eq m 7) (call io.println_i64 "" (i64.trunc_f32_s -9223372036854775808.0f32)))
+      ((eq m 8) (call io.println_i64 "" (i64.trunc_f32_s 9223372036854775808.0f32)))
+      ((eq m 9) (call io.println_int "" (i32.trunc_f32_s -2147483904.0f32)))
+      ((eq m 10) (call io.println_int "" (i32.trunc_f64_s (/ 0.0 0.0))))
+      ((eq m 11) (call io.println_i64 "" (i64.trunc_f32_s (/ 1.0f32 0.0f32))))
+      ((eq m 12) (call io.println_int "" (i32.trunc_f32_s 2147483520.0f32)))
+      (else (block)))
+    0))

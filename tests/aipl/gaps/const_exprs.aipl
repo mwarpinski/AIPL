@@ -1,0 +1,17 @@
+(module const_exprs
+  (import io)
+  (const MB:i32 (* KB 1024))
+  (const KB:i32 1024)
+  (const MASK:i32 (- (shl 1 12) 1))
+  (const BIG:i64 (* 3000000000i64 4i64))
+  (const WRAP:i32 (+ 2147483647 1))
+  (const TWO_PI:f64 (* 2.0 PI))
+  (const PI:f64 3.141592653589793)
+  (const ON:bool (and true (not false)))
+  (fn main [] -> i32
+    (call io.println_int "MB " MB)
+    (call io.println_int "MASK " MASK)
+    (call io.println_i64 "BIG " BIG)
+    (call io.println_int "WRAP " WRAP)
+    (call io.println_f64 "TWO_PI " TWO_PI 15)
+    (if ON 0 1)))

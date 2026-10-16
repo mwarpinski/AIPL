@@ -116,7 +116,8 @@
     (match t
       (ast.Type.i32 0) (ast.Type.i64 1) (ast.Type.f32 2) (ast.Type.f64 3) (ast.Type.bool 4) (ast.Type.str 5)
       (ast.Type.void 6) (ast.Type.ptr [_] 7) (ast.Type.struct_ [_] 8) (ast.Type.result [_ _] 9) (ast.Type.arr [_] 10)
-      (ast.Type.fn_ [_ _] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)))
+      (ast.Type.fn_ [_ _] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)
+      (ast.Type.u8 14) (ast.Type.i8 15) (ast.Type.u16 16) (ast.Type.i16 17)))
 
   ;; Structural equality (src/ast.rs derives PartialEq).
   (fn teq [a:ast.Type b:ast.Type] -> bool
@@ -253,7 +254,10 @@
       (loop j 0 (- (arr.len fs) 1) 1
         (if (get c C.failed) (return) (block))
         (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
-        (let b:(ptr buf.Buf) (call validate c (get f ast.Field.ty) (get sd ast.StructDef.at)))
+        ;; a storage type is a field's type only (not a value struct's)
+        (let b:(ptr buf.Buf) (if (and (call is_narrow (get f ast.Field.ty)) (not (get sd ast.StructDef.value)))
+                                 (ptr.null buf.Buf)
+                                 (call validate c (get f ast.Field.ty) (get sd ast.StructDef.at))))
         (if (neq b (ptr.null buf.Buf))
             (block
               (call s b " (field '") (call by b (get f ast.Field.name)) (call s b "' of struct '")
@@ -394,7 +398,7 @@
     (loop i 0 (- (arr.len fs) 1) 1
       (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
       (let k:i32 (call tag (get fi ast.Field.ty)))
-      (if (or (or (eq k 5) (eq k 13)) (or (eq k 9) (eq k 6)))
+      (if (or (or (or (eq k 5) (eq k 13)) (or (eq k 9) (eq k 6))) (gte k 14))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' of value struct '") (call by b (call names.shown name))
@@ -537,6 +541,7 @@
        (call s b "struct '") (call by b (call names.shown sname)) (call s b "' cannot be used by value; use (ptr ") (call by b (call names.shown sname)) (call s b ")")
        b)
       (ast.Type.arr [elem]
+       (if (call is_narrow elem) (return (ptr.null buf.Buf)) (block))
        (let inner_err:(ptr buf.Buf) (call validate c elem at))
        (if (neq inner_err (ptr.null buf.Buf)) (return inner_err) (block))
        (let scratch:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
@@ -578,7 +583,20 @@
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Unknown union '") (call by b uname) (call s b "'")
              b)))
-      (else (ptr.null buf.Buf))))
+      (else
+       (if (call is_narrow t)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call ty b t) (call s b " is a storage type: only a struct field or an array element is one (reading it gives an i32); use i32")
+             b)
+           (ptr.null buf.Buf)))))
+
+  ;; Whether t is a storage type (u8, i8, u16, i16).
+  (fn is_narrow [t:ast.Type] -> bool (gte (call tag t) 14))
+
+  ;; The type a read of a field or element of type t has: i32 for a storage
+  ;; type, else t (src/checker.rs value_of).
+  (fn value_of [t:ast.Type] -> ast.Type (if (call is_narrow t) (make ast.Type.i32) t))
 
   ;; validate, failing with its message.
   (fn validate_or_fail [c:(ptr C) t:ast.Type at:i32] -> void
@@ -681,6 +699,7 @@
       (ast.Expr.lit_int [_ _] (call i32_t))
       (ast.Expr.lit_i64 [_ _] (call i64_t))
       (ast.Expr.lit_float [_ _] (call f64_t))
+      (ast.Expr.lit_f32 [_ _] (make ast.Type.f32))
       (ast.Expr.lit_bool [_ _] (call bool_t))
       (ast.Expr.lit_str [_ _] (make ast.Type.str))
       (ast.Expr.var [_ name]
@@ -761,6 +780,7 @@
          (ast.Type.struct_ [name]
           (if (or (call has_struct c name) (call has_enum c name)) (call i32_t) (block (call unknown_struct c at name) (call void_t))))
          (else
+          (if (call is_narrow st) (return (call i32_t)) (block))
           (call validate_or_fail c st at)
           (if (get c C.failed) (return (call void_t)) (block))
           (let k:i32 (call tag st))
@@ -1136,16 +1156,17 @@
     (let ft0:ast.MaybeType (call field_type c at sname fname))
     (if (get c C.failed) (return (call void_t)) (block))
     (let ft:ast.Type (match ft0 (ast.MaybeType.some [t] t) (ast.MaybeType.none (call void_t))))
-    (if (not is_put) (return ft) (block))
+    (if (not is_put) (return (call value_of ft)) (block))
     (let w:(ptr Walked) (call walk_path c at sname fname ft path "put"))
     (if (get c C.failed) (return (call void_t)) (block))
+    (let wt:ast.Type (call value_of (get w Walked.ty)))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt (get w Walked.ty)))
+    (if (not (call teq vt wt))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Type mismatch writing to field '") (call by b (call names.shown (get w Walked.sname))) (call s b ".") (call by b (get w Walked.fname))
-          (call s b "': expected ") (call ty b (get w Walked.ty)) (call s b ", got ") (call ty b vt)
+          (call s b "': expected ") (call ty b wt) (call s b ", got ") (call ty b vt)
           (call fail c b))
         (block))
     (call void_t))
@@ -1262,7 +1283,7 @@
   (fn infer_arr_set [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr val:ast.Expr path:(arr (ptr ast.Step))] -> ast.Type
     (let r:ast.Type (call infer_arr_parts c env at ety ptr index true false val))
     (if (get c C.failed) (return (call void_t)) (block))
-    (let target:ast.Type ety)
+    (let target:ast.Type (call value_of ety))
     (if (gt (arr.len path) 0)
         (block
           (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path 0))
@@ -1317,13 +1338,13 @@
           (call s b what) (call s b " index must be i32, got ") (call ty b it)
           (call fail c b) (return (call void_t)))
         (block))
-    (if (not with_val) (return ety) (block))
+    (if (not with_val) (return (call value_of ety)) (block))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt ety))
+    (if (not (call teq vt (call value_of ety)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "arr.set value mismatch: expected ") (call ty b ety) (call s b ", got ") (call ty b vt)
+          (call s b "arr.set value mismatch: expected ") (call ty b (call value_of ety)) (call s b ", got ") (call ty b vt)
           (call fail c b))
         (block))
     (call void_t))
@@ -1611,11 +1632,12 @@
   ;; checker.rs is_unchecked_op
   (fn is_unchecked_op [o:ast.Op] -> bool
     (or (or (or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32)) (or (eq o ast.Op.mem_load64) (eq o ast.Op.mem_store8)))
+    (or (or (or (eq o ast.Op.mem_load8_s) (eq o ast.Op.mem_load16_u)) (or (eq o ast.Op.mem_load16_s) (eq o ast.Op.mem_store16)))
     (or (or (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)) (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)))
     (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
-        (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))))))))
+        (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat)))))))))))
 
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
     (if (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)) (block))
@@ -1639,13 +1661,13 @@
            (block))
        t1)
       ((call is_arith o) (call infer_arith c env at o args))
-      ((or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32))
+      ((or (or (eq o ast.Op.mem_load8) (eq o ast.Op.mem_load32)) (or (eq o ast.Op.mem_load8_s) (or (eq o ast.Op.mem_load16_u) (eq o ast.Op.mem_load16_s))))
        (call one c env at args (call i32_t) o true " requires 1 argument (ptr: i32)" " requires i32 ptr, got ")
        (call i32_t))
       ((eq o ast.Op.mem_load64)
        (call one c env at args (call i32_t) o false "mem.load64 requires 1 argument (ptr: i32)" "mem.load64 requires i32 ptr, got ")
        (call i64_t))
-      ((or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store32))
+      ((or (or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store32)) (eq o ast.Op.mem_store16))
        (call store c env at o args (call i32_t) true " requires 2 arguments (ptr: i32, val: i32)" " requires (i32, i32), got (")
        (call void_t))
       ((eq o ast.Op.mem_store64)
@@ -1745,14 +1767,40 @@
        (call one c env at args (call i64_t) o false "i32.wrap requires 1 argument (x: i64)" "i32.wrap requires i64, got ")
        (call i32_t))
       (else
-       ;; f64.convert_i64_s, f64.reinterpret_i64: i64 -> f64; f64.sqrt: f64 -> f64;
-       ;; i64.trunc_f64_s, i64.reinterpret_f64: f64 -> i64
-       (let from:ast.Type (if (or (eq o ast.Op.f64_convert_i64_s) (eq o ast.Op.f64_reinterpret_i64)) (call i64_t) (call f64_t)))
-       (let to:ast.Type (if (or (eq o ast.Op.i64_trunc_f64_s) (eq o ast.Op.i64_reinterpret_f64)) (call i64_t) (call f64_t)))
-       (if (call is_i64 from)
-           (call one c env at args from o true " requires 1 argument (x: i64)" " requires i64, got ")
-           (call one c env at args from o true " requires 1 argument (x: f64)" " requires f64, got "))
-       to)))
+       ;; the conversions, f64.sqrt: one argument of type from, giving to
+       (let from:ast.Type (call conversion_from o))
+       (if (neq (arr.len args) 1)
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b (call op_debug o)) (call s b " requires 1 argument (x: ") (call ty b from) (call s b ")")
+             (call fail c b)
+             (return (call void_t)))
+           (block))
+       (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call teq t from))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b (call op_debug o)) (call s b " requires ") (call ty b from) (call s b ", got ") (call ty b t)
+             (call fail c b))
+           (block))
+       (call conversion_to o))))
+
+  ;; A conversion's argument and result types (src/checker.rs conversion).
+  (fn conversion_from [o:ast.Op] -> ast.Type
+    (cond
+      ((or (eq o ast.Op.f64_convert_i64_s) (or (eq o ast.Op.f64_reinterpret_i64) (eq o ast.Op.f32_convert_i64_s))) (call i64_t))
+      ((or (eq o ast.Op.f64_promote) (or (eq o ast.Op.i32_trunc_f32_s) (or (eq o ast.Op.i32_reinterpret_f32) (eq o ast.Op.i64_trunc_f32_s))))
+       (make ast.Type.f32))
+      ((or (eq o ast.Op.f32_convert_i32_s) (or (eq o ast.Op.f32_reinterpret_i32) (eq o ast.Op.f64_convert_i32_s))) (call i32_t))
+      (else (call f64_t))))
+  (fn conversion_to [o:ast.Op] -> ast.Type
+    (cond
+      ((or (eq o ast.Op.i64_trunc_f64_s) (or (eq o ast.Op.i64_reinterpret_f64) (eq o ast.Op.i64_trunc_f32_s))) (call i64_t))
+      ((or (eq o ast.Op.f32_demote) (or (eq o ast.Op.f32_convert_i32_s) (or (eq o ast.Op.f32_convert_i64_s) (eq o ast.Op.f32_reinterpret_i32))))
+       (make ast.Type.f32))
+      ((or (eq o ast.Op.i32_trunc_f32_s) (or (eq o ast.Op.i32_trunc_f64_s) (eq o ast.Op.i32_reinterpret_f32))) (call i32_t))
+      (else (call f64_t))))
 
   ;; A message's fixed text, after the op's Debug name when `pre`.
   (fn words [b:(ptr buf.Buf) o:ast.Op pre:bool x:str] -> void
@@ -1927,7 +1975,7 @@
       (else (block)))
     (let integer_only:bool (not (or (eq o ast.Op.add) (or (eq o ast.Op.sub) (or (eq o ast.Op.mul) (eq o ast.Op.div))))))
     (if (and (eq k 5) (eq o ast.Op.add))
-        (block (call fail_str c at "+ does not join strings; build them with std/buf (buf.push_str, buf.bytes)") (return (call void_t)))
+        (block (call fail_str c at "+ does not join strings: join two with (call str.concat a b), or build text with std/buf (buf.push_str, then buf.to_str)") (return (call void_t)))
         (block))
     (if (and integer_only (not (or (call is_int t1) (eq k 12))))
         (block
@@ -1995,6 +2043,15 @@
        (call s b "': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same ") (call by b (call names.shown v)) (call s b ")")
        (call fail c b) (return (call void_t)))
       (else (block)))
+    ;; a str made at run time has its own address, so eq would compare
+    ;; addresses compiled and contents in the VM
+    (if (eq k 5)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b (call op_debug o))
+          (call s b " on str: compare strings by content with (call str.same a b), and order them with (call (cmp.Ord.compare str) a b)")
+          (call fail c b) (return (call void_t)))
+        (block))
     (if (and (or (eq k 7) (or (eq k 10) (or (eq k 11) (eq k 12)))) (not equality))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
@@ -2002,20 +2059,21 @@
           (call s b ": pointers, arrays, function refs, and enums compare only with eq/neq")
           (call fail c b) (return (call void_t)))
         (block))
-    (if (and (or (eq k 4) (eq k 5)) (not equality))
+    (if (and (eq k 4) (not equality))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b (call op_debug o)) (call s b " on ") (call ty b t1)
-          (call s b ": only numbers are ordered; bool and str compare only with eq/neq")
+          (call s b (call op_debug o))
+          (call s b " on bool: only numbers are ordered; bool compares only with eq/neq")
           (call fail c b) (return (call void_t)))
         (block))
     (call bool_t))
 
   ;; src/checker.rs check_literal_address: a literal address argument.
   (fn check_literal_address [c:(ptr C) at:i32 o:ast.Op args:(arr ast.Expr)] -> void
-    (let is_write:bool (or (or (eq o ast.Op.mem_store8) (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)))
+    (let is_write:bool (or (or (or (eq o ast.Op.mem_store8) (eq o ast.Op.mem_store16)) (or (eq o ast.Op.mem_store32) (eq o ast.Op.mem_store64)))
                            (or (or (eq o ast.Op.atomic_add) (eq o ast.Op.atomic_cas)) (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)))))
-    (let is_addr:bool (or is_write (or (eq o ast.Op.mem_load8) (or (eq o ast.Op.mem_load32) (eq o ast.Op.mem_load64)))))
+    (let is_addr:bool (or is_write (or (or (eq o ast.Op.mem_load8) (or (eq o ast.Op.mem_load32) (eq o ast.Op.mem_load64)))
+                                       (or (eq o ast.Op.mem_load8_s) (or (eq o ast.Op.mem_load16_u) (eq o ast.Op.mem_load16_s))))))
     (if (or (not is_addr) (eq (arr.len args) 0)) (return) (block))
     (let a:i64 0i64)
     (match (arr.get ast.Expr args 0)

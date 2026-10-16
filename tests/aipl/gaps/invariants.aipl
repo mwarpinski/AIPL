@@ -1,0 +1,12 @@
+(module invariants
+  (import os)
+  (struct Acct [bal:i32])
+  ;; the balance never goes negative, before or after
+  (fn withdraw [a:(ptr Acct) n:i32] -> i32
+    (inv (gte (get a Acct.bal) 0))
+    (put a Acct.bal (- (get a Acct.bal) n))
+    (get a Acct.bal))
+  (fn main [] -> i32
+    (let a:(ptr Acct) (new Acct))
+    (put a Acct.bal (call os.arg_int 1 10))
+    (call withdraw a 15)))

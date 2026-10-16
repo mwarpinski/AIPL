@@ -144,11 +144,14 @@ fn every_rule_has_its_message() {
         ("(const NN:i32 true) (fn f [] -> i32 NN)", "constant 'NN' is declared i32 but its value is not an i32 literal"),
         ("(const NN:i32 3000000000) (fn f [] -> i32 NN)", "constant 'NN' is declared i32 but its value is not an i32 literal"),
         ("(const NN:f32 1.0) (fn f [] -> i32 0)", "constant 'NN' has type 'f32'; a constant is i32, i64, f64, bool, or str"),
-        ("(const NN:i32 (+ 1 2)) (fn f [] -> i32 NN)", "constant 'NN' is declared i32 but its value is not an i32 literal"),
+        ("(const NN:i32 (+ 1 2i64)) (fn f [] -> i32 NN)", "constant 'NN': + needs two operands of one type, got i32 and i64"),
+        ("(const NN:i64 (+ 1 2)) (fn f [] -> i64 NN)", "constant 'NN' is declared i64 but its value is i32"),
+        ("(const NN:i32 (+ MM 1)) (fn f [] -> i32 NN)", "constant 'NN': 'MM' is not a constant"),
+        ("(const NN:i32 (+ MM 1)) (const MM:i32 NN) (fn f [] -> i32 NN)", "its value depends on itself"),
         ("(const MAX:i32 5) (fn f [] -> i32 (let MAX:i32 1) MAX)", "'MAX' is a constant; it cannot also name a variable, parameter, or field"),
         ("(const MAX:i32 5) (fn f [MAX:i32] -> i32 0)", "'MAX' is a constant; it cannot also name a variable, parameter, or field"),
         ("(const MAX:i32 5) (const MAX:i32 6) (fn f [] -> i32 MAX)", "constant 'MAX' is defined twice"),
-        ("(const MAX:i32) (fn f [] -> i32 0)", "a constant is (const NAME:TYPE literal)"),
+        ("(const MAX:i32) (fn f [] -> i32 0)", "a constant is (const NAME:TYPE value), e.g. (const PAGE_SIZE:i32 65536) or (const PAGES:i32 (* 4 PAGE_SIZE))"),
     ];
     for (i, (body, want)) in cases.iter().enumerate() {
         let src = format!("(module m {body})");
