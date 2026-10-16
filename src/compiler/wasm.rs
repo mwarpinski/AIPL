@@ -125,6 +125,7 @@ impl WasmCompiler {
         let uses_checks = module_uses_checks(module);
         let checks_base = start_fn + if auto_start { 1 } else { 0 };
         let check_fns = CheckFns::at(checks_base);
+        let may_free = functions_that_may_free(module);
         if uses_checks {
             let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 } + if auto_start { 1 } else { 0 };
             for (k, (params, results)) in check_signatures().into_iter().enumerate() {
@@ -252,6 +253,9 @@ impl WasmCompiler {
                 labels: std::cell::RefCell::new(Vec::new()),
                 source,
                 file_names: &module.file_names,
+                may_free: &may_free,
+                proven: std::cell::RefCell::new(Vec::new()),
+                versioning: std::cell::Cell::new(true),
             };
             func.at.push(ctx.position(f.span));
 
@@ -632,6 +636,15 @@ struct Ctx<'a> {
     /// Enclosing structured instructions that can contain user code,
     /// innermost last, so break/continue can compute their branch depth.
     labels: std::cell::RefCell<Vec<Label>>,
+    /// The functions that may free memory (functions_that_may_free).
+    may_free: &'a std::collections::HashSet<String>,
+    /// Pointer and array variables an enclosing versioned loop has checked
+    /// (compile_versioned_loop): their accesses skip the null and generation
+    /// checks.
+    proven: std::cell::RefCell<Vec<String>>,
+    /// False inside a versioned loop's slow copy, whose loops are not
+    /// versioned again (so the code grows linearly with nesting).
+    versioning: std::cell::Cell<bool>,
     /// Where the function's item was written (None for a module parsed from
     /// one text), and each file's name in the line table.
     source: Option<&'a Source>,
@@ -834,8 +847,7 @@ fn compile_value_read(top: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), Stri
         Expr::GetField { struct_name, field_name, ptr, .. } if !is_value_type(&tyf(ptr), ctx.structs) => {
             let def = ctx.structs.get(struct_name).ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let (foff, _) = crate::checker::get_field_offset(def, field_name, ctx.structs)?;
-            compile_expr(ptr, ctx, func)?;
-            emit_null_check(func, ctx);
+            compile_pointer(ptr, ctx, func)?;
             func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
             emit_load_scalars(func, ctx, &t, foff as u32 + off)?;
         }
@@ -858,8 +870,7 @@ fn compile_value_read(top: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), Stri
 /// index (bounds-checked), times the element's size, added.
 fn emit_element_address(elem_ty: &Type, ptr: &Expr, index: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
-    compile_expr(ptr, ctx, func)?;
-    emit_null_check(func, ctx);
+    compile_pointer(ptr, ctx, func)?;
     compile_expr(index, ctx, func)?;
     emit_bounds_check(func, ctx);
     func.instruction(&Instruction::I32Const(elem_size as i32));
@@ -2163,6 +2174,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 }
             }
         }
+        Expr::While { .. } | Expr::Loop { .. } if ctx.versioning.get() && !loop_invariant_pointers(expr, ctx).is_empty() => {
+            compile_versioned_loop(expr, ctx, func)?;
+        }
         Expr::While { cond, body, .. } => {
             // block { loop { cond; eqz; br_if 1; body; br 0 } }:
             // break = br to the block, continue = br to the loop header.
@@ -2302,8 +2316,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             if is_value_type(&field_ty, ctx.structs) {
                 return compile_value_read(expr, ctx, func);
             }
-            compile_expr(ptr, ctx, func)?;
-            emit_null_check(func, ctx);
+            compile_pointer(ptr, ctx, func)?;
             match field_ty {
                 Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
@@ -2359,8 +2372,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 offset += o as usize;
                 field_ty = ft;
             }
-            compile_expr(ptr, ctx, func)?;
-            emit_null_check(func, ctx);
+            compile_pointer(ptr, ctx, func)?;
             emit_write_address_check(func, ctx);
             if is_value_type(&field_ty, ctx.structs) {
                 return emit_store_value(func, ctx, &field_ty, offset as u32, val);
@@ -2535,8 +2547,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
         }
         Expr::ArrLen { arr, .. } => {
-            compile_expr(arr, ctx, func)?;
-            emit_null_check(func, ctx);
+            compile_pointer(arr, ctx, func)?;
             func.instruction(&Instruction::I32Const(4));
             func.instruction(&Instruction::I32Sub);
             func.instruction(&Instruction::I32Load(M4));
@@ -3222,6 +3233,174 @@ fn emit_null_check(func: &mut Body, ctx: &Ctx) {
 
 /// The generation of a pointer made by ptr.cast: never compared.
 const GEN_UNCHECKED: u32 = 0xFFFF_FFFF;
+
+/// Compiles a pointer or array operand and checks it (emit_null_check),
+/// leaving its address, unless it is a variable an enclosing versioned
+/// loop has checked already.
+fn compile_pointer(ptr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    compile_expr(ptr, ctx, func)?;
+    if let Expr::Var(n, _) = ptr {
+        if ctx.proven.borrow().iter().any(|p| p == n) {
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalTee(ctx.addr_scratch));
+            return Ok(());
+        }
+    }
+    emit_null_check(func, ctx);
+    Ok(())
+}
+
+/// An unchecked operation that can change memory other than through a
+/// checked access (a raw load cannot, so it frees nothing).
+fn may_write_memory(op: &OpCode) -> bool {
+    crate::checker::is_unchecked_op(op) && !matches!(op, OpCode::MemLoad8 | OpCode::MemLoad32 | OpCode::MemLoad64)
+}
+
+/// The functions that may free memory, or change it other than through
+/// checked accesses: those that use an unchecked operation (raw memory,
+/// atomics, threads, WASI), call through a function reference, or call a
+/// function that may (or one not in the module). Raw loads do not count.
+fn functions_that_may_free(module: &Module) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let mut may: HashSet<String> = HashSet::new();
+    let mut callees: HashMap<String, Vec<String>> = HashMap::new();
+    for f in &module.functions {
+        let (mut direct, mut calls) = (false, Vec::new());
+        let mut visit = |e: &Expr| match e {
+            Expr::Op { op, .. } if may_write_memory(op) => direct = true,
+            Expr::CallRef { .. } => direct = true,
+            Expr::Call { func, .. } => calls.push(func.clone()),
+            _ => {}
+        };
+        for e in &f.body {
+            walk_expr(e, &mut visit);
+        }
+        for c in &f.contracts {
+            if let Contract::Requires(e) | Contract::Ensures(e) = c {
+                walk_expr(e, &mut visit);
+            }
+        }
+        if direct {
+            may.insert(f.name.clone());
+        }
+        callees.insert(f.name.clone(), calls);
+    }
+    loop {
+        let more: Vec<String> = callees
+            .iter()
+            .filter(|(f, cs)| !may.contains(*f) && cs.iter().any(|c| may.contains(c) || !callees.contains_key(c)))
+            .map(|(f, _)| f.clone())
+            .collect();
+        if more.is_empty() {
+            return may;
+        }
+        may.extend(more);
+    }
+}
+
+/// The pointer and array variables a loop accesses directly (get, put,
+/// arr.get, arr.set, arr.len on the variable) and never assigns, when
+/// nothing in the loop can free memory: their checks hold for the whole
+/// loop if they hold when it starts. Not those already checked.
+fn loop_invariant_pointers(lp: &Expr, ctx: &Ctx) -> Vec<String> {
+    let (mut barrier, mut used, mut assigned) = (false, Vec::new(), std::collections::HashSet::new());
+    walk_expr(lp, &mut |e| match e {
+        Expr::Op { op, .. } if may_write_memory(op) => barrier = true,
+        Expr::CallRef { .. } => barrier = true,
+        Expr::Call { func, .. } if ctx.may_free.contains(func) || !ctx.fn_indices.contains_key(func) => barrier = true,
+        Expr::Let { name, .. } | Expr::Set { name, .. } => {
+            assigned.insert(name.clone());
+        }
+        Expr::Loop { var, .. } => {
+            assigned.insert(var.clone());
+        }
+        Expr::MatchResult { ok_var, err_var, .. } => {
+            assigned.insert(ok_var.clone());
+            assigned.insert(err_var.clone());
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                assigned.extend(arm.binders.iter().flatten().cloned());
+            }
+        }
+        Expr::GetField { ptr, .. } | Expr::PutField { ptr, .. } | Expr::ArrGet { ptr, .. } | Expr::ArrSet { ptr, .. } | Expr::ArrLen { arr: ptr, .. } => {
+            if let Expr::Var(n, _) = ptr.as_ref() {
+                used.push(n.clone());
+            }
+        }
+        _ => {}
+    });
+    if barrier {
+        return Vec::new();
+    }
+    used.sort();
+    used.dedup();
+    let proven = ctx.proven.borrow();
+    used.retain(|n| {
+        !assigned.contains(n)
+            && !proven.contains(n)
+            && matches!(ctx.local_types.get(n), Some(Type::Ptr(_) | Type::Array(_)))
+            && ctx.locals.contains_key(n)
+    });
+    used
+}
+
+/// A loop whose pointer and array variables nothing in it can invalidate
+/// (loop_invariant_pointers), compiled twice: if each is non-null and live
+/// (its generation matches, or it is unchecked) when the loop starts, a
+/// copy whose accesses to them skip the null and generation checks; else
+/// the loop as usual, whose checks then fail where they would have. The
+/// slow copy's loops are not versioned again.
+fn compile_versioned_loop(lp: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
+    use Instruction::*;
+    let names = loop_invariant_pointers(lp, ctx);
+    for (k, n) in names.iter().enumerate() {
+        let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: no local for '{}'", n))?;
+        let pointer_gen = |func: &mut Body| {
+            func.instruction(&LocalGet(ctx.fat_scratch));
+            func.instruction(&I64Const(32));
+            func.instruction(&I64ShrU);
+            func.instruction(&I32WrapI64);
+        };
+        func.instruction(&LocalGet(idx));
+        func.instruction(&LocalTee(ctx.fat_scratch));
+        func.instruction(&I32WrapI64);
+        func.instruction(&LocalTee(ctx.addr_scratch));
+        func.instruction(&I32Eqz);
+        func.instruction(&If(BlockType::Result(ValType::I32)));
+        func.instruction(&I32Const(0));
+        func.instruction(&Else);
+        func.instruction(&LocalGet(ctx.addr_scratch));
+        func.instruction(&I32Const(8));
+        func.instruction(&I32Sub);
+        func.instruction(&I32Load(M4));
+        pointer_gen(func);
+        func.instruction(&I32Eq);
+        pointer_gen(func);
+        func.instruction(&I32Const(GEN_UNCHECKED as i32));
+        func.instruction(&I32Eq);
+        func.instruction(&I32Or);
+        func.instruction(&End);
+        if k > 0 {
+            func.instruction(&I32And);
+        }
+    }
+    func.instruction(&If(BlockType::Empty));
+    with_label(ctx, Label::Plain, || {
+        let before = ctx.proven.borrow().len();
+        ctx.proven.borrow_mut().extend(names.iter().cloned());
+        let fast = compile_expr(lp, ctx, func);
+        ctx.proven.borrow_mut().truncate(before);
+        fast?;
+        func.instruction(&Else);
+        let was = ctx.versioning.replace(false);
+        let slow = compile_expr(lp, ctx, func);
+        ctx.versioning.set(was);
+        slow
+    })?;
+    func.instruction(&End);
+    Ok(())
+}
 
 fn emit_bounds_check(func: &mut Body, ctx: &Ctx) {
     use Instruction::*;

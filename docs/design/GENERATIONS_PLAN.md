@@ -198,19 +198,50 @@ generation.
 binarytrees was 2.38 / 1.79 with a fresh generation per arena allocation
 (an atomic add each); one per reset brought it to the line above.
 
-**Ways to cut it, in order of what they would buy:**
+**Checks once per loop (built, 2026-10-16).** `wasm.rs` versions loops: a
+loop in which nothing can free memory is compiled twice, and before it
+each pointer or array variable it accesses and never reassigns is tested
+once (non-null, and live or unchecked) without failing. If all pass, a
+copy runs whose accesses to them skip the null and generation checks;
+else the usual copy runs, whose checks fail exactly where they would have
+(a stale pointer the loop never touches still causes no failure). "Can
+free" is decided over the call graph: a function may free if it uses an
+unchecked operation that writes memory (raw stores, atomics, threads,
+WASI calls that fill buffers; raw loads do not count), calls through a
+function reference, or calls one that may. Loops inside a slow copy are
+not versioned again, so code grows linearly with nesting depth. It trades
+compile time and code size for speed, by choice.
 
-1. **Check once per loop.** A free is a call, so a pointer checked before
-   a loop whose body makes no calls (and does not reassign it) needs no
-   check inside. That covers the inner loops of fannkuch, spectralnorm,
-   and pidigits.
-2. **The native backend's lowering of the check** (spectralnorm: 2.48
-   natively, 1.00 under wasmtime): keep the pointer and the generation in
-   registers instead of the scratch locals.
+Cost with it, as time over the time without generations, each divided by
+C's time in the same run (the machine's speed drifted between runs):
+
+| Benchmark | Native | Wasm |
+|---|---|---|
+| spigot | 1.07 | 1.00 |
+| mandelbrot | 1.08 | 1.15 |
+| nbody | 0.93 | 1.07 |
+| fannkuch | 1.00 | 1.00 |
+| spectralnorm | 1.08 | 1.02 |
+| pidigits | 1.01 | 0.82 |
+| knucleotide | 1.13 | 1.23 |
+| binarytrees | 2.00 | 1.57 |
+
+(pidigits under wasmtime is faster than before: the versioned loops skip
+the null checks too.) What remains:
+
+1. **Checks inside small calls** (knucleotide: `str.byte_at` once per
+   byte, each call checking its argument): a loop's proof cannot reach a
+   callee. The fix is a pre-checked copy of a small function, called from
+   a versioned loop where its pointer argument is already proven (or
+   inlining).
+2. **Memory** (binarytrees): a node is 32 bytes, was 8: two 8-byte
+   pointers, the 8-byte generation prefix, and the arena's 8-byte block
+   header. Dropping the header and the reset walk measured 1.63 natively
+   and 1.39 under wasmtime; the price is that a pointer used after a reset
+   is caught only once the memory is reused (before that it reads the old
+   object, which is not unsafe, only wrong). Decision pending.
 3. **Per-allocator generations** for the heap (a counter under its lock,
    no atomic), as the arena already does.
-4. The 8-byte pointers and the prefix are the design's price in memory
-   (binarytrees); nothing above changes that.
 
 **Not done in the prototype:** the VM, the AIPL toolchain (codegen.aipl,
 checker.aipl, the native backend's reader is unchanged and needed nothing),
