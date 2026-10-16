@@ -1,6 +1,11 @@
 # Generation checks: stopping use after free
 
-Status: planned, after launch (ROADMAP.md, "Next" 2). Nothing here is built.
+Status: done (2026-10-16) in every backend and both toolchains: the VM,
+`src/compiler/wasm.rs`, `aipl_src/codegen.aipl` (byte for byte), the
+native backend (which needed nothing: it translates the wasm), and the
+standard library (`std/gen`). tests/test_generations.rs checks it in all
+three backends. Still open: data races (below) and the pre-checked small
+functions under "What remains".
 
 ## The gap
 
@@ -131,3 +136,141 @@ generation word and the first field in one cache line.
 - **Never reusing freed memory** (quarantine). Catches the reuse case
   cheaply, but memory only grows, and reads of freed blocks still go
   unnoticed.
+
+## Prototype (2026-10-16)
+
+Built in `src/compiler/wasm.rs`, the Rust checker's layouts, and the
+standard library, enough to run every benchmark as wasm and natively (the
+native backend, compiled by the prototype, runs with the checks on too).
+The VM and the AIPL toolchain are unchanged, so their tests fail on the
+branch.
+
+**What it does.**
+
+- A `(ptr S)` or `(arr T)` is an `i64`: the address in the low half, the
+  generation in the high half; 8 bytes, 8-aligned, in memory.
+- Every object has a generation word 8 bytes before it. `new` and
+  `arr.new` reserve it (the bump allocator never frees, so it stays 0);
+  for an array the length follows it, as before, just before the first
+  element.
+- `get`, `put`, `arr.get`, `arr.set`, and `arr.len` check, after the null
+  check, that the word equals the pointer's generation, else "Use after
+  free" with the usual position and call chain. Same in wasm and natively.
+- `ptr.cast` / `arr.cast` (already `unsafe`) make *unchecked* pointers
+  (generation `0xFFFFFFFF`): the toolchain casts interior addresses of big
+  buffers (tokens, AST nodes), where the word before is another object's
+  field. A mismatch takes a slow path that lets them through, so checked
+  pointers pay nothing for this. A cast of 0 is null.
+- New, `unsafe`: `(ptr.make S addr gen)` / `(arr.make T addr gen)` build a
+  checked pointer, `(ptr.gen p)` / `(arr.gen a)` read one's generation.
+- `std/gen`: fresh generations from a counter in runtime cell 56,
+  scrambled (an odd multiplier, so unique until 2^32) so stale data is
+  unlikely to equal one by accident; `adopt` gives an allocator's block a
+  fresh generation, `retire` checks it is still live (so a double free is
+  caught) and marks it freed.
+- `std/heap` and `std/alloc` (every allocator kind): each typed object
+  gets the 8-byte prefix and its own generation. `std/arena`: an 8-byte
+  size header per block, so `reset` walks the blocks and marks every
+  object freed, then takes one fresh generation for everything allocated
+  until the next reset.
+- `eq` on pointers compares address and generation.
+
+Caught, in wasm and natively: use through a copy after `destroy`, use
+after the block holds a new object at the same address, a double
+`destroy`, use after `arena.reset`, and an array after `free_array`.
+
+Exact for the heap (a block keeps its size class, so the generation word
+is always at the same place). After an arena reset, new objects can start
+at different addresses, so an old pointer's word can be in the middle of
+new data: caught unless that data happens to equal the old (scrambled)
+generation.
+
+**Cost** (`tools/bench.py --runs 3`, time with checks / time without):
+
+| Benchmark | Native | Wasm | What it does |
+|---|---|---|---|
+| spigot | 1.00 | 1.00 | integer arithmetic |
+| mandelbrot | 1.03 | 1.04 | float arithmetic |
+| nbody | 1.07 | 1.06 | value structs (not pointers) |
+| knucleotide | 1.16 | 1.20 | hash map |
+| fannkuch | 1.38 | 1.24 | small array reads and writes |
+| pidigits | 1.39 | 1.51 | big-integer arrays |
+| spectralnorm | 2.48 | 1.00 | array reads: wasmtime removes the cost, the native backend does not |
+| binarytrees | 2.00 | 1.62 | allocation and pointer chasing; a node is 32 bytes, was 8 |
+
+binarytrees was 2.38 / 1.79 with a fresh generation per arena allocation
+(an atomic add each); one per reset brought it to the line above.
+
+**Checks once per loop (built, 2026-10-16).** `wasm.rs` versions loops: a
+loop in which nothing can free memory is compiled twice, and before it
+each pointer or array variable it accesses and never reassigns is tested
+once (non-null, and live or unchecked) without failing. If all pass, a
+copy runs whose accesses to them skip the null and generation checks;
+else the usual copy runs, whose checks fail exactly where they would have
+(a stale pointer the loop never touches still causes no failure). "Can
+free" is decided over the call graph: a function may free if it uses an
+unchecked operation that writes memory (raw stores, atomics, threads,
+WASI calls that fill buffers; raw loads do not count), calls through a
+function reference, or calls one that may. Loops inside a slow copy are
+not versioned again, so code grows linearly with nesting depth. It trades
+compile time and code size for speed, by choice.
+
+Cost with it, as time over the time without generations, each divided by
+C's time in the same run (the machine's speed drifted between runs):
+
+| Benchmark | Native | Wasm |
+|---|---|---|
+| spigot | 1.07 | 1.00 |
+| mandelbrot | 1.08 | 1.15 |
+| nbody | 0.93 | 1.07 |
+| fannkuch | 1.00 | 1.00 |
+| spectralnorm | 1.08 | 1.02 |
+| pidigits | 1.01 | 0.82 |
+| knucleotide | 1.13 | 1.23 |
+| binarytrees | 2.00 | 1.57 |
+
+(pidigits under wasmtime is faster than before: the versioned loops skip
+the null checks too.) What remains:
+
+1. **Checks inside small calls** (knucleotide: `str.byte_at` once per
+   byte, each call checking its argument): a loop's proof cannot reach a
+   callee. The fix is a pre-checked copy of a small function, called from
+   a versioned loop where its pointer argument is already proven (or
+   inlining).
+2. **Memory** (binarytrees): a node is 32 bytes, was 8: two 8-byte
+   pointers, the 8-byte generation prefix, and the arena's 8-byte block
+   header. Dropping the header and the reset walk measured 1.63 natively
+   and 1.39 under wasmtime; the price is that a pointer used after a reset
+   is caught only once the memory is reused (before that it reads the old
+   object, which is not unsafe, only wrong). **Decided (2026-10-16):** the
+   default arena keeps the headers and catches a use after reset at once;
+   a separate fast arena (`arena.Fast`: `make_fast`, `fast_alloc`,
+   `fast_reset`, and `alloc.of_fast_arena`) drops them, for code that opts
+   in. Its own type, not a flag, since testing a flag on every allocation
+   cost binarytrees 10% natively. binarytrees on a fast arena: 1.67
+   natively (2.00 on the default one).
+3. **Per-allocator generations** for the heap (a counter under its lock,
+   no atomic), as the arena already does.
+
+**Not done in the prototype:** the VM, the AIPL toolchain (codegen.aipl,
+checker.aipl, the native backend's reader is unchanged and needed nothing),
+tests, and contract messages show a pointer as its 64-bit value.
+
+## Data races (decided 2026-10-16)
+
+Generation checks do not stop data races (two threads using the same
+memory at once, one writing), which can forge a pointer too. Starting a
+thread and atomics already require `unsafe`, so the claim with generations
+is: **code without `unsafe` is memory-safe; threads need `unsafe`.**
+
+Later, so that ordinary programs never need `unsafe` threads: a safe
+parallel library (fork and join) in which each worker gets its own part of
+the output array (disjoint by construction, kept in it by bounds checks),
+read-only input (value structs, strings, or frozen data), and its own
+arena; results come back at the join. It uses `unsafe` threads inside, as
+`std/heap` uses raw memory. Freezing would be a state of the generation
+word: reads allowed from any thread, a write through a frozen pointer
+stops the program. Considered and not chosen: Rust's Send/Sync (needs a
+borrow checker), isolates that copy every message (large inputs get
+copied), and a race detector (finds races in testing, guarantees nothing).
+

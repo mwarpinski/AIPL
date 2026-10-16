@@ -78,7 +78,7 @@ fn double_free() {
     (let p:(ptr P) (call (heap.create P) h))
     (call (heap.destroy P) h p)
     (call (heap.destroy P) h p)",
-        "(req (call heap.not_freed_already h p))",
+        "(req (call gen.not_freed_already (ptr.addr p) (ptr.gen p)))",
     );
 }
 

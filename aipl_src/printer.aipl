@@ -224,6 +224,11 @@
          (ast.Type.enum_ [name] (call s b "(enum.cast ") (call by b name))
          (else (call s b "(ptr.cast ") (call print_inner b ty)))
        (call s b " ") (call print_expr b addr) (call s b ")"))
+      (ast.Expr.make_ptr [_ ty addr g]
+       (match ty
+         (ast.Type.arr [_] (call s b "(arr.make ") (call print_inner b ty))
+         (else (call s b "(ptr.make ") (call print_inner b ty)))
+       (call s b " ") (call print_expr b addr) (call s b " ") (call print_expr b g) (call s b ")"))
       (ast.Expr.make [_ uname variant args]
        (call s b "(make ") (call by b uname) (call s b ".") (call by b variant) (call with_body b args))
       (ast.Expr.record [_ sname args] (call s b "(make ") (call by b sname) (call with_body b args))
@@ -258,7 +263,8 @@
       (ast.Expr.call_ref [_ sig callee args]
        (call s b "(call_ref ") (call print_type b sig) (call s b " ") (call print_expr b callee) (call with_body b args))
       (ast.Expr.addr [_ val kind]
-       (call s b (match kind (ast.AddrKind.ptr "(ptr.addr ") (ast.AddrKind.arr "(arr.addr ") (ast.AddrKind.enum_ "(enum.ord ")))
+       (call s b (match kind (ast.AddrKind.ptr "(ptr.addr ") (ast.AddrKind.arr "(arr.addr ") (ast.AddrKind.enum_ "(enum.ord ")
+                         (ast.AddrKind.ptr_gen "(ptr.gen ") (ast.AddrKind.arr_gen "(arr.gen ")))
        (call print_expr b val) (call s b ")"))))
 
   (fn print_result [b:(ptr buf.Buf) head:str val:ast.Expr ty:ast.MaybeType] -> void

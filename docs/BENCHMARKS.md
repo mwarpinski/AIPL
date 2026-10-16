@@ -22,34 +22,65 @@ print it on stderr.
 ## Results
 
 AMD Ryzen 7 H 255, Linux 6.18, gcc 16.2 -O2, Python 3.14, release build,
-2026-10-15, after value structs, unions, and results by value
-(docs/design/VALUES_PLAN.md); best of three. Absolute times on this
-machine vary by about 5% from one run to the next, C's and Python's
-included, so the ratios to C are the steadier comparison.
+2026-10-16, after generation checks (docs/design/GENERATIONS_PLAN.md:
+every pointer access checks for use after free); best of three. Absolute
+times on this machine vary by about 5% from one run to the next, C's and
+Python's included, so the ratios to C are the steadier comparison.
 
 | Benchmark | Input | AIPL native | AIPL wasm (wasmtime) | C (gcc -O2) | Python 3 |
 |---|---|---|---|---|---|
-| binarytrees | 16 | 0.146 s (0.6x) | 0.155 s (0.6x) | 0.241 s (1.0x) | 1.143 s (4.7x) |
-| fannkuch | 10 | 0.298 s (1.9x) | 0.249 s (1.6x) | 0.155 s (1.0x) | 3.802 s (24.6x) |
-| knucleotide | stdin: fasta.py 150000 | 0.679 s (13.5x) | 0.615 s (12.2x) | 0.050 s (1.0x) | 0.517 s (10.3x) |
-| mandelbrot | 1000 | 0.062 s (1.2x) | 0.070 s (1.4x) | 0.051 s (1.0x) | 3.075 s (60.7x) |
-| nbody | 1000000 | 0.151 s (2.9x) | 0.080 s (1.5x) | 0.051 s (1.0x) | 5.553 s (108.0x) |
-| pidigits | 10000 | 3.810 s (10.0x) | 2.397 s (6.3x) | 0.382 s (1.0x) | 2.124 s (5.6x) |
-| spectralnorm | 1000 | 0.107 s (4.0x) | 0.127 s (4.8x) | 0.027 s (1.0x) | 7.289 s (273.7x) |
-| spigot | 10000 | 1.426 s (1.5x) | 1.583 s (1.7x) | 0.931 s (1.0x) | 46.950 s (50.4x) |
+| binarytrees | 16 | 0.284 s (1.2x) | 0.250 s (1.0x) | 0.238 s (1.0x) | 1.138 s (4.8x) |
+| fannkuch | 10 | 0.283 s (1.8x) | 0.233 s (1.5x) | 0.156 s (1.0x) | 3.759 s (24.1x) |
+| knucleotide | stdin: fasta.py 150000 | 0.858 s (17.4x) | 0.765 s (15.5x) | 0.049 s (1.0x) | 0.504 s (10.2x) |
+| mandelbrot | 1000 | 0.063 s (1.2x) | 0.072 s (1.4x) | 0.050 s (1.0x) | 3.032 s (60.1x) |
+| nbody | 1000000 | 0.150 s (3.0x) | 0.078 s (1.6x) | 0.050 s (1.0x) | 5.714 s (114.1x) |
+| pidigits | 10000 | 4.027 s (10.4x) | 1.989 s (5.1x) | 0.389 s (1.0x) | 2.133 s (5.5x) |
+| spectralnorm | 1000 | 0.107 s (4.0x) | 0.129 s (4.8x) | 0.027 s (1.0x) | 7.250 s (269.9x) |
+| spigot | 10000 | 1.434 s (1.6x) | 1.593 s (1.7x) | 0.922 s (1.0x) | 46.475 s (50.4x) |
 
 Two rows are not like for like: pidigits' C uses GMP (hand-tuned assembly,
 as the Benchmarks Game's C entries do), and binarytrees' AIPL frees each
-tree at once from an arena where C calls malloc and free per node, which
-is why AIPL is faster than C there. knucleotide's C packs each key into a
-64-bit integer, where AIPL hashes byte strings.
+tree at once from an arena where C calls malloc and free per node.
+knucleotide's C packs each key into a 64-bit integer, where AIPL hashes
+byte strings.
 
-Native code takes 0.8 to 1.9 times wasmtime's time: 1.9 on nbody, whose
-float-heavy loop has more values live than native code has registers for
-("Value structs" below), 1.6 on pidigits, and less than wasmtime's own
-time on binarytrees, mandelbrot, spectralnorm, and spigot. Before value
-structs (2026-10-14), nbody took 0.179 s natively and 0.139 s under
-wasmtime.
+Native code takes 0.8 to 2.0 times wasmtime's time: 2.0 on pidigits, 1.9
+on nbody, whose float-heavy loop has more values live than native code
+has registers for ("Value structs" below), and less than wasmtime's own
+time on mandelbrot, spectralnorm, and spigot.
+
+**Generation checks** (2026-10-16): each ratio to C now, divided by the
+same ratio the day before (the 2026-10-15 table, below):
+
+| Benchmark | Native | Wasm | Why |
+|---|---|---|---|
+| binarytrees | 1.94 | 1.61 | memory: a node is 32 bytes, was 8 (two 8-byte pointers, the generation word, the arena's block header) |
+| knucleotide | 1.29 | 1.27 | a check inside small calls made once per byte (`str.byte_at`), which a loop's single check cannot reach |
+| pidigits | 1.04 | 0.81 | faster under wasmtime: its loops are versioned, which skips the null checks too |
+| nbody | 1.03 | 1.07 | value structs, not pointers |
+| fannkuch | 0.95 | 0.94 | versioned loops |
+| mandelbrot, spectralnorm, spigot | 1.00 | 1.00 | |
+
+Without checks once per loop (each access checked), fannkuch took 1.38
+natively, pidigits 1.39 and 1.51, and spectralnorm 2.48 natively. On a
+fast arena (`arena.Fast`, which catches a stale pointer only once its
+memory is reused), binarytrees takes 1.67 natively.
+
+Before, 2026-10-15 (after value structs, unions, and results by value):
+
+| Benchmark | AIPL native | AIPL wasm | C |
+|---|---|---|---|
+| binarytrees | 0.146 s (0.6x) | 0.155 s (0.6x) | 0.241 s |
+| fannkuch | 0.298 s (1.9x) | 0.249 s (1.6x) | 0.155 s |
+| knucleotide | 0.679 s (13.5x) | 0.615 s (12.2x) | 0.050 s |
+| mandelbrot | 0.062 s (1.2x) | 0.070 s (1.4x) | 0.051 s |
+| nbody | 0.151 s (2.9x) | 0.080 s (1.5x) | 0.051 s |
+| pidigits | 3.810 s (10.0x) | 2.397 s (6.3x) | 0.382 s |
+| spectralnorm | 0.107 s (4.0x) | 0.127 s (4.8x) | 0.027 s |
+| spigot | 1.426 s (1.5x) | 1.583 s (1.7x) | 0.931 s |
+
+Before value structs (2026-10-14), nbody took 0.179 s natively and 0.139 s
+under wasmtime.
 
 Earlier (2026-10-05, before the null checks and the native rewrite):
 native spigot 2.725 s, fannkuch 1.080, spectralnorm 0.392, nbody 0.751,

@@ -27,9 +27,10 @@
     (put j (Job C) a a)
     (thread.spawn (ref (run C)) (ptr.addr j)))
 
-  ;; On the new thread: the job back from its address, freed, then run.
+  ;; On the new thread: the job back from its address (with its generation,
+  ;; the word before it, so destroy can check it), freed, then run.
   (fn (run C) [job:i32] -> i32 (unsafe)
-    (let j:(ptr (Job C)) (ptr.cast (Job C) job))
+    (let j:(ptr (Job C)) (ptr.make (Job C) job (mem.load32 (- job 8))))
     (let w:(fn [C] -> i32) (get j (Job C) worker))
     (let c:C (get j (Job C) ctx))
     (call (alloc.destroy (Job C)) (get j (Job C) a) j)

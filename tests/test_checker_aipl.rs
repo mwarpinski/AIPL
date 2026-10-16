@@ -23,6 +23,8 @@ fn vm_with(rel: &str) -> VM {
 fn int(v: Value) -> i64 {
     match v {
         Value::Int(i) => i,
+        // a pointer: its address, the low half
+        Value::Int64(p) => p as u32 as i64,
         other => panic!("expected Int, got {other:?}"),
     }
 }
@@ -323,6 +325,8 @@ const EVERY_FORM: &str = r#"(module every
     (let cp:(ptr P) (ptr.cast P 4096))
     (let ca:(arr i32) (arr.cast i32 4096))
     (let ad:i32 (+ (ptr.addr p) (arr.addr xs)))
+    (let mp:(ptr P) (ptr.make P 4096 (ptr.gen p)))
+    (let ma:(arr i32) (arr.make i32 4096 (arr.gen xs)))
     (let co:i32 (enum.ord (enum.cast Color 5)))
     (let sh:Shape (make Shape.rect 1 2))
     (let area:i32 (match sh (Shape.circle [_] 0) (Shape.rect [w h] (* w h)) (else 1)))
@@ -693,6 +697,17 @@ const FORMS: &[&str] = &[
     "(let q:(ptr P) (ptr.cast P 2048)) 0",
     "(unsafe (let q:(ptr P) (ptr.cast P 2048)) 0)",
     "(arr.len (arr.cast i32 2048))",
+    // ptr.make / arr.make / ptr.gen / arr.gen (generation checks)
+    "(let q:(ptr P) (ptr.make P 2048 7)) 0",
+    "(unsafe (let q:(ptr P) (ptr.make P 2048 7)) 0)",
+    "(unsafe (arr.len (arr.make i32 2048 7)))",
+    "(unsafe (let q:(ptr P) (ptr.make P 2048 7i64)) 0)",
+    "(unsafe (let q:(ptr P) (ptr.make P 1.5 7)) 0)",
+    "(unsafe (let a:(arr i32) (arr.make void 2048 7)) 0)",
+    "(ptr.gen (new P))",
+    "(arr.gen (arr.new i32 1))",
+    "(ptr.gen 5)",
+    "(arr.gen (new P))",
     "(enum.ord (enum.cast E 1))",
     "(thread.join 0)",
     "(atomic.add 2048 1)",

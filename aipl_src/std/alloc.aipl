@@ -24,6 +24,7 @@
 (module alloc
   (import heap)
   (import arena)
+  (import gen)
 
   ;; A region inside a buffer: [base, base + len), the first `used` bytes
   ;; handed out.
@@ -39,6 +40,7 @@
 
   (union Allocator [(heap h:(ptr heap.Heap))
                     (arena r:(ptr arena.Arena))
+                    (fast_arena fr:(ptr arena.Fast))
                     (fixed f:(ptr Fixed))
                     (custom c:(ptr Custom))] (pub))
 
@@ -64,6 +66,7 @@
 
   (fn of_heap [h:(ptr heap.Heap)] -> Allocator (pub) (make Allocator.heap h))
   (fn of_arena [r:(ptr arena.Arena)] -> Allocator (pub) (make Allocator.arena r))
+  (fn of_fast_arena [fr:(ptr arena.Fast)] -> Allocator (pub) (make Allocator.fast_arena fr))
 
   ;; An allocator handing out the len bytes at base (from mem.alloc, or
   ;; from another allocator), 8 bytes at a time.
@@ -98,6 +101,7 @@
     (match a
       (Allocator.heap [h] (call heap.raw h n))
       (Allocator.arena [r] (call arena.raw r n))
+      (Allocator.fast_arena [fr] (call arena.fast_raw fr n))
       (Allocator.fixed [f] (call fixed_raw f n))
       (Allocator.custom [c] (call custom_raw c n))))
 
@@ -107,6 +111,7 @@
     (unsafe (match a
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))
+      (Allocator.fast_arena [_] (block))
       (Allocator.fixed [f] (call fixed_free f p n))
       (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n)))))
 
@@ -144,20 +149,19 @@
 
   ;; A zeroed T.
   (fn (create T) [a:Allocator] -> (ptr T) (pub) (where (struct T))
-    (unsafe (ptr.cast T (call raw a (sizeof T)))))
+    (unsafe (call (gen.adopt T) (call raw a (+ (sizeof T) 8)))))
 
   (fn (destroy T) [a:Allocator p:(ptr T)] -> void (pub) (where (struct T))
-    (unsafe (call free_raw a (ptr.addr p) (sizeof T))))
+    (unsafe (call free_raw a (call (gen.retire T) p) (+ (sizeof T) 8))))
 
   ;; n zeroed Ts, laid out like (arr.new T n).
   (fn (array T) [a:Allocator n:i32] -> (arr T) (pub)
     (req (gte n 0))
-    (unsafe (let base:i32 (call raw a (checked.add 4 (checked.mul n (sizeof T)))))
-    (mem.store32 base n)
-    (arr.cast T (+ base 4))))
+    (unsafe (call (gen.adopt_array T) (call raw a (checked.add 8 (checked.mul n (sizeof T)))) n)))
 
   (fn (free_array T) [a:Allocator xs:(arr T)] -> void (pub)
-    (unsafe (call free_raw a (- (arr.addr xs) 4) (+ 4 (* (arr.len xs) (sizeof T))))))
+    (unsafe (let n:i32 (+ 8 (* (arr.len xs) (sizeof T))))
+    (call free_raw a (call (gen.retire_array T) xs) n)))
 
   (struct Pair [left:i32 right:i64])
 

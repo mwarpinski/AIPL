@@ -47,15 +47,16 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-15 by the Rust toolchain, from the source of the commit
-that added it:
+Built 2026-10-16 by the Rust toolchain, from the source of the commit
+that added generation checks (the compiler's own source uses `ptr.make`
+since then, which the previous seed did not know):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `d02a2d42d69c9c85433307dc016a5f8d9045d6db83115da403c4551cdcbd680a`.
+sha256 `72a36ea2bdd10795c572916dd5f75ebbd3360984c1b8f841b61729edbe22e923`.
 Building that commit's source with the seed gives the same bytes, so for
 now the seed is its own stage 2.
 
@@ -68,4 +69,4 @@ language has: a new feature is added first, without being used in
 `cargo test` reports that the seed cannot build the source, or at a
 release, replace it with the build above and update the date, the commit,
 and the hash here. Replace it rarely, since every version stays in the
-repository's history (2 MB each).
+repository's history (about 3 MB each).

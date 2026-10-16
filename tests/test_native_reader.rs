@@ -254,7 +254,7 @@ fn aipl_summary(vm: &mut VM, wasm: &[u8]) -> String {
     };
     vm.write_bytes(addr, wasm);
     let out = match vm.invoke("summarize", vec![Value::Int(addr as i64), Value::Int(wasm.len() as i64)]).unwrap() {
-        Value::Int(p) => p as usize,
+        Value::Int64(p) => p as u32 as usize,
         other => panic!("{other:?}"),
     };
     let word = |at: usize| i32::from_le_bytes(vm.read_bytes(at, 4).try_into().unwrap()) as usize;
@@ -284,11 +284,11 @@ impl CompiledReader {
         let mut store = Store::new(&self.engine, WasiCtxBuilder::new().build_p1());
         let inst = linker.instantiate(&mut store, &self.module).unwrap();
         let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").unwrap();
-        let summarize = inst.get_typed_func::<(i32, i32), i32>(&mut store, "summarize").unwrap();
+        let summarize = inst.get_typed_func::<(i32, i32), i64>(&mut store, "summarize").unwrap();
         let mem = inst.get_memory(&mut store, "memory").unwrap();
         let addr = alloc.call(&mut store, wasm.len() as i32 + 8).unwrap() as usize;
         mem.write(&mut store, addr, wasm).unwrap();
-        let out = summarize.call(&mut store, (addr as i32, wasm.len() as i32)).unwrap() as usize;
+        let out = summarize.call(&mut store, (addr as i32, wasm.len() as i32)).unwrap() as u32 as usize;
         let data = mem.data(&store);
         let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
         String::from_utf8(data[word(out)..word(out) + word(out + 4)].to_vec()).unwrap()

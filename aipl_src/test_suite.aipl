@@ -71,7 +71,7 @@
     (set! failures (+ failures (call report "std/map: generic hash map over cmp.Hash keys (9 tests)" (call map.run_map_tests) 9)))
     (set! failures (+ failures (call report "std/buf: string builder (3 tests)" (call buf.run_buf_tests) 3)))
     (set! failures (+ failures (call report "std/time: durations and the clock (7 tests)" (call time.run_time_tests) 7)))
-    (set! failures (+ failures (call report "std/arena: typed region allocator (5 tests)" (call arena.run_arena_tests) 5)))
+    (set! failures (+ failures (call report "std/arena: typed region allocator (7 tests)" (call arena.run_arena_tests) 7)))
     (set! failures (+ failures (call report "std/heap: general-purpose allocator (8 tests)" (call heap.run_heap_tests) 8)))
     (set! failures (+ failures (call report "std/alloc: any allocator as one value (7 tests)" (call alloc.run_alloc_tests) 7)))
     (set! failures (+ failures (call report "std/bigint: arbitrary-precision integers (13 tests)" (call bigint.run_bigint_tests) 13)))

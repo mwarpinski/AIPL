@@ -19,7 +19,8 @@
   ;; The forms of src/parser.rs parse_expr that are not operators.
   (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
-              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_ with_])
+              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_ with_
+              ptr_make arr_make ptr_gen arr_gen])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
              unions:(ptr (map.Map (ptr str.Bytes) i32))
@@ -656,6 +657,16 @@
       ((eq form Form.arr_cast)
        (let elem:ast.Type (call parse_type p))
        (make ast.Expr.cast at (make ast.Type.arr elem) (call parse_expr p)))
+      ((eq form Form.ptr_make)
+       (let name:(ptr str.Bytes) (call expect_symbol p "struct name in ptr.make" at))
+       (let addr:ast.Expr (call parse_expr p))
+       (make ast.Expr.make_ptr at (make ast.Type.ptr (make ast.Type.struct_ name)) addr (call parse_expr p)))
+      ((eq form Form.arr_make)
+       (let elem:ast.Type (call parse_type p))
+       (let addr:ast.Expr (call parse_expr p))
+       (make ast.Expr.make_ptr at (make ast.Type.arr elem) addr (call parse_expr p)))
+      ((eq form Form.ptr_gen) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.ptr_gen))
+      ((eq form Form.arr_gen) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.arr_gen))
       ((eq form Form.ptr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.ptr))
       ((eq form Form.arr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.arr))
       ((eq form Form.enum_ord) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.enum_))
@@ -922,6 +933,8 @@
     (call form m "call_ref" Form.call_ref) (call form m "arr.len" Form.arr_len) (call form m "ptr.null" Form.ptr_null)
     (call form m "arr.null" Form.arr_null) (call form m "ptr.cast" Form.ptr_cast) (call form m "arr.cast" Form.arr_cast)
     (call form m "ptr.addr" Form.ptr_addr) (call form m "arr.addr" Form.arr_addr) (call form m "enum.ord" Form.enum_ord)
+    (call form m "ptr.make" Form.ptr_make) (call form m "arr.make" Form.arr_make)
+    (call form m "ptr.gen" Form.ptr_gen) (call form m "arr.gen" Form.arr_gen)
     (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.arr_new) (call form m "arr.get" Form.arr_get)
     (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free) (call form m "with" Form.with_)
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)

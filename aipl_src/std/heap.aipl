@@ -27,6 +27,7 @@
 ;; size asked for in the other. Allocating and freeing take the heap's
 ;; lock, so threads can share a heap.
 (module heap
+  (import gen)
 
   ;; Header word 0 is the heap's address xor one of these.
   (const LIVE:i32 1279874629)     ;; "LIVE"
@@ -163,21 +164,22 @@
 
   ;; A zeroed T.
   (fn (create T) [h:(ptr Heap)] -> (ptr T) (pub) (where (struct T))
-    (unsafe (ptr.cast T (call raw h (sizeof T)))))
+    (unsafe (call (gen.adopt T) (call raw h (+ (sizeof T) 8)))))
 
+  ;; Destroying p ends its generation (std/gen): p, and every copy of it,
+  ;; stops the program with "Use after free" if used again.
   (fn (destroy T) [h:(ptr Heap) p:(ptr T)] -> void (pub) (where (struct T))
-    (unsafe (call free_raw h (ptr.addr p) (sizeof T))))
+    (unsafe (call free_raw h (call (gen.retire T) p) (+ (sizeof T) 8))))
 
-  ;; n zeroed Ts, laid out like (arr.new T n): the length in the 4 bytes
-  ;; before the first element.
+  ;; n zeroed Ts, laid out like (arr.new T n): the generation word, then the
+  ;; length, before the first element.
   (fn (array T) [h:(ptr Heap) n:i32] -> (arr T) (pub)
     (req (gte n 0))
-    (unsafe (let base:i32 (call raw h (checked.add 4 (checked.mul n (sizeof T)))))
-    (mem.store32 base n)
-    (arr.cast T (+ base 4))))
+    (unsafe (call (gen.adopt_array T) (call raw h (checked.add 8 (checked.mul n (sizeof T)))) n)))
 
   (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void (pub)
-    (unsafe (call free_raw h (- (arr.addr a) 4) (+ 4 (* (arr.len a) (sizeof T))))))
+    (unsafe (let n:i32 (+ 8 (* (arr.len a) (sizeof T))))
+    (call free_raw h (call (gen.retire_array T) a) n)))
 
   ;; ===== Accounting =====
 
@@ -227,7 +229,7 @@
     (let e:(arr i32) (call (array i32) h 4))
     (arr.set i32 e 3 42)
     (call (free_array i32) h e)
-    (if (eq (mem.load32 (+ (arr.addr e) 12)) -559038737) (set! p (+ p 1)) (block))
+    (if (eq (mem.load32 (+ (arr.addr e) 8)) -559038737) (set! p (+ p 1)) (block))
     ;; churn: memory is reused, so a thousand allocations of 1 KiB, each freed,
     ;; take no more than the first chunk
     (let before:i32 (call reserved h))

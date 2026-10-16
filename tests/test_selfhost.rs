@@ -1208,14 +1208,14 @@ fn self_hosted_bytes_match_nested_locals() {
 
 /// Past its table limits the self-hosted compiler reports an error rather
 /// than failing: more than 1024 locals in a function is compile error 93,
-/// and more than 2048 functions is 92 (codegen.aipl's tables are bounded
+/// and more than 8192 functions is 92 (codegen.aipl's tables are bounded
 /// arrays since the CR6 rewrite, so the counts stop at the limit).
 #[test]
 fn self_hosted_table_limits_are_compile_errors() {
     let lets: String = (0..1100).map(|i| format!("(let v{i}:i32 {i}) ")).collect();
     let err = self_host(&format!("(module m (fn f [] -> i32 {lets} 0))")).unwrap_err();
     assert!(err.contains("compile error 93"), "{err}");
-    let fns: String = (0..2100).map(|i| format!("(fn f{i} [] -> i32 {i}) ")).collect();
+    let fns: String = (0..8200).map(|i| format!("(fn f{i} [] -> i32 {i}) ")).collect();
     let err = self_host(&format!("(module m {fns})")).unwrap_err();
     assert!(err.contains("compile error 92"), "{err}");
 }
