@@ -122,13 +122,14 @@ aipl compile --exe aipl_src/driver.aipl -o aiplc
   formatting and exact float parsing, growable vectors, hash maps, a string
   builder, big integers, timing, and allocators. Memory you free comes from
   an allocator you pass explicitly, as in Zig: a general-purpose heap that
-  stops the program on a double free or a write after free, an arena, or one
-  you write.
+  stops the program on a double free or a free of the wrong size, an arena,
+  or one you write.
 - **A self-hosted toolchain.** The resolver, type checker, code generator,
   and native backend are written in AIPL. They produce the same bytes and
   the same error messages as the Rust implementation, and the compiler
   rebuilds itself. Building it the first time still takes the Rust
-  toolchain.
+  toolchain, and so does writing an executable (the Rust CLI runs the AIPL
+  native backend and sets the file's execute bit, which WASI cannot).
 
 AIPL is **not** memory-safe yet. What holds: array indexes are
 bounds-checked, pointers are typed and checked for null, contracts run on
@@ -161,7 +162,7 @@ is missing):
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
    easier installation, a showcase program, and the experiment measuring
    how well agents write AIPL.
-2. **The language:** small structs by value.
+2. **The language:** generation checks against use after free.
 3. **The standard library:** networking and starting processes, once WASI
    can.
 4. **Retiring the Rust compiler:** rebuilding the toolchain from a

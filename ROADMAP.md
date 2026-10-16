@@ -32,9 +32,9 @@ benchmarks against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **Small structs by value**, then unions, results, and `Option` by
-   value (docs/design/VALUES_PLAN.md); generation checks against use after
-   free (docs/design/GENERATIONS_PLAN.md).
+2. **Generation checks against use after free**
+   (docs/design/GENERATIONS_PLAN.md). (Value structs, and unions, results,
+   and `Option` by value, were done on 2026-10-15: docs/design/VALUES_PLAN.md.)
 3. **The standard library:** networking, once WASI has listening sockets;
    starting processes, once WASI can (preview 1 cannot); a faster
    small-block path in `std/heap`.
@@ -54,7 +54,7 @@ versioning (once packages exist), `inv` contracts.
 
 ### Toolchain
 
-- **The Rust toolchain is still needed to bootstrap.** The self-hosted compiler (`aipl_src/driver.aipl`: resolver, generics, checker, code generator) compiles every program to the Rust toolchain's bytes, itself included, but building it the first time takes the Rust toolchain; there is no checked-in seed binary yet (PROGRESS.md step 10). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end. Float literals beyond `m ≤ 2^53`, `k ≤ 22` are compile error 973 in the self-hosted compiler (AIPL_SPEC.md 6.4).
+- **The Rust toolchain is still needed to bootstrap.** The self-hosted compiler (`aipl_src/driver.aipl`: resolver, generics, checker, code generator) compiles every program to the Rust toolchain's bytes, itself included, but building it the first time takes the Rust toolchain; there is no checked-in seed binary yet ("Next" 4). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
 - **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (native code on Linux x86-64, the launcher bundle elsewhere) is written by the Rust CLI, which also runs the AIPL native backend (`aipl_src/native/native.aipl`) in its embedded wasmtime; the planned fix is a host-provided import so the AIPL driver can do it. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
 - **Two copies drift unless held equal.** The fuzzer (`tools/fuzz.py`) checks the two front ends against each other on mutated programs; it finds no differences on 50,000 cases (2026-10-06), and CI runs 3,000 on every push. Only tests and the fuzzer hold the two equal, so a change to one copy must be made to the other.
