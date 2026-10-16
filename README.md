@@ -151,9 +151,11 @@ aipl compile --exe aipl_src/driver.aipl -o aiplc
 - **A self-hosted toolchain.** The resolver, type checker, code generator,
   and native backend are written in AIPL. They produce the same bytes and
   the same error messages as the Rust implementation, and the compiler
-  rebuilds itself. Building it the first time still takes the Rust
-  toolchain, and so does writing an executable (the Rust CLI runs the AIPL
-  native backend and sets the file's execute bit, which WASI cannot).
+  rebuilds itself. On Linux x86-64 it builds from a checked-in native seed
+  with no Rust, and every test run checks that build against the Rust
+  toolchain's ([bootstrap/README.md](bootstrap/README.md)). The `aipl`
+  command the installer builds is still the Rust one: the interpreter and
+  the WebAssembly runner are Rust, and other platforms have no seed yet.
 
 AIPL is **not** memory-safe yet. What holds: array indexes are
 bounds-checked, pointers are typed and checked for null, contracts run on
@@ -189,8 +191,9 @@ is missing):
 2. **The language:** generation checks against use after free.
 3. **The standard library:** networking and starting processes, once WASI
    can.
-4. **Retiring the Rust compiler:** rebuilding the toolchain from a
-   checked-in compiled seed, so Rust is needed only for the launcher.
+4. **Rust out of the build path:** the seed builds the compiler on Linux
+   x86-64 today; next, a WebAssembly seed for other platforms and an
+   installer that needs no Rust. The Rust compiler stays as the referee.
 5. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
 
@@ -200,7 +203,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **340 Rust tests** and an AIPL test suite, run on every push by CI.
+- **343 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

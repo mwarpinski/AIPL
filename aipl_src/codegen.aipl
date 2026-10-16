@@ -157,7 +157,7 @@
     (put cg Cg.src_len 0)
     (put cg Cg.sigs (arr.new (ptr Sig) 31))
     (put cg Cg.nsigs 0)
-    (put cg Cg.strs (arr.new (ptr StrLit) 1364))
+    (put cg Cg.strs (arr.new (ptr StrLit) 256))
     (put cg Cg.nstrs 0)
     (put cg Cg.blob (call buf.make (call alloc.default) 4096))
     (put cg Cg.newline 0)
@@ -2126,6 +2126,15 @@
     true))
 
   (fn add_str_entry [cg:(ptr Cg) pos:i32 len:i32 addr:i32] -> void
+    ;; a full table doubles
+    (let n:i32 (get cg Cg.nstrs))
+    (if (eq n (arr.len (get cg Cg.strs)))
+        (block
+          (let bigger:(arr (ptr StrLit)) (arr.new (ptr StrLit) (* n 2)))
+          (loop i 0 (- n 1) 1
+            (arr.set (ptr StrLit) bigger i (arr.get (ptr StrLit) (get cg Cg.strs) i)))
+          (put cg Cg.strs bigger))
+        (block))
     (let e:(ptr StrLit) (new StrLit))
     (put e StrLit.pos pos)
     (put e StrLit.len len)
@@ -2134,6 +2143,8 @@
     (put cg Cg.nstrs (+ (get cg Cg.nstrs) 1)))
 
   ;; Appends [len u32 LE][bytes] to the blob; returns the bytes' address.
+  ;; The literals and the heap start must fit in the initial 16 pages, as
+  ;; wasm.rs string_layout requires: past that, compile error 768.
   (fn append_to_blob [cg:(ptr Cg) bytes:i32 n:i32] -> i32
     (unsafe (let blob:(ptr buf.Buf) (get cg Cg.blob))
     (let addr:i32 (+ 1028 (call buf.len blob)))
@@ -2142,17 +2153,14 @@
     (call buf.push_byte blob (bitand (shr n 16) 255))
     (call buf.push_byte blob (bitand (shr n 24) 255))
     (loop i 0 (- n 1) 1 (call buf.push_byte blob (mem.load8 (+ bytes i))))
+    (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
     addr))
 
   ;; Interns the literal spelled by this span (escapes decoded) by content,
-  ;; as wasm.rs string_layout does; returns its address. Past 64 KiB of
-  ;; literals or 1364 spellings: compile error 768.
+  ;; as wasm.rs string_layout does; returns its address.
   (fn intern_string [cg:(ptr Cg) pos:i32 len:i32] -> i32
     (unsafe (let existing:i32 (call find_interned_string cg pos len))
     (if (neq existing -1) (return existing) (block))
-    (if (or (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536) (gte (get cg Cg.nstrs) 1364))
-        (block (call set_compile_error CgErr.too_many_literals) (return 1028))
-        (block))
     (let text:(ptr buf.Buf) (call buf.make (call alloc.default) (+ len 1)))
     (let i:i32 0)
     (while (lt i len)
@@ -4515,9 +4523,6 @@
   (fn intern_raw [cg:(ptr Cg) data:i32 len:i32] -> i32
     (let found:i32 (call find_interned_content cg data len))
     (if (neq found -1) (return found) (block))
-    (if (gt (+ (call buf.len (get cg Cg.blob)) (+ 4 len)) 65536)
-        (block (call set_compile_error CgErr.too_many_literals) (return 1028))
-        (block))
     (call append_to_blob cg data len))
 
   (fn add_item [cg:(ptr Cg) m:(ptr Msg) kind:ItemKind b:(ptr buf.Buf) local:i32] -> void

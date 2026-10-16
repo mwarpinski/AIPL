@@ -41,7 +41,7 @@
   (import lower)
   (import wasi)
 
-  (struct Output [ok:bool error:(ptr str.Bytes) exe:(ptr str.Bytes)])
+  (struct Output [(read ok:bool) (read error:(ptr str.Bytes)) (read exe:(ptr str.Bytes))] (pub))
 
   (fn failure [msg:(ptr str.Bytes)] -> (ptr Output)
     (unsafe (let o:(ptr Output) (new Output))
@@ -318,7 +318,7 @@
 
   ;; `sandbox`: the program may use only the working directory (no `/`
   ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
-  (fn compile_with [wasm:(ptr str.Bytes) sandbox:bool] -> (ptr Output)
+  (fn compile_with [wasm:(ptr str.Bytes) sandbox:bool] -> (ptr Output) (pub)
     (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))

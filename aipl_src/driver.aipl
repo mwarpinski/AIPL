@@ -26,13 +26,13 @@
   ;; status 1: import resolution failed; the message is at (addr, len)
   ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
   ;; status 3: the program does not type-check; "path: line:col: message" is at (addr, len)
-  (struct Out [status:i32 addr:i32 len:i32])
+  (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
-  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out)
+  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
     (unsafe (let res:(ptr Out) (new Out))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
