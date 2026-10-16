@@ -1,6 +1,8 @@
 # Generation checks: stopping use after free
 
-Status: planned, after launch (ROADMAP.md, "Next" 2). Nothing here is built.
+Status: decided (2026-10-16) and prototyped in the Rust toolchain on branch
+`features/generations` (see "Prototype" below for what it measured). Not
+merged: the VM and the AIPL toolchain do not have it yet.
 
 ## The gap
 
@@ -131,3 +133,104 @@ generation word and the first field in one cache line.
 - **Never reusing freed memory** (quarantine). Catches the reuse case
   cheaply, but memory only grows, and reads of freed blocks still go
   unnoticed.
+
+## Prototype (2026-10-16)
+
+Built in `src/compiler/wasm.rs`, the Rust checker's layouts, and the
+standard library, enough to run every benchmark as wasm and natively (the
+native backend, compiled by the prototype, runs with the checks on too).
+The VM and the AIPL toolchain are unchanged, so their tests fail on the
+branch.
+
+**What it does.**
+
+- A `(ptr S)` or `(arr T)` is an `i64`: the address in the low half, the
+  generation in the high half; 8 bytes, 8-aligned, in memory.
+- Every object has a generation word 8 bytes before it. `new` and
+  `arr.new` reserve it (the bump allocator never frees, so it stays 0);
+  for an array the length follows it, as before, just before the first
+  element.
+- `get`, `put`, `arr.get`, `arr.set`, and `arr.len` check, after the null
+  check, that the word equals the pointer's generation, else "Use after
+  free" with the usual position and call chain. Same in wasm and natively.
+- `ptr.cast` / `arr.cast` (already `unsafe`) make *unchecked* pointers
+  (generation `0xFFFFFFFF`): the toolchain casts interior addresses of big
+  buffers (tokens, AST nodes), where the word before is another object's
+  field. A mismatch takes a slow path that lets them through, so checked
+  pointers pay nothing for this. A cast of 0 is null.
+- New, `unsafe`: `(ptr.make S addr gen)` / `(arr.make T addr gen)` build a
+  checked pointer, `(ptr.gen p)` / `(arr.gen a)` read one's generation.
+- `std/gen`: fresh generations from a counter in runtime cell 56,
+  scrambled (an odd multiplier, so unique until 2^32) so stale data is
+  unlikely to equal one by accident; `adopt` gives an allocator's block a
+  fresh generation, `retire` checks it is still live (so a double free is
+  caught) and marks it freed.
+- `std/heap` and `std/alloc` (every allocator kind): each typed object
+  gets the 8-byte prefix and its own generation. `std/arena`: an 8-byte
+  size header per block, so `reset` walks the blocks and marks every
+  object freed, then takes one fresh generation for everything allocated
+  until the next reset.
+- `eq` on pointers compares address and generation.
+
+Caught, in wasm and natively: use through a copy after `destroy`, use
+after the block holds a new object at the same address, a double
+`destroy`, use after `arena.reset`, and an array after `free_array`.
+
+Exact for the heap (a block keeps its size class, so the generation word
+is always at the same place). After an arena reset, new objects can start
+at different addresses, so an old pointer's word can be in the middle of
+new data: caught unless that data happens to equal the old (scrambled)
+generation.
+
+**Cost** (`tools/bench.py --runs 3`, time with checks / time without):
+
+| Benchmark | Native | Wasm | What it does |
+|---|---|---|---|
+| spigot | 1.00 | 1.00 | integer arithmetic |
+| mandelbrot | 1.03 | 1.04 | float arithmetic |
+| nbody | 1.07 | 1.06 | value structs (not pointers) |
+| knucleotide | 1.16 | 1.20 | hash map |
+| fannkuch | 1.38 | 1.24 | small array reads and writes |
+| pidigits | 1.39 | 1.51 | big-integer arrays |
+| spectralnorm | 2.48 | 1.00 | array reads: wasmtime removes the cost, the native backend does not |
+| binarytrees | 2.00 | 1.62 | allocation and pointer chasing; a node is 32 bytes, was 8 |
+
+binarytrees was 2.38 / 1.79 with a fresh generation per arena allocation
+(an atomic add each); one per reset brought it to the line above.
+
+**Ways to cut it, in order of what they would buy:**
+
+1. **Check once per loop.** A free is a call, so a pointer checked before
+   a loop whose body makes no calls (and does not reassign it) needs no
+   check inside. That covers the inner loops of fannkuch, spectralnorm,
+   and pidigits.
+2. **The native backend's lowering of the check** (spectralnorm: 2.48
+   natively, 1.00 under wasmtime): keep the pointer and the generation in
+   registers instead of the scratch locals.
+3. **Per-allocator generations** for the heap (a counter under its lock,
+   no atomic), as the arena already does.
+4. The 8-byte pointers and the prefix are the design's price in memory
+   (binarytrees); nothing above changes that.
+
+**Not done in the prototype:** the VM, the AIPL toolchain (codegen.aipl,
+checker.aipl, the native backend's reader is unchanged and needed nothing),
+tests, and contract messages show a pointer as its 64-bit value.
+
+## Data races (decided 2026-10-16)
+
+Generation checks do not stop data races (two threads using the same
+memory at once, one writing), which can forge a pointer too. Starting a
+thread and atomics already require `unsafe`, so the claim with generations
+is: **code without `unsafe` is memory-safe; threads need `unsafe`.**
+
+Later, so that ordinary programs never need `unsafe` threads: a safe
+parallel library (fork and join) in which each worker gets its own part of
+the output array (disjoint by construction, kept in it by bounds checks),
+read-only input (value structs, strings, or frozen data), and its own
+arena; results come back at the join. It uses `unsafe` threads inside, as
+`std/heap` uses raw memory. Freezing would be a state of the generation
+word: reads allowed from any thread, a write through a frozen pointer
+stops the program. Considered and not chosen: Rust's Send/Sync (needs a
+borrow checker), isolates that copy every message (large inputs get
+copied), and a race detector (finds races in testing, guarantees nothing).
+

@@ -274,10 +274,15 @@ pub enum Expr {
         ty: Type,
         span: (u32, u32),
     },
-    /// `(ptr.cast S addr)` / `(arr.cast T addr)`: an `i32` address as `ty`.
+    /// `(ptr.cast S addr)` / `(arr.cast T addr)`: an `i32` address as `ty`,
+    /// unchecked for generations. With `gen`, `(ptr.make S addr gen)` /
+    /// `(arr.make T addr gen)`: a pointer carrying that generation, which
+    /// every access compares with the word 8 bytes before the object
+    /// (docs/design/GENERATIONS_PLAN.md).
     Cast {
         ty: Type,
         addr: Box<Expr>,
+        gen: Option<Box<Expr>>,
         span: (u32, u32),
     },
     /// `(make V args...)`: a value of value struct `V`, one argument per
@@ -388,6 +393,10 @@ pub enum AddrKind {
     Arr,
     /// `(enum.ord e)`
     Enum,
+    /// `(ptr.gen p)`: the generation a pointer carries
+    PtrGen,
+    /// `(arr.gen a)`
+    ArrGen,
 }
 
 /// `(union Name [(variant field:T ...) ...])`: a value is one of the

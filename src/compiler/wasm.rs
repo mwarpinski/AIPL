@@ -186,6 +186,10 @@ impl WasmCompiler {
             let addr_scratch = current_idx;
             wasm_locals.push((2, ValType::I32));
             current_idx += 2;
+            // and an i64: the pointer a generation check is checking
+            let fat_scratch = current_idx;
+            wasm_locals.push((1, ValType::I64));
+            current_idx += 1;
 
             // Two more i32 temps, only for functions that perform I/O: the
             // WASI lowerings evaluate all their operands first (source order,
@@ -225,6 +229,7 @@ impl WasmCompiler {
                 locals: &local_map,
                 addr_scratch,
                 index_scratch: addr_scratch + 1,
+                fat_scratch,
                 checks: &check_fns,
                 ens_block: has_ens,
                 io_locals,
@@ -428,7 +433,7 @@ impl WasmCompiler {
             fn_names.append(start_fn, "_start");
         }
         if uses_checks {
-            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end", "aipl.null"].iter().enumerate() {
+            for (k, n) in ["aipl.dec", "aipl.oob", "aipl.text", "aipl.begin", "aipl.end", "aipl.null", "aipl.uaf"].iter().enumerate() {
                 fn_names.append(checks_base + k as u32, n);
             }
         }
@@ -591,6 +596,8 @@ struct Ctx<'a> {
     addr_scratch: u32,
     /// The index of an array bounds check (addr_scratch holds the array).
     index_scratch: u32,
+    /// The pointer a generation check is checking (an i64).
+    fat_scratch: u32,
     /// The check helpers' function indices (meaningful when the module has checks).
     checks: &'a CheckFns,
     /// The function has `ens`: its body is a block, and `return` branches to
@@ -1089,6 +1096,7 @@ fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
             out.extend(err_body.iter());
         }
         Expr::Block(b, _) | Expr::Unsafe(b, _) => out.extend(b.iter()),
+        Expr::Cast { addr, gen: Some(g), .. } => out.extend([addr.as_ref(), g]),
         Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
         Expr::PutField { ptr, val, .. } => out.extend([ptr.as_ref(), val]),
         Expr::ArrGet { ptr, index, .. } => out.extend([ptr.as_ref(), index]),
@@ -1308,8 +1316,11 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
+        // pointers and arrays: address and generation (a cast of 0 is null)
+        (OpCode::Eq, Type::Ptr(_) | Type::Array(_)) => I64Eq,
+        (OpCode::Neq, Type::Ptr(_) | Type::Array(_)) => I64Ne,
         (OpCode::Lt, Type::I32) => I32LtS,
         (OpCode::Lte, Type::I32) => I32LeS,
         (OpCode::Gt, Type::I32) => I32GtS,
@@ -1476,8 +1487,9 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             | Expr::GetField { ptr: e, .. }
             | Expr::ArrNew { size: e, .. }
             | Expr::ArrLen { arr: e, .. }
-            | Expr::Cast { addr: e, .. }
+            | Expr::Cast { addr: e, gen: None, .. }
             | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets, unions),
+            Expr::Cast { addr, gen: Some(g), .. } => collect_lets(&[*addr.clone(), *g.clone()], lets, unions),
             Expr::If { cond, then_branch, else_branch, .. } => {
                 collect_lets(&[*cond.clone(), *then_branch.clone(), *else_branch.clone()], lets, unions);
             }
@@ -1554,8 +1566,11 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         Type::I64 => ValType::I64,
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
-        // Pointers, arrays, results, and function refs are i32 addresses/indices.
-        Type::Ptr(_) | Type::Struct(_) | Type::ResultType(_, _) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
+        // Pointers and arrays: the address in the low half, the generation in
+        // the high half (docs/design/GENERATIONS_PLAN.md).
+        Type::Ptr(_) | Type::Array(_) => ValType::I64,
+        // Results, unions, and function refs are i32 addresses/indices.
+        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
     }
 }
 
@@ -2260,10 +2275,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 .get(struct_name)
                 .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
             let size = crate::checker::get_struct_size(def, ctx.structs)?;
+            // [generation 0][unused][object]: a bump allocation is never
+            // freed, so its generation word stays 0 (fresh memory)
             func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(round8(size as i32)));
+            func.instruction(&Instruction::I32Const(round8(size as i32) + 8));
             func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             emit_grow_to_cursor(func);
+            func.instruction(&Instruction::I32Const(8));
+            func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I64ExtendI32U);
         }
         Expr::GetField {
             struct_name,
@@ -2285,7 +2305,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             compile_expr(ptr, ctx, func)?;
             emit_null_check(func, ctx);
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2295,7 +2315,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                         normalize_bool(func);
                     }
                 }
-                Type::I64 => {
+                Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 3,
@@ -2347,14 +2367,14 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             compile_expr(val, ctx, func)?;
             match field_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
                         memory_index: 0,
                     }));
                 }
-                Type::I64 => {
+                Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 3,
@@ -2404,25 +2424,26 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::Unreachable);
             func.instruction(&Instruction::End);
-            // claim 4 + n * elem_size bytes atomically; the block starts at `old`
+            // claim 8 + n * elem_size bytes atomically; the block starts at `old`
             let (block, _) = io_locals(ctx)?;
             func.instruction(&Instruction::I32Const(0));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
             func.instruction(&Instruction::I32Const(elem_size as i32));
             func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Const(8));
             func.instruction(&Instruction::I32Add);
             emit_round8(func);
             func.instruction(&Instruction::I32AtomicRmwAdd(M4));
             func.instruction(&Instruction::LocalSet(block));
             emit_grow_to_cursor(func);
-            // header mem[old] = n; the array is old + 4
+            // [generation 0][n][elements]: mem[old + 4] = n; the array is old + 8
             func.instruction(&Instruction::LocalGet(block));
             func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Store(M4));
+            func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
             func.instruction(&Instruction::LocalGet(block));
-            func.instruction(&Instruction::I32Const(4));
+            func.instruction(&Instruction::I32Const(8));
             func.instruction(&Instruction::I32Add);
+            func.instruction(&Instruction::I64ExtendI32U);
         }
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -2463,12 +2484,55 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             let pos = ctx.ref_sigs.iter().position(|k| *k == key).ok_or("Wasm Codegen: call_ref signature not collected")?;
             func.instruction(&Instruction::CallIndirect { type_index: ctx.ref_type_base + pos as u32, table_index: 0 });
         }
-        // Pointers and arrays are i32 addresses: casts and addr are free.
+        // Pointers and arrays are an address and a generation in one i64.
         Expr::Null { .. } => {
-            func.instruction(&Instruction::I32Const(0));
+            func.instruction(&Instruction::I64Const(0));
         }
-        Expr::Cast { addr: inner, .. } | Expr::Addr { val: inner, .. } => {
+        Expr::Cast { ty: Type::Ptr(_) | Type::Array(_), addr, gen, .. } => {
+            use Instruction::*;
+            match gen {
+                // ptr.make / arr.make: addr | gen << 32
+                Some(g) => {
+                    compile_expr(addr, ctx, func)?;
+                    func.instruction(&I64ExtendI32U);
+                    compile_expr(g, ctx, func)?;
+                    func.instruction(&I64ExtendI32U);
+                    func.instruction(&I64Const(32));
+                    func.instruction(&I64Shl);
+                    func.instruction(&I64Or);
+                }
+                // ptr.cast / arr.cast: unchecked (GEN_UNCHECKED), and 0 is null
+                None => {
+                    compile_expr(addr, ctx, func)?;
+                    func.instruction(&LocalTee(ctx.addr_scratch));
+                    func.instruction(&I32Eqz);
+                    func.instruction(&If(BlockType::Result(ValType::I64)));
+                    func.instruction(&I64Const(0));
+                    func.instruction(&Else);
+                    func.instruction(&LocalGet(ctx.addr_scratch));
+                    func.instruction(&I64ExtendI32U);
+                    func.instruction(&I64Const(((GEN_UNCHECKED as u64) << 32) as i64));
+                    func.instruction(&I64Or);
+                    func.instruction(&End);
+                }
+            }
+        }
+        Expr::Cast { addr: inner, .. } => {
             compile_expr(inner, ctx, func)?;
+        }
+        Expr::Addr { val, kind, .. } => {
+            compile_expr(val, ctx, func)?;
+            match kind {
+                AddrKind::Ptr | AddrKind::Arr => {
+                    func.instruction(&Instruction::I32WrapI64);
+                }
+                AddrKind::PtrGen | AddrKind::ArrGen => {
+                    func.instruction(&Instruction::I64Const(32));
+                    func.instruction(&Instruction::I64ShrU);
+                    func.instruction(&Instruction::I32WrapI64);
+                }
+                AddrKind::Enum => {}
+            }
         }
         Expr::ArrLen { arr, .. } => {
             compile_expr(arr, ctx, func)?;
@@ -2484,13 +2548,13 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 return emit_load_scalars(func, ctx, elem_ty, 0);
             }
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
                     }
                 }
-                Type::I64 => {
+                Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -2534,10 +2598,10 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             compile_expr(val, ctx, func)?;
             match elem_ty {
-                Type::I32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
-                Type::I64 => {
+                Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                     func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
                         offset: 0,
                         align: 3,
@@ -3118,18 +3182,46 @@ fn emit_write_address_check(func: &mut Body, ctx: &Ctx) {
 /// $aipl_oob never returns; the `unreachable` after it says so, so wasmtime
 /// keeps no values alive across the call (with the call alone, the checks
 /// cost nbody twice as much).
-/// With a pointer or array on the stack: if it is null, the failure
-/// message ($aipl_null) and a trap; the value stays on the stack.
+/// With a pointer or array (an i64) on the stack: if it is null, the
+/// failure message ($aipl_null) and a trap; if its generation is not the
+/// word 8 bytes before the object, "Use after free" ($aipl_uaf) and a trap,
+/// unless it is unchecked (ptr.cast). Leaves the i32 address.
 fn emit_null_check(func: &mut Body, ctx: &Ctx) {
     use Instruction::*;
+    func.instruction(&LocalTee(ctx.fat_scratch));
+    func.instruction(&I32WrapI64);
     func.instruction(&LocalTee(ctx.addr_scratch));
     func.instruction(&I32Eqz);
     func.instruction(&If(BlockType::Empty));
     func.instruction(&Call(ctx.checks.null));
     func.instruction(&Unreachable);
     func.instruction(&End);
+    let pointer_gen = |func: &mut Body| {
+        func.instruction(&LocalGet(ctx.fat_scratch));
+        func.instruction(&I64Const(32));
+        func.instruction(&I64ShrU);
+        func.instruction(&I32WrapI64);
+    };
+    func.instruction(&LocalGet(ctx.addr_scratch));
+    func.instruction(&I32Const(8));
+    func.instruction(&I32Sub);
+    func.instruction(&I32Load(M4));
+    pointer_gen(func);
+    func.instruction(&I32Ne);
+    func.instruction(&If(BlockType::Empty));
+    pointer_gen(func);
+    func.instruction(&I32Const(GEN_UNCHECKED as i32));
+    func.instruction(&I32Ne);
+    func.instruction(&If(BlockType::Empty));
+    func.instruction(&Call(ctx.checks.uaf));
+    func.instruction(&Unreachable);
+    func.instruction(&End);
+    func.instruction(&End);
     func.instruction(&LocalGet(ctx.addr_scratch));
 }
+
+/// The generation of a pointer made by ptr.cast: never compared.
+const GEN_UNCHECKED: u32 = 0xFFFF_FFFF;
 
 fn emit_bounds_check(func: &mut Body, ctx: &Ctx) {
     use Instruction::*;
@@ -3161,6 +3253,8 @@ const OOB_PREFIX: &[u8] = b"Array index out of bounds: index ";
 const OOB_MIDDLE: &[u8] = b" for array of length ";
 /// The VM's message for a null pointer or array (vm.rs NULL_POINTER).
 const NULL_TEXT: &[u8] = b"Null pointer dereference";
+/// A pointer whose object was freed (GENERATIONS_PLAN.md).
+const UAF_TEXT: &[u8] = b"Use after free";
 
 /// Writes `text` at the address `addr` pushes, eight bytes per i64.store
 /// (the last chunk zero-padded, so it may write up to 7 bytes past the text).
@@ -3183,11 +3277,12 @@ pub struct CheckFns {
     begin: u32,
     end: u32,
     null: u32,
+    uaf: u32,
 }
 
 impl CheckFns {
     fn at(base: u32) -> CheckFns {
-        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4, null: base + 5 }
+        CheckFns { dec: base, oob: base + 1, text: base + 2, begin: base + 3, end: base + 4, null: base + 5, uaf: base + 6 }
     }
 }
 
@@ -3200,6 +3295,7 @@ fn check_signatures() -> Vec<(Vec<ValType>, Vec<ValType>)> {
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32, I32, I32], vec![I32]),
         (vec![I32], vec![]),
+        (vec![], vec![]),
         (vec![], vec![]),
     ]
 }
@@ -3403,7 +3499,19 @@ fn check_functions(fns: &CheckFns) -> Vec<Body> {
     n.instruction(&I32Store(M4));
     n.instruction(&Unreachable);
     n.instruction(&End);
-    vec![d, o, t, b, e, n]
+
+    // $aipl_uaf
+    let mut u = Body::new(vec![]);
+    emit_text_store(&mut u, &I32Const(RT_FAIL_TEXT), UAF_TEXT);
+    u.instruction(&I32Const(RT_FAIL_ADDR));
+    u.instruction(&I32Const(RT_FAIL_TEXT));
+    u.instruction(&I32Store(M4));
+    u.instruction(&I32Const(RT_FAIL_LEN));
+    u.instruction(&I32Const(UAF_TEXT.len() as i32));
+    u.instruction(&I32Store(M4));
+    u.instruction(&Unreachable);
+    u.instruction(&End);
+    vec![d, o, t, b, e, n, u]
 }
 
 /// A contract: whether it is an `ens`, its condition, and its message.
@@ -3426,8 +3534,8 @@ enum MsgItem {
 fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<MsgItem> {
     match ty {
         Type::Union(n) if structs.is_value_union(n) => None,
-        Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
-        Type::I64 => Some(MsgItem::Long(name.to_string())),
+        Type::I32 | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
+        Type::I64 | Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Long(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),
         _ => None,
     }
@@ -3967,8 +4075,12 @@ fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
         Expr::GetField { ptr, .. }
         | Expr::ArrNew { size: ptr, .. }
         | Expr::ArrLen { arr: ptr, .. }
-        | Expr::Cast { addr: ptr, .. }
+        | Expr::Cast { addr: ptr, gen: None, .. }
         | Expr::Addr { val: ptr, .. } => walk_expr(ptr, visit),
+        Expr::Cast { addr, gen: Some(g), .. } => {
+            walk_expr(addr, visit);
+            walk_expr(g, visit);
+        }
         Expr::PutField { ptr, val, .. } => {
             walk_expr(ptr, visit);
             walk_expr(val, visit);

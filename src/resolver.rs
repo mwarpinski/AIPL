@@ -700,7 +700,7 @@ impl Names<'_> {
     fn child_role(head: Option<&str>, i: usize) -> u8 {
         match (head, i) {
             (Some("fn" | "call" | "ref"), 1) => 1,
-            (Some("struct" | "new" | "sizeof" | "ptr" | "ptr.null" | "ptr.cast"), 1) => 2,
+            (Some("struct" | "new" | "sizeof" | "ptr" | "ptr.null" | "ptr.cast" | "ptr.make"), 1) => 2,
             (Some("get" | "put" | "with"), 2) => 3,
             _ => 0,
         }

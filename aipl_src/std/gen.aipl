@@ -1,0 +1,60 @@
+;; std/gen: generations for the objects allocators hand out and take back
+;; (docs/design/GENERATIONS_PLAN.md). An object an allocator gives has an
+;; 8-byte prefix: its generation word, then (for an array) its length. A
+;; pointer carries the generation it was made with, and every access
+;; compares the two, so once the object is freed (its word changed), a
+;; pointer kept from before stops the program with "Use after free", even
+;; after the memory holds another object.
+;;
+;;   (let p:(ptr Point) (call (gen.adopt Point) (call heap.raw h (+ (sizeof Point) 8))))
+;;   (call heap.free_raw h (call (gen.retire Point) p) (+ (sizeof Point) 8))
+;;
+;; std/heap, std/arena, and std/alloc do this; programs use them.
+(module gen
+
+  ;; The counter fresh generations come from (runtime cell 56).
+  (const COUNTER:i32 56)
+  ;; A freed object's word: no fresh generation is this.
+  (const DEAD:i32 -2)
+
+  ;; A generation no object has had since the program started (until 2^32
+  ;; of them): the counter's next value, scrambled (an odd multiplier is
+  ;; one to one) so stale data is unlikely to equal it by accident. Never 0
+  ;; (objects from new), -1 (ptr.cast), or DEAD.
+  (fn fresh [] -> i32 (pub)
+    (unsafe (let g:i32 (* (+ (atomic.add COUNTER 1) 1) -1640531535))
+    (if (or (eq g 0) (or (eq g -1) (eq g DEAD))) 1 g)))
+
+  ;; A T in the zeroed block at `base` (sizeof T + 8 bytes).
+  (fn (adopt T) [base:i32] -> (ptr T) (pub) (where (struct T)) (unsafe)
+    (let g:i32 (call fresh))
+    (mem.store32 base g)
+    (ptr.make T (+ base 8) g))
+
+  ;; n Ts in the zeroed block at `base` (8 + n * sizeof T bytes), laid out
+  ;; like (arr.new T n).
+  (fn (adopt_array T) [base:i32 n:i32] -> (arr T) (pub) (unsafe)
+    (let g:i32 (call fresh))
+    (mem.store32 base g)
+    (mem.store32 (+ base 4) n)
+    (arr.make T (+ base 8) g))
+
+  ;; Ends p's object, which must still be live (freeing it twice is a use
+  ;; after free); returns its block, for the allocator to take back.
+  (fn (retire T) [p:(ptr T)] -> i32 (pub) (where (struct T)) (unsafe)
+    (req (call live (ptr.addr p) (ptr.gen p)))
+    (mem.store32 (- (ptr.addr p) 8) DEAD)
+    (- (ptr.addr p) 8))
+
+  (fn (retire_array T) [a:(arr T)] -> i32 (pub) (unsafe)
+    (req (call live (arr.addr a) (arr.gen a)))
+    (mem.store32 (- (arr.addr a) 8) DEAD)
+    (- (arr.addr a) 8))
+
+  ;; Whether the object at addr still has generation g.
+  (fn live [addr:i32 g:i32] -> bool (unsafe)
+    (eq (mem.load32 (- addr 8)) g))
+
+  ;; Marks the object whose prefix starts at `base` freed (an arena reset).
+  (fn kill [base:i32] -> void (pub) (unsafe)
+    (mem.store32 base DEAD)))
