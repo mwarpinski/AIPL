@@ -73,7 +73,27 @@ Error: bad.aipl: 18:34: Arg 1 of 'gcd' expects i32, got bool
 
 ## Install
 
-AIPL is built from source with a stable Rust toolchain:
+The installer needs git, a stable Rust toolchain
+([rustup.rs](https://rustup.rs)), and a C compiler for linking (e.g.
+`build-essential`). It builds AIPL from source into `~/.aipl` and puts
+`aipl` and `aipl-run` on your `PATH`; nothing runs as root:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.sh | sh
+```
+
+To read it before running it (it is about 200 lines of POSIX `sh`):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSfO https://raw.githubusercontent.com/mwarpinski/AIPL/main/install.sh
+less install.sh && sh install.sh
+```
+
+`sh install.sh --help` lists the options (`--ref` to install a branch, tag,
+or commit; `--no-modify-path`); `sh install.sh --uninstall` removes it. Run
+the installer again to update.
+
+Or build a clone by hand:
 
 ```bash
 git clone https://github.com/mwarpinski/AIPL.git && cd AIPL
@@ -81,14 +101,16 @@ cargo build --release
 ```
 
 This builds `target/release/aipl` (the compiler, interpreter, and checker)
-and `target/release/aipl-run` (the launcher for compiled WebAssembly). The
-binaries find the standard library in the clone they were built from, so
-keep it in place. Native executables need Linux x86-64; the WebAssembly path
-should work wherever wasmtime runs, but only Linux is tested.
+and `target/release/aipl-run` (the launcher for compiled WebAssembly). Either
+way, the binaries find the standard library in the source they were built
+from (`~/.aipl/src` for the installer), so keep it in place. Native
+executables need Linux x86-64; the WebAssembly path should work wherever
+wasmtime runs, but only Linux is tested.
 
 ## Try it
 
-With `target/release` on your `PATH`:
+From the source directory (`~/.aipl/src` after the installer), with `aipl`
+on your `PATH`:
 
 ```bash
 aipl verify examples/word_count.aipl            # parse and type-check
@@ -122,13 +144,14 @@ aipl compile --exe aipl_src/driver.aipl -o aiplc
   formatting and exact float parsing, growable vectors, hash maps, a string
   builder, big integers, timing, and allocators. Memory you free comes from
   an allocator you pass explicitly, as in Zig: a general-purpose heap that
-  stops the program on a double free or a write after free, an arena, or one
-  you write.
+  stops the program on a double free or a free of the wrong size, an arena,
+  or one you write.
 - **A self-hosted toolchain.** The resolver, type checker, code generator,
   and native backend are written in AIPL. They produce the same bytes and
   the same error messages as the Rust implementation, and the compiler
   rebuilds itself. Building it the first time still takes the Rust
-  toolchain.
+  toolchain, and so does writing an executable (the Rust CLI runs the AIPL
+  native backend and sets the file's execute bit, which WASI cannot).
 
 AIPL is **not** memory-safe yet. What holds: array indexes are
 bounds-checked, pointers are typed and checked for null, contracts run on
@@ -161,7 +184,7 @@ is missing):
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
    easier installation, a showcase program, and the experiment measuring
    how well agents write AIPL.
-2. **The language:** small structs by value.
+2. **The language:** generation checks against use after free.
 3. **The standard library:** networking and starting processes, once WASI
    can.
 4. **Retiring the Rust compiler:** rebuilding the toolchain from a

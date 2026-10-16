@@ -33,3 +33,26 @@ jobs:
         run: python3 tools/fuzz.py --cases 3000 --seed 1
       - name: Generated programs, VM against compiled code
         run: python3 tools/run_fuzz.py --cases 500 --seed 1
+
+  install:
+    # install.sh, as a user runs it: shellcheck, then a full install of
+    # this commit into an empty home, a second run (an update), and
+    # --uninstall.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Shellcheck
+        run: shellcheck install.sh
+      - name: Install, update, uninstall
+        run: |
+          export CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup"
+          export HOME="$(mktemp -d)" AIPL_REPO="file://$GITHUB_WORKSPACE" AIPL_REF="$GITHUB_SHA"
+          touch "$HOME/.bashrc"
+          sh install.sh
+          sh install.sh
+          [ "$(grep -c aipl "$HOME/.profile")" = 1 ] && [ "$(grep -c aipl "$HOME/.bashrc")" = 1 ]
+          sh -c '. "$HOME/.aipl/env" && aipl --version'
+          sh install.sh --uninstall
+          [ ! -e "$HOME/.aipl" ] && ! grep -q aipl "$HOME/.profile" "$HOME/.bashrc"

@@ -58,7 +58,9 @@ and native backend are written in AIPL. They produce the same bytes and the
 same error messages as the Rust implementation, and the compiler, built as a
 native executable, compiles itself to the same bytes in about half a
 second. The caveat is the first build: today it still takes the Rust
-toolchain. Rebuilding from a checked-in compiled seed, so that Rust is only
+toolchain, and so does writing an executable, since the Rust CLI runs the
+AIPL native backend and marks the file executable (WASI cannot set that
+bit). Rebuilding from a checked-in compiled seed, so that Rust is only
 needed for the WebAssembly launcher, is on the roadmap.
 
 ### Was it written by AI?

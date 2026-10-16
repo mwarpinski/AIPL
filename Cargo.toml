@@ -3,7 +3,7 @@ name = "aipl"
 version = "0.1.0"
 edition = "2021"
 authors = ["Matt Warpinski"]
-description = "AIPL: a statically typed S-expression language for AI agents, compiled to WebAssembly and to native Linux x86-64 executables, with a self-hosted compiler written in AIPL."
+description = "AIPL: a statically typed S-expression language for AI agents, compiled to WebAssembly and to native Linux x86-64 executables, with a self-hosted compiler written in AIPL (its first build, and writing executables, still take this Rust toolchain)."
 
 [dependencies]
 wasm-encoder = "0.224.0"
