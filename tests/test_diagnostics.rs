@@ -151,13 +151,14 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         ("(sys.print 1) 0", "sys.print prints str values, got i32; for numbers use io.print_int"),
         ("(sys.print \"a\" 2.5) 0", "sys.print prints str values, got f64"),
         // arithmetic on things that are not numbers
-        ("(str.len (+ \"a\" \"b\"))", "+ does not join strings; build them with std/buf"),
+        ("(str.len (+ \"a\" \"b\"))", "+ does not join strings: join two with (call str.concat a b), or build text with std/buf"),
         ("(if (+ true false) 1 0)", "+ needs numbers (i32, i64, f32, f64), got bool"),
         ("(i32.wrap (i64.trunc_f64_s (% 1.5 1.0)))", "% is integer arithmetic (i32 or i64), got f64"),
         ("(if (bitand true true) 1 0)", "bitand is integer arithmetic (i32 or i64), got bool"),
         ("(i32.wrap (i64.trunc_f64_s (shl 1.5 1.5)))", "shl is integer arithmetic (i32 or i64), got f64"),
         // ordering things that are not numbers
-        ("(if (lt \"a\" \"b\") 1 0)", "lt on str: only numbers are ordered; bool and str compare only with eq/neq"),
+        ("(if (lt \"a\" \"b\") 1 0)", "lt on str: compare strings by content with (call str.same a b), and order them with (call (cmp.Ord.compare str) a b)"),
+        ("(if (eq \"a\" \"a\") 1 0)", "eq on str: compare strings by content with (call str.same a b)"),
         ("(if (gte true false) 1 0)", "gte on bool: only numbers are ordered"),
         // ops that no longer exist
         ("(mem.free (mem.alloc 8)) 0", "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap"),
@@ -173,8 +174,8 @@ fn ops_the_compilers_cannot_lower_are_rejected_by_the_checker() {
         };
         assert!(err.contains(want), "{src}\n  expected: {want}\n  got: {err}");
     }
-    // still accepted: eq/neq on bool and str, + - * / and ordering on floats
-    check_ok("(module m (fn main [] -> i32 (if (and (eq \"a\" \"a\") (and (neq true false) (lt 1.5 (* 2.0 (- 3.0 (/ 1.0 2.0)))))) 1 0)))");
+    // still accepted: eq/neq on numbers and bool, + - * / and ordering on floats
+    check_ok("(module m (fn main [] -> i32 (if (and (eq 1 1) (and (neq true false) (lt 1.5 (* 2.0 (- 3.0 (/ 1.0 2.0)))))) 1 0)))");
 }
 
 // ---------------------------------------------------------------------------

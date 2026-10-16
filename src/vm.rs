@@ -13,6 +13,8 @@ pub enum Value {
     /// An `i64`. Operations wrap at 64 bits, matching wasm `i64.*`.
     Int64(i64),
     Float(f64),
+    /// An `f32`: every operation rounds to f32, as wasm's f32 instructions do.
+    Float32(f32),
     Bool(bool),
     Str(String),
     Array(Vec<Value>),
@@ -395,13 +397,17 @@ impl VM {
         }
 
         // Evaluate Pre-Condition Contracts (req ...)
+        // and invariants (inv ...), checked on entry and on return
         for contract in &f.contracts {
-            if let Contract::Requires(expr) = contract {
-                let res = self.eval_expr(expr, &mut scope)?;
-                if res != Value::Bool(true) {
-                    self.error_at = Some(expr.span());
-                    return Err(contract_failure(("Pre-condition", "req"), expr, fn_name, &f.params, &scope, None, &self.structs));
-                }
+            let (kind, expr) = match contract {
+                Contract::Requires(e) => (("Pre-condition", "req"), e),
+                Contract::Invariant(e) => (("Entry invariant", "inv"), e),
+                Contract::Ensures(_) => continue,
+            };
+            let res = self.eval_expr(expr, &mut scope)?;
+            if res != Value::Bool(true) {
+                self.error_at = Some(expr.span());
+                return Err(contract_failure(kind, expr, fn_name, &f.params, &scope, None, &self.structs));
             }
         }
 
@@ -419,14 +425,17 @@ impl VM {
 
         // Evaluate Post-Condition Contracts (ens ...)
         for contract in &f.contracts {
-            if let Contract::Ensures(expr) = contract {
-                let mut contract_scope = scope.clone();
-                contract_scope.insert("res".to_string(), last_val.clone());
-                let res = self.eval_expr(expr, &mut contract_scope)?;
-                if res != Value::Bool(true) {
-                    self.error_at = Some(expr.span());
-                    return Err(contract_failure(("Post-condition", "ens"), expr, fn_name, &f.params, &scope, Some((&last_val, &f.return_type)), &self.structs));
-                }
+            let (kind, expr) = match contract {
+                Contract::Ensures(e) => (("Post-condition", "ens"), e),
+                Contract::Invariant(e) => (("Exit invariant", "inv"), e),
+                Contract::Requires(_) => continue,
+            };
+            let mut contract_scope = scope.clone();
+            contract_scope.insert("res".to_string(), last_val.clone());
+            let res = self.eval_expr(expr, &mut contract_scope)?;
+            if res != Value::Bool(true) {
+                self.error_at = Some(expr.span());
+                return Err(contract_failure(kind, expr, fn_name, &f.params, &scope, Some((&last_val, &f.return_type)), &self.structs));
             }
         }
 
@@ -483,6 +492,7 @@ impl VM {
                 Literal::Int(i) => Ok(Value::Int((*i as i32) as i64)),
                 Literal::Int64(i) => Ok(Value::Int64(*i)),
                 Literal::Float(f) => Ok(Value::Float(*f)),
+                Literal::Float32(f, _) => Ok(Value::Float32(*f)),
                 Literal::Bool(b) => Ok(Value::Bool(*b)),
                 Literal::Str(s) => Ok(Value::Str(s.clone())),
             },
@@ -1102,6 +1112,19 @@ impl VM {
         }
         let mem = self.shared.lock().unwrap();
         match ty {
+            Type::Narrow(n) => {
+                let w = n.size();
+                if addr + w > mem.bytes.len() {
+                    return Err(format!("VM memory load out of bounds: address {}", addr));
+                }
+                let v = match n {
+                    Narrow::U8 => mem.bytes[addr] as i64,
+                    Narrow::I8 => mem.bytes[addr] as i8 as i64,
+                    Narrow::U16 => u16::from_le_bytes([mem.bytes[addr], mem.bytes[addr + 1]]) as i64,
+                    Narrow::I16 => i16::from_le_bytes([mem.bytes[addr], mem.bytes[addr + 1]]) as i64,
+                };
+                Ok(Value::Int(v))
+            }
             Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
@@ -1147,7 +1170,7 @@ impl VM {
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
                 let v = f32::from_le_bytes(bytes);
-                Ok(Value::Float(v as f64))
+                Ok(Value::Float32(v))
             }
             Type::F64 => {
                 if addr + 8 > mem.bytes.len() {
@@ -1185,6 +1208,18 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
+            Type::Narrow(n) => {
+                let w = n.size();
+                if addr + w > mem.bytes.len() {
+                    return Err(format!("VM memory store out of bounds: address {}", addr));
+                }
+                let v = match val {
+                    Value::Int(i) => i as i32,
+                    other => return Err(format!("Expected Int value for {} store, got {:?}", n.name(), other)),
+                };
+                mem.bytes[addr..addr + w].copy_from_slice(&v.to_le_bytes()[..w]);
+                Ok(())
+            }
             Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
@@ -1226,6 +1261,7 @@ impl VM {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
+                    Value::Float32(f) => f,
                     Value::Float(f) => f as f32,
                     other => return Err(format!("Expected Float value for f32 store, got {:?}", other)),
                 };
@@ -1256,6 +1292,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_add(y as i32) as i64)),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_add(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x + y)),
                     _ => Err("Invalid types for +".to_string()),
                 }
             }
@@ -1266,6 +1303,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_sub(y as i32) as i64)),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_sub(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x - y)),
                     _ => Err("Invalid types for -".to_string()),
                 }
             }
@@ -1355,6 +1393,30 @@ impl VM {
                     return Err(format!("Memory load out of bounds: ptr {}", ptr));
                 }
                 Ok(Value::Int(mem.bytes[ptr] as i64))
+            }
+            OpCode::MemLoad8S | OpCode::MemLoad16U | OpCode::MemLoad16S => {
+                let n = match op {
+                    OpCode::MemLoad8S => Narrow::I8,
+                    OpCode::MemLoad16U => Narrow::U16,
+                    _ => Narrow::I16,
+                };
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) if i >= 0 => i as usize,
+                    Value::Int(i) => return Err(format!("Memory load out of bounds: ptr {}", i)),
+                    _ => return Err(format!("{} requires Int ptr", crate::printer::op_name(op))),
+                };
+                self.load_val_at(ptr, &Type::Narrow(n))
+            }
+            OpCode::MemStore16 => {
+                let ptr = match self.eval_expr(&args[0], scope)? {
+                    Value::Int(i) if i >= 0 => i as usize,
+                    Value::Int(i) => return Err(format!("Memory store out of bounds: ptr {}", i)),
+                    _ => return Err("mem.store16 requires Int ptr".to_string()),
+                };
+                self.check_write("mem.store16", ptr)?;
+                let v = self.eval_expr(&args[1], scope)?;
+                self.store_val_at(ptr, &Type::Narrow(Narrow::U16), v)?;
+                Ok(Value::Void)
             }
             OpCode::MemStore8 => {
                 let i_val = match self.eval_expr(&args[0], scope)? {
@@ -1592,6 +1654,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Int((x as i32).wrapping_mul(y as i32) as i64)),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Int64(x.wrapping_mul(y))),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x * y)),
                     _ => Err("Invalid types for *".to_string()),
                 }
             }
@@ -1620,6 +1683,7 @@ impl VM {
                         }
                     }
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Float32(x / y)),
                     _ => Err("Invalid types for /".to_string()),
                 }
             }
@@ -1758,6 +1822,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) < (y as i32))),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x < y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x < y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Bool(x < y)),
                     _ => Err("Invalid types for <".to_string()),
                 }
             }
@@ -1768,6 +1833,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) <= (y as i32))),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x <= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x <= y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Bool(x <= y)),
                     _ => Err("Invalid types for <=".to_string()),
                 }
             }
@@ -1778,6 +1844,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) > (y as i32))),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x > y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x > y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Bool(x > y)),
                     _ => Err("Invalid types for >".to_string()),
                 }
             }
@@ -1788,6 +1855,7 @@ impl VM {
                     (Value::Int(x), Value::Int(y)) => Ok(Value::Bool((x as i32) >= (y as i32))),
                     (Value::Int64(x), Value::Int64(y)) => Ok(Value::Bool(x >= y)),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Bool(x >= y)),
+                    (Value::Float32(x), Value::Float32(y)) => Ok(Value::Bool(x >= y)),
                     _ => Err("Invalid types for >=".to_string()),
                 }
             }
@@ -2120,6 +2188,19 @@ impl VM {
                 _ => Err("i32.wrap requires Int64".to_string()),
             },
             // i64 -> f64 rounds to nearest, ties to even, as Rust's `as` and wasm's f64.convert_i64_s do.
+            OpCode::F32DemoteF64
+            | OpCode::F64PromoteF32
+            | OpCode::F32ConvertI32S
+            | OpCode::F32ConvertI64S
+            | OpCode::F64ConvertI32S
+            | OpCode::I32TruncF32S
+            | OpCode::I32TruncF64S
+            | OpCode::I64TruncF32S
+            | OpCode::F32ReinterpretI32
+            | OpCode::I32ReinterpretF32 => {
+                let v = self.eval_expr(&args[0], scope)?;
+                convert(op, v)
+            }
             OpCode::F64ConvertI64S => match self.eval_expr(&args[0], scope)? {
                 Value::Int64(x) => Ok(Value::Float(x as f64)),
                 _ => Err("f64.convert_i64_s requires Int64".to_string()),
@@ -2300,7 +2381,8 @@ fn to_scalars(ty: &Type, v: Value, structs: &crate::checker::Structs) -> Result<
 fn zero_of(t: &Type) -> Value {
     match t {
         Type::I64 => Value::Int64(0),
-        Type::F32 | Type::F64 => Value::Float(0.0),
+        Type::F32 => Value::Float32(0.0),
+        Type::F64 => Value::Float(0.0),
         _ => Value::Int(0),
     }
 }
@@ -2358,8 +2440,11 @@ fn from_scalars(ty: &Type, s: &[Value], structs: &crate::checker::Structs) -> Va
 fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String {
     match (v, ty) {
         (Value::Int(i), _) => i.to_string(),
+        // a pointer or array: its address, as compiled code shows it
+        (Value::Int64(i), Type::Ptr(_) | Type::Array(_)) => (*i as u64 as u32).to_string(),
         (Value::Int64(i), _) => format!("{i}i64"),
         (Value::Float(x), _) => format!("{x:?}"),
+        (Value::Float32(x), _) => format!("{x:?}f32"),
         (Value::Bool(b), _) => b.to_string(),
         (Value::Str(s), _) => format!("{s:?}"),
         (Value::Ok(x), Type::ResultType(t, e)) => format!("(ok:{} {})", e, value_str(x, t, structs)),
@@ -2381,6 +2466,37 @@ fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String 
         (Value::Void, _) => "void".to_string(),
         (other, _) => format!("{other:?}"),
     }
+}
+
+/// An f32 conversion, as wasm computes it: rounding to nearest for f64 ->
+/// f32 and integer -> float, toward zero for float -> integer, where NaN or
+/// a result out of range is an error (wasm traps); bits unchanged for the
+/// reinterpretations.
+fn convert(op: &OpCode, v: Value) -> Result<Value, String> {
+    let name = crate::printer::op_name(op);
+    let trunc = |x: f64, lo: f64, hi: f64| -> Result<f64, String> {
+        if x.is_nan() {
+            return Err(format!("{name}: invalid conversion to integer (NaN)"));
+        }
+        let t = x.trunc();
+        if t < lo || t >= hi {
+            return Err(format!("{name}: integer overflow converting {x}"));
+        }
+        Ok(t)
+    };
+    Ok(match (op, v) {
+        (OpCode::F32DemoteF64, Value::Float(x)) => Value::Float32(x as f32),
+        (OpCode::F64PromoteF32, Value::Float32(x)) => Value::Float(x as f64),
+        (OpCode::F32ConvertI32S, Value::Int(x)) => Value::Float32(x as i32 as f32),
+        (OpCode::F32ConvertI64S, Value::Int64(x)) => Value::Float32(x as f32),
+        (OpCode::F64ConvertI32S, Value::Int(x)) => Value::Float(x as i32 as f64),
+        (OpCode::I32TruncF32S, Value::Float32(x)) => Value::Int(trunc(x as f64, -2147483648.0, 2147483648.0)? as i64),
+        (OpCode::I32TruncF64S, Value::Float(x)) => Value::Int(trunc(x, -2147483648.0, 2147483648.0)? as i64),
+        (OpCode::I64TruncF32S, Value::Float32(x)) => Value::Int64(trunc(x as f64, -9223372036854775808.0, 9223372036854775808.0)? as i64),
+        (OpCode::F32ReinterpretI32, Value::Int(x)) => Value::Float32(f32::from_bits(x as i32 as u32)),
+        (OpCode::I32ReinterpretF32, Value::Float32(x)) => Value::Int(x.to_bits() as i32 as i64),
+        (_, other) => return Err(format!("{name}: unexpected operand {other:?}")),
+    })
 }
 
 /// Atomic instructions need a naturally aligned address; wasm traps on an

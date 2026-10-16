@@ -244,6 +244,16 @@ FAQ or ROADMAP.md.
   listings, file kind, size, and modification time) over three new WASI
   ops. Starting processes is left out, as WASI preview 1 cannot; networking
   later. AIPL_SPEC.md 4.C and 12.6, ROADMAP.md.
+- [x] **Language gaps** (done 2026-10-16): `f32` literals (`1.5f32`) and
+  conversions, trapping at wasm's bounds natively too; `u8 i8 u16 i16`
+  struct fields and array elements, read as `i32`; constants computed from
+  other constants; `inv` checked at entry and exit; `str.concat`,
+  `str.same`, `str.from_bytes`, `buf.to_str`, and a guide to the three
+  kinds of text (`eq` on `str` is now an error: it would compare addresses
+  compiled and contents in the VM); `std/date` (UTC, ISO 8601);
+  `par.reduce`; generic value types as plain type arguments. Each in every
+  backend and both toolchains, with the same bytes and messages.
+  AIPL_SPEC.md 3, 4.A, 4.B, 4.I, 12.6; tests/test_language_gaps.rs.
 - [x] **Faster native code** (done 2026-10-14,
   docs/design/NATIVE_SPEED_PLAN.md): a single-pass translator that tracks
   where each value is, guard pages, locals and arguments in registers,

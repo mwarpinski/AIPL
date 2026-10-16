@@ -163,21 +163,23 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
 
 ## What works today
 
-- **The language:** `i32`, `i64`, `f32`, `f64`, `bool`, and `str`; structs
-  behind typed pointers, and small immutable structs held by value; arrays;
-  enums; unions with an exhaustive `match`; results and options (held by
-  value when small); function references; generic structs, unions, and
-  functions, checked once with interfaces and `where` clauses; constants;
-  modules and imports; threads and atomics, and `std/par` for parallel work
-  without `unsafe`.
+- **The language:** `i32`, `i64`, `f32`, `f64`, `bool`, and `str`, and
+  8- and 16-bit fields and array elements; structs behind typed pointers,
+  and small immutable structs held by value; arrays; enums; unions with an
+  exhaustive `match`; results and options (held by value when small);
+  function references; generic structs, unions, and functions, checked once
+  with interfaces and `where` clauses; constants, computed from other
+  constants at compile time; contracts (`req`, `ens`, `inv`) checked in
+  every backend; modules and imports; threads and atomics, and `std/par`
+  for parallel maps and reductions without `unsafe`.
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux x86-64 executables with no
   runtime (`word_count` is 64 KB).
 - **A standard library** with printing and file I/O, strings, number
   formatting and exact float parsing, JSON, directory listing, growable
-  vectors, hash maps, a string builder, big integers, timing, and
-  allocators. Memory you free comes from an allocator you pass explicitly,
+  vectors, hash maps, a string builder, big integers, UTC dates and ISO
+  8601, timing, and allocators. Memory you free comes from an allocator you pass explicitly,
   as in Zig: a general-purpose heap that stops the program on a double free
   or a free of the wrong size, an arena, or one you write.
 - **A self-hosted toolchain.** The resolver, type checker, code generator,
@@ -231,7 +233,7 @@ is missing):
    a showcase program and the experiment measuring
    how well agents write AIPL.
 2. **The standard library:** networking and starting processes, once WASI
-   can.
+   can, and time zones.
 3. **Rust out of the build path:** the seed builds the compiler on Linux
    x86-64 today; next, a WebAssembly seed for other platforms and an
    installer that needs no Rust. The Rust compiler stays as the referee.
@@ -244,7 +246,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **354 Rust tests** and an AIPL test suite, run on every push by CI.
+- **360 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

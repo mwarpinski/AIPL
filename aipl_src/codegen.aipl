@@ -218,7 +218,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (arr_gen 120) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309)])
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
@@ -253,6 +253,10 @@
     (call reg m "mem.load32" Kw.mem_load32)
     (call reg m "mem.load64" Kw.mem_load64)
     (call reg m "mem.store8" Kw.mem_store8)
+    (call reg m "mem.load8_s" Kw.mem_load8_s)
+    (call reg m "mem.load16_u" Kw.mem_load16_u)
+    (call reg m "mem.load16_s" Kw.mem_load16_s)
+    (call reg m "mem.store16" Kw.mem_store16)
     (call reg m "mem.store32" Kw.mem_store32)
     (call reg m "mem.store64" Kw.mem_store64)
     (call reg m "eq" Kw.eq)
@@ -295,6 +299,16 @@
     (call reg m "arr.get" Kw.arr_get)
     (call reg m "arr.set" Kw.arr_set)
     (call reg m "f64.convert_i64_s" Kw.f64_convert_i64_s)
+    (call reg m "f32.demote" Kw.f32_demote)
+    (call reg m "f64.promote" Kw.f64_promote)
+    (call reg m "f32.convert_i32_s" Kw.f32_convert_i32_s)
+    (call reg m "f32.convert_i64_s" Kw.f32_convert_i64_s)
+    (call reg m "f64.convert_i32_s" Kw.f64_convert_i32_s)
+    (call reg m "i32.trunc_f32_s" Kw.i32_trunc_f32_s)
+    (call reg m "i32.trunc_f64_s" Kw.i32_trunc_f64_s)
+    (call reg m "i64.trunc_f32_s" Kw.i64_trunc_f32_s)
+    (call reg m "f32.reinterpret_i32" Kw.f32_reinterpret_i32)
+    (call reg m "i32.reinterpret_f32" Kw.i32_reinterpret_f32)
     (call reg m "i64.trunc_f64_s" Kw.i64_trunc_f64_s)
     (call reg m "f64.reinterpret_i64" Kw.f64_reinterpret_i64)
     (call reg m "i64.reinterpret_f64" Kw.i64_reinterpret_f64)
@@ -367,11 +381,19 @@
     (call reg m "result" Kw.ty_result)
     (call reg m "ptr" Kw.ty_ptr)
     (call reg m "arr" Kw.ty_arr)
+    (call reg m "u8" Kw.ty_u8)
+    (call reg m "i8" Kw.ty_i8)
+    (call reg m "u16" Kw.ty_u16)
+    (call reg m "i16" Kw.ty_i16)
     0)
 
   ;; An operator (as opposed to a form, a type name, or none): ids 0-99.
   (fn is_op [k:Kw] -> bool
-    (and (gte (enum.ord k) 0) (lt (enum.ord k) 100)))
+    (or (and (gte (enum.ord k) 0) (lt (enum.ord k) 100)) (call is_conversion k)))
+
+  ;; The f32 conversions, Kw 300-309, in wasm.rs order.
+  (fn is_conversion [k:Kw] -> bool
+    (and (gte (enum.ord k) 300) (lte (enum.ord k) 309)))
 
   ;; return, break, continue: statements that jump.
   (fn is_jump [k:Kw] -> bool
@@ -415,7 +437,7 @@
   ;; results, pointers, arrays, and function refs are i32 in wasm; loop_end
   ;; and loop_step are the hidden locals holding a loop's bound and step.
   ;; The values are the ids codegen has always stored in its tables.
-  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step ck_a ck_b ck_r union value])
+  (enum Ty [(none -1) (i32 200) i64 f32 f64 bool void str result ptr arr fn loop_end loop_step ck_a ck_b ck_r union value u8 i8 u16 i16])
 
   ;; The type a type keyword names, or Ty.none.
   (fn ty_of_kw [k:Kw] -> Ty
@@ -430,6 +452,10 @@
       ((eq k Kw.ty_result) Ty.result)
       ((eq k Kw.ty_ptr) Ty.ptr)
       ((eq k Kw.ty_arr) Ty.arr)
+      ((eq k Kw.ty_u8) Ty.u8)
+      ((eq k Kw.ty_i8) Ty.i8)
+      ((eq k Kw.ty_u16) Ty.u16)
+      ((eq k Kw.ty_i16) Ty.i16)
       (else Ty.none)))
 
   ;; The type a type node names: a scalar or union name, or a (result T E),
@@ -511,15 +537,25 @@
   (fn elem_type_id [cg:(ptr Cg) node:(ptr compiler.Node)] -> Ty
     (let t:Ty (call type_node_id cg node))
     (if (and (call is_memory_type t) (neq (call group_head_keyword cg node) Kw.ty_result)) t (block (call set_compile_error CgErr.not_a_memory_type) Ty.i32)))
-  (fn type_size [t:Ty] -> i32 (if (or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8 4))
-  (fn mem_align [t:Ty] -> i32 (if (eq (call type_size t) 8) 3 2))
+  (fn type_size [t:Ty] -> i32
+    (cond
+      ((or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8)
+      ((or (eq t Ty.u8) (eq t Ty.i8)) 1)
+      ((or (eq t Ty.u16) (eq t Ty.i16)) 2)
+      (else 4)))
+  ;; Whether t is a storage type (u8, i8, u16, i16): read as an i32.
+  (fn is_narrow [t:Ty] -> bool (or (or (eq t Ty.u8) (eq t Ty.i8)) (or (eq t Ty.u16) (eq t Ty.i16))))
+  (fn value_of [t:Ty] -> Ty (if (call is_narrow t) Ty.i32 t))
+  (fn mem_align [t:Ty] -> i32 (cond ((eq (call type_size t) 8) 3) ((eq (call type_size t) 2) 1) ((eq (call type_size t) 1) 0) (else 2)))
   (fn load_opcode [t:Ty] -> i32 (cond
                                   ((or (eq t Ty.i64) (or (eq t Ty.ptr) (eq t Ty.arr))) 41)
+                                  ((eq t Ty.u8) 45) ((eq t Ty.i8) 44) ((eq t Ty.u16) 47) ((eq t Ty.i16) 46)
                                   ((eq t Ty.f32) 42)
                                   ((eq t Ty.f64) 43)
                                   (else 40)))
   (fn store_opcode [t:Ty] -> i32 (cond
                                    ((or (eq t Ty.i64) (or (eq t Ty.ptr) (eq t Ty.arr))) 55)
+                                   ((or (eq t Ty.u8) (eq t Ty.i8)) 58) ((or (eq t Ty.u16) (eq t Ty.i16)) 59)
                                    ((eq t Ty.f32) 56)
                                    ((eq t Ty.f64) 57)
                                    (else 54)))
@@ -825,16 +861,18 @@
         0)
     (get cg Cg.nlocals))
 
-  ;; The contract kind of a body item: Kw.req, Kw.ens, or Kw.none (inv too).
+  ;; The contract kind of a body item: Kw.req, Kw.ens, Kw.inv, or Kw.none.
   (fn contract_kind [cg:(ptr Cg) item:(ptr compiler.Node)] -> Kw
     (if (not (call is_contract_head cg item)) (return Kw.none) (block))
     (let kw:Kw (call group_head_keyword cg item))
-    (if (or (eq kw Kw.req) (eq kw Kw.ens)) kw Kw.none))
+    (if (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv))) kw Kw.none))
 
+  ;; Whether the function checks something on return: an ens, or an inv
+  ;; (checked on entry and on return).
   (fn has_ens [cg:(ptr Cg) fndef_group:(ptr compiler.Node)] -> bool
     (let item:(ptr compiler.Node) (call nth_child fndef_group 5))
     (while (neq item (ptr.null compiler.Node))
-      (if (eq (call contract_kind cg item) Kw.ens) (return true) (block))
+      (if (or (eq (call contract_kind cg item) Kw.ens) (eq (call contract_kind cg item) Kw.inv)) (return true) (block))
       (set! item (call node_next item)))
     false)
 
@@ -1121,6 +1159,42 @@
     (call put_op o OP_F64_CONST)
     (loop b 0 7 1
       (call put_byte o (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64))))))
+
+  ;; `1.5f32`: the nearest f64, then the nearest f32 (wasm.rs: `f as f32`).
+  (fn emit_f32_literal [o:(ptr Out) cg:(ptr Cg) pos:i32 len:i32] -> void
+    (unsafe (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) (- len 3)))
+    (let bits:i32 (call f32_bits (i64.reinterpret_f64 v)))
+    (call put_op o OP_F32_CONST)
+    (loop b 0 3 1
+      (call put_byte o (bitand (shru bits (* b 8)) 255)))))
+
+  ;; The f32 nearest a double (its bits d), ties to even, as IEEE 754 (and
+  ;; f32.demote_f64) round, in integer arithmetic: the compiler is built by
+  ;; compilers that have no f32 ops. A double too large is infinity, too
+  ;; small zero (or a subnormal f32), with the sign kept; a NaN stays one.
+  (fn f32_bits [d:i64] -> i32
+    (let sign:i64 (shl (shru d 63i64) 31i64))
+    (let e:i64 (bitand (shru d 52i64) 2047i64))
+    (let frac:i64 (bitand d 4503599627370495i64))
+    (cond
+      ((eq e 2047i64)
+       (i32.wrap (bitor sign (bitor 2139095040i64 (if (eq frac 0i64) 0i64 (bitor 4194304i64 (shru frac 29i64)))))))
+      ((eq e 0i64) (i32.wrap sign))
+      (else
+       ;; the value is m * 2^(e-1075), m 53 bits; the f32 exponent is fe
+       (let m:i64 (bitor frac 4503599627370496i64))
+       (let fe:i64 (- e 896i64))
+       ;; keep 24 bits (normal), or fewer down to 2^-149 (subnormal)
+       (let drop:i64 (if (gte fe 1i64) 29i64 (- 30i64 fe)))
+       (if (gt drop 54i64) (return (i32.wrap sign)) (block))
+       (let q:i64 (shru m drop))
+       (let rest:i64 (bitand m (- (shl 1i64 drop) 1i64)))
+       (let half:i64 (shl 1i64 (- drop 1i64)))
+       (if (or (gt rest half) (and (eq rest half) (eq (bitand q 1i64) 1i64))) (set! q (+ q 1i64)) (block))
+       ;; a normal one: the exponent, plus the significand without its
+       ;; leading bit (a carry out of it raises the exponent)
+       (let mag:i64 (if (gte fe 1i64) (+ (shl fe 23i64) (- q 8388608i64)) q))
+       (i32.wrap (bitor sign (if (gte mag 2139095040i64) 2139095040i64 mag))))))
 
 
 
@@ -1467,8 +1541,8 @@
   (fn is_void_op [k:Kw] -> bool
     (or (eq k Kw.atomic_lock) (or (eq k Kw.atomic_unlock)
     (or (eq k Kw.return) (or (eq k Kw.break) (or (eq k Kw.continue)
-    (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64)
-    (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set)))))))))))))
+    (or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (or (eq k Kw.mem_store64) (or (eq k Kw.mem_store16)
+    (or (eq k Kw.sys_print) (or (eq k Kw.sys_exit) (or (eq k Kw.put) (eq k Kw.arr_set))))))))))))))
 
   (fn last_child [group:(ptr compiler.Node)] -> (ptr compiler.Node)
     (let cur:(ptr compiler.Node) (call first_child group))
@@ -2324,7 +2398,7 @@
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
             ;; an array index, req, or ens: the module needs the check helpers
-            ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (eq kw Kw.ens))) (put cg Cg.uses_checks true) 0)
+            ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv)))) (put cg Cg.uses_checks true) 0)
             ;; and a struct access or arr.len (the null check)
             ((or (eq kw Kw.get) (or (eq kw Kw.put) (eq kw Kw.arr_len))) (put cg Cg.uses_checks true) 0)
             (else 0))
@@ -2587,6 +2661,7 @@
     (if (eq kind compiler.Kind.string) (set! res Ty.str) (block))
     (if (eq kind compiler.Kind.int64) (set! res Ty.i64) (block))
     (if (eq kind compiler.Kind.float) (set! res Ty.f64) (block))
+    (if (eq kind compiler.Kind.float32) (set! res Ty.f32) (block))
     (if (eq kind compiler.Kind.symbol)
         (block
           (let idx:i32 (call find_local cg (call node_a node) (call node_b node)))
@@ -2610,7 +2685,7 @@
     ;; let, set!, loop, while, put, arr.set, stores, sys.print, sys.exit
     (if (or (eq kw Kw.let) (or (eq kw Kw.set) (or (eq kw Kw.loop) (or (eq kw Kw.while) (or (eq kw Kw.put) (eq kw Kw.arr_set))))))
         (set! res Ty.void) (block))
-    (if (or (eq kw Kw.mem_store8) (or (eq kw Kw.mem_store32) (or (eq kw Kw.mem_store64) (or (eq kw Kw.sys_print) (eq kw Kw.sys_exit))))) (set! res Ty.void) (block))
+    (if (or (eq kw Kw.mem_store8) (or (eq kw Kw.mem_store32) (or (eq kw Kw.mem_store64) (or (eq kw Kw.mem_store16) (or (eq kw Kw.sys_print) (eq kw Kw.sys_exit)))))) (set! res Ty.void) (block))
     ;; return, break, continue are statements
     (if (call is_jump kw) (set! res Ty.void) (block))
     ;; cond: the type of its first clause's body (the desugared if's then branch)
@@ -2643,9 +2718,9 @@
           (let sf_len:i32 (call node_b sf_node))
           (let dot_idx:i32 (call find_last_char cg sf_pos sf_len 46))
           (let ft:Ty (call get_field_type cg sf_pos dot_idx (+ sf_pos (+ dot_idx 1)) (- sf_len (+ dot_idx 1))))
-          (if (neq ft Ty.none) (set! res ft) (block)))
+          (if (neq ft Ty.none) (set! res (call value_of ft)) (block)))
         (block))
-    (if (and (eq kw Kw.arr_get) (eq (call nth_child node 4) (ptr.null compiler.Node))) (set! res (call type_node_id cg (call nth_child node 1))) (block))
+    (if (and (eq kw Kw.arr_get) (eq (call nth_child node 4) (ptr.null compiler.Node))) (set! res (call value_of (call type_node_id cg (call nth_child node 1)))) (block))
     ;; arithmetic and bitwise: the first operand's type
     (if (call is_arith kw)
         (set! res (call node_type cg (call nth_child node 1)))
@@ -2666,7 +2741,28 @@
     (if (or (eq kw Kw.arr_new) (or (eq kw Kw.arr_null) (or (eq kw Kw.arr_cast) (eq kw Kw.arr_make)))) (set! res Ty.arr) (block))
     ;; f64.convert_i64_s, f64.reinterpret_i64, f64.sqrt
     (if (or (eq kw Kw.f64_convert_i64_s) (or (eq kw Kw.f64_reinterpret_i64) (eq kw Kw.f64_sqrt))) (set! res Ty.f64) (block))
+    ;; the f32 conversions (checker.rs conversion)
+    (if (call is_conversion kw) (set! res (call conversion_type kw)) (block))
     res)
+
+  (fn conversion_type [kw:Kw] -> Ty
+    (cond
+      ((or (eq kw Kw.f32_demote) (or (eq kw Kw.f32_convert_i32_s) (or (eq kw Kw.f32_convert_i64_s) (eq kw Kw.f32_reinterpret_i32)))) Ty.f32)
+      ((or (eq kw Kw.f64_promote) (eq kw Kw.f64_convert_i32_s)) Ty.f64)
+      ((eq kw Kw.i64_trunc_f32_s) Ty.i64)
+      (else Ty.i32)))
+
+  ;; Its wasm opcode: f32.demote_f64 0xB6, f64.promote_f32 0xBB,
+  ;; f32.convert_i32_s 0xB2, f32.convert_i64_s 0xB4, f64.convert_i32_s 0xB7,
+  ;; i32.trunc_f32_s 0xA8, i32.trunc_f64_s 0xAA, i64.trunc_f32_s 0xAE,
+  ;; f32.reinterpret_i32 0xBE, i32.reinterpret_f32 0xBC.
+  (fn conversion_opcode [kw:Kw] -> i32
+    (cond
+      ((eq kw Kw.f32_demote) 182) ((eq kw Kw.f64_promote) 187)
+      ((eq kw Kw.f32_convert_i32_s) 178) ((eq kw Kw.f32_convert_i64_s) 180)
+      ((eq kw Kw.f64_convert_i32_s) 183) ((eq kw Kw.i32_trunc_f32_s) 168)
+      ((eq kw Kw.i32_trunc_f64_s) 170) ((eq kw Kw.i64_trunc_f32_s) 174)
+      ((eq kw Kw.f32_reinterpret_i32) 190) (else 188)))
 
 ;; The value struct an expression of type Ty.value is (wasm.rs expr_type
   ;; gives it as Type::Struct): null for any other.
@@ -3193,6 +3289,7 @@
        (call put_op o OP_I64_CONST)
        (call put_s64 o (call parse_i64_literal cg (call node_a node) (call node_b node))))
       ((eq kind compiler.Kind.float) (call emit_f64_literal o cg (call node_a node) (call node_b node)))
+      ((eq kind compiler.Kind.float32) (call emit_f32_literal o cg (call node_a node) (call node_b node)))
       ((eq kind compiler.Kind.string)
        (call emit_i32_const o (call find_interned_string cg (call node_a node) (call node_b node))))
       ((eq kind compiler.Kind.symbol)
@@ -3678,6 +3775,18 @@
     (if (eq op_id Kw.mem_store8)
         (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.scratch)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o OP_I32_STORE8 0) (set! done true))
         (block))
+    (if (eq op_id Kw.mem_load8_s)
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 44 0) (set! done true))
+        (block))
+    (if (eq op_id Kw.mem_load16_u)
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 47 1) (set! done true))
+        (block))
+    (if (eq op_id Kw.mem_load16_s)
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_memop o 46 1) (set! done true))
+        (block))
+    (if (eq op_id Kw.mem_store16)
+        (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.scratch)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o 59 1) (set! done true))
+        (block))
     (if (eq op_id Kw.mem_store32)
         (block (call compile_expr cg (call nth_child node 1) o) (call emit_store_guard cg o (get cg Cg.scratch)) (call compile_expr cg (call nth_child node 2) o) (call emit_memop o OP_I32_STORE 2) (set! done true))
         (block))
@@ -3937,6 +4046,9 @@
         (block))
     (if (eq op_id Kw.f64_convert_i64_s) ;; f64.convert_i64_s
         (block (call compile_expr cg (call nth_child node 1) o) (call put_op o OP_F64_CONVERT_I64_S) (set! done true))
+        (block))
+    (if (call is_conversion op_id) ;; the f32 conversions
+        (block (call compile_expr cg (call nth_child node 1) o) (call put_op o (call conversion_opcode op_id)) (set! done true))
         (block))
     (if (eq op_id Kw.f64_sqrt) ;; f64.sqrt
         (block (call compile_expr cg (call nth_child node 1) o) (call put_op o OP_F64_SQRT) (set! done true))
@@ -4496,7 +4608,7 @@
   ;; checked access; raw loads cannot (wasm.rs may_write_memory).
   (fn writes_memory [k:Kw] -> bool
     (cond
-      ((or (eq k Kw.mem_store8) (or (eq k Kw.mem_store32) (eq k Kw.mem_store64))) true)
+      ((or (or (eq k Kw.mem_store8) (eq k Kw.mem_store16)) (or (eq k Kw.mem_store32) (eq k Kw.mem_store64))) true)
       ((or (eq k Kw.atomic_add) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
       ((or (eq k Kw.thread_spawn) (eq k Kw.thread_join)) true)
       ((or (eq k Kw.fs_open) (or (eq k Kw.fs_read) (or (eq k Kw.fs_write) (eq k Kw.fs_delete)))) true)
@@ -4505,12 +4617,10 @@
       (else (eq k Kw.sys_random))))
 
   ;; Whether node writes memory itself or calls through a reference; the
-  ;; functions it calls go to calls (-1 for one not in the module). inv is
-  ;; not compiled, so not looked at (wasm.rs walks req and ens).
+  ;; functions it calls go to calls (-1 for one not in the module).
   (fn scan_effects [cg:(ptr Cg) node:(ptr compiler.Node) calls:(ptr (vec.Vec i32))] -> bool
     (if (neq (call node_kind node) compiler.Kind.paren) (return false) (block))
     (let kw:Kw (call group_head_keyword cg node))
-    (if (eq kw Kw.inv) (return false) (block))
     (let hit:bool (or (call writes_memory kw) (eq kw Kw.call_ref)))
     (if (eq kw Kw.call)
         (block
@@ -4804,7 +4914,7 @@
 
   ;; One piece of a contract failure's message after its fixed text: text
   ;; (interned at addr), or a local's value shown as the VM shows it.
-  (enum ItemKind [text int long bool_])
+  (enum ItemKind [text int long bool_ addr])
   (struct Item [kind:ItemKind addr:i32 len:i32 local:i32])
   (struct Msg [addr:i32 len:i32 items:(arr (ptr Item)) n:i32])
 
@@ -4841,7 +4951,8 @@
   (fn shown_as [t:Ty] -> ItemKind
     (cond
       ((or (eq t Ty.i32) (or (eq t Ty.union) (eq t Ty.fn))) ItemKind.int)
-      ((or (eq t Ty.i64) (or (eq t Ty.ptr) (eq t Ty.arr))) ItemKind.long)
+      ((eq t Ty.i64) ItemKind.long)
+      ((or (eq t Ty.ptr) (eq t Ty.arr)) ItemKind.addr)
       ((eq t Ty.bool) ItemKind.bool_)
       (else ItemKind.text)))
 
@@ -4888,15 +4999,21 @@
         (else (set! i (+ i 1)))))
     (- i at)))
 
-  ;; The failure message of contract `c` (a req or ens) of function `entry`,
-  ;; its texts interned in the order wasm.rs string_layout interns them.
-  (fn contract_msg [cg:(ptr Cg) entry:(ptr FnInfo) c:(ptr compiler.Node)] -> (ptr Msg)
+  ;; The failure message of contract `c` of function `entry` (an inv's on
+  ;; return when `exit`, else on entry), its texts interned in the order
+  ;; wasm.rs string_layout interns them.
+  (fn contract_msg [cg:(ptr Cg) entry:(ptr FnInfo) c:(ptr compiler.Node) exit:bool] -> (ptr Msg)
     (unsafe (let src:i32 (get cg Cg.src))
-    (let is_ens:bool (eq (call contract_kind cg c) Kw.ens))
+    (let ck:Kw (call contract_kind cg c))
+    (let is_ens:bool (or (eq ck Kw.ens) (and (eq ck Kw.inv) exit)))
     (let t:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
-    (call buf.push_str t (if is_ens "Post-condition failed in '" "Pre-condition failed in '"))
+    (call buf.push_str t (cond
+                           ((eq ck Kw.ens) "Post-condition failed in '")
+                           ((eq ck Kw.req) "Pre-condition failed in '")
+                           (exit "Exit invariant failed in '")
+                           (else "Entry invariant failed in '")))
     (call buf.push_bytes t (call str.bytes (+ src (get entry FnInfo.name_pos)) (get entry FnInfo.name_len)))
-    (call buf.push_str t (if is_ens "': (ens " "': (req "))
+    (call buf.push_str t (cond ((eq ck Kw.ens) "': (ens ") ((eq ck Kw.req) "': (req ") (else "': (inv ")))
     (let e:(ptr compiler.Node) (call nth_child c 1))
     (let at:i32 (get e compiler.Node.pos))
     (call printer.print_expr t (call parser.parse_expr_text (+ src at) (call expr_text_len cg at)))
@@ -4938,7 +5055,8 @@
       (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
       (let item:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
       (while (neq item (ptr.null compiler.Node))
-        (if (neq (call contract_kind cg item) Kw.none) (block (call contract_msg cg entry item) 0) 0)
+        (if (neq (call contract_kind cg item) Kw.none) (block (call contract_msg cg entry item false) 0) 0)
+        (if (eq (call contract_kind cg item) Kw.inv) (block (call contract_msg cg entry item true) 0) 0)
         (set! item (call node_next item)))))
 
   ;; The checks of every contract of kind `kind` (req or ens) of the
@@ -4948,9 +5066,9 @@
     (let base:i32 (get cg Cg.checks_base))
     (let item:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
     (while (neq item (ptr.null compiler.Node))
-      (if (eq (call contract_kind cg item) kind)
+      (if (or (eq (call contract_kind cg item) kind) (eq (call contract_kind cg item) Kw.inv))
           (block
-            (let m:(ptr Msg) (call contract_msg cg entry item))
+            (let m:(ptr Msg) (call contract_msg cg entry item (eq kind Kw.ens)))
             (let max:i32 (get m Msg.len))
             (loop j 0 (- (get m Msg.n) 1) 1
               (let it:(ptr Item) (arr.get (ptr Item) (get m Msg.items) j))
@@ -4981,6 +5099,11 @@
                  (call emit_call o base))
                 ((eq ik ItemKind.long)
                  (call emit_local_get o (get it Item.local))
+                 (call emit_call o base))
+                ((eq ik ItemKind.addr)
+                 (call emit_local_get o (get it Item.local))
+                 (call put_op o OP_I32_WRAP_I64)
+                 (call put_op o OP_I64_EXTEND_I32_U)
                  (call emit_call o base))
                 (else
                  ;; "true" or "false": address, then length

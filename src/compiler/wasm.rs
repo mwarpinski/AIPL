@@ -173,7 +173,8 @@ impl WasmCompiler {
 
             // A function with `ens` keeps its result in `res` for the checks
             // (a hidden local after the lets, unless a let already named it).
-            let has_ens = f.contracts.iter().any(|c| matches!(c, Contract::Ensures(_)));
+            // an inv is also checked on return, as an ens is
+            let has_ens = f.contracts.iter().any(|c| matches!(c, Contract::Ensures(_) | Contract::Invariant(_)));
             if has_ens && f.return_type != Type::Void && !local_map.contains_key("res") {
                 local_map.insert("res".to_string(), current_idx);
                 local_types.insert("res".to_string(), f.return_type.clone());
@@ -212,9 +213,8 @@ impl WasmCompiler {
             let contract_refs: Vec<&Expr> = f
                 .contracts
                 .iter()
-                .filter_map(|c| match c {
-                    Contract::Requires(e) | Contract::Ensures(e) => Some(e),
-                    _ => None,
+                .map(|c| match c {
+                    Contract::Requires(e) | Contract::Ensures(e) | Contract::Invariant(e) => e,
                 })
                 .collect();
             found.extend(value_groups(&contract_refs, &tyf, &structs, false));
@@ -1159,6 +1159,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             Literal::Int(_) => Type::I32,
             Literal::Int64(_) => Type::I64,
             Literal::Float(_) => Type::F64,
+            Literal::Float32(..) => Type::F32,
             Literal::Bool(_) => Type::Bool,
             Literal::Str(_) => Type::Str,
         },
@@ -1178,7 +1179,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::GetField { struct_name, field_name, .. } => {
             if let Some(def) = ctx.structs.get(struct_name) {
                 if let Ok((_, field_ty)) = crate::checker::get_field_offset(def, field_name, ctx.structs) {
-                    return field_ty;
+                    return crate::checker::value_of(&field_ty);
                 }
             }
             Type::I32
@@ -1194,7 +1195,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             Type::Fn(_, ret) => (**ret).clone(),
             _ => Type::I32,
         },
-        Expr::ArrGet { elem_ty, .. } => elem_ty.clone(),
+        Expr::ArrGet { elem_ty, .. } => crate::checker::value_of(elem_ty),
         Expr::ArrSet { .. } => Type::Void,
         Expr::Op { op, args, .. } => match op {
             OpCode::Add
@@ -1233,9 +1234,20 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::I64TruncF64S
             | OpCode::I64ReinterpretF64 => Type::I64,
             OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 | OpCode::F64Sqrt => Type::F64,
+            OpCode::F32DemoteF64
+            | OpCode::F64PromoteF32
+            | OpCode::F32ConvertI32S
+            | OpCode::F32ConvertI64S
+            | OpCode::F64ConvertI32S
+            | OpCode::I32TruncF32S
+            | OpCode::I32TruncF64S
+            | OpCode::I64TruncF32S
+            | OpCode::F32ReinterpretI32
+            | OpCode::I32ReinterpretF32 => crate::checker::conversion(op).1,
             OpCode::SysTime | OpCode::SysMonotonic => Type::I64,
             OpCode::SysRandom => Type::I32,
             OpCode::MemStore8
+            | OpCode::MemStore16
             | OpCode::MemStore32
             | OpCode::MemStore64
             | OpCode::AtomicLock
@@ -1243,6 +1255,9 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::SysPrint
             | OpCode::SysExit => Type::Void,
             OpCode::MemLoad8
+            | OpCode::MemLoad8S
+            | OpCode::MemLoad16U
+            | OpCode::MemLoad16S
             | OpCode::MemLoad32
             | OpCode::MemAlloc
             | OpCode::MemGrow
@@ -1573,7 +1588,7 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
 
 fn aipl_to_wasm_type(ty: &Type) -> ValType {
     match ty {
-        Type::I32 | Type::Bool | Type::Str | Type::Void => ValType::I32,
+        Type::I32 | Type::Bool | Type::Str | Type::Void | Type::Narrow(_) => ValType::I32,
         Type::I64 => ValType::I64,
         Type::F32 => ValType::F32,
         Type::F64 => ValType::F64,
@@ -1617,6 +1632,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             Literal::Float(f) => {
                 func.instruction(&Instruction::F64Const(*f));
+            }
+            Literal::Float32(f, _) => {
+                func.instruction(&Instruction::F32Const(*f));
             }
             Literal::Bool(b) => {
                 func.instruction(&Instruction::I32Const(if *b { 1 } else { 0 }));
@@ -1706,6 +1724,21 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::I32Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
             }
+            OpCode::MemLoad8S | OpCode::MemLoad16U | OpCode::MemLoad16S => {
+                compile_expr(&args[0], ctx, func)?;
+                let n = match op {
+                    OpCode::MemLoad8S => Narrow::I8,
+                    OpCode::MemLoad16U => Narrow::U16,
+                    _ => Narrow::I16,
+                };
+                func.instruction(&narrow_load(n, 0));
+            }
+            OpCode::MemStore16 => {
+                compile_expr(&args[0], ctx, func)?;
+                emit_write_address_check(func, ctx);
+                compile_expr(&args[1], ctx, func)?;
+                func.instruction(&narrow_store(Narrow::U16, 0));
+            }
             OpCode::MemLoad32 => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32Load(wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 }));
@@ -1788,6 +1821,30 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             OpCode::I32Wrap => {
                 compile_expr(&args[0], ctx, func)?;
                 func.instruction(&Instruction::I32WrapI64);
+            }
+            OpCode::F32DemoteF64
+            | OpCode::F64PromoteF32
+            | OpCode::F32ConvertI32S
+            | OpCode::F32ConvertI64S
+            | OpCode::F64ConvertI32S
+            | OpCode::I32TruncF32S
+            | OpCode::I32TruncF64S
+            | OpCode::I64TruncF32S
+            | OpCode::F32ReinterpretI32
+            | OpCode::I32ReinterpretF32 => {
+                compile_expr(&args[0], ctx, func)?;
+                func.instruction(&match op {
+                    OpCode::F32DemoteF64 => Instruction::F32DemoteF64,
+                    OpCode::F64PromoteF32 => Instruction::F64PromoteF32,
+                    OpCode::F32ConvertI32S => Instruction::F32ConvertI32S,
+                    OpCode::F32ConvertI64S => Instruction::F32ConvertI64S,
+                    OpCode::F64ConvertI32S => Instruction::F64ConvertI32S,
+                    OpCode::I32TruncF32S => Instruction::I32TruncF32S,
+                    OpCode::I32TruncF64S => Instruction::I32TruncF64S,
+                    OpCode::I64TruncF32S => Instruction::I64TruncF32S,
+                    OpCode::F32ReinterpretI32 => Instruction::F32ReinterpretI32,
+                    _ => Instruction::I32ReinterpretF32,
+                });
             }
             OpCode::F64ConvertI64S => {
                 compile_expr(&args[0], ctx, func)?;
@@ -2318,6 +2375,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             compile_pointer(ptr, ctx, func)?;
             match field_ty {
+                Type::Narrow(n) => {
+                    func.instruction(&narrow_load(n, offset as u64));
+                }
                 Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
@@ -2379,6 +2439,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             compile_expr(val, ctx, func)?;
             match field_ty {
+                Type::Narrow(n) => {
+                    func.instruction(&narrow_store(n, offset as u64));
+                }
                 Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
@@ -2559,6 +2622,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 return emit_load_scalars(func, ctx, elem_ty, 0);
             }
             match elem_ty {
+                Type::Narrow(n) => {
+                    func.instruction(&narrow_load(*n, 0));
+                }
                 Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
@@ -2609,6 +2675,9 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
             compile_expr(val, ctx, func)?;
             match elem_ty {
+                Type::Narrow(n) => {
+                    func.instruction(&narrow_store(*n, 0));
+                }
                 Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
@@ -2754,7 +2823,31 @@ fn binder_types(
 }
 
 /// The load of a memory value of type `ty` at `offset` from the address on the stack.
+/// A storage type's load at `offset` (stack: address -> i32), zero- or
+/// sign-extended.
+fn narrow_load(n: Narrow, offset: u64) -> Instruction<'static> {
+    let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
+    match n {
+        Narrow::U8 => Instruction::I32Load8U(m(0)),
+        Narrow::I8 => Instruction::I32Load8S(m(0)),
+        Narrow::U16 => Instruction::I32Load16U(m(1)),
+        Narrow::I16 => Instruction::I32Load16S(m(1)),
+    }
+}
+
+/// A storage type's store at `offset` (stack: address, i32): its low bits.
+fn narrow_store(n: Narrow, offset: u64) -> Instruction<'static> {
+    let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
+    match n {
+        Narrow::U8 | Narrow::I8 => Instruction::I32Store8(m(0)),
+        Narrow::U16 | Narrow::I16 => Instruction::I32Store16(m(1)),
+    }
+}
+
 fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
+    if let Type::Narrow(n) = ty {
+        return Ok(narrow_load(*n, offset));
+    }
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
         _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
@@ -2768,6 +2861,9 @@ fn load_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Stri
 
 /// The store of a value of type `ty` at `offset` from an address (stack: address, value).
 fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, String> {
+    if let Type::Narrow(n) = ty {
+        return Ok(narrow_store(*n, offset));
+    }
     let m = |align| wasm_encoder::MemArg { offset, align, memory_index: 0 };
     Ok(match aipl_to_wasm_type(ty) {
         _ if matches!(ty, Type::Void | Type::Struct(_) | Type::ResultType(..)) => return Err(format!("no memory layout for {}", ty)),
@@ -3253,7 +3349,8 @@ fn compile_pointer(ptr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String>
 /// An unchecked operation that can change memory other than through a
 /// checked access (a raw load cannot, so it frees nothing).
 fn may_write_memory(op: &OpCode) -> bool {
-    crate::checker::is_unchecked_op(op) && !matches!(op, OpCode::MemLoad8 | OpCode::MemLoad32 | OpCode::MemLoad64)
+    crate::checker::is_unchecked_op(op)
+        && !matches!(op, OpCode::MemLoad8 | OpCode::MemLoad32 | OpCode::MemLoad64 | OpCode::MemLoad8S | OpCode::MemLoad16U | OpCode::MemLoad16S)
 }
 
 /// The functions that may free memory, or change it other than through
@@ -3276,9 +3373,8 @@ fn functions_that_may_free(module: &Module) -> std::collections::HashSet<String>
             walk_expr(e, &mut visit);
         }
         for c in &f.contracts {
-            if let Contract::Requires(e) | Contract::Ensures(e) = c {
-                walk_expr(e, &mut visit);
-            }
+            let (Contract::Requires(e) | Contract::Ensures(e) | Contract::Invariant(e)) = c;
+            walk_expr(e, &mut visit);
         }
         if direct {
             may.insert(f.name.clone());
@@ -3700,8 +3796,10 @@ type ContractCheck<'a> = (bool, &'a Expr, (String, Vec<MsgItem>));
 /// text, or the value of a local (by name) shown as the VM shows it.
 enum MsgItem {
     Text(String),
-    /// an i32 (or a pointer, array, enum, union, or function reference): decimal
+    /// an i32 (or an enum, union, or function reference): decimal
     Int(String),
+    /// a pointer or array: its address (the low half), unsigned decimal
+    Addr(String),
     /// an i64: decimal, then the text "i64" (a separate item)
     Long(String),
     /// a bool: true or false
@@ -3714,7 +3812,8 @@ fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<
     match ty {
         Type::Union(n) if structs.is_value_union(n) => None,
         Type::I32 | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
-        Type::I64 | Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Long(name.to_string())),
+        Type::I64 => Some(MsgItem::Long(name.to_string())),
+        Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Addr(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),
         _ => None,
     }
@@ -3730,13 +3829,18 @@ fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<
 /// with it, the bytes would depend on that layout.
 fn contract_messages<'f>(f: &'f FnDef, structs: &crate::checker::Structs) -> Vec<ContractCheck<'f>> {
     let mut out = Vec::new();
-    for c in &f.contracts {
-        let (is_ens, expr) = match c {
-            Contract::Requires(e) => (false, e),
-            Contract::Ensures(e) => (true, e),
-            Contract::Invariant(_) => continue,
-        };
-        let (kind, form) = if is_ens { ("Post-condition", "ens") } else { ("Pre-condition", "req") };
+    // an inv is checked twice: with the req checks on entry, and with the
+    // ens checks on return (the entry message first)
+    let checks: Vec<(bool, &Expr, &str, &str)> = f
+        .contracts
+        .iter()
+        .flat_map(|c| match c {
+            Contract::Requires(e) => vec![(false, e, "Pre-condition", "req")],
+            Contract::Ensures(e) => vec![(true, e, "Post-condition", "ens")],
+            Contract::Invariant(e) => vec![(false, e, "Entry invariant", "inv"), (true, e, "Exit invariant", "inv")],
+        })
+        .collect();
+    for (is_ens, expr, kind, form) in checks {
         let text = format!("{} failed in '{}': ({} {})", kind, f.name, form, crate::printer::expr_str(expr));
         let mut items = Vec::new();
         let mut shown: Vec<(String, Option<MsgItem>)> =
@@ -3798,7 +3902,7 @@ fn emit_contract_check_at(
             .iter()
             .map(|i| match i {
                 MsgItem::Text(t) => t.len(),
-                MsgItem::Int(_) | MsgItem::Long(_) => 24,
+                MsgItem::Int(_) | MsgItem::Long(_) | MsgItem::Addr(_) => 24,
                 MsgItem::Bool(_) => 5,
             })
             .sum::<usize>();
@@ -3823,6 +3927,12 @@ fn emit_contract_check_at(
             }
             MsgItem::Long(n) => {
                 func.instruction(&LocalGet(local(n)?));
+                func.instruction(&Call(ctx.checks.dec));
+            }
+            MsgItem::Addr(n) => {
+                func.instruction(&LocalGet(local(n)?));
+                func.instruction(&I32WrapI64);
+                func.instruction(&I64ExtendI32U);
                 func.instruction(&Call(ctx.checks.dec));
             }
             MsgItem::Bool(n) => {
@@ -3920,7 +4030,7 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
                         intern("true", &mut blob, &mut addrs);
                         intern("false", &mut blob, &mut addrs);
                     }
-                    MsgItem::Int(_) | MsgItem::Long(_) => {}
+                    MsgItem::Int(_) | MsgItem::Long(_) | MsgItem::Addr(_) => {}
                 }
             }
         }
@@ -4282,7 +4392,7 @@ fn module_uses_checks(module: &Module) -> bool {
     let mut found = module
         .functions
         .iter()
-        .any(|f| f.contracts.iter().any(|c| matches!(c, Contract::Requires(_) | Contract::Ensures(_))));
+        .any(|f| !f.contracts.is_empty());
     walk_module(module, &mut |e| {
         if matches!(e, Expr::ArrGet { .. } | Expr::ArrSet { .. } | Expr::ArrLen { .. } | Expr::GetField { .. } | Expr::PutField { .. }) {
             found = true;

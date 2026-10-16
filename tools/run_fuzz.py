@@ -233,7 +233,8 @@ class Gen:
 
     def misc_bool(self, ctx, t, d):
         if self.rng.random() < 0.6 or not self.targets():
-            return f"({self.rng.choice(['eq', 'neq'])} {self.rng.choice(STRINGS)} {self.rng.choice(STRINGS)})"
+            # strings do not compare with eq (AIPL_SPEC.md 4.B); their lengths do
+            return f"({self.rng.choice(['eq', 'neq'])} (str.len {self.rng.choice(STRINGS)}) (str.len {self.rng.choice(STRINGS)}))"
         return f"({self.rng.choice(['eq', 'neq'])} {self.expr(ctx, F, d)} {self.expr(ctx, F, d)})"
 
     def call_ref(self, ctx, t, d):

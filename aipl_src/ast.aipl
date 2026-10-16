@@ -18,7 +18,9 @@
                (arr elem:Type)
                (fn_ params:(arr Type) ret:Type)
                (enum_ name:(ptr str.Bytes))
-               (union_ name:(ptr str.Bytes))] (pub))
+               (union_ name:(ptr str.Bytes))
+               ;; storage types: a struct field's or array element's only, read as an i32
+               (u8) (i8) (u16) (i16)] (pub))
 
   ;; An optional type or expression (src/ast.rs Option<Type>, Option<Box<Expr>>).
   (union MaybeType [(none) (some t:Type)] (pub))
@@ -26,13 +28,15 @@
 
   ;; The built-in operators, in src/ast.rs OpCode order.
   (enum Op [add sub mul div mod divu remu bitxor shl shr shru bitand bitor
-            mem_load8 mem_load32 mem_load64 mem_store8 mem_store32 mem_store64 mem_alloc mem_grow
+            mem_load8 mem_load32 mem_load64 mem_store8 mem_store32 mem_store64
+            mem_load8_s mem_load16_u mem_load16_s mem_store16 mem_alloc mem_grow
             atomic_add atomic_cas atomic_lock atomic_unlock
             eq neq lt lte checked_add checked_sub checked_mul ltu lteu gtu gteu gt gte and or not
             sys_print sys_time sys_monotonic sys_random sys_exit
             fs_open fs_read fs_write fs_close fs_delete args_sizes args_get env_sizes env_get
             thread_spawn thread_join i64_extend_s i64_extend_u i32_wrap
-            f64_convert_i64_s f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
+            f64_convert_i64_s f32_demote f64_promote f32_convert_i32_s f32_convert_i64_s f64_convert_i32_s
+            i32_trunc_f32_s i32_trunc_f64_s i64_trunc_f32_s f32_reinterpret_i32 i32_reinterpret_f32 f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
             str_len str_ptr fs_opendir fs_readdir fs_stat] (pub))
 
   ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32;
@@ -48,11 +52,12 @@
   (struct Arm [(pub member:(ptr str.Bytes)) (pub binders:(arr (ptr str.Bytes))) (pub body:(arr Expr)) (pub at:i32)] (pub))
 
   ;; An expression, one variant per form of src/ast.rs Expr. A float
-  ;; literal keeps its text; a string literal its text between the quotes,
+  ;; literal (f64 or f32) keeps its text; a string literal its text between the quotes,
   ;; escapes unexpanded.
   (union Expr [(lit_int at:i32 v:i64)
                (lit_i64 at:i32 v:i64)
                (lit_float at:i32 text:(ptr str.Bytes))
+               (lit_f32 at:i32 text:(ptr str.Bytes))
                (lit_bool at:i32 v:bool)
                (lit_str at:i32 raw:(ptr str.Bytes))
                (var at:i32 name:(ptr str.Bytes))
@@ -113,7 +118,7 @@
   ;; Where an expression starts.
   (fn at [e:Expr] -> i32 (pub)
     (match e
-      (Expr.lit_int [at _] at) (Expr.lit_i64 [at _] at) (Expr.lit_float [at _] at)
+      (Expr.lit_int [at _] at) (Expr.lit_i64 [at _] at) (Expr.lit_float [at _] at) (Expr.lit_f32 [at _] at)
       (Expr.lit_bool [at _] at) (Expr.lit_str [at _] at) (Expr.var [at _] at)
       (Expr.let_ [at _ _ _] at) (Expr.set [at _ _] at) (Expr.if_ [at _ _ _] at)
       (Expr.loop [at _ _ _ _ _] at) (Expr.while_ [at _ _] at) (Expr.call [at _ _] at)

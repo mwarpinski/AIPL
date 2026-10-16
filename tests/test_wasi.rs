@@ -139,13 +139,14 @@ fn sys_print_writes_each_argument_and_a_newline_to_stdout() {
 }
 
 #[test]
-fn string_literals_are_interned_with_lengths_and_compare_by_identity() {
+fn string_literals_are_interned_with_lengths_and_share_addresses() {
     // str.len reads the interned length; identical literals share one address.
+    // (eq on str is an error: strings compare by content, with str.same.)
     let (m, wasm) = compile(
         r#"(module m
              (fn len [] -> i32 (str.len "hello"))
-             (fn same [] -> bool (eq "abc" "abc"))
-             (fn diff [] -> bool (eq "abc" "abd"))
+             (fn same [] -> bool (unsafe (eq (str.ptr "abc") (str.ptr "abc"))))
+             (fn diff [] -> bool (unsafe (eq (str.ptr "abc") (str.ptr "abd"))))
              (fn empty [] -> i32 (str.len "")))"#,
     );
     // No I/O here, so no imports: instantiates without WASI too.

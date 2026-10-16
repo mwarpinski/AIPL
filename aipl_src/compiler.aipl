@@ -10,7 +10,7 @@
   ;; for the absence of a node.
   ;; bad is the token for text the Rust tokenizer rejects (TokErr says why);
   ;; tokenizing stops there, so it is always the last token.
-  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float bad (paren 20) (bracket 21)] (pub))
+  (enum Kind [(none -1) lparen rparen lbracket rbracket colon arrow symbol int bool string int64 float bad float32 (paren 20) (bracket 21)] (pub))
 
   (enum TokErr [unterminated_string unknown_escape stray_whitespace] (pub))
 
@@ -197,7 +197,7 @@
 
   ;; Rust's i64 parse: an optional '+' or '-', then at least one digit, the
   ;; value within i64.
-  (fn is_int_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+  (fn is_int_literal [src_ptr:i32 pos:i32 len:i32] -> bool (pub) (unsafe)
     (req (gte pos 0))
     (req (gt len 0))
     (unsafe (let first:i32 (mem.load8 (+ src_ptr pos)))
@@ -221,15 +221,21 @@
     true))
 
   ;; `42i64`, `-7i64`: an int literal followed by the suffix i64.
-  (fn is_i64_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+  (fn is_i64_literal [src_ptr:i32 pos:i32 len:i32] -> bool (pub) (unsafe)
     (and (gte len 4)
          (and (call span_is src_ptr (+ pos (- len 3)) 3 "i64")
               (call is_int_literal src_ptr pos (- len 3)))))
 
+  ;; `1.5f32`: a float literal followed by the suffix f32.
+  (fn is_f32_literal [src_ptr:i32 pos:i32 len:i32] -> bool (pub) (unsafe)
+    (and (gte len 5)
+         (and (call span_is src_ptr (+ pos (- len 3)) 3 "f32")
+              (call is_float_literal src_ptr pos (- len 3)))))
+
   ;; Rust's rule: the text contains '.', an ASCII digit, and parses as an f64:
   ;; an optional sign, digits around one '.', at least one digit before the
   ;; exponent, and an optional exponent e/E, optional sign, digits.
-  (fn is_float_literal [src_ptr:i32 pos:i32 len:i32] -> bool
+  (fn is_float_literal [src_ptr:i32 pos:i32 len:i32] -> bool (pub) (unsafe)
     (unsafe (let i:i32 0)
     (let c0:i32 (mem.load8 (+ src_ptr pos)))
     (if (or (eq c0 CH_MINUS) (eq c0 CH_PLUS)) (set! i 1) (block))
@@ -338,6 +344,7 @@
                   (call write_token token_out_ptr count Kind.int s n s))
                  ((call is_i64_literal input_ptr s n) (call write_token token_out_ptr count Kind.int64 s n s))
                  ((call is_float_literal input_ptr s n) (call write_token token_out_ptr count Kind.float s n s))
+                 ((call is_f32_literal input_ptr s n) (call write_token token_out_ptr count Kind.float32 s n s))
                  (else (call write_token token_out_ptr count Kind.symbol s n s)))))))
     count))
 
