@@ -122,13 +122,44 @@ aipl compile --exe examples/word_count.aipl -o wc
 ./wc README.md                                  # a native executable
 ```
 
-The self-hosted compiler, built as a native executable, compiles itself in
-under 0.6 seconds to the same bytes the Rust compiler produces:
+## Build AIPL with AIPL
+
+The compiler is written in AIPL, and on Linux x86-64 it builds itself as a
+native executable. Run these from the source directory.
+
+**The first executable** is built by the Rust toolchain (this is how the
+checked-in seed was made):
 
 ```bash
-aipl compile --exe aipl_src/driver.aipl -o aiplc
-./aiplc aipl_src/driver.aipl aiplc.wasm
+cargo build --release
+./target/release/aipl compile --exe aipl_src/aipl.aipl -o target/aipl0
 ```
+
+**Without Rust**, start from the seed in `bootstrap/`. The script builds
+the compiler with the seed, builds it again with the result, and checks
+that a third build is identical (about 3 seconds):
+
+```bash
+sh bootstrap/build.sh               # the result is target/bootstrap/aipl
+```
+
+**By hand**, each executable builds the next:
+
+```bash
+./bootstrap/aipl-linux-x86_64 compile --exe aipl_src/aipl.aipl -o target/aipl1
+chmod +x target/aipl1
+./target/aipl1 compile --exe aipl_src/aipl.aipl -o target/aipl2
+chmod +x target/aipl2
+cmp target/aipl1 target/aipl2       # no output: the compiler reproduces itself
+```
+
+The AIPL-built compiler does `compile` only (to `.wasm`, or with `--exe`
+to an executable), and it compiles every program to the same bytes as the
+Rust one. It reads the standard library from `aipl_src/std/` under the
+working directory, or from `$AIPL_STD`. WASI cannot set a file's execute
+bit, hence the `chmod +x`. `cargo test` checks that the seed's build is
+byte for byte the Rust toolchain's, so the Rust compiler stays as a
+referee ([bootstrap/README.md](bootstrap/README.md) explains why).
 
 ## What works today
 
