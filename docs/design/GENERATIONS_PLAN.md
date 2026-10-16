@@ -4,8 +4,9 @@ Status: done (2026-10-16) in every backend and both toolchains: the VM,
 `src/compiler/wasm.rs`, `aipl_src/codegen.aipl` (byte for byte), the
 native backend (which needed nothing: it translates the wasm), and the
 standard library (`std/gen`). tests/test_generations.rs checks it in all
-three backends. Still open: data races (below) and the pre-checked small
-functions under "What remains".
+three backends. Parallel work without `unsafe` (`std/par`, "Data races"
+below) is done too; the pre-checked small functions under "What remains"
+were measured and not built.
 
 ## The gap
 
@@ -234,9 +235,14 @@ the null checks too.) What remains:
 
 1. **Checks inside small calls** (knucleotide: `str.byte_at` once per
    byte, each call checking its argument): a loop's proof cannot reach a
-   callee. The fix is a pre-checked copy of a small function, called from
-   a versioned loop where its pointer argument is already proven (or
-   inlining).
+   callee. The fix would be a pre-checked copy of a small function, called
+   from a versioned loop where its pointer argument is already proven.
+   **Measured first (2026-10-16), and not built:** removing every
+   generation check from knucleotide saves 2.5% natively and 12% under
+   wasmtime, an upper bound for any such copies; its remaining cost is
+   memory. Dropping the 8-byte prefix from `new` objects (never freed, so
+   they could be unchecked) saved 6% under wasmtime and nothing natively,
+   also not worth a layout change in both toolchains.
 2. **Memory** (binarytrees): a node is 32 bytes, was 8: two 8-byte
    pointers, the 8-byte generation prefix, and the arena's 8-byte block
    header. Dropping the header and the reset walk measured 1.63 natively
@@ -263,14 +269,34 @@ memory at once, one writing), which can forge a pointer too. Starting a
 thread and atomics already require `unsafe`, so the claim with generations
 is: **code without `unsafe` is memory-safe; threads need `unsafe`.**
 
-Later, so that ordinary programs never need `unsafe` threads: a safe
-parallel library (fork and join) in which each worker gets its own part of
-the output array (disjoint by construction, kept in it by bounds checks),
-read-only input (value structs, strings, or frozen data), and its own
-arena; results come back at the join. It uses `unsafe` threads inside, as
-`std/heap` uses raw memory. Freezing would be a state of the generation
-word: reads allowed from any thread, a write through a frozen pointer
-stops the program. Considered and not chosen: Rust's Send/Sync (needs a
-borrow checker), isolates that copy every message (large inputs get
-copied), and a race detector (finds races in testing, guarantees nothing).
+**Built (2026-10-16): `std/par`**, so that ordinary programs need no
+`unsafe` threads. `(call (par.map T U C) out f ctx xs threads)` sets
+`out[i]` to `(call_ref f ctx xs' i)` for every `i`, in contiguous parts,
+one on the calling thread and each other on a thread of its own, and
+returns when all are done. Nothing a worker can reach is written by
+another while it runs:
+
+- `T`, `U`, and `C` must be **plain**, a new kind: `(where (plain T))`,
+  checked by both generics passes, means no pointer or array at any depth
+  (numbers, `bool`, `str`, enums, function references, and value structs
+  and unions of plain fields; not yet a generic instance). So the context
+  and each result are copies, and a result cannot carry a pointer out.
+- Each part gets its **own copy** of the input array, from the shared heap
+  (freed at the end): its worker reads it at full speed, in versioned
+  loops, and may even change it.
+- `par` itself writes each result to its own element of `out`.
+- There are no globals outside `unsafe`; allocation is atomic (`new`,
+  `arr.new`) or locked (`std/heap`), and `par` makes the shared heap
+  before any worker can ask for it.
+
+A first version read the input through a `par.Shared` view (a struct whose
+array field only `par` could reach); every element read was a call, and
+one thread took 2.4 times the sequential time, so it became a copy.
+`examples/spectralnorm_par.aipl` (each row of a matrix-vector product is
+one element of `out`) takes the sequential benchmark's time on one thread
+and 0.26 of it on eight, natively; `tests/test_par.rs` checks its result
+in every backend. Not covered: work that does not fit "one result per
+index" (reductions, shared maps), freezing, and transfer; Rust's
+Send/Sync (it needs a borrow checker), isolates that copy every message,
+and a race detector were considered and not chosen.
 

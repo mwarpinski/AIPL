@@ -212,9 +212,9 @@ fn where_clauses_are_checked_in_both_resolvers() {
          "1:38: where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"),
         // the clause's own form
         ("(module m (import cmp) (fn (f T) [x:T] -> T (where cmp.Eq) x) (fn main [] -> i32 (call (f i32) 1)))",
-         "1:45: a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"),
+         "1:45: a where clause is written (where (Interface T)), (where (struct T)), or (where (plain T)), T a type parameter of this generic"),
         ("(module m (import cmp) (fn (f T) [x:T] -> T (where (cmp.Eq U)) x) (fn main [] -> i32 (call (f i32) 1)))",
-         "1:45: a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"),
+         "1:45: a where clause is written (where (Interface T)), (where (struct T)), or (where (plain T)), T a type parameter of this generic"),
         ("(module m (fn (f T) [x:T] -> T (where (Nope T)) x) (fn main [] -> i32 (call (f i32) 1)))",
          "1:32: 'Nope' is not an interface"),
     ];
@@ -275,6 +275,45 @@ fn templates_are_checked_once_in_both_toolchains() {
             });
         }
     });
+}
+
+/// (where (plain T)): a type argument holding a pointer or an array, at
+/// any depth, is refused in both toolchains with the same message; plain
+/// ones (scalars, str, enums, function references, and value
+/// structs and unions of plain fields) are accepted and run.
+#[test]
+fn plain_type_arguments_are_checked_in_both_toolchains() {
+    let header = "(module m (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
+    let refused: &[(&str, &str)] = &[
+        ("(ptr Box)", "(call (need (ptr Box)) (new Box))"),
+        ("(arr i32)", "(call (need (arr i32)) (arr.new i32 1))"),
+        ("Holds", "(call (need Holds) (make Holds (new Box)))"),
+        ("Deep", "(call (need Deep) (make Deep (make Holds (new Box))))"),
+        ("U", "(call (need U) (make U.b))"),
+    ];
+    for (k, (ty, call)) in refused.iter().enumerate() {
+        let src = format!("{header} (fn main [] -> i32 {call}))");
+        let entry = write_program(&format!("plain_no_{k}"), &[("main.aipl", &src)]);
+        let rust = Resolver::resolve(&entry).and_then(|m| TypeChecker::new().check_module(&m)).expect_err(&src);
+        let want = format!("T must be plain (where (plain T)), and {ty} may hold a pointer or an array");
+        assert!(rust.contains(&want), "{src}\n  expected: {want}\n  rust: {rust}");
+        let aipl = aipl_core::selfhost::compile_with_aipl(&entry).map(|_| ()).expect_err(&src);
+        assert_eq!(aipl, rust, "{src}");
+    }
+    // inside a template: its own parameter needs the clause too
+    let src = format!("{header} (fn (wrap T) [x:T] -> i32 (call (need T) x)) (fn main [] -> i32 0))");
+    let entry = write_program("plain_sealed", &[("main.aipl", &src)]);
+    let rust = Resolver::resolve(&entry).and_then(|m| TypeChecker::new().check_module(&m)).expect_err(&src);
+    assert!(rust.ends_with("need<T>: T must be plain, so wrap needs (where (plain T))"), "{rust}");
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&entry).map(|_| ()).expect_err(&src), rust);
+    // plain ones: 7 each (a result is never a type argument; enums are
+    // plain too, but this helper's flat output keeps their names)
+    let src = format!(
+        "{header} (fn (wrap T) [x:T] -> i32 (where (plain T)) (call (need T) x)) (fn main [] -> i32 (+ (call (need i32) 1) (+ (call (need str) \"s\") (+ (call (need Ok2) (make Ok2 1 2.0)) (+ (call (need V) (make V.b)) (+ (call (need (fn [i32] -> i32)) (ref main2)) (call (wrap i64) 5i64))))))) (fn main2 [x:i32] -> i32 x))"
+    );
+    let entry = write_program("plain_yes", &[("main.aipl", &src)]);
+    assert_eq!(run_both(&entry, "main"), 42);
+    assert_aipl_resolver_agrees(&entry);
 }
 
 /// What sealing allows: a template using only what its kinds and where

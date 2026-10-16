@@ -168,7 +168,8 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
   enums; unions with an exhaustive `match`; results and options (held by
   value when small); function references; generic structs, unions, and
   functions, checked once with interfaces and `where` clauses; constants;
-  modules and imports; threads and atomics.
+  modules and imports; threads and atomics, and `std/par` for parallel work
+  without `unsafe`.
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux x86-64 executables with no
@@ -199,7 +200,8 @@ and the line, even after the memory holds a new object
 Raw memory operations, casts to pointers, threads, and atomics are
 allowed only inside `unsafe`, and module visibility keeps code from
 forging the standard library's descriptors. The limits, in full: AIPL
-does not check for data races, so threads need `unsafe`; after an arena
+does not check for data races, so threads need `unsafe` (but `std/par`
+runs work in parallel without it, with nothing its workers can race on); after an arena
 reuses its memory, a stale pointer is caught unless the new data at one
 word happens to equal its old 32-bit generation (the heap has no such
 case); a fast arena, which programs choose by name, catches a stale
@@ -228,14 +230,12 @@ is missing):
 1. **Launch readiness** ([docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)):
    a showcase program and the experiment measuring
    how well agents write AIPL.
-2. **The language:** a safe way to run code in parallel, so programs need
-   not use `unsafe` threads.
-3. **The standard library:** networking and starting processes, once WASI
+2. **The standard library:** networking and starting processes, once WASI
    can.
-4. **Rust out of the build path:** the seed builds the compiler on Linux
+3. **Rust out of the build path:** the seed builds the compiler on Linux
    x86-64 today; next, a WebAssembly seed for other platforms and an
    installer that needs no Rust. The Rust compiler stays as the referee.
-5. **Packages:** a registry with versioned packages, dependency resolution,
+4. **Packages:** a registry with versioned packages, dependency resolution,
    and lock files.
 
 ## How it is made and tested
@@ -244,7 +244,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **352 Rust tests** and an AIPL test suite, run on every push by CI.
+- **354 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
