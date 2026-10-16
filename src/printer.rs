@@ -63,6 +63,7 @@ pub fn print_module(m: &Module) -> String {
 
 pub fn type_str(t: &Type) -> String {
     match t {
+        Type::Narrow(n) => n.name().into(),
         Type::I32 => "i32".into(),
         Type::I64 => "i64".into(),
         Type::F32 => "f32".into(),
@@ -104,6 +105,7 @@ fn lit_str(l: &Literal) -> String {
             let s = f.to_string();
             if s.contains('.') { s } else { format!("{}.0", s) }
         }
+        Literal::Float32(_, text) => text.clone(),
         Literal::Bool(b) => b.to_string(),
         Literal::Str(s) => {
             let mut out = String::from("\"");
@@ -157,6 +159,10 @@ pub fn op_name(op: &OpCode) -> &'static str {
         MemLoad32 => "mem.load32",
         MemLoad64 => "mem.load64",
         MemStore8 => "mem.store8",
+        MemLoad8S => "mem.load8_s",
+        MemLoad16U => "mem.load16_u",
+        MemLoad16S => "mem.load16_s",
+        MemStore16 => "mem.store16",
         MemStore32 => "mem.store32",
         MemStore64 => "mem.store64",
         MemAlloc => "mem.alloc",
@@ -206,6 +212,16 @@ pub fn op_name(op: &OpCode) -> &'static str {
         I64ExtendU => "i64.extend_u",
         I32Wrap => "i32.wrap",
         F64ConvertI64S => "f64.convert_i64_s",
+        F32DemoteF64 => "f32.demote",
+        F64PromoteF32 => "f64.promote",
+        F32ConvertI32S => "f32.convert_i32_s",
+        F32ConvertI64S => "f32.convert_i64_s",
+        F64ConvertI32S => "f64.convert_i32_s",
+        I32TruncF32S => "i32.trunc_f32_s",
+        I32TruncF64S => "i32.trunc_f64_s",
+        I64TruncF32S => "i64.trunc_f32_s",
+        F32ReinterpretI32 => "f32.reinterpret_i32",
+        I32ReinterpretF32 => "i32.reinterpret_f32",
         F64Sqrt => "f64.sqrt",
         I64TruncF64S => "i64.trunc_f64_s",
         F64ReinterpretI64 => "f64.reinterpret_i64",

@@ -78,6 +78,10 @@
   (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes) (pub)
     (unsafe (call str.bytes (get b Buf.data) (get b Buf.len))))
 
+  ;; The contents as a new str: a copy, so later pushes and free leave it
+  ;; alone. Never freed (str.from_bytes); the contents must be UTF-8.
+  (fn to_str [b:(ptr Buf)] -> str (pub) (call str.from_bytes (call bytes b)))
+
   ;; Writes the contents to file descriptor fd; the bytes written, or a
   ;; negative errno (fs.write).
   (fn write [b:(ptr Buf) fd:i32] -> i32 (pub) (unsafe (fs.write fd (get b Buf.data) (get b Buf.len))))
@@ -107,4 +111,9 @@
     (match_result (call str.parse_int (call bytes c))
       (ok n (if (eq n -2147483648) (set! p (+ p 1)) (block)))
       (err e (block)))
+    ;; to_str copies: pushes and free afterwards leave the str alone
+    (let t:str (call to_str c))
+    (call push_str c "0")
+    (call free c)
+    (if (call str.same t "-2147483648") (set! p (+ p 1)) (block))
     p))

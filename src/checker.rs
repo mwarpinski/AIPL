@@ -91,6 +91,31 @@ impl Structs {
 /// The kind of slot a scalar of type `t` takes: I32 (every 4-byte scalar
 /// but f32: bool, enums, pointers, arrays, function references, unions and
 /// results held by address), F32, I64, or F64.
+/// A conversion's operand and result types.
+pub fn conversion(op: &OpCode) -> (Type, Type) {
+    use OpCode::*;
+    match op {
+        F64ConvertI64S | F64ReinterpretI64 => (Type::I64, Type::F64),
+        F64Sqrt => (Type::F64, Type::F64),
+        I64TruncF64S | I64ReinterpretF64 => (Type::F64, Type::I64),
+        F32DemoteF64 => (Type::F64, Type::F32),
+        F64PromoteF32 => (Type::F32, Type::F64),
+        F32ConvertI32S | F32ReinterpretI32 => (Type::I32, Type::F32),
+        F32ConvertI64S => (Type::I64, Type::F32),
+        F64ConvertI32S => (Type::I32, Type::F64),
+        I32TruncF32S | I32ReinterpretF32 => (Type::F32, Type::I32),
+        I32TruncF64S => (Type::F64, Type::I32),
+        I64TruncF32S => (Type::F32, Type::I64),
+        _ => (Type::Void, Type::Void),
+    }
+}
+
+/// The type a value read from a field or element of type `t` has: an `i32`
+/// for a storage type, else `t`.
+pub fn value_of(t: &Type) -> Type {
+    if matches!(t, Type::Narrow(_)) { Type::I32 } else { t.clone() }
+}
+
 pub fn slot_kind(t: &Type) -> Type {
     match t {
         Type::I64 | Type::Ptr(_) | Type::Array(_) => Type::I64,
@@ -230,6 +255,7 @@ fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize
         }
         // a pointer or array: the address, then the generation (GENERATIONS_PLAN.md)
         Type::Ptr(_) | Type::Array(_) => Ok((8, 8)),
+        Type::Narrow(n) => Ok((n.size(), n.size())),
         Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
@@ -573,6 +599,10 @@ impl TypeChecker {
         for s in &module.structs {
             self.at_item("struct", &s.name);
             for f in &s.fields {
+                // a storage type is a field's type only (not a value struct's)
+                if matches!(f.ty, Type::Narrow(_)) && !s.is_value {
+                    continue;
+                }
                 self.validate_type(&f.ty, s.span).map_err(|e| format!("{} (field '{}' of struct '{}')", e, f.name, shown(&s.name)))?;
             }
         }
@@ -613,7 +643,7 @@ impl TypeChecker {
             return Err(format!("{}:{}: value struct '{}' has no fields", l, c, name));
         }
         for f in &s.fields {
-            if matches!(f.ty, Type::Str | Type::Union(_) | Type::ResultType(_, _) | Type::Void) {
+            if matches!(f.ty, Type::Str | Type::Union(_) | Type::ResultType(_, _) | Type::Void | Type::Narrow(_)) {
                 return Err(format!(
                     "{}:{}: Field '{}' of value struct '{}': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not {}",
                     l, c, f.name, name, f.ty
@@ -703,6 +733,11 @@ impl TypeChecker {
     /// struct is never used by value.
     fn validate_type(&self, ty: &Type, span: (u32, u32)) -> Result<(), String> {
         match ty {
+            Type::Narrow(n) => Err(format!(
+                "{}:{}: {} is a storage type: only a struct field or an array element is one (reading it gives an i32); use i32",
+                span.0, span.1, n.name()
+            )),
+            Type::Array(elem) if matches!(elem.as_ref(), Type::Narrow(_)) => Ok(()),
             Type::Ptr(inner) => match inner.as_ref() {
                 Type::Struct(name) if self.is_value(name) => Err(format!(
                     "{}:{}: '{}' is a value struct, which has no address: write {}, not (ptr {})",
@@ -898,6 +933,7 @@ impl TypeChecker {
                 Literal::Int(_) => Ok(Type::I32),
                 Literal::Int64(_) => Ok(Type::I64),
                 Literal::Float(_) => Ok(Type::F64),
+                Literal::Float32(..) => Ok(Type::F32),
                 Literal::Bool(_) => Ok(Type::Bool),
                 Literal::Str(_) => Ok(Type::Str),
             },
@@ -1075,7 +1111,7 @@ impl TypeChecker {
                     }
                     let integer_only = !matches!(op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div);
                     if t1 == Type::Str && matches!(op, OpCode::Add) {
-                        return Err(format!("{}:{}: + does not join strings; build them with std/buf (buf.push_str, buf.bytes)", l, c));
+                        return Err(format!("{}:{}: + does not join strings: join two with (call str.concat a b), or build text with std/buf (buf.push_str, then buf.to_str)", l, c));
                     }
                     if integer_only && !matches!(t1, Type::I32 | Type::I64 | Type::Enum(_)) {
                         return Err(format!("{}:{}: {} is integer arithmetic (i32 or i64), got {}", l, c, op, t1));
@@ -1091,7 +1127,7 @@ impl TypeChecker {
                     }
                     Ok(t1)
                 }
-                OpCode::MemLoad8 | OpCode::MemLoad32 => {
+                OpCode::MemLoad8 | OpCode::MemLoad32 | OpCode::MemLoad8S | OpCode::MemLoad16U | OpCode::MemLoad16S => {
                     if args.len() != 1 {
                         return Err(format!("{}:{}: {} requires 1 argument (ptr: i32)", l, c, op));
                     }
@@ -1111,7 +1147,7 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
-                OpCode::MemStore8 | OpCode::MemStore32 => {
+                OpCode::MemStore8 | OpCode::MemStore32 | OpCode::MemStore16 => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: {} requires 2 arguments (ptr: i32, val: i32)", l, c, op));
                     }
@@ -1195,12 +1231,20 @@ impl TypeChecker {
                             l, c, op, shown(v), shown(v)
                         ));
                     }
+                    // a str made at run time has its own address, so eq would
+                    // compare addresses compiled and contents in the VM
+                    if t1 == Type::Str {
+                        return Err(format!(
+                            "{}:{}: {} on str: compare strings by content with (call str.same a b), and order them with (call (cmp.Ord.compare str) a b)",
+                            l, c, op
+                        ));
+                    }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {} on {}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
-                    // lt/lte/gt/gte order numbers; bool and str compare only with eq/neq
-                    if matches!(t1, Type::Bool | Type::Str) && !matches!(op, OpCode::Eq | OpCode::Neq) {
-                        return Err(format!("{}:{}: {} on {}: only numbers are ordered; bool and str compare only with eq/neq", l, c, op, t1));
+                    // lt/lte/gt/gte order numbers; bool compares only with eq/neq
+                    if t1 == Type::Bool && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                        return Err(format!("{}:{}: {} on bool: only numbers are ordered; bool compares only with eq/neq", l, c, op));
                     }
                     Ok(Type::Bool)
                 }
@@ -1386,12 +1430,22 @@ impl TypeChecker {
                     }
                     Ok(Type::I64)
                 }
-                OpCode::F64ConvertI64S | OpCode::I64TruncF64S | OpCode::F64ReinterpretI64 | OpCode::I64ReinterpretF64 | OpCode::F64Sqrt => {
-                    let (from, to) = match op {
-                        OpCode::F64ConvertI64S | OpCode::F64ReinterpretI64 => (Type::I64, Type::F64),
-                        OpCode::F64Sqrt => (Type::F64, Type::F64),
-                        _ => (Type::F64, Type::I64),
-                    };
+                OpCode::F64ConvertI64S
+                | OpCode::I64TruncF64S
+                | OpCode::F64ReinterpretI64
+                | OpCode::I64ReinterpretF64
+                | OpCode::F64Sqrt
+                | OpCode::F32DemoteF64
+                | OpCode::F64PromoteF32
+                | OpCode::F32ConvertI32S
+                | OpCode::F32ConvertI64S
+                | OpCode::F64ConvertI32S
+                | OpCode::I32TruncF32S
+                | OpCode::I32TruncF64S
+                | OpCode::I64TruncF32S
+                | OpCode::F32ReinterpretI32
+                | OpCode::I32ReinterpretF32 => {
+                    let (from, to) = conversion(op);
                     if args.len() != 1 {
                         return Err(format!("{}:{}: {} requires 1 argument (x: {})", l, c, op, from));
                     }
@@ -1532,7 +1586,7 @@ impl TypeChecker {
                 let (_offset, field_ty) = get_field_offset(def, field_name, &self.struct_defs).map_err(|e| {
                     format!("{}:{}: {}", span.0, span.1, e)
                 })?;
-                Ok(field_ty)
+                Ok(value_of(&field_ty))
             }
             Expr::PutField {
                 struct_name,
@@ -1560,6 +1614,7 @@ impl TypeChecker {
                     format!("{}:{}: {}", span.0, span.1, e)
                 })?;
                 let (written, field_ty) = self.walk_path((struct_name, field_name), field_ty, path, "put", *span)?;
+                let field_ty = value_of(&field_ty);
                 let val_ty = self.infer_expr_type(val, env)?;
                 if val_ty != field_ty {
                     return Err(format!(
@@ -1629,6 +1684,7 @@ impl TypeChecker {
                             return Err(not_a_struct(*span, name));
                         }
                     }
+                    Type::Narrow(_) => {}
                     _ => {
                         self.validate_type(ty, *span)?;
                         if memory_layout(ty, &self.struct_defs).is_err() {
@@ -1673,7 +1729,7 @@ impl TypeChecker {
                         span.0, span.1, idx_ty
                     ));
                 }
-                Ok(elem_ty.clone())
+                Ok(value_of(elem_ty))
             }
             Expr::ArrSet {
                 elem_ty,
@@ -1700,7 +1756,7 @@ impl TypeChecker {
                 }
                 // a path: one field of a value struct element
                 let target = match path.split_first() {
-                    None => elem_ty.clone(),
+                    None => value_of(elem_ty),
                     Some(((st, f), rest)) => {
                         if *elem_ty != Type::Struct(st.clone()) || !self.is_value(st) {
                             return Err(format!(
@@ -1934,6 +1990,10 @@ fn is_address_op(op: &OpCode) -> bool {
             | OpCode::MemStore8
             | OpCode::MemStore32
             | OpCode::MemStore64
+            | OpCode::MemLoad8S
+            | OpCode::MemLoad16U
+            | OpCode::MemLoad16S
+            | OpCode::MemStore16
             | OpCode::AtomicAdd
             | OpCode::AtomicCas
             | OpCode::AtomicLock
@@ -1946,6 +2006,7 @@ fn is_write_op(op: &OpCode) -> bool {
     matches!(
         op,
         OpCode::MemStore8
+            | OpCode::MemStore16
             | OpCode::MemStore32
             | OpCode::MemStore64
             | OpCode::AtomicAdd
@@ -2001,7 +2062,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
     use OpCode::*;
     matches!(
         op,
-        MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64
+        MemLoad8 | MemLoad32 | MemLoad64 | MemStore8 | MemStore32 | MemStore64 | MemLoad8S | MemLoad16U | MemLoad16S | MemStore16
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat

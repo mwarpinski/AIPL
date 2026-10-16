@@ -13,6 +13,8 @@ pub enum TokenKind {
     Int64Lit(i64),
     /// the value and the literal as written (messages show tokens as written)
     FloatLit(f64, String),
+    /// `1.5f32`: the value and the literal as written
+    Float32Lit(f32, String),
     StringLit(String),
     BoolLit(bool),
 }
@@ -32,6 +34,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::IntLit(v) => write!(f, "{v}"),
             TokenKind::Int64Lit(v) => write!(f, "{v}i64"),
             TokenKind::FloatLit(_, text) => f.write_str(text),
+            TokenKind::Float32Lit(_, text) => f.write_str(text),
             TokenKind::BoolLit(b) => write!(f, "{b}"),
             TokenKind::StringLit(s) => {
                 f.write_str("\"")?;
@@ -308,6 +311,17 @@ impl Parser {
                         // `42i64` / `-7i64`: an explicit 64-bit integer literal.
                         tokens.push(Token {
                             kind: TokenKind::Int64Lit(i),
+                            line: start_line,
+                            col: start_col,
+                        });
+                    } else if let Some(f) = symbol
+                        .strip_suffix("f32")
+                        .filter(|s| s.contains('.') && s.chars().any(|c| c.is_ascii_digit()))
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        // `1.5f32`: the nearest f64, then the nearest f32
+                        tokens.push(Token {
+                            kind: TokenKind::Float32Lit(f as f32, symbol.clone()),
                             line: start_line,
                             col: start_col,
                         });
@@ -943,6 +957,7 @@ impl Parser {
                 "bool" => Ok(Type::Bool),
                 "str" => Ok(Type::Str),
                 "void" => Ok(Type::Void),
+                _ if Narrow::from_name(&s).is_some() => Ok(Type::Narrow(Narrow::from_name(&s).unwrap())),
                 // any other name is a union or an enum type; the checker reports unknown ones
                 _ if self.unions.contains(&s) => Ok(Type::Union(s)),
                 _ if self.values.contains(&s) => Ok(Type::Struct(s)),
@@ -1049,6 +1064,10 @@ impl Parser {
                 TokenKind::FloatLit(val, _) => {
                     self.next();
                     Ok(Expr::Lit(Literal::Float(val), (tok.line, tok.col)))
+                }
+                TokenKind::Float32Lit(val, text) => {
+                    self.next();
+                    Ok(Expr::Lit(Literal::Float32(val, text), (tok.line, tok.col)))
                 }
                 TokenKind::BoolLit(val) => {
                     self.next();
@@ -1480,6 +1499,7 @@ impl Parser {
                             let ty = match self.peek_kind() {
                                 Some(TokenKind::Symbol(s))
                                     if !matches!(s.as_str(), "i32" | "i64" | "f32" | "f64" | "bool" | "str" | "void")
+                                        && Narrow::from_name(s).is_none()
                                         && !self.unions.contains(s) =>
                                 {
                                     let s = s.clone();
@@ -1674,6 +1694,10 @@ impl Parser {
                                 "mem.load32" => OpCode::MemLoad32,
                                 "mem.load64" => OpCode::MemLoad64,
                                 "mem.store8" => OpCode::MemStore8,
+                                "mem.load8_s" => OpCode::MemLoad8S,
+                                "mem.load16_u" => OpCode::MemLoad16U,
+                                "mem.load16_s" => OpCode::MemLoad16S,
+                                "mem.store16" => OpCode::MemStore16,
                                 "mem.store32" => OpCode::MemStore32,
                                 "mem.store64" => OpCode::MemStore64,
                                 "mem.alloc" => OpCode::MemAlloc,
@@ -1723,6 +1747,16 @@ impl Parser {
                                 "remu" => OpCode::RemU,
                                 "i64.extend_s" => OpCode::I64ExtendS,
                                 "f64.convert_i64_s" => OpCode::F64ConvertI64S,
+                                "f32.demote" => OpCode::F32DemoteF64,
+                                "f64.promote" => OpCode::F64PromoteF32,
+                                "f32.convert_i32_s" => OpCode::F32ConvertI32S,
+                                "f32.convert_i64_s" => OpCode::F32ConvertI64S,
+                                "f64.convert_i32_s" => OpCode::F64ConvertI32S,
+                                "i32.trunc_f32_s" => OpCode::I32TruncF32S,
+                                "i32.trunc_f64_s" => OpCode::I32TruncF64S,
+                                "i64.trunc_f32_s" => OpCode::I64TruncF32S,
+                                "f32.reinterpret_i32" => OpCode::F32ReinterpretI32,
+                                "i32.reinterpret_f32" => OpCode::I32ReinterpretF32,
                                 "f64.sqrt" => OpCode::F64Sqrt,
                                 "i64.trunc_f64_s" => OpCode::I64TruncF64S,
                                 "f64.reinterpret_i64" => OpCode::F64ReinterpretI64,

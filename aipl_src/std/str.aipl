@@ -52,6 +52,55 @@
       (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
 
+;; ===== Making strings (AIPL_SPEC.md 4.B) =====
+  ;; A str made at run time is a copy, never freed: it has no generation for
+  ;; a use to be checked against, so its memory (from mem.alloc) stays for
+  ;; the rest of the run. Make one from finished text; to build text in a
+  ;; loop, push onto a std/buf and make the str once, at the end.
+
+  ;; Whether a and b hold the same bytes. (eq on str is an error: it would
+  ;; compare addresses compiled and contents in the VM.)
+  (fn same [a:str b:str] -> bool (pub)
+    (unsafe (if (neq (str.len a) (str.len b)) (return false) (block))
+    (let pa:i32 (str.ptr a))
+    (let pb:i32 (str.ptr b))
+    (loop i 0 (- (str.len a) 1) 1
+      (if (neq (mem.load8 (+ pa i)) (mem.load8 (+ pb i))) (return false) (block)))
+    true))
+
+  ;; A str holding a copy of b's bytes, which must be UTF-8 (check untrusted
+  ;; input with valid_utf8 first).
+  (fn from_bytes [b:(ptr Bytes)] -> str (pub)
+    (req (call valid_utf8 b))
+    (unsafe (let s:i32 (call room (get b Bytes.len)))
+    (call copy s (get b Bytes.addr) (get b Bytes.len))
+    (call at s)))
+
+  ;; a followed by b, as a new str.
+  (fn concat [a:str b:str] -> str (pub)
+    (unsafe (let s:i32 (call room (+ (str.len a) (str.len b))))
+    (call copy s (str.ptr a) (str.len a))
+    (call copy (+ s (str.len a)) (str.ptr b) (str.len b))
+    (call at s)))
+
+  ;; Never-freed room for a str of n bytes: [the str's address][n][bytes].
+  ;; Returns the bytes' address. Unsafe to call: the caller fills them.
+  (fn room [n:i32] -> i32 (unsafe)
+    (unsafe (let base:i32 (mem.alloc (+ n 8)))
+    (mem.store32 base (+ base 8))
+    (mem.store32 (+ base 4) n)
+    (+ base 8)))
+
+  (fn copy [to:i32 from:i32 n:i32] -> void (unsafe)
+    (unsafe (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ from i))))))
+
+  ;; The str whose bytes room returned at s: the word before its length
+  ;; holds its address, read as a str field (in wasm that is the address
+  ;; itself; the VM reads the length and the bytes).
+  (struct Cell [s:str])
+  (fn at [s:i32] -> str (unsafe)
+    (unsafe (get (ptr.cast Cell (- s 8)) Cell.s)))
+
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
     (loop i 0 (- (get b Bytes.len) 1) 1
@@ -101,7 +150,6 @@
   (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32 (pub)
     (match_result (call parse_int b) (ok n n) (err e default)))
 
-  ;; Pass count; test_suite.aipl expects 8.
   ;; Whether b is valid UTF-8 (as Rust's str::from_utf8 decides: no
   ;; overlong forms, no surrogates, nothing past U+10FFFF).
   (fn valid_utf8 [b:(ptr Bytes)] -> bool (pub)
@@ -125,6 +173,7 @@
       (set! i (+ i (+ need 1))))
     true)
 
+  ;; Pass count; test_suite.aipl expects 10.
   (fn run_str_tests [] -> i32 (pub)
     (unsafe (let ab:(ptr Bytes) (call from_str "a b\nc"))
     (let p:i32 0)
@@ -151,6 +200,15 @@
                        (and (not (call valid_utf8 (call bytes u 2)))
                             (and (not (call valid_utf8 (call bytes (+ u 3) 2)))
                                  (not (call valid_utf8 (call bytes (+ u 5) 3))))))))
+        (set! p (+ p 1))
+        (block))
+    ;; same compares contents; concat and from_bytes make new strs
+    (let hw:str (call concat "hello, " "world"))
+    (if (and (call same hw "hello, world")
+             (and (not (call same hw "hello, worle"))
+                  (and (not (call same hw "hello"))
+                       (and (eq (str.len (call concat "" "")) 0)
+                            (call same (call from_bytes (call slice (call from_str hw) 7 5)) "world")))))
         (set! p (+ p 1))
         (block))
     p)))

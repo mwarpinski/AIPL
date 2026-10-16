@@ -33,8 +33,8 @@ benchmarks against C and Python.
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
 2. **The standard library:** networking, once WASI has listening sockets;
-   starting processes, once WASI can (preview 1 cannot); a faster
-   small-block path in `std/heap`.
+   starting processes, once WASI can (preview 1 cannot); time zones; a
+   faster small-block path in `std/heap`.
 3. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,
    bootstrap/README.md): a checked-in native `aipl` builds the compiler on
    Linux x86-64 with no Rust, checked byte for byte against the Rust
@@ -49,7 +49,7 @@ benchmarks against C and Python.
 
 Explicitly not now, each additive later rather than a rewrite: SIMD,
 64-bit memory, exceptions (results cover errors). Later: language
-versioning (once packages exist), `inv` contracts.
+versioning (once packages exist).
 
 ## What AIPL does not do yet
 
@@ -60,7 +60,7 @@ versioning (once packages exist), `inv` contracts.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
 - **Two copies drift unless held equal.** The fuzzer (`tools/fuzz.py`) checks the two front ends against each other on mutated programs; it finds no differences on 50,000 cases (2026-10-06), and CI runs 3,000 on every push. Only tests and the fuzzer hold the two equal, so a change to one copy must be made to the other.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
-- **`inv` is never evaluated, and nothing is proven statically (audit B5).** `req` and `ens` run in every backend (since 2026-10-05); a compiled contract message shows no float or string values, and gives its position in the call chain after it rather than in the message.
+- **Contracts are checked at run time, never proven statically (audit B5).** `req`, `ens`, and `inv` (at entry and exit, since 2026-10-16) run in every backend; a compiled contract message shows no float or string values, and gives its position in the call chain after it rather than in the message.
 - **No language or ABI versioning (deferred from P12).** No `:version` in modules and no version in the wasm output. Deliberately deferred until there are packages from different authors or a second toolchain; see the audit's P12 note.
 - **Diagnostics report one error per function** (a definition's error alone), not every error in a function. Some common mistakes get generic messages: an `if` without an else is `Unexpected token parsing expression: ')'`.
 
@@ -69,11 +69,10 @@ versioning (once packages exist), `inv` contracts.
 - **No closures, by design.** `(ref f)` and `call_ref` give references to named functions; nothing captures variables, and a callback's data is a typed context passed as its first argument (`vec.sort_by_with`, `thread.spawn_with`, `alloc.custom`; AIPL_SPEC.md 4.G). Closures would allocate behind the program's back, enlarge every function value, and slow every call through one.
 - **Generics are explicit.** Every use names its type arguments (no inference), and every call to an interface's function names the interface and the type. Templates are checked once with sealed type parameters (AIPL_SPEC.md 4.H). Not yet: interfaces with several type parameters, generic implementations (`(impl (Hash (ptr T)) ...)`, which need a rule against overlap first), and default functions in an interface.
 - **Structs live only behind pointers.** `(ptr S)` and `(arr T)` are strictly typed, but there are no by-value or nested structs, and no arrays of structs by value (packed records need `ptr.cast` arithmetic, as `compiler.aipl`'s `token_at` does).
-- **No module-level state.** There are no globals; modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16).
-- **Constants are literals only.** `(const NAME:T literal)` (AIPL_SPEC.md 4.I) takes no expressions, not even another constant, and has no `f32` form. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
-- **No 8- or 16-bit types** (`mem.load8` reads unsigned; there is no signed byte load). Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
+- **No module-level variables, by design.** Modules keep state in a struct passed to every function (codegen.aipl's `Cg`), or in a `mem.alloc`'d block whose pointer lives in a runtime cell (codegen.aipl's keyword map, cell 16). Constants may be computed from other constants (`(const PAGES:i32 (* 4 PAGE_SIZE))`, since 2026-10-16; AIPL_SPEC.md 4.I), folded at compile time; there is no `f32` constant. Older code still uses zero-argument functions as constants (`(fn cc_e [] -> i32 4)` in `aipl_src/native/x64.aipl`).
+- **8- and 16-bit types are for storage only** (since 2026-10-16): `u8 i8 u16 i16` struct fields and array elements, read as `i32`, and signed and 16-bit loads and stores (AIPL_SPEC.md 4.A). There is no arithmetic at those widths. Unsigned comparisons (`ltu lteu gtu gteu`) and overflow-checked arithmetic (`checked.add/sub/mul`) exist (AIPL_SPEC.md 8.2); there is no checked division or shift, and no form that reports overflow as a value rather than stopping.
 - **Unions are boxed and immutable.** A union value (AIPL_SPEC.md 4.J) is always a heap cell, even a variant without fields, and `make` is the only way to fill one: no in-place update, no union fields stored inline in a struct, and no nested patterns (a `match` arm binds one level of fields; match again on a field). Generic unions and `std/option` exist (AIPL_SPEC.md 4.J); `result` stays its own form, beside them, with payloads of any type. Older code still uses a tag plus fields reused by cast; `codegen.aipl`'s keyword and type tables are enums, but its AST is `compiler.aipl`'s generic `Node`.
-- **Numeric gaps:** no `f32` literals, no `f32` conversions (only `i64`↔`f64`: `f64.convert_i64_s`, `i64.trunc_f64_s`, and the two reinterprets; go through `i64.extend_s` for `i32`), no float loads or stores on raw memory (keep floats in struct fields or `(arr f64)`, or move bits with `mem.load64` and `f64.reinterpret_i64`), no exponent notation in float literals, and loop bounds and addresses are `i32` only.
+- **Numeric gaps:** `f32` literals (`1.5f32`) and the conversions between `f32`, `f64`, `i32`, and `i64` exist (since 2026-10-16), but not every pair (no unsigned conversions, no `f64.convert_i32_u`, no `i64.trunc_f64_u`); no float loads or stores on raw memory (keep floats in struct fields or arrays, or move bits with `mem.load64` and `f64.reinterpret_i64`); and loop bounds and addresses are `i32` only.
 
 - **Friction for code generators** (audit D3). The pitfalls table (AIPL_SPEC.md 13) is long because the chosen spelling is often not what generators write first: `if` always needs an else (the repository has hundreds of empty `(block)` branches), `loop` includes its end bound, `and`/`or` take exactly two operands, and there is no implicit widening. Each is deliberate; each should be measured against what agents actually produce (docs/LAUNCH_CHECKLIST.md 5).
 - **Errors are easy to ignore and lossy** (audit D5). A `result` or an `fs.*` status in statement position is discarded silently; every WASI errno becomes `-1`, so "not found" and "permission denied" look the same; library failures use sentinels (`len` -1).
@@ -87,12 +86,12 @@ versioning (once packages exist), `inv` contracts.
 
 ### Strings and I/O
 
-- **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05): text is built with `std/buf`.
+- **No string operators.** There is no `+` on `str` (it once worked only in the VM; removed 2026-10-05), and no `eq` (since 2026-10-16: a string made at run time has its own address, so `eq` would differ between the VM and compiled code). Functions do both: `str.concat`, `str.same`, `(cmp.Ord.compare str)`.
 - **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact) or, in `std/json`, as the shortest digits that read back, and `float.from_decimal` parses them; still missing are a shortest-digits printer outside JSON, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
-- **Three kinds of text** (audit D7): `str` (an immutable literal), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by hand (`str.from_str`, `buf.bytes`).
-- **No dates or time zones, no sockets, no starting processes.** The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
+- **Three kinds of text** (audit D7): `str` (immutable), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by calling a function each way (`str.from_str`, `str.from_bytes`, `buf.bytes`, `buf.to_str`; AIPL_SPEC.md 4.B says which to use when). A `str` made at run time is never freed.
+- **No time zones, no sockets, no starting processes.** `std/date` (since 2026-10-16) has UTC dates and ISO 8601; there is no time-zone database. The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
 
 ### Concurrency
 

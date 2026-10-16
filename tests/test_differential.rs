@@ -748,7 +748,7 @@ fn p8_structs_and_arrays() {
     (put n Named.name "abc")
     (let a:(arr str) (arr.new str 2))
     (arr.set str a 1 (get n Named.name))
-    (+ (str.len (arr.get str a 1)) (if (eq (get n Named.name) "abc") 10 0)))
+    (+ (str.len (arr.get str a 1)) (if (eq (mem.load8 (+ (str.ptr (get n Named.name)) 2)) 99) 10 0)))
 
   (fn test_put_reserved [] -> i32 (unsafe)
     (put (ptr.cast Point (- 600 88)) Point.x 1)

@@ -12,11 +12,18 @@
   (import str)
   (import buf)
   (import map)
+  (import vec)
+  (import cexpr)
 
   (struct X [src:i32 toks:i32 n:i32 out:i32 count:i32
              consts:(ptr (map.Map (ptr str.Bytes) i32))
              enums:(ptr (map.Map (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))))
-             spare:(ptr buf.Buf) err:(ptr buf.Buf) err_at:i32 failed:bool])
+             spare:(ptr buf.Buf) err:(ptr buf.Buf) err_at:i32 failed:bool
+             ;; constants whose value is a name or an expression, folded
+             ;; (cexpr.aipl) once all are known: their names, value tokens,
+             ;; and values
+             defs:(ptr cexpr.Defs) deferred:(ptr (vec.Vec (ptr str.Bytes))) deferred_at:(ptr (vec.Vec i32))
+             folded:(ptr (map.Map (ptr str.Bytes) cexpr.Val))])
 
   ;; The result: the expanded tokens, or the first error.
   (struct Expanded [(read toks:i32) (read n:i32) (read ok:bool) (read err:(ptr buf.Buf)) (read err_at:i32)] (pub))
@@ -105,7 +112,7 @@
   ;; (const NAME : TYPE VALUE): remembers VALUE's token (src/consts.rs read_const).
   (fn read_const [x:(ptr X) item:i32] -> void
     (let ks:(ptr Kids) (call kids x item))
-    (let shape:str "a constant is (const NAME:TYPE literal), e.g. (const PAGE_SIZE:i32 65536)")
+    (let shape:str "a constant is (const NAME:TYPE value), e.g. (const PAGE_SIZE:i32 65536) or (const PAGES:i32 (* 4 PAGE_SIZE))")
     (if (or (neq (get ks Kids.n) 5) (or (neq (call kind x (call kid ks 2)) compiler.Kind.colon)
                                         (neq (call kind x (call kid ks 1)) compiler.Kind.symbol)))
         (block (let b:(ptr buf.Buf) (call words)) (call buf.push_str b shape) (call fail x item b) (return))
@@ -125,6 +132,23 @@
     (let ty:(ptr str.Bytes) (if (eq (call kind x ti) compiler.Kind.symbol) (call text x ti) (call str.from_str "")))
     (let vi:i32 (call kid ks 4))
     (let vk:compiler.Kind (call kind x vi))
+    ;; a name or an expression: folded once every constant is known
+    (if (and (or (eq vk compiler.Kind.symbol) (eq vk compiler.Kind.lparen))
+             (or (or (call str.is ty "i32") (call str.is ty "i64")) (or (call str.is ty "f64") (call str.is ty "bool"))))
+        (block
+          (if (call (map.has (ptr str.Bytes) i32) (get x X.consts) name)
+              (block
+                (let b:(ptr buf.Buf) (call words))
+                (call buf.push_str b "constant '") (call buf.push_bytes b name) (call buf.push_str b "' is defined twice")
+                (call fail x item b)
+                (return))
+              (block))
+          (call (map.set (ptr str.Bytes) i32) (get x X.consts) name vi)
+          (call cexpr.add (get x X.defs) name ty (call pos x vi))
+          (call (vec.push (ptr str.Bytes)) (get x X.deferred) name)
+          (call (vec.push i32) (get x X.deferred_at) vi)
+          (return))
+        (block))
     (let tname:str "")
     (let fits:bool false)
     (cond
@@ -163,7 +187,10 @@
           (call buf.push_bytes b name)
           (call buf.push_str b "' is defined twice")
           (call fail x item b))
-        (call (map.set (ptr str.Bytes) i32) (get x X.consts) name vi)))
+        (block
+          (call (map.set (ptr str.Bytes) i32) (get x X.consts) name vi)
+          ;; a literal, for the constants that name it
+          (call cexpr.add (get x X.defs) name ty (call pos x vi)))))
 
   ;; (enum NAME [a b (c 10) ...]): its members' values (src/consts.rs
   ;; read_enum); a malformed enum is left for the parser to report.
@@ -236,7 +263,9 @@
                    (call buf.push_str b "' is a constant; it cannot also name a variable, parameter, or field")
                    (call fail x i b))
                  (block))
-             (call emit x (call (map.get_or (ptr str.Bytes) i32) (get x X.consts) s 0) (call pos x i))
+             (if (call (map.has (ptr str.Bytes) cexpr.Val) (get x X.folded) s)
+                 (call emit_folded x (call (map.get_or (ptr str.Bytes) cexpr.Val) (get x X.folded) s (call cexpr.zero)) (call pos x i))
+                 (call emit x (call (map.get_or (ptr str.Bytes) i32) (get x X.consts) s 0) (call pos x i)))
              (return))
            (block))
        (let d:i32 -1)
@@ -268,6 +297,28 @@
              (call emit_new x compiler.Kind.rparen 0 0 at))
            (call emit x i (call pos x i))))
       (else (call emit x i (call pos x i))))))
+
+  ;; A folded constant's value as tokens at `at`: a literal, or an f64's
+  ;; (f64.reinterpret_i64 bits), its text in the spare buffer.
+  (fn emit_folded [x:(ptr X) v:cexpr.Val at:i32] -> void
+    (let sp:(ptr buf.Buf) (get x X.spare))
+    (let k:cexpr.K (get v cexpr.Val.k))
+    (cond
+      ((eq k cexpr.K.bool) (call emit_new x compiler.Kind.bool (if (eq (get v cexpr.Val.i) 1i64) 1 0) 0 at))
+      ((eq k cexpr.K.f64)
+       (call emit_new x compiler.Kind.lparen 0 0 at)
+       (let s0:i32 (call buf.len sp))
+       (call buf.push_str sp "f64.reinterpret_i64")
+       (call emit_new x compiler.Kind.symbol (call spare_text x s0) 19 at)
+       (let s1:i32 (call buf.len sp))
+       (call buf.push_i64 sp (i64.reinterpret_f64 (get v cexpr.Val.f)))
+       (call buf.push_str sp "i64")
+       (call emit_new x compiler.Kind.int64 (call spare_text x s1) (- (call buf.len sp) s1) at)
+       (call emit_new x compiler.Kind.rparen 0 0 at))
+      (else
+       (let s2:i32 (call buf.len sp))
+       (call cexpr.print v sp)
+       (call emit_new x (if (eq k cexpr.K.i64) compiler.Kind.int64 compiler.Kind.int) (call spare_text x s2) (- (call buf.len sp) s2) at))))
 
   ;; A group, each child rewritten; in a (match v arms...), each arm's head
   ;; is a name for the checker and stays as written.
@@ -309,6 +360,27 @@
       (set! it (call elem_end x it)))
     (loop k it (- n 1) 1 (call emit x k (call pos x k))))
 
+  ;; Folds the deferred constants in order; a failure is reported at the
+  ;; value of the constant it is about.
+  (fn fold_all [x:(ptr X)] -> void
+    (let d:(ptr cexpr.Defs) (get x X.defs))
+    (loop k 0 (- (call (vec.len (ptr str.Bytes)) (get x X.deferred)) 1) 1
+      (let name:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) (get x X.deferred) k))
+      (let v:cexpr.Val (call cexpr.value d name))
+      (if (get d cexpr.Defs.failed)
+          (block
+            (let at:i32 (call (vec.at i32) (get x X.deferred_at) k))
+            (loop j 0 (- (call (vec.len i32) (get x X.deferred_at)) 1) 1
+              (if (eq (call pos x (call (vec.at i32) (get x X.deferred_at) j)) (get d cexpr.Defs.err_at))
+                  (set! at (call (vec.at i32) (get x X.deferred_at) j))
+                  (block)))
+            (let b:(ptr buf.Buf) (call words))
+            (call buf.push_bytes b (call buf.bytes (get d cexpr.Defs.err)))
+            (call fail x at b)
+            (return))
+          (block))
+      (call (map.set (ptr str.Bytes) cexpr.Val) (get x X.folded) name v)))
+
   ;; ===== Driver =====
 
   ;; Expands the n tokens at toks (from compiler.tokenize over src).
@@ -324,6 +396,11 @@
     (put x X.spare (call buf.make (call alloc.default) 4096))
     (call buf.push_str (get x X.spare) "enum.cast")
     (put x X.failed false)
+    (let last:i32 (if (gt n 0) (get (call tok x (- n 1)) compiler.Token.pos) 0))
+    (put x X.defs (call cexpr.make (unsafe (call str.bytes src (+ last 1)))))
+    (put x X.deferred (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (put x X.deferred_at (call (vec.make i32) (call alloc.default) 8))
+    (put x X.folded (call (map.make (ptr str.Bytes) cexpr.Val) (call alloc.default) 8))
     (let r:(ptr Expanded) (new Expanded))
     (put r Expanded.toks toks)
     (put r Expanded.n n)
@@ -336,6 +413,7 @@
       (if (and (call is_open x it) (call is_sym x (+ it 1) "enum")) (call read_enum x it) (block))
       (if (get x X.failed) (break) (block))
       (set! it (call elem_end x it)))
+    (if (not (get x X.failed)) (call fold_all x) (block))
     (if (get x X.failed)
         (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (put r Expanded.err_at (get x X.err_at)) (return r))
         (block))

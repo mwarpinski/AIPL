@@ -391,8 +391,8 @@
       ((or (eq op 12) (or (eq op 13) (eq op 16))) 1)                                ;; br br_if call
       ((eq op 17) 4)                                                                ;; call_indirect
       ((and (gte op 32) (lte op 36)) 1)                                             ;; local.get/set/tee, global.get/set
-      ((or (and (gte op 40) (lte op 43)) (eq op 45)) 3)                             ;; i32/i64/f32/f64.load, i32.load8_u
-      ((and (gte op 54) (lte op 58)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8
+      ((and (gte op 40) (lte op 47)) 3)                                             ;; i32/i64/f32/f64.load, i32.load8_s/u, i32.load16_s/u
+      ((and (gte op 54) (lte op 59)) 3)                                             ;; i32/i64/f32/f64.store, i32.store8, i32.store16
       ((or (eq op 63) (eq op 64)) 8)                                                ;; memory.size memory.grow
       ((eq op 65) 5) ((eq op 66) 6) ((eq op 68) 7) ((eq op 67) 10)                  ;; i32/i64/f64/f32.const
       ;; i32: eqz eq ne lt_s lt_u gt_s gt_u le_s le_u ge_s ge_u
@@ -408,7 +408,15 @@
       ;; i32.wrap_i64, i64.extend_i32_s/u, i64.trunc_f64_s, f64.convert_i64_s, the reinterprets
       ((or (eq op 167) (or (eq op 172) (or (eq op 173) (or (eq op 176) (or (eq op 185) (or (eq op 189) (eq op 191)))))))
        0)
+      ((call conversion op) 0)                                                      ;; the f32 conversions
       (else -1)))
+
+  ;; The f32 conversions: i32.trunc_f32_s, i32.trunc_f64_s, i64.trunc_f32_s,
+  ;; f32.convert_i32_s, f32.convert_i64_s, f32.demote_f64, f64.convert_i32_s,
+  ;; f64.promote_f32, i32.reinterpret_f32, f32.reinterpret_i32.
+  (fn conversion [op:i32] -> bool (pub)
+    (or (or (or (eq op 168) (eq op 170)) (or (eq op 174) (eq op 178)))
+        (or (or (eq op 180) (eq op 182)) (or (or (eq op 183) (eq op 187)) (or (eq op 188) (eq op 190))))))
 
   ;; The instruction's wasm text name, for messages ("?" outside the accepted set).
   (fn op_name [op:i32] -> str (pub)
@@ -434,12 +442,16 @@
       ((eq op 41) "i64.load")
       ((eq op 42) "f32.load")
       ((eq op 43) "f64.load")
+      ((eq op 44) "i32.load8_s")
       ((eq op 45) "i32.load8_u")
+      ((eq op 46) "i32.load16_s")
+      ((eq op 47) "i32.load16_u")
       ((eq op 54) "i32.store")
       ((eq op 55) "i64.store")
       ((eq op 56) "f32.store")
       ((eq op 57) "f64.store")
       ((eq op 58) "i32.store8")
+      ((eq op 59) "i32.store16")
       ((eq op 63) "memory.size")
       ((eq op 64) "memory.grow")
       ((eq op 65) "i32.const")
@@ -521,6 +533,16 @@
       ((eq op 185) "f64.convert_i64_s")
       ((eq op 189) "i64.reinterpret_f64")
       ((eq op 191) "f64.reinterpret_i64")
+      ((eq op 168) "i32.trunc_f32_s")
+      ((eq op 170) "i32.trunc_f64_s")
+      ((eq op 174) "i64.trunc_f32_s")
+      ((eq op 178) "f32.convert_i32_s")
+      ((eq op 180) "f32.convert_i64_s")
+      ((eq op 182) "f32.demote_f64")
+      ((eq op 183) "f64.convert_i32_s")
+      ((eq op 187) "f64.promote_f32")
+      ((eq op 188) "i32.reinterpret_f32")
+      ((eq op 190) "f32.reinterpret_i32")
       ((eq op 64520) "memory.init")
       ((eq op 65024) "memory.atomic.notify")
       ((eq op 65025) "memory.atomic.wait32")

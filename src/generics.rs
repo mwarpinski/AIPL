@@ -209,6 +209,8 @@ struct Made {
     structs: HashSet<String>,
     /// Instances of generic value structs.
     values: HashSet<String>,
+    /// Instances of generic value structs and unions, by name (is_plain).
+    defs: HashMap<String, Sx>,
 }
 
 /// A `(...)` list at the position of `at`.
@@ -451,7 +453,7 @@ fn rewrite(
                 format!("{}: {} is a value type, and {} is a struct, used only through a pointer: write (ptr {})", shown(&name), p, a, a)
             } else if arg.symbol() == Some("void") || arg.head() == Some("result") {
                 format!("{}: {} is a value type, and {} cannot be stored", shown(&name), p, a)
-            } else if t.plain_kind[k] && !is_plain(arg, known, &mut HashSet::new()) {
+            } else if t.plain_kind[k] && !is_plain(arg, known, &made.defs, &mut HashSet::new()) {
                 match sealed_param(arg) {
                     Some((owner, q)) => format!("{}: {} must be plain, so {} needs (where (plain {}))", shown(&name), p, owner, q),
                     None => format!("{}: {} must be plain (where (plain {})), and {} may hold a pointer or an array", shown(&name), p, p, a),
@@ -491,6 +493,14 @@ fn rewrite(
         let header = &inst.items()[1];
         let renamed = Sx::symbol_at(name.clone(), header);
         inst.items_mut().unwrap()[1] = renamed;
+        let by_value = match inst.head() {
+            Some("struct") => crate::resolver::is_value_struct(&inst),
+            Some("union") => true,
+            _ => false,
+        };
+        if by_value {
+            made.defs.insert(name.clone(), inst.clone());
+        }
         // the arguments' tokens keep their positions, in the files they were written in
         let mut arg_files = HashMap::new();
         for a in &args {
@@ -834,33 +844,55 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
 /// Whether type `t` is plain: holds no pointer or array, at any depth, so
 /// threads may share it. The scalars, `str` (immutable), function
 /// references, enums, results of plain types, and value structs and unions
-/// whose fields are plain, and the placeholders of (where (plain T))
-/// parameters; not a generic instance (not yet looked into), a pointer, or
-/// an array. A union that holds itself is plain if its other fields are.
-fn is_plain(t: &Sx, known: &Known, seen: &mut HashSet<String>) -> bool {
+/// whose fields are plain (generic instances among them, `inst`), and the
+/// placeholders of (where (plain T)) parameters; not a pointer or an array.
+/// A union that holds itself is plain if its other fields are.
+fn is_plain(t: &Sx, known: &Known, inst: &HashMap<String, Sx>, seen: &mut HashSet<String>) -> bool {
     if let Some(s) = t.symbol() {
         return match s {
             "i32" | "i64" | "f32" | "f64" | "bool" | "str" => true,
             _ if s.starts_with('\'') => known.plain_names.contains(s),
-            _ => match known.defs.get(s) {
-                Some(def) => !seen.insert(s.to_string()) || def_is_plain(def, known, seen),
+            _ => match known.defs.get(s).or_else(|| inst.get(s)) {
+                Some(def) => !seen.insert(s.to_string()) || def_is_plain(def, known, inst, seen),
                 None => false,
             },
         };
     }
     match t.head() {
         Some("fn") => true,
-        Some("result") => t.items().iter().skip(1).all(|x| is_plain(x, known, seen)),
+        Some("result") => t.items().iter().skip(1).all(|x| is_plain(x, known, inst, seen)),
+        // a generic value struct or union applied, not yet made: its
+        // definition with the arguments put in
+        Some(h) => match known.templates.get(h) {
+            Some(tm) if tm.is_struct && tm.params.len() + 1 == t.items().len() => {
+                if !seen.insert(render(t)) {
+                    return true;
+                }
+                let mut def = tm.item.sx.clone();
+                let subst: HashMap<&str, &Sx> = tm.params.iter().map(|p| p.as_str()).zip(t.items()[1..].iter()).collect();
+                substitute(&mut def, &subst);
+                let by_value = match def.head() {
+                    Some("struct") => crate::resolver::is_value_struct(&def),
+                    Some("union") => true,
+                    _ => false,
+                };
+                by_value && def_is_plain(&def, known, inst, seen)
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
 
-fn def_is_plain(def: &Sx, known: &Known, seen: &mut HashSet<String>) -> bool {
+fn def_is_plain(def: &Sx, known: &Known, inst: &HashMap<String, Sx>, seen: &mut HashSet<String>) -> bool {
     let Some(body) = def.items().get(2) else { return false };
     match def.head() {
         Some("enum") => true,
-        Some("struct") => field_types(body.items()).iter().all(|t| is_plain(t, known, seen)),
-        Some("union") => body.items().iter().all(|v| field_types(v.items().get(1..).unwrap_or(&[])).iter().all(|t| is_plain(t, known, seen))),
+        Some("struct") => field_types(body.items()).iter().all(|t| is_plain(t, known, inst, seen)),
+        Some("union") => body
+            .items()
+            .iter()
+            .all(|v| field_types(v.items().get(1..).unwrap_or(&[])).iter().all(|t| is_plain(t, known, inst, seen))),
         _ => false,
     }
 }

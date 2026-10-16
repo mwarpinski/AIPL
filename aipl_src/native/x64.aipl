@@ -494,9 +494,9 @@
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
-  ;; Pass count; test_suite.aipl expects 13.
+  ;; Pass count; test_suite.aipl expects 15.
   (fn run_x64_tests [] -> i32 (pub)
-    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (+ (call test_rip) (+ (call test_movaps) (+ (call test_nops) (call test_alu_rm))))))))))))))
+    (+ (call test_moves) (+ (call test_alu) (+ (call test_muldiv) (+ (call test_memory) (+ (call test_atomics) (+ (call test_control) (+ (call test_strings) (+ (call test_sse) (+ (call test_tls) (+ (call test_rip) (+ (call test_movaps) (+ (call test_nops) (+ (call test_alu_rm) (+ (call test_narrow) (call test_float_conv))))))))))))))))
   ;; X64_TESTS_END
 
   ;; ===== Forms added after NE3 =====
@@ -681,4 +681,72 @@
     (call imul_rm c 64 7 (call mem 5 -16))
     (call imul_rm c 32 14 (call mem 5 32))
     (call check "alu_rm" c "0345f0480b751844234df84c2b65d0337d10443b6dd8483b5c2408480faf7df0440faf7520"))
+
+  ;; ===== 8- and 16-bit memory (storage types, AIPL_SPEC.md 4.A) =====
+
+  ;; movsx dst32, byte [m]
+  (fn load8s [c:(ptr buf.Buf) dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (call reg_ok dst))
+    (call rm c 32 4030 dst m false))
+
+  ;; movzx dst32, word [m]
+  (fn load16u [c:(ptr buf.Buf) dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (call reg_ok dst))
+    (call rm c 32 4023 dst m false))
+
+  ;; movsx dst32, word [m]
+  (fn load16s [c:(ptr buf.Buf) dst:i32 m:(ptr Mem)] -> void (pub)
+    (req (call reg_ok dst))
+    (call rm c 32 4031 dst m false))
+
+  ;; mov word [m], src16: the operand-size prefix, then mov
+  (fn store16 [c:(ptr buf.Buf) m:(ptr Mem) src:i32] -> void (pub)
+    (req (call reg_ok src))
+    (call byte c 102)
+    (call rm c 32 137 src m false))
+
+  ;; expected bytes from GNU as (movsbl, movzwl, movswl, movw)
+  (fn test_narrow [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
+    (loop b 0 15 1
+      (let r:i32 (call p b))
+      (call load8s c r (call mem b 0))
+      (call load16u c r (call mem b 2))
+      (call load16s c r (call mem_index b (call ix b) (call sc b) -4))
+      (call store16 c (call mem b 6) r)
+      (call store16 c (call mem_index b (call ix b) (call sc b) 300) r))
+    (call check "narrow" c "0fbe180fb758020fbf5c08fc6689580666899c082c010000440fbe11440fb75102460fbf5449fc664489510666468994492c0100000fbe0a0fb74a020fbf4cbafc66894a0666898cba2c010000440fbe03440fb74302460fbf44d3fc664489430666468984d32c010000440fbe3c24440fb77c2402460fbf7c2cfc6644897c2406664689bc2c2c0100000fbe75000fb775020fbf7445fc668975066689b4452c010000440fbe2e440fb76e02440fbf6c9efc6644896e06664489ac9e2c0100000fbe270fb767020fbf64f7fc668967066689a4f72c010000450fbe18450fb75802470fbf5c08fc66458958066647899c082c010000410fbe11410fb75102430fbf5461fc664189510666438994612c010000450fbe0a450fb74a02470fbf4cbafc6645894a066647898cba2c010000410fbe03410fb74302410fbf44d3fc664189430666418984d32c010000410fbe3c24410fb77c2402410fbf7c2cfc6641897c2406664189bc2c2c010000450fbe7500450fb77502470fbf7445fc6645897506664789b4452c010000410fbe2e410fb76e02430fbf6c9efc6641896e06664389ac9e2c010000450fbe27450fb76702470fbf64f7fc6645896706664789a4f72c010000"))
+
+  ;; ===== f32 conversions (AIPL_SPEC.md 4.A) =====
+
+  ;; cvtsd2ss / cvtss2sd dst, src: double to float (rounded to nearest
+  ;; even) and float to double (exact)
+  (fn cvtsd2ss [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub) (call sse c 242 false 90 dst src))
+  (fn cvtss2sd [c:(ptr buf.Buf) dst:i32 src:i32] -> void (pub) (call sse c 243 false 90 dst src))
+
+  ;; cvtsi2ss / cvtsi2sd xmm, r: a signed isz-bit integer to an fsz-bit float
+  (fn cvtsi2f [c:(ptr buf.Buf) fsz:i32 isz:i32 xmm:i32 r:i32] -> void (pub)
+    (req (and (call size_ok fsz) (call size_ok isz)))
+    (call sse c (if (eq fsz 64) 242 243) (eq isz 64) 42 xmm r))
+
+  ;; cvttss2si / cvttsd2si r, xmm: an fsz-bit float to a signed isz-bit
+  ;; integer, truncating (out of range or NaN gives the lowest integer)
+  (fn cvttf2si [c:(ptr buf.Buf) fsz:i32 isz:i32 r:i32 xmm:i32] -> void (pub)
+    (req (and (call size_ok fsz) (call size_ok isz)))
+    (call sse c (if (eq fsz 64) 242 243) (eq isz 64) 44 r xmm))
+
+  ;; expected bytes from GNU as
+  (fn test_float_conv [] -> i32
+    (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
+    (loop x 0 15 1
+      (let r:i32 (call p x))
+      (call cvtsd2ss c x r)
+      (call cvtss2sd c x r)
+      (call cvtsi2f c 32 32 x r)
+      (call cvtsi2f c 32 64 x r)
+      (call cvtsi2f c 64 32 x r)
+      (call cvttf2si c 32 32 r x)
+      (call cvttf2si c 32 64 r x)
+      (call cvttf2si c 64 32 r x))
+    (call check "float_conv" c "f20f5ac3f30f5ac3f30f2ac3f3480f2ac3f20f2ac3f30f2cd8f3480f2cd8f20f2cd8f2410f5acaf3410f5acaf3410f2acaf3490f2acaf2410f2acaf3440f2cd1f34c0f2cd1f2440f2cd1f20f5ad1f30f5ad1f30f2ad1f3480f2ad1f20f2ad1f30f2ccaf3480f2ccaf20f2ccaf2410f5ad8f3410f5ad8f3410f2ad8f3490f2ad8f2410f2ad8f3440f2cc3f34c0f2cc3f2440f2cc3f2410f5ae7f3410f5ae7f3410f2ae7f3490f2ae7f2410f2ae7f3440f2cfcf34c0f2cfcf2440f2cfcf20f5aeef30f5aeef30f2aeef3480f2aeef20f2aeef30f2cf5f3480f2cf5f20f2cf5f2410f5af5f3410f5af5f3410f2af5f3490f2af5f2410f2af5f3440f2ceef34c0f2ceef2440f2ceef20f5afcf30f5afcf30f2afcf3480f2afcf20f2afcf30f2ce7f3480f2ce7f20f2ce7f2450f5ac3f3450f5ac3f3450f2ac3f34d0f2ac3f2450f2ac3f3450f2cd8f34d0f2cd8f2450f2cd8f2440f5acaf3440f5acaf3440f2acaf34c0f2acaf2440f2acaf3410f2cd1f3490f2cd1f2410f2cd1f2450f5ad1f3450f5ad1f3450f2ad1f34d0f2ad1f2450f2ad1f3450f2ccaf34d0f2ccaf2450f2ccaf2440f5ad8f3440f5ad8f3440f2ad8f34c0f2ad8f2440f2ad8f3410f2cc3f3490f2cc3f2410f2cc3f2440f5ae7f3440f5ae7f3440f2ae7f34c0f2ae7f2440f2ae7f3410f2cfcf3490f2cfcf2410f2cfcf2450f5aeef3450f5aeef3450f2aeef34d0f2aeef2450f2aeef3450f2cf5f34d0f2cf5f2450f2cf5f2440f5af5f3440f5af5f3440f2af5f34c0f2af5f2440f2af5f3410f2ceef3490f2ceef2410f2ceef2450f5afcf3450f5afcf3450f2afcf34d0f2afcf2450f2afcf3450f2ce7f34d0f2ce7f2450f2ce7"))
 )

@@ -227,6 +227,10 @@ fn body_summary(wasm: &[u8], body: &wasmparser::FunctionBody) -> String {
             | Operator::F32Load { memarg }
             | Operator::F64Load { memarg }
             | Operator::I32Load8U { memarg }
+            | Operator::I32Load8S { memarg }
+            | Operator::I32Load16U { memarg }
+            | Operator::I32Load16S { memarg }
+            | Operator::I32Store16 { memarg }
             | Operator::I32Store { memarg }
             | Operator::I64Store { memarg }
             | Operator::F32Store { memarg }
@@ -368,8 +372,8 @@ fn every_instruction_module(extra: &[wasm_encoder::Instruction]) -> Vec<u8> {
         I::Block(B::Result(V::F32)), I::Block(B::Result(V::F64)), I::Br(3), I::BrIf(200), I::Return, I::Call(300),
         I::CallIndirect { type_index: 5, table_index: 0 }, I::Drop, I::LocalGet(1), I::LocalSet(129), I::LocalTee(70000),
         I::GlobalGet(0), I::GlobalSet(1), I::I32Load(m(2, 0)), I::I64Load(m(3, 8)), I::F32Load(m(2, 16)),
-        I::F64Load(m(3, 4096)), I::I32Load8U(m(0, 1)), I::I32Store(m(2, 4)), I::I64Store(m(3, 0)), I::F32Store(m(2, 0)),
-        I::F64Store(m(3, 24)), I::I32Store8(m(0, 3)), I::MemorySize(0), I::MemoryGrow(0), I::I32Const(0),
+        I::F64Load(m(3, 4096)), I::I32Load8U(m(0, 1)), I::I32Load8S(m(0, 2)), I::I32Load16U(m(1, 6)), I::I32Load16S(m(1, 0)), I::I32Store(m(2, 4)), I::I64Store(m(3, 0)), I::F32Store(m(2, 0)),
+        I::F64Store(m(3, 24)), I::I32Store8(m(0, 3)), I::I32Store16(m(1, 10)), I::MemorySize(0), I::MemoryGrow(0), I::I32Const(0),
         I::I32Const(-1), I::I32Const(i32::MIN), I::I32Const(i32::MAX), I::I64Const(i64::MIN), I::I64Const(i64::MAX),
         I::I64Const(-129), I::F64Const(-0.0f64), I::F64Const(f64::NAN), I::F64Const(1.5f64),
         I::F32Const(0.0f32), I::F32Const(-1.5f32),
@@ -381,7 +385,8 @@ fn every_instruction_module(extra: &[wasm_encoder::Instruction]) -> Vec<u8> {
         I::I64RemU, I::I64And, I::I64Or, I::I64Xor, I::I64Shl, I::I64ShrS, I::I64ShrU,
         I::F32Add, I::F32Sub, I::F32Mul, I::F32Div, I::F64Add, I::F64Sub, I::F64Mul, I::F64Div, I::F64Sqrt,
         I::I32WrapI64, I::I64ExtendI32S, I::I64ExtendI32U, I::I64TruncF64S, I::F64ConvertI64S, I::F64ReinterpretI64,
-        I::I64ReinterpretF64, I::MemoryInit { mem: 0, data_index: 7 }, I::MemoryAtomicNotify(m(2, 0)),
+        I::I64ReinterpretF64, I::I32TruncF32S, I::I32TruncF64S, I::I64TruncF32S, I::F32ConvertI32S, I::F32ConvertI64S,
+        I::F32DemoteF64, I::F64ConvertI32S, I::F64PromoteF32, I::I32ReinterpretF32, I::F32ReinterpretI32, I::MemoryInit { mem: 0, data_index: 7 }, I::MemoryAtomicNotify(m(2, 0)),
         I::MemoryAtomicWait32(m(2, 88)), I::I32AtomicLoad(m(2, 0)), I::I32AtomicStore(m(2, 4)), I::I32AtomicRmwAdd(m(2, 0)),
         I::I32AtomicRmwXchg(m(2, 8)), I::I32AtomicRmwCmpxchg(m(2, 12)),
     ]
