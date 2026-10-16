@@ -1,0 +1,108 @@
+;; The aipl command, written in AIPL: the self-hosted toolchain
+;; (driver.aipl: resolve, check, compile to wasm) and the native backend
+;; (native/native.aipl: wasm to a Linux x86-64 executable) as one program.
+;; Built natively, it is the stage-0 compiler (bootstrap/README.md): it
+;; builds the next version of itself with no Rust involved.
+;;
+;;   aipl compile FILE.aipl -o OUT.wasm
+;;   aipl compile --exe [--sandbox] FILE.aipl -o OUT
+;;   aipl --version
+;;
+;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative
+;; to the working directory). Exit status 0 on success, 1 on a resolve,
+;; type, compile, or write error (reported on stderr as "Error: ..."), 2 on
+;; bad usage. WASI cannot set the execute bit, so a written executable
+;; still needs `chmod +x`.
+(module aipl
+  (import driver)
+  (import native/native)
+  (import os)
+  (import io)
+  (import str)
+  (import fmt)
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox]] FILE.aipl -o OUT")
+    (call io.eprintln "       aipl --version")
+    2)
+
+  (fn fail [s:str] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.eprintln s)
+    1)
+
+  (fn fail_bytes [prefix:str b:(ptr str.Bytes)] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+    (call io.eprintln "")
+    1)
+
+  (fn write_int [fd:i32 n:i32] -> void
+    (unsafe (let digits:i32 (mem.alloc 11))
+    (fs.write fd digits (call fmt.int_to_bytes n digits))))
+
+  (fn main [] -> i32
+    (let n:i32 (call os.arg_count))
+    (if (lt n 2) (return (call usage)) (block))
+    (let cmd:(ptr str.Bytes) (call os.arg 1))
+    (if (call str.is cmd "--version") (block (call io.println "aipl 0.1.0") (return 0)) (block))
+    (if (not (call str.is cmd "compile")) (return (call usage)) (block))
+    (let exe:bool false)
+    (let sandbox:bool false)
+    (let in_i:i32 -1)
+    (let out_i:i32 -1)
+    (let i:i32 2)
+    (while (lt i n)
+      (let a:(ptr str.Bytes) (call os.arg i))
+      (cond
+        ((call str.is a "--exe") (set! exe true))
+        ((call str.is a "--sandbox") (set! sandbox true))
+        ((call str.is a "-o")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         (set! out_i (+ i 1))
+         (set! i (+ i 1)))
+        ((lt in_i 0) (set! in_i i))
+        (else (return (call usage))))
+      (set! i (+ i 1)))
+    (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
+    (if (and sandbox (not exe)) (return (call usage)) (block))
+    (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
+    (let entry:(ptr str.Bytes) (call os.arg in_i))
+    (let out:(ptr str.Bytes) (call os.arg out_i))
+    (let res:(ptr driver.Out) (call driver.compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
+                                                       (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len)))
+    (let status:i32 (get res driver.Out.status))
+    (if (or (eq status 1) (eq status 3))
+        (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len)))))
+        (block))
+    (if (eq status 2)
+        (block
+          (call io.write_str 2 "Error: compile error ")
+          (call write_int 2 (get res driver.Out.len))
+          (call io.eprintln " (AIPL_SPEC.md 6.4)")
+          (return 1))
+        (block))
+    (let bytes:(ptr str.Bytes) (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    (if exe
+        (block
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
+          (set! bytes (get o native.Output.exe)))
+        (block))
+    (if (neq (call io.write_path out bytes) (get bytes str.Bytes.len))
+        (return (call fail_bytes "cannot write " out))
+        (block))
+    (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
+    (unsafe (fs.write 1 (get entry str.Bytes.addr) (get entry str.Bytes.len)))
+    (call io.write_str 1 "' -> '")
+    (unsafe (fs.write 1 (get out str.Bytes.addr) (get out str.Bytes.len)))
+    (call io.write_str 1 "' (")
+    (call write_int 1 (get bytes str.Bytes.len))
+    (call io.println " bytes)")
+    0)
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

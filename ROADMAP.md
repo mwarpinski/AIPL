@@ -24,7 +24,7 @@ a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
 x86-64 executables from a backend written in AIPL, whose single-pass
 translator keeps values in registers and checks memory by guard pages
-(0.8-1.6x wasmtime's time on the benchmarks); module visibility; eight
+(0.8-1.9x wasmtime's time on the benchmarks); module visibility; eight
 benchmarks against C and Python.
 
 ## Next, in order
@@ -38,9 +38,13 @@ benchmarks against C and Python.
 3. **The standard library:** networking, once WASI has listening sockets;
    starting processes, once WASI can (preview 1 cannot); a faster
    small-block path in `std/heap`.
-4. **A stage-0 seed and retiring the Rust compiler:** the compiler rebuilt
-   from a checked-in `aiplc.wasm`, leaving Rust only in the launcher for
-   platforms without a native backend (DEVELOPING.md, "Direction").
+4. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,
+   bootstrap/README.md): a checked-in native `aipl` builds the compiler on
+   Linux x86-64 with no Rust, checked byte for byte against the Rust
+   toolchain, which stays as the referee. Left: a WebAssembly seed for
+   other platforms, the execute bit (a host import), `verify` in the AIPL
+   command, and an installer that builds from the seed (DEVELOPING.md,
+   "Direction").
 5. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
@@ -54,8 +58,8 @@ versioning (once packages exist), `inv` contracts.
 
 ### Toolchain
 
-- **The Rust toolchain is still needed to bootstrap.** The self-hosted compiler (`aipl_src/driver.aipl`: resolver, generics, checker, code generator) compiles every program to the Rust toolchain's bytes, itself included, but building it the first time takes the Rust toolchain; there is no checked-in seed binary yet ("Next" 4). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
-- **The Rust CLI writes standalone executables.** WASI has no way to set a file's executable bit, so `aipl compile --exe` (native code on Linux x86-64, the launcher bundle elsewhere) is written by the Rust CLI, which also runs the AIPL native backend (`aipl_src/native/native.aipl`) in its embedded wasmtime; the planned fix is a host-provided import so the AIPL driver can do it. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
+- **Rust is needed to bootstrap off Linux x86-64.** The self-hosted compiler (`aipl_src/aipl.aipl`: driver.aipl's resolver, generics, checker, and code generator, plus the native backend) compiles every program to the Rust toolchain's bytes, itself included. On Linux x86-64 it builds from the checked-in seed (`bootstrap/`); elsewhere the first build takes the Rust toolchain ("Next" 4). The `aipl` CLI's `verify`, `eval`, and `test` use the Rust front end.
+- **WASI cannot set the execute bit.** The AIPL `aipl compile --exe` writes the executable, but `chmod +x` is left to the caller (`bootstrap/build.sh` does it); the Rust CLI sets it, and builds the launcher bundle for platforms without a native backend. The planned fix is a host-provided import. Native executables exist only for Linux x86-64; elsewhere the bundle is about 18 MB (wasmtime) and built for the host's OS and CPU.
 - **Two of everything in the front end.** Resolver, generics, constants, parser, and checker exist in Rust (`src/`, used by the `aipl` CLI and the VM) and in AIPL (`aipl_src/`, used by the self-hosted compiler); tests hold each pair equal, message for message (AIPL_SPEC.md 6.4, 11). The Rust copies go when the CLI runs the AIPL ones.
 - **Two copies drift unless held equal.** The fuzzer (`tools/fuzz.py`) checks the two front ends against each other on mutated programs; it finds no differences on 50,000 cases (2026-10-06), and CI runs 3,000 on every push. Only tests and the fuzzer hold the two equal, so a change to one copy must be made to the other.
 - **The VM is slow.** It is a tree-walker: every variable lookup is a string-keyed hash lookup and every block clones its scope. Calls no longer copy the function body (audit B13), but the self-hosted compiler still takes seconds in the VM for work the same compiler compiled to wasm does in milliseconds. Use the compiled toolchain for anything large.
@@ -99,16 +103,16 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ### Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 950 functions, generic instances included. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function (AIPL_SPEC.md 6.4). String literals have the 1 MiB limit both backends share. The toolchain itself is about 1,360 functions, generic instances included (2026-10-15). The Rust backend has none of these limits.
 
 ### Before "many modules from many authors" is safe
 
 Still true from the original analysis, updated for what has landed:
 
-1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
+1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`, and module visibility (2026-10-14) keeps what a module does not give private to it.
 2. **Duplication is still easy.** Imports make reuse possible, not the default; discoverability and lint tooling are missing.
 3. **No versioning or dependency resolution.** Imports resolve by filename through the search path (AIPL_SPEC.md 11); there is no language version (deferred) and nothing handles package versions.
-4. **No privacy.** Every helper is public, and every function is exported from the compiled wasm, so a module has no API surface distinct from its implementation (audit S6).
+4. **Privacy stops at the source.** Visibility (2026-10-14) gives each module an API distinct from its implementation, but every function is still exported from the compiled wasm (audit S6).
 
 ### The longer-term ambition (a PDF viewer or browser in AIPL)
 

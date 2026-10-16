@@ -1014,7 +1014,8 @@ fn self_hosted_arrays_and_results_execute() {
 
 /// Inputs the self-hosted backend cannot compile are compile errors, never a
 /// miscompile: non-scalar struct fields / array elements (95), unknown structs
-/// (96), and string literals beyond its 64 KiB literal buffer (768).
+/// (96), and string literals past the first 1 MiB of memory (768), the
+/// limit the Rust backend has too.
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
     for src in [
@@ -1026,10 +1027,21 @@ fn self_hosted_rejects_what_it_cannot_compile() {
     }
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();
     assert!(err.contains("compile error 96"), "{err}");
-    // The self-hosted literal buffer holds 64 KiB (the Rust backend allows up to 1 MiB).
-    let long = "x".repeat(70_000);
-    let err = self_host(&format!("(module m (fn f [] -> i32 (str.len \"{long}\")))")).unwrap_err();
+    let long = "x".repeat(1_100_000);
+    let src = format!("(module m (fn f [] -> i32 (str.len \"{long}\")))");
+    let err = self_host(&src).unwrap_err();
     assert!(err.contains("compile error 768"), "{err}");
+    let m = aipl_core::parser::Parser::parse(&src).unwrap();
+    assert!(WasmCompiler::compile(&m).unwrap_err().contains("string literals need"));
+}
+
+/// A literal past the old 64 KiB buffer compiles byte for byte as in Rust.
+/// More literals than the table starts with (it doubles) are covered by
+/// tests/test_bootstrap.rs: the aipl command has about 2,000.
+#[test]
+fn self_hosted_long_literal_matches_rust() {
+    let long = "y".repeat(70_000);
+    assert_self_hosted_matches_rust("long_literal", &format!("(module long_literal (fn f [] -> i32 (str.len \"{long}\")))"));
 }
 
 /// String literals sit at 1024 with the heap after them, so a program is not
