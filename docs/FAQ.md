@@ -57,11 +57,13 @@ Yes, with one caveat. The import resolver, type checker, code generator,
 and native backend are written in AIPL. They produce the same bytes and the
 same error messages as the Rust implementation, and the compiler, built as a
 native executable, compiles itself to the same bytes in about half a
-second. The caveat is the first build: today it still takes the Rust
-toolchain, and so does writing an executable, since the Rust CLI runs the
-AIPL native backend and marks the file executable (WASI cannot set that
-bit). Rebuilding from a checked-in compiled seed, so that Rust is only
-needed for the WebAssembly launcher, is on the roadmap.
+second. On Linux x86-64 it builds from a checked-in native seed with no
+Rust at all (`sh bootstrap/build.sh`, about 3 seconds), and every test run
+checks that the seed's build is byte for byte the Rust toolchain's, so the
+seed cannot carry anything the source does not say (bootstrap/README.md).
+The caveat: the `aipl` command most people use is still the Rust one,
+since the interpreter and the WebAssembly runner are Rust, and other
+platforms have no seed yet.
 
 ### Was it written by AI?
 
