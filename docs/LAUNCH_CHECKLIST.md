@@ -152,9 +152,12 @@ more than usual.
   knucleotide's packed keys as why those two are slowest, and say
   binarytrees (0.6x) is not like for like (an arena against malloc and
   free). None leads with the benchmark AIPL wins.
-- [ ] **Re-run the documentation check** (as on 2026-10-06) right before
-  posting; every number in the README (sizes, test counts, timings) must
-  be current.
+- [x] **Re-run the documentation check** (2026-10-15; section 8 repeats it
+  on the day of posting): every number in the README (sizes, test counts,
+  timings) must be current. Corrected: test counts (340), `word_count`'s
+  size (64 KB), the self-compile time (0.57 s), the README's lists (value
+  structs, JSON, installation done), the spec's test-file list, ROADMAP's
+  visibility and native-speed lines, and the suite's expected output.
 
 ## 4. The first five minutes
 
@@ -186,7 +189,7 @@ more than usual.
 - [x] **`cargo clippy` is clean** (2026-10-06, all targets; CI fails on any
   new warning).
 - [ ] **A showcase.** One program a reader would want to run: the compiler
-  compiling itself natively in 0.37 s is a good one; a small, real tool
+  compiling itself natively in 0.57 s is a good one; a small, real tool
   (a JSON pretty-printer, a `wc`/`grep` clone, a Markdown-to-HTML
   converter) would be better, written the way an agent would write it.
 - [x] **A ten-minute tour** (docs/TOUR.md, 2026-10-08; its examples are run by

@@ -24,7 +24,7 @@ a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
 x86-64 executables from a backend written in AIPL, whose single-pass
 translator keeps values in registers and checks memory by guard pages
-(0.8-1.6x wasmtime's time on the benchmarks); module visibility; eight
+(0.8-1.9x wasmtime's time on the benchmarks); module visibility; eight
 benchmarks against C and Python.
 
 ## Next, in order
@@ -99,16 +99,16 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ### Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 950 functions, generic instances included. The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function, 64 KiB / 1364 string literals (AIPL_SPEC.md 6.4). The toolchain itself is about 1,360 functions, generic instances included (2026-10-15). The Rust backend has none of these limits.
 
 ### Before "many modules from many authors" is safe
 
 Still true from the original analysis, updated for what has landed:
 
-1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`. What is still missing is visibility: every struct and function of an imported module is reachable.
+1. **Shared data layouts have a type and a namespace.** Structs (P8) are reached through typed `(ptr S)` pointers and are qualified by module (`compiler.Node`), so two packages can each define `Node`, and module visibility (2026-10-14) keeps what a module does not give private to it.
 2. **Duplication is still easy.** Imports make reuse possible, not the default; discoverability and lint tooling are missing.
 3. **No versioning or dependency resolution.** Imports resolve by filename through the search path (AIPL_SPEC.md 11); there is no language version (deferred) and nothing handles package versions.
-4. **No privacy.** Every helper is public, and every function is exported from the compiled wasm, so a module has no API surface distinct from its implementation (audit S6).
+4. **Privacy stops at the source.** Visibility (2026-10-14) gives each module an API distinct from its implementation, but every function is still exported from the compiled wasm (audit S6).
 
 ### The longer-term ambition (a PDF viewer or browser in AIPL)
 

@@ -197,7 +197,8 @@ the language; Python uses its built-in integers. What it showed:
   printer would remove about a third. *2026-10-05:* `os.arg_int` and
   `buf.print` are in the standard library and every benchmark uses them
   (55 lines fewer across the eight); the digit printer stays in spigot and
-  pidigits, since it prints one contest's output format.
+  pidigits, since it prints one contest's output format. pidigits is 85
+  lines today.
 
 ## Native speed (2026-10-05)
 
