@@ -239,7 +239,13 @@ the null checks too.) What remains:
    header. Dropping the header and the reset walk measured 1.63 natively
    and 1.39 under wasmtime; the price is that a pointer used after a reset
    is caught only once the memory is reused (before that it reads the old
-   object, which is not unsafe, only wrong). Decision pending.
+   object, which is not unsafe, only wrong). **Decided (2026-10-16):** the
+   default arena keeps the headers and catches a use after reset at once;
+   a separate fast arena (`arena.Fast`: `make_fast`, `fast_alloc`,
+   `fast_reset`, and `alloc.of_fast_arena`) drops them, for code that opts
+   in. Its own type, not a flag, since testing a flag on every allocation
+   cost binarytrees 10% natively. binarytrees on a fast arena: 1.67
+   natively (2.00 on the default one).
 3. **Per-allocator generations** for the heap (a counter under its lock,
    no atomic), as the arena already does.
 

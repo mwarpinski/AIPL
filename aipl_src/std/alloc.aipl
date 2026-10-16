@@ -40,6 +40,7 @@
 
   (union Allocator [(heap h:(ptr heap.Heap))
                     (arena r:(ptr arena.Arena))
+                    (fast_arena fr:(ptr arena.Fast))
                     (fixed f:(ptr Fixed))
                     (custom c:(ptr Custom))] (pub))
 
@@ -65,6 +66,7 @@
 
   (fn of_heap [h:(ptr heap.Heap)] -> Allocator (pub) (make Allocator.heap h))
   (fn of_arena [r:(ptr arena.Arena)] -> Allocator (pub) (make Allocator.arena r))
+  (fn of_fast_arena [fr:(ptr arena.Fast)] -> Allocator (pub) (make Allocator.fast_arena fr))
 
   ;; An allocator handing out the len bytes at base (from mem.alloc, or
   ;; from another allocator), 8 bytes at a time.
@@ -99,6 +101,7 @@
     (match a
       (Allocator.heap [h] (call heap.raw h n))
       (Allocator.arena [r] (call arena.raw r n))
+      (Allocator.fast_arena [fr] (call arena.fast_raw fr n))
       (Allocator.fixed [f] (call fixed_raw f n))
       (Allocator.custom [c] (call custom_raw c n))))
 
@@ -108,6 +111,7 @@
     (unsafe (match a
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))
+      (Allocator.fast_arena [_] (block))
       (Allocator.fixed [f] (call fixed_free f p n))
       (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n)))))
 

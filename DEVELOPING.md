@@ -61,7 +61,7 @@ Expected AIPL suite output (29 groups):
 [PASS] std/map: generic hash map over cmp.Hash keys (9 tests)
 [PASS] std/buf: string builder (3 tests)
 [PASS] std/time: durations and the clock (7 tests)
-[PASS] std/arena: typed region allocator (5 tests)
+[PASS] std/arena: typed region allocator (7 tests)
 [PASS] std/heap: general-purpose allocator (8 tests)
 [PASS] std/alloc: any allocator as one value (7 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)
