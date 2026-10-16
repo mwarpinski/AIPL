@@ -32,24 +32,17 @@ benchmarks against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **A safe way to run code in parallel** (docs/design/GENERATIONS_PLAN.md,
-   "Data races"): fork and join over disjoint parts of an array, with
-   read-only inputs, so programs need no `unsafe` threads. (Generation
-   checks against use after free were done on 2026-10-16; value structs,
-   and unions, results, and `Option` by value, on 2026-10-15.) Also: a
-   pre-checked copy of small functions called from versioned loops, the
-   remaining cost of generation checks on knucleotide.
-3. **The standard library:** networking, once WASI has listening sockets;
+2. **The standard library:** networking, once WASI has listening sockets;
    starting processes, once WASI can (preview 1 cannot); a faster
    small-block path in `std/heap`.
-4. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,
+3. **Rust out of the build path:** the stage-0 seed is done (2026-10-15,
    bootstrap/README.md): a checked-in native `aipl` builds the compiler on
    Linux x86-64 with no Rust, checked byte for byte against the Rust
    toolchain, which stays as the referee. Left: a WebAssembly seed for
    other platforms, the execute bit (a host import), `verify` in the AIPL
    command, and an installer that builds from the seed (DEVELOPING.md,
    "Direction").
-5. **Packages, after the launch:** a package registry with versioned
+4. **Packages, after the launch:** a package registry with versioned
    packages, dependency resolution, and lock files (decided 2026-10-07;
    its command and name are open, e.g. folded into the `aipl` CLI as
    `aipl add`, `aipl build`). Language versioning comes with it.
@@ -88,7 +81,7 @@ versioning (once packages exist), `inv` contracts.
 ### Memory
 
 - **The built-ins never free.** `mem.alloc`, `new`, `arr.new`, `make`, and result cells come from a bump cursor that only grows. Freeable memory comes from the standard library (docs/design/HEAP_PLAN.md): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take. A heap's memory is reused but never returned to the system. Freeing object by object costs about 4x C's malloc/free on binarytrees.
-- **Memory-safe outside `unsafe`, with stated limits** (AIPL_SPEC.md 3). Bounds checks, null checks, generation checks (use after free, since 2026-10-16), contracts, and the reserved-block guard run in every backend; the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`/`ptr.make`/`arr.make`, threads, atomics) are fenced inside `(unsafe ...)`; module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. The limits: no data-race checking (threads are unsafe); after an arena reuses its memory, a stale pointer is caught unless the new data at its generation word happens to equal its old 32-bit generation; a fast arena catches a stale pointer only once its memory is reused; `ptr.cast` pointers are unchecked.
+- **Memory-safe outside `unsafe`, with stated limits** (AIPL_SPEC.md 3; parallel work without `unsafe` through `std/par` since 2026-10-16). Bounds checks, null checks, generation checks (use after free, since 2026-10-16), contracts, and the reserved-block guard run in every backend; the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`/`ptr.make`/`arr.make`, threads, atomics) are fenced inside `(unsafe ...)`; module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. The limits: no data-race checking (threads are unsafe); after an arena reuses its memory, a stale pointer is caught unless the new data at its generation word happens to equal its old 32-bit generation; a fast arena catches a stale pointer only once its memory is reused; `ptr.cast` pointers are unchecked.
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 

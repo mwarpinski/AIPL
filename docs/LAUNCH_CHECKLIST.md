@@ -123,7 +123,8 @@ more than usual.
 - [x] **"Memory-safe" only with its limits** (2026-10-16, after
   generation checks; before that, 2026-10-15: never say it). README, FAQ,
   AIPL_SPEC.md 3, and ROADMAP.md say "memory-safe outside `unsafe`" and
-  then the limits in full: no data-race checking (threads are unsafe);
+  then the limits in full: no data-race checking (threads are unsafe;
+  `std/par` is the safe way to run work in parallel);
   after an arena reuses its memory a stale pointer is caught unless the
   new data at its generation word happens to equal its old generation; a
   fast arena catches it only once its memory is reused; `ptr.cast`

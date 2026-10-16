@@ -1,0 +1,106 @@
+;; std/par: running code in parallel with no unsafe threads
+;; (docs/design/GENERATIONS_PLAN.md, "Data races"). (par.map T U C) sets
+;; out[i] to (f ctx xs i) for every i, on several threads, and nothing a
+;; worker can reach is written by another while it runs: the context and
+;; the results are plain ((where (plain T)): no pointer or array inside, so
+;; each worker has its own copy), each part gets its own copy of the input
+;; array (free for the worker to read fast, or even change), and this
+;; module writes each result to its own element of out. So no data race is
+;; possible, and the caller writes no unsafe:
+;;
+;;   (struct Ctx [n:i32 scale:f64] (value))
+;;   (fn row [c:Ctx xs:(arr f64) i:i32] -> f64 ...)
+;;   (call (par.map f64 f64 Ctx) out (ref row) (make Ctx n 2.0) xs 4)
+;;
+;; Copying the input costs one pass over it per part, small beside work
+;; that reads the whole input for each result (a matrix-vector product),
+;; large beside work that reads one element (there, one thread is as
+;; fast). Workers may allocate (alloc.default is a heap with a lock; new
+;; and arr.new are atomic) and print. The caller waits until every part is
+;; done. A program that uses par is a threaded module (AIPL_SPEC.md 6.2):
+;; it runs in the VM, under aipl-run, and natively.
+(module par
+  (import alloc)
+  (import thread)
+
+  ;; One part of out, [lo, hi), with its own copy of the input.
+  (struct (Job T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) lo:i32 hi:i32])
+
+  (fn (run T U C) [j:(ptr (Job T U C))] -> i32 (where (plain T)) (where (plain U)) (where (plain C))
+    (let out:(arr U) (get j (Job T U C) out))
+    (let f:(fn [C (arr T) i32] -> U) (get j (Job T U C) f))
+    (let c:C (get j (Job T U C) ctx))
+    (let xs:(arr T) (get j (Job T U C) xs))
+    (loop i (get j (Job T U C) lo) (- (get j (Job T U C) hi) 1) 1
+      (arr.set U out i (call_ref (fn [C (arr T) i32] -> U) f c xs i)))
+    0)
+
+  ;; Part k of `parts`: as equal as can be, in order, with a copy of xs
+  ;; from the shared heap.
+  (fn (job T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) k:i32 parts:i32] -> (ptr (Job T U C))
+      (where (plain T)) (where (plain U)) (where (plain C))
+    (let n:i32 (arr.len out))
+    (let base:i32 (/ n parts))
+    (let extra:i32 (% n parts))
+    (let copy:(arr T) (call (alloc.array T) (call alloc.default) (arr.len xs)))
+    (loop i 0 (- (arr.len xs) 1) 1 (arr.set T copy i (arr.get T xs i)))
+    (let j:(ptr (Job T U C)) (new (Job T U C)))
+    (put j (Job T U C) out out)
+    (put j (Job T U C) f f)
+    (put j (Job T U C) ctx ctx)
+    (put j (Job T U C) xs copy)
+    (put j (Job T U C) lo (+ (* k base) (if (lt k extra) k extra)))
+    (put j (Job T U C) hi (+ (get j (Job T U C) lo) (+ base (if (lt k extra) 1 0))))
+    j)
+
+  ;; out[i] = (f ctx xs i) for every i of out, in `threads` parts (at least
+  ;; 1, at most out's length): one on the calling thread, each other on a
+  ;; thread of its own, each with its own copy of xs. Returns when all are
+  ;; done; the copies are freed.
+  (fn (map T U C) [out:(arr U) f:(fn [C (arr T) i32] -> U) ctx:C xs:(arr T) threads:i32] -> void (pub)
+      (where (plain T)) (where (plain U)) (where (plain C))
+    (let n:i32 (arr.len out))
+    (let parts:i32 (cond ((or (lt threads 1) (eq n 0)) 1) ((gt threads n) n) (else threads)))
+    (let a:alloc.Allocator (call alloc.default))
+    (let jobs:(arr (ptr (Job T U C))) (arr.new (ptr (Job T U C)) parts))
+    (loop k 0 (- parts 1) 1 (arr.set (ptr (Job T U C)) jobs k (call (job T U C) out f ctx xs k parts)))
+    (let handles:(arr i32) (arr.new i32 parts))
+    (loop k 1 (- parts 1) 1
+      (arr.set i32 handles k (unsafe (call (thread.spawn_with (ptr (Job T U C))) (ref (run T U C)) (arr.get (ptr (Job T U C)) jobs k)))))
+    (let _r:i32 (call (run T U C) (arr.get (ptr (Job T U C)) jobs 0)))
+    (loop k 1 (- parts 1) 1
+      (let _j:i32 (unsafe (thread.join (arr.get i32 handles k)))))
+    (loop k 0 (- parts 1) 1
+      (call (alloc.free_array T) a (get (arr.get (ptr (Job T U C)) jobs k) (Job T U C) xs))))
+
+  ;; ===== Tests =====
+
+  (struct Scale [by:i32] (value))
+  (fn triple [s:Scale xs:(arr i32) i:i32] -> i32
+    (* (get s Scale.by) (arr.get i32 xs i)))
+  ;; a worker changing its copy changes nothing else
+  (fn scribble [s:Scale xs:(arr i32) i:i32] -> i32
+    (arr.set i32 xs i -1)
+    (arr.get i32 xs i))
+
+  ;; Pass count; test_suite.aipl expects 4.
+  (fn run_par_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let xs:(arr i32) (arr.new i32 100))
+    (loop i 0 99 1 (arr.set i32 xs i i))
+    ;; four parts give what one does
+    (let out:(arr i32) (arr.new i32 100))
+    (call (map i32 i32 Scale) out (ref triple) (make Scale 3) xs 4)
+    (let ok:bool true)
+    (loop i 0 99 1 (if (neq (arr.get i32 out i) (* 3 i)) (set! ok false) (block)))
+    (if ok (set! p (+ p 1)) (block))
+    ;; more threads than elements, and fewer than one
+    (let few:(arr i32) (arr.new i32 3))
+    (call (map i32 i32 Scale) few (ref triple) (make Scale 2) xs 64)
+    (if (and (eq (arr.get i32 few 2) 4) (eq (arr.get i32 few 0) 0)) (set! p (+ p 1)) (block))
+    (call (map i32 i32 Scale) few (ref triple) (make Scale 5) xs 0)
+    (if (eq (arr.get i32 few 1) 5) (set! p (+ p 1)) (block))
+    ;; the input is unchanged, whatever the workers do to their copies
+    (call (map i32 i32 Scale) out (ref scribble) (make Scale 1) xs 4)
+    (if (and (eq (arr.get i32 out 50) -1) (eq (arr.get i32 xs 50) 50)) (set! p (+ p 1)) (block))
+    p))

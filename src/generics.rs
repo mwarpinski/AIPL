@@ -44,6 +44,9 @@ struct Template {
     wheres: Vec<(Sx, String, usize)>,
     /// Per parameter: a struct (`(where (struct T))`), or else a value.
     struct_kind: Vec<bool>,
+    /// Per parameter: plain (`(where (plain T))`): a value holding no
+    /// pointer or array, so threads may share it (std/par).
+    plain_kind: Vec<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -75,6 +78,8 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
     let mut order: Vec<String> = Vec::new();
     let mut struct_names: HashSet<String> = HashSet::new();
     let mut value_names: HashSet<String> = HashSet::new();
+    let mut defs: HashMap<String, Sx> = HashMap::new();
+    let mut plain_names: HashSet<String> = HashSet::new();
     let mut ifaces = Ifaces::default();
     let mut work: Vec<(Item, Kind)> = Vec::new();
     for (items, is_struct) in [(prog.structs, true), (prog.fns, false)] {
@@ -100,9 +105,9 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
                         return Err(at(&item.file, &item.sx, &format!("generic '{}' is defined twice", name)));
                     }
                     let mut item = item;
-                    let (wheres, struct_kind) = take_wheres(&mut item, &params)?;
+                    let (wheres, struct_kind, plain_kind) = take_wheres(&mut item, &params)?;
                     order.push(name.clone());
-                    templates.insert(name, Template { params, item, is_struct, wheres, struct_kind });
+                    templates.insert(name, Template { params, item, is_struct, wheres, struct_kind, plain_kind });
                 }
                 None => {
                     if let Some(w) = misplaced_where(&item.sx, 2) {
@@ -113,9 +118,16 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
                             // a value struct is a value type argument
                             if crate::resolver::is_value_struct(&item.sx) {
                                 value_names.insert(n.to_string());
+                                defs.insert(n.to_string(), item.sx.clone());
                             } else {
                                 struct_names.insert(n.to_string());
                             }
+                        }
+                    }
+                    // unions and enums, for plain type arguments
+                    if matches!(item.sx.head(), Some("union" | "enum")) {
+                        if let Some(n) = item.sx.items().get(1).and_then(|n| n.symbol()) {
+                            defs.insert(n.to_string(), item.sx.clone());
                         }
                     }
                     let item = if archetypes && !is_struct { stub(item) } else { item };
@@ -143,6 +155,9 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
                 if t.struct_kind[k] {
                     struct_names.insert(sealed.clone());
                 }
+                if t.plain_kind[k] {
+                    plain_names.insert(sealed.clone());
+                }
                 let decl = list(header, vec![Sx::symbol_at(kind.to_string(), header), Sx::symbol_at(sealed.clone(), header), bracket(header, vec![])]);
                 work.push((Item { sx: decl, file: t.item.file.clone(), foreign: HashMap::new() }, Kind::Struct));
                 app.push(Sx::symbol_at(sealed, header));
@@ -162,7 +177,7 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
             apps.push((list(header, app), t.item.file.clone(), !t.is_struct));
         }
     }
-    let known = Known { templates: &templates, ifaces: &ifaces, struct_names: &struct_names, value_names: &value_names };
+    let known = Known { templates: &templates, ifaces: &ifaces, struct_names: &struct_names, value_names: &value_names, defs: &defs, plain_names: &plain_names };
     let mut made = Made::default();
     for (mut app, file, callee) in apps {
         let mut created = Vec::new();
@@ -436,6 +451,11 @@ fn rewrite(
                 format!("{}: {} is a value type, and {} is a struct, used only through a pointer: write (ptr {})", shown(&name), p, a, a)
             } else if arg.symbol() == Some("void") || arg.head() == Some("result") {
                 format!("{}: {} is a value type, and {} cannot be stored", shown(&name), p, a)
+            } else if t.plain_kind[k] && !is_plain(arg, known, &mut HashSet::new()) {
+                match sealed_param(arg) {
+                    Some((owner, q)) => format!("{}: {} must be plain, so {} needs (where (plain {}))", shown(&name), p, owner, q),
+                    None => format!("{}: {} must be plain (where (plain {})), and {} may hold a pointer or an array", shown(&name), p, p, a),
+                }
             } else {
                 continue;
             };
@@ -555,6 +575,10 @@ struct Known<'a> {
     struct_names: &'a HashSet<String>,
     /// Concrete value structs (type arguments of the value kind).
     value_names: &'a HashSet<String>,
+    /// Value structs, unions, and enums by name (is_plain).
+    defs: &'a HashMap<String, Sx>,
+    /// The placeholders of (where (plain T)) parameters.
+    plain_names: &'a HashSet<String>,
 }
 
 #[derive(Default)]
@@ -767,7 +791,7 @@ fn render(sx: &Sx) -> String {
 /// a union's variants), T one of its type parameters.
 /// A template's interface where clauses (the clause, its interface, T's
 /// index), and per parameter whether it is a struct.
-type Wheres = (Vec<(Sx, String, usize)>, Vec<bool>);
+type Wheres = (Vec<(Sx, String, usize)>, Vec<bool>, Vec<bool>);
 
 fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
     let start = match item.sx.head() {
@@ -779,6 +803,7 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
     let parts = item.sx.items_mut().unwrap();
     let mut wheres = Vec::new();
     let mut struct_kind = vec![false; params.len()];
+    let mut plain_kind = vec![false; params.len()];
     while start < parts.len() && parts[start].head() == Some("where") {
         let clause = parts.remove(start);
         let req = clause.items().get(1).filter(|_| clause.items().len() == 2);
@@ -788,11 +813,14 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
             Some((iname.to_string(), k))
         });
         let Some((iname, k)) = found else {
-            return Err(at(&file, &clause, "a where clause is written (where (Interface T)) or (where (struct T)), T a type parameter of this generic"));
+            return Err(at(&file, &clause, "a where clause is written (where (Interface T)), (where (struct T)), or (where (plain T)), T a type parameter of this generic"));
         };
         // (where (struct T)): T is a struct, used through (ptr T)
         if iname == "struct" {
             struct_kind[k] = true;
+        } else if iname == "plain" {
+            // (where (plain T)): T holds no pointer or array
+            plain_kind[k] = true;
         } else {
             wheres.push((clause, iname, k));
         }
@@ -800,7 +828,58 @@ fn take_wheres(item: &mut Item, params: &[String]) -> Result<Wheres, String> {
     if let Some(w) = misplaced_where(&item.sx, 2) {
         return Err(at(&file, w, "where clauses come right after the signature: after a function's return type, a struct's fields, or a union's variants"));
     }
-    Ok((wheres, struct_kind))
+    Ok((wheres, struct_kind, plain_kind))
+}
+
+/// Whether type `t` is plain: holds no pointer or array, at any depth, so
+/// threads may share it. The scalars, `str` (immutable), function
+/// references, enums, results of plain types, and value structs and unions
+/// whose fields are plain, and the placeholders of (where (plain T))
+/// parameters; not a generic instance (not yet looked into), a pointer, or
+/// an array. A union that holds itself is plain if its other fields are.
+fn is_plain(t: &Sx, known: &Known, seen: &mut HashSet<String>) -> bool {
+    if let Some(s) = t.symbol() {
+        return match s {
+            "i32" | "i64" | "f32" | "f64" | "bool" | "str" => true,
+            _ if s.starts_with('\'') => known.plain_names.contains(s),
+            _ => match known.defs.get(s) {
+                Some(def) => !seen.insert(s.to_string()) || def_is_plain(def, known, seen),
+                None => false,
+            },
+        };
+    }
+    match t.head() {
+        Some("fn") => true,
+        Some("result") => t.items().iter().skip(1).all(|x| is_plain(x, known, seen)),
+        _ => false,
+    }
+}
+
+fn def_is_plain(def: &Sx, known: &Known, seen: &mut HashSet<String>) -> bool {
+    let Some(body) = def.items().get(2) else { return false };
+    match def.head() {
+        Some("enum") => true,
+        Some("struct") => field_types(body.items()).iter().all(|t| is_plain(t, known, seen)),
+        Some("union") => body.items().iter().all(|v| field_types(v.items().get(1..).unwrap_or(&[])).iter().all(|t| is_plain(t, known, seen))),
+        _ => false,
+    }
+}
+
+/// The types in a field list, `name : type` each, or `(read name : type)` /
+/// `(pub name : type)`.
+fn field_types(items: &[Sx]) -> Vec<&Sx> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        if items[i].is_paren() && matches!(items[i].head(), Some("read" | "pub")) {
+            out.extend(items[i].items().get(3));
+            i += 1;
+        } else {
+            out.extend(items.get(i + 2));
+            i += 3;
+        }
+    }
+    out
 }
 
 /// For a placeholder `'owner.T`: the template it belongs to, and T.
