@@ -58,6 +58,10 @@ pub const STACK_BUDGET: usize = 192 << 20;
 /// The error for `get`, `put`, or an array operation on a null pointer or
 /// array, as compiled code reports it (wasm.rs NULL_TEXT).
 pub const NULL_POINTER: &str = "Null pointer dereference";
+/// A pointer whose object was freed (docs/design/GENERATIONS_PLAN.md).
+pub const USE_AFTER_FREE: &str = "Use after free";
+/// The generation of a pointer made by ptr.cast: never compared.
+const GEN_UNCHECKED: u32 = 0xFFFF_FFFF;
 const THREAD_STACK: usize = 256 << 20;
 
 /// An address in the caller's stack frame: how deep the stack is.
@@ -759,8 +763,9 @@ impl VM {
                     .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                     .clone();
                 let size = crate::checker::get_struct_size(&def, &self.structs)?;
-                let ptr = self.alloc_bytes(size);
-                Ok(Value::Int(ptr as i64))
+                // [generation 0][unused][object], as compiled code lays it out
+                let ptr = self.alloc_bytes(size + 8) as u32 + 8;
+                Ok(Value::Int64(ptr as i64))
             }
             Expr::GetField { struct_name, field_name, ptr, .. } => {
                 let def = self
@@ -776,10 +781,8 @@ impl VM {
                     let k = def.fields.iter().position(|f| &f.name == field_name).ok_or_else(|| format!("VM: no field '{}'", field_name))?;
                     return Ok(fields.swap_remove(k));
                 }
-                let ptr_val = match self.eval_expr(ptr, scope)? {
-                    Value::Int(i) => i as u32 as usize,
-                    other => return Err(format!("VM: Expected Int pointer for get, got {:?}", other)),
-                };
+                let ptr_val = self.eval_expr(ptr, scope)?;
+                let ptr_val = self.deref(ptr_val, "get")?;
                 if ptr_val == 0 {
                     return Err(NULL_POINTER.to_string());
                 }
@@ -793,10 +796,8 @@ impl VM {
                     .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
                     .clone();
                 let (offset, field_ty) = crate::checker::get_field_offset(&def, field_name, &self.structs)?;
-                let ptr_val = match self.eval_expr(ptr, scope)? {
-                    Value::Int(i) => i as u32 as usize,
-                    other => return Err(format!("VM: Expected Int pointer for put, got {:?}", other)),
-                };
+                let ptr_val = self.eval_expr(ptr, scope)?;
+                let ptr_val = self.deref(ptr_val, "put")?;
                 if ptr_val == 0 {
                     return Err(NULL_POINTER.to_string());
                 }
@@ -828,18 +829,15 @@ impl VM {
                     other => return Err(format!("VM: Expected Int size for arr.new, got {:?}", other)),
                 };
                 let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
-                let total_size = 4 + count * elem_size;
-                let raw_ptr = self.alloc_bytes(total_size);
-                // Store element count in the 4 bytes before the base pointer
-                self.store_val_at(raw_ptr as u32 as usize, &Type::I32, Value::Int(count as i64))?;
-                let base_ptr = raw_ptr + 4;
-                Ok(Value::Int(base_ptr as i64))
+                // [generation 0][count][elements]
+                let total_size = 8 + count * elem_size;
+                let raw_ptr = self.alloc_bytes(total_size) as u32 as usize;
+                self.store_val_at(raw_ptr + 4, &Type::I32, Value::Int(count as i64))?;
+                Ok(Value::Int64((raw_ptr + 8) as i64))
             }
             Expr::ArrGet { elem_ty, ptr, index, .. } => {
-                let ptr_val = match self.eval_expr(ptr, scope)? {
-                    Value::Int(i) => i as u32 as usize,
-                    other => return Err(format!("VM: Expected Int pointer for arr.get, got {:?}", other)),
-                };
+                let ptr_val = self.eval_expr(ptr, scope)?;
+                let ptr_val = self.deref(ptr_val, "arr.get")?;
                 // before the index is evaluated, as compiled code checks
                 if ptr_val == 0 {
                     return Err(NULL_POINTER.to_string());
@@ -862,14 +860,37 @@ impl VM {
                 let addr = ptr_val + (idx_val as usize) * elem_size;
                 self.load_val_at(addr, elem_ty)
             }
-            // Pointers and arrays are i32 addresses at run time.
-            Expr::Null { .. } => Ok(Value::Int(0)),
-            Expr::Cast { addr: inner, .. } | Expr::Addr { val: inner, .. } => self.eval_expr(inner, scope),
-            Expr::ArrLen { arr, .. } => {
-                let p = match self.eval_expr(arr, scope)? {
-                    Value::Int(i) => i as u32 as usize,
-                    other => return Err(format!("VM: Expected Int array for arr.len, got {:?}", other)),
+            // Pointers and arrays are an address and a generation in one i64,
+            // as in compiled code (docs/design/GENERATIONS_PLAN.md).
+            Expr::Null { .. } => Ok(Value::Int64(0)),
+            Expr::Cast { ty: Type::Ptr(_) | Type::Array(_), addr, gen, .. } => {
+                let a = match self.eval_expr(addr, scope)? {
+                    Value::Int(i) => i as u32 as u64,
+                    other => return Err(format!("VM: Expected an i32 address, got {:?}", other)),
                 };
+                let g = match gen {
+                    Some(g) => match self.eval_expr(g, scope)? {
+                        Value::Int(i) => i as u32 as u64,
+                        other => return Err(format!("VM: Expected an i32 generation, got {:?}", other)),
+                    },
+                    None if a == 0 => 0,
+                    None => GEN_UNCHECKED as u64,
+                };
+                Ok(Value::Int64((a | (g << 32)) as i64))
+            }
+            Expr::Cast { addr: inner, .. } => self.eval_expr(inner, scope),
+            Expr::Addr { val, kind, .. } => {
+                let v = self.eval_expr(val, scope)?;
+                match (kind, v) {
+                    (crate::ast::AddrKind::Ptr | crate::ast::AddrKind::Arr, Value::Int64(f)) => Ok(Value::Int(f as u32 as i32 as i64)),
+                    (crate::ast::AddrKind::PtrGen | crate::ast::AddrKind::ArrGen, Value::Int64(f)) => Ok(Value::Int((f as u64 >> 32) as u32 as i32 as i64)),
+                    (crate::ast::AddrKind::Enum, v) => Ok(v),
+                    (_, other) => Err(format!("VM: Expected a pointer, got {:?}", other)),
+                }
+            }
+            Expr::ArrLen { arr, .. } => {
+                let p = self.eval_expr(arr, scope)?;
+                let p = self.deref(p, "arr.len")?;
                 if p == 0 {
                     return Err(NULL_POINTER.to_string());
                 }
@@ -879,10 +900,8 @@ impl VM {
                 Ok(Value::Int(self.array_len_at(p)?))
             }
             Expr::ArrSet { elem_ty, ptr, index, val, path, .. } => {
-                let ptr_val = match self.eval_expr(ptr, scope)? {
-                    Value::Int(i) => i as u32 as usize,
-                    other => return Err(format!("VM: Expected Int pointer for arr.set, got {:?}", other)),
-                };
+                let ptr_val = self.eval_expr(ptr, scope)?;
+                let ptr_val = self.deref(ptr_val, "arr.set")?;
                 if ptr_val == 0 {
                     return Err(NULL_POINTER.to_string());
                 }
@@ -985,6 +1004,29 @@ impl VM {
     }
 
     /// Element count stored in the 4 bytes before an `arr.new` pointer.
+    /// The address of a pointer or array about to be used: null fails, and
+    /// so does a generation other than the word 8 bytes before the object
+    /// (unless the pointer is unchecked), as compiled code checks.
+    fn deref(&self, v: Value, op: &str) -> Result<usize, String> {
+        let fat = match v {
+            Value::Int64(f) => f as u64,
+            other => return Err(format!("VM: Expected a pointer for {}, got {:?}", op, other)),
+        };
+        let addr = (fat & 0xFFFF_FFFF) as usize;
+        if addr == 0 {
+            return Err(NULL_POINTER.to_string());
+        }
+        let gen = (fat >> 32) as u32;
+        let word = match self.load_val_at(addr.wrapping_sub(8), &Type::I32) {
+            Ok(Value::Int(w)) => w as u32,
+            _ => return Err(format!("VM memory load out of bounds: address {}", addr.wrapping_sub(8))),
+        };
+        if word != gen && gen != GEN_UNCHECKED {
+            return Err(USE_AFTER_FREE.to_string());
+        }
+        Ok(addr)
+    }
+
     fn array_len_at(&self, ptr: usize) -> Result<i64, String> {
         let mem = self.shared.lock().unwrap();
         if ptr > mem.bytes.len() {
@@ -1060,7 +1102,7 @@ impl VM {
         }
         let mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -1091,7 +1133,7 @@ impl VM {
                 }
                 Ok(Value::Str(String::from_utf8_lossy(&mem.bytes[p..p + len]).into_owned()))
             }
-            Type::I64 => {
+            Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                 if addr + 8 > mem.bytes.len() {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -1143,7 +1185,7 @@ impl VM {
         };
         let mut mem = self.shared.lock().unwrap();
         match ty {
-            Type::I32 | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
+            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
                 if addr + 4 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
@@ -1167,7 +1209,7 @@ impl VM {
                 mem.bytes[addr..addr + 4].copy_from_slice(&v.to_le_bytes());
                 Ok(())
             }
-            Type::I64 => {
+            Type::I64 | Type::Ptr(_) | Type::Array(_) => {
                 if addr + 8 > mem.bytes.len() {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }

@@ -1582,18 +1582,32 @@ impl Parser {
                         "ptr.cast" => {
                             let name = self.expect_symbol("struct name in ptr.cast", span)?;
                             let addr = self.parse_expr()?;
-                            Expr::Cast { ty: Type::Ptr(Box::new(Type::Struct(name))), addr: Box::new(addr), span }
+                            Expr::Cast { ty: Type::Ptr(Box::new(Type::Struct(name))), addr: Box::new(addr), gen: None, span }
                         }
                         "arr.cast" => {
                             let elem = self.parse_type()?;
                             let addr = self.parse_expr()?;
-                            Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), span }
+                            Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), gen: None, span }
                         }
-                        "ptr.addr" | "arr.addr" | "enum.ord" => {
+                        "ptr.make" => {
+                            let name = self.expect_symbol("struct name in ptr.make", span)?;
+                            let addr = self.parse_expr()?;
+                            let gen = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Ptr(Box::new(Type::Struct(name))), addr: Box::new(addr), gen: Some(Box::new(gen)), span }
+                        }
+                        "arr.make" => {
+                            let elem = self.parse_type()?;
+                            let addr = self.parse_expr()?;
+                            let gen = self.parse_expr()?;
+                            Expr::Cast { ty: Type::Array(Box::new(elem)), addr: Box::new(addr), gen: Some(Box::new(gen)), span }
+                        }
+                        "ptr.addr" | "arr.addr" | "enum.ord" | "ptr.gen" | "arr.gen" => {
                             let val = self.parse_expr()?;
                             let kind = match head.as_str() {
                                 "ptr.addr" => AddrKind::Ptr,
                                 "arr.addr" => AddrKind::Arr,
+                                "ptr.gen" => AddrKind::PtrGen,
+                                "arr.gen" => AddrKind::ArrGen,
                                 _ => AddrKind::Enum,
                             };
                             Expr::Addr { val: Box::new(val), kind, span }
@@ -1601,7 +1615,7 @@ impl Parser {
                         "enum.cast" => {
                             let name = self.expect_symbol("enum name in enum.cast", span)?;
                             let val = self.parse_expr()?;
-                            Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), span }
+                            Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), gen: None, span }
                         }
                         "arr.new" => {
                             let elem_ty = self.parse_type()?;

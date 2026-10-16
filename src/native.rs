@@ -33,18 +33,20 @@ pub fn executable(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
     let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").map_err(|e| e.to_string())?;
     let entry = if sandbox { "compile_sandboxed_at" } else { "compile_at" };
-    let compile = inst.get_typed_func::<(i32, i32), i32>(&mut store, entry).map_err(|e| e.to_string())?;
+    let compile = inst.get_typed_func::<(i32, i32), i64>(&mut store, entry).map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").ok_or("native backend: no memory")?;
     let addr = alloc.call(&mut store, wasm.len() as i32 + 8).map_err(|e| e.to_string())?;
     mem.write(&mut store, addr as usize, wasm).map_err(|e| e.to_string())?;
-    let out = compile.call(&mut store, (addr, wasm.len() as i32)).map_err(|e| format!("native backend trapped: {e}"))? as usize;
-    // native.Output [ok:bool error:(ptr Bytes) exe:(ptr Bytes)]; Bytes [addr len]
+    // a (ptr Output): the address in the low half (GENERATIONS_PLAN.md)
+    let out = compile.call(&mut store, (addr, wasm.len() as i32)).map_err(|e| format!("native backend trapped: {e}"))? as u32 as usize;
+    // native.Output [ok:bool error:(ptr Bytes) exe:(ptr Bytes)], pointers 8
+    // bytes (address first); Bytes [addr len]
     let data = mem.data(&store);
     let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
     let bytes = |p: usize| data[word(p)..word(p) + word(p + 4)].to_vec();
     if word(out) != 0 {
-        Ok(bytes(word(out + 8)))
+        Ok(bytes(word(out + 16)))
     } else {
-        Err(String::from_utf8_lossy(&bytes(word(out + 4))).into_owned())
+        Err(String::from_utf8_lossy(&bytes(word(out + 8))).into_owned())
     }
 }

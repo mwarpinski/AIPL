@@ -47,7 +47,7 @@ made by translating the WebAssembly to x86-64 machine code.
 To keep the toolchain small and written in AIPL. The native backend is
 about 5,800 lines of AIPL with no dependencies: a single-pass translator
 that keeps values in registers, in the manner of V8's Liftoff, whose code
-takes 0.8 to 1.9 times as long as wasmtime's (Cranelift's) on the eight
+takes 0.8 to 2.0 times as long as wasmtime's (Cranelift's) on the eight
 benchmarks. LLVM would make the code faster still and the toolchain far
 larger, and could not be self-hosted.
 
@@ -77,30 +77,45 @@ these.
 
 ### Is it memory-safe?
 
-Not yet. What holds now: array indexes are bounds-checked, pointers are
-typed and checked for null, contracts run on every call, and the standard
-heap stops the program on a double free, a free of the wrong size or type,
-or a write to freed memory (when that memory is handed out again). The
-operations nothing checks (raw `mem.load32`/`mem.store32`, casts to
-pointers, threads, atomics) are rejected outside an `(unsafe ...)` block,
-as in Rust, so a program without `unsafe` cannot reach memory through a
-raw address.
+Outside `(unsafe ...)`, yes, with limits stated below. Array indexes are
+bounds-checked, pointers are typed and checked for null, and every pointer
+carries its object's generation, a number the object's allocator changes
+when it frees it. Every access compares the two, so a pointer kept after
+its object is freed (with `std/heap`), or its arena reset (`std/arena`),
+stops the program with `Use after free` and the line, the same in the
+interpreter and in compiled code, whether or not the memory holds a new
+object by then. Freeing twice is caught the same way. The operations
+nothing checks (raw `mem.load32`/`mem.store32`, casts to pointers,
+threads, atomics) are rejected outside an `(unsafe ...)` block, as in
+Rust, and module visibility keeps the standard library's raw addresses in
+fields other modules may only read, so safe code cannot forge one.
 
-Module visibility closes a second door: the standard library keeps its raw
-addresses in fields other modules may only read, such as `str.Bytes`'s
-address and length, so safe code cannot forge one.
+The limits:
 
-The gap is use after free. A pointer kept after its object is freed (with
-`std/heap`) or its arena is reset (`std/arena`) still works. While the
-memory is free, the heap has filled it with a junk pattern; but once it
-holds another object, the old pointer reads and writes that object, and
-writing an integer where the new object keeps a pointer gives code without
-`unsafe` a pointer to any address in the program's memory. It never
-reaches outside that memory, in any backend (WebAssembly's sandbox, a
-guarded region natively), but inside it nothing is protected. Generation
-checks (each object and each pointer carries a number, compared on every
-access) are planned
-([docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md)).
+- **Data races.** AIPL does not check them, so threads and atomics need
+  `unsafe`. A safe way to run code in parallel is planned.
+- **Arenas, after their memory is reused.** A new object can start where
+  an old one's middle was, so the word an old pointer checks may be the
+  new object's data; the pointer is caught unless that word happens to
+  equal its old generation, a scrambled 32-bit number. The heap reuses a
+  block only for a block of the same size, so it has no such case.
+- **Fast arenas.** `arena.Fast`, which a program chooses by name for
+  speed, marks nothing at reset: a stale pointer is caught once its memory
+  is reused, and until then reads the old object (wrong, but not unsafe).
+- **`ptr.cast`.** A pointer made from an address inside `unsafe` is not
+  checked.
+- **The trusted base.** The compilers, the standard library's own
+  `unsafe` code, and the runtime are trusted; two independent compilers
+  that must agree byte for byte, differential testing, and fuzzing check
+  them, which is evidence, not proof.
+
+Unlike Rust, which rejects a use after free before the program runs,
+AIPL stops the program when it happens: no borrow checker, at the cost of
+a check on each pointer access (one per loop where nothing in the loop
+can free). It never reaches outside the program's memory in any case
+(WebAssembly's sandbox, a guarded region natively). The costs are in
+docs/BENCHMARKS.md; the design is in
+[docs/design/GENERATIONS_PLAN.md](design/GENERATIONS_PLAN.md).
 
 ### Does it have closures, or lambdas?
 
@@ -135,15 +150,15 @@ so returning an `(option.Option i32)` allocates nothing.
 
 ### How fast is it?
 
-Between C and Python. On seven of eight benchmarks, native executables
-take 1.2 to 14 times as long as C compiled with `gcc -O2`, and
-WebAssembly run by wasmtime 1.4 to 12 times as long. The slowest are
-pidigits (C uses GMP's hand-tuned big integers) and k-nucleotide (C packs
-each key into one 64-bit integer where AIPL hashes byte strings). On the
-eighth, binarytrees, AIPL takes 0.6 times C's time because it frees whole
-trees from an arena while C frees every node, so that one is not a fair
-race. The native backend
-is a single-pass translator, within 0.8 to 1.9 times wasmtime's optimising
+Between C and Python. On the eight benchmarks, native executables take
+1.2 to 17 times as long as C compiled with `gcc -O2`, and WebAssembly run
+by wasmtime 1.0 to 16 times as long. The slowest are k-nucleotide (C packs
+each key into one 64-bit integer where AIPL hashes byte strings) and
+pidigits (C uses GMP's hand-tuned big integers). binarytrees is not a fair
+race: AIPL frees whole trees from an arena while C frees every node.
+Generation checks (use after free) cost little on six of them, 1.3 times
+on k-nucleotide, and twice on binarytrees. The native backend is a
+single-pass translator, within 0.8 to 2.0 times wasmtime's optimising
 compiler. [docs/BENCHMARKS.md](BENCHMARKS.md) has every measurement and
 what each benchmark showed.
 

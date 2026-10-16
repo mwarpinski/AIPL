@@ -93,7 +93,7 @@ impl Structs {
 /// results held by address), F32, I64, or F64.
 pub fn slot_kind(t: &Type) -> Type {
     match t {
-        Type::I64 => Type::I64,
+        Type::I64 | Type::Ptr(_) | Type::Array(_) => Type::I64,
         Type::F32 => Type::F32,
         Type::F64 => Type::F64,
         _ => Type::I32,
@@ -228,7 +228,9 @@ fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize
             let l = structs.result_layout(a, b).unwrap_or_else(|| unreachable!());
             Ok((l.size, l.align))
         }
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
+        // a pointer or array: the address, then the generation (GENERATIONS_PLAN.md)
+        Type::Ptr(_) | Type::Array(_) => Ok((8, 8)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
             Some(def) if def.is_value => {
@@ -1729,11 +1731,19 @@ impl TypeChecker {
 
                 Ok(ty.clone())
             }
-            Expr::Cast { ty, addr, span } => {
-                match ty {
-                    Type::Ptr(_) => self.require_unsafe("ptr.cast", span.0, span.1)?,
-                    Type::Array(_) => self.require_unsafe("arr.cast", span.0, span.1)?,
+            Expr::Cast { ty, addr, gen, span } => {
+                match (ty, gen.is_some()) {
+                    (Type::Ptr(_), false) => self.require_unsafe("ptr.cast", span.0, span.1)?,
+                    (Type::Array(_), false) => self.require_unsafe("arr.cast", span.0, span.1)?,
+                    (Type::Ptr(_), true) => self.require_unsafe("ptr.make", span.0, span.1)?,
+                    (Type::Array(_), true) => self.require_unsafe("arr.make", span.0, span.1)?,
                     _ => {}
+                }
+                if let Some(g) = gen {
+                    let gt = self.infer_expr_type(g, env)?;
+                    if gt != Type::I32 {
+                        return Err(format!("{}:{}: the generation in ptr.make/arr.make must be i32, got {}", span.0, span.1, gt));
+                    }
                 }
                 self.validate_type(ty, *span)?;
                 if let Some(p) = sealed(ty) {
@@ -1902,7 +1912,9 @@ impl TypeChecker {
                     return Err(format!("{}:{}: enum.ord on {}: a type parameter is not an enum", span.0, span.1, p));
                 }
                 match (kind, &t) {
-                    (AddrKind::Ptr, Type::Ptr(_)) | (AddrKind::Arr, Type::Array(_)) | (AddrKind::Enum, Type::Enum(_)) => Ok(Type::I32),
+                    (AddrKind::Ptr | AddrKind::PtrGen, Type::Ptr(_)) | (AddrKind::Arr | AddrKind::ArrGen, Type::Array(_)) | (AddrKind::Enum, Type::Enum(_)) => Ok(Type::I32),
+                    (AddrKind::PtrGen, _) => Err(format!("{}:{}: ptr.gen needs a (ptr S), got {}", span.0, span.1, t)),
+                    (AddrKind::ArrGen, _) => Err(format!("{}:{}: arr.gen needs an (arr T), got {}", span.0, span.1, t)),
                     (AddrKind::Ptr, _) => Err(format!("{}:{}: ptr.addr needs a (ptr S), got {}", span.0, span.1, t)),
                     (AddrKind::Arr, _) => Err(format!("{}:{}: arr.addr needs an (arr T), got {}", span.0, span.1, t)),
                     (AddrKind::Enum, _) => Err(format!("{}:{}: enum.ord needs an enum value, got {}", span.0, span.1, t)),

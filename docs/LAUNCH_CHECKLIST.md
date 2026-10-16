@@ -120,15 +120,15 @@ more than usual.
   wasmtime; the compiler does not" is false (the CLI runs the native
   backend in wasmtime); the description says the toolchain is "written in
   AIPL itself" without the bootstrap caveat.
-- [x] **Never say "memory-safe"** (checked 2026-10-15): no document
-  claims it. README, FAQ, AIPL_SPEC.md 3, and ROADMAP.md say what holds
-  (bounds-checked arrays, typed and null-checked pointers, contracts,
-  checked frees, raw memory fenced inside `(unsafe ...)`, module
-  visibility) and state the gap in full: after `heap.destroy` or
-  `arena.reset` a kept pointer still works, reads and writes whatever
-  object the memory holds next, and can so forge a pointer to any address
-  in the program's memory (never outside it). The earlier wording, "reads
-  of freed memory", undersold it; GENERATIONS_PLAN.md now covers arenas.
+- [x] **"Memory-safe" only with its limits** (2026-10-16, after
+  generation checks; before that, 2026-10-15: never say it). README, FAQ,
+  AIPL_SPEC.md 3, and ROADMAP.md say "memory-safe outside `unsafe`" and
+  then the limits in full: no data-race checking (threads are unsafe);
+  after an arena reuses its memory a stale pointer is caught unless the
+  new data at its generation word happens to equal its old generation; a
+  fast arena catches it only once its memory is reused; `ptr.cast`
+  pointers are unchecked; the compilers and the standard library's unsafe
+  code are trusted.
 - [x] **"Self-hosted" always with the caveat** (checked 2026-10-15) that
   the first build takes the Rust toolchain, and so does writing an
   executable (`--exe`), until the stage-0 seed and a host-provided way to
@@ -146,12 +146,12 @@ more than usual.
   evidence: VM-against-wasmtime differential testing, byte-for-byte parity
   between two independent compilers, the compiler rebuilding itself,
   mutation-checked tests, the fuzzing run.
-- [x] **Benchmarks framed honestly** (done 2026-10-15): README, FAQ, and
-  docs/BENCHMARKS.md give native code as 1.2-14x C's time on seven of the
-  eight benchmarks (wasm under wasmtime 1.4-12x), name pidigits' GMP and
-  knucleotide's packed keys as why those two are slowest, and say
-  binarytrees (0.6x) is not like for like (an arena against malloc and
-  free). None leads with the benchmark AIPL wins.
+- [x] **Benchmarks framed honestly** (done 2026-10-15; numbers updated
+  2026-10-16 after generation checks): README, FAQ, and docs/BENCHMARKS.md
+  give native code as 1.2-17x C's time (wasm under wasmtime 1.0-16x), name
+  knucleotide's packed keys and pidigits' GMP as why those two are
+  slowest, say binarytrees is not like for like (an arena against malloc
+  and free), and give the generation checks' cost.
 - [x] **Re-run the documentation check** (2026-10-15; section 8 repeats it
   on the day of posting): every number in the README (sizes, test counts,
   timings) must be current. Corrected: test counts (340), `word_count`'s

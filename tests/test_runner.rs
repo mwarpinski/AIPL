@@ -190,7 +190,8 @@ fn assert_kind(path: &Path, target: &str) {
     match target {
         "native" => {
             assert!(!bytes.ends_with(b"AIPLEXE1"), "{}: a launcher bundle, not native code", path.display());
-            assert!(bytes.len() < 2_000_000, "{}: {} bytes is not a native AIPL executable", path.display(), bytes.len());
+            // native code is a few MB at most; a launcher bundle is about 18 MB
+            assert!(bytes.len() < 5_000_000, "{}: {} bytes is not a native AIPL executable", path.display(), bytes.len());
         }
         _ => assert!(bytes.ends_with(b"AIPLEXE1"), "{}: not a launcher bundle", path.display()),
     }

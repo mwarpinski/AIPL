@@ -37,7 +37,7 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 343 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 352 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
@@ -61,7 +61,7 @@ Expected AIPL suite output (29 groups):
 [PASS] std/map: generic hash map over cmp.Hash keys (9 tests)
 [PASS] std/buf: string builder (3 tests)
 [PASS] std/time: durations and the clock (7 tests)
-[PASS] std/arena: typed region allocator (5 tests)
+[PASS] std/arena: typed region allocator (7 tests)
 [PASS] std/heap: general-purpose allocator (8 tests)
 [PASS] std/alloc: any allocator as one value (7 tests)
 [PASS] std/bigint: arbitrary-precision integers (13 tests)

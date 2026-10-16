@@ -766,7 +766,9 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_point_ops", &[15, 27]), Ok(Value::Int(42)));
     // Point 8; Mixed 24 (bool 4 + pad 4 + i64 8 + i32 4 + pad 4); Floats 16 (f32 4 + pad 4 + f64 8)
     assert_eq!(differential(&module, &wasm, "test_sizeof", &[]), Ok(Value::Int(48)));
-    assert_eq!(differential(&module, &wasm, "test_sizeof_types", &[]), Ok(Value::Int(36)));
+    // i64 8 + i32 4 + (ptr Point) 8 + f64 8 + (arr i64) 8 + bool 4 + str 4: a pointer
+    // or array is 8 bytes, its address and generation (GENERATIONS_PLAN.md)
+    assert_eq!(differential(&module, &wasm, "test_sizeof_types", &[]), Ok(Value::Int(44)));
     // high word of n << 32 is n; tag read via get and via raw offset 16
     assert_eq!(differential(&module, &wasm, "test_mixed", &[3]), Ok(Value::Int(3 + 7 + 7)));
     assert_eq!(differential(&module, &wasm, "test_floats", &[]), Ok(Value::Int(1)));
@@ -774,19 +776,19 @@ fn p8_structs_and_arrays() {
     assert_eq!(differential(&module, &wasm, "test_points", &[]), Ok(Value::Int(33)));
     assert_eq!(differential(&module, &wasm, "test_bool_word", &[]), Ok(Value::Int(1)));
     assert_eq!(differential(&module, &wasm, "test_str_field", &[]), Ok(Value::Int(13)));
-    // count 3 + (array pointer to the next block: the 4 + 3 * 8 = 28-byte block
-    // rounded to 32, minus the 4-byte header) + element 5
-    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 28 + 5)));
+    // count 3 + (array to the next block: the 8 + 3 * 8 = 32-byte block minus
+    // its 8-byte prefix, the generation and the count) + element 5
+    assert_eq!(differential(&module, &wasm, "test_i64_array", &[3]), Ok(Value::Int(3 + 24 + 5)));
     // relative to the heap start H: alloc_four's block at H (4 bytes, rounded
-    // to 8), then the array block at H+8 (4 + 2 * 4 = 12 bytes, rounded to
-    // 16): array at H+12, cursor H+24, so array - cursor = -12
-    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-12)));
+    // to 8), then the array block at H+8 (8 + 2 * 4 = 16 bytes): array at
+    // H+16, cursor H+24, so array - cursor = -8
+    assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
     // The module's string literal occupies 1024..1032, so the heap starts at
     // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
     // the 4-byte block.
     assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
-    // result cell at 1032, array header at 1040, array at 1044
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1044)));
+    // result cell at 1032, the array's 8-byte prefix at 1040, array at 1048
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1048)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -879,9 +881,9 @@ fn allocation_grows_memory_identically() {
   (fn grow_past_cap [] -> i32 (unsafe) (mem.grow 40000)))
 "#;
     let (module, wasm) = compile_checked(src);
-    // 50 pages: 1 MiB start + ~1.3 MB of structs and arrays + 2 MB block
-    // (the results are held by value)
-    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 50)));
+    // 51 pages: 1 MiB start + ~1.4 MB of structs and arrays (each with its
+    // 8-byte generation prefix) + 2 MB block (the results are held by value)
+    assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(700 + 51)));
     assert!(differential(&module, &wasm, "too_big", &[]).is_err());
     assert_eq!(differential(&module, &wasm, "grow_past_cap", &[]), Ok(Value::Int(-1)));
 }
@@ -907,7 +909,8 @@ fn nested_allocations_do_not_overlap() {
   (fn arr_len_allocates [] -> i32 (unsafe)
     (let a:(arr i32) (arr.new i32 (call inner_size)))
     (arr.set i32 a 0 5)
-    (mem.load32 (- (arr.addr a) 12))))
+    ;; the array's block is [generation][length][elements], right after the 8 inner bytes
+    (mem.load32 (- (arr.addr a) 16))))
 "#;
     let (module, wasm) = compile_checked(src);
     assert_eq!(differential(&module, &wasm, "main", &[]), Ok(Value::Int(99)));

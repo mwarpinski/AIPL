@@ -270,6 +270,10 @@ pub fn expr_str(e: &Expr) -> String {
             Type::Array(_) => format!("(arr.null {})", elem(ty)),
             _ => format!("(ptr.null {})", struct_name(ty)),
         },
+        Expr::Cast { ty, addr, gen: Some(g), .. } => match ty {
+            Type::Array(_) => format!("(arr.make {} {} {})", elem(ty), expr_str(addr), expr_str(g)),
+            _ => format!("(ptr.make {} {} {})", struct_name(ty), expr_str(addr), expr_str(g)),
+        },
         Expr::Cast { ty, addr, .. } => match ty {
             Type::Array(_) => format!("(arr.cast {} {})", elem(ty), expr_str(addr)),
             Type::Enum(name) => format!("(enum.cast {} {})", name, expr_str(addr)),
@@ -312,6 +316,8 @@ pub fn expr_str(e: &Expr) -> String {
                 AddrKind::Ptr => "ptr.addr",
                 AddrKind::Arr => "arr.addr",
                 AddrKind::Enum => "enum.ord",
+                AddrKind::PtrGen => "ptr.gen",
+                AddrKind::ArrGen => "arr.gen",
             };
             format!("({} {})", head, expr_str(val))
         }
