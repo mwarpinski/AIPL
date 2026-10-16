@@ -3,7 +3,7 @@
 
 > **WebAssembly semantics are the specification.** Where this document is silent, a program means what its compiled wasm does. `i32` and `i64` are wrapping two's-complement, shifts mask their count, and traps are wasm's traps. The VM and the native backend must match wasmtime exactly, and any divergence is a bug in them: `tests/test_differential.rs` checks the VM, `tests/test_native.rs` the native executables.
 
-AIPL (AI Programming Language) is an unambiguous, statically typed S-expression systems language with runtime-checked contracts, designed for AI agents to generate. It compiles to WebAssembly (with WASI for I/O), and on Linux x86-64 to native executables translated from that wasm (section 6.6). It also runs in a reference VM, and has a self-hosted compiler written in AIPL itself (section 6.4).
+AIPL (AI Programming Language) is an unambiguous, statically typed S-expression systems language with runtime-checked contracts, designed for AI agents to generate. It compiles to WebAssembly (with WASI for I/O), and on Linux x86-64 to native executables translated from that wasm (section 6.6). It also runs in a reference VM, and has a self-hosted compiler written in AIPL itself (section 6.4), which compiles itself to the same bytes; building it the first time, and writing executables (section 6.5), still take the Rust toolchain.
 
 What AIPL optimises for is that a program has one obvious spelling and that mistakes are caught early with a `line:col` diagnostic, not brevity. With the standard library (section 12.6), a small I/O program is about twice the length of the Python equivalent (section 12.7), which is roughly the floor for a fully parenthesised, fully annotated syntax.
 
