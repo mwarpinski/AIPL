@@ -169,9 +169,14 @@ more than usual.
   S-expressions; why so verbose (`(call (vec.push i32) v x)`); why not
   just use Rust, Zig, or Python; why WebAssembly; is it really
   self-hosted; was it written by AI; is it memory-safe; how fast is it.
-- [ ] **Install in two commands.** `cargo install --git ...` at least;
-  better, prebuilt `aipl` and `aipl-run` binaries on a GitHub release for
-  Linux x86-64 (and macOS/Windows through the launcher).
+- [x] **Install in one command** (2026-10-15, `install.sh`): the rustup
+  style `curl ... | sh`, from the repository so it can be read first. It
+  builds from source into `~/.aipl` (git, Rust, and a C linker needed; it
+  installs none of them) and adds `~/.aipl/env` to the shell profiles;
+  `--uninstall` undoes it; CI runs shellcheck and a full install. Not
+  `cargo install --git`: its binaries point at a cargo checkout that cargo
+  deletes after about a month unused. Later, optionally: prebuilt `aipl`
+  and `aipl-run` on a GitHub release, so Rust is not needed.
 - [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.
