@@ -1717,12 +1717,13 @@ fn to_native_with(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
     let inst = linker.instantiate(&mut store, module).unwrap();
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").unwrap();
     let compile = inst
-        .get_typed_func::<(i32, i32), i32>(&mut store, if sandbox { "compile_sandboxed_at" } else { "compile_at" })
+        .get_typed_func::<(i32, i32), i64>(&mut store, if sandbox { "compile_sandboxed_at" } else { "compile_at" })
         .unwrap();
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let addr = alloc.call(&mut store, wasm.len() as i32 + 8).unwrap() as usize;
     mem.write(&mut store, addr, wasm).unwrap();
-    let out = compile.call(&mut store, (addr as i32, wasm.len() as i32)).unwrap() as usize;
+    // a (ptr Output): the address is the low half
+    let out = compile.call(&mut store, (addr as i32, wasm.len() as i32)).unwrap() as u32 as usize;
     output_of(mem.data(&store), out)
 }
 
@@ -1730,10 +1731,11 @@ fn to_native_with(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
 fn output_of(data: &[u8], out: usize) -> Result<Vec<u8>, String> {
     let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
     let bytes = |p: usize| data[word(p)..word(p) + word(p + 4)].to_vec();
+    // pointers are 8 bytes, the address first
     if word(out) != 0 {
-        Ok(bytes(word(out + 8)))
+        Ok(bytes(word(out + 16)))
     } else {
-        Err(String::from_utf8(bytes(word(out + 4))).unwrap())
+        Err(String::from_utf8(bytes(word(out + 8))).unwrap())
     }
 }
 
@@ -2199,10 +2201,11 @@ fn the_vm_builds_the_same_executable() {
     vm.load_module(native_module());
     let Value::Int(addr) = vm.invoke("host_alloc", vec![Value::Int(wasm.len() as i64 + 8)]).unwrap() else { panic!() };
     vm.write_bytes(addr as usize, &wasm);
-    let Value::Int(out) = vm.invoke("compile_at", vec![Value::Int(addr), Value::Int(wasm.len() as i64)]).unwrap() else { panic!() };
+    let Value::Int64(out) = vm.invoke("compile_at", vec![Value::Int(addr), Value::Int(wasm.len() as i64)]).unwrap() else { panic!() };
+    let out = out as u32 as i64;
     let word = |vm: &mut VM, at: usize| i32::from_le_bytes(vm.read_bytes(at, 4).try_into().unwrap()) as usize;
     assert_ne!(word(&mut vm, out as usize), 0, "the VM build failed");
-    let exe_ptr = word(&mut vm, out as usize + 8);
+    let exe_ptr = word(&mut vm, out as usize + 16);
     let (a, n) = (word(&mut vm, exe_ptr), word(&mut vm, exe_ptr + 4));
     assert_eq!(vm.read_bytes(a, n), to_native(&wasm).unwrap());
 }

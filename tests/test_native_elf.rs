@@ -24,7 +24,8 @@ fn runtime() -> aipl_core::ast::Module {
 fn hello_from_vm() -> Vec<u8> {
     let mut vm = VM::new();
     vm.load_module(runtime());
-    let Value::Int(p) = vm.invoke("hello_exe", vec![]).unwrap() else { panic!() };
+    let Value::Int64(p) = vm.invoke("hello_exe", vec![]).unwrap() else { panic!() };
+    let p = p as u32 as i64;
     let word = |vm: &mut VM, at: usize| i32::from_le_bytes(vm.read_bytes(at, 4).try_into().unwrap()) as usize;
     let (addr, len) = (word(&mut vm, p as usize), word(&mut vm, p as usize + 4));
     vm.read_bytes(addr, len)
@@ -39,8 +40,8 @@ fn hello_from_wasm() -> Vec<u8> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).unwrap();
-    let f = inst.get_typed_func::<(), i32>(&mut store, "hello_exe").unwrap();
-    let p = f.call(&mut store, ()).unwrap() as usize;
+    let f = inst.get_typed_func::<(), i64>(&mut store, "hello_exe").unwrap();
+    let p = f.call(&mut store, ()).unwrap() as u32 as usize;
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let data = mem.data(&store);
     let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;

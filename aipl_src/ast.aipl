@@ -35,8 +35,9 @@
             f64_convert_i64_s f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
             str_len str_ptr fs_opendir fs_readdir fs_stat] (pub))
 
-  ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32.
-  (enum AddrKind [ptr arr enum_] (pub))
+  ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32;
+  ;; ptr.gen, arr.gen: the generation a pointer carries.
+  (enum AddrKind [ptr arr enum_ ptr_gen arr_gen] (pub))
 
   ;; One step of a put's or arr.set's field path: field fname of struct
   ;; sname (src/ast.rs PutField.path, ArrSet.path).
@@ -77,6 +78,8 @@
                (arr_len at:i32 arr:Expr)
                (null at:i32 ty:Type)
                (cast at:i32 ty:Type addr:Expr)
+               ;; (ptr.make S addr gen) / (arr.make T addr gen): a checked pointer
+               (make_ptr at:i32 ty:Type addr:Expr gen:Expr)
                (make at:i32 uname:(ptr str.Bytes) variant:(ptr str.Bytes) args:(arr Expr))
                (record at:i32 sname:(ptr str.Bytes) args:(arr Expr))
                (with_ at:i32 sname:(ptr str.Bytes) fname:(ptr str.Bytes) val:Expr new:Expr)
@@ -118,7 +121,7 @@
       (Expr.match_result [at _ _ _ _ _] at) (Expr.block [at _] at) (Expr.unsafe_ [at _] at) (Expr.new_ [at _] at)
       (Expr.get_ [at _ _ _] at) (Expr.put_ [at _ _ _ _ _] at) (Expr.sizeof [at _] at)
       (Expr.arr_new [at _ _] at) (Expr.arr_get [at _ _ _] at) (Expr.arr_set [at _ _ _ _ _] at)
-      (Expr.arr_len [at _] at) (Expr.null [at _] at) (Expr.cast [at _ _] at)
+      (Expr.arr_len [at _] at) (Expr.null [at _] at) (Expr.cast [at _ _] at) (Expr.make_ptr [at _ _ _] at)
       (Expr.make [at _ _ _] at) (Expr.record [at _ _] at) (Expr.with_ [at _ _ _ _] at)
       (Expr.match_ [at _ _ _] at) (Expr.return_ [at _] at)
       (Expr.break_ [at] at) (Expr.continue_ [at] at) (Expr.ref [at _] at)

@@ -199,8 +199,8 @@ mod wasm_driver {
         };
         let p = put(&mut store, entry);
         let d = put(&mut store, dirs);
-        let compile: TypedFunc<(i32, i32, i32, i32), i32> = inst.get_typed_func(&mut store, "compile_file").unwrap();
-        let out = compile.call(&mut store, (p, entry.len() as i32, d, dirs.len() as i32)).expect("compile_file trapped") as usize;
+        let compile: TypedFunc<(i32, i32, i32, i32), i64> = inst.get_typed_func(&mut store, "compile_file").unwrap();
+        let out = compile.call(&mut store, (p, entry.len() as i32, d, dirs.len() as i32)).expect("compile_file trapped") as u32 as usize;
         let mut w = [0u8; 12];
         memory.read(&store, out, &mut w).unwrap();
         let word = |i: usize| i32::from_le_bytes(w[i * 4..i * 4 + 4].try_into().unwrap());

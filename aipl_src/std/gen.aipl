@@ -39,21 +39,22 @@
     (mem.store32 (+ base 4) n)
     (arr.make T (+ base 8) g))
 
-  ;; Ends p's object, which must still be live (freeing it twice is a use
-  ;; after free); returns its block, for the allocator to take back.
+  ;; Ends p's object, which must not be freed already (freeing it twice is
+  ;; a use after free); returns its block, for the allocator to take back.
   (fn (retire T) [p:(ptr T)] -> i32 (pub) (where (struct T)) (unsafe)
-    (req (call live (ptr.addr p) (ptr.gen p)))
+    (req (call not_freed_already (ptr.addr p) (ptr.gen p)))
     (mem.store32 (- (ptr.addr p) 8) DEAD)
     (- (ptr.addr p) 8))
 
   (fn (retire_array T) [a:(arr T)] -> i32 (pub) (unsafe)
-    (req (call live (arr.addr a) (arr.gen a)))
+    (req (call not_freed_already (arr.addr a) (arr.gen a)))
     (mem.store32 (- (arr.addr a) 8) DEAD)
     (- (arr.addr a) 8))
 
-  ;; Whether the object at addr still has generation g.
-  (fn live [addr:i32 g:i32] -> bool (unsafe)
-    (eq (mem.load32 (- addr 8)) g))
+  ;; Whether the object at addr still has generation g. An unchecked
+  ;; pointer (ptr.cast) cannot say: the allocator's own checks decide.
+  (fn not_freed_already [addr:i32 g:i32] -> bool (unsafe)
+    (or (eq g -1) (eq (mem.load32 (- addr 8)) g)))
 
   ;; Marks the object whose prefix starts at `base` freed (an arena reset).
   (fn kill [base:i32] -> void (pub) (unsafe)

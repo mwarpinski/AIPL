@@ -24,7 +24,7 @@ a self-hosted toolchain (resolver, generics, type checker, code generator)
 that matches the Rust one byte for byte and rebuilds itself; native Linux
 x86-64 executables from a backend written in AIPL, whose single-pass
 translator keeps values in registers and checks memory by guard pages
-(0.8-1.9x wasmtime's time on the benchmarks); module visibility; eight
+(0.8-2.0x wasmtime's time on the benchmarks); module visibility; eight
 benchmarks against C and Python.
 
 ## Next, in order
@@ -32,9 +32,13 @@ benchmarks against C and Python.
 1. **[docs/LAUNCH_CHECKLIST.md](docs/LAUNCH_CHECKLIST.md)**, before showing
    the project publicly: checking every claim, the first five minutes of a new user, and an
    experiment measuring how well AI agents write AIPL.
-2. **Generation checks against use after free**
-   (docs/design/GENERATIONS_PLAN.md). (Value structs, and unions, results,
-   and `Option` by value, were done on 2026-10-15: docs/design/VALUES_PLAN.md.)
+2. **A safe way to run code in parallel** (docs/design/GENERATIONS_PLAN.md,
+   "Data races"): fork and join over disjoint parts of an array, with
+   read-only inputs, so programs need no `unsafe` threads. (Generation
+   checks against use after free were done on 2026-10-16; value structs,
+   and unions, results, and `Option` by value, on 2026-10-15.) Also: a
+   pre-checked copy of small functions called from versioned loops, the
+   remaining cost of generation checks on knucleotide.
 3. **The standard library:** networking, once WASI has listening sockets;
    starting processes, once WASI can (preview 1 cannot); a faster
    small-block path in `std/heap`.
@@ -84,7 +88,7 @@ versioning (once packages exist), `inv` contracts.
 ### Memory
 
 - **The built-ins never free.** `mem.alloc`, `new`, `arr.new`, `make`, and result cells come from a bump cursor that only grows. Freeable memory comes from the standard library (docs/design/HEAP_PLAN.md): `std/heap` frees single objects (checking double frees, wrong sizes or types, and writes after free), `std/arena` frees a region at once, and `std/alloc` makes either one `Allocator`, which the collections take. A heap's memory is reused but never returned to the system. Freeing object by object costs about 4x C's malloc/free on binarytrees.
-- **Not memory-safe yet.** Bounds checks, null checks, contracts, and the reserved-block guard run in every backend, and the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`, threads, atomics) are fenced inside `(unsafe ...)` (AIPL_SPEC.md 3). Module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. One gap remains: use after free. A pointer kept after `heap.destroy` or `arena.reset` still works; while the memory is free it holds a junk pattern, but once it holds another object the old pointer reads and writes that object, which can forge a pointer to any address in the program's memory (never outside it). Generation checks are planned in docs/design/GENERATIONS_PLAN.md.
+- **Memory-safe outside `unsafe`, with stated limits** (AIPL_SPEC.md 3). Bounds checks, null checks, generation checks (use after free, since 2026-10-16), contracts, and the reserved-block guard run in every backend; the unchecked operations (`mem.*`, `ptr.cast`/`arr.cast`/`ptr.make`/`arr.make`, threads, atomics) are fenced inside `(unsafe ...)`; module visibility (AIPL_SPEC.md 11.1) keeps safe code from forging the standard library's descriptors. The limits: no data-race checking (threads are unsafe); after an arena reuses its memory, a stale pointer is caught unless the new data at its generation word happens to equal its old 32-bit generation; a fast arena catches a stale pointer only once its memory is reused; `ptr.cast` pointers are unchecked.
 - **Reads from the reserved block 0–1023 are not checked.** This is deliberate: the block holds zeros and runtime cells.
 - **Memory caps at 32768 pages (2 GiB)** in every backend (raised from 64 MiB on 2026-10-05; above 2 GiB addresses would be negative `i32`s). Allocation grows memory up to the cap automatically; a program that needs more fails at the first access past the end.
 
@@ -103,7 +107,7 @@ Threads and atomics work in both backends (AIPL_SPEC.md 4.D). Gaps: compiled thr
 
 ### Self-hosted compiler capacities
 
-`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 2048 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function (AIPL_SPEC.md 6.4). String literals have the 1 MiB limit both backends share. The toolchain itself is about 1,360 functions, generic instances included (2026-10-15). The Rust backend has none of these limits.
+`codegen.aipl` uses fixed-size tables (typed arrays in its `Cg`) and reports a compile error (never a miscompile) past them: 8192 functions, 16 parameters, 1024 locals per function, 255 structs of up to 64 fields, 31 distinct `call_ref` signatures, 255 nested blocks per function (AIPL_SPEC.md 6.4). String literals have the 1 MiB limit both backends share. The aipl command (the compiler and the native backend) is about 2,100 functions, generic instances included (2026-10-16). The Rust backend has none of these limits.
 
 ### Before "many modules from many authors" is safe
 

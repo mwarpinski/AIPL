@@ -822,6 +822,31 @@
              (call fail c b))
            (block))
        cty)
+      (ast.Expr.make_ptr [_ cty addr g]
+       (match cty
+         (ast.Type.ptr [_] (call require_unsafe c at "ptr.make"))
+         (else (call require_unsafe c at "arr.make")))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let gt:ast.Type (call infer c g env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call is_i32 gt))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "the generation in ptr.make/arr.make must be i32, got ") (call ty b gt)
+             (call fail c b)
+             (return (call void_t)))
+           (block))
+       (call validate_or_fail c cty at)
+       (if (get c C.failed) (return (call void_t)) (block))
+       (let t:ast.Type (call infer c addr env))
+       (if (get c C.failed) (return (call void_t)) (block))
+       (if (not (call is_i32 t))
+           (block
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "cast needs an i32 address, got ") (call ty b t)
+             (call fail c b))
+           (block))
+       cty)
       (ast.Expr.ref [_ name]
        (if (call (map.has (ptr str.Bytes) (ptr Sig)) (get c C.fns) name)
            (block
@@ -851,7 +876,9 @@
             (match kind
               (ast.AddrKind.ptr (eq (call tag t) 7))
               (ast.AddrKind.arr (eq (call tag t) 10))
-              (ast.AddrKind.enum_ (eq (call tag t) 12))))
+              (ast.AddrKind.enum_ (eq (call tag t) 12))
+              (ast.AddrKind.ptr_gen (eq (call tag t) 7))
+              (ast.AddrKind.arr_gen (eq (call tag t) 10))))
        (if ok
            (call i32_t)
            (block
@@ -859,7 +886,9 @@
              (call s b (match kind
                          (ast.AddrKind.ptr "ptr.addr needs a (ptr S), got ")
                          (ast.AddrKind.arr "arr.addr needs an (arr T), got ")
-                         (ast.AddrKind.enum_ "enum.ord needs an enum value, got ")))
+                         (ast.AddrKind.enum_ "enum.ord needs an enum value, got ")
+                         (ast.AddrKind.ptr_gen "ptr.gen needs a (ptr S), got ")
+                         (ast.AddrKind.arr_gen "arr.gen needs an (arr T), got ")))
              (call ty b t)
              (call fail c b)
              (call void_t))))))

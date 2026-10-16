@@ -1,8 +1,11 @@
 # Generation checks: stopping use after free
 
-Status: decided (2026-10-16) and prototyped in the Rust toolchain on branch
-`features/generations` (see "Prototype" below for what it measured). Not
-merged: the VM and the AIPL toolchain do not have it yet.
+Status: done (2026-10-16) in every backend and both toolchains: the VM,
+`src/compiler/wasm.rs`, `aipl_src/codegen.aipl` (byte for byte), the
+native backend (which needed nothing: it translates the wasm), and the
+standard library (`std/gen`). tests/test_generations.rs checks it in all
+three backends. Still open: data races (below) and the pre-checked small
+functions under "What remains".
 
 ## The gap
 

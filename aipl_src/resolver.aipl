@@ -218,7 +218,7 @@
        (cond
          ((or (call eq_lit h "fn") (or (call eq_lit h "call") (call eq_lit h "ref"))) 1)
          ((or (call eq_lit h "struct") (or (call eq_lit h "new") (or (call eq_lit h "sizeof")
-            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (call eq_lit h "ptr.cast")))))) 2)
+            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (or (call eq_lit h "ptr.cast") (call eq_lit h "ptr.make"))))))) 2)
          (else 0)))
       ((eq i 2) (if (or (call eq_lit h "get") (or (call eq_lit h "put") (call eq_lit h "with"))) 3 0))
       (else 0)))

@@ -33,6 +33,8 @@ fn resolve_on_this_thread(path: &str) -> Result<String, String> {
     vm.load_module(module);
     let int = |v: Value| match v {
         Value::Int(i) => Ok(i as i32),
+        // a pointer: its address, the low half (GENERATIONS_PLAN.md)
+        Value::Int64(p) => Ok(p as i32),
         other => Err(format!("expected Int, got {other:?}")),
     };
     let put = |vm: &mut VM, s: &str| -> Result<i32, String> {
@@ -73,6 +75,8 @@ fn compile_on_this_thread(path: &str) -> Result<Vec<u8>, String> {
     vm.load_module(module);
     let int = |v: Value| match v {
         Value::Int(i) => Ok(i as i32),
+        // a pointer: its address, the low half (GENERATIONS_PLAN.md)
+        Value::Int64(p) => Ok(p as i32),
         other => Err(format!("expected Int, got {other:?}")),
     };
     let put = |vm: &mut VM, s: &str| -> Result<i32, String> {
