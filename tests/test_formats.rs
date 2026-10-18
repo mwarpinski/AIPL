@@ -3,7 +3,9 @@
 //! self-hosted toolchain compiles it to the Rust toolchain's bytes; every
 //! error has the same message in both toolchains; and std/show writes what
 //! Python writes for 1,455 generated values and formats
-//! (tests/aipl/show, from tools/show_vectors.py).
+//! (tests/aipl/show, from tools/show_vectors.py); and every other value but
+//! void and a function reference prints through a printer generated for its
+//! type (tests/aipl/formats/values.aipl).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -83,12 +85,37 @@ fn std_show_writes_what_python_writes() {
     }
 }
 
+/// Structs behind pointers, value structs, arrays, unions, results, and
+/// generic instances print through the printers formatting generates
+/// (tests/aipl/formats/values.aipl): alike in the VM, under aipl-run, and
+/// natively, and compiled to the same bytes by both toolchains.
+#[test]
+fn every_value_prints_through_a_generated_printer() {
+    let src = root().join("tests/aipl/formats/values.aipl");
+    let want = std::fs::read_to_string(root().join("tests/aipl/formats/values.expected")).unwrap();
+    let runs = run_all(&src, "values");
+    for (o, backend) in runs.iter().zip(["VM", "aipl-run", "native"]) {
+        assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        // an address is the same in every backend but changes with the standard library
+        let got = stdout(o);
+        let masked: String = got
+            .split("@ ")
+            .enumerate()
+            .map(|(k, part)| if k == 0 { part.to_string() } else { format!("@ ADDR{}", part.trim_start_matches(|c: char| c.is_ascii_digit())) })
+            .collect();
+        assert_eq!(masked, want, "{backend}");
+        assert_eq!(got, stdout(&runs[0]), "{backend}: the addresses differ from the VM's");
+    }
+    same_bytes(&src);
+}
+
 /// Every mistake in a formatting form, with its message, the same from the
 /// Rust and the self-hosted toolchain.
 #[test]
 fn every_formatting_error_has_one_message_in_both_toolchains() {
     let cases: &[(&str, &str)] = &[
-        ("(println \"{p}\")", "format cannot print (ptr P): it prints numbers, bool, str, (ptr str.Bytes), and enums"),
+        ("(println \"{(ref main)}\")", "format cannot print (fn [] -> i32): it prints every value but void and function references"),
+        ("(println \"{p:>5}\")", "formats are for numbers, bool, str, (ptr str.Bytes), and enums, not (ptr P)"),
         ("(println \"{n:q}\")", "bad format 'q': a format is [[fill]align][+][0][width][.decimals][x|X|b], e.g. {n:>8} or {x:.2}"),
         ("(println \"{name:.2}\")", "decimals (.N) are for f32 and f64, not str"),
         ("(println \"{x:x}\")", "x, X, and b are for i32 and i64, not f64"),

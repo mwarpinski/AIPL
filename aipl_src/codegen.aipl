@@ -1022,6 +1022,11 @@
     (if (and (neq ls (ptr.null Lines)) (call traps_or_calls code)) (call mark ls (get o Out.pos)) (block))
     (call put_byte o code))
 
+  ;; Whether fi is a printer formatting generates: its name starts with
+  ;; show.debug. (formats.rs debug_functions).
+  (fn is_debug_fn [cg:(ptr Cg) fi:(ptr FnInfo)] -> bool
+    (unsafe (call str.starts_with (call str.bytes (+ (get cg Cg.src) (get fi FnInfo.name_pos)) (get fi FnInfo.name_len)) (call str.from_str "show.debug."))))
+
   (fn mark [ls:(ptr Lines) at:i32] -> void
     (let stack:(ptr (vec.Vec i32)) (get ls Lines.at))
     (let n:i32 (call (vec.len i32) stack))
@@ -5577,13 +5582,18 @@
     (let fn_lines:(ptr (vec.Vec (ptr FnLines))) (call (vec.make (ptr FnLines)) (call alloc.default) (+ nfns 1)))
     (loop f 0 (- nfns 1) 1
       (let fc:(ptr Out) (call out_at fcode_scratch))
-      (put fc Out.lines (call new_lines (get cg Cg.places)))
+      ;; a printer formatting generates (show.debug.*) has no positions (wasm.rs Body.quiet)
+      (let quiet:bool (call is_debug_fn cg (call func_entry_ptr cg f)))
+      (put fc Out.lines (if quiet (ptr.null Lines) (call new_lines (get cg Cg.places))))
       (call at_push fc (get (get (call func_entry_ptr cg f) FnInfo.node) compiler.Node.pos))
       (call emit_function cg (call func_entry_ptr cg f) fc)
-      (let fl:(ptr FnLines) (new FnLines))
-      (put fl FnLines.index (+ imports f))
-      (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
-      (if (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl) (block))
+      (if (not quiet)
+          (block
+            (let fl:(ptr FnLines) (new FnLines))
+            (put fl FnLines.index (+ imports f))
+            (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
+            (if (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl) (block)))
+          (block))
       (if (gt (get fc Out.pos) cap) (call set_compile_error CgErr.output_full) 0)
       (call emit_sized sec fc))
     (if threaded

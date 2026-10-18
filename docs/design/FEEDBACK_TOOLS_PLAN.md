@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1, F2, and F3 built 2026-10-18; F3b next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1, F2, F3, and F3b built 2026-10-18; F4 next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -140,6 +140,16 @@ rows.aipl:12:16: (call distance p q) = 5
   their fields, `Row{n: 2, name: "a"}`, through a printer generated per
   type, for `dbg`, `eval -e`, and `{p}` in formatting. One level deep, so a
   cycle cannot loop.
+
+  As built (2026-10-18): both toolchains write the printers as source
+  text from the same template (formats.rs debug_functions,
+  aipl_src/fmtdebug.aipl), for each type printed and each value type
+  inside one, sorted by name, so the order the lowering meets them in
+  cannot differ; Rust parses the text, the AIPL toolchain appends it to the
+  program, and both codegens give these functions no line-table positions
+  (as `_start`). Arrays print too, up to 16 elements; unions as
+  `variant{field: value}`, results as `ok(v)` / `err(e)`. Every field
+  shows, private ones too. A value printed this way takes no format.
 
 ## F4. A test form: experiments that stay
 

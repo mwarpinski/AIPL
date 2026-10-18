@@ -48,6 +48,13 @@
   ;; The end of (format_to b "..."): the text stays in b.
   (fn end_to [b:(ptr buf.Buf)] -> void (pub) (block))
 
+  ;; A pointer or array inside a value being shown (formats.rs
+  ;; debug_functions): null, or its type and address.
+  (fn debug_addr [b:(ptr buf.Buf) label:str addr:i32] -> (ptr buf.Buf) (pub)
+    (if (eq addr 0)
+        (call lit b "null")
+        (block (call lit b label) (call lit b " @ ") (call put_i32 b addr 0))))
+
   ;; Writes b to standard output and frees it.
   (fn print [b:(ptr buf.Buf)] -> void (pub)
     (let _n:i32 (call buf.write b 1))

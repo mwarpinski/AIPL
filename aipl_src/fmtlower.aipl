@@ -23,6 +23,7 @@
   (import checker)
   (import fmtsplit)
   (import printer)
+  (import fmtdebug)
 
   ;; fn: the function the tokens being printed are in; tries: the early
   ;; returns lowered in it so far (each names its own variables).
@@ -314,7 +315,10 @@
           (block
             (let f:(ptr checker.Fmt) (call fmt_at l (call pos l (+ a 2))))
             (call gen l at "(call ")
-            (call buf.push_str (get l L.out) (call put_fn (get f checker.Fmt.ty)))
+            ;; a struct, array, union, or result: its generated printer
+            (if (call fmtdebug.printable (get f checker.Fmt.ty))
+                (call buf.push_str (get l L.out) (call put_fn (get f checker.Fmt.ty)))
+                (call buf.push_bytes (get l L.out) (call fmtdebug.debug_name (get f checker.Fmt.ty))))
             (call buf.push_byte (get l L.out) 32))))
     ;; the start: the buffer as written, or a new one
     (cond
@@ -351,11 +355,14 @@
                     (call buf.push_str (get l L.out) "\")"))
                   (call buf.push_byte (get l L.out) 41))
                 (block))
-            ;; the spec word, from the piece's format string
-            (let st:(ptr compiler.Token) (call tok l ve))
-            (let sp:(ptr fmtsplit.Spec) (unsafe (call fmtsplit.spec (call str.bytes (+ (get l L.src) (get st compiler.Token.a)) (get st compiler.Token.b)))))
-            (call gen l at " ")
-            (call buf.push_int (get l L.out) (call fmtsplit.word sp))))
+            ;; the spec word, from the piece's format string (a printer takes none)
+            (if (call fmtdebug.printable (get f checker.Fmt.ty))
+                (block
+                  (let st:(ptr compiler.Token) (call tok l ve))
+                  (let sp:(ptr fmtsplit.Spec) (unsafe (call fmtsplit.spec (call str.bytes (+ (get l L.src) (get st compiler.Token.a)) (get st compiler.Token.b)))))
+                  (call gen l at " ")
+                  (call buf.push_int (get l L.out) (call fmtsplit.word sp)))
+                (block))))
       (call buf.push_byte (get l L.out) 41))
     (call buf.push_byte (get l L.out) 41))
 
@@ -399,27 +406,22 @@
     (call buf.push_byte out 32)
     (call emit_elem l v)
     (call gen l at ") (call show.eprintln ")
-    ;; how the value is written: 0 by put_fn, 1 an enum's name, 2 its
-    ;; address, 3 not at all
+    ;; how the value is written: 0 by put_fn, 1 an enum's name, 2 by its
+    ;; generated printer, 3 not at all (a function reference)
     (let how:i32 (match t
       (ast.Type.enum_ [_] 1)
-      (ast.Type.ptr [inner] (match inner (ast.Type.struct_ [s] (if (call str.is s "str.Bytes") 0 2)) (else 2)))
-      (ast.Type.arr [_] 2)
-      (else (if (call checker.is_printable t) 0 3))))
+      (else (cond ((call fmtdebug.printable t) 0) ((call fmtdebug.prints t) 2) (else 3)))))
     (cond
       ((eq how 0) (call gen l at "(call ") (call buf.push_str out (call put_fn t)) (call buf.push_byte out 32))
       ((eq how 1) (call gen l at "(call show.put_str "))
-      ((eq how 2) (call gen l at "(call show.put_i32 "))
+      ((eq how 2) (call gen l at "(call ") (call buf.push_bytes out (call fmtdebug.debug_name t)) (call buf.push_byte out 32))
       (else (block)))
     ;; (call show.lit (call show.start) "LABEL = ...")
     (call gen l at "(call show.lit (call show.start) \"")
     (let lt:(ptr compiler.Token) (call tok l lab))
     (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
     (call buf.push_str out " = ")
-    (cond
-      ((eq how 2) (call source_type out t) (call buf.push_str out " @ "))
-      ((eq how 3) (call buf.push_str out "<value> : ") (call source_type out t))
-      (else (block)))
+    (if (eq how 3) (block (call buf.push_str out "<value> : ") (call fmtdebug.source_type out t)) (block))
     (call buf.push_str out "\")")
     (cond
       ((eq how 0) (call buf.push_byte out 32) (call buf.push_bytes out var) (call buf.push_str out " 0)"))
@@ -438,62 +440,13 @@
          (call buf.push_bytes out mn)
          (call buf.push_str out "\")"))
        (call buf.push_str out ") 0)"))
-      ((eq how 2)
-       (call buf.push_str out (match t (ast.Type.arr [_] " (unsafe (arr.addr ") (else " (unsafe (ptr.addr ")))
-       (call buf.push_bytes out var)
-       (call buf.push_str out ")) 0)"))
+      ((eq how 2) (call buf.push_byte out 32) (call buf.push_bytes out var) (call buf.push_byte out 41))
       (else (block)))
     (call buf.push_str out ") ")
     (call buf.push_bytes out var)
     (call buf.push_byte out 41)
     (put l L.dbgs n))
 
-  ;; t as source writes it, instances of generic types (option.Option<i32>
-  ;; in the flat program) as (option.Option i32) (formats.rs source_type).
-  (fn source_type [out:(ptr buf.Buf) t:ast.Type] -> void
-    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
-    (call printer.print_type b t)
-    (call convert out (call buf.bytes b)))
-
-  (fn convert [out:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
-    (let n:i32 (get s str.Bytes.len))
-    (let open:i32 0)
-    (while (and (lt open n) (neq (call str.byte_at s open) 60)) (set! open (+ open 1)))
-    (if (eq open n) (block (call buf.push_bytes out s) (return)) (block))
-    ;; the base: after its last space or bracket, the text before it kept
-    (let split:i32 open)
-    (while (and (gt split 0) (not (call opens_base (call str.byte_at s (- split 1))))) (set! split (- split 1)))
-    (let depth:i32 0)
-    (let from:i32 (+ open 1))
-    (let args:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
-    (let k:i32 open)
-    (while (lt k n)
-      (let c:i32 (call str.byte_at s k))
-      (cond
-        ((or (eq c 60) (or (eq c 40) (eq c 91))) (set! depth (+ depth 1)))
-        ((or (eq c 62) (or (eq c 41) (eq c 93)))
-         (set! depth (- depth 1))
-         (if (eq depth 0)
-             (block
-               (call buf.push_byte args 32)
-               (call convert args (call str.slice s from (- k from)))
-               (call buf.push_bytes out (call str.slice s 0 split))
-               (call buf.push_byte out 40)
-               (call buf.push_bytes out (call str.slice s split (- open split)))
-               (call buf.push_bytes out (call buf.bytes args))
-               (call buf.push_byte out 41)
-               (call convert out (call str.slice s (+ k 1) (- (- n k) 1)))
-               (return))
-             (block)))
-        ((and (eq c 44) (eq depth 1))
-         (call buf.push_byte args 32)
-         (call convert args (call str.slice s from (- k from)))
-         (set! from (+ k 1)))
-        (else (block)))
-      (set! k (+ k 1)))
-    (call buf.push_bytes out s))
-
-  (fn opens_base [c:i32] -> bool (or (eq c 32) (or (eq c 40) (eq c 91))))
 
   ;; The current function's return type: the element after its ->.
   (fn ret_elem [l:(ptr L)] -> i32
@@ -586,5 +539,18 @@
       (if (eq (call kind l i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
       (if (and (eq square 0) (call lowers l i)) (set! any true) (block)))
     (if (not any) (return false) (block))
-    (call emit l 0 (get l L.n) 0 len)
+    ;; the printers formatting generates (fmtdebug.aipl), before the
+    ;; module's closing paren
+    (let printers:(ptr buf.Buf) (ptr.null buf.Buf))
+    (loop k 0 (- (call (vec.len (ptr checker.Fmt)) fmts) 1) 1
+      (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fmts k))
+      (if (eq (get f checker.Fmt.k) -3) (set! printers (get f checker.Fmt.text)) (block)))
+    (if (eq printers (ptr.null buf.Buf))
+        (call emit l 0 (get l L.n) 0 len)
+        (block
+          (let close:i32 (- (get l L.n) 1))
+          (call emit l 0 close 0 (call pos l close))
+          (call buf.push_byte out 10)
+          (call buf.push_bytes out (call buf.bytes printers))
+          (call emit l close (get l L.n) (call pos l close) len)))
     true)))

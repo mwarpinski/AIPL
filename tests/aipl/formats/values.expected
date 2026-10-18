@@ -1,0 +1,11 @@
+Row{n: 2, name: "a", q: (ptr Q) @ ADDR, xs: (arr i32) @ ADDR, at: V{a: 1, b: 2.5}, sh: dark, label: "lab", none: null}
+null
+[0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ... 4 more]
+["x", "y"] []
+boxed{w: 2, h: 3} empty circle{r: 0.5}
+node{left: leaf{n: 1}, right: node{left: leaf{n: 2}, right: leaf{n: 3}}}
+some{value: "x"} none
+ok(4) err("bad")
+Pair{left: V{a: 1, b: 0.5}, right: V{a: 2, b: 1.5}}
+Small{tiny: 255, neg: -3, f: <fn>}
+box (Box i32){item: 9} done

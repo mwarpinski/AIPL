@@ -48,7 +48,8 @@ fn values_print_with_their_types_in_every_backend() {
         (None, "(call (vec.len i32) (call (vec.make i32) (call alloc.default) 4))", "0 : i32\n"),
         // void: the program's own output, no value
         (None, "(println \"n = {(+ 1 2)}\")", "n = 3\n"),
-        (None, "(make (option.Option i32) some 5)", "<value> : (option.Option i32)\n"),
+        (None, "(make (option.Option i32) some 5)", "some{value: 5} : (option.Option i32)\n"),
+        (Some(ROWS), "(call make_row 2)", "Row{n: 2} : (ptr Row)\n"),
         // --with: the file's functions, private ones too; its main does not run
         (Some(ROWS), "(call parse_row \"a,b,c\")", "3 : i32\n"),
         (Some(ROWS), "(let r:(ptr Row) (call make_row 2))\n(get r Row.n)", "2 : i32\n"),
@@ -64,10 +65,10 @@ fn values_print_with_their_types_in_every_backend() {
 }
 
 #[test]
-fn a_pointer_prints_its_type_and_address() {
+fn a_struct_prints_its_fields_and_a_pointer_inside_it_its_address() {
     let o = eval("", None, "(call (vec.make i32) (call alloc.default) 4)");
     let out = stdout(&o);
-    assert!(out.starts_with("(ptr (vec.Vec i32)) @ ") && out.trim_end().rsplit(' ').next().unwrap().parse::<u32>().is_ok(), "{out}");
+    assert!(out.starts_with("(vec.Vec i32){items: (arr i32) @ ") && out.ends_with("} : (ptr (vec.Vec i32))\n"), "{out}");
 }
 
 #[test]

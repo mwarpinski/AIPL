@@ -440,6 +440,9 @@ impl Spec {
 
     /// Why this format does not fit a value of type `t`, if it does not.
     pub fn misfit(&self, t: &Type) -> Option<String> {
+        if !printable(t) && *self != Spec::default() {
+            return Some(format!("formats are for numbers, bool, str, (ptr str.Bytes), and enums, not {t}"));
+        }
         let float = matches!(t, Type::F32 | Type::F64);
         let int = matches!(t, Type::I32 | Type::I64);
         if self.decimals.is_some() && !float {
@@ -455,7 +458,15 @@ impl Spec {
     }
 }
 
-/// Whether the formatting forms print a value of type `t`.
+/// Whether the formatting forms print a value of type `t` at all: every
+/// type but void and function references (a struct, array, union, or
+/// result through a printer generated for its type, debug_functions).
+pub fn prints(t: &Type) -> bool {
+    !matches!(t, Type::Void | Type::Fn(..))
+}
+
+/// Whether the formatting forms print a value of type `t` through std/show
+/// alone (and so take a format).
 pub fn printable(t: &Type) -> bool {
     matches!(t, Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::Enum(_))
         || matches!(t, Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()))
@@ -473,7 +484,13 @@ fn lowered(op: &OpCode) -> bool {
 
 /// `(call show.put_T chain value spec)`: the call that writes `value`, of
 /// type `t`, onto the buffer `chain` gives.
-fn put(chain: Expr, value: Expr, t: &Type, spec: i64, enums: &HashMap<String, Vec<String>>, span: (u32, u32)) -> Expr {
+fn put(chain: Expr, value: Expr, t: &Type, spec: i64, lw: &Lower, span: (u32, u32)) -> Expr {
+    let enums = lw.enums;
+    if !printable(t) {
+        // a struct, array, union, or result: its generated printer
+        lw.roots.borrow_mut().push(t.clone());
+        return Expr::Call { func: debug_name(t), args: vec![chain, value], span };
+    }
     let (func, value) = match t {
         Type::I32 => ("show.put_i32", value),
         Type::I64 => ("show.put_i64", value),
@@ -501,6 +518,8 @@ fn put(chain: Expr, value: Expr, t: &Type, spec: i64, enums: &HashMap<String, Ve
 /// the value. A pointer or array shows its type and address; a value
 /// formatting cannot print, its type. N counts the function's dbgs, inner
 /// ones first (aipl_src/fmtlower.aipl lower_dbg writes the same).
+/// A struct, array, union, or result shows through its generated printer
+/// (debug_functions); a function reference as `<value> : T`.
 fn lower_dbg(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
     lw.dbgs += 1;
     let v = format!("_dbg_{}", lw.dbgs);
@@ -510,14 +529,10 @@ fn lower_dbg(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
     let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
     let var = || Expr::Var(v.clone(), span);
     let start = |text: String| call("show.lit", vec![call("show.start", vec![]), Expr::Lit(Literal::Str(text), span)]);
-    let chain = match &t {
-        p if printable(p) => put(start(format!("{label} = ")), var(), p, 0, lw.enums, span),
-        Type::Ptr(_) | Type::Array(_) => {
-            let kind = if matches!(t, Type::Ptr(_)) { crate::ast::AddrKind::Ptr } else { crate::ast::AddrKind::Arr };
-            let addr = Expr::Unsafe(vec![Expr::Addr { val: Box::new(var()), kind, span }], span);
-            put(start(format!("{label} = {} @ ", source_type(&t))), addr, &Type::I32, 0, lw.enums, span)
-        }
-        _ => start(format!("{label} = <value> : {}", source_type(&t))),
+    let chain = if prints(&t) {
+        put(start(format!("{label} = ")), var(), &t, 0, lw, span)
+    } else {
+        start(format!("{label} = <value> : {}", source_type(&t)))
     };
     Expr::Block(vec![Expr::Let { name: v.clone(), ty: t, val: Box::new(value), span }, call("show.eprintln", vec![chain]), var()], span)
 }
@@ -564,6 +579,8 @@ struct Lower<'a> {
     ret: Type,
     tries: u32,
     dbgs: u32,
+    /// the types printed through a generated printer (debug_functions)
+    roots: &'a std::cell::RefCell<Vec<Type>>,
 }
 
 /// Step 3: every formatting form in `module` replaced by `std/show` calls,
@@ -585,8 +602,9 @@ pub fn lower(module: &mut Module) {
     let Some(types) = crate::checker::TypeChecker::format_types(module) else { return };
     let enums: HashMap<String, Vec<String>> =
         module.enums.iter().map(|e| (e.name.clone(), e.members.iter().map(|(m, _)| m.clone()).collect())).collect();
+    let roots = std::cell::RefCell::new(Vec::new());
     for f in &mut module.functions {
-        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0, dbgs: 0 };
+        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0, dbgs: 0, roots: &roots };
         for e in &mut f.body {
             match e {
                 // a defer's statements, lowered where they are
@@ -601,6 +619,166 @@ pub fn lower(module: &mut Module) {
             }
         }
     }
+    let roots = roots.into_inner();
+    if !roots.is_empty() {
+        let text = debug_functions(&roots, module);
+        let unions = module.unions.iter().map(|u| u.name.clone()).collect();
+        let values = module.structs.iter().filter(|s| s.is_value).map(|s| s.name.clone()).collect();
+        // a failure here is this file's bug; the checker then names the missing printer
+        if let Ok(m) = Parser::tokenize(&format!("(module show_debug\n{text})")).and_then(|t| Parser::parse_tokens_with(t, unions, values)) {
+            module.functions.extend(m.functions);
+        }
+    }
+}
+
+/// A generated printer's name: `show.debug.` and its type as the flat
+/// program writes it, brackets and spaces as `<`, `>`, and `,`
+/// (`show.debug.<ptr,Row>`).
+pub fn debug_name(t: &Type) -> String {
+    format!("show.debug.{}", crate::printer::type_str(t).replace('(', "<").replace(')', ">").replace(' ', ","))
+}
+
+/// The printers (F3b, docs/design/FEEDBACK_TOOLS_PLAN.md) for the types in
+/// `roots` and for the value structs, unions, and results inside them, as
+/// source text, sorted by name; aipl_src/fmtdebug.aipl writes the same text.
+/// Each `(fn NAME [b:(ptr buf.Buf) v:T] -> (ptr buf.Buf) ...)` appends v to b:
+/// a struct behind a pointer as `Row{n: 2, name: "a"}` (or `null`), a pointer
+/// or array inside it as its type and address, so a cycle cannot loop; a
+/// value struct the same; a union as `variant{field: value}` or `variant`; a
+/// result as `ok(v)` or `err(e)`; an array as `[1, 2, 3]`, up to 16 elements.
+/// Text inside a value is quoted.
+pub fn debug_functions(roots: &[Type], module: &Module) -> String {
+    let mut need = std::collections::BTreeMap::new();
+    for t in roots {
+        need_printer(t, module, &mut need);
+    }
+    let mut out = String::new();
+    for (name, t) in &need {
+        out.push_str(&printer_text(name, t, module));
+        out.push('\n');
+    }
+    out
+}
+
+fn need_printer(t: &Type, m: &Module, need: &mut std::collections::BTreeMap<String, Type>) {
+    let name = debug_name(t);
+    if need.contains_key(&name) || printable(t) || !prints(t) {
+        return;
+    }
+    need.insert(name, t.clone());
+    let fields = |n: &str| m.structs.iter().find(|s| s.name == n).map(|s| s.fields.iter().map(|f| f.ty.clone()).collect::<Vec<_>>()).unwrap_or_default();
+    let inside: Vec<Type> = match t {
+        Type::Ptr(s) => match &**s {
+            Type::Struct(n) => fields(n),
+            _ => vec![],
+        },
+        Type::Struct(n) => fields(n),
+        Type::Array(e) => vec![(**e).clone()],
+        Type::Union(u) => m.unions.iter().find(|x| x.name == *u).into_iter().flat_map(|x| x.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))).collect(),
+        Type::ResultType(a, b) => vec![(**a).clone(), (**b).clone()],
+        _ => vec![],
+    };
+    for f in inside {
+        // a pointer or array inside shows its address: only values recurse
+        if matches!(f, Type::Struct(_) | Type::Union(_) | Type::ResultType(..)) {
+            need_printer(&f, m, need);
+        }
+    }
+}
+
+/// `(call show.lit b "s")`.
+fn lit_text(s: &str) -> String {
+    format!("(call show.lit b \"{s}\")")
+}
+
+/// The statements that append `e`, of type `t`, inside a printed value.
+fn elem_text(e: &str, t: &Type, m: &Module) -> String {
+    let put = |f: &str| format!("(call show.{f} b {e} 0)");
+    let quoted = |f: &str| format!("{} {} {}", lit_text("\\\""), put(f), lit_text("\\\""));
+    match t {
+        // a storage type (u8, i8, u16, i16) reads as an i32
+        Type::I32 | Type::Narrow(_) => put("put_i32"),
+        Type::I64 => put("put_i64"),
+        Type::F32 => put("put_f32"),
+        Type::F64 => put("put_f64"),
+        Type::Bool => put("put_bool"),
+        Type::Str => quoted("put_str"),
+        Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()) => quoted("put_bytes"),
+        Type::Enum(n) => {
+            let members: Vec<String> = m.enums.iter().find(|x| x.name == *n).map(|x| x.members.iter().map(|(k, _)| format!(" ({n}.{k} \"{k}\")")).collect()).unwrap_or_default();
+            format!("(call show.put_str b (match {e}{}) 0)", members.concat())
+        }
+        Type::Ptr(_) => format!("(call show.debug_addr b \"{}\" (unsafe (ptr.addr {e})))", source_type(t)),
+        Type::Array(_) => format!("(call show.debug_addr b \"{}\" (unsafe (arr.addr {e})))", source_type(t)),
+        Type::Struct(_) | Type::Union(_) | Type::ResultType(..) => format!("(call {} b {e})", debug_name(t)),
+        Type::Fn(..) => lit_text("<fn>"),
+        _ => lit_text("?"),
+    }
+}
+
+/// `{` fields `}`: each `name: value`, `, ` between, read with `get_of(name)`.
+fn fields_text(head: &str, fields: &[crate::ast::StructField], get_of: &dyn Fn(&str) -> String, m: &Module) -> Vec<String> {
+    let mut parts = vec![lit_text(&format!("{head}{{"))];
+    for (k, f) in fields.iter().enumerate() {
+        parts.push(lit_text(&format!("{}{}: ", if k == 0 { "" } else { ", " }, f.name)));
+        parts.push(elem_text(&get_of(&f.name), &f.ty, m));
+    }
+    parts.push(lit_text("}"));
+    parts
+}
+
+fn printer_text(name: &str, t: &Type, m: &Module) -> String {
+    let header = format!("(fn {name} [b:(ptr buf.Buf) v:{}] -> (ptr buf.Buf) ", crate::printer::type_str(t));
+    let fields_of = |n: &str| m.structs.iter().find(|s| s.name == n).map(|s| s.fields.clone()).unwrap_or_default();
+    let body = match t {
+        Type::Ptr(s) => {
+            let n = match &**s {
+                Type::Struct(n) => n.clone(),
+                _ => String::new(),
+            };
+            let parts = fields_text(&source_type(s), &fields_of(&n), &|f| format!("(get v {n}.{f})"), m);
+            format!("(if (eq (unsafe (ptr.addr v)) 0) {} (block {}))", lit_text("null"), parts.join(" "))
+        }
+        Type::Struct(n) => fields_text(&source_type(t), &fields_of(n), &|f| format!("(get v {n}.{f})"), m).join(" "),
+        Type::Union(u) => {
+            let variants = m.unions.iter().find(|x| x.name == *u).map(|x| x.variants.clone()).unwrap_or_default();
+            let arms: Vec<String> = variants
+                .iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    if v.fields.is_empty() {
+                        return format!("({u}.{} {})", v.name, lit_text(&v.name));
+                    }
+                    let binders: Vec<String> = (0..v.fields.len()).map(|j| format!("_d{k}_{j}")).collect();
+                    let names: Vec<&str> = v.fields.iter().map(|f| f.name.as_str()).collect();
+                    let parts = fields_text(&v.name, &v.fields, &|f| binders[names.iter().position(|x| *x == f).unwrap()].clone(), m);
+                    format!("({u}.{} [{}] (block {}))", v.name, binders.join(" "), parts.join(" "))
+                })
+                .collect();
+            format!("(match v {})", arms.join(" "))
+        }
+        Type::ResultType(a, e) => format!(
+            "(match_result v (ok _ok (block {} {} {})) (err _err (block {} {} {})))",
+            lit_text("ok("),
+            elem_text("_ok", a, m),
+            lit_text(")"),
+            lit_text("err("),
+            elem_text("_err", e, m),
+            lit_text(")")
+        ),
+        Type::Array(e) => format!(
+            "(if (eq (unsafe (arr.addr v)) 0) {} (block {} (let n:i32 (arr.len v)) (loop i 0 (- (if (gt n 16) 16 n) 1) 1 (if (gt i 0) {} b) {}) (if (gt n 16) (block {} (call show.put_i32 b (- n 16) 0) {}) b) {}))",
+            lit_text("null"),
+            lit_text("["),
+            lit_text(", "),
+            elem_text(&format!("(arr.get {} v i)", crate::printer::type_str(e)), e, m),
+            lit_text(", ... "),
+            lit_text(" more"),
+            lit_text("]")
+        ),
+        _ => lit_text("?"),
+    };
+    format!("{header}{body} b)")
 }
 
 /// A body's defers, once its tries are lowered: each return after a defer
@@ -749,7 +927,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
         *e = lower_try(&op, args, span, lw);
         return;
     }
-    let (types, enums) = (lw.types, lw.enums);
+    let types = lw.types;
     // each piece's type, by its value's address, before anything moves
     let piece_types: Vec<Option<Type>> = args
         .iter()
@@ -789,7 +967,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
                     _ => 0,
                 };
                 let value = pa.pop().unwrap();
-                put(chain, value, &t, spec as i64, enums, span)
+                put(chain, value, &t, spec as i64, lw, span)
             }
             (lit, _) => call("show.lit", vec![chain, lit]),
         };

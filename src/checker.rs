@@ -1234,11 +1234,8 @@ impl TypeChecker {
                                 let Expr::Lit(Literal::Str(text), _) = &pa[1] else {
                                     return Err(format!("{}:{}: a piece's format is a string literal", pl, pc));
                                 };
-                                if !crate::formats::printable(&t) {
-                                    return Err(format!(
-                                        "{}:{}: format cannot print {}: it prints numbers, bool, str, (ptr str.Bytes), and enums",
-                                        pl, pc, t
-                                    ));
+                                if !crate::formats::prints(&t) {
+                                    return Err(format!("{}:{}: format cannot print {}: it prints every value but void and function references", pl, pc, t));
                                 }
                                 let spec = crate::formats::Spec::parse(text).map_err(|m| format!("{}:{}: {}", pl, pc, m))?;
                                 if let Some(m) = spec.misfit(&t) {

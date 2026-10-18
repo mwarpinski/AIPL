@@ -24,6 +24,7 @@
   (import vec)
   (import map)
   (import fmtsplit)
+  (import fmtdebug)
 
   ;; unsafe_: the function has the (unsafe) clause.
   (struct Sig [params:(arr ast.Type) ret:ast.Type unsafe_:bool])
@@ -50,7 +51,9 @@
   ;; string is there), which value of that string it is (from 0), its type,
   ;; and an enum's members (to print the member's name). fmtlower.aipl
   ;; writes the std/show calls from these (formats.rs lower).
-  (struct Fmt [(read at:i32) (read k:i32) (read ty:ast.Type) (read members:(arr (ptr ast.Member)))] (pub))
+;; k: a piece's index, -1 a format_to target, -2 a dbg's value, -3 the
+  ;; printers formatting generates (text, fmtdebug.aipl).
+  (struct Fmt [(read at:i32) (read k:i32) (read ty:ast.Type) (read members:(arr (ptr ast.Member))) (read text:(ptr buf.Buf))] (pub))
 
   ;; ===== Messages =====
 
@@ -1964,9 +1967,11 @@
         (block
           (let f:(ptr Fmt) (new Fmt))
           (put f Fmt.at (call ast.at (arr.get ast.Expr args 0)))
-          (put f Fmt.k 0)
+          ;; a try's operand
+          (put f Fmt.k -4)
           (put f Fmt.ty t)
           (put f Fmt.members (arr.null (ptr ast.Member)))
+          (put f Fmt.text (ptr.null buf.Buf))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f))
         (block))
     value)
@@ -1985,9 +1990,6 @@
 
   ;; Whether format_to's target t is a (ptr stream.Writer) (fmtlower).
   (fn is_writer [t:ast.Type] -> bool (pub) (call ptr_to t "stream.Writer"))
-
-  ;; Whether the formatting forms print t (fmtlower).
-  (fn is_printable [t:ast.Type] -> bool (pub) (call printable t))
 
   (fn printable [t:ast.Type] -> bool
     (or (lte (call tag t) 5) (or (eq (call tag t) 12) (call ptr_to t "str.Bytes"))))
@@ -2024,6 +2026,7 @@
                 (put f Fmt.k -1)
                 (put f Fmt.ty bt)
                 (put f Fmt.members (arr.null (ptr ast.Member)))
+                (put f Fmt.text (ptr.null buf.Buf))
                 (call (vec.push (ptr Fmt)) (get c C.fmts) f))
               (block))
           (set! first 1))
@@ -2081,6 +2084,7 @@
                (let d:(ptr ast.EnumDef) (call (map.get_or (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
               (else (arr.null (ptr ast.Member)))))
+          (put f Fmt.text (ptr.null buf.Buf))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f))
         (block)))
 
@@ -2089,10 +2093,10 @@
     (if (get c C.failed) (return) (block))
     (let raw:(ptr str.Bytes) (match fe (ast.Expr.lit_str [_ r] r) (else (ptr.null str.Bytes))))
     (if (eq raw (ptr.null str.Bytes)) (block (call fail_str c at "a piece's format is a string literal") (return)) (block))
-    (if (not (call printable t))
+    (if (not (call fmtdebug.prints t))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
-          (call s b "format cannot print ") (call ty b t) (call s b ": it prints numbers, bool, str, (ptr str.Bytes), and enums")
+          (call s b "format cannot print ") (call ty b t) (call s b ": it prints every value but void and function references")
           (call fail c b)
           (return))
         (block))
@@ -2105,7 +2109,11 @@
           (return))
         (block))
     (let why:str "")
+    (let plain:bool (and (and (eq (get sp fmtsplit.Spec.fill) 0) (eq (get sp fmtsplit.Spec.align) 0))
+                         (and (and (not (get sp fmtsplit.Spec.plus)) (not (get sp fmtsplit.Spec.zero)))
+                              (and (eq (get sp fmtsplit.Spec.width) 0) (and (lt (get sp fmtsplit.Spec.decimals) 0) (eq (get sp fmtsplit.Spec.base) 0))))))
     (cond
+      ((and (not (call fmtdebug.printable t)) (not plain)) (set! why "formats are for numbers, bool, str, (ptr str.Bytes), and enums, not "))
       ((and (gte (get sp fmtsplit.Spec.decimals) 0) (not (call is_float t))) (set! why "decimals (.N) are for f32 and f64, not "))
       ((and (gt (get sp fmtsplit.Spec.base) 0) (not (call is_int t))) (set! why "x, X, and b are for i32 and i64, not "))
       ((and (or (get sp fmtsplit.Spec.plus) (get sp fmtsplit.Spec.zero)) (not (or (call is_float t) (call is_int t))))
@@ -2126,6 +2134,7 @@
                (let d:(ptr ast.EnumDef) (call (map.get_or (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
               (else (arr.null (ptr ast.Member)))))
+          (put f Fmt.text (ptr.null buf.Buf))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f))
         (block)))
 
@@ -2454,7 +2463,33 @@
     (put c C.problems (ptr.null Problem))
     (put c C.last_problem (ptr.null Problem))
     (call check_module c m)
+    (if (and (neq out (ptr.null (vec.Vec (ptr Fmt)))) (and (not (get c C.failed)) (eq (get c C.problems) (ptr.null Problem))))
+        (call note_printers c out)
+        (block))
     (if (get c C.failed) (call problem (get c C.err_at) (get c C.err)) (get c C.problems)))
+
+  ;; The printers for the values pieces and dbgs show through one
+  ;; (fmtdebug.aipl), as a Fmt with k -3 and their text, if any are needed.
+  (fn note_printers [c:(ptr C) out:(ptr (vec.Vec (ptr Fmt)))] -> void
+    (let roots:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
+    (loop k 0 (- (call (vec.len (ptr Fmt)) out) 1) 1
+      (let f:(ptr Fmt) (call (vec.at (ptr Fmt)) out k))
+      (if (and (or (gte (get f Fmt.k) 0) (eq (get f Fmt.k) -2))
+               (and (not (call fmtdebug.printable (get f Fmt.ty))) (call fmtdebug.prints (get f Fmt.ty))))
+          (call (vec.push ast.Type) roots (get f Fmt.ty))
+          (block)))
+    (if (eq (call (vec.len ast.Type) roots) 0) (return) (block))
+    (let d:(ptr fmtdebug.Defs) (new fmtdebug.Defs))
+    (put d fmtdebug.Defs.structs (get c C.structs))
+    (put d fmtdebug.Defs.unions (get c C.unions))
+    (put d fmtdebug.Defs.enums (get c C.enums))
+    (let f:(ptr Fmt) (new Fmt))
+    (put f Fmt.at -1)
+    (put f Fmt.k -3)
+    (put f Fmt.ty (call void_t))
+    (put f Fmt.members (arr.null (ptr ast.Member)))
+    (put f Fmt.text (call fmtdebug.debug_functions d roots))
+    (call (vec.push (ptr Fmt)) out f))
 
   (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem) (pub)
     (let pr:(ptr Problem) (new Problem))

@@ -15,7 +15,7 @@
 //! expressions' lines are reported at `-e:LINE:COL`. The decisions live in
 //! this file, not in the language: nothing here is new syntax.
 
-use crate::ast::{AddrKind, Expr, FnDef, Literal, Module, OpCode, Type};
+use crate::ast::{Expr, FnDef, Literal, Module, OpCode, Type};
 use crate::checker::TypeChecker;
 use crate::resolver::Resolver;
 use std::path::{Path, PathBuf};
@@ -127,11 +127,10 @@ fn prepare(exprs: &str, with: Option<&Path>, backend: Backend) -> Result<(Module
         let f = module.functions.iter_mut().find(|f| f.name == "__eval").ok_or("aipl eval: no __eval")?;
         f.return_type = ty.clone();
         body.push(Expr::Let { name: "__v".into(), ty: ty.clone(), val: Box::new(Expr::Call { func: "__eval".into(), args: vec![], span }), span });
-        let pieces = match &ty {
-            t if crate::formats::printable(t) => vec![piece(var()), lit(format!(" : {shown}"))],
-            Type::Ptr(_) => vec![lit(format!("{shown} @ ")), piece(Expr::Addr { val: Box::new(var()), kind: AddrKind::Ptr, span })],
-            Type::Array(_) => vec![lit(format!("{shown} @ ")), piece(Expr::Addr { val: Box::new(var()), kind: AddrKind::Arr, span })],
-            _ => vec![lit(format!("<value> : {shown}"))],
+        let pieces = if crate::formats::prints(&ty) {
+            vec![piece(var()), lit(format!(" : {shown}"))]
+        } else {
+            vec![lit(format!("<value> : {shown}"))]
         };
         body.push(Expr::Op { op: OpCode::FormatPrintln, args: pieces, span });
     }
