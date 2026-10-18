@@ -474,6 +474,9 @@ pub struct TypeChecker {
     formats: std::cell::RefCell<HashMap<usize, Type>>,
     /// Inside a `(defer ...)`, which may not return (it runs as the function does).
     in_defer: std::cell::Cell<bool>,
+    /// Each checked function's body type, its last expression's: `aipl eval
+    /// -e` reads its wrapper's to print the value (body_type).
+    bodies: std::cell::RefCell<HashMap<String, Type>>,
 }
 
 impl Default for TypeChecker {
@@ -499,6 +502,7 @@ impl TypeChecker {
             payloads: std::cell::RefCell::new(HashMap::new()),
             formats: std::cell::RefCell::new(HashMap::new()),
             in_defer: std::cell::Cell::new(false),
+            bodies: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -582,6 +586,12 @@ impl TypeChecker {
 
     /// The type of every formatting piece's value in `module`, by the value's
     /// address, if the module checks (formats::lower).
+    /// The type of the last expression of function `name`'s body, once
+    /// check_module has checked it (a `void` function's included).
+    pub fn body_type(&self, name: &str) -> Option<Type> {
+        self.bodies.borrow().get(name).cloned()
+    }
+
     pub fn format_types(module: &Module) -> Option<HashMap<usize, Type>> {
         let mut checker = TypeChecker::new();
         checker.check_module(module).ok()?;
@@ -1012,6 +1022,7 @@ impl TypeChecker {
         }
         *self.return_type.borrow_mut() = None;
         result?;
+        self.bodies.borrow_mut().insert(f.name.clone(), last_ty.clone());
 
         // A body may end in (return v) instead of a bare value.
         let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));

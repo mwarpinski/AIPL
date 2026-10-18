@@ -16,11 +16,28 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Evaluate an AIPL source file directly using the VM interpreter
+    /// Evaluate an AIPL source file directly using the VM interpreter; or,
+    /// with -e, expressions, printing the last one's value and type
+    /// (aipl eval -e '(call str.find ...)' [--with FILE] [--wasm | --native])
     Eval {
-        file: String,
+        /// The program to run (not with -e)
+        #[arg(required_unless_present = "expr")]
+        file: Option<String>,
         #[arg(short, long, default_value = "main")]
         func: String,
+        /// Expressions to evaluate; the last one's value is printed with its type
+        #[arg(short = 'e', long = "expr", conflicts_with = "file")]
+        expr: Option<String>,
+        /// With -e: evaluate inside this file's module (its functions, private
+        /// ones included, are in scope; its main is not run)
+        #[arg(long, requires = "expr")]
+        with: Option<String>,
+        /// With -e: compile to wasm and run under aipl-run instead of the VM
+        #[arg(long, requires = "expr", conflicts_with = "native")]
+        wasm: bool,
+        /// With -e: compile to a native executable and run it instead of the VM
+        #[arg(long, requires = "expr")]
+        native: bool,
         /// Command-line arguments for the program (after `--`); with FILE as
         /// argv[0] they are what std/os.arg reports.
         #[arg(last = true)]
@@ -246,7 +263,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func, args } => {
+        Commands::Eval { file, func, expr, with, wasm, native, args } => {
+            if let Some(exprs) = expr {
+                use aipl_core::evalexpr::{run, Backend};
+                let backend = if wasm { Backend::Wasm } else if native { Backend::Native } else { Backend::Vm };
+                let runner = if wasm { runner_path()? } else { std::path::PathBuf::new() };
+                std::process::exit(run(&exprs, with.as_deref().map(Path::new), backend, &runner, &args)?);
+            }
+            let file = file.unwrap_or_default();
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;

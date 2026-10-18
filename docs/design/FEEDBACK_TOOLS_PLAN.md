@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1 built 2026-10-18; F2 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1 and F2 built 2026-10-18; F3 next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -100,6 +100,15 @@ $ aipl eval --with rows.aipl -e '(let r:(ptr Row) (call make_row 2)) (get r Row.
 - In the Rust CLI: running code is what the self-hosted binary cannot do
   yet (WASI cannot start a process, and AIPL has no interpreter of its own,
   section 7), which is the reason this is Rust.
+
+As built (2026-10-18): `src/evalexpr.rs`, about 300 lines. The
+expressions are checked inside a `void` wrapper, which gives their type
+(the checker records each function's body type, `body_type`); the second
+step changes the flat, already-resolved module rather than re-parsing, since
+the flat program names generic instances `option.Option<i32>`, which source
+cannot. The printer is a `(println ...)` built in the tree and lowered by
+`formats::lower` like any other. Exit status: 1 for an error in the VM,
+134 for a trap compiled, as for any program.
 
 ## F3. `(dbg e)`: see a value, keep going
 

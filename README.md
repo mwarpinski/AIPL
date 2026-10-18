@@ -118,6 +118,7 @@ aipl verify examples/word_count.aipl            # parse and type-check
 aipl doc text                                   # a module's functions and types, with their comments
 aipl doc --find split                           # search the standard library
 aipl eval examples/math_core.aipl               # run main in the interpreter
+aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints 1 : i32
 aipl compile examples/word_count.aipl -o wc.wasm
 aipl run wc.wasm -- README.md                   # run compiled WebAssembly
 aipl compile --exe examples/word_count.aipl -o wc
@@ -252,7 +253,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **375 Rust tests** and an AIPL test suite, run on every push by CI.
+- **379 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
