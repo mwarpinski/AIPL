@@ -119,7 +119,7 @@ fn prepare(exprs: &str, with: Option<&Path>, backend: Backend) -> Result<(Module
     let lit = |s: String| Expr::Lit(Literal::Str(s), span);
     let var = || Expr::Var("__v".into(), span);
     let piece = |v: Expr| Expr::Op { op: OpCode::FormatPiece, args: vec![v, lit(String::new())], span };
-    let shown = source_type(&ty);
+    let shown = crate::formats::source_type(&ty);
     let mut body = Vec::new();
     if ty == Type::Void {
         body.push(Expr::Call { func: "__eval".into(), args: vec![], span });
@@ -222,39 +222,6 @@ fn named_modules(exprs: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// A type as source writes it: instances of generic types, which the flat
-/// program names `option.Option<i32>`, as `(option.Option i32)`.
-fn source_type(t: &Type) -> String {
-    fn convert(s: &str) -> String {
-        let Some(open) = s.find('<') else { return s.to_string() };
-        // the matching '>', and the arguments between, split at depth 0
-        let (mut depth, mut args, mut from) = (0, Vec::new(), open + 1);
-        for (k, c) in s.char_indices().skip(open) {
-            match c {
-                '<' | '(' | '[' => depth += 1,
-                '>' | ')' | ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        args.push(convert(&s[from..k]));
-                        let rest = convert(&s[k + 1..]);
-                        let base = &s[..open];
-                        // a base after other text (inside "(ptr ...") keeps that text
-                        let split = base.rfind([' ', '(', '[']).map_or(0, |p| p + 1);
-                        return format!("{}({} {}){rest}", &base[..split], &base[split..], args.join(" "));
-                    }
-                }
-                ',' if depth == 1 => {
-                    args.push(convert(&s[from..k]));
-                    from = k + 1;
-                }
-                _ => {}
-            }
-        }
-        s.to_string()
-    }
-    convert(&t.to_string())
 }
 
 /// `msg` with each position on the expressions' lines given as `-e:L:C`,

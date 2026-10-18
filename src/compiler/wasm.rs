@@ -1206,7 +1206,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::Op { op, args, .. } => match op {
             OpCode::FormatStr => Type::Str,
             OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece => Type::Void,
-            OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => Type::Void,
+            OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg => Type::Void,
             OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -1708,7 +1708,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         }
         Expr::Op { op, args, .. } => match op {
             OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece
-            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => {
+            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg => {
                 return Err(format!("Wasm Codegen: {op} is lowered by the resolver (formats::lower); compile a resolved module"));
             }
             OpCode::Add

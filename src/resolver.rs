@@ -154,7 +154,7 @@ impl Resolver {
 
     /// Resolution without generic expansion or parsing.
     pub fn flatten(entry_src: &str, entry_path: &Path) -> Result<FlatProgram, String> {
-        let entry = read_module(entry_src).map_err(|e| format!("{}: {}", entry_path.display(), e))?;
+        let entry = read_module(entry_src, &file_name(entry_path)).map_err(|e| format!("{}: {}", entry_path.display(), e))?;
         let mut st = State {
             entry_path,
             included: HashSet::new(),
@@ -196,7 +196,12 @@ fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>, values: 
     })
 }
 
-fn read_module(src: &str) -> Result<ModuleSx, String> {
+/// A path's last component, as dbg labels name a file.
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn read_module(src: &str, file: &str) -> Result<ModuleSx, String> {
     let sx = Sx::read_one(&Parser::tokenize(src)?)?;
     let (line, col) = sx.position();
     if sx.head() != Some("module") {
@@ -230,7 +235,7 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
             imports.push(("show".to_string(), None));
         }
         for item in items.iter_mut() {
-            crate::formats::split(item, &|sx, msg| {
+            crate::formats::split(item, src, file, &|sx, msg| {
                 let (l, c) = sx.position();
                 format!("{}:{}: {}", l, c, msg)
             })?;
@@ -285,7 +290,7 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
     }
     st.in_progress.insert(file_path.clone());
     let src = fs::read_to_string(&file_path).map_err(|e| format!("{}: Cannot read: {}", file_path.display(), e))?;
-    let module = read_module(&src).map_err(|e| format!("{}: {}", file_path.display(), e))?;
+    let module = read_module(&src, &file_name(&file_path)).map_err(|e| format!("{}: {}", file_path.display(), e))?;
     for (sub, _) in &module.imports {
         resolve_import(st, sub, &file_path)?;
     }

@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1 and F2 built 2026-10-18; F3 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1, F2, and F3 built 2026-10-18; F3b next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -129,6 +129,13 @@ rows.aipl:12:16: (call distance p q) = 5
   give the same), and the position its file and line, as errors give them.
 - It stays in every build, as Rust's `dbg!` does; `aipl verify --no-dbg`
   refuses it where a project wants that (D5).
+- As built (2026-10-18): each resolver turns `(dbg e)` into `(format.dbg
+  "FILE:L:C: e" e)` while it still has the file's text (both take `e`'s text
+  from the source the same way, `formats.rs form_text`, `resolver.aipl
+  dbg_text`), the checker gives it `e`'s type, and the lowering binds
+  the value to `_dbg_N` (numbered per function, inner ones first, as
+  tries are). One rule was added: a placeholder cannot hold a `dbg`, since
+  its code has the string's position, not its own.
 - **F3b**, after: a struct (behind its pointer) and a value struct print
   their fields, `Row{n: 2, name: "a"}`, through a printer generated per
   type, for `dbg`, `eval -e`, and `{p}` in formatting. One level deep, so a

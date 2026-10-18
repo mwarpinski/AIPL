@@ -1777,6 +1777,7 @@
        (call void_t))
       ((call is_format o) (call check_format c env at o args))
       ((eq o ast.Op.format_piece) (call fail_str c at "format.piece is part of a format string") (call void_t))
+      ((eq o ast.Op.format_dbg) (call check_dbg c env at args))
       ((or (eq o ast.Op.try_) (or (eq o ast.Op.try_opt) (eq o ast.Op.try_or)))
        (if (get c C.in_defer)
            (block
@@ -1985,6 +1986,9 @@
   ;; Whether format_to's target t is a (ptr stream.Writer) (fmtlower).
   (fn is_writer [t:ast.Type] -> bool (pub) (call ptr_to t "stream.Writer"))
 
+  ;; Whether the formatting forms print t (fmtlower).
+  (fn is_printable [t:ast.Type] -> bool (pub) (call printable t))
+
   (fn printable [t:ast.Type] -> bool
     (or (lte (call tag t) 5) (or (eq (call tag t) 12) (call ptr_to t "str.Bytes"))))
 
@@ -2047,6 +2051,38 @@
             (return (call void_t)))
           (block)))
     (if (eq o ast.Op.format_str) (make ast.Type.str) (call void_t)))
+
+  ;; (format.dbg "label" e), from (dbg e): e's type, noted for fmtlower
+  ;; (k -2) (checker.rs FormatDbg).
+  (fn check_dbg [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr)] -> ast.Type
+    (let ok:bool (and (eq (arr.len args) 2) (match (arr.get ast.Expr args 0) (ast.Expr.lit_str [_ _] true) (else false))))
+    (if (not ok) (block (call fail_str c at "dbg takes one expression, e.g. (dbg (call f x))") (return (call void_t))) (block))
+    (let v:ast.Expr (arr.get ast.Expr args 1))
+    (let t:ast.Type (call infer c v env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (call is_void t)
+        (block (call fail_str c at "dbg shows a value, and this expression has none (it is void)") (return (call void_t)))
+        (block))
+    (call note_fmt c v t -2)
+    t)
+
+  ;; Notes v's type t for fmtlower: k is a piece's index, -1 a format_to
+  ;; target, -2 a dbg's value; an enum's members come with it.
+  (fn note_fmt [c:(ptr C) v:ast.Expr t:ast.Type k:i32] -> void
+    (if (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
+        (block
+          (let f:(ptr Fmt) (new Fmt))
+          (put f Fmt.at (call ast.at v))
+          (put f Fmt.k k)
+          (put f Fmt.ty t)
+          (put f Fmt.members
+            (match t
+              (ast.Type.enum_ [en]
+               (let d:(ptr ast.EnumDef) (call (map.get_or (ptr str.Bytes) (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
+               (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
+              (else (arr.null (ptr ast.Member)))))
+          (call (vec.push (ptr Fmt)) (get c C.fmts) f))
+        (block)))
 
   (fn check_piece [c:(ptr C) env:(ptr Env) at:i32 v:ast.Expr fe:ast.Expr k:i32] -> void
     (let t:ast.Type (call infer c v env))

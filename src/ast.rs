@@ -237,6 +237,9 @@ pub enum OpCode {
     /// function returns, however it returns, the last defer first. Lowered
     /// by the resolver (formats::lower), like `try`.
     Defer,
+    /// `(format.dbg "label" e)`, from `(dbg e)`: prints the label and e's
+    /// value to stderr and gives the value (formats.rs).
+    FormatDbg,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

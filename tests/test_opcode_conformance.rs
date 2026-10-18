@@ -107,7 +107,7 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         StrPtr => ("i32", "(mem.load8 (str.ptr \"hello\"))"),
         // the formatting ops never reach a backend: the resolver lowers them
         // to std/show calls (tests/test_formats.rs), so they are not in ALL_OPCODES
-        FormatStr | FormatTo | FormatPrint | FormatPrintln | FormatEprintln | FormatPiece | Try | TryOpt | TryOr | Defer => {
+        FormatStr | FormatTo | FormatPrint | FormatPrintln | FormatEprintln | FormatPiece | Try | TryOpt | TryOr | Defer | FormatDbg => {
             unreachable!("{op:?} is lowered by the resolver")
         }
     }

@@ -1255,6 +1255,18 @@ impl TypeChecker {
                     Ok(if *op == OpCode::FormatStr { Type::Str } else { Type::Void })
                 }
                 OpCode::FormatPiece => Err(format!("{}:{}: format.piece is part of a format string", l, c)),
+                OpCode::FormatDbg => {
+                    let (Some(Expr::Lit(Literal::Str(_), _)), Some(v), 2) = (args.first(), args.get(1), args.len()) else {
+                        return Err(format!("{}:{}: dbg takes one expression, e.g. (dbg (call f x))", l, c));
+                    };
+                    let t = self.infer_expr_type(v, env)?;
+                    if t == Type::Void {
+                        return Err(format!("{}:{}: dbg shows a value, and this expression has none (it is void)", l, c));
+                    }
+                    // the value's type, for formats::lower
+                    self.formats.borrow_mut().insert(v as *const Expr as usize, t.clone());
+                    Ok(t)
+                }
                 OpCode::Try | OpCode::TryOpt | OpCode::TryOr => {
                     if self.in_defer.get() {
                         return Err(format!("{}:{}: a defer cannot {}: it runs as the function returns", l, c, op));
