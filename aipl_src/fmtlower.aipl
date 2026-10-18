@@ -289,9 +289,21 @@
     (while (lt c close) (call (vec.push i32) args c) (set! c (call elem_end l c)))
     (let first:i32 (if (eq op 1) 1 0))
     (let n:i32 (call (vec.len i32) args))
+    ;; a writer's text goes to its buffer, then (call stream.format_end w b)
+    (let writer:bool false)
+    (if (eq op 1)
+        (block
+          (let tf:(ptr checker.Fmt) (call fmt_at l (call pos l (call (vec.at i32) args 0))))
+          (if (neq tf (ptr.null checker.Fmt)) (set! writer (call checker.is_writer (get tf checker.Fmt.ty))) (block)))
+        (block))
     ;; outermost first: the ending, then one call per piece
-    (call gen l at (cond ((eq op 0) "(call show.done ") ((eq op 1) "(call show.end_to ") ((eq op 2) "(call show.print ")
-                         ((eq op 3) "(call show.println ") (else "(call show.eprintln ")))
+    (if writer
+        (block
+          (call gen l at "(call stream.format_end ")
+          (call emit_elem l (call (vec.at i32) args 0))
+          (call gen l at " "))
+        (call gen l at (cond ((eq op 0) "(call show.done ") ((eq op 1) "(call show.end_to ") ((eq op 2) "(call show.print ")
+                             ((eq op 3) "(call show.println ") (else "(call show.eprintln "))))
     (loop j 0 (- (- n first) 1) 1
       (let a:i32 (call (vec.at i32) args (- (- n 1) j)))
       (if (eq (call kind l a) compiler.Kind.string)
@@ -302,9 +314,13 @@
             (call buf.push_str (get l L.out) (call put_fn (get f checker.Fmt.ty)))
             (call buf.push_byte (get l L.out) 32))))
     ;; the start: the buffer as written, or a new one
-    (if (eq op 1)
+    (cond
+      (writer
+        (call gen l at "(call stream.buffer ")
         (call emit_elem l (call (vec.at i32) args 0))
-        (call gen l at "(call show.start)"))
+        (call buf.push_byte (get l L.out) 41))
+      ((eq op 1) (call emit_elem l (call (vec.at i32) args 0)))
+      (else (call gen l at "(call show.start)")))
     ;; each piece's own arguments, then its call's ')'
     (loop j first (- n 1) 1
       (let a:i32 (call (vec.at i32) args j))

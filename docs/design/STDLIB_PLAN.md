@@ -182,6 +182,22 @@ with the compiler's optimizer work rather than in a library batch.
   a `buf.Buf`, a byte slice, and later a socket; `read_byte`,
   `read_line`, `read_all`, `write_bytes`, `write_str`, `flush`, buffering
   of its own. `(format_to w ...)` gains a writer form.
+
+  As built (2026-10-18): a Reader and a Writer are each one struct behind
+  a pointer, holding a union of their sources (a file descriptor, memory,
+  a function of your own) or sinks (a file descriptor, a `buf.Buf`, a
+  function), as `alloc.Allocator` is a union of allocators. A custom source
+  appends to a `buf.Buf` it is given and a custom sink takes a
+  `(ptr str.Bytes)`, so neither sees a raw address and neither needs
+  `unsafe`. Reading a line allocates nothing: the line is a view into the
+  reader's window, reused, good until the next read. A writer to a
+  `buf.Buf` holds nothing back (its buffer is that buffer). Every OS error
+  is -1, so a stream records only that one happened (`read_error`,
+  `write_error`). `(format_to w ...)` takes a writer only as a variable,
+  since the lowering names it twice (its buffer, then the flush check).
+  Building it found a compiler bug: a result cell gave a pointer payload 4
+  bytes of an 8-byte cell, so `(ok:str p)` wrote the pointer's generation
+  over the next object's (fixed in both toolchains, ed12333).
 - **`csv`**: RFC 4180 reading (quoted fields, doubled quotes, newlines
   inside quotes, CRLF or LF, a chosen delimiter, an optional header row)
   into rows of `(ptr str.Bytes)` fields, both all at once and one row at a

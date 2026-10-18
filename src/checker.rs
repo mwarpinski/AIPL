@@ -1203,9 +1203,16 @@ impl TypeChecker {
                             return Err(format!("{}:{}: format_to takes a buffer and a string literal, e.g. (format_to b \"n = {{n}}\")", l, c));
                         };
                         let t = self.infer_expr_type(b, env)?;
-                        if t != Type::Ptr(Box::new(Type::Struct("buf.Buf".into()))) {
-                            return Err(format!("{}:{}: format_to writes to a (ptr buf.Buf), got {}", l, c, t));
+                        let writer = Type::Ptr(Box::new(Type::Struct("stream.Writer".into())));
+                        if t != Type::Ptr(Box::new(Type::Struct("buf.Buf".into()))) && t != writer {
+                            return Err(format!("{}:{}: format_to writes to a (ptr buf.Buf) or a (ptr stream.Writer), got {}", l, c, t));
                         }
+                        // a writer is named twice once lowered (its buffer, then the
+                        // flush check), so it must be a variable
+                        if t == writer && !matches!(b, Expr::Var(..)) {
+                            return Err(format!("{}:{}: format_to takes a (ptr stream.Writer) as a variable: bind it with let first", l, c));
+                        }
+                        self.formats.borrow_mut().insert(b as *const Expr as usize, t);
                         pieces = &args[1..];
                     }
                     for p in pieces {

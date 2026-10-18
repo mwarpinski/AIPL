@@ -556,6 +556,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
             _ => None,
         })
         .collect();
+    let target_type = if op == OpCode::FormatTo { args.first().and_then(|b| types.get(&(b as *const Expr as usize))).cloned() } else { None };
     let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
     let mut parts = std::mem::take(args);
     for p in parts.iter_mut() {
@@ -565,7 +566,19 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
         }
     }
     let mut iter = parts.into_iter().zip(piece_types);
-    let mut chain = if op == OpCode::FormatTo { iter.next().map(|(b, _)| b).unwrap() } else { call("show.start", vec![]) };
+    // a writer's text goes to its buffer, then (call stream.format_end w b)
+    let mut writer = None;
+    let mut chain = if op == OpCode::FormatTo {
+        let b = iter.next().map(|(b, _)| b).unwrap();
+        if target_type == Some(Type::Ptr(Box::new(Type::Struct("stream.Writer".into())))) {
+            writer = Some(b.clone());
+            call("stream.buffer", vec![b])
+        } else {
+            b
+        }
+    } else {
+        call("show.start", vec![])
+    };
     for (p, t) in iter {
         chain = match (p, t) {
             (Expr::Op { args: mut pa, .. }, Some(t)) => {
@@ -600,7 +613,10 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
     }
     *e = match op {
         OpCode::FormatStr => call("show.done", vec![chain]),
-        OpCode::FormatTo => call("show.end_to", vec![chain]),
+        OpCode::FormatTo => match writer {
+            Some(w) => call("stream.format_end", vec![w, chain]),
+            None => call("show.end_to", vec![chain]),
+        },
         OpCode::FormatPrint => call("show.print", vec![chain]),
         OpCode::FormatPrintln => call("show.println", vec![chain]),
         _ => call("show.eprintln", vec![chain]),

@@ -100,7 +100,7 @@ fn every_formatting_error_has_one_message_in_both_toolchains() {
         ("(println \"{(call f \\\"a\\\")}\")", "a placeholder cannot hold a string or an escape; bind it with let first"),
         ("(eprintln \"\\t{n:\\t>3}\")", "a placeholder cannot hold a string or an escape; bind it with let first"),
         ("(print \"{n x}\")", "a placeholder is {name} or {(expression)}, then optionally :format, e.g. {n:>5} or {x:.2}"),
-        ("(format_to n \"x\")", "format_to writes to a (ptr buf.Buf), got i32"),
+        ("(format_to n \"x\")", "format_to writes to a (ptr buf.Buf) or a (ptr stream.Writer), got i32"),
         ("(format_to)", "format_to takes a buffer and a string literal, e.g. (format_to b \"n = {n}\")"),
         ("(println name)", "println takes one string literal, e.g. (println \"n = {n}\")"),
         ("(println \"a\" \"b\")", "println takes one string literal, e.g. (println \"n = {n}\")"),
