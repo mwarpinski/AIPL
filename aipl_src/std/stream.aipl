@@ -1,0 +1,495 @@
+;; std/stream: reading and writing as you go, over a file, standard input
+;; and output, bytes in memory, a buf.Buf, or functions of your own, so a
+;; program (and csv, and later deflate and http) can take a big input a
+;; piece at a time instead of holding all of it.
+;;
+;;   (let r:(ptr stream.Reader) (try (call stream.open a "data.txt")))
+;;   (while (call stream.next_line r)
+;;     (let line:(ptr str.Bytes) (call stream.line r)) ...)
+;;   (call stream.close_reader r)
+;;
+;;   (let w:(ptr stream.Writer) (call stream.stdout a))
+;;   (format_to w "{n} lines\n")
+;;   (let _ok:bool (call stream.close_writer w))     ;; flushes
+;;
+;; A Reader holds a window of what it has read and not yet handed out
+;; (memory from its allocator, grown for a line longer than the window).
+;; What it hands out (a line, the view from `line`) points into that
+;; window, so it is good until the next read from that reader: copy what
+;; you keep.
+;;
+;; A Writer keeps what it is given in a buffer and writes it out when the
+;; buffer reaches 8 KB, at flush, and at close_writer: a program that ends
+;; without either loses its last writes. std/io and println write at once,
+;; so between them and a buffered stdout writer, flush.
+;;
+;; Every OS error is -1 (AIPL_SPEC.md 4.C), so a stream records only that
+;; one happened: read_error and write_error. After a read error a reader
+;; is at its end; after a write error a writer drops what it is given.
+(module stream
+  (import str)
+  (import buf)
+  (import alloc)
+  (import option)
+
+  ;; ===== Reading =====
+
+  ;; A source of your own, for its state's type C: fill_fn appends some
+  ;; bytes to the buffer it is given and returns how many (0 at the end,
+  ;; negative on an error).
+  (struct (FillOf C) [state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32)])
+
+  ;; What a Reader holds for one, whatever C is: the FillOf<C> cell's
+  ;; address and the functions that read it back as one.
+  (struct Fill [cell:i32 fill_fn:(fn [i32 (ptr buf.Buf)] -> i32) drop_fn:(fn [alloc.Allocator i32] -> void)
+                scratch:(ptr buf.Buf)])
+
+  (union Source [(fd n:i32) (memory) (custom f:(ptr Fill))])
+
+  ;; The unread bytes are data + start .. data + end - 1; cap is the
+  ;; window's size (0 when the reader reads memory it does not own).
+  (struct Reader [src:Source owns_fd:bool data:i32 cap:i32 start:i32 end:i32 at_end:bool failed:bool
+                  view:(ptr str.Bytes) a:alloc.Allocator] (pub))
+
+  (fn make_reader [a:alloc.Allocator src:Source owns_fd:bool data:i32 cap:i32 end:i32 at_end:bool] -> (ptr Reader)
+    (let r:(ptr Reader) (call (alloc.create Reader) a))
+    (put r Reader.src src)
+    (put r Reader.owns_fd owns_fd)
+    (put r Reader.data data)
+    (put r Reader.cap cap)
+    (put r Reader.start 0)
+    (put r Reader.end end)
+    (put r Reader.at_end at_end)
+    (put r Reader.failed false)
+    (put r Reader.view (unsafe (call str.bytes data 0)))
+    (put r Reader.a a)
+    r)
+
+  (fn fd_reader [a:alloc.Allocator fd:i32 owns_fd:bool] -> (ptr Reader)
+    (call make_reader a (make Source.fd fd) owns_fd (call alloc.raw a 8192) 8192 0 false))
+
+  ;; Reads file descriptor fd; close_reader leaves fd open.
+  (fn of_fd [a:alloc.Allocator fd:i32] -> (ptr Reader) (pub)
+    (call fd_reader a fd false))
+
+  (fn stdin [a:alloc.Allocator] -> (ptr Reader) (pub)
+    (call fd_reader a 0 false))
+
+  ;; Opens a file to read; close_reader closes it.
+  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) str) (pub)
+    (call open_path a (call str.from_str path)))
+
+  ;; open for a path held as bytes.
+  (fn open_path [a:alloc.Allocator path:(ptr str.Bytes)] -> (result (ptr Reader) str) (pub)
+    (let fd:i32 (unsafe (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 0)))
+    (if (lt fd 0) (return (err:(ptr Reader) (format "cannot open {path} to read"))) (block))
+    (ok:str (call fd_reader a fd true)))
+
+  ;; Reads b's bytes where they are, so b must not change or be freed
+  ;; while the reader is in use.
+  (fn of_bytes [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr Reader) (pub)
+    (req (gte (get b str.Bytes.len) 0))
+    (call make_reader a (make Source.memory) false (get b str.Bytes.addr) 0 (get b str.Bytes.len) true))
+
+  (fn of_str [a:alloc.Allocator s:str] -> (ptr Reader) (pub)
+    (call of_bytes a (call str.from_str s)))
+
+  ;; A reader over fill_fn, called with `state` whenever the reader needs
+  ;; more bytes.
+  (fn (reader_of C) [a:alloc.Allocator state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32)] -> (ptr Reader) (pub)
+    (let cell:(ptr (FillOf C)) (call (alloc.create (FillOf C)) a))
+    (put cell (FillOf C) state state)
+    (put cell (FillOf C) fill_fn fill_fn)
+    (let f:(ptr Fill) (call (alloc.create Fill) a))
+    (put f Fill.cell (unsafe (ptr.addr cell)))
+    (put f Fill.fill_fn (ref (fill_through C)))
+    (put f Fill.drop_fn (ref (drop_fill C)))
+    (put f Fill.scratch (call buf.make a 0))
+    (call make_reader a (make Source.custom f) false (call alloc.raw a 8192) 8192 0 false))
+
+  (fn (fill_through C) [cell:i32 into:(ptr buf.Buf)] -> i32
+    (unsafe (let x:(ptr (FillOf C)) (ptr.cast (FillOf C) cell))
+    (call_ref (fn [C (ptr buf.Buf)] -> i32) (get x (FillOf C) fill_fn) (get x (FillOf C) state) into)))
+
+  (fn (drop_fill C) [a:alloc.Allocator cell:i32] -> void
+    (unsafe (call (alloc.destroy (FillOf C)) a (ptr.cast (FillOf C) cell))))
+
+  ;; Makes room for `need` more bytes after end: moves the unread bytes to
+  ;; the window's start, then doubles the window until they fit.
+  (fn make_room [r:(ptr Reader) need:i32] -> void
+    (unsafe (let d:i32 (get r Reader.data))
+    (let s:i32 (get r Reader.start))
+    (let n:i32 (- (get r Reader.end) s))
+    (if (gt s 0)
+        (block
+          (loop i 0 (- n 1) 1 (mem.store8 (+ d i) (mem.load8 (+ d (+ s i)))))
+          (put r Reader.start 0)
+          (put r Reader.end n))
+        (block))
+    (let cap:i32 (get r Reader.cap))
+    (if (lte (+ n need) cap) (return) (block))
+    (let bigger:i32 (* cap 2))
+    (while (lt bigger (+ n need)) (set! bigger (* bigger 2)))
+    (let nd:i32 (call alloc.raw (get r Reader.a) bigger))
+    (loop i 0 (- n 1) 1 (mem.store8 (+ nd i) (mem.load8 (+ d i))))
+    (call alloc.free_raw (get r Reader.a) d cap)
+    (put r Reader.data nd)
+    (put r Reader.cap bigger)))
+
+  ;; Reads more into the window; whether any bytes came.
+  (fn fill [r:(ptr Reader)] -> bool
+    (if (get r Reader.at_end) (return false) (block))
+    (let got:i32 (match (get r Reader.src)
+      (Source.fd [fd]
+        (block
+          (call make_room r 4096)
+          (unsafe (fs.read fd (+ (get r Reader.data) (get r Reader.end)) (- (get r Reader.cap) (get r Reader.end))))))
+      (Source.memory 0)
+      (Source.custom [f] (call fill_custom r f))))
+    (cond
+      ((lt got 0) (put r Reader.failed true) (put r Reader.at_end true) false)
+      ((eq got 0) (put r Reader.at_end true) false)
+      (else (put r Reader.end (+ (get r Reader.end) got)) true)))
+
+  (fn fill_custom [r:(ptr Reader) f:(ptr Fill)] -> i32
+    (let sc:(ptr buf.Buf) (get f Fill.scratch))
+    (call buf.clear sc)
+    (let got:i32 (call_ref (fn [i32 (ptr buf.Buf)] -> i32) (get f Fill.fill_fn) (get f Fill.cell) sc))
+    (if (lt got 0) (return got) (block))
+    ;; what it appended, whatever it said
+    (let n:i32 (call buf.len sc))
+    (call make_room r n)
+    (unsafe (let to:i32 (+ (get r Reader.data) (get r Reader.end)))
+    (let from:i32 (get sc buf.Buf.data))
+    (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ from i)))))
+    n)
+
+  ;; The next byte (0 .. 255), or -1 at the end.
+  (fn read_byte [r:(ptr Reader)] -> i32 (pub)
+    (let c:i32 (call peek_byte r))
+    (if (gte c 0) (put r Reader.start (+ (get r Reader.start) 1)) (block))
+    c)
+
+  ;; The next byte without taking it, or -1 at the end.
+  (fn peek_byte [r:(ptr Reader)] -> i32 (pub)
+    (if (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r))) (return -1) (block))
+    (unsafe (mem.load8 (+ (get r Reader.data) (get r Reader.start)))))
+
+  ;; Moves to the next line; false at the end. A line ends at "\n" or
+  ;; "\r\n", which `line` leaves out, or at the end of the input (a last
+  ;; line with no "\n" keeps a "\r", as Rust's str::lines and text.lines do).
+  (fn next_line [r:(ptr Reader)] -> bool (pub)
+    (let scanned:i32 0)
+    (while true
+      (let s:i32 (get r Reader.start))
+      (let e:i32 (get r Reader.end))
+      (let d:i32 (get r Reader.data))
+      (let i:i32 (+ s scanned))
+      (while (and (lt i e) (neq (unsafe (mem.load8 (+ d i))) 10)) (set! i (+ i 1)))
+      (if (lt i e)
+          (block
+            (let stop:i32 (if (and (gt i s) (eq (unsafe (mem.load8 (+ d (- i 1)))) 13)) (- i 1) i))
+            (unsafe (call str.repoint (get r Reader.view) (+ d s) (- stop s)))
+            (put r Reader.start (+ i 1))
+            (return true))
+          (block))
+      (set! scanned (- e s))
+      ;; fill may move the unread bytes (to the window's start, or to a
+      ;; bigger window) even when it finds no more, so read them again
+      (if (not (call fill r))
+          (block
+            (let s2:i32 (get r Reader.start))
+            (let e2:i32 (get r Reader.end))
+            (if (eq s2 e2) (return false) (block))
+            (unsafe (call str.repoint (get r Reader.view) (+ (get r Reader.data) s2) (- e2 s2)))
+            (put r Reader.start e2)
+            (return true))
+          (block)))
+    false)
+
+  ;; The line next_line moved to, good until the next read from r.
+  (fn line [r:(ptr Reader)] -> (ptr str.Bytes) (pub)
+    (get r Reader.view))
+
+  ;; The next line (as next_line and line), or none at the end.
+  (fn read_line [r:(ptr Reader)] -> (option.Option (ptr str.Bytes)) (pub)
+    (if (call next_line r)
+        (make (option.Option (ptr str.Bytes)) some (get r Reader.view))
+        (make (option.Option (ptr str.Bytes)) none)))
+
+  ;; Appends up to max bytes (max > 0) to `into`: how many, 0 at the end,
+  ;; or -1 after a read error.
+  (fn read [r:(ptr Reader) into:(ptr buf.Buf) max:i32] -> i32 (pub)
+    (req (gt max 0))
+    (if (and (eq (get r Reader.start) (get r Reader.end)) (not (call fill r)))
+        (return (if (get r Reader.failed) -1 0))
+        (block))
+    (let s:i32 (get r Reader.start))
+    (let n:i32 (- (get r Reader.end) s))
+    (if (gt n max) (set! n max) (block))
+    (let v:(ptr str.Bytes) (get r Reader.view))
+    (unsafe (call str.repoint v (+ (get r Reader.data) s) n))
+    (call buf.push_bytes into v)
+    (put r Reader.start (+ s n))
+    n)
+
+  ;; Appends everything left to `into`: how many bytes, or -1 after a read
+  ;; error (what came before it is appended).
+  (fn read_all [r:(ptr Reader) into:(ptr buf.Buf)] -> i32 (pub)
+    (let total:i32 0)
+    (while true
+      (let n:i32 (call read r into 65536))
+      (if (lte n 0) (break) (block))
+      (set! total (+ total n)))
+    (if (get r Reader.failed) -1 total))
+
+  ;; Whether a read from the source failed.
+  (fn read_error [r:(ptr Reader)] -> bool (pub)
+    (get r Reader.failed))
+
+  ;; Frees the reader and its window, and closes the file open opened.
+  (fn close_reader [r:(ptr Reader)] -> void (pub)
+    (let a:alloc.Allocator (get r Reader.a))
+    (match (get r Reader.src)
+      (Source.fd [fd] (if (get r Reader.owns_fd) (let _c:i32 (unsafe (fs.close fd))) (block)))
+      (Source.memory (block))
+      (Source.custom [f]
+        (block
+          (call_ref (fn [alloc.Allocator i32] -> void) (get f Fill.drop_fn) a (get f Fill.cell))
+          (call buf.free (get f Fill.scratch))
+          (call (alloc.destroy Fill) a f))))
+    (if (gt (get r Reader.cap) 0) (unsafe (call alloc.free_raw a (get r Reader.data) (get r Reader.cap))) (block))
+    (call (alloc.destroy Reader) a r))
+
+  ;; ===== Writing =====
+
+  ;; A sink of your own, for its state's type C: write_fn takes the bytes
+  ;; and returns whether it took them all.
+  (struct (DrainOf C) [state:C write_fn:(fn [C (ptr str.Bytes)] -> bool)])
+  (struct Drain [cell:i32 write_fn:(fn [i32 (ptr str.Bytes)] -> bool) drop_fn:(fn [alloc.Allocator i32] -> void)])
+
+  (union Sink [(fd n:i32) (buffer) (custom d:(ptr Drain))])
+
+  ;; out holds what is not written yet; for a writer to a buf.Buf, out is
+  ;; that buffer and nothing is held back.
+  (struct Writer [sink:Sink owns_fd:bool out:(ptr buf.Buf) failed:bool view:(ptr str.Bytes) a:alloc.Allocator] (pub))
+
+  (fn make_writer [a:alloc.Allocator sink:Sink owns_fd:bool out:(ptr buf.Buf)] -> (ptr Writer)
+    (let w:(ptr Writer) (call (alloc.create Writer) a))
+    (put w Writer.sink sink)
+    (put w Writer.owns_fd owns_fd)
+    (put w Writer.out out)
+    (put w Writer.failed false)
+    (put w Writer.view (unsafe (call str.bytes 0 0)))
+    (put w Writer.a a)
+    w)
+
+  ;; Writes to file descriptor fd; close_writer leaves fd open.
+  (fn to_fd [a:alloc.Allocator fd:i32] -> (ptr Writer) (pub)
+    (call make_writer a (make Sink.fd fd) false (call buf.make a 8192)))
+
+  (fn stdout [a:alloc.Allocator] -> (ptr Writer) (pub) (call to_fd a 1))
+  (fn stderr [a:alloc.Allocator] -> (ptr Writer) (pub) (call to_fd a 2))
+
+  ;; Creates (or empties) a file to write; close_writer closes it.
+  (fn create [a:alloc.Allocator path:str] -> (result (ptr Writer) str) (pub)
+    (call create_path a (call str.from_str path)))
+
+  ;; create for a path held as bytes.
+  (fn create_path [a:alloc.Allocator path:(ptr str.Bytes)] -> (result (ptr Writer) str) (pub)
+    (let fd:i32 (unsafe (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 1)))
+    (if (lt fd 0) (return (err:(ptr Writer) (format "cannot open {path} to write"))) (block))
+    (ok:str (call make_writer a (make Sink.fd fd) true (call buf.make a 8192))))
+
+  ;; Appends to b as it is written to; close_writer leaves b.
+  (fn to_buf [a:alloc.Allocator b:(ptr buf.Buf)] -> (ptr Writer) (pub)
+    (call make_writer a (make Sink.buffer) false b))
+
+  ;; A writer into write_fn, called with `state` and the bytes whenever the
+  ;; writer writes out.
+  (fn (writer_of C) [a:alloc.Allocator state:C write_fn:(fn [C (ptr str.Bytes)] -> bool)] -> (ptr Writer) (pub)
+    (let cell:(ptr (DrainOf C)) (call (alloc.create (DrainOf C)) a))
+    (put cell (DrainOf C) state state)
+    (put cell (DrainOf C) write_fn write_fn)
+    (let d:(ptr Drain) (call (alloc.create Drain) a))
+    (put d Drain.cell (unsafe (ptr.addr cell)))
+    (put d Drain.write_fn (ref (drain_through C)))
+    (put d Drain.drop_fn (ref (drop_drain C)))
+    (call make_writer a (make Sink.custom d) false (call buf.make a 8192)))
+
+  (fn (drain_through C) [cell:i32 b:(ptr str.Bytes)] -> bool
+    (unsafe (let x:(ptr (DrainOf C)) (ptr.cast (DrainOf C) cell))
+    (call_ref (fn [C (ptr str.Bytes)] -> bool) (get x (DrainOf C) write_fn) (get x (DrainOf C) state) b)))
+
+  (fn (drop_drain C) [a:alloc.Allocator cell:i32] -> void
+    (unsafe (call (alloc.destroy (DrainOf C)) a (ptr.cast (DrainOf C) cell))))
+
+  (fn write_byte [w:(ptr Writer) c:i32] -> void (pub)
+    (if (get w Writer.failed) (return) (block))
+    (call buf.push_byte (get w Writer.out) c)
+    (call wrote w))
+
+  (fn write_bytes [w:(ptr Writer) b:(ptr str.Bytes)] -> void (pub)
+    (if (get w Writer.failed) (return) (block))
+    (call buf.push_bytes (get w Writer.out) b)
+    (call wrote w))
+
+  (fn write_str [w:(ptr Writer) s:str] -> void (pub)
+    (if (get w Writer.failed) (return) (block))
+    (call buf.push_str (get w Writer.out) s)
+    (call wrote w))
+
+  ;; The bytes not yet written out, to add to directly (buf.push_int, ...):
+  ;; call wrote after, so the writer writes out when it has 8 KB.
+  (fn buffer [w:(ptr Writer)] -> (ptr buf.Buf) (pub)
+    (get w Writer.out))
+
+  ;; Writes out what is held once it reaches 8 KB.
+  (fn wrote [w:(ptr Writer)] -> void (pub)
+    (if (gte (call buf.len (get w Writer.out)) 8192) (let _ok:bool (call flush w)) (block)))
+
+  ;; The end of (format_to w "..."): b is w's buffer.
+  (fn format_end [w:(ptr Writer) b:(ptr buf.Buf)] -> void (pub)
+    (call wrote w))
+
+  ;; Writes out everything held; false if a write has failed.
+  (fn flush [w:(ptr Writer)] -> bool (pub)
+    (let out:(ptr buf.Buf) (get w Writer.out))
+    (if (get w Writer.failed) (block (call buf.clear out) (return false)) (block))
+    (let n:i32 (call buf.len out))
+    (let base:i32 (get out buf.Buf.data))
+    (let ok:bool (match (get w Writer.sink)
+      (Sink.fd [fd]
+        (block
+          (let done:i32 0)
+          (while (lt done n)
+            (let k:i32 (unsafe (fs.write fd (+ base done) (- n done))))
+            (if (lte k 0) (break) (block))
+            (set! done (+ done k)))
+          (eq done n)))
+      (Sink.buffer true)
+      (Sink.custom [d]
+        (block
+          (unsafe (call str.repoint (get w Writer.view) base n))
+          (if (eq n 0) true (call_ref (fn [i32 (ptr str.Bytes)] -> bool) (get d Drain.write_fn) (get d Drain.cell) (get w Writer.view)))))))
+    (match (get w Writer.sink)
+      (Sink.buffer (block))
+      (else (call buf.clear out)))
+    (if (not ok) (put w Writer.failed true) (block))
+    ok)
+
+  ;; Whether a write to the sink failed.
+  (fn write_error [w:(ptr Writer)] -> bool (pub)
+    (get w Writer.failed))
+
+  ;; Flushes, frees the writer, and closes the file create opened; false
+  ;; if a write failed.
+  (fn close_writer [w:(ptr Writer)] -> bool (pub)
+    (let ok:bool (call flush w))
+    (let a:alloc.Allocator (get w Writer.a))
+    (match (get w Writer.sink)
+      (Sink.fd [fd]
+        (block
+          (if (get w Writer.owns_fd)
+              (if (lt (unsafe (fs.close fd)) 0) (set! ok false) (block))
+              (block))
+          (call buf.free (get w Writer.out))))
+      (Sink.buffer (block))
+      (Sink.custom [d]
+        (block
+          (call_ref (fn [alloc.Allocator i32] -> void) (get d Drain.drop_fn) a (get d Drain.cell))
+          (call (alloc.destroy Drain) a d)
+          (call buf.free (get w Writer.out)))))
+    (call (alloc.destroy Writer) a w)
+    ok)
+
+  ;; ===== Tests =====
+
+  ;; A source that gives its text 3 bytes at a time.
+  (struct Drip [text:(ptr str.Bytes) at:i32])
+
+  (fn drip [d:(ptr Drip) into:(ptr buf.Buf)] -> i32
+    (let t:(ptr str.Bytes) (get d Drip.text))
+    (let n:i32 0)
+    (while (and (lt n 3) (lt (get d Drip.at) (get t str.Bytes.len)))
+      (call buf.push_byte into (call str.byte_at t (get d Drip.at)))
+      (put d Drip.at (+ (get d Drip.at) 1))
+      (set! n (+ n 1)))
+    n)
+
+  ;; A sink that counts what it is given.
+  (struct Tally [bytes:i32 calls:i32])
+
+  (fn tally [t:(ptr Tally) b:(ptr str.Bytes)] -> bool
+    (put t Tally.bytes (+ (get t Tally.bytes) (get b str.Bytes.len)))
+    (put t Tally.calls (+ (get t Tally.calls) 1))
+    true)
+
+  ;; The lines of r joined with '|'.
+  (fn joined [r:(ptr Reader)] -> str
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 0))
+    (let first:bool true)
+    (while (call next_line r)
+      (if first (set! first false) (call buf.push_byte b 124))
+      (call buf.push_bytes b (call line r)))
+    (call close_reader r)
+    (let s:str (call buf.to_str b))
+    (call buf.free b)
+    s)
+
+  ;; Pass count; test_suite.aipl expects 7.
+  (fn run_stream_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let a:alloc.Allocator (call alloc.default))
+    ;; lines in memory: \n, \r\n, an empty line, a last line with no \n
+    (if (call str.same (call joined (call of_str a "one\ntwo\r\n\nthree")) "one|two||three") (set! p (+ p 1)) (block))
+    (if (call str.same (call joined (call of_str a "a\n")) "a") (set! p (+ p 1)) (block))
+    ;; a source 3 bytes at a time, lines longer than what it gives
+    (let d:(ptr Drip) (new Drip))
+    (put d Drip.text (call str.from_str "alpha\nbe\r\ngamma delta\r"))
+    (put d Drip.at 0)
+    (if (call str.same (call joined (call (reader_of (ptr Drip)) a d (ref drip))) "alpha|be|gamma delta\r") (set! p (+ p 1)) (block))
+    ;; bytes, peeking, and read_all
+    (let r:(ptr Reader) (call of_str a "xyz"))
+    (let ok:bool (and (eq (call peek_byte r) 120) (eq (call read_byte r) 120)))
+    (let rest:(ptr buf.Buf) (call buf.make a 0))
+    (if (and ok (and (eq (call read_all r rest) 2) (and (call str.same (call buf.to_str rest) "yz") (eq (call read_byte r) -1))))
+        (set! p (+ p 1)) (block))
+    (call close_reader r)
+    ;; a writer into a buffer, formatting into its buffer (as (format_to w
+    ;; ...) does in another module, where this module's names are qualified)
+    (let b:(ptr buf.Buf) (call buf.make a 0))
+    (let w:(ptr Writer) (call to_buf a b))
+    (call write_str w "n=")
+    (format_to (call buffer w) "{(+ 40 2)},{true}")
+    (call wrote w)
+    (call write_byte w 33)
+    (if (and (call close_writer w) (call str.same (call buf.to_str b) "n=42,true!")) (set! p (+ p 1)) (block))
+    ;; a custom sink gets 8 KB at a time, and the rest at close
+    (let t:(ptr Tally) (new Tally))
+    (put t Tally.bytes 0)
+    (put t Tally.calls 0)
+    (let tw:(ptr Writer) (call (writer_of (ptr Tally)) a t (ref tally)))
+    (loop i 1 10000 1 (call write_byte tw 46))
+    (if (and (call close_writer tw) (and (eq (get t Tally.bytes) 10000) (eq (get t Tally.calls) 2))) (set! p (+ p 1)) (block))
+    ;; a file written and read back, line by line
+    (match_result (call create a "_stream_test.tmp")
+      (ok fw
+        (block
+          (loop i 1 3000 1 (format_to (call buffer fw) "line {i}\n") (call wrote fw))
+          (if (call close_writer fw)
+              (match_result (call open a "_stream_test.tmp")
+                (ok fr
+                  (block
+                    (let count:i32 0)
+                    (let last:(ptr str.Bytes) (call str.from_str ""))
+                    (while (call next_line fr)
+                      (set! count (+ count 1))
+                      (if (eq count 3000) (set! last (call str.from_str (call str.from_bytes (call line fr)))) (block)))
+                    (call close_reader fr)
+                    (if (and (eq count 3000) (call str.bytes_eq last (call str.from_str "line 3000"))) (set! p (+ p 1)) (block))))
+                (err _e (block)))
+              (block))))
+      (err _e (block)))
+    (unsafe (fs.delete (str.ptr "_stream_test.tmp") (str.len "_stream_test.tmp")))
+    p))

@@ -1982,6 +1982,9 @@
       (ast.Type.ptr [i] (match i (ast.Type.struct_ [n] (call lit n name)) (else false)))
       (else false)))
 
+  ;; Whether format_to's target t is a (ptr stream.Writer) (fmtlower).
+  (fn is_writer [t:ast.Type] -> bool (pub) (call ptr_to t "stream.Writer"))
+
   (fn printable [t:ast.Type] -> bool
     (or (lte (call tag t) 5) (or (eq (call tag t) 12) (call ptr_to t "str.Bytes"))))
 
@@ -1994,14 +1997,30 @@
           (if (eq (arr.len args) 0)
               (block (call fail_str c at "format_to takes a buffer and a string literal, e.g. (format_to b \"n = {n}\")") (return (call void_t)))
               (block))
-          (let bt:ast.Type (call infer c (arr.get ast.Expr args 0) env))
+          (let target:ast.Expr (arr.get ast.Expr args 0))
+          (let bt:ast.Type (call infer c target env))
           (if (get c C.failed) (return (call void_t)) (block))
-          (if (not (call ptr_to bt "buf.Buf"))
+          (let writer:bool (call ptr_to bt "stream.Writer"))
+          (if (not (or writer (call ptr_to bt "buf.Buf")))
               (block
                 (let b:(ptr buf.Buf) (call msg c at))
-                (call s b "format_to writes to a (ptr buf.Buf), got ") (call ty b bt)
+                (call s b "format_to writes to a (ptr buf.Buf) or a (ptr stream.Writer), got ") (call ty b bt)
                 (call fail c b)
                 (return (call void_t)))
+              (block))
+          ;; a writer is named twice once lowered (its buffer, then the
+          ;; flush check), so it must be a variable
+          (if (and writer (match target (ast.Expr.var [_ _] false) (else true)))
+              (block (call fail_str c at "format_to takes a (ptr stream.Writer) as a variable: bind it with let first") (return (call void_t)))
+              (block))
+          (if (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
+              (block
+                (let f:(ptr Fmt) (new Fmt))
+                (put f Fmt.at (call ast.at target))
+                (put f Fmt.k -1)
+                (put f Fmt.ty bt)
+                (put f Fmt.members (arr.null (ptr ast.Member)))
+                (call (vec.push (ptr Fmt)) (get c C.fmts) f))
               (block))
           (set! first 1))
         (block))

@@ -2767,7 +2767,7 @@ fn emit_grow_to_cursor(func: &mut Body) {
 
 /// `ok`/`err`: allocate a cell `[tag:i32 payload]` (tag 0 = ok, 1 = err;
 /// checker::result_cell_layout: the payload at 4 in 8 bytes, or a 64-bit one
-/// at 8 in 16) from the heap cursor before evaluating the payload, and leave
+/// (i64, f64, a pointer, an array) at 8 in 16) from the heap cursor before evaluating the payload, and leave
 /// the cell pointer on the stack. The pointer is pushed twice before the
 /// payload is compiled, so a payload that itself uses the scratch local
 /// cannot clobber it. The VM allocates the same cell in the same order.

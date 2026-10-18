@@ -179,8 +179,9 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
   runtime (`word_count` is 104 KB).
 - **A standard library** with printing and file I/O, `"x = {x}"`
   formatting (built into the language), strings and text (search, split,
-  join, replace, trim, case, UTF-8), number formatting and exact float
-  parsing, JSON, directory listing, growable
+  join, replace, trim, case, UTF-8), streams (files, standard input and
+  output, and memory, read a line at a time and written through a buffer),
+  number formatting and exact float parsing, JSON, directory listing, growable
   vectors, hash maps, a string builder, big integers, UTC dates and ISO
   8601, timing, and allocators. Memory you free comes from an allocator you pass explicitly,
   as in Zig: a general-purpose heap that stops the program on a double free
@@ -249,7 +250,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **367 Rust tests** and an AIPL test suite, run on every push by CI.
+- **370 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500
