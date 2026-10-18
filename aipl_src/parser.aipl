@@ -20,7 +20,7 @@
   (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
               arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_ with_
-              ptr_make arr_make ptr_gen arr_gen])
+              ptr_make arr_make ptr_gen arr_gen fmt_surface])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
              unions:(ptr (map.Map (ptr str.Bytes) i32))
@@ -697,6 +697,13 @@
        (let path:(ptr (vec.Vec (ptr ast.Step))) (call (vec.make (ptr ast.Step)) (call alloc.default) 2))
        (let val:ast.Expr (call path_and_value p "arr.set" at path))
        (make ast.Expr.arr_set at ty a ix val (call (to_arr (ptr ast.Step)) path)))
+      ((eq form Form.fmt_surface)
+       (let b:(ptr buf.Buf) (call msg p at))
+       (call buf.push_str b "(")
+       (call buf.push_bytes b head)
+       (call buf.push_str b " ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse")
+       (call fail p b)
+       (call placeholder at))
       ((eq form Form.mem_free)
        (call fail_str p at "there is no mem.free: memory from mem.alloc is never freed. Free single objects with std/heap, or everything in a region at once with std/arena")
        (call placeholder at))
@@ -944,6 +951,8 @@
     (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free) (call form m "with" Form.with_)
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)
+    (call form m "format" Form.fmt_surface) (call form m "format_to" Form.fmt_surface) (call form m "print" Form.fmt_surface)
+    (call form m "println" Form.fmt_surface) (call form m "eprintln" Form.fmt_surface)
     m)
 
   (fn op [m:(ptr (map.Map (ptr str.Bytes) i32)) s:str o:ast.Op] -> void
@@ -961,6 +970,10 @@
     (call op m "mem.load16_s" ast.Op.mem_load16_s) (call op m "mem.store16" ast.Op.mem_store16)
     (call op m "mem.alloc" ast.Op.mem_alloc) (call op m "mem.grow" ast.Op.mem_grow)
     (call op m "str.len" ast.Op.str_len) (call op m "str.ptr" ast.Op.str_ptr)
+    (call op m "format.str" ast.Op.format_str) (call op m "format.to" ast.Op.format_to)
+    (call op m "format.print" ast.Op.format_print) (call op m "format.println" ast.Op.format_println)
+    (call op m "format.eprintln" ast.Op.format_eprintln) (call op m "format.piece" ast.Op.format_piece)
+    (call op m "try" ast.Op.try_) (call op m "try_opt" ast.Op.try_opt) (call op m "try_or" ast.Op.try_or) (call op m "defer" ast.Op.defer)
     (call op m "atomic.add" ast.Op.atomic_add) (call op m "atomic.cas" ast.Op.atomic_cas)
     (call op m "atomic.lock" ast.Op.atomic_lock) (call op m "atomic.unlock" ast.Op.atomic_unlock)
     (call op m "eq" ast.Op.eq) (call op m "neq" ast.Op.neq) (call op m "lt" ast.Op.lt) (call op m "lte" ast.Op.lte)

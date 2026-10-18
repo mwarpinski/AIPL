@@ -1,0 +1,32 @@
+(module defer_edges
+  (import option)
+  (fn h [n:i32] -> (option.Option i32) (if (gt n 0) (make (option.Option i32) some n) (make (option.Option i32) none)))
+  (fn trailing [n:i32] -> i32
+    (println "trailing {n}")
+    (if (lt n 0) (return -1) (* n 3))
+    (defer (println "  trailing's defer")))
+  (fn inner_return [n:i32] -> i32
+    (defer (println "  inner_return's defer {n}"))
+    (if (gt n 5) (return 100) (+ n 1)))
+  (fn only_defers [] -> void
+    (defer (println "  only a defer") (println "  second statement")))
+  (fn opt [n:i32] -> (option.Option i32)
+    (defer (println "  opt's defer"))
+    (let v:i32 (try_opt (call h n)))
+    (make (option.Option i32) some (* v 10)))
+  (fn middle [n:i32] -> void
+    (defer (println "  middle's first defer"))
+    (if (eq n 0) (return) (block))
+    (defer (println "  middle's second defer"))
+    (println "  middle body {n}"))
+  (fn main [] -> i32
+    (println "{(call trailing 2)}")
+    (println "{(call trailing -2)}")
+    (println "{(call inner_return 3)}")
+    (println "{(call inner_return 9)}")
+    (call only_defers)
+    (match (call opt 4) ((option.Option i32) some [v] (println "opt {v}")) ((option.Option i32) none (println "opt none")))
+    (match (call opt 0) ((option.Option i32) some [v] (println "opt {v}")) ((option.Option i32) none (println "opt none")))
+    (call middle 0)
+    (call middle 1)
+    0))

@@ -1,0 +1,23 @@
+(module defer_basics
+  (import buf)
+  (import alloc)
+  (fn d [c:i32] -> (result i32 str) (if (lt c 10) (ok:str c) (err:i32 "big")))
+  (fn work [n:i32] -> (result i32 str)
+    (println "start {n}")
+    (defer (println "first defer {n}"))
+    (if (eq n 0) (return (ok:str -1)) (block))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (defer (call buf.free b) (println "freed the buffer"))
+    (let v:i32 (try (call d n)))
+    (format_to b "v={v}")
+    (println "{(call buf.bytes b)}")
+    (ok:str (* v 2)))
+  (fn noisy [] -> void
+    (defer (println "noisy done"))
+    (loop i 1 3 1 (if (eq i 2) (return) (println "i={i}"))))
+  (fn main [] -> i32
+    (match_result (call work 4) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call work 0) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (match_result (call work 12) (ok v (println "ok {v}")) (err e (println "err {e}")))
+    (call noisy)
+    0))

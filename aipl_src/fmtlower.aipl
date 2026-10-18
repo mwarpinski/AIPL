@@ -1,0 +1,443 @@
+;; The formatting forms and the early returns lowered (formats.rs lower), in
+;; the text the code generator compiles. Once the program checks, each
+;;
+;;   (format.println "x = " (format.piece x ">4") "!")
+;;
+;; becomes the std/show calls a programmer would write, each piece's
+;; function chosen by the type the checker noted for its value (checker.Fmt):
+;;
+;;   (call show.println (call show.lit (call show.put_i32 (call show.lit (call show.start) "x = ") x 8388612) "!"))
+;;
+;; and (try r), (try_opt o), (try_or o e) become match_result / match with
+;; an early return. Everything else is copied as it is. `low` notes where
+;; each printed token came from (places.aipl maps compiled code back
+;; through it).
+(module fmtlower
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import compiler)
+  (import origins)
+  (import ast)
+  (import checker)
+  (import fmtsplit)
+
+  ;; fn: the function the tokens being printed are in; tries: the early
+  ;; returns lowered in it so far (each names its own variables).
+  ;; defers: the current function's defers met so far (their '(' tokens),
+  ;; which each return after them runs first; rets: the returns so wrapped.
+  (struct L [src:i32 toks:i32 n:i32 out:(ptr buf.Buf) low:(ptr origins.Origins) fmts:(ptr (vec.Vec (ptr checker.Fmt)))
+             fn_at:i32 tries:i32 defers:(ptr (vec.Vec i32)) rets:i32])
+
+  (fn tok [l:(ptr L) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get l L.toks) i))
+  (fn kind [l:(ptr L) i:i32] -> compiler.Kind
+    (if (and (gte i 0) (lt i (get l L.n))) (get (call tok l i) compiler.Token.kind) compiler.Kind.none))
+  (fn pos [l:(ptr L) i:i32] -> i32 (get (call tok l i) compiler.Token.pos))
+  (fn is_open [l:(ptr L) i:i32] -> bool (or (eq (call kind l i) compiler.Kind.lparen) (eq (call kind l i) compiler.Kind.lbracket)))
+  (fn is_close [l:(ptr L) i:i32] -> bool (or (eq (call kind l i) compiler.Kind.rparen) (eq (call kind l i) compiler.Kind.rbracket)))
+
+  (fn sym_is [l:(ptr L) i:i32 s:str] -> bool
+    (and (eq (call kind l i) compiler.Kind.symbol)
+         (call compiler.span_is (get l L.src) (get (call tok l i) compiler.Token.a) (get (call tok l i) compiler.Token.b) s)))
+
+  ;; The index after the element at i.
+  (fn elem_end [l:(ptr L) i:i32] -> i32
+    (if (not (call is_open l i)) (return (+ i 1)) (block))
+    (let depth:i32 0)
+    (let k:i32 i)
+    (while (lt k (get l L.n))
+      (if (call is_open l k) (set! depth (+ depth 1)) (block))
+      (if (call is_close l k) (set! depth (- depth 1)) (block))
+      (set! k (+ k 1))
+      (if (eq depth 0) (return k) (block)))
+    k)
+
+  ;; Copies the input's bytes [from, to) and notes every token starting
+  ;; there (from token first_tok) at its own offset.
+  (fn copy [l:(ptr L) from:i32 to:i32 first_tok:i32] -> void
+    (unsafe (let out:(ptr buf.Buf) (get l L.out))
+    (let i:i32 first_tok)
+    (let at:i32 from)
+    (while (and (lt i (get l L.n)) (lt (call pos l i) to))
+      (let p:i32 (call pos l i))
+      (loop k at (- p 1) 1 (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))
+      (call origins.note (get l L.low) out -1 p)
+      (set! at p)
+      (set! i (+ i 1)))
+    (loop k at (- to 1) 1 (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))))
+
+  ;; The input's bytes [from, to), not noted (a type inside generated text).
+  (fn raw [l:(ptr L) from:i32 to:i32] -> void
+    (unsafe (loop k from (- to 1) 1 (call buf.push_byte (get l L.out) (mem.load8 (+ (get l L.src) k))))))
+
+  ;; Generated text, at the form's place.
+  (fn gen [l:(ptr L) at:i32 s:str] -> void
+    (call origins.note (get l L.low) (get l L.out) -1 at)
+    (call buf.push_str (get l L.out) s))
+
+  ;; The formatting ops 0-4, the early returns 5-7, or -1, for the head at i.
+  (fn form [l:(ptr L) i:i32] -> i32
+    (cond
+      ((call sym_is l i "format.str") 0) ((call sym_is l i "format.to") 1) ((call sym_is l i "format.print") 2)
+      ((call sym_is l i "format.println") 3) ((call sym_is l i "format.eprintln") 4)
+      ((call sym_is l i "try") 5) ((call sym_is l i "try_opt") 6) ((call sym_is l i "try_or") 7) (else -1)))
+
+  (fn lowers [l:(ptr L) g:i32] -> bool
+    (or (and (eq (call kind l g) compiler.Kind.lparen) (gte (call form l (+ g 1)) 0))
+        (and (call wrapping l) (and (eq (call kind l g) compiler.Kind.lparen) (call sym_is l (+ g 1) "return")))))
+
+  (fn wrapping [l:(ptr L)] -> bool (gt (call (vec.len i32) (get l L.defers)) 0))
+
+  ;; Bytes [start, end), holding tokens [from, to), with every form in them
+  ;; lowered. A (fn ...) starts a function: its early returns are counted
+  ;; afresh.
+  (fn emit [l:(ptr L) from:i32 to:i32 start:i32 end:i32] -> void
+    (let cursor:i32 start)
+    (let ct:i32 from)
+    (let i:i32 from)
+    (while (lt i to)
+      (cond
+        ;; a [...] list holds no expression: an enum member (try 1) is no form
+        ((eq (call kind l i) compiler.Kind.lbracket) (set! i (call elem_end l i)))
+        ((call lowers l i)
+         (call copy l cursor (call pos l i) ct)
+         (call lower_form l i (call form l (+ i 1)))
+         (let e:i32 (call elem_end l i))
+         (set! cursor (+ (call pos l (- e 1)) 1))
+         (set! ct e)
+         (set! i e))
+        (else
+         (if (and (eq (call kind l i) compiler.Kind.lparen) (call sym_is l (+ i 1) "fn"))
+             (block
+               (put l L.fn_at i) (put l L.tries 0) (put l L.rets 0)
+               (call (vec.clear i32) (get l L.defers))
+               (if (call has_defers l i)
+                   (block
+                     (call copy l cursor (call pos l i) ct)
+                     (call emit_fn l i)
+                     (let fe:i32 (call elem_end l i))
+                     (set! cursor (+ (call pos l (- fe 1)) 1))
+                     (set! ct fe)
+                     (set! i fe))
+                   (set! i (+ i 1))))
+             (set! i (+ i 1))))))
+    (call copy l cursor end ct))
+
+  ;; The element at i, lowered, with the space after it (up to the next
+  ;; token: inside a form there always is one).
+  (fn emit_elem [l:(ptr L) i:i32] -> void
+    (let e:i32 (call elem_end l i))
+    (call emit l i e (call pos l i) (call pos l e)))
+
+  ;; The noted type of the value whose first token is at offset at.
+  (fn fmt_at [l:(ptr L) at:i32] -> (ptr checker.Fmt)
+    (let fs:(ptr (vec.Vec (ptr checker.Fmt))) (get l L.fmts))
+    (loop k 0 (- (call (vec.len (ptr checker.Fmt)) fs) 1) 1
+      (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fs k))
+      (if (eq (get f checker.Fmt.at) at) (return f) (block)))
+    (ptr.null checker.Fmt))
+
+  (fn put_fn [t:ast.Type] -> str
+    (match t
+      (ast.Type.i32 "show.put_i32") (ast.Type.i64 "show.put_i64") (ast.Type.f32 "show.put_f32") (ast.Type.f64 "show.put_f64")
+      (ast.Type.bool "show.put_bool") (ast.Type.str "show.put_str") (ast.Type.enum_ [_] "show.put_str")
+      (else "show.put_bytes")))
+
+  (fn lower_form [l:(ptr L) g:i32 op:i32] -> void
+    (cond
+      ((call sym_is l (+ g 1) "return") (call lower_return l g))
+      ((gte op 5) (call lower_try l g op))
+      (else (call lower_format l g op))))
+
+  ;; ===== Defers (formats.rs lower_defers) =====
+
+  ;; The first statement of function f's body: after the header (fn NAME
+  ;; [params] -> RET) and its clauses (req, ens, inv, (unsafe)).
+  (fn body_start [l:(ptr L) f:i32] -> i32
+    (let c:i32 (+ f 1))
+    (while (neq (call kind l c) compiler.Kind.arrow) (set! c (call elem_end l c)))
+    (set! c (call elem_end l (+ c 1)))
+    (while (and (eq (call kind l c) compiler.Kind.lparen)
+                (or (or (call sym_is l (+ c 1) "req") (call sym_is l (+ c 1) "ens"))
+                    (or (call sym_is l (+ c 1) "inv") (and (call sym_is l (+ c 1) "unsafe") (call is_close l (+ c 2))))))
+      (set! c (call elem_end l c)))
+    c)
+
+  (fn is_defer [l:(ptr L) i:i32] -> bool
+    (and (eq (call kind l i) compiler.Kind.lparen) (call sym_is l (+ i 1) "defer")))
+
+  (fn has_defers [l:(ptr L) f:i32] -> bool
+    (let close:i32 (- (call elem_end l f) 1))
+    (let c:i32 (call body_start l f))
+    (while (lt c close)
+      (if (call is_defer l c) (return true) (block))
+      (set! c (call elem_end l c)))
+    false)
+
+  ;; Whether the element at i always leaves (checker.rs diverges).
+  (fn diverges [l:(ptr L) i:i32] -> bool
+    (if (neq (call kind l i) compiler.Kind.lparen) (return false) (block))
+    (cond
+      ((or (call sym_is l (+ i 1) "return") (or (call sym_is l (+ i 1) "break") (call sym_is l (+ i 1) "continue"))) true)
+      ((or (call sym_is l (+ i 1) "block") (call sym_is l (+ i 1) "unsafe"))
+       (let close:i32 (- (call elem_end l i) 1))
+       (let c:i32 (+ i 2))
+       (let last:i32 -1)
+       (while (lt c close) (set! last c) (set! c (call elem_end l c)))
+       (and (gte last 0) (call diverges l last)))
+      ((call sym_is l (+ i 1) "if")
+       (let th:i32 (call elem_end l (+ i 2)))
+       (and (call diverges l th) (call diverges l (call elem_end l th))))
+      (else false)))
+
+  ;; The defers met so far, the last first, each statement in order.
+  (fn emit_defers [l:(ptr L)] -> void
+    (let ds:(ptr (vec.Vec i32)) (get l L.defers))
+    (loop j 0 (- (call (vec.len i32) ds) 1) 1
+      (let d:i32 (call (vec.at i32) ds (- (- (call (vec.len i32) ds) 1) j)))
+      (let close:i32 (- (call elem_end l d) 1))
+      (let c:i32 (+ d 2))
+      (while (lt c close)
+        (call buf.push_byte (get l L.out) 32)
+        (call emit_elem l c)
+        (set! c (call elem_end l c)))))
+
+  ;; The function's return type as written.
+  (fn emit_ret_type [l:(ptr L)] -> void
+    (let re:i32 (call ret_elem l))
+    (call raw l (call pos l re) (call pos l (call elem_end l re))))
+
+  ;; A return after a defer: (block (let _defer_ret_N:R v) D... (return
+  ;; _defer_ret_N)), or (block D... (return)).
+  (fn lower_return [l:(ptr L) g:i32] -> void
+    (let at:i32 (call pos l g))
+    (let v:i32 (+ g 2))
+    (if (call is_close l v)
+        (block (call gen l at "(block") (call emit_defers l) (call gen l at " (return))"))
+        (block
+          (let n:i32 (call begin_return l at))
+          (call emit_elem l v)
+          (call end_return l at n))))
+
+  ;; The start of a return whose value follows: plain, or with the defers.
+  (fn begin_return [l:(ptr L) at:i32] -> i32
+    (if (not (call wrapping l)) (block (call gen l at "(return ") (return -1)) (block))
+    (put l L.rets (+ (get l L.rets) 1))
+    (call gen l at "(block (let _defer_ret_")
+    (call buf.push_int (get l L.out) (get l L.rets))
+    (call buf.push_byte (get l L.out) 58)
+    (call emit_ret_type l)
+    (call buf.push_byte (get l L.out) 32)
+    (get l L.rets))
+
+  (fn end_return [l:(ptr L) at:i32 n:i32] -> void
+    (if (lt n 0) (block (call buf.push_byte (get l L.out) 41) (return)) (block))
+    (call buf.push_byte (get l L.out) 41)
+    (call emit_defers l)
+    (call gen l at " (return _defer_ret_")
+    (call buf.push_int (get l L.out) n)
+    (call buf.push_str (get l L.out) "))"))
+
+  ;; A function with defers: its header and clauses as they are, then each
+  ;; statement, a defer joining the defers; the last statement's value is
+  ;; kept while every defer runs (those after it too), returns inside it
+  ;; running only those before (formats.rs lower_defers).
+  (fn emit_fn [l:(ptr L) f:i32] -> void
+    (let close:i32 (- (call elem_end l f) 1))
+    (let bs:i32 (call body_start l f))
+    ;; from the '(' (the scan from the next token: this is not a new function)
+    (call emit l (+ f 1) bs (call pos l f) (call pos l bs))
+    ;; the last statement that is not a defer
+    (let last:i32 -1)
+    (let c:i32 bs)
+    (while (lt c close) (if (not (call is_defer l c)) (set! last c) (block)) (set! c (call elem_end l c)))
+    (set! c bs)
+    (let void_fn:bool (call sym_is l (call ret_elem l) "void"))
+    ;; 0: the value is the last statement's; 1: it was kept in _defer_val
+    (let kept:i32 0)
+    (let last_at:i32 0)
+    (while (lt c close)
+      (cond
+        ((call is_defer l c) (call (vec.push i32) (get l L.defers) c))
+        ((and (eq c last) (and (not void_fn) (not (call diverges l c))))
+         (set! last_at (call pos l c))
+         (call gen l last_at " (let _defer_val:")
+         (call emit_ret_type l)
+         (call buf.push_byte (get l L.out) 32)
+         (call emit_elem l c)
+         (call buf.push_byte (get l L.out) 41)
+         (set! kept 1))
+        ((and (eq c last) (call diverges l c))
+         (call buf.push_byte (get l L.out) 32)
+         (call emit_elem l c)
+         (set! kept 2))
+        (else (call buf.push_byte (get l L.out) 32) (call emit_elem l c)))
+      (set! c (call elem_end l c)))
+    ;; the defers after the value, unless the body always leaves
+    (if (neq kept 2) (call emit_defers l) (block))
+    (if (eq kept 1) (call gen l last_at " _defer_val") (block))
+    (call copy l (call pos l close) (+ (call pos l close) 1) close))
+
+  ;; ===== Formatting =====
+
+  (fn lower_format [l:(ptr L) g:i32 op:i32] -> void
+    (let at:i32 (call pos l g))
+    (let close:i32 (- (call elem_end l g) 1))
+    (let args:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    (let c:i32 (+ g 2))
+    (while (lt c close) (call (vec.push i32) args c) (set! c (call elem_end l c)))
+    (let first:i32 (if (eq op 1) 1 0))
+    (let n:i32 (call (vec.len i32) args))
+    ;; outermost first: the ending, then one call per piece
+    (call gen l at (cond ((eq op 0) "(call show.done ") ((eq op 1) "(call show.end_to ") ((eq op 2) "(call show.print ")
+                         ((eq op 3) "(call show.println ") (else "(call show.eprintln ")))
+    (loop j 0 (- (- n first) 1) 1
+      (let a:i32 (call (vec.at i32) args (- (- n 1) j)))
+      (if (eq (call kind l a) compiler.Kind.string)
+          (call gen l at "(call show.lit ")
+          (block
+            (let f:(ptr checker.Fmt) (call fmt_at l (call pos l (+ a 2))))
+            (call gen l at "(call ")
+            (call buf.push_str (get l L.out) (call put_fn (get f checker.Fmt.ty)))
+            (call buf.push_byte (get l L.out) 32))))
+    ;; the start: the buffer as written, or a new one
+    (if (eq op 1)
+        (call emit_elem l (call (vec.at i32) args 0))
+        (call gen l at "(call show.start)"))
+    ;; each piece's own arguments, then its call's ')'
+    (loop j first (- n 1) 1
+      (let a:i32 (call (vec.at i32) args j))
+      (call buf.push_byte (get l L.out) 32)
+      (if (eq (call kind l a) compiler.Kind.string)
+          (call emit_elem l a)
+          (block
+            (let v:i32 (+ a 2))
+            (let ve:i32 (call elem_end l v))
+            (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
+            (let enum_name:(ptr str.Bytes) (match (get f checker.Fmt.ty) (ast.Type.enum_ [e] e) (else (ptr.null str.Bytes))))
+            (if (neq enum_name (ptr.null str.Bytes)) (call gen l at "(match ") (block))
+            (call emit_elem l v)
+            (if (neq enum_name (ptr.null str.Bytes))
+                (block
+                  (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
+                  (loop k 0 (- (arr.len ms) 1) 1
+                    (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
+                    (call gen l at " (")
+                    (call buf.push_bytes (get l L.out) enum_name)
+                    (call buf.push_byte (get l L.out) 46)
+                    (call buf.push_bytes (get l L.out) mn)
+                    (call buf.push_str (get l L.out) " \"")
+                    (call buf.push_bytes (get l L.out) mn)
+                    (call buf.push_str (get l L.out) "\")"))
+                  (call buf.push_byte (get l L.out) 41))
+                (block))
+            ;; the spec word, from the piece's format string
+            (let st:(ptr compiler.Token) (call tok l ve))
+            (let sp:(ptr fmtsplit.Spec) (unsafe (call fmtsplit.spec (call str.bytes (+ (get l L.src) (get st compiler.Token.a)) (get st compiler.Token.b)))))
+            (call gen l at " ")
+            (call buf.push_int (get l L.out) (call fmtsplit.word sp))))
+      (call buf.push_byte (get l L.out) 41))
+    (call buf.push_byte (get l L.out) 41))
+
+  ;; ===== Early returns =====
+
+  ;; The tries in tokens [from, to), lowered before the one around them.
+  (fn tries_in [l:(ptr L) from:i32 to:i32] -> i32
+    (let k:i32 0)
+    (loop i from (- to 2) 1
+      (if (and (eq (call kind l i) compiler.Kind.lparen) (gte (call form l (+ i 1)) 5)) (set! k (+ k 1)) (block)))
+    k)
+
+  ;; The current function's return type: the element after its ->.
+  (fn ret_elem [l:(ptr L)] -> i32
+    (let c:i32 (+ (get l L.fn_at) 1))
+    (while (and (lt c (get l L.n)) (neq (call kind l c) compiler.Kind.arrow)) (set! c (call elem_end l c)))
+    (+ c 1))
+
+  ;; (try r) as (match_result r (ok _try_N _try_N) (err _try_err_N (return
+  ;; (err:R _try_err_N)))); (try_opt o) as (match o (U.some [_try_N]
+  ;; _try_N) (U.none (return (make RU.none)))); (try_or o e) the same with
+  ;; (return (err:R e)). R is the function's ok type, RU its Option, U the
+  ;; operand's. N counts the function's tries, inner ones first.
+  (fn lower_try [l:(ptr L) g:i32 op:i32] -> void
+    (unsafe (let at:i32 (call pos l g))
+    (let v:i32 (+ g 2))
+    (let ve:i32 (call elem_end l v))
+    (let n:i32 (+ (+ (get l L.tries) (call tries_in l v (- (call elem_end l g) 1))) 1))
+    (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 8))
+    (call buf.push_int nb n)
+    (let num:(ptr str.Bytes) (call buf.bytes nb))
+    (let re:i32 (call ret_elem l))
+    ;; R: the second element of (result R E)
+    (let r:i32 (+ re 2))
+    (let rend:i32 (call pos l (call elem_end l r)))
+    (if (eq op 5)
+        (block
+          (call gen l at "(match_result ")
+          (call emit_elem l v)
+          (call gen l at "(ok _try_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_str (get l L.out) " _try_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_str (get l L.out) ") (err _try_err_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_byte (get l L.out) 32)
+          (let k:i32 (call begin_return l at))
+          (call buf.push_str (get l L.out) "(err:")
+          (call raw l (call pos l r) rend)
+          (call gen l at " _try_err_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_byte (get l L.out) 41)
+          (call end_return l at k)
+          (call buf.push_str (get l L.out) "))"))
+        (block
+          (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
+          (let u:(ptr str.Bytes) (match (get f checker.Fmt.ty) (ast.Type.union_ [nm] nm) (else (call str.from_str ""))))
+          (call gen l at "(match ")
+          (call emit_elem l v)
+          (call gen l at "(")
+          (call buf.push_bytes (get l L.out) u)
+          (call buf.push_str (get l L.out) ".some [_try_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_str (get l L.out) "] _try_") (call buf.push_bytes (get l L.out) num)
+          (call buf.push_str (get l L.out) ") (")
+          (call buf.push_bytes (get l L.out) u)
+          (call buf.push_str (get l L.out) ".none ")
+          (let k:i32 (call begin_return l at))
+          (if (eq op 6)
+              (block
+                ;; RU: the return type, one name (option.Option<T>)
+                (let rt:(ptr compiler.Token) (call tok l re))
+                (call buf.push_str (get l L.out) "(make ")
+                (call raw l (get rt compiler.Token.a) (+ (get rt compiler.Token.a) (get rt compiler.Token.b)))
+                (call gen l at ".none)"))
+              (block
+                (call buf.push_str (get l L.out) "(err:")
+                (call raw l (call pos l r) rend)
+                (call buf.push_byte (get l L.out) 32)
+                (call emit_elem l ve)
+                (call gen l at ")")))
+          (call end_return l at k)
+          (call buf.push_str (get l L.out) "))")))
+    (put l L.tries n)))
+
+  ;; The program at (src, len) with its forms lowered into out, noting places
+  ;; in low; false (out untouched) when it has none.
+  (fn lower [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt))) out:(ptr buf.Buf) low:(ptr origins.Origins)] -> bool (pub)
+    (unsafe (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
+    (let l:(ptr L) (new L))
+    (put l L.src src)
+    (put l L.toks toks)
+    (put l L.n (call compiler.tokenize src len toks))
+    (put l L.out out)
+    (put l L.low low)
+    (put l L.fmts fmts)
+    (put l L.fn_at 0)
+    (put l L.tries 0)
+    (put l L.defers (call (vec.make i32) (call alloc.default) 4))
+    (put l L.rets 0)
+    (let any:bool false)
+    (let square:i32 0)
+    (loop i 0 (- (get l L.n) 2) 1
+      (if (eq (call kind l i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
+      (if (eq (call kind l i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
+      (if (and (eq square 0) (call lowers l i)) (set! any true) (block)))
+    (if (not any) (return false) (block))
+    (call emit l 0 (get l L.n) 0 len)
+    true)))

@@ -1,0 +1,19 @@
+trailing 2
+  trailing's defer
+6
+trailing -2
+-1
+  inner_return's defer 3
+4
+  inner_return's defer 9
+100
+  only a defer
+  second statement
+  opt's defer
+opt 40
+  opt's defer
+opt none
+  middle's first defer
+  middle body 1
+  middle's second defer
+  middle's first defer

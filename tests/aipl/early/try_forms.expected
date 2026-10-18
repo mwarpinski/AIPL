@@ -1,0 +1,8 @@
+two 42 = 42
+err not a digit
+quarter 12 = 3
+quarter 6: none
+half_or 8 = 1004
+half_or 7: odd
+nested 14 = 7
+nested 30: not a digit

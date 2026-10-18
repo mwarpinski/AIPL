@@ -35,6 +35,9 @@ const EXPECTED: &[(&str, i32)] = &[
     ("file_demo", 1),
     ("word_count", -1), // no input.txt in the scratch directory
     ("shapes", 28),
+    ("formatting", 0),
+    ("parse_two", 42),
+    ("cleanup", 3),
     ("geom", 15),
     ("tokens_demo", 110),
     ("unsafe_demo", 42),

@@ -1,0 +1,104 @@
+;; std/utf8: text one character (Unicode scalar value) at a time, over byte
+;; slices. A str is UTF-8 by construction; a (ptr str.Bytes) from a file may
+;; not be (str.valid_utf8 checks).
+;;
+;;   (let i:i32 0)
+;;   (while (lt i (get b str.Bytes.len))
+;;     (let ch:utf8.Char (call utf8.decode b i))
+;;     ... (get ch utf8.Char.cp) ...
+;;     (set! i (+ i (call utf8.step ch))))
+(module utf8
+  (import str)
+  (import buf)
+  (import alloc)
+
+  ;; The character at a byte index: its code point and its length in bytes
+  ;; (1-4); len 0 when the bytes there are not UTF-8 (cp is the byte).
+  (struct Char [(read cp:i32) (read len:i32)] (value) (pub))
+
+  ;; The bytes to move past ch: its length, or 1 past a byte that is not UTF-8.
+  (fn step [ch:Char] -> i32 (pub) (if (eq (get ch Char.len) 0) 1 (get ch Char.len)))
+
+  ;; The character starting at byte i of b (as str.valid_utf8 decides what
+  ;; is UTF-8: no overlong forms, no surrogates, nothing past U+10FFFF).
+  (fn decode [b:(ptr str.Bytes) i:i32] -> Char (pub)
+    (req (and (gte i 0) (lt i (get b str.Bytes.len))))
+    (let n:i32 (get b str.Bytes.len))
+    (let c:i32 (call str.byte_at b i))
+    (if (lt c 128) (return (make Char c 1)) (block))
+    (let need:i32 (cond ((and (gte c 194) (lte c 223)) 1) ((and (gte c 224) (lte c 239)) 2) ((and (gte c 240) (lte c 244)) 3) (else -1)))
+    (if (or (lt need 0) (gte (+ i need) n)) (return (make Char c 0)) (block))
+    (let lo:i32 (cond ((eq c 224) 160) ((eq c 240) 144) (else 128)))
+    (let hi:i32 (cond ((eq c 237) 159) ((eq c 244) 143) (else 191)))
+    (let c1:i32 (call str.byte_at b (+ i 1)))
+    (if (or (lt c1 lo) (gt c1 hi)) (return (make Char c 0)) (block))
+    (let cp:i32 (bitand c (cond ((eq need 1) 31) ((eq need 2) 15) (else 7))))
+    (set! cp (bitor (shl cp 6) (bitand c1 63)))
+    (loop k 2 need 1
+      (let ck:i32 (call str.byte_at b (+ i k)))
+      (if (or (lt ck 128) (gt ck 191)) (return (make Char c 0)) (block))
+      (set! cp (bitor (shl cp 6) (bitand ck 63))))
+    (make Char cp (+ need 1)))
+
+  ;; Whether cp is a Unicode scalar value (0 .. 0x10FFFF, not a surrogate).
+  (fn scalar [cp:i32] -> bool (pub)
+    (and (and (gte cp 0) (lte cp 1114111)) (not (and (gte cp 55296) (lte cp 57343)))))
+
+  ;; Appends cp's UTF-8 bytes.
+  (fn encode [out:(ptr buf.Buf) cp:i32] -> void (pub)
+    (req (call scalar cp))
+    (cond
+      ((lt cp 128) (call buf.push_byte out cp))
+      ((lt cp 2048)
+       (call buf.push_byte out (bitor 192 (shr cp 6)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))
+      ((lt cp 65536)
+       (call buf.push_byte out (bitor 224 (shr cp 12)))
+       (call buf.push_byte out (bitor 128 (bitand (shr cp 6) 63)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))
+      (else
+       (call buf.push_byte out (bitor 240 (shr cp 18)))
+       (call buf.push_byte out (bitor 128 (bitand (shr cp 12) 63)))
+       (call buf.push_byte out (bitor 128 (bitand (shr cp 6) 63)))
+       (call buf.push_byte out (bitor 128 (bitand cp 63))))))
+
+  ;; The characters in b (a byte that is not UTF-8 counts as one).
+  (fn count [b:(ptr str.Bytes)] -> i32 (pub)
+    (let k:i32 0)
+    (let i:i32 0)
+    (while (lt i (get b str.Bytes.len))
+      (set! i (+ i (call step (call decode b i))))
+      (set! k (+ k 1)))
+    k)
+
+  ;; Unicode's White_Space property: \t \n \v \f \r, space, U+0085, U+00A0,
+  ;; U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+  (fn is_space [cp:i32] -> bool (pub)
+    (or (or (and (gte cp 9) (lte cp 13)) (or (eq cp 32) (or (eq cp 133) (eq cp 160))))
+        (or (or (eq cp 5760) (and (gte cp 8192) (lte cp 8202)))
+            (or (or (eq cp 8232) (eq cp 8233)) (or (eq cp 8239) (or (eq cp 8287) (eq cp 12288)))))))
+
+  (fn is_ascii_letter [cp:i32] -> bool (pub) (or (and (gte cp 65) (lte cp 90)) (and (gte cp 97) (lte cp 122))))
+  (fn is_ascii_digit [cp:i32] -> bool (pub) (and (gte cp 48) (lte cp 57)))
+
+  ;; ===== Tests =====
+
+  ;; Pass count; test_suite.aipl expects 4.
+  (fn run_utf8_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (let s:(ptr str.Bytes) (call str.from_str "aé€😀"))
+    (let a:Char (call decode s 0))
+    (let e:Char (call decode s 1))
+    (let eu:Char (call decode s 3))
+    (let em:Char (call decode s 6))
+    (if (and (and (eq (get a Char.cp) 97) (eq (get e Char.cp) 233))
+             (and (and (eq (get eu Char.cp) 8364) (eq (get eu Char.len) 3)) (and (eq (get em Char.cp) 128512) (eq (get em Char.len) 4))))
+        (set! p (+ p 1))
+        (block))
+    (if (eq (call count s) 4) (set! p (+ p 1)) (block))
+    ;; encoding gives the bytes back
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call encode b 97) (call encode b 233) (call encode b 8364) (call encode b 128512)
+    (if (call str.bytes_eq (call buf.bytes b) s) (set! p (+ p 1)) (block))
+    (if (and (call is_space 12288) (and (call is_space 10) (not (call is_space 65)))) (set! p (+ p 1)) (block))
+    p))

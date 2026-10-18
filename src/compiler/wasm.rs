@@ -1165,13 +1165,19 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         },
         Expr::Var(name, _) => ctx.local_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Let { .. } | Expr::Set { .. } => Type::Void,
-        Expr::If { then_branch, .. } => expr_type(then_branch, ctx),
+        // a branch that always leaves takes the other's type (checker::diverges)
+        Expr::If { then_branch, else_branch, .. } => {
+            expr_type(if crate::checker::diverges(then_branch) { else_branch } else { then_branch }, ctx)
+        }
         Expr::Block(exprs, _) | Expr::Unsafe(exprs, _) => exprs.last().map_or(Type::Void, |e| expr_type(e, ctx)),
         Expr::Loop { .. } | Expr::While { .. } => Type::Void,
         Expr::Call { func, .. } => ctx.fn_returns.get(func).cloned().unwrap_or(Type::I32),
         Expr::Ok(inner, other, _) => Type::ResultType(Box::new(expr_type(inner, ctx)), Box::new(other.clone().unwrap_or(Type::I32))),
         Expr::Err(inner, other, _) => Type::ResultType(Box::new(other.clone().unwrap_or(Type::I32)), Box::new(expr_type(inner, ctx))),
-        Expr::MatchResult { ok_body, .. } => ok_body.last().map_or(Type::Void, |e| expr_type(e, ctx)),
+        Expr::MatchResult { ok_body, err_body, .. } => {
+            let body = if crate::checker::body_diverges(ok_body) { err_body } else { ok_body };
+            body.last().map_or(Type::Void, |e| expr_type(e, ctx))
+        }
         Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
         Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => Type::Struct(struct_name.clone()),
@@ -1198,6 +1204,9 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::ArrGet { elem_ty, .. } => crate::checker::value_of(elem_ty),
         Expr::ArrSet { .. } => Type::Void,
         Expr::Op { op, args, .. } => match op {
+            OpCode::FormatStr => Type::Str,
+            OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece => Type::Void,
+            OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => Type::Void,
             OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -1668,17 +1677,22 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         }
         Expr::If { cond, then_branch, else_branch, .. } => {
             compile_expr(cond, ctx, func)?;
-            let then_void = is_void_expr(then_branch, ctx);
-            let block_ty = if then_void {
+            // the block's type is the branch's that does not always leave
+            let typed = if crate::checker::diverges(then_branch) { else_branch } else { then_branch };
+            let block_ty = if is_void_expr(typed, ctx) {
                 BlockType::Empty
             } else {
-                BlockType::Result(aipl_to_wasm_type(&expr_type(then_branch, ctx)))
+                BlockType::Result(aipl_to_wasm_type(&expr_type(typed, ctx)))
             };
             func.instruction(&Instruction::If(block_ty));
+            let valued = !matches!(block_ty, BlockType::Empty);
             with_label(ctx, Label::Plain, || {
                 compile_expr(then_branch, ctx, func)?;
+                seal(then_branch, valued, func);
                 func.instruction(&Instruction::Else);
-                compile_expr(else_branch, ctx, func)
+                compile_expr(else_branch, ctx, func)?;
+                seal(else_branch, valued, func);
+                Ok(())
             })?;
             func.instruction(&Instruction::End);
         }
@@ -1693,6 +1707,10 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             }
         }
         Expr::Op { op, args, .. } => match op {
+            OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece
+            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => {
+                return Err(format!("Wasm Codegen: {op} is lowered by the resolver (formats::lower); compile a resolved module"));
+            }
             OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -2923,7 +2941,8 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
         }
     };
 
-    let last_ok = ok_body.last();
+    // the arm that does not always leave gives the block's type
+    let last_ok = if crate::checker::body_diverges(ok_body) { err_body.last() } else { ok_body.last() };
     let block_ty = if dest.is_some() || last_ok.is_none_or(|e| is_void_expr(e, ctx)) {
         wasm_encoder::BlockType::Empty
     } else {
@@ -2967,12 +2986,21 @@ fn emit_load_binder(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, idx: u32
 
 /// An arm's body: its statements; its last expression left as the block's
 /// value, or into `dest` (compile_into), or dropped for an empty block type.
+/// After a branch whose value a block wants: `unreachable` if the branch
+/// always leaves without a jump of its own (checker::ends_in_jump).
+fn seal(branch: &Expr, valued: bool, func: &mut Body) {
+    if valued && crate::checker::diverges(branch) && !crate::checker::ends_in_jump(branch) {
+        func.instruction(&Instruction::Unreachable);
+    }
+}
+
 fn compile_arm(body: &[Expr], block_ty: BlockType, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     for (i, stmt) in body.iter().enumerate() {
         if i + 1 == body.len() && dest.is_some() {
             compile_into(stmt, dest.unwrap_or(0), ctx, func)?;
         } else if i + 1 == body.len() && !matches!(block_ty, BlockType::Empty) {
             compile_expr(stmt, ctx, func)?;
+            seal(stmt, true, func);
         } else {
             compile_stmt(stmt, ctx, func)?;
         }
@@ -3078,12 +3106,12 @@ fn emit_zero(func: &mut Body, t: &Type) {
 /// The arm body whose last expression gives a match its type: the first
 /// arm's, or the else body's when there are no arms (the checker has made
 /// every arm agree).
+/// The body whose type is the match's: the first arm's (or the else's)
+/// that does not always leave (checker::diverges), else the first.
 fn match_type_body<'e>(arms: &'e [MatchArm], else_body: &'e Option<Vec<Expr>>) -> &'e [Expr] {
-    match (arms.first(), else_body) {
-        (Some(arm), _) => &arm.body,
-        (None, Some(body)) => body,
-        (None, None) => &[],
-    }
+    let mut bodies = arms.iter().map(|a| a.body.as_slice()).chain(else_body.iter().map(|b| b.as_slice()));
+    let first = bodies.clone().next().unwrap_or(&[]);
+    bodies.find(|b| !crate::checker::body_diverges(b)).unwrap_or(first)
 }
 
 /// `(match v arms... [(else ...)])`: v goes to the scratch local, then an
@@ -3221,7 +3249,10 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         // be left out, as checked.* and sys.time once were
         Expr::Op { .. } => expr_type(expr, ctx) == Type::Void,
         // Same rule as the block type compile_expr gives a match_result.
-        Expr::MatchResult { ok_body, .. } => ok_body.last().is_none_or(|e| is_void_expr(e, ctx)),
+        Expr::MatchResult { ok_body, err_body, .. } => {
+            let body = if crate::checker::body_diverges(ok_body) { err_body } else { ok_body };
+            body.last().is_none_or(|e| is_void_expr(e, ctx))
+        }
         // Same rule as the block type compile_match gives a match.
         Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().is_none_or(|e| is_void_expr(e, ctx)),
         Expr::Make { .. } | Expr::Record { .. } | Expr::With { .. } => false,
@@ -4288,7 +4319,7 @@ fn walk_module(module: &Module, visit: &mut dyn FnMut(&Expr)) {
     }
 }
 
-fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
+pub(crate) fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
     visit(expr);
     match expr {
         Expr::Lit(..) | Expr::Var(..) => {}
