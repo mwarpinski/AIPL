@@ -10,4 +10,5 @@ pub mod generics;
 pub mod consts;
 pub mod formats;
 pub mod native;
+pub mod tools;
 pub mod vm;

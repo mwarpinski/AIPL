@@ -5,6 +5,8 @@
   ;; `len` bytes starting at address `addr`. A failed read has len -1.
   (struct Bytes [(read addr:i32) (read len:i32)] (pub))
 
+  ;; A view of len bytes at addr. Unsafe to call: the memory is the
+  ;; caller's word.
   (fn bytes [addr:i32 len:i32] -> (ptr Bytes) (pub) (unsafe)
     (let b:(ptr Bytes) (new Bytes))
     (put b Bytes.addr addr)
@@ -22,6 +24,7 @@
   (fn from_str [s:str] -> (ptr Bytes) (pub)
     (unsafe (call bytes (str.ptr s) (str.len s))))
 
+  ;; Byte i of b (0-255); i must be in range.
   (fn byte_at [b:(ptr Bytes) i:i32] -> i32 (pub)
     (req (and (gte i 0) (lt i (get b Bytes.len))))
     (unsafe (mem.load8 (+ (get b Bytes.addr) i))))
@@ -40,6 +43,7 @@
   (fn is_space [c:i32] -> bool (pub)
     (or (eq c 32) (and (gte c 9) (lte c 13))))
 
+  ;; Whether a and b hold the same bytes.
   (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool (pub)
     (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
     (loop i 0 (- (get a Bytes.len) 1) 1
@@ -68,9 +72,11 @@
       (if (neq (mem.load8 (+ ba k)) (mem.load8 (+ pa k))) (return false) (block)))
     true))
 
+  ;; Whether b begins with p.
   (fn starts_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
     (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p 0)))
 
+  ;; Whether b ends with p.
   (fn ends_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
     (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p (- (get b Bytes.len) (get p Bytes.len)))))
 
@@ -88,8 +94,10 @@
       (if (and (eq (mem.load8 (+ ba i)) first) (call at_is b p i)) (return i) (block)))
     -1))
 
+  ;; The first index where p occurs in b, or -1.
   (fn find [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub) (call find_from b p 0))
 
+  ;; Whether p occurs in b.
   (fn contains [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub) (gte (call find b p) 0))
 
   ;; The last index where p occurs in b, or -1 (an empty p: b's length).
@@ -187,16 +195,20 @@
     (while (and (lt i (get b Bytes.len)) (call is_space (call byte_at b i))) (set! i (+ i 1)))
     (call slice b i (- (get b Bytes.len) i)))
 
+  ;; b without trailing ASCII whitespace (a view).
   (fn trim_end [b:(ptr Bytes)] -> (ptr Bytes) (pub)
     (let n:i32 (get b Bytes.len))
     (while (and (gt n 0) (call is_space (call byte_at b (- n 1)))) (set! n (- n 1)))
     (call slice b 0 n))
 
+  ;; b without leading or trailing ASCII whitespace (a view).
   (fn trim [b:(ptr Bytes)] -> (ptr Bytes) (pub) (call trim_end (call trim_start b)))
 
   ;; The text before and after the first sep.
   (struct Halves [(read before:(ptr Bytes)) (read after:(ptr Bytes))] (value) (pub))
 
+  ;; The text before and after the first sep in b, or none if sep does
+  ;; not occur.
   (fn split_once [b:(ptr Bytes) sep:(ptr Bytes)] -> (option.Option Halves) (pub)
     (req (gt (get sep Bytes.len) 0))
     (let i:i32 (call find b sep))
@@ -304,6 +316,7 @@
       (if (eq (call byte_at b i) c) (return i) (block)))
     -1)
 
+  ;; The number of bytes in b equal to c.
   (fn count_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
     (let n:i32 0)
     (loop i 0 (- (get b Bytes.len) 1) 1

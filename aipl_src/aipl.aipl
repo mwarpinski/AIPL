@@ -6,6 +6,7 @@
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
 ;;   aipl compile --exe [--sandbox] FILE.aipl -o OUT
+;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
 ;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative
@@ -20,9 +21,11 @@
   (import io)
   (import str)
   (import fmt)
+  (import doc)
 
   (fn usage [] -> i32
     (call io.eprintln "usage: aipl compile [--exe [--sandbox]] FILE.aipl -o OUT")
+    (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
 
@@ -47,6 +50,7 @@
     (if (lt n 2) (return (call usage)) (block))
     (let cmd:(ptr str.Bytes) (call os.arg 1))
     (if (call str.is cmd "--version") (block (call io.println "aipl 0.1.0") (return 0)) (block))
+    (if (call str.is cmd "doc") (return (call doc.command 2)) (block))
     (if (not (call str.is cmd "compile")) (return (call usage)) (block))
     (let exe:bool false)
     (let sandbox:bool false)

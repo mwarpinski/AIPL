@@ -31,7 +31,11 @@
   ;; one being filled, `used` bytes into it (a chunk's own `used` is set
   ;; when the arena moves past it, and by reset).
   (struct Chunk [base:i32 cap:i32 used:i32 next:(ptr Chunk)])
+  ;; A region allocator: alloc hands out memory, reset frees all of it
+  ;; at once; a pointer used after reset stops the program.
   (struct Arena [first:(ptr Chunk) current:(ptr Chunk) used:i32 chunk_size:i32 gen:i32] (pub))
+  ;; A faster arena that catches a pointer used after fast_reset only once
+  ;; its memory is reused.
   (struct Fast [first:(ptr Chunk) current:(ptr Chunk) used:i32 chunk_size:i32 gen:i32] (pub))
 
   ;; An arena that takes memory in chunks of at least chunk_size bytes.
@@ -109,6 +113,7 @@
 
   ;; ===== Fast arenas =====
 
+  ;; A fast arena taking its memory chunk_size bytes at a time.
   (fn make_fast [chunk_size:i32] -> (ptr Fast) (pub)
     (req (gt chunk_size 0))
     (let f:(ptr Fast) (new Fast))

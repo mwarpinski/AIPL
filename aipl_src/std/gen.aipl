@@ -46,6 +46,8 @@
     (mem.store32 (- (ptr.addr p) 8) DEAD)
     (- (ptr.addr p) 8))
 
+  ;; Ends a's array, which must not be freed already; returns its block,
+  ;; for the allocator to take back.
   (fn (retire_array T) [a:(arr T)] -> i32 (pub) (unsafe)
     (req (call not_freed_already (arr.addr a) (arr.gen a)))
     (mem.store32 (- (arr.addr a) 8) DEAD)

@@ -4,7 +4,8 @@
 //! the same source: two independent compilers agree on the compiler, so the
 //! seed carries nothing the source does not say. Stage 2 also rebuilds itself
 //! unchanged. And the AIPL `aipl` command compiles every example, benchmark,
-//! and test program to the same bytes as the Rust one, with the same errors.
+//! and test program to the same bytes as the Rust one, with the same errors,
+//! and gives the same `aipl doc` output.
 //! Linux x86-64 only, as the seed is.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -126,5 +127,22 @@ fn the_aipl_command_matches_the_rust_command() {
     assert_eq!(run(Command::new(&aipl).args(["compile", "--sandbox", "x.aipl", "-o", "y"])).status.code(), Some(2));
     let v = run(Command::new(&aipl).arg("--version"));
     assert_eq!(String::from_utf8_lossy(&v.stdout), format!("aipl {}\n", env!("CARGO_PKG_VERSION")));
+
+    // aipl doc (aipl_src/doc.aipl, which both run): the same output, errors,
+    // and status
+    let docs: &[&[&str]] = &[
+        &["doc"],
+        &["doc", "stream"],
+        &["doc", "text.split"],
+        &["doc", "--find", "utf"],
+        &["doc", "--private", "tests/aipl/doc/shapes.aipl"],
+        &["doc", "--check", "tests/aipl/doc/shapes.aipl"],
+        &["doc", "no_such"],
+    ];
+    for args in docs {
+        let r = run(Command::new(AIPL).args(*args));
+        let a = run(Command::new(&aipl).args(*args));
+        assert_eq!((a.status.code(), &a.stdout, &a.stderr), (r.status.code(), &r.stdout, &r.stderr), "{args:?}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

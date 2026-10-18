@@ -178,6 +178,7 @@
   (fn converts [text:str want:f64] -> bool
     (unsafe (eq (i64.reinterpret_f64 (call from_decimal (str.ptr text) (str.len text))) (i64.reinterpret_f64 want))))
 
+  ;; Pass count; test_suite.aipl expects 14.
   (fn run_float_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     (if (call converts "0.1" 0.1) (set! p (+ p 1)) (block))

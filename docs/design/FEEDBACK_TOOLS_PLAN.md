@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1 built 2026-10-18; F2 next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -60,6 +60,13 @@ $ aipl doc path/to/mod.aipl    # any module
 - Written in AIPL (`aipl_src/doc.aipl`): it needs no execution, only parsing,
   so it is a self-hosted subcommand. The Rust CLI's `aipl doc` compiles and
   runs that same program (decision D1).
+
+As built (2026-10-18): `aipl_src/doc.aipl`, about 660 lines, in only what
+the stage-0 seed compiles (no formatting forms, `try`, or `defer`); the
+Rust CLI's `aipl doc` is `src/tools.rs` compiling and running it (about 50
+ms a call). Generic items show as a caller writes them, `(option.unwrap_or
+T)`, and contracts follow the comment. `--check` found 88 undocumented
+public items in std, now documented (308 in 25 files).
 
 Why first: it is the cheapest, and the most useful to an agent, which today
 reads a 400-line file to learn one function's parameters. The prompt guide

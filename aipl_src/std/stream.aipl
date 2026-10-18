@@ -72,6 +72,7 @@
   (fn of_fd [a:alloc.Allocator fd:i32] -> (ptr Reader) (pub)
     (call fd_reader a fd false))
 
+  ;; Reads standard input.
   (fn stdin [a:alloc.Allocator] -> (ptr Reader) (pub)
     (call fd_reader a 0 false))
 
@@ -91,6 +92,7 @@
     (req (gte (get b str.Bytes.len) 0))
     (call make_reader a (make Source.memory) false (get b str.Bytes.addr) 0 (get b str.Bytes.len) true))
 
+  ;; Reads the bytes of s.
   (fn of_str [a:alloc.Allocator s:str] -> (ptr Reader) (pub)
     (call of_bytes a (call str.from_str s)))
 
@@ -288,7 +290,9 @@
   (fn to_fd [a:alloc.Allocator fd:i32] -> (ptr Writer) (pub)
     (call make_writer a (make Sink.fd fd) false (call buf.make a 8192)))
 
+  ;; Writes to standard output (held until 8 KB, flush, or close_writer).
   (fn stdout [a:alloc.Allocator] -> (ptr Writer) (pub) (call to_fd a 1))
+  ;; Writes to standard error (held until 8 KB, flush, or close_writer).
   (fn stderr [a:alloc.Allocator] -> (ptr Writer) (pub) (call to_fd a 2))
 
   ;; Creates (or empties) a file to write; close_writer closes it.
@@ -324,16 +328,19 @@
   (fn (drop_drain C) [a:alloc.Allocator cell:i32] -> void
     (unsafe (call (alloc.destroy (DrainOf C)) a (ptr.cast (DrainOf C) cell))))
 
+  ;; Writes the byte c (its low 8 bits).
   (fn write_byte [w:(ptr Writer) c:i32] -> void (pub)
     (if (get w Writer.failed) (return) (block))
     (call buf.push_byte (get w Writer.out) c)
     (call wrote w))
 
+  ;; Writes the bytes of b.
   (fn write_bytes [w:(ptr Writer) b:(ptr str.Bytes)] -> void (pub)
     (if (get w Writer.failed) (return) (block))
     (call buf.push_bytes (get w Writer.out) b)
     (call wrote w))
 
+  ;; Writes the text s.
   (fn write_str [w:(ptr Writer) s:str] -> void (pub)
     (if (get w Writer.failed) (return) (block))
     (call buf.push_str (get w Writer.out) s)

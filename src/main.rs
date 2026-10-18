@@ -58,6 +58,13 @@ enum Commands {
     /// Parse and type-check an AIPL file without running it (contracts are
     /// type-checked, not proven)
     Verify { file: String },
+    /// Show a module's public functions and types with their comments:
+    /// aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private], aipl doc
+    /// --find WORD, aipl doc --check FILE.aipl... (aipl_src/doc.aipl)
+    Doc {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run an AIPL test entrypoint and report pass/fail via the process exit
     /// code. The entrypoint owns all test/reporting logic (via sys.print) and
     /// must return an i32 failure count: 0 = every group passed, N = N
@@ -314,6 +321,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let status = cmd.arg(&file).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));
+        }
+        Commands::Doc { args } => {
+            std::process::exit(aipl_core::tools::run("aipl_src/doc.aipl", "aipl doc", &args)?);
         }
         Commands::Verify { file } => {
             let module = Resolver::resolve(Path::new(&file))?;
