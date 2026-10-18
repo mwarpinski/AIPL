@@ -110,6 +110,35 @@ pub fn conversion(op: &OpCode) -> (Type, Type) {
     }
 }
 
+/// Whether `e` always leaves its branch: a `return`, `break`, or `continue`,
+/// a block ending in one, or an `if` whose branches both do. Such a branch
+/// takes the other branches' type (`(if ok v (return (err:T e)))` is a T).
+pub fn diverges(e: &Expr) -> bool {
+    match e {
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
+        Expr::Block(es, _) | Expr::Unsafe(es, _) => es.last().is_some_and(diverges),
+        Expr::If { then_branch, else_branch, .. } => diverges(then_branch) && diverges(else_branch),
+        _ => false,
+    }
+}
+
+/// Whether `e` ends in a jump instruction of its own (a `return`, `break`,
+/// or `continue`, last in any blocks around it). A branch that diverges
+/// without one (it ends in an `if` whose branches both leave) is followed by
+/// `unreachable` where its value is wanted, so the wasm stack checks.
+pub fn ends_in_jump(e: &Expr) -> bool {
+    match e {
+        Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
+        Expr::Block(es, _) | Expr::Unsafe(es, _) => es.last().is_some_and(ends_in_jump),
+        _ => false,
+    }
+}
+
+/// Whether a body (its last expression) always leaves (diverges).
+pub fn body_diverges(body: &[Expr]) -> bool {
+    body.last().is_some_and(diverges)
+}
+
 /// The type a value read from a field or element of type `t` has: an `i32`
 /// for a storage type, else `t`.
 pub fn value_of(t: &Type) -> Type {
@@ -439,6 +468,11 @@ pub struct TypeChecker {
     /// lays out a result cell before it evaluates the payload, so it needs
     /// the payload's size from here (payload_types).
     payloads: std::cell::RefCell<HashMap<usize, Type>>,
+    /// The type of each formatting piece's value, by the value's address:
+    /// lowering the forms to std/show calls (formats::lower) needs them.
+    formats: std::cell::RefCell<HashMap<usize, Type>>,
+    /// Inside a `(defer ...)`, which may not return (it runs as the function does).
+    in_defer: std::cell::Cell<bool>,
 }
 
 impl Default for TypeChecker {
@@ -462,6 +496,8 @@ impl TypeChecker {
             unsafe_depth: std::cell::Cell::new(0),
             in_unsafe_fn: std::cell::Cell::new(false),
             payloads: std::cell::RefCell::new(HashMap::new()),
+            formats: std::cell::RefCell::new(HashMap::new()),
+            in_defer: std::cell::Cell::new(false),
         }
     }
 
@@ -472,6 +508,83 @@ impl TypeChecker {
         let mut checker = TypeChecker::new();
         let _ = checker.check_module(module);
         checker.payloads.into_inner()
+    }
+
+    /// A defer's statements, each checked, in an environment of their own.
+    fn check_defer(&self, body: &[Expr], env: &mut HashMap<String, Type>) -> Result<(), String> {
+        self.in_defer.set(true);
+        let mut inner = env.clone();
+        let r = body.iter().try_for_each(|e| self.infer_expr_type(e, &mut inner).map(|_| ()));
+        self.in_defer.set(false);
+        r
+    }
+
+    /// `(try r)`, `(try_opt o)`, `(try_or o e)`: the value they give, checked
+    /// against the function's return type (where their early return goes).
+    fn check_try(&self, op: &OpCode, args: &[Expr], env: &mut HashMap<String, Type>, l: u32, c: u32) -> Result<Type, String> {
+        let want = if *op == OpCode::TryOr { 2 } else { 1 };
+        if args.len() != want {
+            return Err(format!(
+                "{}:{}: {}",
+                l,
+                c,
+                match op {
+                    OpCode::Try => "try takes one result: (try (call f x))",
+                    OpCode::TryOpt => "try_opt takes one option: (try_opt (call (map.find K V) m k))",
+                    _ => "try_or takes an option and the error to return without a value: (try_or o err)",
+                }
+            ));
+        }
+        let t = self.infer_expr_type(&args[0], env)?;
+        let ret = self.return_type.borrow().clone();
+        let Some(ret) = ret else { return Err(format!("{}:{}: {} returns from the function, and a contract cannot", l, c, op)) };
+        let option_of = |t: &Type| -> Option<Type> {
+            let Type::Union(u) = t else { return None };
+            if !u.starts_with("option.Option<") {
+                return None;
+            }
+            let def = self.union_defs.get(u)?;
+            def.variants.iter().find(|v| v.name == "some").and_then(|v| v.fields.first()).map(|f| f.ty.clone())
+        };
+        let value = match op {
+            OpCode::Try => match &t {
+                Type::ResultType(ok, _) => (**ok).clone(),
+                _ => return Err(format!("{}:{}: try takes a (result T E), got {}", l, c, t)),
+            },
+            _ => option_of(&t).ok_or_else(|| format!("{}:{}: {} takes an (option.Option T), got {}", l, c, op, shown(&t.to_string())))?,
+        };
+        match op {
+            OpCode::TryOpt => {
+                if option_of(&ret).is_none() {
+                    return Err(format!("{}:{}: try_opt returns none from the function, which returns {}, not an (option.Option T)", l, c, shown(&ret.to_string())));
+                }
+            }
+            _ => {
+                let err = if *op == OpCode::Try {
+                    let Type::ResultType(_, e) = &t else { unreachable!() };
+                    (**e).clone()
+                } else {
+                    self.infer_expr_type(&args[1], env)?
+                };
+                match &ret {
+                    Type::ResultType(_, e) if **e == err => {}
+                    Type::ResultType(_, e) => {
+                        return Err(format!("{}:{}: {}'s error is {}, and the function's is {}: they must be one type", l, c, op, err, e));
+                    }
+                    _ => return Err(format!("{}:{}: {} returns an error from the function, which returns {}, not a (result T E)", l, c, op, shown(&ret.to_string()))),
+                }
+            }
+        }
+        self.formats.borrow_mut().insert(&args[0] as *const Expr as usize, t);
+        Ok(value)
+    }
+
+    /// The type of every formatting piece's value in `module`, by the value's
+    /// address, if the module checks (formats::lower).
+    pub fn format_types(module: &Module) -> Option<HashMap<usize, Type>> {
+        let mut checker = TypeChecker::new();
+        checker.check_module(module).ok()?;
+        Some(checker.formats.into_inner())
     }
 
     /// Checks a module. Definitions and signatures stop at the first error
@@ -883,7 +996,12 @@ impl TypeChecker {
         let mut last_ty = Type::Void;
         let mut result = Ok(());
         for expr in &f.body {
-            match self.infer_expr_type(expr, &mut env) {
+            // a defer is a statement of the body, and not its value
+            let r = match expr {
+                Expr::Op { op: OpCode::Defer, args, .. } => self.check_defer(args, &mut env).map(|_| last_ty.clone()),
+                _ => self.infer_expr_type(expr, &mut env),
+            };
+            match r {
                 Ok(t) => last_ty = t,
                 Err(e) => {
                     result = Err(e);
@@ -895,7 +1013,7 @@ impl TypeChecker {
         result?;
 
         // A body may end in (return v) instead of a bare value.
-        let ends_in_return = matches!(f.body.last(), Some(Expr::Return { .. }));
+        let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));
         if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
             return Err(format!(
                 "{}:{}: Function '{}' expects return type {}, but body returned {}",
@@ -981,7 +1099,12 @@ impl TypeChecker {
                 }
                 let then_ty = self.infer_expr_type(then_branch, &mut env.clone())?;
                 let else_ty = self.infer_expr_type(else_branch, &mut env.clone())?;
-                if then_ty == Type::Void && else_ty == Type::Void {
+                // a branch that always leaves takes the other's type
+                if diverges(then_branch) {
+                    Ok(if diverges(else_branch) { Type::Void } else { else_ty })
+                } else if diverges(else_branch) {
+                    Ok(then_ty)
+                } else if then_ty == Type::Void && else_ty == Type::Void {
                     Ok(Type::Void)
                 } else if then_ty != Type::Void && else_ty != Type::Void && then_ty == else_ty {
                     Ok(then_ty)
@@ -1018,6 +1141,9 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
             Expr::Return { val, .. } => {
+                if self.in_defer.get() {
+                    return Err(format!("{}:{}: a defer cannot return: it runs as the function returns", l, c));
+                }
                 let expected = self.return_type.borrow().clone().ok_or_else(|| {
                     format!("{}:{}: return is not allowed in a contract", l, c)
                 })?;
@@ -1069,6 +1195,57 @@ impl TypeChecker {
                 }
                 check_literal_address(op, args, l, c)?;
                 match op {
+                OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln => {
+                    let mut pieces = &args[..];
+                    if *op == OpCode::FormatTo {
+                        let Some(b) = args.first() else {
+                            return Err(format!("{}:{}: format_to takes a buffer and a string literal, e.g. (format_to b \"n = {{n}}\")", l, c));
+                        };
+                        let t = self.infer_expr_type(b, env)?;
+                        if t != Type::Ptr(Box::new(Type::Struct("buf.Buf".into()))) {
+                            return Err(format!("{}:{}: format_to writes to a (ptr buf.Buf), got {}", l, c, t));
+                        }
+                        pieces = &args[1..];
+                    }
+                    for p in pieces {
+                        match p {
+                            Expr::Lit(Literal::Str(_), _) => {}
+                            Expr::Op { op: OpCode::FormatPiece, args: pa, span: (pl, pc) } if pa.len() == 2 => {
+                                let t = self.infer_expr_type(&pa[0], env)?;
+                                let Expr::Lit(Literal::Str(text), _) = &pa[1] else {
+                                    return Err(format!("{}:{}: a piece's format is a string literal", pl, pc));
+                                };
+                                if !crate::formats::printable(&t) {
+                                    return Err(format!(
+                                        "{}:{}: format cannot print {}: it prints numbers, bool, str, (ptr str.Bytes), and enums",
+                                        pl, pc, t
+                                    ));
+                                }
+                                let spec = crate::formats::Spec::parse(text).map_err(|m| format!("{}:{}: {}", pl, pc, m))?;
+                                if let Some(m) = spec.misfit(&t) {
+                                    return Err(format!("{}:{}: {}", pl, pc, m));
+                                }
+                                self.formats.borrow_mut().insert(&pa[0] as *const Expr as usize, t);
+                            }
+                            other => {
+                                let (pl, pc) = other.span();
+                                return Err(format!("{}:{}: {} takes string literals and (format.piece value \"format\")", pl, pc, op));
+                            }
+                        }
+                    }
+                    Ok(if *op == OpCode::FormatStr { Type::Str } else { Type::Void })
+                }
+                OpCode::FormatPiece => Err(format!("{}:{}: format.piece is part of a format string", l, c)),
+                OpCode::Try | OpCode::TryOpt | OpCode::TryOr => {
+                    if self.in_defer.get() {
+                        return Err(format!("{}:{}: a defer cannot {}: it runs as the function returns", l, c, op));
+                    }
+                    self.check_try(op, args, env, l, c)
+                }
+                OpCode::Defer => Err(format!(
+                    "{}:{}: defer is a statement of a function's body (it runs when the function returns), not part of an expression or a block",
+                    l, c
+                )),
                 OpCode::CheckedAdd | OpCode::CheckedSub | OpCode::CheckedMul => {
                     if args.len() != 2 {
                         return Err(format!("{}:{}: {} requires 2 arguments", l, c, op));
@@ -1519,7 +1696,11 @@ impl TypeChecker {
                     last_err_ty = self.infer_expr_type(stmt, &mut err_env)?;
                 }
 
-                if last_ok_ty == Type::Void && last_err_ty == Type::Void {
+                if body_diverges(ok_body) {
+                    Ok(if body_diverges(err_body) { Type::Void } else { last_err_ty })
+                } else if body_diverges(err_body) {
+                    Ok(last_ok_ty)
+                } else if last_ok_ty == Type::Void && last_err_ty == Type::Void {
                     Ok(Type::Void)
                 } else if last_ok_ty != Type::Void && last_err_ty != Type::Void && last_ok_ty == last_err_ty {
                     Ok(last_ok_ty)
@@ -1932,7 +2113,9 @@ impl TypeChecker {
                     for stmt in &arm.body {
                         t = self.infer_expr_type(stmt, &mut arm_env)?;
                     }
-                    arm_types.push((format!("{}.{}", tname, member), t));
+                    if !body_diverges(&arm.body) {
+                        arm_types.push((format!("{}.{}", tname, member), t));
+                    }
                 }
                 match else_body {
                     Some(body) => {
@@ -1944,7 +2127,9 @@ impl TypeChecker {
                         for stmt in body {
                             t = self.infer_expr_type(stmt, &mut else_env)?;
                         }
-                        arm_types.push(("else".to_string(), t));
+                        if !body_diverges(body) {
+                            arm_types.push(("else".to_string(), t));
+                        }
                     }
                     None => {
                         let missing: Vec<String> =
@@ -1954,7 +2139,8 @@ impl TypeChecker {
                         }
                     }
                 }
-                let (first_name, first) = &arm_types[0];
+                // arms that always leave take the others' type
+                let Some((first_name, first)) = arm_types.first() else { return Ok(Type::Void) };
                 for (name, t) in &arm_types[1..] {
                     if t != first {
                         return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t));

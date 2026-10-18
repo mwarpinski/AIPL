@@ -24,6 +24,8 @@
   (import generics)
   (import origins)
   (import parser)
+  (import fmtsplit)
+  (import vec)
 
   ;; A parsed file: its text, its (module ...) tree, and where its tokens'
   ;; origins are noted (file is its index there; -1 and null when not mapping).
@@ -42,7 +44,10 @@
                aliases:(ptr (map.Map (ptr str.Bytes) (ptr str.Bytes)))
                templates:(ptr (map.Map (ptr str.Bytes) i32)) known:(ptr (map.Map (ptr str.Bytes) i32))
                vis:(ptr Vis) name:(ptr str.Bytes) paths:(ptr (map.Map (ptr str.Bytes) (ptr str.Bytes)))
-               item:(ptr compiler.Node) err:(ptr buf.Buf)])
+               item:(ptr compiler.Node) err:(ptr buf.Buf)
+               ;; how many [...] lists the node being printed is in (no
+               ;; expression is in one, so no formatting form either)
+               square:i32])
 
   ;; What modules give each other (resolver.rs Vis): the canonical names of
   ;; (pub) items, and each struct's fields with their levels (0 private,
@@ -289,8 +294,90 @@
     (let src:(ptr Src) (get m Mod.src))
     (if (gte (get g compiler.Node.a) 0) (call origins.note (get src Src.origins) out (get src Src.file) (get g compiler.Node.a)) (block)))
 
+  ;; Notes that the next token printed into out comes from offset pos.
+  (fn note_at [m:(ptr Mod) pos:i32 out:(ptr buf.Buf)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (call origins.note (get src Src.origins) out (get src Src.file) pos))
+
+  ;; The index of a formatting form's head among format format_to print
+  ;; println eprintln, or -1.
+  (fn format_head [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
+    (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return -1) (block))
+    (let h:(ptr str.Bytes) (call head (get m Mod.src) g))
+    (cond
+      ((call str.is h "format") 0) ((call str.is h "format_to") 1) ((call str.is h "print") 2)
+      ((call str.is h "println") 3) ((call str.is h "eprintln") 4) (else -1)))
+
+  ;; (println "x = {x:>4}!") printed as (format.println "x = " (format.piece
+  ;; x ">4") "!") (formats.rs split): the op at the head's place, every piece
+  ;; at the string's; a value's code read where it is in the string and
+  ;; printed like any other expression of the module (renamed). The shape
+  ;; and the string were checked when the file was read (format_error).
+  (fn emit_format [m:(ptr Mod) g:(ptr compiler.Node) op:i32 out:(ptr buf.Buf)] -> void
+    (unsafe (let src:(ptr Src) (get m Mod.src))
+    (let h:(ptr compiler.Node) (call first_child g))
+    (let str_node:(ptr compiler.Node) (call nth g (if (eq op 1) 2 1)))
+    (let at:i32 (get str_node compiler.Node.pos))
+    (call note m g out)
+    (call buf.push_byte out 40)
+    (call note m h out)
+    (call buf.push_str out (call form_op op))
+    (if (eq op 1)
+        (block (call buf.push_byte out 32) (call emit m (call nth g 1) 0 out))
+        (block))
+    (let raw:(ptr str.Bytes) (call text src str_node))
+    (let base:i32 (get str_node compiler.Node.a))
+    (let ps:(ptr (vec.Vec fmtsplit.Piece)) (get (call fmtsplit.pieces raw) fmtsplit.Split.pieces))
+    (loop k 0 (- (call (vec.len fmtsplit.Piece) ps) 1) 1
+      (let p:fmtsplit.Piece (call (vec.at fmtsplit.Piece) ps k))
+      (call buf.push_byte out 32)
+      (call note_at m at out)
+      (if (get p fmtsplit.Piece.value)
+          (block
+            (call buf.push_str out "(format.piece ")
+            (call emit m (call code_node m (+ base (get p fmtsplit.Piece.a)) (get p fmtsplit.Piece.n) at) 0 out)
+            (call buf.push_byte out 32)
+            (call note_at m at out)
+            (call buf.push_byte out 34)
+            (call buf.push_bytes out (call slice raw (get p fmtsplit.Piece.sa) (get p fmtsplit.Piece.sn)))
+            (call buf.push_str out "\")"))
+          (block
+            ;; the text, {{ and }} as one brace each
+            (call buf.push_byte out 34)
+            (let j:i32 (get p fmtsplit.Piece.a))
+            (let e:i32 (+ j (get p fmtsplit.Piece.n)))
+            (while (lt j e)
+              (let c:i32 (call str.byte_at raw j))
+              (call buf.push_byte out c)
+              (if (and (or (eq c 123) (eq c 125)) (and (lt (+ j 1) e) (eq (call str.byte_at raw (+ j 1)) c)))
+                  (set! j (+ j 2))
+                  (set! j (+ j 1))))
+            (call buf.push_byte out 34))))
+    (call note_at m (get g compiler.Node.pos) out)
+    (call buf.push_byte out 41)))
+
+  ;; A placeholder's code, n bytes at offset a of the file: read there as
+  ;; one form whose every token is at pos (the string's place).
+  (fn code_node [m:(ptr Mod) a:i32 n:i32 pos:i32] -> (ptr compiler.Node)
+    (unsafe (let src:(ptr Src) (get m Mod.src))
+    (let p:i32 (+ (get (get src Src.text) str.Bytes.addr) a))
+    (let ts:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens p n) 1))))
+    (let tn:i32 (call compiler.tokenize p n ts))
+    (loop k 0 (- tn 1) 1
+      (let t:(ptr compiler.Token) (call compiler.token_at ts k))
+      (let kd:compiler.Kind (get t compiler.Token.kind))
+      ;; a text token's a is an offset in the file
+      (if (or (eq kd compiler.Kind.symbol) (or (eq kd compiler.Kind.int) (or (eq kd compiler.Kind.int64) (or (eq kd compiler.Kind.float) (eq kd compiler.Kind.float32)))))
+          (put t compiler.Token.a (+ (get t compiler.Token.a) a))
+          (block))
+      (put t compiler.Token.pos pos))
+    (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ tn 2)))))
+    (call compiler.parse_ast ts tn ast)))
+
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) own_role:i32 out:(ptr buf.Buf)] -> void
+    (if (and (eq (get m Mod.square) 0) (gte (call format_head m g) 0)) (block (call emit_format m g (call format_head m g) out) (return)) (block))
     (unsafe (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
+    (if square (put m Mod.square (+ (get m Mod.square) 1)) (block))
     (call note m g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
@@ -376,6 +463,7 @@
       (set! prev_colon colon)))
       (set! i (+ i 1))
       (set! c (get c compiler.Node.next)))
+    (if square (put m Mod.square (- (get m Mod.square) 1)) (block))
     (call note_close m g out)
     (call buf.push_byte out (if square 93 41))))
 
@@ -916,7 +1004,62 @@
                 (block)))
           (block))
       (set! j next))
-    (ptr.null buf.Buf))
+    (call format_error src toks count))
+
+  ;; The formatting forms' shapes and strings (formats.rs split, which the
+  ;; Rust resolver runs as it reads a module): the first error, or null.
+  (fn format_error [src:i32 toks:i32 count:i32] -> (ptr buf.Buf)
+    ;; inside a [...] list there are no forms (formats.rs split)
+    (unsafe (let square:i32 0)
+    (loop i 0 (- count 2) 1
+      (if (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
+      (if (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
+      (let op:i32 (if (and (eq square 0) (eq (call kind_at toks i) compiler.Kind.lparen)) (call form_index src toks (+ i 1)) -1))
+      (if (gte op 0)
+          (block
+            (let to:bool (eq op 1))
+            (let args:i32 0)
+            (let last:i32 -1)
+            (let c:i32 (+ i 2))
+            (while (and (lt c count) (not (call is_closer (call kind_at toks c))))
+              (set! args (+ args 1))
+              (set! last c)
+              (set! c (call skip_form toks c)))
+            (if (or (neq args (if to 2 1)) (neq (call kind_at toks last) compiler.Kind.string))
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (if to
+                      (call buf.push_str b "format_to takes a buffer and a string literal, e.g. (format_to b \"n = {n}\")")
+                      (block
+                        (let h:(ptr compiler.Token) (call compiler.token_at toks (+ i 1)))
+                        (let hn:(ptr str.Bytes) (call str.bytes (+ src (get h compiler.Token.a)) (get h compiler.Token.b)))
+                        (call buf.push_bytes b hn)
+                        (call buf.push_str b " takes one string literal, e.g. (")
+                        (call buf.push_bytes b hn)
+                        (call buf.push_str b " \"n = {n}\")")))
+                  (return b))
+                (block))
+            (let t:(ptr compiler.Token) (call compiler.token_at toks last))
+            (let sp:(ptr fmtsplit.Split) (call fmtsplit.pieces (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b))))
+            (if (not (get sp fmtsplit.Split.ok))
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks last ""))
+                  (call buf.push_str b (get sp fmtsplit.Split.err))
+                  (return b))
+                (block)))
+          (block)))
+    (ptr.null buf.Buf)))
+
+  ;; The formatting forms: format format_to print println eprintln as 0-4,
+  ;; or -1 (the token at i is not one of them).
+  (fn form_index [src:i32 toks:i32 i:i32] -> i32
+    (cond
+      ((call symbol_is src toks i "format") 0) ((call symbol_is src toks i "format_to") 1)
+      ((call symbol_is src toks i "print") 2) ((call symbol_is src toks i "println") 3)
+      ((call symbol_is src toks i "eprintln") 4) (else -1)))
+
+  (fn form_op [i:i32] -> str
+    (cond ((eq i 0) "format.str") ((eq i 1) "format.to") ((eq i 2) "format.print") ((eq i 3) "format.println") (else "format.eprintln")))
 
   (fn first_item [src:(ptr Src)] -> (ptr compiler.Node)
     (call nth (get src Src.root) 2))
@@ -932,6 +1075,7 @@
     (put m Mod.aliases (call (map.make (ptr str.Bytes) (ptr str.Bytes)) (call alloc.default) 8))
     (put m Mod.templates (call (map.make (ptr str.Bytes) i32) (call alloc.default) 8))
     (put m Mod.known known)
+    (put m Mod.square 0)
     (let item:(ptr compiler.Node) (call first_item src))
     (while (neq item (ptr.null compiler.Node))
       (let h:(ptr str.Bytes) (call head src item))
@@ -1076,12 +1220,35 @@
   ;; Resolves every (import ...) of src, found relative to dir.
   (fn resolve_imports [st:(ptr State) src:(ptr Src) dir:(ptr str.Bytes)] -> bool
     (let item:(ptr compiler.Node) (call first_item src))
+    (let has_show:bool false)
+    (let formats:bool false)
     (while (neq item (ptr.null compiler.Node))
       (if (call eq_lit (call head src item) "import")
-          (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false))
-          (block))
+          (block
+            (if (call str.is (call module_name (call text src (call nth item 1))) "show") (set! has_show true) (block))
+            (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false)))
+          (if (call uses_formats src item) (set! formats true) (block)))
       (set! item (get item compiler.Node.next)))
-    true)
+    ;; the formatting forms become std/show calls (formats.rs): a module
+    ;; that uses one imports it, after its own imports
+    (if (and formats (not has_show))
+        (call resolve_module st dir (call str.from_str "show") (get src Src.path))
+        true))
+
+  ;; Whether node n holds a formatting form.
+  (fn uses_formats [src:(ptr Src) n:(ptr compiler.Node)] -> bool
+    ;; a [...] list holds no expression (formats.rs uses_formats)
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    (let h:(ptr str.Bytes) (call head src n))
+    (if (or (or (call str.is h "format") (call str.is h "format_to"))
+            (or (call str.is h "print") (or (call str.is h "println") (call str.is h "eprintln"))))
+        (return true)
+        (block))
+    (let c:(ptr compiler.Node) (call first_child n))
+    (while (neq c (ptr.null compiler.Node))
+      (if (call uses_formats src c) (return true) (block))
+      (set! c (get c compiler.Node.next)))
+    false)
 
   (fn with_ext [dir:(ptr str.Bytes) name:(ptr str.Bytes)] -> (ptr str.Bytes)
     (call concat (call concat dir name) (call str.from_str ".aipl")))

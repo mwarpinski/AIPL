@@ -105,6 +105,11 @@ fn case(op: &OpCode) -> (&'static str, &'static str) {
         I64ReinterpretF64 => ("i64", "(i64.reinterpret_f64 2.0)"),
         StrLen => ("i32", "(str.len \"hello\")"),
         StrPtr => ("i32", "(mem.load8 (str.ptr \"hello\"))"),
+        // the formatting ops never reach a backend: the resolver lowers them
+        // to std/show calls (tests/test_formats.rs), so they are not in ALL_OPCODES
+        FormatStr | FormatTo | FormatPrint | FormatPrintln | FormatEprintln | FormatPiece | Try | TryOpt | TryOr | Defer => {
+            unreachable!("{op:?} is lowered by the resolver")
+        }
     }
 }
 

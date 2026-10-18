@@ -119,7 +119,9 @@ impl Resolver {
             crate::checker::TypeChecker::new().check_module(&module)?;
         }
         let flat = crate::generics::expand(flat)?;
-        Self::parse_flat(crate::consts::expand(flat)?)
+        let mut module = Self::parse_flat(crate::consts::expand(flat)?)?;
+        crate::formats::lower(&mut module);
+        Ok(module)
     }
 
     /// Parses each item of an expanded flat program, with its positions.
@@ -217,6 +219,21 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
             imports.push((module.to_string(), alias));
         } else {
             items.push(item.clone());
+        }
+    }
+    // the formatting forms become std/show calls (formats.rs): a module that
+    // uses one imports it, after its own imports; their strings are split
+    // here, before names are qualified, so a placeholder's names are renamed
+    // like the rest of the module's
+    if crate::formats::uses_formats(&items) {
+        if !imports.iter().any(|(m, _)| module_name(m) == "show") {
+            imports.push(("show".to_string(), None));
+        }
+        for item in items.iter_mut() {
+            crate::formats::split(item, &|sx, msg| {
+                let (l, c) = sx.position();
+                format!("{}:{}: {}", l, c, msg)
+            })?;
         }
     }
     Ok(ModuleSx { name: name.to_string(), imports, items })

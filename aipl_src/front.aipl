@@ -11,12 +11,17 @@
   (import parser)
   (import expand)
   (import checker)
+  (import vec)
   (import buf)
 
   (fn check [src:i32 len:i32] -> (ptr checker.Problem) (pub)
+    (call check_formats src len (ptr.null (vec.Vec (ptr checker.Fmt)))))
+
+  ;; check, noting each formatting piece's type in fmts (fmtlower.aipl).
+  (fn check_formats [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt)))] -> (ptr checker.Problem) (pub)
     (let r:(ptr parser.Parsed) (call parse src len))
     (if (get r parser.Parsed.ok)
-        (call checker.check src (get r parser.Parsed.module))
+        (call checker.check_formats src (get r parser.Parsed.module) fmts)
         (call checker.problem (get r parser.Parsed.err_at) (get r parser.Parsed.err))))
 
   ;; Tokenize, expand, parse; a tokenizer error comes first, as in Rust.

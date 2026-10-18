@@ -1,0 +1,59 @@
+That feeling you have—*"I have this crazy compiler, but I feel like I can't leave the git repo or do anything without `cargo` holding my hand"*—is **the exact definition of "inverted maturity."**
+
+### What "Inverted Maturity" Means Here
+
+Most new languages build the **outside** first and fake the **inside**:
+- **Normal new language (Year 1):** Has a slick `curl | sh` installer, `my_lang init`, `my_lang build`, `my_lang run` that work from any directory on your laptop—and under the hood it's just transpiling to C or Python because the compiler is a toy.
+- **AIPL today:** You built the **Year-5 compiler internals** first. You have a self-hosted compiler ([`aipl_src/aipl.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl)) that compiles AIPL $\to$ WebAssembly $\to$ standalone native Linux x86-64 ELF machine code with **zero Rust, zero LLVM, and zero libc**.
+- **Why you feel stuck inside Cargo:** The "front door" (the last 100 lines of CLI glue and path lookup) still assumes your current working directory is `/home/matt/Projects/Repos/AIPL`!
+
+Look at the 4 tiny paper cuts that currently trap you inside the repo:
+
+1. **The Standard Library Path is Hardcoded to the Repo:**
+   - In the self-hosted CLI ([`aipl_src/aipl.aipl:70-71`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl#L70-L71)) and [`codegen_opt.aipl:2357-2358`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L2357-L2358):
+     ```lisp
+     (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
+     ```
+     If you `cd ~/Desktop` and run the self-hosted `aipl` binary without setting `AIPL_STD`, it looks for `~/Desktop/aipl_src/std/` and immediately fails on `(import io)`!
+   - And in the Rust CLI ([`src/resolver.rs:880`](file:///home/matt/Projects/Repos/AIPL/src/resolver.rs#L880)), it hardcodes `env!("CARGO_MANIFEST_DIR")/aipl_src/std` at compile time—which only works if `/home/matt/Projects/Repos/AIPL` stays right where it is on your disk.
+
+2. **The Self-Hosted [`aipl_src/aipl.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl) Only Exposes `compile` and `--version`:**
+   - Look at [`aipl_src/aipl.aipl:24-27`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl#L24-L27): the standalone self-hosted binary already contains the full type-checker ([`front.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/front.aipl)) and native x86-64 backend ([`native.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/native.aipl)), **but its `main` function only checks for `aipl compile`!**
+   - It doesn't expose `aipl verify`, `aipl test`, or `aipl build`, so you keep falling back to `cargo run -- verify` or `./target/debug/aipl test`.
+
+3. **WASI `fs.open` Doesn't Set the Executable Bit (`chmod +x`):**
+   - When the self-hosted compiler writes a native ELF binary via `aipl compile --exe app.aipl -o app`, WASI's `path_open` creates the file with permissions `0644` (not `0755`). You have to manually run `chmod +x ./app` before you can execute it (noted in [`aipl_src/aipl.aipl:14-15`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl#L14-L15)).
+
+4. **Requiring `-o OUT` Every Time:**
+   - You have to type `aipl compile --exe hello.aipl -o hello` instead of `aipl build hello.aipl` (defaulting the output binary name to `./hello`).
+
+---
+
+### How We Can Fix This (So You Never Need Cargo Again)
+
+You are literally **one small step away** from having a single, self-contained `~/.local/bin/aipl` executable (written 100% in AIPL, compiled to native x86-64) that works from any directory on any Linux machine with zero Rust or Cargo installed:
+
+1. **Bundle or Auto-Locate `std/`:**
+   - The entire `aipl_src/std/*.aipl` standard library is only **~115 KB of text across 19 files**.
+   - We can either:
+     - **Option A (Zero-file single binary):** Embed the 19 `std/*.aipl` files as string constants in a small `std_bundle.aipl` module inside the compiler so `aipl` is a **true single-file static executable** that you can copy (`scp`) to any Linux server and run immediately with zero external files or environment variables; **and/or**
+     - **Option B (Install directory fallback):** Have `aipl` check `$AIPL_STD` $\to$ `./aipl_src/std/` $\to$ `~/.local/share/aipl/std/`.
+2. **Make the Self-Hosted `aipl` CLI Complete (`verify`, `compile`, `build`, `test`):**
+   - Upgrade [`aipl_src/aipl.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl) (or [`codegen_opt.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl)) so the standalone native `aipl` binary supports:
+     - `aipl verify foo.aipl` (runs the self-hosted verifier and prints `OK` or `file: line:col: error`)
+     - `aipl build foo.aipl` (compiles `foo.aipl` with the optimizer to a native executable `./foo` by default)
+     - `aipl compile [--opt] [--exe [--sandbox]] foo.aipl [-o out]`
+     - `aipl test foo.aipl`
+3. **Provide a 10-Line `install.sh`:**
+   - Compiles the self-hosted native `aipl` compiler, installs it to `~/.local/bin/aipl`, and copies `aipl_src/std/` to `~/.local/share/aipl/std/`.
+
+After that, you can open a terminal in `~/Projects/my_new_app`, write `main.aipl`, and run:
+```bash
+aipl verify main.aipl
+aipl build main.aipl
+./main
+```
+with **zero Cargo, zero Rust, and zero environment variables.**
+
+Would you like me to build that standalone installable CLI + `install.sh` (or put it into a plan) so you can use `aipl` as a real standalone tool anywhere on your machine?

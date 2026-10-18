@@ -213,6 +213,30 @@ pub enum OpCode {
     /// is that pointer); the VM copies the string into the heap and returns
     /// the copy's address. Pair with `(str.len s)` for the length.
     StrPtr,
+    /// The formatting forms after the resolver splits their strings
+    /// (AIPL_SPEC.md 4.K): `(format "x = {x}")` is `(format.str "x = "
+    /// (format.piece x ""))`, each argument a string literal or a piece, a
+    /// value and its format as written after the colon. `format.to` takes the
+    /// buffer first. The resolver lowers them to `std/show` calls once the
+    /// program checks (formats.rs), so no backend sees them.
+    FormatStr,
+    FormatTo,
+    FormatPrint,
+    FormatPrintln,
+    FormatEprintln,
+    FormatPiece,
+    /// Early returns (AIPL_SPEC.md 4.F): `(try r)` is a result's ok value,
+    /// or returns its error from the function; `(try_opt o)` an Option's
+    /// value, or returns `none`; `(try_or o e)` an Option's value, or returns
+    /// `(err e)`. Lowered by the resolver to match_result / match
+    /// (formats::lower), like the formatting ops.
+    Try,
+    TryOpt,
+    TryOr,
+    /// `(defer e ...)`, a statement of a function's body: `e ...` run when the
+    /// function returns, however it returns, the last defer first. Lowered
+    /// by the resolver (formats::lower), like `try`.
+    Defer,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

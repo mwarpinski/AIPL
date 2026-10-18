@@ -1,0 +1,31 @@
+(module diverging
+  (import io)
+  (enum K [a b c])
+  (struct V [x:i32 y:f64] (value))
+  (fn r [n:i32] -> (result i32 i32) (if (gt n 0) (ok:i32 n) (err:i32 (- 0 n))))
+  (fn twice [n:i32] -> (result i32 i32)
+    (let v:i32 (match_result (call r n) (ok x x) (err e (return (err:i32 e)))))
+    (ok:i32 (* 2 v)))
+  (fn pick [k:K n:i32] -> i32
+    (let t:i32 (match k (K.a 1) (K.b (return -1)) (K.c (if (gt n 0) n (return -2)))))
+    (+ t 100))
+  (fn vs [n:i32] -> f64
+    (let v:V (if (gt n 0) (make V n 1.5) (return 0.0)))
+    (get v V.y))
+  (fn sum_pos [n:i32] -> i32
+    (let s:i32 0)
+    (loop i 1 n 1
+      (let x:i32 (if (eq (% i 3) 0) (block (continue)) i))
+      (set! s (+ s x)))
+    s)
+  (fn main [] -> i32
+    (match_result (call twice 5) (ok v (call io.println_int "twice 5 = " v)) (err e (call io.println_int "err " e)))
+    (match_result (call twice -4) (ok v (call io.println_int "twice -4 = " v)) (err e (call io.println_int "err " e)))
+    (call io.println_int "pick a " (call pick K.a 0))
+    (call io.println_int "pick b " (call pick K.b 0))
+    (call io.println_int "pick c 7 " (call pick K.c 7))
+    (call io.println_int "pick c -1 " (call pick K.c -1))
+    (call io.println_f64 "vs 3 " (call vs 3) 1)
+    (call io.println_f64 "vs 0 " (call vs 0) 1)
+    (call io.println_int "sum_pos " (call sum_pos 10))
+    0))

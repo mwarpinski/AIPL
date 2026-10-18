@@ -219,8 +219,11 @@ fn misplaced_control_flow_is_rejected() {
     assert!(err.contains("return value has type i32, but the function returns void"), "{err}");
     let err = check_err("(module m (fn f [n:i32] -> i32 (req (block (return 1) true)) n))");
     assert!(err.contains("return is not allowed in a contract"), "{err}");
-    // return is a statement: it cannot stand in for a value in an if
-    let err = check_err("(module m (fn f [n:i32] -> i32 (if (lt n 0) (return 0) 5)))");
+    // a branch that returns takes the other branch's type (AIPL_SPEC.md
+    // 7.1); a void branch that does not leave still mismatches
+    let m = Parser::parse("(module m (fn f [n:i32] -> i32 (if (lt n 0) (return 0) 5)))").unwrap();
+    TypeChecker::new().check_module(&m).expect("a returning branch fits any type");
+    let err = check_err("(module m (fn f [n:i32] -> i32 (if (lt n 0) (block) 5)))");
     assert!(err.contains("If branch type mismatch"), "{err}");
 }
 

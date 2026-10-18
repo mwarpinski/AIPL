@@ -45,7 +45,8 @@ fn run_both(entry: &Path, f: &str) -> i32 {
 /// The AIPL resolver's flat program compiles to the Rust resolver's bytes.
 fn assert_aipl_resolver_agrees(entry: &Path) {
     let flat = aipl_core::selfhost::resolve_with_aipl(entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
-    let m = aipl_core::parser::Parser::parse(&flat).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    // the flat program can hold constants (std/gen's), which need the resolver
+    let m = Resolver::resolve_source(&flat, entry).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
     let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
     let rust = WasmCompiler::compile(&Resolver::resolve(entry).unwrap()).unwrap();

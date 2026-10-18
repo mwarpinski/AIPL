@@ -1,0 +1,193 @@
+;; The formatting forms' strings, read as src/formats.rs reads them: the
+;; pieces of a format string (pieces), and a format after the colon
+;; (spec). Shared by expand.aipl (which splits the strings for the
+;; checker), checker.aipl (which checks each format against its value's
+;; type), and fmtlower.aipl (which writes the std/show calls). Every message
+;; is formats.rs's, word for word.
+;;
+;; The text here is a string token's raw content, escapes not undone (Rust
+;; reads it undone); that changes nothing, as a placeholder may hold no
+;; quote, backslash, or control character, and text pieces are kept raw.
+(module fmtsplit
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+
+  ;; A piece of a format string, as offsets into its raw content: text
+  ;; (a, n), with {{ and }} still doubled; or a value, its code (a, n) and
+  ;; its format (sa, sn).
+  (struct Piece [(read value:bool) (read a:i32) (read n:i32) (read sa:i32) (read sn:i32)] (value) (pub))
+
+  ;; The pieces, or the first error.
+  (struct Split [(read ok:bool) (read err:str) (read pieces:(ptr (vec.Vec Piece)))] (pub))
+
+  (fn unclosed [] -> str "unclosed { in a format string (write {{ for a brace)")
+  (fn shape [] -> str "a placeholder is {name} or {(expression)}, then optionally :format, e.g. {n:>5} or {x:.2}")
+  (fn no_string [] -> str "a placeholder cannot hold a string or an escape; bind it with let first")
+
+  (fn quoted [c:i32] -> bool
+    (or (or (eq c 34) (eq c 92)) (or (or (eq c 10) (eq c 9)) (or (eq c 13) (eq c 0)))))
+
+  (fn name_byte [c:i32] -> bool
+    (or (or (and (gte c 97) (lte c 122)) (and (gte c 65) (lte c 90)))
+        (or (and (gte c 48) (lte c 57)) (or (or (eq c 95) (eq c 46)) (or (eq c 43) (eq c 45))))))
+
+  (fn fail [msg:str] -> (ptr Split)
+    (let s:(ptr Split) (new Split))
+    (put s Split.ok false)
+    (put s Split.err msg)
+    (put s Split.pieces (ptr.null (vec.Vec Piece)))
+    s)
+
+  ;; The pieces of raw content t: {{ and }} are braces; {name},
+  ;; {(expression)}, and either followed by :format, are values.
+  (fn pieces [t:(ptr str.Bytes)] -> (ptr Split) (pub)
+    (let len:i32 (get t str.Bytes.len))
+    (let out:(ptr (vec.Vec Piece)) (call (vec.make Piece) (call alloc.default) 8))
+    (let i:i32 0)
+    (let lit:i32 0)
+    (while (lt i len)
+      (let c:i32 (call str.byte_at t i))
+      (let next:i32 (if (lt (+ i 1) len) (call str.byte_at t (+ i 1)) -1))
+      (cond
+        ((and (eq c 123) (eq next 123)) (set! i (+ i 2)))
+        ((and (eq c 125) (eq next 125)) (set! i (+ i 2)))
+        ((eq c 125) (return (call fail "a } in a format string closes nothing (write }} for a brace)")))
+        ((eq c 123)
+         (let start:i32 (+ i 1))
+         (let j:i32 start)
+         (if (eq next 40)
+             (block
+               (let depth:i32 0)
+               (let closed:bool false)
+               (while (and (lt j len) (not closed))
+                 (let d:i32 (call str.byte_at t j))
+                 (cond
+                   ((eq d 40) (set! depth (+ depth 1)))
+                   ((eq d 41) (set! depth (- depth 1)))
+                   ((call quoted d) (return (call fail (call no_string))))
+                   ((or (eq d 123) (eq d 125)) (return (call fail (call unclosed))))
+                   (else (block)))
+                 (set! j (+ j 1))
+                 (if (eq depth 0) (set! closed true) (block)))
+               (if (neq depth 0) (return (call fail (call unclosed))) (block)))
+             (block
+               (while (and (lt j len) (call name_byte (call str.byte_at t j))) (set! j (+ j 1)))
+               (if (eq j start)
+                   (cond
+                     ((eq j len) (return (call fail (call unclosed))))
+                     ((eq (call str.byte_at t j) 125) (return (call fail "{} needs a value: {name} or {(expression)}")))
+                     (else (return (call fail (call shape)))))
+                   (block))))
+         (let code_n:i32 (- j start))
+         (let sa:i32 0)
+         (let sn:i32 0)
+         (if (eq j len) (return (call fail (call unclosed))) (block))
+         (cond
+           ((eq (call str.byte_at t j) 125) (set! j (+ j 1)))
+           ((eq (call str.byte_at t j) 58)
+            (set! j (+ j 1))
+            (set! sa j)
+            (while (and (lt j len) (neq (call str.byte_at t j) 125))
+              (if (call quoted (call str.byte_at t j)) (return (call fail (call no_string))) (block))
+              (if (eq (call str.byte_at t j) 123) (return (call fail (call shape))) (block))
+              (set! j (+ j 1)))
+            (if (eq j len) (return (call fail (call unclosed))) (block))
+            (set! sn (- j sa))
+            (set! j (+ j 1)))
+           (else (return (call fail (call shape)))))
+         (if (gt i lit) (call (vec.push Piece) out (make Piece false lit (- i lit) 0 0)) (block))
+         (call (vec.push Piece) out (make Piece true start code_n sa sn))
+         (set! i j)
+         (set! lit j))
+        (else (set! i (+ i 1)))))
+    (if (gt len lit) (call (vec.push Piece) out (make Piece false lit (- len lit) 0 0)) (block))
+    (let s:(ptr Split) (new Split))
+    (put s Split.ok true)
+    (put s Split.err "")
+    (put s Split.pieces out)
+    s)
+
+  ;; ===== Formats =====
+
+  ;; A format, read: [[fill]align][+][0][width][.decimals][x|X|b]
+  ;; (formats.rs Spec). decimals is -1 for none; err is null when it reads.
+  (struct Spec [(read fill:i32) (read align:i32) (read plus:bool) (read zero:bool) (read width:i32)
+                (read decimals:i32) (read base:i32) (read err:(ptr buf.Buf))] (pub))
+
+  (fn align_of [c:i32] -> i32 (cond ((eq c 60) 1) ((eq c 62) 2) ((eq c 94) 3) (else 0)))
+
+  (fn bad [t:(ptr str.Bytes) why:str] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_str b "bad format '")
+    (call buf.push_bytes b t)
+    (call buf.push_str b why)
+    b)
+
+  (fn bad_shape [t:(ptr str.Bytes)] -> (ptr buf.Buf)
+    (call bad t "': a format is [[fill]align][+][0][width][.decimals][x|X|b], e.g. {n:>8} or {x:.2}"))
+
+  (fn spec [t:(ptr str.Bytes)] -> (ptr Spec) (pub)
+    (let s:(ptr Spec) (new Spec))
+    (put s Spec.decimals -1)
+    (put s Spec.err (ptr.null buf.Buf))
+    (let n:i32 (get t str.Bytes.len))
+    (let byte:i32 0)
+    (let i:i32 0)
+    (cond
+      ((and (gte n 2) (gt (call align_of (call str.byte_at t 1)) 0))
+       (set! byte (call str.byte_at t 0))
+       (if (or (lt byte 32) (gte byte 127)) (block (put s Spec.err (call bad_shape t)) (return s)) (block))
+       (put s Spec.fill byte)
+       (put s Spec.align (call align_of (call str.byte_at t 1)))
+       (set! i 2))
+      ((and (gte n 1) (gt (call align_of (call str.byte_at t 0)) 0))
+       (put s Spec.align (call align_of (call str.byte_at t 0)))
+       (set! i 1))
+      (else (block)))
+    (if (and (lt i n) (eq (call str.byte_at t i) 43)) (block (put s Spec.plus true) (set! i (+ i 1))) (block))
+    (if (and (lt i n) (eq (call str.byte_at t i) 48)) (block (put s Spec.zero true) (set! i (+ i 1))) (block))
+    ;; the width
+    (let st:i32 i)
+    (let v:i32 0)
+    (while (and (lt i n) (call is_digit (call str.byte_at t i)))
+      (if (lt v 1000000) (set! v (+ (* v 10) (- (call str.byte_at t i) 48))) (block))
+      (set! i (+ i 1)))
+    (if (gt i st)
+        (block
+          (if (gt v 4095) (block (put s Spec.err (call bad t "': a width is at most 4095")) (return s)) (block))
+          (put s Spec.width v))
+        (block))
+    ;; the decimals
+    (if (and (lt i n) (eq (call str.byte_at t i) 46))
+        (block
+          (set! i (+ i 1))
+          (let ds:i32 i)
+          (let d:i32 0)
+          (while (and (lt i n) (call is_digit (call str.byte_at t i)))
+            (if (lt d 1000000) (set! d (+ (* d 10) (- (call str.byte_at t i) 48))) (block))
+            (set! i (+ i 1)))
+          (if (eq i ds) (block (put s Spec.err (call bad_shape t)) (return s)) (block))
+          (if (gt d 40) (block (put s Spec.err (call bad t "': at most 40 decimals")) (return s)) (block))
+          (put s Spec.decimals d))
+        (block))
+    (if (lt i n)
+        (block
+          (let c:i32 (call str.byte_at t i))
+          (let bs:i32 (cond ((eq c 120) 1) ((eq c 88) 2) ((eq c 98) 3) (else 0)))
+          (if (gt bs 0) (block (put s Spec.base bs) (set! i (+ i 1))) (block)))
+        (block))
+    (if (neq i n) (put s Spec.err (call bad_shape t)) (block))
+    s)
+
+  (fn is_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
+
+  ;; std/show's spec word (formats.rs Spec::word).
+  (fn word [s:(ptr Spec)] -> i32 (pub)
+    (bitor (get s Spec.width)
+      (bitor (shl (+ (get s Spec.decimals) 1) 12)
+        (bitor (shl (get s Spec.align) 18)
+          (bitor (if (get s Spec.zero) 1048576 0)
+            (bitor (shl (get s Spec.base) 21)
+              (bitor (if (get s Spec.plus) 8388608 0) (shl (get s Spec.fill) 24)))))))))

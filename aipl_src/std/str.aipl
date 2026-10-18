@@ -1,6 +1,7 @@
 ;; std/str: byte slices and byte-level text functions. Every function is plain
 ;; AIPL over mem.* and str.*, so it behaves the same in the VM and compiled.
 (module str
+  (import option)
   ;; `len` bytes starting at address `addr`. A failed read has len -1.
   (struct Bytes [(read addr:i32) (read len:i32)] (pub))
 
@@ -51,6 +52,202 @@
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
+
+;; ===== Searching and trimming =====
+  ;; Nothing here allocates but the slices it returns (std/text has the
+  ;; functions that build). Searches take linear time in constant space: a
+  ;; needle of up to 64 bytes is compared where its first byte matches, a
+  ;; longer one by the Two-Way algorithm (Crochemore and Perrin; as musl's
+  ;; memmem, without its shift table).
+
+  ;; Whether b's bytes from i are p's (i + |p| <= |b|).
+  (fn at_is [b:(ptr Bytes) p:(ptr Bytes) i:i32] -> bool
+    (unsafe (let ba:i32 (+ (get b Bytes.addr) i))
+    (let pa:i32 (get p Bytes.addr))
+    (loop k 0 (- (get p Bytes.len) 1) 1
+      (if (neq (mem.load8 (+ ba k)) (mem.load8 (+ pa k))) (return false) (block)))
+    true))
+
+  (fn starts_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
+    (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p 0)))
+
+  (fn ends_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
+    (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p (- (get b Bytes.len) (get p Bytes.len)))))
+
+  ;; The first index at or after `from` where p occurs in b, or -1 (an
+  ;; empty p occurs at `from`).
+  (fn find_from [b:(ptr Bytes) p:(ptr Bytes) from:i32] -> i32 (pub)
+    (req (and (gte from 0) (lte from (get b Bytes.len))))
+    (let n:i32 (get b Bytes.len))
+    (let m:i32 (get p Bytes.len))
+    (if (eq m 0) (return from) (block))
+    (if (gt m 64) (return (call two_way b p from false)) (block))
+    (unsafe (let ba:i32 (get b Bytes.addr))
+    (let first:i32 (mem.load8 (get p Bytes.addr)))
+    (loop i from (- n m) 1
+      (if (and (eq (mem.load8 (+ ba i)) first) (call at_is b p i)) (return i) (block)))
+    -1))
+
+  (fn find [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub) (call find_from b p 0))
+
+  (fn contains [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub) (gte (call find b p) 0))
+
+  ;; The last index where p occurs in b, or -1 (an empty p: b's length).
+  (fn rfind [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub)
+    (let n:i32 (get b Bytes.len))
+    (let m:i32 (get p Bytes.len))
+    (if (eq m 0) (return n) (block))
+    (if (gt m 64)
+        (block
+          ;; the first match in the reversed bytes is the last one
+          (let r:i32 (call two_way b p 0 true))
+          (return (if (lt r 0) -1 (- (- n m) r))))
+        (block))
+    (loop j 0 (- n m) 1
+      (let i:i32 (- (- n m) j))
+      (if (call at_is b p i) (return i) (block)))
+    -1)
+
+  ;; Byte i of x, or of x reversed (rev).
+  (fn nth [x:(ptr Bytes) i:i32 rev:bool] -> i32
+    (unsafe (mem.load8 (+ (get x Bytes.addr) (if rev (- (- (get x Bytes.len) 1) i) i)))))
+
+  ;; The first index at or after `from` where p occurs in h (reversed:
+  ;; both read backwards, and the index counts from h's end), or -1. p has
+  ;; at least two bytes. The needle is cut at its critical factorization
+  ;; (from the two maximal suffixes); the right part is matched left to
+  ;; right, then the left part right to left; a mismatch shifts by the
+  ;; distance matched, or by the period, remembering the prefix a periodic
+  ;; needle shares with itself (mem).
+  (fn two_way [h:(ptr Bytes) p:(ptr Bytes) from:i32 rev:bool] -> i32
+    (let l:i32 (get p Bytes.len))
+    (let n:i32 (get h Bytes.len))
+    ;; the maximal suffix for <, then for >
+    (let ip:i32 -1)
+    (let jp:i32 0)
+    (let k:i32 1)
+    (let per:i32 1)
+    (while (lt (+ jp k) l)
+      (let a:i32 (call nth p (+ ip k) rev))
+      (let c:i32 (call nth p (+ jp k) rev))
+      (cond
+        ((eq a c) (if (eq k per) (block (set! jp (+ jp per)) (set! k 1)) (set! k (+ k 1))))
+        ((gt a c) (set! jp (+ jp k)) (set! k 1) (set! per (- jp ip)))
+        (else (set! ip jp) (set! jp (+ jp 1)) (set! k 1) (set! per 1))))
+    (let ms:i32 ip)
+    (let p0:i32 per)
+    (set! ip -1) (set! jp 0) (set! k 1) (set! per 1)
+    (while (lt (+ jp k) l)
+      (let a:i32 (call nth p (+ ip k) rev))
+      (let c:i32 (call nth p (+ jp k) rev))
+      (cond
+        ((eq a c) (if (eq k per) (block (set! jp (+ jp per)) (set! k 1)) (set! k (+ k 1))))
+        ((lt a c) (set! jp (+ jp k)) (set! k 1) (set! per (- jp ip)))
+        (else (set! ip jp) (set! jp (+ jp 1)) (set! k 1) (set! per 1))))
+    (if (gt (+ ip 1) (+ ms 1)) (set! ms ip) (set! per p0))
+    ;; periodic: the needle's first ms+1 bytes recur after one period
+    (let periodic:bool true)
+    (loop i 0 ms 1
+      (if (neq (call nth p i rev) (call nth p (+ i per) rev)) (set! periodic false) (block)))
+    (let mem0:i32 0)
+    (if periodic
+        (set! mem0 (- l per))
+        (set! per (+ (if (gt ms (- (- l ms) 1)) ms (- (- l ms) 1)) 1)))
+    (let mem:i32 0)
+    (let pos:i32 from)
+    (while (lte (+ pos l) n)
+      ;; the right part, left to right
+      (let j:i32 (if (gt (+ ms 1) mem) (+ ms 1) mem))
+      (while (and (lt j l) (eq (call nth p j rev) (call nth h (+ pos j) rev))) (set! j (+ j 1)))
+      (if (lt j l)
+          (block (set! pos (+ pos (- j ms))) (set! mem 0))
+          (block
+            ;; the left part, right to left
+            (let q:i32 (+ ms 1))
+            (while (and (gt q mem) (eq (call nth p (- q 1) rev) (call nth h (+ pos (- q 1)) rev))) (set! q (- q 1)))
+            (if (lte q mem) (return pos) (block))
+            (set! pos (+ pos per))
+            (set! mem mem0))))
+    -1)
+
+  ;; How many times p occurs in b, not overlapping, from the left.
+  (fn count [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub)
+    (req (gt (get p Bytes.len) 0))
+    (let k:i32 0)
+    (let i:i32 (call find_from b p 0))
+    (while (gte i 0)
+      (set! k (+ k 1))
+      (let next:i32 (+ i (get p Bytes.len)))
+      (set! i (if (lte next (get b Bytes.len)) (call find_from b p next) -1)))
+    k)
+
+  ;; b without its leading, trailing, or both runs of ASCII whitespace.
+  (fn trim_start [b:(ptr Bytes)] -> (ptr Bytes) (pub)
+    (let i:i32 0)
+    (while (and (lt i (get b Bytes.len)) (call is_space (call byte_at b i))) (set! i (+ i 1)))
+    (call slice b i (- (get b Bytes.len) i)))
+
+  (fn trim_end [b:(ptr Bytes)] -> (ptr Bytes) (pub)
+    (let n:i32 (get b Bytes.len))
+    (while (and (gt n 0) (call is_space (call byte_at b (- n 1)))) (set! n (- n 1)))
+    (call slice b 0 n))
+
+  (fn trim [b:(ptr Bytes)] -> (ptr Bytes) (pub) (call trim_end (call trim_start b)))
+
+  ;; The text before and after the first sep.
+  (struct Halves [(read before:(ptr Bytes)) (read after:(ptr Bytes))] (value) (pub))
+
+  (fn split_once [b:(ptr Bytes) sep:(ptr Bytes)] -> (option.Option Halves) (pub)
+    (req (gt (get sep Bytes.len) 0))
+    (let i:i32 (call find b sep))
+    (if (lt i 0) (return (make (option.Option Halves) none)) (block))
+    (let j:i32 (+ i (get sep Bytes.len)))
+    (make (option.Option Halves) some (make Halves (call slice b 0 i) (call slice b j (- (get b Bytes.len) j)))))
+
+  ;; Whether a and b are equal but for the case of ASCII letters.
+  (fn eq_ignore_case [a:(ptr Bytes) b:(ptr Bytes)] -> bool (pub)
+    (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
+    (loop i 0 (- (get a Bytes.len) 1) 1
+      (if (neq (call lower (call byte_at a i)) (call lower (call byte_at b i))) (return false) (block)))
+    true)
+
+  (fn lower [c:i32] -> i32 (if (and (gte c 65) (lte c 90)) (+ c 32) c))
+
+  ;; Byte order: -1, 0, or 1 (a prefix first).
+  (fn cmp [a:(ptr Bytes) b:(ptr Bytes)] -> i32 (pub)
+    (let n:i32 (if (lt (get a Bytes.len) (get b Bytes.len)) (get a Bytes.len) (get b Bytes.len)))
+    (loop i 0 (- n 1) 1
+      (let x:i32 (call byte_at a i))
+      (let y:i32 (call byte_at b i))
+      (if (lt x y) (return -1) (block))
+      (if (gt x y) (return 1) (block)))
+    (cond ((lt (get a Bytes.len) (get b Bytes.len)) -1) ((gt (get a Bytes.len) (get b Bytes.len)) 1) (else 0)))
+
+  ;; b as a decimal i64: an optional sign, then digits; or (err i), the
+  ;; index of the first byte that is not a digit, or of the digit past which
+  ;; the value no longer fits.
+  (fn parse_i64 [b:(ptr Bytes)] -> (result i64 i32) (pub)
+    (let n:i32 (get b Bytes.len))
+    (let c0:i32 (if (gt n 0) (call byte_at b 0) 0))
+    (let neg:bool (eq c0 45))
+    (let start:i32 (if (or neg (eq c0 43)) 1 0))
+    (if (lte n start) (return (err:i64 n)) (block))
+    ;; built negative, which reaches the lowest i64
+    (let v:i64 0i64)
+    (loop i start (- n 1) 1
+      (let c:i32 (call byte_at b i))
+      (if (or (lt c 48) (gt c 57)) (return (err:i64 i)) (block))
+      (let d:i64 (i64.extend_s (- c 48)))
+      (if (lt v -922337203685477580i64) (return (err:i64 i)) (block))
+      (if (and (eq v -922337203685477580i64) (gt d 8i64)) (return (err:i64 i)) (block))
+      (set! v (- (* v 10i64) d)))
+    (if neg
+        (ok:i32 v)
+        (if (eq v -9223372036854775808i64) (err:i64 (- n 1)) (ok:i32 (- 0i64 v)))))
+
+  ;; "true" or "false"; else (err 0).
+  (fn parse_bool [b:(ptr Bytes)] -> (result bool i32) (pub)
+    (cond ((call is b "true") (ok:i32 true)) ((call is b "false") (ok:i32 false)) (else (err:bool 0))))
 
 ;; ===== Making strings (AIPL_SPEC.md 4.B) =====
   ;; A str made at run time is a copy, never freed: it has no generation for
