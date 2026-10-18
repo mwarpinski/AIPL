@@ -335,7 +335,8 @@ pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
         Type::Struct(_) => value_cell(payload, structs),
         Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
         Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => value_cell(payload, structs),
-        Type::I64 | Type::F64 => (8, 16),
+        // a pointer or array is 8 bytes: its address, then its generation
+        Type::I64 | Type::F64 | Type::Ptr(_) | Type::Array(_) => (8, 16),
         _ => (4, 8),
     }
 }

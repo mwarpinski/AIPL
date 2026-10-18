@@ -2679,9 +2679,11 @@
     found)
 
   ;; Where a result cell keeps a payload of type t (checker.rs
-  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit, else at 4
-  ;; in an 8-byte one. A result payload is its cell's address, an i32.
-  (fn payload_offset [t:Ty] -> i32 (if (or (eq t Ty.i64) (eq t Ty.f64)) 8 4))
+  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit (i64, f64,
+  ;; or a pointer or array: an address, then a generation), else at 4 in an
+  ;; 8-byte one. A result payload is its cell's address, an i32.
+  (fn payload_offset [t:Ty] -> i32
+    (if (or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8 4))
 
   ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
   ;; evaluating the payload, store the tag, then the payload.
