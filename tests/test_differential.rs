@@ -1086,7 +1086,7 @@ fn value_structs_agree() {
   (struct W [v:V n:i64] (value))
   (struct Holder [w:W k:i32])
   ;; U contains itself, so it is a heap cell; X is held by value
-  (union U [(p v:V) (q) (r next:U)])
+  (union U [(p v:V) (q) (r next:(ptr Holder))])
   (union X [(p v:V) (q)])
 
   ;; V 24 (b aligned to 8, rounded to 8), W 32, Holder 40
@@ -1106,8 +1106,8 @@ fn value_structs_agree() {
     (let r:(result V str) (ok:str (make V 1 2.0 false)))
     (- (mem.alloc 4) a0))
 
-  ;; a union's cell holding a V: the payload at 8, the cell 32 bytes (a
-  ;; variant's cell is its own size); a union held by value takes none
+  ;; a union holding a V takes no cell, whether or not it also holds a
+  ;; pointer (every union is a value): the two 4-byte blocks are 8 apart
   (fn union_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
     (let u:U (make U.p (make V 3 1.5 true)))
@@ -1137,7 +1137,7 @@ fn value_structs_agree() {
     assert_eq!(differential(&module, &wasm, "raw", &[]), Ok(Value::Int(21)));
     // the 4-byte block rounded to 8, and no result cell
     assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(8)));
-    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(40)));
+    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(8)));
     assert_eq!(differential(&module, &wasm, "elements", &[]), Ok(Value::Int(5)));
     assert!(differential(&module, &wasm, "read_null", &[]).is_err());
     assert_eq!(differential(&module, &wasm, "read_past", &[1]), Ok(Value::Int(0)));

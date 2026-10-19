@@ -330,23 +330,32 @@ fn plain_type_arguments_are_checked_in_both_toolchains() {
 }
 
 /// What sealing allows: a template using only what its kinds and where
-/// clauses give it, a recursive generic union, a struct parameter, and a
+/// clauses give it, a recursive generic union (its node behind a pointer
+/// to a generic struct), a struct parameter, and a
 /// template never used, all checking in both toolchains and running.
 #[test]
 fn templates_within_their_clauses_check_and_run() {
     let src = r#"(module main
   (import cmp)
   (import alloc)
-  (union (Tree T) [(leaf) (node l:(Tree T) v:T r:(Tree T))])
+  (union (Tree T) [(leaf) (node n:(ptr (Node T)))])
+  (struct (Node T) [l:(Tree T) v:T r:(Tree T)])
+  (fn (node T) [l:(Tree T) v:T r:(Tree T)] -> (Tree T)
+    (let n:(ptr (Node T)) (call (alloc.create (Node T)) (call alloc.default)))
+    (put n (Node T) l l)
+    (put n (Node T) v v)
+    (put n (Node T) r r)
+    (make (Tree T) node n))
   (fn (insert T) [t:(Tree T) x:T] -> (Tree T) (where (cmp.Ord T))
     (match t
-      ((Tree T) leaf (make (Tree T) node (make (Tree T) leaf) x (make (Tree T) leaf)))
-      ((Tree T) node [l v r]
+      ((Tree T) leaf (call (node T) (make (Tree T) leaf) x (make (Tree T) leaf)))
+      ((Tree T) node [n]
+        (let v:T (get n (Node T) v))
         (if (lt (call (cmp.Ord.compare T) x v) 0)
-            (make (Tree T) node (call (insert T) l x) v r)
-            (make (Tree T) node l v (call (insert T) r x))))))
+            (call (node T) (call (insert T) (get n (Node T) l) x) v (get n (Node T) r))
+            (call (node T) (get n (Node T) l) v (call (insert T) (get n (Node T) r) x))))))
   (fn (size T) [t:(Tree T)] -> i32
-    (match t ((Tree T) leaf 0) ((Tree T) node [l _ r] (+ 1 (+ (call (size T) l) (call (size T) r))))))
+    (match t ((Tree T) leaf 0) ((Tree T) node [n] (+ 1 (+ (call (size T) (get n (Node T) l)) (call (size T) (get n (Node T) r)))))))
   (struct Cell [n:i32])
   (fn (fresh S) [] -> (ptr S) (where (struct S)) (call (alloc.create S) (call alloc.default)))
   (fn (never_used T) [x:T] -> T x)

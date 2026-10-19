@@ -128,11 +128,11 @@
       (ast.Type.bool (call s b "bool"))
       (ast.Type.str (call s b "str"))
       (ast.Type.void (call s b "void"))
-      (ast.Type.ptr [inner] (call s b "(ptr ") (call print_type b inner) (call s b ")"))
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (call s b "(ptr ") (call print_type b inner) (call s b ")"))
       (ast.Type.struct_ [name] (call by b name))
-      (ast.Type.result [ok_t err_t] (call s b "(result ") (call print_type b ok_t) (call s b " ") (call print_type b err_t) (call s b ")"))
-      (ast.Type.arr [elem] (call s b "(arr ") (call print_type b elem) (call s b ")"))
-      (ast.Type.fn_ [params ret]
+      (ast.Type.result [n_result] (let ok_t:ast.Type (get n_result ast.ResultType.ok)) (let err_t:ast.Type (get n_result ast.ResultType.err)) (call s b "(result ") (call print_type b ok_t) (call s b " ") (call print_type b err_t) (call s b ")"))
+      (ast.Type.arr [n_arr] (let elem:ast.Type (get n_arr ast.ArrType.elem)) (call s b "(arr ") (call print_type b elem) (call s b ")"))
+      (ast.Type.fn_ [n_fn] (let params:(arr ast.Type) (get n_fn ast.FnType.params)) (let ret:ast.Type (get n_fn ast.FnType.ret))
        (call s b "(fn [")
        (loop j 0 (- (arr.len params) 1) 1
          (if (gt j 0) (call s b " ") (block))
@@ -146,8 +146,8 @@
   ;; src/printer.rs struct_name / elem: a ptr or arr type's inner name.
   (fn print_inner [b:(ptr buf.Buf) t:ast.Type] -> void
     (match t
-      (ast.Type.ptr [inner] (call print_type b inner))
-      (ast.Type.arr [elem] (call print_type b elem))
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (call print_type b inner))
+      (ast.Type.arr [n_arr] (let elem:ast.Type (get n_arr ast.ArrType.elem)) (call print_type b elem))
       (else (call print_type b t))))
 
   (fn print_raw_string [b:(ptr buf.Buf) raw:str.Bytes] -> void
@@ -185,20 +185,20 @@
       (ast.Expr.lit_bool [_ bv] (call s b (if bv "true" "false")))
       (ast.Expr.lit_str [_ raw] (call print_raw_string b raw))
       (ast.Expr.var [_ name] (call by b name))
-      (ast.Expr.let_ [_ name ty val]
+      (ast.Expr.let_ [n_let] (let name:str.Bytes (get n_let ast.LetExpr.name)) (let ty:ast.Type (get n_let ast.LetExpr.ty)) (let val:ast.Expr (get n_let ast.LetExpr.val))
        (call s b "(let ") (call by b name) (call s b ":") (call print_type b ty) (call s b " ") (call print_expr b val) (call s b ")"))
-      (ast.Expr.set [_ name val] (call s b "(set! ") (call by b name) (call s b " ") (call print_expr b val) (call s b ")"))
-      (ast.Expr.if_ [_ c t f]
+      (ast.Expr.set [n_set] (let name:str.Bytes (get n_set ast.SetExpr.name)) (let val:ast.Expr (get n_set ast.SetExpr.val)) (call s b "(set! ") (call by b name) (call s b " ") (call print_expr b val) (call s b ")"))
+      (ast.Expr.if_ [n_if] (let c:ast.Expr (get n_if ast.IfExpr.cond)) (let t:ast.Expr (get n_if ast.IfExpr.then_)) (let f:ast.Expr (get n_if ast.IfExpr.else_))
        (call s b "(if ") (call print_expr b c) (call s b " ") (call print_expr b t) (call s b " ") (call print_expr b f) (call s b ")"))
-      (ast.Expr.loop [_ var start end step body]
+      (ast.Expr.loop [n_loop] (let var:str.Bytes (get n_loop ast.LoopExpr.var)) (let start:ast.Expr (get n_loop ast.LoopExpr.start)) (let end:ast.Expr (get n_loop ast.LoopExpr.end)) (let step:ast.Expr (get n_loop ast.LoopExpr.step)) (let body:(arr ast.Expr) (get n_loop ast.LoopExpr.body))
        (call s b "(loop ") (call by b var) (call s b " ") (call print_expr b start) (call s b " ")
        (call print_expr b end) (call s b " ") (call print_expr b step) (call with_body b body))
-      (ast.Expr.while_ [_ c body] (call s b "(while ") (call print_expr b c) (call with_body b body))
+      (ast.Expr.while_ [n_while] (let c:ast.Expr (get n_while ast.WhileExpr.cond)) (let body:(arr ast.Expr) (get n_while ast.WhileExpr.body)) (call s b "(while ") (call print_expr b c) (call with_body b body))
       (ast.Expr.call [_ fname args] (call s b "(call ") (call by b fname) (call with_body b args))
       (ast.Expr.op [_ op args] (call s b "(") (call s b (call op_name op)) (call with_body b args))
-      (ast.Expr.ok [_ val oty] (call print_result b "ok" val oty))
-      (ast.Expr.err [_ val oty] (call print_result b "err" val oty))
-      (ast.Expr.match_result [_ val ok_var ok_body err_var err_body]
+      (ast.Expr.ok [n_ok] (let val:ast.Expr (get n_ok ast.OkExpr.val)) (let oty:ast.MaybeType (get n_ok ast.OkExpr.ty)) (call print_result b "ok" val oty))
+      (ast.Expr.err [n_err] (let val:ast.Expr (get n_err ast.ErrExpr.val)) (let oty:ast.MaybeType (get n_err ast.ErrExpr.ty)) (call print_result b "err" val oty))
+      (ast.Expr.match_result [n_match_result] (let val:ast.Expr (get n_match_result ast.MatchResultExpr.val)) (let ok_var:str.Bytes (get n_match_result ast.MatchResultExpr.ok_var)) (let ok_body:(arr ast.Expr) (get n_match_result ast.MatchResultExpr.ok_body)) (let err_var:str.Bytes (get n_match_result ast.MatchResultExpr.err_var)) (let err_body:(arr ast.Expr) (get n_match_result ast.MatchResultExpr.err_body))
        (call s b "(match_result ") (call print_expr b val)
        (call s b " (ok ") (call by b ok_var) (call with_body b ok_body)
        (call s b " (err ") (call by b err_var) (call with_body b err_body)
@@ -206,42 +206,42 @@
       (ast.Expr.block [_ body] (call s b "(block") (call with_body b body))
       (ast.Expr.unsafe_ [_ body] (call s b "(unsafe") (call with_body b body))
       (ast.Expr.new_ [_ name] (call s b "(new ") (call by b name) (call s b ")"))
-      (ast.Expr.get_ [_ sname fname ptr]
+      (ast.Expr.get_ [n_get] (let sname:str.Bytes (get n_get ast.GetExpr.sname)) (let fname:str.Bytes (get n_get ast.GetExpr.fname)) (let ptr:ast.Expr (get n_get ast.GetExpr.ptr))
        (call s b "(get ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname) (call s b ")"))
-      (ast.Expr.put_ [_ sname fname ptr val path]
+      (ast.Expr.put_ [n_put] (let sname:str.Bytes (get n_put ast.PutExpr.sname)) (let fname:str.Bytes (get n_put ast.PutExpr.fname)) (let ptr:ast.Expr (get n_put ast.PutExpr.ptr)) (let val:ast.Expr (get n_put ast.PutExpr.val)) (let path:(arr (ptr ast.Step)) (get n_put ast.PutExpr.path))
        (call s b "(put ") (call print_expr b ptr) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
        (call print_path b path)
        (call s b " ") (call print_expr b val) (call s b ")"))
       (ast.Expr.sizeof [_ st] (call s b "(sizeof ") (call print_type b st) (call s b ")"))
-      (ast.Expr.arr_new [_ ty size] (call s b "(arr.new ") (call print_type b ty) (call s b " ") (call print_expr b size) (call s b ")"))
-      (ast.Expr.arr_get [_ ty ptr index]
+      (ast.Expr.arr_new [n_arr_new] (let ty:ast.Type (get n_arr_new ast.ArrNewExpr.ty)) (let size:ast.Expr (get n_arr_new ast.ArrNewExpr.size)) (call s b "(arr.new ") (call print_type b ty) (call s b " ") (call print_expr b size) (call s b ")"))
+      (ast.Expr.arr_get [n_arr_get] (let ty:ast.Type (get n_arr_get ast.ArrGetExpr.ty)) (let ptr:ast.Expr (get n_arr_get ast.ArrGetExpr.ptr)) (let index:ast.Expr (get n_arr_get ast.ArrGetExpr.index))
        (call s b "(arr.get ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ") (call print_expr b index) (call s b ")"))
-      (ast.Expr.arr_set [_ ty ptr index val path]
+      (ast.Expr.arr_set [n_arr_set] (let ty:ast.Type (get n_arr_set ast.ArrSetExpr.ty)) (let ptr:ast.Expr (get n_arr_set ast.ArrSetExpr.ptr)) (let index:ast.Expr (get n_arr_set ast.ArrSetExpr.index)) (let val:ast.Expr (get n_arr_set ast.ArrSetExpr.val)) (let path:(arr (ptr ast.Step)) (get n_arr_set ast.ArrSetExpr.path))
        (call s b "(arr.set ") (call print_type b ty) (call s b " ") (call print_expr b ptr) (call s b " ")
        (call print_expr b index) (call print_path b path) (call s b " ") (call print_expr b val) (call s b ")"))
-      (ast.Expr.arr_len [_ a] (call s b "(arr.len ") (call print_expr b a) (call s b ")"))
+      (ast.Expr.arr_len [n_arr_len] (let a:ast.Expr (get n_arr_len ast.ArrLenExpr.arr)) (call s b "(arr.len ") (call print_expr b a) (call s b ")"))
       (ast.Expr.null [_ ty]
        (match ty
          (ast.Type.arr [_] (call s b "(arr.null ") (call print_inner b ty) (call s b ")"))
          (else (call s b "(ptr.null ") (call print_inner b ty) (call s b ")"))))
-      (ast.Expr.cast [_ ty addr]
+      (ast.Expr.cast [n_cast] (let ty:ast.Type (get n_cast ast.CastExpr.ty)) (let addr:ast.Expr (get n_cast ast.CastExpr.addr))
        (match ty
          (ast.Type.arr [_] (call s b "(arr.cast ") (call print_inner b ty))
          (ast.Type.enum_ [name] (call s b "(enum.cast ") (call by b name))
          (else (call s b "(ptr.cast ") (call print_inner b ty)))
        (call s b " ") (call print_expr b addr) (call s b ")"))
-      (ast.Expr.make_ptr [_ ty addr g]
+      (ast.Expr.make_ptr [n_make_ptr] (let ty:ast.Type (get n_make_ptr ast.MakePtrExpr.ty)) (let addr:ast.Expr (get n_make_ptr ast.MakePtrExpr.addr)) (let g:ast.Expr (get n_make_ptr ast.MakePtrExpr.gen))
        (match ty
          (ast.Type.arr [_] (call s b "(arr.make ") (call print_inner b ty))
          (else (call s b "(ptr.make ") (call print_inner b ty)))
        (call s b " ") (call print_expr b addr) (call s b " ") (call print_expr b g) (call s b ")"))
-      (ast.Expr.make [_ uname variant args]
+      (ast.Expr.make [n_make] (let uname:str.Bytes (get n_make ast.MakeExpr.uname)) (let variant:str.Bytes (get n_make ast.MakeExpr.variant)) (let args:(arr ast.Expr) (get n_make ast.MakeExpr.args))
        (call s b "(make ") (call by b uname) (call s b ".") (call by b variant) (call with_body b args))
       (ast.Expr.record [_ sname args] (call s b "(make ") (call by b sname) (call with_body b args))
-      (ast.Expr.with_ [_ sname fname val nv]
+      (ast.Expr.with_ [n_with] (let sname:str.Bytes (get n_with ast.WithExpr.sname)) (let fname:str.Bytes (get n_with ast.WithExpr.fname)) (let val:ast.Expr (get n_with ast.WithExpr.val)) (let nv:ast.Expr (get n_with ast.WithExpr.new))
        (call s b "(with ") (call print_expr b val) (call s b " ") (call by b sname) (call s b ".") (call by b fname)
        (call s b " ") (call print_expr b nv) (call s b ")"))
-      (ast.Expr.match_ [_ val arms else_body]
+      (ast.Expr.match_ [n_match] (let val:ast.Expr (get n_match ast.MatchExpr.val)) (let arms:(arr (ptr ast.Arm)) (get n_match ast.MatchExpr.arms)) (let else_body:(arr ast.Expr) (get n_match ast.MatchExpr.else_body))
        (call s b "(match ") (call print_expr b val)
        (loop j 0 (- (arr.len arms) 1) 1
          (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms j))
@@ -259,16 +259,16 @@
          (call with_body b (get arm ast.Arm.body)))
        (if (neq else_body (arr.null ast.Expr)) (block (call s b " (else") (call with_body b else_body)) (block))
        (call s b ")"))
-      (ast.Expr.return_ [_ rv]
+      (ast.Expr.return_ [n_return] (let rv:ast.MaybeExpr (get n_return ast.ReturnExpr.val))
        (match rv
          (ast.MaybeExpr.none (call s b "(return)"))
          (ast.MaybeExpr.some [v] (call s b "(return ") (call print_expr b v) (call s b ")"))))
       (ast.Expr.break_ [_] (call s b "(break)"))
       (ast.Expr.continue_ [_] (call s b "(continue)"))
       (ast.Expr.ref [_ name] (call s b "(ref ") (call by b name) (call s b ")"))
-      (ast.Expr.call_ref [_ sig callee args]
+      (ast.Expr.call_ref [n_call_ref] (let sig:ast.Type (get n_call_ref ast.CallRefExpr.sig)) (let callee:ast.Expr (get n_call_ref ast.CallRefExpr.func)) (let args:(arr ast.Expr) (get n_call_ref ast.CallRefExpr.args))
        (call s b "(call_ref ") (call print_type b sig) (call s b " ") (call print_expr b callee) (call with_body b args))
-      (ast.Expr.addr [_ val kind]
+      (ast.Expr.addr [n_addr] (let val:ast.Expr (get n_addr ast.AddrExpr.val)) (let kind:ast.AddrKind (get n_addr ast.AddrExpr.kind))
        (call s b (match kind (ast.AddrKind.ptr "(ptr.addr ") (ast.AddrKind.arr "(arr.addr ") (ast.AddrKind.enum_ "(enum.ord ")
                          (ast.AddrKind.ptr_gen "(ptr.gen ") (ast.AddrKind.arr_gen "(arr.gen ")))
        (call print_expr b val) (call s b ")"))))

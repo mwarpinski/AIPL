@@ -33,13 +33,13 @@
 
   ;; Whether the formatting forms print t at all (formats.rs prints).
   (fn prints [t:ast.Type] -> bool (pub)
-    (match t (ast.Type.void false) (ast.Type.fn_ [_ _] false) (else true)))
+    (match t (ast.Type.void false) (ast.Type.fn_ [_] false) (else true)))
 
   (fn is_bytes [t:ast.Type] -> bool
     (match t (ast.Type.struct_ [n] (call str.is n "str.Bytes")) (else false)))
 
   (fn is_value_kind [t:ast.Type] -> bool
-    (match t (ast.Type.struct_ [_] true) (ast.Type.union_ [_] true) (ast.Type.result [_ _] true) (else false)))
+    (match t (ast.Type.struct_ [_] true) (ast.Type.union_ [_] true) (ast.Type.result [_] true) (else false)))
 
   (fn type_text [t:ast.Type] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
@@ -132,16 +132,16 @@
     (put nd Need.ty t)
     (call (vec.push (ptr Need)) need nd)
     (match t
-      (ast.Type.ptr [inner] (match inner (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need)) (else (block))))
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (match inner (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need)) (else (block))))
       (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need))
-      (ast.Type.arr [e] (call need_inside d e need))
+      (ast.Type.arr [n_arr] (let e:ast.Type (get n_arr ast.ArrType.elem)) (call need_inside d e need))
       (ast.Type.union_ [u]
        (let ud:(ptr ast.UnionDef) (call union_def d u))
        (if (neq ud (ptr.null ast.UnionDef))
            (loop k 0 (- (arr.len (get ud ast.UnionDef.variants)) 1) 1
              (call need_fields d (get (arr.get (ptr ast.Variant) (get ud ast.UnionDef.variants) k) ast.Variant.fields) need))
            (block)))
-      (ast.Type.result [a b] (call need_inside d a need) (call need_inside d b need))
+      (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let b:ast.Type (get n_result ast.ResultType.err)) (call need_inside d a need) (call need_inside d b need))
       (else (block))))
 
   ;; Bytewise order, as Rust orders strings.
@@ -242,8 +242,8 @@
       (ast.Type.arr [_] (call addr out t "arr.addr" e))
       (ast.Type.struct_ [_] (if (call is_bytes t) (call quoted out "put_bytes" e) (call named out t e)))
       (ast.Type.union_ [_] (call named out t e))
-      (ast.Type.result [_ _] (call named out t e))
-      (ast.Type.fn_ [_ _] (call lit out "<fn>"))
+      (ast.Type.result [_] (call named out t e))
+      (ast.Type.fn_ [_] (call lit out "<fn>"))
       (else (call lit out "?"))))
 
   (fn named [out:(ptr buf.Buf) t:ast.Type e:str.Bytes] -> void
@@ -305,7 +305,7 @@
     (call printer.print_type out t)
     (call buf.push_str out "] -> (ptr buf.Buf) ")
     (match t
-      (ast.Type.ptr [inner]
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner))
        (let n:str.Bytes (match inner (ast.Type.struct_ [s] s) (else (call str.from_str ""))))
        (call buf.push_str out "(if (eq (unsafe (ptr.addr v)) 0) ")
        (call lit out "null")
@@ -336,7 +336,7 @@
                    (call buf.push_str out "))"))))
            (block))
        (call buf.push_byte out 41))
-      (ast.Type.result [a e]
+      (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let e:ast.Type (get n_result ast.ResultType.err))
        (call buf.push_str out "(match_result v (ok _ok (block ")
        (call lit out "ok(")
        (call buf.push_byte out 32)
@@ -350,7 +350,7 @@
        (call buf.push_byte out 32)
        (call lit out ")")
        (call buf.push_str out ")))"))
-      (ast.Type.arr [e]
+      (ast.Type.arr [n_arr] (let e:ast.Type (get n_arr ast.ArrType.elem))
        (call buf.push_str out "(if (eq (unsafe (arr.addr v)) 0) ")
        (call lit out "null")
        (call buf.push_str out " (block ")

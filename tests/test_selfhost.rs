@@ -1245,7 +1245,8 @@ fn self_hosted_bytes_match_checked_arithmetic() {
 }
 
 /// Unions, make, and match: variant layouts (i64/f64 fields aligned to 8,
-/// bool fields normalized when read), a recursive union, enum arms (their
+/// bool fields normalized when read), a recursive union (its rest behind a
+/// pointer), enum arms (their
 /// heads numbers after consts.aipl), an else-only match, void arms, and
 /// make/match nested in each other's operands, so the scratch local is
 /// reused while a cell is being filled.
@@ -1255,7 +1256,8 @@ fn self_hosted_bytes_match_sum_types() {
         "sum_types",
         "(module sum
   (union Shape [(circle r:f64) (rect w:i32 h:i32) (big n:i64 flag:bool) (empty)])
-  (union List [(nil) (cons head:i32 tail:List)])
+  (union List [(nil) (cons head:i32 tail:(ptr Rest))])
+  (struct Rest [l:List])
   (enum Color [red green (blue 10)])
   (struct Holder [s:Shape c:Color])
   (fn area [s:Shape] -> i64 (unsafe)
@@ -1265,7 +1267,11 @@ fn self_hosted_bytes_match_sum_types() {
       (Shape.big [n flag] (if flag n 0i64))
       (Shape.empty -1i64)))
   (fn sum [l:List] -> i32 (unsafe)
-    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum rest)))))
+    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum (get rest Rest.l))))))
+  (fn cons [x:i32 l:List] -> List (unsafe)
+    (let r:(ptr Rest) (new Rest))
+    (put r Rest.l l)
+    (make List.cons x r))
   (fn code [c:Color] -> i32 (unsafe) (match c (Color.red 1) (Color.blue 3) (else 2)))
   (fn always [c:Color] -> i32 (unsafe) (match c (else 7)))
   (fn effect [s:Shape] -> void (unsafe)
@@ -1275,7 +1281,7 @@ fn self_hosted_bytes_match_sum_types() {
     (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
     (put h Holder.c Color.blue)
     (call effect (get h Holder.s))
-    (let l:List (make List.cons 1 (make List.cons 2 (make List.nil))))
+    (let l:List (call cons 1 (call cons 2 (make List.nil))))
     (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",
     );
 }

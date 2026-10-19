@@ -178,9 +178,20 @@ refused with the way to write it. Steps: a `str` variant is one slot
 (done 2026-10-19: the union is a value; all three deciders, checker.rs,
 checker.aipl, and codegen.aipl, agree); the refusal lands unused, its
 message naming the widest variant and saying to move its fields into a
-struct held by a `(ptr S)`; the seed is refreshed; ast.aipl's `Type` and `Expr`
-and the tests' recursive unions move behind cells by script; then the
-held-by-address code leaves all three code generators and the spec.
+struct held by a `(ptr S)`; ast.aipl's `Type` and `Expr` and the tests'
+recursive unions move behind cells (done 2026-10-19:
+tools/migrate_ast_cells.py moved the 22 variants of `Expr` that hold
+expressions, `Expr.make` for width, and `Type`'s 4 that hold types
+behind read-only structs built by constructors in ast.aipl; `Expr` is 7
+slots, `Type` 4; the compiler's output is unchanged and compiling itself
+takes the same time, 1.18 s against 1.16 s; no seed refresh was needed,
+since the new code uses only structs and pointers); the refusal is on in
+both checkers (done 2026-10-19, tests/test_values.rs), with the spec,
+the prompt guide's union example, and every test that held a union by
+address rewritten; then the held-by-address code leaves all three code
+generators. A loss to recover: formatting prints a pointer field as its
+address, so a tree no longer prints whole; the generated printers could
+follow pointers, with a guard against cycles.
 
 ### M5. Long-lived servers
 

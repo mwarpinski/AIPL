@@ -132,21 +132,21 @@
   (fn tag [t:ast.Type] -> i32
     (match t
       (ast.Type.i32 0) (ast.Type.i64 1) (ast.Type.f32 2) (ast.Type.f64 3) (ast.Type.bool 4) (ast.Type.str 5)
-      (ast.Type.void 6) (ast.Type.ptr [_] 7) (ast.Type.struct_ [_] 8) (ast.Type.result [_ _] 9) (ast.Type.arr [_] 10)
-      (ast.Type.fn_ [_ _] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)
+      (ast.Type.void 6) (ast.Type.ptr [_] 7) (ast.Type.struct_ [_] 8) (ast.Type.result [_] 9) (ast.Type.arr [_] 10)
+      (ast.Type.fn_ [_] 11) (ast.Type.enum_ [_] 12) (ast.Type.union_ [_] 13)
       (ast.Type.u8 14) (ast.Type.i8 15) (ast.Type.u16 16) (ast.Type.i16 17)))
 
   ;; Structural equality (src/ast.rs derives PartialEq).
   (fn teq [a:ast.Type b:ast.Type] -> bool
     (if (neq (call tag a) (call tag b)) (return false) (block))
     (match a
-      (ast.Type.ptr [ia] (match b (ast.Type.ptr [ib] (call teq ia ib)) (else false)))
+      (ast.Type.ptr [n_ptr] (let ia:ast.Type (get n_ptr ast.PtrType.inner)) (match b (ast.Type.ptr [n_ptr2] (let ib:ast.Type (get n_ptr2 ast.PtrType.inner)) (call teq ia ib)) (else false)))
       (ast.Type.struct_ [na] (match b (ast.Type.struct_ [nb] (call beq na nb)) (else false)))
-      (ast.Type.result [oa ea] (match b (ast.Type.result [ob eb] (and (call teq oa ob) (call teq ea eb))) (else false)))
-      (ast.Type.arr [xa] (match b (ast.Type.arr [xb] (call teq xa xb)) (else false)))
-      (ast.Type.fn_ [pa ra]
+      (ast.Type.result [n_result] (let oa:ast.Type (get n_result ast.ResultType.ok)) (let ea:ast.Type (get n_result ast.ResultType.err)) (match b (ast.Type.result [n_result2] (let ob:ast.Type (get n_result2 ast.ResultType.ok)) (let eb:ast.Type (get n_result2 ast.ResultType.err)) (and (call teq oa ob) (call teq ea eb))) (else false)))
+      (ast.Type.arr [n_arr] (let xa:ast.Type (get n_arr ast.ArrType.elem)) (match b (ast.Type.arr [n_arr2] (let xb:ast.Type (get n_arr2 ast.ArrType.elem)) (call teq xa xb)) (else false)))
+      (ast.Type.fn_ [n_fn] (let pa:(arr ast.Type) (get n_fn ast.FnType.params)) (let ra:ast.Type (get n_fn ast.FnType.ret))
        (match b
-         (ast.Type.fn_ [pb rb]
+         (ast.Type.fn_ [n_fn2] (let pb:(arr ast.Type) (get n_fn2 ast.FnType.params)) (let rb:ast.Type (get n_fn2 ast.FnType.ret))
           (if (neq (arr.len pa) (arr.len pb)) (return false) (block))
           (loop k 0 (- (arr.len pa) 1) 1
             (if (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k)) (block) (return false)))
@@ -299,6 +299,10 @@
                 (call by b (call names.shown (get ud ast.UnionDef.name))) (call s b ".") (call by b (get v ast.Variant.name)) (call s b "')")
                 (call fail c b))
               (block)))))
+    ;; every union is a value (AIPL_SPEC.md 4.J)
+    (for k 0 (arr.len us)
+      (if (get c C.failed) (return) (block))
+      (call fail_if c (call union_error c (arr.get (ptr ast.UnionDef) us k))))
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (loop k 0 (- (arr.len fns) 1) 1
       (let fd:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
@@ -570,7 +574,7 @@
       (ast.Type.union_ [un]
        (let uc:(arr i32) (call (map.get_or str.Bytes (arr i32)) (get c C.by_value) un (arr.null i32)))
        (if (eq uc (arr.null i32)) (call (vec.push i32) out 0) (call push_sum uc out)))
-      (ast.Type.result [a b]
+      (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let b:ast.Type (get n_result ast.ResultType.err))
        (let rc:(arr i32) (call result_counts c a b))
        (if (lte (call width rc) 8) (call push_sum rc out) (call (vec.push i32) out 0)))
       (ast.Type.void (block))
@@ -613,7 +617,7 @@
     (let n:i32 (call width (call result_counts c a b)))
     (when (lte n 8) (return (ptr.null buf.Buf)))
     (let m:(ptr buf.Buf) (call msg c at))
-    (call ty m (make ast.Type.result a b)) (call s m " needs ") (call buf.push_int m n)
+    (call ty m (call ast.result_type (call alloc.default) a b)) (call s m " needs ") (call buf.push_int m n)
     (call s m " slots, more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)")
     m)
 
@@ -641,17 +645,66 @@
           (else (block))))))
 
   (fn reaches_itself [c:(ptr C) u:(ptr ast.UnionDef)] -> bool
+    (call reaches c (get u ast.UnionDef.name) (get u ast.UnionDef.name)))
+
+  ;; Whether target is among the unions union `from` holds, directly or
+  ;; through the unions they hold (checker.rs reaches).
+  (fn reaches [c:(ptr C) from:str.Bytes target:str.Bytes] -> bool
     (let todo:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (let seen:(ptr (map.Map str.Bytes bool)) (call (map.make str.Bytes bool) (call alloc.default) 16))
-    (call push_held u todo)
+    (let start:(ptr ast.UnionDef) (call union_def c from))
+    (when (neq start (ptr.null ast.UnionDef)) (call push_held start todo))
     (while (gt (call (vec.len str.Bytes) todo) 0)
       (let un:str.Bytes (call (vec.pop str.Bytes) todo))
-      (when (call beq un (get u ast.UnionDef.name)) (return true))
+      (when (call beq un target) (return true))
       (when (not (call (map.has str.Bytes bool) seen un))
         (call (map.set str.Bytes bool) seen un true)
         (let w:(ptr ast.UnionDef) (call union_def c un))
         (when (neq w (ptr.null ast.UnionDef)) (call push_held w todo))))
     false)
+
+  ;; How many slots variant v's fields need.
+  (fn variant_width [c:(ptr C) v:(ptr ast.Variant)] -> i32
+    (let ks:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+    (for k 0 (arr.len fs) (call push_kinds c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) ks))
+    (call (vec.len i32) ks))
+
+  ;; src/checker.rs union_error: why u cannot be held by value (it contains
+  ;; itself, named by the first field that leads back to it, or it needs
+  ;; more than 8 slots, named by its widest variant), or null if it can.
+  (fn union_error [c:(ptr C) u:(ptr ast.UnionDef)] -> (ptr buf.Buf)
+    (let un:str.Bytes (get u ast.UnionDef.name))
+    (when (call (map.has str.Bytes (arr i32)) (get c C.by_value) un) (return (ptr.null buf.Buf)))
+    (let name:str.Bytes (call names.shown un))
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (for k 0 (arr.len vs)
+      (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs k))
+      (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
+      (for j 0 (arr.len fs)
+        (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
+        (match (get f ast.Field.ty)
+          (ast.Type.union_ [held]
+           (when (or (call beq held un) (call reaches c held un))
+             (let b:(ptr buf.Buf) (call msg c (get u ast.UnionDef.at)))
+             (call s b "union '") (call by b name) (call s b "' contains itself (") (call by b name) (call s b ".")
+             (call by b (get v ast.Variant.name)) (call s b "'s field '") (call by b (get f ast.Field.name))
+             (call s b "' has type ") (call by b (call names.shown held))
+             (call s b "): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it")
+             (return b)))
+          (else (block)))))
+    (let counts:(arr i32) (call no_counts))
+    (for k 0 (arr.len vs) (call fold_fields c counts (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
+    (let widest:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs 0))
+    (for k 1 (arr.len vs)
+      (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs k))
+      (when (gt (call variant_width c v) (call variant_width c widest)) (set! widest v)))
+    (let m:(ptr buf.Buf) (call msg c (get u ast.UnionDef.at)))
+    (call s m "union '") (call by m name) (call s m "' needs ") (call buf.push_int m (call width counts))
+    (call s m " slots, more than the 8 a value holds: move the fields of its widest variant, ") (call by m name) (call s m ".")
+    (call by m (get widest ast.Variant.name)) (call s m " (") (call buf.push_int m (call variant_width c widest))
+    (call s m " slots), into a struct and hold a (ptr S)")
+    m)
 
   ;; u, after the candidates it holds: a value if it fits.
   (fn decide_union [c:(ptr C) decided:(ptr (map.Map str.Bytes bool)) u:(ptr ast.UnionDef)] -> void
@@ -672,7 +725,7 @@
   ;; callers may add context).
   (fn validate [c:(ptr C) t:ast.Type at:i32] -> (ptr buf.Buf)
     (match t
-      (ast.Type.ptr [inner]
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner))
        (match inner
          (ast.Type.struct_ [name]
           (cond
@@ -696,7 +749,7 @@
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b "struct '") (call by b (call names.shown sname)) (call s b "' cannot be used by value; use (ptr ") (call by b (call names.shown sname)) (call s b ")")
        b)
-      (ast.Type.arr [elem]
+      (ast.Type.arr [n_arr] (let elem:ast.Type (get n_arr ast.ArrType.elem))
        (if (call is_narrow elem) (return (ptr.null buf.Buf)) (block))
        (let inner_err:(ptr buf.Buf) (call validate c elem at))
        (if (neq inner_err (ptr.null buf.Buf)) (return inner_err) (block))
@@ -707,12 +760,12 @@
              (call s b "(arr T) element must be a scalar, (ptr S), or (arr T), got ") (call ty b elem)
              b)
            (ptr.null buf.Buf)))
-      (ast.Type.result [ok_t err_t]
+      (ast.Type.result [n_result] (let ok_t:ast.Type (get n_result ast.ResultType.ok)) (let err_t:ast.Type (get n_result ast.ResultType.err))
        (let first:(ptr buf.Buf) (call validate c ok_t at))
        (if (neq first (ptr.null buf.Buf)) (return first) (block))
        (let second:(ptr buf.Buf) (call validate c err_t at))
        (if (neq second (ptr.null buf.Buf)) second (call result_error c ok_t err_t at)))
-      (ast.Type.fn_ [params ret]
+      (ast.Type.fn_ [n_fn] (let params:(arr ast.Type) (get n_fn ast.FnType.params)) (let ret:ast.Type (get n_fn ast.FnType.ret))
        (loop k 0 (- (arr.len params) 1) 1
          (let pe:(ptr buf.Buf) (call validate c (arr.get ast.Type params k) at))
          (if (neq pe (ptr.null buf.Buf)) (return pe) (block)))
@@ -825,7 +878,7 @@
     (let ends_in_return:bool
          (if (lt last_stmt 0)
              false
-             (match (arr.get ast.Expr body last_stmt) (ast.Expr.return_ [_ _] true) (else false))))
+             (match (arr.get ast.Expr body last_stmt) (ast.Expr.return_ [_] true) (else false))))
     (if (and (not (call is_void (get f ast.FnDef.ret))) (and (not (call teq last (get f ast.FnDef.ret))) (not ends_in_return)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
@@ -889,11 +942,11 @@
              (call s b "Undefined variable '") (call by b name) (call s b "'")
              (call fail c b)
              (call void_t))))
-      (ast.Expr.let_ [_ name lty val] (call infer_let c env at name lty val))
-      (ast.Expr.set [_ name val] (call infer_set c env at name val))
-      (ast.Expr.if_ [_ cnd thn els] (call infer_if c env at cnd thn els))
-      (ast.Expr.loop [_ var start end step body] (call infer_loop c env at var start end step body))
-      (ast.Expr.while_ [_ cnd body]
+      (ast.Expr.let_ [n_let] (let name:str.Bytes (get n_let ast.LetExpr.name)) (let lty:ast.Type (get n_let ast.LetExpr.ty)) (let val:ast.Expr (get n_let ast.LetExpr.val)) (call infer_let c env at name lty val))
+      (ast.Expr.set [n_set] (let name:str.Bytes (get n_set ast.SetExpr.name)) (let val:ast.Expr (get n_set ast.SetExpr.val)) (call infer_set c env at name val))
+      (ast.Expr.if_ [n_if] (let cnd:ast.Expr (get n_if ast.IfExpr.cond)) (let thn:ast.Expr (get n_if ast.IfExpr.then_)) (let els:ast.Expr (get n_if ast.IfExpr.else_)) (call infer_if c env at cnd thn els))
+      (ast.Expr.loop [n_loop] (let var:str.Bytes (get n_loop ast.LoopExpr.var)) (let start:ast.Expr (get n_loop ast.LoopExpr.start)) (let end:ast.Expr (get n_loop ast.LoopExpr.end)) (let step:ast.Expr (get n_loop ast.LoopExpr.step)) (let body:(arr ast.Expr) (get n_loop ast.LoopExpr.body)) (call infer_loop c env at var start end step body))
+      (ast.Expr.while_ [n_while] (let cnd:ast.Expr (get n_while ast.WhileExpr.cond)) (let body:(arr ast.Expr) (get n_while ast.WhileExpr.body))
        (let ct:ast.Type (call infer c cnd env))
        (if (get c C.failed) (return (call void_t)) (block))
        (if (not (call teq ct (call bool_t))) (block (call fail_str c at "While condition must be bool") (return (call void_t))) (block))
@@ -901,12 +954,12 @@
        (call check_loop_body c body env)
        (call restore env m)
        (call void_t))
-      (ast.Expr.return_ [_ rv] (call infer_return c env at rv))
+      (ast.Expr.return_ [n_return] (let rv:ast.MaybeExpr (get n_return ast.ReturnExpr.val)) (call infer_return c env at rv))
       (ast.Expr.break_ [_] (call jump c at "break"))
       (ast.Expr.continue_ [_] (call jump c at "continue"))
       (ast.Expr.call [_ func args] (call infer_call c env at func args))
       (ast.Expr.op [_ o args] (call infer_op c env at o args))
-      (ast.Expr.ok [_ val oty]
+      (ast.Expr.ok [n_ok] (let val:ast.Expr (get n_ok ast.OkExpr.val)) (let oty:ast.MaybeType (get n_ok ast.OkExpr.ty))
        ;; a result's whole type is written where it is made
        (if (call no_type oty) (return (call fail_text c at "(ok v) must name its result's err type: write (ok:E v) for a (result T E)")) (block))
        (let inner:ast.Type (call infer c val env))
@@ -917,8 +970,8 @@
        (call validate_or_fail c et at)
        (if (get c C.failed) (return (call void_t)) (block))
        (call fail_if c (call result_error c inner et at))
-       (make ast.Type.result inner et))
-      (ast.Expr.err [_ val oty]
+       (call ast.result_type (call alloc.default) inner et))
+      (ast.Expr.err [n_err] (let val:ast.Expr (get n_err ast.ErrExpr.val)) (let oty:ast.MaybeType (get n_err ast.ErrExpr.ty))
        (if (call no_type oty) (return (call fail_text c at "(err e) must name its result's ok type: write (err:T e) for a (result T E)")) (block))
        (let errt:ast.Type (call infer c val env))
        (if (get c C.failed) (return (call void_t)) (block))
@@ -928,8 +981,8 @@
        (call validate_or_fail c okt at)
        (if (get c C.failed) (return (call void_t)) (block))
        (call fail_if c (call result_error c okt errt at))
-       (make ast.Type.result okt errt))
-      (ast.Expr.match_result [_ val ok_var ok_body err_var err_body]
+       (call ast.result_type (call alloc.default) okt errt))
+      (ast.Expr.match_result [n_match_result] (let val:ast.Expr (get n_match_result ast.MatchResultExpr.val)) (let ok_var:str.Bytes (get n_match_result ast.MatchResultExpr.ok_var)) (let ok_body:(arr ast.Expr) (get n_match_result ast.MatchResultExpr.ok_body)) (let err_var:str.Bytes (get n_match_result ast.MatchResultExpr.err_var)) (let err_body:(arr ast.Expr) (get n_match_result ast.MatchResultExpr.err_body))
        (call infer_match_result c env at val ok_var ok_body err_var err_body))
       (ast.Expr.block [_ body]
        (let m:i32 (call mark env))
@@ -952,11 +1005,11 @@
           (call s b "'") (call by b (call names.shown name)) (call s b "' is a value struct: make one with (make ")
           (call by b (call names.shown name)) (call s b " field-values...), not new")
           (call fail c b) (call void_t))
-         (else (make ast.Type.ptr (make ast.Type.struct_ name)))))
-      (ast.Expr.get_ [_ sname fname ptr] (call infer_field c env at sname fname ptr false (call placeholder at) (arr.null (ptr ast.Step))))
-      (ast.Expr.put_ [_ sname fname ptr val path] (call infer_field c env at sname fname ptr true val path))
+         (else (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ name)))))
+      (ast.Expr.get_ [n_get] (let sname:str.Bytes (get n_get ast.GetExpr.sname)) (let fname:str.Bytes (get n_get ast.GetExpr.fname)) (let ptr:ast.Expr (get n_get ast.GetExpr.ptr)) (call infer_field c env at sname fname ptr false (call placeholder at) (arr.null (ptr ast.Step))))
+      (ast.Expr.put_ [n_put] (let sname:str.Bytes (get n_put ast.PutExpr.sname)) (let fname:str.Bytes (get n_put ast.PutExpr.fname)) (let ptr:ast.Expr (get n_put ast.PutExpr.ptr)) (let val:ast.Expr (get n_put ast.PutExpr.val)) (let path:(arr (ptr ast.Step)) (get n_put ast.PutExpr.path)) (call infer_field c env at sname fname ptr true val path))
       (ast.Expr.record [_ sname args] (call infer_record c env at sname args))
-      (ast.Expr.with_ [_ sname fname val nv] (call infer_with c env at sname fname val nv))
+      (ast.Expr.with_ [n_with] (let sname:str.Bytes (get n_with ast.WithExpr.sname)) (let fname:str.Bytes (get n_with ast.WithExpr.fname)) (let val:ast.Expr (get n_with ast.WithExpr.val)) (let nv:ast.Expr (get n_with ast.WithExpr.new)) (call infer_with c env at sname fname val nv))
       (ast.Expr.sizeof [_ st]
        (match st
          ;; a bare name: a struct, or an enum (an i32)
@@ -975,18 +1028,18 @@
                 (call fail c b)
                 (call void_t))
               (call i32_t)))))
-      (ast.Expr.arr_new [_ ety size]
-       (call validate_or_fail c (make ast.Type.arr ety) at)
+      (ast.Expr.arr_new [n_arr_new] (let ety:ast.Type (get n_arr_new ast.ArrNewExpr.ty)) (let size:ast.Expr (get n_arr_new ast.ArrNewExpr.size))
+       (call validate_or_fail c (call ast.arr_type (call alloc.default) ety) at)
        (if (get c C.failed) (return (call void_t)) (block))
        (let st:ast.Type (call infer c size env))
        (if (get c C.failed) (return (call void_t)) (block))
        (if (not (call is_i32 st))
            (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "arr.new size must be i32, got ") (call ty b st) (call fail c b))
            (block))
-       (make ast.Type.arr ety))
-      (ast.Expr.arr_get [_ ety ptr index] (call infer_arr c env at ety ptr index false (call placeholder at)))
-      (ast.Expr.arr_set [_ ety ptr index val path] (call infer_arr_set c env at ety ptr index val path))
-      (ast.Expr.arr_len [_ a]
+       (call ast.arr_type (call alloc.default) ety))
+      (ast.Expr.arr_get [n_arr_get] (let ety:ast.Type (get n_arr_get ast.ArrGetExpr.ty)) (let ptr:ast.Expr (get n_arr_get ast.ArrGetExpr.ptr)) (let index:ast.Expr (get n_arr_get ast.ArrGetExpr.index)) (call infer_arr c env at ety ptr index false (call placeholder at)))
+      (ast.Expr.arr_set [n_arr_set] (let ety:ast.Type (get n_arr_set ast.ArrSetExpr.ty)) (let ptr:ast.Expr (get n_arr_set ast.ArrSetExpr.ptr)) (let index:ast.Expr (get n_arr_set ast.ArrSetExpr.index)) (let val:ast.Expr (get n_arr_set ast.ArrSetExpr.val)) (let path:(arr (ptr ast.Step)) (get n_arr_set ast.ArrSetExpr.path)) (call infer_arr_set c env at ety ptr index val path))
+      (ast.Expr.arr_len [n_arr_len] (let a:ast.Expr (get n_arr_len ast.ArrLenExpr.arr))
        (let t:ast.Type (call infer c a env))
        (if (get c C.failed) (return (call void_t)) (block))
        (match t
@@ -997,7 +1050,7 @@
       (ast.Expr.null [_ nty]
        (call validate_or_fail c nty at)
        nty)
-      (ast.Expr.cast [_ cty addr]
+      (ast.Expr.cast [n_cast] (let cty:ast.Type (get n_cast ast.CastExpr.ty)) (let addr:ast.Expr (get n_cast ast.CastExpr.addr))
        (match cty
          (ast.Type.ptr [_] (call require_unsafe c at "ptr.cast"))
          (ast.Type.arr [_] (call require_unsafe c at "arr.cast"))
@@ -1025,7 +1078,7 @@
              (call fail c b))
            (block))
        cty)
-      (ast.Expr.make_ptr [_ cty addr g]
+      (ast.Expr.make_ptr [n_make_ptr] (let cty:ast.Type (get n_make_ptr ast.MakePtrExpr.ty)) (let addr:ast.Expr (get n_make_ptr ast.MakePtrExpr.addr)) (let g:ast.Expr (get n_make_ptr ast.MakePtrExpr.gen))
        (match cty
          (ast.Type.ptr [_] (call require_unsafe c at "ptr.make"))
          (else (call require_unsafe c at "arr.make")))
@@ -1055,16 +1108,16 @@
            (block
              (let sig:(ptr Sig) (call (map.get_or str.Bytes (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
              (call require_unsafe_fn c at name sig)
-             (make ast.Type.fn_ (get sig Sig.params) (get sig Sig.ret)))
+             (call ast.fn_type (call alloc.default) (get sig Sig.params) (get sig Sig.ret)))
            (block
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Undefined function '") (call by b name) (call s b "' in ref")
              (call fail c b)
              (call void_t))))
-      (ast.Expr.call_ref [_ csig callee args] (call infer_call_ref c env at csig callee args))
-      (ast.Expr.make [_ uname variant args] (call infer_make c env at uname variant args))
-      (ast.Expr.match_ [_ val arms else_body] (call infer_match c env at val arms else_body))
-      (ast.Expr.addr [_ val kind]
+      (ast.Expr.call_ref [n_call_ref] (let csig:ast.Type (get n_call_ref ast.CallRefExpr.sig)) (let callee:ast.Expr (get n_call_ref ast.CallRefExpr.func)) (let args:(arr ast.Expr) (get n_call_ref ast.CallRefExpr.args)) (call infer_call_ref c env at csig callee args))
+      (ast.Expr.make [n_make] (let uname:str.Bytes (get n_make ast.MakeExpr.uname)) (let variant:str.Bytes (get n_make ast.MakeExpr.variant)) (let args:(arr ast.Expr) (get n_make ast.MakeExpr.args)) (call infer_make c env at uname variant args))
+      (ast.Expr.match_ [n_match] (let val:ast.Expr (get n_match ast.MatchExpr.val)) (let arms:(arr (ptr ast.Arm)) (get n_match ast.MatchExpr.arms)) (let else_body:(arr ast.Expr) (get n_match ast.MatchExpr.else_body)) (call infer_match c env at val arms else_body))
+      (ast.Expr.addr [n_addr] (let val:ast.Expr (get n_addr ast.AddrExpr.val)) (let kind:ast.AddrKind (get n_addr ast.AddrExpr.kind))
        (let t:ast.Type (call infer c val env))
        (if (get c C.failed) (return (call void_t)) (block))
        (let op:str.Bytes (call sealed t))
@@ -1273,7 +1326,7 @@
     (let okt:ast.Type (call void_t))
     (let errt:ast.Type (call void_t))
     (match rt
-      (ast.Type.result [o e2] (set! okt o) (set! errt e2))
+      (ast.Type.result [n_result] (let o:ast.Type (get n_result ast.ResultType.ok)) (let e2:ast.Type (get n_result ast.ResultType.err)) (set! okt o) (set! errt e2))
       (else
        (let b:(ptr buf.Buf) (call msg c at)) (call s b "match_result expected a (result T E), got ") (call ty b rt) (call fail c b)
        (return (call void_t))))
@@ -1335,7 +1388,7 @@
               (call s b " needs a ") (call by b (call names.shown sname)) (call s b ", got ") (call ty b pt)
               (call fail c b) (return (call void_t)))
             (block))
-        (if (not (call teq pt (make ast.Type.ptr (make ast.Type.struct_ sname))))
+        (if (not (call teq pt (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ sname))))
             (block
               (let b:(ptr buf.Buf) (call msg c at))
               (call s b (if is_put "put " "get ")) (call by b (call names.shown sname)) (call s b ".") (call by b fname)
@@ -1509,11 +1562,11 @@
   ;; arr.set's value against its path).
   (fn infer_arr_parts [c:(ptr C) env:(ptr Env) at:i32 ety:ast.Type ptr:ast.Expr index:ast.Expr is_set:bool with_val:bool val:ast.Expr] -> ast.Type
     (let what:str (if is_set "arr.set" "arr.get"))
-    (call validate_or_fail c (make ast.Type.arr ety) at)
+    (call validate_or_fail c (call ast.arr_type (call alloc.default) ety) at)
     (if (get c C.failed) (return (call void_t)) (block))
     (let pt:ast.Type (call infer c ptr env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq pt (make ast.Type.arr ety)))
+    (if (not (call teq pt (call ast.arr_type (call alloc.default) ety)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b what) (call s b " ") (call ty b ety) (call s b " needs an (arr ") (call ty b ety) (call s b "), got ") (call ty b pt)
@@ -1544,7 +1597,7 @@
     (let ps:(arr ast.Type) (arr.null ast.Type))
     (let ret:ast.Type (call void_t))
     (match sig
-      (ast.Type.fn_ [p r] (set! ps p) (set! ret r))
+      (ast.Type.fn_ [n_fn] (let p:(arr ast.Type) (get n_fn ast.FnType.params)) (let r:ast.Type (get n_fn ast.FnType.ret)) (set! ps p) (set! ret r))
       (else
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b "call_ref needs a (fn [...] -> r) signature, got ") (call ty b sig)
@@ -2018,10 +2071,10 @@
   ;; diverges).
   (fn diverges [e:ast.Expr] -> bool
     (match e
-      (ast.Expr.return_ [_ _] true) (ast.Expr.break_ [_] true) (ast.Expr.continue_ [_] true)
+      (ast.Expr.return_ [_] true) (ast.Expr.break_ [_] true) (ast.Expr.continue_ [_] true)
       (ast.Expr.block [_ body] (call body_diverges body))
       (ast.Expr.unsafe_ [_ body] (call body_diverges body))
-      (ast.Expr.if_ [_ _ thn els] (and (call diverges thn) (call diverges els)))
+      (ast.Expr.if_ [n_if] (let thn:ast.Expr (get n_if ast.IfExpr.then_)) (let els:ast.Expr (get n_if ast.IfExpr.else_)) (and (call diverges thn) (call diverges els)))
       (else false)))
 
   (fn body_diverges [body:(arr ast.Expr)] -> bool (pub)
@@ -2074,7 +2127,7 @@
     (let value:ast.Type (call void_t))
     (if (eq o ast.Op.try_)
         (match t
-          (ast.Type.result [ok _] (set! value ok))
+          (ast.Type.result [n_result] (let ok:ast.Type (get n_result ast.ResultType.ok)) (set! value ok))
           (else
            (let b:(ptr buf.Buf) (call msg c at))
            (call s b "try takes a (result T E), got ") (call ty b t)
@@ -2098,11 +2151,11 @@
             (block))
         (block
           (let err:ast.Type (if (eq o ast.Op.try_)
-                                (match t (ast.Type.result [_ e] e) (else (call void_t)))
+                                (match t (ast.Type.result [n_result] (let e:ast.Type (get n_result ast.ResultType.err)) e) (else (call void_t)))
                                 (call infer c (arr.get ast.Expr args 1) env)))
           (if (get c C.failed) (return (call void_t)) (block))
           (match ret
-            (ast.Type.result [_ re]
+            (ast.Type.result [n_result] (let re:ast.Type (get n_result ast.ResultType.err))
              (if (not (call teq re err))
                  (block
                    (let b:(ptr buf.Buf) (call msg c at))
@@ -2137,7 +2190,7 @@
   ;; Whether t is (ptr NAME).
   (fn ptr_to [t:ast.Type name:str] -> bool
     (match t
-      (ast.Type.ptr [i] (match i (ast.Type.struct_ [n] (call lit n name)) (else false)))
+      (ast.Type.ptr [n_ptr] (let i:ast.Type (get n_ptr ast.PtrType.inner)) (match i (ast.Type.struct_ [n] (call lit n name)) (else false)))
       (else false)))
 
   ;; Whether format_to's target t is a (ptr stream.Writer) (fmtlower).
@@ -2420,7 +2473,7 @@
         (block))
     (let ps:(arr ast.Type) (arr.new ast.Type 1))
     (arr.set ast.Type ps 0 (call i32_t))
-    (let worker:ast.Type (make ast.Type.fn_ ps (call i32_t)))
+    (let worker:ast.Type (call ast.fn_type (call alloc.default) ps (call i32_t)))
     (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
     (if (get c C.failed) (return (call void_t)) (block))
     (if (not (call teq t worker))

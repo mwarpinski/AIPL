@@ -178,31 +178,7 @@ pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
 /// slots, counting the unions it holds that are values as their slots and
 /// the others as one (each union is decided after the unions it holds).
 fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
-    // the unions each one holds inline
-    let holds = |u: &UnionDef| -> Vec<String> {
-        u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
-            Type::Union(n) => Some(n.clone()),
-            _ => None,
-        }).collect()
-    };
-    // a union that reaches itself through the unions it holds
-    let reaches_itself = |start: &String| -> bool {
-        let mut todo: Vec<String> = st.unions.get(start).map(holds).unwrap_or_default();
-        let mut seen: Vec<String> = Vec::new();
-        while let Some(n) = todo.pop() {
-            if &n == start {
-                return true;
-            }
-            if seen.contains(&n) {
-                continue;
-            }
-            if let Some(u) = st.unions.get(&n) {
-                todo.extend(holds(u));
-            }
-            seen.push(n);
-        }
-        false
-    };
+    let reaches_itself = |start: &String| reaches(st, std::slice::from_ref(start), start);
     let mut names: Vec<&String> = st.unions.keys().collect();
     names.sort();
     let candidates: Vec<String> = names
@@ -236,6 +212,64 @@ fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
         decide(n, &candidates, &mut work, &mut decided);
     }
     work.by_value
+}
+
+/// The unions u holds inline, in its variants' fields.
+fn holds(u: &UnionDef) -> Vec<String> {
+    u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
+        Type::Union(n) => Some(n.clone()),
+        _ => None,
+    }).collect()
+}
+
+/// Whether `target` is among the unions `from` hold, directly or through
+/// the unions they hold.
+fn reaches(st: &Structs, from: &[String], target: &str) -> bool {
+    let mut todo: Vec<String> = from.iter().filter_map(|n| st.unions.get(n)).flat_map(holds).collect();
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(n) = todo.pop() {
+        if n == target {
+            return true;
+        }
+        if seen.contains(&n) {
+            continue;
+        }
+        if let Some(u) = st.unions.get(&n) {
+            todo.extend(holds(u));
+        }
+        seen.push(n);
+    }
+    false
+}
+
+/// Why union u cannot be held by value, if it cannot (AIPL_SPEC.md 4.J):
+/// it contains itself (named by the first field that leads back to it), or
+/// it needs more than MAX_SCALARS slots (named by its widest variant).
+pub fn union_error(u: &UnionDef, st: &Structs) -> Option<String> {
+    if st.by_value.contains_key(&u.name) {
+        return None;
+    }
+    let name = shown(&u.name);
+    for v in &u.variants {
+        for f in &v.fields {
+            if let Type::Union(m) = &f.ty {
+                if *m == u.name || reaches(st, std::slice::from_ref(m), &u.name) {
+                    return Some(format!(
+                        "union '{name}' contains itself ({name}.{}'s field '{}' has type {}): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it",
+                        v.name, f.name, shown(m)
+                    ));
+                }
+            }
+        }
+    }
+    let n = sum_layout(&u.variants, st).slots.len();
+    let width = |v: &Variant| v.fields.iter().map(|f| scalars(&f.ty, st).len()).sum::<usize>();
+    let widest = u.variants.iter().fold(&u.variants[0], |w, v| if width(v) > width(w) { v } else { w });
+    Some(format!(
+        "union '{name}' needs {n} slots, more than the {MAX_SCALARS} a value holds: move the fields of its widest variant, {name}.{} ({} slots), into a struct and hold a (ptr S)",
+        widest.name,
+        width(widest)
+    ))
 }
 
 /// The layout of a sum of variants (each a list of fields) held by value.
@@ -715,6 +749,13 @@ impl TypeChecker {
                     self.validate_type(&f.ty, u.span)
                         .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name))?;
                 }
+            }
+        }
+        // every union is a value (AIPL_SPEC.md 4.J)
+        for u in &module.unions {
+            self.at_item("union", &u.name);
+            if let Some(e) = union_error(u, &self.struct_defs) {
+                return Err(format!("{}:{}: {e}", u.span.0, u.span.1));
             }
         }
 

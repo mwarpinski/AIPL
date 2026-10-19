@@ -28,7 +28,7 @@ RULES:
 15. (and a b c ...) and (or a b c ...) short-circuit, left to right, and take two or more operands. (and (lt i n) (eq (arr.get i32 a i) x)) is a safe bounds guard.
 16. Generics: (struct (Box T) [value:T]) and (fn (make T) [v:T] -> (ptr (Box T)) ...) are templates. Every use names the types: (ptr (Box i32)), (new (Box i32)), (get b (Box i32) value), (put b (Box i32) value 5), (call (make i32) 5), (ref (make i32)). Type parameters start with an uppercase letter; generic names may not be built-in forms like get or put. A template is checked once with its parameters sealed: T supports only let, parameters, results, fields, (arr T), and sizeof. Anything more is asked for right after the signature: (where (cmp.Eq T)) then (call (cmp.Eq.same T) a b); (where (cmp.Ord T)) then (call (cmp.Ord.compare T) a b) (-1, 0, or 1); (where (cmp.Hash T)); (where (struct T)) to use (ptr T) or (new T). Never (eq a b) or (lt a b) on a T. Pass a struct as (ptr S), never S, unless the parameter has (where (struct T)). Give your own type an interface with (impl (cmp.Eq (ptr Point)) (fn same [a:(ptr Point) b:(ptr Point)] -> bool ...)) in the module that defines Point: the interface's functions, with its parameter names and types.
 17. Constants and enums: (const PAGE_SIZE:i32 65536) names a value (capitals; i32 i64 f64 bool str); use PAGE_SIZE anywhere. A constant may be computed from literals and other constants: (const POOL:i32 (* 4 PAGE_SIZE)). (enum Kind [red green (blue 10)]) is a new type with members Kind.red (0), Kind.green (1), Kind.blue (10); use Kind as a type ([k:Kind], (arr Kind), struct fields). Enums are not numbers: compare with eq/neq only, convert with (enum.ord k) -> i32 and (enum.cast Kind n). Imported: m.PAGE_SIZE, m.Kind, m.Kind.red. Use these instead of bare numbers or zero-argument functions for fixed values and codes.
-18. Unions: (union Shape [(circle r:f64) (rect w:f64 h:f64) (dot)]) is a type whose value is one variant with that variant's fields. Build one with (make Shape.rect 2.0 3.0) (one value per field, in order); take it apart with (match s (Shape.circle [r] body...) (Shape.rect [w h] body...) (Shape.dot body...)): every variant needs an arm unless the last arm is (else body...), and an else that can never run is an error. Binders are new names for the variant's fields, in order; write _ for a field you do not need. All arms yield the same type. match also works on enums: (match k (Kind.red 1) (else 0)). Union values never compare (no eq) and are never null; use a variant like (none) for "no value". A union that does not contain itself, holds no str, and fits in 8 numbers is a value: make allocates nothing, so (option.Option T) for a small T is free to return. Use a union instead of a struct with a kind field whose other fields mean different things per kind. A generic union (union (Tree T) [(leaf) (node l:(Tree T) v:T r:(Tree T))]) is used with its type arguments, then the variant: (make (Tree i32) leaf), and the arm ((Tree i32) node [l v r] body...).
+18. Unions: (union Shape [(circle r:f64) (rect w:f64 h:f64) (dot)]) is a type whose value is one variant with that variant's fields. Build one with (make Shape.rect 2.0 3.0) (one value per field, in order); take it apart with (match s (Shape.circle [r] body...) (Shape.rect [w h] body...) (Shape.dot body...)): every variant needs an arm unless the last arm is (else body...), and an else that can never run is an error. Binders are new names for the variant's fields, in order; write _ for a field you do not need. All arms yield the same type. match also works on enums: (match k (Kind.red 1) (else 0)). Union values never compare (no eq) and are never null; use a variant like (none) for "no value". Every union is a value: make allocates nothing, so (option.Option T) is free to return. A union may not contain itself or need more than 8 numbers (a str and an enum are 1, a str.Bytes 3, a pointer 1): put a recursive or large variant's fields in a struct and make the variant a pointer to it, from an allocator you name, (union Tree [(leaf) (node n:(ptr Node))]) with (struct Node [l:Tree v:i32 r:Tree]); the checker names the field or variant to move. Use a union instead of a struct with a kind field whose other fields mean different things per kind. A generic union (union (Pair T) [(one a:T) (two a:T b:T)]) is used with its type arguments, then the variant: (make (Pair i32) one 5), and the arm ((Pair i32) two [a b] body...).
 19. Integers: lt/lte/gt/gte are signed; ltu/lteu/gtu/gteu compare i32/i64 as unsigned (sizes, hashes). + - * wrap silently; checked.add / checked.sub / checked.mul stop the program on overflow instead, for values where wrapping would be a wrong answer.
 20. Unchecked operations (mem.load*/mem.store*, ptr.cast, arr.cast, atomic.*, thread.*, fs.*, args.*, env.*, sys.random, and calls to functions marked (unsafe)) are rejected unless written inside (unsafe e...), a block in every other way, or in a function with the (unsafe) clause: (fn f [at:i32] -> void (unsafe) body...), which makes f itself unsafe to call. Wrap the operations in (unsafe ...) when the function is safe for any arguments; add the clause only when wrong arguments could break memory. Most programs need neither: use new, arrays, and the standard library.
 21. Visibility: a module's items are private to it. Mark what other modules may use with (pub) right after the signature: (fn f [x:i32] -> i32 (pub) ...), (struct S [fields] (pub)), (enum E [members] (pub)), (union U [variants] (pub)), (const MAX:i32 9 (pub)). Fields are private unless written (read x:T) (others may get it) or (pub x:T) (get and put); others can (new S) only if every field is (pub). A single-module program needs no marks.
@@ -212,26 +212,43 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 ### 9. Unions and match
 ```lisp
 (module expr_demo
-  ;; an arithmetic expression: a number, or an operation on two expressions
-  (union Expr [(num v:i32) (add a:Expr b:Expr) (mul a:Expr b:Expr) (neg e:Expr)])
+  (import alloc)
+  ;; an arithmetic expression: a number, or an operation on expressions.
+  ;; A union is a value, so a variant that holds expressions holds them
+  ;; through a pointer to a struct, made from an allocator.
+  (union Expr [(num v:i32) (add p:(ptr Pair)) (mul p:(ptr Pair)) (neg s:(ptr Sub))])
+  (struct Pair [a:Expr b:Expr])
+  (struct Sub [e:Expr])
+
+  (fn pair [al:alloc.Allocator a:Expr b:Expr] -> (ptr Pair)
+    (let p:(ptr Pair) (call (alloc.create Pair) al))
+    (put p Pair.a a)
+    (put p Pair.b b)
+    p)
+
+  (fn sub [al:alloc.Allocator e:Expr] -> (ptr Sub)
+    (let s:(ptr Sub) (call (alloc.create Sub) al))
+    (put s Sub.e e)
+    s)
 
   (fn eval [e:Expr] -> i32
     (match e
       (Expr.num [v] v)
-      (Expr.add [x y] (checked.add (call eval x) (call eval y)))
-      (Expr.mul [x y] (checked.mul (call eval x) (call eval y)))
-      (Expr.neg [x] (- 0 (call eval x)))))
+      (Expr.add [p] (checked.add (call eval (get p Pair.a)) (call eval (get p Pair.b))))
+      (Expr.mul [p] (checked.mul (call eval (get p Pair.a)) (call eval (get p Pair.b))))
+      (Expr.neg [s] (- 0 (call eval (get s Sub.e))))))
 
   (fn is_leaf [e:Expr] -> bool
     (match e (Expr.num [v] true) (else false)))
 
   (fn main [] -> i32
+    (let al:alloc.Allocator (call alloc.default))
     ;; (2 + 3) * -(4)
-    (let e:Expr (make Expr.mul (make Expr.add (make Expr.num 2) (make Expr.num 3))
-                               (make Expr.neg (make Expr.num 4))))
+    (let e:Expr (make Expr.mul (call pair al (make Expr.add (call pair al (make Expr.num 2) (make Expr.num 3)))
+                                             (make Expr.neg (call sub al (make Expr.num 4))))))
     (+ (call eval e) (if (call is_leaf (make Expr.num 7)) 100 0))))
 ```
-`main` returns `80`: `(2 + 3) * -4` is `-20`, plus `100` because a `num` is a leaf. The binders `x` and `y` are reused by two arms with the same type, which is allowed; binding `x` as an `f64` in one arm and an `i32` in another is not.
+`main` returns `80`: `(2 + 3) * -4` is `-20`, plus `100` because a `num` is a leaf. A union that held `Expr` directly would contain itself, and the checker refuses it, naming the field; the pointer is the program's own allocation, from the allocator it names (`alloc.default` here; a server building one tree per request passes its request arena). The binder `p` is reused by two arms with the same type, which is allowed; binding `p` as an `f64` in one arm and a `(ptr Pair)` in another is not.
 
 ---
 

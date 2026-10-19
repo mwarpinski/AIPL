@@ -45,6 +45,8 @@ rule earns its cost), **open** (for a decision).
 | 17 | Calling `alloc.fill`, which exists only in an example in std/alloc.aipl's header comment (checker.aipl, M4) | Both resolvers said "Expected func name in call, got '('", naming neither the function nor the module | An unknown template should be named: "'alloc.fill' is not a generic function of module alloc" from both resolvers; and `aipl doc --check` could run a module header's examples as it runs function comments'. | open |
 | 18 | Writing `(match_result r (ok [s] ...) (err [e] ...))`, binding as a `match` arm does (`(V [x] ...)`) | "Expected ok var, got '['" | One idea, two binder syntaxes. Either `match_result` accepts `[s]` too, or its error says "write (ok s ...)". | open |
 | 19 | Writing `(ok "yes")` without the err side's type | The checker asked for `(ok:E v)`, clearly | The rule is right (the whole type is written where a result is made); nothing to change. | keep |
+| 20 | Expecting a union of an i32 variant and an eight-i64 variant to be 9 slots (tests/test_values.rs) | The checker said 10, rightly: slots of different kinds never share | Counting slots by hand is error-prone; `aipl eval -e '(slots T)'` (or `aipl doc` showing a type's slots) would answer it in one call, as `(sizeof T)` does for bytes. | open |
+| 21 | Using `alloc.create` in tests/aipl/formats/values.aipl, which never imports alloc | Accepted: the module reached alloc through std/option's import | Import visibility (launch checklist): a module should use only what it imports. | open |
 
 ## What a corpus would fix instead
 

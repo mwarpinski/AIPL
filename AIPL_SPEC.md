@@ -151,7 +151,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 - `(ptr S)`: a pointer to a struct `S`. `(arr T)`: a heap array of `T` made by `arr.new`. Both are checked strictly, are never interchangeable with `i32` or with each other, and lower to `i32` in wasm (section 4.E).
 - `(fn [t1 ...] -> r)`: a reference to a function with that signature, made by `(ref f)` and called with `call_ref` (section 4.G).
 - `Name` for an enum `Name`: one of its members (section 4.I). An `i32` at run time, a distinct type to the checker.
-- `Name` for a union `Name`: one of its variants, carrying that variant's fields (section 4.J). A pointer to a heap cell at run time, never null.
+- `Name` for a union `Name`: one of its variants, carrying that variant's fields (section 4.J). A value, held inline like a value struct, never null.
 - `(Name t...)`: a generic struct instantiated with types `t...` (section 4.H), used behind `(ptr ...)` like any struct.
 
 ### Contracts
@@ -172,7 +172,7 @@ AIPL is strongly and statically typed. Every parameter, return type, `let`, and 
 13:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)
 ```
 
-What the function allocates through an `alloc.Allocator` it is handed is its caller's choice, so a server passes each request's handler an arena and resets it after (tests/aipl/memory/no_leak_loop.aipl runs 10,000 requests with the arena's memory flat). Inside `unsafe` the promise is the programmer's word, as every unsafe promise is: that is how std's allocators, which grow their own pools with `mem.alloc` and hand that memory out again, are marked `(no_leak)` (`alloc.raw`, `alloc.free_raw`, `alloc.default`, `heap.raw`, `arena.raw`, `arena.fast_raw`). A function not marked is not checked, only described. Not yet counted: the hidden cell of a result or union held by address (sections 4.F, 4.J), which docs/design/MEMORY_PLAN.md M4 removes. Both checkers (`src/leaks.rs`, `aipl_src/leaks.aipl`) give the same errors.
+What the function allocates through an `alloc.Allocator` it is handed is its caller's choice, so a server passes each request's handler an arena and resets it after (tests/aipl/memory/no_leak_loop.aipl runs 10,000 requests with the arena's memory flat). Inside `unsafe` the promise is the programmer's word, as every unsafe promise is: that is how std's allocators, which grow their own pools with `mem.alloc` and hand that memory out again, are marked `(no_leak)` (`alloc.raw`, `alloc.free_raw`, `alloc.default`, `heap.raw`, `arena.raw`, `arena.fast_raw`). A function not marked is not checked, only described. Results and unions are values (sections 4.F, 4.J), so building one allocates nothing and there is no hidden allocation to count. Both checkers (`src/leaks.rs`, `aipl_src/leaks.aipl`) give the same errors.
 
 ### Unchecked operations and `unsafe`
 
@@ -633,8 +633,11 @@ A union is a type whose value is exactly one of several variants, each carrying 
 
 ```lisp
 (module geom
+  (import alloc)
   (union Shape [(circle r:i32) (rect w:i32 h:i32) (dot)])
-  (union List [(nil) (cons head:Shape tail:List)])     ;; may refer to itself
+  ;; a list of shapes: the rest of it behind a pointer, from an allocator
+  (union List [(nil) (cons head:Shape tail:(ptr Rest))])
+  (struct Rest [l:List])
   (enum Dir [north east south west])
 
   (fn area [s:Shape] -> i32
@@ -643,18 +646,24 @@ A union is a type whose value is exactly one of several variants, each carrying 
       (Shape.rect [w h] (* w h))
       (Shape.dot 0)))
 
+  (fn cons [a:alloc.Allocator s:Shape rest:List] -> List
+    (let r:(ptr Rest) (call (alloc.create Rest) a))
+    (put r Rest.l rest)
+    (make List.cons s r))
+
   (fn total [l:List] -> i32
     (match l
       (List.nil 0)
-      (List.cons [s rest] (+ (call area s) (call total rest)))))
+      (List.cons [s rest] (+ (call area s) (call total (get rest Rest.l))))))
 
   (fn turns [d:Dir] -> i32
     (match d (Dir.north 0) (Dir.south 2) (else 1)))
 
   (fn main [] -> i32
-    (let shapes:List (make List.cons (make Shape.rect 2 5)
-                      (make List.cons (make Shape.circle 1)
-                      (make List.cons (make Shape.dot) (make List.nil)))))
+    (let a:alloc.Allocator (call alloc.default))
+    (let shapes:List (call cons a (make Shape.rect 2 5)
+                      (call cons a (make Shape.circle 1)
+                      (call cons a (make Shape.dot) (make List.nil)))))
     (+ (call total shapes) (call turns Dir.south))))     ;; 10 + 3 + 0 + 2 => 15
 ```
 
@@ -672,14 +681,16 @@ Rules the checker enforces:
 - **Binders are new names**, scoped to their arm: they may not shadow a name in scope.
 - **Union values are opaque.** They have no arithmetic and do not compare (`eq`/`neq` included): take them apart with `match`. There is no null union value, and no cast to one; `make` is the only way to build one.
 
-**Unions by value.** Since unions cannot be changed, compared, or addressed, how one is held is invisible to a program, except in the memory it takes. Most unions are held by value, like a value struct (section 4.E): `make` allocates nothing, and a union is copied where it goes, inline in struct fields and arrays. A union is held by value unless:
+**Unions are values.** Every union is held by value, like a value struct (section 4.E): `make` allocates nothing, and a union is copied where it goes, inline in struct fields and arrays. So two kinds of union are refused, each with the way to write it:
 
-- it contains itself, directly or through other unions it holds (`List` above): then its size would have no bound;
-- it needs more than 8 slots. A union by value is its variant's index (the tag, an `i32`), then slots the variants share by kind: the i32-sized slots (every 4-byte scalar but `f32`: `i32`, `bool`, `str`, enums, function references, unions held by address), then the `f32`, `i64` (with pointers and arrays, each an address and a generation), and `f64` slots, as many of each as the variant needing most has. Each variant's scalars take the first slots of their kind in order: a value struct field its fields' scalars, a union held by value its own slots. So `Shape` above is 3 slots (the tag and two i32 slots, which `circle` and `rect` share), `(option.Option i64)` 2, and `std/alloc`'s `Allocator`, four variants of one pointer each, 2. A union holding another counts the held one's slots if it is held by value, else one; each union is decided after the unions it holds. (Until 2026-10 a union with a `str` variant was also held by address; a `str` is one slot, so it is a value now.)
+- one that contains itself, directly or through other unions it holds: its size would have no bound. `union 'List' contains itself (List.cons's field 'tail' has type List): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it`, as `List` above does with `(ptr Rest)`;
+- one that needs more than 8 slots. A union is its variant's index (the tag, an `i32`), then slots the variants share by kind: the i32-sized slots (every 4-byte scalar but `f32`: `i32`, `bool`, `str`, enums, function references), then the `f32`, `i64` (with pointers and arrays, each an address and a generation), and `f64` slots, as many of each as the variant needing most has. Each variant's scalars take the first slots of their kind in order: a value struct field its fields' scalars, a union field its own slots. So `Shape` above is 3 slots (the tag and two i32 slots, which `circle` and `rect` share), `(option.Option i64)` 2, and `std/alloc`'s `Allocator`, five variants of one pointer each, 2; a `str.Bytes` is 3. A variant's fields count once however many variants there are, but slots of different kinds never share: one variant of six `i32`s and another of six `f64`s are 14. `union 'W' needs 10 slots, more than the 8 a value holds: move the fields of its widest variant, W.nine (8 slots), into a struct and hold a (ptr S)`.
+
+The pointer is an ordinary checked `(ptr S)` from the allocator the program names, so a stale one traps like any other (docs/design/MEMORY_PLAN.md M4; until 2026-10, such unions, and those with a `str` variant, were given a hidden heap cell that was never freed).
 
 In memory a union by value is laid out like a struct of its slots in that order, each aligned to its size, the whole rounded up to its largest; a slot its variant does not use holds zero, so the memory is the same in every backend. `(sizeof Shape)` is 12. Locals, parameters, and results hold one as its slots (several wasm values, as for a value struct).
 
-A union held by address is the address of a heap cell: the variant's index (its position in the declaration, from 0) as an `i32` at offset 0, then the variant's fields laid out like a struct's starting at offset 4 (an `i64` or `f64` field is aligned to 8). Each `make` allocates the variant's exact size, rounded up to 8, and the cell is never changed afterwards. `make` claims the cell before evaluating its fields, in both backends. `match` reads the index and compares it with each arm's in order; a match on an enum compares the value. Only a value built with `(enum.cast Name n)` from a number that is no member can reach the end of a `match` without an `else`: the VM reports `unreachable` and compiled code traps.
+`match` reads the index and compares it with each arm's in order; a match on an enum compares the value. Only a value built with `(enum.cast Name n)` from a number that is no member can reach the end of a `match` without an `else`: the VM reports `unreachable` and compiled code traps.
 
 `Parser::parse` alone knows the unions of the module it parses; across modules the resolver passes them along. Imports qualify unions like structs and enums: `geom.Shape`, `(make geom.Shape.dot)`, and in an arm `(geom.Shape.circle [r] ...)`, or through an alias `(g.Shape.circle [r] ...)`.
 
@@ -690,12 +701,22 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
 ```lisp
 (module option_demo
   (import option)
-  (union (Tree T) [(leaf) (node left:(Tree T) value:T right:(Tree T))])
+  (import alloc)
+  ;; a tree: a node's fields behind a pointer (a union cannot contain itself)
+  (union (Tree T) [(leaf) (node n:(ptr (Node T)))])
+  (struct (Node T) [left:(Tree T) value:T right:(Tree T)])
+
+  (fn (node T) [a:alloc.Allocator l:(Tree T) v:T r:(Tree T)] -> (Tree T)
+    (let n:(ptr (Node T)) (call (alloc.create (Node T)) a))
+    (put n (Node T) left l)
+    (put n (Node T) value v)
+    (put n (Node T) right r)
+    (make (Tree T) node n))
 
   (fn (count T) [t:(Tree T)] -> i32
     (match t
       ((Tree T) leaf 0)
-      ((Tree T) node [l _ r] (+ 1 (+ (call (count T) l) (call (count T) r))))))
+      ((Tree T) node [n] (+ 1 (+ (call (count T) (get n (Node T) left)) (call (count T) (get n (Node T) right)))))))
 
   ;; the first index of `want`, or none
   (fn find [xs:(arr i64) want:i64] -> (option.Option i32)
@@ -704,8 +725,9 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
     (make (option.Option i32) none))
 
   (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
     (let empty:(Tree f64) (make (Tree f64) leaf))
-    (let t:(Tree f64) (make (Tree f64) node empty 1.5 (make (Tree f64) node empty 2.5 empty)))
+    (let t:(Tree f64) (call (node f64) a empty 1.5 (call (node f64) a empty 2.5 empty)))
     (let xs:(arr i64) (arr.new i64 4))
     (arr.set i64 xs 3 9i64)
     (+ (* 10 (call (count f64) t))
@@ -714,7 +736,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
          ((option.Option i32) none -1)))))     ;; 2 nodes, found at 3 => 23
 ```
 
-Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union; whether it is held by value is decided per instance (`(option.Option i64)` is 2 slots, `(option.Option str)` is a cell). A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
+Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union: every instance is a value, and one that would contain itself or need more than 8 slots is refused (`(option.Option i64)` is 2 slots, `(option.Option str)` 2). A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
 
 ---
 
@@ -926,7 +948,7 @@ Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module t
 | `args.sizes/get`, `env.sizes/get` | Yes | Yes (host-set args, process environment) | Yes via WASI `args_*` / `environ_*` | Yes |
 | `ref`, `call_ref`, `(fn [..] -> r)` types | Yes | Yes | Yes (funcref table, `call_indirect`) | Yes |
 | `const`, `enum`, `enum.cast`, `enum.ord` | Yes | Yes | Yes (literals and `i32`; no code of their own) | Yes (erased by `consts.aipl`) |
-| `union`, `make`, `match` | Yes | Yes | Yes (a tagged heap cell; `match` is an `if` chain ending in `unreachable`) | Yes |
+| `union`, `make`, `match` | Yes | Yes | Yes (held by value, up to 8 slots; `match` is an `if` chain ending in `unreachable`) | Yes |
 | `return`, `break`, `continue`, `cond` | Yes | Yes | Yes (`return`, `br`; `cond` is nested `if`) | Yes |
 | `thread.spawn / thread.join` | Yes | Yes, real `std::thread`; the worker is a `(fn [i32] -> i32)` reference | Yes, as a threaded module (section 4.D): needs a host that provides `wasi.thread-spawn` | Yes |
 | `str` literals, `str.len`, `str.ptr` | Yes | Yes | Yes (interned data segment, pointer identity) | Yes |
@@ -1514,7 +1536,7 @@ Coverage:
 - Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
 - Typing and scoping (P7): one case per rule.
 - Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in both with the same message; and the section 4.E example.
-- Value structs held inline (docs/design/VALUES_PLAN.md): their sizes and offsets, raw words written through a field path, the heap used by a result's and a union's cell holding one, array element spacing, and reads through a null pointer or past an array's end and writes into the reserved block failing in both.
+- Value structs held inline (docs/design/VALUES_PLAN.md): their sizes and offsets, raw words written through a field path, that results and unions holding one take no heap, array element spacing, and reads through a null pointer or past an array's end and writes into the reserved block failing in both.
 - Every `examples/*.aipl`: resolved, checked, compiled; every function returning `i32`/`i64`/`bool` with all-`i32` params is called over nine fixed argument tuples in both backends. Files the wasm backend rejects are skipped with a printed reason, and files that do I/O (`word_count`, `word_freq`) are compared with captured output in `tests/test_wasi.rs` instead. Every example must parse (the stale-file list is empty). The test asserts at least 4 files and 40 calls were compared so it cannot silently go vacuous; today it compares `accounts`, `math_core`, `matrix_mult`, and `quicksort` over 116 calls. Every example is also compiled by the self-hosted compiler at byte parity (`tests/test_selfhost.rs`).
 - `aipl_src/codegen.aipl`'s `test_signatures_and_locals` is compared under WASI (the module uses `fs.*` and so imports WASI).
 
