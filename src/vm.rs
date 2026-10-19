@@ -659,24 +659,12 @@ impl VM {
             Expr::Make { union_name, variant, args, .. } => {
                 let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
                 let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
-                // a union by value: its fields, nothing allocated
-                if self.structs.is_value_union(union_name) {
-                    let mut fields = Vec::with_capacity(args.len());
-                    for a in args {
-                        fields.push(self.eval_expr(a, scope)?);
-                    }
-                    return Ok(Value::Union(tag, fields));
+                // a union is a value (AIPL_SPEC.md 4.J): its fields, nothing allocated
+                let mut fields = Vec::with_capacity(args.len());
+                for a in args {
+                    fields.push(self.eval_expr(a, scope)?);
                 }
-                let v = &def.variants[tag];
-                let (offsets, size) = crate::checker::variant_layout(v, &self.structs)?;
-                // the cell is claimed before the fields are evaluated, as in the wasm lowering
-                let cell = self.alloc_bytes(size) as u32 as usize;
-                self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
-                for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
-                    let val = self.eval_expr(a, scope)?;
-                    self.store_val_at(cell + off, &f.ty, val)?;
-                }
-                Ok(Value::Int(cell as i64))
+                Ok(Value::Union(tag, fields))
             }
             Expr::Record { args, .. } => {
                 let mut fields = Vec::with_capacity(args.len());
@@ -720,22 +708,7 @@ impl VM {
                     }
                     other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
                 };
-                if let Some(def) = self.unions.get(&tname).cloned() {
-                    let cell = v as u32 as usize;
-                    let tag = match self.load_val_at(cell, &Type::I32)? {
-                        Value::Int(t) => t as usize,
-                        _ => unreachable!(),
-                    };
-                    if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
-                        let var = &def.variants[tag];
-                        let (offsets, _) = crate::checker::variant_layout(var, &self.structs)?;
-                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
-                            let fv = self.load_val_at(cell + off, &f.ty)?;
-                            scope.insert(name.clone(), fv);
-                        }
-                        chosen = Some(&arm.body);
-                    }
-                } else if let Some(def) = self.enums.get(&tname) {
+                if let Some(def) = self.enums.get(&tname) {
                     chosen = arms
                         .iter()
                         .find(|a| def.members.iter().any(|(m, val)| *m == member(&a.member) && *val as i64 == v))

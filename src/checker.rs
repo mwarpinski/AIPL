@@ -428,23 +428,6 @@ pub fn get_field_offset(def: &StructDef, field_name: &str, structs: &Structs) ->
     Err(format!("Struct '{}' has no field '{}'", shown(&def.name), field_name))
 }
 
-/// Where each field of a union variant lives in its cell: the tag (i32) is
-/// at offset 0 and the fields follow from offset 4, laid out like a struct's.
-/// Returns the field offsets and the cell's size.
-pub fn variant_layout(v: &Variant, structs: &Structs) -> Result<(Vec<usize>, usize), String> {
-    let mut offset = 4;
-    let mut max_align = 4;
-    let mut offsets = Vec::new();
-    for f in &v.fields {
-        let (s, a) = type_size_and_align(&f.ty, structs)?;
-        max_align = max_align.max(a);
-        offset = (offset + a - 1) & !(a - 1);
-        offsets.push(offset);
-        offset += s;
-    }
-    Ok((offsets, (offset + max_align - 1) & !(max_align - 1)))
-}
-
 pub fn get_struct_size(def: &StructDef, structs: &Structs) -> Result<usize, String> {
     let mut offset = 0;
     let mut max_align = 1;
