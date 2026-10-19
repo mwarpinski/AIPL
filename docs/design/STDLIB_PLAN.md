@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
 **Status: approved 2026-10-16, every decision as recommended; L1 built
-2026-10-18; L2 in progress (stream, csv, stats built).** Four choices were made before writing (2026-10-16): formatting
+2026-10-18; L2 built 2026-10-18; L3 next.** Four choices were made before writing (2026-10-16): formatting
 is part of the language, not a library; cryptography stops at hashes and
 HMAC; regular expressions are the guaranteed-linear kind; the work goes in
 batches. At approval, networking was added as batch L7. After a review
@@ -243,6 +243,14 @@ with the compiler's optimizer work rather than in a library batch.
   forms, `--name=value`, `--` to end options.
 - **`path`**: `join`, `parent`, `file_name`, `stem`, `extension`,
   `normalize` (`.` and `..`), `is_absolute`; text only, no file access.
+
+As built (2026-10-18): set is a layer over std/map; random is pcg32 with
+its reference numbers checked, and normal uses a port of fdlibm's log
+(no std math module yet), checked against Python's math.log; path follows
+posixpath (1,600 generated paths match); cli parses lists too
+(`parse_list`), so a program's handling of its options can be tested
+without starting it. Fixed on the way: `aipl eval` now exits with the
+status a program gives sys.exit, as compiled programs do.
 
 A table type (a small data frame: typed columns, filter, group by,
 aggregate) is the obvious next step after these and is left for a later
