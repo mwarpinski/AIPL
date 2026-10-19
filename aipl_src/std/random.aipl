@@ -1,0 +1,146 @@
+;; std/random: random numbers from a seeded generator (PCG-32, O'Neill's
+;; pcg32 from pcg-c-basic), so a seed gives the same numbers in every
+;; backend, every run, on every machine.
+;;
+;;   (let r:(ptr random.Rng) (call random.seeded a 42i64))
+;;   (call random.range r 1 7)          ;; a die: 1 to 6
+;;   (call random.f64 r)                ;; in [0, 1)
+;;   (call (random.shuffle i32) r xs)
+;;
+;; seeded_from_os seeds from the system's random bytes instead. Not for
+;; secrets: PCG-32 is fast and well distributed, not cryptographic.
+(module random
+  (import alloc)
+  (import os)
+
+  ;; The generator's state and stream (pcg32_random_t).
+  (struct Rng [state:i64 inc:i64 a:alloc.Allocator] (pub))
+
+  ;; A generator from a seed, on the stream `seq` (pcg32_srandom_r).
+  (fn seeded_stream [a:alloc.Allocator seed:i64 seq:i64] -> (ptr Rng) (pub)
+    (let r:(ptr Rng) (call (alloc.create Rng) a))
+    (put r Rng.state 0i64)
+    (put r Rng.inc (bitor (shl seq 1i64) 1i64))
+    (put r Rng.a a)
+    (let _x:i32 (call next_u32 r))
+    (put r Rng.state (+ (get r Rng.state) seed))
+    (let _y:i32 (call next_u32 r))
+    r)
+
+  ;; A generator from a seed (stream 54, as pcg32's demo).
+  (fn seeded [a:alloc.Allocator seed:i64] -> (ptr Rng) (pub) (call seeded_stream a seed 54i64))
+
+  ;; A generator seeded from the system's random bytes.
+  (fn seeded_from_os [a:alloc.Allocator] -> (ptr Rng) (pub)
+    (let hi:i64 (i64.extend_u (call os.random_i32)))
+    (let lo:i64 (i64.extend_u (call os.random_i32)))
+    (call seeded_stream a (bitor (shl hi 32i64) lo) (i64.extend_u (call os.random_i32))))
+
+  ;; Frees the generator.
+  (fn free [r:(ptr Rng)] -> void (pub) (call (alloc.destroy Rng) (get r Rng.a) r))
+
+  ;; The next 32 random bits (pcg32_random_r), as an i32.
+  (fn next_u32 [r:(ptr Rng)] -> i32 (pub)
+    (let old:i64 (get r Rng.state))
+    (put r Rng.state (+ (* old 6364136223846793005i64) (bitor (get r Rng.inc) 1i64)))
+    (let x:i32 (i32.wrap (shru (^ (shru old 18i64) old) 27i64)))
+    (let rot:i32 (i32.wrap (shru old 59i64)))
+    (bitor (shru x rot) (shl x (bitand (- 0 rot) 31))))
+
+  ;; The next 64 random bits: two draws, the first the high half.
+  (fn next_u64 [r:(ptr Rng)] -> i64 (pub)
+    (let hi:i64 (i64.extend_u (call next_u32 r)))
+    (bitor (shl hi 32i64) (i64.extend_u (call next_u32 r))))
+
+  ;; A number from 0 to bound - 1 (bound an unsigned 32-bit count, not 0),
+  ;; every one equally likely (pcg32_boundedrand_r: draws again below the
+  ;; threshold rather than taking a biased remainder).
+  (fn below [r:(ptr Rng) bound:i32] -> i32 (pub)
+    (req (neq bound 0))
+    (let threshold:i32 (remu (- 0 bound) bound))
+    (let x:i32 (call next_u32 r))
+    (while (ltu x threshold) (set! x (call next_u32 r)))
+    (remu x bound))
+
+  ;; An i32 from lo up to hi, hi left out.
+  (fn range [r:(ptr Rng) lo:i32 hi:i32] -> i32 (pub)
+    (req (lt lo hi))
+    (+ lo (call below r (- hi lo))))
+
+  ;; An f64 in [0, 1): 53 random bits, each value a multiple of 2^-53.
+  (fn f64 [r:(ptr Rng)] -> f64 (pub)
+    (* (f64.convert_i64_s (shru (call next_u64 r) 11i64)) 1.1102230246251565e-16))
+
+  ;; true or false, equally likely.
+  (fn coin [r:(ptr Rng)] -> bool (pub) (lt (call next_u32 r) 0))
+
+  ;; A normally distributed f64 (Marsaglia's polar method).
+  (fn normal [r:(ptr Rng) mean:f64 sd:f64] -> f64 (pub)
+    (let u:f64 0.0)
+    (let v:f64 0.0)
+    (let s:f64 0.0)
+    (while (or (gte s 1.0) (eq s 0.0))
+      (set! u (- (* 2.0 (call f64 r)) 1.0))
+      (set! v (- (* 2.0 (call f64 r)) 1.0))
+      (set! s (+ (* u u) (* v v))))
+    (+ mean (* sd (* u (f64.sqrt (/ (* -2.0 (call ln s)) s))))))
+
+  ;; Shuffles xs in place, every order equally likely (Fisher-Yates).
+  (fn (shuffle T) [r:(ptr Rng) xs:(arr T)] -> void (pub)
+    (let i:i32 (- (arr.len xs) 1))
+    (while (gt i 0)
+      (let j:i32 (call below r (+ i 1)))
+      (let t:T (arr.get T xs i))
+      (arr.set T xs i (arr.get T xs j))
+      (arr.set T xs j t)
+      (set! i (- i 1))))
+
+  ;; One of xs, each equally likely.
+  (fn (choice T) [r:(ptr Rng) xs:(arr T)] -> T (pub)
+    (req (gt (arr.len xs) 0))
+    (arr.get T xs (call below r (arr.len xs))))
+
+  ;; k of xs, without repeats, in random order, as a new array from a.
+  (fn (sample T) [a:alloc.Allocator r:(ptr Rng) xs:(arr T) k:i32] -> (arr T) (pub)
+    (req (and (gte k 0) (lte k (arr.len xs))))
+    (let pool:(arr T) (call (alloc.array T) a (arr.len xs)))
+    (for i 0 (arr.len xs) (arr.set T pool i (arr.get T xs i)))
+    (let out:(arr T) (call (alloc.array T) a k))
+    (for i 0 k
+      (let j:i32 (+ i (call below r (- (arr.len xs) i))))
+      (let t:T (arr.get T pool i))
+      (arr.set T pool i (arr.get T pool j))
+      (arr.set T pool j t)
+      (arr.set T out i (arr.get T pool i)))
+    (call (alloc.free_array T) a pool)
+    out)
+
+  ;; ===== ln, for normal =====
+
+  ;; The natural log of a positive, finite x (fdlibm's e_log.c: x = 2^k *
+  ;; (1 + f), log(1 + f) from a polynomial in s = f / (2 + f)).
+  (fn ln [x0:f64] -> f64
+    (let x:f64 x0)
+    (let k:i64 0i64)
+    ;; subnormals: scale up first
+    (when (lt x 2.2250738585072014e-308)
+      (set! x (* x 18014398509481984.0))
+      (set! k -54i64))
+    (let bits:i64 (i64.reinterpret_f64 x))
+    (let hx:i64 (shru bits 32i64))
+    (set! k (+ k (- (shr hx 20i64) 1023i64)))
+    (set! hx (bitand hx 1048575i64))
+    (let i:i64 (bitand (+ hx 614244i64) 1048576i64))
+    ;; normalize x or x/2 into [sqrt(2)/2, sqrt(2)]
+    (set! x (f64.reinterpret_i64 (bitor (shl (bitor hx (^ i 1072693248i64)) 32i64) (bitand bits 4294967295i64))))
+    (set! k (+ k (shr i 20i64)))
+    (let f:f64 (- x 1.0))
+    (let dk:f64 (f64.convert_i64_s k))
+    (let s:f64 (/ f (+ 2.0 f)))
+    (let z:f64 (* s s))
+    (let w:f64 (* z z))
+    (let t1:f64 (* w (+ 0.3999999999940942 (* w (+ 0.22222198432149784 (* w 0.15313837699209373))))))
+    (let t2:f64 (* z (+ 0.6666666666666735 (* w (+ 0.2857142874366239 (* w (+ 0.1818357216161805 (* w 0.14798198605116586))))))))
+    (let rr:f64 (+ t2 t1))
+    (let hfsq:f64 (* 0.5 (* f f)))
+    (- (* dk 0.6931471803691238) (- (- hfsq (+ (* s (+ hfsq rr)) (* dk 1.9082149292705877e-10))) f))))

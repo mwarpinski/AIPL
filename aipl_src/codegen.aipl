@@ -185,9 +185,17 @@
   ;; continue leaves (falling into the step).
   (enum Label [if_else loop_exit loop_header loop_body])
 
+  ;; The stack grows as needed, as wasm.rs's Vec does (a fixed 255 refused
+  ;; a 259-branch cond, then crashed when its callers popped what was
+  ;; never pushed).
   (fn label_push [cg:(ptr Cg) l:Label] -> i32
     (let n:i32 (get cg Cg.nlabels))
-    (if (gte n 255) (return (call set_compile_error CgErr.too_deeply_nested)) (block))
+    (if (gte n (arr.len (get cg Cg.labels)))
+        (block
+          (let bigger:(arr Label) (arr.new Label (* 2 n)))
+          (loop i 0 (- n 1) 1 (arr.set Label bigger i (arr.get Label (get cg Cg.labels) i)))
+          (put cg Cg.labels bigger))
+        (block))
     (arr.set Label (get cg Cg.labels) n l)
     (put cg Cg.nlabels (+ n 1))
     0)
@@ -2265,7 +2273,7 @@
                (no_value_group 97)        ;; a value struct with no scratch group (a codegen bug)
                (unlowerable_type 98)
                (no_instruction_for_type 99) ;; e.g. % on f64, + on str
-               (too_deeply_nested 100)    ;; more than 255 nested blocks
+               (too_deeply_nested 100)    ;; unused since 2026-10-19: the label stack grows
                (jump_outside_loop 101)
                (too_many_literals 768)
                (unknown_symbol 971)

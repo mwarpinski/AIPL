@@ -317,7 +317,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             // an error is followed by its call chain, as compiled code prints it
-            let res = vm.invoke(&func, vec![]).map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?;
+            let res = match vm.invoke(&func, vec![]) {
+                // the VM's sys.exit ends the run with this error: exit as compiled code does
+                Err(e) if e.starts_with("sys.exit(") && e.ends_with(") requested") => {
+                    std::process::exit(e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
+                }
+                r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
+            };
             println!("[AIPL Result]: {:?}", res);
         }
         Commands::Compile { file, output, self_flag, exe, sandbox, target, tests } => {

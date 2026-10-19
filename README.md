@@ -186,8 +186,13 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
   formatting (built into the language), strings and text (search, split,
   join, replace, trim, case, UTF-8), streams (files, standard input and
   output, and memory, read a line at a time and written through a buffer),
-  number formatting and exact float parsing, JSON, directory listing, growable
-  vectors, hash maps, a string builder, big integers, UTC dates and ISO
+  number formatting and exact float parsing, JSON, CSV (as Python reads
+  it), statistics (Python's, to the bit), sets, seeded random numbers,
+  UUIDs, paths, command-line options, base64, hex, and percent-encoding,
+  hashes (CRC-32, MD5, SHA-1, SHA-256, SHA-512, HMAC), regular expressions
+  (linear-time, as Python's re matches), DEFLATE, zlib, and gzip both
+  ways, URLs, HTTP messages, HTML escaping, directory listing,
+  growable vectors, hash maps, a string builder, big integers, UTC dates and ISO
   8601, timing, and allocators. Memory you free comes from an allocator you pass explicitly,
   as in Zig: a general-purpose heap that stops the program on a double free
   or a free of the wrong size, an arena, or one you write.
@@ -255,7 +260,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **388 Rust tests** and an AIPL test suite, run on every push by CI.
+- **408 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

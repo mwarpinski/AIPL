@@ -1,0 +1,59 @@
+;; std/cli (tests/test_libs.rs): options parsed from lists, every error,
+;; the usage text, and the program's own arguments.
+(module cli_demo
+  (import cli)
+  (import alloc)
+  (import vec)
+  (import text)
+  (import str)
+
+  (fn spec [a:alloc.Allocator] -> (ptr cli.Parser)
+    (let p:(ptr cli.Parser) (call cli.parser a "wc" "count the words in files"))
+    (call cli.flag p "verbose" "v" "print each file's count")
+    (call cli.flag p "quiet" "q" "print nothing")
+    (call cli.option p "min" "m" "1" "skip words shorter than this")
+    (call cli.option p "out" "" "" "write here")
+    (call cli.positional p "file" "the file to read")
+    (call cli.rest p "more" "other files")
+    p)
+
+  ;; the arguments in `line` (split on spaces), parsed
+  (fn try_line [line:str] -> void
+    (let a:alloc.Allocator (call alloc.default))
+    (let argv:(ptr (vec.Vec str)) (call (vec.make str) a 8))
+    (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call text.fields a (call str.from_str line)))
+    (for k 0 (call (vec.len (ptr str.Bytes)) parts) (call (vec.push str) argv (call str.from_bytes (call (vec.at (ptr str.Bytes)) parts k))))
+    (match_result (call cli.parse_list (call spec a) argv)
+      (ok args
+        (block
+          (let more:i32 (call (vec.len str) (call cli.rest_args args)))
+          (let mn:str (match_result (call cli.get_i64 args "min") (ok n (format "{n}")) (err bad bad)))
+          (let file:str (call cli.get_str args "file"))
+          (let v:bool (call cli.get_bool args "verbose"))
+          (let q:bool (call cli.get_bool args "quiet"))
+          (let out:str (call cli.get_str args "out"))
+          (println "{line} => file={file} v={v} q={q} min={mn} out={out} more={more}")))
+      (err why (println "{line} => error: {why}"))))
+
+  (fn main [] -> i32
+    (call try_line "a.txt")
+    (call try_line "-v a.txt b c")
+    (call try_line "-vq --min 3 a.txt")
+    (call try_line "--min=4 -m5 --out=x a.txt")
+    (call try_line "-m 6 -- -v")
+    (call try_line "- --verbose")
+    (call try_line "--min abc a.txt")
+    (call try_line "")
+    (call try_line "--nope a.txt")
+    (call try_line "-x a.txt")
+    (call try_line "--verbose=yes a.txt")
+    (call try_line "a.txt --min")
+    (call try_line "a.txt -m")
+    (call try_line "--help")
+    (print "{(call cli.usage (call spec (call alloc.default)))}")
+    ;; this program's own arguments
+    (let mine:(ptr cli.Args) (call cli.parse_or_exit (call spec (call alloc.default))))
+    (let own_file:str (call cli.get_str mine "file"))
+    (let own_v:bool (call cli.get_bool mine "verbose"))
+    (println "own: file={own_file} v={own_v}")
+    0))

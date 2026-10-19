@@ -1,0 +1,357 @@
+;; std/url: URLs (RFC 3986) taken apart, put back together, and resolved
+;; against a base; and query strings both ways.
+;;
+;;   (match_result (call url.parse a (call str.from_str "https://x.org/a/b?q=1#top"))
+;;     (ok u ... (get u url.Url.host) (get u url.Url.path) ...)
+;;     (err e ... (get e url.Error.what) ...))
+;;   (call url.resolve_str a "http://a/b/c/d;p?q" "../g")   ;; (ok "http://a/b/g")
+;;
+;; A Url's parts are views into the text it was parsed from, as written
+;; (scheme and host are not lowercased: compare them ignoring case), with
+;; whether it has an authority, a query, and a fragment ("http://a?" has
+;; an empty query, "http://a" none). The parts are split as Python's
+;; urllib.parse.urlsplit splits them, with username, password, hostname
+;; (without the brackets of an IPv6 address), and port as its properties
+;; give them; a port that is not a number up to 65535, or a bracket
+;; without its pair, is an error. resolve is RFC 3986's (section 5.2, the
+;; strict form: "http:g" against an http base stays "http:g"), as Python's
+;; urljoin is apart from that. Checked against Python (tests/aipl/url).
+(module url
+  (import str)
+  (import buf)
+  (import alloc)
+  (import vec)
+  (import encode)
+  (import option)
+
+  ;; Why a URL or a query was refused, and the byte offset where.
+  (struct Error [(read at:i32) (read what:str)] (pub))
+
+  ;; A URL's parts (port -1 if none); scheme is empty if there is none;
+  ;; authority is all of it as written (user info, host, and port). From
+  ;; the allocator it was made with; free gives it back.
+  (struct Url [(read scheme:(ptr str.Bytes))
+               (read has_authority:bool) (read authority:(ptr str.Bytes)) (read has_user:bool) (read user:(ptr str.Bytes))
+               (read has_password:bool) (read password:(ptr str.Bytes))
+               (read host:(ptr str.Bytes)) (read port:i32)
+               (read path:(ptr str.Bytes))
+               (read has_query:bool) (read query:(ptr str.Bytes))
+               (read has_fragment:bool) (read fragment:(ptr str.Bytes)) a:alloc.Allocator] (pub))
+
+  (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
+    (let e:(ptr Error) (call (alloc.create Error) a))
+    (put e Error.at at)
+    (put e Error.what what)
+    e)
+
+  ;; Frees an Error parse or a query function gave.
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (call (alloc.destroy Error) a e))
+
+  (fn is_alpha [c:i32] -> bool (or (and (gte c 65) (lte c 90)) (and (gte c 97) (lte c 122))))
+  (fn is_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
+
+  ;; The index of the first byte in b[from..to) that is one of s1 to s4
+  ;; (-1: none), or to.
+  (fn find_any [b:(ptr str.Bytes) from:i32 to:i32 s1:i32 s2:i32 s3:i32 s4:i32] -> i32
+    (for i from to
+      (let c:i32 (call str.byte_at b i))
+      (when (or (or (eq c s1) (eq c s2)) (or (eq c s3) (eq c s4))) (return i)))
+    to)
+
+  (fn view [b:(ptr str.Bytes) from:i32 to:i32] -> (ptr str.Bytes) (call str.slice b from (- to from)))
+
+  ;; text's parts, from a, or why it is not a URL.
+  (fn parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result (ptr Url) (ptr Error)) (pub)
+    (let n:i32 (get text str.Bytes.len))
+    (let empty:(ptr str.Bytes) (call view text 0 0))
+    ;; a scheme: a letter, then letters, digits, + - ., before a ':' that
+    ;; comes before any / ? #
+    (let p:i32 0)
+    (let scheme:(ptr str.Bytes) empty)
+    (let colon:i32 (call find_any text 0 n 58 47 63 35))
+    (when (and (lt colon n) (and (eq (call str.byte_at text colon) 58) (gt colon 0)))
+      (let ok:bool (call is_alpha (call str.byte_at text 0)))
+      (for i 1 colon
+        (let c:i32 (call str.byte_at text i))
+        (when (not (or (or (call is_alpha c) (call is_digit c)) (or (eq c 43) (or (eq c 45) (eq c 46))))) (set! ok false)))
+      (when ok (set! scheme (call view text 0 colon)) (set! p (+ colon 1))))
+    ;; an authority after //
+    (let has_authority:bool false)
+    (let auth_from:i32 p)
+    (let auth_to:i32 p)
+    (when (and (lte (+ p 2) n) (and (eq (call str.byte_at text p) 47) (eq (call str.byte_at text (+ p 1)) 47)))
+      (set! has_authority true)
+      (set! auth_from (+ p 2))
+      (set! auth_to (call find_any text auth_from n 47 63 35 -1))
+      (set! p auth_to))
+    (let hash:i32 (call find_any text p n 35 -1 -1 -1))
+    (let quest:i32 (call find_any text p hash 63 -1 -1 -1))
+    (let has_user:bool false)
+    (let user:(ptr str.Bytes) empty)
+    (let has_password:bool false)
+    (let password:(ptr str.Bytes) empty)
+    (let host:(ptr str.Bytes) empty)
+    (let port:i32 -1)
+    (when has_authority
+      ;; user info: up to the last '@'; a password after its first ':'
+      (let at:i32 -1)
+      (for i auth_from auth_to (when (eq (call str.byte_at text i) 64) (set! at i)))
+      (let hp:i32 auth_from)
+      (when (gte at 0)
+        (set! has_user true)
+        (let c:i32 (call find_any text auth_from at 58 -1 -1 -1))
+        (set! user (call view text auth_from c))
+        (when (lt c at) (set! has_password true) (set! password (call view text (+ c 1) at)))
+        (set! hp (+ at 1)))
+      (let open:i32 (call find_any text hp auth_to 91 -1 -1 -1))
+      (let close:i32 (call find_any text hp auth_to 93 -1 -1 -1))
+      (let port_from:i32 auth_to)
+      (cond
+        ((lt open auth_to)
+         (when (or (neq open hp) (eq close auth_to)) (return (err:(ptr Url) (call error a open "an IPv6 address without its closing ]"))))
+         (set! host (call view text (+ open 1) close))
+         (let after:i32 (+ close 1))
+         (when (lt after auth_to)
+           (when (neq (call str.byte_at text after) 58) (return (err:(ptr Url) (call error a after "text after an IPv6 address"))))
+           (set! port_from (+ after 1))))
+        ((lt close auth_to) (return (err:(ptr Url) (call error a close "a ] without its ["))))
+        (else
+          (let c2:i32 (call find_any text hp auth_to 58 -1 -1 -1))
+          (set! host (call view text hp c2))
+          (when (lt c2 auth_to) (set! port_from (+ c2 1)))))
+      (when (lt port_from auth_to)
+        (let v:i32 0)
+        (for i port_from auth_to
+          (let d:i32 (call str.byte_at text i))
+          (when (not (call is_digit d)) (return (err:(ptr Url) (call error a i "a port that is not a number"))))
+          (set! v (+ (* v 10) (- d 48)))
+          (when (gt v 65535) (return (err:(ptr Url) (call error a port_from "a port past 65535")))))
+        (set! port v)))
+    (let u:(ptr Url) (call (alloc.create Url) a))
+    (put u Url.scheme scheme)
+    (put u Url.has_authority has_authority)
+    (put u Url.authority (call view text auth_from auth_to))
+    (put u Url.has_user has_user)
+    (put u Url.user user)
+    (put u Url.has_password has_password)
+    (put u Url.password password)
+    (put u Url.host host)
+    (put u Url.port port)
+    (put u Url.path (call view text p quest))
+    (put u Url.has_query (lt quest hash))
+    (put u Url.query (if (lt quest hash) (call view text (+ quest 1) hash) empty))
+    (put u Url.has_fragment (lt hash n))
+    (put u Url.fragment (if (lt hash n) (call view text (+ hash 1) n) empty))
+    (put u Url.a a)
+    (ok:(ptr Error) u))
+
+  ;; Frees the Url (its parts are views of the text it came from, or of
+  ;; bytes resolve made, which are not freed).
+  (fn free [u:(ptr Url)] -> void (pub) (call (alloc.destroy Url) (get u Url.a) u))
+
+  ;; Appends u as text (RFC 3986, 5.3): an IPv6 host in brackets, the port
+  ;; if there is one.
+  (fn write [o:(ptr buf.Buf) u:(ptr Url)] -> void (pub)
+    (when (gt (get (get u Url.scheme) str.Bytes.len) 0)
+      (call buf.push_bytes o (get u Url.scheme))
+      (call buf.push_byte o 58))
+    (when (get u Url.has_authority)
+      (call buf.push_str o "//")
+      (when (get u Url.has_user)
+        (call buf.push_bytes o (get u Url.user))
+        (when (get u Url.has_password) (call buf.push_byte o 58) (call buf.push_bytes o (get u Url.password)))
+        (call buf.push_byte o 64))
+      (let host:(ptr str.Bytes) (get u Url.host))
+      (let v6:bool (gte (call str.find_byte host 58) 0))
+      (when v6 (call buf.push_byte o 91))
+      (call buf.push_bytes o host)
+      (when v6 (call buf.push_byte o 93))
+      (when (gte (get u Url.port) 0) (call buf.push_byte o 58) (call buf.push_int o (get u Url.port))))
+    (call buf.push_bytes o (get u Url.path))
+    (when (get u Url.has_query) (call buf.push_byte o 63) (call buf.push_bytes o (get u Url.query)))
+    (when (get u Url.has_fragment) (call buf.push_byte o 35) (call buf.push_bytes o (get u Url.fragment))))
+
+  ;; u as a new str.
+  (fn to_str [u:(ptr Url)] -> str (pub)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call write o u)
+    (let s:str (call buf.to_str o))
+    (call buf.free o)
+    s)
+
+  ;; ===== resolving (RFC 3986, 5.2) =====
+
+  ;; path with its "." and ".." segments taken out (5.2.4), as new bytes.
+  (fn remove_dots [path:(ptr str.Bytes)] -> (ptr str.Bytes) (pub)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get path str.Bytes.len) 1)))
+    (let n:i32 (get path str.Bytes.len))
+    (let i:i32 0)
+    (while (lt i n)
+      (let left:i32 (- n i))
+      (cond
+        ;; A: a leading "../" or "./" goes
+        ((call str.is_at path i "../") (set! i (+ i 3)))
+        ((call str.is_at path i "./") (set! i (+ i 2)))
+        ;; B: "/./" becomes "/", and a final "/." "/"
+        ((call str.is_at path i "/./") (set! i (+ i 2)))
+        ((and (eq left 2) (call str.is_at path i "/.")) (call buf.push_byte o 47) (set! i n))
+        ;; C: "/../" becomes "/", and a final "/.." "/", each taking the
+        ;; last segment before it
+        ((call str.is_at path i "/../") (set! i (+ i 3)) (call drop_last o))
+        ((and (eq left 3) (call str.is_at path i "/..")) (call drop_last o) (call buf.push_byte o 47) (set! i n))
+        ;; D: a lone "." or ".." goes
+        ((or (and (eq left 1) (call str.is_at path i ".")) (and (eq left 2) (call str.is_at path i ".."))) (set! i n))
+        ;; E: the first segment moves to the output
+        (else
+          (let first:i32 (if (eq (call str.byte_at path i) 47) 1 0))
+          (let end:i32 (call find_any path (+ i first) n 47 -1 -1 -1))
+          (for k i end (call buf.push_byte o (call str.byte_at path k)))
+          (set! i end))))
+    (let s:str (call buf.to_str o))
+    (call buf.free o)
+    (call str.from_str s))
+
+  ;; Takes the output's last segment and the '/' before it.
+  (fn drop_last [o:(ptr buf.Buf)] -> void
+    (let k:i32 (call buf.len o))
+    (while (and (gt k 0) (neq (call buf.byte_at o (- k 1)) 47)) (set! k (- k 1)))
+    (when (gt k 0) (set! k (- k 1)))
+    (call buf.truncate o k))
+
+  ;; ref resolved against base (RFC 3986, 5.2.2, strict), as a new Url
+  ;; from a.
+  (fn resolve [a:alloc.Allocator base:(ptr Url) ref:(ptr Url)] -> (ptr Url) (pub)
+    (let t:(ptr Url) (call (alloc.create Url) a))
+    (put t Url.a a)
+    (call copy_parts t ref)
+    (when (gt (get (get ref Url.scheme) str.Bytes.len) 0)
+      (put t Url.path (call remove_dots (get ref Url.path)))
+      (return t))
+    (if (get ref Url.has_authority)
+        (put t Url.path (call remove_dots (get ref Url.path)))
+        (block
+          (if (eq (get (get ref Url.path) str.Bytes.len) 0)
+              (block
+                (put t Url.path (get base Url.path))
+                (when (not (get ref Url.has_query))
+                  (put t Url.has_query (get base Url.has_query))
+                  (put t Url.query (get base Url.query))))
+              (if (eq (call str.byte_at (get ref Url.path) 0) 47)
+                  (put t Url.path (call remove_dots (get ref Url.path)))
+                  (put t Url.path (call remove_dots (call merge base (get ref Url.path))))))
+          (put t Url.has_authority (get base Url.has_authority))
+          (put t Url.authority (get base Url.authority))
+          (put t Url.has_user (get base Url.has_user))
+          (put t Url.user (get base Url.user))
+          (put t Url.has_password (get base Url.has_password))
+          (put t Url.password (get base Url.password))
+          (put t Url.host (get base Url.host))
+          (put t Url.port (get base Url.port))))
+    (put t Url.scheme (get base Url.scheme))
+    t)
+
+  ;; Sets every part of t to u's.
+  (fn copy_parts [t:(ptr Url) u:(ptr Url)] -> void
+    (put t Url.scheme (get u Url.scheme))
+    (put t Url.has_authority (get u Url.has_authority))
+    (put t Url.authority (get u Url.authority))
+    (put t Url.has_user (get u Url.has_user))
+    (put t Url.user (get u Url.user))
+    (put t Url.has_password (get u Url.has_password))
+    (put t Url.password (get u Url.password))
+    (put t Url.host (get u Url.host))
+    (put t Url.port (get u Url.port))
+    (put t Url.path (get u Url.path))
+    (put t Url.has_query (get u Url.has_query))
+    (put t Url.query (get u Url.query))
+    (put t Url.has_fragment (get u Url.has_fragment))
+    (put t Url.fragment (get u Url.fragment)))
+
+  ;; ref's path after base's directory (5.2.3).
+  (fn merge [base:(ptr Url) path:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let bp:(ptr str.Bytes) (get base Url.path))
+    (if (and (get base Url.has_authority) (eq (get bp str.Bytes.len) 0))
+        (call buf.push_byte o 47)
+        (block
+          (let k:i32 (get bp str.Bytes.len))
+          (while (and (gt k 0) (neq (call str.byte_at bp (- k 1)) 47)) (set! k (- k 1)))
+          (call buf.push_bytes o (call view bp 0 k))))
+    (call buf.push_bytes o path)
+    (let s:str (call buf.to_str o))
+    (call buf.free o)
+    (call str.from_str s))
+
+  ;; ref resolved against base, as text, or why one is not a URL.
+  (fn resolve_str [a:alloc.Allocator base:str ref:str] -> (result str (ptr Error)) (pub)
+    (let b:(ptr Url) (try (call parse a (call str.from_str base))))
+    (match_result (call parse a (call str.from_str ref))
+      (ok r
+        (let t:(ptr Url) (call resolve a b r))
+        (let s:str (call to_str t))
+        (call free t)
+        (call free r)
+        (call free b)
+        (ok:(ptr Error) s))
+      (err e (call free b) (err:str e))))
+
+  ;; ===== query strings =====
+
+  ;; The names and values of the query q ("a=1&b=two+words"), in turn
+  ;; (name 0, value 0, name 1, ...), each with + as a space and %XX
+  ;; decoded, in a new vector from a; parts are split at '&', empty ones
+  ;; skipped, a part without '=' a name with an empty value (as Python's
+  ;; parse_qsl with keep_blank_values). A % without two hex digits, or
+  ;; bytes that are not UTF-8, is an error (Python passes them through).
+  (fn query_pairs [a:alloc.Allocator q:(ptr str.Bytes)] -> (result (ptr (vec.Vec str)) (ptr Error)) (pub)
+    (let out:(ptr (vec.Vec str)) (call (vec.make str) a 8))
+    (let n:i32 (get q str.Bytes.len))
+    (let i:i32 0)
+    (let o:(ptr buf.Buf) (call buf.make a 64))
+    (while (lt i n)
+      (let end:i32 (call find_any q i n 38 -1 -1 -1))
+      (when (gt end i)
+        (let eq_at:i32 (call find_any q i end 61 -1 -1 -1))
+        (for side 0 2
+          (let from:i32 (if (eq side 0) i (+ eq_at 1)))
+          (let to:i32 (if (eq side 0) eq_at end))
+          (call buf.clear o)
+          (when (lt from to)
+            (match_result (call encode.percent_decode_to o (call view q from to) true)
+              (ok _k (block))
+              (err at (call buf.free o) (call (vec.free str) out) (return (err:(ptr (vec.Vec str)) (call error a (+ from at) "a % without two hex digits"))))))
+          (when (not (call str.valid_utf8 (call buf.bytes o)))
+            (call buf.free o)
+            (call (vec.free str) out)
+            (return (err:(ptr (vec.Vec str)) (call error a from "a part that is not UTF-8"))))
+          (call (vec.push str) out (if (lt from to) (call buf.to_str o) ""))))
+      (set! i (+ end 1)))
+    (call buf.free o)
+    (ok:(ptr Error) out))
+
+  ;; The first value for name in the query q, decoded as query_pairs
+  ;; decodes, if there is one.
+  (fn query_get [a:alloc.Allocator q:(ptr str.Bytes) name:str] -> (result (option.Option str) (ptr Error)) (pub)
+    (let pairs:(ptr (vec.Vec str)) (try (call query_pairs a q)))
+    (let found:(option.Option str) (make (option.Option str) none))
+    (let k:i32 0)
+    (while (lt k (call (vec.len str) pairs))
+      (when (call str.same (call (vec.at str) pairs k) name)
+        (set! found (make (option.Option str) some (call (vec.at str) pairs (+ k 1))))
+        (set! k (call (vec.len str) pairs)))
+      (set! k (+ k 2)))
+    (call (vec.free str) pairs)
+    (ok:(ptr Error) found))
+
+  ;; The query for the names and values in turn (as query_pairs gives
+  ;; them): each name=value joined with '&', with a space as + and all but
+  ;; A-Z a-z 0-9 _ . - ~ as %XX (Python's urlencode).
+  (fn query_build [pairs:(ptr (vec.Vec str))] -> str (pub)
+    (req (eq (% (call (vec.len str) pairs) 2) 0))
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (for k 0 (call (vec.len str) pairs)
+      (when (gt k 0) (call buf.push_byte o (if (eq (% k 2) 0) 38 61)))
+      (call encode.percent_encode_to o (call str.from_str (call (vec.at str) pairs k)) "" true))
+    (let s:str (call buf.to_str o))
+    (call buf.free o)
+    s))

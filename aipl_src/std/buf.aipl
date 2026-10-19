@@ -29,8 +29,16 @@
 
   ;; The number of bytes in b.
   (fn len [b:(ptr Buf)] -> i32 (pub) (get b Buf.len))
+  ;; Byte i of b (0 <= i < len), without making a view.
+  (fn byte_at [b:(ptr Buf) i:i32] -> i32 (pub)
+    (req (and (gte i 0) (lt i (get b Buf.len))))
+    (unsafe (mem.load8 (+ (get b Buf.data) i))))
   ;; Empties b, keeping its storage.
   (fn clear [b:(ptr Buf)] -> void (pub) (put b Buf.len 0))
+  ;; Keeps only the first n bytes (0 <= n <= len), keeping the storage.
+  (fn truncate [b:(ptr Buf) n:i32] -> void (pub)
+    (req (and (gte n 0) (lte n (get b Buf.len))))
+    (put b Buf.len n))
 
   ;; Makes room for `extra` more bytes, doubling the storage as needed.
   (fn ensure [b:(ptr Buf) extra:i32] -> void

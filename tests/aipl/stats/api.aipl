@@ -1,0 +1,18 @@
+;; std/stats beyond Python's module (tests/test_stats.rs): a histogram, a
+;; z-score, and a fit's r2; and a statistic of too little data failing its
+;; contract.
+(module api
+  (import stats)
+  (import alloc)
+  (fn main [] -> i32
+    (let xs:(arr f64) (arr.new f64 6))
+    (for k 0 6 (arr.set f64 xs k (f64.convert_i32_s (* k k))))
+    (let h:(arr i32) (call stats.histogram (call alloc.default) xs 0.0 25.0 5))
+    (println "{(arr.get i32 h 0)} {(arr.get i32 h 1)} {(arr.get i32 h 2)} {(arr.get i32 h 3)} {(arr.get i32 h 4)}")
+    (println "z {(call stats.zscore 9.0 (call stats.mean xs) (call stats.stdev xs))}")
+    (let ys:(arr f64) (arr.new f64 6))
+    (for k 0 6 (arr.set f64 ys k (+ 1.0 (* 2.0 (f64.convert_i32_s k)))))
+    (let f:stats.Fit (call stats.linear_fit ys xs))
+    (println "fit {(get f stats.Fit.slope)} {(get f stats.Fit.intercept)} {(get f stats.Fit.r2)}")
+    (println "{(call stats.variance (arr.new f64 1))}")
+    0))

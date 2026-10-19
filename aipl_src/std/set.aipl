@@ -1,0 +1,94 @@
+;; std/set: a hash set of any type with a cmp.Hash implementation (i32,
+;; i64, str, and (ptr str.Bytes) by its contents come with std/cmp).
+;;
+;;   (let s:(ptr (set.Set str)) (call (set.make str) a 16))
+;;   (let _new:bool (call (set.add str) s "apple"))
+;;   (when (call (set.has str) s "apple") ...)
+;;
+;; Built on std/map; its memory comes from the allocator it is made with,
+;; and free gives it back. Items come out in the order of the slots they
+;; hash to: the same in every backend, but not the order added.
+(module set
+  (import map)
+  (import vec)
+  (import alloc)
+  (import cmp)
+
+  ;; A set of K: a map from each item to true.
+  (struct (Set K) [m:(ptr (map.Map K bool)) a:alloc.Allocator] (pub) (where (cmp.Hash K)))
+
+  ;; An empty set with room for about `capacity` items, from a.
+  (fn (make K) [a:alloc.Allocator capacity:i32] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
+    (let s:(ptr (Set K)) (call (alloc.create (Set K)) a))
+    (put s (Set K) m (call (map.make K bool) a capacity))
+    (put s (Set K) a a)
+    s)
+
+  ;; Frees the set.
+  (fn (free K) [s:(ptr (Set K))] -> void (pub) (where (cmp.Hash K))
+    (call (map.free K bool) (get s (Set K) m))
+    (call (alloc.destroy (Set K)) (get s (Set K) a) s))
+
+  ;; Adds k; whether it was not there before.
+  (fn (add K) [s:(ptr (Set K)) k:K] -> bool (pub) (where (cmp.Hash K))
+    (let m:(ptr (map.Map K bool)) (get s (Set K) m))
+    (when (call (map.has K bool) m k) (return false))
+    (call (map.set K bool) m k true)
+    true)
+
+  ;; Whether k is in the set.
+  (fn (has K) [s:(ptr (Set K)) k:K] -> bool (pub) (where (cmp.Hash K))
+    (call (map.has K bool) (get s (Set K) m) k))
+
+  ;; Takes k out; whether it was there.
+  (fn (remove K) [s:(ptr (Set K)) k:K] -> bool (pub) (where (cmp.Hash K))
+    (call (map.remove K bool) (get s (Set K) m) k))
+
+  ;; The number of items.
+  (fn (count K) [s:(ptr (Set K))] -> i32 (pub) (where (cmp.Hash K))
+    (call (map.count K bool) (get s (Set K) m)))
+
+  ;; The items, in slot order, as a new vector from a.
+  (fn (items K) [a:alloc.Allocator s:(ptr (Set K))] -> (ptr (vec.Vec K)) (pub) (where (cmp.Hash K))
+    (let m:(ptr (map.Map K bool)) (get s (Set K) m))
+    (let out:(ptr (vec.Vec K)) (call (vec.make K) a (+ (call (map.count K bool) m) 1)))
+    (for i 0 (call (map.capacity K bool) m)
+      (when (call (map.slot_used K bool) m i) (call (vec.push K) out (call (map.slot_key K bool) m i))))
+    out)
+
+  ;; The items of s and of t, as a new set from a.
+  (fn (union K) [a:alloc.Allocator s:(ptr (Set K)) t:(ptr (Set K))] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
+    (let r:(ptr (Set K)) (call (make K) a (+ (call (count K) s) (call (count K) t))))
+    (call (add_all K) r s)
+    (call (add_all K) r t)
+    r)
+
+  (fn (add_all K) [r:(ptr (Set K)) s:(ptr (Set K))] -> void (where (cmp.Hash K))
+    (let m:(ptr (map.Map K bool)) (get s (Set K) m))
+    (for i 0 (call (map.capacity K bool) m)
+      (when (call (map.slot_used K bool) m i) (let _n:bool (call (add K) r (call (map.slot_key K bool) m i))))))
+
+  ;; The items of s that are in t (keep true) or not (keep false).
+  (fn (filtered K) [a:alloc.Allocator s:(ptr (Set K)) t:(ptr (Set K)) keep:bool] -> (ptr (Set K)) (where (cmp.Hash K))
+    (let r:(ptr (Set K)) (call (make K) a (+ (call (count K) s) 1)))
+    (let m:(ptr (map.Map K bool)) (get s (Set K) m))
+    (for i 0 (call (map.capacity K bool) m)
+      (when (call (map.slot_used K bool) m i)
+        (let k:K (call (map.slot_key K bool) m i))
+        (when (eq (call (has K) t k) keep) (let _n:bool (call (add K) r k)))))
+    r)
+
+  ;; The items in both s and t, as a new set from a.
+  (fn (intersection K) [a:alloc.Allocator s:(ptr (Set K)) t:(ptr (Set K))] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
+    (call (filtered K) a s t true))
+
+  ;; The items of s not in t, as a new set from a.
+  (fn (difference K) [a:alloc.Allocator s:(ptr (Set K)) t:(ptr (Set K))] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
+    (call (filtered K) a s t false))
+
+  ;; Whether every item of s is in t.
+  (fn (is_subset K) [s:(ptr (Set K)) t:(ptr (Set K))] -> bool (pub) (where (cmp.Hash K))
+    (let m:(ptr (map.Map K bool)) (get s (Set K) m))
+    (for i 0 (call (map.capacity K bool) m)
+      (when (and (call (map.slot_used K bool) m i) (not (call (has K) t (call (map.slot_key K bool) m i)))) (return false)))
+    true))

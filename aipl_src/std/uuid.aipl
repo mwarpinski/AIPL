@@ -1,0 +1,52 @@
+;; std/uuid: random UUIDs (RFC 9562 version 4), as 36 characters,
+;; 8-4-4-4-12 lowercase hex digits: "3f2b8c1e-7d4a-4c9b-9e21-5a6b7c8d9e0f".
+;;
+;;   (call uuid.v4)                 ;; from the system's random bytes
+;;   (call uuid.v4_from r)          ;; from a random.Rng: the same each run
+(module uuid
+  (import os)
+  (import random)
+  (import buf)
+  (import alloc)
+  (import str)
+
+  ;; The text of the UUID whose 16 bytes come from next (called 4 times
+  ;; for 32 bits each), with version 4 and variant 10 set.
+  (fn text [w0:i32 w1:i32 w2:i32 w3:i32] -> str
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 40))
+    (let ws:(arr i32) (arr.new i32 4))
+    (arr.set i32 ws 0 w0)
+    ;; byte 6 (the high byte of word 1's low half) holds the version
+    (arr.set i32 ws 1 (bitor (bitand w1 -61441) 16384))
+    ;; byte 8 (word 2's high byte) holds the variant, binary 10
+    (arr.set i32 ws 2 (bitor (bitand w2 1073741823) -2147483648))
+    (arr.set i32 ws 3 w3)
+    (for k 0 16
+      (when (or (eq k 4) (eq k 6) (eq k 8) (eq k 10)) (call buf.push_byte b 45))
+      (let byte:i32 (bitand (shru (arr.get i32 ws (/ k 4)) (* 8 (- 3 (% k 4)))) 255))
+      (call buf.push_byte b (call hex (shru byte 4)))
+      (call buf.push_byte b (call hex (bitand byte 15))))
+    (let s:str (call buf.to_str b))
+    (call buf.free b)
+    s)
+
+  (fn hex [d:i32] -> i32 (if (lt d 10) (+ 48 d) (+ 87 d)))
+
+  ;; A version 4 UUID from the system's random bytes.
+  (fn v4 [] -> str (pub)
+    (call text (call os.random_i32) (call os.random_i32) (call os.random_i32) (call os.random_i32)))
+
+  ;; A version 4 UUID from r: the same UUIDs for the same seed.
+  (fn v4_from [r:(ptr random.Rng)] -> str (pub)
+    (call text (call random.next_u32 r) (call random.next_u32 r) (call random.next_u32 r) (call random.next_u32 r)))
+
+  ;; Whether s is a UUID's text: 8-4-4-4-12 hex digits (either case).
+  (fn valid [s:str] -> bool (pub)
+    (let b:(ptr str.Bytes) (call str.from_str s))
+    (when (neq (get b str.Bytes.len) 36) (return false))
+    (for k 0 36
+      (let c:i32 (call str.byte_at b k))
+      (if (or (eq k 8) (eq k 13) (eq k 18) (eq k 23))
+          (when (neq c 45) (return false))
+          (when (not (or (and (gte c 48) (lte c 57)) (or (and (gte c 97) (lte c 102)) (and (gte c 65) (lte c 70))))) (return false))))
+    true))

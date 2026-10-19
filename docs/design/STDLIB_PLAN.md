@@ -1,12 +1,13 @@
 # A broader standard library, and string formatting
 
-**Status: approved 2026-10-16, every decision as recommended; L1 built
-2026-10-18; L2 next.** Four choices were made before writing (2026-10-16): formatting
-is part of the language, not a library; cryptography stops at hashes and
-HMAC; regular expressions are the guaranteed-linear kind; the work goes in
-batches. At approval, networking was added as batch L7. After a review
-(REVISIONS.md, 2026-10-16), `try` and `defer` joined L1 and `std/stream`
-L2, so that the libraries after them are written with both.
+**Status: approved 2026-10-16, every decision as recommended; L1 to L6
+built 2026-10-18; L7 next (its design doc first).** Four choices were made before writing
+(2026-10-16): formatting is part of the language, not a library;
+cryptography stops at hashes and HMAC; regular expressions are the
+guaranteed-linear kind; the work goes in batches. At approval,
+networking was added as batch L7. After a review (REVISIONS.md,
+2026-10-16), `try` and `defer` joined L1 and `std/stream` L2, so that the
+libraries after them are written with both.
 
 ## The gap
 
@@ -205,12 +206,29 @@ with the compiler's optimizer work rather than in a library batch.
   typed helpers (`csv.f64_at`, `csv.i64_at`, returning results with the
   row and column of a bad value); writing with quoting where needed.
   Checked against Python's `csv`.
+
+  As built (2026-10-18): the reader is Python's _csv.c state machine,
+  non-strict, over a `stream.Reader`, with Python's universal-newline line
+  splitting, so a lone `\r` ends a line as Python's reader sees it. Fields
+  are views into one reused buffer (no allocation per row). Writing is per
+  field (`field_str`, `field_i64`, `field_f64`, then `end_row`) rather than
+  from an array. 3,600 generated cases match Python 3.14; Python's field
+  size limit (131,072 bytes) is not kept.
 - **`stats`** on `(arr f64)`: `sum` (compensated), `mean`, `median`,
   `quantile` (Python's default method, and the others by name),
   `variance` and `stdev` (sample and population), `min`, `max`, `mode`,
   `histogram`, `covariance`, `correlation`, `linear_fit` (least squares:
   slope, intercept, r²), `zscore`. Checked against Python's `statistics`
   to the last bit where Python is exact.
+
+  As built (2026-10-18): to the last bit everywhere, about 44,000 values
+  over six generated seeds. Python's mean, variance, and stdev round an
+  exact fraction once; here the exact values are expansions (Shewchuk's
+  partials, Dekker's exact products) and the rounding is found by exact
+  sign tests at the midpoints, so no big integers are needed. Python's
+  sumprod is ported from CPython's triple-length accumulation, an exact
+  product standing in for fma. linear_fit adds r2 (the correlation
+  squared).
 - **`set`**: a hash set `(set.Set K)` over std/cmp's `Hash` and `Eq`
   (add, has, remove, count, union, intersection, difference, items).
 - **`random`**: a seeded generator (PCG-32, a value struct, so a seed
@@ -226,6 +244,14 @@ with the compiler's optimizer work rather than in a library batch.
   forms, `--name=value`, `--` to end options.
 - **`path`**: `join`, `parent`, `file_name`, `stem`, `extension`,
   `normalize` (`.` and `..`), `is_absolute`; text only, no file access.
+
+As built (2026-10-18): set is a layer over std/map; random is pcg32 with
+its reference numbers checked, and normal uses a port of fdlibm's log
+(no std math module yet), checked against Python's math.log; path follows
+posixpath (1,600 generated paths match); cli parses lists too
+(`parse_list`), so a program's handling of its options can be tested
+without starting it. Fixed on the way: `aipl eval` now exits with the
+status a program gives sys.exit, as compiled programs do.
 
 A table type (a small data frame: typed columns, filter, group by,
 aggregate) is the obvious next step after these and is left for a later
@@ -253,6 +279,34 @@ plan: it is a design of its own, and these are what it would be built on.
 - **`json`** exists (AIPL_SPEC.md 12.6); it gains `json.get_path` for
   `"a.b[2].c"` lookups.
 
+As built (2026-10-18), L6: `url` splits as Python's urlsplit does
+(1,142 generated cases, with its properties) but keeps whether a `?` or
+`#` was there, which RFC 3986's resolution needs and urlsplit loses; it
+resolves as the RFC does, checked by the RFC's 45 examples and, on
+generated references, by the RFC's algorithm written out in the test
+generator (itself checked by those examples first): Python's urljoin
+departs from the RFC on 32 of 300 of them, in three ways the generator
+names. Query strings decode strictly (a bad `%` or bytes that are not
+UTF-8 are errors). `http` reads strictly where a lenient reader could
+disagree with another about where a message ends; the plan's chunked
+bodies, limits, and reason phrases (Python's, generated) are in, and
+`mime_type` is a fixed table of 31 rather than the system's. `html`
+knows HTML 4's names (each as HTML5 means it: `&lang;` is U+27E8, not
+HTML 4's U+2329) and matches Python's html module on 700 generated texts
+that use them. Added on the way: `str.is_at` and `buf.truncate` (reading
+and trimming without making views), and `json.get_path` with
+`json.valid_path`. Writing it, the agent's own mistakes started a log,
+docs/design/AGENT_FRICTION.md.
+
+As built (2026-10-18), `encode`: the alphabet and the padding are enums
+(`encode.Alphabet.url_safe`, `encode.Padding.unpadded`) rather than
+flags, so a call says which it means. Decoding accepts exactly what
+Python's `binascii.a2b_base64(strict_mode=True)` and `unhexlify` accept,
+with the index of the first byte it refuses as the error, and checks
+before writing, so a failed decode leaves the buffer as it was.
+`percent_decode` refuses a `%` without two hex digits where Python's
+`unquote` passes it through. 1,650 generated cases match Python.
+
 ## 5. Hashes (`hash`)
 
 CRC-32 (zlib's), Adler-32, MD5, SHA-1, SHA-256, SHA-512, and HMAC over
@@ -263,6 +317,15 @@ Checked against the published test vectors (NIST, RFC 1321, RFC 4231) and
 against Python's `hashlib` on random inputs of every length up to a few
 blocks. MD5 and SHA-1 are documented as checksums only (both are broken
 for security). No encryption, as decided: ours would be unaudited.
+
+As built (2026-10-18): one `hash.Hasher` for all four hashes, chosen by
+`hash.Algorithm` (`make`, `update`, `update_reader` for a whole stream,
+`finish_to`, `free`), rather than a set of functions per hash; HMAC works
+over any of them. The constant tables are computed exactly with integer
+roots by tools/hash_tables.py, which writes them into hash.aipl. 772
+generated cases match Python's hashlib, hmac, and zlib, NIST's examples
+and RFC 4231's cases among them. CRC-32 goes bit by bit (no table yet);
+deflate (L5) may want a faster one.
 
 ## 6. Regular expressions (`regex`)
 
@@ -288,6 +351,19 @@ texts, for patterns in the common subset of the two syntaxes. A literal
 prefix is found with `str.find` first, so plain-text searches run at
 search speed.
 
+As built (2026-10-18): matches are Python's under `re.ASCII`, including
+its rule for loops whose body can match nothing (an optional pass that
+matches nothing ends the loop). A plain Pike VM gets those wrong in rare
+cases (9 of 4,529 generated cases at first, all `(x*?)+`-shaped), so such
+a loop's body compiles to two copies, before and after reading a
+character, which keeps the machine exact and linear. 18,116 cases over
+four seeds match. Text is UTF-8 (`.` and classes match a character; a
+byte that is not UTF-8 matches as U+FFFD) and spans are byte offsets;
+`\d \w \s \b` are ASCII, as in RE2. Flags go at the start only (as
+Python requires); scoped flags, lookaround, backreferences, and possessive
+quantifiers are errors. `split` gives only the text between matches
+(Python's also gives the groups).
+
 ## 7. Compression (`deflate`)
 
 DEFLATE (RFC 1951), with the zlib (RFC 1950) and gzip (RFC 1952)
@@ -301,6 +377,21 @@ matching them byte for byte is not a goal.
 
 With `deflate` and `hash.crc32`, writing a PNG is a short program; it is
 one of the showcase programs (docs/LAUNCH_CHECKLIST.md), not a library.
+
+As built (2026-10-18): one module, `deflate`, over whole buffers (a
+stream version can come with `http`, when a body arrives in pieces). The
+decoder is puff.c's (zlib's reference decoder), so it refuses what zlib
+refuses; every decoder takes an output limit, so a small input cannot
+make a huge one. The raw and zlib decoders give the input bytes the
+stream took and leave what follows to the caller (Python ignores it);
+gzip reads every member, as Python's gzip does, but refuses reserved
+header flags as zlib does (Python ignores them). The compressor picks
+stored, fixed, or dynamic codes per block by size and stays within 1% of
+zlib's output at every level on the spec's text (smaller at 1 to 3);
+nine compressions of 60 KB take 63 ms natively. 544 generated cases
+agree with Python both ways; our 133 compressed streams are checked by
+Python when the answers are made. Added on the way: `buf.byte_at`, for
+reading back without making a view (buf.bytes makes one each call).
 
 ## Batches
 
