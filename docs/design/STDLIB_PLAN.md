@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
-**Status: approved 2026-10-16, every decision as recommended; L1, L2,
-L3, and L4 built 2026-10-18; L5 next.** Four choices were made before writing
+**Status: approved 2026-10-16, every decision as recommended; L1 to L5
+built 2026-10-18; L6 next.** Four choices were made before writing
 (2026-10-16): formatting is part of the language, not a library;
 cryptography stops at hashes and HMAC; regular expressions are the
 guaranteed-linear kind; the work goes in batches. At approval,
@@ -358,6 +358,21 @@ matching them byte for byte is not a goal.
 
 With `deflate` and `hash.crc32`, writing a PNG is a short program; it is
 one of the showcase programs (docs/LAUNCH_CHECKLIST.md), not a library.
+
+As built (2026-10-18): one module, `deflate`, over whole buffers (a
+stream version can come with `http`, when a body arrives in pieces). The
+decoder is puff.c's (zlib's reference decoder), so it refuses what zlib
+refuses; every decoder takes an output limit, so a small input cannot
+make a huge one. The raw and zlib decoders give the input bytes the
+stream took and leave what follows to the caller (Python ignores it);
+gzip reads every member, as Python's gzip does, but refuses reserved
+header flags as zlib does (Python ignores them). The compressor picks
+stored, fixed, or dynamic codes per block by size and stays within 1% of
+zlib's output at every level on the spec's text (smaller at 1 to 3);
+nine compressions of 60 KB take 63 ms natively. 544 generated cases
+agree with Python both ways; our 133 compressed streams are checked by
+Python when the answers are made. Added on the way: `buf.byte_at`, for
+reading back without making a view (buf.bytes makes one each call).
 
 ## Batches
 

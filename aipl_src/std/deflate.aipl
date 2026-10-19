@@ -1,0 +1,865 @@
+;; std/deflate: DEFLATE compression (RFC 1951), raw and in the zlib (RFC
+;; 1950) and gzip (RFC 1952) wrappers, both ways.
+;;
+;;   (call deflate.gzip_compress_to a o data 6)          ;; levels 0 to 9
+;;   (match_result (call deflate.gzip_decompress_to a o data 100000000)
+;;     (ok used ...)                                     ;; input bytes read
+;;     (err e ... (get e deflate.Error.what) ...))
+;;
+;; Decompression reads every block type and refuses what zlib refuses
+;; (its codes are puff.c's, zlib's reference decoder); the limit caps the
+;; output, so a small input cannot make a huge one. The raw and zlib
+;; decoders give how many input bytes the stream took and leave what
+;; follows to the caller; the gzip decoder reads members one after another
+;; to the end, as Python's gzip does. Compression is LZ77 over a 32 KiB
+;; window with hash chains (lazy matching from level 4), in blocks coded
+;; each way that is smallest: stored, fixed, or dynamic Huffman codes.
+;; Level 0 stores. Everything compressed here decompresses with Python's
+;; zlib and gzip to the same bytes, and the reverse (tests/aipl/deflate);
+;; the compressed bytes are not zlib's own.
+(module deflate
+  (import str)
+  (import buf)
+  (import alloc)
+  (import hash)
+
+  ;; Why a stream was refused, and the input byte offset where.
+  (struct Error [(read at:i32) (read what:str)] (pub))
+
+  ;; ===== the tables of RFC 1951, 3.2.5 =====
+
+  ;; Extra bits and base length for length code k (257 + k), k = 0..28.
+  (fn len_extra [k:i32] -> i32 (if (or (lt k 8) (eq k 28)) 0 (/ (- k 4) 4)))
+  (fn len_base [k:i32] -> i32
+    (when (eq k 28) (return 258))
+    (let base:i32 3)
+    (for i 0 k (set! base (+ base (shl 1 (call len_extra i)))))
+    base)
+
+  ;; Extra bits and base distance for distance code k, k = 0..29.
+  (fn dist_extra [k:i32] -> i32 (if (lt k 4) 0 (/ (- k 2) 2)))
+  (fn dist_base [k:i32] -> i32
+    (let base:i32 1)
+    (for i 0 k (set! base (+ base (shl 1 (call dist_extra i)))))
+    base)
+
+  ;; The order code length code lengths come in.
+  (fn clen_order [i:i32] -> i32
+    (cond
+      ((eq i 0) 16) ((eq i 1) 17) ((eq i 2) 18) ((eq i 3) 0) ((eq i 4) 8) ((eq i 5) 7) ((eq i 6) 9)
+      ((eq i 7) 6) ((eq i 8) 10) ((eq i 9) 5) ((eq i 10) 11) ((eq i 11) 4) ((eq i 12) 12) ((eq i 13) 3)
+      ((eq i 14) 13) ((eq i 15) 2) ((eq i 16) 14) ((eq i 17) 1) (else 15)))
+
+  ;; The base lengths and distances, as tables, made once per stream.
+  (struct Tables [lbase:(arr i32) lext:(arr i32) dbase:(arr i32) dext:(arr i32)])
+
+  (fn make_tables [a:alloc.Allocator] -> (ptr Tables)
+    (let t:(ptr Tables) (call (alloc.create Tables) a))
+    (let lbase:(arr i32) (call (alloc.array i32) a 29))
+    (let lext:(arr i32) (call (alloc.array i32) a 29))
+    (let dbase:(arr i32) (call (alloc.array i32) a 30))
+    (let dext:(arr i32) (call (alloc.array i32) a 30))
+    (for k 0 29 (arr.set i32 lbase k (call len_base k)) (arr.set i32 lext k (call len_extra k)))
+    (for k 0 30 (arr.set i32 dbase k (call dist_base k)) (arr.set i32 dext k (call dist_extra k)))
+    (put t Tables.lbase lbase)
+    (put t Tables.lext lext)
+    (put t Tables.dbase dbase)
+    (put t Tables.dext dext)
+    t)
+
+  (fn free_tables [a:alloc.Allocator t:(ptr Tables)] -> void
+    (call (alloc.free_array i32) a (get t Tables.lbase))
+    (call (alloc.free_array i32) a (get t Tables.lext))
+    (call (alloc.free_array i32) a (get t Tables.dbase))
+    (call (alloc.free_array i32) a (get t Tables.dext))
+    (call (alloc.destroy Tables) a t))
+
+  ;; ===== decompression (puff.c) =====
+
+  ;; A stream being read: the input from pos, bits not yet used in bitbuf
+  ;; (bitcnt of them), the output o from byte start, and a Huffman code
+  ;; for literals and lengths (lcnt: codes of each length, lsym: symbols in
+  ;; code order) and one for distances.
+  (struct Inflate [a:alloc.Allocator input:(ptr str.Bytes) pos:i32 bitbuf:i32 bitcnt:i32
+                   o:(ptr buf.Buf) start:i32 limit:i32
+                   lcnt:(arr i32) lsym:(arr i32) dcnt:(arr i32) dsym:(arr i32) lengths:(arr i32) offs:(arr i32)
+                   t:(ptr Tables) failed:bool at:i32 what:str])
+
+  ;; Notes the first failure.
+  (fn stop [s:(ptr Inflate) what:str] -> void
+    (when (not (get s Inflate.failed))
+      (put s Inflate.failed true)
+      (put s Inflate.at (get s Inflate.pos))
+      (put s Inflate.what what)))
+
+  ;; The next need bits (up to 16), first bit lowest.
+  (fn bits [s:(ptr Inflate) need:i32] -> i32
+    (let buf_:i32 (get s Inflate.bitbuf))
+    (let cnt:i32 (get s Inflate.bitcnt))
+    (let input:(ptr str.Bytes) (get s Inflate.input))
+    (while (lt cnt need)
+      (when (gte (get s Inflate.pos) (get input str.Bytes.len))
+        (call stop s "the data ends early")
+        (return 0))
+      (set! buf_ (bitor buf_ (shl (call str.byte_at input (get s Inflate.pos)) cnt)))
+      (put s Inflate.pos (+ (get s Inflate.pos) 1))
+      (set! cnt (+ cnt 8)))
+    (put s Inflate.bitbuf (shru buf_ need))
+    (put s Inflate.bitcnt (- cnt need))
+    (bitand buf_ (- (shl 1 need) 1)))
+
+  ;; A block stored as it is.
+  (fn stored [s:(ptr Inflate)] -> void
+    ;; the rest of the current byte is unused
+    (put s Inflate.bitbuf 0)
+    (put s Inflate.bitcnt 0)
+    (let input:(ptr str.Bytes) (get s Inflate.input))
+    (let p:i32 (get s Inflate.pos))
+    (when (gt (+ p 4) (get input str.Bytes.len)) (call stop s "the data ends early") (return))
+    (let len:i32 (bitor (call str.byte_at input p) (shl (call str.byte_at input (+ p 1)) 8)))
+    (let nlen:i32 (bitor (call str.byte_at input (+ p 2)) (shl (call str.byte_at input (+ p 3)) 8)))
+    (when (neq len (bitand (^ nlen -1) 65535)) (call stop s "invalid stored block lengths") (return))
+    (put s Inflate.pos (+ p 4))
+    (when (gt (+ (get s Inflate.pos) len) (get input str.Bytes.len)) (call stop s "the data ends early") (return))
+    (when (call over_limit s len) (return))
+    (call buf.push_bytes (get s Inflate.o) (call str.slice input (get s Inflate.pos) len))
+    (put s Inflate.pos (+ (get s Inflate.pos) len)))
+
+  ;; Whether n more output bytes would pass the limit (noting it).
+  (fn over_limit [s:(ptr Inflate) n:i32] -> bool
+    (if (gt (+ (- (call buf.len (get s Inflate.o)) (get s Inflate.start)) n) (get s Inflate.limit))
+        (block (call stop s "the output would pass the limit") true)
+        false))
+
+  ;; The next symbol in the code cnt/sym, or -1 (no code matches).
+  (fn decode [s:(ptr Inflate) cnt:(arr i32) sym:(arr i32)] -> i32
+    (let code:i32 0)
+    (let first:i32 0)
+    (let index:i32 0)
+    (for len 1 16
+      (set! code (bitor code (call bits s 1)))
+      (when (get s Inflate.failed) (return -1))
+      (let count:i32 (arr.get i32 cnt len))
+      (when (lt (- code count) first) (return (arr.get i32 sym (+ index (- code first)))))
+      (set! index (+ index count))
+      (set! first (shl (+ first count) 1))
+      (set! code (shl code 1)))
+    (call stop s "a code that is not in the table")
+    -1)
+
+  ;; Builds the code for the n lengths from lengths[from]: 0 if complete,
+  ;; below 0 if over-subscribed, above 0 if incomplete.
+  (fn construct [s:(ptr Inflate) cnt:(arr i32) sym:(arr i32) from:i32 n:i32] -> i32
+    (let lengths:(arr i32) (get s Inflate.lengths))
+    (let offs:(arr i32) (get s Inflate.offs))
+    (for len 0 16 (arr.set i32 cnt len 0))
+    (for k 0 n (let l:i32 (arr.get i32 lengths (+ from k))) (arr.set i32 cnt l (+ (arr.get i32 cnt l) 1)))
+    (when (eq (arr.get i32 cnt 0) n) (return 0))
+    (let left:i32 1)
+    (for len 1 16
+      (set! left (- (shl left 1) (arr.get i32 cnt len)))
+      (when (lt left 0) (return left)))
+    (arr.set i32 offs 1 0)
+    (for len 1 15 (arr.set i32 offs (+ len 1) (+ (arr.get i32 offs len) (arr.get i32 cnt len))))
+    (for k 0 n
+      (let l:i32 (arr.get i32 lengths (+ from k)))
+      (when (neq l 0)
+        (arr.set i32 sym (arr.get i32 offs l) k)
+        (arr.set i32 offs l (+ (arr.get i32 offs l) 1))))
+    left)
+
+  ;; The symbols of a block up to its end code.
+  (fn codes [s:(ptr Inflate)] -> void
+    (let o:(ptr buf.Buf) (get s Inflate.o))
+    (let t:(ptr Tables) (get s Inflate.t))
+    (while true
+      (let sym:i32 (call decode s (get s Inflate.lcnt) (get s Inflate.lsym)))
+      (when (get s Inflate.failed) (return))
+      (cond
+        ((lt sym 256)
+         (when (call over_limit s 1) (return))
+         (call buf.push_byte o sym))
+        ((eq sym 256) (return))
+        (else
+          (let k:i32 (- sym 257))
+          (when (gte k 29) (call stop s "an invalid length code") (return))
+          (let len:i32 (+ (arr.get i32 (get t Tables.lbase) k) (call bits s (arr.get i32 (get t Tables.lext) k))))
+          (let d:i32 (call decode s (get s Inflate.dcnt) (get s Inflate.dsym)))
+          (when (get s Inflate.failed) (return))
+          (when (gte d 30) (call stop s "an invalid distance code") (return))
+          (let dist:i32 (+ (arr.get i32 (get t Tables.dbase) d) (call bits s (arr.get i32 (get t Tables.dext) d))))
+          (when (get s Inflate.failed) (return))
+          (when (gt dist (- (call buf.len o) (get s Inflate.start))) (call stop s "a distance too far back") (return))
+          (when (call over_limit s len) (return))
+          ;; byte by byte: the copy may overlap what it makes
+          (let from:i32 (- (call buf.len o) dist))
+          (for i 0 len (call buf.push_byte o (call buf.byte_at o (+ from i))))))))
+
+  ;; A block with the fixed codes.
+  (fn fixed [s:(ptr Inflate)] -> void
+    (let lengths:(arr i32) (get s Inflate.lengths))
+    (for k 0 288 (arr.set i32 lengths k (cond ((lt k 144) 8) ((lt k 256) 9) ((lt k 280) 7) (else 8))))
+    (let _l:i32 (call construct s (get s Inflate.lcnt) (get s Inflate.lsym) 0 288))
+    (for k 0 30 (arr.set i32 lengths k 5))
+    (let _d:i32 (call construct s (get s Inflate.dcnt) (get s Inflate.dsym) 0 30))
+    (call codes s))
+
+  ;; A block with codes of its own, described at its start.
+  (fn dynamic [s:(ptr Inflate)] -> void
+    (let lengths:(arr i32) (get s Inflate.lengths))
+    (let nlen:i32 (+ (call bits s 5) 257))
+    (let ndist:i32 (+ (call bits s 5) 1))
+    (let ncode:i32 (+ (call bits s 4) 4))
+    (when (get s Inflate.failed) (return))
+    (when (or (gt nlen 286) (gt ndist 30)) (call stop s "too many length or distance codes") (return))
+    (for k 0 19 (arr.set i32 lengths k 0))
+    (for k 0 ncode (arr.set i32 lengths (call clen_order k) (call bits s 3)))
+    (when (get s Inflate.failed) (return))
+    (when (neq (call construct s (get s Inflate.lcnt) (get s Inflate.lsym) 0 19) 0) (call stop s "an incomplete code length code") (return))
+    (let index:i32 0)
+    (while (lt index (+ nlen ndist))
+      (let sym:i32 (call decode s (get s Inflate.lcnt) (get s Inflate.lsym)))
+      (when (get s Inflate.failed) (return))
+      (if (lt sym 16)
+          (block (arr.set i32 lengths index sym) (set! index (+ index 1)))
+          (block
+            (let len:i32 0)
+            (let times:i32 0)
+            (cond
+              ((eq sym 16)
+               (when (eq index 0) (call stop s "a repeat with no length before it") (return))
+               (set! len (arr.get i32 lengths (- index 1)))
+               (set! times (+ 3 (call bits s 2))))
+              ((eq sym 17) (set! times (+ 3 (call bits s 3))))
+              (else (set! times (+ 11 (call bits s 7)))))
+            (when (get s Inflate.failed) (return))
+            (when (gt (+ index times) (+ nlen ndist)) (call stop s "too many lengths") (return))
+            (for _k 0 times (arr.set i32 lengths index len) (set! index (+ index 1))))))
+    (when (eq (arr.get i32 lengths 256) 0) (call stop s "no end-of-block code") (return))
+    (let lerr:i32 (call construct s (get s Inflate.lcnt) (get s Inflate.lsym) 0 nlen))
+    ;; an incomplete code only as one code of one bit (puff.c, zlib)
+    (when (or (lt lerr 0) (and (gt lerr 0) (neq nlen (+ (arr.get i32 (get s Inflate.lcnt) 0) (arr.get i32 (get s Inflate.lcnt) 1)))))
+      (call stop s "an incomplete literal/length code") (return))
+    (let derr:i32 (call construct s (get s Inflate.dcnt) (get s Inflate.dsym) nlen ndist))
+    (when (or (lt derr 0) (and (gt derr 0) (neq ndist (+ (arr.get i32 (get s Inflate.dcnt) 0) (arr.get i32 (get s Inflate.dcnt) 1)))))
+      (call stop s "an incomplete distance code") (return))
+    (call codes s))
+
+  ;; Appends what the raw DEFLATE stream at in[from] stands for to o (at
+  ;; most limit bytes); the offset just past the stream, or the error.
+  (fn inflate_at [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) from:i32 limit:i32] -> (result i32 (ptr Error))
+    (let s:(ptr Inflate) (call (alloc.create Inflate) a))
+    (put s Inflate.a a)
+    (put s Inflate.input input)
+    (put s Inflate.pos from)
+    (put s Inflate.bitbuf 0)
+    (put s Inflate.bitcnt 0)
+    (put s Inflate.o o)
+    (put s Inflate.start (call buf.len o))
+    (put s Inflate.limit limit)
+    (put s Inflate.lcnt (call (alloc.array i32) a 16))
+    (put s Inflate.lsym (call (alloc.array i32) a 288))
+    (put s Inflate.dcnt (call (alloc.array i32) a 16))
+    (put s Inflate.dsym (call (alloc.array i32) a 30))
+    (put s Inflate.lengths (call (alloc.array i32) a 320))
+    (put s Inflate.offs (call (alloc.array i32) a 16))
+    (put s Inflate.t (call make_tables a))
+    (put s Inflate.failed false)
+    (put s Inflate.at 0)
+    (put s Inflate.what "")
+    (let last:i32 0)
+    (while (and (eq last 0) (not (get s Inflate.failed)))
+      (set! last (call bits s 1))
+      (let kind:i32 (call bits s 2))
+      (when (not (get s Inflate.failed))
+        (cond
+          ((eq kind 0) (call stored s))
+          ((eq kind 1) (call fixed s))
+          ((eq kind 2) (call dynamic s))
+          (else (call stop s "an invalid block type")))))
+    (let failed:bool (get s Inflate.failed))
+    (let end:i32 (get s Inflate.pos))
+    (let at:i32 (get s Inflate.at))
+    (let what:str (get s Inflate.what))
+    (call (alloc.free_array i32) a (get s Inflate.lcnt))
+    (call (alloc.free_array i32) a (get s Inflate.lsym))
+    (call (alloc.free_array i32) a (get s Inflate.dcnt))
+    (call (alloc.free_array i32) a (get s Inflate.dsym))
+    (call (alloc.free_array i32) a (get s Inflate.lengths))
+    (call (alloc.free_array i32) a (get s Inflate.offs))
+    (call free_tables a (get s Inflate.t))
+    (call (alloc.destroy Inflate) a s)
+    (if failed (err:i32 (call error a at what)) (ok:(ptr Error) end)))
+
+  (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
+    (let e:(ptr Error) (call (alloc.create Error) a))
+    (put e Error.at at)
+    (put e Error.what what)
+    e)
+
+  ;; Frees an Error a decoder gave.
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (call (alloc.destroy Error) a e))
+
+  ;; Appends what the raw DEFLATE stream in stands for to o (at most limit
+  ;; bytes); how many bytes of in the stream took, or the error.
+  (fn inflate_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+    (call inflate_at a o input 0 limit))
+
+  ;; The big-endian 32 bits at in[p].
+  (fn be32 [b:(ptr str.Bytes) p:i32] -> i32
+    (bitor (bitor (shl (call str.byte_at b p) 24) (shl (call str.byte_at b (+ p 1)) 16)) (bitor (shl (call str.byte_at b (+ p 2)) 8) (call str.byte_at b (+ p 3)))))
+  (fn le32 [b:(ptr str.Bytes) p:i32] -> i32
+    (bitor (bitor (call str.byte_at b p) (shl (call str.byte_at b (+ p 1)) 8)) (bitor (shl (call str.byte_at b (+ p 2)) 16) (shl (call str.byte_at b (+ p 3)) 24))))
+
+  ;; o's bytes from start as a view (for the checksums)
+  (fn tail [o:(ptr buf.Buf) start:i32] -> (ptr str.Bytes)
+    (call str.slice (call buf.bytes o) start (- (call buf.len o) start)))
+
+  ;; Appends what the zlib stream in stands for to o (at most limit bytes);
+  ;; how many bytes of in the stream took, or the error (a bad header, a
+  ;; preset dictionary, or a wrong Adler-32 among them).
+  (fn zlib_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+    (let n:i32 (get input str.Bytes.len))
+    (when (lt n 2) (return (err:i32 (call error a n "the data ends early"))))
+    (let cmf:i32 (call str.byte_at input 0))
+    (let flg:i32 (call str.byte_at input 1))
+    (when (or (neq (bitand cmf 15) 8) (or (gt (shru cmf 4) 7) (neq (% (+ (* cmf 256) flg) 31) 0)))
+      (return (err:i32 (call error a 0 "an incorrect header check"))))
+    (when (neq (bitand flg 32) 0) (return (err:i32 (call error a 1 "a preset dictionary, which is not supported"))))
+    (let start:i32 (call buf.len o))
+    (let end:i32 (try (call inflate_at a o input 2 limit)))
+    (when (gt (+ end 4) n) (return (err:i32 (call error a n "the data ends early"))))
+    (when (neq (call be32 input end) (call hash.adler32 (call tail o start))) (return (err:i32 (call error a end "an incorrect data check (Adler-32)"))))
+    (ok:(ptr Error) (+ end 4)))
+
+  ;; Appends what the gzip data in stands for to o (at most limit bytes):
+  ;; each member in turn to the end of in (zero bytes may pad the end, as
+  ;; tape archives do; an empty in is no members); in's length, or the
+  ;; error (a bad header, a wrong CRC-32 or length among them).
+  (fn gzip_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+    (let n:i32 (get input str.Bytes.len))
+    (let p:i32 0)
+    (let first:bool true)
+    (let start:i32 (call buf.len o))
+    (while (lt p n)
+      ;; after a member, only padding or another member
+      (when (and (not first) (neq (call str.byte_at input p) 31))
+        (for k p n (when (neq (call str.byte_at input k) 0) (return (err:i32 (call error a k "not gzip data after a member")))))
+        (return (ok:(ptr Error) n)))
+      (set! first false)
+      (when (gt (+ p 10) n) (return (err:i32 (call error a n "the data ends early"))))
+      (when (or (neq (call str.byte_at input p) 31) (neq (call str.byte_at input (+ p 1)) 139)) (return (err:i32 (call error a p "not gzip data"))))
+      (when (neq (call str.byte_at input (+ p 2)) 8) (return (err:i32 (call error a (+ p 2) "an unknown compression method"))))
+      (let flags:i32 (call str.byte_at input (+ p 3)))
+      (when (neq (bitand flags 224) 0) (return (err:i32 (call error a (+ p 3) "reserved header flags set"))))
+      (set! p (+ p 10))
+      (when (neq (bitand flags 4) 0)
+        (when (gt (+ p 2) n) (return (err:i32 (call error a n "the data ends early"))))
+        (set! p (+ p (+ 2 (bitor (call str.byte_at input p) (shl (call str.byte_at input (+ p 1)) 8))))))
+      ;; a file name, then a comment: each ends with a zero byte
+      (for bit 0 2
+        (when (neq (bitand flags (shl 8 bit)) 0)
+          (while (and (lt p n) (neq (call str.byte_at input p) 0)) (set! p (+ p 1)))
+          (set! p (+ p 1))))
+      (when (neq (bitand flags 2) 0) (set! p (+ p 2)))
+      (when (gt p n) (return (err:i32 (call error a n "the data ends early"))))
+      (let member:i32 (call buf.len o))
+      (let left:i32 (- limit (- member start)))
+      (let end:i32 (try (call inflate_at a o input p left)))
+      (when (gt (+ end 8) n) (return (err:i32 (call error a n "the data ends early"))))
+      (let made:(ptr str.Bytes) (call tail o member))
+      (when (neq (call le32 input end) (call hash.crc32 made)) (return (err:i32 (call error a end "a CRC-32 that does not match"))))
+      (when (neq (call le32 input (+ end 4)) (get made str.Bytes.len)) (return (err:i32 (call error a (+ end 4) "a length that does not match"))))
+      (set! p (+ end 8)))
+    ;; no input at all is no output, as in Python
+    (ok:(ptr Error) n))
+
+  ;; ===== compression =====
+
+  ;; Bits written into o, first bit lowest.
+  (struct Bits [o:(ptr buf.Buf) acc:i32 cnt:i32])
+
+  (fn put_bits [w:(ptr Bits) v:i32 n:i32] -> void
+    (let acc:i32 (bitor (get w Bits.acc) (shl v (get w Bits.cnt))))
+    (let cnt:i32 (+ (get w Bits.cnt) n))
+    (while (gte cnt 8)
+      (call buf.push_byte (get w Bits.o) (bitand acc 255))
+      (set! acc (shru acc 8))
+      (set! cnt (- cnt 8)))
+    (put w Bits.acc acc)
+    (put w Bits.cnt cnt))
+
+  ;; Pads to a whole byte with zero bits.
+  (fn align [w:(ptr Bits)] -> void
+    (when (gt (get w Bits.cnt) 0) (call put_bits w 0 (- 8 (get w Bits.cnt)))))
+
+  ;; The settings for a level: the longest hash chain followed, a match
+  ;; long enough to stop looking, and whether to look one byte ahead for
+  ;; a longer match (lazy) with the length beyond which it does not.
+  (fn chain_for [level:i32] -> i32
+    (cond ((eq level 1) 4) ((eq level 2) 8) ((eq level 3) 32) ((eq level 4) 16) ((eq level 5) 32) ((eq level 6) 128) ((eq level 7) 256) ((eq level 8) 1024) (else 4096)))
+  (fn nice_for [level:i32] -> i32
+    (cond ((eq level 1) 8) ((eq level 2) 16) ((eq level 3) 32) ((eq level 4) 16) ((eq level 5) 32) ((eq level 6) 128) ((eq level 7) 128) (else 258)))
+  (fn lazy_for [level:i32] -> i32
+    (cond ((lt level 4) 0) ((eq level 4) 4) ((eq level 5) 16) ((eq level 6) 16) ((eq level 7) 32) ((eq level 8) 128) (else 258)))
+
+  (const WINDOW:i32 32768)
+  (const HASH:i32 32768)
+  ;; symbols per block
+  (const BLOCK:i32 16384)
+
+  ;; A compression in progress: the input, its hash chains (head: the
+  ;; last position with each hash; prev: the position before with the same
+  ;; hash, by position mod WINDOW), and the block's symbols (lens 0: a
+  ;; literal vals; else a match of lens bytes at distance vals).
+  (struct Deflate [a:alloc.Allocator input:(ptr str.Bytes) w:(ptr Bits) t:(ptr Tables)
+                   head:(arr i32) prev:(arr i32) lens:(arr i32) vals:(arr i32) count:i32 block_start:i32
+                   lfreq:(arr i32) dfreq:(arr i32) llen:(arr i32) dlen:(arr i32) lcode:(arr i32) dcode:(arr i32)
+                   cfreq:(arr i32) clen:(arr i32) ccode:(arr i32) runs:(arr i32) runx:(arr i32) nruns:i32
+                   hfreq:(arr i32) hparent:(arr i32) hlive:(arr i32)])
+
+  (fn hash3 [b:(ptr str.Bytes) p:i32] -> i32
+    (bitand (^ (^ (shl (call str.byte_at b p) 10) (shl (call str.byte_at b (+ p 1)) 5)) (call str.byte_at b (+ p 2))) (- HASH 1)))
+
+  ;; Adds position p to its hash chain.
+  (fn insert [d:(ptr Deflate) p:i32] -> void
+    (let input:(ptr str.Bytes) (get d Deflate.input))
+    (when (gt (+ p 3) (get input str.Bytes.len)) (return))
+    (let h:i32 (call hash3 input p))
+    (arr.set i32 (get d Deflate.prev) (bitand p (- WINDOW 1)) (arr.get i32 (get d Deflate.head) h))
+    (arr.set i32 (get d Deflate.head) h p))
+
+  ;; The longest match for the bytes at p among the earlier positions on
+  ;; its chain (at most chain of them, in the window): its length (0 if
+  ;; under 3) and, in dist_out[0], its distance. The nearest wins a tie.
+  (fn longest [d:(ptr Deflate) p:i32 chain:i32 nice:i32 dist_out:(arr i32)] -> i32
+    (let input:(ptr str.Bytes) (get d Deflate.input))
+    (let n:i32 (get input str.Bytes.len))
+    (let most:i32 (if (lt (- n p) 258) (- n p) 258))
+    (when (lt most 3) (return 0))
+    (let best:i32 0)
+    (let c:i32 (arr.get i32 (get d Deflate.head) (call hash3 input p)))
+    (let left:i32 chain)
+    (while (and (gte c 0) (and (gt c (- p WINDOW)) (gt left 0)))
+      ;; a candidate can beat best only if it matches at byte best (as
+      ;; zlib checks first): most fail there, at once
+      (when (and (lt c p) (eq (call str.byte_at input (+ c best)) (call str.byte_at input (+ p best))))
+        (let k:i32 0)
+        (while (and (lt k most) (eq (call str.byte_at input (+ c k)) (call str.byte_at input (+ p k)))) (set! k (+ k 1)))
+        (when (gt k best)
+          (set! best k)
+          (arr.set i32 dist_out 0 (- p c))
+          (when (or (gte k nice) (eq k most)) (set! left 0))))
+      (set! left (- left 1))
+      (let next:i32 (arr.get i32 (get d Deflate.prev) (bitand c (- WINDOW 1))))
+      ;; a chain only goes back: a later entry is a stale one
+      (set! c (if (lt next c) next -1)))
+    (if (gte best 3) best 0))
+
+  (fn add_symbol [d:(ptr Deflate) len:i32 val:i32] -> void
+    (arr.set i32 (get d Deflate.lens) (get d Deflate.count) len)
+    (arr.set i32 (get d Deflate.vals) (get d Deflate.count) val)
+    (put d Deflate.count (+ (get d Deflate.count) 1)))
+
+  ;; Appends the raw DEFLATE stream of b at level (0: stored, 1 fastest to
+  ;; 9 smallest) to o.
+  (fn compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+    (req (and (gte level 0) (lte level 9)))
+    (let w:(ptr Bits) (call (alloc.create Bits) a))
+    (put w Bits.o o)
+    (put w Bits.acc 0)
+    (put w Bits.cnt 0)
+    (let n:i32 (get b str.Bytes.len))
+    (if (eq level 0)
+        (block
+          ;; stored blocks of up to 65535 bytes (one, empty, for no input)
+          (let p:i32 0)
+          (let more:bool true)
+          (while more
+            (let len:i32 (if (lt (- n p) 65535) (- n p) 65535))
+            (set! more (lt (+ p len) n))
+            (call stored_block w b p len (not more))
+            (set! p (+ p len))))
+        (call lz77 a w b level))
+    (call align w)
+    (call (alloc.destroy Bits) a w))
+
+  (fn stored_block [w:(ptr Bits) b:(ptr str.Bytes) from:i32 len:i32 last:bool] -> void
+    (call put_bits w (if last 1 0) 1)
+    (call put_bits w 0 2)
+    (call align w)
+    (let o:(ptr buf.Buf) (get w Bits.o))
+    (call buf.push_byte o (bitand len 255))
+    (call buf.push_byte o (shru len 8))
+    (call buf.push_byte o (bitand (^ len -1) 255))
+    (call buf.push_byte o (bitand (shru (^ len -1) 8) 255))
+    (call buf.push_bytes o (call str.slice b from len)))
+
+  (fn lz77 [a:alloc.Allocator w:(ptr Bits) b:(ptr str.Bytes) level:i32] -> void
+    (let d:(ptr Deflate) (call make_deflate a w b))
+    (let n:i32 (get b str.Bytes.len))
+    (let chain:i32 (call chain_for level))
+    (let nice:i32 (call nice_for level))
+    (let lazy:i32 (call lazy_for level))
+    (let dist:(arr i32) (call (alloc.array i32) a 1))
+    (let dist2:(arr i32) (call (alloc.array i32) a 1))
+    (let p:i32 0)
+    (while (lt p n)
+      (let len:i32 (call longest d p chain nice dist))
+      ;; whether p is on its hash chain already
+      (let inserted:bool false)
+      ;; lazy: if a longer match starts one byte on, p is a literal
+      (when (and (gt len 0) (and (lt len lazy) (lt (+ p 1) n)))
+        (call insert d p)
+        (set! inserted true)
+        (let len2:i32 (call longest d (+ p 1) chain nice dist2))
+        (when (gt len2 len)
+          (call add_symbol d 0 (call str.byte_at b p))
+          (set! p (+ p 1))
+          (set! inserted false)
+          (set! len len2)
+          (arr.set i32 dist 0 (arr.get i32 dist2 0))))
+      (if (eq len 0)
+          (block
+            (when (not inserted) (call insert d p))
+            (call add_symbol d 0 (call str.byte_at b p))
+            (set! p (+ p 1)))
+          (block
+            (call add_symbol d len (arr.get i32 dist 0))
+            (for k (if inserted 1 0) len (call insert d (+ p k)))
+            (set! p (+ p len))))
+      (when (gte (get d Deflate.count) (- BLOCK 2)) (call flush_block d p false)))
+    (call flush_block d n true)
+    (call (alloc.free_array i32) a dist)
+    (call (alloc.free_array i32) a dist2)
+    (call free_deflate d))
+
+  (fn make_deflate [a:alloc.Allocator w:(ptr Bits) b:(ptr str.Bytes)] -> (ptr Deflate)
+    (let d:(ptr Deflate) (call (alloc.create Deflate) a))
+    (put d Deflate.a a)
+    (put d Deflate.input b)
+    (put d Deflate.w w)
+    (put d Deflate.t (call make_tables a))
+    (let head:(arr i32) (call (alloc.array i32) a HASH))
+    (for i 0 HASH (arr.set i32 head i -1))
+    (put d Deflate.head head)
+    (put d Deflate.prev (call (alloc.array i32) a WINDOW))
+    (put d Deflate.lens (call (alloc.array i32) a BLOCK))
+    (put d Deflate.vals (call (alloc.array i32) a BLOCK))
+    (put d Deflate.count 0)
+    (put d Deflate.block_start 0)
+    (put d Deflate.lfreq (call (alloc.array i32) a 286))
+    (put d Deflate.dfreq (call (alloc.array i32) a 30))
+    (put d Deflate.llen (call (alloc.array i32) a 286))
+    (put d Deflate.dlen (call (alloc.array i32) a 30))
+    (put d Deflate.lcode (call (alloc.array i32) a 288))
+    (put d Deflate.dcode (call (alloc.array i32) a 30))
+    (put d Deflate.cfreq (call (alloc.array i32) a 19))
+    (put d Deflate.clen (call (alloc.array i32) a 19))
+    (put d Deflate.ccode (call (alloc.array i32) a 19))
+    (put d Deflate.runs (call (alloc.array i32) a 320))
+    (put d Deflate.runx (call (alloc.array i32) a 320))
+    (put d Deflate.nruns 0)
+    (put d Deflate.hfreq (call (alloc.array i32) a 600))
+    (put d Deflate.hparent (call (alloc.array i32) a 600))
+    (put d Deflate.hlive (call (alloc.array i32) a 600))
+    d)
+
+  (fn free_deflate [d:(ptr Deflate)] -> void
+    (let a:alloc.Allocator (get d Deflate.a))
+    (call free_tables a (get d Deflate.t))
+    (call (alloc.free_array i32) a (get d Deflate.head))
+    (call (alloc.free_array i32) a (get d Deflate.prev))
+    (call (alloc.free_array i32) a (get d Deflate.lens))
+    (call (alloc.free_array i32) a (get d Deflate.vals))
+    (call (alloc.free_array i32) a (get d Deflate.lfreq))
+    (call (alloc.free_array i32) a (get d Deflate.dfreq))
+    (call (alloc.free_array i32) a (get d Deflate.llen))
+    (call (alloc.free_array i32) a (get d Deflate.dlen))
+    (call (alloc.free_array i32) a (get d Deflate.lcode))
+    (call (alloc.free_array i32) a (get d Deflate.dcode))
+    (call (alloc.free_array i32) a (get d Deflate.cfreq))
+    (call (alloc.free_array i32) a (get d Deflate.clen))
+    (call (alloc.free_array i32) a (get d Deflate.ccode))
+    (call (alloc.free_array i32) a (get d Deflate.runs))
+    (call (alloc.free_array i32) a (get d Deflate.runx))
+    (call (alloc.free_array i32) a (get d Deflate.hfreq))
+    (call (alloc.free_array i32) a (get d Deflate.hparent))
+    (call (alloc.free_array i32) a (get d Deflate.hlive))
+    (call (alloc.destroy Deflate) a d))
+
+  ;; The length code (257..285) and the distance code for a match.
+  (fn len_code [t:(ptr Tables) len:i32] -> i32
+    (let k:i32 28)
+    (while (gt (arr.get i32 (get t Tables.lbase) k) len) (set! k (- k 1)))
+    k)
+  (fn dist_code [t:(ptr Tables) dist:i32] -> i32
+    (let k:i32 29)
+    (while (gt (arr.get i32 (get t Tables.dbase) k) dist) (set! k (- k 1)))
+    k)
+
+  ;; Writes the block's symbols, input bytes block_start..end, as the
+  ;; smallest of a stored, a fixed, and a dynamic block.
+  (fn flush_block [d:(ptr Deflate) end:i32 last:bool] -> void
+    (let t:(ptr Tables) (get d Deflate.t))
+    (let lfreq:(arr i32) (get d Deflate.lfreq))
+    (let dfreq:(arr i32) (get d Deflate.dfreq))
+    (for i 0 286 (arr.set i32 lfreq i 0))
+    (for i 0 30 (arr.set i32 dfreq i 0))
+    (let count:i32 (get d Deflate.count))
+    (for i 0 count
+      (let len:i32 (arr.get i32 (get d Deflate.lens) i))
+      (if (eq len 0)
+          (call bump lfreq (arr.get i32 (get d Deflate.vals) i))
+          (block
+            (call bump lfreq (+ 257 (call len_code t len)))
+            (call bump dfreq (call dist_code t (arr.get i32 (get d Deflate.vals) i))))))
+    (call bump lfreq 256)
+    ;; dynamic codes
+    (call build_lengths d lfreq (get d Deflate.llen) 286 15)
+    (call build_lengths d dfreq (get d Deflate.dlen) 30 15)
+    (let nlen:i32 286)
+    (while (and (gt nlen 257) (eq (arr.get i32 (get d Deflate.llen) (- nlen 1)) 0)) (set! nlen (- nlen 1)))
+    (let ndist:i32 30)
+    (while (and (gt ndist 1) (eq (arr.get i32 (get d Deflate.dlen) (- ndist 1)) 0)) (set! ndist (- ndist 1)))
+    (call make_runs d nlen ndist)
+    (call build_lengths d (get d Deflate.cfreq) (get d Deflate.clen) 19 7)
+    (let ncode:i32 19)
+    (while (and (gt ncode 4) (eq (arr.get i32 (get d Deflate.clen) (call clen_order (- ncode 1))) 0)) (set! ncode (- ncode 1)))
+    ;; the sizes in bits
+    (let dyn:i32 (+ 17 (* 3 ncode)))
+    (for i 0 19 (set! dyn (+ dyn (* (arr.get i32 (get d Deflate.cfreq) i) (arr.get i32 (get d Deflate.clen) i)))))
+    (set! dyn (+ dyn (+ (* 2 (arr.get i32 (get d Deflate.cfreq) 16)) (+ (* 3 (arr.get i32 (get d Deflate.cfreq) 17)) (* 7 (arr.get i32 (get d Deflate.cfreq) 18))))))
+    (let fix:i32 3)
+    (for i 0 286
+      (let f:i32 (arr.get i32 lfreq i))
+      (set! dyn (+ dyn (* f (arr.get i32 (get d Deflate.llen) i))))
+      (set! fix (+ fix (* f (call fixed_len i))))
+      (when (gte i 257)
+        (let x:i32 (* f (arr.get i32 (get t Tables.lext) (- i 257))))
+        (set! dyn (+ dyn x))
+        (set! fix (+ fix x))))
+    (for i 0 30
+      (let f:i32 (arr.get i32 dfreq i))
+      (set! dyn (+ dyn (* f (arr.get i32 (get d Deflate.dlen) i))))
+      (let x:i32 (* f (+ 5 (arr.get i32 (get t Tables.dext) i))))
+      (set! fix (+ fix x))
+      (set! dyn (+ dyn (* f (arr.get i32 (get t Tables.dext) i)))))
+    (let raw:i32 (- end (get d Deflate.block_start)))
+    ;; stored: the header bits, up to 7 to the byte, and 4 bytes of lengths
+    (let sto:i32 (if (lte raw 65535) (+ (+ 3 7) (* 8 (+ raw 4))) 2147483647))
+    (let w:(ptr Bits) (get d Deflate.w))
+    (cond
+      ((and (lte sto dyn) (lte sto fix))
+       (call stored_block w (get d Deflate.input) (get d Deflate.block_start) raw last))
+      ((lte fix dyn)
+       (call put_bits w (if last 1 0) 1)
+       (call put_bits w 1 2)
+       (for i 0 288 (arr.set i32 (get d Deflate.lcode) i (call fixed_len i)))
+       (call make_codes (get d Deflate.lcode) (get d Deflate.lcode) 288)
+       (for i 0 30 (arr.set i32 (get d Deflate.dcode) i 5))
+       (call make_codes (get d Deflate.dcode) (get d Deflate.dcode) 30)
+       (call write_symbols d true))
+      (else
+        (call put_bits w (if last 1 0) 1)
+        (call put_bits w 2 2)
+        (call put_bits w (- nlen 257) 5)
+        (call put_bits w (- ndist 1) 5)
+        (call put_bits w (- ncode 4) 4)
+        (for i 0 ncode (call put_bits w (arr.get i32 (get d Deflate.clen) (call clen_order i)) 3))
+        (call make_codes (get d Deflate.clen) (get d Deflate.ccode) 19)
+        (for i 0 (get d Deflate.nruns)
+          (let sym:i32 (arr.get i32 (get d Deflate.runs) i))
+          (call put_bits w (arr.get i32 (get d Deflate.ccode) sym) (arr.get i32 (get d Deflate.clen) sym))
+          (cond
+            ((eq sym 16) (call put_bits w (arr.get i32 (get d Deflate.runx) i) 2))
+            ((eq sym 17) (call put_bits w (arr.get i32 (get d Deflate.runx) i) 3))
+            ((eq sym 18) (call put_bits w (arr.get i32 (get d Deflate.runx) i) 7))
+            (else (block))))
+        (call make_codes (get d Deflate.llen) (get d Deflate.lcode) 286)
+        (call make_codes (get d Deflate.dlen) (get d Deflate.dcode) 30)
+        (call write_symbols d false)))
+    (put d Deflate.count 0)
+    (put d Deflate.block_start end))
+
+  (fn bump [f:(arr i32) i:i32] -> void (arr.set i32 f i (+ (arr.get i32 f i) 1)))
+
+  (fn fixed_len [i:i32] -> i32 (cond ((lt i 144) 8) ((lt i 256) 9) ((lt i 280) 7) (else 8)))
+
+  ;; Writes the block's symbols and its end code, with the code lengths
+  ;; (llen/dlen, or for fixed the lengths in lcode's place) and codes.
+  (fn write_symbols [d:(ptr Deflate) fixed:bool] -> void
+    (let w:(ptr Bits) (get d Deflate.w))
+    (let t:(ptr Tables) (get d Deflate.t))
+    (let lcode:(arr i32) (get d Deflate.lcode))
+    (let dcode:(arr i32) (get d Deflate.dcode))
+    (for i 0 (get d Deflate.count)
+      (let len:i32 (arr.get i32 (get d Deflate.lens) i))
+      (let v:i32 (arr.get i32 (get d Deflate.vals) i))
+      (if (eq len 0)
+          (call put_bits w (arr.get i32 lcode v) (call code_len d v fixed))
+          (block
+            (let lc:i32 (call len_code t len))
+            (call put_bits w (arr.get i32 lcode (+ 257 lc)) (call code_len d (+ 257 lc) fixed))
+            (call put_bits w (- len (arr.get i32 (get t Tables.lbase) lc)) (arr.get i32 (get t Tables.lext) lc))
+            (let dc:i32 (call dist_code t v))
+            (call put_bits w (arr.get i32 dcode dc) (if fixed 5 (arr.get i32 (get d Deflate.dlen) dc)))
+            (call put_bits w (- v (arr.get i32 (get t Tables.dbase) dc)) (arr.get i32 (get t Tables.dext) dc)))))
+    (call put_bits w (arr.get i32 lcode 256) (call code_len d 256 fixed)))
+
+  (fn code_len [d:(ptr Deflate) sym:i32 fixed:bool] -> i32
+    (if fixed (call fixed_len sym) (arr.get i32 (get d Deflate.llen) sym)))
+
+  ;; Canonical codes for the n lengths (RFC 1951, 3.2.2), bit-reversed to
+  ;; be written first bit lowest; codes may be lengths itself (read first).
+  (fn make_codes [lengths:(arr i32) codes:(arr i32) n:i32] -> void
+    (let a:alloc.Allocator (call alloc.default))
+    (let count:(arr i32) (call (alloc.array i32) a 16))
+    (let next:(arr i32) (call (alloc.array i32) a 16))
+    (for i 0 n (let l:i32 (arr.get i32 lengths i)) (when (gt l 0) (call bump count l)))
+    (let code:i32 0)
+    (for l 1 16
+      (set! code (shl (+ code (arr.get i32 count (- l 1))) 1))
+      (arr.set i32 next l code))
+    (for i 0 n
+      (let l:i32 (arr.get i32 lengths i))
+      (if (gt l 0)
+          (block
+            (let c:i32 (arr.get i32 next l))
+            (arr.set i32 next l (+ c 1))
+            (arr.set i32 codes i (call reverse c l)))
+          (arr.set i32 codes i 0)))
+    (call (alloc.free_array i32) a count)
+    (call (alloc.free_array i32) a next))
+
+  (fn reverse [c:i32 l:i32] -> i32
+    (let r:i32 0)
+    (for _k 0 l (set! r (bitor (shl r 1) (bitand c 1))) (set! c (shru c 1)))
+    r)
+
+  ;; Huffman code lengths for the n frequencies, none over limit: build
+  ;; the tree from the two least frequent nodes up; if it is too deep,
+  ;; halve the frequencies (keeping each above 0) and build again. At
+  ;; least two symbols get a code, as zlib makes them (a lone code would
+  ;; be incomplete).
+  (fn build_lengths [d:(ptr Deflate) freq0:(arr i32) out:(arr i32) n:i32 limit:i32] -> void
+    (let freq:(arr i32) (get d Deflate.hfreq))
+    (let parent:(arr i32) (get d Deflate.hparent))
+    (let live:(arr i32) (get d Deflate.hlive))
+    (for i 0 n (arr.set i32 freq i (arr.get i32 freq0 i)))
+    (let used:i32 0)
+    (for i 0 n (when (gt (arr.get i32 freq i) 0) (set! used (+ used 1))))
+    (let k:i32 0)
+    (while (lt used 2)
+      (when (eq (arr.get i32 freq k) 0) (arr.set i32 freq k 1) (set! used (+ used 1)))
+      (set! k (+ k 1)))
+    (let done:bool false)
+    (while (not done)
+      ;; nodes 0..n-1 are the symbols, n.. the joins
+      (let nodes:i32 n)
+      (for i 0 n (arr.set i32 live i (if (gt (arr.get i32 freq i) 0) 1 0)) (arr.set i32 parent i -1))
+      (let left:i32 used)
+      (while (gt left 1)
+        (let x:i32 (call least freq live nodes))
+        (arr.set i32 live x 0)
+        (let y:i32 (call least freq live nodes))
+        (arr.set i32 live y 0)
+        (arr.set i32 freq nodes (+ (arr.get i32 freq x) (arr.get i32 freq y)))
+        (arr.set i32 parent nodes -1)
+        (arr.set i32 live nodes 1)
+        (arr.set i32 parent x nodes)
+        (arr.set i32 parent y nodes)
+        (set! nodes (+ nodes 1))
+        (set! left (- left 1)))
+      (let deepest:i32 0)
+      (for i 0 n
+        (if (gt (arr.get i32 freq i) 0)
+            (block
+              (let depth:i32 0)
+              (let at:i32 i)
+              (while (gte (arr.get i32 parent at) 0) (set! at (arr.get i32 parent at)) (set! depth (+ depth 1)))
+              (arr.set i32 out i depth)
+              (when (gt depth deepest) (set! deepest depth)))
+            (arr.set i32 out i 0)))
+      (if (lte deepest limit)
+          (set! done true)
+          (for i 0 n
+            (let f:i32 (arr.get i32 freq i))
+            (when (gt f 0) (arr.set i32 freq i (+ (/ f 2) 1)))))))
+
+  ;; The live node with the least frequency (the lowest index on a tie).
+  (fn least [freq:(arr i32) live:(arr i32) nodes:i32] -> i32
+    (let best:i32 -1)
+    (for i 0 nodes
+      (when (and (eq (arr.get i32 live i) 1) (or (lt best 0) (lt (arr.get i32 freq i) (arr.get i32 freq best)))) (set! best i)))
+    best)
+
+  ;; The code lengths of both codes as code length symbols, with 16 (repeat
+  ;; the last 3-6 times), 17 (3-10 zeros), and 18 (11-138 zeros); counts
+  ;; their frequencies.
+  (fn make_runs [d:(ptr Deflate) nlen:i32 ndist:i32] -> void
+    (let total:i32 (+ nlen ndist))
+    (let all:(arr i32) (call (alloc.array i32) (get d Deflate.a) 316))
+    (for i 0 nlen (arr.set i32 all i (arr.get i32 (get d Deflate.llen) i)))
+    (for i 0 ndist (arr.set i32 all (+ nlen i) (arr.get i32 (get d Deflate.dlen) i)))
+    (let cfreq:(arr i32) (get d Deflate.cfreq))
+    (for i 0 19 (arr.set i32 cfreq i 0))
+    (put d Deflate.nruns 0)
+    (let i:i32 0)
+    (while (lt i total)
+      (let l:i32 (arr.get i32 all i))
+      (let run:i32 1)
+      (while (and (lt (+ i run) total) (eq (arr.get i32 all (+ i run)) l)) (set! run (+ run 1)))
+      (cond
+        ((and (eq l 0) (gte run 11))
+         (let r:i32 (if (gt run 138) 138 run))
+         (call add_run d 18 (- r 11))
+         (set! i (+ i r)))
+        ((and (eq l 0) (gte run 3))
+         (call add_run d 17 (- run 3))
+         (set! i (+ i run)))
+        ((gte run 4)
+         ;; the length once, then repeats of 3 to 6
+         (call add_run d l 0)
+         (let r:i32 (- run 1))
+         (let take:i32 (if (gt r 6) 6 r))
+         (call add_run d 16 (- take 3))
+         (set! i (+ i (+ 1 take))))
+        (else (call add_run d l 0) (set! i (+ i 1)))))
+    (call (alloc.free_array i32) (get d Deflate.a) all))
+
+  (fn add_run [d:(ptr Deflate) sym:i32 extra:i32] -> void
+    (arr.set i32 (get d Deflate.runs) (get d Deflate.nruns) sym)
+    (arr.set i32 (get d Deflate.runx) (get d Deflate.nruns) extra)
+    (put d Deflate.nruns (+ (get d Deflate.nruns) 1))
+    (call bump (get d Deflate.cfreq) sym))
+
+  ;; ===== the wrappers =====
+
+  ;; Appends the zlib stream of b at level to o (a header, the DEFLATE
+  ;; stream, and b's Adler-32).
+  (fn zlib_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+    (req (and (gte level 0) (lte level 9)))
+    (call buf.push_byte o 120)
+    ;; the level's FLEVEL, as zlib writes it, with the check bits
+    (call buf.push_byte o (cond ((lt level 2) 1) ((lt level 6) 94) ((eq level 6) 156) (else 218)))
+    (call compress_to a o b level)
+    (let sum:i32 (call hash.adler32 b))
+    (for k 0 4 (call buf.push_byte o (bitand (shru sum (* 8 (- 3 k))) 255))))
+
+  ;; Appends the gzip data of b at level to o: one member with no name
+  ;; and no time, then b's CRC-32 and length.
+  (fn gzip_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+    (req (and (gte level 0) (lte level 9)))
+    (call buf.push_byte o 31)
+    (call buf.push_byte o 139)
+    (call buf.push_byte o 8)
+    (for _k 0 5 (call buf.push_byte o 0))
+    ;; XFL: 2 for the smallest, 4 for the fastest; OS 255: unknown
+    (call buf.push_byte o (cond ((eq level 9) 2) ((eq level 1) 4) (else 0)))
+    (call buf.push_byte o 255)
+    (call compress_to a o b level)
+    (let crc:i32 (call hash.crc32 b))
+    (let n:i32 (get b str.Bytes.len))
+    (for k 0 4 (call buf.push_byte o (bitand (shru crc (* 8 k)) 255)))
+    (for k 0 4 (call buf.push_byte o (bitand (shru n (* 8 k)) 255)))))

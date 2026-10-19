@@ -29,6 +29,10 @@
 
   ;; The number of bytes in b.
   (fn len [b:(ptr Buf)] -> i32 (pub) (get b Buf.len))
+  ;; Byte i of b (0 <= i < len), without making a view.
+  (fn byte_at [b:(ptr Buf) i:i32] -> i32 (pub)
+    (req (and (gte i 0) (lt i (get b Buf.len))))
+    (unsafe (mem.load8 (+ (get b Buf.data) i))))
   ;; Empties b, keeping its storage.
   (fn clear [b:(ptr Buf)] -> void (pub) (put b Buf.len 0))
 

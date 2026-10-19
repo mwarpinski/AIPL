@@ -112,6 +112,16 @@ more than usual.
 - [x] **Type errors name the file** in the Rust toolchain (2026-10-06), as
   `aiplc` already did. The CLI also prints `Error: MESSAGE` plainly instead
   of in Rust's debug quoting.
+- [ ] **`when` around a value** (noted 2026-10-18, from
+  docs/notes/painpoints.md item 5). `(when c (call f x))` with `f`
+  returning `i32` fails with "If branch type mismatch: then is i32, else
+  is void", naming an `if` the program does not have (the `when` rewrite
+  makes one). `when` has no else, so it cannot give a value: it should
+  discard its body's value, as a statement does, in both toolchains.
+  Until then a branch that discards a value needs `(let _x:i32 ...)`
+  (37 of them in std). A bare call in statement position already
+  drops its value correctly in every backend (checked 2026-10-18; the
+  note's "stack mismatches in native code" no longer happen).
 
 ## 3. Claims (every sentence must survive being checked)
 
@@ -181,6 +191,21 @@ more than usual.
   `cargo install --git`: its binaries point at a cargo checkout that cargo
   deletes after about a month unused. Later, optionally: prebuilt `aipl`
   and `aipl-run` on a GitHub release, so Rust is not needed.
+- [ ] **A binary that works wherever it is** (noted 2026-10-18, from
+  docs/notes/freedom.md). install.sh works only because it builds in
+  place: the Rust CLI finds the standard library at the checkout it was
+  built from (`env!("CARGO_MANIFEST_DIR")` in `src/resolver.rs`
+  `find_module_file`) and ignores `AIPL_STD`, so a copied or prebuilt
+  `aipl` cannot import `str`. The self-hosted `aipl` (`aipl.aipl`,
+  `driver.aipl`, `doc.aipl`) falls back to `./aipl_src/std/`, so it works
+  only from the repository root, and install.sh does not install it. To
+  do, in both toolchains: look in `$AIPL_STD`, then beside the executable
+  (`<bin>/../share/aipl/std`, as Go and rustup do), then the build-time
+  path; install.sh copies the library there; a test copies both binaries
+  out of the repository and compiles a program importing std. Then
+  prebuilt release binaries are possible. Later: the self-hosted binary
+  could embed the library (460 KB) and become one file; it still needs
+  `chmod +x` (WASI cannot set file modes) and has no `verify` or `test`.
 - [x] **CI** (added 2026-10-06, `.github/workflows/ci.yml`; check its first run on GitHub). A GitHub Actions workflow running `cargo build`, `cargo test`,
   and `aipl test aipl_src/test_suite.aipl` on Linux, with the badge in the
   README. The native tests need Linux x86-64, which GitHub's runners are.
@@ -271,6 +296,33 @@ FAQ or ROADMAP.md.
 - [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
   `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
   side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
+- [ ] **Making a heap struct in one form** (noted 2026-10-18, from
+  docs/notes/painpoints.md item 4; a language change, for approval).
+  Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
+  nothing notices a field left out: a new field means finding every place
+  that makes one. Proposed: `(new S v1 v2 ...)` with every field, in
+  order, as `make` already does for value structs, so a missing or extra
+  field is a compile error. The compiler's own source can use it only
+  after the seed refresh below.
+- [ ] **Refresh the stage-0 seed** (noted 2026-10-18; when, is a decision).
+  The compiler's source may use only what bootstrap/aipl-linux-x86_64
+  knows, and that seed (2026-10-16) predates `when`, `for`, variadic
+  `and`/`or`, `dbg`, `(test ...)`/`expect`, and the formatting forms, so
+  the compiler (codegen_opt.aipl included) is still written without them
+  (painpoints.md item 2). A refresh rebuilds the seed with the Rust
+  toolchain from a chosen commit and records its sha256 in
+  bootstrap/README.md; test_bootstrap then shows the new seed is the Rust
+  build of that source. Best done once the language settles before
+  launch, so it happens once.
+- [ ] **codegen_opt.aipl's own friction** (noted 2026-10-18, from
+  docs/notes/painpoints.md items 1 and 6, for its integration behind
+  `--opt`): matching tree shapes like `(/ (* e (+ e 1)) 2)` takes chains
+  of `onode_count`/`onode_nth`/`is_form`/`node_eq`; a matcher over ONode
+  taking a pattern with placeholders would replace them, as a library in
+  that file, not a language change. Item 6's truncation of large
+  literals when printing is in its own printer (the language already
+  refuses an unsuffixed literal past 32 bits, AIPL_SPEC.md section 2):
+  check it there.
 
 ## 7. Documentation: delete, merge, keep
 
