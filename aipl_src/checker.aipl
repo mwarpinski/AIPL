@@ -25,6 +25,7 @@
   (import map)
   (import fmtsplit)
   (import fmtdebug)
+  (import leaks)
 
   ;; unsafe_: the function has the (unsafe) clause.
   (struct Sig [params:(arr ast.Type) ret:ast.Type unsafe_:bool])
@@ -319,7 +320,13 @@
           (block
             (call add_problem c (call problem (get c C.err_at) (get c C.err)))
             (put c C.failed false))
-          (block))))
+          (block)))
+    ;; (no_leak) promises, once every body checks (leaks.aipl, MEMORY_PLAN.md M3)
+    (when (eq (get c C.problems) (ptr.null Problem))
+      (let found:(ptr (vec.Vec (ptr leaks.Found))) (call leaks.check m))
+      (for k 0 (call (vec.len (ptr leaks.Found)) found)
+        (let lf:(ptr leaks.Found) (call (vec.at (ptr leaks.Found)) found k))
+        (call add_problem c (call problem (get lf leaks.Found.at) (get lf leaks.Found.text))))))
 
   (fn add_problem [c:(ptr C) pr:(ptr Problem)] -> void
     (if (eq (get c C.problems) (ptr.null Problem))

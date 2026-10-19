@@ -612,6 +612,13 @@ impl TypeChecker {
                 errors.push(self.name_file(module, e));
             }
         }
+        if errors.is_empty() {
+            // (no_leak) promises, once every body checks (docs/design/MEMORY_PLAN.md M3)
+            for (name, e) in crate::leaks::check(module) {
+                self.at_item("fn", &name);
+                errors.push(self.name_file(module, e));
+            }
+        }
         if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
     }
 

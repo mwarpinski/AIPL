@@ -365,6 +365,8 @@
     (call reg m "block" Kw.block)
     ;; (unsafe e...) compiles as a block; the (unsafe) clause, as an empty one
     (call reg m "unsafe" Kw.block)
+    ;; the (no_leak) clause compiles to nothing, as (unsafe) does
+    (call reg m "no_leak" Kw.block)
     (call reg m "req" Kw.req)
     (call reg m "ens" Kw.ens)
     (call reg m "inv" Kw.inv)

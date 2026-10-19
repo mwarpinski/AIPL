@@ -1,0 +1,181 @@
+;; (no_leak) (docs/design/MEMORY_PLAN.md M3): which functions may make
+;; memory that is never freed, and the error for each function marked
+;; (no_leak) that does. src/leaks.rs, message for message.
+;;
+;; A function may leak if its code uses new, arr.new, mem.alloc, or format
+;; (a str), calls through a function reference, or calls a function that
+;; may leak. Inside unsafe this counts for the function's callers but not
+;; against its own (no_leak) promise: there it is the programmer's word,
+;; which is how an allocator growing its pool with mem.alloc is marked
+;; (no_leak). A function marked (no_leak) does not leak for its callers.
+(module leaks
+  (import ast)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import vec)
+  (import map)
+
+  ;; A site in a function: an allocation that is never freed (what, as
+  ;; text) or a call (what: the callee), where, and whether inside unsafe.
+  (struct Site [(read at:i32) (read call:bool) (read what:str.Bytes) (read in_unsafe:bool)])
+
+  ;; Why a function may leak: its first allocation that is never freed
+  ;; (uses), or its first call to a function that may (what: the callee).
+  (struct Why [(read uses:bool) (read what:str.Bytes)])
+
+  ;; An error found: where, and the message (front.aipl puts the position
+  ;; in front).
+  (struct Found [(read at:i32) (read text:(ptr buf.Buf))] (pub))
+
+  (fn site [out:(ptr (vec.Vec (ptr Site))) at:i32 call:bool what:str.Bytes inside:bool] -> void
+    (let s:(ptr Site) (call (alloc.create Site) (call alloc.default)))
+    (put s Site.at at)
+    (put s Site.call call)
+    (put s Site.what what)
+    (put s Site.in_unsafe inside)
+    (call (vec.push (ptr Site)) out s))
+
+  (fn leak [out:(ptr (vec.Vec (ptr Site))) at:i32 what:str inside:bool] -> void
+    (call site out at false (call str.from_str what) inside))
+
+  ;; es may be null (a match without else)
+  (fn walk_all [out:(ptr (vec.Vec (ptr Site))) es:(arr ast.Expr) inside:bool] -> void
+    (when (eq es (arr.null ast.Expr)) (return))
+    (for k 0 (arr.len es) (call walk out (arr.get ast.Expr es k) inside)))
+
+  ;; Every site of e, in source order (src/leaks.rs sites, over
+  ;; walk_expr's order).
+  (fn walk [out:(ptr (vec.Vec (ptr Site))) e:ast.Expr inside:bool] -> void
+    (match e
+      (ast.Expr.let_ [_ _ _ v] (call walk out v inside))
+      (ast.Expr.set [_ _ v] (call walk out v inside))
+      (ast.Expr.if_ [_ c t f] (call walk out c inside) (call walk out t inside) (call walk out f inside))
+      (ast.Expr.loop [_ _ s en st body] (call walk out s inside) (call walk out en inside) (call walk out st inside) (call walk_all out body inside))
+      (ast.Expr.while_ [_ c body] (call walk out c inside) (call walk_all out body inside))
+      (ast.Expr.call [at func args] (call site out at true func inside) (call walk_all out args inside))
+      (ast.Expr.op [at o args]
+       (when (eq o ast.Op.mem_alloc) (call leak out at "mem.alloc" inside))
+       (when (eq o ast.Op.format_str) (call leak out at "format (a str)" inside))
+       (call walk_all out args inside))
+      (ast.Expr.ok [_ v _] (call walk out v inside))
+      (ast.Expr.err [_ v _] (call walk out v inside))
+      (ast.Expr.match_result [_ v _ ok_body _ err_body] (call walk out v inside) (call walk_all out ok_body inside) (call walk_all out err_body inside))
+      (ast.Expr.block [_ body] (call walk_all out body inside))
+      (ast.Expr.unsafe_ [_ body] (call walk_all out body true))
+      (ast.Expr.new_ [at _] (call leak out at "new" inside))
+      (ast.Expr.get_ [_ _ _ p] (call walk out p inside))
+      (ast.Expr.put_ [_ _ _ p v _] (call walk out p inside) (call walk out v inside))
+      (ast.Expr.arr_new [at _ size] (call leak out at "arr.new" inside) (call walk out size inside))
+      (ast.Expr.arr_get [_ _ p i] (call walk out p inside) (call walk out i inside))
+      (ast.Expr.arr_set [_ _ p i v _] (call walk out p inside) (call walk out i inside) (call walk out v inside))
+      (ast.Expr.arr_len [_ a] (call walk out a inside))
+      (ast.Expr.cast [_ _ a] (call walk out a inside))
+      (ast.Expr.make_ptr [_ _ a g] (call walk out a inside) (call walk out g inside))
+      (ast.Expr.make [_ _ _ args] (call walk_all out args inside))
+      (ast.Expr.record [_ _ args] (call walk_all out args inside))
+      (ast.Expr.with_ [_ _ _ v n] (call walk out v inside) (call walk out n inside))
+      (ast.Expr.match_ [_ v arms else_body]
+       (call walk out v inside)
+       (for k 0 (arr.len arms) (call walk_all out (get (arr.get (ptr ast.Arm) arms k) ast.Arm.body) inside))
+       (call walk_all out else_body inside))
+      (ast.Expr.return_ [_ rv] (match rv (ast.MaybeExpr.some [x] (call walk out x inside)) (ast.MaybeExpr.none (block))))
+      (ast.Expr.call_ref [at _ f args]
+       (call leak out at "a call through a function reference (its target is not known)" inside)
+       (call walk out f inside)
+       (call walk_all out args inside))
+      (ast.Expr.addr [_ v _] (call walk out v inside))
+      (else (block))))
+
+  (fn site_order [a:(ptr Site) b:(ptr Site)] -> i32
+    (cond ((lt (get a Site.at) (get b Site.at)) -1) ((gt (get a Site.at) (get b Site.at)) 1) (else 0)))
+
+  ;; f's sites, in source order; inside unsafe throughout for an (unsafe) function.
+  (fn sites_of [f:(ptr ast.FnDef)] -> (ptr (vec.Vec (ptr Site)))
+    (let out:(ptr (vec.Vec (ptr Site))) (call (vec.make (ptr Site)) (call alloc.default) 8))
+    (call walk_all out (get f ast.FnDef.body) (get f ast.FnDef.unsafe_))
+    (call (vec.sort_by (ptr Site)) out (ref site_order))
+    out)
+
+  (fn why_of [why:(ptr (map.Map str.Bytes (ptr Why))) name:str.Bytes] -> bool
+    (call (map.has str.Bytes (ptr Why)) why name))
+
+  ;; "g calls h; h uses mem.alloc": the chain from start down to the
+  ;; allocation.
+  (fn chain [b:(ptr buf.Buf) why:(ptr (map.Map str.Bytes (ptr Why))) start:str.Bytes] -> void
+    (let at:str.Bytes start)
+    (let first:bool true)
+    (while (call why_of why at)
+      (let w:(ptr Why) (call (map.get_or str.Bytes (ptr Why)) why at (ptr.null Why)))
+      (when (not first) (call buf.push_str b "; "))
+      (set! first false)
+      (call buf.push_bytes b at)
+      (if (get w Why.uses)
+          (block (call buf.push_str b " uses ") (call buf.push_bytes b (get w Why.what)) (return))
+          (block (call buf.push_str b " calls ") (call buf.push_bytes b (get w Why.what)) (set! at (get w Why.what))))))
+
+  ;; The errors for the functions marked (no_leak) that may make memory
+  ;; that is never freed, one per function, in the module's order, each at
+  ;; its first offending site.
+  (fn check [m:(ptr ast.Module)] -> (ptr (vec.Vec (ptr Found))) (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
+    (let n:i32 (arr.len fns))
+    (let all:(arr (ptr (vec.Vec (ptr Site)))) (call (alloc.array (ptr (vec.Vec (ptr Site)))) a n))
+    (for k 0 n (arr.set (ptr (vec.Vec (ptr Site))) all k (call sites_of (arr.get (ptr ast.FnDef) fns k))))
+    ;; which unmarked functions may leak, and why, to a fixed point (as
+    ;; src/leaks.rs: each round sees what earlier ones, and the round so
+    ;; far, found)
+    (let why:(ptr (map.Map str.Bytes (ptr Why))) (call (map.make str.Bytes (ptr Why)) a 64))
+    (let more:bool true)
+    (while more
+      (set! more false)
+      (for k 0 n
+        (let f:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
+        (let name:str.Bytes (get f ast.FnDef.name))
+        (when (and (not (get f ast.FnDef.no_leak)) (not (call why_of why name)))
+          (let ss:(ptr (vec.Vec (ptr Site))) (arr.get (ptr (vec.Vec (ptr Site))) all k))
+          (let found:(ptr Why) (ptr.null Why))
+          (let j:i32 0)
+          (while (and (lt j (call (vec.len (ptr Site)) ss)) (eq found (ptr.null Why)))
+            (let s:(ptr Site) (call (vec.at (ptr Site)) ss j))
+            (when (or (not (get s Site.call)) (call why_of why (get s Site.what)))
+              (set! found (call (alloc.create Why) a))
+              (put found Why.uses (not (get s Site.call)))
+              (put found Why.what (get s Site.what)))
+            (set! j (+ j 1)))
+          (when (neq found (ptr.null Why))
+            (call (map.set str.Bytes (ptr Why)) why name found)
+            (set! more true)))))
+    (let out:(ptr (vec.Vec (ptr Found))) (call (vec.make (ptr Found)) a 4))
+    (for k 0 n
+      (let f:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
+      (when (get f ast.FnDef.no_leak)
+        (let ss:(ptr (vec.Vec (ptr Site))) (arr.get (ptr (vec.Vec (ptr Site))) all k))
+        (let hit:(ptr Site) (ptr.null Site))
+        (let j:i32 0)
+        (while (and (lt j (call (vec.len (ptr Site)) ss)) (eq hit (ptr.null Site)))
+          (let s:(ptr Site) (call (vec.at (ptr Site)) ss j))
+          (when (and (not (get s Site.in_unsafe)) (or (not (get s Site.call)) (call why_of why (get s Site.what))))
+            (set! hit s))
+          (set! j (+ j 1)))
+        (when (neq hit (ptr.null Site))
+          (let b:(ptr buf.Buf) (call buf.make a 128))
+          (call buf.push_bytes b (get f ast.FnDef.name))
+          (call buf.push_str b " is marked (no_leak) but ")
+          (if (get hit Site.call)
+              (block
+                (call buf.push_str b "calls ")
+                (call buf.push_bytes b (get hit Site.what))
+                (call buf.push_str b ", which may make memory that is never freed (")
+                (call chain b why (get hit Site.what))
+                (call buf.push_str b ")"))
+              (block
+                (call buf.push_str b "uses ")
+                (call buf.push_bytes b (get hit Site.what))
+                (call buf.push_str b ", whose memory is never freed")))
+          (let fd:(ptr Found) (call (alloc.create Found) a))
+          (put fd Found.at (get hit Site.at))
+          (put fd Found.text b)
+          (call (vec.push (ptr Found)) out fd))))
+    out))

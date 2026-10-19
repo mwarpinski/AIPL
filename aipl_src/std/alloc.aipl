@@ -109,7 +109,7 @@
       (Allocator.arena [r] (call arena.raw r n))
       (Allocator.fast_arena [fr] (call arena.fast_raw fr n))
       (Allocator.fixed [f] (call fixed_raw f n))
-      (Allocator.custom [c] (call custom_raw c n))))
+      (Allocator.custom [c] (unsafe (call custom_raw c n)))))
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
   ;; Unsafe to call: p must be what raw returned for n bytes.

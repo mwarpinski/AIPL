@@ -816,6 +816,7 @@ impl Parser {
         let mut contracts = Vec::new();
         let mut body = Vec::new();
         let mut is_unsafe = false;
+        let mut is_no_leak = false;
 
         while let Some(kind) = self.peek_kind() {
             if *kind == TokenKind::RParen {
@@ -827,9 +828,14 @@ impl Parser {
                     continue;
                 }
             // the clause (unsafe), which an (unsafe e...) block is not
-            if self.is_unsafe_clause_ahead() {
+            if self.is_clause_ahead("unsafe") {
                 self.pos += 3;
                 is_unsafe = true;
+                continue;
+            }
+            if self.is_clause_ahead("no_leak") {
+                self.pos += 3;
+                is_no_leak = true;
                 continue;
             }
             body.push(self.parse_expr()?);
@@ -843,13 +849,15 @@ impl Parser {
             contracts,
             body,
             is_unsafe,
+            is_no_leak,
             span,
         })
     }
 
-    fn is_unsafe_clause_ahead(&self) -> bool {
+    /// Whether `(word)` is next: a clause such as (unsafe) or (no_leak).
+    fn is_clause_ahead(&self, word: &str) -> bool {
         matches!(self.tokens.get(self.pos).map(|t| &t.kind), Some(TokenKind::LParen))
-            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Symbol(s)) if s == "unsafe")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Symbol(s)) if s == word)
             && matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::RParen))
     }
 

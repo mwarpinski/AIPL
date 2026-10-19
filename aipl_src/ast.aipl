@@ -109,9 +109,10 @@
   (struct Variant [(pub name:str.Bytes) (pub fields:(arr (ptr Field)))] (pub))
   (struct UnionDef [(pub name:str.Bytes) (pub variants:(arr (ptr Variant))) (pub at:i32)] (pub))
   (struct Param [(pub name:str.Bytes) (pub ty:Type)] (pub))
-  ;; unsafe_: the (unsafe) clause (src/ast.rs FnDef.is_unsafe).
+  ;; unsafe_: the (unsafe) clause (src/ast.rs FnDef.is_unsafe); no_leak:
+  ;; the (no_leak) clause (is_no_leak, leaks.aipl).
   (struct FnDef [(pub name:str.Bytes) (pub params:(arr (ptr Param))) (pub ret:Type)
-                 (pub contracts:(arr Contract)) (pub body:(arr Expr)) (pub at:i32) (pub unsafe_:bool)] (pub))
+                 (pub contracts:(arr Contract)) (pub body:(arr Expr)) (pub at:i32) (pub unsafe_:bool) (pub no_leak:bool)] (pub))
   (struct Import [(pub name:str.Bytes) (pub alias:str.Bytes)] (pub))
   (struct Module [(pub name:str.Bytes) (pub imports:(arr (ptr Import)))
                   (pub structs:(arr (ptr StructDef))) (pub enums:(arr (ptr EnumDef)))

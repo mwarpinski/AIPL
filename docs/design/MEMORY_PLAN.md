@@ -119,7 +119,32 @@ naming the call and where the allocation is: "handle may make memory
 that is never freed: it calls str.concat (std/str.aipl:289), which
 makes a str". The analysis is the call-graph pass loop versioning
 already has (`may_free`), over a different question, in both checkers.
-`unsafe` code is trusted, as it is for everything else.
+
+The rule, exactly (settled 2026-10-19):
+
+- A function not marked `(no_leak)` **may leak** if its code, `unsafe`
+  parts included, uses `new`, `arr.new`, `mem.alloc`, or `format` (a
+  `str`), calls `alloc.forever`, calls through a function reference
+  (`call_ref`, whose target is not known; allowed once function types can
+  carry the promise), or calls a function that may leak. A function
+  marked `(no_leak)` does not leak for its callers. The hidden cells (a
+  result with a `str` side or more than 8 slots, a union held by address)
+  are not counted: only the code generators know which values take one,
+  and M4 removes them, so `(no_leak)` does not ship before M4 does.
+- A function marked `(no_leak)` must not, and the checker says which use
+  or call does, with the chain down to the allocation: "handle may make
+  memory that is never freed: it calls str.concat (std/str.aipl:297),
+  which calls str.room, which uses mem.alloc". Inside `unsafe` the
+  promise is the programmer's word, as every unsafe promise is: that is
+  how an allocator that grows its own pool with `mem.alloc` (heap.raw,
+  arena.raw, alloc.raw) is marked `(no_leak)` and trusted, and where the
+  checking of its callers stops.
+- An `Allocator` a function is handed is its caller's choice: `(no_leak)`
+  says what the function's own code does, so a server passes its
+  handlers a request arena, never `alloc.forever`.
+- Both checkers compute it over the whole program, after generics; a
+  function not marked is not checked, only described (may leak or not),
+  so marking a request path is how a program asks for the guarantee.
 
 ### M4. Results and unions without hidden cells
 
@@ -145,6 +170,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 (done 2026-10-19) | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
 | M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
 | M3 | `(no_leak)` | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
+| F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` leave the language, the compiler's 209 uses and every other moving to `alloc.create` / `alloc.array` on `alloc.forever` | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
 | M2, M4 | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
 | M5 | servers | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
 

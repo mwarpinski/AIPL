@@ -560,6 +560,11 @@ pub struct FnDef {
     /// context, and its body is one.
     #[serde(default)]
     pub is_unsafe: bool,
+    /// The `(no_leak)` clause: the function promises to make no memory that
+    /// is never freed (docs/design/MEMORY_PLAN.md M3), which the checker
+    /// checks outside `unsafe` (leaks::check).
+    #[serde(default)]
+    pub is_no_leak: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

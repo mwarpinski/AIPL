@@ -158,14 +158,14 @@
   ;; ===== Defers (formats.rs lower_defers) =====
 
   ;; The first statement of function f's body: after the header (fn NAME
-  ;; [params] -> RET) and its clauses (req, ens, inv, (unsafe)).
+  ;; [params] -> RET) and its clauses (req, ens, inv, (unsafe), (no_leak)).
   (fn body_start [l:(ptr L) f:i32] -> i32
     (let c:i32 (+ f 1))
     (while (neq (call kind l c) compiler.Kind.arrow) (set! c (call elem_end l c)))
     (set! c (call elem_end l (+ c 1)))
     (while (and (eq (call kind l c) compiler.Kind.lparen)
-                (or (or (call sym_is l (+ c 1) "req") (call sym_is l (+ c 1) "ens"))
-                    (or (call sym_is l (+ c 1) "inv") (and (call sym_is l (+ c 1) "unsafe") (call is_close l (+ c 2))))))
+                (or (call sym_is l (+ c 1) "req") (call sym_is l (+ c 1) "ens") (call sym_is l (+ c 1) "inv")
+                    (and (or (call sym_is l (+ c 1) "unsafe") (call sym_is l (+ c 1) "no_leak")) (call is_close l (+ c 2)))))
       (set! c (call elem_end l c)))
     c)
 
