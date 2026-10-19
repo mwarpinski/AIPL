@@ -1,0 +1,85 @@
+;; std/regex's API (tests/test_regex.rs): errors with their offsets, named
+;; groups, templates and their errors, split, find_at, byte spans of UTF-8
+;; text, and a pattern a backtracking matcher takes exponential time on.
+(module api
+  (import regex)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import vec)
+  (import option)
+
+  ;; the error compiling pat, or "ok"
+  (fn refusal [a:alloc.Allocator pat:str] -> str
+    (match_result (call regex.compile a pat)
+      (ok re (call regex.free re) "ok")
+      (err e
+        (let what:str (format "{(get e regex.Error.what)} at {(get e regex.Error.at)}"))
+        (call regex.free_error a e)
+        what)))
+
+  (fn span_of [s:(option.Option regex.Span)] -> str
+    (match s
+      ((option.Option regex.Span) some [v] (format "{(get v regex.Span.start)}..{(get v regex.Span.end)}"))
+      ((option.Option regex.Span) none [] "none")))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let e1:str (call refusal a "ab(cd"))
+    (let e2:str (call refusal a "x{3,2}"))
+    (let e3:str (call refusal a "(?=x)"))
+    (println "{e1} | {e2} | {e3}")
+    (match_result (call regex.compile a "(?P<key>\\w+)=(?P<value>\\d+)")
+      (ok re
+        (block
+          (let text:(ptr str.Bytes) (call str.from_str "x: width=640, height=480"))
+          (match (call regex.captures a re text)
+            ((option.Option (ptr regex.Captures)) some [c]
+              (let k:i32 (call regex.group_index re "key"))
+              (let v:i32 (call regex.group_index re "value"))
+              (println "groups {(call regex.groups re)}: key {(call span_of (call regex.group c k))}, value {(call span_of (call regex.group c v))}, whole {(call span_of (call regex.group c 0))}")
+              (call regex.free_captures c))
+            ((option.Option (ptr regex.Captures)) none [] (println "no match")))
+          (match_result (call regex.replace_all re text "${value}<-$key ($$)")
+            (ok s (println "{s}"))
+            (err e (println "template: {(get e regex.Error.what)}") (call regex.free_error a e)))
+          (match_result (call regex.replace_all re text "$size")
+            (ok s (println "{s}"))
+            (err e (println "template: {(get e regex.Error.what)} at {(get e regex.Error.at)}") (call regex.free_error a e)))
+          (println "from 12: {(call span_of (call regex.find_at re text 12))}")
+          (call regex.free re)))
+      (err e (println "{(get e regex.Error.what)}")))
+    ;; split at each comma and the spaces after it
+    (match_result (call regex.compile a ",\\s*")
+      (ok re
+        (block
+          (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call regex.split a re (call str.from_str "a, b,c,  d")))
+          (let o:(ptr buf.Buf) (call buf.make a 32))
+          (for k 0 (call (vec.len (ptr str.Bytes)) parts)
+            (call buf.push_byte o 91)
+            (call buf.push_bytes o (call (vec.at (ptr str.Bytes)) parts k))
+            (call buf.push_byte o 93))
+          (println "split {(call buf.to_str o)}")
+          (call buf.free o)
+          (call (vec.free (ptr str.Bytes)) parts)
+          (call regex.free re)))
+      (err e (println "{(get e regex.Error.what)}")))
+    ;; spans are bytes: "é" is two
+    (match_result (call regex.compile a "(?i)caf.")
+      (ok re
+        (block
+          (let cafe:(ptr str.Bytes) (call str.from_str "au CAFé"))
+          (println "utf-8: {(call span_of (call regex.find re cafe))}")
+          (call regex.free re)))
+      (err e (println "{(get e regex.Error.what)}")))
+    ;; (a|aa)*c on 3,000 a's: exponential for a backtracking matcher
+    (let long:(ptr buf.Buf) (call buf.make a 4096))
+    (for _i 0 3000 (call buf.push_byte long 97))
+    (match_result (call regex.compile a "(a|aa)*c")
+      (ok re
+        (block
+          (println "3000 a's: match {(call regex.is_match re (call buf.bytes long))}")
+          (call regex.free re)))
+      (err e (println "{(get e regex.Error.what)}")))
+    (call buf.free long)
+    0))

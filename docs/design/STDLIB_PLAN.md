@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
 **Status: approved 2026-10-16, every decision as recommended; L1, L2,
-and L3 built 2026-10-18; L4 next.** Four choices were made before writing
+L3, and L4 built 2026-10-18; L5 next.** Four choices were made before writing
 (2026-10-16): formatting is part of the language, not a library;
 cryptography stops at hashes and HMAC; regular expressions are the
 guaranteed-linear kind; the work goes in batches. At approval,
@@ -331,6 +331,19 @@ and `split`. Checked against Python's `re` on generated patterns and
 texts, for patterns in the common subset of the two syntaxes. A literal
 prefix is found with `str.find` first, so plain-text searches run at
 search speed.
+
+As built (2026-10-18): matches are Python's under `re.ASCII`, including
+its rule for loops whose body can match nothing (an optional pass that
+matches nothing ends the loop). A plain Pike VM gets those wrong in rare
+cases (9 of 4,529 generated cases at first, all `(x*?)+`-shaped), so such
+a loop's body compiles to two copies, before and after reading a
+character, which keeps the machine exact and linear. 18,116 cases over
+four seeds match. Text is UTF-8 (`.` and classes match a character; a
+byte that is not UTF-8 matches as U+FFFD) and spans are byte offsets;
+`\d \w \s \b` are ASCII, as in RE2. Flags go at the start only (as
+Python requires); scoped flags, lookaround, backreferences, and possessive
+quantifiers are errors. `split` gives only the text between matches
+(Python's also gives the groups).
 
 ## 7. Compression (`deflate`)
 
