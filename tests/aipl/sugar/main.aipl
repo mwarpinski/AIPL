@@ -1,0 +1,45 @@
+;; when, for, and variadic and/or (tests/test_sugar.rs; sugar.rs): each
+;; rewritten as the resolver reads the module, the same in every backend.
+(module main
+  (import lib)
+
+  (fn noisy [label:str v:bool] -> bool
+    (print "{label} ")
+    v)
+
+  (fn ends [] -> i32
+    (println "end evaluated")
+    4)
+
+  (fn main [] -> i32
+    ;; up to, not including, the end; the end evaluated once
+    (let s:i32 0)
+    (for i 0 (call ends) (set! s (+ s i)))
+    (println "sum {s}")
+    ;; an empty range, and one that ends before it starts
+    (for i 3 3 (println "never"))
+    (for i 5 2 (println "never"))
+    ;; break and continue inside
+    (let odd:i32 0)
+    (for i 0 100
+      (when (eq i 9) (break))
+      (when (eq (% i 2) 0) (continue))
+      (set! odd (+ odd i)))
+    (println "odd {odd}")
+    ;; nested, and a when with no body
+    (let pairs:i32 0)
+    (for i 0 3 (for j 0 3 (when (lt i j) (set! pairs (+ pairs 1)))))
+    (when true)
+    (println "pairs {pairs}")
+    ;; and/or: left to right, stopping at the first that decides
+    (let a:bool (and (call noisy "a1" true) (call noisy "a2" true) (call noisy "a3" false) (call noisy "a4" true)))
+    (println "= {a}")
+    (let o:bool (or (call noisy "o1" false) (call noisy "o2" true) (call noisy "o3" true)))
+    (println "= {o}")
+    (println "lib {(call lib.count_to 6)}")
+    0)
+
+  (test "for counts up to the end"
+    (let n:i32 0)
+    (for i 0 10 (set! n (+ n 1)))
+    (expect (and (eq n 10) (gt n 0) (lt n 11)))))

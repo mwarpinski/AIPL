@@ -288,6 +288,13 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
     if tests && !test_items.is_empty() {
         test_functions(&test_items, &mut imports, &mut items)?;
     }
+    // when, for, and variadic and/or (sugar.rs)
+    for item in items.iter_mut() {
+        crate::sugar::rewrite(item, &|sx, msg| {
+            let (l, c) = sx.position();
+            format!("{}:{}: {}", l, c, msg)
+        })?;
+    }
     // the formatting forms become std/show calls (formats.rs): a module that
     // uses one imports it, after its own imports; their strings are split
     // here, before names are qualified, so a placeholder's names are renamed

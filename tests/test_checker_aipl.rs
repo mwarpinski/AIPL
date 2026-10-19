@@ -672,6 +672,11 @@ fn checkers_agree_on_every_operator_and_operand() {
             for b in pool {
                 programs.push(format!("({op} {a} {b})"));
             }
+            // and/or of three are rewritten by the resolver, which this
+            // compares on one side only (tests/test_sugar.rs compares both)
+            if op == "and" || op == "or" {
+                continue;
+            }
             for (b, c) in [("2000", "2000"), ("1.5", "1.5"), ("2000", "true"), ("(ref w)", "2000")] {
                 programs.push(format!("({op} {a} {b} {c})"));
             }

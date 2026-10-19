@@ -10,6 +10,7 @@ pub mod generics;
 pub mod consts;
 pub mod evalexpr;
 pub mod formats;
+pub mod sugar;
 pub mod native;
 pub mod tools;
 pub mod testrun;
