@@ -81,6 +81,15 @@ has evidence behind it.
   HTTP server for agents and the browser demo, with the `tiny_http` and
   `serde_json` dependencies; agents use the CLI).
 
+- [ ] **Views are not checked** (found 2026-10-19; blocking). A
+  `(ptr str.Bytes)` is an address and a length with no generation, so a
+  view of a freed buffer reads whatever reuses the memory, in code with
+  no `unsafe` (a three-line program prints the next buffer's contents,
+  in the VM and natively). The fix, with the never-freed allocations
+  that keep long-running programs from being possible:
+  docs/design/MEMORY_PLAN.md (M1, checked views as value structs; then
+  `(no_leak)`). The spec no longer claims `buf.free` ends views.
+
 ## 2. When something goes wrong (crash locations and errors)
 
 The pitch is that agents fix code from error messages, so these matter
@@ -320,6 +329,15 @@ FAQ or ROADMAP.md.
   blocks it crashed instead of giving error 100), and a refusal should
   say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
   then the two compilers agree only below those sizes.
+- [ ] **Using a module without importing it** (found 2026-10-19; a
+  decision). A module that imports `io` can call `str.from_str` without
+  `(import str)`, because io imports str and imports are flattened into
+  one program (AIPL_SPEC.md 11); with no imports at all, `str.Bytes` is
+  "Unknown struct". The spec says neither that this is allowed nor that it
+  is not. For a language that wants every dependency written down, the
+  rule should be: `m.x` needs `(import m)` in that module, checked by
+  both resolvers; existing programs that lean on an import's imports
+  would need the missing lines.
 - [ ] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
