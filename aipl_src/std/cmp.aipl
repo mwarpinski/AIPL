@@ -12,9 +12,12 @@
 (module cmp
   (import str)
 
+  ;; Equality for T: same is true for equal values (a hash map's keys, a
+  ;; search).
   (interface (Eq T) (pub)
     (fn same [a:T b:T] -> bool))
 
+  ;; An order for T, for sorting and searching.
   (interface (Ord T) (pub)
     ;; negative, zero, or positive: -1, 0, or 1
     (fn compare [a:T b:T] -> i32
@@ -88,6 +91,7 @@
 
   ;; ===== Tests =====
 
+  ;; Pass count; test_suite.aipl expects 10.
   (fn run_cmp_tests [] -> i32 (pub)
     (let p:i32 0)
     (if (call (Eq.same i32) 3 3) (set! p (+ p 1)) (block))

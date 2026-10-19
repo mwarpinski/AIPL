@@ -1,0 +1,661 @@
+;; aipl doc: a module's interface, read from its source
+;; (docs/design/FEEDBACK_TOOLS_PLAN.md, F1). For each public item it prints
+;; the signature, with the module's own type names qualified as a caller
+;; writes them, and the ;; comment block directly above it.
+;;
+;;   aipl doc                  every standard module, with its first line
+;;   aipl doc text             one module (./text.aipl, else the standard one)
+;;   aipl doc text.split       one item
+;;   aipl doc path/to/m.aipl   a module by its path
+;;   aipl doc --find split     public items whose name or comment has "split"
+;;   aipl doc --check FILE...  exit 1, naming each public item with no comment
+;;   --private                 private items too
+;;
+;; Built into the self-hosted aipl (aipl.aipl calls command) and run by the
+;; Rust CLI's aipl doc (src/tools.rs). The standard library is at $AIPL_STD,
+;; else aipl_src/std/. Written with only what the stage-0 seed compiles
+;; (bootstrap/README.md), since the self-hosted aipl includes it.
+(module doc
+  (import str)
+  (import buf)
+  (import vec)
+  (import alloc)
+  (import io)
+  (import os)
+  (import fs)
+  (import option)
+
+  ;; One item of a module: its kind (fn, struct, union, enum, const,
+  ;; interface), its name as written ("split", or "(unwrap_or T)" for a
+  ;; generic one) and bare ("unwrap_or"), its text from..to, its line, its
+  ;; comment, and whether it is (pub).
+  (struct Item [kind:(ptr str.Bytes) name:(ptr str.Bytes) bare:(ptr str.Bytes) from:i32 to:i32 line:i32
+                doc:(ptr buf.Buf) public:bool])
+
+  ;; A module read from its source: its name, the comment above (module,
+  ;; its items, and the names of its own types (to qualify in signatures).
+  (struct Mod [name:(ptr str.Bytes) path:(ptr str.Bytes) src:(ptr str.Bytes) doc:(ptr buf.Buf)
+               items:(ptr (vec.Vec (ptr Item))) types:(ptr (vec.Vec (ptr str.Bytes))) ok:bool])
+
+  ;; ===== Reading source =====
+
+  ;; Byte i of b, or -1 past its end.
+  (fn at [b:(ptr str.Bytes) i:i32] -> i32
+    (if (lt i (get b str.Bytes.len)) (call str.byte_at b i) -1))
+
+  (fn is_space [c:i32] -> bool (or (eq c 32) (or (eq c 9) (or (eq c 10) (eq c 13)))))
+
+  ;; A character of a name inside a type: a letter, a digit, or _.
+  (fn is_ident [c:i32] -> bool
+    (or (and (gte c 97) (lte c 122)) (or (and (gte c 65) (lte c 90)) (or (and (gte c 48) (lte c 57)) (eq c 95)))))
+
+  ;; i at a '"': the index after its closing quote.
+  (fn skip_string [b:(ptr str.Bytes) from:i32] -> i32
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 (+ from 1))
+    (while (and (lt i n) (neq (call str.byte_at b i) 34))
+      (if (eq (call str.byte_at b i) 92) (set! i (+ i 2)) (set! i (+ i 1))))
+    (if (lt i n) (+ i 1) n))
+
+  ;; i at a ';': the index of the newline ending the comment (or the end).
+  (fn skip_comment [b:(ptr str.Bytes) from:i32] -> i32
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 from)
+    (while (and (lt i n) (neq (call str.byte_at b i) 10)) (set! i (+ i 1)))
+    i)
+
+  ;; i at a '(' or '[': the index after its match (strings and comments
+  ;; skipped).
+  (fn close [b:(ptr str.Bytes) from:i32] -> i32
+    (let n:i32 (get b str.Bytes.len))
+    (let depth:i32 0)
+    (let i:i32 from)
+    (while (lt i n)
+      (let c:i32 (call str.byte_at b i))
+      (cond
+        ((eq c 34) (set! i (call skip_string b i)))
+        ((eq c 59) (set! i (call skip_comment b i)))
+        ((or (eq c 40) (eq c 91)) (set! depth (+ depth 1)) (set! i (+ i 1)))
+        ((or (eq c 41) (eq c 93))
+         (set! depth (- depth 1))
+         (set! i (+ i 1))
+         (if (eq depth 0) (return i) (block)))
+        (else (set! i (+ i 1)))))
+    n)
+
+  ;; The index of the next token at or after i, before `to` (whitespace and
+  ;; comments skipped), or `to`.
+  (fn next_token [b:(ptr str.Bytes) from:i32 to:i32] -> i32
+    (let i:i32 from)
+    (while (lt i to)
+      (let c:i32 (call str.byte_at b i))
+      (cond
+        ((call is_space c) (set! i (+ i 1)))
+        ((eq c 59) (set! i (call skip_comment b i)))
+        (else (return i))))
+    to)
+
+  ;; The index after the token at i: a group, a string, or an atom.
+  (fn token_end [b:(ptr str.Bytes) i:i32 to:i32] -> i32
+    (let c:i32 (call str.byte_at b i))
+    (if (or (eq c 40) (eq c 91)) (return (call close b i)) (block))
+    (if (eq c 34) (return (call skip_string b i)) (block))
+    (let j:i32 i)
+    (while (lt j to)
+      (let d:i32 (call str.byte_at b j))
+      (if (or (call is_space d) (or (eq d 40) (or (eq d 41) (or (eq d 91) (or (eq d 93) (or (eq d 34) (eq d 59)))))))
+          (return j)
+          (block))
+      (set! j (+ j 1)))
+    to)
+
+  (fn slice [b:(ptr str.Bytes) from:i32 to:i32] -> (ptr str.Bytes) (call str.slice b from (- to from)))
+
+  ;; Whether b[from..to) is the text s.
+  (fn text_is [b:(ptr str.Bytes) from:i32 to:i32 s:str] -> bool (call str.is (call slice b from to) s))
+
+  (fn is_kind [k:(ptr str.Bytes)] -> bool
+    (or (call str.is k "fn") (or (call str.is k "struct") (or (call str.is k "union")
+      (or (call str.is k "enum") (or (call str.is k "const") (call str.is k "interface")))))))
+
+  (fn is_type_kind [k:(ptr str.Bytes)] -> bool
+    (or (call str.is k "struct") (or (call str.is k "union") (or (call str.is k "enum") (call str.is k "interface")))))
+
+  ;; Adds the comment line at i (a ';') to `into`, without its ;; and one
+  ;; space, unless it is a section banner (;; ===== Tests =====); returns
+  ;; the index of its newline.
+  (fn take_comment [b:(ptr str.Bytes) i:i32 into:(ptr buf.Buf)] -> i32
+    (let e:i32 (call skip_comment b i))
+    (let s:i32 i)
+    (while (and (lt s e) (eq (call str.byte_at b s) 59)) (set! s (+ s 1)))
+    (if (and (lt s e) (eq (call str.byte_at b s) 32)) (set! s (+ s 1)) (block))
+    (if (not (call str.starts_with (call slice b s e) (call str.from_str "=====")))
+        (block
+          (call buf.push_bytes into (call slice b s e))
+          (call buf.push_byte into 10))
+        (block))
+    e)
+
+  ;; The item at b[from..to) (a top-level form of the module), with its
+  ;; comment; null for one this tool does not show (import, impl, test).
+  (fn read_item [b:(ptr str.Bytes) from:i32 to:i32 line:i32 doc:(ptr buf.Buf)] -> (ptr Item)
+    (let k0:i32 (call next_token b (+ from 1) to))
+    (let k1:i32 (call token_end b k0 to))
+    (let kind:(ptr str.Bytes) (call slice b k0 k1))
+    (if (not (call is_kind kind)) (return (ptr.null Item)) (block))
+    (let n0:i32 (call next_token b k1 to))
+    (let n1:i32 (call token_end b n0 to))
+    ;; a generic name is (name T ...); a constant's is NAME:type
+    (let bare:(ptr str.Bytes) (call slice b n0 n1))
+    (if (eq (call str.byte_at b n0) 40)
+        (block
+          (let g0:i32 (call next_token b (+ n0 1) n1))
+          (set! bare (call slice b g0 (call token_end b g0 n1))))
+        (block))
+    (if (call str.is kind "const")
+        (block
+          (let c:i32 0)
+          (while (and (lt c (get bare str.Bytes.len)) (neq (call str.byte_at bare c) 58)) (set! c (+ c 1)))
+          (set! bare (call str.slice bare 0 c)))
+        (block))
+    (let it:(ptr Item) (new Item))
+    (put it Item.kind kind)
+    (put it Item.name (call slice b n0 n1))
+    (put it Item.bare bare)
+    (put it Item.from from)
+    (put it Item.to to)
+    (put it Item.line line)
+    (put it Item.doc doc)
+    ;; (pub) is one of the item's own forms
+    (let public:bool false)
+    (let i:i32 (call next_token b n1 to))
+    (while (lt i (- to 1))
+      (let e:i32 (call token_end b i to))
+      (if (call text_is b i e "(pub)") (set! public true) (block))
+      (set! i (call next_token b e to)))
+    (put it Item.public public)
+    it)
+
+  ;; Reads the module in src (from path).
+  (fn scan [path:(ptr str.Bytes) src:(ptr str.Bytes)] -> (ptr Mod)
+    (let a:alloc.Allocator (call alloc.default))
+    (let m:(ptr Mod) (new Mod))
+    (put m Mod.path path)
+    (put m Mod.src src)
+    (put m Mod.ok false)
+    (put m Mod.name (call str.from_str "?"))
+    (put m Mod.doc (call buf.make a 64))
+    (put m Mod.items (call (vec.make (ptr Item)) a 32))
+    (put m Mod.types (call (vec.make (ptr str.Bytes)) a 16))
+    (let b:(ptr str.Bytes) src)
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 0)
+    (let line:i32 1)
+    (let blank:i32 0)
+    (let pending:(ptr buf.Buf) (call buf.make a 64))
+    (let in_module:bool false)
+    ;; whether only whitespace is before i on its line (a comment after
+    ;; code on its line documents nothing)
+    (let line_start:bool true)
+    (while (lt i n)
+      (let c:i32 (call str.byte_at b i))
+      (cond
+        ((eq c 10)
+         (set! line (+ line 1))
+         (set! blank (+ blank 1))
+         (set! line_start true)
+         (if (gte blank 2) (call buf.clear pending) (block))
+         (set! i (+ i 1)))
+        ((call is_space c) (set! i (+ i 1)))
+        ((and (eq c 59) line_start)
+         (set! blank 0)
+         (set! i (call take_comment b i pending)))
+        ((eq c 59) (set! i (call skip_comment b i)))
+        ((and (eq c 40) (not in_module))
+         ;; (module NAME: the comment above is the module's
+         (let k0:i32 (call next_token b (+ i 1) n))
+         (let k1:i32 (call token_end b k0 n))
+         (if (not (call text_is b k0 k1 "module")) (return m) (block))
+         (let n0:i32 (call next_token b k1 n))
+         (let n1:i32 (call token_end b n0 n))
+         (put m Mod.name (call slice b n0 n1))
+         (put m Mod.doc pending)
+         (set! pending (call buf.make a 64))
+         (set! in_module true)
+         (set! blank 0)
+         (set! line_start false)
+         (set! i n1))
+        ((eq c 40)
+         (let e:i32 (call close b i))
+         (let it:(ptr Item) (call read_item b i e line pending))
+         (if (neq it (ptr.null Item))
+             (block
+               (call (vec.push (ptr Item)) (get m Mod.items) it)
+               (if (call is_type_kind (get it Item.kind)) (call (vec.push (ptr str.Bytes)) (get m Mod.types) (get it Item.bare)) (block)))
+             (block))
+         (set! pending (call buf.make a 64))
+         (loop k i (- e 1) 1 (if (eq (call str.byte_at b k) 10) (set! line (+ line 1)) (block)))
+         (set! blank 0)
+         (set! line_start false)
+         (set! i e))
+        (else (set! blank 0) (set! line_start false) (set! i (+ i 1)))))
+    (put m Mod.ok in_module)
+    m)
+
+  ;; ===== Writing signatures =====
+
+  (fn own_type [m:(ptr Mod) w:(ptr str.Bytes)] -> bool
+    (let ts:(ptr (vec.Vec (ptr str.Bytes))) (get m Mod.types))
+    (loop k 0 (- (call (vec.len (ptr str.Bytes)) ts) 1) 1
+      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) ts k) w) (return true) (block)))
+    false)
+
+  ;; Writes m's source from..to to out on one line: comments dropped,
+  ;; whitespace runs one space (none just inside a bracket), and each name
+  ;; of m's own types qualified with m's name, as a caller writes it.
+  (fn emit_clean [m:(ptr Mod) out:(ptr buf.Buf) from:i32 to:i32] -> void
+    (let b:(ptr str.Bytes) (get m Mod.src))
+    (let space:bool false)
+    ;; the last byte written (a bracket at the start, so no space follows)
+    (let last:i32 (if (gt (call buf.len out) 0) (call str.byte_at (call buf.bytes out) (- (call buf.len out) 1)) 40))
+    (let i:i32 from)
+    (while (lt i to)
+      (let c:i32 (call str.byte_at b i))
+      (cond
+        ((eq c 59) (set! i (call skip_comment b i)))
+        ((call is_space c) (set! space true) (set! i (+ i 1)))
+        (else
+         (if (and space (and (neq last 40) (and (neq last 91) (and (neq last 32) (and (neq c 41) (neq c 93))))))
+             (block (call buf.push_byte out 32) (set! last 32))
+             (block))
+         (set! space false)
+         (cond
+           ((eq c 34)
+            (let e:i32 (call skip_string b i))
+            (call buf.push_bytes out (call slice b i e))
+            (set! last 34)
+            (set! i e))
+           ((and (call is_ident c) (or (eq i 0) (not (or (call is_ident (call at b (- i 1))) (eq (call at b (- i 1)) 46)))))
+            (let e:i32 i)
+            (while (and (lt e to) (call is_ident (call str.byte_at b e))) (set! e (+ e 1)))
+            (let w:(ptr str.Bytes) (call slice b i e))
+            (if (and (neq (call at b e) 46) (call own_type m w))
+                (block (call buf.push_bytes out (get m Mod.name)) (call buf.push_byte out 46))
+                (block))
+            (call buf.push_bytes out w)
+            (set! last 97)
+            (set! i e))
+           (else (call buf.push_byte out c) (set! last c) (set! i (+ i 1)))))))
+    (block))
+
+
+  ;; Where b (a view of m's source) starts in it.
+  (fn offset [m:(ptr Mod) b:(ptr str.Bytes)] -> i32
+    (- (get b str.Bytes.addr) (get (get m Mod.src) str.Bytes.addr)))
+
+  (fn starts [m:(ptr Mod) from:i32 to:i32 s:str] -> bool
+    (call str.starts_with (call slice (get m Mod.src) from to) (call str.from_str s)))
+
+  ;; The item's head, as a caller writes it: fn text.split [...] -> ...,
+  ;; (option.unwrap_or T), struct counter.Counter [(read n:i32)]; and its
+  ;; contracts, one per line, in `contracts`.
+  (fn describe [m:(ptr Mod) it:(ptr Item) out:(ptr buf.Buf) contracts:(ptr buf.Buf)] -> void
+    (let b:(ptr str.Bytes) (get m Mod.src))
+    (let to:i32 (get it Item.to))
+    (let kind:(ptr str.Bytes) (get it Item.kind))
+    (let n0:i32 (call offset m (get it Item.name)))
+    (let n1:i32 (+ n0 (get (get it Item.name) str.Bytes.len)))
+    (call buf.push_bytes out kind)
+    (call buf.push_byte out 32)
+    ;; the name itself as is (it is the module's own), what follows it
+    ;; (a generic's parameters, a constant's type) cleaned
+    (let bare:(ptr str.Bytes) (get it Item.bare))
+    (let b1:i32 (+ (call offset m bare) (get bare str.Bytes.len)))
+    (if (eq (call str.byte_at b n0) 40) (call buf.push_byte out 40) (block))
+    (call buf.push_bytes out (get m Mod.name))
+    (call buf.push_byte out 46)
+    (call buf.push_bytes out bare)
+    (call emit_clean m out b1 n1)
+    (let i:i32 (call next_token b n1 to))
+    (cond
+      ((call str.is kind "fn")
+       ;; [params] -> type
+       (let p1:i32 (call token_end b i to))
+       (let r0:i32 (call next_token b (call token_end b (call next_token b p1 to) to) to))
+       (let r1:i32 (call token_end b r0 to))
+       (call buf.push_byte out 32)
+       (call emit_clean m out i r1)
+       (set! i (call next_token b r1 to))
+       (let more:bool true)
+       (while (and more (lt i (- to 1)))
+         (let e:i32 (call token_end b i to))
+         (cond
+           ((call text_is b i e "(pub)") (block))
+           ((call text_is b i e "(unsafe)") (call buf.push_str out " (unsafe)"))
+           ((call starts m i e "(where ") (call buf.push_byte out 32) (call emit_clean m out i e))
+           ((or (call starts m i e "(req ") (call starts m i e "(ens "))
+            (call buf.push_str contracts "    ")
+            (call emit_clean m contracts i e)
+            (call buf.push_byte contracts 10))
+           (else (set! more false)))
+         (if more (set! i (call next_token b e to)) (block))))
+      ((call str.is kind "struct")
+       ;; the fields another module can read; the rest counted
+       (let f1:i32 (call token_end b i to))
+       (let hidden:i32 0)
+       (let first:bool true)
+       (call buf.push_str out " [")
+       (let j:i32 (call next_token b (+ i 1) (- f1 1)))
+       (while (lt j (- f1 1))
+         (let e:i32 (call token_end b j (- f1 1)))
+         (if (or (call starts m j e "(read ") (call starts m j e "(pub "))
+             (block
+               (if first (set! first false) (call buf.push_byte out 32))
+               (call emit_clean m out j e))
+             (set! hidden (+ hidden 1)))
+         (set! j (call next_token b e (- f1 1))))
+       (call buf.push_byte out 93)
+       (set! i (call next_token b f1 to))
+       (while (lt i (- to 1))
+         (let e:i32 (call token_end b i to))
+         (if (call text_is b i e "(value)") (call buf.push_str out " (value)") (block))
+         (set! i (call next_token b e to)))
+       (if (gt hidden 0)
+           (block
+             (call buf.push_str out " and ")
+             (call buf.push_int out hidden)
+             (call buf.push_str out (if (eq hidden 1) " private field" " private fields")))
+           (block)))
+      ((call str.is kind "const")
+       (call buf.push_str out " = ")
+       (call emit_clean m out i (call token_end b i to)))
+      ((call str.is kind "interface")
+       (while (lt i (- to 1))
+         (let e:i32 (call token_end b i to))
+         (if (not (call text_is b i e "(pub)"))
+             (block (call buf.push_str contracts "    ") (call emit_clean m contracts i e) (call buf.push_byte contracts 10))
+             (block))
+         (set! i (call next_token b e to))))
+      ;; union, enum: the variants or members
+      (else
+       (call buf.push_byte out 32)
+       (call emit_clean m out i (call token_end b i to)))))
+
+  ;; Writes each line of doc to out, indented by four spaces.
+  (fn push_indented [out:(ptr buf.Buf) doc:(ptr buf.Buf)] -> void
+    (let d:(ptr str.Bytes) (call buf.bytes doc))
+    (let start:bool true)
+    (loop k 0 (- (get d str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at d k))
+      (if (and start (neq c 10)) (call buf.push_str out "    ") (block))
+      (call buf.push_byte out c)
+      (set! start (eq c 10))))
+
+  (fn print_item [m:(ptr Mod) it:(ptr Item) out:(ptr buf.Buf)] -> void
+    (let contracts:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call describe m it out contracts)
+    (if (not (get it Item.public)) (call buf.push_str out "    (private)") (block))
+    (call buf.push_byte out 10)
+    (call push_indented out (get it Item.doc))
+    (call buf.push_bytes out (call buf.bytes contracts))
+    (call buf.free contracts))
+
+  (fn print_module [m:(ptr Mod) out:(ptr buf.Buf) private:bool] -> void
+    (call buf.push_str out "module ")
+    (call buf.push_bytes out (get m Mod.name))
+    (call buf.push_str out " (")
+    (call buf.push_bytes out (get m Mod.path))
+    (call buf.push_str out ")\n")
+    (call push_indented out (get m Mod.doc))
+    (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
+    (loop k 0 (- (call (vec.len (ptr Item)) items) 1) 1
+      (let it:(ptr Item) (call (vec.at (ptr Item)) items k))
+      (if (or private (get it Item.public))
+          (block (call buf.push_byte out 10) (call print_item m it out))
+          (block))))
+
+  ;; ===== Finding modules =====
+
+  (fn join [a:(ptr str.Bytes) b:(ptr str.Bytes) suffix:str] -> (ptr str.Bytes)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes o a)
+    (if (and (gt (get a str.Bytes.len) 0) (neq (call str.byte_at a (- (get a str.Bytes.len) 1)) 47)) (call buf.push_byte o 47) (block))
+    (call buf.push_bytes o b)
+    (call buf.push_str o suffix)
+    (call buf.bytes o))
+
+  (fn concat [a:(ptr str.Bytes) suffix:str] -> (ptr str.Bytes)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes o a)
+    (call buf.push_str o suffix)
+    (call buf.bytes o))
+
+  ;; The module at path, or null if it cannot be read.
+  (fn load [path:(ptr str.Bytes)] -> (ptr Mod)
+    (let src:(ptr str.Bytes) (call io.read_path path))
+    (if (lt (get src str.Bytes.len) 0) (return (ptr.null Mod)) (block))
+    (call scan path src))
+
+  ;; The module a name means: a path ending in .aipl, else NAME.aipl here,
+  ;; else the standard one.
+  (fn find_module [std:(ptr str.Bytes) name:(ptr str.Bytes)] -> (ptr Mod)
+    (if (call str.ends_with name (call str.from_str ".aipl")) (return (call load name)) (block))
+    (let here:(ptr Mod) (call load (call concat name ".aipl")))
+    (if (neq here (ptr.null Mod)) (return here) (block))
+    (call load (call join std name ".aipl")))
+
+  ;; The standard modules, by name, sorted.
+  (fn std_names [std:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes)))
+    (let out:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 32))
+    (match (call fs.list_path (call alloc.default) std)
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
+       (loop k 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 1
+         (let f:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names k))
+         (if (call str.ends_with f (call str.from_str ".aipl"))
+             (call (vec.push (ptr str.Bytes)) out (call str.slice f 0 (- (get f str.Bytes.len) 5)))
+             (block))))
+      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (block)))
+    out)
+
+  ;; The first sentence of a module's comment, on one line, without a
+  ;; leading "std/NAME: ": up to a '.' or ':' that ends a word, or a blank
+  ;; line; cut at a word near 72 characters.
+  (fn summary [m:(ptr Mod)] -> (ptr str.Bytes)
+    (let d:(ptr str.Bytes) (call buf.bytes (get m Mod.doc)))
+    (let n:i32 (get d str.Bytes.len))
+    (let s:i32 0)
+    (if (call str.starts_with d (call str.from_str "std/"))
+        (block
+          (let c:i32 (call str.find d (call str.from_str ": ")))
+          (if (gte c 0) (set! s (+ c 2)) (block)))
+        (block))
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 80))
+    (let i:i32 s)
+    (let done:bool false)
+    (while (and (not done) (lt i n))
+      (let c:i32 (call str.byte_at d i))
+      (let next:i32 (call at d (+ i 1)))
+      (cond
+        ((and (eq c 10) (eq next 10)) (set! done true))
+        ((eq c 10) (call buf.push_byte o 32))
+        ((and (or (eq c 46) (eq c 58)) (or (eq next 32) (or (eq next 10) (eq next -1))))
+         (call buf.push_byte o c)
+         (set! done true))
+        ((and (eq c 32) (gte (call buf.len o) 72))
+         (call buf.push_str o " ...")
+         (set! done true))
+        (else (call buf.push_byte o c)))
+      (set! i (+ i 1)))
+    (call buf.bytes o))
+
+  (fn list_std [std:(ptr str.Bytes) out:(ptr buf.Buf)] -> i32
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call std_names std))
+    (if (eq (call (vec.len (ptr str.Bytes)) names) 0)
+        (block (call err_bytes "no standard modules in " std) (return 1))
+        (block))
+    (loop k 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 1
+      (let nm:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names k))
+      (let m:(ptr Mod) (call load (call join std nm ".aipl")))
+      (call buf.push_str out "  ")
+      (call buf.push_bytes out nm)
+      (loop p (get nm str.Bytes.len) 9 1 (call buf.push_byte out 32))
+      (call buf.push_byte out 32)
+      (if (neq m (ptr.null Mod)) (call buf.push_bytes out (call summary m)) (block))
+      (call buf.push_byte out 10))
+    (call buf.push_str out "\naipl doc MODULE shows one; aipl doc --find WORD searches them all.\n")
+    0)
+
+  ;; b in ASCII lower case.
+  (fn lower [b:(ptr str.Bytes)] -> (ptr str.Bytes)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get b str.Bytes.len) 1)))
+    (loop k 0 (- (get b str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at b k))
+      (call buf.push_byte o (if (and (gte c 65) (lte c 90)) (+ c 32) c)))
+    (call buf.bytes o))
+
+  ;; Every standard item whose name or comment has `word` (any case).
+  (fn find_all [std:(ptr str.Bytes) word:(ptr str.Bytes) private:bool out:(ptr buf.Buf)] -> i32
+    (let w:(ptr str.Bytes) (call lower word))
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call std_names std))
+    (let found:i32 0)
+    (loop k 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 1
+      (let m:(ptr Mod) (call load (call join std (call (vec.at (ptr str.Bytes)) names k) ".aipl")))
+      (if (neq m (ptr.null Mod))
+          (block
+            (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
+            (loop j 0 (- (call (vec.len (ptr Item)) items) 1) 1
+              (let it:(ptr Item) (call (vec.at (ptr Item)) items j))
+              (if (and (or private (get it Item.public))
+                       (or (call str.contains (call lower (get it Item.bare)) w)
+                           (call str.contains (call lower (call buf.bytes (get it Item.doc))) w)))
+                  (block
+                    (if (gt found 0) (call buf.push_byte out 10) (block))
+                    (call print_item m it out)
+                    (set! found (+ found 1)))
+                  (block))))
+          (block)))
+    (if (eq found 0)
+        (block (call err_bytes "nothing in the standard library matches " word) 1)
+        0))
+
+  ;; Names each public item of each file with no comment above it.
+  (fn check_files [files:(ptr (vec.Vec (ptr str.Bytes))) out:(ptr buf.Buf)] -> i32
+    (let missing:i32 0)
+    (let documented:i32 0)
+    (loop k 0 (- (call (vec.len (ptr str.Bytes)) files) 1) 1
+      (let path:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) files k))
+      (let m:(ptr Mod) (call load path))
+      (cond
+        ((eq m (ptr.null Mod)) (call err_bytes "cannot read " path) (set! missing (+ missing 1)))
+        ((not (get m Mod.ok)) (call err_bytes "no (module ...) in " path) (set! missing (+ missing 1)))
+        (else
+         (if (eq (call buf.len (get m Mod.doc)) 0)
+             (block
+               (call note m 1 "module " (get m Mod.name) " has no comment above (module")
+               (set! missing (+ missing 1)))
+             (block))
+         (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
+         (loop j 0 (- (call (vec.len (ptr Item)) items) 1) 1
+           (let it:(ptr Item) (call (vec.at (ptr Item)) items j))
+           (if (get it Item.public)
+               (if (eq (call buf.len (get it Item.doc)) 0)
+                   (block
+                     (call note m (get it Item.line) "" (get it Item.bare) " is (pub) but has no ;; comment directly above it")
+                     (set! missing (+ missing 1)))
+                   (set! documented (+ documented 1)))
+               (block))))))
+    (if (gt missing 0) (return 1) (block))
+    (call buf.push_str out "every public item documented: ")
+    (call buf.push_int out documented)
+    (call buf.push_str out " in ")
+    (call buf.push_int out (call (vec.len (ptr str.Bytes)) files))
+    (call buf.push_str out (if (eq (call (vec.len (ptr str.Bytes)) files) 1) " file\n" " files\n"))
+    0)
+
+  ;; path:line: prefix name suffix, to standard error.
+  (fn note [m:(ptr Mod) line:i32 prefix:str name:(ptr str.Bytes) suffix:str] -> void
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes o (get m Mod.path))
+    (call buf.push_byte o 58)
+    (call buf.push_int o line)
+    (call buf.push_str o ": ")
+    (call buf.push_str o prefix)
+    (call buf.push_bytes o name)
+    (call buf.push_str o suffix)
+    (call buf.push_byte o 10)
+    (let _n:i32 (call buf.write o 2))
+    (call buf.free o))
+
+  (fn err_bytes [prefix:str b:(ptr str.Bytes)] -> void
+    (call io.write_str 2 "aipl doc: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+    (call io.write_str 2 "\n"))
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private]")
+    (call io.eprintln "       aipl doc --find WORD")
+    (call io.eprintln "       aipl doc --check FILE.aipl...")
+    2)
+
+  ;; ===== The command =====
+
+  ;; aipl doc, its arguments from os.arg `first` on; the exit status.
+  (fn command [first:i32] -> i32 (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let private:bool false)
+    (let find:bool false)
+    (let check:bool false)
+    (let args:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 8))
+    (loop i first (- (call os.arg_count) 1) 1
+      (let x:(ptr str.Bytes) (call os.arg i))
+      (cond
+        ((call str.is x "--private") (set! private true))
+        ((call str.is x "--find") (set! find true))
+        ((call str.is x "--check") (set! check true))
+        ((or (call str.is x "--help") (call str.is x "-h")) (return (call usage)))
+        (else (call (vec.push (ptr str.Bytes)) args x))))
+    (let std:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (if (lt (get std str.Bytes.len) 0) (set! std (call str.from_str "aipl_src/std/")) (block))
+    (let out:(ptr buf.Buf) (call buf.make a 4096))
+    (let n:i32 (call (vec.len (ptr str.Bytes)) args))
+    (let status:i32 0)
+    (cond
+      (check (set! status (if (eq n 0) (call usage) (call check_files args out))))
+      (find (set! status (if (eq n 1) (call find_all std (call (vec.at (ptr str.Bytes)) args 0) private out) (call usage))))
+      ((eq n 0) (set! status (call list_std std out)))
+      ((gt n 1) (set! status (call usage)))
+      (else (set! status (call show std (call (vec.at (ptr str.Bytes)) args 0) private out))))
+    (let _w:i32 (call buf.write out 1))
+    status)
+
+  ;; aipl doc NAME: a module, or MODULE.ITEM.
+  (fn show [std:(ptr str.Bytes) name:(ptr str.Bytes) private:bool out:(ptr buf.Buf)] -> i32
+    (let m:(ptr Mod) (call find_module std name))
+    (if (neq m (ptr.null Mod))
+        (block (call print_module m out private) (return 0))
+        (block))
+    ;; MODULE.ITEM: split at the last '.'
+    (let dot:i32 (- (get name str.Bytes.len) 1))
+    (while (and (gte dot 0) (neq (call str.byte_at name dot) 46)) (set! dot (- dot 1)))
+    (if (lte dot 0) (block (call err_bytes "no module " name) (return 1)) (block))
+    (let mm:(ptr Mod) (call find_module std (call str.slice name 0 dot)))
+    (if (eq mm (ptr.null Mod)) (block (call err_bytes "no module " (call str.slice name 0 dot)) (return 1)) (block))
+    (let want:(ptr str.Bytes) (call str.slice name (+ dot 1) (- (- (get name str.Bytes.len) dot) 1)))
+    (let items:(ptr (vec.Vec (ptr Item))) (get mm Mod.items))
+    (let found:bool false)
+    (loop k 0 (- (call (vec.len (ptr Item)) items) 1) 1
+      (let it:(ptr Item) (call (vec.at (ptr Item)) items k))
+      (if (and (call str.bytes_eq (get it Item.bare) want) (or private (get it Item.public)))
+          (block
+            (if found (call buf.push_byte out 10) (block))
+            (call print_item mm it out)
+            (set! found true))
+          (block)))
+    (if found 0 (block (call err_bytes "no public item named " name) 1)))
+
+  (fn main [] -> i32 (call command 1))
+
+  ;; WASI command entry point: runs main and exits with its status.
+  (fn _start [] -> void
+    (sys.exit (call main))))

@@ -37,7 +37,7 @@ pub fn uses_formats(items: &[Sx]) -> bool {
             return false;
         }
         if let Some(h) = sx.head() {
-            if FORMS.iter().any(|(f, _)| *f == h) {
+            if FORMS.iter().any(|(f, _)| *f == h) || h == "dbg" || h == "expect" {
                 return true;
             }
         }
@@ -48,7 +48,9 @@ pub fn uses_formats(items: &[Sx]) -> bool {
 
 /// Step 1, in place over one item: every formatting form's string split into
 /// pieces. `err` places a message at a form.
-pub fn split(sx: &mut Sx, err: &dyn Fn(&Sx, &str) -> String) -> Result<(), String> {
+/// `src` is the module's text and `file` its file's name: `(dbg e)` becomes
+/// `(format.dbg "file:L:C: e" e)`, e as written there (dbg_label).
+pub fn split(sx: &mut Sx, src: &str, file: &str, err: &dyn Fn(&Sx, &str) -> String) -> Result<(), String> {
     // nothing in a [...] list is an expression (uses_formats)
     if !sx.is_paren() {
         return Ok(());
@@ -57,14 +59,118 @@ pub fn split(sx: &mut Sx, err: &dyn Fn(&Sx, &str) -> String) -> Result<(), Strin
         if let Some((form, op)) = FORMS.iter().find(|(f, _)| *f == h) {
             let replaced = split_form(sx, form, op, err)?;
             *sx = replaced;
+        } else if h == "dbg" {
+            let items = sx.items();
+            if items.len() != 2 {
+                return Err(err(sx, "dbg takes one expression, e.g. (dbg (call f x))"));
+            }
+            let (l, c) = sx.position();
+            let label = format!("{file}:{l}:{c}: {}", form_text(src, items[1].position()));
+            *sx = list_at(vec![Sx::symbol_at("format.dbg".into(), &items[0]), string_at(label, sx), items[1].clone()], sx);
+        } else if h == "expect" {
+            // labelled with the whole (expect c), as written
+            let items = sx.items();
+            if items.len() != 2 {
+                return Err(err(sx, "expect takes one condition, e.g. (expect (eq n 3))"));
+            }
+            let (l, c) = sx.position();
+            let label = format!("{file}:{l}:{c}: {}", form_text(src, (l, c)));
+            *sx = list_at(vec![Sx::symbol_at("format.expect".into(), &items[0]), string_at(label, sx), items[1].clone()], sx);
         }
     }
     if let Some(items) = sx.items_mut() {
         for i in items {
-            split(i, err)?;
+            split(i, src, file, err)?;
         }
     }
     Ok(())
+}
+
+/// The source text of the form at (line, col) (a column counts characters,
+/// as the tokenizer does), on one line: comments dropped, each run of
+/// whitespace one space, none just inside brackets, strings as written
+/// (aipl_src/resolver.aipl dbg_text gives the same).
+pub fn form_text(src: &str, (line, col): (u32, u32)) -> String {
+    let b = src.as_bytes();
+    let mut i = 0;
+    let mut l = 1;
+    while l < line && i < b.len() {
+        if b[i] == b'\n' {
+            l += 1;
+        }
+        i += 1;
+    }
+    for _ in 1..col {
+        i += 1;
+        while i < b.len() && b[i] & 0xC0 == 0x80 {
+            i += 1;
+        }
+    }
+    let delimiter = |c: u8| c.is_ascii_whitespace() || matches!(c, b'(' | b')' | b'[' | b']' | b'"' | b';');
+    let mut out: Vec<u8> = Vec::new();
+    if i < b.len() && !matches!(b[i], b'(' | b'[' | b'"') {
+        // an atom
+        while i < b.len() && !delimiter(b[i]) {
+            out.push(b[i]);
+            i += 1;
+        }
+        return String::from_utf8_lossy(&out).into_owned();
+    }
+    let mut depth = 0;
+    let mut space = false;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_whitespace() {
+            space = true;
+            i += 1;
+            continue;
+        }
+        if c == b';' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            space = true;
+            continue;
+        }
+        if space && !matches!(out.last(), None | Some(b'(' | b'[')) && !matches!(c, b')' | b']') {
+            out.push(b' ');
+        }
+        space = false;
+        match c {
+            b'"' => {
+                out.push(c);
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' && i + 1 < b.len() {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                    out.push(b[i]);
+                    i += 1;
+                }
+                out.push(b'"');
+                i += 1;
+            }
+            b'(' | b'[' => {
+                out.push(c);
+                depth += 1;
+                i += 1;
+            }
+            b')' | b']' => {
+                out.push(c);
+                depth -= 1;
+                i += 1;
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+        if depth == 0 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn split_form(sx: &Sx, form: &str, op: &str, err: &dyn Fn(&Sx, &str) -> String) -> Result<Sx, String> {
@@ -94,12 +200,21 @@ fn split_form(sx: &Sx, form: &str, op: &str, err: &dyn Fn(&Sx, &str) -> String) 
                 // a name or literal is one token, an expression one form
                 let toks = Parser::tokenize(&code).map_err(|m| err(at, &m))?;
                 let mut value = Sx::read_one(&toks).map_err(|m| err(at, &m))?;
+                // a dbg is labelled with where it is written, which a placeholder's code is not
+                if holds_dbg(&value) {
+                    return Err(err(at, "a placeholder cannot hold a dbg; bind the value with let and dbg it there"));
+                }
                 move_to(&mut value, at.position());
                 list_at(vec![Sx::symbol_at("format.piece".into(), at), value, string_at(spec, at)], at)
             }
         });
     }
     Ok(list_at(out, sx))
+}
+
+/// Whether sx is or holds a `(dbg ...)`.
+fn holds_dbg(sx: &Sx) -> bool {
+    sx.is_paren() && (sx.head() == Some("dbg") || sx.items().iter().any(holds_dbg))
 }
 
 /// One piece of a format string: text, or a value (a name, or an
@@ -223,7 +338,7 @@ fn list_at(items: Vec<Sx>, at: &Sx) -> Sx {
 }
 
 /// Every token of `sx` at `pos` (a placeholder's code is reported at its string).
-fn move_to(sx: &mut Sx, pos: (u32, u32)) {
+pub(crate) fn move_to(sx: &mut Sx, pos: (u32, u32)) {
     match sx {
         Sx::Atom(t) => (t.line, t.col) = pos,
         Sx::List { open, items, close } => {
@@ -334,6 +449,9 @@ impl Spec {
 
     /// Why this format does not fit a value of type `t`, if it does not.
     pub fn misfit(&self, t: &Type) -> Option<String> {
+        if !printable(t) && *self != Spec::default() {
+            return Some(format!("formats are for numbers, bool, str, (ptr str.Bytes), and enums, not {t}"));
+        }
         let float = matches!(t, Type::F32 | Type::F64);
         let int = matches!(t, Type::I32 | Type::I64);
         if self.decimals.is_some() && !float {
@@ -349,7 +467,15 @@ impl Spec {
     }
 }
 
-/// Whether the formatting forms print a value of type `t`.
+/// Whether the formatting forms print a value of type `t` at all: every
+/// type but void and function references (a struct, array, union, or
+/// result through a printer generated for its type, debug_functions).
+pub fn prints(t: &Type) -> bool {
+    !matches!(t, Type::Void | Type::Fn(..))
+}
+
+/// Whether the formatting forms print a value of type `t` through std/show
+/// alone (and so take a format).
 pub fn printable(t: &Type) -> bool {
     matches!(t, Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::Enum(_))
         || matches!(t, Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()))
@@ -359,9 +485,137 @@ pub fn is_format(op: &OpCode) -> bool {
     matches!(op, OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln)
 }
 
-/// The ops this module lowers: the formatting forms and the early returns.
+/// The ops this module lowers: the formatting forms, dbg, and the early
+/// returns.
 fn lowered(op: &OpCode) -> bool {
-    is_format(op) || matches!(op, OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer)
+    is_format(op) || matches!(op, OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg | OpCode::FormatExpect)
+}
+
+/// `(call show.put_T chain value spec)`: the call that writes `value`, of
+/// type `t`, onto the buffer `chain` gives.
+fn put(chain: Expr, value: Expr, t: &Type, spec: i64, lw: &Lower, span: (u32, u32)) -> Expr {
+    let enums = lw.enums;
+    if !printable(t) {
+        // a struct, array, union, or result: its generated printer
+        lw.roots.borrow_mut().push(t.clone());
+        return Expr::Call { func: debug_name(t), args: vec![chain, value], span };
+    }
+    let (func, value) = match t {
+        Type::I32 => ("show.put_i32", value),
+        Type::I64 => ("show.put_i64", value),
+        Type::F32 => ("show.put_f32", value),
+        Type::F64 => ("show.put_f64", value),
+        Type::Bool => ("show.put_bool", value),
+        Type::Str => ("show.put_str", value),
+        Type::Enum(name) => {
+            // the member's name: (match v (E.a "a") (E.b "b") ...)
+            let arms = enums.get(name).into_iter().flatten().map(|m| MatchArm {
+                member: format!("{name}.{m}"),
+                binders: None,
+                body: vec![Expr::Lit(Literal::Str(m.clone()), span)],
+                span,
+            });
+            ("show.put_str", Expr::Match { value: Box::new(value), arms: arms.collect(), else_body: None, span })
+        }
+        _ => ("show.put_bytes", value),
+    };
+    Expr::Call { func: func.into(), args: vec![chain, value, Expr::Lit(Literal::Int(spec), span)], span }
+}
+
+/// `(format.dbg "label" e)` as `(block (let _dbg_N:T e) (call show.eprintln
+/// ...) _dbg_N)`: the label and the value written to standard error, then
+/// the value. A pointer or array shows its type and address; a value
+/// formatting cannot print, its type. N counts the function's dbgs, inner
+/// ones first (aipl_src/fmtlower.aipl lower_dbg writes the same).
+/// A struct, array, union, or result shows through its generated printer
+/// (debug_functions); a function reference as `<value> : T`.
+fn lower_dbg(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
+    lw.dbgs += 1;
+    let v = format!("_dbg_{}", lw.dbgs);
+    let t = lw.types.get(&(&args[1] as *const Expr as usize)).cloned().unwrap_or(Type::Void);
+    let value = args.remove(1);
+    let Expr::Lit(Literal::Str(label), _) = args.remove(0) else { return value };
+    let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
+    let var = || Expr::Var(v.clone(), span);
+    let start = |text: String| call("show.lit", vec![call("show.start", vec![]), Expr::Lit(Literal::Str(text), span)]);
+    let chain = if prints(&t) {
+        put(start(format!("{label} = ")), var(), &t, 0, lw, span)
+    } else {
+        start(format!("{label} = <value> : {}", source_type(&t)))
+    };
+    Expr::Block(vec![Expr::Let { name: v.clone(), ty: t, val: Box::new(value), span }, call("show.eprintln", vec![chain]), var()], span)
+}
+
+/// `(format.expect "label" c)`: when c is false, `(call testing.fail
+/// "label")`; a comparison binds its sides once, `(block (let _x_N:T a) (let
+/// _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "label" X
+/// Y)))`, X and Y the sides as the formatting forms print them. N counts the
+/// function's expects (aipl_src/fmtlower.aipl lower_expect writes the same).
+fn lower_expect(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
+    let cond = args.remove(1);
+    let Expr::Lit(Literal::Str(label), _) = args.remove(0) else { return cond };
+    let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
+    let label_lit = || Expr::Lit(Literal::Str(label.clone()), span);
+    let fail = |c: Expr, why: Expr| Expr::If { cond: Box::new(c), then_branch: Box::new(Expr::Block(vec![], span)), else_branch: Box::new(why), span };
+    let side_type = match &cond {
+        Expr::Op { op, args: sides, .. }
+            if matches!(op, OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte) && sides.len() == 2 =>
+        {
+            lw.types.get(&(&sides[0] as *const Expr as usize)).cloned()
+        }
+        _ => None,
+    };
+    let (Some(t), Expr::Op { op, args: mut sides, span: cs }) = (side_type.filter(prints), cond.clone()) else {
+        return fail(cond, call("testing.fail", vec![label_lit()]));
+    };
+    lw.expects += 1;
+    let (x, y) = (format!("_x_{}", lw.expects), format!("_y_{}", lw.expects));
+    let b = sides.pop().unwrap();
+    let a = sides.pop().unwrap();
+    let shown = |v: &str| call("show.done", vec![put(call("show.start", vec![]), Expr::Var(v.into(), span), &t, 0, lw, span)]);
+    let compare = Expr::Op { op, args: vec![Expr::Var(x.clone(), span), Expr::Var(y.clone(), span)], span: cs };
+    Expr::Block(
+        vec![
+            Expr::Let { name: x.clone(), ty: t.clone(), val: Box::new(a), span },
+            Expr::Let { name: y.clone(), ty: t.clone(), val: Box::new(b), span },
+            fail(compare, call("testing.fail_cmp", vec![label_lit(), shown(&x), shown(&y)])),
+        ],
+        span,
+    )
+}
+
+/// A type as source writes it: instances of generic types, which the flat
+/// program names `option.Option<i32>`, as `(option.Option i32)`
+/// (aipl_src/fmtlower.aipl source_type writes the same).
+pub fn source_type(t: &Type) -> String {
+    fn convert(s: &str) -> String {
+        let Some(open) = s.find('<') else { return s.to_string() };
+        // the matching '>', and the arguments between, split at depth 0
+        let (mut depth, mut args, mut from) = (0, Vec::new(), open + 1);
+        for (k, c) in s.char_indices().skip(open) {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        args.push(convert(&s[from..k]));
+                        let rest = convert(&s[k + 1..]);
+                        let base = &s[..open];
+                        // a base after other text (inside "(ptr ...") keeps that text
+                        let split = base.rfind([' ', '(', '[']).map_or(0, |p| p + 1);
+                        return format!("{}({} {}){rest}", &base[..split], &base[split..], args.join(" "));
+                    }
+                }
+                ',' if depth == 1 => {
+                    args.push(convert(&s[from..k]));
+                    from = k + 1;
+                }
+                _ => {}
+            }
+        }
+        s.to_string()
+    }
+    convert(&t.to_string())
 }
 
 /// What lowering a function's body needs: the noted types, the enums'
@@ -371,6 +625,10 @@ struct Lower<'a> {
     enums: &'a HashMap<String, Vec<String>>,
     ret: Type,
     tries: u32,
+    dbgs: u32,
+    expects: u32,
+    /// the types printed through a generated printer (debug_functions)
+    roots: &'a std::cell::RefCell<Vec<Type>>,
 }
 
 /// Step 3: every formatting form in `module` replaced by `std/show` calls,
@@ -392,8 +650,9 @@ pub fn lower(module: &mut Module) {
     let Some(types) = crate::checker::TypeChecker::format_types(module) else { return };
     let enums: HashMap<String, Vec<String>> =
         module.enums.iter().map(|e| (e.name.clone(), e.members.iter().map(|(m, _)| m.clone()).collect())).collect();
+    let roots = std::cell::RefCell::new(Vec::new());
     for f in &mut module.functions {
-        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0 };
+        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0, dbgs: 0, expects: 0, roots: &roots };
         for e in &mut f.body {
             match e {
                 // a defer's statements, lowered where they are
@@ -408,6 +667,166 @@ pub fn lower(module: &mut Module) {
             }
         }
     }
+    let roots = roots.into_inner();
+    if !roots.is_empty() {
+        let text = debug_functions(&roots, module);
+        let unions = module.unions.iter().map(|u| u.name.clone()).collect();
+        let values = module.structs.iter().filter(|s| s.is_value).map(|s| s.name.clone()).collect();
+        // a failure here is this file's bug; the checker then names the missing printer
+        if let Ok(m) = Parser::tokenize(&format!("(module show_debug\n{text})")).and_then(|t| Parser::parse_tokens_with(t, unions, values)) {
+            module.functions.extend(m.functions);
+        }
+    }
+}
+
+/// A generated printer's name: `show.debug.` and its type as the flat
+/// program writes it, brackets and spaces as `<`, `>`, and `,`
+/// (`show.debug.<ptr,Row>`).
+pub fn debug_name(t: &Type) -> String {
+    format!("show.debug.{}", crate::printer::type_str(t).replace('(', "<").replace(')', ">").replace(' ', ","))
+}
+
+/// The printers (F3b, docs/design/FEEDBACK_TOOLS_PLAN.md) for the types in
+/// `roots` and for the value structs, unions, and results inside them, as
+/// source text, sorted by name; aipl_src/fmtdebug.aipl writes the same text.
+/// Each `(fn NAME [b:(ptr buf.Buf) v:T] -> (ptr buf.Buf) ...)` appends v to b:
+/// a struct behind a pointer as `Row{n: 2, name: "a"}` (or `null`), a pointer
+/// or array inside it as its type and address, so a cycle cannot loop; a
+/// value struct the same; a union as `variant{field: value}` or `variant`; a
+/// result as `ok(v)` or `err(e)`; an array as `[1, 2, 3]`, up to 16 elements.
+/// Text inside a value is quoted.
+pub fn debug_functions(roots: &[Type], module: &Module) -> String {
+    let mut need = std::collections::BTreeMap::new();
+    for t in roots {
+        need_printer(t, module, &mut need);
+    }
+    let mut out = String::new();
+    for (name, t) in &need {
+        out.push_str(&printer_text(name, t, module));
+        out.push('\n');
+    }
+    out
+}
+
+fn need_printer(t: &Type, m: &Module, need: &mut std::collections::BTreeMap<String, Type>) {
+    let name = debug_name(t);
+    if need.contains_key(&name) || printable(t) || !prints(t) {
+        return;
+    }
+    need.insert(name, t.clone());
+    let fields = |n: &str| m.structs.iter().find(|s| s.name == n).map(|s| s.fields.iter().map(|f| f.ty.clone()).collect::<Vec<_>>()).unwrap_or_default();
+    let inside: Vec<Type> = match t {
+        Type::Ptr(s) => match &**s {
+            Type::Struct(n) => fields(n),
+            _ => vec![],
+        },
+        Type::Struct(n) => fields(n),
+        Type::Array(e) => vec![(**e).clone()],
+        Type::Union(u) => m.unions.iter().find(|x| x.name == *u).into_iter().flat_map(|x| x.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))).collect(),
+        Type::ResultType(a, b) => vec![(**a).clone(), (**b).clone()],
+        _ => vec![],
+    };
+    for f in inside {
+        // a pointer or array inside shows its address: only values recurse
+        if matches!(f, Type::Struct(_) | Type::Union(_) | Type::ResultType(..)) {
+            need_printer(&f, m, need);
+        }
+    }
+}
+
+/// `(call show.lit b "s")`.
+fn lit_text(s: &str) -> String {
+    format!("(call show.lit b \"{s}\")")
+}
+
+/// The statements that append `e`, of type `t`, inside a printed value.
+fn elem_text(e: &str, t: &Type, m: &Module) -> String {
+    let put = |f: &str| format!("(call show.{f} b {e} 0)");
+    let quoted = |f: &str| format!("{} {} {}", lit_text("\\\""), put(f), lit_text("\\\""));
+    match t {
+        // a storage type (u8, i8, u16, i16) reads as an i32
+        Type::I32 | Type::Narrow(_) => put("put_i32"),
+        Type::I64 => put("put_i64"),
+        Type::F32 => put("put_f32"),
+        Type::F64 => put("put_f64"),
+        Type::Bool => put("put_bool"),
+        Type::Str => quoted("put_str"),
+        Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()) => quoted("put_bytes"),
+        Type::Enum(n) => {
+            let members: Vec<String> = m.enums.iter().find(|x| x.name == *n).map(|x| x.members.iter().map(|(k, _)| format!(" ({n}.{k} \"{k}\")")).collect()).unwrap_or_default();
+            format!("(call show.put_str b (match {e}{}) 0)", members.concat())
+        }
+        Type::Ptr(_) => format!("(call show.debug_addr b \"{}\" (unsafe (ptr.addr {e})))", source_type(t)),
+        Type::Array(_) => format!("(call show.debug_addr b \"{}\" (unsafe (arr.addr {e})))", source_type(t)),
+        Type::Struct(_) | Type::Union(_) | Type::ResultType(..) => format!("(call {} b {e})", debug_name(t)),
+        Type::Fn(..) => lit_text("<fn>"),
+        _ => lit_text("?"),
+    }
+}
+
+/// `{` fields `}`: each `name: value`, `, ` between, read with `get_of(name)`.
+fn fields_text(head: &str, fields: &[crate::ast::StructField], get_of: &dyn Fn(&str) -> String, m: &Module) -> Vec<String> {
+    let mut parts = vec![lit_text(&format!("{head}{{"))];
+    for (k, f) in fields.iter().enumerate() {
+        parts.push(lit_text(&format!("{}{}: ", if k == 0 { "" } else { ", " }, f.name)));
+        parts.push(elem_text(&get_of(&f.name), &f.ty, m));
+    }
+    parts.push(lit_text("}"));
+    parts
+}
+
+fn printer_text(name: &str, t: &Type, m: &Module) -> String {
+    let header = format!("(fn {name} [b:(ptr buf.Buf) v:{}] -> (ptr buf.Buf) ", crate::printer::type_str(t));
+    let fields_of = |n: &str| m.structs.iter().find(|s| s.name == n).map(|s| s.fields.clone()).unwrap_or_default();
+    let body = match t {
+        Type::Ptr(s) => {
+            let n = match &**s {
+                Type::Struct(n) => n.clone(),
+                _ => String::new(),
+            };
+            let parts = fields_text(&source_type(s), &fields_of(&n), &|f| format!("(get v {n}.{f})"), m);
+            format!("(if (eq (unsafe (ptr.addr v)) 0) {} (block {}))", lit_text("null"), parts.join(" "))
+        }
+        Type::Struct(n) => fields_text(&source_type(t), &fields_of(n), &|f| format!("(get v {n}.{f})"), m).join(" "),
+        Type::Union(u) => {
+            let variants = m.unions.iter().find(|x| x.name == *u).map(|x| x.variants.clone()).unwrap_or_default();
+            let arms: Vec<String> = variants
+                .iter()
+                .enumerate()
+                .map(|(k, v)| {
+                    if v.fields.is_empty() {
+                        return format!("({u}.{} {})", v.name, lit_text(&v.name));
+                    }
+                    let binders: Vec<String> = (0..v.fields.len()).map(|j| format!("_d{k}_{j}")).collect();
+                    let names: Vec<&str> = v.fields.iter().map(|f| f.name.as_str()).collect();
+                    let parts = fields_text(&v.name, &v.fields, &|f| binders[names.iter().position(|x| *x == f).unwrap()].clone(), m);
+                    format!("({u}.{} [{}] (block {}))", v.name, binders.join(" "), parts.join(" "))
+                })
+                .collect();
+            format!("(match v {})", arms.join(" "))
+        }
+        Type::ResultType(a, e) => format!(
+            "(match_result v (ok _ok (block {} {} {})) (err _err (block {} {} {})))",
+            lit_text("ok("),
+            elem_text("_ok", a, m),
+            lit_text(")"),
+            lit_text("err("),
+            elem_text("_err", e, m),
+            lit_text(")")
+        ),
+        Type::Array(e) => format!(
+            "(if (eq (unsafe (arr.addr v)) 0) {} (block {} (let n:i32 (arr.len v)) (loop i 0 (- (if (gt n 16) 16 n) 1) 1 (if (gt i 0) {} b) {}) (if (gt n 16) (block {} (call show.put_i32 b (- n 16) 0) {}) b) {}))",
+            lit_text("null"),
+            lit_text("["),
+            lit_text(", "),
+            elem_text(&format!("(arr.get {} v i)", crate::printer::type_str(e)), e, m),
+            lit_text(", ... "),
+            lit_text(" more"),
+            lit_text("]")
+        ),
+        _ => lit_text("?"),
+    };
+    format!("{header}{body} b)")
 }
 
 /// A body's defers, once its tries are lowered: each return after a defer
@@ -537,6 +956,15 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
             return;
         }
     };
+    if op == OpCode::FormatDbg || op == OpCode::FormatExpect {
+        // the operand first (a dbg inside it is numbered before this one)
+        for a in args.iter_mut() {
+            lower_expr(a, lw);
+        }
+        let args = std::mem::take(args);
+        *e = if op == OpCode::FormatDbg { lower_dbg(args, span, lw) } else { lower_expect(args, span, lw) };
+        return;
+    }
     if !is_format(&op) {
         // the operands first (a try inside a try's operand), keeping the
         // operand's address until its type is read
@@ -547,7 +975,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
         *e = lower_try(&op, args, span, lw);
         return;
     }
-    let (types, enums) = (lw.types, lw.enums);
+    let types = lw.types;
     // each piece's type, by its value's address, before anything moves
     let piece_types: Vec<Option<Type>> = args
         .iter()
@@ -587,26 +1015,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
                     _ => 0,
                 };
                 let value = pa.pop().unwrap();
-                let (func, value) = match &t {
-                    Type::I32 => ("show.put_i32", value),
-                    Type::I64 => ("show.put_i64", value),
-                    Type::F32 => ("show.put_f32", value),
-                    Type::F64 => ("show.put_f64", value),
-                    Type::Bool => ("show.put_bool", value),
-                    Type::Str => ("show.put_str", value),
-                    Type::Enum(name) => {
-                        // the member's name: (match v (E.a "a") (E.b "b") ...)
-                        let arms = enums.get(name).into_iter().flatten().map(|m| MatchArm {
-                            member: format!("{name}.{m}"),
-                            binders: None,
-                            body: vec![Expr::Lit(Literal::Str(m.clone()), span)],
-                            span,
-                        });
-                        ("show.put_str", Expr::Match { value: Box::new(value), arms: arms.collect(), else_body: None, span })
-                    }
-                    _ => ("show.put_bytes", value),
-                };
-                call(func, vec![chain, value, Expr::Lit(Literal::Int(spec as i64), span)])
+                put(chain, value, &t, spec as i64, lw, span)
             }
             (lit, _) => call("show.lit", vec![chain, lit]),
         };

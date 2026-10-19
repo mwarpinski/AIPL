@@ -82,6 +82,16 @@ struct ModuleSx {
     name: String,
     imports: Vec<(String, Option<String>)>,
     items: Vec<Sx>,
+    /// its `(test "name" ...)` items: each name and where it is
+    tests: Vec<TestInfo>,
+}
+
+/// One `(test "name" body...)` of a module: its name, line, and column.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestInfo {
+    pub name: String,
+    pub line: u32,
+    pub col: u32,
 }
 
 impl Resolver {
@@ -110,8 +120,34 @@ impl Resolver {
             .map_err(|_| "the resolver thread panicked".to_string())?
     }
 
+    /// A test build of the file at `entry_path` (AIPL_SPEC.md 4.L): its
+    /// tests are the functions `__test_0`, `__test_1`, ..., and its `_start`
+    /// runs the one its first argument names and exits with that test's
+    /// failure count (std/testing); with each test's name and place.
+    pub fn resolve_tests(entry_path: &Path) -> Result<(Module, Vec<TestInfo>), String> {
+        let src = fs::read_to_string(entry_path).map_err(|e| format!("{}: Cannot read: {}", entry_path.display(), e))?;
+        let tests = read_module(&src, &file_name(entry_path), false).map_err(|e| format!("{}: {}", entry_path.display(), e))?.tests;
+        let path = entry_path.to_path_buf();
+        let module = std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || Self::resolve_with(&src, &path, true))
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())??;
+        Ok((module, tests))
+    }
+
+    /// The `(test ...)` items of the module in `src` (at `path`), in order.
+    pub fn test_names(src: &str, path: &Path) -> Result<Vec<TestInfo>, String> {
+        Ok(read_module(src, &file_name(path), false).map_err(|e| format!("{}: {}", path.display(), e))?.tests)
+    }
+
     fn resolve_on_this_thread(entry_src: &str, entry_path: &Path) -> Result<Module, String> {
-        let flat = Self::flatten(entry_src, entry_path)?;
+        Self::resolve_with(entry_src, entry_path, false)
+    }
+
+    fn resolve_with(entry_src: &str, entry_path: &Path, tests: bool) -> Result<Module, String> {
+        let flat = Self::flatten_with(entry_src, entry_path, tests)?;
         // every template checked once, at placeholders for its type
         // parameters (generics::archetypes); nothing is compiled from these
         if let Some(arch) = crate::generics::archetypes(flat.clone())? {
@@ -154,7 +190,12 @@ impl Resolver {
 
     /// Resolution without generic expansion or parsing.
     pub fn flatten(entry_src: &str, entry_path: &Path) -> Result<FlatProgram, String> {
-        let entry = read_module(entry_src).map_err(|e| format!("{}: {}", entry_path.display(), e))?;
+        Self::flatten_with(entry_src, entry_path, false)
+    }
+
+    /// `flatten`, the entry's tests made functions when `tests` (resolve_tests).
+    fn flatten_with(entry_src: &str, entry_path: &Path, tests: bool) -> Result<FlatProgram, String> {
+        let entry = read_module(entry_src, &file_name(entry_path), tests).map_err(|e| format!("{}: {}", entry_path.display(), e))?;
         let mut st = State {
             entry_path,
             included: HashSet::new(),
@@ -196,7 +237,15 @@ fn parse_item(module_name: &str, item: &Item, unions: &HashSet<String>, values: 
     })
 }
 
-fn read_module(src: &str) -> Result<ModuleSx, String> {
+/// A path's last component, as dbg labels name a file.
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Reads a module. Its `(test ...)` items are left out, or, when `tests`
+/// (the entry of a test build), become functions and a `_start`
+/// (test_functions).
+fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
     let sx = Sx::read_one(&Parser::tokenize(src)?)?;
     let (line, col) = sx.position();
     if sx.head() != Some("module") {
@@ -205,7 +254,22 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
     let name = sx.items().get(1).and_then(|n| n.symbol()).ok_or(format!("{}:{}: the module needs a name", line, col))?;
     let mut imports = Vec::new();
     let mut items = Vec::new();
+    let mut test_items = Vec::new();
+    let mut infos = Vec::new();
     for item in &sx.items()[2..] {
+        if item.head() == Some("test") {
+            let (l, c) = item.position();
+            let name = match item.items().get(1) {
+                Some(Sx::Atom(Token { kind: TokenKind::StringLit(s), .. })) => s.clone(),
+                _ => return Err(format!("{}:{}: a test is (test \"name\" body...)", l, c)),
+            };
+            infos.push(TestInfo { name, line: l, col: c });
+            test_items.push(item.clone());
+            continue;
+        }
+        if let Some((l, c)) = item.find_head("expect") {
+            return Err(format!("{}:{}: expect is only for a test's body: (test \"name\" ... (expect c))", l, c));
+        }
         if item.head() == Some("import") {
             let parts = item.items();
             let (l, c) = item.position();
@@ -221,6 +285,9 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
             items.push(item.clone());
         }
     }
+    if tests && !test_items.is_empty() {
+        test_functions(&test_items, &mut imports, &mut items)?;
+    }
     // the formatting forms become std/show calls (formats.rs): a module that
     // uses one imports it, after its own imports; their strings are split
     // here, before names are qualified, so a placeholder's names are renamed
@@ -230,13 +297,53 @@ fn read_module(src: &str) -> Result<ModuleSx, String> {
             imports.push(("show".to_string(), None));
         }
         for item in items.iter_mut() {
-            crate::formats::split(item, &|sx, msg| {
+            crate::formats::split(item, src, file, &|sx, msg| {
                 let (l, c) = sx.position();
                 format!("{}:{}: {}", l, c, msg)
             })?;
         }
     }
-    Ok(ModuleSx { name: name.to_string(), imports, items })
+    Ok(ModuleSx { name: name.to_string(), imports, items, tests: infos })
+}
+
+/// A test build's entry: test K as `(fn __test_K [] -> void body...)`, and
+/// `(fn _start [] -> void ...)` running the one argument 1 names, then
+/// exiting with its failure count; std/testing and std/os imported. The
+/// generated tokens are all at the test's place (the `_start`'s at the first
+/// test's), as aipl_src/resolver.aipl writes them.
+fn test_functions(tests: &[Sx], imports: &mut Vec<(String, Option<String>)>, items: &mut Vec<Sx>) -> Result<(), String> {
+    for m in ["testing", "os"] {
+        if !imports.iter().any(|(i, _)| module_name(i) == m) {
+            imports.push((m.to_string(), None));
+        }
+    }
+    let at = tests[0].position();
+    if let Some(start) = items.iter().find(|i| i.head() == Some("fn") && i.items().get(1).and_then(|n| n.symbol()) == Some("_start")) {
+        let (l, c) = start.position();
+        return Err(format!("{}:{}: a test build makes its own _start: test a module without one", l, c));
+    }
+    let read = |text: &str, pos: (u32, u32)| -> Result<Sx, String> {
+        let mut sx = Sx::read_one(&Parser::tokenize(text)?)?;
+        crate::formats::move_to(&mut sx, pos);
+        Ok(sx)
+    };
+    let mut arms = String::new();
+    for (k, t) in tests.iter().enumerate() {
+        let mut f = read(&format!("(fn __test_{k} [] -> void)"), t.position())?;
+        let body: Vec<Sx> = t.items()[2..].to_vec();
+        let items_of = f.items_mut().ok_or("a test function")?;
+        if body.is_empty() {
+            items_of.push(read("(block)", t.position())?);
+        }
+        items_of.extend(body);
+        items.push(f);
+        arms.push_str(&format!(" ((eq k {k}) (call __test_{k}))"));
+    }
+    items.push(read(
+        &format!("(fn _start [] -> void (let k:i32 (call os.arg_int 1 -1)) (cond{arms} (else (block))) (sys.exit (call testing.status (call testing.failures))))"),
+        at,
+    )?);
+    Ok(())
 }
 
 /// A module's name: the last segment of its import path
@@ -285,7 +392,7 @@ fn resolve_import(st: &mut State, name: &str, importer_path: &Path) -> Result<()
     }
     st.in_progress.insert(file_path.clone());
     let src = fs::read_to_string(&file_path).map_err(|e| format!("{}: Cannot read: {}", file_path.display(), e))?;
-    let module = read_module(&src).map_err(|e| format!("{}: {}", file_path.display(), e))?;
+    let module = read_module(&src, &file_name(&file_path), false).map_err(|e| format!("{}: {}", file_path.display(), e))?;
     for (sub, _) in &module.imports {
         resolve_import(st, sub, &file_path)?;
     }

@@ -31,8 +31,10 @@
 
   ;; ===== Starting and finishing =====
 
+  ;; A new buffer to format into (the start of (format ...) and (println ...)).
   (fn start [] -> (ptr buf.Buf) (pub) (call buf.make (call alloc.default) 64))
 
+  ;; Appends the text s to b; returns b.
   (fn lit [b:(ptr buf.Buf) s:str] -> (ptr buf.Buf) (pub)
     (call buf.push_str b s)
     b)
@@ -46,14 +48,24 @@
   ;; The end of (format_to b "..."): the text stays in b.
   (fn end_to [b:(ptr buf.Buf)] -> void (pub) (block))
 
+  ;; A pointer or array inside a value being shown (formats.rs
+  ;; debug_functions): null, or its type and address.
+  (fn debug_addr [b:(ptr buf.Buf) label:str addr:i32] -> (ptr buf.Buf) (pub)
+    (if (eq addr 0)
+        (call lit b "null")
+        (block (call lit b label) (call lit b " @ ") (call put_i32 b addr 0))))
+
+  ;; Writes b to standard output and frees it.
   (fn print [b:(ptr buf.Buf)] -> void (pub)
     (let _n:i32 (call buf.write b 1))
     (call buf.free b))
 
+  ;; Writes b and a newline to standard output and frees it.
   (fn println [b:(ptr buf.Buf)] -> void (pub)
     (call buf.push_byte b 10)
     (call print b))
 
+  ;; Writes b and a newline to standard error and frees it.
   (fn eprintln [b:(ptr buf.Buf)] -> void (pub)
     (call buf.push_byte b 10)
     (let _n:i32 (call buf.write b 2))
@@ -109,26 +121,31 @@
 
   ;; ===== Text, bools, integers =====
 
+  ;; Appends v under spec s (a word from spec); returns b.
   (fn put_str [b:(ptr buf.Buf) v:str s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call buf.push_str b v)
     (call pad b from s false)
     b)
 
+  ;; Appends the bytes of v under spec s; returns b.
   (fn put_bytes [b:(ptr buf.Buf) v:(ptr str.Bytes) s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call buf.push_bytes b v)
     (call pad b from s false)
     b)
 
+  ;; Appends true or false under spec s; returns b.
   (fn put_bool [b:(ptr buf.Buf) v:bool s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call buf.push_str b (if v "true" "false"))
     (call pad b from s false)
     b)
 
+  ;; Appends v in decimal (or the spec's base) under spec s; returns b.
   (fn put_i32 [b:(ptr buf.Buf) v:i32 s:i32] -> (ptr buf.Buf) (pub) (call put_i64 b (i64.extend_s v) s))
 
+  ;; Appends v in decimal (or the spec's base) under spec s; returns b.
   (fn put_i64 [b:(ptr buf.Buf) v:i64 s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (cond
@@ -144,12 +161,15 @@
 
   ;; ===== Floats =====
 
+  ;; Appends v, as Python's repr or with the spec's decimals; returns b.
   (fn put_f64 [b:(ptr buf.Buf) v:f64 s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call float b v s false)
     (call pad b from s true)
     b)
 
+  ;; Appends v, its shortest digits as an f32, or with the spec's
+  ;; decimals; returns b.
   (fn put_f32 [b:(ptr buf.Buf) v:f32 s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call float b (f64.promote v) s true)

@@ -952,7 +952,7 @@
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)
     (call form m "format" Form.fmt_surface) (call form m "format_to" Form.fmt_surface) (call form m "print" Form.fmt_surface)
-    (call form m "println" Form.fmt_surface) (call form m "eprintln" Form.fmt_surface)
+    (call form m "println" Form.fmt_surface) (call form m "eprintln" Form.fmt_surface) (call form m "dbg" Form.fmt_surface) (call form m "expect" Form.fmt_surface)
     m)
 
   (fn op [m:(ptr (map.Map (ptr str.Bytes) i32)) s:str o:ast.Op] -> void
@@ -973,7 +973,7 @@
     (call op m "format.str" ast.Op.format_str) (call op m "format.to" ast.Op.format_to)
     (call op m "format.print" ast.Op.format_print) (call op m "format.println" ast.Op.format_println)
     (call op m "format.eprintln" ast.Op.format_eprintln) (call op m "format.piece" ast.Op.format_piece)
-    (call op m "try" ast.Op.try_) (call op m "try_opt" ast.Op.try_opt) (call op m "try_or" ast.Op.try_or) (call op m "defer" ast.Op.defer)
+    (call op m "try" ast.Op.try_) (call op m "try_opt" ast.Op.try_opt) (call op m "try_or" ast.Op.try_or) (call op m "defer" ast.Op.defer) (call op m "format.dbg" ast.Op.format_dbg) (call op m "format.expect" ast.Op.format_expect)
     (call op m "atomic.add" ast.Op.atomic_add) (call op m "atomic.cas" ast.Op.atomic_cas)
     (call op m "atomic.lock" ast.Op.atomic_lock) (call op m "atomic.unlock" ast.Op.atomic_unlock)
     (call op m "eq" ast.Op.eq) (call op m "neq" ast.Op.neq) (call op m "lt" ast.Op.lt) (call op m "lte" ast.Op.lte)

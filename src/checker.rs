@@ -474,6 +474,9 @@ pub struct TypeChecker {
     formats: std::cell::RefCell<HashMap<usize, Type>>,
     /// Inside a `(defer ...)`, which may not return (it runs as the function does).
     in_defer: std::cell::Cell<bool>,
+    /// Each checked function's body type, its last expression's: `aipl eval
+    /// -e` reads its wrapper's to print the value (body_type).
+    bodies: std::cell::RefCell<HashMap<String, Type>>,
 }
 
 impl Default for TypeChecker {
@@ -499,6 +502,7 @@ impl TypeChecker {
             payloads: std::cell::RefCell::new(HashMap::new()),
             formats: std::cell::RefCell::new(HashMap::new()),
             in_defer: std::cell::Cell::new(false),
+            bodies: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -582,6 +586,12 @@ impl TypeChecker {
 
     /// The type of every formatting piece's value in `module`, by the value's
     /// address, if the module checks (formats::lower).
+    /// The type of the last expression of function `name`'s body, once
+    /// check_module has checked it (a `void` function's included).
+    pub fn body_type(&self, name: &str) -> Option<Type> {
+        self.bodies.borrow().get(name).cloned()
+    }
+
     pub fn format_types(module: &Module) -> Option<HashMap<usize, Type>> {
         let mut checker = TypeChecker::new();
         checker.check_module(module).ok()?;
@@ -1012,6 +1022,7 @@ impl TypeChecker {
         }
         *self.return_type.borrow_mut() = None;
         result?;
+        self.bodies.borrow_mut().insert(f.name.clone(), last_ty.clone());
 
         // A body may end in (return v) instead of a bare value.
         let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));
@@ -1223,11 +1234,8 @@ impl TypeChecker {
                                 let Expr::Lit(Literal::Str(text), _) = &pa[1] else {
                                     return Err(format!("{}:{}: a piece's format is a string literal", pl, pc));
                                 };
-                                if !crate::formats::printable(&t) {
-                                    return Err(format!(
-                                        "{}:{}: format cannot print {}: it prints numbers, bool, str, (ptr str.Bytes), and enums",
-                                        pl, pc, t
-                                    ));
+                                if !crate::formats::prints(&t) {
+                                    return Err(format!("{}:{}: format cannot print {}: it prints every value but void and function references", pl, pc, t));
                                 }
                                 let spec = crate::formats::Spec::parse(text).map_err(|m| format!("{}:{}: {}", pl, pc, m))?;
                                 if let Some(m) = spec.misfit(&t) {
@@ -1244,6 +1252,35 @@ impl TypeChecker {
                     Ok(if *op == OpCode::FormatStr { Type::Str } else { Type::Void })
                 }
                 OpCode::FormatPiece => Err(format!("{}:{}: format.piece is part of a format string", l, c)),
+                OpCode::FormatExpect => {
+                    let (Some(Expr::Lit(Literal::Str(_), _)), Some(cond), 2) = (args.first(), args.get(1), args.len()) else {
+                        return Err(format!("{}:{}: expect takes one condition, e.g. (expect (eq n 3))", l, c));
+                    };
+                    let t = self.infer_expr_type(cond, env)?;
+                    if t != Type::Bool {
+                        return Err(format!("{}:{}: expect takes a bool, e.g. (expect (eq n 3)), got {}", l, c, t));
+                    }
+                    // a comparison's sides, to show them when it fails (formats::lower)
+                    if let Expr::Op { op: cmp, args: sides, .. } = cond {
+                        if matches!(cmp, OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte) && sides.len() == 2 {
+                            let st = self.infer_expr_type(&sides[0], env)?;
+                            self.formats.borrow_mut().insert(&sides[0] as *const Expr as usize, st);
+                        }
+                    }
+                    Ok(Type::Void)
+                }
+                OpCode::FormatDbg => {
+                    let (Some(Expr::Lit(Literal::Str(_), _)), Some(v), 2) = (args.first(), args.get(1), args.len()) else {
+                        return Err(format!("{}:{}: dbg takes one expression, e.g. (dbg (call f x))", l, c));
+                    };
+                    let t = self.infer_expr_type(v, env)?;
+                    if t == Type::Void {
+                        return Err(format!("{}:{}: dbg shows a value, and this expression has none (it is void)", l, c));
+                    }
+                    // the value's type, for formats::lower
+                    self.formats.borrow_mut().insert(v as *const Expr as usize, t.clone());
+                    Ok(t)
+                }
                 OpCode::Try | OpCode::TryOpt | OpCode::TryOr => {
                     if self.in_defer.get() {
                         return Err(format!("{}:{}: a defer cannot {}: it runs as the function returns", l, c, op));

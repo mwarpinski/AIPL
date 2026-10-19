@@ -179,6 +179,8 @@ pub fn op_name(op: &OpCode) -> &'static str {
         TryOpt => "try_opt",
         TryOr => "try_or",
         Defer => "defer",
+        FormatDbg => "format.dbg",
+        FormatExpect => "format.expect",
         AtomicAdd => "atomic.add",
         AtomicCas => "atomic.cas",
         AtomicLock => "atomic.lock",

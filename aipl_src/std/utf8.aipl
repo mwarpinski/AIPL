@@ -78,7 +78,9 @@
         (or (or (eq cp 5760) (and (gte cp 8192) (lte cp 8202)))
             (or (or (eq cp 8232) (eq cp 8233)) (or (eq cp 8239) (or (eq cp 8287) (eq cp 12288)))))))
 
+  ;; Whether cp is an ASCII letter (A-Z, a-z).
   (fn is_ascii_letter [cp:i32] -> bool (pub) (or (and (gte cp 65) (lte cp 90)) (and (gte cp 97) (lte cp 122))))
+  ;; Whether cp is an ASCII digit (0-9).
   (fn is_ascii_digit [cp:i32] -> bool (pub) (and (gte cp 48) (lte cp 57)))
 
   ;; ===== Tests =====

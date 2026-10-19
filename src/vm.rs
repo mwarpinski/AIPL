@@ -1286,7 +1286,7 @@ impl VM {
     fn eval_op(&mut self, op: &OpCode, args: &[Expr], scope: &mut HashMap<String, Value>) -> Result<Value, String> {
         match op {
             OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece
-            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => {
+            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg | OpCode::FormatExpect => {
                 Err(format!("{op} is lowered by the resolver (formats::lower); load a resolved module"))
             }
             OpCode::Add => {

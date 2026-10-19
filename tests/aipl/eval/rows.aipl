@@ -1,0 +1,11 @@
+;; A module for aipl eval --with (tests/test_eval_expr.rs): its functions,
+;; private ones included, are in scope; its main is not run.
+(module rows
+  (import str)
+  (struct Row [n:i32])
+  (enum Shade [light dark])
+  (fn count_commas [s:str] -> i32 (call str.count_byte (call str.from_str s) 44))
+  (fn parse_row [s:str] -> i32 (+ 1 (call count_commas s)))
+  (fn make_row [n:i32] -> (ptr Row) (let r:(ptr Row) (new Row)) (put r Row.n n) r)
+  (fn shade [k:i32] -> Shade (if (eq k 0) Shade.light Shade.dark))
+  (fn main [] -> i32 (println "main ran") 0))

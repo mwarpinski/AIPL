@@ -4,13 +4,16 @@
   (import str)
   (import fmt)
 
+  ;; Writes s to file descriptor fd (1 is stdout, 2 stderr).
   (fn write_str [fd:i32 s:str] -> void (pub)
     (unsafe (fs.write fd (str.ptr s) (str.len s))))
 
+  ;; Writes s and a newline to standard output.
   (fn println [s:str] -> void (pub)
     (call write_str 1 s)
     (call write_str 1 "\n"))
 
+  ;; Writes s and a newline to standard error.
   (fn eprintln [s:str] -> void (pub)
     (call write_str 2 s)
     (call write_str 2 "\n"))

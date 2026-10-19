@@ -39,7 +39,7 @@
             i32_trunc_f32_s i32_trunc_f64_s i64_trunc_f32_s f32_reinterpret_i32 i32_reinterpret_f32 f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
             str_len str_ptr fs_opendir fs_readdir fs_stat
             format_str format_to format_print format_println format_eprintln format_piece
-            try_ try_opt try_or defer] (pub))
+            try_ try_opt try_or defer format_dbg format_expect] (pub))
 
   ;; ptr.addr, arr.addr, enum.ord: a value's address or ordinal as an i32;
   ;; ptr.gen, arr.gen: the generation a pointer carries.

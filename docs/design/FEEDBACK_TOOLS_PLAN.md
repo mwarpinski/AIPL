@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1-F5 built 2026-10-18; F6 (std's tests as test forms) next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -61,6 +61,13 @@ $ aipl doc path/to/mod.aipl    # any module
   so it is a self-hosted subcommand. The Rust CLI's `aipl doc` compiles and
   runs that same program (decision D1).
 
+As built (2026-10-18): `aipl_src/doc.aipl`, about 660 lines, in only what
+the stage-0 seed compiles (no formatting forms, `try`, or `defer`); the
+Rust CLI's `aipl doc` is `src/tools.rs` compiling and running it (about 50
+ms a call). Generic items show as a caller writes them, `(option.unwrap_or
+T)`, and contracts follow the comment. `--check` found 88 undocumented
+public items in std, now documented (308 in 25 files).
+
 Why first: it is the cheapest, and the most useful to an agent, which today
 reads a 400-line file to learn one function's parameters. The prompt guide
 can then say "run `aipl doc MODULE`" instead of listing APIs inline.
@@ -94,6 +101,15 @@ $ aipl eval --with rows.aipl -e '(let r:(ptr Row) (call make_row 2)) (get r Row.
   yet (WASI cannot start a process, and AIPL has no interpreter of its own,
   section 7), which is the reason this is Rust.
 
+As built (2026-10-18): `src/evalexpr.rs`, about 300 lines. The
+expressions are checked inside a `void` wrapper, which gives their type
+(the checker records each function's body type, `body_type`); the second
+step changes the flat, already-resolved module rather than re-parsing, since
+the flat program names generic instances `option.Option<i32>`, which source
+cannot. The printer is a `(println ...)` built in the tree and lowered by
+`formats::lower` like any other. Exit status: 1 for an error in the VM,
+134 for a trap compiled, as for any program.
+
 ## F3. `(dbg e)`: see a value, keep going
 
 ```lisp
@@ -113,10 +129,27 @@ rows.aipl:12:16: (call distance p q) = 5
   give the same), and the position its file and line, as errors give them.
 - It stays in every build, as Rust's `dbg!` does; `aipl verify --no-dbg`
   refuses it where a project wants that (D5).
+- As built (2026-10-18): each resolver turns `(dbg e)` into `(format.dbg
+  "FILE:L:C: e" e)` while it still has the file's text (both take `e`'s text
+  from the source the same way, `formats.rs form_text`, `resolver.aipl
+  dbg_text`), the checker gives it `e`'s type, and the lowering binds
+  the value to `_dbg_N` (numbered per function, inner ones first, as
+  tries are). One rule was added: a placeholder cannot hold a `dbg`, since
+  its code has the string's position, not its own.
 - **F3b**, after: a struct (behind its pointer) and a value struct print
   their fields, `Row{n: 2, name: "a"}`, through a printer generated per
   type, for `dbg`, `eval -e`, and `{p}` in formatting. One level deep, so a
   cycle cannot loop.
+
+  As built (2026-10-18): both toolchains write the printers as source
+  text from the same template (formats.rs debug_functions,
+  aipl_src/fmtdebug.aipl), for each type printed and each value type
+  inside one, sorted by name, so the order the lowering meets them in
+  cannot differ; Rust parses the text, the AIPL toolchain appends it to the
+  program, and both codegens give these functions no line-table positions
+  (as `_start`). Arrays print too, up to 16 elements; unions as
+  `variant{field: value}`, results as `ok(v)` / `err(e)`. Every field
+  shows, private ones too. A value printed this way takes no format.
 
 ## F4. A test form: experiments that stay
 
@@ -165,6 +198,17 @@ rows.aipl
   into `std/show`). The runner, which instantiates and reports, is in the
   Rust CLI for the reason F2 gives.
 
+As built (2026-10-18): `aipl test` runs tests under aipl-run by default
+(wasm's semantics are the specification), each as `PROGRAM K` in a fresh
+process; the VM runs a test through `aipl test --run-one K --vm`, the same
+binary again, so its output is captured like the others'. `expect` is
+labelled and lowered as `dbg` is: the resolver writes the label from the
+source, the checker notes a comparison's side type, and the lowering binds
+both sides once and prints them only on failure, through the same
+printers (so a struct's fields show). std/testing keeps the failure count
+in runtime cell 24. The call chain of a trap names the test's function,
+`__test_K`.
+
 ## F5. `aipl watch`: the editor as the session
 
 ```
@@ -177,6 +221,10 @@ changes four times a second; on a change it clears the screen and shows
 `verify`'s errors, or the run's output, and how long it took. What a REPL
 would hold in a session is in a file you can see, save, and diff. Rust, for
 the reason F2 gives, and small (polling, no file-notification library).
+
+As built (2026-10-18): `src/watch.rs`, about 60 lines; the files it
+watches are the resolved program's (the standard modules it uses too),
+found again after each run.
 
 ## F6. Afterwards: std's tests become test forms
 

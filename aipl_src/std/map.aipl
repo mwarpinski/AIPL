@@ -28,6 +28,7 @@
     (put m (Map K V) count 0)
     (put m (Map K V) used 0))
 
+  ;; An empty map with room for about `capacity` entries, from a.
   (fn (make K V) [a:alloc.Allocator capacity:i32] -> (ptr (Map K V)) (pub) (where (cmp.Hash K))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
@@ -46,7 +47,9 @@
     (call (alloc.free_array V) a vals)
     (call (alloc.free_array i32) a states))
 
+  ;; The number of slots (for iterating with slot_used, slot_key, slot_val).
   (fn (capacity K V) [m:(ptr (Map K V))] -> i32 (pub) (where (cmp.Hash K)) (arr.len (get m (Map K V) keys)))
+  ;; The number of entries.
   (fn (count K V) [m:(ptr (Map K V))] -> i32 (pub) (where (cmp.Hash K)) (get m (Map K V) count))
 
   ;; The slot holding k, else the first reusable slot on k's probe path.
@@ -106,6 +109,7 @@
         (make (option.Option V) some (arr.get V (get m (Map K V) vals) i))
         (make (option.Option V) none)))
 
+  ;; Whether k has an entry.
   (fn (has K V) [m:(ptr (Map K V)) k:K] -> bool (pub) (where (cmp.Hash K))
     (eq (arr.get i32 (get m (Map K V) states) (call (slot_for K V) m k)) 1))
 
@@ -119,7 +123,9 @@
 
   ;; Iterate with (loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ...)).
   (fn (slot_used K V) [m:(ptr (Map K V)) i:i32] -> bool (pub) (where (cmp.Hash K)) (eq (arr.get i32 (get m (Map K V) states) i) 1))
+  ;; The key in slot i (slot_used must be true for it).
   (fn (slot_key K V) [m:(ptr (Map K V)) i:i32] -> K (pub) (where (cmp.Hash K)) (arr.get K (get m (Map K V) keys) i))
+  ;; The value in slot i (slot_used must be true for it).
   (fn (slot_val K V) [m:(ptr (Map K V)) i:i32] -> V (pub) (where (cmp.Hash K)) (arr.get V (get m (Map K V) vals) i))
 
   ;; ===== Tests =====

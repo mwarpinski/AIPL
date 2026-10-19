@@ -10,11 +10,14 @@
 ;; Use it instead of a sentinel (-1, a null pointer) when "nothing" is a
 ;; possible answer: the checker makes every match handle none.
 (module option
+  ;; A value of type T (some), or nothing (none).
   (union (Option T) [(some value:T) (none)] (pub))
 
+  ;; Whether o holds a value.
   (fn (is_some T) [o:(Option T)] -> bool (pub)
     (match o ((Option T) some [_] true) ((Option T) none false)))
 
+  ;; Whether o is none.
   (fn (is_none T) [o:(Option T)] -> bool (pub)
     (match o ((Option T) some [_] false) ((Option T) none true)))
 
@@ -24,6 +27,7 @@
 
   ;; ===== Tests =====
 
+  ;; Pass count; test_suite.aipl expects 7.
   (fn run_option_tests [] -> i32 (pub)
     (let p:i32 0)
     (let five:(Option i32) (make (Option i32) some 5))

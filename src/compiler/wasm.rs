@@ -226,6 +226,7 @@ impl WasmCompiler {
             }
 
             let mut func = Body::new(wasm_locals);
+            func.quiet = f.name.starts_with("show.debug.");
             let ctx = Ctx {
                 locals: &local_map,
                 addr_scratch,
@@ -471,6 +472,9 @@ pub(crate) struct Body {
     at: Vec<Pos>,
     /// (offset in the body, position)
     lines: Vec<(u32, Pos)>,
+    /// A compiler-made function, with no positions: the printers formatting
+    /// generates (`show.debug.*`, formats.rs debug_functions).
+    quiet: bool,
 }
 
 impl Body {
@@ -478,11 +482,11 @@ impl Body {
     where
         L::IntoIter: ExactSizeIterator,
     {
-        Body { f: Function::new(locals), at: Vec::new(), lines: Vec::new() }
+        Body { f: Function::new(locals), at: Vec::new(), lines: Vec::new(), quiet: false }
     }
 
     fn instruction(&mut self, i: &Instruction) -> &mut Self {
-        if let Some(p) = self.at.last() {
+        if let (Some(p), false) = (self.at.last(), self.quiet) {
             if traps_or_calls(i) && self.lines.last().map(|(_, q)| q) != Some(p) {
                 self.lines.push((self.f.byte_len() as u32, p.clone()));
             }
@@ -1206,7 +1210,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::Op { op, args, .. } => match op {
             OpCode::FormatStr => Type::Str,
             OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece => Type::Void,
-            OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => Type::Void,
+            OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg | OpCode::FormatExpect => Type::Void,
             OpCode::Add
             | OpCode::Sub
             | OpCode::Mul
@@ -1708,7 +1712,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
         }
         Expr::Op { op, args, .. } => match op {
             OpCode::FormatStr | OpCode::FormatTo | OpCode::FormatPrint | OpCode::FormatPrintln | OpCode::FormatEprintln | OpCode::FormatPiece
-            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer => {
+            | OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg | OpCode::FormatExpect => {
                 return Err(format!("Wasm Codegen: {op} is lowered by the resolver (formats::lower); compile a resolved module"));
             }
             OpCode::Add

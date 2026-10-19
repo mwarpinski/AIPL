@@ -90,6 +90,7 @@
 
   ;; b with ASCII letters in upper or lower case (other bytes as they are).
   (fn to_upper [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr buf.Buf) (pub) (call with_case a b true))
+  ;; b with ASCII letters in lower case (other bytes as they are).
   (fn to_lower [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr buf.Buf) (pub) (call with_case a b false))
 
   (fn with_case [a:alloc.Allocator b:(ptr str.Bytes) upper:bool] -> (ptr buf.Buf)

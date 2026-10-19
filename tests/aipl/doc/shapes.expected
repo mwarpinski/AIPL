@@ -1,0 +1,39 @@
+module shapes (tests/aipl/doc/shapes.aipl)
+    shapes: a fixture for aipl doc (tests/test_doc.rs), with every kind of
+    item it shows.
+
+      (call shapes.area s)
+
+struct shapes.Box [(read w:i32) (pub h:i32)] and 1 private field
+    A shape's size, readable and writable.
+
+struct shapes.Point [(read x:f64) (read y:f64)] (value)
+    A point, held by value.
+
+struct shapes.Hidden [] and 2 private fields
+    Nothing outside can read it.
+
+union shapes.Shape [(circle r:f64) (boxed b:(ptr shapes.Box))]
+    A circle or a box.
+
+enum shapes.Style [solid dashed]
+    How it is drawn.
+
+const shapes.MAX:i32 = 4096
+    The largest side.
+
+interface (shapes.Area T)
+    Shapes that know their area.
+    (fn area_of [s:T] -> f64)
+
+fn shapes.undocumented [] -> i32
+
+fn shapes.area [s:shapes.Shape] -> f64
+    The area of s.
+
+fn (shapes.larger T) [a:T b:T] -> T (where (cmp.Ord T))
+    The larger of a and b, for any ordered T.
+    (req true)
+
+fn shapes.peek [addr:i32] -> i32 (unsafe)
+    A raw byte. Unsafe to call: any address.

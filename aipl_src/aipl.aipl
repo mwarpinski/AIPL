@@ -6,6 +6,7 @@
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
 ;;   aipl compile --exe [--sandbox] FILE.aipl -o OUT
+;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
 ;; The standard library is found at $AIPL_STD, else aipl_src/std/ (relative
@@ -20,9 +21,11 @@
   (import io)
   (import str)
   (import fmt)
+  (import doc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox]] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox]] [--tests] FILE.aipl -o OUT")
+    (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
 
@@ -47,8 +50,10 @@
     (if (lt n 2) (return (call usage)) (block))
     (let cmd:(ptr str.Bytes) (call os.arg 1))
     (if (call str.is cmd "--version") (block (call io.println "aipl 0.1.0") (return 0)) (block))
+    (if (call str.is cmd "doc") (return (call doc.command 2)) (block))
     (if (not (call str.is cmd "compile")) (return (call usage)) (block))
     (let exe:bool false)
+    (let tests:bool false)
     (let sandbox:bool false)
     (let in_i:i32 -1)
     (let out_i:i32 -1)
@@ -57,6 +62,7 @@
       (let a:(ptr str.Bytes) (call os.arg i))
       (cond
         ((call str.is a "--exe") (set! exe true))
+        ((call str.is a "--tests") (set! tests true))
         ((call str.is a "--sandbox") (set! sandbox true))
         ((call str.is a "-o")
          (if (gte (+ i 1) n) (return (call usage)) (block))
@@ -71,8 +77,11 @@
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
     (let entry:(ptr str.Bytes) (call os.arg in_i))
     (let out:(ptr str.Bytes) (call os.arg out_i))
-    (let res:(ptr driver.Out) (call driver.compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                                       (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len)))
+    (let res:(ptr driver.Out) (if tests
+                                  (call driver.compile_tests (get entry str.Bytes.addr) (get entry str.Bytes.len)
+                                                             (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))
+                                  (call driver.compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
+                                                            (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))))
     (let status:i32 (get res driver.Out.status))
     (if (or (eq status 1) (eq status 3))
         (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len)))))
