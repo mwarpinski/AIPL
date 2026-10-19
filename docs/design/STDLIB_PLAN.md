@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
-**Status: approved 2026-10-16, every decision as recommended; L1 to L5
-built 2026-10-18; L6 next.** Four choices were made before writing
+**Status: approved 2026-10-16, every decision as recommended; L1 to L6
+built 2026-10-18; L7 next (its design doc first).** Four choices were made before writing
 (2026-10-16): formatting is part of the language, not a library;
 cryptography stops at hashes and HMAC; regular expressions are the
 guaranteed-linear kind; the work goes in batches. At approval,
@@ -278,6 +278,25 @@ plan: it is a design of its own, and these are what it would be built on.
   (named entities for the common set, and numeric ones).
 - **`json`** exists (AIPL_SPEC.md 12.6); it gains `json.get_path` for
   `"a.b[2].c"` lookups.
+
+As built (2026-10-18), L6: `url` splits as Python's urlsplit does
+(1,142 generated cases, with its properties) but keeps whether a `?` or
+`#` was there, which RFC 3986's resolution needs and urlsplit loses; it
+resolves as the RFC does, checked by the RFC's 45 examples and, on
+generated references, by the RFC's algorithm written out in the test
+generator (itself checked by those examples first): Python's urljoin
+departs from the RFC on 32 of 300 of them, in three ways the generator
+names. Query strings decode strictly (a bad `%` or bytes that are not
+UTF-8 are errors). `http` reads strictly where a lenient reader could
+disagree with another about where a message ends; the plan's chunked
+bodies, limits, and reason phrases (Python's, generated) are in, and
+`mime_type` is a fixed table of 31 rather than the system's. `html`
+knows HTML 4's names (each as HTML5 means it: `&lang;` is U+27E8, not
+HTML 4's U+2329) and matches Python's html module on 700 generated texts
+that use them. Added on the way: `str.is_at` and `buf.truncate` (reading
+and trimming without making views), and `json.get_path` with
+`json.valid_path`. Writing it, the agent's own mistakes started a log,
+docs/design/AGENT_FRICTION.md.
 
 As built (2026-10-18), `encode`: the alphabet and the padding are enums
 (`encode.Alphabet.url_safe`, `encode.Padding.unpadded`) rather than

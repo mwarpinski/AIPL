@@ -1,0 +1,71 @@
+;; std/http (tests/test_web.rs): a request and a chunked response read,
+;; header lookup ignoring case, every kind of message refused (each the
+;; way two readers could disagree about), the limits, two messages back to
+;; back, and a response written and read back.
+(module api
+  (import http)
+  (import str)
+  (import buf)
+  (import alloc)
+  (import option)
+
+  ;; the message read from text, briefly, or its error
+  (fn read [a:alloc.Allocator text:str request:bool lim:http.Limits] -> str
+    (let b:(ptr str.Bytes) (call str.from_str text))
+    (let r:(result (ptr http.Message) (ptr http.Error)) (if request (call http.parse_request a b lim) (call http.parse_response a b lim)))
+    (match_result r
+      (ok m
+        (let host:str (match (call http.header m "HOST") ((option.Option (ptr str.Bytes)) some [v] (call str.from_bytes v)) ((option.Option (ptr str.Bytes)) none [] "-")))
+        (let s:str (if request
+                       (format "{(get m http.Message.method)} {(get m http.Message.target)} {(get m http.Message.version)} host {host} body [{(get m http.Message.body)}] took {(get m http.Message.length)}")
+                       (format "{(get m http.Message.status)} {(get m http.Message.reason)} body [{(get m http.Message.body)}] took {(get m http.Message.length)}")))
+        (call http.free_message m)
+        s)
+      (err e
+        (let s:str (format "err {(get e http.Error.what)} at {(get e http.Error.at)}"))
+        (call http.free_error a e)
+        s)))
+
+  (fn show [a:alloc.Allocator text:str request:bool lim:http.Limits] -> void
+    (let s:str (call read a text request lim))
+    (println "{s}"))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let lim:http.Limits (call http.default_limits))
+    ;; a request, with the start of another after it
+    (call show a "GET /a?b=1 HTTP/1.1\r\nHost: x.org\r\nContent-Length: 5\r\n\r\nhelloGET" true lim)
+    ;; bare LF line ends, no body
+    (call show a "DELETE /x HTTP/1.0\nhost: y\n\n" true lim)
+    ;; a chunked response with a trailer
+    (call show a "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-Trailer: t\r\n\r\n" false lim)
+    ;; a response read to the end, and one that never has a body
+    (call show a "HTTP/1.1 404 Not Found\r\n\r\nno such page" false lim)
+    (call show a "HTTP/1.1 304 Not Modified\r\nContent-Length: 10\r\n\r\n" false lim)
+    ;; refused
+    (call show a "GET / HTTP/1.1\r\nHost : x\r\n\r\n" true lim)
+    (call show a "GET / HTTP/1.1\r\nA: 1\r\n continued\r\n\r\n" true lim)
+    (call show a "POST / HTTP/1.1\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" true lim)
+    (call show a "POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\nabcd" true lim)
+    (call show a "POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n" true lim)
+    (call show a "GET / HTTP/1.1\r\nContent-Length: 10\r\n\r\nshort" true lim)
+    (call show a "GET / HTTP/1.1\r\nHost: x\r\n" true lim)
+    (call show a "GET  / HTTP/1.1\r\n\r\n" true lim)
+    (call show a "GET / HTTP/2\r\n\r\n" true lim)
+    (call show a "HTTP/1.1 20 OK\r\n\r\n" false lim)
+    ;; the limits
+    (let small:http.Limits (call http.limits 64 1 4))
+    (call show a "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n" true small)
+    (call show a "GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello" true small)
+    (call show a "GET /a-very-long-target-that-goes-on-and-on-past-the-limit-of-the-head HTTP/1.1\r\n\r\n" true small)
+    ;; a response written, then read back
+    (let o:(ptr buf.Buf) (call buf.make a 128))
+    (call http.start_response o 201)
+    (let page:str "index.html")
+    (call http.add_header o "Content-Type" (call http.mime_type page))
+    (call http.end_head o (call str.from_str "<p>made</p>"))
+    (let written:str (call buf.to_str o))
+    (call show a written false lim)
+    (call buf.free o)
+    (println "{(call http.reason 418)} | {(call http.reason 799)}")
+    0))

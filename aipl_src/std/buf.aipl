@@ -35,6 +35,10 @@
     (unsafe (mem.load8 (+ (get b Buf.data) i))))
   ;; Empties b, keeping its storage.
   (fn clear [b:(ptr Buf)] -> void (pub) (put b Buf.len 0))
+  ;; Keeps only the first n bytes (0 <= n <= len), keeping the storage.
+  (fn truncate [b:(ptr Buf) n:i32] -> void (pub)
+    (req (and (gte n 0) (lte n (get b Buf.len))))
+    (put b Buf.len n))
 
   ;; Makes room for `extra` more bytes, doubling the storage as needed.
   (fn ensure [b:(ptr Buf) extra:i32] -> void

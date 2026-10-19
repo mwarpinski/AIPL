@@ -132,9 +132,13 @@ more than usual.
   review. Readers will point their own models at the repository, so each
   claim gets a verdict with evidence (a test, a command, file:line): true
   and fixed, true and open (with an item here), wrong (and what shows
-  it), or by design (and why), all in one document. Started 2026-10-18:
-  freedom.md (the item in section 4) and painpoints.md (the items in
-  sections 2 and 6).
+  it), or by design (and why), all in one document: docs/NOTES_REVIEW.md
+  (2026-10-19, all eight notes). Its open items still to do: `str.Bytes` as a
+  value struct (before L7); `io.read_file`, `os.arg`, `os.env` returning
+  len -1 instead of an Option (after the seed refresh); match binders
+  scoped to their arm; "Unknown op/keyword: =" suggesting `eq`;
+  codegen_opt type-checking its output; the double parse in the
+  self-hosted compiler (a large refactor, for after launch).
 - [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
   wasmtime; the compiler does not" is false (the CLI runs the native
@@ -306,6 +310,16 @@ FAQ or ROADMAP.md.
 - [x] **Results by value** (done 2026-10-15, VALUES_PLAN.md V5): every
   `ok`/`err` names its other side, `(ok:E v)`; a result without a `str`
   side that fits in 8 slots allocates nothing. AIPL_SPEC.md 4.F.
+- [ ] **The self-hosted compiler's fixed tables** (found 2026-10-19). It
+  refuses, as numbered compile errors, programs the Rust compiler
+  accepts: more than 16 parameters (92), 255 structs, unions, or
+  variants, 64 fields, or 31 `call_ref` signatures (94), 1,024 locals
+  (93), 8,192 functions (92); each limit is in AIPL_SPEC.md 6.4, and each
+  checked 2026-10-19 with a program just past it. The tables should grow
+  as wasm.rs's vectors do (as the label stack now does: at 255 nested
+  blocks it crashed instead of giving error 100), and a refusal should
+  say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
+  then the two compilers agree only below those sizes.
 - [ ] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
