@@ -1,0 +1,49 @@
+;; std/encode's API (tests/test_encode.rs): the str-to-str functions, the
+;; indices decoding gives as its errors, the URL-safe alphabet, and `+` for
+;; spaces.
+(module api
+  (import encode)
+  (import str)
+  (import buf)
+  (import alloc)
+
+  ;; a decoding as "ok TEXT" or "err AT"
+  (fn said [r:(result str i32)] -> str
+    (match_result r
+      (ok s (call str.concat "ok " s))
+      (err at (format "err {at}"))))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let b64:str (call encode.base64 "hello"))
+    (println "base64 {b64}")
+    (let back:str (call said (call encode.base64_decode b64)))
+    (let short:str (call said (call encode.base64_decode "aGVsbG8")))
+    (let bad:str (call said (call encode.base64_decode "aGV!bG8=")))
+    (println "{back} | {short} | {bad}")
+    ;; bytes fb ff: `+/` in the standard alphabet, `-_` in the URL-safe one
+    (let o:(ptr buf.Buf) (call buf.make a 16))
+    (call buf.push_byte o 251)
+    (call buf.push_byte o 255)
+    (let raw:(ptr buf.Buf) (call buf.make a 16))
+    (call encode.base64_to raw (call buf.bytes o) encode.Alphabet.standard encode.Padding.padded)
+    (call buf.push_byte raw 32)
+    (call encode.base64_to raw (call buf.bytes o) encode.Alphabet.url_safe encode.Padding.unpadded)
+    (println "fb ff: {(call buf.to_str raw)}")
+    (let hx:str (call encode.hex "AB"))
+    (let hback:str (call said (call encode.hex_decode "4142")))
+    (let hbad:str (call said (call encode.hex_decode "41g2")))
+    (let hodd:str (call said (call encode.hex_decode "414")))
+    (println "hex {hx} | {hback} | {hbad} | {hodd}")
+    (let pe:str (call encode.percent_encode "a b/c&d=é" "/"))
+    (let pback:str (call said (call encode.percent_decode pe)))
+    (let pbad:str (call said (call encode.percent_decode "100%")))
+    (println "percent {pe} | {pback} | {pbad}")
+    ;; a form's fields: spaces as `+`
+    (call buf.clear raw)
+    (match_result (call encode.percent_decode_to raw (call str.from_str "a+b%2Bc") true)
+      (ok n (println "form: {(call buf.to_str raw)} ({n} bytes)"))
+      (err at (println "form: err {at}")))
+    (call buf.free raw)
+    (call buf.free o)
+    0))

@@ -1,0 +1,667 @@
+;; std/hash: checksums and hashes of bytes: CRC-32 (zlib's), Adler-32,
+;; MD5, SHA-1, SHA-256, SHA-512, and HMAC over any of the four.
+;;
+;;   (call hash.hex hash.Algorithm.sha256 "abc")     ;; "ba7816bf8f01cfea..."
+;;   (call hash.hmac_hex hash.Algorithm.sha256 "key" "message")
+;;   (call hash.crc32 (call str.from_str "abc"))      ;; 891568578 (0x352441c2)
+;;
+;; For big inputs, a Hasher takes the bytes in pieces: make, update (or
+;; update_reader, for a whole stream), finish_to, free. MD5 and SHA-1 are
+;; for checksums and old formats only: both are broken for security
+;; (anyone can make two inputs with the same digest). There is no
+;; encryption here, by design. Digests compare with constant_time_eq,
+;; whose time does not depend on where they differ. Checked against the
+;; published test vectors and against Python's hashlib, hmac, and zlib
+;; (tests/aipl/hash).
+(module hash
+  (import str)
+  (import buf)
+  (import alloc)
+  (import encode)
+  (import stream)
+
+  ;; Which hash a Hasher computes.
+  (enum Algorithm [md5 sha1 sha256 sha512] (pub))
+
+  ;; A hash in progress: the chaining words (h32 or h64), the round
+  ;; constants (k32 or k64), the message schedule (w32 or w64), and the
+  ;; bytes of the block not yet full (block, fill of them). total counts
+  ;; every byte given so far.
+  (struct Hasher [alg:Algorithm a:alloc.Allocator h32:(arr i32) h64:(arr i64) k32:(arr i32) k64:(arr i64) w32:(arr i32) w64:(arr i64) block:(arr i32) fill:i32 total:i64 done:bool] (pub))
+
+  ;; The digest's length in bytes: 16, 20, 32, or 64.
+  (fn digest_size [alg:Algorithm] -> i32 (pub)
+    (cond ((eq alg Algorithm.md5) 16) ((eq alg Algorithm.sha1) 20) ((eq alg Algorithm.sha256) 32) (else 64)))
+
+  ;; The block length in bytes: 64, or 128 for SHA-512 (what HMAC pads
+  ;; its key to).
+  (fn block_size [alg:Algorithm] -> i32 (pub)
+    (if (eq alg Algorithm.sha512) 128 64))
+
+  ;; A Hasher for alg, from a; nothing given to it yet.
+  (fn make [a:alloc.Allocator alg:Algorithm] -> (ptr Hasher) (pub)
+    (let x:(ptr Hasher) (call (alloc.create Hasher) a))
+    (put x Hasher.alg alg)
+    (put x Hasher.a a)
+    (let wide:bool (eq alg Algorithm.sha512))
+    (put x Hasher.h32 (call (alloc.array i32) a (if wide 0 8)))
+    (put x Hasher.h64 (call (alloc.array i64) a (if wide 8 0)))
+    (put x Hasher.k32 (call (alloc.array i32) a (if wide 0 64)))
+    (put x Hasher.k64 (call (alloc.array i64) a (if wide 80 0)))
+    (put x Hasher.w32 (call (alloc.array i32) a (if wide 0 80)))
+    (put x Hasher.w64 (call (alloc.array i64) a (if wide 80 0)))
+    (put x Hasher.block (call (alloc.array i32) a 128))
+    (put x Hasher.fill 0)
+    (put x Hasher.total 0i64)
+    (put x Hasher.done false)
+    (cond
+      ((eq alg Algorithm.md5) (call md5_tables (get x Hasher.h32) (get x Hasher.k32)))
+      ((eq alg Algorithm.sha1) (call sha1_tables (get x Hasher.h32)))
+      ((eq alg Algorithm.sha256) (call sha256_tables (get x Hasher.h32) (get x Hasher.k32)))
+      (else (call sha512_tables (get x Hasher.h64) (get x Hasher.k64))))
+    x)
+
+  ;; Frees the Hasher.
+  (fn free [x:(ptr Hasher)] -> void (pub)
+    (let a:alloc.Allocator (get x Hasher.a))
+    (call (alloc.free_array i32) a (get x Hasher.h32))
+    (call (alloc.free_array i64) a (get x Hasher.h64))
+    (call (alloc.free_array i32) a (get x Hasher.k32))
+    (call (alloc.free_array i64) a (get x Hasher.k64))
+    (call (alloc.free_array i32) a (get x Hasher.w32))
+    (call (alloc.free_array i64) a (get x Hasher.w64))
+    (call (alloc.free_array i32) a (get x Hasher.block))
+    (call (alloc.destroy Hasher) a x))
+
+  ;; Gives b to the hash (not after finish_to).
+  (fn update [x:(ptr Hasher) b:(ptr str.Bytes)] -> void (pub)
+    (req (not (get x Hasher.done)))
+    (for i 0 (get b str.Bytes.len) (call absorb x (call str.byte_at b i)))
+    (put x Hasher.total (+ (get x Hasher.total) (i64.extend_u (get b str.Bytes.len)))))
+
+  ;; Gives everything r reads to the hash; how many bytes, or -1 after a
+  ;; read error.
+  (fn update_reader [x:(ptr Hasher) r:(ptr stream.Reader)] -> i64 (pub)
+    (let piece:(ptr buf.Buf) (call buf.make (get x Hasher.a) 65536))
+    (let total:i64 0i64)
+    (while true
+      (call buf.clear piece)
+      (let n:i32 (call stream.read r piece 65536))
+      (when (lte n 0) (break))
+      (call update x (call buf.bytes piece))
+      (set! total (+ total (i64.extend_u n))))
+    (call buf.free piece)
+    (if (call stream.read_error r) -1i64 total))
+
+  ;; Appends the digest (digest_size bytes) to o. The Hasher takes no more
+  ;; bytes after this.
+  (fn finish_to [x:(ptr Hasher) o:(ptr buf.Buf)] -> void (pub)
+    (req (not (get x Hasher.done)))
+    (let alg:Algorithm (get x Hasher.alg))
+    (let bs:i32 (call block_size alg))
+    (let total:i64 (get x Hasher.total))
+    (let bits:i64 (shl total 3i64))
+    (call absorb x 128)
+    ;; zeros up to the length field: 8 bytes, or 16 for SHA-512
+    (let room:i32 (if (eq alg Algorithm.sha512) 16 8))
+    (while (neq (get x Hasher.fill) (- bs room)) (call absorb x 0))
+    (cond
+      ((eq alg Algorithm.md5) (for k 0 8 (call absorb x (i32.wrap (bitand (shru bits (i64.extend_u (* 8 k))) 255i64)))))
+      (else
+        (when (eq alg Algorithm.sha512)
+          (let high:i64 (shru total 61i64))
+          (for k 0 8 (call absorb x (i32.wrap (bitand (shru high (i64.extend_u (* 8 (- 7 k)))) 255i64)))))
+        (for k 0 8 (call absorb x (i32.wrap (bitand (shru bits (i64.extend_u (* 8 (- 7 k)))) 255i64))))))
+    (cond
+      ((eq alg Algorithm.md5)
+       (for i 0 4
+         (let w:i32 (arr.get i32 (get x Hasher.h32) i))
+         (for k 0 4 (call buf.push_byte o (bitand (shru w (* 8 k)) 255)))))
+      ((eq alg Algorithm.sha512)
+       (for i 0 8
+         (let wide:i64 (arr.get i64 (get x Hasher.h64) i))
+         (for k 0 8 (call buf.push_byte o (i32.wrap (bitand (shru wide (i64.extend_u (* 8 (- 7 k)))) 255i64))))))
+      (else
+       (for i 0 (/ (call digest_size alg) 4)
+         (let w:i32 (arr.get i32 (get x Hasher.h32) i))
+         (for k 0 4 (call buf.push_byte o (bitand (shru w (* 8 (- 3 k))) 255))))))
+    (put x Hasher.done true))
+
+  ;; Appends the digest of b to o.
+  (fn digest_to [o:(ptr buf.Buf) alg:Algorithm b:(ptr str.Bytes)] -> void (pub)
+    (let x:(ptr Hasher) (call make (call alloc.default) alg))
+    (call update x b)
+    (call finish_to x o)
+    (call free x))
+
+  ;; The digest of s's bytes as lowercase hex (Python's hexdigest()).
+  (fn hex [alg:Algorithm s:str] -> str (pub)
+    (let d:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call digest_to d alg (call str.from_str s))
+    (call hex_of d))
+
+  ;; d's bytes as lowercase hex; frees d.
+  (fn hex_of [d:(ptr buf.Buf)] -> str
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (call encode.hex_to o (call buf.bytes d) false)
+    (call buf.free d)
+    (let s:str (call buf.to_str o))
+    (call buf.free o)
+    s)
+
+  ;; ===== HMAC (RFC 2104) =====
+
+  ;; Appends the HMAC of msg under key to o (digest_size bytes): a key
+  ;; longer than a block is hashed first, as the RFC says.
+  (fn hmac_to [o:(ptr buf.Buf) alg:Algorithm key:(ptr str.Bytes) msg:(ptr str.Bytes)] -> void (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let bs:i32 (call block_size alg))
+    (let k:(ptr buf.Buf) (call buf.make a bs))
+    (if (gt (get key str.Bytes.len) bs) (call digest_to k alg key) (call buf.push_bytes k key))
+    (let kb:(ptr str.Bytes) (call buf.bytes k))
+    (let pad:(ptr buf.Buf) (call buf.make a bs))
+    ;; inner: H((K xor 0x36...) || msg)
+    (for i 0 bs (call buf.push_byte pad (^ (call key_byte kb i) 54)))
+    (let inner:(ptr Hasher) (call make a alg))
+    (call update inner (call buf.bytes pad))
+    (call update inner msg)
+    (let mid:(ptr buf.Buf) (call buf.make a 64))
+    (call finish_to inner mid)
+    (call free inner)
+    ;; outer: H((K xor 0x5c...) || inner)
+    (call buf.clear pad)
+    (for i 0 bs (call buf.push_byte pad (^ (call key_byte kb i) 92)))
+    (let outer:(ptr Hasher) (call make a alg))
+    (call update outer (call buf.bytes pad))
+    (call update outer (call buf.bytes mid))
+    (call finish_to outer o)
+    (call free outer)
+    (call buf.free mid)
+    (call buf.free pad)
+    (call buf.free k))
+
+  ;; Byte i of the key, zero past its end.
+  (fn key_byte [kb:(ptr str.Bytes) i:i32] -> i32
+    (if (lt i (get kb str.Bytes.len)) (call str.byte_at kb i) 0))
+
+  ;; The HMAC of msg under key as lowercase hex (Python's
+  ;; hmac.new(key, msg, alg).hexdigest()).
+  (fn hmac_hex [alg:Algorithm key:str msg:str] -> str (pub)
+    (let d:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call hmac_to d alg (call str.from_str key) (call str.from_str msg))
+    (call hex_of d))
+
+  ;; Whether a and b hold the same bytes, taking the same time wherever
+  ;; they differ (for digests and tokens; their lengths are not secret).
+  (fn constant_time_eq [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (pub)
+    (when (neq (get a str.Bytes.len) (get b str.Bytes.len)) (return false))
+    (let diff:i32 0)
+    (for i 0 (get a str.Bytes.len) (set! diff (bitor diff (^ (call str.byte_at a i) (call str.byte_at b i)))))
+    (eq diff 0))
+
+  ;; ===== CRC-32 and Adler-32 =====
+
+  ;; crc (a CRC-32 so far, 0 to start) continued over b: zlib's crc32
+  ;; (the reflected polynomial 0xEDB88320, as PNG, gzip, and zip use).
+  (fn crc32_update [crc:i32 b:(ptr str.Bytes)] -> i32 (pub)
+    (let c:i32 (^ crc -1))
+    (for i 0 (get b str.Bytes.len)
+      (set! c (^ c (call str.byte_at b i)))
+      (for _k 0 8
+        (set! c (if (eq (bitand c 1) 1) (^ (shru c 1) -306674912) (shru c 1)))))
+    (^ c -1))
+
+  ;; The CRC-32 of b (zlib.crc32(b), as a signed i32).
+  (fn crc32 [b:(ptr str.Bytes)] -> i32 (pub) (call crc32_update 0 b))
+
+  ;; adler (an Adler-32 so far, 1 to start) continued over b: zlib's
+  ;; adler32.
+  (fn adler32_update [adler:i32 b:(ptr str.Bytes)] -> i32 (pub)
+    (let lo:i32 (bitand adler 65535))
+    (let hi:i32 (shru adler 16))
+    (for i 0 (get b str.Bytes.len)
+      (set! lo (% (+ lo (call str.byte_at b i)) 65521))
+      (set! hi (% (+ hi lo) 65521)))
+    (bitor (shl hi 16) lo))
+
+  ;; The Adler-32 of b (zlib.adler32(b)).
+  (fn adler32 [b:(ptr str.Bytes)] -> i32 (pub) (call adler32_update 1 b))
+
+  ;; ===== the block functions =====
+
+  ;; Adds the byte c to the block, running the block function when full.
+  (fn absorb [x:(ptr Hasher) c:i32] -> void
+    (let fill:i32 (get x Hasher.fill))
+    (arr.set i32 (get x Hasher.block) fill c)
+    (set! fill (+ fill 1))
+    (if (eq fill (call block_size (get x Hasher.alg)))
+        (block (call compress x) (put x Hasher.fill 0))
+        (put x Hasher.fill fill)))
+
+  (fn compress [x:(ptr Hasher)] -> void
+    (let alg:Algorithm (get x Hasher.alg))
+    (cond
+      ((eq alg Algorithm.md5) (call md5_block x))
+      ((eq alg Algorithm.sha1) (call sha1_block x))
+      ((eq alg Algorithm.sha256) (call sha256_block x))
+      (else (call sha512_block x))))
+
+  (fn rotl [v:i32 n:i32] -> i32 (bitor (shl v n) (shru v (- 32 n))))
+  (fn rotr [v:i32 n:i32] -> i32 (bitor (shru v n) (shl v (- 32 n))))
+  (fn rotr64 [v:i64 n:i64] -> i64 (bitor (shru v n) (shl v (- 64i64 n))))
+
+  ;; Word j of the block, big-endian (SHA) or little-endian (MD5).
+  (fn be32 [blk:(arr i32) j:i32] -> i32
+    (bitor (bitor (shl (arr.get i32 blk j) 24) (shl (arr.get i32 blk (+ j 1)) 16)) (bitor (shl (arr.get i32 blk (+ j 2)) 8) (arr.get i32 blk (+ j 3)))))
+  (fn le32 [blk:(arr i32) j:i32] -> i32
+    (bitor (bitor (arr.get i32 blk j) (shl (arr.get i32 blk (+ j 1)) 8)) (bitor (shl (arr.get i32 blk (+ j 2)) 16) (shl (arr.get i32 blk (+ j 3)) 24))))
+  (fn be64 [blk:(arr i32) j:i32] -> i64
+    (bitor (shl (i64.extend_u (call be32 blk j)) 32i64) (i64.extend_u (call be32 blk (+ j 4)))))
+
+  ;; MD5's shift for step i (RFC 1321).
+  (fn md5_shift [i:i32] -> i32
+    (let r:i32 (% i 4))
+    (cond
+      ((lt i 16) (cond ((eq r 0) 7) ((eq r 1) 12) ((eq r 2) 17) (else 22)))
+      ((lt i 32) (cond ((eq r 0) 5) ((eq r 1) 9) ((eq r 2) 14) (else 20)))
+      ((lt i 48) (cond ((eq r 0) 4) ((eq r 1) 11) ((eq r 2) 16) (else 23)))
+      (else (cond ((eq r 0) 6) ((eq r 1) 10) ((eq r 2) 15) (else 21)))))
+
+  (fn md5_block [x:(ptr Hasher)] -> void
+    (let h:(arr i32) (get x Hasher.h32))
+    (let k:(arr i32) (get x Hasher.k32))
+    (let m:(arr i32) (get x Hasher.w32))
+    (let blk:(arr i32) (get x Hasher.block))
+    (for j 0 16 (arr.set i32 m j (call le32 blk (* 4 j))))
+    (let a:i32 (arr.get i32 h 0))
+    (let b:i32 (arr.get i32 h 1))
+    (let c:i32 (arr.get i32 h 2))
+    (let d:i32 (arr.get i32 h 3))
+    (for i 0 64
+      (let f:i32 0)
+      (let g:i32 0)
+      (cond
+        ((lt i 16) (set! f (bitor (bitand b c) (bitand (^ b -1) d))) (set! g i))
+        ((lt i 32) (set! f (bitor (bitand d b) (bitand (^ d -1) c))) (set! g (% (+ (* 5 i) 1) 16)))
+        ((lt i 48) (set! f (^ (^ b c) d)) (set! g (% (+ (* 3 i) 5) 16)))
+        (else (set! f (^ c (bitor b (^ d -1)))) (set! g (% (* 7 i) 16))))
+      (set! f (+ (+ f a) (+ (arr.get i32 k i) (arr.get i32 m g))))
+      (set! a d)
+      (set! d c)
+      (set! c b)
+      (set! b (+ b (call rotl f (call md5_shift i)))))
+    (arr.set i32 h 0 (+ (arr.get i32 h 0) a))
+    (arr.set i32 h 1 (+ (arr.get i32 h 1) b))
+    (arr.set i32 h 2 (+ (arr.get i32 h 2) c))
+    (arr.set i32 h 3 (+ (arr.get i32 h 3) d)))
+
+  (fn sha1_block [x:(ptr Hasher)] -> void
+    (let h:(arr i32) (get x Hasher.h32))
+    (let w:(arr i32) (get x Hasher.w32))
+    (let blk:(arr i32) (get x Hasher.block))
+    (for t 0 16 (arr.set i32 w t (call be32 blk (* 4 t))))
+    (for t 16 80
+      (arr.set i32 w t (call rotl (^ (^ (arr.get i32 w (- t 3)) (arr.get i32 w (- t 8))) (^ (arr.get i32 w (- t 14)) (arr.get i32 w (- t 16)))) 1)))
+    (let a:i32 (arr.get i32 h 0))
+    (let b:i32 (arr.get i32 h 1))
+    (let c:i32 (arr.get i32 h 2))
+    (let d:i32 (arr.get i32 h 3))
+    (let e:i32 (arr.get i32 h 4))
+    (for t 0 80
+      (let f:i32 0)
+      (let kt:i32 0)
+      (cond
+        ((lt t 20) (set! f (bitor (bitand b c) (bitand (^ b -1) d))) (set! kt 1518500249))
+        ((lt t 40) (set! f (^ (^ b c) d)) (set! kt 1859775393))
+        ((lt t 60) (set! f (bitor (bitor (bitand b c) (bitand b d)) (bitand c d))) (set! kt -1894007588))
+        (else (set! f (^ (^ b c) d)) (set! kt -899497514)))
+      (let temp:i32 (+ (+ (call rotl a 5) f) (+ (+ e kt) (arr.get i32 w t))))
+      (set! e d)
+      (set! d c)
+      (set! c (call rotl b 30))
+      (set! b a)
+      (set! a temp))
+    (arr.set i32 h 0 (+ (arr.get i32 h 0) a))
+    (arr.set i32 h 1 (+ (arr.get i32 h 1) b))
+    (arr.set i32 h 2 (+ (arr.get i32 h 2) c))
+    (arr.set i32 h 3 (+ (arr.get i32 h 3) d))
+    (arr.set i32 h 4 (+ (arr.get i32 h 4) e)))
+
+  (fn sha256_block [x:(ptr Hasher)] -> void
+    (let h:(arr i32) (get x Hasher.h32))
+    (let k:(arr i32) (get x Hasher.k32))
+    (let w:(arr i32) (get x Hasher.w32))
+    (let blk:(arr i32) (get x Hasher.block))
+    (for t 0 16 (arr.set i32 w t (call be32 blk (* 4 t))))
+    (for t 16 64
+      (let w15:i32 (arr.get i32 w (- t 15)))
+      (let w2:i32 (arr.get i32 w (- t 2)))
+      (let s0:i32 (^ (^ (call rotr w15 7) (call rotr w15 18)) (shru w15 3)))
+      (let s1:i32 (^ (^ (call rotr w2 17) (call rotr w2 19)) (shru w2 10)))
+      (arr.set i32 w t (+ (+ (arr.get i32 w (- t 16)) s0) (+ (arr.get i32 w (- t 7)) s1))))
+    (let a:i32 (arr.get i32 h 0))
+    (let b:i32 (arr.get i32 h 1))
+    (let c:i32 (arr.get i32 h 2))
+    (let d:i32 (arr.get i32 h 3))
+    (let e:i32 (arr.get i32 h 4))
+    (let f:i32 (arr.get i32 h 5))
+    (let g:i32 (arr.get i32 h 6))
+    (let hh:i32 (arr.get i32 h 7))
+    (for t 0 64
+      (let big1:i32 (^ (^ (call rotr e 6) (call rotr e 11)) (call rotr e 25)))
+      (let ch:i32 (^ (bitand e f) (bitand (^ e -1) g)))
+      (let t1:i32 (+ (+ hh big1) (+ ch (+ (arr.get i32 k t) (arr.get i32 w t)))))
+      (let big0:i32 (^ (^ (call rotr a 2) (call rotr a 13)) (call rotr a 22)))
+      (let maj:i32 (^ (^ (bitand a b) (bitand a c)) (bitand b c)))
+      (let t2:i32 (+ big0 maj))
+      (set! hh g)
+      (set! g f)
+      (set! f e)
+      (set! e (+ d t1))
+      (set! d c)
+      (set! c b)
+      (set! b a)
+      (set! a (+ t1 t2)))
+    (arr.set i32 h 0 (+ (arr.get i32 h 0) a))
+    (arr.set i32 h 1 (+ (arr.get i32 h 1) b))
+    (arr.set i32 h 2 (+ (arr.get i32 h 2) c))
+    (arr.set i32 h 3 (+ (arr.get i32 h 3) d))
+    (arr.set i32 h 4 (+ (arr.get i32 h 4) e))
+    (arr.set i32 h 5 (+ (arr.get i32 h 5) f))
+    (arr.set i32 h 6 (+ (arr.get i32 h 6) g))
+    (arr.set i32 h 7 (+ (arr.get i32 h 7) hh)))
+
+  (fn sha512_block [x:(ptr Hasher)] -> void
+    (let h:(arr i64) (get x Hasher.h64))
+    (let k:(arr i64) (get x Hasher.k64))
+    (let w:(arr i64) (get x Hasher.w64))
+    (let blk:(arr i32) (get x Hasher.block))
+    (for t 0 16 (arr.set i64 w t (call be64 blk (* 8 t))))
+    (for t 16 80
+      (let w15:i64 (arr.get i64 w (- t 15)))
+      (let w2:i64 (arr.get i64 w (- t 2)))
+      (let s0:i64 (^ (^ (call rotr64 w15 1i64) (call rotr64 w15 8i64)) (shru w15 7i64)))
+      (let s1:i64 (^ (^ (call rotr64 w2 19i64) (call rotr64 w2 61i64)) (shru w2 6i64)))
+      (arr.set i64 w t (+ (+ (arr.get i64 w (- t 16)) s0) (+ (arr.get i64 w (- t 7)) s1))))
+    (let a:i64 (arr.get i64 h 0))
+    (let b:i64 (arr.get i64 h 1))
+    (let c:i64 (arr.get i64 h 2))
+    (let d:i64 (arr.get i64 h 3))
+    (let e:i64 (arr.get i64 h 4))
+    (let f:i64 (arr.get i64 h 5))
+    (let g:i64 (arr.get i64 h 6))
+    (let hh:i64 (arr.get i64 h 7))
+    (for t 0 80
+      (let big1:i64 (^ (^ (call rotr64 e 14i64) (call rotr64 e 18i64)) (call rotr64 e 41i64)))
+      (let ch:i64 (^ (bitand e f) (bitand (^ e -1i64) g)))
+      (let t1:i64 (+ (+ hh big1) (+ ch (+ (arr.get i64 k t) (arr.get i64 w t)))))
+      (let big0:i64 (^ (^ (call rotr64 a 28i64) (call rotr64 a 34i64)) (call rotr64 a 39i64)))
+      (let maj:i64 (^ (^ (bitand a b) (bitand a c)) (bitand b c)))
+      (let t2:i64 (+ big0 maj))
+      (set! hh g)
+      (set! g f)
+      (set! f e)
+      (set! e (+ d t1))
+      (set! d c)
+      (set! c b)
+      (set! b a)
+      (set! a (+ t1 t2)))
+    (arr.set i64 h 0 (+ (arr.get i64 h 0) a))
+    (arr.set i64 h 1 (+ (arr.get i64 h 1) b))
+    (arr.set i64 h 2 (+ (arr.get i64 h 2) c))
+    (arr.set i64 h 3 (+ (arr.get i64 h 3) d))
+    (arr.set i64 h 4 (+ (arr.get i64 h 4) e))
+    (arr.set i64 h 5 (+ (arr.get i64 h 5) f))
+    (arr.set i64 h 6 (+ (arr.get i64 h 6) g))
+    (arr.set i64 h 7 (+ (arr.get i64 h 7) hh)))
+
+  ;; ===== constants =====
+  ;; SHA-2's are the first 32 or 64 bits of the fractional parts of the
+  ;; square roots (starting values) and cube roots (round constants) of
+  ;; the first primes (FIPS 180-4, 4.2.2, 4.2.3, 5.3.3, 5.3.5); MD5's are
+  ;; floor(abs(sin(i + 1)) * 2^32) (RFC 1321, 3.4). Written as signed
+  ;; decimals, computed exactly by tools/hash_tables.py, which writes the
+  ;; functions between the markers.
+
+  ;; @tables (tools/hash_tables.py)
+  (fn md5_tables [h:(arr i32) k:(arr i32)] -> void
+    (arr.set i32 h 0 1732584193)
+    (arr.set i32 h 1 -271733879)
+    (arr.set i32 h 2 -1732584194)
+    (arr.set i32 h 3 271733878)
+    (arr.set i32 k 0 -680876936)
+    (arr.set i32 k 1 -389564586)
+    (arr.set i32 k 2 606105819)
+    (arr.set i32 k 3 -1044525330)
+    (arr.set i32 k 4 -176418897)
+    (arr.set i32 k 5 1200080426)
+    (arr.set i32 k 6 -1473231341)
+    (arr.set i32 k 7 -45705983)
+    (arr.set i32 k 8 1770035416)
+    (arr.set i32 k 9 -1958414417)
+    (arr.set i32 k 10 -42063)
+    (arr.set i32 k 11 -1990404162)
+    (arr.set i32 k 12 1804603682)
+    (arr.set i32 k 13 -40341101)
+    (arr.set i32 k 14 -1502002290)
+    (arr.set i32 k 15 1236535329)
+    (arr.set i32 k 16 -165796510)
+    (arr.set i32 k 17 -1069501632)
+    (arr.set i32 k 18 643717713)
+    (arr.set i32 k 19 -373897302)
+    (arr.set i32 k 20 -701558691)
+    (arr.set i32 k 21 38016083)
+    (arr.set i32 k 22 -660478335)
+    (arr.set i32 k 23 -405537848)
+    (arr.set i32 k 24 568446438)
+    (arr.set i32 k 25 -1019803690)
+    (arr.set i32 k 26 -187363961)
+    (arr.set i32 k 27 1163531501)
+    (arr.set i32 k 28 -1444681467)
+    (arr.set i32 k 29 -51403784)
+    (arr.set i32 k 30 1735328473)
+    (arr.set i32 k 31 -1926607734)
+    (arr.set i32 k 32 -378558)
+    (arr.set i32 k 33 -2022574463)
+    (arr.set i32 k 34 1839030562)
+    (arr.set i32 k 35 -35309556)
+    (arr.set i32 k 36 -1530992060)
+    (arr.set i32 k 37 1272893353)
+    (arr.set i32 k 38 -155497632)
+    (arr.set i32 k 39 -1094730640)
+    (arr.set i32 k 40 681279174)
+    (arr.set i32 k 41 -358537222)
+    (arr.set i32 k 42 -722521979)
+    (arr.set i32 k 43 76029189)
+    (arr.set i32 k 44 -640364487)
+    (arr.set i32 k 45 -421815835)
+    (arr.set i32 k 46 530742520)
+    (arr.set i32 k 47 -995338651)
+    (arr.set i32 k 48 -198630844)
+    (arr.set i32 k 49 1126891415)
+    (arr.set i32 k 50 -1416354905)
+    (arr.set i32 k 51 -57434055)
+    (arr.set i32 k 52 1700485571)
+    (arr.set i32 k 53 -1894986606)
+    (arr.set i32 k 54 -1051523)
+    (arr.set i32 k 55 -2054922799)
+    (arr.set i32 k 56 1873313359)
+    (arr.set i32 k 57 -30611744)
+    (arr.set i32 k 58 -1560198380)
+    (arr.set i32 k 59 1309151649)
+    (arr.set i32 k 60 -145523070)
+    (arr.set i32 k 61 -1120210379)
+    (arr.set i32 k 62 718787259)
+    (arr.set i32 k 63 -343485551))
+
+  (fn sha256_tables [h:(arr i32) k:(arr i32)] -> void
+    (arr.set i32 h 0 1779033703)
+    (arr.set i32 h 1 -1150833019)
+    (arr.set i32 h 2 1013904242)
+    (arr.set i32 h 3 -1521486534)
+    (arr.set i32 h 4 1359893119)
+    (arr.set i32 h 5 -1694144372)
+    (arr.set i32 h 6 528734635)
+    (arr.set i32 h 7 1541459225)
+    (arr.set i32 k 0 1116352408)
+    (arr.set i32 k 1 1899447441)
+    (arr.set i32 k 2 -1245643825)
+    (arr.set i32 k 3 -373957723)
+    (arr.set i32 k 4 961987163)
+    (arr.set i32 k 5 1508970993)
+    (arr.set i32 k 6 -1841331548)
+    (arr.set i32 k 7 -1424204075)
+    (arr.set i32 k 8 -670586216)
+    (arr.set i32 k 9 310598401)
+    (arr.set i32 k 10 607225278)
+    (arr.set i32 k 11 1426881987)
+    (arr.set i32 k 12 1925078388)
+    (arr.set i32 k 13 -2132889090)
+    (arr.set i32 k 14 -1680079193)
+    (arr.set i32 k 15 -1046744716)
+    (arr.set i32 k 16 -459576895)
+    (arr.set i32 k 17 -272742522)
+    (arr.set i32 k 18 264347078)
+    (arr.set i32 k 19 604807628)
+    (arr.set i32 k 20 770255983)
+    (arr.set i32 k 21 1249150122)
+    (arr.set i32 k 22 1555081692)
+    (arr.set i32 k 23 1996064986)
+    (arr.set i32 k 24 -1740746414)
+    (arr.set i32 k 25 -1473132947)
+    (arr.set i32 k 26 -1341970488)
+    (arr.set i32 k 27 -1084653625)
+    (arr.set i32 k 28 -958395405)
+    (arr.set i32 k 29 -710438585)
+    (arr.set i32 k 30 113926993)
+    (arr.set i32 k 31 338241895)
+    (arr.set i32 k 32 666307205)
+    (arr.set i32 k 33 773529912)
+    (arr.set i32 k 34 1294757372)
+    (arr.set i32 k 35 1396182291)
+    (arr.set i32 k 36 1695183700)
+    (arr.set i32 k 37 1986661051)
+    (arr.set i32 k 38 -2117940946)
+    (arr.set i32 k 39 -1838011259)
+    (arr.set i32 k 40 -1564481375)
+    (arr.set i32 k 41 -1474664885)
+    (arr.set i32 k 42 -1035236496)
+    (arr.set i32 k 43 -949202525)
+    (arr.set i32 k 44 -778901479)
+    (arr.set i32 k 45 -694614492)
+    (arr.set i32 k 46 -200395387)
+    (arr.set i32 k 47 275423344)
+    (arr.set i32 k 48 430227734)
+    (arr.set i32 k 49 506948616)
+    (arr.set i32 k 50 659060556)
+    (arr.set i32 k 51 883997877)
+    (arr.set i32 k 52 958139571)
+    (arr.set i32 k 53 1322822218)
+    (arr.set i32 k 54 1537002063)
+    (arr.set i32 k 55 1747873779)
+    (arr.set i32 k 56 1955562222)
+    (arr.set i32 k 57 2024104815)
+    (arr.set i32 k 58 -2067236844)
+    (arr.set i32 k 59 -1933114872)
+    (arr.set i32 k 60 -1866530822)
+    (arr.set i32 k 61 -1538233109)
+    (arr.set i32 k 62 -1090935817)
+    (arr.set i32 k 63 -965641998))
+
+  (fn sha512_tables [h:(arr i64) k:(arr i64)] -> void
+    (arr.set i64 h 0 7640891576956012808i64)
+    (arr.set i64 h 1 -4942790177534073029i64)
+    (arr.set i64 h 2 4354685564936845355i64)
+    (arr.set i64 h 3 -6534734903238641935i64)
+    (arr.set i64 h 4 5840696475078001361i64)
+    (arr.set i64 h 5 -7276294671716946913i64)
+    (arr.set i64 h 6 2270897969802886507i64)
+    (arr.set i64 h 7 6620516959819538809i64)
+    (arr.set i64 k 0 4794697086780616226i64)
+    (arr.set i64 k 1 8158064640168781261i64)
+    (arr.set i64 k 2 -5349999486874862801i64)
+    (arr.set i64 k 3 -1606136188198331460i64)
+    (arr.set i64 k 4 4131703408338449720i64)
+    (arr.set i64 k 5 6480981068601479193i64)
+    (arr.set i64 k 6 -7908458776815382629i64)
+    (arr.set i64 k 7 -6116909921290321640i64)
+    (arr.set i64 k 8 -2880145864133508542i64)
+    (arr.set i64 k 9 1334009975649890238i64)
+    (arr.set i64 k 10 2608012711638119052i64)
+    (arr.set i64 k 11 6128411473006802146i64)
+    (arr.set i64 k 12 8268148722764581231i64)
+    (arr.set i64 k 13 -9160688886553864527i64)
+    (arr.set i64 k 14 -7215885187991268811i64)
+    (arr.set i64 k 15 -4495734319001033068i64)
+    (arr.set i64 k 16 -1973867731355612462i64)
+    (arr.set i64 k 17 -1171420211273849373i64)
+    (arr.set i64 k 18 1135362057144423861i64)
+    (arr.set i64 k 19 2597628984639134821i64)
+    (arr.set i64 k 20 3308224258029322869i64)
+    (arr.set i64 k 21 5365058923640841347i64)
+    (arr.set i64 k 22 6679025012923562964i64)
+    (arr.set i64 k 23 8573033837759648693i64)
+    (arr.set i64 k 24 -7476448914759557205i64)
+    (arr.set i64 k 25 -6327057829258317296i64)
+    (arr.set i64 k 26 -5763719355590565569i64)
+    (arr.set i64 k 27 -4658551843659510044i64)
+    (arr.set i64 k 28 -4116276920077217854i64)
+    (arr.set i64 k 29 -3051310485924567259i64)
+    (arr.set i64 k 30 489312712824947311i64)
+    (arr.set i64 k 31 1452737877330783856i64)
+    (arr.set i64 k 32 2861767655752347644i64)
+    (arr.set i64 k 33 3322285676063803686i64)
+    (arr.set i64 k 34 5560940570517711597i64)
+    (arr.set i64 k 35 5996557281743188959i64)
+    (arr.set i64 k 36 7280758554555802590i64)
+    (arr.set i64 k 37 8532644243296465576i64)
+    (arr.set i64 k 38 -9096487096722542874i64)
+    (arr.set i64 k 39 -7894198246740708037i64)
+    (arr.set i64 k 40 -6719396339535248540i64)
+    (arr.set i64 k 41 -6333637450476146687i64)
+    (arr.set i64 k 42 -4446306890439682159i64)
+    (arr.set i64 k 43 -4076793802049405392i64)
+    (arr.set i64 k 44 -3345356375505022440i64)
+    (arr.set i64 k 45 -2983346525034927856i64)
+    (arr.set i64 k 46 -860691631967231958i64)
+    (arr.set i64 k 47 1182934255886127544i64)
+    (arr.set i64 k 48 1847814050463011016i64)
+    (arr.set i64 k 49 2177327727835720531i64)
+    (arr.set i64 k 50 2830643537854262169i64)
+    (arr.set i64 k 51 3796741975233480872i64)
+    (arr.set i64 k 52 4115178125766777443i64)
+    (arr.set i64 k 53 5681478168544905931i64)
+    (arr.set i64 k 54 6601373596472566643i64)
+    (arr.set i64 k 55 7507060721942968483i64)
+    (arr.set i64 k 56 8399075790359081724i64)
+    (arr.set i64 k 57 8693463985226723168i64)
+    (arr.set i64 k 58 -8878714635349349518i64)
+    (arr.set i64 k 59 -8302665154208450068i64)
+    (arr.set i64 k 60 -8016688836872298968i64)
+    (arr.set i64 k 61 -6606660893046293015i64)
+    (arr.set i64 k 62 -4685533653050689259i64)
+    (arr.set i64 k 63 -4147400797238176981i64)
+    (arr.set i64 k 64 -3880063495543823972i64)
+    (arr.set i64 k 65 -3348786107499101689i64)
+    (arr.set i64 k 66 -1523767162380948706i64)
+    (arr.set i64 k 67 -757361751448694408i64)
+    (arr.set i64 k 68 500013540394364858i64)
+    (arr.set i64 k 69 748580250866718886i64)
+    (arr.set i64 k 70 1242879168328830382i64)
+    (arr.set i64 k 71 1977374033974150939i64)
+    (arr.set i64 k 72 2944078676154940804i64)
+    (arr.set i64 k 73 3659926193048069267i64)
+    (arr.set i64 k 74 4368137639120453308i64)
+    (arr.set i64 k 75 4836135668995329356i64)
+    (arr.set i64 k 76 5532061633213252278i64)
+    (arr.set i64 k 77 6448918945643986474i64)
+    (arr.set i64 k 78 6902733635092675308i64)
+    (arr.set i64 k 79 7801388544844847127i64))
+  ;; @end
+
+  (fn sha1_tables [h:(arr i32)] -> void
+    (arr.set i32 h 0 1732584193)
+    (arr.set i32 h 1 -271733879)
+    (arr.set i32 h 2 -1732584194)
+    (arr.set i32 h 3 271733878)
+    (arr.set i32 h 4 -1009589776)))
