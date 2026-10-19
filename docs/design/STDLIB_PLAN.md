@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
 **Status: approved 2026-10-16, every decision as recommended; L1 built
-2026-10-18; L2 next.** Four choices were made before writing (2026-10-16): formatting
+2026-10-18; L2 in progress (stream, csv built).** Four choices were made before writing (2026-10-16): formatting
 is part of the language, not a library; cryptography stops at hashes and
 HMAC; regular expressions are the guaranteed-linear kind; the work goes in
 batches. At approval, networking was added as batch L7. After a review
@@ -205,6 +205,14 @@ with the compiler's optimizer work rather than in a library batch.
   typed helpers (`csv.f64_at`, `csv.i64_at`, returning results with the
   row and column of a bad value); writing with quoting where needed.
   Checked against Python's `csv`.
+
+  As built (2026-10-18): the reader is Python's _csv.c state machine,
+  non-strict, over a `stream.Reader`, with Python's universal-newline line
+  splitting, so a lone `\r` ends a line as Python's reader sees it. Fields
+  are views into one reused buffer (no allocation per row). Writing is per
+  field (`field_str`, `field_i64`, `field_f64`, then `end_row`) rather than
+  from an array. 3,600 generated cases match Python 3.14; Python's field
+  size limit (131,072 bytes) is not kept.
 - **`stats`** on `(arr f64)`: `sum` (compensated), `mean`, `median`,
   `quantile` (Python's default method, and the others by name),
   `variance` and `stdev` (sample and population), `min`, `max`, `mode`,

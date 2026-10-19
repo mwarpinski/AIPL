@@ -1,0 +1,347 @@
+;; std/csv: comma-separated values (RFC 4180, read as Python's csv module
+;; reads them), a row at a time from a stream, or a whole text at once;
+;; and written with quoting only where a field needs it.
+;;
+;;   (let cr:(ptr csv.Reader) (try (call csv.open a "prices.csv")))
+;;   (defer (call csv.close cr))
+;;   (let _h:bool (call csv.header cr))
+;;   (let price:i32 (call csv.column cr "price"))
+;;   (while (call csv.next_row cr)
+;;     (let p:f64 (try (call csv.f64_at cr price))) ...)
+;;
+;; A field is a view into the reader's buffer, good until the next row:
+;; copy what you keep. Reading follows Python's csv.reader with its default
+;; dialect, from its C source: a quoted field may hold delimiters, quotes
+;; written twice, and line breaks; text after a closing quote is kept as
+;; written (Python's non-strict mode), a quote inside an unquoted field is
+;; an ordinary character, an unclosed quote runs to the end, and a line
+;; ends at "\n", "\r\n", or "\r". An empty line is a row of no fields. Unlike
+;; Python, a field may be any size. Checked against Python on generated
+;; texts (tests/aipl/csv, tools/csv_vectors.py).
+(module csv
+  (import str)
+  (import buf)
+  (import vec)
+  (import alloc)
+  (import stream)
+  (import option)
+  (import text)
+
+  ;; ===== Reading =====
+
+  ;; The parser's states (Python's _csv.c).
+  (enum State [start_record start_field in_field in_quoted quote_in_quoted eat_crnl])
+
+  ;; data holds the row's fields one after another; spans has each field's
+  ;; start and end; views are the fields handed out.
+  (struct Reader [src:(ptr stream.Reader) owns:bool delim:i32 state:State data:(ptr buf.Buf) field_start:i32
+                  spans:(ptr (vec.Vec i32)) views:(ptr (vec.Vec (ptr str.Bytes))) n:i32 row:i32
+                  names:(ptr (vec.Vec (ptr str.Bytes))) a:alloc.Allocator] (pub))
+
+  ;; Where a value did not read: its row (1 the first) and column (1 the
+  ;; first), and why, as one line.
+  (struct Error [(read row:i32) (read column:i32) (read what:str)] (pub))
+
+  ;; Reads comma-separated rows from r (close r yourself).
+  (fn reader [a:alloc.Allocator r:(ptr stream.Reader)] -> (ptr Reader) (pub)
+    (call reader_with a r 44))
+
+  ;; reader with another delimiter byte (9 for tab-separated values).
+  (fn reader_with [a:alloc.Allocator r:(ptr stream.Reader) delim:i32] -> (ptr Reader) (pub)
+    (let cr:(ptr Reader) (call (alloc.create Reader) a))
+    (put cr Reader.src r)
+    (put cr Reader.owns false)
+    (put cr Reader.delim delim)
+    (put cr Reader.state State.start_record)
+    (put cr Reader.data (call buf.make a 256))
+    (put cr Reader.field_start 0)
+    (put cr Reader.spans (call (vec.make i32) a 32))
+    (put cr Reader.views (call (vec.make (ptr str.Bytes)) a 16))
+    (put cr Reader.n 0)
+    (put cr Reader.row 0)
+    (put cr Reader.names (call (vec.make (ptr str.Bytes)) a 8))
+    (put cr Reader.a a)
+    cr)
+
+  ;; Opens a file of comma-separated rows; close closes it.
+  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) str) (pub)
+    (let r:(ptr stream.Reader) (try (call stream.open a path)))
+    (let cr:(ptr Reader) (call reader a r))
+    (put cr Reader.owns true)
+    (ok:str cr))
+
+  ;; Reads the text of b.
+  (fn of_bytes [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr Reader) (pub)
+    (let cr:(ptr Reader) (call reader a (call stream.of_bytes a b)))
+    (put cr Reader.owns true)
+    cr)
+
+  ;; Frees the reader, and closes the stream open or of_bytes made.
+  (fn close [cr:(ptr Reader)] -> void (pub)
+    (let a:alloc.Allocator (get cr Reader.a))
+    (when (get cr Reader.owns) (call stream.close_reader (get cr Reader.src)))
+    (call buf.free (get cr Reader.data))
+    (call (vec.free i32) (get cr Reader.spans))
+    (call (vec.free (ptr str.Bytes)) (get cr Reader.views))
+    (call (vec.free (ptr str.Bytes)) (get cr Reader.names))
+    (call (alloc.destroy Reader) a cr))
+
+  (fn save_field [cr:(ptr Reader)] -> void
+    (let d:(ptr buf.Buf) (get cr Reader.data))
+    (call (vec.push i32) (get cr Reader.spans) (get cr Reader.field_start))
+    (call (vec.push i32) (get cr Reader.spans) (call buf.len d))
+    (put cr Reader.field_start (call buf.len d)))
+
+  (fn field_len [cr:(ptr Reader)] -> i32
+    (- (call buf.len (get cr Reader.data)) (get cr Reader.field_start)))
+
+  ;; One character of a line, or the line's end (c -1), as Python's
+  ;; parse_process_char handles it with the default dialect, non-strict.
+  (fn step [cr:(ptr Reader) c:i32] -> void
+    (let eol:bool (eq c -1))
+    (let newline:bool (or (eq c 10) (eq c 13)))
+    (let d:(ptr buf.Buf) (get cr Reader.data))
+    (let st:State (get cr Reader.state))
+    ;; a record's first character starts its first field
+    (when (eq st State.start_record)
+      (cond
+        (eol (return))
+        (newline (put cr Reader.state State.eat_crnl) (return))
+        (else (set! st State.start_field))))
+    (match st
+      (State.start_field
+       (cond
+         ((or newline eol) (call save_field cr) (put cr Reader.state (if eol State.start_record State.eat_crnl)))
+         ((eq c 34) (put cr Reader.state State.in_quoted))
+         ((eq c (get cr Reader.delim)) (call save_field cr) (put cr Reader.state State.start_field))
+         (else (call buf.push_byte d c) (put cr Reader.state State.in_field))))
+      (State.in_field
+       (cond
+         ((or newline eol) (call save_field cr) (put cr Reader.state (if eol State.start_record State.eat_crnl)))
+         ((eq c (get cr Reader.delim)) (call save_field cr) (put cr Reader.state State.start_field))
+         (else (call buf.push_byte d c))))
+      (State.in_quoted
+       (cond
+         (eol (block))
+         ((eq c 34) (put cr Reader.state State.quote_in_quoted))
+         (else (call buf.push_byte d c))))
+      (State.quote_in_quoted
+       (cond
+         ;; "" is one quote
+         ((eq c 34) (call buf.push_byte d c) (put cr Reader.state State.in_quoted))
+         ((eq c (get cr Reader.delim)) (call save_field cr) (put cr Reader.state State.start_field))
+         ((or newline eol) (call save_field cr) (put cr Reader.state (if eol State.start_record State.eat_crnl)))
+         (else (call buf.push_byte d c) (put cr Reader.state State.in_field))))
+      (State.eat_crnl (when eol (put cr Reader.state State.start_record)))
+      (State.start_record (block))))
+
+  ;; The row's fields as views (after the row is read: data may move while
+  ;; it is).
+  (fn finish [cr:(ptr Reader)] -> bool
+    (let spans:(ptr (vec.Vec i32)) (get cr Reader.spans))
+    (let views:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.views))
+    (let n:i32 (/ (call (vec.len i32) spans) 2))
+    (let base:i32 (get (get cr Reader.data) buf.Buf.data))
+    (while (lt (call (vec.len (ptr str.Bytes)) views) n)
+      (call (vec.push (ptr str.Bytes)) views (unsafe (call str.bytes 0 0))))
+    (for k 0 n
+      (let s:i32 (call (vec.at i32) spans (* 2 k)))
+      (unsafe (call str.repoint (call (vec.at (ptr str.Bytes)) views k) (+ base s) (- (call (vec.at i32) spans (+ (* 2 k) 1)) s))))
+    (put cr Reader.n n)
+    (put cr Reader.row (+ (get cr Reader.row) 1))
+    true)
+
+  ;; Moves to the next row; false at the end of the input (or after a read
+  ;; error: read_error).
+  (fn next_row [cr:(ptr Reader)] -> bool (pub)
+    (let r:(ptr stream.Reader) (get cr Reader.src))
+    (call buf.clear (get cr Reader.data))
+    (call (vec.clear i32) (get cr Reader.spans))
+    (put cr Reader.field_start 0)
+    (put cr Reader.state State.start_record)
+    ;; whether characters were read since the last line ended
+    (let pending:bool false)
+    (while true
+      (let c:i32 (call stream.read_byte r))
+      (when (lt c 0)
+        ;; the last line, if it had no line break
+        (when pending
+          (call step cr -1)
+          (when (eq (get cr Reader.state) State.start_record) (return (call finish cr))))
+        ;; the end: a field begun, or a quote left open, is the last
+        (when (or (gt (call field_len cr) 0) (eq (get cr Reader.state) State.in_quoted))
+          (call save_field cr)
+          (return (call finish cr)))
+        (put cr Reader.n 0)
+        (return false))
+      (set! pending true)
+      (call step cr c)
+      ;; a line ends after \n, \r\n, or \r
+      (when (eq c 13)
+        (when (eq (call stream.peek_byte r) 10)
+          (let _n:i32 (call stream.read_byte r))
+          (call step cr 10)))
+      (when (or (eq c 10) (eq c 13))
+        (call step cr -1)
+        (set! pending false)
+        (when (eq (get cr Reader.state) State.start_record) (return (call finish cr)))))
+    false)
+
+  ;; The fields in the current row.
+  (fn count [cr:(ptr Reader)] -> i32 (pub) (get cr Reader.n))
+
+  ;; Field i (0 the first) of the current row, good until the next row.
+  (fn field [cr:(ptr Reader) i:i32] -> (ptr str.Bytes) (pub)
+    (req (and (gte i 0) (lt i (get cr Reader.n))))
+    (call (vec.at (ptr str.Bytes)) (get cr Reader.views) i))
+
+  ;; The current row's number: 1 the first row read.
+  (fn row [cr:(ptr Reader)] -> i32 (pub) (get cr Reader.row))
+
+  ;; Whether a read from the stream failed.
+  (fn read_error [cr:(ptr Reader)] -> bool (pub) (call stream.read_error (get cr Reader.src)))
+
+  ;; Reads the next row as the column names (column finds them); false if
+  ;; there is none.
+  (fn header [cr:(ptr Reader)] -> bool (pub)
+    (when (not (call next_row cr)) (return false))
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.names))
+    (call (vec.clear (ptr str.Bytes)) names)
+    (for k 0 (get cr Reader.n)
+      (call (vec.push (ptr str.Bytes)) names (call str.from_str (call str.from_bytes (call field cr k)))))
+    true)
+
+  ;; The index of the column the header names `name`, or -1.
+  (fn column [cr:(ptr Reader) name:str] -> i32 (pub)
+    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.names))
+    (let want:(ptr str.Bytes) (call str.from_str name))
+    (for k 0 (call (vec.len (ptr str.Bytes)) names)
+      (when (call str.bytes_eq (call (vec.at (ptr str.Bytes)) names k) want) (return k)))
+    -1)
+
+  ;; The current row's field in the column named `name`, or none (no such
+  ;; column, or a row too short for it).
+  (fn get [cr:(ptr Reader) name:str] -> (option.Option (ptr str.Bytes)) (pub)
+    (let k:i32 (call column cr name))
+    (if (and (gte k 0) (lt k (get cr Reader.n)))
+        (make (option.Option (ptr str.Bytes)) some (call field cr k))
+        (make (option.Option (ptr str.Bytes)) none)))
+
+  (fn fail [cr:(ptr Reader) i:i32 why:str] -> (ptr Error)
+    (let e:(ptr Error) (new Error))
+    (put e Error.row (get cr Reader.row))
+    (put e Error.column (+ i 1))
+    (let what:str (if (lt i (get cr Reader.n))
+                      (format "row {(get cr Reader.row)}, column {(+ i 1)}: {(call field cr i)} is not {why}")
+                      (format "row {(get cr Reader.row)} has no column {(+ i 1)}")))
+    (put e Error.what what)
+    e)
+
+  ;; Field i as an f64 (text.parse_f64: exactly rounded), or where and why
+  ;; it is not one.
+  (fn f64_at [cr:(ptr Reader) i:i32] -> (result f64 (ptr Error)) (pub)
+    (when (or (lt i 0) (gte i (get cr Reader.n))) (return (err:f64 (call fail cr i "a number"))))
+    (match_result (call text.parse_f64 (call field cr i))
+      (ok x (ok:(ptr Error) x))
+      (err _at (err:f64 (call fail cr i "a number")))))
+
+  ;; Field i as an i64 (str.parse_i64), or where and why it is not one.
+  (fn i64_at [cr:(ptr Reader) i:i32] -> (result i64 (ptr Error)) (pub)
+    (when (or (lt i 0) (gte i (get cr Reader.n))) (return (err:i64 (call fail cr i "an integer"))))
+    (match_result (call str.parse_i64 (call field cr i))
+      (ok x (ok:(ptr Error) x))
+      (err _at (err:i64 (call fail cr i "an integer")))))
+
+  ;; The whole text of b as rows of fields, the fields views into one
+  ;; buffer from a (each view is a small cell never freed: for a big input,
+  ;; read a row at a time).
+  (fn parse [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr (vec.Vec (ptr str.Bytes))))) (pub)
+    (let cr:(ptr Reader) (call of_bytes a b))
+    (let all:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 16)))
+    (let spans:(ptr (vec.Vec i32)) (call (vec.make i32) a 64))
+    (let counts:(ptr (vec.Vec i32)) (call (vec.make i32) a 16))
+    (while (call next_row cr)
+      (call (vec.push i32) counts (get cr Reader.n))
+      (for k 0 (get cr Reader.n)
+        (call (vec.push i32) spans (call buf.len all))
+        (call buf.push_bytes all (call field cr k))
+        (call (vec.push i32) spans (call buf.len all))))
+    (call close cr)
+    ;; views once the buffer no longer moves
+    (let rows:(ptr (vec.Vec (ptr (vec.Vec (ptr str.Bytes))))) (call (vec.make (ptr (vec.Vec (ptr str.Bytes)))) a (+ (call (vec.len i32) counts) 1)))
+    (let base:i32 (get all buf.Buf.data))
+    (let at:i32 0)
+    (for r 0 (call (vec.len i32) counts)
+      (let n:i32 (call (vec.at i32) counts r))
+      (let fields:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a (+ n 1)))
+      (for k 0 n
+        (let s:i32 (call (vec.at i32) spans at))
+        (let e:i32 (call (vec.at i32) spans (+ at 1)))
+        (call (vec.push (ptr str.Bytes)) fields (unsafe (call str.bytes (+ base s) (- e s))))
+        (set! at (+ at 2)))
+      (call (vec.push (ptr (vec.Vec (ptr str.Bytes)))) rows fields))
+    (call (vec.free i32) spans)
+    (call (vec.free i32) counts)
+    rows)
+
+  ;; ===== Writing =====
+
+  ;; Writes rows to a stream: fields one at a time, then end_row.
+  (struct Writer [out:(ptr stream.Writer) delim:i32 fields:i32 wrote:bool a:alloc.Allocator] (pub))
+
+  ;; Writes comma-separated rows to w.
+  (fn writer [a:alloc.Allocator w:(ptr stream.Writer)] -> (ptr Writer) (pub) (call writer_with a w 44))
+
+  ;; writer with another delimiter byte.
+  (fn writer_with [a:alloc.Allocator w:(ptr stream.Writer) delim:i32] -> (ptr Writer) (pub)
+    (let cw:(ptr Writer) (call (alloc.create Writer) a))
+    (put cw Writer.out w)
+    (put cw Writer.delim delim)
+    (put cw Writer.fields 0)
+    (put cw Writer.wrote false)
+    (put cw Writer.a a)
+    cw)
+
+  ;; Frees the writer (not its stream: flush or close that).
+  (fn free [cw:(ptr Writer)] -> void (pub) (call (alloc.destroy Writer) (get cw Writer.a) cw))
+
+  ;; Writes b as the row's next field, quoted if it holds the delimiter, a
+  ;; quote, or a line break (each quote written twice), as Python's
+  ;; QUOTE_MINIMAL.
+  (fn field_bytes [cw:(ptr Writer) b:(ptr str.Bytes)] -> void (pub)
+    (let w:(ptr stream.Writer) (get cw Writer.out))
+    (when (gt (get cw Writer.fields) 0) (call stream.write_byte w (get cw Writer.delim)))
+    (put cw Writer.fields (+ (get cw Writer.fields) 1))
+    (let n:i32 (get b str.Bytes.len))
+    (when (gt n 0) (put cw Writer.wrote true))
+    (let quote:bool false)
+    (for k 0 n
+      (let c:i32 (call str.byte_at b k))
+      (when (or (eq c (get cw Writer.delim)) (eq c 34) (eq c 10) (eq c 13)) (set! quote true)))
+    (if quote
+        (block
+          (call stream.write_byte w 34)
+          (for k 0 n
+            (let c:i32 (call str.byte_at b k))
+            (when (eq c 34) (call stream.write_byte w 34))
+            (call stream.write_byte w c))
+          (call stream.write_byte w 34))
+        (call stream.write_bytes w b)))
+
+  ;; field_bytes for a str.
+  (fn field_str [cw:(ptr Writer) s:str] -> void (pub) (call field_bytes cw (call str.from_str s)))
+
+  ;; An integer field, in decimal.
+  (fn field_i64 [cw:(ptr Writer) n:i64] -> void (pub) (call field_str cw (format "{n}")))
+
+  ;; A number field, as Python's str() writes a float (0.1, 2.0, 1e+16).
+  (fn field_f64 [cw:(ptr Writer) x:f64] -> void (pub) (call field_str cw (format "{x}")))
+
+  ;; Ends the row with "\r\n" (Python's line terminator); a row of one empty
+  ;; field is written "" so it reads back as one.
+  (fn end_row [cw:(ptr Writer) ] -> void (pub)
+    (let w:(ptr stream.Writer) (get cw Writer.out))
+    (when (and (eq (get cw Writer.fields) 1) (not (get cw Writer.wrote))) (call stream.write_str w "\"\""))
+    (call stream.write_str w "\r\n")
+    (put cw Writer.fields 0)
+    (put cw Writer.wrote false)))
