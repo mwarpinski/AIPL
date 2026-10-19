@@ -64,6 +64,86 @@
             (make (option.Option Value) none)))
       (else (make (option.Option Value) none))))
 
+  ;; Whether path is one get_path reads: empty, or steps, each a key (any
+  ;; bytes but '.' and '[', after a '.' unless it is the first step) or an
+  ;; index in brackets: "a.b[2].c", "[0].name", "".
+  (fn valid_path [path:str] -> bool (pub)
+    (let b:(ptr str.Bytes) (call str.from_str path))
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 0)
+    (let first:bool true)
+    (while (lt i n)
+      (if (eq (call str.byte_at b i) 91)
+          (block
+            (let j:i32 (+ i 1))
+            (while (and (lt j n) (call path_digit (call str.byte_at b j))) (set! j (+ j 1)))
+            (if (or (eq j (+ i 1)) (or (gte j n) (neq (call str.byte_at b j) 93))) (return false) (block))
+            (set! i (+ j 1)))
+          (block
+            (if (not first) (if (neq (call str.byte_at b i) 46) (return false) (set! i (+ i 1))) (block))
+            (let k:i32 (call key_end b i))
+            (if (eq k i) (return false) (block))
+            (set! i k)))
+      (set! first false))
+    true)
+
+  (fn path_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
+
+  ;; The end of the key starting at i: the next '.' or '[', or the end.
+  (fn key_end [b:(ptr str.Bytes) i:i32] -> i32
+    (let k:i32 i)
+    (while (and (lt k (get b str.Bytes.len)) (and (neq (call str.byte_at b k) 46) (neq (call str.byte_at b k) 91))) (set! k (+ k 1)))
+    k)
+
+  ;; The value at path in v ("a.b[2].c": member a, then its member b, then
+  ;; that list's element 2, then its member c), or none if a step finds
+  ;; nothing; "" is v itself. A key cannot hold '.' or '[' (use get for
+  ;; those). path must be valid (valid_path).
+  (fn get_path [v:Value path:str] -> (option.Option Value) (pub)
+    (req (call valid_path path))
+    (let b:(ptr str.Bytes) (call str.from_str path))
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 0)
+    (let cur:Value v)
+    (while (lt i n)
+      (if (eq (call str.byte_at b i) 91)
+          (block
+            (let j:i32 (+ i 1))
+            (let idx:i32 0)
+            (while (neq (call str.byte_at b j) 93)
+              ;; an index past what any list holds finds nothing
+              (if (lt idx 100000000) (set! idx (+ (* idx 10) (- (call str.byte_at b j) 48))) (block))
+              (set! j (+ j 1)))
+            (match (call at cur idx)
+              ((option.Option Value) some [x] (set! cur x))
+              ((option.Option Value) none [] (return (make (option.Option Value) none))))
+            (set! i (+ j 1)))
+          (block
+            (if (eq (call str.byte_at b i) 46) (set! i (+ i 1)) (block))
+            (let k:i32 (call key_end b i))
+            (match (call member cur b i k)
+              ((option.Option Value) some [x] (set! cur x))
+              ((option.Option Value) none [] (return (make (option.Option Value) none))))
+            (set! i k))))
+    (make (option.Option Value) some cur))
+
+  ;; The member of object v whose key is b[from..to), as get finds it.
+  (fn member [v:Value b:(ptr str.Bytes) from:i32 to:i32] -> (option.Option Value)
+    (match v
+      (Value.object [fields]
+        (loop f 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+          (let fd:(ptr Field) (call (vec.at (ptr Field)) fields f))
+          (let key:(ptr str.Bytes) (get fd Field.key))
+          (if (eq (get key str.Bytes.len) (- to from))
+              (block
+                (let same:bool true)
+                (loop c 0 (- (- to from) 1) 1
+                  (if (neq (call str.byte_at key c) (call str.byte_at b (+ from c))) (set! same false) (block)))
+                (if same (return (make (option.Option Value) some (get fd Field.value))) (block)))
+              (block)))
+        (make (option.Option Value) none))
+      (else (make (option.Option Value) none))))
+
   ;; A list's elements or an object's members; 0 for any other value.
   (fn count [v:Value] -> i32 (pub)
     (match v

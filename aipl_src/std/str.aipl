@@ -57,6 +57,14 @@
       (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
 
+  ;; Whether b holds the bytes of s at index i (false if they would run
+  ;; past its end), without allocating.
+  (fn is_at [b:(ptr Bytes) i:i32 s:str] -> bool (pub)
+    (unsafe (if (or (lt i 0) (gt (+ i (str.len s)) (get b Bytes.len))) (return false) (block))
+    (loop k 0 (- (str.len s) 1) 1
+      (if (neq (call byte_at b (+ i k)) (mem.load8 (+ (str.ptr s) k))) (return false) (block)))
+    true))
+
 ;; ===== Searching and trimming =====
   ;; Nothing here allocates but the slices it returns (std/text has the
   ;; functions that build). Searches take linear time in constant space: a

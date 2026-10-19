@@ -1,0 +1,75 @@
+;; std/deflate's API (tests/test_deflate.rs): round trips (a run of 70,000
+;; bytes among them, two stored blocks at level 0), what the raw decoder
+;; leaves after a stream, the output limit, and the errors for a bad
+;; header and a bad checksum.
+(module api
+  (import deflate)
+  (import str)
+  (import buf)
+  (import alloc)
+
+  ;; a decoding as "ok USED, N bytes" or "err WHAT at AT"
+  (fn said [a:alloc.Allocator r:(result i32 (ptr deflate.Error)) o:(ptr buf.Buf)] -> str
+    (match_result r
+      (ok used (format "ok {used}, {(call buf.len o)} bytes"))
+      (err e
+        (let what:str (format "err {(get e deflate.Error.what)} at {(get e deflate.Error.at)}"))
+        (call deflate.free_error a e)
+        what)))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let text:(ptr buf.Buf) (call buf.make a 4096))
+    (for _i 0 40 (call buf.push_str text "the quick brown fox jumps over the lazy dog. "))
+    (let data:(ptr str.Bytes) (call buf.bytes text))
+    ;; zlib, and back
+    (let z:(ptr buf.Buf) (call buf.make a 256))
+    (call deflate.zlib_compress_to a z data 6)
+    (let back:(ptr buf.Buf) (call buf.make a 4096))
+    (let r1:str (call said a (call deflate.zlib_decompress_to a back (call buf.bytes z) 100000) back))
+    (println "zlib: {(get data str.Bytes.len)} bytes to {(call buf.len z)}; {r1}; same {(call str.bytes_eq (call buf.bytes back) data)}")
+    ;; the limit
+    (call buf.clear back)
+    (let r2:str (call said a (call deflate.zlib_decompress_to a back (call buf.bytes z) 100) back))
+    (println "limit 100: {r2}")
+    ;; a raw stream with more after it: the decoder says where it ended
+    (let raw:(ptr buf.Buf) (call buf.make a 256))
+    (call deflate.compress_to a raw data 9)
+    (let end:i32 (call buf.len raw))
+    (call buf.push_str raw "trailing")
+    (call buf.clear back)
+    (let r3:str (call said a (call deflate.inflate_to a back (call buf.bytes raw) 100000) back))
+    (println "raw: stream of {end} then 8 more; {r3}")
+    ;; a bad header and a bad Adler-32
+    (call buf.clear back)
+    (let r4:str (call said a (call deflate.zlib_decompress_to a back (call str.from_str "xyz") 100000) back))
+    (let bad:(ptr str.Bytes) (call buf.bytes z))
+    (let last:i32 (- (get bad str.Bytes.len) 1))
+    (call str.set_byte bad last (^ (call str.byte_at bad last) 1))
+    (call buf.clear back)
+    (let r5:str (call said a (call deflate.zlib_decompress_to a back bad 100000) back))
+    (println "{r4} | {r5}")
+    ;; gzip of nothing, and back
+    (let g:(ptr buf.Buf) (call buf.make a 64))
+    (call deflate.gzip_compress_to a g (call str.from_str "") 6)
+    (call buf.clear back)
+    (let r6:str (call said a (call deflate.gzip_decompress_to a back (call buf.bytes g) 100000) back))
+    (println "gzip of nothing: {(call buf.len g)} bytes; {r6}")
+    ;; a long run, both ways at levels 0 and 9
+    (let run:(ptr buf.Buf) (call buf.make a 70016))
+    (for _i 0 70000 (call buf.push_byte run 0))
+    (for level 0 10
+      (when (or (eq level 0) (eq level 9))
+        (let packed:(ptr buf.Buf) (call buf.make a 256))
+        (call deflate.compress_to a packed (call buf.bytes run) level)
+        (call buf.clear back)
+        (let r7:str (call said a (call deflate.inflate_to a back (call buf.bytes packed) 100000) back))
+        (println "70000 zeros at {level}: {(call buf.len packed)} bytes; {r7}; same {(call str.bytes_eq (call buf.bytes back) (call buf.bytes run))}")
+        (call buf.free packed)))
+    (call buf.free run)
+    (call buf.free g)
+    (call buf.free raw)
+    (call buf.free back)
+    (call buf.free z)
+    (call buf.free text)
+    0))
