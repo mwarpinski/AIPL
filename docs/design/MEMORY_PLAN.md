@@ -174,9 +174,11 @@ into memory as it does for a struct field. What remains is recursion and
 width, and decision 6 settles both: every union is a value, at most 8
 slots, as a result is; recursion and width go through a `(ptr S)` the
 program allocates from an allocator it names, and anything else is
-refused with the way to write it. Steps: the rule lands unused (both
-checkers; a `str` variant one slot; the held-by-address paths left until
-nothing uses them); the seed is refreshed; ast.aipl's `Type` and `Expr`
+refused with the way to write it. Steps: a `str` variant is one slot
+(done 2026-10-19: the union is a value; all three deciders, checker.rs,
+checker.aipl, and codegen.aipl, agree); the refusal lands unused, its
+message naming the widest variant and saying to move its fields into a
+struct held by a `(ptr S)`; the seed is refreshed; ast.aipl's `Type` and `Expr`
 and the tests' recursive unions move behind cells by script; then the
 held-by-address code leaves all three code generators and the spec.
 
@@ -247,3 +249,16 @@ compiler's source can be migrated in the current language.
    instead of an unchecked i32 address (less rewriting, a second way to
    allocate, and every backend's union representation changes). Either
    needs a seed refresh before the compiler's source uses it.
+7. **The 8-slot cap stays (decided 2026-10-19).** Measured before
+   deciding: no std union exceeds it; the tests' three that do exist to
+   test the old cell; in the compiler only ast.aipl's `Expr` does, since
+   a `str.Bytes` is 3 slots and its variants hold two names. Variants
+   share slots by kind, so a union is its tag and its largest variant's
+   slots of each kind, not the sum of its variants (two 7-slot unions of
+   i32s in one union are 8 slots; one of i32s with one of f64s, 14).
+   Hitting the cap almost always means a variant carries a whole record,
+   which belongs in a struct the variant points to (as Rust's
+   `ExprKind::Call(Box<CallExpr>)`); text cut from one input can be a
+   span (start, len: 2 slots), and text from a fixed set an enum (1).
+   A cap can be raised later without breaking a program, never lowered:
+   raise it only if the showcase programs keep reaching it.

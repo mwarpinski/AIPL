@@ -1823,8 +1823,8 @@
     (put v VariantInfo.nfields fcount))
 
   ;; ===== Unions held by value (checker.rs union_layouts, sum_layout) =====
-  ;; A union is a value unless a variant holds a str, it contains itself
-  ;; (through unions it holds), or it needs more than 8 slots, counting the
+  ;; A union is a value unless it contains itself (through unions it
+  ;; holds), or it needs more than 8 slots, counting the
   ;; unions it holds that are values as their slots and the others as one
   ;; (each union is decided after the unions it holds).
   (fn decide_unions [cg:(ptr Cg)] -> void
@@ -1833,7 +1833,7 @@
     (let decided:(arr bool) (arr.new bool (+ n 1)))
     (loop i 0 (- n 1) 1
       (let u:(ptr UnionInfo) (call union_at cg i))
-      (arr.set bool cand i (and (not (call holds_str cg u)) (not (call reaches_itself cg u)))))
+      (arr.set bool cand i (not (call reaches_itself cg u))))
     (loop i 0 (- n 1) 1
       (if (arr.get bool cand i) (call decide_union cg cand decided (call union_at cg i)) (block))))
 
@@ -1972,14 +1972,6 @@
   (fn type_node_union [cg:(ptr Cg) t:(ptr compiler.Node)] -> (ptr UnionInfo)
     (if (neq (call node_kind t) compiler.Kind.symbol) (return (ptr.null UnionInfo)) (block))
     (call find_union cg (call node_a t) (call node_b t)))
-
-  (fn holds_str [cg:(ptr Cg) u:(ptr UnionInfo)] -> bool
-    (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
-      (let ts:(ptr (vec.Vec (ptr compiler.Node))) (call variant_types (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k)))
-      (loop j 0 (- (call (vec.len (ptr compiler.Node)) ts) 1) 1
-        (let t:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) ts j))
-        (if (and (eq (call node_kind t) compiler.Kind.symbol) (eq (call classify_keyword cg (call node_a t) (call node_b t)) Kw.ty_str)) (return true) (block))))
-    false)
 
   ;; Whether u reaches itself through the unions its variants hold.
   (fn reaches_itself [cg:(ptr Cg) u:(ptr UnionInfo)] -> bool

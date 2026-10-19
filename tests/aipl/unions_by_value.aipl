@@ -16,7 +16,7 @@
   (union Tagged [(plain s:Shape) (count n:i32)])
   ;; stays a cell: it contains itself
   (union List [(nil) (cons head:i32 tail:List)])
-  ;; stays a cell: a str
+  ;; a value: a str is one slot
   (union Named [(name s:str) (anon)])
   ;; stays a cell: nine slots
   (union Wide [(nine a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64)])

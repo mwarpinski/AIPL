@@ -618,8 +618,7 @@
     m)
 
   ;; Which unions are values (checker.rs union_layouts): a union is a value
-  ;; unless a variant holds a str, it reaches itself through the unions it
-  ;; holds, or it needs more than 8 slots, counting the unions it holds
+  ;; unless it reaches itself through the unions it holds, or it needs more than 8 slots, counting the unions it holds
   ;; that are values as their slots and the others as one (each decided
   ;; after the unions it holds).
   (fn decide_unions [c:(ptr C) us:(arr (ptr ast.UnionDef))] -> void
@@ -629,15 +628,7 @@
       (when (call candidate c u) (call decide_union c decided u))))
 
   (fn candidate [c:(ptr C) u:(ptr ast.UnionDef)] -> bool
-    (and (not (call holds_str u)) (not (call reaches_itself c u))))
-
-  (fn holds_str [u:(ptr ast.UnionDef)] -> bool
-    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
-    (for k 0 (arr.len vs)
-      (let fs:(arr (ptr ast.Field)) (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields))
-      (for j 0 (arr.len fs)
-        (when (eq (call tag (get (arr.get (ptr ast.Field) fs j) ast.Field.ty)) 5) (return true))))
-    false)
+    (not (call reaches_itself c u)))
 
   ;; The unions u's variants hold in fields, onto out.
   (fn push_held [u:(ptr ast.UnionDef) out:(ptr (vec.Vec str.Bytes))] -> void

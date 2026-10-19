@@ -290,9 +290,11 @@ fn unions_by_value_are_decided_as_specified() {
     let mut values: Vec<&str> = st.by_value.keys().map(String::as_str).filter(|n| !n.contains('<') || n.contains("Vec2") || n.contains("Shape")).collect();
     values.sort();
     // Tagged and Option of Shape hold a whole Shape (8 slots) and a tag: 9;
-    // List and Chain contain themselves, Named a str, Wide needs 9 slots;
-    // HoldsWide holds Wide by address (one slot); Outer holds Inner by value
-    assert_eq!(values, ["HoldsWide", "Inner", "Outer", "Shape", "option.Option<Vec2>"]);
+    // List and Chain contain themselves, Wide needs 9 slots; Named is a
+    // value (a str is one slot); HoldsWide holds Wide by address (one
+    // slot); Outer holds Inner by value
+    assert_eq!(values, ["HoldsWide", "Inner", "Named", "Outer", "Shape", "option.Option<Vec2>"]);
+    assert_eq!(st.by_value["Named"].slots, [aipl_core::ast::Type::I32, aipl_core::ast::Type::I32]);
     assert_eq!(st.by_value["Outer"].slots.len(), 4);
     use aipl_core::ast::Type::*;
     let shape = &st.by_value["Shape"];

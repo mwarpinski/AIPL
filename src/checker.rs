@@ -173,7 +173,7 @@ pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
 }
 
 /// Which unions are values and how they are laid out (AIPL_SPEC.md 4.J): a
-/// union is a value unless a variant holds a str, it contains itself
+/// union is a value unless it contains itself
 /// (through other unions held inline), or it needs more than MAX_SCALARS
 /// slots, counting the unions it holds that are values as their slots and
 /// the others as one (each union is decided after the unions it holds).
@@ -207,7 +207,7 @@ fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
     names.sort();
     let candidates: Vec<String> = names
         .iter()
-        .filter(|n| !st.unions[**n].variants.iter().any(|v| v.fields.iter().any(|f| f.ty == Type::Str)) && !reaches_itself(n))
+        .filter(|n| !reaches_itself(n))
         .map(|n| n.to_string())
         .collect();
     fn decide(n: &str, candidates: &[String], st: &mut Structs, decided: &mut Vec<String>) {
