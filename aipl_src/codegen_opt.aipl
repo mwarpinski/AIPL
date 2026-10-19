@@ -1,0 +1,2440 @@
+;; Optimizing compiler pipeline for the self-hosted AIPL toolchain.
+;;
+;; Sits between the front end (resolver.aipl, generics.aipl, front.aipl,
+;; fmtlower.aipl, consts.aipl) and the WebAssembly / native x86-64 backends
+;; (codegen.aipl, native/native.aipl). Operates on an explicit mutable
+;; S-expression IR (ONode) and runs four whole-module and per-function
+;; optimization passes before lowering to WebAssembly:
+;;
+;;   Pass 1 — Expression Simplification, Known-Bits Parity & Strength Reduction:
+;;     * Constant folding for i32, i64, bool, and string lengths (str.len "...")
+;;     * Algebraic identities (+ x 0, - x 0, * x 1, * x 0, / x 1, divu x 1,
+;;       % x 1, remu x 1, shl/shr/shru by 0, bitand/bitor/^ with 0 and -1,
+;;       boolean not/and/or identities, comparison with true/false)
+;;     * Constant reassociation: (+ (+ x c1) c2) -> (+ x (c1+c2)),
+;;       (- (- x c1) c2) -> (- x (c1+c2)), nested shifts (shl (shl x c1) c2)
+;;     * Power-of-two strength reduction:
+;;         (* x 2^k) / (* 2^k x) -> (shl x k)
+;;         (divu x 2^k)          -> (shru x k)
+;;         (remu x 2^k)          -> (bitand x (2^k - 1))
+;;     * Known-bits parity analysis (is_known_even): proves expressions such as
+;;       (* e (+ e 1)), shifts, and even products are unconditionally even across
+;;       all 2^32 i32 inputs, strength-reducing signed (/ even_expr 2) -> (shr even_expr 1)
+;;       and (% even_expr 2) -> 0
+;;     * Type conversion folding & fusion:
+;;         (i64.extend_s <int>)                -> <int>i64
+;;         (i64.extend_u <nonneg_int>)         -> <int>i64
+;;         (i32.wrap <i64>)                    -> <int>
+;;         (i32.wrap (i64.extend_s/u x))       -> x
+;;         (f64.convert_i64_s (i64.extend_s x))-> (f64.convert_i32_s x)
+;;         (f32.convert_i64_s (i64.extend_s x))-> (f32.convert_i32_s x)
+;;         (f64.convert_i32_s <int>)           -> <int>.0
+;;     * Branch & block simplification: (if true a b) -> a, (if false a b) -> b,
+;;       (if (not c) a b) -> (if c b a), constant cond clauses, (while false ...),
+;;       and single-expression (block e) unwrapping
+;;
+;;   Pass 2 — Multi-Round Hygienic Function Inlining:
+;;     * Inlines non-recursive single-expression functions (without contracts)
+;;       when arguments are atoms or pure single-use expressions
+;;     * Inlines small contract-free void wrapper functions (e.g. times_ata,
+;;       buf.clear, vec.clear) when called with atom arguments
+;;     * Runs two rounds so wrappers calling leaf helpers (and monomorphized
+;;       trait/container helpers from std/cmp, std/vec, std/map) inline cleanly
+;;
+;;   Pass 3 — Immutable Local Constant/Copy Propagation & Dead Local Elimination:
+;;     * Tracks local variables mutated by set! or loop, plus shadowed names
+;;     * Propagates immutable (let x:T <literal_or_immutable_sym>) bindings into
+;;       all subsequent uses in the function body
+;;     * Eliminates dead pure (let x:T init) bindings with zero remaining uses
+;;     * Flattens empty blocks and re-folds newly exposed constant expressions
+;;
+;;   Pass 4 — Whole-Program Call-Graph Reachability & Dead Function Elimination:
+;;     * For executable/command modules (those with `main` or `_start`), walks
+;;       the call and function-reference (`ref`) graph from `main` and `_start`
+;;       and strips all unreachable functions (unused stdlib imports, test
+;;       runners, and helpers whose call sites were all inlined), which also
+;;       eliminates their dead WASI imports and dead string literals in codegen
+(module codegen_opt
+  (import alloc)
+  (import compiler)
+  (import consts)
+  (import origins)
+  (import resolver)
+  (import front)
+  (import checker)
+  (import fmtlower)
+  (import codegen)
+  (import native/native)
+  (import str)
+  (import buf)
+  (import vec)
+  (import map)
+  (import os)
+  (import io)
+  (import fmt)
+
+  ;; ===== Public Types =====
+
+  ;; Optimization counters recorded across passes.
+  (struct Stats [
+    (read consts_folded:i32)
+    (read calls_inlined:i32)
+    (read locals_eliminated:i32)
+    (read fns_eliminated:i32)
+    (read fns_kept:i32)
+  ] (pub))
+
+  ;; Mirrors driver.Out so compile_file is a drop-in replacement.
+  ;; status 0: wasm module at (addr, len)
+  ;; status 1: import resolution failed; message at (addr, len)
+  ;; status 2: codegen failed; len is the compile error code (AIPL_SPEC.md 6.4)
+  ;; status 3: type-check failed; diagnostic at (addr, len)
+  (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
+
+  (fn make_stats [] -> (ptr Stats) (pub)
+    (let s:(ptr Stats) (new Stats))
+    (put s Stats.consts_folded 0)
+    (put s Stats.calls_inlined 0)
+    (put s Stats.locals_eliminated 0)
+    (put s Stats.fns_eliminated 0)
+    (put s Stats.fns_kept 0)
+    s)
+
+  (fn bump_folded [s:(ptr Stats)] -> void
+    (if (neq s (ptr.null Stats))
+        (put s Stats.consts_folded (+ (get s Stats.consts_folded) 1))
+        (block)))
+
+  (fn bump_inlined [s:(ptr Stats)] -> void
+    (if (neq s (ptr.null Stats))
+        (put s Stats.calls_inlined (+ (get s Stats.calls_inlined) 1))
+        (block)))
+
+  (fn bump_locals [s:(ptr Stats)] -> void
+    (if (neq s (ptr.null Stats))
+        (put s Stats.locals_eliminated (+ (get s Stats.locals_eliminated) 1))
+        (block)))
+
+  ;; ===== Mutable S-Expression IR (ONode) =====
+
+  (enum OKind [sym int int64 float float32 bool string colon arrow paren bracket])
+
+  (struct ONode [
+    kind:OKind
+    text:str.Bytes
+    ival:i32
+    lval:i64
+    first:(ptr ONode)
+    next:(ptr ONode)
+    pos:i32
+  ])
+
+  (fn new_onode [k:OKind text:str.Bytes ival:i32 lval:i64 pos:i32] -> (ptr ONode)
+    (let n:(ptr ONode) (new ONode))
+    (put n ONode.kind k)
+    (put n ONode.text text)
+    (put n ONode.ival ival)
+    (put n ONode.lval lval)
+    (put n ONode.first (ptr.null ONode))
+    (put n ONode.next (ptr.null ONode))
+    (put n ONode.pos pos)
+    n)
+
+  (fn make_int [v:i32 pos:i32] -> (ptr ONode)
+    (call new_onode OKind.int (call str.absent) v 0i64 pos))
+
+  (fn make_i64 [v:i64 pos:i32] -> (ptr ONode)
+    (call new_onode OKind.int64 (call str.absent) 0 v pos))
+
+  (fn make_bool [b:bool pos:i32] -> (ptr ONode)
+    (call new_onode OKind.bool (call str.absent) (if b 1 0) 0i64 pos))
+
+  (fn make_sym [word:str pos:i32] -> (ptr ONode)
+    (call new_onode OKind.sym (call str.from_str word) 0 0i64 pos))
+
+  (fn make_sym_bytes [b:str.Bytes pos:i32] -> (ptr ONode)
+    (call new_onode OKind.sym b 0 0i64 pos))
+
+  (fn make_float_from_int [v:i32 pos:i32] -> (ptr ONode)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call buf.push_int b v)
+    (call buf.push_str b ".0")
+    (call new_onode OKind.float (call buf.bytes b) 0 0i64 pos))
+
+  (fn make_op1 [op:str a:(ptr ONode) pos:i32] -> (ptr ONode)
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym op pos))
+    (let c1:(ptr ONode) (call clone_node a))
+    (put h ONode.next c1)
+    (put g ONode.first h)
+    g)
+
+  (fn make_op2 [op:str a:(ptr ONode) b:(ptr ONode) pos:i32] -> (ptr ONode)
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym op pos))
+    (let c1:(ptr ONode) (call clone_node a))
+    (let c2:(ptr ONode) (call clone_node b))
+    (put h ONode.next c1)
+    (put c1 ONode.next c2)
+    (put g ONode.first h)
+    g)
+
+  (fn make_if [c:(ptr ONode) t:(ptr ONode) e:(ptr ONode) pos:i32] -> (ptr ONode)
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym "if" pos))
+    (let cc:(ptr ONode) (call clone_node c))
+    (let tt:(ptr ONode) (call clone_node t))
+    (let ee:(ptr ONode) (call clone_node e))
+    (put h ONode.next cc)
+    (put cc ONode.next tt)
+    (put tt ONode.next ee)
+    (put g ONode.first h)
+    g)
+
+  (fn make_empty_block [pos:i32] -> (ptr ONode)
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (put g ONode.first (call make_sym "block" pos))
+    g)
+
+  ;; Deep-clones a single ONode subtree (setting next = null on the returned root).
+  (fn clone_node [n:(ptr ONode)] -> (ptr ONode)
+    (if (eq n (ptr.null ONode)) (return (ptr.null ONode)) (block))
+    (let copy:(ptr ONode) (call new_onode (get n ONode.kind) (get n ONode.text) (get n ONode.ival) (get n ONode.lval) (get n ONode.pos)))
+    (let first:(ptr ONode) (ptr.null ONode))
+    (let last:(ptr ONode) (ptr.null ONode))
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (let cc:(ptr ONode) (call clone_node c))
+      (if (eq last (ptr.null ONode)) (set! first cc) (put last ONode.next cc))
+      (set! last cc)
+      (set! c (get c ONode.next)))
+    (put copy ONode.first first)
+    copy)
+
+  ;; ===== Parsing compiler.Node -> ONode =====
+
+  ;; Parses a signed 64-bit integer literal with "i64" suffix.
+  (fn parse_i64 [src_ptr:i32 pos:i32 len:i32] -> i64
+    (unsafe
+      (let dlen:i32 (- len 3))
+      (if (lte dlen 0) (return 0i64) (block))
+      (let first:i32 (mem.load8 (+ src_ptr pos)))
+      (let start:i32 (if (or (eq first 45) (eq first 43)) 1 0))
+      (let neg_val:i64 0i64)
+      (loop i start (- dlen 1) 1
+        (let d:i64 (i64.extend_s (- (mem.load8 (+ src_ptr (+ pos i))) 48)))
+        (set! neg_val (- (* neg_val 10i64) d)))
+      (if (eq first 45) neg_val (- 0i64 neg_val))))
+
+  ;; Whether an integer token's text fits in signed 32-bit [-2147483648, 2147483647].
+  (fn text_fits_i32 [t:str.Bytes] -> bool
+    (if (not (call str.present t)) (return true) (block))
+    (let len:i32 (get t str.Bytes.len))
+    (if (lte len 0) (return false) (block))
+    (let b0:i32 (call str.byte_at t 0))
+    (let start:i32 (if (or (eq b0 45) (eq b0 43)) 1 0))
+    (while (and (lt start (- len 1)) (eq (call str.byte_at t start) 48))
+      (set! start (+ start 1)))
+    (let nd:i32 (- len start))
+    (if (lt nd 10) (return true) (block))
+    (if (gt nd 10) (return false) (block))
+    (let lim:str (if (eq b0 45) "2147483648" "2147483647"))
+    (loop i 0 9 1
+      (let ca:i32 (call str.byte_at t (+ start i)))
+      (let cb:i32 (unsafe (mem.load8 (+ (str.ptr lim) i))))
+      (if (lt ca cb) (return true) (block))
+      (if (gt ca cb) (return false) (block)))
+    true)
+
+  (fn map_pos [pos:i32 const_orig:(ptr origins.Origins) in_low:(ptr origins.Origins)] -> i32
+    (let p:i32 pos)
+    (if (neq const_orig (ptr.null origins.Origins))
+        (block
+          (let ce:(ptr origins.Entry) (call origins.find const_orig p))
+          (if (neq ce (ptr.null origins.Entry)) (set! p (get ce origins.Entry.pos)) (block)))
+        (block))
+    (if (neq in_low (ptr.null origins.Origins))
+        (block
+          (let le:(ptr origins.Entry) (call origins.find in_low p))
+          (if (neq le (ptr.null origins.Entry)) (set! p (get le origins.Entry.pos)) (block)))
+        (block))
+    p)
+
+  (fn from_cnode [src_ptr:i32 n:(ptr compiler.Node) const_orig:(ptr origins.Origins) in_low:(ptr origins.Origins)] -> (ptr ONode)
+    (if (eq n (ptr.null compiler.Node)) (return (ptr.null ONode)) (block))
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (let a:i32 (get n compiler.Node.a))
+    (let b:i32 (get n compiler.Node.b))
+    (let pos:i32 (call map_pos (get n compiler.Node.pos) const_orig in_low))
+    (cond
+      ((or (eq k compiler.Kind.paren) (eq k compiler.Kind.bracket))
+       (let ok:OKind (if (eq k compiler.Kind.paren) OKind.paren OKind.bracket))
+       (let g:(ptr ONode) (call new_onode ok (call str.absent) 0 0i64 pos))
+       (let first:(ptr ONode) (ptr.null ONode))
+       (let last:(ptr ONode) (ptr.null ONode))
+       (let c:(ptr compiler.Node) (get n compiler.Node.first))
+       (while (neq c (ptr.null compiler.Node))
+         (let cn:(ptr ONode) (call from_cnode src_ptr c const_orig in_low))
+         (if (eq last (ptr.null ONode)) (set! first cn) (put last ONode.next cn))
+         (set! last cn)
+         (set! c (get c compiler.Node.next)))
+       (put g ONode.first first)
+       g)
+      ((eq k compiler.Kind.symbol)
+       (call new_onode OKind.sym (unsafe (call str.bytes (+ src_ptr a) b)) 0 0i64 pos))
+      ((eq k compiler.Kind.int)
+       (let slice:str.Bytes (unsafe (call str.bytes (+ src_ptr a) b)))
+       (let iv:i32 (call compiler.int_value src_ptr a b))
+       (call new_onode OKind.int slice iv 0i64 pos))
+      ((eq k compiler.Kind.int64)
+       (let slice:str.Bytes (unsafe (call str.bytes (+ src_ptr a) b)))
+       (let lv:i64 (call parse_i64 src_ptr a b))
+       (call new_onode OKind.int64 slice 0 lv pos))
+      ((eq k compiler.Kind.bool)
+       (call new_onode OKind.bool (call str.absent) a 0i64 pos))
+      ((eq k compiler.Kind.string)
+       (call new_onode OKind.string (unsafe (call str.bytes (+ src_ptr a) b)) 0 0i64 pos))
+      ((eq k compiler.Kind.float)
+       (call new_onode OKind.float (unsafe (call str.bytes (+ src_ptr a) b)) 0 0i64 pos))
+      ((eq k compiler.Kind.float32)
+       (call new_onode OKind.float32 (unsafe (call str.bytes (+ src_ptr a) b)) 0 0i64 pos))
+      ((eq k compiler.Kind.colon)
+       (call new_onode OKind.colon (call str.absent) 0 0i64 pos))
+      ((eq k compiler.Kind.arrow)
+       (call new_onode OKind.arrow (call str.absent) 0 0i64 pos))
+      (else
+       (call new_onode OKind.sym (unsafe (call str.bytes (+ src_ptr a) b)) 0 0i64 pos))))
+
+  ;; ===== Printing ONode -> buf.Buf =====
+
+  (fn push_i64_lit [out:(ptr buf.Buf) v:i64] -> void
+    (if (eq v (- (- 0i64 9223372036854775807i64) 1i64))
+        (call buf.push_str out "-9223372036854775808i64")
+        (block
+          (if (lt v 0i64)
+              (block
+                (call buf.push_byte out 45)
+                (call buf.push_unsigned out (- 0i64 v) 10 false))
+              (call buf.push_unsigned out v 10 false))
+          (call buf.push_str out "i64"))))
+
+  (fn print_onode [n:(ptr ONode) out:(ptr buf.Buf) out_orig:(ptr origins.Origins) orig_file:i32] -> void
+    (if (eq n (ptr.null ONode)) (return) (block))
+    (if (and (neq out_orig (ptr.null origins.Origins)) (gte (get n ONode.pos) 0))
+        (call origins.note out_orig out orig_file (get n ONode.pos))
+        (block))
+    (let k:OKind (get n ONode.kind))
+    (cond
+      ((or (eq k OKind.paren) (eq k OKind.bracket))
+       (let sq:bool (eq k OKind.bracket))
+       (call buf.push_byte out (if sq 91 40))
+       (let c:(ptr ONode) (get n ONode.first))
+       (let prev_colon:bool true)
+       (while (neq c (ptr.null ONode))
+         (let colon:bool (eq (get c ONode.kind) OKind.colon))
+         (if (or prev_colon colon) (block) (call buf.push_byte out 32))
+         (call print_onode c out out_orig orig_file)
+         (set! prev_colon colon)
+         (set! c (get c ONode.next)))
+       (call buf.push_byte out (if sq 93 41)))
+      ((eq k OKind.sym)
+       (call buf.push_bytes out (get n ONode.text)))
+      ((eq k OKind.int)
+       (let t:str.Bytes (get n ONode.text))
+       (if (and (call str.present t) (not (call text_fits_i32 t)))
+           (call buf.push_bytes out t)
+           (call buf.push_int out (get n ONode.ival))))
+      ((eq k OKind.int64)
+       (call push_i64_lit out (get n ONode.lval)))
+      ((eq k OKind.bool)
+       (call buf.push_str out (if (eq (get n ONode.ival) 0) "false" "true")))
+      ((eq k OKind.string)
+       (call buf.push_byte out 34)
+       (call buf.push_bytes out (get n ONode.text))
+       (call buf.push_byte out 34))
+      ((or (eq k OKind.float) (eq k OKind.float32))
+       (call buf.push_bytes out (get n ONode.text)))
+      ((eq k OKind.colon)
+       (call buf.push_byte out 58))
+      ((eq k OKind.arrow)
+       (call buf.push_str out "->"))
+      (else (block))))
+
+  ;; ===== Tree Inspection & Structural Queries =====
+
+  (fn onode_count [g:(ptr ONode)] -> i32
+    (if (eq g (ptr.null ONode)) (return 0) (block))
+    (let k:i32 0)
+    (let c:(ptr ONode) (get g ONode.first))
+    (while (neq c (ptr.null ONode))
+      (set! k (+ k 1))
+      (set! c (get c ONode.next)))
+    k)
+
+  (fn onode_nth [g:(ptr ONode) idx:i32] -> (ptr ONode)
+    (if (eq g (ptr.null ONode)) (return (ptr.null ONode)) (block))
+    (let c:(ptr ONode) (get g ONode.first))
+    (let i:i32 0)
+    (while (and (neq c (ptr.null ONode)) (lt i idx))
+      (set! c (get c ONode.next))
+      (set! i (+ i 1)))
+    c)
+
+  (fn is_sym [n:(ptr ONode) word:str] -> bool
+    (and (neq n (ptr.null ONode))
+         (and (eq (get n ONode.kind) OKind.sym)
+              (call str.is (get n ONode.text) word))))
+
+  (fn is_sym_bytes [n:(ptr ONode) b:str.Bytes] -> bool
+    (and (neq n (ptr.null ONode))
+         (and (eq (get n ONode.kind) OKind.sym)
+              (call str.bytes_eq (get n ONode.text) b))))
+
+  (fn is_form [g:(ptr ONode) kw:str] -> bool
+    (and (neq g (ptr.null ONode))
+         (and (eq (get g ONode.kind) OKind.paren)
+              (call is_sym (get g ONode.first) kw))))
+
+  (fn is_int_node [n:(ptr ONode)] -> bool
+    (and (neq n (ptr.null ONode))
+         (and (eq (get n ONode.kind) OKind.int)
+              (call text_fits_i32 (get n ONode.text)))))
+
+  (fn is_i64_node [n:(ptr ONode)] -> bool
+    (and (neq n (ptr.null ONode)) (eq (get n ONode.kind) OKind.int64)))
+
+  (fn is_bool_node [n:(ptr ONode)] -> bool
+    (and (neq n (ptr.null ONode)) (eq (get n ONode.kind) OKind.bool)))
+
+  ;; Whether `n` is a literal or symbol atom (zero computation, zero side effects).
+  (fn is_atom [n:(ptr ONode)] -> bool
+    (if (eq n (ptr.null ONode)) (return false) (block))
+    (let k:OKind (get n ONode.kind))
+    (or (eq k OKind.sym)
+        (or (eq k OKind.int)
+            (or (eq k OKind.int64)
+                (or (eq k OKind.float)
+                    (or (eq k OKind.float32)
+                        (or (eq k OKind.bool) (eq k OKind.string))))))))
+
+  (fn is_literal [n:(ptr ONode)] -> bool
+    (if (eq n (ptr.null ONode)) (return false) (block))
+    (let k:OKind (get n ONode.kind))
+    (or (eq k OKind.int)
+        (or (eq k OKind.int64)
+            (or (eq k OKind.float)
+                (or (eq k OKind.float32)
+                    (or (eq k OKind.bool) (eq k OKind.string)))))))
+
+  ;; Structural equality on ONode subtrees.
+  (fn node_eq [a:(ptr ONode) b:(ptr ONode)] -> bool
+    (if (or (eq a (ptr.null ONode)) (eq b (ptr.null ONode)))
+        (return (and (eq a (ptr.null ONode)) (eq b (ptr.null ONode))))
+        (block))
+    (let ka:OKind (get a ONode.kind))
+    (if (neq ka (get b ONode.kind)) (return false) (block))
+    (cond
+      ((eq ka OKind.int) (eq (get a ONode.ival) (get b ONode.ival)))
+      ((eq ka OKind.int64) (eq (get a ONode.lval) (get b ONode.lval)))
+      ((eq ka OKind.bool) (eq (get a ONode.ival) (get b ONode.ival)))
+      ((or (eq ka OKind.sym) (or (eq ka OKind.string) (or (eq ka OKind.float) (eq ka OKind.float32))))
+       (call str.bytes_eq (get a ONode.text) (get b ONode.text)))
+      ((or (eq ka OKind.colon) (eq ka OKind.arrow)) true)
+      (else
+       (let ca:(ptr ONode) (get a ONode.first))
+       (let cb:(ptr ONode) (get b ONode.first))
+       (while (and (neq ca (ptr.null ONode)) (neq cb (ptr.null ONode)))
+         (if (not (call node_eq ca cb)) (return false) (block))
+         (set! ca (get ca ONode.next))
+         (set! cb (get cb ONode.next)))
+       (and (eq ca (ptr.null ONode)) (eq cb (ptr.null ONode))))))
+
+  ;; Total node count of an ONode subtree (for inline size heuristics).
+  (fn tree_size [n:(ptr ONode)] -> i32
+    (if (eq n (ptr.null ONode)) (return 0) (block))
+    (let total:i32 1)
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (set! total (+ total (call tree_size c)))
+      (set! c (get c ONode.next)))
+    total)
+
+  ;; ===== Purity Analysis (Side-Effect & Trap Safety) =====
+
+  (fn is_pure_op_name [h:str.Bytes] -> bool
+    (or (call str.is h "+")
+    (or (call str.is h "-")
+    (or (call str.is h "*")
+    (or (call str.is h "^")
+    (or (call str.is h "shl")
+    (or (call str.is h "shr")
+    (or (call str.is h "shru")
+    (or (call str.is h "bitand")
+    (or (call str.is h "bitor")
+    (or (call str.is h "eq")
+    (or (call str.is h "neq")
+    (or (call str.is h "lt")
+    (or (call str.is h "lte")
+    (or (call str.is h "gt")
+    (or (call str.is h "gte")
+    (or (call str.is h "ltu")
+    (or (call str.is h "lteu")
+    (or (call str.is h "gtu")
+    (or (call str.is h "gteu")
+    (or (call str.is h "and")
+    (or (call str.is h "or")
+    (or (call str.is h "not")
+    (or (call str.is h "str.len")
+    (or (call str.is h "str.ptr")
+    (or (call str.is h "i64.extend_s")
+    (or (call str.is h "i64.extend_u")
+    (or (call str.is h "i32.wrap")
+    (or (call str.is h "f64.convert_i64_s")
+    (or (call str.is h "f64.convert_i32_s")
+    (or (call str.is h "f32.convert_i32_s")
+    (or (call str.is h "f32.convert_i64_s")
+    (or (call str.is h "f32.demote")
+    (or (call str.is h "f64.promote")
+    (or (call str.is h "f64.reinterpret_i64")
+    (or (call str.is h "i64.reinterpret_f64")
+    (or (call str.is h "f32.reinterpret_i32")
+    (or (call str.is h "i32.reinterpret_f32")
+        (call str.is h "f64.sqrt")))))))))))))))))))))))))))))))))))))))
+
+  ;; Whether `n` is guaranteed free of side effects and runtime traps.
+  (fn is_pure [n:(ptr ONode)] -> bool
+    (if (eq n (ptr.null ONode)) (return true) (block))
+    (if (call is_atom n) (return true) (block))
+    (if (neq (get n ONode.kind) OKind.paren) (return false) (block))
+    (let h:(ptr ONode) (get n ONode.first))
+    (if (or (eq h (ptr.null ONode)) (neq (get h ONode.kind) OKind.sym)) (return false) (block))
+    (let ht:str.Bytes (get h ONode.text))
+    ;; Type-parameterized pure forms: (sizeof T), (ptr.null S), (arr.null T), (ref f)
+    (if (or (call str.is ht "sizeof") (or (call str.is ht "ptr.null") (or (call str.is ht "arr.null") (call str.is ht "ref"))))
+        (return true)
+        (block))
+    (if (or (call str.is ht "ptr.addr") (or (call str.is ht "ptr.gen") (or (call str.is ht "arr.addr") (call str.is ht "arr.gen"))))
+        (return (call is_pure (call onode_nth n 1)))
+        (block))
+    (if (or (call str.is ht "ptr.cast") (call str.is ht "arr.cast"))
+        (return (call is_pure (call onode_nth n 2)))
+        (block))
+    ;; Division / remainder: pure only when divisor is a safe non-zero constant
+    (if (or (call str.is ht "/") (call str.is ht "%"))
+        (block
+          (let a:(ptr ONode) (call onode_nth n 1))
+          (let b:(ptr ONode) (call onode_nth n 2))
+          (return (and (call is_pure a)
+                       (and (call is_int_node b)
+                            (and (neq (get b ONode.ival) 0) (neq (get b ONode.ival) -1))))))
+        (block))
+    (if (or (call str.is ht "divu") (call str.is ht "remu"))
+        (block
+          (let a:(ptr ONode) (call onode_nth n 1))
+          (let b:(ptr ONode) (call onode_nth n 2))
+          (return (and (call is_pure a) (and (call is_int_node b) (neq (get b ONode.ival) 0)))))
+        (block))
+    (if (or (call str.is ht "block") (call str.is ht "unsafe"))
+        (return (and (eq (call onode_count n) 2) (call is_pure (call onode_nth n 1))))
+        (block))
+    (if (call str.is ht "if")
+        (return (and (call is_pure (call onode_nth n 1))
+                     (and (call is_pure (call onode_nth n 2))
+                          (call is_pure (call onode_nth n 3)))))
+        (block))
+    (if (not (call is_pure_op_name ht)) (return false) (block))
+    (let c:(ptr ONode) (get h ONode.next))
+    (while (neq c (ptr.null ONode))
+      (if (not (call is_pure c)) (return false) (block))
+      (set! c (get c ONode.next)))
+    true)
+
+  ;; ===== Known-Bits Parity & Power-of-Two Analysis =====
+
+  ;; Returns log2(v) if v > 1 is a power of two (2, 4, ..., 1073741824), else -1.
+  (fn pow2_shift [v:i32] -> i32
+    (if (lte v 1) (return -1) (block))
+    (if (neq (bitand v (- v 1)) 0) (return -1) (block))
+    (let k:i32 0)
+    (let cur:i32 v)
+    (while (gt cur 1)
+      (set! cur (shru cur 1))
+      (set! k (+ k 1)))
+    k)
+
+  ;; Whether `b` is syntactically `(+ a 1)`, `(+ 1 a)`, or `(- a 1)` (consecutive integer).
+  (fn is_plus_minus_one [a:(ptr ONode) b:(ptr ONode)] -> bool
+    (if (or (eq a (ptr.null ONode)) (eq b (ptr.null ONode))) (return false) (block))
+    (if (call is_form b "+")
+        (block
+          (let b1:(ptr ONode) (call onode_nth b 1))
+          (let b2:(ptr ONode) (call onode_nth b 2))
+          (return (or (and (call is_int_node b2) (and (eq (get b2 ONode.ival) 1) (call node_eq a b1)))
+                      (and (call is_int_node b1) (and (eq (get b1 ONode.ival) 1) (call node_eq a b2))))))
+        (block))
+    (if (call is_form b "-")
+        (block
+          (let b1:(ptr ONode) (call onode_nth b 1))
+          (let b2:(ptr ONode) (call onode_nth b 2))
+          (return (and (call is_int_node b2) (and (eq (get b2 ONode.ival) 1) (call node_eq a b1)))))
+        (block))
+    false)
+
+  ;; Known-bits LSB parity analysis: returns true when `n` is provably even
+  ;; (least-significant bit == 0) for all 2^32 two's-complement i32 values.
+  (fn is_known_even [n:(ptr ONode)] -> bool
+    (if (eq n (ptr.null ONode)) (return false) (block))
+    (if (call is_int_node n)
+        (return (eq (bitand (get n ONode.ival) 1) 0))
+        (block))
+    (if (neq (get n ONode.kind) OKind.paren) (return false) (block))
+    (let a:(ptr ONode) (call onode_nth n 1))
+    (let b:(ptr ONode) (call onode_nth n 2))
+    (cond
+      ((call is_form n "shl")
+       (and (call is_int_node b) (gt (bitand (get b ONode.ival) 31) 0)))
+      ((call is_form n "*")
+       (or (call is_known_even a)
+           (or (call is_known_even b)
+               (or (call is_plus_minus_one a b)
+                   (call is_plus_minus_one b a)))))
+      ((call is_form n "bitand")
+       (or (call is_known_even a) (call is_known_even b)))
+      ((or (call is_form n "+") (or (call is_form n "-") (or (call is_form n "bitor") (call is_form n "^"))))
+       (and (call is_known_even a) (call is_known_even b)))
+      (else false)))
+
+  ;; Decoded byte length of a string token's raw text (counting \x escapes as 1 byte).
+  (fn decoded_str_len [s:str.Bytes] -> i32
+    (let n:i32 (get s str.Bytes.len))
+    (let i:i32 0)
+    (let count:i32 0)
+    (while (lt i n)
+      (if (and (eq (call str.byte_at s i) 92) (lt (+ i 1) n))
+          (set! i (+ i 2))
+          (set! i (+ i 1)))
+      (set! count (+ count 1)))
+    count)
+
+  ;; ===== Pass 1 & 3: Expression Optimizer =====
+
+  ;; Whether child index `idx` (0-based) inside paren group `g` with head `ht`
+  ;; is a value expression (as opposed to a keyword, type name, field name,
+  ;; binder, or callee symbol).
+  (fn is_expr_child [g:(ptr ONode) ht:str.Bytes idx:i32 total:i32] -> bool
+    (if (eq idx 0) (return false) (block))
+    (cond
+      ((or (call str.is ht "struct") (or (call str.is ht "union") (or (call str.is ht "const") (call str.is ht "enum"))))
+       false)
+      ((or (call str.is ht "new") (or (call str.is ht "sizeof") (or (call str.is ht "ptr.null") (or (call str.is ht "arr.null") (call str.is ht "ref")))))
+       false)
+      ((call str.is ht "call") (gt idx 1))
+      ((call str.is ht "call_ref") (gt idx 1))
+      ((call str.is ht "let") (eq idx 4))
+      ((call str.is ht "set!") (eq idx 2))
+      ((call str.is ht "loop") (gte idx 2))
+      ((call str.is ht "get") (eq idx 1))
+      ((call str.is ht "put") (or (eq idx 1) (eq idx (- total 1))))
+      ((call str.is ht "arr.new") (eq idx 2))
+      ((call str.is ht "arr.get") (or (eq idx 2) (eq idx 3)))
+      ((call str.is ht "arr.set") (or (eq idx 2) (or (eq idx 3) (eq idx (- total 1)))))
+      ((or (call str.is ht "ptr.cast") (or (call str.is ht "ptr.make") (or (call str.is ht "arr.cast") (call str.is ht "arr.make"))))
+       (gt idx 1))
+      ((call str.is ht "make") (gt idx 1))
+      ((call str.is ht "with") (or (eq idx 1) (eq idx 3)))
+      ((or (call str.is ht "ok") (call str.is ht "err"))
+       ;; (ok : T val) has total=4 (val at idx 3); (ok val) has total=2 (val at idx 1)
+       (if (gt total 2) (eq idx 3) (eq idx 1)))
+      (else true)))
+
+  (fn opt_cond [g:(ptr ONode) stats:(ptr Stats)] -> (ptr ONode)
+    (let pos:i32 (get g ONode.pos))
+    (let first_out:(ptr ONode) (call make_sym "cond" pos))
+    (let last_out:(ptr ONode) first_out)
+    (let clause:(ptr ONode) (get (get g ONode.first) ONode.next))
+    (while (neq clause (ptr.null ONode))
+      (let next_clause:(ptr ONode) (get clause ONode.next))
+      (if (eq (get clause ONode.kind) OKind.paren)
+          (block
+            (let ch:(ptr ONode) (get clause ONode.first))
+            (if (call is_sym ch "else")
+                (block
+                  (let nc:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get clause ONode.pos)))
+                  (let eh:(ptr ONode) (call make_sym "else" (get ch ONode.pos)))
+                  (let body:(ptr ONode) (call opt_stmt_list (get ch ONode.next) stats))
+                  (put eh ONode.next body)
+                  (put nc ONode.first eh)
+                  (put last_out ONode.next nc)
+                  (set! last_out nc)
+                  (set! next_clause (ptr.null ONode)))
+                (block
+                  (let raw_body:(ptr ONode) (get ch ONode.next))
+                  (let opt_c:(ptr ONode) (call opt_expr ch stats))
+                  (let body:(ptr ONode) (call opt_stmt_list raw_body stats))
+                  (cond
+                    ((and (call is_bool_node opt_c) (eq (get opt_c ONode.ival) 0))
+                     ;; (false body...) clause is unreachable: drop it
+                     (call bump_folded stats))
+                    ((and (call is_bool_node opt_c) (eq (get opt_c ONode.ival) 1))
+                     ;; (true body...) clause always fires
+                     (call bump_folded stats)
+                     (if (eq last_out first_out)
+                         (return (call wrap_stmt_list body (get clause ONode.pos)))
+                         (block
+                           (let nc:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get clause ONode.pos)))
+                           (let eh:(ptr ONode) (call make_sym "else" (get ch ONode.pos)))
+                           (put eh ONode.next body)
+                           (put nc ONode.first eh)
+                           (put last_out ONode.next nc)
+                           (set! last_out nc)
+                           (set! next_clause (ptr.null ONode)))))
+                    (else
+                     (let nc:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get clause ONode.pos)))
+                     (put opt_c ONode.next body)
+                     (put nc ONode.first opt_c)
+                     (put last_out ONode.next nc)
+                     (set! last_out nc))))))
+          (block))
+      (set! clause next_clause))
+    ;; If only (else body...) remains in cond, unwrap it directly
+    (let only_clause:(ptr ONode) (get first_out ONode.next))
+    (if (and (neq only_clause (ptr.null ONode))
+             (and (eq (get only_clause ONode.next) (ptr.null ONode))
+                  (call is_form only_clause "else")))
+        (return (call wrap_stmt_list (get (get only_clause ONode.first) ONode.next) pos))
+        (block))
+    (let res:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (put res ONode.first first_out)
+    res)
+
+  (fn wrap_stmt_list [first:(ptr ONode) pos:i32] -> (ptr ONode)
+    (if (eq first (ptr.null ONode)) (return (call make_empty_block pos)) (block))
+    (if (and (eq (get first ONode.next) (ptr.null ONode)) (not (call is_form first "let")))
+        (return first)
+        (block))
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym "block" pos))
+    (put h ONode.next first)
+    (put g ONode.first h)
+    g)
+
+  ;; Optimizes a linked list of statements (flattening empty blocks and nested
+  ;; let-free blocks along the way).
+  (fn opt_stmt_list [first:(ptr ONode) stats:(ptr Stats)] -> (ptr ONode)
+    (let out_first:(ptr ONode) (ptr.null ONode))
+    (let out_last:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) first)
+    (while (neq cur (ptr.null ONode))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let opt_s:(ptr ONode) (call opt_expr cur stats))
+      (let is_empty_blk:bool (and (call is_form opt_s "block") (eq (call onode_count opt_s) 1)))
+      ;; Keep an empty (block) when it is the final statement (`nxt == null`) so a
+      ;; `(block <non-void-stmt> (block))` sequence preserves its `void` type.
+      (if (and is_empty_blk (neq nxt (ptr.null ONode)))
+          (call bump_folded stats)
+          ;; Splice a let-free (block s1 s2 ...) into the surrounding statement list
+          (if (and (call is_form opt_s "block")
+                   (and (gt (call onode_count opt_s) 1)
+                        (not (call list_has_let (get (get opt_s ONode.first) ONode.next)))))
+              (block
+                (let bc:(ptr ONode) (get (get opt_s ONode.first) ONode.next))
+                (while (neq bc (ptr.null ONode))
+                  (let bnxt:(ptr ONode) (get bc ONode.next))
+                  (put bc ONode.next (ptr.null ONode))
+                  (if (eq out_last (ptr.null ONode)) (set! out_first bc) (put out_last ONode.next bc))
+                  (set! out_last bc)
+                  (set! bc bnxt)))
+              (block
+                (if (eq out_last (ptr.null ONode)) (set! out_first opt_s) (put out_last ONode.next opt_s))
+                (set! out_last opt_s))))
+      (set! cur nxt))
+    out_first)
+
+  (fn list_has_let [first:(ptr ONode)] -> bool
+    (let c:(ptr ONode) first)
+    (while (neq c (ptr.null ONode))
+      (if (call is_form c "let") (return true) (block))
+      (set! c (get c ONode.next)))
+    false)
+
+  (fn opt_match_arms [first_arm:(ptr ONode) is_mr:bool stats:(ptr Stats)] -> (ptr ONode)
+    (let out_first:(ptr ONode) (ptr.null ONode))
+    (let out_last:(ptr ONode) (ptr.null ONode))
+    (let arm:(ptr ONode) first_arm)
+    (while (neq arm (ptr.null ONode))
+      (let nxt:(ptr ONode) (get arm ONode.next))
+      (if (eq (get arm ONode.kind) OKind.paren)
+          (block
+            (let na:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get arm ONode.pos)))
+            (let c0:(ptr ONode) (call clone_node (call onode_nth arm 0)))
+            (let c1:(ptr ONode) (call onode_nth arm 1))
+            (if is_mr
+                ;; (ok v body...) or (err e body...)
+                (block
+                  (let binder:(ptr ONode) (call clone_node c1))
+                  (let body:(ptr ONode) (call opt_stmt_list (get c1 ONode.next) stats))
+                  (put c0 ONode.next binder)
+                  (put binder ONode.next body)
+                  (put na ONode.first c0))
+                ;; (else body...), (Tag [b1...] body...), or (Tag body...)
+                (if (and (neq c1 (ptr.null ONode)) (eq (get c1 ONode.kind) OKind.bracket))
+                    (block
+                      (let br:(ptr ONode) (call clone_node c1))
+                      (let body:(ptr ONode) (call opt_stmt_list (get c1 ONode.next) stats))
+                      (put c0 ONode.next br)
+                      (put br ONode.next body)
+                      (put na ONode.first c0))
+                    (block
+                      (let body:(ptr ONode) (call opt_stmt_list (get (get arm ONode.first) ONode.next) stats))
+                      (put c0 ONode.next body)
+                      (put na ONode.first c0))))
+            (if (eq out_last (ptr.null ONode)) (set! out_first na) (put out_last ONode.next na))
+            (set! out_last na))
+          (block))
+      (set! arm nxt))
+    out_first)
+
+  ;; Optimizes an expression or statement subtree bottom-up (clearing any stale
+  ;; sibling pointer on the returned root node).
+  (fn opt_expr [n:(ptr ONode) stats:(ptr Stats)] -> (ptr ONode)
+    (let r:(ptr ONode) (call opt_expr_raw n stats))
+    (if (neq r (ptr.null ONode)) (put r ONode.next (ptr.null ONode)) (block))
+    r)
+
+  (fn opt_expr_raw [n:(ptr ONode) stats:(ptr Stats)] -> (ptr ONode)
+    (if (eq n (ptr.null ONode)) (return (ptr.null ONode)) (block))
+    (if (neq (get n ONode.kind) OKind.paren) (return n) (block))
+    (let h:(ptr ONode) (get n ONode.first))
+    (if (or (eq h (ptr.null ONode)) (neq (get h ONode.kind) OKind.sym)) (return n) (block))
+    (let ht:str.Bytes (get h ONode.text))
+    (let pos:i32 (get n ONode.pos))
+
+    ;; Special forms with statement bodies
+    (if (call str.is ht "cond") (return (call opt_cond n stats)) (block))
+    (if (or (call str.is ht "block") (call str.is ht "unsafe"))
+        (block
+          (if (eq (call onode_count n) 1) (return n) (block))
+          (let body:(ptr ONode) (call opt_stmt_list (get h ONode.next) stats))
+          (if (and (call str.is ht "block")
+                   (and (neq body (ptr.null ONode))
+                        (and (eq (get body ONode.next) (ptr.null ONode))
+                             (not (call is_form body "let")))))
+              (block (call bump_folded stats) (return body))
+              (block))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call clone_node h))
+          (put nh ONode.next body)
+          (put g ONode.first nh)
+          (return g))
+        (block))
+    (if (call str.is ht "while")
+        (block
+          (let raw_c:(ptr ONode) (call onode_nth n 1))
+          (let bhead:(ptr ONode) (get raw_c ONode.next))
+          (let cnode:(ptr ONode) (call opt_expr raw_c stats))
+          (let body:(ptr ONode) (call opt_stmt_list bhead stats))
+          (if (and (call is_bool_node cnode) (eq (get cnode ONode.ival) 0))
+              (block (call bump_folded stats) (return (call make_empty_block pos)))
+              (block))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call make_sym "while" pos))
+          (put nh ONode.next cnode)
+          (put cnode ONode.next body)
+          (put g ONode.first nh)
+          (return g))
+        (block))
+    (if (call str.is ht "loop")
+        (block
+          (let raw_var:(ptr ONode) (call onode_nth n 1))
+          (let raw_s:(ptr ONode) (get raw_var ONode.next))
+          (let raw_e:(ptr ONode) (get raw_s ONode.next))
+          (let raw_st:(ptr ONode) (get raw_e ONode.next))
+          (let bhead:(ptr ONode) (get raw_st ONode.next))
+          (let var:(ptr ONode) (call clone_node raw_var))
+          (let s_e:(ptr ONode) (call opt_expr raw_s stats))
+          (let e_e:(ptr ONode) (call opt_expr raw_e stats))
+          (let st_e:(ptr ONode) (call opt_expr raw_st stats))
+          (let body:(ptr ONode) (call opt_stmt_list bhead stats))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call make_sym "loop" pos))
+          (put nh ONode.next var)
+          (put var ONode.next s_e)
+          (put s_e ONode.next e_e)
+          (put e_e ONode.next st_e)
+          (put st_e ONode.next body)
+          (put g ONode.first nh)
+          (return g))
+        (block))
+    (if (or (call str.is ht "match") (call str.is ht "match_result"))
+        (block
+          (let is_mr:bool (call str.is ht "match_result"))
+          (let raw_scrut:(ptr ONode) (call onode_nth n 1))
+          (let raw_arms:(ptr ONode) (get raw_scrut ONode.next))
+          (let scrut:(ptr ONode) (call opt_expr raw_scrut stats))
+          (let arms:(ptr ONode) (call opt_match_arms raw_arms is_mr stats))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let nh:(ptr ONode) (call clone_node h))
+          (put nh ONode.next scrut)
+          (put scrut ONode.next arms)
+          (put g ONode.first nh)
+          (return g))
+        (block))
+
+    ;; Standard form / operator: optimize expression children in place
+    (let total:i32 (call onode_count n))
+    (let first_c:(ptr ONode) (ptr.null ONode))
+    (let last_c:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) (get n ONode.first))
+    (let idx:i32 0)
+    (while (neq cur (ptr.null ONode))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let oc:(ptr ONode) (if (call is_expr_child n ht idx total) (call opt_expr cur stats) cur))
+      (if (eq last_c (ptr.null ONode)) (set! first_c oc) (put last_c ONode.next oc))
+      (set! last_c oc)
+      (set! cur nxt)
+      (set! idx (+ idx 1)))
+    (put n ONode.first first_c)
+
+    (let a:(ptr ONode) (call onode_nth n 1))
+    (let b:(ptr ONode) (call onode_nth n 2))
+
+    ;; (if cond then else)
+    (if (call str.is ht "if")
+        (block
+          (let c3:(ptr ONode) (call onode_nth n 3))
+          (if (call is_bool_node a)
+              (block
+                (call bump_folded stats)
+                (return (if (neq (get a ONode.ival) 0) b c3)))
+              (block))
+          (if (call is_form a "not")
+              (block
+                (call bump_folded stats)
+                (return (call make_if (call onode_nth a 1) c3 b pos)))
+              (block))
+          (if (and (call node_eq b c3) (and (call is_pure a) (call is_pure b)))
+              (block (call bump_folded stats) (return b))
+              (block))
+          (return n))
+        (block))
+
+    ;; Unary operators & conversions
+    (if (eq total 2)
+        (return (call fold_unary n ht a pos stats))
+        (block))
+
+    ;; Binary operators
+    (if (eq total 3)
+        (return (call fold_binary n ht a b pos stats))
+        (block))
+
+    n)
+
+  (fn fold_unary [n:(ptr ONode) ht:str.Bytes a:(ptr ONode) pos:i32 stats:(ptr Stats)] -> (ptr ONode)
+    (cond
+      ((call str.is ht "not")
+       (if (call is_bool_node a)
+           (block (call bump_folded stats) (return (call make_bool (eq (get a ONode.ival) 0) pos)))
+           (block))
+       (if (call is_form a "not")
+           (block (call bump_folded stats) (return (call onode_nth a 1)))
+           (block))
+       n)
+      ((call str.is ht "i64.extend_s")
+       (if (call is_int_node a)
+           (block (call bump_folded stats) (return (call make_i64 (i64.extend_s (get a ONode.ival)) pos)))
+           n))
+      ((call str.is ht "i64.extend_u")
+       (if (call is_int_node a)
+           (block (call bump_folded stats) (return (call make_i64 (i64.extend_u (get a ONode.ival)) pos)))
+           n))
+      ((call str.is ht "i32.wrap")
+       (if (call is_i64_node a)
+           (block (call bump_folded stats) (return (call make_int (i32.wrap (get a ONode.lval)) pos)))
+           (block))
+       (if (or (call is_form a "i64.extend_s") (call is_form a "i64.extend_u"))
+           (block (call bump_folded stats) (return (call onode_nth a 1)))
+           n))
+      ((call str.is ht "f64.convert_i64_s")
+       (if (call is_form a "i64.extend_s")
+           (block
+             (call bump_folded stats)
+             (let inner:(ptr ONode) (call onode_nth a 1))
+             (if (call is_int_node inner)
+                 (return (call make_float_from_int (get inner ONode.ival) pos))
+                 (return (call make_op1 "f64.convert_i32_s" inner pos))))
+           (block))
+       (if (and (call is_i64_node a)
+                (and (gte (get a ONode.lval) -2147483648i64) (lte (get a ONode.lval) 2147483647i64)))
+           (block (call bump_folded stats) (return (call make_float_from_int (i32.wrap (get a ONode.lval)) pos)))
+           n))
+      ((call str.is ht "f64.convert_i32_s")
+       (if (call is_int_node a)
+           (block (call bump_folded stats) (return (call make_float_from_int (get a ONode.ival) pos)))
+           n))
+      ((call str.is ht "f32.convert_i64_s")
+       (if (call is_form a "i64.extend_s")
+           (block
+             (call bump_folded stats)
+             (return (call make_op1 "f32.convert_i32_s" (call onode_nth a 1) pos)))
+           n))
+      ((call str.is ht "str.len")
+       (if (and (neq a (ptr.null ONode)) (eq (get a ONode.kind) OKind.string))
+           (block (call bump_folded stats) (return (call make_int (call decoded_str_len (get a ONode.text)) pos)))
+           n))
+      (else n)))
+
+  (fn fold_binary [n:(ptr ONode) ht:str.Bytes a:(ptr ONode) b:(ptr ONode) pos:i32 stats:(ptr Stats)] -> (ptr ONode)
+    (let a_int:bool (call is_int_node a))
+    (let b_int:bool (call is_int_node b))
+    (let av:i32 (if a_int (get a ONode.ival) 0))
+    (let bv:i32 (if b_int (get b ONode.ival) 0))
+
+    ;; Both operands are i32 constants
+    (if (and a_int b_int)
+        (block
+          (cond
+            ((call str.is ht "+") (call bump_folded stats) (return (call make_int (+ av bv) pos)))
+            ((call str.is ht "-") (call bump_folded stats) (return (call make_int (- av bv) pos)))
+            ((call str.is ht "*") (call bump_folded stats) (return (call make_int (* av bv) pos)))
+            ((call str.is ht "/")
+             (if (and (neq bv 0) (not (and (eq av -2147483648) (eq bv -1))))
+                 (block (call bump_folded stats) (return (call make_int (/ av bv) pos)))
+                 (return n)))
+            ((call str.is ht "%")
+             (if (and (neq bv 0) (not (and (eq av -2147483648) (eq bv -1))))
+                 (block (call bump_folded stats) (return (call make_int (% av bv) pos)))
+                 (return n)))
+            ((call str.is ht "divu")
+             (if (neq bv 0)
+                 (block (call bump_folded stats) (return (call make_int (divu av bv) pos)))
+                 (return n)))
+            ((call str.is ht "remu")
+             (if (neq bv 0)
+                 (block (call bump_folded stats) (return (call make_int (remu av bv) pos)))
+                 (return n)))
+            ((call str.is ht "shl") (call bump_folded stats) (return (call make_int (shl av (bitand bv 31)) pos)))
+            ((call str.is ht "shr") (call bump_folded stats) (return (call make_int (shr av (bitand bv 31)) pos)))
+            ((call str.is ht "shru") (call bump_folded stats) (return (call make_int (shru av (bitand bv 31)) pos)))
+            ((call str.is ht "bitand") (call bump_folded stats) (return (call make_int (bitand av bv) pos)))
+            ((call str.is ht "bitor") (call bump_folded stats) (return (call make_int (bitor av bv) pos)))
+            ((call str.is ht "^") (call bump_folded stats) (return (call make_int (^ av bv) pos)))
+            ((call str.is ht "eq") (call bump_folded stats) (return (call make_bool (eq av bv) pos)))
+            ((call str.is ht "neq") (call bump_folded stats) (return (call make_bool (neq av bv) pos)))
+            ((call str.is ht "lt") (call bump_folded stats) (return (call make_bool (lt av bv) pos)))
+            ((call str.is ht "lte") (call bump_folded stats) (return (call make_bool (lte av bv) pos)))
+            ((call str.is ht "gt") (call bump_folded stats) (return (call make_bool (gt av bv) pos)))
+            ((call str.is ht "gte") (call bump_folded stats) (return (call make_bool (gte av bv) pos)))
+            ((call str.is ht "ltu") (call bump_folded stats) (return (call make_bool (ltu av bv) pos)))
+            ((call str.is ht "lteu") (call bump_folded stats) (return (call make_bool (lteu av bv) pos)))
+            ((call str.is ht "gtu") (call bump_folded stats) (return (call make_bool (gtu av bv) pos)))
+            ((call str.is ht "gteu") (call bump_folded stats) (return (call make_bool (gteu av bv) pos)))
+            (else (block))))
+        (block))
+
+    ;; Both operands are i64 constants
+    (if (and (call is_i64_node a) (call is_i64_node b))
+        (block
+          (let al:i64 (get a ONode.lval))
+          (let bl:i64 (get b ONode.lval))
+          (cond
+            ((call str.is ht "+") (call bump_folded stats) (return (call make_i64 (+ al bl) pos)))
+            ((call str.is ht "-") (call bump_folded stats) (return (call make_i64 (- al bl) pos)))
+            ((call str.is ht "*") (call bump_folded stats) (return (call make_i64 (* al bl) pos)))
+            ((call str.is ht "bitand") (call bump_folded stats) (return (call make_i64 (bitand al bl) pos)))
+            ((call str.is ht "bitor") (call bump_folded stats) (return (call make_i64 (bitor al bl) pos)))
+            ((call str.is ht "^") (call bump_folded stats) (return (call make_i64 (^ al bl) pos)))
+            ((call str.is ht "shl") (call bump_folded stats) (return (call make_i64 (shl al (bitand bl 63i64)) pos)))
+            ((call str.is ht "shr") (call bump_folded stats) (return (call make_i64 (shr al (bitand bl 63i64)) pos)))
+            ((call str.is ht "shru") (call bump_folded stats) (return (call make_i64 (shru al (bitand bl 63i64)) pos)))
+            ((call str.is ht "eq") (call bump_folded stats) (return (call make_bool (eq al bl) pos)))
+            ((call str.is ht "neq") (call bump_folded stats) (return (call make_bool (neq al bl) pos)))
+            ((call str.is ht "lt") (call bump_folded stats) (return (call make_bool (lt al bl) pos)))
+            ((call str.is ht "lte") (call bump_folded stats) (return (call make_bool (lte al bl) pos)))
+            ((call str.is ht "gt") (call bump_folded stats) (return (call make_bool (gt al bl) pos)))
+            ((call str.is ht "gte") (call bump_folded stats) (return (call make_bool (gte al bl) pos)))
+            (else (block))))
+        (block))
+
+    ;; Boolean identities
+    (if (call str.is ht "and")
+        (block
+          (if (call is_bool_node a)
+              (block (call bump_folded stats) (return (if (neq (get a ONode.ival) 0) b (call make_bool false pos))))
+              (block))
+          (if (call is_bool_node b)
+              (if (neq (get b ONode.ival) 0)
+                  (block (call bump_folded stats) (return a))
+                  (if (call is_pure a)
+                      (block (call bump_folded stats) (return (call make_bool false pos)))
+                      (block)))
+              (block))
+          (if (and (call node_eq a b) (call is_pure a))
+              (block (call bump_folded stats) (return a))
+              (block))
+          (return n))
+        (block))
+    (if (call str.is ht "or")
+        (block
+          (if (call is_bool_node a)
+              (block (call bump_folded stats) (return (if (eq (get a ONode.ival) 0) b (call make_bool true pos))))
+              (block))
+          (if (call is_bool_node b)
+              (if (eq (get b ONode.ival) 0)
+                  (block (call bump_folded stats) (return a))
+                  (if (call is_pure a)
+                      (block (call bump_folded stats) (return (call make_bool true pos)))
+                      (block)))
+              (block))
+          (if (and (call node_eq a b) (call is_pure a))
+              (block (call bump_folded stats) (return a))
+              (block))
+          (return n))
+        (block))
+
+    ;; Boolean comparison simplifications
+    (if (and (call is_bool_node a) (call is_bool_node b))
+        (cond
+          ((call str.is ht "eq") (call bump_folded stats) (return (call make_bool (eq (get a ONode.ival) (get b ONode.ival)) pos)))
+          ((call str.is ht "neq") (call bump_folded stats) (return (call make_bool (neq (get a ONode.ival) (get b ONode.ival)) pos)))
+          (else (block)))
+        (block))
+    (if (and (call str.is ht "eq") (call is_bool_node b))
+        (block
+          (call bump_folded stats)
+          (return (if (neq (get b ONode.ival) 0) a (call opt_expr (call make_op1 "not" a pos) stats))))
+        (block))
+    (if (and (call str.is ht "neq") (call is_bool_node b))
+        (block
+          (call bump_folded stats)
+          (return (if (eq (get b ONode.ival) 0) a (call opt_expr (call make_op1 "not" a pos) stats))))
+        (block))
+
+    ;; Algebraic identities & strength reductions (i32 and i64)
+    (cond
+      ((call str.is ht "+")
+       (if (and b_int (eq bv 0)) (block (call bump_folded stats) (return a)) (block))
+       (if (and a_int (eq av 0)) (block (call bump_folded stats) (return b)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node a) (eq (get a ONode.lval) 0i64)) (block (call bump_folded stats) (return b)) (block))
+       ;; Reassociate (+ (+ x c1) c2) -> (+ x (c1+c2))
+       (if (and b_int (and (call is_form a "+") (call is_int_node (call onode_nth a 2))))
+           (block
+             (let c1:i32 (get (call onode_nth a 2) ONode.ival))
+             (let sum:i32 (+ c1 bv))
+             (call bump_folded stats)
+             (return (if (eq sum 0)
+                         (call onode_nth a 1)
+                         (call make_op2 "+" (call onode_nth a 1) (call make_int sum pos) pos))))
+           (block))
+       ;; Reassociate (+ (- x c1) c2) -> (+ x (c2-c1))
+       (if (and b_int (and (call is_form a "-") (call is_int_node (call onode_nth a 2))))
+           (block
+             (let c1:i32 (get (call onode_nth a 2) ONode.ival))
+             (let diff:i32 (- bv c1))
+             (call bump_folded stats)
+             (return (if (eq diff 0)
+                         (call onode_nth a 1)
+                         (call make_op2 "+" (call onode_nth a 1) (call make_int diff pos) pos))))
+           (block))
+       n)
+      ((call str.is ht "-")
+       (if (and b_int (eq bv 0)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (block (call bump_folded stats) (return a)) (block))
+       ;; Reassociate (- (- x c1) c2) -> (- x (c1+c2))
+       (if (and b_int (and (call is_form a "-") (call is_int_node (call onode_nth a 2))))
+           (block
+             (let c1:i32 (get (call onode_nth a 2) ONode.ival))
+             (let sum:i32 (+ c1 bv))
+             (call bump_folded stats)
+             (return (if (eq sum 0)
+                         (call onode_nth a 1)
+                         (call make_op2 "-" (call onode_nth a 1) (call make_int sum pos) pos))))
+           (block))
+       ;; Reassociate (- (+ x c1) c2) -> (+ x (c1-c2))
+       (if (and b_int (and (call is_form a "+") (call is_int_node (call onode_nth a 2))))
+           (block
+             (let c1:i32 (get (call onode_nth a 2) ONode.ival))
+             (let diff:i32 (- c1 bv))
+             (call bump_folded stats)
+             (return (if (eq diff 0)
+                         (call onode_nth a 1)
+                         (call make_op2 "+" (call onode_nth a 1) (call make_int diff pos) pos))))
+           (block))
+       n)
+      ((call str.is ht "*")
+       (if (and b_int (eq bv 1)) (block (call bump_folded stats) (return a)) (block))
+       (if (and a_int (eq av 1)) (block (call bump_folded stats) (return b)) (block))
+       (if (and b_int (and (eq bv 0) (call is_pure a))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if (and a_int (and (eq av 0) (call is_pure b))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 1i64)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node a) (eq (get a ONode.lval) 1i64)) (block (call bump_folded stats) (return b)) (block))
+       (if (and (call is_i64_node b) (and (eq (get b ONode.lval) 0i64) (call is_pure a))) (block (call bump_folded stats) (return (call make_i64 0i64 pos))) (block))
+       (if (and (call is_i64_node a) (and (eq (get a ONode.lval) 0i64) (call is_pure b))) (block (call bump_folded stats) (return (call make_i64 0i64 pos))) (block))
+       ;; Strength reduction: (* x 2^k) / (* 2^k x) -> (shl x k)
+       (if b_int
+           (block
+             (let sh:i32 (call pow2_shift bv))
+             (if (gt sh 0)
+                 (block (call bump_folded stats) (return (call make_op2 "shl" a (call make_int sh pos) pos)))
+                 (block)))
+           (block))
+       (if a_int
+           (block
+             (let sh:i32 (call pow2_shift av))
+             (if (gt sh 0)
+                 (block (call bump_folded stats) (return (call make_op2 "shl" b (call make_int sh pos) pos)))
+                 (block)))
+           (block))
+       n)
+      ((call str.is ht "/")
+       (if (and b_int (eq bv 1)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 1i64)) (block (call bump_folded stats) (return a)) (block))
+       ;; Known-even parity strength reduction: (/ even_expr 2) -> (shr even_expr 1)
+       (if (and b_int (and (eq bv 2) (call is_known_even a)))
+           (block (call bump_folded stats) (return (call make_op2 "shr" a (call make_int 1 pos) pos)))
+           (block))
+       n)
+      ((call str.is ht "%")
+       (if (and b_int (and (eq bv 1) (call is_pure a))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if (and b_int (and (eq bv 2) (and (call is_known_even a) (call is_pure a))))
+           (block (call bump_folded stats) (return (call make_int 0 pos)))
+           (block))
+       n)
+      ((call str.is ht "divu")
+       (if (and b_int (eq bv 1)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 1i64)) (block (call bump_folded stats) (return a)) (block))
+       (if b_int
+           (block
+             (let sh:i32 (call pow2_shift bv))
+             (if (gt sh 0)
+                 (block (call bump_folded stats) (return (call make_op2 "shru" a (call make_int sh pos) pos)))
+                 (block)))
+           (block))
+       n)
+      ((call str.is ht "remu")
+       (if (and b_int (and (eq bv 1) (call is_pure a))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if b_int
+           (block
+             (let sh:i32 (call pow2_shift bv))
+             (if (gt sh 0)
+                 (block (call bump_folded stats) (return (call make_op2 "bitand" a (call make_int (- bv 1) pos) pos)))
+                 (block)))
+           (block))
+       n)
+      ((or (call str.is ht "shl") (or (call str.is ht "shr") (call str.is ht "shru")))
+       (if (and b_int (eq bv 0)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (block (call bump_folded stats) (return a)) (block))
+       ;; Combine nested identical shifts: (shl (shl x c1) c2) -> (shl x (c1+c2))
+       (if (and b_int (and (gte bv 0) (and (eq (get a ONode.kind) OKind.paren) (call is_sym_bytes (get a ONode.first) ht))))
+           (block
+             (let inner_b:(ptr ONode) (call onode_nth a 2))
+             (if (and (call is_int_node inner_b) (gte (get inner_b ONode.ival) 0))
+                 (block
+                   (let sum:i32 (+ (get inner_b ONode.ival) bv))
+                   (if (lt sum 32)
+                       (block
+                         (call bump_folded stats)
+                         (return (call make_op2 (if (call str.is ht "shl") "shl" (if (call str.is ht "shr") "shr" "shru"))
+                                                (call onode_nth a 1)
+                                                (call make_int sum pos)
+                                                pos)))
+                       (block)))
+                 (block)))
+           (block))
+       n)
+      ((call str.is ht "bitand")
+       (if (and b_int (eq bv -1)) (block (call bump_folded stats) (return a)) (block))
+       (if (and a_int (eq av -1)) (block (call bump_folded stats) (return b)) (block))
+       (if (and b_int (and (eq bv 0) (call is_pure a))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if (and a_int (and (eq av 0) (call is_pure b))) (block (call bump_folded stats) (return (call make_int 0 pos))) (block))
+       (if (and (call is_i64_node b) (and (eq (get b ONode.lval) 0i64) (call is_pure a))) (block (call bump_folded stats) (return (call make_i64 0i64 pos))) (block))
+       (if (and (call is_i64_node a) (and (eq (get a ONode.lval) 0i64) (call is_pure b))) (block (call bump_folded stats) (return (call make_i64 0i64 pos))) (block))
+       (if (and (call node_eq a b) (call is_pure a)) (block (call bump_folded stats) (return a)) (block))
+       n)
+      ((call str.is ht "bitor")
+       (if (and b_int (eq bv 0)) (block (call bump_folded stats) (return a)) (block))
+       (if (and a_int (eq av 0)) (block (call bump_folded stats) (return b)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node a) (eq (get a ONode.lval) 0i64)) (block (call bump_folded stats) (return b)) (block))
+       (if (and (call node_eq a b) (call is_pure a)) (block (call bump_folded stats) (return a)) (block))
+       n)
+      ((call str.is ht "^")
+       (if (and b_int (eq bv 0)) (block (call bump_folded stats) (return a)) (block))
+       (if (and a_int (eq av 0)) (block (call bump_folded stats) (return b)) (block))
+       (if (and (call is_i64_node b) (eq (get b ONode.lval) 0i64)) (block (call bump_folded stats) (return a)) (block))
+       (if (and (call is_i64_node a) (eq (get a ONode.lval) 0i64)) (block (call bump_folded stats) (return b)) (block))
+       n)
+      (else n)))
+
+  ;; ===== Pass 2: Multi-Round Hygienic Function Inliner =====
+
+  (struct InlineDef [
+    name:str.Bytes
+    params:(ptr (vec.Vec str.Bytes))
+    param_uses:(ptr (vec.Vec i32))
+    body_first:(ptr ONode)
+    stmt_count:i32
+    is_void:bool
+    is_unsafe:bool
+  ])
+
+  ;; Standard return / local types that are never value structs or value unions.
+  (fn is_standard_type [tn:(ptr ONode)] -> bool
+    (if (eq tn (ptr.null ONode)) (return false) (block))
+    (if (eq (get tn ONode.kind) OKind.sym)
+        (block
+          (let t:str.Bytes (get tn ONode.text))
+          (return (or (call str.is t "i32")
+                  (or (call str.is t "i64")
+                  (or (call str.is t "f64")
+                  (or (call str.is t "f32")
+                  (or (call str.is t "bool")
+                  (or (call str.is t "str")
+                      (call str.is t "void")))))))))
+        (block))
+    (if (eq (get tn ONode.kind) OKind.paren)
+        (return (or (call is_form tn "ptr") (call is_form tn "arr")))
+        (block))
+    false)
+
+  ;; Whether an AST subtree contains any form that disqualifies a function from
+  ;; expression/void-wrapper inlining (let, set!, return, loop, while, match,
+  ;; match_result, ok, err, or a recursive call to `self_name`).
+  (fn has_inline_disqualifier [n:(ptr ONode) self_name:str.Bytes] -> bool
+    (if (eq n (ptr.null ONode)) (return false) (block))
+    (if (eq (get n ONode.kind) OKind.paren)
+        (block
+          (let h:(ptr ONode) (get n ONode.first))
+          (if (and (neq h (ptr.null ONode)) (eq (get h ONode.kind) OKind.sym))
+              (block
+                (let ht:str.Bytes (get h ONode.text))
+                (if (or (call str.is ht "let")
+                    (or (call str.is ht "set!")
+                    (or (call str.is ht "return")
+                    (or (call str.is ht "loop")
+                    (or (call str.is ht "while")
+                    (or (call str.is ht "match")
+                    (or (call str.is ht "match_result")
+                    (or (call str.is ht "ok")
+                        (call str.is ht "err")))))))))
+                    (return true)
+                    (block))
+                (if (or (call str.is ht "call") (call str.is ht "ref"))
+                    (block
+                      (let target:(ptr ONode) (call onode_nth n 1))
+                      (if (call is_sym_bytes target self_name) (return true) (block)))
+                    (block)))
+              (block)))
+        (block))
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (if (call has_inline_disqualifier c self_name) (return true) (block))
+      (set! c (get c ONode.next)))
+    false)
+
+  ;; Counts syntax-directed variable references to `var_name` inside `n`.
+  (fn count_var_refs [n:(ptr ONode) var_name:str.Bytes] -> i32
+    (if (eq n (ptr.null ONode)) (return 0) (block))
+    (if (eq (get n ONode.kind) OKind.sym)
+        (return (if (call str.bytes_eq (get n ONode.text) var_name) 1 0))
+        (block))
+    (if (neq (get n ONode.kind) OKind.paren) (return 0) (block))
+    (let h:(ptr ONode) (get n ONode.first))
+    (if (or (eq h (ptr.null ONode)) (neq (get h ONode.kind) OKind.sym)) (return 0) (block))
+    (let ht:str.Bytes (get h ONode.text))
+    (if (call str.is ht "cond")
+        (block
+          (let sum:i32 0)
+          (let cl:(ptr ONode) (get h ONode.next))
+          (while (neq cl (ptr.null ONode))
+            (let ch:(ptr ONode) (get cl ONode.first))
+            (if (not (call is_sym ch "else"))
+                (set! sum (+ sum (call count_var_refs ch var_name)))
+                (block))
+            (let st:(ptr ONode) (get ch ONode.next))
+            (while (neq st (ptr.null ONode))
+              (set! sum (+ sum (call count_var_refs st var_name)))
+              (set! st (get st ONode.next)))
+            (set! cl (get cl ONode.next)))
+          (return sum))
+        (block))
+    (if (or (call str.is ht "match") (call str.is ht "match_result"))
+        (block
+          (let is_mr:bool (call str.is ht "match_result"))
+          (let sum:i32 (call count_var_refs (call onode_nth n 1) var_name))
+          (let arm:(ptr ONode) (get (call onode_nth n 1) ONode.next))
+          (while (neq arm (ptr.null ONode))
+            (let c1:(ptr ONode) (call onode_nth arm 1))
+            (let st:(ptr ONode) (if is_mr
+                                    (get c1 ONode.next)
+                                    (if (and (neq c1 (ptr.null ONode)) (eq (get c1 ONode.kind) OKind.bracket))
+                                        (get c1 ONode.next)
+                                        (get (get arm ONode.first) ONode.next))))
+            (while (neq st (ptr.null ONode))
+              (set! sum (+ sum (call count_var_refs st var_name)))
+              (set! st (get st ONode.next)))
+            (set! arm (get arm ONode.next)))
+          (return sum))
+        (block))
+    (let total:i32 (call onode_count n))
+    (let sum:i32 0)
+    (let cur:(ptr ONode) (get n ONode.first))
+    (let idx:i32 0)
+    (while (neq cur (ptr.null ONode))
+      (if (call is_expr_child n ht idx total)
+          (set! sum (+ sum (call count_var_refs cur var_name)))
+          (block))
+      (set! cur (get cur ONode.next))
+      (set! idx (+ idx 1)))
+    sum)
+
+  (fn is_syntactic_void_stmt [n:(ptr ONode)] -> bool
+    (or (call is_form n "put")
+        (or (call is_form n "set!")
+            (or (call is_form n "arr.set")
+                (or (call is_form n "mem.store8")
+                    (or (call is_form n "mem.store16")
+                        (or (call is_form n "mem.store32")
+                            (or (call is_form n "mem.store64")
+                                (or (call is_form n "while")
+                                    (or (call is_form n "loop")
+                                        (or (call is_form n "block")
+                                            (or (call is_form n "sys.print")
+                                                (or (call is_form n "sys.exit")
+                                                    (or (call is_form n "atomic.lock")
+                                                        (call is_form n "atomic.unlock")))))))))))))))
+
+  (fn count_calls_in_node [n:(ptr ONode) counts:(ptr (map.Map str.Bytes i32))] -> void
+    (if (or (eq n (ptr.null ONode)) (neq (get n ONode.kind) OKind.paren)) (return) (block))
+    (if (call is_form n "call")
+        (block
+          (let cal:(ptr ONode) (call onode_nth n 1))
+          (if (and (neq cal (ptr.null ONode)) (eq (get cal ONode.kind) OKind.sym))
+              (block
+                (let cname:str.Bytes (get cal ONode.text))
+                (call (map.set str.Bytes i32) counts cname (+ 1 (call (map.get_or str.Bytes i32) counts cname 0))))
+              (block)))
+        (block))
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (call count_calls_in_node c counts)
+      (set! c (get c ONode.next))))
+
+  ;; Inspects a `(fn name [params] -> Ret ...)` item and returns an InlineDef
+  ;; if it is eligible for inlining under the call-site cost model, else null.
+  (fn try_make_inline_def [fn_node:(ptr ONode) call_count:i32] -> (ptr InlineDef)
+    (if (lte call_count 0) (return (ptr.null InlineDef)) (block))
+    (let name_node:(ptr ONode) (call onode_nth fn_node 1))
+    (let params_node:(ptr ONode) (call onode_nth fn_node 2))
+    (let ret_node:(ptr ONode) (call onode_nth fn_node 4))
+    (if (or (eq name_node (ptr.null ONode)) (or (eq params_node (ptr.null ONode)) (eq ret_node (ptr.null ONode))))
+        (return (ptr.null InlineDef))
+        (block))
+    (let fname:str.Bytes (get name_node ONode.text))
+    (if (or (call str.is fname "main") (call str.is fname "_start"))
+        (return (ptr.null InlineDef))
+        (block))
+    (if (not (call is_standard_type ret_node))
+        (return (ptr.null InlineDef))
+        (block))
+    (let is_void:bool (call is_sym ret_node "void"))
+
+    ;; Extract parameter names from [p1 : T1 p2 : T2 ...]
+    (let params:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let pc:(ptr ONode) (get params_node ONode.first))
+    (while (neq pc (ptr.null ONode))
+      (call (vec.push str.Bytes) params (get pc ONode.text))
+      (let colon:(ptr ONode) (get pc ONode.next))
+      (let ty:(ptr ONode) (if (neq colon (ptr.null ONode)) (get colon ONode.next) (ptr.null ONode)))
+      (set! pc (if (neq ty (ptr.null ONode)) (get ty ONode.next) (ptr.null ONode))))
+
+    ;; Inspect clauses and body statements after return type
+    (let cur:(ptr ONode) (get ret_node ONode.next))
+    (let is_unsafe:bool false)
+    (while (and (neq cur (ptr.null ONode))
+                (and (call is_form cur "unsafe") (eq (call onode_count cur) 1)))
+      (set! is_unsafe true)
+      (set! cur (get cur ONode.next)))
+    ;; Do not inline functions with runtime contracts (req, ens, inv)
+    (let scan:(ptr ONode) cur)
+    (let stmt_count:i32 0)
+    (let total_nodes:i32 0)
+    (while (neq scan (ptr.null ONode))
+      (if (or (call is_form scan "req") (or (call is_form scan "ens") (call is_form scan "inv")))
+          (return (ptr.null InlineDef))
+          (block))
+      (if (call has_inline_disqualifier scan fname)
+          (return (ptr.null InlineDef))
+          (block))
+      (set! stmt_count (+ stmt_count 1))
+      (set! total_nodes (+ total_nodes (call tree_size scan)))
+      (set! scan (get scan ONode.next)))
+
+    (if (or (eq stmt_count 0) (gt total_nodes 42))
+        (return (ptr.null InlineDef))
+        (block))
+    ;; Call-site-aware cost model: tiny single-expression leaf accessors (<= 9 AST
+    ;; nodes) are always inlined; larger functions are inlined only when their call
+    ;; count and total expansion cost are bounded.
+    (if (or (gt total_nodes 9) (gt stmt_count 1))
+        (if (or (gt call_count 8) (gt (* total_nodes call_count) 160))
+            (return (ptr.null InlineDef))
+            (block))
+        (block))
+    ;; Non-void functions must have a single body expression (or (unsafe single_expr))
+    (if (and (not is_void) (gt stmt_count 1))
+        (return (ptr.null InlineDef))
+        (block))
+    ;; Void functions can have up to 4 statements
+    (if (and is_void (gt stmt_count 4))
+        (return (ptr.null InlineDef))
+        (block))
+    ;; If the single body expression is `(unsafe e1)` (with 1 inner expr), unwrap and mark is_unsafe
+    (if (and (eq stmt_count 1) (and (call is_form cur "unsafe") (eq (call onode_count cur) 2)))
+        (block
+          (set! is_unsafe true)
+          (set! cur (call onode_nth cur 1)))
+        (block))
+    (if (and (eq stmt_count 1) (and (call is_form cur "unsafe") (gt (call onode_count cur) 2)))
+        (if (not is_void) (return (ptr.null InlineDef)) (block))
+        (block))
+
+    ;; Count parameter uses across the body
+    (let p_uses:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (call (vec.len str.Bytes) params)))
+    (loop i 0 (- (call (vec.len str.Bytes) params) 1) 1
+      (let pname:str.Bytes (call (vec.at str.Bytes) params i))
+      (let u:i32 0)
+      (let s:(ptr ONode) cur)
+      (while (neq s (ptr.null ONode))
+        (set! u (+ u (call count_var_refs s pname)))
+        (set! s (if (eq stmt_count 1) (ptr.null ONode) (get s ONode.next))))
+      (call (vec.push i32) p_uses u))
+
+    (let cloned_body:(ptr ONode) (if (eq stmt_count 1) (call clone_node cur) (call clone_stmt_list cur)))
+    ;; Ensure an inlined `void` function always ends with a syntactically void node
+    ;; so inlining into an `if` branch or `cond` clause preserves `void` typing even
+    ;; when the callee's final statement was a call whose return value was dropped.
+    (if is_void
+        (block
+          (let last_st:(ptr ONode) cloned_body)
+          (while (neq (get last_st ONode.next) (ptr.null ONode))
+            (set! last_st (get last_st ONode.next)))
+          (if (not (call is_syntactic_void_stmt last_st))
+              (block
+                (put last_st ONode.next (call make_empty_block (get fn_node ONode.pos)))
+                (set! stmt_count (+ stmt_count 1)))
+              (block)))
+        (block))
+    (let def:(ptr InlineDef) (new InlineDef))
+    (put def InlineDef.name fname)
+    (put def InlineDef.params params)
+    (put def InlineDef.param_uses p_uses)
+    (put def InlineDef.body_first cloned_body)
+    (put def InlineDef.stmt_count stmt_count)
+    (put def InlineDef.is_void is_void)
+    (put def InlineDef.is_unsafe is_unsafe)
+    def)
+
+  (fn clone_stmt_list [first:(ptr ONode)] -> (ptr ONode)
+    (let out_f:(ptr ONode) (ptr.null ONode))
+    (let out_l:(ptr ONode) (ptr.null ONode))
+    (let c:(ptr ONode) first)
+    (while (neq c (ptr.null ONode))
+      (let cc:(ptr ONode) (call clone_node c))
+      (if (eq out_l (ptr.null ONode)) (set! out_f cc) (put out_l ONode.next cc))
+      (set! out_l cc)
+      (set! c (get c ONode.next)))
+    out_f)
+
+  ;; Clones `n` while substituting any variable reference in `env` with a
+  ;; deep clone of its mapped ONode.
+  (fn subst_with_map [n:(ptr ONode) env:(ptr (map.Map str.Bytes (ptr ONode)))] -> (ptr ONode)
+    (if (eq n (ptr.null ONode)) (return (ptr.null ONode)) (block))
+    (if (eq (get n ONode.kind) OKind.sym)
+        (block
+          (let t:str.Bytes (get n ONode.text))
+          (if (call (map.has str.Bytes (ptr ONode)) env t)
+              (return (call clone_node (call (map.get_or str.Bytes (ptr ONode)) env t (ptr.null ONode))))
+              (return (call clone_node n))))
+        (block))
+    (if (neq (get n ONode.kind) OKind.paren)
+        (return (call clone_node n))
+        (block))
+    (let h:(ptr ONode) (get n ONode.first))
+    (if (or (eq h (ptr.null ONode)) (neq (get h ONode.kind) OKind.sym))
+        (return (call clone_node n))
+        (block))
+    (let ht:str.Bytes (get h ONode.text))
+    (if (call str.is ht "cond")
+        (block
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get n ONode.pos)))
+          (let first_c:(ptr ONode) (call make_sym "cond" (get n ONode.pos)))
+          (let last_c:(ptr ONode) first_c)
+          (let cl:(ptr ONode) (get h ONode.next))
+          (while (neq cl (ptr.null ONode))
+            (let ncl:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get cl ONode.pos)))
+            (let ch:(ptr ONode) (get cl ONode.first))
+            (let nch:(ptr ONode) (if (call is_sym ch "else") (call clone_node ch) (call subst_with_map ch env)))
+            (let f_st:(ptr ONode) nch)
+            (let l_st:(ptr ONode) nch)
+            (let st:(ptr ONode) (get ch ONode.next))
+            (while (neq st (ptr.null ONode))
+              (let nst:(ptr ONode) (call subst_with_map st env))
+              (put l_st ONode.next nst)
+              (set! l_st nst)
+              (set! st (get st ONode.next)))
+            (put ncl ONode.first f_st)
+            (put last_c ONode.next ncl)
+            (set! last_c ncl)
+            (set! cl (get cl ONode.next)))
+          (put g ONode.first first_c)
+          (return g))
+        (block))
+    (if (or (call str.is ht "match") (call str.is ht "match_result"))
+        (block
+          (let is_mr:bool (call str.is ht "match_result"))
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get n ONode.pos)))
+          (let nh:(ptr ONode) (call clone_node h))
+          (let raw_scrut:(ptr ONode) (call onode_nth n 1))
+          (let raw_arms:(ptr ONode) (get raw_scrut ONode.next))
+          (let scrut:(ptr ONode) (call subst_with_map raw_scrut env))
+          (put nh ONode.next scrut)
+          (let last_arm:(ptr ONode) scrut)
+          (let arm:(ptr ONode) raw_arms)
+          (while (neq arm (ptr.null ONode))
+            (let narm:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get arm ONode.pos)))
+            (let c0:(ptr ONode) (call clone_node (call onode_nth arm 0)))
+            (let c1:(ptr ONode) (call onode_nth arm 1))
+            (let st_start:(ptr ONode) (ptr.null ONode))
+            (let arm_last:(ptr ONode) c0)
+            (if is_mr
+                (block
+                  (let binder:(ptr ONode) (call clone_node c1))
+                  (put c0 ONode.next binder)
+                  (set! arm_last binder)
+                  (set! st_start (get c1 ONode.next)))
+                (if (and (neq c1 (ptr.null ONode)) (eq (get c1 ONode.kind) OKind.bracket))
+                    (block
+                      (let br:(ptr ONode) (call clone_node c1))
+                      (put c0 ONode.next br)
+                      (set! arm_last br)
+                      (set! st_start (get c1 ONode.next)))
+                    (set! st_start (get (get arm ONode.first) ONode.next))))
+            (let st:(ptr ONode) st_start)
+            (while (neq st (ptr.null ONode))
+              (let nst:(ptr ONode) (call subst_with_map st env))
+              (put arm_last ONode.next nst)
+              (set! arm_last nst)
+              (set! st (get st ONode.next)))
+            (put narm ONode.first c0)
+            (put last_arm ONode.next narm)
+            (set! last_arm narm)
+            (set! arm (get arm ONode.next)))
+          (put g ONode.first nh)
+          (return g))
+        (block))
+    (let total:i32 (call onode_count n))
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 (get n ONode.pos)))
+    (let first_c:(ptr ONode) (ptr.null ONode))
+    (let last_c:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) (get n ONode.first))
+    (let idx:i32 0)
+    (while (neq cur (ptr.null ONode))
+      (let cc:(ptr ONode) (if (call is_expr_child n ht idx total)
+                              (call subst_with_map cur env)
+                              (call clone_node cur)))
+      (if (eq last_c (ptr.null ONode)) (set! first_c cc) (put last_c ONode.next cc))
+      (set! last_c cc)
+      (set! cur (get cur ONode.next))
+      (set! idx (+ idx 1)))
+    (put g ONode.first first_c)
+    g)
+
+  ;; Recursively inlines eligible `(call callee ...)` sites in `n`.
+  (fn inline_in_node [n:(ptr ONode) defs:(ptr (map.Map str.Bytes (ptr InlineDef))) self_name:str.Bytes stats:(ptr Stats)] -> (ptr ONode)
+    (if (eq n (ptr.null ONode)) (return (ptr.null ONode)) (block))
+    (if (neq (get n ONode.kind) OKind.paren) (return n) (block))
+    ;; First inline inside children
+    (let first_c:(ptr ONode) (ptr.null ONode))
+    (let last_c:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) (get n ONode.first))
+    (while (neq cur (ptr.null ONode))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let ic:(ptr ONode) (call inline_in_node cur defs self_name stats))
+      (if (eq last_c (ptr.null ONode)) (set! first_c ic) (put last_c ONode.next ic))
+      (set! last_c ic)
+      (set! cur nxt))
+    (put n ONode.first first_c)
+
+    (if (not (call is_form n "call")) (return n) (block))
+    (let target:(ptr ONode) (call onode_nth n 1))
+    (if (or (eq target (ptr.null ONode)) (neq (get target ONode.kind) OKind.sym)) (return n) (block))
+    (let cname:str.Bytes (get target ONode.text))
+    (if (call str.bytes_eq cname self_name) (return n) (block))
+    (if (not (call (map.has str.Bytes (ptr InlineDef)) defs cname)) (return n) (block))
+
+    (let def:(ptr InlineDef) (call (map.get_or str.Bytes (ptr InlineDef)) defs cname (ptr.null InlineDef)))
+    (let nparams:i32 (call (vec.len str.Bytes) (get def InlineDef.params)))
+    (let nargs:i32 (- (call onode_count n) 2))
+    (if (neq nargs nparams) (return n) (block))
+
+    ;; Verify call-site argument hygiene
+    (let env:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 8))
+    (let multi_stmt:bool (gt (get def InlineDef.stmt_count) 1))
+    (loop i 0 (- nparams 1) 1
+      (let arg:(ptr ONode) (call onode_nth n (+ i 2)))
+      (let uses:i32 (call (vec.at i32) (get def InlineDef.param_uses) i))
+      (if multi_stmt
+          (if (not (call is_atom arg)) (return n) (block))
+          (if (not (call is_atom arg))
+              (if (or (gt uses 1) (not (call is_pure arg))) (return n) (block))
+              (block)))
+      (call (map.set str.Bytes (ptr ONode)) env (call (vec.at str.Bytes) (get def InlineDef.params) i) arg))
+
+    (call bump_inlined stats)
+    (let pos:i32 (get n ONode.pos))
+    (if (eq (get def InlineDef.stmt_count) 1)
+        (block
+          (let inlined:(ptr ONode) (call subst_with_map (get def InlineDef.body_first) env))
+          (if (and (get def InlineDef.is_unsafe) (not (call is_form inlined "unsafe")))
+              (call opt_expr (call make_op1 "unsafe" inlined pos) stats)
+              (call opt_expr inlined stats)))
+        (block
+          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+          (let head_kw:str (if (get def InlineDef.is_unsafe) "unsafe" "block"))
+          (let bh:(ptr ONode) (call make_sym head_kw pos))
+          (let b_last:(ptr ONode) bh)
+          (let st:(ptr ONode) (get def InlineDef.body_first))
+          (while (neq st (ptr.null ONode))
+            (let sub_st:(ptr ONode) (call opt_expr (call subst_with_map st env) stats))
+            (put b_last ONode.next sub_st)
+            (set! b_last sub_st)
+            (set! st (get st ONode.next)))
+          (put g ONode.first bh)
+          g)))
+
+  ;; ===== Pass 3: Immutable Local Propagation & Dead Local Elimination =====
+
+  ;; Records mutated variable names (`set!`, `loop`) and declaration counts (`let`,
+  ;; `loop`, `match`, `match_result`, params) across a function so shadowed or
+  ;; mutated variables are never propagated.
+  (fn scan_fn_locals [n:(ptr ONode) mutated:(ptr (map.Map str.Bytes bool)) decls:(ptr (map.Map str.Bytes i32))] -> void
+    (if (or (eq n (ptr.null ONode)) (neq (get n ONode.kind) OKind.paren)) (return) (block))
+    (let h:(ptr ONode) (get n ONode.first))
+    (if (and (neq h (ptr.null ONode)) (eq (get h ONode.kind) OKind.sym))
+        (block
+          (let ht:str.Bytes (get h ONode.text))
+          (cond
+            ((call str.is ht "set!")
+             (let v:(ptr ONode) (call onode_nth n 1))
+             (if (and (neq v (ptr.null ONode)) (eq (get v ONode.kind) OKind.sym))
+                 (call (map.set str.Bytes bool) mutated (get v ONode.text) true)
+                 (block)))
+            ((call str.is ht "let")
+             (let v:(ptr ONode) (call onode_nth n 1))
+             (if (and (neq v (ptr.null ONode)) (eq (get v ONode.kind) OKind.sym))
+                 (block
+                   (let vt:str.Bytes (get v ONode.text))
+                   (call (map.set str.Bytes i32) decls vt (+ 1 (call (map.get_or str.Bytes i32) decls vt 0))))
+                 (block)))
+            ((call str.is ht "loop")
+             (let v:(ptr ONode) (call onode_nth n 1))
+             (if (and (neq v (ptr.null ONode)) (eq (get v ONode.kind) OKind.sym))
+                 (block
+                   (let vt:str.Bytes (get v ONode.text))
+                   (call (map.set str.Bytes bool) mutated vt true)
+                   (call (map.set str.Bytes i32) decls vt (+ 1 (call (map.get_or str.Bytes i32) decls vt 0))))
+                 (block)))
+            ((call str.is ht "match_result")
+             (let ok_b:(ptr ONode) (call onode_nth (call onode_nth n 2) 1))
+             (let err_b:(ptr ONode) (call onode_nth (call onode_nth n 3) 1))
+             (if (and (neq ok_b (ptr.null ONode)) (eq (get ok_b ONode.kind) OKind.sym))
+                 (call (map.set str.Bytes bool) mutated (get ok_b ONode.text) true)
+                 (block))
+             (if (and (neq err_b (ptr.null ONode)) (eq (get err_b ONode.kind) OKind.sym))
+                 (call (map.set str.Bytes bool) mutated (get err_b ONode.text) true)
+                 (block)))
+            ((call str.is ht "match")
+             (let arm:(ptr ONode) (get (call onode_nth n 1) ONode.next))
+             (while (neq arm (ptr.null ONode))
+               (let bbr:(ptr ONode) (call onode_nth arm 1))
+               (if (and (neq bbr (ptr.null ONode)) (eq (get bbr ONode.kind) OKind.bracket))
+                   (block
+                     (let b:(ptr ONode) (get bbr ONode.first))
+                     (while (neq b (ptr.null ONode))
+                       (if (eq (get b ONode.kind) OKind.sym)
+                           (call (map.set str.Bytes bool) mutated (get b ONode.text) true)
+                           (block))
+                       (set! b (get b ONode.next))))
+                   (block))
+               (set! arm (get arm ONode.next))))
+            (else (block))))
+        (block))
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (call scan_fn_locals c mutated decls)
+      (set! c (get c ONode.next))))
+
+  ;; Whether `v` is an immutable local/param name (declared once, never set!).
+  (fn is_immutable_var [v:str.Bytes mutated:(ptr (map.Map str.Bytes bool)) decls:(ptr (map.Map str.Bytes i32))] -> bool
+    (and (not (call (map.has str.Bytes bool) mutated v))
+         (lte (call (map.get_or str.Bytes i32) decls v 0) 1)))
+
+  ;; Propagates immutable `let` bindings and drops dead pure `let` bindings in a
+  ;; statement sequence.
+  (fn propagate_in_stmts [first:(ptr ONode)
+                          mutated:(ptr (map.Map str.Bytes bool))
+                          decls:(ptr (map.Map str.Bytes i32))
+                          env:(ptr (map.Map str.Bytes (ptr ONode)))
+                          stats:(ptr Stats)] -> (ptr ONode)
+    (let out_first:(ptr ONode) (ptr.null ONode))
+    (let out_last:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) first)
+    (while (neq cur (ptr.null ONode))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let s:(ptr ONode) (call opt_expr (call subst_with_map cur env) stats))
+      (let dropped:bool false)
+      (if (and (call is_form s "let") (neq nxt (ptr.null ONode)))
+          (block
+            (let vnode:(ptr ONode) (call onode_nth s 1))
+            (let tnode:(ptr ONode) (call onode_nth s 3))
+            (let inode:(ptr ONode) (call onode_nth s 4))
+            (let vname:str.Bytes (get vnode ONode.text))
+            (if (and (call is_immutable_var vname mutated decls)
+                     (call is_standard_type tnode))
+                (if (or (call is_literal inode)
+                        (and (eq (get inode ONode.kind) OKind.sym)
+                             (call is_immutable_var (get inode ONode.text) mutated decls)))
+                    (block
+                      (call (map.set str.Bytes (ptr ONode)) env vname inode)
+                      (call bump_locals stats)
+                      (set! dropped true))
+                    (block))
+                (block)))
+          (block))
+      (if (not dropped)
+          (block
+            (if (eq out_last (ptr.null ONode)) (set! out_first s) (put out_last ONode.next s))
+            (set! out_last s))
+          (block))
+      (set! cur nxt))
+    out_first)
+
+  ;; Eliminates remaining unused `(let x:T pure_init)` statements in `fn_node`'s body.
+  (fn eliminate_dead_lets [body_first:(ptr ONode)
+                           mutated:(ptr (map.Map str.Bytes bool))
+                           decls:(ptr (map.Map str.Bytes i32))
+                           stats:(ptr Stats)] -> (ptr ONode)
+    ;; Count total references to every candidate across the entire function body
+    (let out_first:(ptr ONode) (ptr.null ONode))
+    (let out_last:(ptr ONode) (ptr.null ONode))
+    (let cur:(ptr ONode) body_first)
+    (while (neq cur (ptr.null ONode))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let drop_let:bool false)
+      (if (and (call is_form cur "let") (neq nxt (ptr.null ONode)))
+          (block
+            (let vnode:(ptr ONode) (call onode_nth cur 1))
+            (let tnode:(ptr ONode) (call onode_nth cur 3))
+            (let inode:(ptr ONode) (call onode_nth cur 4))
+            (let vname:str.Bytes (get vnode ONode.text))
+            (if (and (call is_immutable_var vname mutated decls)
+                     (and (call is_standard_type tnode) (call is_pure inode)))
+                (block
+                  (let refs:i32 0)
+                  (let rscan:(ptr ONode) nxt)
+                  (while (neq rscan (ptr.null ONode))
+                    (set! refs (+ refs (call count_var_refs rscan vname)))
+                    (set! rscan (get rscan ONode.next)))
+                  (if (eq refs 0)
+                      (block (call bump_locals stats) (set! drop_let true))
+                      (block)))
+                (block)))
+          (block))
+      (if (not drop_let)
+          (block
+            (if (eq out_last (ptr.null ONode)) (set! out_first cur) (put out_last ONode.next cur))
+            (set! out_last cur))
+          (block))
+      (set! cur nxt))
+    out_first)
+
+  ;; Runs Pass 3 on a single `(fn ...)` ONode.
+  (fn optimize_fn_locals [fn_node:(ptr ONode) stats:(ptr Stats)] -> void
+    (let params_node:(ptr ONode) (call onode_nth fn_node 2))
+    (let ret_node:(ptr ONode) (call onode_nth fn_node 4))
+    (if (or (eq params_node (ptr.null ONode)) (eq ret_node (ptr.null ONode))) (return) (block))
+
+    (let mutated:(ptr (map.Map str.Bytes bool)) (call (map.make str.Bytes bool) (call alloc.default) 16))
+    (let decls:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 16))
+    ;; Record parameter declarations
+    (let pc:(ptr ONode) (get params_node ONode.first))
+    (while (neq pc (ptr.null ONode))
+      (let pt:str.Bytes (get pc ONode.text))
+      (call (map.set str.Bytes i32) decls pt (+ 1 (call (map.get_or str.Bytes i32) decls pt 0)))
+      (let colon:(ptr ONode) (get pc ONode.next))
+      (let ty:(ptr ONode) (if (neq colon (ptr.null ONode)) (get colon ONode.next) (ptr.null ONode)))
+      (set! pc (if (neq ty (ptr.null ONode)) (get ty ONode.next) (ptr.null ONode))))
+
+    ;; Scan body for mutations and local declarations
+    (let bscan:(ptr ONode) (get ret_node ONode.next))
+    (while (neq bscan (ptr.null ONode))
+      (call scan_fn_locals bscan mutated decls)
+      (set! bscan (get bscan ONode.next)))
+
+    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe) clauses
+    (let prev:(ptr ONode) ret_node)
+    (let cur:(ptr ONode) (get ret_node ONode.next))
+    (while (and (neq cur (ptr.null ONode))
+                (or (call is_form cur "req")
+                    (or (call is_form cur "ens")
+                        (or (call is_form cur "inv")
+                            (and (call is_form cur "unsafe") (eq (call onode_count cur) 1))))))
+      (let nxt:(ptr ONode) (get cur ONode.next))
+      (put cur ONode.next (ptr.null ONode))
+      (let oc:(ptr ONode) (call opt_expr cur stats))
+      (put prev ONode.next oc)
+      (put oc ONode.next nxt)
+      (set! prev oc)
+      (set! cur nxt))
+
+    (let env:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 16))
+    (let new_body:(ptr ONode) (call propagate_in_stmts cur mutated decls env stats))
+    (set! new_body (call eliminate_dead_lets new_body mutated decls stats))
+    (set! new_body (call opt_stmt_list new_body stats))
+    (put prev ONode.next new_body))
+
+  ;; ===== Pass 4: Call-Graph Reachability & Dead Function Elimination =====
+
+  (fn collect_callees [n:(ptr ONode) out:(ptr (vec.Vec str.Bytes))] -> void
+    (if (or (eq n (ptr.null ONode)) (neq (get n ONode.kind) OKind.paren)) (return) (block))
+    (if (or (call is_form n "call") (call is_form n "ref"))
+        (block
+          (let target:(ptr ONode) (call onode_nth n 1))
+          (if (and (neq target (ptr.null ONode)) (eq (get target ONode.kind) OKind.sym))
+              (call (vec.push str.Bytes) out (get target ONode.text))
+              (block)))
+        (block))
+    (let c:(ptr ONode) (get n ONode.first))
+    (while (neq c (ptr.null ONode))
+      (call collect_callees c out)
+      (set! c (get c ONode.next))))
+
+  ;; ===== Whole-Module Optimization Driver =====
+
+  ;; Optimizes flat AIPL source `src` while mapping token origins through
+  ;; `in_low` into `out_orig` (when non-null) and recording optimization counts
+  ;; in `stats` (when non-null).
+  (fn optimize_mapped [src:str.Bytes root_override:str.Bytes stats:(ptr Stats) in_low:(ptr origins.Origins) out_orig:(ptr origins.Origins) orig_file:i32] -> str.Bytes (pub)
+    ;; Step 0: Erase const and enum declarations to literals and i32 first
+    (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get src str.Bytes.len) 64)))
+    (let cerr:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let const_orig:(ptr origins.Origins)
+      (if (neq out_orig (ptr.null origins.Origins)) (call origins.make) (ptr.null origins.Origins)))
+    (if (not (call consts.expand src plain cerr const_orig))
+        (return src)
+        (block))
+    (let pbytes:str.Bytes (call buf.bytes plain))
+    (let src_ptr:i32 (call str.addr pbytes))
+    (let src_len:i32 (get pbytes str.Bytes.len))
+
+    ;; Tokenize, strip visibility marks, and parse into ONode IR
+    (let tok_cnt_raw:i32 (call compiler.count_tokens src_ptr src_len))
+    (let tok_buf:i32 (mem.alloc (* (+ tok_cnt_raw 1) (sizeof compiler.Token))))
+    (let tok_cnt:i32 (call compiler.strip_marks src_ptr tok_buf (call compiler.tokenize src_ptr src_len tok_buf)))
+    (let ast_buf:i32 (mem.alloc (+ 8 (* (+ tok_cnt 2) (sizeof compiler.Node)))))
+    (let croot:(ptr compiler.Node) (call compiler.parse_ast tok_buf tok_cnt ast_buf))
+    (let root:(ptr ONode) (call from_cnode src_ptr croot const_orig in_low))
+    (if (not (call is_form root "module")) (return pbytes) (block))
+
+    ;; Collect module items
+    (let items:(ptr (vec.Vec (ptr ONode))) (call (vec.make (ptr ONode)) (call alloc.default) 32))
+    (let it:(ptr ONode) (get (call onode_nth root 1) ONode.next))
+    (while (neq it (ptr.null ONode))
+      (let nxt:(ptr ONode) (get it ONode.next))
+      (put it ONode.next (ptr.null ONode))
+      (call (vec.push (ptr ONode)) items it)
+      (set! it nxt))
+    (let nitems:i32 (call (vec.len (ptr ONode)) items))
+
+    ;; Pass 1: Optimize expressions and statements in every function
+    (loop i 0 (- nitems 1) 1
+      (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+      (if (call is_form item "fn")
+          (call optimize_fn_locals item stats)
+          (block)))
+
+    ;; Pass 2: Two rounds of hygienic function inlining + local re-optimization
+    (loop round 1 2 1
+      (let call_counts:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 64))
+      (loop i 0 (- nitems 1) 1
+        (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+        (if (call is_form item "fn")
+            (block
+              (let c:(ptr ONode) (get (call onode_nth item 4) ONode.next))
+              (while (neq c (ptr.null ONode))
+                (call count_calls_in_node c call_counts)
+                (set! c (get c ONode.next))))
+            (block)))
+      (let defs:(ptr (map.Map str.Bytes (ptr InlineDef))) (call (map.make str.Bytes (ptr InlineDef)) (call alloc.default) 32))
+      (loop i 0 (- nitems 1) 1
+        (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+        (if (call is_form item "fn")
+            (block
+              (let fn_name:str.Bytes (get (call onode_nth item 1) ONode.text))
+              (let cc:i32 (call (map.get_or str.Bytes i32) call_counts fn_name 0))
+              (let def:(ptr InlineDef) (call try_make_inline_def item cc))
+              (if (neq def (ptr.null InlineDef))
+                  (call (map.set str.Bytes (ptr InlineDef)) defs (get def InlineDef.name) def)
+                  (block)))
+            (block)))
+      (if (gt (call (map.count str.Bytes (ptr InlineDef)) defs) 0)
+          (loop i 0 (- nitems 1) 1
+            (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+            (if (call is_form item "fn")
+                (block
+                  (let fname:str.Bytes (get (call onode_nth item 1) ONode.text))
+                  (let ret_node:(ptr ONode) (call onode_nth item 4))
+                  (let prev:(ptr ONode) ret_node)
+                  (let cur:(ptr ONode) (get ret_node ONode.next))
+                  (while (neq cur (ptr.null ONode))
+                    (let nxt:(ptr ONode) (get cur ONode.next))
+                    (put cur ONode.next (ptr.null ONode))
+                    (let inl:(ptr ONode) (call inline_in_node cur defs fname stats))
+                    (put prev ONode.next inl)
+                    (put inl ONode.next nxt)
+                    (set! prev inl)
+                    (set! cur nxt))
+                  ;; Pass 3: Re-run local constant/copy propagation & expression folding
+                  (call optimize_fn_locals item stats))
+                (block)))
+          (block)))
+
+    ;; Pass 4: Whole-Program Call-Graph Reachability & Dead Function Elimination
+    (let fn_by_name:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 64))
+    (let total_fns:i32 0)
+    (loop i 0 (- nitems 1) 1
+      (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+      (if (call is_form item "fn")
+          (block
+            (set! total_fns (+ total_fns 1))
+            (call (map.set str.Bytes (ptr ONode)) fn_by_name (get (call onode_nth item 1) ONode.text) item))
+          (block)))
+
+    (let reachable:(ptr (map.Map str.Bytes bool)) (call (map.make str.Bytes bool) (call alloc.default) 64))
+    (let queue:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 32))
+    (let has_root_override:bool (and (call str.present root_override) (gt (get root_override str.Bytes.len) 0)))
+    (let main_b:str.Bytes (call str.from_str "main"))
+    (let start_b:str.Bytes (call str.from_str "_start"))
+
+    (cond
+      (has_root_override
+       (if (call (map.has str.Bytes (ptr ONode)) fn_by_name root_override)
+           (block
+             (call (map.set str.Bytes bool) reachable root_override true)
+             (call (vec.push str.Bytes) queue root_override))
+           (block)))
+      ((or (call (map.has str.Bytes (ptr ONode)) fn_by_name main_b)
+           (call (map.has str.Bytes (ptr ONode)) fn_by_name start_b))
+       (if (call (map.has str.Bytes (ptr ONode)) fn_by_name main_b)
+           (block
+             (call (map.set str.Bytes bool) reachable main_b true)
+             (call (vec.push str.Bytes) queue main_b))
+           (block))
+       (if (call (map.has str.Bytes (ptr ONode)) fn_by_name start_b)
+           (block
+             (call (map.set str.Bytes bool) reachable start_b true)
+             (call (vec.push str.Bytes) queue start_b))
+           (block)))
+      (else
+       ;; Library module (no main or _start): keep all functions
+       (loop i 0 (- nitems 1) 1
+         (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+         (if (call is_form item "fn")
+             (block
+               (let fn_name:str.Bytes (get (call onode_nth item 1) ONode.text))
+               (call (map.set str.Bytes bool) reachable fn_name true))
+             (block)))))
+
+    ;; BFS over the call & ref graph
+    (let qhead:i32 0)
+    (while (lt qhead (call (vec.len str.Bytes) queue))
+      (let cur_name:str.Bytes (call (vec.at str.Bytes) queue qhead))
+      (set! qhead (+ qhead 1))
+      (let fn_node:(ptr ONode) (call (map.get_or str.Bytes (ptr ONode)) fn_by_name cur_name (ptr.null ONode)))
+      (if (neq fn_node (ptr.null ONode))
+          (block
+            (let callees:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
+            (call collect_callees fn_node callees)
+            (loop k 0 (- (call (vec.len str.Bytes) callees) 1) 1
+              (let cal:str.Bytes (call (vec.at str.Bytes) callees k))
+              (if (and (call (map.has str.Bytes (ptr ONode)) fn_by_name cal)
+                       (not (call (map.has str.Bytes bool) reachable cal)))
+                  (block
+                    (call (map.set str.Bytes bool) reachable cal true)
+                    (call (vec.push str.Bytes) queue cal))
+                  (block))))
+          (block)))
+
+    ;; Emit the optimized module
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
+    (if (neq out_orig (ptr.null origins.Origins))
+        (call origins.note out_orig out orig_file (get root ONode.pos))
+        (block))
+    (call buf.push_str out "(module ")
+    (call buf.push_bytes out (get (call onode_nth root 1) ONode.text))
+    (call buf.push_byte out 10)
+    (let kept:i32 0)
+    (let elim:i32 0)
+    (loop i 0 (- nitems 1) 1
+      (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
+      (if (call is_form item "fn")
+          (block
+            (let fn_name:str.Bytes (get (call onode_nth item 1) ONode.text))
+            (if (call (map.has str.Bytes bool) reachable fn_name)
+                (block
+                  (set! kept (+ kept 1))
+                  (call buf.push_str out "  ")
+                  (call print_onode item out out_orig orig_file)
+                  (call buf.push_byte out 10))
+                (set! elim (+ elim 1))))
+          (block
+            (call buf.push_str out "  ")
+            (call print_onode item out out_orig orig_file)
+            (call buf.push_byte out 10))))
+    (call buf.push_byte out 41)
+    (if (neq stats (ptr.null Stats))
+        (block
+          (put stats Stats.fns_kept kept)
+          (put stats Stats.fns_eliminated elim))
+        (block))
+    (call buf.bytes out))
+
+  (fn optimize_ext [src:str.Bytes root_override:str.Bytes stats:(ptr Stats)] -> str.Bytes (pub)
+    (call optimize_mapped src root_override stats (ptr.null origins.Origins) (ptr.null origins.Origins) -1))
+
+  (fn optimize [src:str.Bytes] -> str.Bytes (pub)
+    (call optimize_ext src (call str.absent) (ptr.null Stats)))
+
+  (fn optimize_with_stats [src:str.Bytes stats:(ptr Stats)] -> str.Bytes (pub)
+    (call optimize_ext src (call str.absent) stats))
+
+  ;; Drop-in optimizing replacement for codegen.compile_module: optimizes the
+  ;; import-free module at (src_ptr, src_len), compiles it to WebAssembly
+  ;; (storing the module address in cell 60), and returns its byte length
+  ;; (or -1 with the error code in cell 4).
+  (fn compile_module [src_ptr:i32 src_len:i32] -> i32 (pub)
+    (unsafe
+      (let src_b:str.Bytes (call str.bytes src_ptr src_len))
+      (let opt_orig:(ptr origins.Origins) (call origins.make))
+      (let _fi:i32 (call origins.add_file opt_orig (call str.from_str "") src_b))
+      (let opt_src:str.Bytes
+        (call optimize_mapped src_b (call str.absent) (ptr.null Stats) (ptr.null origins.Origins) opt_orig 0))
+      (call codegen.compile_mapped
+            (call str.addr opt_src)
+            (get opt_src str.Bytes.len)
+            (call origins.make)
+            opt_orig)))
+
+  ;; Drop-in optimizing replacement for driver.compile_file: resolves imports,
+  ;; expands generics, type-checks, lowers format strings, runs the 4-pass
+  ;; codegen_opt optimizer, and compiles to WebAssembly.
+  (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (unsafe
+      (let res:(ptr Out) (new Out))
+      (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+      (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+      (let orig:(ptr origins.Origins) (call origins.make))
+      (let gen:(ptr origins.Origins) (call origins.make))
+      (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+      (if (not (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))
+          (block (call put_text res 1 err) (return res))
+          (block))
+      (let arch:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+      (let agen:(ptr origins.Origins) (call origins.make))
+      (if (not (call resolver.archetypes_of pre arch err orig agen))
+          (block (call put_text res 1 err) (return res))
+          (block))
+      (if (gt (call buf.len arch) 0)
+          (block
+            (let at:str.Bytes (call buf.bytes arch))
+            (let ap:(ptr checker.Problem) (call front.check (call str.addr at) (get at str.Bytes.len)))
+            (if (neq ap (ptr.null checker.Problem))
+                (block (call put_text res 3 (call locate orig agen ap (call str.bytes path_addr path_len))) (return res))
+                (block)))
+          (block))
+      (if (not (call resolver.expand_generics pre out err orig gen))
+          (block (call put_text res 1 err) (return res))
+          (block))
+      (let flat:str.Bytes (call buf.bytes out))
+      (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
+      (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
+      (if (neq problem (ptr.null checker.Problem))
+          (block (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
+          (block))
+      (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
+      (let low:(ptr origins.Origins) (call origins.make))
+      (let stage_src:str.Bytes
+        (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
+            (call buf.bytes lowered)
+            flat))
+      (let opt_orig:(ptr origins.Origins) (call origins.make))
+      (let opt_src:str.Bytes
+        (call optimize_mapped stage_src (call str.absent) (ptr.null Stats) low opt_orig -1))
+      (let n:i32 (call codegen.compile_lowered
+                       (call str.addr opt_src)
+                       (get opt_src str.Bytes.len)
+                       gen
+                       orig
+                       opt_orig))
+      (if (gt n 0)
+          (block
+            (put res Out.status 0)
+            (put res Out.addr (mem.load32 60))
+            (put res Out.len n))
+          (block
+            (put res Out.status 2)
+            (put res Out.addr 0)
+            (put res Out.len (mem.load32 4))))
+      res))
+
+  (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
+    (let t:str.Bytes (call buf.bytes b))
+    (put res Out.status status)
+    (put res Out.addr (call str.addr t))
+    (put res Out.len (get t str.Bytes.len)))
+
+  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
+    (let pr:(ptr checker.Problem) first)
+    (while (neq pr (ptr.null checker.Problem))
+      (if (neq pr first) (call buf.push_byte b 10) (block))
+      (call buf.push_bytes b (call buf.bytes (call locate_one orig gen pr entry)))
+      (set! pr (get pr checker.Problem.next)))
+    b)
+
+  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
+    (let at:i32 (get pr checker.Problem.at))
+    (let g:(ptr origins.Entry) (call origins.find gen at))
+    (if (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)) (block))
+    (let r:(ptr origins.Entry) (call origins.find orig at))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
+    (let path:str.Bytes entry)
+    (let line:i32 1)
+    (let col:i32 1)
+    (if (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
+        (block
+          (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
+          (set! path (get f origins.File.path))
+          (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
+          (set! line (get lc compiler.LineCol.line))
+          (set! col (get lc compiler.LineCol.col)))
+        (block))
+    (call buf.push_bytes b path)
+    (call buf.push_str b ": ")
+    (call buf.push_int b line)
+    (call buf.push_byte b 58)
+    (call buf.push_int b col)
+    (call buf.push_str b ": ")
+    (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
+    b)
+
+  ;; ===== Self-Tests =====
+
+  (fn opt_eq [src:str want:str] -> bool
+    (let got:str.Bytes (call optimize (call str.from_str src)))
+    (call str.bytes_eq got (call str.from_str want)))
+
+  ;; Test 1: Constant folding across i32, i64, bool, str.len, and conversions
+  (fn test_const_folding [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let src:str "(module m (const K:i32 6) (fn f [] -> i32 (+ (* K 7) (+ (str.len \"hello\\n\") (i32.wrap (i64.extend_s 10))))))")
+    (let want:str "(module m\n  (fn f [] -> i32 58)\n)")
+    (let got:str.Bytes (call optimize_with_stats (call str.from_str src) s))
+    (if (and (call str.bytes_eq got (call str.from_str want))
+             (gte (get s Stats.consts_folded) 4))
+        1
+        0))
+
+  ;; Test 2: Strength reduction (* 2^k -> shl, divu 2^k -> shru, remu 2^k -> bitand,
+  ;; known-even signed / 2 -> shr, and conversion fusion f64.convert_i64_s+i64.extend_s -> f64.convert_i32_s)
+  (fn test_strength_and_parity [] -> i32
+    (let src:str "(module m (fn step [i:i32 j:i32 u:i32] -> f64 (let idx:i32 (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ (* u 8) (+ (divu u 16) (remu u 32))))) (f64.convert_i64_s (i64.extend_s idx))))")
+    (let want:str "(module m\n  (fn step [i:i32 j:i32 u:i32] -> f64 (let idx:i32 (+ (shr (* (+ i j) (+ (+ i j) 1)) 1) (+ (shl u 3) (+ (shru u 4) (bitand u 31))))) (f64.convert_i32_s idx))\n)")
+    (if (call opt_eq src want) 1 0))
+
+  ;; Test 3: Multi-round hygienic function inlining (leaf expression + void wrapper)
+  ;; and subsequent Dead Function Elimination from `main`
+  (fn test_inlining_and_dce [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let src:str "(module m (fn sq [x:i32] -> i32 (* x x)) (fn bump [x:i32] -> i32 (+ (call sq x) 1)) (fn dead_helper [] -> i32 999) (fn main [] -> i32 (call bump 5)))")
+    (let want:str "(module m\n  (fn main [] -> i32 26)\n)")
+    (let got:str.Bytes (call optimize_with_stats (call str.from_str src) s))
+    (if (and (call str.bytes_eq got (call str.from_str want))
+             (and (gte (get s Stats.calls_inlined) 2)
+                  (and (eq (get s Stats.fns_eliminated) 3)
+                       (eq (get s Stats.fns_kept) 1))))
+        1
+        0))
+
+  ;; Test 4: Immutable local constant/copy propagation, dead local elimination,
+  ;; and dead branch elimination
+  (fn test_local_prop_and_branches [] -> i32
+    (let s:(ptr Stats) (call make_stats))
+    (let src:str "(module m (fn main [x:i32] -> i32 (let a:i32 10) (let b:i32 (+ a 20)) (let copy_x:i32 x) (let dead:i32 (* b 99)) (if (gt b 5) (+ copy_x b) dead)))")
+    (let want:str "(module m\n  (fn main [x:i32] -> i32 (+ x 30))\n)")
+    (let got:str.Bytes (call optimize_with_stats (call str.from_str src) s))
+    (if (and (call str.bytes_eq got (call str.from_str want))
+             (gte (get s Stats.locals_eliminated) 4))
+        1
+        0))
+
+  ;; Test 5: End-to-end WebAssembly compilation and binary size reduction check
+  (fn test_wasm_compilation_shrink [] -> i32
+    (unsafe
+      (let src:str "(module m (fn a [i:i32 j:i32] -> f64 (/ 1.0 (f64.convert_i64_s (i64.extend_s (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ i 1)))))) (fn unused_1 [x:i32] -> i32 (+ x 111)) (fn unused_2 [x:i32] -> i32 (* x 222)) (fn main [] -> i32 (let v:f64 (call a 3 4)) (if (gt v 0.0) 0 1)))")
+      (let unopt_len:i32 (call codegen.compile_mapped (str.ptr src) (str.len src) (call origins.make) (call origins.make)))
+      (let opt_len:i32 (call compile_module (str.ptr src) (str.len src)))
+      (let out:i32 (mem.load32 60))
+      ;; Verify valid Wasm header ("\0asm" version 1) and significant byte reduction
+      (if (and (gt opt_len 8)
+               (and (lt opt_len unopt_len)
+                    (and (eq (mem.load32 out) 1836278016)
+                         (eq (mem.load32 (+ out 4)) 1))))
+          1
+          0)))
+
+  ;; Group runner returning pass count (5), matching test_suite.aipl convention.
+  (fn run_codegen_opt_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (if (eq (call test_const_folding) 1) (set! p (+ p 1)) (block))
+    (if (eq (call test_strength_and_parity) 1) (set! p (+ p 1)) (block))
+    (if (eq (call test_inlining_and_dce) 1) (set! p (+ p 1)) (block))
+    (if (eq (call test_local_prop_and_branches) 1) (set! p (+ p 1)) (block))
+    (if (eq (call test_wasm_compilation_shrink) 1) (set! p (+ p 1)) (block))
+    p)
+
+  ;; Entrypoints for `aipl test aipl_src/codegen_opt.aipl` (0 = 0 failures).
+  (fn run_tests [] -> i32 (pub)
+    (- 5 (call run_codegen_opt_tests)))
+
+  (fn run_all [] -> i32 (pub)
+    (- 5 (call run_codegen_opt_tests)))
+
+  ;; ===== CLI Entrypoint (`codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT`) =====
+
+  (fn usage [] -> i32
+    (call io.eprintln "usage: codegen_opt compile [--exe [--sandbox]] FILE.aipl -o OUT")
+    2)
+
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
+    (call io.write_str 2 "Error: ")
+    (call io.write_str 2 prefix)
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
+    (call io.eprintln "")
+    1)
+
+  (fn write_int [fd:i32 n:i32] -> void
+    (unsafe
+      (let digits:i32 (mem.alloc 11))
+      (fs.write fd digits (call fmt.int_to_bytes n digits))))
+
+  (fn main [] -> i32
+    (let n:i32 (call os.arg_count))
+    (if (lt n 2) (return (call usage)) (block))
+    (let cmd:str.Bytes (call os.arg 1))
+    (if (call str.is cmd "--test")
+        (return (call run_tests))
+        (block))
+    (if (not (or (call str.is cmd "compile") (call str.is cmd "emit-opt"))) (return (call usage)) (block))
+    (let emit_only:bool (call str.is cmd "emit-opt"))
+    (let exe:bool false)
+    (let sandbox:bool false)
+    (let in_i:i32 -1)
+    (let out_i:i32 -1)
+    (let i:i32 2)
+    (while (lt i n)
+      (let a:str.Bytes (call os.arg i))
+      (cond
+        ((call str.is a "--exe") (set! exe true))
+        ((call str.is a "--sandbox") (set! sandbox true))
+        ((call str.is a "-o")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         (set! out_i (+ i 1))
+         (set! i (+ i 1)))
+        ((lt in_i 0) (set! in_i i))
+        (else (return (call usage))))
+      (set! i (+ i 1)))
+    (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
+    (if (and sandbox (not exe)) (return (call usage)) (block))
+    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
+    (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
+    (let entry:str.Bytes (call os.arg in_i))
+    (let out:str.Bytes (call os.arg out_i))
+    (if emit_only
+        (block
+          (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+          (let flat_b:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
+          (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+          (let orig:(ptr origins.Origins) (call origins.make))
+          (let gen:(ptr origins.Origins) (call origins.make))
+          (if (not (call resolver.flatten_mapped entry std_dir pre err orig))
+              (return (call fail_bytes "" (call buf.bytes err)))
+              (block))
+          (if (not (call resolver.expand_generics pre flat_b err orig gen))
+              (return (call fail_bytes "" (call buf.bytes err)))
+              (block))
+          (let flat:str.Bytes (call buf.bytes flat_b))
+          (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
+          (let _pr:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
+          (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
+          (let low:(ptr origins.Origins) (call origins.make))
+          (let stage_src:str.Bytes
+            (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
+                (call buf.bytes lowered)
+                flat))
+          (let opt_src:str.Bytes (call optimize stage_src))
+          (if (neq (call io.write_path out opt_src) (get opt_src str.Bytes.len))
+              (return (call fail_bytes "cannot write " out))
+              (return 0)))
+        (block))
+    (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
+                                          (call str.addr std_dir) (get std_dir str.Bytes.len)))
+    (let status:i32 (get res Out.status))
+    (if (or (eq status 1) (eq status 3))
+        (return (call fail_bytes "" (unsafe (call str.bytes (get res Out.addr) (get res Out.len)))))
+        (block))
+    (if (eq status 2)
+        (block
+          (call io.write_str 2 "Error: compile error ")
+          (call write_int 2 (get res Out.len))
+          (call io.eprintln " (AIPL_SPEC.md 6.4)")
+          (return 1))
+        (block))
+    (let bytes:str.Bytes (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))
+    (if exe
+        (block
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
+          (set! bytes (get o native.Output.exe)))
+        (block))
+    (if (neq (call io.write_path out bytes) (get bytes str.Bytes.len))
+        (return (call fail_bytes "cannot write " out))
+        (block))
+    (call io.write_str 1 "[AIPL Optimizing Compiler] Successfully compiled '")
+    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
+    (call io.write_str 1 "' -> '")
+    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
+    (call io.write_str 1 "' (")
+    (call write_int 1 (get bytes str.Bytes.len))
+    (call io.println " bytes)")
+    0)
+
+  (fn _start [] -> void
+    (sys.exit (call main))))

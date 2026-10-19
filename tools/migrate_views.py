@@ -4,13 +4,15 @@ before it (a file, or every file under a directory):
 
     python3 tools/migrate_views.py PATH
 
-Rewrites, in .aipl, .rs, .md, and .py files under ROOT (skipping target/
-and bootstrap/):
-  (ptr str.Bytes)            -> str.Bytes
-  (get X str.Bytes.addr)     -> (call str.addr X)     (X any expression)
-and lists what needs a person: (ptr.null str.Bytes) (a view is a
-value: use str.absent and str.present), str.repoint (make a new view
-instead), (put X str.Bytes...), (new str.Bytes).
+Rewrites, in .aipl, .rs, .md, and .py files (skipping target/ and
+bootstrap/):
+  (ptr str.Bytes)                     -> str.Bytes
+  (get X str.Bytes.addr)              -> (call str.addr X)    (X any expression)
+  (ptr.null str.Bytes)                -> (call str.absent)    (a view is a value)
+  (neq X (call str.absent))           -> (call str.present X)
+  (eq X (call str.absent))            -> (not (call str.present X))
+and lists what needs a person: str.repoint (make a new view instead),
+(put X str.Bytes...), (new str.Bytes).
 """
 import os, re, sys
 
@@ -18,6 +20,44 @@ root = sys.argv[1]
 # a single file is a directory of one
 single = os.path.isfile(root)
 skip_dirs = {"target", "bootstrap", ".git"}
+
+def end_of(text, k):
+    # the index just past the expression starting at k
+    if text[k] == "(":
+        d = 0
+        while True:
+            if text[k] == "(":
+                d += 1
+            elif text[k] == ")":
+                d -= 1
+                if d == 0:
+                    return k + 1
+            k += 1
+    while text[k] not in " )\n":
+        k += 1
+    return k
+
+def nulls(t):
+    t = t.replace("(ptr.null str.Bytes)", "(call str.absent)")
+    for op, wrap in (("neq", "(call str.present {x})"), ("eq", "(not (call str.present {x}))")):
+        key = f"({op} "
+        out, i = [], 0
+        while True:
+            j = t.find(key, i)
+            if j < 0:
+                out.append(t[i:])
+                break
+            k = j + len(key)
+            e = end_of(t, k)
+            if t[e:].startswith(" (call str.absent))"):
+                out.append(t[i:j])
+                out.append(wrap.format(x=t[k:e]))
+                i = e + len(" (call str.absent))")
+            else:
+                out.append(t[i:k])
+                i = k
+        t = "".join(out)
+    return t
 
 def get_addr(text):
     # (get X str.Bytes.addr) with X a balanced expression
@@ -68,7 +108,9 @@ for dirpath, dirs, files in walk:
         t = open(p, encoding="utf-8").read()
         n = t.replace("(ptr str.Bytes)", "str.Bytes")
         n = get_addr(n)
-        for pat in ("(ptr.null str.Bytes)", "str.repoint", "(put ", "(new str.Bytes)"):
+        if f.endswith(".aipl"):
+            n = nulls(n)
+        for pat in ("str.repoint", "(put ", "(new str.Bytes)"):
             for m in re.finditer(re.escape(pat), n):
                 line = n.count("\n", 0, m.start()) + 1
                 ln = n.splitlines()[line - 1]
