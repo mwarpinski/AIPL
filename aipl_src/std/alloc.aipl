@@ -89,8 +89,9 @@
   ;; holding it. Like any heap it is not safe to use from two threads at once.
   (struct Shared [a:Allocator])
 
-  ;; The shared general-purpose heap, made on first use.
-  (fn default [] -> Allocator (pub)
+  ;; The shared general-purpose heap, made on first use ((no_leak): it
+  ;; is made once, then handed out each time).
+  (fn default [] -> Allocator (pub) (no_leak)
     (unsafe (if (eq (mem.load32 52) 0)
         (block
           (let s:(ptr Shared) (new Shared))
@@ -102,7 +103,10 @@
   ;; ===== Raw bytes =====
 
   ;; n zeroed bytes, 8-aligned.
-  (fn raw [a:Allocator n:i32] -> i32 (pub)
+  ;; (no_leak): every allocator here hands out memory it gets back (a
+  ;; heap's freed blocks, an arena's chunks after reset, a fixed buffer);
+  ;; a custom allocator is its maker's word, as making one is unsafe.
+  (fn raw [a:Allocator n:i32] -> i32 (pub) (no_leak)
     (req (gt n 0))
     (match a
       (Allocator.heap [h] (call heap.raw h n))
@@ -113,7 +117,8 @@
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
   ;; Unsafe to call: p must be what raw returned for n bytes.
-  (fn free_raw [a:Allocator p:i32 n:i32] -> void (pub) (unsafe)
+  ;; (no_leak): it frees; a custom allocator's free is its maker's word.
+  (fn free_raw [a:Allocator p:i32 n:i32] -> void (pub) (unsafe) (no_leak)
     (unsafe (match a
       (Allocator.heap [h] (call heap.free_raw h p n))
       (Allocator.arena [_] (block))

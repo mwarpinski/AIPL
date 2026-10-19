@@ -60,3 +60,33 @@ fn a_view_taken_before_a_buffer_grows_stops_the_program() {
 fn a_line_kept_past_its_readers_close_stops_the_program_unless_the_reader_read_memory() {
     stops_with_use_after_free("line_after_close", "memory: a line\nbefore close: windowed\n", "str.byte_at");
 }
+
+/// (no_leak) (MEMORY_PLAN.md M3): each function that breaks the promise is
+/// refused at its first offending site, with the chain down to the
+/// allocation; fine (an allocator it is handed) and raw_in_unsafe (the
+/// programmer's word) pass. test_bootstrap checks the AIPL toolchain gives
+/// the same errors.
+#[test]
+fn no_leak_names_each_broken_promise_and_its_chain() {
+    let o = Command::new(AIPL).current_dir(root()).args(["verify", "tests/aipl/memory/no_leak_refused.aipl"]).output().unwrap();
+    assert!(!o.status.success());
+    let f = "tests/aipl/memory/no_leak_refused.aipl";
+    let want = format!(
+        "Error: {f}: 10:20: uses_new is marked (no_leak) but uses new, whose memory is never freed\n\
+         {f}: 13:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)\n\
+         {f}: 15:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stderr), want);
+}
+
+/// A (no_leak) handler run 10,000 times on a request arena reset after
+/// each: accepted, and the arena holds no more after the last request than
+/// after the first, in every backend.
+#[test]
+fn a_no_leak_handler_on_a_request_arena_keeps_memory_flat() {
+    for (backend, o) in runs("no_leak_loop") {
+        let stdout: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(stdout, "250000 bytes of replies; arena 4096 bytes after the first request, 4096 after the last\n", "{backend}");
+    }
+}

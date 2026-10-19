@@ -35,6 +35,14 @@ rule earns its cost), **open** (for a decision).
 | 12 | `aipl run file.aipl` (run takes a compiled `.wasm`) | "not a valid module: expected `(`" pointing at the module name | Have `run` compile a `.aipl` first, or say "run takes a .wasm; aipl eval runs source". | error |
 | 13 | Setting `AIPL_STD` for the Rust CLI | Ignored: the Rust CLI reads the standard library from the checkout it was built in | Launch checklist section 4, "A binary that works wherever it is". | fix |
 
+## Added 2026-10-19
+
+| # | Mistake | What happened | What would prevent it | Verdict |
+|---|---|---|---|---|
+| 14 | Marking std's allocators `(no_leak)` (compiler source) before the stage-0 seed knew the clause | The seed failed on heap.aipl: "Unknown op/keyword: no_leak"; the seed had to be refreshed first, then the marks added | Say why: "the stage-0 seed does not know (no_leak); compiler source may use it only after bootstrap/README.md's refresh". The rule is in the README, but nothing names it when it bites. | error |
+| 15 | Walking a `match`'s `else_body` without checking it for null (leaks.aipl) | The self-hosted compiler stopped with "Null pointer dereference" building itself: the AST holds a missing else as a null array | The compiler's AST uses null arrays for "none", against the prompt guide's own rule to use `Option`; an `(option.Option (arr Expr))` would have made the case impossible to miss. | open |
+| 16 | Keying the checker's notes on values by line and column (src/checker.rs, since removed) | In the flattened program two modules' expressions shared a position, so a site in std/buf matched a note made in std/alloc | Not AIPL; the Rust checker already keys such notes by the expression's address, as `payloads` does. | keep |
+
 ## What a corpus would fix instead
 
 Most of the remaining slowness was not a mistake but recall: the exact

@@ -1,0 +1,24 @@
+;; Each (no_leak) function here breaks its promise but fine and
+;; raw_in_unsafe (tests/test_memory.rs): the checker names the site and
+;; the chain down to the allocation, the same in both toolchains.
+(module no_leak_refused
+  (import str)
+  (import buf)
+  (import alloc)
+  (struct P [x:i32])
+  (fn uses_new [] -> i32 (no_leak)
+    (let p:(ptr P) (new P))
+    (get p P.x))
+  (fn uses_concat [s:str] -> str (no_leak)
+    (call str.concat s "!"))
+  (fn uses_format [n:i32] -> str (no_leak)
+    (format "n = {n}"))
+  (fn fine [a:alloc.Allocator] -> i32 (no_leak)
+    (let b:(ptr buf.Buf) (call buf.make a 16))
+    (call buf.push_str b "hello")
+    (let n:i32 (call buf.len b))
+    (call buf.free b)
+    n)
+  (fn raw_in_unsafe [] -> i32 (no_leak)
+    (unsafe (mem.alloc 8)))
+  (fn main [] -> i32 (call fine (call alloc.default))))

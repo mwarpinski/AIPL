@@ -59,7 +59,9 @@
 
   ;; n zeroed bytes, 8-aligned, after an 8-byte header holding the block's
   ;; size (header included).
-  (fn raw [a:(ptr Arena) n:i32] -> i32 (pub)
+  ;; (no_leak): after reset the arena hands out its chunks again; it takes
+  ;; a new one only when they are all in use.
+  (fn raw [a:(ptr Arena) n:i32] -> i32 (pub) (no_leak)
     (req (gt n 0))
     (unsafe (let size:i32 (+ (bitand (+ n 7) -8) 8))
     (let found:i32 -1)
@@ -125,7 +127,8 @@
     f)
 
   ;; n zeroed bytes, 8-aligned (no header).
-  (fn fast_raw [f:(ptr Fast) n:i32] -> i32 (pub)
+  ;; (no_leak): as raw.
+  (fn fast_raw [f:(ptr Fast) n:i32] -> i32 (pub) (no_leak)
     (req (gt n 0))
     (unsafe (let size:i32 (bitand (+ n 7) -8))
     (let found:i32 -1)
