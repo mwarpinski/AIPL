@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1-F4 built 2026-10-18; F5 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1-F5 built 2026-10-18; F6 (std's tests as test forms) next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -221,6 +221,10 @@ changes four times a second; on a change it clears the screen and shows
 `verify`'s errors, or the run's output, and how long it took. What a REPL
 would hold in a session is in a file you can see, save, and diff. Rust, for
 the reason F2 gives, and small (polling, no file-notification library).
+
+As built (2026-10-18): `src/watch.rs`, about 60 lines; the files it
+watches are the resolved program's (the standard modules it uses too),
+found again after each run.
 
 ## F6. Afterwards: std's tests become test forms
 

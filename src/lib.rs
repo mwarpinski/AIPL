@@ -13,4 +13,5 @@ pub mod formats;
 pub mod native;
 pub mod tools;
 pub mod testrun;
+pub mod watch;
 pub mod vm;

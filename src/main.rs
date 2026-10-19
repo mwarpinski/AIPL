@@ -79,6 +79,20 @@ enum Commands {
     /// Parse and type-check an AIPL file without running it (contracts are
     /// type-checked, not proven)
     Verify { file: String },
+    /// Run a file (or, with --test, its tests) again each time it or a file it
+    /// imports changes: aipl watch FILE [--test] [-- ARGS...]
+    Watch {
+        file: String,
+        /// Run the file's tests instead of its main
+        #[arg(long)]
+        test: bool,
+        /// (internal) stop after this many runs
+        #[arg(long, hide = true)]
+        max_runs: Option<usize>,
+        /// Arguments for the program (after `--`)
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Show a module's public functions and types with their comments:
     /// aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private], aipl doc
     /// --find WORD, aipl doc --check FILE.aipl... (aipl_src/doc.aipl)
@@ -368,6 +382,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let status = cmd.arg(&file).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));
+        }
+        Commands::Watch { file, test, max_runs, args } => {
+            let me = std::env::current_exe().map_err(|e| e.to_string())?;
+            aipl_core::watch::run(Path::new(&file), test, &args, &me, max_runs)?;
         }
         Commands::Doc { args } => {
             std::process::exit(aipl_core::tools::run("aipl_src/doc.aipl", "aipl doc", &args)?);
