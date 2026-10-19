@@ -1,0 +1,400 @@
+///../b/..d | /b/x.tar.gz/b/..d |  |  |  | /b/x.tar.gz/b/..d | true
+/b/.hidden/a/a | ////a/..d |  |  |  | /a/..d | true
+///e.txt/../.hidden | ../c. | a | a |  | ../c./a | false
+/b/.hidden// | /x.tar.gz/a | c. | c | . | /x.tar.gz/a/c. | true
+///a/..d/../c.// | /x.tar.gz |  |  |  | /x.tar.gz | true
+///b/./e.txt/c./ | /e.txt | .hidden | .hidden |  | /e.txt/.hidden | true
+/// | ///// |  |  |  | / | true
+/e.txt/e.txt | / | e.txt | e | .txt | /e.txt | true
+///.hidden//.hidden/..d/e.txt/./e.txt | ///.hidden//.hidden/..d |  |  |  | /.hidden/.hidden/..d | true
+//e.txt/../e.txt/c.// | ///// |  |  |  | / | true
+///a/.././e.txt | //.hidden/a/e.txt |  |  |  | //.hidden/a/e.txt | true
+//// | x.tar.gz/a/b | b | b |  | x.tar.gz/a/b/b | false
+//b/. | /b |  |  |  | /b | true
+///b/a/x.tar.gz// | //./x.tar.gz/x.tar.gz/..d |  |  |  | //x.tar.gz/x.tar.gz/..d | true
+/c./a/../a// | //../x.tar.gz/b |  |  |  | //x.tar.gz/b | true
+///c./e.txt/../e.txt// | / |  |  |  | / | true
+/a/c.//.hidden//./.. | /a/c.//.hidden |  |  |  | /a/c./.hidden | true
+//./c./ | // |  |  |  | // | true
+/..d/.//e.txt | / |  |  |  | / | true
+/c.//../..d | /// | .hidden | .hidden |  | /.hidden | true
+//c./x.tar.gz/a/. | ///e.txt | ..d | ..d |  | /e.txt/..d | true
+//./.hidden/c./../e.txt/.hidden/e.txt// | //./.hidden/c./.. |  |  |  | //.hidden | true
+/. | / |  |  |  | / | true
+//.hidden/b/ | /.hidden |  |  |  | /.hidden | true
+//// | /..d/. | e.txt | e | .txt | /..d/e.txt | true
+/// | ./. | .hidden | .hidden |  | .hidden | false
+///b/a/ | .hidden | x.tar.gz | x.tar | .gz | .hidden/x.tar.gz | false
+/// | a/b/c. | b | b |  | a/b/c./b | false
+/. | /// |  |  |  | / | true
+///b/../ | ///e.txt/x.tar.gz/e.txt |  |  |  | /e.txt/x.tar.gz/e.txt | true
+//.hidden/..d/c./.hidden// |  |  |  |  | . | false
+//// | / |  |  |  | / | true
+/../../ | /e.txt/..d/.hidden | x.tar.gz | x.tar | .gz | /e.txt/..d/.hidden/x.tar.gz | true
+//c./ | b | ..d | ..d |  | b/..d | false
+/b/e.txt | ./.hidden |  |  |  | .hidden | false
+//// | / | a | a |  | /a | true
+.hidden/..d// |  |  |  |  | . | false
+//././././ | // |  |  |  | // | true
+/. | /// |  |  |  | / | true
+/ | //e.txt/.././x.tar.gz |  |  |  | //x.tar.gz | true
+///x.tar.gz/e.txt/..d/e.txt// | //// |  |  |  | / | true
+/a/a/ | .hidden/./x.tar.gz |  |  |  | .hidden/x.tar.gz | false
+/// | /././x.tar.gz/x.tar.gz |  |  |  | /x.tar.gz/x.tar.gz | true
+///../ | /a/./e.txt |  |  |  | /a/e.txt | true
+/ | ///../c./.hidden |  |  |  | /c./.hidden | true
+//x.tar.gz/e.txt/ | // | e.txt | e | .txt | //e.txt | true
+/x.tar.gz// | //b/b |  |  |  | //b/b | true
+/a/e.txt/b/x.tar.gz | /a/..d/c./.hidden |  |  |  | /a/..d/c./.hidden | true
+//../c./c.// | // |  |  |  | // | true
+/// | /..d/. |  |  |  | /..d | true
+//c. | //// |  |  |  | / | true
+//./ | /..d//a | a | a |  | /..d/a/a | true
+///e.txt/ | /../x.tar.gz/x.tar.gz |  |  |  | /x.tar.gz/x.tar.gz | true
+/b/a | ///b/.. |  |  |  | / | true
+//e.txt/.hidden/e.txt/ | x.tar.gz/./b/e.txt |  |  |  | x.tar.gz/b/e.txt | false
+///x.tar.gz/e.txt// | // |  |  |  | // | true
+/e.txt | //..d/b/c. | c. | c | . | //..d/b/c./c. | true
+/e.txt/a// | ///e.txt/c./x.tar.gz/. |  |  |  | /e.txt/c./x.tar.gz | true
+///x.tar.gz | ///.hidden |  |  |  | /.hidden | true
+/ | ///c. |  |  |  | /c. | true
+/x.tar.gz/..d/.// | //c./e.txt |  |  |  | //c./e.txt | true
+e.txt/b//b/..d | e.txt/b |  |  |  | e.txt/b | false
+/../../.hidden/x.tar.gz | /./b/c./x.tar.gz |  |  |  | /b/c./x.tar.gz | true
+/e.txt/x.tar.gz/ | .hidden/..d/e.txt | e.txt | e | .txt | .hidden/..d/e.txt/e.txt | false
+//.hidden/../x.tar.gz/ | /e.txt/c./. |  |  |  | /e.txt/c. | true
+/ | c./.hidden/c./.. |  |  |  | c./.hidden | false
+/..d/ | ///.//x.tar.gz | ..d | ..d |  | /x.tar.gz/..d | true
+//../b/../ | //../b/.. |  |  |  | // | true
+///..d/b/ | ///..d | b | b |  | /..d/b | true
+///x.tar.gz/b | /// |  |  |  | / | true
+///c././.. |  | c. | c | . | c. | false
+///.hidden/..d | //e.txt | c. | c | . | //e.txt/c. | true
+// | / |  |  |  | / | true
+/a | ///x.tar.gz/.. |  |  |  | / | true
+///./b// | /// | e.txt | e | .txt | /e.txt | true
+//./a/x.tar.gz/b// | // |  |  |  | // | true
+/../..d// | a |  |  |  | a | false
+/./.hidden/c. | //x.tar.gz | .. | .. |  | // | true
+/b/ | //c./e.txt/../e.txt |  |  |  | //c./e.txt | true
+/c. | / |  |  |  | / | true
+/// | // |  |  |  | // | true
+///c.// |  | e.txt | e | .txt | e.txt | false
+//// | x.tar.gz/b/x.tar.gz | .hidden | .hidden |  | x.tar.gz/b/x.tar.gz/.hidden | false
+//// | .hidden/. |  |  |  | .hidden | false
+//e.txt/c.// | ../e.txt | e.txt | e | .txt | ../e.txt/e.txt | false
+//../ |  | ..d | ..d |  | ..d | false
+/ | ///.hidden/b/c. | .hidden | .hidden |  | /.hidden/b/c./.hidden | true
+//e.txt/a/e.txt/b | //x.tar.gz/.hidden/.hidden |  |  |  | //x.tar.gz/.hidden/.hidden | true
+///..d/..d/ | //.hidden |  |  |  | //.hidden | true
+/// | /// |  |  |  | / | true
+//c./x.tar.gz// | /// |  |  |  | / | true
+/./b/./c. | //e.txt/./a/. |  |  |  | //e.txt/a | true
+x.tar.gz/b/../x.tar.gz/ | x.tar.gz/b/.. | x.tar.gz | x.tar | .gz | x.tar.gz/x.tar.gz | false
+//..// | /c./a//.hidden |  |  |  | /c./a/.hidden | true
+//// | /..d/.hidden | e.txt | e | .txt | /..d/.hidden/e.txt | true
+///// | ///a |  |  |  | /a | true
+/// | //// |  |  |  | / | true
+//.hidden/e.txt//e.txt/ | // |  |  |  | // | true
+///./e.txt// | ///e.txt/c. |  |  |  | /e.txt/c. | true
+//c./x.tar.gz/a | /./x.tar.gz/a | c. | c | . | /x.tar.gz/a/c. | true
+//x.tar.gz/.hidden/..d/ | // |  |  |  | // | true
+///a | ///b/..d | .hidden | .hidden |  | /b/..d/.hidden | true
+///e.txt/x.tar.gz// | //. |  |  |  | // | true
+///b/b/. | //.hidden/..d/.. |  |  |  | //.hidden | true
+//..d | / | a | a |  | /a | true
+///a/e.txt/../e.txt// | /// | a | a |  | /a | true
+//// | // |  |  |  | // | true
+/// | // | ..d | ..d |  | //..d | true
+x.tar.gz/e.txt/..d//..d/b/./c. | x.tar.gz/e.txt/..d |  |  |  | x.tar.gz/e.txt/..d | false
+/.hidden/..d/b/a/ | /x.tar.gz/c./e.txt/x.tar.gz |  |  |  | /x.tar.gz/c./e.txt/x.tar.gz | true
+// | //// |  |  |  | / | true
+/../c. | //.. | c. | c | . | //c. | true
+//../..d/.hidden// | /x.tar.gz/x.tar.gz/..d |  |  |  | /x.tar.gz/x.tar.gz/..d | true
+///./a/e.txt/.hidden | /. |  |  |  | / | true
+// | //..d |  |  |  | //..d | true
+/ | /.. | b | b |  | /b | true
+/.. | //x.tar.gz/c. | .hidden | .hidden |  | //x.tar.gz/c./.hidden | true
+/ | /.hidden/x.tar.gz |  |  |  | /.hidden/x.tar.gz | true
+/a/.hidden/b/b | //b |  |  |  | //b | true
+// | //.. | x.tar.gz | x.tar | .gz | //x.tar.gz | true
+/// | /.hidden/../b |  |  |  | /b | true
+///// | . |  |  |  | . | false
+///c./x.tar.gz/../x.tar.gz/e.txt/b/./.. | ///c./x.tar.gz/.. | x.tar.gz | x.tar | .gz | /c./x.tar.gz | true
+//x.tar.gz/..d/./c. | ///e.txt/a |  |  |  | /e.txt/a | true
+///x.tar.gz/..d/./. | /// |  |  |  | / | true
+//./.// | /..d |  |  |  | /..d | true
+//a/e.txt/a/.// | ///b//. |  |  |  | /b | true
+//c./c.// | a/c. |  |  |  | a/c. | false
+// | // |  |  |  | // | true
+//..//.. | ./e.txt/e.txt/.hidden |  |  |  | e.txt/e.txt/.hidden | false
+//.hidden/x.tar.gz/a// | // | b | b |  | //b | true
+/e.txt/./a/.hidden | ///.hidden/x.tar.gz/.hidden |  |  |  | /.hidden/x.tar.gz/.hidden | true
+///c. | /..d/.hidden/b |  |  |  | /..d/.hidden/b | true
+//../..d// | /// | b | b |  | /b | true
+//../c./..d//..d/x.tar.gz/./. | //../c./..d |  |  |  | //c./..d | true
+///e.txt/x.tar.gz/. | ///b/a | b | b |  | /b/a/b | true
+/c./a/e.txt/..// | a/..d |  |  |  | a/..d | false
+/.hidden/e.txt/././c. | / | .hidden | .hidden |  | /.hidden | true
+/../a/e.txt/c.// | /../a | e.txt | e | .txt | /a/e.txt | true
+/// | a/c./b | e.txt | e | .txt | a/c./b/e.txt | false
+///c./. | / |  |  |  | / | true
+///../..d/x.tar.gz/ | //..d/e.txt/c. | e.txt | e | .txt | //..d/e.txt/c./e.txt | true
+//x.tar.gz/.hidden/./ | // | x.tar.gz | x.tar | .gz | //x.tar.gz | true
+/// | //.hidden/c. |  |  |  | //.hidden/c. | true
+/c./..//.// | /.. | .. | .. |  | / | true
+/ | /// | b | b |  | /b | true
+///c././c. | ///c./. |  |  |  | /c. | true
+/x.tar.gz | //c. |  |  |  | //c. | true
+/a/x.tar.gz/ | //e.txt/x.tar.gz/b |  |  |  | //e.txt/x.tar.gz/b | true
+//. | //x.tar.gz | a | a |  | //x.tar.gz/a | true
+/../..//c. | /../.. |  |  |  | / | true
+/c./..d/e.txt/ | // |  |  |  | // | true
+/x.tar.gz/c./c./ | // |  |  |  | // | true
+/a/..d/a/..d | /// |  |  |  | / | true
+///.././ | ///.hidden/../b | b | b |  | /b/b | true
+//// | ///.hidden/../.. | .hidden | .hidden |  | /.hidden | true
+././x.tar.gz/..d/c./b/c./e.txt/ | ././x.tar.gz | ..d | ..d |  | x.tar.gz/..d | false
+///// | ///.hidden | ..d | ..d |  | /.hidden/..d | true
+//.hidden/.///.hidden/c./c./e.txt | //.hidden/. |  |  |  | //.hidden | true
+.hidden/.hidden |  |  |  |  | . | false
+//e.txt/a/./.hidden/ | //b/..d/b/e.txt |  |  |  | //b/..d/b/e.txt | true
+/.hidden/e.txt/c./ | / |  |  |  | / | true
+///.hidden/x.tar.gz// | /// | .hidden | .hidden |  | /.hidden | true
+/// | ///b/b/. |  |  |  | /b/b | true
+//// | //x.tar.gz/../../b |  |  |  | //b | true
+/// | /b/e.txt/.hidden/.hidden |  |  |  | /b/e.txt/.hidden/.hidden | true
+//./e.txt/a// | // |  |  |  | // | true
+/e.txt/b/x.tar.gz/..d | / | .. | .. |  | / | true
+/ | ..d/.hidden |  |  |  | ..d/.hidden | false
+//a/a/../b | /// |  |  |  | / | true
+///.hidden/.hidden/c./b | ../../..d | x.tar.gz | x.tar | .gz | ../../..d/x.tar.gz | false
+///..d/.hidden/a/..d | // |  |  |  | // | true
+/c.//.hidden/../e.txt/..d// | /c.//.hidden |  |  |  | /c./.hidden | true
+///e.txt/x.tar.gz/x.tar.gz/x.tar.gz | ///..d/./x.tar.gz/e.txt |  |  |  | /..d/x.tar.gz/e.txt | true
+/.hidden/./c.// | ..d/.hidden/.. |  |  |  | ..d | false
+/e.txt/a/ | / |  |  |  | / | true
+///a | //// |  |  |  | / | true
+///.hidden/.. | b | b | b |  | b/b | false
+///..d/b/../c. | //.hidden/x.tar.gz/x.tar.gz |  |  |  | //.hidden/x.tar.gz/x.tar.gz | true
+/./x.tar.gz/.hidden/a/ | ../../../c. |  |  |  | ../../../c. | false
+///.hidden/e.txt/..d/.hidden | ///././a |  |  |  | /a | true
+/// | //x.tar.gz/c./a | x.tar.gz | x.tar | .gz | //x.tar.gz/c./a/x.tar.gz | true
+/x.tar.gz | //.hidden/.. | a | a |  | //a | true
+/// |  | a | a |  | a | false
+//a/ |  |  |  |  | . | false
+/..// | /../x.tar.gz/x.tar.gz |  |  |  | /x.tar.gz/x.tar.gz | true
+e.txt//.hidden/c. | e.txt |  |  |  | e.txt | false
+/x.tar.gz | ./e.txt/b | . | . |  | e.txt/b | false
+/a/ | ./b |  |  |  | b | false
+///.. | // |  |  |  | // | true
+ |  |  |  |  | . | false
+// | /x.tar.gz/e.txt |  |  |  | /x.tar.gz/e.txt | true
+///b/c./..// | /.hidden/.hidden |  |  |  | /.hidden/.hidden | true
+/// | // |  |  |  | // | true
+//.hidden/c.// | //x.tar.gz/.hidden/.hidden/c. |  |  |  | //x.tar.gz/.hidden/.hidden/c. | true
+//./e.txt/./.// | . | x.tar.gz | x.tar | .gz | x.tar.gz | false
+//.hidden/ | / | . | . |  | / | true
+///e.txt/ | /..d | x.tar.gz | x.tar | .gz | /..d/x.tar.gz | true
+// | /// |  |  |  | / | true
+//.hidden/.hidden/b/.// | ///a/a/../.hidden |  |  |  | /a/.hidden | true
+/.hidden/// | / | .. | .. |  | / | true
+/a/../b | /a/.. |  |  |  | / | true
+/b/ | /e.txt | x.tar.gz | x.tar | .gz | /e.txt/x.tar.gz | true
+//c. | ////e.txt | ..d | ..d |  | /e.txt/..d | true
+/a | // | .. | .. |  | // | true
+///./a/../../b/..d | ///./a |  |  |  | /a | true
+/..d/e.txt | // |  |  |  | // | true
+/b/e.txt/.hidden/ | ..d/e.txt |  |  |  | ..d/e.txt | false
+/// | //b/..d/.hidden | c. | c | . | //b/..d/.hidden/c. | true
+//x.tar.gz/x.tar.gz// |  | .hidden | .hidden |  | .hidden | false
+/a/b// | //// |  |  |  | / | true
+//x.tar.gz/./.hidden/./ | ///../x.tar.gz/.hidden |  |  |  | /x.tar.gz/.hidden | true
+///./..d/.. | .hidden/e.txt |  |  |  | .hidden/e.txt | false
+/e.txt/..d//..d/ | / |  |  |  | / | true
+//.hidden/a/.hidden/ | /..d/c./a/c. |  |  |  | /..d/c./a/c. | true
+///e.txt/.hidden/../. | ///e.txt |  |  |  | /e.txt | true
+//// | //// |  |  |  | / | true
+///./e.txt/..// | /// |  |  |  | / | true
+//./ | //// |  |  |  | / | true
+/c./..d/..d/e.txt/ | // |  |  |  | // | true
+//a/ | //e.txt/x.tar.gz |  |  |  | //e.txt/x.tar.gz | true
+///..d/.hidden/../a | c./e.txt/. |  |  |  | c./e.txt | false
+/c././..d// | // |  |  |  | // | true
+//.// | ..//..d/..d |  |  |  | ../..d/..d | false
+/../..d/.hidden/..d/ | / |  |  |  | / | true
+///e.txt/b | a/..d/x.tar.gz |  |  |  | a/..d/x.tar.gz | false
+//.hidden | ///c.//..d | e.txt | e | .txt | /c./..d/e.txt | true
+/ | /.. |  |  |  | / | true
+/e.txt/.hidden/ | ///// |  |  |  | / | true
+///x.tar.gz/x.tar.gz/// | ///// |  |  |  | / | true
+/./..d/b | //./b |  |  |  | //b | true
+///..d/.hidden/..d// | //..d/e.txt |  |  |  | //..d/e.txt | true
+// | / | .. | .. |  | / | true
+///// | c./a |  |  |  | c./a | false
+///a// | /../.hidden |  |  |  | /.hidden | true
+///x.tar.gz | ///../../b |  |  |  | /b | true
+////./b/e.txt | //// |  |  |  | / | true
+//e.txt/x.tar.gz/../.. | //c. |  |  |  | //c. | true
+///.hidden/ | /././b | ..d | ..d |  | /b/..d | true
+/..// | // |  |  |  | // | true
+/..d//./../ | /// |  |  |  | / | true
+///// | /.hidden/b |  |  |  | /.hidden/b | true
+/// | / | .. | .. |  | / | true
+/.hidden/b/..d// | / |  |  |  | / | true
+//c./c./.hidden | //c. |  |  |  | //c. | true
+/a | / |  |  |  | / | true
+////..d/e.txt | ////..d |  |  |  | /..d | true
+//.hidden//a// | x.tar.gz/c. | . | . |  | x.tar.gz/c. | false
+/// | /.hidden//a | .hidden | .hidden |  | /.hidden/a/.hidden | true
+/x.tar.gz | // |  |  |  | // | true
+/////c./b/..d/e.txt | ///// |  |  |  | / | true
+///.hidden/..d/b | /c.//e.txt | c. | c | . | /c./e.txt/c. | true
+//.hidden/b/b/b | //.hidden/b/b |  |  |  | //.hidden/b/b | true
+c./../b/x.tar.gz//c./e.txt/x.tar.gz/c. | c./../b/x.tar.gz |  |  |  | b/x.tar.gz | false
+/.hidden/..d// | /..d |  |  |  | /..d | true
+//// | e.txt/. |  |  |  | e.txt | false
+///x.tar.gz | //c./c./e.txt |  |  |  | //c./c./e.txt | true
+//x.tar.gz/e.txt/ |  | ..d | ..d |  | ..d | false
+///// | / |  |  |  | / | true
+//b// | ///.hidden/e.txt/.hidden | . | . |  | /.hidden/e.txt/.hidden | true
+///c./b/b/.hidden// | /// |  |  |  | / | true
+/a | ..d/e.txt/.hidden |  |  |  | ..d/e.txt/.hidden | false
+/e.txt | / |  |  |  | / | true
+////./ | /b |  |  |  | /b | true
+// | // |  |  |  | // | true
+/// | //c./c. | b | b |  | //c./c./b | true
+/.. | ///.hidden | e.txt | e | .txt | /.hidden/e.txt | true
+//../ | //// |  |  |  | / | true
+///x.tar.gz/x.tar.gz | /c./b/..d |  |  |  | /c./b/..d | true
+/..d | /a/c. | ..d | ..d |  | /a/c./..d | true
+/..d | //c./../e.txt | .hidden | .hidden |  | //e.txt/.hidden | true
+///c./a/c./.// | /.hidden |  |  |  | /.hidden | true
+///c./b/..// | // |  |  |  | // | true
+/e.txt/x.tar.gz/a/e.txt | ///c./x.tar.gz/e.txt/b |  |  |  | /c./x.tar.gz/e.txt/b | true
+//x.tar.gz/b/x.tar.gz/c./a/..d | //x.tar.gz/b | x.tar.gz | x.tar | .gz | //x.tar.gz/b/x.tar.gz | true
+/b/.. | ///../e.txt/a |  |  |  | /e.txt/a | true
+////a/b | //// |  |  |  | / | true
+//./.hidden | x.tar.gz/.hidden/x.tar.gz/b |  |  |  | x.tar.gz/.hidden/x.tar.gz/b | false
+///a// | //../../../x.tar.gz |  |  |  | //x.tar.gz | true
+// | // | . | . |  | // | true
+///./c./.. | /// | . | . |  | / | true
+/e.txt/..d/ | ../c./b |  |  |  | ../c./b | false
+/// |  |  |  |  | . | false
+///e.txt/b/.. | /// |  |  |  | / | true
+//.hidden/x.tar.gz/ | /../e.txt |  |  |  | /e.txt | true
+/// |  |  |  |  | . | false
+/ | ..d | x.tar.gz | x.tar | .gz | ..d/x.tar.gz | false
+/// |  | . | . |  | . | false
+/b | /// | e.txt | e | .txt | /e.txt | true
+/a/e.txt/x.tar.gz/ | //b |  |  |  | //b | true
+// | //c./c./e.txt/e.txt |  |  |  | //c./c./e.txt/e.txt | true
+///c././/.././../ | ///c./. | .. | .. |  | / | true
+///b/a/./e.txt// | ///// |  |  |  | / | true
+//x.tar.gz/e.txt/a/ | ///x.tar.gz//a | .. | .. |  | /x.tar.gz | true
+/./a/c./ | /e.txt/e.txt/. | .. | .. |  | /e.txt | true
+///./../// |  | b | b |  | b | false
+///e.txt/.hidden/c. | ../b/. |  |  |  | ../b | false
+//b/./ | ///c./.hidden |  |  |  | /c./.hidden | true
+///// | // |  |  |  | // | true
+..d/a/x.tar.gz/ | ..d |  |  |  | ..d | false
+///a/e.txt/x.tar.gz | /./c./x.tar.gz | ..d | ..d |  | /c./x.tar.gz/..d | true
+//./../x.tar.gz/b | //a |  |  |  | //a | true
+///c./..d//..d//b/a | ///c./..d |  |  |  | /c./..d | true
+/..d//.hidden/a// | a/x.tar.gz |  |  |  | a/x.tar.gz | false
+// | //.. |  |  |  | // | true
+/// | /./. | .. | .. |  | / | true
+/// | //// |  |  |  | / | true
+/e.txt/..d/c./c./c./e.txt// | /e.txt | ..d | ..d |  | /e.txt/..d | true
+///./c./. | //.hidden | a | a |  | //.hidden/a | true
+///c./x.tar.gz/../.hidden | //..d/x.tar.gz/.hidden |  |  |  | //..d/x.tar.gz/.hidden | true
+//./x.tar.gz// | // |  |  |  | // | true
+/// | /// |  |  |  | / | true
+///b | /// |  |  |  | / | true
+///.hidden// | ///..d/a/a | x.tar.gz | x.tar | .gz | /..d/a/a/x.tar.gz | true
+// | .hidden/c. |  |  |  | .hidden/c. | false
+/a/ | ///.hidden/c./c./c. |  |  |  | /.hidden/c./c./c. | true
+/ | //b | .hidden | .hidden |  | //b/.hidden | true
+/./.// | /// | .hidden | .hidden |  | /.hidden | true
+///.hidden/a/e.txt/../. | ///.hidden/a | e.txt | e | .txt | /.hidden/a/e.txt | true
+//.hidden/b/ | ///e.txt//x.tar.gz |  |  |  | /e.txt/x.tar.gz | true
+/..d/./b/a/x.tar.gz | /..d/./b | a | a |  | /..d/b/a | true
+///// | ///e.txt/e.txt/x.tar.gz |  |  |  | /e.txt/e.txt/x.tar.gz | true
+/a/c./a/x.tar.gz/ | ///b |  |  |  | /b | true
+///// | ..d/.hidden//a |  |  |  | ..d/.hidden/a | false
+/c./.hidden/.// | c./b |  |  |  | c./b | false
+/..d/x.tar.gz/// | x.tar.gz |  |  |  | x.tar.gz | false
+//..d// | e.txt | c. | c | . | e.txt/c. | false
+//..d/a/x.tar.gz | /b |  |  |  | /b | true
+// | //x.tar.gz/b | x.tar.gz | x.tar | .gz | //x.tar.gz/b/x.tar.gz | true
+/../../a/ | /../.. | a | a |  | /a | true
+// | b/a/x.tar.gz | c. | c | . | b/a/x.tar.gz/c. | false
+//c. | ////.././e.txt |  |  |  | /e.txt | true
+//b/a/a//b/a/a/ | //b/a/a |  |  |  | //b/a/a | true
+/./e.txt | ///x.tar.gz/..d | c. | c | . | /x.tar.gz/..d/c. | true
+//b/c././x.tar.gz/../ | //b/c./. |  |  |  | //b/c. | true
+//c./ | /..//a/.. |  |  |  | / | true
+//.. | ///..d/b/x.tar.gz/a |  |  |  | /..d/b/x.tar.gz/a | true
+/..d/b/e.txt/ | /.hidden/x.tar.gz/a |  |  |  | /.hidden/x.tar.gz/a | true
+///b// | b |  |  |  | b | false
+//.hidden/x.tar.gz | /.. |  |  |  | / | true
+x.tar.gz//a/. | x.tar.gz |  |  |  | x.tar.gz | false
+//../b | //b |  |  |  | //b | true
+//x.tar.gz/c.//x.tar.gz/ | ////.hidden |  |  |  | /.hidden | true
+// | ..//..d |  |  |  | ../..d | false
+///c./c. |  |  |  |  | . | false
+///b/c./.// | .//.. |  |  |  | .. | false
+//x.tar.gz/ | /e.txt/a |  |  |  | /e.txt/a | true
+//x.tar.gz | ///c. |  |  |  | /c. | true
+/x.tar.gz/.hidden | ///x.tar.gz/..d/x.tar.gz |  |  |  | /x.tar.gz/..d/x.tar.gz | true
+//..d/..d/.// | //..d/..d/. |  |  |  | //..d/..d | true
+///b//.hidden | /// |  |  |  | / | true
+///e.txt | .. |  |  |  | .. | false
+//..// | a | ..d | ..d |  | a/..d | false
+///e.txt/b/c./ | // | a | a |  | //a | true
+////..d | /// |  |  |  | / | true
+///// | c. | . | . |  | c. | false
+/// | /// | x.tar.gz | x.tar | .gz | /x.tar.gz | true
+///x.tar.gz/b/x.tar.gz | / |  |  |  | / | true
+/// | /// | x.tar.gz | x.tar | .gz | /x.tar.gz | true
+e.txt/x.tar.gz/a/c././ | e.txt/x.tar.gz/a/c. |  |  |  | e.txt/x.tar.gz/a/c. | false
+//c. | // |  |  |  | // | true
+///. | c.//./a |  |  |  | c./a | false
+//x.tar.gz/c./../ | ..d/e.txt/e.txt/.hidden |  |  |  | ..d/e.txt/e.txt/.hidden | false
+//../../e.txt/a | //x.tar.gz |  |  |  | //x.tar.gz | true
+/ | /. | .hidden | .hidden |  | /.hidden | true
+/// | ///x.tar.gz/.. |  |  |  | / | true
+//../x.tar.gz/x.tar.gz/x.tar.gz// | /c./x.tar.gz/.hidden |  |  |  | /c./x.tar.gz/.hidden | true
+//// | /.hidden/./c. | a | a |  | /.hidden/c./a | true
+/x.tar.gz/a/x.tar.gz/..d/c./c./c./ | /x.tar.gz/a/x.tar.gz |  |  |  | /x.tar.gz/a/x.tar.gz | true
+// | ///c. |  |  |  | /c. | true
+///// | /.hidden |  |  |  | /.hidden | true
+///././.. | /.. | b | b |  | /b | true
+////./a | //e.txt | ..d | ..d |  | //e.txt/..d | true
+/ | /b |  |  |  | /b | true
+/b | //a |  |  |  | //a | true
+/c./../c./e.txt// | ///. | b | b |  | /b | true
+/.. | /b/..d/.. | .. | .. |  | / | true
+///e.txt/x.tar.gz | /// |  |  |  | / | true
+//b/c./c./ | ///e.txt | e.txt | e | .txt | /e.txt/e.txt | true
+/ | /e.txt/c. | .hidden | .hidden |  | /e.txt/c./.hidden | true
+//..d | ///..d |  |  |  | /..d | true
+// | ///x.tar.gz//.. | . | . |  | / | true
+/e.txt/../x.tar.gz//../a/x.tar.gz/ | /e.txt/../x.tar.gz |  |  |  | /x.tar.gz | true
+/ | /a/..d/.hidden |  |  |  | /a/..d/.hidden | true
+///e.txt/c. | ./a/e.txt |  |  |  | a/e.txt | false
+/a/.// | ///../e.txt | a | a |  | /e.txt/a | true
+/././x.tar.gz//b/b/c./..d/ | /././x.tar.gz |  |  |  | /x.tar.gz | true
+/.././.. | /// |  |  |  | / | true
+/b/ | //..d |  |  |  | //..d | true
+.hidden/b/e.txt/.//./e.txt/a | .hidden/b/e.txt/. |  |  |  | .hidden/b/e.txt | false
+///// | //..d/.. |  |  |  | // | true
+/.hidden/.hidden/a/b// | /// |  |  |  | / | true
+//../a | ///. | x.tar.gz | x.tar | .gz | /x.tar.gz | true
+/// | // |  |  |  | // | true
+//c./ | // |  |  |  | // | true
+///..// | //a/c./b |  |  |  | //a/c./b | true
+/./.hidden/b | // |  |  |  | // | true
+//. | / | c. | c | . | /c. | true
+//a/. | a |  |  |  | a | false
+///.hidden/..d/.hidden/ | c./c. | x.tar.gz | x.tar | .gz | c./c./x.tar.gz | false

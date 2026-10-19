@@ -1,0 +1,70 @@
+;; std/csv's API (tests/test_csv.rs): a header and columns by name, typed
+;; fields and their errors, a whole text at once, tab-separated values,
+;; and a file written and read back, with try and defer.
+(module api
+  (import csv)
+  (import str)
+  (import alloc)
+  (import stream)
+  (import option)
+  (import vec)
+
+  (fn total [a:alloc.Allocator path:str] -> (result f64 str)
+    (let cr:(ptr csv.Reader) (try (call csv.open a path)))
+    (defer (call csv.close cr))
+    (when (not (call csv.header cr)) (return (err:f64 "no header")))
+    (let price:i32 (call csv.column cr "price"))
+    (let qty:i32 (call csv.column cr "qty"))
+    (let sum:f64 0.0)
+    (while (call csv.next_row cr)
+      (match_result (call csv.f64_at cr price)
+        (ok p (match_result (call csv.i64_at cr qty)
+                (ok q (set! sum (+ sum (* p (f64.convert_i64_s q)))))
+                (err e (return (err:f64 (get e csv.Error.what))))))
+        (err e (return (err:f64 (get e csv.Error.what))))))
+    (ok:str sum))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    ;; a file, written then read back
+    (match_result (call stream.create a "_api.csv")
+      (ok w
+        (block
+          (let cw:(ptr csv.Writer) (call csv.writer a w))
+          (call csv.field_str cw "item") (call csv.field_str cw "price") (call csv.field_str cw "qty") (call csv.end_row cw)
+          (call csv.field_str cw "pen, blue") (call csv.field_f64 cw 1.5) (call csv.field_i64 cw 4i64) (call csv.end_row cw)
+          (call csv.field_str cw "say \"hi\"") (call csv.field_f64 cw 0.25) (call csv.field_i64 cw 2i64) (call csv.end_row cw)
+          (call csv.free cw)
+          (let _ok:bool (call stream.close_writer w))))
+      (err msg (println "{msg}")))
+    (match_result (call total a "_api.csv")
+      (ok sum (println "total {sum}"))
+      (err why (println "error {why}")))
+    ;; a bad number, named by row and column
+    (let bad:(ptr csv.Reader) (call csv.of_bytes a (call str.from_str "n\n1\nx2\n")))
+    (let _h:bool (call csv.header bad))
+    (while (call csv.next_row bad)
+      (match_result (call csv.i64_at bad 0)
+        (ok n (println "n {n}"))
+        (err e (println "{(get e csv.Error.what)} (row {(get e csv.Error.row)}, column {(get e csv.Error.column)})"))))
+    (call csv.close bad)
+    ;; by name, and a column the row is too short for
+    (let g:(ptr csv.Reader) (call csv.of_bytes a (call str.from_str "a,b\n1\n")))
+    (let _g:bool (call csv.header g))
+    (let _r:bool (call csv.next_row g))
+    (let none:(ptr str.Bytes) (call str.from_str "?"))
+    (let va:(ptr str.Bytes) (call (option.unwrap_or (ptr str.Bytes)) (call csv.get g "a") none))
+    (let vb:(ptr str.Bytes) (call (option.unwrap_or (ptr str.Bytes)) (call csv.get g "b") none))
+    (let vc:i32 (call csv.column g "c"))
+    (println "a={va} b={vb} c={vc}")
+    (match_result (call csv.f64_at g 1) (ok _x (println "?")) (err e (println "{(get e csv.Error.what)}")))
+    (call csv.close g)
+    ;; all at once, tab-separated, a quoted line break
+    (let rows:(ptr (vec.Vec (ptr (vec.Vec (ptr str.Bytes))))) (call csv.parse a (call str.from_str "x,\"two\nlines\"\r\n\ny\n")))
+    (println "{(call (vec.len (ptr (vec.Vec (ptr str.Bytes)))) rows)} rows; {(call (vec.at (ptr str.Bytes)) (call (vec.at (ptr (vec.Vec (ptr str.Bytes)))) rows 0) 1)}")
+    (let t:(ptr csv.Reader) (call csv.reader_with a (call stream.of_str a "a\tb,c\td") 9))
+    (let _t:bool (call csv.next_row t))
+    (println "tab: {(call csv.count t)} fields, second {(call csv.field t 1)}")
+    (call csv.close t)
+    (unsafe (fs.delete (str.ptr "_api.csv") (str.len "_api.csv")))
+    0))

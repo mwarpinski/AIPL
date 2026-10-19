@@ -1,0 +1,25 @@
+a.txt => file=a.txt v=false q=false min=1 out= more=0
+-v a.txt b c => file=a.txt v=true q=false min=1 out= more=2
+-vq --min 3 a.txt => file=a.txt v=true q=true min=3 out= more=0
+--min=4 -m5 --out=x a.txt => file=a.txt v=false q=false min=5 out=x more=0
+-m 6 -- -v => file=-v v=false q=false min=6 out= more=0
+- --verbose => file=- v=true q=false min=1 out= more=0
+--min abc a.txt => file=a.txt v=false q=false min='abc' for min is not an integer out= more=0
+ => error: missing argument 'file'
+--nope a.txt => error: unknown option '--nope'
+-x a.txt => error: unknown option '-x'
+--verbose=yes a.txt => error: option '--verbose' takes no value
+a.txt --min => error: option '--min' needs a value
+a.txt -m => error: option '-m' needs a value
+--help => error: help
+usage: wc [options] file [more...]
+count the words in files
+
+  -v, --verbose  print each file's count
+  -q, --quiet    print nothing
+  -m, --min MIN  skip words shorter than this (default 1)
+      --out OUT  write here
+  file           the file to read
+  more...        other files
+  -h, --help     show this help
+own: file=in.txt v=true

@@ -1,0 +1,273 @@
+;; std/cli: command-line options. Declare them, then parse the arguments:
+;;
+;;   (let p:(ptr cli.Parser) (call cli.parser a "wc" "count the words in files"))
+;;   (call cli.flag p "verbose" "v" "print each file's count")
+;;   (call cli.option p "min" "m" "1" "skip words shorter than this")
+;;   (call cli.positional p "file" "the file to read")
+;;   (let args:(ptr cli.Args) (call cli.parse_or_exit p))
+;;   (call cli.get_bool args "verbose")
+;;   (try (call cli.get_i64 args "min"))
+;;
+;; Accepted: --name, --name value, --name=value; -n, -n value, -nvalue;
+;; flags together (-vq); "-" as an argument; and "--", after which
+;; everything is an argument. --help (or -h) prints the usage. An option
+;; not given has its default; a positional must be given, and rest takes
+;; any that follow.
+(module cli
+  (import str)
+  (import buf)
+  (import vec)
+  (import alloc)
+  (import os)
+
+  ;; What a program accepts: flags (on or off), options (a value), and
+  ;; positionals (in order).
+  (enum Kind [flag option positional rest])
+
+  (struct Spec [kind:Kind name:str short:str help:str default:str])
+
+  ;; A program's declared options, built with flag, option, positional, and rest.
+  (struct Parser [name:str about:str specs:(ptr (vec.Vec (ptr Spec))) a:alloc.Allocator] (pub))
+
+  ;; The values given: each spec's, by name (a flag "true" or ""), and
+  ;; what rest took.
+  (struct Args [names:(ptr (vec.Vec str)) values:(ptr (vec.Vec str)) rest:(ptr (vec.Vec str))] (pub))
+
+  ;; A parser for the program `name`, which does `about`.
+  (fn parser [a:alloc.Allocator name:str about:str] -> (ptr Parser) (pub)
+    (let p:(ptr Parser) (call (alloc.create Parser) a))
+    (put p Parser.name name)
+    (put p Parser.about about)
+    (put p Parser.specs (call (vec.make (ptr Spec)) a 8))
+    (put p Parser.a a)
+    p)
+
+  (fn add [p:(ptr Parser) kind:Kind name:str short:str help:str default:str] -> void
+    (let s:(ptr Spec) (new Spec))
+    (put s Spec.kind kind)
+    (put s Spec.name name)
+    (put s Spec.short short)
+    (put s Spec.help help)
+    (put s Spec.default default)
+    (call (vec.push (ptr Spec)) (get p Parser.specs) s))
+
+  ;; A flag, --name or -short (short "" for none): on when given.
+  (fn flag [p:(ptr Parser) name:str short:str help:str] -> void (pub)
+    (call add p Kind.flag name short help ""))
+
+  ;; An option with a value, --name VALUE or -short VALUE, `default` when
+  ;; not given.
+  (fn option [p:(ptr Parser) name:str short:str default:str help:str] -> void (pub)
+    (call add p Kind.option name short help default))
+
+  ;; A positional argument, required, in the order declared.
+  (fn positional [p:(ptr Parser) name:str help:str] -> void (pub)
+    (call add p Kind.positional name "" help ""))
+
+  ;; Any arguments after the positionals (none required).
+  (fn rest [p:(ptr Parser) name:str help:str] -> void (pub)
+    (call add p Kind.rest name "" help ""))
+
+  ;; The usage text --help prints.
+  (fn usage [p:(ptr Parser)] -> str (pub)
+    (let b:(ptr buf.Buf) (call buf.make (get p Parser.a) 256))
+    (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
+    (format_to b "usage: {(get p Parser.name)} [options]")
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (when (eq (get s Spec.kind) Kind.positional) (format_to b " {(get s Spec.name)}"))
+      (when (eq (get s Spec.kind) Kind.rest) (format_to b " [{(get s Spec.name)}...]")))
+    (format_to b "\n{(get p Parser.about)}\n\n")
+    ;; one line each, the help in a column
+    (let lefts:(ptr (vec.Vec str)) (call (vec.make str) (get p Parser.a) 8))
+    (let width:i32 10)
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (let left:str (match (get s Spec.kind)
+        (Kind.flag (call opt_text s ""))
+        (Kind.option (call opt_text s (call upper (get s Spec.name))))
+        (Kind.positional (get s Spec.name))
+        (Kind.rest (format "{(get s Spec.name)}..."))))
+      (when (gt (str.len left) width) (set! width (str.len left)))
+      (call (vec.push str) lefts left))
+    (call (vec.push str) lefts "-h, --help")
+    (for k 0 (call (vec.len str) lefts)
+      (let left:str (call (vec.at str) lefts k))
+      (let help:str (if (lt k (call (vec.len (ptr Spec)) specs)) (call help_of (call (vec.at (ptr Spec)) specs k)) "show this help"))
+      (call buf.push_str b "  ")
+      (call buf.push_str b left)
+      (for pad (str.len left) width (call buf.push_byte b 32))
+      (format_to b "  {help}\n"))
+    (let text:str (call buf.to_str b))
+    (call buf.free b)
+    (call (vec.free str) lefts)
+    text)
+
+  (fn help_of [s:(ptr Spec)] -> str
+    (if (and (eq (get s Spec.kind) Kind.option) (gt (str.len (get s Spec.default)) 0))
+        (format "{(get s Spec.help)} (default {(get s Spec.default)})")
+        (get s Spec.help)))
+
+  (fn opt_text [s:(ptr Spec) value:str] -> str
+    (let v:str (if (gt (str.len value) 0) (call str.concat " " value) ""))
+    (if (gt (str.len (get s Spec.short)) 0)
+        (format "-{(get s Spec.short)}, --{(get s Spec.name)}{v}")
+        (format "    --{(get s Spec.name)}{v}")))
+
+  (fn upper [s:str] -> str
+    (let b:(ptr str.Bytes) (call str.from_str s))
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (for k 0 (get b str.Bytes.len)
+      (let c:i32 (call str.byte_at b k))
+      (call buf.push_byte o (if (and (gte c 97) (lte c 122)) (- c 32) c)))
+    (let t:str (call buf.to_str o))
+    (call buf.free o)
+    t)
+
+  ;; ===== Parsing =====
+
+  (fn find_long [p:(ptr Parser) name:(ptr str.Bytes)] -> (ptr Spec)
+    (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (when (and (or (eq (get s Spec.kind) Kind.flag) (eq (get s Spec.kind) Kind.option)) (call str.bytes_eq (call str.from_str (get s Spec.name)) name))
+        (return s)))
+    (ptr.null Spec))
+
+  (fn find_short [p:(ptr Parser) c:i32] -> (ptr Spec)
+    (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (let sb:(ptr str.Bytes) (call str.from_str (get s Spec.short)))
+      (when (and (eq (get sb str.Bytes.len) 1) (eq (call str.byte_at sb 0) c)) (return s)))
+    (ptr.null Spec))
+
+  (fn set_value [args:(ptr Args) name:str value:str] -> void
+    (let names:(ptr (vec.Vec str)) (get args Args.names))
+    (for k 0 (call (vec.len str) names)
+      (when (call str.same (call (vec.at str) names k) name)
+        (call (vec.set str) (get args Args.values) k value)
+        (return)))
+    (call (vec.push str) names name)
+    (call (vec.push str) (get args Args.values) value))
+
+  (fn text_of [b:(ptr str.Bytes) from:i32] -> str
+    (call str.from_bytes (call str.slice b from (- (get b str.Bytes.len) from))))
+
+  ;; The arguments in argv (argument 1 on, as os.arg gives them), or the
+  ;; first that does not fit, with a hint; "help" when --help was asked.
+  (fn parse_list [p:(ptr Parser) argv:(ptr (vec.Vec str))] -> (result (ptr Args) str) (pub)
+    (let a:alloc.Allocator (get p Parser.a))
+    (let args:(ptr Args) (new Args))
+    (put args Args.names (call (vec.make str) a 8))
+    (put args Args.values (call (vec.make str) a 8))
+    (put args Args.rest (call (vec.make str) a 4))
+    (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
+    ;; defaults first
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (call set_value args (get s Spec.name) (get s Spec.default)))
+    (let positionals:(ptr (vec.Vec str)) (call (vec.make str) a 4))
+    (let options_end:bool false)
+    (let i:i32 0)
+    (let n:i32 (call (vec.len str) argv))
+    (while (lt i n)
+      (let arg:str (call (vec.at str) argv i))
+      (let b:(ptr str.Bytes) (call str.from_str arg))
+      (let len:i32 (get b str.Bytes.len))
+      (cond
+        ((or options_end (or (lt len 2) (neq (call str.byte_at b 0) 45))) (call (vec.push str) positionals arg))
+        ((call str.same arg "--") (set! options_end true))
+        ((or (call str.same arg "--help") (call str.same arg "-h")) (return (err:(ptr Args) "help")))
+        ;; --name, --name=value
+        ((eq (call str.byte_at b 1) 45)
+         (let eq_at:i32 (call str.find_byte b 61))
+         (let name:(ptr str.Bytes) (call str.slice b 2 (- (if (lt eq_at 0) len eq_at) 2)))
+         (let s:(ptr Spec) (call find_long p name))
+         (when (eq s (ptr.null Spec)) (return (err:(ptr Args) (format "unknown option '{arg}'"))))
+         (cond
+           ((eq (get s Spec.kind) Kind.flag)
+            (when (gte eq_at 0) (return (err:(ptr Args) (format "option '--{(get s Spec.name)}' takes no value"))))
+            (call set_value args (get s Spec.name) "true"))
+           ((gte eq_at 0) (call set_value args (get s Spec.name) (call text_of b (+ eq_at 1))))
+           ((lt (+ i 1) n)
+            (set! i (+ i 1))
+            (call set_value args (get s Spec.name) (call (vec.at str) argv i)))
+           (else (return (err:(ptr Args) (format "option '--{(get s Spec.name)}' needs a value"))))))
+        ;; -v, -vq, -n VALUE, -nVALUE
+        (else
+         (let j:i32 1)
+         (while (lt j len)
+           (let s:(ptr Spec) (call find_short p (call str.byte_at b j)))
+           (when (eq s (ptr.null Spec))
+             (let c:str (call str.from_bytes (call str.slice b j 1)))
+             (return (err:(ptr Args) (format "unknown option '-{c}'"))))
+           (if (eq (get s Spec.kind) Kind.flag)
+               (block (call set_value args (get s Spec.name) "true") (set! j (+ j 1)))
+               (block
+                 (cond
+                   ((lt (+ j 1) len) (call set_value args (get s Spec.name) (call text_of b (+ j 1))))
+                   ((lt (+ i 1) n) (set! i (+ i 1)) (call set_value args (get s Spec.name) (call (vec.at str) argv i)))
+                   (else (return (err:(ptr Args) (format "option '-{(get s Spec.short)}' needs a value")))))
+                 (set! j len))))))
+      (set! i (+ i 1)))
+    ;; the positionals, in order, then rest
+    (let next:i32 0)
+    (for k 0 (call (vec.len (ptr Spec)) specs)
+      (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
+      (cond
+        ((eq (get s Spec.kind) Kind.positional)
+         (when (gte next (call (vec.len str) positionals)) (return (err:(ptr Args) (format "missing argument '{(get s Spec.name)}'"))))
+         (call set_value args (get s Spec.name) (call (vec.at str) positionals next))
+         (set! next (+ next 1)))
+        ((eq (get s Spec.kind) Kind.rest)
+         (while (lt next (call (vec.len str) positionals))
+           (call (vec.push str) (get args Args.rest) (call (vec.at str) positionals next))
+           (set! next (+ next 1))))
+        (else (block))))
+    (when (lt next (call (vec.len str) positionals))
+      (return (err:(ptr Args) (format "unexpected argument '{(call (vec.at str) positionals next)}'"))))
+    (call (vec.free str) positionals)
+    (ok:str args))
+
+  ;; parse_list over the program's own arguments.
+  (fn parse [p:(ptr Parser)] -> (result (ptr Args) str) (pub)
+    (let argv:(ptr (vec.Vec str)) (call (vec.make str) (get p Parser.a) 8))
+    (for k 1 (call os.arg_count) (call (vec.push str) argv (call str.from_bytes (call os.arg k))))
+    (call parse_list p argv))
+
+  ;; parse, printing the usage and exiting 0 for --help, or the error and
+  ;; a hint and exiting 2 for arguments that do not fit.
+  (fn parse_or_exit [p:(ptr Parser)] -> (ptr Args) (pub)
+    (match_result (call parse p)
+      (ok args args)
+      (err why
+        (block
+          (if (call str.same why "help")
+              (block (print "{(call usage p)}") (sys.exit 0))
+              (block (eprintln "{(get p Parser.name)}: {why} ({(get p Parser.name)} --help shows the options)") (sys.exit 2)))
+          (new Args)))))
+
+  ;; ===== Values =====
+
+  ;; The value of the option, flag, or positional `name` ("" for a flag
+  ;; not given, or a name never declared).
+  (fn get_str [args:(ptr Args) name:str] -> str (pub)
+    (let names:(ptr (vec.Vec str)) (get args Args.names))
+    (for k 0 (call (vec.len str) names)
+      (when (call str.same (call (vec.at str) names k) name) (return (call (vec.at str) (get args Args.values) k))))
+    "")
+
+  ;; Whether the flag `name` was given.
+  (fn get_bool [args:(ptr Args) name:str] -> bool (pub)
+    (call str.same (call get_str args name) "true"))
+
+  ;; The value of `name` as an integer, or why it is not one.
+  (fn get_i64 [args:(ptr Args) name:str] -> (result i64 str) (pub)
+    (let v:str (call get_str args name))
+    (match_result (call str.parse_i64 (call str.from_str v))
+      (ok n (ok:str n))
+      (err _at (err:i64 (format "'{v}' for {name} is not an integer")))))
+
+  ;; What rest took, in order.
+  (fn rest_args [args:(ptr Args)] -> (ptr (vec.Vec str)) (pub) (get args Args.rest)))

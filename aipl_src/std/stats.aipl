@@ -1,0 +1,450 @@
+;; std/stats: statistics over (arr f64), computed as Python's statistics
+;; module computes them, so the answers are Python's to the last bit:
+;;
+;;   (call stats.mean xs)        ;; statistics.mean: the exact mean, rounded once
+;;   (call stats.stdev xs)       ;; statistics.stdev: the exact one, rounded once
+;;   (call stats.median xs)      (call stats.quantiles xs 4 false)
+;;
+;; sum is math.fsum (the exact sum, rounded once) and fmean statistics.fmean
+;; (fsum / n). mean, variance, pvariance, stdev, and pstdev round an exact
+;; rational once, as Python's do with fractions; here the exact values are
+;; held as expansions (sums of f64s that are exact, Shewchuk's partials) and
+;; the rounding found by exact sign tests, so for |x| beyond about 1e150 a
+;; square can overflow. covariance, correlation, and linear_fit follow
+;; Python's formulas over fsum and math.sumprod (triple-length
+;; accumulation, an exact product standing in for fma). Too little data
+;; (an empty array; one value for a sample statistic) fails the function's
+;; contract, as Python raises StatisticsError. Checked against Python on
+;; generated data (tests/aipl/stats, tools/stats_vectors.py).
+(module stats
+  (import alloc)
+  (import vec)
+
+  ;; ===== Exact arithmetic =====
+
+  ;; A value as two f64s whose sum is exact: hi, and the error lo.
+  (struct Two [hi:f64 lo:f64] (value))
+
+  (fn abs [x:f64] -> f64 (if (lt x 0.0) (- 0.0 x) x))
+
+  ;; a + b exactly (Knuth's TwoSum; CPython's dl_sum).
+  (fn two_sum [a:f64 b:f64] -> Two
+    (let x:f64 (+ a b))
+    (let z:f64 (- x a))
+    (make Two x (+ (- a (- x z)) (- b z))))
+
+  ;; a * b exactly (Dekker's product, with Veltkamp's split): what fma(a,
+  ;; b, -a*b) gives for the error, as CPython's dl_mul.
+  (fn two_prod [a:f64 b:f64] -> Two
+    (let p:f64 (* a b))
+    (let ca:f64 (* 134217729.0 a))
+    (let ahi:f64 (- ca (- ca a)))
+    (let alo:f64 (- a ahi))
+    (let cb:f64 (* 134217729.0 b))
+    (let bhi:f64 (- cb (- cb b)))
+    (let blo:f64 (- b bhi))
+    (make Two p (+ (+ (+ (- (* ahi bhi) p) (* ahi blo)) (* alo bhi)) (* alo blo))))
+
+  ;; An exact sum of many f64s: CPython's math.fsum partials, nonoverlapping
+  ;; and increasing in magnitude.
+  (struct Exact [parts:(ptr (vec.Vec f64))])
+
+  (fn exact [] -> (ptr Exact)
+    (let e:(ptr Exact) (call (alloc.create Exact) (call alloc.default)))
+    (put e Exact.parts (call (vec.make f64) (call alloc.default) 16))
+    e)
+
+  (fn drop [e:(ptr Exact)] -> void
+    (call (vec.free f64) (get e Exact.parts))
+    (call (alloc.destroy Exact) (call alloc.default) e))
+
+  ;; Adds x exactly (fsum's inner loop).
+  (fn add [e:(ptr Exact) x0:f64] -> void
+    (let ps:(ptr (vec.Vec f64)) (get e Exact.parts))
+    (let x:f64 x0)
+    (let i:i32 0)
+    (for k 0 (call (vec.len f64) ps)
+      (let y:f64 (call (vec.at f64) ps k))
+      (when (lt (call abs x) (call abs y))
+        (let t:f64 x)
+        (set! x y)
+        (set! y t))
+      (let hi:f64 (+ x y))
+      (let lo:f64 (- y (- hi x)))
+      (when (neq lo 0.0)
+        (call (vec.set f64) ps i lo)
+        (set! i (+ i 1)))
+      (set! x hi))
+    (while (gt (call (vec.len f64) ps) i) (let _p:f64 (call (vec.pop f64) ps)))
+    (call (vec.push f64) ps x))
+
+  (fn add_two [e:(ptr Exact) t:Two] -> void
+    (call add e (get t Two.hi))
+    (call add e (get t Two.lo)))
+
+  ;; The exact sum rounded once to the nearest f64, ties to even (fsum's
+  ;; final step).
+  (fn total [e:(ptr Exact)] -> f64
+    (let ps:(ptr (vec.Vec f64)) (get e Exact.parts))
+    (let n:i32 (call (vec.len f64) ps))
+    (when (eq n 0) (return 0.0))
+    (set! n (- n 1))
+    (let hi:f64 (call (vec.at f64) ps n))
+    (let lo:f64 0.0)
+    (while (gt n 0)
+      (let x:f64 hi)
+      (set! n (- n 1))
+      (let y:f64 (call (vec.at f64) ps n))
+      (set! hi (+ x y))
+      (let yr:f64 (- hi x))
+      (set! lo (- y yr))
+      (when (neq lo 0.0) (break)))
+    ;; half-even rounding across several partials
+    (when (and (gt n 0) (or (and (lt lo 0.0) (lt (call (vec.at f64) ps (- n 1)) 0.0)) (and (gt lo 0.0) (gt (call (vec.at f64) ps (- n 1)) 0.0))))
+      (let y:f64 (* lo 2.0))
+      (let x:f64 (+ hi y))
+      (let yr:f64 (- x hi))
+      (when (eq y yr) (set! hi x)))
+    hi)
+
+  ;; -1, 0, or 1: the exact sum's sign (its rounding is 0 only when it is).
+  (fn sign [e:(ptr Exact)] -> i32
+    (let t:f64 (call total e))
+    (cond ((gt t 0.0) 1) ((lt t 0.0) -1) (else 0)))
+
+  ;; A copy of e, every partial times f (an f64 holding a small integer or
+  ;; a power of two), exactly.
+  (fn scaled [e:(ptr Exact) f:f64] -> (ptr Exact)
+    (let r:(ptr Exact) (call exact))
+    (let ps:(ptr (vec.Vec f64)) (get e Exact.parts))
+    (for k 0 (call (vec.len f64) ps) (call add_two r (call two_prod (call (vec.at f64) ps k) f)))
+    r)
+
+  ;; The neighbours of a positive, finite x.
+  (fn next_up [x:f64] -> f64 (f64.reinterpret_i64 (+ (i64.reinterpret_f64 x) 1i64)))
+  (fn next_down [x:f64] -> f64 (f64.reinterpret_i64 (- (i64.reinterpret_f64 x) 1i64)))
+  (fn even [x:f64] -> bool (eq (bitand (i64.reinterpret_f64 x) 1i64) 0i64))
+
+  ;; The sign of n - q*d - h*d (h = 0 or half the gap to a neighbour of q).
+  (fn above [n:(ptr Exact) q:f64 h:f64 d:f64] -> i32
+    (let r:(ptr Exact) (call scaled n 1.0))
+    (let qd:Two (call two_prod q d))
+    (call add r (- 0.0 (get qd Two.hi)))
+    (call add r (- 0.0 (get qd Two.lo)))
+    (let hd:Two (call two_prod h d))
+    (call add r (- 0.0 (get hd Two.hi)))
+    (call add r (- 0.0 (get hd Two.lo)))
+    (let s:i32 (call sign r))
+    (call drop r)
+    s)
+
+  ;; n / d (n exact and not negative, d a positive integer as an f64),
+  ;; rounded once to the nearest f64, ties to even.
+  (fn quotient [n:(ptr Exact) d:f64] -> f64
+    (let q:f64 (/ (call total n) d))
+    (when (eq q 0.0) (return q))
+    ;; q is within an f64 of the answer: test the midpoints either side
+    (let up:f64 (call next_up q))
+    (let s_up:i32 (call above n q (/ (- up q) 2.0) d))
+    (cond
+      ((gt s_up 0) (return up))
+      ((eq s_up 0) (return (if (call even q) q up)))
+      (else (block)))
+    (let down:f64 (call next_down q))
+    (let s_down:i32 (call above n q (/ (- down q) 2.0) d))
+    (cond
+      ((lt s_down 0) down)
+      ((eq s_down 0) (if (call even q) q down))
+      (else q)))
+
+  ;; The sign of n - d*(s + h)^2 (h = 0 or half the gap to a neighbour of s).
+  (fn above_root [n:(ptr Exact) s:f64 h:f64 d:f64] -> i32
+    (let sq:(ptr Exact) (call exact))
+    ;; (s + h)^2 = s*s + 2*s*h + h*h, each exact (h a power of two)
+    (call add_two sq (call two_prod s s))
+    (call add sq (* (* 2.0 s) h))
+    (call add sq (* h h))
+    (let sqd:(ptr Exact) (call scaled sq d))
+    (let r:(ptr Exact) (call scaled n 1.0))
+    (let ps:(ptr (vec.Vec f64)) (get sqd Exact.parts))
+    (for k 0 (call (vec.len f64) ps) (call add r (- 0.0 (call (vec.at f64) ps k))))
+    (let sg:i32 (call sign r))
+    (call drop sq)
+    (call drop sqd)
+    (call drop r)
+    sg)
+
+  ;; sqrt(n / d), rounded once to the nearest f64.
+  (fn root [n:(ptr Exact) d:f64] -> f64
+    (let s:f64 (f64.sqrt (/ (call total n) d)))
+    (when (eq s 0.0) (return s))
+    (let up:f64 (call next_up s))
+    (let s_up:i32 (call above_root n s (/ (- up s) 2.0) d))
+    (cond
+      ((gt s_up 0) (return up))
+      ((eq s_up 0) (return (if (call even s) s up)))
+      (else (block)))
+    (let down:f64 (call next_down s))
+    (let s_down:i32 (call above_root n s (/ (- down s) 2.0) d))
+    (cond
+      ((lt s_down 0) down)
+      ((eq s_down 0) (if (call even s) s down))
+      (else s)))
+
+  ;; ===== Sums and means =====
+
+  ;; math.fsum: the exact sum, rounded once.
+  (fn sum [xs:(arr f64)] -> f64 (pub)
+    (let e:(ptr Exact) (call exact))
+    (for k 0 (arr.len xs) (call add e (arr.get f64 xs k)))
+    (let t:f64 (call total e))
+    (call drop e)
+    t)
+
+  ;; statistics.fmean: fsum / n.
+  (fn fmean [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (/ (call sum xs) (f64.convert_i32_s (arr.len xs))))
+
+  ;; statistics.mean: the exact mean, rounded once.
+  (fn mean [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let e:(ptr Exact) (call exact))
+    (for k 0 (arr.len xs) (call add e (arr.get f64 xs k)))
+    (let negative:bool (lt (call sign e) 0))
+    (let pos:(ptr Exact) (call scaled e (if negative -1.0 1.0)))
+    (let m:f64 (call quotient pos (f64.convert_i32_s (arr.len xs))))
+    (call drop e)
+    (call drop pos)
+    (if negative (- 0.0 m) m))
+
+  ;; n * sum(x^2) - sum(x)^2, exactly: the sum of squared deviations times n.
+  (fn ss_times_n [xs:(arr f64)] -> (ptr Exact)
+    (let sx:(ptr Exact) (call exact))
+    (let sxx:(ptr Exact) (call exact))
+    (for k 0 (arr.len xs)
+      (let x:f64 (arr.get f64 xs k))
+      (call add sx x)
+      (call add_two sxx (call two_prod x x)))
+    (let r:(ptr Exact) (call scaled sxx (f64.convert_i32_s (arr.len xs))))
+    (let ps:(ptr (vec.Vec f64)) (get sx Exact.parts))
+    (for i 0 (call (vec.len f64) ps)
+      (for j 0 (call (vec.len f64) ps)
+        (let t:Two (call two_prod (call (vec.at f64) ps i) (call (vec.at f64) ps j)))
+        (call add r (- 0.0 (get t Two.hi)))
+        (call add r (- 0.0 (get t Two.lo)))))
+    (call drop sx)
+    (call drop sxx)
+    r)
+
+  ;; statistics.variance: the sample variance, exact then rounded once.
+  (fn variance [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 1))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let ss:(ptr Exact) (call ss_times_n xs))
+    (let v:f64 (call quotient ss (* n (- n 1.0))))
+    (call drop ss)
+    v)
+
+  ;; statistics.pvariance: the population variance.
+  (fn pvariance [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let ss:(ptr Exact) (call ss_times_n xs))
+    (let v:f64 (call quotient ss (* n n)))
+    (call drop ss)
+    v)
+
+  ;; statistics.stdev: the square root of the exact sample variance,
+  ;; rounded once.
+  (fn stdev [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 1))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let ss:(ptr Exact) (call ss_times_n xs))
+    (let s:f64 (call root ss (* n (- n 1.0))))
+    (call drop ss)
+    s)
+
+  ;; statistics.pstdev: the population standard deviation.
+  (fn pstdev [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let ss:(ptr Exact) (call ss_times_n xs))
+    (let s:f64 (call root ss (* n n)))
+    (call drop ss)
+    s)
+
+  ;; ===== Order =====
+
+  (fn cmp [a:f64 b:f64] -> i32 (cond ((lt a b) -1) ((gt a b) 1) (else 0)))
+
+  ;; A sorted copy of xs, from the shared heap.
+  (fn sorted [xs:(arr f64)] -> (ptr (vec.Vec f64))
+    (let v:(ptr (vec.Vec f64)) (call (vec.make f64) (call alloc.default) (+ (arr.len xs) 1)))
+    (for k 0 (arr.len xs) (call (vec.push f64) v (arr.get f64 xs k)))
+    (call (vec.sort_by f64) v (ref cmp))
+    v)
+
+  ;; statistics.median: the middle value, or the mean of the two middle ones.
+  (fn median [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let v:(ptr (vec.Vec f64)) (call sorted xs))
+    (let n:i32 (arr.len xs))
+    (let m:f64 (if (eq (% n 2) 1)
+                   (call (vec.at f64) v (/ n 2))
+                   (/ (+ (call (vec.at f64) v (- (/ n 2) 1)) (call (vec.at f64) v (/ n 2))) 2.0)))
+    (call (vec.free f64) v)
+    m)
+
+  ;; statistics.quantiles: the n - 1 cut points dividing xs into n groups,
+  ;; by Python's 'exclusive' method (its default), or 'inclusive'.
+  (fn quantiles [a:alloc.Allocator xs:(arr f64) n:i32 inclusive:bool] -> (arr f64) (pub)
+    (req (and (gt n 0) (gt (arr.len xs) 0)))
+    (let out:(arr f64) (call (alloc.array f64) a (- n 1)))
+    (let v:(ptr (vec.Vec f64)) (call sorted xs))
+    (let ld:i32 (arr.len xs))
+    (let nf:f64 (f64.convert_i32_s n))
+    (for i 1 n
+      (let x:f64
+        (cond
+          ((eq ld 1) (call (vec.at f64) v 0))
+          (inclusive
+           (let m:i32 (- ld 1))
+           (let j:i32 (/ (* i m) n))
+           (let delta:i32 (% (* i m) n))
+           (/ (+ (* (call (vec.at f64) v j) (f64.convert_i32_s (- n delta))) (* (call (vec.at f64) v (+ j 1)) (f64.convert_i32_s delta))) nf))
+          (else
+           (let m:i32 (+ ld 1))
+           (let j:i32 (/ (* i m) n))
+           (set! j (cond ((lt j 1) 1) ((gt j (- ld 1)) (- ld 1)) (else j)))
+           (let delta:i32 (- (* i m) (* j n)))
+           (/ (+ (* (call (vec.at f64) v (- j 1)) (f64.convert_i32_s (- n delta))) (* (call (vec.at f64) v j) (f64.convert_i32_s delta))) nf))))
+      (arr.set f64 out (- i 1) x))
+    (call (vec.free f64) v)
+    out)
+
+  ;; The least value (the first of equal ones), as Python's min.
+  (fn min [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let m:f64 (arr.get f64 xs 0))
+    (for k 1 (arr.len xs) (when (lt (arr.get f64 xs k) m) (set! m (arr.get f64 xs k))))
+    m)
+
+  ;; The greatest value (the first of equal ones), as Python's max.
+  (fn max [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let m:f64 (arr.get f64 xs 0))
+    (for k 1 (arr.len xs) (when (gt (arr.get f64 xs k) m) (set! m (arr.get f64 xs k))))
+    m)
+
+  ;; statistics.mode: the most common value; of equally common ones, the
+  ;; first to appear (as written there first).
+  (fn mode [xs:(arr f64)] -> f64 (pub)
+    (req (gt (arr.len xs) 0))
+    (let n:i32 (arr.len xs))
+    (let best:i32 0)
+    (let best_count:i32 0)
+    (let v:(ptr (vec.Vec f64)) (call sorted xs))
+    ;; each run of equal values: its count, and where its value first appears
+    (let k:i32 0)
+    (while (lt k n)
+      (let x:f64 (call (vec.at f64) v k))
+      (let e:i32 k)
+      (while (and (lt e n) (eq (call (vec.at f64) v e) x)) (set! e (+ e 1)))
+      (let first:i32 0)
+      (while (neq (arr.get f64 xs first) x) (set! first (+ first 1)))
+      (when (or (gt (- e k) best_count) (and (eq (- e k) best_count) (lt first best)))
+        (set! best_count (- e k))
+        (set! best first))
+      (set! k e))
+    (call (vec.free f64) v)
+    (arr.get f64 xs best))
+
+  ;; ===== Two variables =====
+
+  ;; math.sumprod of the first n pairs (p[k] - pm) * (q[k] - qm): CPython's
+  ;; triple-length accumulation (tl_fma), then plus 0 (its integer start).
+  (struct Three [hi:f64 lo:f64 tiny:f64] (value))
+
+  (fn tl_fma [x:f64 y:f64 t:Three] -> Three
+    (let pr:Two (call two_prod x y))
+    (let sm:Two (call two_sum (get t Three.hi) (get pr Two.hi)))
+    (let r1:Two (call two_sum (get t Three.lo) (get pr Two.lo)))
+    (let r2:Two (call two_sum (get r1 Two.hi) (get sm Two.lo)))
+    (make Three (get sm Two.hi) (get r2 Two.hi) (+ (+ (get t Three.tiny) (get r1 Two.lo)) (get r2 Two.lo))))
+
+  (fn tl_to_d [t:Three] -> f64
+    (let last:Two (call two_sum (get t Three.lo) (get t Three.hi)))
+    (+ (+ (get t Three.tiny) (get last Two.lo)) (get last Two.hi)))
+
+  (fn sumprod [p:(arr f64) pm:f64 q:(arr f64) qm:f64] -> f64
+    (let t:Three (make Three 0.0 0.0 0.0))
+    (for k 0 (arr.len p) (set! t (call tl_fma (- (arr.get f64 p k) pm) (- (arr.get f64 q k) qm) t)))
+    (+ 0.0 (call tl_to_d t)))
+
+  (fn sumprod2 [a:f64 b:f64 c:f64 d:f64] -> f64
+    (+ 0.0 (call tl_to_d (call tl_fma b d (call tl_fma a c (make Three 0.0 0.0 0.0))))))
+
+  ;; statistics._sqrtprod: sqrt(x * y), corrected, without overflow.
+  (fn sqrtprod [x:f64 y:f64] -> f64
+    (let h:f64 (f64.sqrt (* x y)))
+    (let inf:f64 (/ 1.0 0.0))
+    (when (or (eq h inf) (neq h h))
+      (if (and (eq h inf) (and (neq (call abs x) inf) (neq (call abs y) inf)))
+          (return (/ (call sqrtprod (* 7.458340731200207e-155 x) (* 7.458340731200207e-155 y)) 7.458340731200207e-155))
+          (return h)))
+    (when (eq h 0.0)
+      (if (and (neq x 0.0) (neq y 0.0))
+          (return (/ (call sqrtprod (* 4.4989137945431964e161 x) (* 4.4989137945431964e161 y)) 4.4989137945431964e161))
+          (return h)))
+    (let d:f64 (call sumprod2 x h y (- 0.0 h)))
+    (+ h (/ d (* 2.0 h))))
+
+  ;; statistics.covariance: the sample covariance of xs and ys.
+  (fn covariance [xs:(arr f64) ys:(arr f64)] -> f64 (pub)
+    (req (and (eq (arr.len xs) (arr.len ys)) (gt (arr.len xs) 1)))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (/ (call sumprod xs (/ (call sum xs) n) ys (/ (call sum ys) n)) (- n 1.0)))
+
+  ;; statistics.correlation: Pearson's coefficient of xs and ys.
+  (fn correlation [xs:(arr f64) ys:(arr f64)] -> f64 (pub)
+    (req (and (eq (arr.len xs) (arr.len ys)) (gt (arr.len xs) 1)))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let xbar:f64 (/ (call sum xs) n))
+    (let ybar:f64 (/ (call sum ys) n))
+    (/ (call sumprod xs xbar ys ybar) (call sqrtprod (call sumprod xs xbar xs xbar) (call sumprod ys ybar ys ybar))))
+
+  ;; A least-squares line, y = slope * x + intercept (statistics.
+  ;; linear_regression), and r2, the correlation squared.
+  (struct Fit [(read slope:f64) (read intercept:f64) (read r2:f64)] (value) (pub))
+
+  ;; The least-squares line through (xs[k], ys[k]).
+  (fn linear_fit [xs:(arr f64) ys:(arr f64)] -> Fit (pub)
+    (req (and (eq (arr.len xs) (arr.len ys)) (gt (arr.len xs) 1)))
+    (let n:f64 (f64.convert_i32_s (arr.len xs)))
+    (let xbar:f64 (/ (call sum xs) n))
+    (let ybar:f64 (/ (call sum ys) n))
+    (let slope:f64 (/ (+ (call sumprod xs xbar ys ybar) 0.0) (call sumprod xs xbar xs xbar)))
+    (let r:f64 (call correlation xs ys))
+    (make Fit slope (- ybar (* slope xbar)) (* r r)))
+
+  ;; ===== Others =====
+
+  ;; How far x is from the mean, in standard deviations.
+  (fn zscore [x:f64 mean_:f64 sd:f64] -> f64 (pub)
+    (req (gt sd 0.0))
+    (/ (- x mean_) sd))
+
+  ;; How many of xs fall in each of `bins` equal intervals from lo to hi
+  ;; (hi in the last; values outside left out).
+  (fn histogram [a:alloc.Allocator xs:(arr f64) lo:f64 hi:f64 bins:i32] -> (arr i32) (pub)
+    (req (and (gt bins 0) (lt lo hi)))
+    (let out:(arr i32) (call (alloc.array i32) a bins))
+    (let width:f64 (/ (- hi lo) (f64.convert_i32_s bins)))
+    (for k 0 (arr.len xs)
+      (let x:f64 (arr.get f64 xs k))
+      (when (and (gte x lo) (lte x hi))
+        (let b:i32 (i32.trunc_f64_s (/ (- x lo) width)))
+        (when (gte b bins) (set! b (- bins 1)))
+        (arr.set i32 out b (+ (arr.get i32 out b) 1))))
+    out))
