@@ -1,0 +1,46 @@
+;; Numbers the lines of standard input through std/stream, then writes a
+;; file and counts its lines with try and defer: tests/test_stream.rs runs
+;; it in the VM, under aipl-run, and natively on the same input.
+(module lines
+  (import stream)
+  (import alloc)
+  (import str)
+
+  ;; The lines in the file at path, or why it cannot be read.
+  (fn count_lines [a:alloc.Allocator path:str] -> (result i32 str)
+    (let r:(ptr stream.Reader) (try (call stream.open a path)))
+    (defer (call stream.close_reader r))
+    (let n:i32 0)
+    (while (call stream.next_line r) (set! n (+ n 1)))
+    (if (call stream.read_error r) (err:i32 "a read failed") (ok:str n)))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let r:(ptr stream.Reader) (call stream.stdin a))
+    (let w:(ptr stream.Writer) (call stream.stdout a))
+    (let n:i32 0)
+    (let total:i32 0)
+    (while (call stream.next_line r)
+      (set! n (+ n 1))
+      (let l:(ptr str.Bytes) (call stream.line r))
+      (set! total (+ total (get l str.Bytes.len)))
+      (format_to w "{n:>5}|{(get l str.Bytes.len)}|")
+      (call stream.write_bytes w l)
+      (call stream.write_byte w 10))
+    (call stream.close_reader r)
+    (format_to w "{n} lines, {total} bytes\n")
+    ;; a file of 5000 lines, then its lines counted back
+    (match_result (call stream.create a "_lines_test.tmp")
+      (ok f
+        (block
+          (loop i 1 5000 1 (format_to f "row {i},{(* i i)}\n"))
+          (let _ok:bool (call stream.close_writer f))))
+      (err e (format_to w "{e}\n")))
+    (match_result (call count_lines a "_lines_test.tmp")
+      (ok k (format_to w "counted {k}\n"))
+      (err e (format_to w "{e}\n")))
+    (unsafe (fs.delete (str.ptr "_lines_test.tmp") (str.len "_lines_test.tmp")))
+    (match_result (call count_lines a "no_such_dir/missing.txt")
+      (ok k (format_to w "counted {k}?\n"))
+      (err e (format_to w "{e}\n")))
+    (if (call stream.close_writer w) 0 1)))

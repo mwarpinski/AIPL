@@ -115,7 +115,12 @@ on your `PATH`:
 
 ```bash
 aipl verify examples/word_count.aipl            # parse and type-check
+aipl doc text                                   # a module's functions and types, with their comments
+aipl doc --find split                           # search the standard library
+aipl test rows.aipl                             # run a file's (test ...) items, each alone
+aipl watch scratch.aipl                         # run it again on every save
 aipl eval examples/math_core.aipl               # run main in the interpreter
+aipl eval -e '(call str.find (call str.from_str "a,b") (call str.from_str ","))'   # prints 1 : i32
 aipl compile examples/word_count.aipl -o wc.wasm
 aipl run wc.wasm -- README.md                   # run compiled WebAssembly
 aipl compile --exe examples/word_count.aipl -o wc
@@ -166,7 +171,8 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
 - **The language:** `i32`, `i64`, `f32`, `f64`, `bool`, and `str`, and
   8- and 16-bit fields and array elements; structs behind typed pointers,
   and small immutable structs held by value; arrays; enums; unions with an
-  exhaustive `match`; results and options (held by value when small);
+  exhaustive `match`; results and options (held by value when small), with
+  `try` to pass an error up and `defer` for cleanup on every return;
   function references; generic structs, unions, and functions, checked once
   with interfaces and `where` clauses; constants, computed from other
   constants at compile time; contracts (`req`, `ens`, `inv`) checked in
@@ -175,9 +181,12 @@ referee ([bootstrap/README.md](bootstrap/README.md) explains why).
 - **Three ways to run a program,** which must agree: an interpreter for
   quick runs, WebAssembly with WASI (files, stdio, the command line, the
   environment, clocks, threads), and native Linux x86-64 executables with no
-  runtime (`word_count` is 64 KB).
-- **A standard library** with printing and file I/O, strings, number
-  formatting and exact float parsing, JSON, directory listing, growable
+  runtime (`word_count` is 104 KB).
+- **A standard library** with printing and file I/O, `"x = {x}"`
+  formatting (built into the language), strings and text (search, split,
+  join, replace, trim, case, UTF-8), streams (files, standard input and
+  output, and memory, read a line at a time and written through a buffer),
+  number formatting and exact float parsing, JSON, directory listing, growable
   vectors, hash maps, a string builder, big integers, UTC dates and ISO
   8601, timing, and allocators. Memory you free comes from an allocator you pass explicitly,
   as in Zig: a general-purpose heap that stops the program on a double free
@@ -246,7 +255,7 @@ AIPL is designed by Matt Warpinski and implemented with AI coding agents.
 Nothing is taken on trust: every change has to pass checks that compare
 independent implementations against each other.
 
-- **360 Rust tests** and an AIPL test suite, run on every push by CI.
+- **388 Rust tests** and an AIPL test suite, run on every push by CI.
 - **The interpreter, WebAssembly, and native code must agree.** Differential
   tests run the same programs every way, and a fuzzer generates random
   well-typed programs and compares their output and failures (CI runs 500

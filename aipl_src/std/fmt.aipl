@@ -119,6 +119,9 @@
     (loop i 0 (- (str.len s) 1) 1 (mem.store8 (+ out i) (mem.load8 (+ p i))))
     (str.len s))
 
+  ;; Writes x with `digits` decimals (0-40) at `out`, exactly rounded with
+  ;; ties to even, as printf("%.*f") does; returns the bytes written. `out`
+  ;; must have room for 312 + digits bytes.
   (fn f64_fixed [x:f64 digits:i32 out:i32] -> i32 (pub) (unsafe)
     (req (and (gte digits 0) (lte digits 40)))
     (let bits:i64 (i64.reinterpret_f64 x))

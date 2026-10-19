@@ -1763,6 +1763,24 @@ impl Parser {
                                 "i64.reinterpret_f64" => OpCode::I64ReinterpretF64,
                                 "i64.extend_u" => OpCode::I64ExtendU,
                                 "i32.wrap" => OpCode::I32Wrap,
+                                "format.str" => OpCode::FormatStr,
+                                "format.to" => OpCode::FormatTo,
+                                "format.print" => OpCode::FormatPrint,
+                                "format.println" => OpCode::FormatPrintln,
+                                "format.eprintln" => OpCode::FormatEprintln,
+                                "format.piece" => OpCode::FormatPiece,
+                                "try" => OpCode::Try,
+                                "try_opt" => OpCode::TryOpt,
+                                "try_or" => OpCode::TryOr,
+                                "defer" => OpCode::Defer,
+                                "format.dbg" => OpCode::FormatDbg,
+                                "format.expect" => OpCode::FormatExpect,
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" => {
+                                    return Err(format!(
+                                        "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
+                                        span.0, span.1, op_str
+                                    ))
+                                }
                                 other => {
                                     return Err(format!(
                                         "{}:{}: Unknown op/keyword: {}",

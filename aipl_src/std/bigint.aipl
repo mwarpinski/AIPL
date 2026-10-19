@@ -19,8 +19,10 @@
   (import str)
   (import buf)
 
+  ;; An arbitrary-precision signed integer, changed in place.
   (struct Int [limbs:(arr i64) len:i32 neg:bool] (pub))
 
+  ;; Zero, with room for `limbs` 64-bit limbs (at least 4) before it grows.
   (fn with_capacity [limbs:i32] -> (ptr Int) (pub)
     (let n:(ptr Int) (new Int))
     (let xs:(arr i64) (arr.new i64 (if (lt limbs 4) 4 limbs)))
@@ -46,6 +48,7 @@
     (put a Int.len 1)
     (call trim a))
 
+  ;; Whether a is zero.
   (fn is_zero [a:(ptr Int)] -> bool (pub) (eq (get a Int.len) 0))
 
   ;; The number of 32-bit limbs in |a| (0 for zero).
@@ -169,7 +172,9 @@
     (req (gt m -2147483648))
     (call add_mul_small a b (- 0 m)))
 
+  ;; a = a + b.
   (fn add [a:(ptr Int) b:(ptr Int)] -> void (pub) (call add_mul_small a b 1))
+  ;; a = a - b.
   (fn sub [a:(ptr Int) b:(ptr Int)] -> void (pub) (call add_mul_small a b -1))
 
   ;; a = a * m (|m| < 2^31)

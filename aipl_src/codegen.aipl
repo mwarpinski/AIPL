@@ -790,13 +790,13 @@
            (ptr.null Desc)
            (call result_side cg (call desc (call nth_child (get (call func_entry_ptr cg fidx) FnInfo.node) 4) false) side)))
       ((eq kw Kw.call_ref) (call result_side cg (call desc (call nth_child (call nth_child node 1) 3) false) side))
-      ((eq kw Kw.if) (call result_side cg (call desc (call nth_child node 2) true) side))
+      ((eq kw Kw.if) (call result_side cg (call desc (call if_typed cg node) true) side))
       ((eq kw Kw.block) (call result_side cg (call desc (call last_of (call node_next (call first_child node))) true) side))
       ((eq kw Kw.cond)
-       (call result_side cg (call desc (call last_of (call node_next (call first_child (call nth_child node 1)))) true) side))
-      ((eq kw Kw.match) (call result_side cg (call desc (call last_of (call arm_body (call nth_child node 2))) true) side))
+       (call result_side cg (call desc (call last_of (call cond_typed cg node)) true) side))
+      ((eq kw Kw.match) (call result_side cg (call desc (call last_of (call match_typed cg node)) true) side))
       ((eq kw Kw.match_result)
-       (call result_side cg (call desc (call last_of (call node_next (call node_next (call first_child (call nth_child node 2))))) true) side))
+       (call result_side cg (call desc (call last_of (call mr_typed cg node)) true) side))
       (else (ptr.null Desc))))
 
   ;; Types each match_result binder as its payload (wasm.rs binder_types),
@@ -1021,6 +1021,11 @@
     (let ls:(ptr Lines) (get o Out.lines))
     (if (and (neq ls (ptr.null Lines)) (call traps_or_calls code)) (call mark ls (get o Out.pos)) (block))
     (call put_byte o code))
+
+  ;; Whether fi is a printer formatting generates: its name starts with
+  ;; show.debug. (formats.rs debug_functions).
+  (fn is_debug_fn [cg:(ptr Cg) fi:(ptr FnInfo)] -> bool
+    (unsafe (call str.starts_with (call str.bytes (+ (get cg Cg.src) (get fi FnInfo.name_pos)) (get fi FnInfo.name_len)) (call str.from_str "show.debug."))))
 
   (fn mark [ls:(ptr Lines) at:i32] -> void
     (let stack:(ptr (vec.Vec i32)) (get ls Lines.at))
@@ -1577,10 +1582,10 @@
           (if (eq kw Kw.loop) (set! res true) (block))
           (if (eq kw Kw.while) (set! res true) (block))
           (if (eq kw Kw.struct) (set! res true) (block))
-          (if (eq kw Kw.match_result) (set! res (call is_void_node cg (call last_child (call nth_child node 2)))) (block))
+          (if (eq kw Kw.match_result) (set! res (call is_void_node cg (call last_of (call mr_typed cg node)))) (block))
           (if (eq kw Kw.match)
               (block
-                (let last:(ptr compiler.Node) (call last_of (call arm_body (call nth_child node 2))))
+                (let last:(ptr compiler.Node) (call last_of (call match_typed cg node)))
                 (set! res (or (eq last (ptr.null compiler.Node)) (call is_void_node cg last))))
               (block))
           ;; an empty (block) is void, like Expr::Block([]) in wasm.rs
@@ -2140,6 +2145,85 @@
     (let b:(ptr compiler.Node) (call node_next (call first_child arm)))
     (if (eq (call node_kind b) compiler.Kind.bracket) (call node_next b) b))
 
+  ;; Whether node n always leaves its branch: a return, break, or continue,
+  ;; a block ending in one, or an if whose branches both do (checker.rs
+  ;; diverges). Such a branch takes the other branches' type.
+  (fn diverges_node [cg:(ptr Cg) n:(ptr compiler.Node)] -> bool
+    (if (or (eq n (ptr.null compiler.Node)) (neq (call node_kind n) compiler.Kind.paren)) (return false) (block))
+    (let kw:Kw (call group_head_keyword cg n))
+    (cond
+      ((call is_jump kw) true)
+      ((eq kw Kw.block) (call body_diverges_node cg (call node_next (call first_child n))))
+      ((eq kw Kw.if) (and (call diverges_node cg (call nth_child n 2)) (call diverges_node cg (call nth_child n 3))))
+      (else false)))
+
+  ;; Whether the body starting at `first` ends in an expression that always leaves.
+  (fn body_diverges_node [cg:(ptr Cg) first:(ptr compiler.Node)] -> bool
+    (call diverges_node cg (call last_of first)))
+
+  ;; Whether node n ends in a jump of its own (checker.rs ends_in_jump).
+  (fn ends_jump_node [cg:(ptr Cg) n:(ptr compiler.Node)] -> bool
+    (if (or (eq n (ptr.null compiler.Node)) (neq (call node_kind n) compiler.Kind.paren)) (return false) (block))
+    (let kw:Kw (call group_head_keyword cg n))
+    (cond
+      ((call is_jump kw) true)
+      ((eq kw Kw.block) (call ends_jump_node cg (call last_of (call node_next (call first_child n)))))
+      (else false)))
+
+  ;; After a branch whose value a block wants: unreachable if it always
+  ;; leaves without a jump of its own (wasm.rs seal).
+  (fn seal_node [cg:(ptr Cg) n:(ptr compiler.Node) valued:bool o:(ptr Out)] -> void
+    (if (and valued (and (call diverges_node cg n) (not (call ends_jump_node cg n)))) (call put_op o OP_UNREACHABLE) (block)))
+  (fn seal_body [cg:(ptr Cg) first:(ptr compiler.Node) valued:bool o:(ptr Out)] -> void
+    (call seal_node cg (call last_of first) valued o))
+
+  ;; Whether every clause from this one on always leaves (the nested if
+  ;; src/parser.rs makes there diverges).
+  (fn clauses_diverge [cg:(ptr Cg) from:(ptr compiler.Node)] -> bool
+    (let clause:(ptr compiler.Node) from)
+    (while (neq clause (ptr.null compiler.Node))
+      (let b:(ptr compiler.Node) (call node_next (call first_child clause)))
+      (if (call is_else_clause cg clause) (return (call body_diverges_node cg b)) (block))
+      (if (not (call body_diverges_node cg b)) (return false) (block))
+      (set! clause (call node_next clause)))
+    false)
+
+  ;; The branch of an if whose type is the if's: then, unless it always leaves.
+  (fn if_typed [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let t:(ptr compiler.Node) (call nth_child node 2))
+    (if (call diverges_node cg t) (call nth_child node 3) t))
+
+  ;; The body (its first expression) whose type is a cond's: the first
+  ;; clause's that does not always leave, else the last clause's (the nested
+  ;; ifs src/parser.rs makes of it, typed as wasm.rs types them).
+  (fn cond_typed [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (call clause_typed cg (call nth_child node 1)))
+
+  ;; The same from one clause on: the nested if made at that clause.
+  (fn clause_typed [cg:(ptr Cg) from:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let clause:(ptr compiler.Node) from)
+    (let last:(ptr compiler.Node) (ptr.null compiler.Node))
+    (while (neq clause (ptr.null compiler.Node))
+      (let b:(ptr compiler.Node) (call node_next (call first_child clause)))
+      (if (not (call body_diverges_node cg b)) (return b) (block))
+      (set! last b)
+      (set! clause (call node_next clause)))
+    last)
+
+  ;; The arm body whose type is a match's: the first that does not always
+  ;; leave, else the first (wasm.rs match_type_body).
+  (fn match_typed [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let arm:(ptr compiler.Node) (call nth_child node 2))
+    (while (neq arm (ptr.null compiler.Node))
+      (if (not (call body_diverges_node cg (call arm_body arm))) (return (call arm_body arm)) (block))
+      (set! arm (call node_next arm)))
+    (call arm_body (call nth_child node 2)))
+
+  ;; The arm body whose type is a match_result's: ok's, unless it always leaves.
+  (fn mr_typed [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr compiler.Node)
+    (let ok:(ptr compiler.Node) (call node_next (call node_next (call first_child (call nth_child node 2)))))
+    (if (call body_diverges_node cg ok) (call node_next (call node_next (call first_child (call nth_child node 3)))) ok))
+
   ;; The last of a list of nodes starting at `first` (null if empty).
   (fn last_of [first:(ptr compiler.Node)] -> (ptr compiler.Node)
     (if (eq first (ptr.null compiler.Node)) (return first) (block))
@@ -2600,9 +2684,11 @@
     found)
 
   ;; Where a result cell keeps a payload of type t (checker.rs
-  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit, else at 4
-  ;; in an 8-byte one. A result payload is its cell's address, an i32.
-  (fn payload_offset [t:Ty] -> i32 (if (or (eq t Ty.i64) (eq t Ty.f64)) 8 4))
+  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit (i64, f64,
+  ;; or a pointer or array: an address, then a generation), else at 4 in an
+  ;; 8-byte one. A result payload is its cell's address, an i32.
+  (fn payload_offset [t:Ty] -> i32
+    (if (or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8 4))
 
   ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
   ;; evaluating the payload, store the tag, then the payload.
@@ -2689,14 +2775,12 @@
     ;; return, break, continue are statements
     (if (call is_jump kw) (set! res Ty.void) (block))
     ;; cond: the type of its first clause's body (the desugared if's then branch)
-    (if (eq kw Kw.cond) (set! res (call body_type cg (call node_next (call first_child (call nth_child node 1))))) (block))
-    (if (eq kw Kw.if) (set! res (call node_type cg (call nth_child node 2))) (block))
+    (if (eq kw Kw.cond) (set! res (call body_type cg (call cond_typed cg node))) (block))
+    (if (eq kw Kw.if) (set! res (call node_type cg (call if_typed cg node))) (block))
     (if (eq kw Kw.block) (set! res (call body_type cg (call node_next (call first_child node)))) (block))
-    (if (eq kw Kw.match_result)
-        (set! res (call body_type cg (call node_next (call node_next (call first_child (call nth_child node 2))))))
-        (block))
+    (if (eq kw Kw.match_result) (set! res (call body_type cg (call mr_typed cg node))) (block))
     ;; match: its first arm's type (wasm.rs match_type_body); make: a union
-    (if (eq kw Kw.match) (set! res (call body_type cg (call arm_body (call nth_child node 2)))) (block))
+    (if (eq kw Kw.match) (set! res (call body_type cg (call match_typed cg node))) (block))
     ;; make: a union, or a value struct (with: one too)
     (if (eq kw Kw.make) (set! res (if (neq (call make_struct cg node) (ptr.null StructInfo)) Ty.value Ty.union)) (block))
     (if (eq kw Kw.with) (set! res Ty.value) (block))
@@ -2778,11 +2862,11 @@
     (if (neq kind compiler.Kind.paren) (return (ptr.null StructInfo)) (block))
     (let kw:Kw (call group_head_keyword cg node))
     (cond
-      ((eq kw Kw.if) (call node_struct cg (call nth_child node 2)))
+      ((eq kw Kw.if) (call node_struct cg (call if_typed cg node)))
       ((eq kw Kw.block) (call body_struct cg (call node_next (call first_child node))))
-      ((eq kw Kw.cond) (call body_struct cg (call node_next (call first_child (call nth_child node 1)))))
-      ((eq kw Kw.match_result) (call body_struct cg (call node_next (call node_next (call first_child (call nth_child node 2))))))
-      ((eq kw Kw.match) (call body_struct cg (call arm_body (call nth_child node 2))))
+      ((eq kw Kw.cond) (call body_struct cg (call cond_typed cg node)))
+      ((eq kw Kw.match_result) (call body_struct cg (call mr_typed cg node)))
+      ((eq kw Kw.match) (call body_struct cg (call match_typed cg node)))
       ((eq kw Kw.make) (call make_struct cg node))
       ((or (eq kw Kw.ok) (eq kw Kw.err)) (call result_info cg (call desc node true)))
       ((eq kw Kw.with) (call ref_struct cg (call nth_child node 2)))
@@ -2924,8 +3008,8 @@
     (let kw:Kw (call group_head_keyword cg node))
     (cond
       ((eq kw Kw.if)
-       (let v:bool (call is_value_node cg (call nth_child node 2)))
-       (if (and v (not into)) (call add_group cg node false (call node_struct cg (call nth_child node 2))) (block))
+       (let v:bool (call is_value_node cg (call if_typed cg node)))
+       (if (and v (not into)) (call add_group cg node false (call node_struct cg (call if_typed cg node))) (block))
        (call groups_walk cg (call nth_child node 1) false)
        (call groups_walk cg (call nth_child node 2) v)
        (call groups_walk cg (call nth_child node 3) v))
@@ -3386,7 +3470,7 @@
           (call emit_local_get o scratch)
           (call emit_memop o OP_I32_LOAD 2)))
     (call put_op o OP_I32_EQZ)
-    (let ok_last:(ptr compiler.Node) (call last_child ok_group))
+    (let ok_last:(ptr compiler.Node) (call last_of (call mr_typed cg node)))
     (let is_void:bool (call is_void_node cg ok_last))
     (let block_ty:i32 64)
     (if (or is_void (gte dest 0)) (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg ok_last))))
@@ -3396,11 +3480,13 @@
         (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
         (call emit_load_binder cg o (call nth_child ok_group 1) ok_ty (call desc_struct cg ok_side)))
     (call compile_arm_seq cg (call node_next (call node_next (call first_child ok_group))) dest o)
+    (call seal_body cg (call node_next (call node_next (call first_child ok_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call put_op o OP_ELSE)
     (if (neq rvs (ptr.null StructInfo))
         (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
         (call emit_load_binder cg o (call nth_child err_group 1) err_ty (call desc_struct cg err_side)))
     (call compile_arm_seq cg (call node_next (call node_next (call first_child err_group))) dest o)
+    (call seal_body cg (call node_next (call node_next (call first_child err_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call label_pop cg)
     (call put_op o OP_END))
 
@@ -3585,7 +3671,7 @@
   (fn compile_match [cg:(ptr Cg) node:(ptr compiler.Node) dest:i32 o:(ptr Out)] -> void
     (let scratch:i32 (get cg Cg.scratch))
     (let first_arm:(ptr compiler.Node) (call nth_child node 2))
-    (let last:(ptr compiler.Node) (call last_of (call arm_body first_arm)))
+    (let last:(ptr compiler.Node) (call last_of (call match_typed cg node)))
     (let block_ty:i32 BLOCK_EMPTY)
     (if (or (or (eq last (ptr.null compiler.Node)) (gte dest 0)) (call is_void_node cg last))
         (block)
@@ -3652,7 +3738,7 @@
     (cond
       ((gte dest 0) (call compile_body_into cg first dest o))
       ((eq block_ty BLOCK_EMPTY) (call compile_all_stmts cg first o))
-      (else (call compile_stmt_seq cg first o))))
+      (else (call compile_stmt_seq cg first o) (call seal_body cg first true o))))
 
   ;; The address of runtime cell `cell` (64-87): the cell itself, or in a
   ;; threaded module the same offset in this thread's block (global 0).
@@ -4544,14 +4630,17 @@
     (let then_node:(ptr compiler.Node) (call nth_child node 2))
     (let else_node:(ptr compiler.Node) (call nth_child node 3))
     (call compile_expr cg cond_node o)
-    (let void_then:bool (call is_void_node cg then_node))
+    ;; the block's type is the branch's that does not always leave
+    (let typed:(ptr compiler.Node) (call if_typed cg node))
     (let block_ty:i32 64)
-    (if void_then (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg then_node))))
+    (if (call is_void_node cg typed) (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg typed))))
     (call put_op o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
     (call compile_expr cg then_node o)
+    (call seal_node cg then_node (neq block_ty 64) o)
     (call put_op o OP_ELSE)
     (call compile_expr cg else_node o)
+    (call seal_node cg else_node (neq block_ty 64) o)
     (call label_pop cg)
     (call put_op o OP_END))
 
@@ -4851,15 +4940,23 @@
     (let body_first:(ptr compiler.Node) (call node_next head))
     (call compile_expr cg head o)
     (let bt:i32 64)
-    (if (call is_void_node cg (call last_child clause))
+    (let typed:(ptr compiler.Node) (call clause_typed cg clause))
+    (if (call is_void_node cg (call last_of typed))
         (block)
-        (set! bt (call block_type_byte (call body_type cg body_first))))
+        (set! bt (call block_type_byte (call body_type cg typed))))
     (call put_op o OP_IF)
     (call put_byte o bt)
     (call label_push cg Label.if_else)
     (call compile_stmt_seq cg body_first o)
+    (call seal_body cg body_first (neq bt 64) o)
     (call put_op o OP_ELSE)
-    (call compile_cond_from cg (call node_next clause) o)
+    (let rest:(ptr compiler.Node) (call node_next clause))
+    (call compile_cond_from cg rest o)
+    (if (and (neq bt 64) (neq rest (ptr.null compiler.Node)))
+        (if (call is_else_clause cg rest)
+            (call seal_body cg (call node_next (call first_child rest)) true o)
+            (if (call clauses_diverge cg rest) (call put_op o OP_UNREACHABLE) (block)))
+        (block))
     (call label_pop cg)
     (call put_op o OP_END)
     (call at_pop o))
@@ -5253,6 +5350,11 @@
   (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32 (pub)
     (call compile_at src_ptr src_len (call places.mapped gen orig)))
 
+  ;; The same for a program whose formatting forms were lowered (low maps
+  ;; the lowered text back to the program the generics pass printed).
+  (fn compile_lowered [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins)] -> i32 (pub)
+    (call compile_at src_ptr src_len (call places.lowered gen orig low)))
+
   (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
     (unsafe (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
@@ -5480,13 +5582,18 @@
     (let fn_lines:(ptr (vec.Vec (ptr FnLines))) (call (vec.make (ptr FnLines)) (call alloc.default) (+ nfns 1)))
     (loop f 0 (- nfns 1) 1
       (let fc:(ptr Out) (call out_at fcode_scratch))
-      (put fc Out.lines (call new_lines (get cg Cg.places)))
+      ;; a printer formatting generates (show.debug.*) has no positions (wasm.rs Body.quiet)
+      (let quiet:bool (call is_debug_fn cg (call func_entry_ptr cg f)))
+      (put fc Out.lines (if quiet (ptr.null Lines) (call new_lines (get cg Cg.places))))
       (call at_push fc (get (get (call func_entry_ptr cg f) FnInfo.node) compiler.Node.pos))
       (call emit_function cg (call func_entry_ptr cg f) fc)
-      (let fl:(ptr FnLines) (new FnLines))
-      (put fl FnLines.index (+ imports f))
-      (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
-      (if (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl) (block))
+      (if (not quiet)
+          (block
+            (let fl:(ptr FnLines) (new FnLines))
+            (put fl FnLines.index (+ imports f))
+            (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
+            (if (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl) (block)))
+          (block))
       (if (gt (get fc Out.pos) cap) (call set_compile_error CgErr.output_full) 0)
       (call emit_sized sec fc))
     (if threaded

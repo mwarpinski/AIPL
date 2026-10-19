@@ -106,6 +106,18 @@ impl Sx {
         }
     }
 
+    /// Where the first `(name ...)` form in this one is (itself included),
+    /// not looking inside `[...]` lists, which hold no expressions.
+    pub fn find_head(&self, name: &str) -> Option<(u32, u32)> {
+        if !self.is_paren() {
+            return None;
+        }
+        if self.head() == Some(name) {
+            return Some(self.position());
+        }
+        self.items().iter().find_map(|i| i.find_head(name))
+    }
+
     /// A symbol atom with `text` at the position of `at`.
     pub fn symbol_at(text: String, at: &Sx) -> Sx {
         let (line, col) = at.position();

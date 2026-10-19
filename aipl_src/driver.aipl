@@ -21,6 +21,8 @@
   (import io)
   (import str)
   (import fmt)
+  (import vec)
+  (import fmtlower)
 
   ;; status 0: the wasm module is at (addr, len)
   ;; status 1: import resolution failed; the message is at (addr, len)
@@ -33,13 +35,24 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false))
+
+  ;; compile_file for the file's test build (resolver.rs resolve_tests): its
+  ;; (test ...) items as functions, and a _start running the one its first
+  ;; argument names.
+  (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true))
+
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool] -> (ptr Out)
     (unsafe (let res:(ptr Out) (new Out))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
     (let gen:(ptr origins.Origins) (call origins.make))
     (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-    (if (not (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))
+    (if (not (if tests
+                 (call resolver.flatten_tests_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)
+                 (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)))
         (block (call put_text res 1 err) (return res))
         (block))
     ;; every template checked once, at placeholders for its type parameters
@@ -61,11 +74,19 @@
         (block (call put_text res 1 err) (return res))
         (block))
     (let flat:(ptr str.Bytes) (call buf.bytes out))
-    (let problem:(ptr checker.Problem) (call front.check (get flat str.Bytes.addr) (get flat str.Bytes.len)))
+    (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
+    (let problem:(ptr checker.Problem) (call front.check_formats (get flat str.Bytes.addr) (get flat str.Bytes.len) fmts))
     (if (neq problem (ptr.null checker.Problem))
         (block (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
         (block))
-    (let n:i32 (call codegen.compile_mapped (get flat str.Bytes.addr) (get flat str.Bytes.len) gen orig))
+    ;; the formatting forms become std/show calls (fmtlower.aipl)
+    (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
+    (let low:(ptr origins.Origins) (call origins.make))
+    (let n:i32 (if (call fmtlower.lower (get flat str.Bytes.addr) (get flat str.Bytes.len) fmts lowered low)
+                   (block
+                     (let lt:(ptr str.Bytes) (call buf.bytes lowered))
+                     (call codegen.compile_lowered (get lt str.Bytes.addr) (get lt str.Bytes.len) gen orig low))
+                   (call codegen.compile_mapped (get flat str.Bytes.addr) (get flat str.Bytes.len) gen orig)))
     (if (gt n 0)
         (block
           (put res Out.status 0)

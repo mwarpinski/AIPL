@@ -1,0 +1,41 @@
+;; (dbg e) in every backend and both toolchains (tests/test_dbg.rs): each
+;; prints FILE:LINE:COL: e = value to standard error and gives the value.
+(module main
+  (import lib)
+  (import str)
+  (import option)
+  (struct P [x:i32])
+  (struct V [a:i32 b:f64] (value))
+  (enum Shade [light dark])
+
+  (fn parse [s:str] -> (result i32 str)
+    (let n:i32 (dbg (str.len s)))
+    (if (eq n 0) (err:i32 "empty") (ok:str n)))
+
+  (fn twice_parsed [s:str] -> (result i32 str)
+    (let n:i32 (try (dbg (call parse s))))
+    (ok:str (* n 2)))
+
+  (fn main [] -> i32
+    (let a:i32 (dbg (* 6 7)))
+    (let b:i64 (dbg 5000000000i64))
+    (let c:f32 (dbg 0.1f32))
+    (let d:bool (dbg (lt a 50)))
+    (let e:str (dbg "tab\there"))
+    (let f:Shade (dbg Shade.dark))
+    (let g:(ptr str.Bytes) (dbg (call str.from_str "bytes")))
+    (let h:(arr i32) (dbg (arr.new i32 3)))
+    (let v:V (dbg (make V 1 2.5)))
+    (let o:(option.Option i32) (dbg (make (option.Option i32) some 9)))
+    ;; nested, over two lines, with a comment
+    (let n:i32 (dbg (+ (dbg a)   ;; the inner one first
+                       1)))
+    (let half:i32 (call lib.half 9))
+    (let w:f64 (call (lib.twice f64) 1.5))
+    (match_result (call twice_parsed "abc")
+      (ok k (block (let k1:i32 (dbg (+ k 1))) (println "twice: {k} {k1}")))
+      (err m (println "error: {m}")))
+    (let p:(ptr P) (new P))
+    (put p P.x (dbg (get p P.x)))
+    (println "{a} {b} {c} {d} {e} {f} {g} {n} {half} {w}")
+    (arr.len h)))

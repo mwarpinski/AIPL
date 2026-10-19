@@ -1,0 +1,20 @@
+Viewed main.rs:160-240
+
+You actually have two great ways to get an ARM64 / macOS binary **without buying a Mac**:
+
+### 1. Immediate Way (Works Today): The `AIPLEXE1` Wasm-Launcher Bundle + GitHub Actions
+Look at [`src/main.rs:217-236`](file:///home/matt/Projects/Repos/AIPL/src/main.rs#L217-L236)—AIPL already has a second standalone executable format built in:
+- On platforms without a native machine-code backend, `aipl compile --exe --target wasm` takes the `aipl-run` binary (which embeds Wasmtime), appends the compiled `.wasm` bytecode to the end of the file, and tacks on a 16-byte `AIPLEXE1` footer.
+- When executed, the binary sees the `AIPLEXE1` footer at the end of itself and runs the embedded `.wasm` payload directly at near-native speed via Wasmtime's AArch64 Cranelift JIT.
+- **How to build it without a Mac:**
+  - GitHub Actions gives you free **`macos-14` (Apple Silicon M1 ARM64)** and **`ubuntu-24.04-arm` (Linux ARM64)** runners. A 15-line `.github/workflows/release.yml` can build `aipl-darwin-arm64` and `aipl-linux-arm64` automatically on every push.
+
+### 2. The "Pure AIPL" Way: Adding an ARM64 (`aarch64`) Backend to `aipl_src/native/`
+Because [`aipl_src/native/`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/native.aipl) compiles **WebAssembly $\to$ machine code** (instead of lowering the AIPL AST), adding native ARM64 is surprisingly clean:
+- [`wasm_reader.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/wasm_reader.aipl) (100% of the Wasm parser and validation) stays **completely unchanged**.
+- **ARM64 instruction encoding (`arm64_emit.aipl`) is actually simpler than [`x64_emit.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/x64_emit.aipl):**
+  - Every ARM64 instruction is a fixed 32-bit `i32` word (no variable-length REX/ModRM/SIB bytes like x86-64).
+  - ARM64 has 31 general-purpose registers (`x0..x30`) and 32 float registers (`v0..v31`), so the virtual-stack cache in [`lower.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/native/lower.aipl) never even has to spill in normal functions.
+  - Even integer division on ARM64 (`sdiv` / `udiv`) doesn't trap on `INT_MIN / -1` or `/ 0`,unlike x86-64 `idiv`!
+- **And you can test Linux ARM64 right on this Linux x86-64 machine:**
+  - With `qemu-aarch64` (user-mode emulation) installed on Linux x86-64, your machine can directly execute native Linux ARM64 ELF binaries (`./aipl-linux-arm64`) as if they were native x86-64 binaries!

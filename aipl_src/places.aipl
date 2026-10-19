@@ -13,10 +13,12 @@
   ;; (worked out on first use).
   (struct Text [name:(ptr str.Bytes) text:(ptr str.Bytes) starts:(ptr (vec.Vec i32))])
 
-  ;; consts: consts.aipl's reprinting (no entries: unchanged). gen and orig:
+  ;; consts: consts.aipl's reprinting (no entries: unchanged). low: the
+  ;; formatting forms' lowering (fmtlower.aipl; null when there were none).
+  ;; gen and orig:
   ;; the generics pass's and the resolver's (null for one file's text, which
   ;; is `flat`). files: orig's files, in its order.
-  (struct Places [(read consts:(ptr origins.Origins)) gen:(ptr origins.Origins) orig:(ptr origins.Origins)
+  (struct Places [(read consts:(ptr origins.Origins)) low:(ptr origins.Origins) gen:(ptr origins.Origins) orig:(ptr origins.Origins)
                   flat:(ptr Text) files:(ptr (vec.Vec (ptr Text))) file:i32] (pub))
 
   ;; A resolved position.
@@ -33,6 +35,7 @@
   (fn single [name:(ptr str.Bytes) text:(ptr str.Bytes)] -> (ptr Places) (pub)
     (let p:(ptr Places) (new Places))
     (put p Places.consts (call origins.make))
+    (put p Places.low (ptr.null origins.Origins))
     (put p Places.gen (ptr.null origins.Origins))
     (put p Places.orig (ptr.null origins.Origins))
     (put p Places.flat (call text_of name text))
@@ -51,6 +54,12 @@
       (call (vec.push (ptr Text)) (get p Places.files) (call text_of (get f origins.File.name) (get f origins.File.text))))
     p)
 
+  ;; The same, through the formatting forms' lowering first.
+  (fn lowered [gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins)] -> (ptr Places) (pub)
+    (let p:(ptr Places) (call mapped gen orig))
+    (put p Places.low low)
+    p)
+
   ;; An offset back through one pass's reprinting: the original offset of the
   ;; token printed at or before it, or the offset unchanged when the pass
   ;; printed nothing. Sets p's file to the entry's file (-1: the pass's input).
@@ -65,6 +74,7 @@
   ;; The place of offset `at` in the code generator's text.
   (fn place [p:(ptr Places) at:i32] -> (ptr Place) (pub)
     (let pos:i32 (call back p (get p Places.consts) at))
+    (if (neq (get p Places.low) (ptr.null origins.Origins)) (set! pos (call back p (get p Places.low) pos)) (block))
     (let t:(ptr Text) (get p Places.flat))
     (if (neq (get p Places.orig) (ptr.null origins.Origins))
         (block

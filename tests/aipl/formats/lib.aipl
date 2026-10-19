@@ -1,0 +1,10 @@
+;; A module whose format strings name its own private function, constant,
+;; and struct: the resolver renames them like the rest of the module.
+(module lib
+  (const MAX:i32 7)
+  (struct P [x:i32])
+  (fn helper [n:i32] -> i32 (* n 2))
+  (fn report [n:i32] -> void (pub)
+    (let p:(ptr P) (new P))
+    (put p P.x 5)
+    (println "lib: {(call helper n)} {MAX} {(get p P.x)}")))

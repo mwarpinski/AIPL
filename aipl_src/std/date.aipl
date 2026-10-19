@@ -25,9 +25,11 @@
   (const END:i64 253402300800i64)
   (const NS:i64 1000000000i64)
 
+  ;; Whether year is a leap year (Gregorian).
   (fn is_leap [year:i32] -> bool (pub)
     (and (eq (% year 4) 0) (or (neq (% year 100) 0) (eq (% year 400) 0))))
 
+  ;; The number of days in month (1-12) of year.
   (fn days_in_month [year:i32 month:i32] -> i32 (pub)
     (req (and (gte month 1) (lte month 12)))
     (cond
@@ -45,6 +47,7 @@
                              (and (and (gte second 0) (lte second 59))
                                   (and (gte nano 0) (lte nano 999999999)))))))))
 
+  ;; The date and time given, which must be valid (see valid).
   (fn make [year:i32 month:i32 day:i32 hour:i32 minute:i32 second:i32 nano:i32] -> Date (pub)
     (req (call valid year month day hour minute second nano))
     (make Date year month day hour minute second nano))
@@ -125,6 +128,7 @@
   (fn add_seconds [d:Date secs:i64] -> Date (pub)
     (call from_unix_parts (+ (call to_unix d) secs) (get d Date.nano)))
 
+  ;; d moved by `days` days (negative goes back).
   (fn add_days [d:Date days:i32] -> Date (pub)
     (call add_seconds d (* (i64.extend_s days) 86400i64)))
 

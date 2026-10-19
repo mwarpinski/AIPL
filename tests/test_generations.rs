@@ -5,7 +5,8 @@
 //! array, a heap, an arena, a fast arena (only once the memory is reused),
 //! and a std/alloc allocator. Versioned loops (checks once per loop) fail
 //! exactly where the unversioned loop would, and not where it would not.
-//! An unchecked pointer (ptr.cast) is not checked.
+//! An unchecked pointer (ptr.cast) is not checked, and a pointer in a
+//! result cell does not spill onto the next object.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -215,6 +216,26 @@ fn an_unchecked_pointer_is_not_checked() {
     (call (heap.destroy P) h p)
     (call io.println_int \"x: \" (get raw P.x))",
         "x: -559038737\n",
+        "",
+    );
+}
+
+/// A result cell holding a pointer is 16 bytes, the pointer (address, then
+/// generation) at 8: in an 8-byte cell, the pointer's generation landed on
+/// the generation word of the object allocated next, and a correct program
+/// stopped with "Use after free" when compiled (the VM was right).
+#[test]
+fn a_pointer_in_a_result_cell_stays_in_its_cell() {
+    assert_runs(
+        "result_cell",
+        "    (let a:alloc.Allocator (call alloc.default))
+    (let _warm:(ptr P) (call (alloc.create P) a))
+    (let inner:(ptr P) (ptr.null P))
+    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (call (alloc.create P) a)) (set! inner (new P)) q)))
+    (put inner P.x 5)
+    (call io.println_int \"x: \" (get inner P.x))
+    (match_result r (ok q (call io.println_int \"q: \" (get q P.x))) (err _e (block)))",
+        "x: 5\nq: 0\n",
         "",
     );
 }

@@ -787,8 +787,9 @@ fn p8_structs_and_arrays() {
     // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
     // the 4-byte block.
     assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
-    // result cell at 1032, the array's 8-byte prefix at 1040, array at 1048
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1048)));
+    // result cell at 1032 (16 bytes: an array is 8, its address and
+    // generation, at 8), the array's 8-byte prefix at 1048, array at 1056
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1056)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());

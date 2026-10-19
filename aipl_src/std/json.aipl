@@ -25,6 +25,8 @@
   (import float)
   (import bigint)
 
+  ;; A JSON value: null, a boolean, a number, text, a list, or an object
+  ;; (its members in the order written).
   (union Value [(null) (boolean b:bool) (number n:f64) (text s:(ptr str.Bytes))
                 (list items:(ptr (vec.Vec Value))) (object fields:(ptr (vec.Vec (ptr Field))))] (pub))
 
@@ -34,6 +36,7 @@
   ;; Where parsing stopped (a byte offset in the text) and why.
   (struct Error [(read at:i32) (read what:str)] (pub))
 
+  ;; A member for building an object: key and value.
   (fn field [a:alloc.Allocator key:(ptr str.Bytes) value:Value] -> (ptr Field) (pub)
     (let f:(ptr Field) (call (alloc.create Field) a))
     (put f Field.key key)
@@ -72,6 +75,8 @@
 
   (struct P [text:(ptr str.Bytes) pos:i32 a:alloc.Allocator depth:i32 err:(ptr Error)])
 
+  ;; Parses text as JSON (strict RFC 8259), or says where and why it is
+  ;; not JSON.
   (fn parse [a:alloc.Allocator text:(ptr str.Bytes)] -> (result Value (ptr Error)) (pub)
     (let p:(ptr P) (new P))
     (put p P.text text)

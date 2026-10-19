@@ -42,6 +42,7 @@
   ;; blocks come from [cur, end).
   (struct Heap [lock:i32 heads:(arr i32) cur:i32 end:i32 nlive:i32 live_bytes:i32 reserved:i32] (pub))
 
+  ;; A new, empty heap.
   (fn make [] -> (ptr Heap) (pub)
     (let h:(ptr Heap) (new Heap))
     (put h Heap.lock 0)
@@ -177,6 +178,8 @@
     (req (gte n 0))
     (unsafe (call (gen.adopt_array T) (call raw h (checked.add 8 (checked.mul n (sizeof T)))) n)))
 
+  ;; Frees a, which array made from h; any copy of a used afterwards stops
+  ;; the program with "Use after free".
   (fn (free_array T) [h:(ptr Heap) a:(arr T)] -> void (pub)
     (unsafe (let n:i32 (+ 8 (* (arr.len a) (sizeof T))))
     (call free_raw h (call (gen.retire_array T) a) n)))

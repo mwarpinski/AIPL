@@ -1,0 +1,206 @@
+;; std/text: the text functions that build something, over byte slices
+;; ((ptr str.Bytes)), with memory from the allocator passed in (free a
+;; vector with vec.free, a buffer with buf.free; the slices in a vector are
+;; views of the input). The ones that only look are in std/str.
+;;
+;;   (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call text.split a line (call str.from_str ",")))
+;;   (let b:(ptr buf.Buf) (call text.replace a s (call str.from_str "cat") (call str.from_str "dog")))
+;;
+;; Splitting works as Python's str.split(sep), str.split(), and Rust's
+;; str::lines do; replace as Python's str.replace.
+(module text
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import float)
+
+  ;; The pieces of b between each sep: "a,,b" gives "a", "", "b"; "" gives
+  ;; one empty piece.
+  (fn split [a:alloc.Allocator b:(ptr str.Bytes) sep:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes))) (pub)
+    (req (gt (get sep str.Bytes.len) 0))
+    (let out:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 8))
+    (let start:i32 0)
+    (let i:i32 (call str.find b sep))
+    (while (gte i 0)
+      (call (vec.push (ptr str.Bytes)) out (call str.slice b start (- i start)))
+      (set! start (+ i (get sep str.Bytes.len)))
+      (set! i (call str.find_from b sep start)))
+    (call (vec.push (ptr str.Bytes)) out (call str.slice b start (- (get b str.Bytes.len) start)))
+    out)
+
+  ;; The runs of non-whitespace in b (ASCII whitespace): "  a b\n" gives "a", "b".
+  (fn fields [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes))) (pub)
+    (let out:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 8))
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 0)
+    (while (lt i n)
+      (while (and (lt i n) (call str.is_space (call str.byte_at b i))) (set! i (+ i 1)))
+      (let s:i32 i)
+      (while (and (lt i n) (not (call str.is_space (call str.byte_at b i)))) (set! i (+ i 1)))
+      (if (gt i s) (call (vec.push (ptr str.Bytes)) out (call str.slice b s (- i s))) (block)))
+    out)
+
+  ;; The lines of b: split at each \n, a \r before it dropped, and no empty
+  ;; line after a final \n ("a\r\nb\n" gives "a", "b"; "" gives none), as
+  ;; Rust's str::lines.
+  (fn lines [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes))) (pub)
+    (let out:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 16))
+    (let n:i32 (get b str.Bytes.len))
+    (let s:i32 0)
+    (loop i 0 (- n 1) 1
+      (if (eq (call str.byte_at b i) 10)
+          (block
+            (let e:i32 (if (and (gt i s) (eq (call str.byte_at b (- i 1)) 13)) (- i 1) i))
+            (call (vec.push (ptr str.Bytes)) out (call str.slice b s (- e s)))
+            (set! s (+ i 1)))
+          (block)))
+    ;; a last line with no \n keeps a \r it ends in, as Rust's str::lines
+    (if (lt s n) (call (vec.push (ptr str.Bytes)) out (call str.slice b s (- n s))) (block))
+    out)
+
+  ;; The parts with sep between each.
+  (fn join [a:alloc.Allocator parts:(ptr (vec.Vec (ptr str.Bytes))) sep:(ptr str.Bytes)] -> (ptr buf.Buf) (pub)
+    (let out:(ptr buf.Buf) (call buf.make a 64))
+    (loop i 0 (- (call (vec.len (ptr str.Bytes)) parts) 1) 1
+      (if (gt i 0) (call buf.push_bytes out sep) (block))
+      (call buf.push_bytes out (call (vec.at (ptr str.Bytes)) parts i)))
+    out)
+
+  ;; b with every `from` replaced by `to`, from the left, not overlapping.
+  (fn replace [a:alloc.Allocator b:(ptr str.Bytes) from:(ptr str.Bytes) to:(ptr str.Bytes)] -> (ptr buf.Buf) (pub)
+    (req (gt (get from str.Bytes.len) 0))
+    (let out:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 16)))
+    (let start:i32 0)
+    (let i:i32 (call str.find b from))
+    (while (gte i 0)
+      (call buf.push_bytes out (call str.slice b start (- i start)))
+      (call buf.push_bytes out to)
+      (set! start (+ i (get from str.Bytes.len)))
+      (set! i (call str.find_from b from start)))
+    (call buf.push_bytes out (call str.slice b start (- (get b str.Bytes.len) start)))
+    out)
+
+  ;; b, n times.
+  (fn repeat [a:alloc.Allocator b:(ptr str.Bytes) n:i32] -> (ptr buf.Buf) (pub)
+    (req (gte n 0))
+    (let out:(ptr buf.Buf) (call buf.make a (+ (* (get b str.Bytes.len) n) 1)))
+    (loop i 1 n 1 (call buf.push_bytes out b))
+    out)
+
+  ;; b with ASCII letters in upper or lower case (other bytes as they are).
+  (fn to_upper [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr buf.Buf) (pub) (call with_case a b true))
+  ;; b with ASCII letters in lower case (other bytes as they are).
+  (fn to_lower [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr buf.Buf) (pub) (call with_case a b false))
+
+  (fn with_case [a:alloc.Allocator b:(ptr str.Bytes) upper:bool] -> (ptr buf.Buf)
+    (let out:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 1)))
+    (loop i 0 (- (get b str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at b i))
+      (call buf.push_byte out
+        (cond ((and upper (and (gte c 97) (lte c 122))) (- c 32))
+              ((and (not upper) (and (gte c 65) (lte c 90))) (+ c 32))
+              (else c))))
+    out)
+
+  ;; b as an f64, exactly rounded: an optional sign, digits with at most
+  ;; one '.', at least one digit, then optionally e or E, a sign, and
+  ;; digits ("12", "-0.5", "1e-3", ".5"); or (err i), the index of the
+  ;; first byte that does not fit (the length when b ends too soon).
+  (fn parse_f64 [b:(ptr str.Bytes)] -> (result f64 i32) (pub)
+    (let n:i32 (get b str.Bytes.len))
+    (let i:i32 0)
+    (if (and (lt i n) (or (eq (call str.byte_at b 0) 45) (eq (call str.byte_at b 0) 43))) (set! i 1) (block))
+    (let digits:i32 0)
+    (let dot:i32 -1)
+    (while (and (lt i n) (or (call digit (call str.byte_at b i)) (and (eq (call str.byte_at b i) 46) (lt dot 0))))
+      (if (eq (call str.byte_at b i) 46) (set! dot i) (set! digits (+ digits 1)))
+      (set! i (+ i 1)))
+    (if (eq digits 0) (return (err:f64 i)) (block))
+    (let exp:i32 -1)
+    (if (and (lt i n) (or (eq (call str.byte_at b i) 101) (eq (call str.byte_at b i) 69)))
+        (block
+          (set! exp i)
+          (set! i (+ i 1))
+          (if (and (lt i n) (or (eq (call str.byte_at b i) 45) (eq (call str.byte_at b i) 43))) (set! i (+ i 1)) (block))
+          (let s:i32 i)
+          (while (and (lt i n) (call digit (call str.byte_at b i))) (set! i (+ i 1)))
+          (if (eq i s) (return (err:f64 i)) (block)))
+        (block))
+    (if (lt i n) (return (err:f64 i)) (block))
+    ;; float.from_decimal reads a literal, which has a '.': add one if needed
+    (let t:(ptr buf.Buf) (call buf.make (call alloc.default) (+ n 4)))
+    (let cut:i32 (if (lt exp 0) n exp))
+    (call buf.push_bytes t (call str.slice b 0 cut))
+    (if (lt dot 0) (call buf.push_str t ".0") (block))
+    (call buf.push_bytes t (call str.slice b cut (- n cut)))
+    (let tb:(ptr str.Bytes) (call buf.bytes t))
+    (let x:f64 (unsafe (call float.from_decimal (get tb str.Bytes.addr) (get tb str.Bytes.len))))
+    (call buf.free t)
+    (ok:i32 x))
+
+  (fn digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
+
+  ;; ===== Tests =====
+
+  (fn pieces_are [v:(ptr (vec.Vec (ptr str.Bytes))) want:str] -> bool
+    ;; want: the pieces joined by '|'
+    (let b:(ptr buf.Buf) (call join (call alloc.default) v (call str.from_str "|")))
+    (call str.is (call buf.bytes b) want))
+
+  (fn buf_is [b:(ptr buf.Buf) want:str] -> bool (call str.is (call buf.bytes b) want))
+
+  ;; Pass count; test_suite.aipl expects 7.
+  (fn run_text_tests [] -> i32 (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let p:i32 0)
+    (let comma:(ptr str.Bytes) (call str.from_str ","))
+    (if (and (call pieces_are (call split a (call str.from_str "a,,b") comma) "a||b")
+             (and (eq (call (vec.len (ptr str.Bytes)) (call split a (call str.from_str "") comma)) 1)
+                  (call pieces_are (call split a (call str.from_str "x=1==y") (call str.from_str "==")) "x=1|y")))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call pieces_are (call fields a (call str.from_str "  one\ttwo \n three ")) "one|two|three")
+             (eq (call (vec.len (ptr str.Bytes)) (call fields a (call str.from_str " \t"))) 0))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call pieces_are (call lines a (call str.from_str "a\r\nb\n\nc")) "a|b||c")
+             (and (eq (call (vec.len (ptr str.Bytes)) (call lines a (call str.from_str "x\n"))) 1)
+                  (eq (call (vec.len (ptr str.Bytes)) (call lines a (call str.from_str ""))) 0)))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call buf_is (call replace a (call str.from_str "aaaa") (call str.from_str "aa") (call str.from_str "b")) "bb")
+             (call buf_is (call replace a (call str.from_str "a cat, a cat") (call str.from_str "cat") (call str.from_str "dog")) "a dog, a dog"))
+        (set! p (+ p 1))
+        (block))
+    (if (and (call buf_is (call repeat a (call str.from_str "ab") 3) "ababab")
+             (and (call buf_is (call to_upper a (call str.from_str "Hi, é!")) "HI, é!")
+                  (call buf_is (call to_lower a (call str.from_str "ABC def")) "abc def")))
+        (set! p (+ p 1))
+        (block))
+    (let ok:bool true)
+    (match_result (call parse_f64 (call str.from_str "12")) (ok x (if (neq x 12.0) (set! ok false) (block))) (err e (set! ok false)))
+    (match_result (call parse_f64 (call str.from_str "-1.5e3")) (ok x (if (neq x -1500.0) (set! ok false) (block))) (err e (set! ok false)))
+    (match_result (call parse_f64 (call str.from_str "0.1")) (ok x (if (neq x 0.1) (set! ok false) (block))) (err e (set! ok false)))
+    (match_result (call parse_f64 (call str.from_str "1e")) (ok x (set! ok false)) (err e (if (neq e 2) (set! ok false) (block))))
+    (match_result (call parse_f64 (call str.from_str "1.2.3")) (ok x (set! ok false)) (err e (if (neq e 3) (set! ok false) (block))))
+    (if ok (set! p (+ p 1)) (block))
+    ;; std/str's searching, trimming, and parsing
+    (let s:(ptr str.Bytes) (call str.from_str "  the cat sat on the mat  "))
+    (let the:(ptr str.Bytes) (call str.from_str "the"))
+    (let long:(ptr buf.Buf) (call repeat a (call str.from_str "ab") 50))
+    (call buf.push_str long "c")
+    (let hay:(ptr buf.Buf) (call repeat a (call str.from_str "ab") 200))
+    (call buf.push_bytes hay (call buf.bytes long))
+    (if (and (eq (call str.find s the) 2)
+             (and (eq (call str.rfind s the) 17)
+                  (and (eq (call str.count s the) 2)
+                       (and (call str.is (call str.trim s) "the cat sat on the mat")
+                            (and (call str.starts_with (call str.trim s) the)
+                                 (and (eq (call str.find (call buf.bytes hay) (call buf.bytes long)) 400)
+                                      (and (eq (call str.rfind (call buf.bytes hay) (call buf.bytes long)) 400)
+                                           (and (call str.eq_ignore_case (call str.from_str "AbC") (call str.from_str "aBc"))
+                                                (eq (call str.cmp (call str.from_str "ab") (call str.from_str "abc")) -1)))))))))
+        (set! p (+ p 1))
+        (block))
+    p))

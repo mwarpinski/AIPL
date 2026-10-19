@@ -10,8 +10,10 @@
   (import cmp)
   (import alloc)
 
+  ;; A growable list of T; len is how many it holds.
   (struct (Vec T) [items:(arr T) (read len:i32) allocator:alloc.Allocator] (pub))
 
+  ;; An empty list with room for `capacity` items, from a.
   (fn (make T) [a:alloc.Allocator capacity:i32] -> (ptr (Vec T)) (pub)
     (req (gte capacity 0))
     (let cap:i32 (if (lt capacity 4) 4 capacity))
@@ -27,6 +29,7 @@
     (call (alloc.free_array T) a (get v (Vec T) items))
     (call (alloc.destroy (Vec T)) a v))
 
+  ;; The number of items in v.
   (fn (len T) [v:(ptr (Vec T))] -> i32 (pub)
     (get v (Vec T) len))
 
@@ -35,6 +38,7 @@
     (req (and (gte i 0) (lt i (get v (Vec T) len))))
     (arr.get T (get v (Vec T) items) i))
 
+  ;; Replaces item i of v (0 <= i < len) with x.
   (fn (set T) [v:(ptr (Vec T)) i:i32 x:T] -> void (pub)
     (req (and (gte i 0) (lt i (get v (Vec T) len))))
     (arr.set T (get v (Vec T) items) i x))
@@ -66,6 +70,7 @@
     (req (and (gte n 0) (lte n (get v (Vec T) len))))
     (put v (Vec T) len n))
 
+  ;; Empties v, keeping its storage.
   (fn (clear T) [v:(ptr (Vec T))] -> void (pub)
     (put v (Vec T) len 0))
 

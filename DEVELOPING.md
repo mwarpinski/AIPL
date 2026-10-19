@@ -37,30 +37,35 @@ and the 2026-10 audit.
 ## How to verify everything
 
 ```bash
-cargo test                                   # 360 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
+cargo test                                   # 388 tests; test_selfhost and test_resolver_aipl take a minute or two each (the self-hosted toolchain runs in the VM)
 cargo run --bin aipl -- test aipl_src/test_suite.aipl   # AIPL-native suite, exit 0 = all groups pass
 cargo run --bin aipl -- compile --self aipl_src/memory.aipl -o /tmp/m.wasm       # Rust vs self-hosted byte parity
 ```
 
-Expected AIPL suite output (30 groups):
+Expected AIPL suite output (35 groups):
 ```
 [PASS] compiler: tokenizer (2 tests)
 [PASS] compiler: parser (2 tests)
 [PASS] codegen: signatures + 3 real wasm modules (4 tests)
 [PASS] memory: allocator + arena
 [PASS] file_io: real disk round-trip
-[PASS] std/str: byte slices, parse_int, UTF-8 (9 tests)
+[PASS] std/str: byte slices, parse_int, UTF-8, making strings (10 tests)
 [PASS] std/fmt: number formatting (14 tests)
 [PASS] resolver: imports in AIPL (3 tests)
 [PASS] std/os: arguments + environment (3 tests)
 [PASS] native/wasm_reader: module structure and bodies (5 tests)
-[PASS] native/x64: instruction encodings vs GNU as (13 tests)
+[PASS] native/x64: instruction encodings vs GNU as (15 tests)
 [PASS] native/elf: executable layout and headers (4 tests)
 [PASS] std/io: file round trip (2 tests)
 [PASS] std/vec: generic list + stable sort (7 tests)
 [PASS] std/map: generic hash map over cmp.Hash keys (9 tests)
-[PASS] std/buf: string builder (3 tests)
+[PASS] std/buf: string builder (4 tests)
 [PASS] std/time: durations and the clock (7 tests)
+[PASS] std/date: UTC dates, ISO 8601 (8 tests)
+[PASS] std/show: values as text, floats as Python's repr (7 tests)
+[PASS] std/text: split, lines, replace, case, parse_f64 (7 tests)
+[PASS] std/utf8: decode, encode, count, whitespace (4 tests)
+[PASS] std/stream: readers and writers over files, memory, and functions (7 tests)
 [PASS] std/arena: typed region allocator (7 tests)
 [PASS] std/heap: general-purpose allocator (8 tests)
 [PASS] std/alloc: any allocator as one value (7 tests)
@@ -68,7 +73,7 @@ Expected AIPL suite output (30 groups):
 [PASS] std/option: Option T, a generic union (7 tests)
 [PASS] std/cmp: Eq, Ord, Hash for built-in types (10 tests)
 [PASS] std/thread: spawn_with, a typed context (2 tests)
-[PASS] std/par: parallel map, no unsafe (4 tests)
+[PASS] std/par: parallel map and reduce, no unsafe (8 tests)
 [PASS] std/fs: directory listing and file information (4 tests)
 [PASS] std/json: parsing and writing JSON (6 tests)
 [PASS] std/float: decimal text to the nearest f64 (14 tests)
