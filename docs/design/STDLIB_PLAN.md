@@ -1,7 +1,7 @@
 # A broader standard library, and string formatting
 
 **Status: approved 2026-10-16, every decision as recommended; L1 built
-2026-10-18; L2 in progress (stream, csv built).** Four choices were made before writing (2026-10-16): formatting
+2026-10-18; L2 in progress (stream, csv, stats built).** Four choices were made before writing (2026-10-16): formatting
 is part of the language, not a library; cryptography stops at hashes and
 HMAC; regular expressions are the guaranteed-linear kind; the work goes in
 batches. At approval, networking was added as batch L7. After a review
@@ -219,6 +219,15 @@ with the compiler's optimizer work rather than in a library batch.
   `histogram`, `covariance`, `correlation`, `linear_fit` (least squares:
   slope, intercept, r²), `zscore`. Checked against Python's `statistics`
   to the last bit where Python is exact.
+
+  As built (2026-10-18): to the last bit everywhere, about 44,000 values
+  over six generated seeds. Python's mean, variance, and stdev round an
+  exact fraction once; here the exact values are expansions (Shewchuk's
+  partials, Dekker's exact products) and the rounding is found by exact
+  sign tests at the midpoints, so no big integers are needed. Python's
+  sumprod is ported from CPython's triple-length accumulation, an exact
+  product standing in for fma. linear_fit adds r2 (the correlation
+  squared).
 - **`set`**: a hash set `(set.Set K)` over std/cmp's `Hash` and `Eq`
   (add, has, remove, count, union, intersection, difference, items).
 - **`random`**: a seeded generator (PCG-32, a value struct, so a seed

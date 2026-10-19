@@ -77,9 +77,16 @@ fn the_aipl_command_matches_the_rust_command() {
 
     // every example, benchmark, and test program, as wasm and as an executable
     let mut paths = Vec::new();
-    for sub in ["examples", "tests/aipl"] {
-        for e in std::fs::read_dir(root().join(sub)).unwrap() {
-            paths.push(e.unwrap().path());
+    // every program below tests/aipl too, a directory per feature
+    let mut dirs = vec![root().join("examples"), root().join("tests/aipl")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() && d != root().join("examples") {
+                dirs.push(p);
+            } else {
+                paths.push(p);
+            }
         }
     }
     for e in std::fs::read_dir(root().join("benchmarks")).unwrap() {
