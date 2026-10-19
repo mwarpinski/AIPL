@@ -125,6 +125,16 @@ more than usual.
 
 ## 3. Claims (every sentence must survive being checked)
 
+- [ ] **Every claim in docs/notes has a checked verdict** (noted
+  2026-10-18). The notes (assessment, final_thoughts, freedom,
+  kernel_notes, painpoints, pitfalls, speed-ups, arm64_build; the .txt
+  originals hold more than the .md versions) are an outside model's
+  review. Readers will point their own models at the repository, so each
+  claim gets a verdict with evidence (a test, a command, file:line): true
+  and fixed, true and open (with an item here), wrong (and what shows
+  it), or by design (and why), all in one document. Started 2026-10-18:
+  freedom.md (the item in section 4) and painpoints.md (the items in
+  sections 2 and 6).
 - [x] **`Cargo.toml`** (fixed 2026-10-06): `authors = ["AI Swarm Team <ai@antigravity.internal>"]`
   must go (use your name); the comment "Only the aipl-run launcher uses
   wasmtime; the compiler does not" is false (the CLI runs the native
