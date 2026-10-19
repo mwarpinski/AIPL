@@ -222,7 +222,7 @@
     (call (push i64) big 5000000000i64)
     (let pts:(ptr (Vec (ptr Point))) (call (make (ptr Point)) (call alloc.default) 0))
     (loop i 0 4 1
-      (let pt:(ptr Point) (new Point))
+      (let pt:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
       (put pt Point.x (- 10 i))
       (call (push (ptr Point)) pts pt))
     (call (sort_by (ptr Point)) pts (ref by_x))
@@ -230,7 +230,7 @@
         (set! p (+ p 1))
         (block))
     ;; a context: positions sorted by the scores they index, highest first
-    (let scores:(arr i32) (arr.new i32 4))
+    (let scores:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
     (arr.set i32 scores 0 30) (arr.set i32 scores 1 90) (arr.set i32 scores 2 10) (arr.set i32 scores 3 50)
     (let idx:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (loop i 0 3 1 (call (push i32) idx i))

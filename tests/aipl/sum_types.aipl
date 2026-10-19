@@ -29,7 +29,7 @@
       (let s:geometry.Shape (call (vec.at geometry.Shape) shapes i))
       (set! total (+ total (+ (call geo.area s) (call sides s)))))
     ;; total: (10 + 4) + (3 + 0) + (0 + 1) = 18
-    (let l:(ptr geo.Labelled) (new geo.Labelled))
+    (let l:(ptr geo.Labelled) (call (alloc.create geo.Labelled) (call alloc.forever)))
     (put l geometry.Labelled.shape (make geo.Shape.rect 3 3))
     (put l geo.Labelled.turn geometry.Turn.back)
     (let p:geo.Path (call geometry.step a 1 2 (call geo.step a 3 4 (make geo.Path.stop))))

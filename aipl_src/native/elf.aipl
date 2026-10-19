@@ -33,7 +33,7 @@
   ;; address; Linux maps nothing for an empty segment).
   (fn layout [data_len:i32 bss:i32] -> (ptr Layout) (pub)
     (req (and (gte data_len 0) (gte bss 0)))
-    (let l:(ptr Layout) (new Layout))
+    (let l:(ptr Layout) (call (alloc.create Layout) (call alloc.forever)))
     (put l Layout.data_vaddr (call data_vaddr))
     (put l Layout.data_offset (call page))
     (put l Layout.code_offset (call align_page (+ (call page) data_len)))

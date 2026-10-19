@@ -457,7 +457,7 @@
     (if (call str.same (call joined (call of_str a "one\ntwo\r\n\nthree")) "one|two||three") (set! p (+ p 1)) (block))
     (if (call str.same (call joined (call of_str a "a\n")) "a") (set! p (+ p 1)) (block))
     ;; a source 3 bytes at a time, lines longer than what it gives
-    (let d:(ptr Drip) (new Drip))
+    (let d:(ptr Drip) (call (alloc.create Drip) (call alloc.forever)))
     (put d Drip.text (call str.from_str "alpha\nbe\r\ngamma delta\r"))
     (put d Drip.at 0)
     (if (call str.same (call joined (call (reader_of (ptr Drip)) a d (ref drip))) "alpha|be|gamma delta\r") (set! p (+ p 1)) (block))
@@ -478,7 +478,7 @@
     (call write_byte w 33)
     (if (and (call close_writer w) (call str.same (call buf.to_str b) "n=42,true!")) (set! p (+ p 1)) (block))
     ;; a custom sink gets 8 KB at a time, and the rest at close
-    (let t:(ptr Tally) (new Tally))
+    (let t:(ptr Tally) (call (alloc.create Tally) (call alloc.forever)))
     (put t Tally.bytes 0)
     (put t Tally.calls 0)
     (let tw:(ptr Writer) (call (writer_of (ptr Tally)) a t (ref tally)))

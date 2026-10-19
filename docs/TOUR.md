@@ -93,10 +93,11 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 ```lisp
 (module tour_structs
+  (import alloc)
   (struct Point [x:i32 y:i32])
 
   (fn make_point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     p)
@@ -109,7 +110,7 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
     sum)
 
   (fn main [] -> i32
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (call (alloc.array (ptr Point)) (call alloc.forever) 3))
     (loop i 0 2 1
       (arr.set (ptr Point) ps i (call make_point i (* i 10))))
     (call total ps)))
@@ -129,13 +130,14 @@ nothing allocated, copied where it goes, never changed in place.
 
 ```lisp
 (module tour_values
+  (import alloc)
   (struct Point [x:i32 y:i32] (value))
 
   (fn shift [p:Point dx:i32] -> Point
     (with p Point.x (+ (get p Point.x) dx)))
 
   (fn main [] -> i32
-    (let ps:(arr Point) (arr.new Point 3))
+    (let ps:(arr Point) (call (alloc.array Point) (call alloc.forever) 3))
     (loop i 0 2 1 (arr.set Point ps i (make Point i (* i 10))))
     (let q:Point (call shift (arr.get Point ps 2) 5))
     (+ (get q Point.x) (arr.get Point ps 1 Point.y))))

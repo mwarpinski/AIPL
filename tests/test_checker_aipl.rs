@@ -369,7 +369,9 @@ const EVERY_FORM: &str = r#"(module every
 
 /// The same source parsed directly by both parsers (no resolver), printed by
 /// both printers: the same text, for the corpus above and for every
-/// repository file Parser::parse accepts (those without constants).
+/// repository file Parser::parse accepts (those without constants or
+/// calls of generic functions, such as alloc.create, which only the
+/// resolver reads).
 #[test]
 fn parsers_agree_on_original_sources() {
     let front = front::load();
@@ -391,7 +393,7 @@ fn parsers_agree_on_original_sources() {
         assert_eq!(ours, theirs, "{name}");
         compared += 1;
     }
-    assert!(compared >= 25, "{compared}");
+    assert!(compared >= 15, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the

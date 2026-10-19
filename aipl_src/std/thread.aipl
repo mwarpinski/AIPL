@@ -47,7 +47,7 @@
     s)
 
   (fn part [from:i32 to:i32] -> (ptr Part)
-    (let p:(ptr Part) (new Part))
+    (let p:(ptr Part) (call (alloc.create Part) (call alloc.forever)))
     (put p Part.from from)
     (put p Part.to to)
     p)

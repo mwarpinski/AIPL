@@ -3,7 +3,8 @@
 ;; (no_leak) that does. src/leaks.rs, message for message.
 ;;
 ;; A function may leak if its code uses new, arr.new, mem.alloc, or format
-;; (a str), calls through a function reference, or calls a function that
+;; (a str), calls alloc.forever (the allocator whose memory is never
+;; freed), calls through a function reference, or calls a function that
 ;; may leak. Inside unsafe this counts for the function's callers but not
 ;; against its own (no_leak) promise: there it is the programmer's word,
 ;; which is how an allocator growing its pool with mem.alloc is marked
@@ -53,7 +54,11 @@
       (ast.Expr.if_ [n_if] (let c:ast.Expr (get n_if ast.IfExpr.cond)) (let t:ast.Expr (get n_if ast.IfExpr.then_)) (let f:ast.Expr (get n_if ast.IfExpr.else_)) (call walk out c inside) (call walk out t inside) (call walk out f inside))
       (ast.Expr.loop [n_loop] (let s:ast.Expr (get n_loop ast.LoopExpr.start)) (let en:ast.Expr (get n_loop ast.LoopExpr.end)) (let st:ast.Expr (get n_loop ast.LoopExpr.step)) (let body:(arr ast.Expr) (get n_loop ast.LoopExpr.body)) (call walk out s inside) (call walk out en inside) (call walk out st inside) (call walk_all out body inside))
       (ast.Expr.while_ [n_while] (let c:ast.Expr (get n_while ast.WhileExpr.cond)) (let body:(arr ast.Expr) (get n_while ast.WhileExpr.body)) (call walk out c inside) (call walk_all out body inside))
-      (ast.Expr.call [at func args] (call site out at true func inside) (call walk_all out args inside))
+      (ast.Expr.call [at func args]
+       (if (call str.bytes_eq func (call str.from_str "alloc.forever"))
+           (call leak out at "alloc.forever" inside)
+           (call site out at true func inside))
+       (call walk_all out args inside))
       (ast.Expr.op [at o args]
        (when (eq o ast.Op.mem_alloc) (call leak out at "mem.alloc" inside))
        (when (eq o ast.Op.format_str) (call leak out at "format (a str)" inside))

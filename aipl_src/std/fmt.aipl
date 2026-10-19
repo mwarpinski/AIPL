@@ -2,6 +2,7 @@
 ;; must have room: 10 bytes for uint/hex, 11 for int, 20 for uint64, 21 for
 ;; int64, 312 + digits for f64_fixed) and returns the count.
 (module fmt
+  (import alloc)
   ;; Decimal digits of n read as unsigned, so -1 is 4294967295.
   (fn uint_to_bytes [n:i32 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 10)))
@@ -61,7 +62,7 @@
   (fn big_limbs [] -> i32 40)
 
   (fn big_new [] -> (arr i64)
-    (let a:(arr i64) (arr.new i64 (call big_limbs)))
+    (let a:(arr i64) (call (alloc.array i64) (call alloc.forever) (call big_limbs)))
     (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 a i 0i64))
     a)
 

@@ -6,6 +6,7 @@
 ;; when forwarded, e.g. `--env AIPL_PATH`). Each call reads a fresh copy
 ;; (allocated, never freed); fetch once and keep the result in a loop.
 (module os
+  (import alloc)
   (import str)
 
   ;; A fetched table: count entries, entry i's address at argv + 4i.
@@ -15,7 +16,7 @@
   (fn fetch [is_env:bool] -> (ptr Table)
     (unsafe (let sizes:i32 (mem.alloc 8))
     (let ok:i32 (if is_env (env.sizes sizes (+ sizes 4)) (args.sizes sizes (+ sizes 4))))
-    (let t:(ptr Table) (new Table))
+    (let t:(ptr Table) (call (alloc.create Table) (call alloc.forever)))
     (put t Table.count 0)
     (put t Table.argv 0)
     (if (neq ok 0) (return t) (block))

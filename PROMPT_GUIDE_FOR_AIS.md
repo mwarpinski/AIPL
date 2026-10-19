@@ -54,6 +54,7 @@ RULES:
 ### 2. Binary search over a heap array
 ```lisp
 (module search
+  (import alloc)
   ;; returns the index of target in the sorted array a, or -1
   (fn binary_search [a:(arr i32) target:i32] -> i32
     (let low:i32 0)
@@ -68,7 +69,7 @@ RULES:
     -1)
 
   (fn main [] -> i32
-    (let a:(arr i32) (arr.new i32 8))
+    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) 8))
     (loop i 0 7 1
       (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
     (+ (* 10 (call binary_search a 15)) (call binary_search a 4))))
@@ -78,10 +79,11 @@ RULES:
 ### 3. A struct-based linked list
 ```lisp
 (module list_demo
+  (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
 
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next head)
     n)
@@ -162,7 +164,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
   (struct (Pair A B) [first:A second:B])
 
   (fn (swap A B) [p:(ptr (Pair A B))] -> (ptr (Pair B A))
-    (let q:(ptr (Pair B A)) (new (Pair B A)))
+    (let q:(ptr (Pair B A)) (call (alloc.create (Pair B A)) (call alloc.forever)))
     (put q (Pair B A) first (get p (Pair A B) second))
     (put q (Pair B A) second (get p (Pair A B) first))
     q)
@@ -172,11 +174,11 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
   (fn main [] -> i32
     (let pts:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) (call alloc.default) 0))
     (loop i 1 3 1
-      (let p:(ptr Point) (new Point))
+      (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
       (put p Point.x (* i 10))
       (call (vec.push (ptr Point)) pts p))
     (call (vec.sort_by (ptr Point)) pts (ref by_x))
-    (let pair:(ptr (Pair i32 bool)) (new (Pair i32 bool)))
+    (let pair:(ptr (Pair i32 bool)) (call (alloc.create (Pair i32 bool)) (call alloc.forever)))
     (put pair (Pair i32 bool) first 7)
     (put pair (Pair i32 bool) second true)
     (let flipped:(ptr (Pair bool i32)) (call (swap i32 bool) pair))
@@ -187,6 +189,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
 ### 8. Constants and enums
 ```lisp
 (module tokens_demo
+  (import alloc)
   (const MAX_TOKENS:i32 4)
   (enum Tok [num plus (minus 10)])
 
@@ -197,7 +200,7 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
       (else 0)))
 
   (fn main [] -> i32
-    (let ts:(arr Tok) (arr.new Tok MAX_TOKENS))
+    (let ts:(arr Tok) (call (alloc.array Tok) (call alloc.forever) MAX_TOKENS))
     (arr.set Tok ts 0 Tok.plus)
     (arr.set Tok ts 1 Tok.plus)
     (arr.set Tok ts 2 Tok.minus)

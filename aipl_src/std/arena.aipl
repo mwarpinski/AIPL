@@ -41,7 +41,7 @@
   ;; An arena that takes memory in chunks of at least chunk_size bytes.
   (fn make [chunk_size:i32] -> (ptr Arena) (pub)
     (req (gt chunk_size 0))
-    (let a:(ptr Arena) (new Arena))
+    (let a:(ptr Arena) (call (gen.forever Arena)))
     (put a Arena.chunk_size (bitand (+ chunk_size 7) -8))
     (put a Arena.first (call new_chunk (get a Arena.chunk_size)))
     (put a Arena.current (get a Arena.first))
@@ -50,7 +50,7 @@
     a)
 
   (fn new_chunk [size:i32] -> (ptr Chunk)
-    (let c:(ptr Chunk) (new Chunk))
+    (let c:(ptr Chunk) (call (gen.forever Chunk)))
     (put c Chunk.base (mem.alloc size))
     (put c Chunk.cap size)
     (put c Chunk.used 0)
@@ -118,7 +118,7 @@
   ;; A fast arena taking its memory chunk_size bytes at a time.
   (fn make_fast [chunk_size:i32] -> (ptr Fast) (pub)
     (req (gt chunk_size 0))
-    (let f:(ptr Fast) (new Fast))
+    (let f:(ptr Fast) (call (gen.forever Fast)))
     (put f Fast.chunk_size (bitand (+ chunk_size 7) -8))
     (put f Fast.first (call new_chunk (get f Fast.chunk_size)))
     (put f Fast.current (get f Fast.first))

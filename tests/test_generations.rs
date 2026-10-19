@@ -231,7 +231,7 @@ fn a_pointer_in_a_result_cell_stays_in_its_cell() {
         "    (let a:alloc.Allocator (call alloc.default))
     (let _warm:(ptr P) (call (alloc.create P) a))
     (let inner:(ptr P) (ptr.null P))
-    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (call (alloc.create P) a)) (set! inner (new P)) q)))
+    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (call (alloc.create P) a)) (set! inner (call (alloc.create P) (call alloc.forever))) q)))
     (put inner P.x 5)
     (call io.println_int \"x: \" (get inner P.x))
     (match_result r (ok q (call io.println_int \"q: \" (get q P.x))) (err _e (block)))",

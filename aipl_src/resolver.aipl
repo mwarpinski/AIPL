@@ -103,7 +103,7 @@
   (fn load [path:str.Bytes o:(ptr origins.Origins) tests:bool] -> (ptr Src)
     (let text:str.Bytes (call io.read_path path))
     (if (lt (get text str.Bytes.len) 0) (return (ptr.null Src)) (block))
-    (let src:(ptr Src) (new Src))
+    (let src:(ptr Src) (call (alloc.create Src) (call alloc.forever)))
     ;; not in the origins until it has read cleanly
     (put src Src.file -1)
     (put src Src.origins (ptr.null origins.Origins))
@@ -1167,7 +1167,7 @@
         (block))
     (if (call is_closer (call kind_at toks 0)) (return (call at_token src toks 0 "unexpected closing bracket")) (block))
     ;; the first form: a stack of open brackets (their token indices)
-    (let stack:(arr i32) (arr.new i32 (+ count 1)))
+    (let stack:(arr i32) (call (alloc.array i32) (call alloc.forever) (+ count 1)))
     (let top:i32 0)
     (let i:i32 0)
     (if (call is_opener (call kind_at toks 0))
@@ -1308,7 +1308,7 @@
   ;; Which tokens are inside a (test ...) item that is not read: every test
   ;; but a test build's (resolver.rs drops them before reading forms).
   (fn in_tests [src:i32 toks:i32 count:i32 tests:bool] -> (arr bool)
-    (unsafe (let marks:(arr bool) (arr.new bool (+ count 1)))
+    (unsafe (let marks:(arr bool) (call (alloc.array bool) (call alloc.forever) (+ count 1)))
     (loop i 0 count 1 (arr.set bool marks i false))
     (if tests (return marks) (block))
     (let depth:i32 0)
@@ -1403,7 +1403,7 @@
     (call nth (get src Src.root) 2))
 
   (fn make_mod [src:(ptr Src) prefix:str.Bytes imported:bool known:(ptr (map.Map str.Bytes i32))] -> (ptr Mod)
-    (let m:(ptr Mod) (new Mod))
+    (let m:(ptr Mod) (call (alloc.create Mod) (call alloc.forever)))
     (put m Mod.src src)
     (put m Mod.prefix prefix)
     (put m Mod.imported imported)
@@ -1833,7 +1833,7 @@
     (let src:(ptr Src) (call load entry orig tests))
     ;; the entry file's name in compiled code's line table is its file name
     (call name_file src (call slice entry (+ (call last_index entry 47) 1) (- (get entry str.Bytes.len) (+ (call last_index entry 47) 1))))
-    (let st:(ptr State) (new State))
+    (let st:(ptr State) (call (alloc.create State) (call alloc.forever)))
     (put st State.tests tests)
     (put st State.entry src)
     (put st State.origins orig)
@@ -1847,7 +1847,7 @@
     (put st State.known (call (map.make str.Bytes i32) (call alloc.default) 16))
     (put st State.paths (call (map.make str.Bytes str.Bytes) (call alloc.default) 16))
     (put st State.found (call (map.make str.Bytes str.Bytes) (call alloc.default) 32))
-    (let vis:(ptr Vis) (new Vis))
+    (let vis:(ptr Vis) (call (alloc.create Vis) (call alloc.forever)))
     (put vis Vis.public (call (map.make str.Bytes i32) (call alloc.default) 256))
     (put vis Vis.fields (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 64))
     (put vis Vis.values (call (map.make str.Bytes i32) (call alloc.default) 16))
@@ -1867,10 +1867,10 @@
     (call buf.push_byte flat 41)
     (if (neq orig (ptr.null origins.Origins))
         (block
-          (let parts:(arr (ptr buf.Buf)) (arr.new (ptr buf.Buf) 2))
+          (let parts:(arr (ptr buf.Buf)) (call (alloc.array (ptr buf.Buf)) (call alloc.forever) 2))
           (arr.set (ptr buf.Buf) parts 0 (get st State.structs_out))
           (arr.set (ptr buf.Buf) parts 1 (get st State.fns_out))
-          (let bases:(arr i32) (arr.new i32 2))
+          (let bases:(arr i32) (call (alloc.array i32) (call alloc.forever) 2))
           (arr.set i32 bases 0 structs_at)
           (arr.set i32 bases 1 fns_at)
           (call origins.join orig parts bases))
@@ -1889,7 +1889,7 @@
     (call expand_as flat out err orig gen true))
 
   (fn expand_as [flat:(ptr buf.Buf) out:(ptr buf.Buf) err:(ptr buf.Buf) orig:(ptr origins.Origins) gen:(ptr origins.Origins) archetypes:bool] -> bool
-    (let failure:(ptr generics.Failure) (new generics.Failure))
+    (let failure:(ptr generics.Failure) (call (alloc.create generics.Failure) (call alloc.forever)))
     (put failure generics.Failure.at -1)
     (let gen_err:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
     (if (if archetypes
@@ -1927,7 +1927,7 @@
     (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let ok:bool (call resolve (call str.bytes path_addr path_len) (call str.bytes std_addr std_len) out err))
-    (let res:(ptr Out) (new Out))
+    (let res:(ptr Out) (call (alloc.create Out) (call alloc.forever)))
     (let b:str.Bytes (call buf.bytes (if ok out err)))
     (put res Out.ok (if ok 1 0))
     (put res Out.addr (call str.addr b))

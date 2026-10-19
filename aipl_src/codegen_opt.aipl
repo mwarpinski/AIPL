@@ -92,7 +92,7 @@
   (struct Out [(read status:i32) (read addr:i32) (read len:i32)] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
-    (let s:(ptr Stats) (new Stats))
+    (let s:(ptr Stats) (call (alloc.create Stats) (call alloc.forever)))
     (put s Stats.consts_folded 0)
     (put s Stats.calls_inlined 0)
     (put s Stats.locals_eliminated 0)
@@ -130,7 +130,7 @@
   ])
 
   (fn new_onode [k:OKind text:str.Bytes ival:i32 lval:i64 pos:i32] -> (ptr ONode)
-    (let n:(ptr ONode) (new ONode))
+    (let n:(ptr ONode) (call (alloc.create ONode) (call alloc.forever)))
     (put n ONode.kind k)
     (put n ONode.text text)
     (put n ONode.ival ival)
@@ -1528,7 +1528,7 @@
                 (set! stmt_count (+ stmt_count 1)))
               (block)))
         (block))
-    (let def:(ptr InlineDef) (new InlineDef))
+    (let def:(ptr InlineDef) (call (alloc.create InlineDef) (call alloc.forever)))
     (put def InlineDef.name fname)
     (put def InlineDef.params params)
     (put def InlineDef.param_uses p_uses)
@@ -2147,7 +2147,7 @@
   ;; codegen_opt optimizer, and compiles to WebAssembly.
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
     (unsafe
-      (let res:(ptr Out) (new Out))
+      (let res:(ptr Out) (call (alloc.create Out) (call alloc.forever)))
       (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
       (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
       (let orig:(ptr origins.Origins) (call origins.make))

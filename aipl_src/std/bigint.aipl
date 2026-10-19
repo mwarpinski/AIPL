@@ -24,8 +24,8 @@
 
   ;; Zero, with room for `limbs` 64-bit limbs (at least 4) before it grows.
   (fn with_capacity [limbs:i32] -> (ptr Int) (pub)
-    (let n:(ptr Int) (new Int))
-    (let xs:(arr i64) (arr.new i64 (if (lt limbs 4) 4 limbs)))
+    (let n:(ptr Int) (call (alloc.create Int) (call alloc.forever)))
+    (let xs:(arr i64) (call (alloc.array i64) (call alloc.forever) (if (lt limbs 4) 4 limbs)))
     (loop i 0 (- (arr.len xs) 1) 1 (arr.set i64 xs i 0i64))
     (put n Int.limbs xs)
     (put n Int.len 0)
@@ -64,7 +64,7 @@
     (if (lte limbs (arr.len old)) (return) (block))
     (let cap:i32 (arr.len old))
     (while (lt cap limbs) (set! cap (* cap 2)))
-    (let grown:(arr i64) (arr.new i64 cap))
+    (let grown:(arr i64) (call (alloc.array i64) (call alloc.forever) cap))
     (loop i 0 (- (get a Int.len) 1) 1 (arr.set i64 grown i (arr.get i64 old i)))
     (loop i (get a Int.len) (- cap 1) 1 (arr.set i64 grown i 0i64))
     (put a Int.limbs grown))

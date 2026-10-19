@@ -4,7 +4,8 @@
 //! message.
 //!
 //! A function may leak if its code uses `new`, `arr.new`, `mem.alloc`, or
-//! `format` (a str), calls through a function reference, or calls a
+//! `format` (a str), calls `alloc.forever` (the allocator whose memory is
+//! never freed), calls through a function reference, or calls a
 //! function that may leak. (Results and unions are values, MEMORY_PLAN.md
 //! M4, so nothing else allocates without saying so.) Inside
 //! `unsafe` this counts for the function's callers but not against its own
@@ -59,6 +60,7 @@ fn sites(f: &FnDef) -> Vec<Sited> {
             Expr::Op { op: OpCode::MemAlloc, .. } => Some(Site::Leak("mem.alloc".into())),
             Expr::Op { op: OpCode::FormatStr, .. } => Some(Site::Leak("format (a str)".into())),
             Expr::CallRef { .. } => Some(Site::Leak("a call through a function reference (its target is not known)".into())),
+            Expr::Call { func, .. } if func == "alloc.forever" => Some(Site::Leak("alloc.forever".into())),
             Expr::Call { func, .. } => Some(Site::Call(func.clone())),
             _ => None,
         };

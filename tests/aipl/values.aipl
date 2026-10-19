@@ -41,7 +41,7 @@
     (let c:Vec3 (call add a b))                          ;; (2 22 6)
     (let total:f64 (call sum3 c))                        ;; 30
     ;; an array of bodies, written whole and field by field
-    (let bs:(arr Body) (arr.new Body 4))
+    (let bs:(arr Body) (call (alloc.array Body) (call alloc.forever) 4))
     (arr.set Body bs 0 (make Body a b 2.0))
     (arr.set Body bs 1 Body.vel Vec3.z 7.5)
     (arr.set Body bs 2 Body.mass 4.0)
@@ -49,7 +49,7 @@
     (set! total (+ total (get (get (arr.get Body bs 1) Body.vel) Vec3.z)))  ;; +7.5
     (set! total (+ total (get (arr.get Body bs 2) Body.mass)))     ;; +4
     ;; a value in a heap struct's field, read and written in place
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
     (put n Node.cell (make Cell 5 n 6000000000i64))
     (put n Node.cell Cell.id 9)
     (let cell:Cell (get n Node.cell))

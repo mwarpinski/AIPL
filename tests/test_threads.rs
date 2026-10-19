@@ -5,7 +5,6 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::vm::{Value, VM};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -14,8 +13,18 @@ use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::WasiCtxBuilder;
 
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
+
 fn compile(src: &str) -> (aipl_core::ast::Module, Vec<u8>) {
-    let m = Parser::parse(src).unwrap_or_else(|e| panic!("parse: {e}"));
+    let m = parse_program(src).unwrap_or_else(|e| panic!("parse: {e}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("check: {e}"));
     let wasm = WasmCompiler::compile(&m).unwrap_or_else(|e| panic!("compile: {e}"));
     let mut features = wasmparser::WasmFeatures::default();
@@ -84,7 +93,7 @@ fn run_threaded(wasm: &[u8], f: &str) -> (Result<i32, wasmtime::Error>, String) 
 
 /// Workers share a counter, a lock, and the allocator.
 const THREADS: &str = r#"
-(module threads
+(module threads (import alloc)
   (struct Job [counter:i32 lock:i32 plain:i32])
 
   ;; 1000 atomic increments of the shared counter
@@ -95,7 +104,7 @@ const THREADS: &str = r#"
 
   (fn atomic_counter [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
-    (let hs:(arr i32) (arr.new i32 4))
+    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref add_worker) c)))
     (loop t 0 3 1
@@ -119,8 +128,8 @@ const THREADS: &str = r#"
       (atomic.unlock lock))
     0)
   (fn mutex_counter [] -> i32 (unsafe)
-    (let job:(ptr Job) (new Job))
-    (let hs:(arr i32) (arr.new i32 4))
+    (let job:(ptr Job) (call (alloc.create Job) (call alloc.forever)))
+    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref locked_worker) (ptr.addr job))))
     (loop t 0 3 1
@@ -129,7 +138,7 @@ const THREADS: &str = r#"
 
   ;; concurrent allocation: every block keeps the value its thread wrote
   (fn alloc_worker [tag:i32] -> i32 (unsafe)
-    (let blocks:(arr i32) (arr.new i32 500))
+    (let blocks:(arr i32) (call (alloc.array i32) (call alloc.forever) 500))
     (loop i 0 499 1
       (let p:i32 (mem.alloc 8))
       (mem.store32 p tag)
@@ -141,7 +150,7 @@ const THREADS: &str = r#"
       (if (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i)) (block) (set! ok 0)))
     ok)
   (fn concurrent_alloc [] -> i32 (unsafe)
-    (let hs:(arr i32) (arr.new i32 4))
+    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref alloc_worker) (+ t 100))))
     (let good:i32 0)
@@ -262,14 +271,14 @@ fn atomics_agree_without_threads() {
 /// the VM and as a threaded module.
 #[test]
 fn spawn_with_passes_a_typed_context() {
-    let src = r#"(module m
+    let src = r#"(module m (import alloc)
   (import thread)
   (struct Tally [from:i32 to:i32 sum:i32])
   (fn add_up [t:(ptr Tally)] -> i32
     (loop i (get t Tally.from) (get t Tally.to) 1 (put t Tally.sum (+ (get t Tally.sum) i)))
     (get t Tally.sum))
   (fn tally [from:i32 to:i32] -> (ptr Tally)
-    (let t:(ptr Tally) (new Tally))
+    (let t:(ptr Tally) (call (alloc.create Tally) (call alloc.forever)))
     (put t Tally.from from)
     (put t Tally.to to)
     t)

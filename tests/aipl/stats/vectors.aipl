@@ -11,7 +11,7 @@
   (fn nums [s:str] -> (arr f64)
     (let a:alloc.Allocator (call alloc.default))
     (let fs:(ptr (vec.Vec str.Bytes)) (call text.fields a (call str.from_str s)))
-    (let xs:(arr f64) (arr.new f64 (call (vec.len str.Bytes) fs)))
+    (let xs:(arr f64) (call (alloc.array f64) (call alloc.forever) (call (vec.len str.Bytes) fs)))
     (for k 0 (arr.len xs)
       (match_result (call text.parse_f64 (call (vec.at str.Bytes) fs k))
         (ok x (arr.set f64 xs k x))

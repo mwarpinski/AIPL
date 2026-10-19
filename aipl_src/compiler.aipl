@@ -4,6 +4,7 @@
 ;; (codegen.compile_module is the self-hosted compiler's entry point).
 
 (module aipl_compiler
+  (import alloc)
 
   ;; Token kinds, which are also the kinds of the atoms in the tree; paren
   ;; and bracket are the two kinds of group, "(...)" and "[...]". none is
@@ -101,7 +102,7 @@
   (struct LineCol [(read line:i32) (read col:i32)] (pub))
 
   (fn line_col [src:i32 pos:i32] -> (ptr LineCol) (pub)
-    (unsafe (let lc:(ptr LineCol) (new LineCol))
+    (unsafe (let lc:(ptr LineCol) (call (alloc.create LineCol) (call alloc.forever)))
     (put lc LineCol.line 1)
     (put lc LineCol.col 1)
     (loop i 0 (- pos 1) 1
@@ -404,7 +405,7 @@
     (req (gte token_count 0))
     (req (gte ast_out_ptr 0))
     (ens (neq res (ptr.null Node)))
-    (let p:(ptr Parser) (new Parser))
+    (let p:(ptr Parser) (call (alloc.create Parser) (call alloc.forever)))
     (put p Parser.tokens token_ptr)
     (put p Parser.count token_count)
     (put p Parser.pos 0)

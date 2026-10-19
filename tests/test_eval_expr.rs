@@ -80,7 +80,7 @@ fn errors_are_at_the_expressions_own_lines_and_columns() {
     assert_eq!(stderr(&o), "Error: -e:1:1: Arg 0 of 'parse_row' expects str, got i32\n");
     // a trap: its call chain, without the generated printer
     for (backend, code, prefix) in [("", 1, "Error: "), ("--wasm", 134, "-e: "), ("--native", 134, "-e: ")] {
-        let o = eval(backend, None, "(arr.get i32 (arr.new i32 2) 5)");
+        let o = eval(backend, None, "(arr.get i32 (call (alloc.array i32) (call alloc.forever) 2) 5)");
         assert_eq!(o.status.code(), Some(code), "{backend}");
         assert_eq!(stderr(&o), format!("{prefix}Array index out of bounds: index 5 for array of length 2\n  at __eval (-e:1:1)\n"), "{backend}");
     }

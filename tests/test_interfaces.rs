@@ -53,7 +53,7 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
     assert!(same(&WasmCompiler::compile(&m).unwrap()) == same(&rust), "AIPL and Rust resolvers disagree:\n{flat}");
 }
 
-const MAIN: &str = r#"(module main
+const MAIN: &str = r#"(module main (import alloc)
   (import cmp)
   (import cmp as c)
   (import shapes)
@@ -71,7 +71,7 @@ const MAIN: &str = r#"(module main
       (and (eq (get a Pair.a) (get b Pair.a)) (eq (get a Pair.b) (get b Pair.b)))))
 
   (fn pair [a:i32 b:i32] -> (ptr Pair)
-    (let p:(ptr Pair) (new Pair))
+    (let p:(ptr Pair) (call (alloc.create Pair) (call alloc.forever)))
     (put p Pair.a a)
     (put p Pair.b b)
     p)
@@ -96,12 +96,12 @@ const MAIN: &str = r#"(module main
     (if (gt (call (cmp.Ord.compare T) a b) 0) a b))
   (fn generic [] -> i32 (call (biggest i32) 4 9)))"#;
 
-const SHAPES: &str = r#"(module shapes
+const SHAPES: &str = r#"(module shapes (import alloc)
   (import cmp)
   (struct Square [side:i32])
   (impl (cmp.Eq (ptr Square)) (fn same [a:(ptr Square) b:(ptr Square)] -> bool (eq (get a Square.side) (get b Square.side))))
   (fn sides [] -> i32 (pub)
-    (let s:(ptr Square) (new Square))
+    (let s:(ptr Square) (call (alloc.create Square) (call alloc.forever)))
     (if (call (cmp.Eq.same (ptr Square)) s s) 4 3)))"#;
 
 #[test]
@@ -170,7 +170,7 @@ fn malformed_interfaces_and_implementations_are_errors_in_both_resolvers() {
 
 /// Where clauses (IC2): a template asks for implementations, and every use
 /// of it is checked for them.
-const WHERE: &str = r#"(module main
+const WHERE: &str = r#"(module main (import alloc)
   (import cmp)
   (struct (Set K) [items:(arr K) n:i32] (where (cmp.Eq K)))
   (fn (contains K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K))
@@ -183,9 +183,9 @@ const WHERE: &str = r#"(module main
       (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
     best)
   (fn main [] -> i32
-    (let xs:(arr i64) (arr.new i64 3))
+    (let xs:(arr i64) (call (alloc.array i64) (call alloc.forever) 3))
     (arr.set i64 xs 1 7i64)
-    (let s:(ptr (Set str)) (new (Set str)))
+    (let s:(ptr (Set str)) (call (alloc.create (Set str)) (call alloc.forever)))
     (put s (Set str) n 100)
     (+ (get s (Set str) n) (+ (if (call (contains i64) xs 7i64) 10 0) (i32.wrap (call (largest i64) xs))))))"#;
 
@@ -200,8 +200,8 @@ fn where_clauses_work_in_both_backends() {
 fn where_clauses_are_checked_in_both_resolvers() {
     let cases: &[(&str, &str)] = &[
         // a use without the implementation asked for
-        ("(module m (import cmp) (struct P [x:i32]) (fn (has K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K)) false) (fn main [] -> i32 (if (call (has (ptr P)) (arr.new (ptr P) 1) (ptr.null P)) 1 0)))",
-         "1:135: has<ptr<P>> needs (cmp.Eq (ptr P)): write (impl (cmp.Eq (ptr P)) ...)"),
+        ("(module m (import alloc) (import cmp) (struct P [x:i32]) (fn (has K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K)) false) (fn main [] -> i32 (if (call (has (ptr P)) (call (alloc.array (ptr P)) (call alloc.forever) 1) (ptr.null P)) 1 0)))",
+         "1:150: has<ptr<P>> needs (cmp.Eq (ptr P)): write (impl (cmp.Eq (ptr P)) ...)"),
         ("(module m (import cmp) (struct P [x:i32]) (struct (S K) [k:K] (where (cmp.Hash K))) (fn main [] -> i32 (sizeof (S (ptr P)))))",
          "1:112: S<ptr<P>> needs (cmp.Hash (ptr P)): write (impl (cmp.Hash (ptr P)) ...)"),
         // where clauses only on templates, and right after the signature
@@ -284,16 +284,16 @@ fn templates_are_checked_once_in_both_toolchains() {
 /// structs and unions of plain fields, generic ones too) are accepted and run.
 #[test]
 fn plain_type_arguments_are_checked_in_both_toolchains() {
-    let header = "(module m (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (struct (Pair A B) [a:A b:B] (value)) (struct (Wrap T) [p:(Pair T i32)] (value)) (union (Opt T) [(none) (some v:T)]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
+    let header = "(module m (import alloc) (struct Box [n:i32]) (struct Holds [b:(ptr Box)] (value)) (struct Deep [h:Holds] (value)) (struct Ok2 [x:i32 y:f64] (value)) (union U [(a p:(ptr Box)) (b)]) (union V [(a x:f64) (b)]) (enum E [red green]) (struct (Pair A B) [a:A b:B] (value)) (struct (Wrap T) [p:(Pair T i32)] (value)) (union (Opt T) [(none) (some v:T)]) (fn (need T) [x:T] -> i32 (where (plain T)) 7)";
     let refused: &[(&str, &str)] = &[
-        ("(ptr Box)", "(call (need (ptr Box)) (new Box))"),
-        ("(arr i32)", "(call (need (arr i32)) (arr.new i32 1))"),
-        ("Holds", "(call (need Holds) (make Holds (new Box)))"),
-        ("Deep", "(call (need Deep) (make Deep (make Holds (new Box))))"),
+        ("(ptr Box)", "(call (need (ptr Box)) (call (alloc.create Box) (call alloc.forever)))"),
+        ("(arr i32)", "(call (need (arr i32)) (call (alloc.array i32) (call alloc.forever) 1))"),
+        ("Holds", "(call (need Holds) (make Holds (call (alloc.create Box) (call alloc.forever))))"),
+        ("Deep", "(call (need Deep) (make Deep (make Holds (call (alloc.create Box) (call alloc.forever)))))"),
         ("U", "(call (need U) (make U.b))"),
         // generic instances are looked into, at any depth
-        ("Pair<ptr<Box>,i32>", "(call (need (Pair (ptr Box) i32)) (make (Pair (ptr Box) i32) (new Box) 1))"),
-        ("Wrap<arr<i32>>", "(call (need (Wrap (arr i32))) (make (Wrap (arr i32)) (make (Pair (arr i32) i32) (arr.new i32 1) 1)))"),
+        ("Pair<ptr<Box>,i32>", "(call (need (Pair (ptr Box) i32)) (make (Pair (ptr Box) i32) (call (alloc.create Box) (call alloc.forever)) 1))"),
+        ("Wrap<arr<i32>>", "(call (need (Wrap (arr i32))) (make (Wrap (arr i32)) (make (Pair (arr i32) i32) (call (alloc.array i32) (call alloc.forever) 1) 1)))"),
         ("Opt<ptr<Box>>", "(call (need (Opt (ptr Box))) (make (Opt (ptr Box)) none))"),
         ("Opt<Wrap<Pair<i32,arr<f64>>>>", "(call (need (Opt (Wrap (Pair i32 (arr f64))))) (make (Opt (Wrap (Pair i32 (arr f64)))) none))"),
     ];

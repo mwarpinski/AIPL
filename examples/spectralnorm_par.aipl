@@ -6,6 +6,7 @@
 ;;   aipl compile --exe examples/spectralnorm_par.aipl -o snp
 ;;   ./snp 1000 8        ->   1.274224153 (n = 1000 on 8 threads)
 (module spectralnorm_par
+  (import alloc)
   (import io)
   (import os)
   (import par)
@@ -35,9 +36,9 @@
   (fn main [] -> i32
     (let n:i32 (call os.arg_int 1 100))
     (let threads:i32 (call os.arg_int 2 4))
-    (let u:(arr f64) (arr.new f64 n))
-    (let v:(arr f64) (arr.new f64 n))
-    (let tmp:(arr f64) (arr.new f64 n))
+    (let u:(arr f64) (call (alloc.array f64) (call alloc.forever) n))
+    (let v:(arr f64) (call (alloc.array f64) (call alloc.forever) n))
+    (let tmp:(arr f64) (call (alloc.array f64) (call alloc.forever) n))
     (loop i 0 (- n 1) 1 (arr.set f64 u i 1.0))
     (loop round 1 10 1
       (call times n u tmp false threads)

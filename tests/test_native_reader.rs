@@ -46,7 +46,7 @@ fn programs() -> Vec<(String, Vec<u8>)> {
     for name in ["(module threads", "(module atomics"] {
         let start = threads.find(name).unwrap();
         let end = threads[start..].find("\"#;").unwrap();
-        let m = aipl_core::parser::Parser::parse(&threads[start..start + end]).unwrap();
+        let m = Resolver::resolve_source(&threads[start..start + end], &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl")).unwrap();
         out.push((name.to_string(), WasmCompiler::compile(&m).unwrap()));
     }
     out

@@ -5,6 +5,7 @@
 ;;     (let xs:(arr T) (call (alloc.array T) a n)) ...)
 ;;
 ;;   (call (fill i32) (call alloc.default) 10 7)               ;; the shared heap
+;;   (call (fill i32) (call alloc.forever) 10 7)               ;; never freed
 ;;   (call (fill i32) (call alloc.of_heap h) 10 7)             ;; a heap of your own
 ;;   (call (fill i32) (call alloc.of_arena ar) 10 7)           ;; freed by arena.reset
 ;;   (call (fill i32) (call alloc.fixed (mem.alloc 4096) 4096) 10 7)  ;; inside a buffer
@@ -39,20 +40,29 @@
   (struct Custom [cell:i32 alloc_fn:(fn [i32 i32] -> i32) free_fn:(fn [i32 i32 i32] -> void)] (pub))
 
   ;; Any allocator as one value, to pass to code that allocates: make it
-  ;; with of_heap, of_arena, of_fast_arena, fixed, custom, or default.
+  ;; with of_heap, of_arena, of_fast_arena, fixed, custom, default, or
+  ;; forever.
   (union Allocator [(heap h:(ptr heap.Heap))
                     (arena r:(ptr arena.Arena))
                     (fast_arena fr:(ptr arena.Fast))
                     (fixed f:(ptr Fixed))
-                    (custom c:(ptr Custom))] (pub))
+                    (custom c:(ptr Custom))
+                    (forever)] (pub))
+
+  ;; Memory that lives until the program exits: never reused, so what it
+  ;; hands out is never freed (a destroy still ends the object: a pointer
+  ;; kept past it stops the program). Right for what a program makes once
+  ;; and keeps; a call to it is what (no_leak) refuses (docs/design/
+  ;; MEMORY_PLAN.md decision 5).
+  (fn forever [] -> Allocator (pub) (make Allocator.forever))
 
   ;; Unsafe to call: the allocator's functions hand out raw addresses.
   (fn (custom C) [state:C alloc_fn:(fn [C i32] -> i32) free_fn:(fn [C i32 i32] -> void)] -> Allocator (pub) (unsafe)
-    (let cell:(ptr (CustomOf C)) (new (CustomOf C)))
+    (let cell:(ptr (CustomOf C)) (call (create (CustomOf C)) (call forever)))
     (put cell (CustomOf C) state state)
     (put cell (CustomOf C) alloc_fn alloc_fn)
     (put cell (CustomOf C) free_fn free_fn)
-    (let c:(ptr Custom) (new Custom))
+    (let c:(ptr Custom) (call (create Custom) (call forever)))
     (put c Custom.cell (ptr.addr cell))
     (put c Custom.alloc_fn (ref (alloc_through C)))
     (put c Custom.free_fn (ref (free_through C)))
@@ -78,7 +88,7 @@
   ;; Unsafe to call: the allocator hands out whatever memory base names.
   (fn fixed [base:i32 len:i32] -> Allocator (pub) (unsafe)
     (req (gte len 0))
-    (let f:(ptr Fixed) (new Fixed))
+    (let f:(ptr Fixed) (call (create Fixed) (call forever)))
     (put f Fixed.base base)
     (put f Fixed.len len)
     (put f Fixed.used 0)
@@ -94,7 +104,7 @@
   (fn default [] -> Allocator (pub) (no_leak)
     (unsafe (if (eq (mem.load32 52) 0)
         (block
-          (let s:(ptr Shared) (new Shared))
+          (let s:(ptr Shared) (call (create Shared) (call forever)))
           (put s Shared.a (call of_heap (call heap.make)))
           (mem.store32 52 (ptr.addr s)))
         (block))
@@ -113,7 +123,9 @@
       (Allocator.arena [r] (call arena.raw r n))
       (Allocator.fast_arena [fr] (call arena.fast_raw fr n))
       (Allocator.fixed [f] (call fixed_raw f n))
-      (Allocator.custom [c] (unsafe (call custom_raw c n)))))
+      (Allocator.custom [c] (unsafe (call custom_raw c n)))
+      ;; fresh memory from the bump cursor, which is zero
+      (Allocator.forever (unsafe (mem.alloc n)))))
 
   ;; Frees the n bytes at p, which raw returned for n bytes.
   ;; Unsafe to call: p must be what raw returned for n bytes.
@@ -124,7 +136,9 @@
       (Allocator.arena [_] (block))
       (Allocator.fast_arena [_] (block))
       (Allocator.fixed [f] (call fixed_free f p n))
-      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n)))))
+      (Allocator.custom [c] (call_ref (fn [i32 i32 i32] -> void) (get c Custom.free_fn) (get c Custom.cell) p n))
+      ;; never reused
+      (Allocator.forever (block)))))
 
   ;; n bytes from a custom allocator, zeroed here.
   (fn custom_raw [c:(ptr Custom) n:i32] -> i32
@@ -200,7 +214,7 @@
     (put k Counting.frees (+ (get k Counting.frees) 1))
     (call heap.free_raw (get k Counting.h) p n))
 
-  ;; Pass count; test_suite.aipl expects 7.
+  ;; Pass count; test_suite.aipl expects 9.
   (fn run_alloc_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     ;; the same code works with every kind of allocator
@@ -227,10 +241,16 @@
     (let a4:i32 (call raw g 16))
     (if (and (eq a3 (+ a2 16)) (eq a4 a3)) (set! p (+ p 1)) (block))
     ;; a custom allocator gets every allocation and free
-    (let k:(ptr Counting) (new Counting))
+    (let k:(ptr Counting) (call (create Counting) (call forever)))
     (put k Counting.h (call heap.make))
     (let c:Allocator (call (custom (ptr Counting)) k (ref counting_alloc) (ref counting_free)))
     (if (and (call round_trip c) (and (eq (get k Counting.allocs) 2) (eq (get k Counting.frees) 2)))
         (set! p (+ p 1))
         (block))
+    ;; forever: usable, and never reused after a destroy
+    (if (call round_trip (call forever)) (set! p (+ p 1)) (block))
+    (let fx:(ptr Pair) (call (create Pair) (call forever)))
+    (call (destroy Pair) (call forever) fx)
+    (let fy:(ptr Pair) (call (create Pair) (call forever)))
+    (if (neq (ptr.addr fx) (ptr.addr fy)) (set! p (+ p 1)) (block))
     p)))

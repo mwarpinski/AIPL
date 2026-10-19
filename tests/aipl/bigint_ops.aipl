@@ -53,9 +53,9 @@
     (call bigint.div_small_quotient a den))
 
   (fn main [] -> i32
-    (let r:(ptr Rng) (new Rng))
+    (let r:(ptr Rng) (call (alloc.create Rng) (call alloc.forever)))
     (put r Rng.x 123456789)
-    (let rs:(ptr Regs) (new Regs))
+    (let rs:(ptr Regs) (call (alloc.create Regs) (call alloc.forever)))
     (put rs Regs.r0 (call bigint.from_i32 (call mult r)))
     (put rs Regs.r1 (call bigint.from_i32 (call mult r)))
     (put rs Regs.r2 (call bigint.from_i32 (call mult r)))

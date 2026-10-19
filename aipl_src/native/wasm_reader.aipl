@@ -177,7 +177,7 @@
           (block
             (let count:i32 (call u32 r))
             (loop k 1 count 1
-              (let fn_name:(ptr FnName) (new FnName))
+              (let fn_name:(ptr FnName) (call (alloc.create FnName) (call alloc.forever)))
               (put fn_name FnName.index (call u32 r))
               (put fn_name FnName.name (call name r))
               (if (or (get r R.failed) (gt (get r R.pos) sub_end))
@@ -196,7 +196,7 @@
     (let fns:i32 (call u32 r))
     (loop k 1 fns 1
       (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
-      (let f:(ptr FnLines) (new FnLines))
+      (let f:(ptr FnLines) (call (alloc.create FnLines) (call alloc.forever)))
       (put f FnLines.index (call u32 r))
       (put f FnLines.entries (call (vec.make (ptr LinePos)) (call alloc.default) 16))
       (let n:i32 (call u32 r))
@@ -204,7 +204,7 @@
       (let line:i32 0)
       (loop j 1 n 1
         (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
-        (let e:(ptr LinePos) (new LinePos))
+        (let e:(ptr LinePos) (call (alloc.create LinePos) (call alloc.forever)))
         (set! at (+ at (call u32 r)))
         (put e LinePos.at at)
         (put e LinePos.file (call u32 r))
@@ -231,7 +231,7 @@
   ;; flags 0: min; 1: min max; 3: min max shared
   (fn limits [r:(ptr R)] -> (ptr Limits)
     (let flags:i32 (call byte r))
-    (let l:(ptr Limits) (new Limits))
+    (let l:(ptr Limits) (call (alloc.create Limits) (call alloc.forever)))
     (put l Limits.min (call u32 r))
     (put l Limits.has_max (neq (bitand flags 1) 0))
     (put l Limits.max (if (get l Limits.has_max) (call u32 r) 0))
@@ -256,7 +256,7 @@
     (let count:i32 (call u32 r))
     (loop i 1 count 1
       (if (neq (call byte r) 96) (block (call fail r "type is not a function type") (return)) (block))
-      (let t:(ptr FuncType) (new FuncType))
+      (let t:(ptr FuncType) (call (alloc.create FuncType) (call alloc.forever)))
       (put t FuncType.params (call (vec.make i32) (call alloc.default) 4))
       (put t FuncType.results (call (vec.make i32) (call alloc.default) 1))
       (let np:i32 (call u32 r))
@@ -269,7 +269,7 @@
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
     (loop i 1 count 1
-      (let im:(ptr Import) (new Import))
+      (let im:(ptr Import) (call (alloc.create Import) (call alloc.forever)))
       (put im Import.module (call name r))
       (put im Import.name (call name r))
       (put im Import.kind (call byte r))
@@ -291,7 +291,7 @@
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
     (loop i 1 count 1
-      (let t:(ptr Table) (new Table))
+      (let t:(ptr Table) (call (alloc.create Table) (call alloc.forever)))
       (put t Table.elem_type (call byte r))
       (if (neq (get t Table.elem_type) 112) (call fail r "unsupported table element type (only funcref)") (block))
       (put t Table.limits (call limits r))
@@ -307,7 +307,7 @@
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
     (loop i 1 count 1
-      (let g:(ptr Global) (new Global))
+      (let g:(ptr Global) (call (alloc.create Global) (call alloc.forever)))
       (put g Global.valtype (call valtype r))
       (let m:i32 (call byte r))
       (if (gt m 1) (call fail r "unsupported global mutability") (block))
@@ -319,7 +319,7 @@
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
     (loop i 1 count 1
-      (let e:(ptr Export) (new Export))
+      (let e:(ptr Export) (call (alloc.create Export) (call alloc.forever)))
       (put e Export.name (call name r))
       (put e Export.kind (call byte r))
       (if (and (neq (get e Export.kind) 0) (neq (get e Export.kind) 2))
@@ -334,7 +334,7 @@
     (let count:i32 (call u32 r))
     (loop i 1 count 1
       (if (neq (call u32 r) 0) (block (call fail r "unsupported element segment kind") (return)) (block))
-      (let e:(ptr Elem) (new Elem))
+      (let e:(ptr Elem) (call (alloc.create Elem) (call alloc.forever)))
       (put e Elem.offset (i32.wrap (call const_expr r)))
       (put e Elem.funcs (call (vec.make i32) (call alloc.default) 16))
       (let nf:i32 (call u32 r))
@@ -347,7 +347,7 @@
     (let count:i32 (call u32 r))
     (loop i 1 count 1
       (let size:i32 (call u32 r))
-      (let body:(ptr Range) (new Range))
+      (let body:(ptr Range) (call (alloc.create Range) (call alloc.forever)))
       (put body Range.addr (+ (call str.addr (get r R.b)) (get r R.pos)))
       (put body Range.len size)
       (if (gt (+ (get r R.pos) size) (get (get r R.b) str.Bytes.len))
@@ -361,7 +361,7 @@
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
     (loop i 1 count 1
-      (let d:(ptr Data) (new Data))
+      (let d:(ptr Data) (call (alloc.create Data) (call alloc.forever)))
       (let flag:i32 (call u32 r))
       (put d Data.passive (eq flag 1))
       (put d Data.offset 0)
@@ -558,7 +558,7 @@
     (or (eq sub 0) (or (eq sub 1) (or (eq sub 16) (or (eq sub 23) (or (eq sub 30) (or (eq sub 65) (eq sub 72))))))))
 
   (fn read_instr [r:(ptr R) start:i32] -> (ptr Instr)
-    (let ins:(ptr Instr) (new Instr))
+    (let ins:(ptr Instr) (call (alloc.create Instr) (call alloc.forever)))
     (let at:i32 (get r R.pos))
     (put ins Instr.offset (- at start))
     (put ins Instr.a 0)
@@ -610,7 +610,7 @@
   ;; Decodes the body at `range`: local declarations, then instructions up
   ;; to the body's end.
   (fn read_body [r:(ptr R) range:(ptr Range)] -> (ptr Body)
-    (let body:(ptr Body) (new Body))
+    (let body:(ptr Body) (call (alloc.create Body) (call alloc.forever)))
     (put body Body.locals (call (vec.make (ptr Locals)) (call alloc.default) 4))
     (put body Body.code (call (vec.make (ptr Instr)) (call alloc.default) 64))
     (let start:i32 (- (get range Range.addr) (call str.addr (get r R.b))))
@@ -618,7 +618,7 @@
     (put r R.pos start)
     (let groups:i32 (call u32 r))
     (loop i 1 groups 1
-      (let l:(ptr Locals) (new Locals))
+      (let l:(ptr Locals) (call (alloc.create Locals) (call alloc.forever)))
       (put l Locals.count (call u32 r))
       (put l Locals.type (call valtype r))
       (call (vec.push (ptr Locals)) (get body Body.locals) l))
@@ -632,7 +632,7 @@
     body)
 
   (fn empty_module [] -> (ptr Wasm)
-    (unsafe (let w:(ptr Wasm) (new Wasm))
+    (unsafe (let w:(ptr Wasm) (call (alloc.create Wasm) (call alloc.forever)))
     (put w Wasm.ok false)
     (put w Wasm.error (call str.bytes 0 0))
     (put w Wasm.types (call (vec.make (ptr FuncType)) (call alloc.default) 16))
@@ -656,7 +656,7 @@
   ;; Decodes `bytes`. On failure, ok is false and error says what and where.
   (fn decode [bytes:str.Bytes] -> (ptr Wasm) (pub)
     (let w:(ptr Wasm) (call empty_module))
-    (let r:(ptr R) (new R))
+    (let r:(ptr R) (call (alloc.create R) (call alloc.forever)))
     (put r R.b bytes)
     (put r R.pos 0)
     (put r R.failed false)
@@ -836,7 +836,7 @@
   ;; same however a str.Bytes is laid out.
   (struct HostBytes [(read addr:i32) (read len:i32)])
   (fn host_bytes [b:str.Bytes] -> (ptr HostBytes)
-    (let h:(ptr HostBytes) (new HostBytes))
+    (let h:(ptr HostBytes) (call (alloc.create HostBytes) (call alloc.forever)))
     (put h HostBytes.addr (call str.addr b))
     (put h HostBytes.len (get b str.Bytes.len))
     h)
@@ -878,7 +878,7 @@
     (call buf.push_byte lb 255) (call buf.push_byte lb 126)
     (loop k 1 9 1 (call buf.push_byte lb 128))
     (call buf.push_byte lb 127)
-    (let r:(ptr R) (new R))
+    (let r:(ptr R) (call (alloc.create R) (call alloc.forever)))
     (put r R.b (call bytes_of lb))
     (put r R.pos 0)
     (put r R.failed false)

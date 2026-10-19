@@ -28,7 +28,7 @@
 
   (fn make [text:str.Bytes] -> (ptr Defs) (pub)
     (let a:alloc.Allocator (call alloc.default))
-    (let d:(ptr Defs) (new Defs))
+    (let d:(ptr Defs) (call (alloc.create Defs) (call alloc.forever)))
     (put d Defs.text text)
     (put d Defs.index (call (map.make str.Bytes i32) a 16))
     (put d Defs.names (call (vec.make str.Bytes) a 16))

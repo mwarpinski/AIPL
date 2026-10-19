@@ -331,11 +331,12 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
 
 ```lisp
 (module points
+  (import alloc)
   (struct Point [x:i32 y:i32])
   (fn main [] -> i32
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (call (alloc.array (ptr Point)) (call alloc.forever) 3))
     (loop i 0 2 1
-      (let p:(ptr Point) (new Point))
+      (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
@@ -352,6 +353,7 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
 
 ```lisp
 (module values_demo
+  (import alloc)
   (struct Vec2 [x:f64 y:f64] (value))
   (struct Particle [pos:Vec2 vel:Vec2 alive:bool] (value))
 
@@ -359,7 +361,7 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
     (make Vec2 (+ (get a Vec2.x) (get b Vec2.x)) (+ (get a Vec2.y) (get b Vec2.y))))
 
   (fn main [] -> i32
-    (let ps:(arr Particle) (arr.new Particle 2))       ;; two particles inline: 80 bytes
+    (let ps:(arr Particle) (call (alloc.array Particle) (call alloc.forever) 2))       ;; two particles inline: 80 bytes
     (arr.set Particle ps 0 (make Particle (make Vec2 1.0 2.0) (make Vec2 0.5 0.5) true))
     (arr.set Particle ps 1 Particle.vel Vec2.y 3.0)     ;; one field, written in place
     (let p:Particle (arr.get Particle ps 0))
@@ -469,7 +471,7 @@ Function types are strict like pointer types: a reference is never an `i32`, a r
           (else 0)))
 
   (fn main [] -> i32
-    (let scores:(arr i32) (arr.new i32 3))
+    (let scores:(arr i32) (call (alloc.array i32) (call alloc.forever) 3))
     (arr.set i32 scores 0 40) (arr.set i32 scores 1 90) (arr.set i32 scores 2 60)
     (let order:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 3))
     (loop i 0 2 1 (call (vec.push i32) order i))
@@ -489,7 +491,7 @@ A generic struct or function takes type parameters in its header, and every use 
 (struct (Box T) [value:T next:(ptr (Box T))])
 
 (fn (make T) [v:T] -> (ptr (Box T))
-  (let b:(ptr (Box T)) (new (Box T)))
+  (let b:(ptr (Box T)) (call (alloc.create (Box T)) (call alloc.forever)))
   (put b (Box T) value v)
   b)
 
@@ -535,7 +537,7 @@ An interface names functions a type can have; an implementation provides them fo
       (and (eq (get a Point.x) (get b Point.x)) (eq (get a Point.y) (get b Point.y)))))
 
   (fn point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     p)
@@ -552,7 +554,7 @@ An interface names functions a type can have; an implementation provides them fo
     (let seen:(ptr (map.Map (ptr Point) i32)) (call (map.make (ptr Point) i32) (call alloc.default) 0))
     (call (map.set (ptr Point) i32) seen (call point 1 2) 10)
     (call (map.set (ptr Point) i32) seen (call point 1 2) 20)     ;; the same point: replaces 10
-    (let xs:(arr i64) (arr.new i64 3))
+    (let xs:(arr i64) (call (alloc.array i64) (call alloc.forever) 3))
     (arr.set i64 xs 1 7i64)
     (+ (call (map.get_or (ptr Point) i32) seen (call point 1 2) 0)
        (+ (call (map.count (ptr Point) i32) seen) (i32.wrap (call (largest i64) xs))))))   ;; 20 + 1 + 7 => 28
@@ -592,6 +594,7 @@ What can still fail where a template is used is the use itself: a missing implem
 
 ```lisp
 (module shapes
+  (import alloc)
   (const MAX_SIDES:i32 12)
   (const UNIT:f64 0.5)
   (const LABEL:str "shape")
@@ -604,7 +607,7 @@ What can still fail where a template is used is the use itself: a missing implem
       (else (enum.ord k))))                            ;; hexagon 6, octagon 7
 
   (fn main [] -> i32
-    (let ks:(arr Kind) (arr.new Kind 2))
+    (let ks:(arr Kind) (call (alloc.array Kind) (call alloc.forever) 2))
     (arr.set Kind ks 0 Kind.square)
     (arr.set Kind ks 1 (enum.cast Kind 7))
     (+ (call sides (arr.get Kind ks 0))
@@ -728,7 +731,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
     (let a:alloc.Allocator (call alloc.default))
     (let empty:(Tree f64) (make (Tree f64) leaf))
     (let t:(Tree f64) (call (node f64) a empty 1.5 (call (node f64) a empty 2.5 empty)))
-    (let xs:(arr i64) (arr.new i64 4))
+    (let xs:(arr i64) (call (alloc.array i64) (call alloc.forever) 4))
     (arr.set i64 xs 3 9i64)
     (+ (* 10 (call (count f64) t))
        (match (call find xs 9i64)
@@ -753,7 +756,7 @@ Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `o
     (let n:i32 3)
     (let mean:f64 2.71828)
     (println "{name} ran {n} tests, mean {mean:.2}")         ;; Ada ran 3 tests, mean 2.72
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
     (put p Point.x 1.5)
     (let s:str (format "{n:>5}|{(get p Point.x)}|{{}}"))      ;; "    3|1.5|{}"
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
@@ -1590,10 +1593,11 @@ Everything a module defines is private to it unless marked `(pub)`: another modu
 
 ```lisp
 (module counter
+  (import alloc)
   ;; others can read n, write nothing, and make a Counter only through start
   (struct Counter [(read n:i32) step:i32] (pub))
   (fn start [step:i32] -> (ptr Counter) (pub)
-    (let c:(ptr Counter) (new Counter))
+    (let c:(ptr Counter) (call (alloc.create Counter) (call alloc.forever)))
     (put c Counter.step step)
     c)
   (fn tick [c:(ptr Counter)] -> void (pub)

@@ -1,14 +1,15 @@
 ;; Dense f64 matrices: a struct holding a row-major (arr f64), and the
 ;; i-k-j multiplication order, which walks both inputs' rows sequentially.
 (module matrix_mult
+  (import alloc)
   (struct Matrix [rows:i32 cols:i32 data:(arr f64)])
 
   (fn make [rows:i32 cols:i32] -> (ptr Matrix)
     (req (and (gte rows 0) (gte cols 0)))
-    (let m:(ptr Matrix) (new Matrix))
+    (let m:(ptr Matrix) (call (alloc.create Matrix) (call alloc.forever)))
     (put m Matrix.rows rows)
     (put m Matrix.cols cols)
-    (put m Matrix.data (arr.new f64 (* rows cols)))
+    (put m Matrix.data (call (alloc.array f64) (call alloc.forever) (* rows cols)))
     m)
 
   (fn at [m:(ptr Matrix) r:i32 c:i32] -> f64

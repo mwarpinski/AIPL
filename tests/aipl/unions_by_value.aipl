@@ -85,10 +85,10 @@
     (set! total (+ total (call tagged_area (make Tagged.plain held))))         ;; +5
     (set! total (+ total (call tagged_area (make Tagged.count 7))))           ;; +7 = 71
     ;; in a heap struct's field, and an array
-    (let b:(ptr Box) (new Box))
+    (let b:(ptr Box) (call (alloc.create Box) (call alloc.forever)))
     (put b Box.shape (make Shape.big 9i64 Color.blue))
     (set! total (+ total (call area (get b Box.shape))))                      ;; +9
-    (let shapes:(arr Shape) (arr.new Shape 3))
+    (let shapes:(arr Shape) (call (alloc.array Shape) (call alloc.forever) 3))
     (arr.set Shape shapes 2 c)
     (set! total (+ total (call area (arr.get Shape shapes 2))))               ;; +5
     (set! total (+ total (call area (arr.get Shape shapes 0))))               ;; zero: dot, +0 = 85

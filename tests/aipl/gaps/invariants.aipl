@@ -1,4 +1,5 @@
 (module invariants
+  (import alloc)
   (import os)
   (struct Acct [bal:i32])
   ;; the balance never goes negative, before or after
@@ -7,6 +8,6 @@
     (put a Acct.bal (- (get a Acct.bal) n))
     (get a Acct.bal))
   (fn main [] -> i32
-    (let a:(ptr Acct) (new Acct))
+    (let a:(ptr Acct) (call (alloc.create Acct) (call alloc.forever)))
     (put a Acct.bal (call os.arg_int 1 10))
     (call withdraw a 15)))

@@ -1046,7 +1046,7 @@ impl VM {
         match ty {
             Type::Narrow(n) => {
                 let w = n.size();
-                if addr + w > mem.bytes.len() {
+                if addr.checked_add(w).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let v = match n {
@@ -1058,7 +1058,7 @@ impl VM {
                 Ok(Value::Int(v))
             }
             Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1066,7 +1066,7 @@ impl VM {
                 Ok(Value::Int(v as i64))
             }
             Type::Bool => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1075,7 +1075,7 @@ impl VM {
             }
             Type::Str => {
                 // The word is the address of the bytes; the length is in the 4 bytes before them.
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let p = u32::from_le_bytes(mem.bytes[addr..addr + 4].try_into().unwrap()) as usize;
@@ -1083,13 +1083,13 @@ impl VM {
                     return Err(format!("VM: str field at address {} holds invalid string pointer {}", addr, p));
                 }
                 let len = u32::from_le_bytes(mem.bytes[p - 4..p].try_into().unwrap()) as usize;
-                if p + len > mem.bytes.len() {
+                if p.checked_add(len).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM: str at {} with length {} runs past memory", p, len));
                 }
                 Ok(Value::Str(String::from_utf8_lossy(&mem.bytes[p..p + len]).into_owned()))
             }
             Type::I64 | Type::Ptr(_) | Type::Array(_) => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
@@ -1097,7 +1097,7 @@ impl VM {
                 Ok(Value::Int64(v))
             }
             Type::F32 => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1105,7 +1105,7 @@ impl VM {
                 Ok(Value::Float32(v))
             }
             Type::F64 => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
@@ -1142,7 +1142,7 @@ impl VM {
         match ty {
             Type::Narrow(n) => {
                 let w = n.size();
-                if addr + w > mem.bytes.len() {
+                if addr.checked_add(w).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1153,7 +1153,7 @@ impl VM {
                 Ok(())
             }
             Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1165,7 +1165,7 @@ impl VM {
                 Ok(())
             }
             Type::Bool => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v: i32 = match val {
@@ -1177,7 +1177,7 @@ impl VM {
                 Ok(())
             }
             Type::I64 | Type::Ptr(_) | Type::Array(_) => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1189,7 +1189,7 @@ impl VM {
                 Ok(())
             }
             Type::F32 => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1201,7 +1201,7 @@ impl VM {
                 Ok(())
             }
             Type::F64 => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1536,7 +1536,7 @@ impl VM {
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
-                        if ptr + 4 > mem.bytes.len() {
+                        if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                             return Err(format!("atomic.lock out of bounds: ptr {}", ptr));
                         }
                         let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
@@ -1569,7 +1569,7 @@ impl VM {
                 self.check_write("atomic.unlock", ptr)?;
                 check_atomic_alignment("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
-                if ptr + 4 > mem.bytes.len() {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
                 }
                 let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();

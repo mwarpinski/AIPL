@@ -14,9 +14,9 @@
   (fn main [] -> i32
     (let started:i64 (call time.now))
     (let n:i32 (call os.arg_int 1 7))
-    (let perm:(arr i32) (arr.new i32 n))
-    (let perm1:(arr i32) (arr.new i32 n))
-    (let count:(arr i32) (arr.new i32 n))
+    (let perm:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let perm1:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let count:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
     (loop i 0 (- n 1) 1 (arr.set i32 perm1 i i))
     (let max_flips:i32 0)
     (let checksum:i32 0)
