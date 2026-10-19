@@ -1,12 +1,13 @@
 # A broader standard library, and string formatting
 
-**Status: approved 2026-10-16, every decision as recommended; L1 built
-2026-10-18; L2 built 2026-10-18; L3 next.** Four choices were made before writing (2026-10-16): formatting
-is part of the language, not a library; cryptography stops at hashes and
-HMAC; regular expressions are the guaranteed-linear kind; the work goes in
-batches. At approval, networking was added as batch L7. After a review
-(REVISIONS.md, 2026-10-16), `try` and `defer` joined L1 and `std/stream`
-L2, so that the libraries after them are written with both.
+**Status: approved 2026-10-16, every decision as recommended; L1, L2,
+and L3 built 2026-10-18; L4 next.** Four choices were made before writing
+(2026-10-16): formatting is part of the language, not a library;
+cryptography stops at hashes and HMAC; regular expressions are the
+guaranteed-linear kind; the work goes in batches. At approval,
+networking was added as batch L7. After a review (REVISIONS.md,
+2026-10-16), `try` and `defer` joined L1 and `std/stream` L2, so that the
+libraries after them are written with both.
 
 ## The gap
 
@@ -278,6 +279,15 @@ plan: it is a design of its own, and these are what it would be built on.
 - **`json`** exists (AIPL_SPEC.md 12.6); it gains `json.get_path` for
   `"a.b[2].c"` lookups.
 
+As built (2026-10-18), `encode`: the alphabet and the padding are enums
+(`encode.Alphabet.url_safe`, `encode.Padding.unpadded`) rather than
+flags, so a call says which it means. Decoding accepts exactly what
+Python's `binascii.a2b_base64(strict_mode=True)` and `unhexlify` accept,
+with the index of the first byte it refuses as the error, and checks
+before writing, so a failed decode leaves the buffer as it was.
+`percent_decode` refuses a `%` without two hex digits where Python's
+`unquote` passes it through. 1,650 generated cases match Python.
+
 ## 5. Hashes (`hash`)
 
 CRC-32 (zlib's), Adler-32, MD5, SHA-1, SHA-256, SHA-512, and HMAC over
@@ -288,6 +298,15 @@ Checked against the published test vectors (NIST, RFC 1321, RFC 4231) and
 against Python's `hashlib` on random inputs of every length up to a few
 blocks. MD5 and SHA-1 are documented as checksums only (both are broken
 for security). No encryption, as decided: ours would be unaudited.
+
+As built (2026-10-18): one `hash.Hasher` for all four hashes, chosen by
+`hash.Algorithm` (`make`, `update`, `update_reader` for a whole stream,
+`finish_to`, `free`), rather than a set of functions per hash; HMAC works
+over any of them. The constant tables are computed exactly with integer
+roots by tools/hash_tables.py, which writes them into hash.aipl. 772
+generated cases match Python's hashlib, hmac, and zlib, NIST's examples
+and RFC 4231's cases among them. CRC-32 goes bit by bit (no table yet);
+deflate (L5) may want a faster one.
 
 ## 6. Regular expressions (`regex`)
 
