@@ -46,7 +46,9 @@
              ;; each formatting piece's value type, when asked for (check_formats)
              fmts:(ptr (vec.Vec (ptr Fmt)))
              ;; inside a (defer ...), which may not return
-             in_defer:bool])
+             in_defer:bool
+             ;; the unions held by value, each with its slot counts (Slots)
+             by_value:(ptr (map.Map str.Bytes (arr i32)))])
 
   ;; A formatting piece's value: where its string is (every piece of one
   ;; string is there), which value of that string it is (from 0), its type,
@@ -262,6 +264,8 @@
       (if (get c C.failed) (return) (block))
       (call register_union c (arr.get (ptr ast.UnionDef) us k)))
     (if (get c C.failed) (return) (block))
+    ;; which unions are values, which a result's slots count
+    (call decide_unions c us)
     ;; field types may name structs and unions defined later
     (loop k 0 (- (arr.len ss) 1) 1
       (let sd:(ptr ast.StructDef) (arr.get (ptr ast.StructDef) ss k))
@@ -533,6 +537,146 @@
         (if (call layout_error c b (get fj ast.Field.ty)) (block (call fail c b) (return)) (block))))
     (call (map.set str.Bytes (ptr ast.UnionDef)) (get c C.unions) name u))
 
+;; ===== Slots (checker.rs scalars, sum_layout, union_layouts) =====
+  ;; A value's scalars take slots of four kinds: 0 the i32-sized, 1 f32, 2
+  ;; i64 (and pointers and arrays), 3 f64. A sum (a union or a result held
+  ;; by value) is a tag and then, of each kind, the most any variant needs:
+  ;; its counts, an (arr i32) of four.
+
+  (fn slot_kind [t:ast.Type] -> i32
+    (match t
+      (ast.Type.f32 1) (ast.Type.i64 2) (ast.Type.ptr [_] 2) (ast.Type.arr [_] 2) (ast.Type.f64 3)
+      (else 0)))
+
+  (fn no_counts [] -> (arr i32)
+    (let counts:(arr i32) (call (alloc.array i32) (call alloc.default) 4))
+    (for k 0 4 (arr.set i32 counts k 0))
+    counts)
+
+  ;; The slots a sum with these counts needs: the tag and the counts.
+  (fn width [counts:(arr i32)] -> i32
+    (+ 1 (+ (arr.get i32 counts 0) (+ (arr.get i32 counts 1) (+ (arr.get i32 counts 2) (arr.get i32 counts 3))))))
+
+  ;; The kinds of t's scalars, in order, onto out (checker.rs scalars): a
+  ;; value struct's fields', a sum held by value's slots, else t's own.
+  (fn push_kinds [c:(ptr C) t:ast.Type out:(ptr (vec.Vec i32))] -> void
+    (match t
+      (ast.Type.struct_ [sn]
+       (if (call is_value c sn)
+           (block
+             (let fs:(arr (ptr ast.Field)) (get (call struct_def c sn) ast.StructDef.fields))
+             (for k 0 (arr.len fs) (call push_kinds c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) out)))
+           (call (vec.push i32) out 0)))
+      (ast.Type.union_ [un]
+       (let uc:(arr i32) (call (map.get_or str.Bytes (arr i32)) (get c C.by_value) un (arr.null i32)))
+       (if (eq uc (arr.null i32)) (call (vec.push i32) out 0) (call push_sum uc out)))
+      (ast.Type.result [a b]
+       (let rc:(arr i32) (call result_counts c a b))
+       (if (lte (call width rc) 8) (call push_sum rc out) (call (vec.push i32) out 0)))
+      (ast.Type.void (block))
+      (else (call (vec.push i32) out (call slot_kind t)))))
+
+  ;; A sum's slots' kinds: the tag, then its counts of each kind in order.
+  (fn push_sum [counts:(arr i32) out:(ptr (vec.Vec i32))] -> void
+    (call (vec.push i32) out 0)
+    (for k 0 4 (for j 0 (arr.get i32 counts k) (call (vec.push i32) out k))))
+
+  ;; counts raised to what a variant whose scalars are of kinds ks needs.
+  (fn fold [counts:(arr i32) ks:(ptr (vec.Vec i32))] -> void
+    (for k 0 4
+      (let n:i32 0)
+      (for j 0 (call (vec.len i32) ks) (when (eq (call (vec.at i32) ks j) k) (set! n (+ n 1))))
+      (when (gt n (arr.get i32 counts k)) (arr.set i32 counts k n))))
+
+  ;; counts raised to what a variant of these fields needs.
+  (fn fold_fields [c:(ptr C) counts:(arr i32) fs:(arr (ptr ast.Field))] -> void
+    (let ks:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    (for k 0 (arr.len fs) (call push_kinds c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) ks))
+    (call fold counts ks))
+
+  ;; counts raised to what a variant of one field of type t needs.
+  (fn fold_type [c:(ptr C) counts:(arr i32) t:ast.Type] -> void
+    (let ks:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    (call push_kinds c t ks)
+    (call fold counts ks))
+
+  ;; (result a b)'s counts: two variants, ok and err.
+  (fn result_counts [c:(ptr C) a:ast.Type b:ast.Type] -> (arr i32)
+    (let counts:(arr i32) (call no_counts))
+    (call fold_type c counts a)
+    (call fold_type c counts b)
+    counts)
+
+  ;; src/checker.rs result_fits: a result is held by value, so one that
+  ;; needs more than 8 slots is refused; null if it fits.
+  (fn result_error [c:(ptr C) a:ast.Type b:ast.Type at:i32] -> (ptr buf.Buf)
+    (let n:i32 (call width (call result_counts c a b)))
+    (when (lte n 8) (return (ptr.null buf.Buf)))
+    (let m:(ptr buf.Buf) (call msg c at))
+    (call ty m (make ast.Type.result a b)) (call s m " needs ") (call buf.push_int m n)
+    (call s m " slots, more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)")
+    m)
+
+  ;; Which unions are values (checker.rs union_layouts): a union is a value
+  ;; unless a variant holds a str, it reaches itself through the unions it
+  ;; holds, or it needs more than 8 slots, counting the unions it holds
+  ;; that are values as their slots and the others as one (each decided
+  ;; after the unions it holds).
+  (fn decide_unions [c:(ptr C) us:(arr (ptr ast.UnionDef))] -> void
+    (let decided:(ptr (map.Map str.Bytes bool)) (call (map.make str.Bytes bool) (call alloc.default) 16))
+    (for k 0 (arr.len us)
+      (let u:(ptr ast.UnionDef) (arr.get (ptr ast.UnionDef) us k))
+      (when (call candidate c u) (call decide_union c decided u))))
+
+  (fn candidate [c:(ptr C) u:(ptr ast.UnionDef)] -> bool
+    (and (not (call holds_str u)) (not (call reaches_itself c u))))
+
+  (fn holds_str [u:(ptr ast.UnionDef)] -> bool
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (for k 0 (arr.len vs)
+      (let fs:(arr (ptr ast.Field)) (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields))
+      (for j 0 (arr.len fs)
+        (when (eq (call tag (get (arr.get (ptr ast.Field) fs j) ast.Field.ty)) 5) (return true))))
+    false)
+
+  ;; The unions u's variants hold in fields, onto out.
+  (fn push_held [u:(ptr ast.UnionDef) out:(ptr (vec.Vec str.Bytes))] -> void
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (for k 0 (arr.len vs)
+      (let fs:(arr (ptr ast.Field)) (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields))
+      (for j 0 (arr.len fs)
+        (match (get (arr.get (ptr ast.Field) fs j) ast.Field.ty)
+          (ast.Type.union_ [un] (call (vec.push str.Bytes) out un))
+          (else (block))))))
+
+  (fn reaches_itself [c:(ptr C) u:(ptr ast.UnionDef)] -> bool
+    (let todo:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
+    (let seen:(ptr (map.Map str.Bytes bool)) (call (map.make str.Bytes bool) (call alloc.default) 16))
+    (call push_held u todo)
+    (while (gt (call (vec.len str.Bytes) todo) 0)
+      (let un:str.Bytes (call (vec.pop str.Bytes) todo))
+      (when (call beq un (get u ast.UnionDef.name)) (return true))
+      (when (not (call (map.has str.Bytes bool) seen un))
+        (call (map.set str.Bytes bool) seen un true)
+        (let w:(ptr ast.UnionDef) (call union_def c un))
+        (when (neq w (ptr.null ast.UnionDef)) (call push_held w todo))))
+    false)
+
+  ;; u, after the candidates it holds: a value if it fits.
+  (fn decide_union [c:(ptr C) decided:(ptr (map.Map str.Bytes bool)) u:(ptr ast.UnionDef)] -> void
+    (let un:str.Bytes (get u ast.UnionDef.name))
+    (when (call (map.has str.Bytes bool) decided un) (return))
+    (call (map.set str.Bytes bool) decided un true)
+    (let held:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (call push_held u held)
+    (for k 0 (call (vec.len str.Bytes) held)
+      (let w:(ptr ast.UnionDef) (call union_def c (call (vec.at str.Bytes) held k)))
+      (when (and (neq w (ptr.null ast.UnionDef)) (call candidate c w)) (call decide_union c decided w)))
+    (let counts:(arr i32) (call no_counts))
+    (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
+    (for k 0 (arr.len vs) (call fold_fields c counts (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
+    (when (lte (call width counts) 8) (call (map.set str.Bytes (arr i32)) (get c C.by_value) un counts)))
+
   ;; src/checker.rs validate_type: null, or the error's message (to which
   ;; callers may add context).
   (fn validate [c:(ptr C) t:ast.Type at:i32] -> (ptr buf.Buf)
@@ -574,7 +718,9 @@
            (ptr.null buf.Buf)))
       (ast.Type.result [ok_t err_t]
        (let first:(ptr buf.Buf) (call validate c ok_t at))
-       (if (neq first (ptr.null buf.Buf)) first (call validate c err_t at)))
+       (if (neq first (ptr.null buf.Buf)) (return first) (block))
+       (let second:(ptr buf.Buf) (call validate c err_t at))
+       (if (neq second (ptr.null buf.Buf)) second (call result_error c ok_t err_t at)))
       (ast.Type.fn_ [params ret]
        (loop k 0 (- (arr.len params) 1) 1
          (let pe:(ptr buf.Buf) (call validate c (arr.get ast.Type params k) at))
@@ -621,7 +767,10 @@
 
   ;; validate, failing with its message.
   (fn validate_or_fail [c:(ptr C) t:ast.Type at:i32] -> void
-    (let b:(ptr buf.Buf) (call validate c t at))
+    (call fail_if c (call validate c t at)))
+
+  ;; Fails with b, if b is an error (not null).
+  (fn fail_if [c:(ptr C) b:(ptr buf.Buf)] -> void
     (if (neq b (ptr.null buf.Buf)) (call fail c b) (block)))
 
   ;; ===== Functions =====
@@ -775,6 +924,8 @@
        (if (get c C.failed) (return (call void_t)) (block))
        (let et:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
        (call validate_or_fail c et at)
+       (if (get c C.failed) (return (call void_t)) (block))
+       (call fail_if c (call result_error c inner et at))
        (make ast.Type.result inner et))
       (ast.Expr.err [_ val oty]
        (if (call no_type oty) (return (call fail_text c at "(err e) must name its result's ok type: write (err:T e) for a (result T E)")) (block))
@@ -784,6 +935,8 @@
        (if (get c C.failed) (return (call void_t)) (block))
        (let okt:ast.Type (match oty (ast.MaybeType.some [t] t) (ast.MaybeType.none (call i32_t))))
        (call validate_or_fail c okt at)
+       (if (get c C.failed) (return (call void_t)) (block))
+       (call fail_if c (call result_error c okt errt at))
        (make ast.Type.result okt errt))
       (ast.Expr.match_result [_ val ok_var ok_body err_var err_body]
        (call infer_match_result c env at val ok_var ok_body err_var err_body))
@@ -2490,6 +2643,7 @@
     (put c C.structs (call (map.make str.Bytes (ptr ast.StructDef)) (call alloc.default) 64))
     (put c C.enums (call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16))
     (put c C.unions (call (map.make str.Bytes (ptr ast.UnionDef)) (call alloc.default) 16))
+    (put c C.by_value (call (map.make str.Bytes (arr i32)) (call alloc.default) 16))
     (put c C.fns (call (map.make str.Bytes (ptr Sig)) (call alloc.default) 256))
     (put c C.declared (call (map.make str.Bytes ast.Type) (call alloc.default) 32))
     (put c C.loop_depth 0)

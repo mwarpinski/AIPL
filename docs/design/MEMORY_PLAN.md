@@ -148,11 +148,37 @@ The rule, exactly (settled 2026-10-19):
 
 ### M4. Results and unions without hidden cells
 
-A result with a `str` side, and a union needing more than 8 slots, get
-a heap cell the program never sees and never frees. With views as
-values, results with text sides are views (no cell); a union too big to
-hold by value becomes an error that says to put the big variant behind a
-pointer from an allocator, so every cell is one the program made.
+A result with a `str` side or more than 8 slots, and a union that is
+recursive, has a `str` variant, or needs more than 8 slots, got a heap
+cell the program never sees and never frees.
+
+**(a) Results (done 2026-10-19).** A result is never stored in memory
+(a struct field or array element cannot be one), which is why a `str`
+side once needed a cell, so it is always held by value: a `str` side is
+one i32-sized slot, and a result needing more than 8 slots is refused,
+where its type is written and where one is made, by both checkers word
+for word ("keep the larger side's data in a struct that is not (value)
+and make that side a (ptr S)"). The result-cell code is gone from the
+VM, wasm.rs, and codegen.aipl, and with it the checker's payload-type
+pass the VM ran on every load. checker.aipl now decides which unions are
+values (checker.rs union_layouts), which (b) needs too. No test program
+in the tree used a result wider than 8 slots but results_by_value.aipl
+and unions_by_value.aipl, which tested the cell.
+
+**(b) Unions held by address (decision 6: every union a value).** Unions that are
+recursive (ast.aipl's `Type` and `Expr`, the tests' `List` and `Chain`),
+have a `str` variant, or exceed 8 slots are an unchecked i32 address of
+a cell from `make`. A `str` variant needs no cell, for the reason (a)
+gave: once a `str` is one slot of a value, and the VM writes a `str`
+into memory as it does for a struct field. What remains is recursion and
+width, and decision 6 settles both: every union is a value, at most 8
+slots, as a result is; recursion and width go through a `(ptr S)` the
+program allocates from an allocator it names, and anything else is
+refused with the way to write it. Steps: the rule lands unused (both
+checkers; a `str` variant one slot; the held-by-address paths left until
+nothing uses them); the seed is refreshed; ast.aipl's `Type` and `Expr`
+and the tests' recursive unions move behind cells by script; then the
+held-by-address code leaves all three code generators and the spec.
 
 ### M5. Long-lived servers
 
@@ -171,7 +197,8 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
 | M3 | `(no_leak)` (done 2026-10-19: both checkers, word for word; std's allocators marked after a second seed refresh; tests/test_memory.rs) | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
 | F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` leave the language, the compiler's 209 uses and every other moving to `alloc.create` / `alloc.array` on `alloc.forever` | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
-| M2, M4 | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
+| M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
+| M2, M4 (b) | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
 | M5 | servers | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
 
 M1 is the largest; the rest are each about the size of one stdlib
@@ -207,3 +234,16 @@ compiler's source can be migrated in the current language.
    only from `alloc.forever` (they have no generation, so nothing else
    could free them safely); text built per request is a view of a
    buffer from the request's allocator.
+6. **Unions held by address (M4 b; decided 2026-10-19: (i)).** Either (i) every union is a
+   value, and recursion or width goes through a pointer the program
+   allocates: `(union List [(nil) (cons head:i32 tail:(ptr Cell))])`
+   with `(struct Cell [l:List])`, so each cell is an ordinary checked
+   `(ptr S)` from a named allocator and a stale one traps (recommended:
+   no new form, one rule shared with results, and nothing unchecked
+   left; but ast.aipl's `Type` and `Expr` move behind such cells, the
+   largest migration in the plan); or (ii) `make` of a union held by
+   address names its allocator, `(make List.cons a h t)`, and the union
+   becomes a checked pointer (address and generation, an i64 slot)
+   instead of an unchecked i32 address (less rewriting, a second way to
+   allocate, and every backend's union representation changes). Either
+   needs a seed refresh before the compiler's source uses it.

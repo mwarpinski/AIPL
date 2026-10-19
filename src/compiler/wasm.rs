@@ -797,7 +797,7 @@ fn emit_set_slots(func: &mut Body, base: u32, n: u32) {
 fn emit_load_scalars(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32) -> Result<(), String> {
     for (t, o) in flat(ty, ctx.structs) {
         func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&load_instruction(&in_cell(&t), (offset + o) as u64)?);
+        func.instruction(&load_instruction(&t, (offset + o) as u64)?);
         if t == Type::Bool {
             normalize_bool(func);
         }
@@ -817,7 +817,7 @@ fn emit_store_value(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, val: &Ex
     for (k, (t, o)) in flat(ty, ctx.structs).iter().enumerate() {
         func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
         func.instruction(&Instruction::LocalGet(g + k as u32));
-        func.instruction(&store_instruction(&in_cell(t), (offset + o) as u64)?);
+        func.instruction(&store_instruction(t, (offset + o) as u64)?);
     }
     Ok(())
 }
@@ -2321,9 +2321,8 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Ok(inner, ..) | Expr::Err(inner, ..) if is_value_type(&expr_type(expr, ctx), ctx.structs) => compile_value_result(expr, inner, ctx, func)?,
-        Expr::Ok(inner, ..) => compile_result_cell(0, inner, ctx, func)?,
-        Expr::Err(inner, ..) => compile_result_cell(1, inner, ctx, func)?,
+        // a result is held by value (AIPL_SPEC.md 4.F)
+        Expr::Ok(inner, ..) | Expr::Err(inner, ..) => compile_value_result(expr, inner, ctx, func)?,
         Expr::MatchResult { .. } => {
             let t = expr_type(expr, ctx);
             if is_value_type(&t, ctx.structs) {
@@ -2769,35 +2768,6 @@ fn emit_grow_to_cursor(func: &mut Body) {
     func.instruction(&End);
 }
 
-/// `ok`/`err`: allocate a cell `[tag:i32 payload]` (tag 0 = ok, 1 = err;
-/// checker::result_cell_layout: the payload at 4 in 8 bytes, or a 64-bit one
-/// (i64, f64, a pointer, an array) at 8 in 16) from the heap cursor before evaluating the payload, and leave
-/// the cell pointer on the stack. The pointer is pushed twice before the
-/// payload is compiled, so a payload that itself uses the scratch local
-/// cannot clobber it. The VM allocates the same cell in the same order.
-fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
-    let payload_ty = expr_type(inner, ctx);
-    let (offset, size) = crate::checker::result_cell_layout(&payload_ty, ctx.structs);
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(size));
-    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-    emit_grow_to_cursor(func);
-
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    func.instruction(&Instruction::I32Const(tag));
-    func.instruction(&Instruction::I32Store(M4));
-
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    if is_value_type(&payload_ty, ctx.structs) {
-        return emit_store_value(func, ctx, &payload_ty, offset, inner);
-    }
-    compile_expr(inner, ctx, func)?;
-    func.instruction(&store_instruction(&in_cell(&payload_ty), offset as u64)?);
-    Ok(())
-}
-
 /// The ok and err payload types of a result-typed expression (i32 for
 /// anything else, which the checker has ruled out).
 fn result_sides(ty: Type) -> (Type, Type) {
@@ -2805,12 +2775,6 @@ fn result_sides(ty: Type) -> (Type, Type) {
         Type::ResultType(a, b) => (*a, *b),
         _ => (Type::I32, Type::I32),
     }
-}
-
-/// How a payload of type `ty` sits in a result cell: a result payload is
-/// the address of its own cell.
-fn in_cell(ty: &Type) -> Type {
-    if matches!(ty, Type::ResultType(..)) { Type::I32 } else { ty.clone() }
 }
 
 /// Gives each match_result binder its payload's type, which collect_lets
@@ -2897,8 +2861,8 @@ fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Str
     })
 }
 
-/// `(match_result r (ok v ...) (err e ...))`: the cell's tag picks the arm;
-/// its binder is loaded from the cell. With `dest`, a value struct result
+/// `(match_result r (ok v ...) (err e ...))`: the result's tag picks the
+/// arm; its binder is its side's slots. With `dest`, a value struct result
 /// goes into the locals from there (compile_into) and the if yields nothing.
 fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } = this else {
@@ -2906,43 +2870,26 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
     };
     let rt = expr_type(expr, ctx);
     let (ok_ty, err_ty) = result_sides(rt.clone());
-    // a result by value: its tag and binders from its slots (a variable's
-    // own locals, else its spill group)
-    let by_value = ctx.structs.sum_of(&rt);
-    let mut base = 0;
-    if by_value.is_some() {
-        base = match expr.as_ref() {
-            Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
-            _ => {
-                let g = *ctx.groups.get(&(2 * (expr.as_ref() as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match_result has no spill group")?;
-                compile_expr(expr, ctx, func)?;
-                emit_set_slots(func, g, width(&rt, ctx.structs));
-                g
-            }
-        };
-        func.instruction(&Instruction::LocalGet(base));
-    } else {
-        compile_expr(expr, ctx, func)?;
-        func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-            offset: 0,
-            align: 2,
-            memory_index: 0,
-        }));
-    }
+    // a result is held by value: its tag and binders from its slots (a
+    // variable's own locals, else its spill group)
+    let l = ctx.structs.sum_of(&rt).ok_or("Wasm Codegen: a result wider than its checker allows")?;
+    let base = match expr.as_ref() {
+        Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
+        _ => {
+            let g = *ctx.groups.get(&(2 * (expr.as_ref() as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match_result has no spill group")?;
+            compile_expr(expr, ctx, func)?;
+            emit_set_slots(func, g, width(&rt, ctx.structs));
+            g
+        }
+    };
+    func.instruction(&Instruction::LocalGet(base));
     func.instruction(&Instruction::I32Eqz);
     let load_binder = |func: &mut Body, side: usize, ty: &Type, idx: u32| -> Result<(), String> {
-        match &by_value {
-            Some(l) => {
-                for slot in &l.variants[side] {
-                    func.instruction(&Instruction::LocalGet(base + slot));
-                }
-                emit_set_slots(func, idx, width(ty, ctx.structs));
-                Ok(())
-            }
-            None => emit_load_binder(func, ctx, ty, crate::checker::result_cell_layout(ty, ctx.structs).0, idx),
+        for slot in &l.variants[side] {
+            func.instruction(&Instruction::LocalGet(base + slot));
         }
+        emit_set_slots(func, idx, width(ty, ctx.structs));
+        Ok(())
     };
 
     // the arm that does not always leave gives the block's type
@@ -2971,20 +2918,6 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
 
     ctx.labels.borrow_mut().pop();
     func.instruction(&Instruction::End);
-    Ok(())
-}
-
-/// A binder of type `ty` loaded from the cell in addr_scratch, `offset`
-/// bytes on, into its local (or locals, for a value struct).
-fn emit_load_binder(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, idx: u32) -> Result<(), String> {
-    if is_value_type(ty, ctx.structs) {
-        emit_load_scalars(func, ctx, ty, offset)?;
-        emit_set_slots(func, idx, width(ty, ctx.structs));
-    } else {
-        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&load_instruction(&in_cell(ty), offset as u64)?);
-        func.instruction(&Instruction::LocalSet(idx));
-    }
     Ok(())
 }
 

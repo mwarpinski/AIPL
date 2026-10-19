@@ -5,8 +5,8 @@
 //!
 //! A function may leak if its code uses `new`, `arr.new`, `mem.alloc`, or
 //! `format` (a str), calls through a function reference, or calls a
-//! function that may leak. (The hidden cells of results and unions held by
-//! address are not counted: MEMORY_PLAN.md M4 removes them.) Inside
+//! function that may leak. (The hidden cells of unions held by address are
+//! not counted: MEMORY_PLAN.md M4 removes them; results have none.) Inside
 //! `unsafe` this counts for the function's callers but not against its own
 //! `(no_leak)` promise: there it is the programmer's word, which is how an
 //! allocator growing its pool with `mem.alloc` is marked `(no_leak)`. A

@@ -784,12 +784,11 @@ fn p8_structs_and_arrays() {
     // H+16, cursor H+24, so array - cursor = -8
     assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
     // The module's string literal occupies 1024..1032, so the heap starts at
-    // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
-    // the 4-byte block.
-    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
-    // result cell at 1032 (16 bytes: an array is 8, its address and
-    // generation, at 8), the array's 8-byte prefix at 1048, array at 1056
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1056)));
+    // 1032 in both backends; results are values (AIPL_SPEC.md 4.F), so the
+    // two take no memory and the 4-byte block is at 1032.
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1032)));
+    // the array's 8-byte prefix at 1032, the array at 1040: no result cell
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1040)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -807,11 +806,9 @@ fn p8_structs_and_arrays() {
     }
 }
 
-/// Result payloads of any type (AIPL_SPEC.md 4.F): in a heap cell (a result
-/// with a str side) a 64-bit one sits at 8 in a 16-byte cell, anything else
-/// at 4 in an 8-byte one, the same in both backends; a result without a str
-/// side is held by value and takes no memory; only a void payload is
-/// rejected.
+/// Result payloads of any type (AIPL_SPEC.md 4.F): a result is held by
+/// value, a str side included, and takes no memory, the same in both
+/// backends; only a void payload is rejected.
 #[test]
 fn results_carry_payloads_of_any_type() {
     let src = r#"
@@ -844,8 +841,8 @@ fn results_carry_payloads_of_any_type() {
     assert_eq!(differential(&module, &wasm, "wide", &[0]), Ok(Value::Int(12)));
     assert_eq!(differential(&module, &wasm, "float", &[]), Ok(Value::Int(25)));
     assert_eq!(differential(&module, &wasm, "inner", &[]), Ok(Value::Int(5)));
-    // big's is a cell with an i64 payload (16 bytes); the others are values
-    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(16)));
+    // none takes a cell, big's (a str side) included
+    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(0)));
 
     let err = TypeChecker::new()
         .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
@@ -853,7 +850,7 @@ fn results_carry_payloads_of_any_type() {
     assert!(err.ends_with("1:60: a result payload must be a value, got void"), "got {err}");
 }
 
-// Allocation grows memory: new, arr.new, ok/err cells, and mem.alloc past the
+// Allocation grows memory: new, arr.new, and mem.alloc past the
 // initial 1 MiB need no explicit mem.grow, and both backends end with the same
 // number of pages.
 #[test]
@@ -1102,8 +1099,8 @@ fn value_structs_agree() {
     (put h Holder.w W.v V.a 11)
     (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
 
-  ;; a result's cell holding a V (a cell: its err side is a str): the
-  ;; payload at 8, the cell 32 bytes
+  ;; a result holding a V beside a str takes no cell (it is a value): the
+  ;; two 4-byte blocks, each rounded to 8, are 8 apart
   (fn result_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
     (let r:(result V str) (ok:str (make V 1 2.0 false)))
@@ -1138,8 +1135,8 @@ fn value_structs_agree() {
     assert_eq!(differential(&module, &wasm, "sizes", &[]), Ok(Value::Int(2400 + 320 + 40)));
     // a 11, c true (1), n 9
     assert_eq!(differential(&module, &wasm, "raw", &[]), Ok(Value::Int(21)));
-    // the 4-byte block rounded to 8, then the 32-byte cell
-    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(40)));
+    // the 4-byte block rounded to 8, and no result cell
+    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(8)));
     assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(40)));
     assert_eq!(differential(&module, &wasm, "elements", &[]), Ok(Value::Int(5)));
     assert!(differential(&module, &wasm, "read_null", &[]).is_err());

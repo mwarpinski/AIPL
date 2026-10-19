@@ -388,9 +388,36 @@ fn results_by_value_are_decided_as_specified() {
     assert!(st.result_layout(&r(I64, Bool), &I32).is_some());
     // Vec2's two f64s beside Shape's slots (tag, two i32s, f64): six
     assert_eq!(st.result_layout(&vec2, &shape).unwrap().slots.len(), 6);
-    // four f64s beside four i32s: nine, a cell; a str side: a cell
-    assert_eq!(st.result_layout(&Struct("Quad".into()), &Struct("Ints".into())), None);
-    assert_eq!(st.result_layout(&I32, &Str), None);
+    // a str side: the tag and one shared i32 slot
+    assert_eq!(st.result_layout(&I32, &Str).unwrap().slots, [I32, I32]);
+    // four f64s beside four i32s: nine, which the checker refuses
+    let quad4 = aipl_core::ast::StructDef { name: "Quad4".into(), is_value: true, ..m.structs.iter().find(|s| s.name == "Quad").unwrap().clone() };
+    let st = aipl_core::checker::Structs::new(&[m.structs.clone(), vec![quad4]].concat(), &m.unions);
+    assert_eq!(st.result_slots(&Struct("Quad4".into()), &Struct("Ints".into())), 9);
+    assert_eq!(st.result_layout(&Struct("Quad4".into()), &Struct("Ints".into())), None);
+}
+
+/// A result is held by value, so one that needs more than eight slots is
+/// refused (MEMORY_PLAN.md M4), where its type is written and where one is
+/// made, with the same error from both toolchains.
+#[test]
+fn a_result_over_eight_slots_is_refused_by_both_toolchains() {
+    let defs = "  (struct Q [a:f64 b:f64 c:f64 d:f64] (value))\n  (struct I [a:i32 b:i32 c:i32 d:i32] (value))\n";
+    for (name, body, want) in [
+        ("written", "  (fn f [r:(result Q I)] -> i32 0)\n  (fn main [] -> i32 0))\n", "(result Q I) needs 9 slots"),
+        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I 1 2 3 4)) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 9 slots"),
+    ] {
+        let dir = scratch(&format!("wide_result_{name}"));
+        let file = dir.join("m.aipl");
+        std::fs::write(&file, format!("(module m\n{defs}{body}")).unwrap();
+        let module = Resolver::resolve(&file).unwrap();
+        let rust = aipl_core::checker::TypeChecker::new().check_module(&module).map(|_| ()).expect_err(name);
+        let aipl = aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).expect_err(name);
+        assert!(rust.contains(want), "{name}: {rust}");
+        assert!(rust.contains("more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)"), "{rust}");
+        assert!(aipl.contains(&rust), "{name}: {aipl} / {rust}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Malformed items the program fuzzer found (tools/fuzz.py): an empty item

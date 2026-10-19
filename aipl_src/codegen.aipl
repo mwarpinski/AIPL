@@ -1860,7 +1860,6 @@
     (let er:(ptr Desc) (call result_side cg d 1))
     (let ot:Ty (call desc_ty cg ok))
     (let et:Ty (call desc_ty cg er))
-    (if (or (eq ot Ty.str) (eq et Ty.str)) (return (ptr.null StructInfo)) (block))
     (let ok_k:(ptr (vec.Vec Ty)) (call desc_kinds cg ok ot))
     (let er_k:(ptr (vec.Vec Ty)) (call desc_kinds cg er et))
     (let rs:(ptr (vec.Vec (ptr StructInfo))) (get cg Cg.results))
@@ -2691,42 +2690,14 @@
       (set! bchild (call node_next bchild)))
     found)
 
-  ;; Where a result cell keeps a payload of type t (checker.rs
-  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit (i64, f64,
-  ;; or a pointer or array: an address, then a generation), else at 4 in an
-  ;; 8-byte one. A result payload is its cell's address, an i32.
-  (fn payload_offset [t:Ty] -> i32
-    (if (or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8 4))
-
-  ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
-  ;; evaluating the payload, store the tag, then the payload.
-  (fn compile_result_cell [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
-    (if (call is_value_node cg node) (return (call compile_value_result cg node tag o)) (block))
-    (let t:Ty (call node_type cg (call result_payload node)))
-    (let vs:(ptr StructInfo) (if (eq t Ty.value) (call node_struct cg (call result_payload node)) (ptr.null StructInfo)))
-    (let at:i32 (call cell_offset t vs))
-    (call emit_i32_const o 0)
-    (call emit_i32_const o (call cell_size t vs))
-    (call emit_rmw_add o)
-    (call emit_local_set o (get cg Cg.scratch))
-    (call emit_grow_to_cursor o)
-    (call emit_local_get o (get cg Cg.scratch))
-    (call emit_i32_const o tag)
-    (call emit_memop o OP_I32_STORE 2)
-    (call emit_local_get o (get cg Cg.scratch))
-    (call emit_local_get o (get cg Cg.scratch))
-    (if (eq t Ty.value)
-        (return (call emit_store_value cg o vs at (call result_payload node)))
-        (block))
-    (call compile_expr cg (call result_payload node) o)
-    (call emit_memop_offset o (call store_opcode t) (call mem_align t) at))
-
-;; (ok:E v) / (err:T e) of a result held by value (wasm.rs
+  ;; (ok:E v) / (err:T e), a result held by value (AIPL_SPEC.md 4.F; wasm.rs
   ;; compile_value_result): into its group, the tag, the payload's scalars in
   ;; their slots, zero in the others; then the group pushed.
   (fn compile_value_result [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
-    (let g:i32 (call group_slot cg node false))
     (let vs:(ptr StructInfo) (call node_struct cg node))
+    ;; wider than the checker allows
+    (if (eq vs (ptr.null StructInfo)) (block (call set_compile_error CgErr.table_full) (return)) (block))
+    (let g:i32 (call group_slot cg node false))
     (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get (get vs StructInfo.union_of) UnionInfo.variants) tag))
     (call emit_i32_const o tag)
     (call emit_local_set o g)
@@ -3349,17 +3320,6 @@
     (call put_op o OP_END)
     (call at_pop o))
 
-  ;; Where a result cell keeps a payload (checker.rs result_cell_layout): a
-  ;; value struct after the tag, aligned; the cell's size a multiple of 8.
-  (fn cell_offset [t:Ty vs:(ptr StructInfo)] -> i32
-    (if (eq t Ty.value)
-        (if (eq (get vs StructInfo.align) 8) 8 4)
-        (call payload_offset t)))
-  (fn cell_size [t:Ty vs:(ptr StructInfo)] -> i32
-    (if (eq t Ty.value)
-        (bitand (+ (+ (call cell_offset t vs) (get vs StructInfo.size)) 7) -8)
-        (* 2 (call payload_offset t))))
-
   ;; ===== Expression / statement codegen =====
   ;; Compiles one expression, its position the innermost one while it is
   ;; compiled (for the line table).
@@ -3446,37 +3406,25 @@
     (call emit_get_slots o g n))
 
   ;; (match_result r (ok v ...) (err e ...)) (wasm.rs compile_match_result):
-  ;; the cell's tag picks the arm; its binder is loaded from the cell. With
+  ;; the result's tag picks the arm; its binder is its side's slots. With
   ;; dest (a local, else -1), a value struct result goes into the locals
   ;; from there (compile_into) and the if yields nothing.
   (fn compile_match_result [cg:(ptr Cg) node:(ptr compiler.Node) dest:i32 o:(ptr Out)] -> void
     (let expr_node:(ptr compiler.Node) (call nth_child node 1))
     (let ok_group:(ptr compiler.Node) (call nth_child node 2))
     (let err_group:(ptr compiler.Node) (call nth_child node 3))
-    (let scratch:i32 (get cg Cg.scratch))
-    ;; each side's payload type picks its load and offset (result_cell_layout)
-    (let ok_side:(ptr Desc) (call result_side cg (call desc expr_node true) 0))
-    (let err_side:(ptr Desc) (call result_side cg (call desc expr_node true) 1))
-    (let ok_ty:Ty (call desc_ty cg ok_side))
-    (let err_ty:Ty (call desc_ty cg err_side))
-    ;; a result by value: its tag and binders from its slots (a variable's
-    ;; own locals, else its spill group)
-    (let rvs:(ptr StructInfo) (if (call is_value_node cg expr_node) (call node_struct cg expr_node) (ptr.null StructInfo)))
+    ;; a result is held by value: its tag and binders from its slots (a
+    ;; variable's own locals, else its spill group)
+    (let rvs:(ptr StructInfo) (call node_struct cg expr_node))
+    (if (eq rvs (ptr.null StructInfo)) (block (call set_compile_error CgErr.table_full) (return)) (block))
     (let base:i32 0)
-    (if (neq rvs (ptr.null StructInfo))
+    (if (eq (call node_kind expr_node) compiler.Kind.symbol)
+        (set! base (call node_slot cg expr_node))
         (block
-          (if (eq (call node_kind expr_node) compiler.Kind.symbol)
-              (set! base (call node_slot cg expr_node))
-              (block
-                (set! base (call group_slot cg expr_node true))
-                (call compile_expr cg expr_node o)
-                (call emit_set_slots o base (get rvs StructInfo.width))))
-          (call emit_local_get o base))
-        (block
+          (set! base (call group_slot cg expr_node true))
           (call compile_expr cg expr_node o)
-          (call emit_local_set o scratch)
-          (call emit_local_get o scratch)
-          (call emit_memop o OP_I32_LOAD 2)))
+          (call emit_set_slots o base (get rvs StructInfo.width))))
+    (call emit_local_get o base)
     (call put_op o OP_I32_EQZ)
     (let ok_last:(ptr compiler.Node) (call last_of (call mr_typed cg node)))
     (let is_void:bool (call is_void_node cg ok_last))
@@ -3484,36 +3432,17 @@
     (if (or is_void (gte dest 0)) (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg ok_last))))
     (call put_op o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
-    (if (neq rvs (ptr.null StructInfo))
-        (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
-        (call emit_load_binder cg o (call nth_child ok_group 1) ok_ty (call desc_struct cg ok_side)))
+    (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
     (call compile_arm_seq cg (call node_next (call node_next (call first_child ok_group))) dest o)
     (call seal_body cg (call node_next (call node_next (call first_child ok_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call put_op o OP_ELSE)
-    (if (neq rvs (ptr.null StructInfo))
-        (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
-        (call emit_load_binder cg o (call nth_child err_group 1) err_ty (call desc_struct cg err_side)))
+    (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
     (call compile_arm_seq cg (call node_next (call node_next (call first_child err_group))) dest o)
     (call seal_body cg (call node_next (call node_next (call first_child err_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call label_pop cg)
     (call put_op o OP_END))
 
-  ;; A match_result binder (named by var) of type t loaded from the cell in
-  ;; the scratch local into its local, or locals for a value struct.
-  (fn emit_load_binder [cg:(ptr Cg) o:(ptr Out) var:(ptr compiler.Node) t:Ty vs:(ptr StructInfo)] -> void
-    (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
-    (if (eq idx -1) (return) (block))
-    (let slot:i32 (call slot_of cg idx))
-    (if (eq t Ty.value)
-        (block
-          (call emit_load_scalars cg o t vs (call cell_offset t vs))
-          (call emit_set_slots o slot (call width t vs)))
-        (block
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_memop_offset o (call load_opcode t) (call mem_align t) (call payload_offset t))
-          (call emit_local_set o slot))))
-
-;; A match_result binder of a result by value (described by rvs), side 0
+  ;; A match_result binder of a result by value (described by rvs), side 0
   ;; (ok) or 1 (err), from the slots from `base`.
   (fn slot_binder [cg:(ptr Cg) o:(ptr Out) var:(ptr compiler.Node) rvs:(ptr StructInfo) side:i32 base:i32] -> void
     (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
@@ -4249,8 +4178,8 @@
           (call put_op o OP_BR)
           (call put_u32 o (call label_depth cg Label.loop_header Label.loop_body)) (set! done true))
         (block))
-    (if (eq op_id Kw.ok) (block (call compile_result_cell cg node 0 o) (set! done true)) (block))
-    (if (eq op_id Kw.err) (block (call compile_result_cell cg node 1 o) (set! done true)) (block))
+    (if (eq op_id Kw.ok) (block (call compile_value_result cg node 0 o) (set! done true)) (block))
+    (if (eq op_id Kw.err) (block (call compile_value_result cg node 1 o) (set! done true)) (block))
     (if (eq op_id Kw.new) ;; new Struct
         (block
           (let snode:(ptr compiler.Node) (call nth_child node 1))
