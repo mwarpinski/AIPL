@@ -17,9 +17,9 @@ part, harder than the sockets:
 - `new`, `arr.new`, and every run-time `str` are never freed
   (AIPL_SPEC.md 4.B, 4.E), by design: a program frees what it allocates
   through `std/alloc`, and the rest goes when it exits.
-- Every `(ptr str.Bytes)` view is made with `new` (std/str.aipl:10-14),
+- Every `str.Bytes` view is made with `new` (std/str.aipl:10-14),
   so `str.slice`, `str.from_str`, and `buf.bytes` leak 16 bytes per call.
-  Views are everywhere: `(ptr str.Bytes)` appears 377 times in std and
+  Views are everywhere: `str.Bytes` appears 377 times in std and
   1,308 times in the compiler's own source. std/http's reader makes a
   view per header and per part of the start line.
 - Memory is at most 2 GiB (wasm32).

@@ -230,24 +230,23 @@
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
-  (struct Keywords [map:(ptr (map.Map (ptr str.Bytes) Kw)) key:(ptr str.Bytes)])
+  (struct Keywords [map:(ptr (map.Map str.Bytes Kw))])
 
   (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
     (unsafe (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (map.make (ptr str.Bytes) Kw) (call alloc.default) 256))
-    (put ks Keywords.key (call str.bytes 0 0))
+    (put ks Keywords.map (call (map.make str.Bytes Kw) (call alloc.default) 256))
     ks))
 
-  (fn reg [m:(ptr (map.Map (ptr str.Bytes) Kw)) word:str k:Kw] -> void
-    (call (map.set (ptr str.Bytes) Kw) m (call str.from_str word) k))
+  (fn reg [m:(ptr (map.Map str.Bytes Kw)) word:str k:Kw] -> void
+    (call (map.set str.Bytes Kw) m (call str.from_str word) k))
 
   ;; Fills the keyword map once (it also runs codegen_init, every time).
   (fn init_keywords [] -> i32
     (let _init:i32 (call codegen_init))
-    (let m:(ptr (map.Map (ptr str.Bytes) Kw)) (get (call keywords) Keywords.map))
-    (if (gt (call (map.count (ptr str.Bytes) Kw) m) 0) (return 0) (block))
+    (let m:(ptr (map.Map str.Bytes Kw)) (get (call keywords) Keywords.map))
+    (if (gt (call (map.count str.Bytes Kw) m) 0) (return 0) (block))
     (call reg m "+" Kw.add)
     (call reg m "-" Kw.sub)
     (call reg m "*" Kw.mul)
@@ -436,9 +435,8 @@
   ;; The keyword spelled by len bytes at src_ptr + pos, or Kw.none.
   (fn classify_keyword [cg:(ptr Cg) pos:i32 len:i32] -> Kw
     (let ks:(ptr Keywords) (call keywords))
-    (let key:(ptr str.Bytes) (get ks Keywords.key))
-    (unsafe (call str.repoint key (+ (get cg Cg.src) pos) len))
-    (call (map.get_or (ptr str.Bytes) Kw) (get ks Keywords.map) key Kw.none))
+    (let key:str.Bytes (unsafe (call str.bytes (+ (get cg Cg.src) pos) len)))
+    (call (map.get_or str.Bytes Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
   ;; A value's static type, as expr_type in wasm.rs computes it. bool, str,
@@ -998,7 +996,7 @@
   ;; ===== Line table (docs/design/LINES_PLAN.md; wasm.rs Body) =====
 
   ;; From offset `at` in a function's body, its code is at file:line:col.
-  (struct LEntry [at:i32 file:(ptr str.Bytes) line:i32 col:i32])
+  (struct LEntry [at:i32 file:str.Bytes line:i32 col:i32])
 
   ;; A body's line table as it is written: the offsets in the source of the
   ;; expressions being compiled (innermost last), and the entries so far.
@@ -1068,15 +1066,15 @@
   ;; first-use order, then each function's entries, offsets and lines as
   ;; deltas.
   (fn emit_lines [sec:(ptr Out) fns:(ptr (vec.Vec (ptr FnLines)))] -> void
-    (let files:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (let files:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (loop f 0 (- (call (vec.len (ptr FnLines)) fns) 1) 1
       (let es:(ptr (vec.Vec (ptr LEntry))) (get (call (vec.at (ptr FnLines)) fns f) FnLines.entries))
       (loop k 0 (- (call (vec.len (ptr LEntry)) es) 1) 1
-        (let name:(ptr str.Bytes) (get (call (vec.at (ptr LEntry)) es k) LEntry.file))
-        (if (lt (call file_index files name) 0) (call (vec.push (ptr str.Bytes)) files name) (block))))
-    (call put_u32 sec (call (vec.len (ptr str.Bytes)) files))
-    (loop i 0 (- (call (vec.len (ptr str.Bytes)) files) 1) 1
-      (let name:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) files i))
+        (let name:str.Bytes (get (call (vec.at (ptr LEntry)) es k) LEntry.file))
+        (if (lt (call file_index files name) 0) (call (vec.push str.Bytes) files name) (block))))
+    (call put_u32 sec (call (vec.len str.Bytes) files))
+    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+      (let name:str.Bytes (call (vec.at str.Bytes) files i))
       (call put_u32 sec (get name str.Bytes.len))
       (loop k 0 (- (get name str.Bytes.len) 1) 1 (call put_byte sec (call str.byte_at name k))))
     (call put_u32 sec (call (vec.len (ptr FnLines)) fns))
@@ -1096,9 +1094,9 @@
         (set! off (get e LEntry.at))
         (set! line (get e LEntry.line)))))
 
-  (fn file_index [files:(ptr (vec.Vec (ptr str.Bytes))) name:(ptr str.Bytes)] -> i32
-    (loop i 0 (- (call (vec.len (ptr str.Bytes)) files) 1) 1
-      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) files i) name) (return i) (block)))
+  (fn file_index [files:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> i32
+    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+      (if (call str.bytes_eq (call (vec.at str.Bytes) files i) name) (return i) (block)))
     -1)
 
   ;; The address of the next byte, for code that still writes at an address
@@ -5370,7 +5368,7 @@
     (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make (call alloc.default) 64) (get where places.Places.consts)))
         (block (call set_compile_error CgErr.unknown_enum_member) (return -1))
         (block))
-    (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))
+    (set! src_ptr (call str.addr (call buf.bytes plain)))
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (put cg Cg.places where)
     (set! src_len (call buf.len plain))

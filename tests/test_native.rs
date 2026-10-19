@@ -504,7 +504,7 @@ fn wasi_programs_match_natively() {
         ),
         (
             "stdin_large",
-            "(module m (import io) (import str) (fn main [] -> i32 (let b:(ptr str.Bytes) (call io.read_stdin)) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (call io.read_stdin)) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
             Io { stdin: big_input.clone(), ..Io::default() },
         ),
         (
@@ -1727,15 +1727,16 @@ fn to_native_with(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
     output_of(mem.data(&store), out)
 }
 
-/// Reads a native.Output [ok:bool error:(ptr Bytes) exe:(ptr Bytes)] at `out`.
+/// Reads a native.Output at `out`: [addr:i32 len:i32 ok:bool ...], the
+/// executable's bytes when ok, else the error's.
 fn output_of(data: &[u8], out: usize) -> Result<Vec<u8>, String> {
     let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
-    let bytes = |p: usize| data[word(p)..word(p) + word(p + 4)].to_vec();
-    // pointers are 8 bytes, the address first
-    if word(out) != 0 {
-        Ok(bytes(word(out + 16)))
+    let (addr, len, ok) = (word(out), word(out + 4), word(out + 8) != 0);
+    let bytes = data[addr..addr + len].to_vec();
+    if ok {
+        Ok(bytes)
     } else {
-        Err(String::from_utf8(bytes(word(out + 8))).unwrap())
+        Err(String::from_utf8(bytes).unwrap())
     }
 }
 
@@ -2204,9 +2205,9 @@ fn the_vm_builds_the_same_executable() {
     let Value::Int64(out) = vm.invoke("compile_at", vec![Value::Int(addr), Value::Int(wasm.len() as i64)]).unwrap() else { panic!() };
     let out = out as u32 as i64;
     let word = |vm: &mut VM, at: usize| i32::from_le_bytes(vm.read_bytes(at, 4).try_into().unwrap()) as usize;
-    assert_ne!(word(&mut vm, out as usize), 0, "the VM build failed");
-    let exe_ptr = word(&mut vm, out as usize + 16);
-    let (a, n) = (word(&mut vm, exe_ptr), word(&mut vm, exe_ptr + 4));
+    // native.Output [addr:i32 len:i32 ok:bool ...]
+    assert_ne!(word(&mut vm, out as usize + 8), 0, "the VM build failed");
+    let (a, n) = (word(&mut vm, out as usize), word(&mut vm, out as usize + 4));
     assert_eq!(vm.read_bytes(a, n), to_native(&wasm).unwrap());
 }
 
@@ -2330,18 +2331,18 @@ fn directories_and_file_information_match_natively() {
       ((option.Option fs.Info) none (call io.write_str 1 path) (call io.println " missing"))))
   (fn main [] -> i32
     (match (call fs.list (call alloc.default) "big")
-      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) some [names]
-        (call io.println_int "names " (call (vec.len (ptr str.Bytes)) names))
-        (loop i 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 37
-          (let n:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) names i))
+      ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
+        (call io.println_int "names " (call (vec.len str.Bytes) names))
+        (loop i 0 (- (call (vec.len str.Bytes) names) 1) 37
+          (let n:str.Bytes (call (vec.at str.Bytes) names i))
           (call io.println_int "  length " (get n str.Bytes.len))
           (call io.println_int "  first byte " (call str.byte_at n 0))
           (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))))
-      ((option.Option (ptr (vec.Vec (ptr str.Bytes)))) none (call io.println "no listing")))
+      ((option.Option (ptr (vec.Vec str.Bytes))) none (call io.println "no listing")))
     (call show "big/f007")
     (call show "big/sub")
     (call show "nowhere")
-    (if (call (option.is_none (ptr (vec.Vec (ptr str.Bytes)))) (call fs.list (call alloc.default) "nowhere")) 0 1)))"#;
+    (if (call (option.is_none (ptr (vec.Vec str.Bytes))) (call fs.list (call alloc.default) "nowhere")) 0 1)))"#;
     let mut files = Vec::new();
     for k in 0..300 {
         files.push((format!("big/f{:03}{}", (k * 7919) % 1000, "n".repeat(k % 120)), vec![b'x'; k]));

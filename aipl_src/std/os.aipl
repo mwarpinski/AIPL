@@ -28,7 +28,7 @@
     t))
 
   ;; Entry i of a table, without its NUL.
-  (fn entry [t:(ptr Table) i:i32] -> (ptr str.Bytes)
+  (fn entry [t:(ptr Table) i:i32] -> str.Bytes
     (req (and (gte i 0) (lt i (get t Table.count))))
     (unsafe (let p:i32 (mem.load32 (+ (get t Table.argv) (* 4 i))))
     (let n:i32 0)
@@ -40,21 +40,21 @@
     (get (call fetch false) Table.count))
 
   ;; Argument i (0 is the program), or len -1 when there is no argument i.
-  (fn arg [i:i32] -> (ptr str.Bytes) (pub)
+  (fn arg [i:i32] -> str.Bytes (pub)
     (unsafe (let t:(ptr Table) (call fetch false))
     (if (and (gte i 0) (lt i (get t Table.count))) (call entry t i) (call str.bytes 0 -1))))
 
   ;; The value of environment variable `name`, or len -1 when it is not set.
-  (fn env [name:str] -> (ptr str.Bytes) (pub)
-    (unsafe (let key:(ptr str.Bytes) (call str.from_str name))
+  (fn env [name:str] -> str.Bytes (pub)
+    (unsafe (let key:str.Bytes (call str.from_str name))
     (let klen:i32 (get key str.Bytes.len))
     (let t:(ptr Table) (call fetch true))
     (loop i 0 (- (get t Table.count) 1) 1
-      (let e:(ptr str.Bytes) (call entry t i))
+      (let e:str.Bytes (call entry t i))
       (if (and (gt (get e str.Bytes.len) klen)
                (and (eq (call str.byte_at e klen) 61)
-                    (call str.bytes_eq (call str.bytes (get e str.Bytes.addr) klen) key)))
-          (return (call str.bytes (+ (get e str.Bytes.addr) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
+                    (call str.bytes_eq (call str.bytes (call str.addr e) klen) key)))
+          (return (call str.bytes (+ (call str.addr e) (+ klen 1)) (- (get e str.Bytes.len) (+ klen 1))))
           (block)))
     (call str.bytes 0 -1)))
 

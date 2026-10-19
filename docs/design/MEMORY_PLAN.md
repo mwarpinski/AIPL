@@ -14,12 +14,12 @@ types such as `(arr u8)`, added at 15:29 that day in ab54038).
 
 Two things, one a safety hole and one a leak.
 
-**Views are not checked.** A `(ptr str.Bytes)` is an address and a
+**Views are not checked.** A `str.Bytes` is an address and a
 length, with no generation. A view of a buffer that has been freed reads
 whatever is there now, silently, in code with no `unsafe`:
 
 ```lisp
-(let v:(ptr str.Bytes) (call buf.bytes b))
+(let v:str.Bytes (call buf.bytes b))
 (call buf.free b)
 (let c:(ptr buf.Buf) (call buf.make a 32))
 (call buf.push_str c "something else!")
@@ -37,7 +37,7 @@ code with no `unsafe`, these take memory for the rest of the run:
 
 | What | Where it happens | How often |
 |---|---|---|
-| a view | `str.from_str`, `str.slice`, `buf.bytes`, `io.read_file`: each makes a `(ptr str.Bytes)` with `new` | 1,700 places hold the type (377 in std, 1,308 in the compiler) |
+| a view | `str.from_str`, `str.slice`, `buf.bytes`, `io.read_file`: each makes a `str.Bytes` with `new` | 1,700 places hold the type (377 in std, 1,308 in the compiler) |
 | a run-time `str` | `str.concat`, `buf.to_str`, `str.from_bytes`, `(format ...)`, `date.to_str` | about 50 calls in std |
 | `new`, `arr.new`, `mem.alloc` | written in the program, or inside std (`io.print_int` takes 11 bytes a call) | 65 in std, 252 in the compiler |
 | a result cell | `ok`/`err` when a side is a `str` or needs more than 8 slots (AIPL_SPEC.md 4.F) | wherever such results are made |
@@ -86,7 +86,7 @@ is used, and nothing can pile up.
   growing it (a new array, the old one freed) ends the old views, as
   the spec has always said it does.
 
-The change: `(ptr str.Bytes)` becomes `str.Bytes` in about 1,700 places
+The change: `str.Bytes` becomes `str.Bytes` in about 1,700 places
 (a script does most of it), `(get b str.Bytes.len)` keeps working,
 `(ptr.null str.Bytes)` and `str.repoint` (which changes a view in place)
 go, and the 27 places in std that read through a view's raw address
@@ -143,7 +143,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 |---|---|---|
 | 0 | Correct the spec now: views are not checked, and `buf.free` does not end them (done 2026-10-19) | the docs check |
 | S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 (done 2026-10-19) | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
-| M1 | checked views | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
+| M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
 | M3 | `(no_leak)` | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
 | M2, M4 | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
 | M5 | servers | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |

@@ -1,5 +1,5 @@
 ;; std/utf8: text one character (Unicode scalar value) at a time, over byte
-;; slices. A str is UTF-8 by construction; a (ptr str.Bytes) from a file may
+;; slices. A str is UTF-8 by construction; a str.Bytes from a file may
 ;; not be (str.valid_utf8 checks).
 ;;
 ;;   (let i:i32 0)
@@ -21,7 +21,7 @@
 
   ;; The character starting at byte i of b (as str.valid_utf8 decides what
   ;; is UTF-8: no overlong forms, no surrogates, nothing past U+10FFFF).
-  (fn decode [b:(ptr str.Bytes) i:i32] -> Char (pub)
+  (fn decode [b:str.Bytes i:i32] -> Char (pub)
     (req (and (gte i 0) (lt i (get b str.Bytes.len))))
     (let n:i32 (get b str.Bytes.len))
     (let c:i32 (call str.byte_at b i))
@@ -63,7 +63,7 @@
        (call buf.push_byte out (bitor 128 (bitand cp 63))))))
 
   ;; The characters in b (a byte that is not UTF-8 counts as one).
-  (fn count [b:(ptr str.Bytes)] -> i32 (pub)
+  (fn count [b:str.Bytes] -> i32 (pub)
     (let k:i32 0)
     (let i:i32 0)
     (while (lt i (get b str.Bytes.len))
@@ -88,7 +88,7 @@
   ;; Pass count; test_suite.aipl expects 4.
   (fn run_utf8_tests [] -> i32 (pub)
     (let p:i32 0)
-    (let s:(ptr str.Bytes) (call str.from_str "aé€😀"))
+    (let s:str.Bytes (call str.from_str "aé€😀"))
     (let a:Char (call decode s 0))
     (let e:Char (call decode s 1))
     (let eu:Char (call decode s 3))

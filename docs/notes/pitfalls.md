@@ -35,7 +35,7 @@ Core language forms (`new`, `arr.new`, `str.from_str`, `(format ...)`) currently
 - *Remedy:* Transition standard string and buffer types to value representations where feasible, and provide explicit allocator-aware allocation semantics for long-running workflows.
 
 ### 2. Mandatory Full Generic Type Repetition
-Requiring complete generic parameters at every call site, `get`/`put`, and `match` arm (e.g., `(call (vec.at (ptr str.Bytes)) names i)`) increases AST depth and parenthesis balancing overhead where types are already uniquely determined by the receiver.
+Requiring complete generic parameters at every call site, `get`/`put`, and `match` arm (e.g., `(call (vec.at str.Bytes) names i)`) increases AST depth and parenthesis balancing overhead where types are already uniquely determined by the receiver.
 
 ### 3. Sentinel Error Returns in Core Modules
 Certain functions in `std/io` and `std/os` rely on negative length sentinels (e.g., `len = -1`) rather than explicit `Option` or `result` types, bypassing static error-handling enforcement.

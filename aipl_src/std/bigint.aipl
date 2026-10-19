@@ -254,7 +254,7 @@
       (loop k 1 9 1
         (call buf.push_byte groups (+ 48 (% g 10)))
         (set! g (/ g 10))))
-    (let digits:(ptr str.Bytes) (call buf.bytes groups))
+    (let digits:str.Bytes (call buf.bytes groups))
     (let n:i32 (get digits str.Bytes.len))
     ;; skip the leading zeros of the most significant group
     (while (eq (call str.byte_at digits (- n 1)) 48) (set! n (- n 1)))

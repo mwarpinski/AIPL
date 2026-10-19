@@ -134,26 +134,26 @@ def program(show_hex):
   (import alloc)
 
   ;; unit (hex) count times
-  (fn input [unit:str count:i32] -> (ptr str.Bytes)
+  (fn input [unit:str count:i32] -> str.Bytes
     (let a:alloc.Allocator (call alloc.default))
     (let u:(ptr buf.Buf) (call buf.make a 16))
     (match_result (call encode.hex_decode_to u (call str.from_str unit))
       (ok _n (block))
       (err _at (block)))
     (let o:(ptr buf.Buf) (call buf.make a (+ 16 (* count (call buf.len u)))))
-    (let ub:(ptr str.Bytes) (call buf.bytes u))
+    (let ub:str.Bytes (call buf.bytes u))
     (for _k 0 count (call buf.push_bytes o ub))
     (call buf.bytes o))
 
   ;; input k
-  (fn source [k:i32] -> (ptr str.Bytes)
+  (fn source [k:i32] -> str.Bytes
     (cond
 ''' + source + '''
       (else (call input "" 0))))
 
   (fn unpack [stream:str kind:str] -> void
     (let a:alloc.Allocator (call alloc.default))
-    (let s:(ptr str.Bytes) (call input stream 1))
+    (let s:str.Bytes (call input stream 1))
     (let o:(ptr buf.Buf) (call buf.make a 64))
     (let r:(result i32 (ptr deflate.Error))
       (cond
@@ -167,7 +167,7 @@ def program(show_hex):
 
   (fn pack [k:i32 level:i32 kind:str] -> void
     (let a:alloc.Allocator (call alloc.default))
-    (let data:(ptr str.Bytes) (call source k))
+    (let data:str.Bytes (call source k))
     (let o:(ptr buf.Buf) (call buf.make a 64))
     (cond
       ((call str.same kind "raw") (call deflate.compress_to a o data level))

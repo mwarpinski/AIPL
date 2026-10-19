@@ -946,8 +946,9 @@ impl Names<'_> {
                         // `new`); a value struct's does not (a value-kind argument)
                         (Some(n), _) if template.is_some() && !self.vis.values.contains(n) => self.check_makes(n, child_at),
                         (Some(n), 1) if head.as_deref() == Some("new") => self.check_makes(n, child_at),
-                        // (make V ...) of a value struct
-                        (Some(n), 1) if head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
+                        // (make V ...) of a value struct (not std/vec's make
+                        // called with a value struct, (call (make V) ...))
+                        (Some(n), 1) if template.is_none() && head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
                         // (get p S.f), (put p S.f v)
                         (Some(n), 2) if field_op => {
                             if let Some((st, f)) = n.rsplit_once('.') {

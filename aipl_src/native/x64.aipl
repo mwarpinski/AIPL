@@ -346,7 +346,7 @@
   ;; ===== Self-tests =====
 
   ;; The buffer as lowercase hex, two digits per byte, no separators.
-  (fn hex [c:(ptr buf.Buf)] -> (ptr str.Bytes)
+  (fn hex [c:(ptr buf.Buf)] -> str.Bytes
     (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 2 (* 2 (call buf.len c)))))
     (loop i 0 (- (call buf.len c) 1) 1
       (let v:i32 (mem.load8 (+ (get c buf.Buf.data) i)))
@@ -358,7 +358,7 @@
 
   ;; 1 if the buffer holds exactly `expected` (hex), else prints both and 0.
   (fn check [name:str c:(ptr buf.Buf) expected:str] -> i32
-    (unsafe (let got:(ptr str.Bytes) (call hex c))
+    (unsafe (let got:str.Bytes (call hex c))
     (if (call str.bytes_eq got (call str.from_str expected))
         1
         (block

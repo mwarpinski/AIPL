@@ -7,7 +7,7 @@
   (import stream)
 
   ;; a field on one line, as the generator escapes it
-  (fn esc [o:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
+  (fn esc [o:(ptr buf.Buf) s:str.Bytes] -> void
     (for i 0 (get s str.Bytes.len)
       (let c:i32 (call str.byte_at s i))
       (cond ((eq c 92) (call buf.push_str o "\\\\")) ((eq c 10) (call buf.push_str o "\\n")) ((eq c 13) (call buf.push_str o "\\r"))

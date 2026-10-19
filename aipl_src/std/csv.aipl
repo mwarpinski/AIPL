@@ -35,8 +35,8 @@
   ;; data holds the row's fields one after another; spans has each field's
   ;; start and end; views are the fields handed out.
   (struct Reader [src:(ptr stream.Reader) owns:bool delim:i32 state:State data:(ptr buf.Buf) field_start:i32
-                  spans:(ptr (vec.Vec i32)) views:(ptr (vec.Vec (ptr str.Bytes))) n:i32 row:i32
-                  names:(ptr (vec.Vec (ptr str.Bytes))) a:alloc.Allocator] (pub))
+                  spans:(ptr (vec.Vec i32)) views:(ptr (vec.Vec str.Bytes)) n:i32 row:i32
+                  names:(ptr (vec.Vec str.Bytes)) a:alloc.Allocator] (pub))
 
   ;; Where a value did not read: its row (1 the first) and column (1 the
   ;; first), and why, as one line.
@@ -56,10 +56,10 @@
     (put cr Reader.data (call buf.make a 256))
     (put cr Reader.field_start 0)
     (put cr Reader.spans (call (vec.make i32) a 32))
-    (put cr Reader.views (call (vec.make (ptr str.Bytes)) a 16))
+    (put cr Reader.views (call (vec.make str.Bytes) a 16))
     (put cr Reader.n 0)
     (put cr Reader.row 0)
-    (put cr Reader.names (call (vec.make (ptr str.Bytes)) a 8))
+    (put cr Reader.names (call (vec.make str.Bytes) a 8))
     (put cr Reader.a a)
     cr)
 
@@ -71,7 +71,7 @@
     (ok:str cr))
 
   ;; Reads the text of b.
-  (fn of_bytes [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr Reader) (pub)
+  (fn of_bytes [a:alloc.Allocator b:str.Bytes] -> (ptr Reader) (pub)
     (let cr:(ptr Reader) (call reader a (call stream.of_bytes a b)))
     (put cr Reader.owns true)
     cr)
@@ -82,8 +82,8 @@
     (when (get cr Reader.owns) (call stream.close_reader (get cr Reader.src)))
     (call buf.free (get cr Reader.data))
     (call (vec.free i32) (get cr Reader.spans))
-    (call (vec.free (ptr str.Bytes)) (get cr Reader.views))
-    (call (vec.free (ptr str.Bytes)) (get cr Reader.names))
+    (call (vec.free str.Bytes) (get cr Reader.views))
+    (call (vec.free str.Bytes) (get cr Reader.names))
     (call (alloc.destroy Reader) a cr))
 
   (fn save_field [cr:(ptr Reader)] -> void
@@ -139,14 +139,15 @@
   ;; it is).
   (fn finish [cr:(ptr Reader)] -> bool
     (let spans:(ptr (vec.Vec i32)) (get cr Reader.spans))
-    (let views:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.views))
+    (let views:(ptr (vec.Vec str.Bytes)) (get cr Reader.views))
     (let n:i32 (/ (call (vec.len i32) spans) 2))
-    (let base:i32 (get (get cr Reader.data) buf.Buf.data))
-    (while (lt (call (vec.len (ptr str.Bytes)) views) n)
-      (call (vec.push (ptr str.Bytes)) views (unsafe (call str.bytes 0 0))))
+    ;; checked views of the row's buffer: a field kept past the next row
+    ;; (which may move the buffer) or past close stops the program
+    (let all:str.Bytes (call buf.bytes (get cr Reader.data)))
+    (call (vec.clear str.Bytes) views)
     (for k 0 n
       (let s:i32 (call (vec.at i32) spans (* 2 k)))
-      (unsafe (call str.repoint (call (vec.at (ptr str.Bytes)) views k) (+ base s) (- (call (vec.at i32) spans (+ (* 2 k) 1)) s))))
+      (call (vec.push str.Bytes) views (call str.slice all s (- (call (vec.at i32) spans (+ (* 2 k) 1)) s))))
     (put cr Reader.n n)
     (put cr Reader.row (+ (get cr Reader.row) 1))
     true)
@@ -191,9 +192,9 @@
   (fn count [cr:(ptr Reader)] -> i32 (pub) (get cr Reader.n))
 
   ;; Field i (0 the first) of the current row, good until the next row.
-  (fn field [cr:(ptr Reader) i:i32] -> (ptr str.Bytes) (pub)
+  (fn field [cr:(ptr Reader) i:i32] -> str.Bytes (pub)
     (req (and (gte i 0) (lt i (get cr Reader.n))))
-    (call (vec.at (ptr str.Bytes)) (get cr Reader.views) i))
+    (call (vec.at str.Bytes) (get cr Reader.views) i))
 
   ;; The current row's number: 1 the first row read.
   (fn row [cr:(ptr Reader)] -> i32 (pub) (get cr Reader.row))
@@ -205,27 +206,27 @@
   ;; there is none.
   (fn header [cr:(ptr Reader)] -> bool (pub)
     (when (not (call next_row cr)) (return false))
-    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.names))
-    (call (vec.clear (ptr str.Bytes)) names)
+    (let names:(ptr (vec.Vec str.Bytes)) (get cr Reader.names))
+    (call (vec.clear str.Bytes) names)
     (for k 0 (get cr Reader.n)
-      (call (vec.push (ptr str.Bytes)) names (call str.from_str (call str.from_bytes (call field cr k)))))
+      (call (vec.push str.Bytes) names (call str.from_str (call str.from_bytes (call field cr k)))))
     true)
 
   ;; The index of the column the header names `name`, or -1.
   (fn column [cr:(ptr Reader) name:str] -> i32 (pub)
-    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get cr Reader.names))
-    (let want:(ptr str.Bytes) (call str.from_str name))
-    (for k 0 (call (vec.len (ptr str.Bytes)) names)
-      (when (call str.bytes_eq (call (vec.at (ptr str.Bytes)) names k) want) (return k)))
+    (let names:(ptr (vec.Vec str.Bytes)) (get cr Reader.names))
+    (let want:str.Bytes (call str.from_str name))
+    (for k 0 (call (vec.len str.Bytes) names)
+      (when (call str.bytes_eq (call (vec.at str.Bytes) names k) want) (return k)))
     -1)
 
   ;; The current row's field in the column named `name`, or none (no such
   ;; column, or a row too short for it).
-  (fn get [cr:(ptr Reader) name:str] -> (option.Option (ptr str.Bytes)) (pub)
+  (fn get [cr:(ptr Reader) name:str] -> (option.Option str.Bytes) (pub)
     (let k:i32 (call column cr name))
     (if (and (gte k 0) (lt k (get cr Reader.n)))
-        (make (option.Option (ptr str.Bytes)) some (call field cr k))
-        (make (option.Option (ptr str.Bytes)) none)))
+        (make (option.Option str.Bytes) some (call field cr k))
+        (make (option.Option str.Bytes) none)))
 
   (fn fail [cr:(ptr Reader) i:i32 why:str] -> (ptr Error)
     (let e:(ptr Error) (new Error))
@@ -255,7 +256,7 @@
   ;; The whole text of b as rows of fields, the fields views into one
   ;; buffer from a (each view is a small cell never freed: for a big input,
   ;; read a row at a time).
-  (fn parse [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr (vec.Vec (ptr str.Bytes))))) (pub)
+  (fn parse [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec (ptr (vec.Vec str.Bytes)))) (pub)
     (let cr:(ptr Reader) (call of_bytes a b))
     (let all:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 16)))
     (let spans:(ptr (vec.Vec i32)) (call (vec.make i32) a 64))
@@ -268,18 +269,18 @@
         (call (vec.push i32) spans (call buf.len all))))
     (call close cr)
     ;; views once the buffer no longer moves
-    (let rows:(ptr (vec.Vec (ptr (vec.Vec (ptr str.Bytes))))) (call (vec.make (ptr (vec.Vec (ptr str.Bytes)))) a (+ (call (vec.len i32) counts) 1)))
-    (let base:i32 (get all buf.Buf.data))
+    (let rows:(ptr (vec.Vec (ptr (vec.Vec str.Bytes)))) (call (vec.make (ptr (vec.Vec str.Bytes))) a (+ (call (vec.len i32) counts) 1)))
+    (let whole:str.Bytes (call buf.bytes all))
     (let at:i32 0)
     (for r 0 (call (vec.len i32) counts)
       (let n:i32 (call (vec.at i32) counts r))
-      (let fields:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a (+ n 1)))
+      (let fields:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a (+ n 1)))
       (for k 0 n
         (let s:i32 (call (vec.at i32) spans at))
         (let e:i32 (call (vec.at i32) spans (+ at 1)))
-        (call (vec.push (ptr str.Bytes)) fields (unsafe (call str.bytes (+ base s) (- e s))))
+        (call (vec.push str.Bytes) fields (call str.slice whole s (- e s)))
         (set! at (+ at 2)))
-      (call (vec.push (ptr (vec.Vec (ptr str.Bytes)))) rows fields))
+      (call (vec.push (ptr (vec.Vec str.Bytes))) rows fields))
     (call (vec.free i32) spans)
     (call (vec.free i32) counts)
     rows)
@@ -308,7 +309,7 @@
   ;; Writes b as the row's next field, quoted if it holds the delimiter, a
   ;; quote, or a line break (each quote written twice), as Python's
   ;; QUOTE_MINIMAL.
-  (fn field_bytes [cw:(ptr Writer) b:(ptr str.Bytes)] -> void (pub)
+  (fn field_bytes [cw:(ptr Writer) b:str.Bytes] -> void (pub)
     (let w:(ptr stream.Writer) (get cw Writer.out))
     (when (gt (get cw Writer.fields) 0) (call stream.write_byte w (get cw Writer.delim)))
     (put cw Writer.fields (+ (get cw Writer.fields) 1))

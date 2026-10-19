@@ -1,5 +1,5 @@
 ;; std/set: a hash set of any type with a cmp.Hash implementation (i32,
-;; i64, str, and (ptr str.Bytes) by its contents come with std/cmp).
+;; i64, str, and str.Bytes by its contents come with std/cmp).
 ;;
 ;;   (let s:(ptr (set.Set str)) (call (set.make str) a 16))
 ;;   (let _new:bool (call (set.add str) s "apple"))

@@ -53,23 +53,23 @@
     (call write_str 1 "\n"))
 
   ;; The whole file in a fresh buffer, or len -1 if it cannot be opened or read.
-  (fn read_file [path:str] -> (ptr str.Bytes) (pub)
+  (fn read_file [path:str] -> str.Bytes (pub)
     (call read_path (call str.from_str path)))
 
   ;; read_file for a path held as bytes (e.g. one built at run time).
-  (fn read_path [path:(ptr str.Bytes)] -> (ptr str.Bytes) (pub)
-    (unsafe (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 0))
+  (fn read_path [path:str.Bytes] -> str.Bytes (pub)
+    (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 0))
     (if (lt fd 0) (return (call str.bytes 0 -1)) (block))
-    (let b:(ptr str.Bytes) (call read_fd fd))
+    (let b:str.Bytes (call read_fd fd))
     (fs.close fd)
     b))
 
   ;; Everything on standard input, until end of input (len -1 on a read error).
-  (fn read_stdin [] -> (ptr str.Bytes) (pub)
+  (fn read_stdin [] -> str.Bytes (pub)
     (call read_fd 0))
 
   ;; Reads fd to its end into a fresh buffer that doubles as it fills.
-  (fn read_fd [fd:i32] -> (ptr str.Bytes) (pub)
+  (fn read_fd [fd:i32] -> str.Bytes (pub)
     (unsafe (let cap:i32 4096)
     (let buf:i32 (mem.alloc cap))
     (let len:i32 0)
@@ -90,25 +90,25 @@
     (call str.bytes buf len)))
 
   ;; Creates or truncates the file; returns bytes written, or -1.
-  (fn write_file [path:str b:(ptr str.Bytes)] -> i32 (pub)
+  (fn write_file [path:str b:str.Bytes] -> i32 (pub)
     (call write_path (call str.from_str path) b))
 
   ;; write_file for a path held as bytes.
-  (fn write_path [path:(ptr str.Bytes) b:(ptr str.Bytes)] -> i32 (pub)
-    (unsafe (let fd:i32 (fs.open (get path str.Bytes.addr) (get path str.Bytes.len) 1))
+  (fn write_path [path:str.Bytes b:str.Bytes] -> i32 (pub)
+    (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 1))
     (if (lt fd 0)
         -1
         (block
-          (let n:i32 (fs.write fd (get b str.Bytes.addr) (get b str.Bytes.len)))
+          (let n:i32 (fs.write fd (call str.addr b) (get b str.Bytes.len)))
           (fs.close fd)
           n))))
 
   ;; Pass count; test_suite.aipl expects 2. Uses a scratch file in the cwd.
   (fn run_io_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
-    (let data:(ptr str.Bytes) (call str.from_str "io\nround trip\n"))
+    (let data:str.Bytes (call str.from_str "io\nround trip\n"))
     (let wrote:i32 (call write_file "_io_test.tmp" data))
-    (let back:(ptr str.Bytes) (call read_file "_io_test.tmp"))
+    (let back:str.Bytes (call read_file "_io_test.tmp"))
     (fs.delete (str.ptr "_io_test.tmp") (str.len "_io_test.tmp"))
     (if (and (eq wrote 14) (call str.bytes_eq back data)) (set! p (+ p 1)) (block))
     (if (eq (get (call read_file "_io_missing.tmp") str.Bytes.len) -1) (set! p (+ p 1)) (block))

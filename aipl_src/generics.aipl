@@ -23,8 +23,8 @@
   ;; instances leave out
   ;; struct_kind: per parameter, whether it is a struct ((where (struct T)))
   ;; rather than a value; plain_kind: whether it is plain ((where (plain T)))
-  (struct Tmpl [node:(ptr compiler.Node) is_struct:bool params:(ptr (vec.Vec (ptr str.Bytes)))
-                wheres:(ptr (vec.Vec (ptr compiler.Node))) struct_kind:(arr bool) name:(ptr str.Bytes)
+  (struct Tmpl [node:(ptr compiler.Node) is_struct:bool params:(ptr (vec.Vec str.Bytes))
+                wheres:(ptr (vec.Vec (ptr compiler.Node))) struct_kind:(arr bool) name:str.Bytes
                 plain_kind:(arr bool)])
   ;; parallel lists: parameter names, the argument as code ("(ptr Point)"),
   ;; and as part of an instance name ("ptr<Point>")
@@ -33,22 +33,22 @@
   ;; sealed: the arguments are placeholders (archetypes), written as their
   ;; names in `mangled`, at the template's header (offset `at`), as
   ;; generics.rs makes them; `args` is then unused.
-  (struct Env [names:(ptr (vec.Vec (ptr str.Bytes))) args:(ptr (vec.Vec (ptr compiler.Node))) outer:(ptr Env)
-               mangled:(ptr (vec.Vec (ptr str.Bytes))) sealed:bool at:i32])
-  (struct Inst [tmpl:(ptr Tmpl) env:(ptr Env) name:(ptr str.Bytes)])
-  (struct St [text:(ptr str.Bytes) templates:(ptr (map.Map (ptr str.Bytes) (ptr Tmpl))) made:(ptr (map.Map (ptr str.Bytes) i32))
+  (struct Env [names:(ptr (vec.Vec str.Bytes)) args:(ptr (vec.Vec (ptr compiler.Node))) outer:(ptr Env)
+               mangled:(ptr (vec.Vec str.Bytes)) sealed:bool at:i32])
+  (struct Inst [tmpl:(ptr Tmpl) env:(ptr Env) name:str.Bytes])
+  (struct St [text:str.Bytes templates:(ptr (map.Map str.Bytes (ptr Tmpl))) made:(ptr (map.Map str.Bytes i32))
               queue:(ptr (vec.Vec (ptr Inst))) err:(ptr buf.Buf) failed:bool
               origins:(ptr origins.Origins) failure:(ptr Failure)
-              ifaces:(ptr (map.Map (ptr str.Bytes) (ptr Iface))) impls:(ptr (map.Map (ptr str.Bytes) i32))
-              order:(ptr (vec.Vec (ptr Tmpl))) struct_names:(ptr (map.Map (ptr str.Bytes) i32))
-              made_structs:(ptr (map.Map (ptr str.Bytes) i32)) archetypes:bool
-              value_names:(ptr (map.Map (ptr str.Bytes) i32)) made_values:(ptr (map.Map (ptr str.Bytes) i32))
+              ifaces:(ptr (map.Map str.Bytes (ptr Iface))) impls:(ptr (map.Map str.Bytes i32))
+              order:(ptr (vec.Vec (ptr Tmpl))) struct_names:(ptr (map.Map str.Bytes i32))
+              made_structs:(ptr (map.Map str.Bytes i32)) archetypes:bool
+              value_names:(ptr (map.Map str.Bytes i32)) made_values:(ptr (map.Map str.Bytes i32))
               granted:(ptr (vec.Vec (ptr compiler.Node))) granted_by:(ptr (vec.Vec (ptr Tmpl)))
-              defs:(ptr (map.Map (ptr str.Bytes) (ptr compiler.Node))) plain_names:(ptr (map.Map (ptr str.Bytes) i32))])
+              defs:(ptr (map.Map str.Bytes (ptr compiler.Node))) plain_names:(ptr (map.Map str.Bytes i32))])
 
   ;; An interface (generics.rs Interface): its item, type parameter, and
   ;; function signatures, (fn name [params] -> type contracts...).
-  (struct Iface [node:(ptr compiler.Node) param:(ptr str.Bytes) fns:(ptr (vec.Vec (ptr compiler.Node)))])
+  (struct Iface [node:(ptr compiler.Node) param:str.Bytes fns:(ptr (vec.Vec (ptr compiler.Node)))])
 
   ;; Where an expansion error is: an offset in the program expanded, or -1
   ;; for an error with no position (too many instances).
@@ -77,14 +77,14 @@
   (fn is_symbol [n:(ptr compiler.Node)] -> bool
     (and (neq n (ptr.null compiler.Node)) (eq (get n compiler.Node.kind) compiler.Kind.symbol)))
 
-  (fn text [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
-    (unsafe (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
+  (fn text [st:(ptr St) n:(ptr compiler.Node)] -> str.Bytes
+    (unsafe (call str.bytes (+ (call str.addr (get st St.text)) (get n compiler.Node.a)) (get n compiler.Node.b))))
 
-  (fn lit [b:(ptr str.Bytes) s:str] -> bool
+  (fn lit [b:str.Bytes s:str] -> bool
     (call str.bytes_eq b (call str.from_str s)))
 
   ;; The head symbol of a (...) group, or len -1.
-  (fn head [st:(ptr St) g:(ptr compiler.Node)] -> (ptr str.Bytes)
+  (fn head [st:(ptr St) g:(ptr compiler.Node)] -> str.Bytes
     (unsafe (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
     (let h:(ptr compiler.Node) (call first_child g))
     (if (and (neq h (ptr.null compiler.Node)) (call is_symbol h)) (call text st h) (call str.bytes 0 -1))))
@@ -96,21 +96,21 @@
     ;; n is null for a missing child: (get p) has no third
     (if (eq n (ptr.null compiler.Node)) (return false) (block))
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     (if (lt (get h str.Bytes.len) 0) (return false) (block))
-    (if (not (call (map.has (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) h)) (return false) (block))
-    (or callee (get (call (map.get_or (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)) Tmpl.is_struct)))
+    (if (not (call (map.has str.Bytes (ptr Tmpl)) (get st St.templates) h)) (return false) (block))
+    (or callee (get (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)) Tmpl.is_struct)))
 
   ;; Whether child i of group g is a callee: g is (call ...) or (ref ...), i = 1.
   (fn callee_at [st:(ptr St) g:(ptr compiler.Node) i:i32] -> bool
-    (let h:(ptr str.Bytes) (call head st g))
+    (let h:str.Bytes (call head st g))
     (and (eq i 1) (and (gte (get h str.Bytes.len) 0) (or (call lit h "call") (call lit h "ref")))))
 
   ;; Index of name in env, or -1.
-  (fn lookup [env:(ptr Env) name:(ptr str.Bytes)] -> i32
+  (fn lookup [env:(ptr Env) name:str.Bytes] -> i32
     (if (eq env (ptr.null Env)) (return -1) (block))
-    (loop i 0 (- (call (vec.len (ptr str.Bytes)) (get env Env.names)) 1) 1
-      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) (get env Env.names) i) name) (return i) (block)))
+    (loop i 0 (- (call (vec.len str.Bytes) (get env Env.names)) 1) 1
+      (if (call str.bytes_eq (call (vec.at str.Bytes) (get env Env.names) i) name) (return i) (block)))
     -1)
 
   ;; Records the first error: message b, at offset `at` (or -1).
@@ -127,28 +127,28 @@
     b)
 
   ;; "generic 'NAME'..." messages (generics.rs).
-  (fn quoted [b:(ptr buf.Buf) name:(ptr str.Bytes)] -> (ptr buf.Buf)
+  (fn quoted [b:(ptr buf.Buf) name:str.Bytes] -> (ptr buf.Buf)
     (call buf.push_byte b 39)
     (call buf.push_bytes b name)
     (call buf.push_byte b 39)
     b)
 
-  (fn as_bytes [b:(ptr buf.Buf)] -> (ptr str.Bytes) (call buf.bytes b))
+  (fn as_bytes [b:(ptr buf.Buf)] -> str.Bytes (call buf.bytes b))
 
   ;; ===== Instance names =====
 
   ;; A type as part of an instance name: i32, ptr<Point>, fn<i32,i32->i32>, Vec<i32>.
-  (fn mangle [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> (ptr str.Bytes)
+  (fn mangle [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> str.Bytes
     (if (call is_symbol n)
         (block
-          (let t:(ptr str.Bytes) (call text st n))
+          (let t:str.Bytes (call text st n))
           (let k:i32 (call lookup env t))
-          (return (if (gte k 0) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) k) t)))
+          (return (if (gte k 0) (call (vec.at str.Bytes) (get env Env.mangled) k) t)))
         (block))
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return (call not_a_type st n)) (block))
     (if (call is_app st n false) (return (call instance st n env)) (block))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     ;; (fn [..] -> r), or (Name args...) with at least one argument (generics.rs type_name)
     (if (or (lt (get h str.Bytes.len) 0)
             (and (not (and (call lit h "fn") (eq (call count_children n) 4))) (lt (call count_children n) 2)))
@@ -190,16 +190,16 @@
       (set! c (get c compiler.Node.next)))
     (if (call is_app st n false) (block (call instance st n env) 0) 0))
 
-  (fn not_a_type [st:(ptr St) n:(ptr compiler.Node)] -> (ptr str.Bytes)
+  (fn not_a_type [st:(ptr St) n:(ptr compiler.Node)] -> str.Bytes
     (call fail_at st (get n compiler.Node.pos) (call msg "not a type"))
     (call str.from_str "?"))
 
   ;; The instance name of template application `app` (Name args...), creating
   ;; the instance the first time: its arguments are named first (which may
   ;; create instances of their own), then it is queued.
-  (fn instance [st:(ptr St) app:(ptr compiler.Node) env:(ptr Env)] -> (ptr str.Bytes)
-    (let h:(ptr str.Bytes) (call head st app))
-    (let t:(ptr Tmpl) (call (map.get_or (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)))
+  (fn instance [st:(ptr St) app:(ptr compiler.Node) env:(ptr Env)] -> str.Bytes
+    (let h:str.Bytes (call head st app))
+    (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) h (ptr.null Tmpl)))
     (let nargs:i32 (- (call count_children app) 1))
     ;; generics.rs order: the applications nested in the arguments first,
     ;; then the argument count, then the arguments' names
@@ -208,7 +208,7 @@
       (call visit_apps st v env)
       (set! v (get v compiler.Node.next)))
     (if (get st St.failed) (return h) (block))
-    (let np:i32 (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)))
+    (let np:i32 (call (vec.len str.Bytes) (get t Tmpl.params)))
     (if (neq nargs np)
         (block
           (let ab:(ptr buf.Buf) (call quoted (call msg "generic ") h))
@@ -217,32 +217,32 @@
           (call buf.push_str ab " type argument(s) (")
           (loop k 0 (- np 1) 1
             (if (gt k 0) (call buf.push_byte ab 32) (block))
-            (call buf.push_bytes ab (call (vec.at (ptr str.Bytes)) (get t Tmpl.params) k)))
+            (call buf.push_bytes ab (call (vec.at str.Bytes) (get t Tmpl.params) k)))
           (call buf.push_str ab "), got ")
           (call buf.push_int ab nargs)
           (call fail_at st (get app compiler.Node.pos) ab)
           (return h))
         (block))
-    (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+    (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_bytes out h)
     (call buf.push_byte out 60)
     (let a:(ptr compiler.Node) (get (call first_child app) compiler.Node.next))
     (let first:bool true)
     (while (neq a (ptr.null compiler.Node))
-      (let m:(ptr str.Bytes) (call mangle st a env))
-      (call (vec.push (ptr str.Bytes)) names m)
+      (let m:str.Bytes (call mangle st a env))
+      (call (vec.push str.Bytes) names m)
       (if first (block) (call buf.push_byte out 44))
       (call buf.push_bytes out m)
       (set! first false)
       (set! a (get a compiler.Node.next)))
     (call buf.push_byte out 62)
-    (let name:(ptr str.Bytes) (call as_bytes out))
+    (let name:str.Bytes (call as_bytes out))
     (if (gt (get name str.Bytes.len) 1024)
         (block (call fail_at st (get app compiler.Node.pos) (call msg "generic instance name longer than 1024 characters: a generic probably instantiates itself with ever larger types")) (return h))
         (block))
-    (if (call (map.has (ptr str.Bytes) i32) (get st St.made) name) (return name) (block))
-    (call (map.set (ptr str.Bytes) i32) (get st St.made) name 1)
+    (if (call (map.has str.Bytes i32) (get st St.made) name) (return name) (block))
+    (call (map.set str.Bytes i32) (get st St.made) name 1)
     ;; each type argument is of its parameter's kind: a struct for
     ;; (where (struct T)), else a value that can be stored
     (loop ka 0 (- np 1) 1
@@ -253,8 +253,8 @@
     (let ws:(ptr (vec.Vec (ptr compiler.Node))) (get t Tmpl.wheres))
     (loop wi 0 (- (call (vec.len (ptr compiler.Node)) ws) 1) 1
       (let w:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) ws wi))
-      (let iname:(ptr str.Bytes) (call head st (call nth w 1)))
-      (if (not (call (map.has (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname))
+      (let iname:str.Bytes (call head st (call nth w 1)))
+      (if (not (call (map.has str.Bytes (ptr Iface)) (get st St.ifaces) iname))
           (block
             (let nb:(ptr buf.Buf) (call quoted (call msg "") iname))
             (call buf.push_str nb " is not an interface")
@@ -262,7 +262,7 @@
             (return name))
           (block))
       (let k:i32 (call where_param st t w))
-      (if (not (call (map.has (ptr str.Bytes) i32) (get st St.impls) (call impl_key iname (call (vec.at (ptr str.Bytes)) names k))))
+      (if (not (call (map.has str.Bytes i32) (get st St.impls) (call impl_key iname (call (vec.at str.Bytes) names k))))
           (block
             (let mb:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
             (call buf.push_bytes mb (call names.shown name))
@@ -272,7 +272,7 @@
             (return name))
           (block)))
     (if (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
-        (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
+        (call (map.set str.Bytes i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
         (block))
     (let e:(ptr Env) (new Env))
     (put e Env.names (get t Tmpl.params))
@@ -301,7 +301,7 @@
     (call note st n out)
     (cond
       ((eq k compiler.Kind.symbol)
-       (let t:(ptr str.Bytes) (call text st n))
+       (let t:str.Bytes (call text st n))
        (let i:i32 (call lookup env t))
        ;; a type parameter prints its argument, from where the argument was
        ;; written (a placeholder, from the template's header)
@@ -309,11 +309,11 @@
          ((lt i 0) (call buf.push_bytes out t))
          ((get env Env.sealed)
           (call origins.note (get st St.origins) out -1 (get env Env.at))
-          (call buf.push_bytes out (call (vec.at (ptr str.Bytes)) (get env Env.mangled) i)))
+          (call buf.push_bytes out (call (vec.at str.Bytes) (get env Env.mangled) i)))
          (else (call print st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) out false))))
       ((or (eq k compiler.Kind.int64) (or (eq k compiler.Kind.float) (eq k compiler.Kind.float32))) (call buf.push_bytes out (call text st n)))
       ;; an int as written (its value is only the low 32 bits)
-      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (get (get st St.text) str.Bytes.addr) (get n compiler.Node.a)) (get n compiler.Node.b))))
+      ((eq k compiler.Kind.int) (call buf.push_bytes out (call str.bytes (+ (call str.addr (get st St.text)) (get n compiler.Node.a)) (get n compiler.Node.b))))
       ((eq k compiler.Kind.bool) (call buf.push_str out (if (eq (get n compiler.Node.a) 0) "false" "true")))
       ((eq k compiler.Kind.string)
        (call buf.push_byte out 34)
@@ -346,12 +346,12 @@
   ;; Whether n applies a generic union's template ((Option T)).
   (fn is_union_app [st:(ptr St) n:(ptr compiler.Node)] -> bool
     (if (not (call is_app st n false)) (return false) (block))
-    (let t:(ptr Tmpl) (call (map.get_or (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
+    (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
     (and (neq t (ptr.null Tmpl)) (call lit (call head st (get t Tmpl.node)) "union")))
 
-  (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
+  (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:str.Bytes out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
-    (let h:(ptr str.Bytes) (call head st g))
+    (let h:str.Bytes (call head st g))
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
                                  (and (or (call lit h "get") (or (call lit h "put") (call lit h "with")))
                                       (call is_app st (call nth g 2) false))))
@@ -401,7 +401,7 @@
     (if (gte (get g compiler.Node.a) 0) (call origins.note (get st St.origins) out -1 (get g compiler.Node.a)) (block))
     (call buf.push_byte out (if square 93 41)))
 
-  (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:(ptr str.Bytes) out:(ptr buf.Buf)] -> void
+  (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:str.Bytes out:(ptr buf.Buf)] -> void
     (call buf.push_str out "  ")
     ;; a stray atom at module level stays an atom, for the parser to report
     (if (or (eq (get item compiler.Node.kind) compiler.Kind.paren) (eq (get item compiler.Node.kind) compiler.Kind.bracket))
@@ -412,15 +412,15 @@
   ;; ===== Driver =====
 
 ;; The part of a qualified name after its last '.'.
-  (fn last_part [n:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn last_part [n:str.Bytes] -> str.Bytes
     (unsafe (let dot:i32 -1)
     (loop i 0 (- (get n str.Bytes.len) 1) 1
       (if (eq (call str.byte_at n i) 46) (set! dot i) (block)))
-    (call str.bytes (+ (get n str.Bytes.addr) (+ dot 1)) (- (get n str.Bytes.len) (+ dot 1)))))
+    (call str.bytes (+ (call str.addr n) (+ dot 1)) (- (get n str.Bytes.len) (+ dot 1)))))
 
   ;; Built-in forms and types (generics.rs BUILT_IN): a template with one of
   ;; these names would be indistinguishable from the form itself.
-  (fn built_in [base:(ptr str.Bytes)] -> bool
+  (fn built_in [base:str.Bytes] -> bool
     (or (call lit base "module") (or (call lit base "import") (or (call lit base "fn") (or (call lit base "struct") (or (call lit base "let") (or (call lit base "set!") (or (call lit base "if") (or (call lit base "while") (or (call lit base "loop") (or (call lit base "block") (or (call lit base "call") (or (call lit base "ref") (or (call lit base "call_ref") (or (call lit base "new") (or (call lit base "get") (or (call lit base "put") (or (call lit base "sizeof") (or (call lit base "ptr") (or (call lit base "arr") (or (call lit base "result") (or (call lit base "ok") (or (call lit base "err") (or (call lit base "match_result") (or (call lit base "return") (or (call lit base "break") (or (call lit base "continue") (or (call lit base "cond") (or (call lit base "else") (or (call lit base "req") (or (call lit base "ens") (or (call lit base "inv") (or (call lit base "+") (or (call lit base "-") (or (call lit base "*") (or (call lit base "/") (or (call lit base "%") (or (call lit base "^") (or (call lit base "eq") (or (call lit base "neq") (or (call lit base "lt") (or (call lit base "lte") (or (call lit base "gt") (or (call lit base "gte") (or (call lit base "and") (or (call lit base "or") (or (call lit base "not") (or (call lit base "shl") (or (call lit base "shr") (or (call lit base "shru") (or (call lit base "bitand") (or (call lit base "bitor") (or (call lit base "divu") (or (call lit base "remu") (or (call lit base "i32") (or (call lit base "i64") (or (call lit base "f32") (or (call lit base "f64") (or (call lit base "bool") (or (call lit base "str") (call lit base "void")))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
 
   ;; Collects a template from (fn (name T...) ...) / (struct (Name T...) ...);
@@ -430,10 +430,10 @@
   ;; struct templates, anything else a function template), with its checks.
   (fn collect [st:(ptr St) item:(ptr compiler.Node)] -> bool
     (if (neq (get item compiler.Node.kind) compiler.Kind.paren) (return false) (block))
-    (let h:(ptr str.Bytes) (call head st item))
+    (let h:str.Bytes (call head st item))
     (let header:(ptr compiler.Node) (call nth item 1))
     (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) compiler.Kind.paren)) (return false) (block))
-    (let name:(ptr str.Bytes) (call head st header))
+    (let name:str.Bytes (call head st header))
     (if (lt (get name str.Bytes.len) 0) (return false) (block))
     (if (call built_in (call last_part name))
         (block
@@ -445,21 +445,21 @@
     (put t Tmpl.node item)
     (put t Tmpl.is_struct (and (gte (get h str.Bytes.len) 0)
                                (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))))
-    (put t Tmpl.params (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+    (put t Tmpl.params (call (vec.make str.Bytes) (call alloc.default) 4))
     (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
     (while (neq p (ptr.null compiler.Node))
-      (let pt:(ptr str.Bytes) (if (call is_symbol p) (call text st p) (call str.from_str "")))
+      (let pt:str.Bytes (if (call is_symbol p) (call text st p) (call str.from_str "")))
       (if (and (gt (get pt str.Bytes.len) 0) (and (gte (call str.byte_at pt 0) 65) (lte (call str.byte_at pt 0) 90)))
-          (call (vec.push (ptr str.Bytes)) (get t Tmpl.params) pt)
+          (call (vec.push str.Bytes) (get t Tmpl.params) pt)
           (call fail_at st (get p compiler.Node.pos) (call msg "a type parameter is a name starting with an uppercase letter, e.g. T")))
       (set! p (get p compiler.Node.next)))
-    (if (eq (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)) 0)
+    (if (eq (call (vec.len str.Bytes) (get t Tmpl.params)) 0)
         (block
           (let nb:(ptr buf.Buf) (call quoted (call msg "generic ") name))
           (call buf.push_str nb " needs at least one type parameter")
           (call fail_at st (get header compiler.Node.pos) nb))
         (block))
-    (if (call (map.has (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) name)
+    (if (call (map.has str.Bytes (ptr Tmpl)) (get st St.templates) name)
         (block
           (let db:(ptr buf.Buf) (call quoted (call msg "generic ") name))
           (call buf.push_str db " is defined twice")
@@ -468,17 +468,17 @@
     (put t Tmpl.name name)
     (call take_wheres st t h)
     (call (vec.push (ptr Tmpl)) (get st St.order) t)
-    (call (map.set (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) name t)
+    (call (map.set str.Bytes (ptr Tmpl)) (get st St.templates) name t)
     true)
 
   ;; A template's where clauses (generics.rs take_wheres): (where (Interface
   ;; T)), right after its signature (a function's return type, a struct's
   ;; fields, a union's variants), T one of its type parameters.
-  (fn take_wheres [st:(ptr St) t:(ptr Tmpl) h:(ptr str.Bytes)] -> void
+  (fn take_wheres [st:(ptr St) t:(ptr Tmpl) h:str.Bytes] -> void
     (let item:(ptr compiler.Node) (get t Tmpl.node))
     (put t Tmpl.wheres (call (vec.make (ptr compiler.Node)) (call alloc.default) 2))
-    (put t Tmpl.struct_kind (arr.new bool (+ (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)) 1)))
-    (put t Tmpl.plain_kind (arr.new bool (+ (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)) 1)))
+    (put t Tmpl.struct_kind (arr.new bool (+ (call (vec.len str.Bytes) (get t Tmpl.params)) 1)))
+    (put t Tmpl.plain_kind (arr.new bool (+ (call (vec.len str.Bytes) (get t Tmpl.params)) 1)))
     (let taken:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 2))
     (let start:i32 (cond ((call lit h "fn") 5) ((or (call lit h "struct") (call lit h "union")) 3) (else 1000000)))
     (let c:(ptr compiler.Node) (if (lt start 1000000) (call nth item start) (ptr.null compiler.Node)))
@@ -509,9 +509,9 @@
     (if (lt (get (call head st req) str.Bytes.len) 0) (return -1) (block))
     (let p:(ptr compiler.Node) (call nth req 1))
     (if (not (call is_symbol p)) (return -1) (block))
-    (let params:(ptr (vec.Vec (ptr str.Bytes))) (get t Tmpl.params))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) params) 1) 1
-      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) params k) (call text st p)) (return k) (block)))
+    (let params:(ptr (vec.Vec str.Bytes)) (get t Tmpl.params))
+    (loop k 0 (- (call (vec.len str.Bytes) params) 1) 1
+      (if (call str.bytes_eq (call (vec.at str.Bytes) params k) (call text st p)) (return k) (block)))
     -1)
 
   ;; The first (where ...) among an item's parts from index 2 that is not
@@ -530,32 +530,32 @@
 
   ;; Expands the generics of flat program `flat` into `out`; false with a
   ;; message in `err` on a malformed or unbounded use.
-  (fn expand [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
+  (fn expand [flat:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf)] -> bool
     (call expand_mapped flat out err (ptr.null origins.Origins) (ptr.null Failure)))
 
   ;; expand, noting in `gen` (if not null) where each token of the result
   ;; comes from in `flat`; nothing is noted when there are no generics (the
   ;; result is `flat` itself).
   ;; On an error, `failure` (if not null) gets its offset in `flat`.
-  (fn expand_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
+  (fn expand_mapped [flat:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
     (call expand_with flat out err gen failure false))
 
   ;; generics.rs archetypes: every template once at placeholders for its
   ;; type parameters, for checking only. Nothing is written to `out` when
   ;; there are no templates.
-  (fn archetypes_mapped [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
+  (fn archetypes_mapped [flat:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure)] -> bool (pub)
     (call expand_with flat out err gen failure true))
 
-  (fn expand_with [flat:(ptr str.Bytes) out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure) archetypes:bool] -> bool
+  (fn expand_with [flat:str.Bytes out:(ptr buf.Buf) err:(ptr buf.Buf) gen:(ptr origins.Origins) failure:(ptr Failure) archetypes:bool] -> bool
     (unsafe (let n:i32 (get flat str.Bytes.len))
-    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (get flat str.Bytes.addr) n) 1))))
-    (let count:i32 (call compiler.tokenize (get flat str.Bytes.addr) n tok))
+    (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens (call str.addr flat) n) 1))))
+    (let count:i32 (call compiler.tokenize (call str.addr flat) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
     (let st:(ptr St) (new St))
     (put st St.text flat)
-    (put st St.templates (call (map.make (ptr str.Bytes) (ptr Tmpl)) (call alloc.default) 16))
-    (put st St.made (call (map.make (ptr str.Bytes) i32) (call alloc.default) 64))
+    (put st St.templates (call (map.make str.Bytes (ptr Tmpl)) (call alloc.default) 16))
+    (put st St.made (call (map.make str.Bytes i32) (call alloc.default) 64))
     (put st St.queue (call (vec.make (ptr Inst)) (call alloc.default) 16))
     (put st St.err err)
     (put st St.failed false)
@@ -563,22 +563,22 @@
     (put st St.failure failure)
     (let items:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 64))
     (let item:(ptr compiler.Node) (call nth root 2))
-    (put st St.ifaces (call (map.make (ptr str.Bytes) (ptr Iface)) (call alloc.default) 8))
-    (put st St.impls (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put st St.ifaces (call (map.make str.Bytes (ptr Iface)) (call alloc.default) 8))
+    (put st St.impls (call (map.make str.Bytes i32) (call alloc.default) 16))
     (put st St.order (call (vec.make (ptr Tmpl)) (call alloc.default) 16))
-    (put st St.struct_names (call (map.make (ptr str.Bytes) i32) (call alloc.default) 64))
-    (put st St.made_structs (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
-    (put st St.value_names (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
-    (put st St.defs (call (map.make (ptr str.Bytes) (ptr compiler.Node)) (call alloc.default) 16))
-    (put st St.plain_names (call (map.make (ptr str.Bytes) i32) (call alloc.default) 8))
-    (put st St.made_values (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put st St.struct_names (call (map.make str.Bytes i32) (call alloc.default) 64))
+    (put st St.made_structs (call (map.make str.Bytes i32) (call alloc.default) 16))
+    (put st St.value_names (call (map.make str.Bytes i32) (call alloc.default) 16))
+    (put st St.defs (call (map.make str.Bytes (ptr compiler.Node)) (call alloc.default) 16))
+    (put st St.plain_names (call (map.make str.Bytes i32) (call alloc.default) 8))
+    (put st St.made_values (call (map.make str.Bytes i32) (call alloc.default) 16))
     (put st St.archetypes archetypes)
     (put st St.granted (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
     (put st St.granted_by (call (vec.make (ptr Tmpl)) (call alloc.default) 8))
     (while (and (neq item (ptr.null compiler.Node)) (not (get st St.failed)))
       ;; interfaces are with the structs, so every one is known before the
       ;; first implementation (with the functions)
-      (let ih:(ptr str.Bytes) (call head st item))
+      (let ih:str.Bytes (call head st item))
       (cond
         ((call lit ih "interface") (call collect_interface st item))
         ((call lit ih "impl") (call collect_impl st item) (call (vec.push (ptr compiler.Node)) items item))
@@ -590,24 +590,24 @@
              (block))
          ;; a value struct is a value type argument
          (if (and (call lit ih "struct") (call is_symbol (call nth item 1)))
-             (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st item) (get st St.value_names) (get st St.struct_names)) (call text st (call nth item 1)) 1)
+             (call (map.set str.Bytes i32) (if (call is_value_item st item) (get st St.value_names) (get st St.struct_names)) (call text st (call nth item 1)) 1)
              (block))
          ;; value structs, unions, and enums, for plain type arguments
          (if (and (or (call is_value_item st item) (or (call lit ih "union") (call lit ih "enum"))) (call is_symbol (call nth item 1)))
-             (call (map.set (ptr str.Bytes) (ptr compiler.Node)) (get st St.defs) (call text st (call nth item 1)) item)
+             (call (map.set str.Bytes (ptr compiler.Node)) (get st St.defs) (call text st (call nth item 1)) item)
              (block))
          (call (vec.push (ptr compiler.Node)) items item)))
       (set! item (get item compiler.Node.next)))
     (if (get st St.failed) (return false) (block))
-    (if (and archetypes (eq (call (map.count (ptr str.Bytes) (ptr Tmpl)) (get st St.templates)) 0)) (return true) (block))
-    (if (and (eq (call (map.count (ptr str.Bytes) (ptr Tmpl)) (get st St.templates)) 0) (eq (call (map.count (ptr str.Bytes) (ptr Iface)) (get st St.ifaces)) 0))
+    (if (and archetypes (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0)) (return true) (block))
+    (if (and (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0) (eq (call (map.count str.Bytes (ptr Iface)) (get st St.ifaces)) 0))
         (block (call buf.push_bytes out flat) (return true))
         (block))
     (let so:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let si:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let fo:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let fi:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
-    (let none:(ptr str.Bytes) (call str.bytes 0 -1))
+    (let none:str.Bytes (call str.bytes 0 -1))
     ;; the placeholders' implementations, then each template at its placeholders
     (let order:(ptr (vec.Vec (ptr Tmpl))) (get st St.order))
     (if archetypes
@@ -621,7 +621,7 @@
     (loop pass 0 1 1
       (loop i 0 (- (call (vec.len (ptr compiler.Node)) items) 1) 1
         (let it:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) items i))
-        (let h:(ptr str.Bytes) (call head st it))
+        (let h:str.Bytes (call head st it))
         (let is_struct:bool (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union")))))
         (cond
           ((neq is_struct (eq pass 0)) (block))
@@ -664,7 +664,7 @@
   ;; interface's contracts before its own; (call (Hash.hash i32) x) calls one.
 
   (fn is_contract [st:(ptr St) n:(ptr compiler.Node)] -> bool
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     (or (call lit h "req") (or (call lit h "ens") (call lit h "inv"))))
 
   ;; The index of the first body item of (fn name [p:T ...] -> R contracts...
@@ -692,14 +692,14 @@
   ;; A type's name in an instance name, as generics.rs type_name: like
   ;; mangle, but makes no instances. len -1 if n is not a type (reported at
   ;; the offending node when `report`).
-  (fn type_text [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) report:bool] -> (ptr str.Bytes)
+  (fn type_text [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) report:bool] -> str.Bytes
     (unsafe (if (call is_symbol n)
         (block
-          (let t:(ptr str.Bytes) (call text st n))
+          (let t:str.Bytes (call text st n))
           (let k:i32 (call lookup env t))
-          (return (if (gte k 0) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) k) t)))
+          (return (if (gte k 0) (call (vec.at str.Bytes) (get env Env.mangled) k) t)))
         (block))
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     (let fn_type:bool (and (call lit h "fn") (eq (call count_children n) 4)))
     (if (or (lt (get h str.Bytes.len) 0) (and (not fn_type) (lt (call count_children n) 2)))
         (block
@@ -712,7 +712,7 @@
     (let a:(ptr compiler.Node) (if fn_type (call first_child (call nth n 1)) (get (call first_child n) compiler.Node.next)))
     (let first:bool true)
     (while (neq a (ptr.null compiler.Node))
-      (let m:(ptr str.Bytes) (call type_text st a env report))
+      (let m:str.Bytes (call type_text st a env report))
       (if (lt (get m str.Bytes.len) 0) (return m) (block))
       (if first (block) (call buf.push_byte out 44))
       (call buf.push_bytes out m)
@@ -720,7 +720,7 @@
       (set! a (get a compiler.Node.next)))
     (if fn_type
         (block
-          (let r:(ptr str.Bytes) (call type_text st (call nth n 3) env report))
+          (let r:str.Bytes (call type_text st (call nth n 3) env report))
           (if (lt (get r str.Bytes.len) 0) (return r) (block))
           (call buf.push_str out "->")
           (call buf.push_bytes out r))
@@ -735,11 +735,11 @@
     (let k:compiler.Kind (get n compiler.Node.kind))
     (cond
       ((eq k compiler.Kind.symbol)
-       (let t:(ptr str.Bytes) (call text st n))
+       (let t:str.Bytes (call text st n))
        (let i:i32 (call lookup env t))
        (cond
          ((lt i 0) (call buf.push_bytes out t))
-         ((get env Env.sealed) (call buf.push_bytes out (call (vec.at (ptr str.Bytes)) (get env Env.mangled) i)))
+         ((get env Env.sealed) (call buf.push_bytes out (call (vec.at str.Bytes) (get env Env.mangled) i)))
          (else (call render st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) as_written out))))
       ((eq k compiler.Kind.colon) (call buf.push_byte out 58))
       ((eq k compiler.Kind.arrow) (call buf.push_str out "->"))
@@ -759,49 +759,49 @@
       (else (call buf.push_bytes out (call text st n)))))
 
   ;; An environment putting `ty` in for the interface's parameter.
-  (fn iface_env [st:(ptr St) i:(ptr Iface) ty:(ptr compiler.Node) tn:(ptr str.Bytes)] -> (ptr Env)
+  (fn iface_env [st:(ptr St) i:(ptr Iface) ty:(ptr compiler.Node) tn:str.Bytes] -> (ptr Env)
     (let e:(ptr Env) (new Env))
-    (put e Env.names (call (vec.make (ptr str.Bytes)) (call alloc.default) 1))
-    (call (vec.push (ptr str.Bytes)) (get e Env.names) (get i Iface.param))
+    (put e Env.names (call (vec.make str.Bytes) (call alloc.default) 1))
+    (call (vec.push str.Bytes) (get e Env.names) (get i Iface.param))
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
     (call (vec.push (ptr compiler.Node)) (get e Env.args) ty)
-    (put e Env.mangled (call (vec.make (ptr str.Bytes)) (call alloc.default) 1))
-    (call (vec.push (ptr str.Bytes)) (get e Env.mangled) tn)
+    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 1))
+    (call (vec.push str.Bytes) (get e Env.mangled) tn)
     (put e Env.outer (ptr.null Env))
     e)
 
   ;; The interface's signature named `name`, or null.
-  (fn iface_fn [st:(ptr St) i:(ptr Iface) name:(ptr str.Bytes)] -> (ptr compiler.Node)
+  (fn iface_fn [st:(ptr St) i:(ptr Iface) name:str.Bytes] -> (ptr compiler.Node)
     (let fns:(ptr (vec.Vec (ptr compiler.Node))) (get i Iface.fns))
     (loop k 0 (- (call (vec.len (ptr compiler.Node)) fns) 1) 1
       (let f:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) fns k))
       (if (call str.bytes_eq (call text st (call nth f 1)) name) (return f) (block)))
     (ptr.null compiler.Node))
 
-  (fn has_name [names:(ptr (vec.Vec (ptr str.Bytes))) name:(ptr str.Bytes)] -> bool
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) names) 1) 1
-      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) names k) name) (return true) (block)))
+  (fn has_name [names:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> bool
+    (loop k 0 (- (call (vec.len str.Bytes) names) 1) 1
+      (if (call str.bytes_eq (call (vec.at str.Bytes) names k) name) (return true) (block)))
     false)
 
   ;; The part of a qualified name before its last '.' ("" for none).
-  (fn module_of [n:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn module_of [n:str.Bytes] -> str.Bytes
     (unsafe (let dot:i32 -1)
     (loop i 0 (- (get n str.Bytes.len) 1) 1
       (if (eq (call str.byte_at n i) 46) (set! dot i) (block)))
-    (call str.bytes (get n str.Bytes.addr) (if (lt dot 0) 0 dot))))
+    (call str.bytes (call str.addr n) (if (lt dot 0) 0 dot))))
 
-  (fn built_in_type [t:(ptr str.Bytes)] -> bool
+  (fn built_in_type [t:str.Bytes] -> bool
     (or (call lit t "i32") (or (call lit t "i64") (or (call lit t "f32") (or (call lit t "f64")
       (or (call lit t "bool") (or (call lit t "str") (call lit t "void"))))))))
 
   ;; The named type a type is about (generics.rs type_owner); len -1 for none.
-  (fn type_owner [st:(ptr St) ty:(ptr compiler.Node)] -> (ptr str.Bytes)
+  (fn type_owner [st:(ptr St) ty:(ptr compiler.Node)] -> str.Bytes
     (unsafe (if (call is_symbol ty)
         (block
-          (let t:(ptr str.Bytes) (call text st ty))
+          (let t:str.Bytes (call text st ty))
           (return (if (call built_in_type t) (call str.bytes 0 -1) t)))
         (block))
-    (let h:(ptr str.Bytes) (call head st ty))
+    (let h:str.Bytes (call head st ty))
     (cond
       ((or (call lit h "ptr") (call lit h "arr"))
        (let inner:(ptr compiler.Node) (call nth ty 1))
@@ -815,7 +815,7 @@
             (or (neq (get header compiler.Node.kind) compiler.Kind.paren) (lt (get (call head st header) str.Bytes.len) 0)))
         (block (call fail_at st (get item compiler.Node.pos) (call msg "an interface is written (interface (Name T) (fn name [params] -> type) ...)")) (return))
         (block))
-    (let name:(ptr str.Bytes) (call head st header))
+    (let name:str.Bytes (call head st header))
     ;; generics.rs generic_header's checks
     (if (call built_in (call last_part name))
         (block
@@ -826,7 +826,7 @@
         (block))
     (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
     (while (neq p (ptr.null compiler.Node))
-      (let pt:(ptr str.Bytes) (if (call is_symbol p) (call text st p) (call str.from_str "")))
+      (let pt:str.Bytes (if (call is_symbol p) (call text st p) (call str.from_str "")))
       (if (not (and (gt (get pt str.Bytes.len) 0) (and (gte (call str.byte_at pt 0) 65) (lte (call str.byte_at pt 0) 90))))
           (block (call fail_at st (get p compiler.Node.pos) (call msg "a type parameter is a name starting with an uppercase letter, e.g. T")) (return))
           (block))
@@ -841,7 +841,7 @@
     (if (neq (call count_children header) 2)
         (block (call fail_at st (get header compiler.Node.pos) (call msg "an interface takes one type parameter: (interface (Name T) ...)")) (return))
         (block))
-    (if (call (map.has (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) name)
+    (if (call (map.has str.Bytes (ptr Iface)) (get st St.ifaces) name)
         (block
           (let db:(ptr buf.Buf) (call quoted (call msg "interface ") name))
           (call buf.push_str db " is defined twice")
@@ -865,7 +865,7 @@
       (if (neq body (ptr.null compiler.Node))
           (block (call fail_at st (get body compiler.Node.pos) (call msg "an interface's function has no body: its implementations have one")) (return))
           (block))
-      (let fname:(ptr str.Bytes) (call text st (call nth f 1)))
+      (let fname:str.Bytes (call text st (call nth f 1)))
       (if (neq (call iface_fn st i fname) (ptr.null compiler.Node))
           (block
             (let b:(ptr buf.Buf) (call quoted (call msg "") fname))
@@ -876,7 +876,7 @@
           (block))
       (call (vec.push (ptr compiler.Node)) (get i Iface.fns) f)
       (set! f (get f compiler.Node.next)))
-    (call (map.set (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) name i))
+    (call (map.set str.Bytes (ptr Iface)) (get st St.ifaces) name i))
 
   ;; Checks an implementation and records it (generics.rs add_impl); it is
   ;; printed with the functions (print_impl).
@@ -886,9 +886,9 @@
     (if (or (eq header (ptr.null compiler.Node)) (neq (get header compiler.Node.kind) compiler.Kind.paren))
         (block (call fail_at st (get item compiler.Node.pos) (call msg form)) (return))
         (block))
-    (let iname:(ptr str.Bytes) (call head st header))
+    (let iname:str.Bytes (call head st header))
     (if (lt (get iname str.Bytes.len) 0) (block (call fail_at st (get header compiler.Node.pos) (call msg form)) (return)) (block))
-    (let i:(ptr Iface) (call (map.get_or (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
+    (let i:(ptr Iface) (call (map.get_or str.Bytes (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
     (if (eq i (ptr.null Iface))
         (block
           (let nb:(ptr buf.Buf) (call quoted (call msg "") iname))
@@ -900,10 +900,10 @@
         (block (call fail_at st (get header compiler.Node.pos) (call msg "an implementation names one type: (impl (Interface type) ...)")) (return))
         (block))
     (let ty:(ptr compiler.Node) (call nth header 1))
-    (let tn:(ptr str.Bytes) (call type_text st ty (ptr.null Env) true))
+    (let tn:str.Bytes (call type_text st ty (ptr.null Env) true))
     (if (lt (get tn str.Bytes.len) 0) (return) (block))
-    (let key:(ptr str.Bytes) (call impl_key iname tn))
-    (if (call (map.has (ptr str.Bytes) i32) (get st St.impls) key)
+    (let key:str.Bytes (call impl_key iname tn))
+    (if (call (map.has str.Bytes i32) (get st St.impls) key)
         (block
           (let kb:(ptr buf.Buf) (call msg "a second implementation of "))
           (call buf.push_bytes kb key)
@@ -912,17 +912,17 @@
           (return))
         (block))
     (let env:(ptr Env) (call iface_env st i ty tn))
-    (let seen:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
-    (let module:(ptr str.Bytes) (call str.from_str ""))
+    (let seen:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let module:str.Bytes (call str.from_str ""))
     (let f:(ptr compiler.Node) (call nth item 2))
     (while (neq f (ptr.null compiler.Node))
       (if (lt (call sig_end st f) 0)
           (block (call fail_at st (get f compiler.Node.pos) (call msg "an implementation's function is written (fn name [params] -> type body...)")) (return))
           (block))
       (let name_node:(ptr compiler.Node) (call nth f 1))
-      (let full:(ptr str.Bytes) (call text st name_node))
+      (let full:str.Bytes (call text st name_node))
       (set! module (call module_of full))
-      (let base:(ptr str.Bytes) (call last_part full))
+      (let base:str.Bytes (call last_part full))
       (let want:(ptr compiler.Node) (call iface_fn st i base))
       (if (eq want (ptr.null compiler.Node))
           (block
@@ -939,7 +939,7 @@
             (call fail_at st (get name_node compiler.Node.pos) b2)
             (return))
           (block))
-      (call (vec.push (ptr str.Bytes)) seen base)
+      (call (vec.push str.Bytes) seen base)
       (if (not (call same_signature st f want env))
           (block
             (let sb:(ptr buf.Buf) (call quoted (call msg "") base))
@@ -978,7 +978,7 @@
             (return))
           (block)))
     ;; the orphan rule
-    (let owner:(ptr str.Bytes) (call type_owner st ty))
+    (let owner:str.Bytes (call type_owner st ty))
     (if (not (or (call str.bytes_eq module (call module_of iname))
                  (and (gte (get owner str.Bytes.len) 0) (call str.bytes_eq module (call module_of owner)))))
         (block
@@ -993,9 +993,9 @@
           (call fail_at st (get header compiler.Node.pos) ob)
           (return))
         (block))
-    (call (map.set (ptr str.Bytes) i32) (get st St.impls) key 1))
+    (call (map.set str.Bytes i32) (get st St.impls) key 1))
 
-  (fn impl_key [iname:(ptr str.Bytes) tn:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn impl_key [iname:str.Bytes tn:str.Bytes] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_bytes b iname)
     (call buf.push_byte b 60)
@@ -1018,23 +1018,23 @@
     (and (eq a b) (call same_type st (call nth f 4) (ptr.null Env) (call nth want 4) env)))
 
   (fn same_type [st:(ptr St) a:(ptr compiler.Node) ea:(ptr Env) b:(ptr compiler.Node) eb:(ptr Env)] -> bool
-    (let x:(ptr str.Bytes) (call type_text st a ea false))
-    (let y:(ptr str.Bytes) (call type_text st b eb false))
+    (let x:str.Bytes (call type_text st a ea false))
+    (let y:str.Bytes (call type_text st b eb false))
     (and (gte (get x str.Bytes.len) 0) (and (gte (get y str.Bytes.len) 0) (call str.bytes_eq x y))))
 
   ;; An implementation's functions, each as (fn Interface<type>.name [params]
   ;; -> R <the interface's contracts> <its own>...).
   (fn print_impl [st:(ptr St) item:(ptr compiler.Node) stub:bool out:(ptr buf.Buf)] -> void
     (let header:(ptr compiler.Node) (call nth item 1))
-    (let iname:(ptr str.Bytes) (call head st header))
-    (let i:(ptr Iface) (call (map.get_or (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
+    (let iname:str.Bytes (call head st header))
+    (let i:(ptr Iface) (call (map.get_or str.Bytes (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
     (let ty:(ptr compiler.Node) (call nth header 1))
-    (let tn:(ptr str.Bytes) (call type_text st ty (ptr.null Env) false))
-    (let key:(ptr str.Bytes) (call impl_key iname tn))
+    (let tn:str.Bytes (call type_text st ty (ptr.null Env) false))
+    (let key:str.Bytes (call impl_key iname tn))
     (let env:(ptr Env) (call iface_env st i ty tn))
     (let f:(ptr compiler.Node) (call nth item 2))
     (while (neq f (ptr.null compiler.Node))
-      (let base:(ptr str.Bytes) (call last_part (call text st (call nth f 1))))
+      (let base:str.Bytes (call last_part (call text st (call nth f 1))))
       (let want:(ptr compiler.Node) (call iface_fn st i base))
       (if stub
           (block
@@ -1076,22 +1076,22 @@
   ;; (Interface.function t), the callee of a call or ref, for a known interface.
   (fn is_iface_call [st:(ptr St) n:(ptr compiler.Node)] -> bool
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     (if (lt (get h str.Bytes.len) 0) (return false) (block))
-    (call (map.has (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) (call module_of h)))
+    (call (map.has str.Bytes (ptr Iface)) (get st St.ifaces) (call module_of h)))
 
   ;; Prints the implementation's function a call names (generics.rs rewrite).
   (fn print_iface_call [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
     ;; the applications in the type first, as generics.rs rewrites children first
     (call visit_apps st n env)
     (if (get st St.failed) (return) (block))
-    (let h:(ptr str.Bytes) (call head st n))
-    (let iname:(ptr str.Bytes) (call module_of h))
-    (let f:(ptr str.Bytes) (call last_part h))
+    (let h:str.Bytes (call head st n))
+    (let iname:str.Bytes (call module_of h))
+    (let f:str.Bytes (call last_part h))
     (if (neq (call count_children n) 2)
         (block (call fail_at st (get n compiler.Node.pos) (call msg "a call to an interface's function names one type: (call (Interface.function type) args...)")) (return))
         (block))
-    (let i:(ptr Iface) (call (map.get_or (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
+    (let i:(ptr Iface) (call (map.get_or str.Bytes (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
     (if (eq (call iface_fn st i f) (ptr.null compiler.Node))
         (block
           (let b:(ptr buf.Buf) (call quoted (call msg "") f))
@@ -1101,8 +1101,8 @@
           (return))
         (block))
     (let ty:(ptr compiler.Node) (call nth n 1))
-    (let key:(ptr str.Bytes) (call impl_key iname (call mangle st ty env)))
-    (if (not (call (map.has (ptr str.Bytes) i32) (get st St.impls) key))
+    (let key:str.Bytes (call impl_key iname (call mangle st ty env)))
+    (if (not (call (map.has str.Bytes i32) (get st St.impls) key))
         (block
           (let mb:(ptr buf.Buf) (call msg "no implementation of "))
           (call missing_impl st mb iname ty env)
@@ -1118,7 +1118,7 @@
 
   ;; "(Interface T): write (impl (Interface T) ...)", or for a placeholder
   ;; "(Interface T): add (where (Interface T)) to template".
-  (fn missing_impl [st:(ptr St) b:(ptr buf.Buf) iname:(ptr str.Bytes) arg:(ptr compiler.Node) env:(ptr Env)] -> void
+  (fn missing_impl [st:(ptr St) b:(ptr buf.Buf) iname:str.Bytes arg:(ptr compiler.Node) env:(ptr Env)] -> void
     (let w:(ptr buf.Buf) (call msg "("))
     (call buf.push_bytes w iname)
     (call buf.push_byte w 32)
@@ -1126,10 +1126,10 @@
     (call render st arg env false a)
     (call buf.push_bytes w (call names.shown (call as_bytes a)))
     (call buf.push_byte w 41)
-    (let wanted:(ptr str.Bytes) (call as_bytes w))
+    (let wanted:str.Bytes (call as_bytes w))
     (call buf.push_bytes b wanted)
-    (let sym:(ptr str.Bytes) (call arg_symbol st arg env))
-    (if (and (neq sym (ptr.null str.Bytes)) (call names.is_sealed sym))
+    (let sym:str.Bytes (call arg_symbol st arg env))
+    (if (and (call str.present sym) (call names.is_sealed sym))
         (block
           (call buf.push_str b ": add (where (")
           (call buf.push_bytes b iname)
@@ -1143,28 +1143,28 @@
           (call buf.push_str b " ...)"))))
 
   ;; The template a placeholder 'owner.T belongs to.
-  (fn sealed_owner [sym:(ptr str.Bytes)] -> (ptr str.Bytes)
-    (unsafe (call module_of (call str.bytes (+ (get sym str.Bytes.addr) 1) (- (get sym str.Bytes.len) 1)))))
+  (fn sealed_owner [sym:str.Bytes] -> str.Bytes
+    (unsafe (call module_of (call str.bytes (+ (call str.addr sym) 1) (- (get sym str.Bytes.len) 1)))))
 
   ;; The argument as generics.rs has it after rewriting, if that is a
   ;; symbol: a name, a placeholder, or an application's instance; else null.
-  (fn arg_symbol [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> (ptr str.Bytes)
+  (fn arg_symbol [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> str.Bytes
     (if (call is_symbol n)
         (block
-          (let t:(ptr str.Bytes) (call text st n))
+          (let t:str.Bytes (call text st n))
           (let i:i32 (call lookup env t))
           (return (cond
                     ((lt i 0) t)
-                    ((get env Env.sealed) (call (vec.at (ptr str.Bytes)) (get env Env.mangled) i))
+                    ((get env Env.sealed) (call (vec.at str.Bytes) (get env Env.mangled) i))
                     (else (call arg_symbol st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer))))))
         (block))
-    (if (call is_app st n false) (call instance st n env) (ptr.null str.Bytes)))
+    (if (call is_app st n false) (call instance st n env) (call str.absent)))
 
   ;; Whether the argument cannot be stored: void, or a result.
   (fn arg_unstorable [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env)] -> bool
     (if (call is_symbol n)
         (block
-          (let t:(ptr str.Bytes) (call text st n))
+          (let t:str.Bytes (call text st n))
           (let i:i32 (call lookup env t))
           (return (cond
                     ((lt i 0) (call lit t "void"))
@@ -1174,14 +1174,14 @@
     (and (not (call is_app st n false)) (call lit (call head st n) "result")))
 
   ;; Why argument k of an instance of t is of the wrong kind, or null.
-  (fn kind_error [st:(ptr St) t:(ptr Tmpl) k:i32 an:(ptr compiler.Node) env:(ptr Env) name:(ptr str.Bytes)] -> (ptr buf.Buf)
-    (let p:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) (get t Tmpl.params) k))
+  (fn kind_error [st:(ptr St) t:(ptr Tmpl) k:i32 an:(ptr compiler.Node) env:(ptr Env) name:str.Bytes] -> (ptr buf.Buf)
+    (let p:str.Bytes (call (vec.at str.Bytes) (get t Tmpl.params) k))
     (let ab:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call render st an env false ab)
-    (let a:(ptr str.Bytes) (call names.shown (call as_bytes ab)))
-    (let sym:(ptr str.Bytes) (call arg_symbol st an env))
-    (let is_struct:bool (and (neq sym (ptr.null str.Bytes))
-                             (or (call (map.has (ptr str.Bytes) i32) (get st St.struct_names) sym) (call (map.has (ptr str.Bytes) i32) (get st St.made_structs) sym))))
+    (let a:str.Bytes (call names.shown (call as_bytes ab)))
+    (let sym:str.Bytes (call arg_symbol st an env))
+    (let is_struct:bool (and (call str.present sym)
+                             (or (call (map.has str.Bytes i32) (get st St.struct_names) sym) (call (map.has str.Bytes i32) (get st St.made_structs) sym))))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
     (call buf.push_bytes b (call names.shown name))
     (call buf.push_str b ": ")
@@ -1189,15 +1189,15 @@
     (cond
       ((arr.get bool (get t Tmpl.struct_kind) k)
        (if is_struct (return (ptr.null buf.Buf)) (block))
-       (if (and (neq sym (ptr.null str.Bytes)) (call names.is_sealed sym))
+       (if (and (call str.present sym) (call names.is_sealed sym))
            (block
              (call buf.push_str b " must be a struct, so ")
              (call buf.push_bytes b (call sealed_owner sym))
              (call buf.push_str b " needs (where (struct ")
              (call buf.push_bytes b (call last_part sym))
              (call buf.push_str b "))"))
-           (if (and (neq sym (ptr.null str.Bytes))
-                    (or (call (map.has (ptr str.Bytes) i32) (get st St.value_names) sym) (call (map.has (ptr str.Bytes) i32) (get st St.made_values) sym)))
+           (if (and (call str.present sym)
+                    (or (call (map.has str.Bytes i32) (get st St.value_names) sym) (call (map.has str.Bytes i32) (get st St.made_values) sym)))
                (block
                  (call buf.push_str b " must be a struct used through a pointer (where (struct ")
                  (call buf.push_bytes b p)
@@ -1220,8 +1220,8 @@
        (call buf.push_str b " is a value type, and ")
        (call buf.push_bytes b a)
        (call buf.push_str b " cannot be stored"))
-      ((and (arr.get bool (get t Tmpl.plain_kind) k) (not (call is_plain st an env (call (map.make (ptr str.Bytes) i32) (call alloc.default) 4))))
-       (if (and (neq sym (ptr.null str.Bytes)) (call names.is_sealed sym))
+      ((and (arr.get bool (get t Tmpl.plain_kind) k) (not (call is_plain st an env (call (map.make str.Bytes i32) (call alloc.default) 4))))
+       (if (and (call str.present sym) (call names.is_sealed sym))
            (block
              (call buf.push_str b " must be plain, so ")
              (call buf.push_bytes b (call sealed_owner sym))
@@ -1243,18 +1243,18 @@
   ;; are plain (generic ones among them), and the placeholders of (where
   ;; (plain T)) parameters. seen: the definitions being looked into (a
   ;; union that holds itself is plain if its other fields are).
-  (fn is_plain [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map (ptr str.Bytes) i32))] -> bool
+  (fn is_plain [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map str.Bytes i32))] -> bool
     (if (call is_symbol n)
         (block
-          (let t:(ptr str.Bytes) (call text st n))
+          (let t:str.Bytes (call text st n))
           (let i:i32 (call lookup env t))
           (if (and (gte i 0) (not (get env Env.sealed)))
               (return (call is_plain st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) seen))
               (block))
-          (return (call plain_name st (if (lt i 0) t (call (vec.at (ptr str.Bytes)) (get env Env.mangled) i)) seen)))
+          (return (call plain_name st (if (lt i 0) t (call (vec.at str.Bytes) (get env Env.mangled) i)) seen)))
         (block))
     (if (call is_app st n false) (return (call instance_plain st n env seen)) (block))
-    (let h:(ptr str.Bytes) (call head st n))
+    (let h:str.Bytes (call head st n))
     (cond
       ((call lit h "fn") true)
       ((call lit h "result")
@@ -1266,31 +1266,31 @@
        ok)
       (else false)))
 
-  (fn plain_name [st:(ptr St) s:(ptr str.Bytes) seen:(ptr (map.Map (ptr str.Bytes) i32))] -> bool
+  (fn plain_name [st:(ptr St) s:str.Bytes seen:(ptr (map.Map str.Bytes i32))] -> bool
     (cond
       ((or (call lit s "i32") (or (call lit s "i64") (or (call lit s "f32") (or (call lit s "f64") (or (call lit s "bool") (call lit s "str")))))) true)
-      ((call names.is_sealed s) (call (map.has (ptr str.Bytes) i32) (get st St.plain_names) s))
-      ((not (call (map.has (ptr str.Bytes) (ptr compiler.Node)) (get st St.defs) s)) false)
-      ((call (map.has (ptr str.Bytes) i32) seen s) true)
+      ((call names.is_sealed s) (call (map.has str.Bytes i32) (get st St.plain_names) s))
+      ((not (call (map.has str.Bytes (ptr compiler.Node)) (get st St.defs) s)) false)
+      ((call (map.has str.Bytes i32) seen s) true)
       (else
-       (call (map.set (ptr str.Bytes) i32) seen s 1)
-       (call def_is_plain st (call (map.get_or (ptr str.Bytes) (ptr compiler.Node)) (get st St.defs) s (ptr.null compiler.Node)) (ptr.null Env) seen))))
+       (call (map.set str.Bytes i32) seen s 1)
+       (call def_is_plain st (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.defs) s (ptr.null compiler.Node)) (ptr.null Env) seen))))
 
   ;; A generic value struct or union applied (n, read in env): plain if its
   ;; definition, with the arguments put in, is.
-  (fn instance_plain [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map (ptr str.Bytes) i32))] -> bool
-    (let t:(ptr Tmpl) (call (map.get_or (ptr str.Bytes) (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
-    (if (neq (+ (call (vec.len (ptr str.Bytes)) (get t Tmpl.params)) 1) (call count_children n)) (return false) (block))
+  (fn instance_plain [st:(ptr St) n:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map str.Bytes i32))] -> bool
+    (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
+    (if (neq (+ (call (vec.len str.Bytes) (get t Tmpl.params)) 1) (call count_children n)) (return false) (block))
     (let kb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call push_key st kb n env)
-    (let key:(ptr str.Bytes) (call as_bytes kb))
-    (if (call (map.has (ptr str.Bytes) i32) seen key) (return true) (block))
-    (call (map.set (ptr str.Bytes) i32) seen key 1)
+    (let key:str.Bytes (call as_bytes kb))
+    (if (call (map.has str.Bytes i32) seen key) (return true) (block))
+    (call (map.set str.Bytes i32) seen key 1)
     (let def:(ptr compiler.Node) (get t Tmpl.node))
     (if (not (or (call is_value_item st def) (call lit (call head st def) "union"))) (return false) (block))
     (let e:(ptr Env) (new Env))
     (put e Env.names (get t Tmpl.params))
-    (put e Env.mangled (call (vec.make (ptr str.Bytes)) (call alloc.default) 1))
+    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 1))
     (put e Env.outer env)
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
     (let a:(ptr compiler.Node) (get (call first_child n) compiler.Node.next))
@@ -1313,16 +1313,16 @@
           (call buf.push_byte b 41)
           (return))
         (block))
-    (let t:(ptr str.Bytes) (call text st n))
+    (let t:str.Bytes (call text st n))
     (let i:i32 (if (call is_symbol n) (call lookup env t) -1))
     (cond
       ((lt i 0) (call buf.push_bytes b t))
-      ((get env Env.sealed) (call buf.push_bytes b (call (vec.at (ptr str.Bytes)) (get env Env.mangled) i)))
+      ((get env Env.sealed) (call buf.push_bytes b (call (vec.at str.Bytes) (get env Env.mangled) i)))
       (else (call push_key st b (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer)))))
 
   ;; def's fields (its type parameters, if any, bound in env) all plain.
-  (fn def_is_plain [st:(ptr St) def:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map (ptr str.Bytes) i32))] -> bool
-    (let h:(ptr str.Bytes) (call head st def))
+  (fn def_is_plain [st:(ptr St) def:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map str.Bytes i32))] -> bool
+    (let h:str.Bytes (call head st def))
     (let body:(ptr compiler.Node) (call nth def 2))
     (if (eq body (ptr.null compiler.Node)) (return false) (block))
     (cond
@@ -1339,11 +1339,11 @@
 
   ;; Whether every type in a field list from node f is plain: name : type
   ;; each, or (read name : type) / (pub name : type).
-  (fn fields_plain [st:(ptr St) f:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map (ptr str.Bytes) i32))] -> bool
+  (fn fields_plain [st:(ptr St) f:(ptr compiler.Node) env:(ptr Env) seen:(ptr (map.Map str.Bytes i32))] -> bool
     (let c:(ptr compiler.Node) f)
     (let ok:bool true)
     (while (neq c (ptr.null compiler.Node))
-      (let h:(ptr str.Bytes) (call head st c))
+      (let h:str.Bytes (call head st c))
       (if (or (call lit h "read") (call lit h "pub"))
           (block
             (let t:(ptr compiler.Node) (call nth c 3))
@@ -1361,7 +1361,7 @@
   ;; cut to its signature: checking this checks each template once.
 
   ;; The placeholder for parameter p of template t: 'name.p.
-  (fn placeholder_name [t:(ptr Tmpl) p:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn placeholder_name [t:(ptr Tmpl) p:str.Bytes] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_byte b 39)
     (call buf.push_bytes b (get t Tmpl.name))
@@ -1374,23 +1374,23 @@
     (let e:(ptr Env) (new Env))
     (put e Env.names (get t Tmpl.params))
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
-    (put e Env.mangled (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
-    (let ps:(ptr (vec.Vec (ptr str.Bytes))) (get t Tmpl.params))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) ps) 1) 1
-      (call (vec.push (ptr str.Bytes)) (get e Env.mangled) (call placeholder_name t (call (vec.at (ptr str.Bytes)) ps k))))
+    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let ps:(ptr (vec.Vec str.Bytes)) (get t Tmpl.params))
+    (loop k 0 (- (call (vec.len str.Bytes) ps) 1) 1
+      (call (vec.push str.Bytes) (get e Env.mangled) (call placeholder_name t (call (vec.at str.Bytes) ps k))))
     (put e Env.outer (ptr.null Env))
     (put e Env.sealed true)
     (put e Env.at (get (call nth (get t Tmpl.node) 1) compiler.Node.pos))
     e)
 
   ;; An environment putting placeholder `ph` in for interface i's parameter.
-  (fn sealed_iface_env [i:(ptr Iface) ph:(ptr str.Bytes) at:i32] -> (ptr Env)
+  (fn sealed_iface_env [i:(ptr Iface) ph:str.Bytes at:i32] -> (ptr Env)
     (let e:(ptr Env) (new Env))
-    (put e Env.names (call (vec.make (ptr str.Bytes)) (call alloc.default) 1))
-    (call (vec.push (ptr str.Bytes)) (get e Env.names) (get i Iface.param))
+    (put e Env.names (call (vec.make str.Bytes) (call alloc.default) 1))
+    (call (vec.push str.Bytes) (get e Env.names) (get i Iface.param))
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
-    (put e Env.mangled (call (vec.make (ptr str.Bytes)) (call alloc.default) 1))
-    (call (vec.push (ptr str.Bytes)) (get e Env.mangled) ph)
+    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 1))
+    (call (vec.push str.Bytes) (get e Env.mangled) ph)
     (put e Env.outer (ptr.null Env))
     (put e Env.sealed true)
     (put e Env.at at)
@@ -1400,26 +1400,26 @@
   ;; (their functions are printed by print_granted), and marks struct
   ;; placeholders as structs.
   (fn grant [st:(ptr St) t:(ptr Tmpl)] -> void
-    (let ps:(ptr (vec.Vec (ptr str.Bytes))) (get t Tmpl.params))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) ps) 1) 1
+    (let ps:(ptr (vec.Vec str.Bytes)) (get t Tmpl.params))
+    (loop k 0 (- (call (vec.len str.Bytes) ps) 1) 1
       (if (arr.get bool (get t Tmpl.struct_kind) k)
-          (call (map.set (ptr str.Bytes) i32) (get st St.struct_names) (call placeholder_name t (call (vec.at (ptr str.Bytes)) ps k)) 1)
+          (call (map.set str.Bytes i32) (get st St.struct_names) (call placeholder_name t (call (vec.at str.Bytes) ps k)) 1)
           (block))
       (if (arr.get bool (get t Tmpl.plain_kind) k)
-          (call (map.set (ptr str.Bytes) i32) (get st St.plain_names) (call placeholder_name t (call (vec.at (ptr str.Bytes)) ps k)) 1)
+          (call (map.set str.Bytes i32) (get st St.plain_names) (call placeholder_name t (call (vec.at str.Bytes) ps k)) 1)
           (block)))
     (let ws:(ptr (vec.Vec (ptr compiler.Node))) (get t Tmpl.wheres))
     (loop wi 0 (- (call (vec.len (ptr compiler.Node)) ws) 1) 1
       (let w:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) ws wi))
-      (let iname:(ptr str.Bytes) (call head st (call nth w 1)))
-      (if (call (map.has (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname)
+      (let iname:str.Bytes (call head st (call nth w 1)))
+      (if (call (map.has str.Bytes (ptr Iface)) (get st St.ifaces) iname)
           (block
-            (let ph:(ptr str.Bytes) (call placeholder_name t (call (vec.at (ptr str.Bytes)) ps (call where_param st t w))))
-            (let key:(ptr str.Bytes) (call impl_key iname ph))
-            (if (call (map.has (ptr str.Bytes) i32) (get st St.impls) key)
+            (let ph:str.Bytes (call placeholder_name t (call (vec.at str.Bytes) ps (call where_param st t w))))
+            (let key:str.Bytes (call impl_key iname ph))
+            (if (call (map.has str.Bytes i32) (get st St.impls) key)
                 (block)
                 (block
-                  (call (map.set (ptr str.Bytes) i32) (get st St.impls) key 1)
+                  (call (map.set str.Bytes i32) (get st St.impls) key 1)
                   ;; remembered for printing, in order
                   (call (vec.push (ptr compiler.Node)) (get st St.granted) w)
                   (call (vec.push (ptr Tmpl)) (get st St.granted_by) t))))
@@ -1433,19 +1433,19 @@
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_bytes out (get t Tmpl.name))
     (call buf.push_byte out 60)
-    (let ms:(ptr (vec.Vec (ptr str.Bytes))) (get env Env.mangled))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) ms) 1) 1
+    (let ms:(ptr (vec.Vec str.Bytes)) (get env Env.mangled))
+    (loop k 0 (- (call (vec.len str.Bytes) ms) 1) 1
       (if (gt k 0) (call buf.push_byte out 44) (block))
-      (call buf.push_bytes out (call (vec.at (ptr str.Bytes)) ms k)))
+      (call buf.push_bytes out (call (vec.at str.Bytes) ms k)))
     (call buf.push_byte out 62)
-    (let name:(ptr str.Bytes) (call as_bytes out))
-    (if (call (map.has (ptr str.Bytes) i32) (get st St.made) name) (return) (block))
-    (call (map.set (ptr str.Bytes) i32) (get st St.made) name 1)
+    (let name:str.Bytes (call as_bytes out))
+    (if (call (map.has str.Bytes i32) (get st St.made) name) (return) (block))
+    (call (map.set str.Bytes i32) (get st St.made) name 1)
     (let ws:(ptr (vec.Vec (ptr compiler.Node))) (get t Tmpl.wheres))
     (loop wi 0 (- (call (vec.len (ptr compiler.Node)) ws) 1) 1
       (let w:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) ws wi))
-      (let iname:(ptr str.Bytes) (call head st (call nth w 1)))
-      (if (not (call (map.has (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname))
+      (let iname:str.Bytes (call head st (call nth w 1)))
+      (if (not (call (map.has str.Bytes (ptr Iface)) (get st St.ifaces) iname))
           (block
             (let nb:(ptr buf.Buf) (call quoted (call msg "") iname))
             (call buf.push_str nb " is not an interface")
@@ -1453,7 +1453,7 @@
             (return))
           (block)))
     (if (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
-        (call (map.set (ptr str.Bytes) i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
+        (call (map.set str.Bytes i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1)
         (block))
     (let inst:(ptr Inst) (new Inst))
     (put inst Inst.tmpl t)
@@ -1463,29 +1463,29 @@
 
   ;; (enum 'name.T []) for a value parameter, (struct 'name.T []) for a struct.
   (fn print_placeholders [st:(ptr St) t:(ptr Tmpl) out:(ptr buf.Buf)] -> void
-    (let ps:(ptr (vec.Vec (ptr str.Bytes))) (get t Tmpl.params))
+    (let ps:(ptr (vec.Vec str.Bytes)) (get t Tmpl.params))
     (let at:i32 (get (call nth (get t Tmpl.node) 1) compiler.Node.pos))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) ps) 1) 1
+    (loop k 0 (- (call (vec.len str.Bytes) ps) 1) 1
       (call buf.push_str out "  ")
       (call origins.note (get st St.origins) out -1 at)
       (call buf.push_str out (if (arr.get bool (get t Tmpl.struct_kind) k) "(struct " "(enum "))
-      (call buf.push_bytes out (call placeholder_name t (call (vec.at (ptr str.Bytes)) ps k)))
+      (call buf.push_bytes out (call placeholder_name t (call (vec.at str.Bytes) ps k)))
       (call buf.push_str out " [])")
       (call buf.push_byte out 10)))
 
   ;; The functions a where clause grants a placeholder: (fn I<'name.T>.f
   ;; [params] -> R (call I<'name.T>.f params...)), which check for any caller.
   (fn print_granted [st:(ptr St) w:(ptr compiler.Node) t:(ptr Tmpl) out:(ptr buf.Buf)] -> void
-    (let iname:(ptr str.Bytes) (call head st (call nth w 1)))
-    (let i:(ptr Iface) (call (map.get_or (ptr str.Bytes) (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
-    (let ph:(ptr str.Bytes) (call placeholder_name t (call (vec.at (ptr str.Bytes)) (get t Tmpl.params) (call where_param st t w))))
-    (let key:(ptr str.Bytes) (call impl_key iname ph))
+    (let iname:str.Bytes (call head st (call nth w 1)))
+    (let i:(ptr Iface) (call (map.get_or str.Bytes (ptr Iface)) (get st St.ifaces) iname (ptr.null Iface)))
+    (let ph:str.Bytes (call placeholder_name t (call (vec.at str.Bytes) (get t Tmpl.params) (call where_param st t w))))
+    (let key:str.Bytes (call impl_key iname ph))
     (let at:i32 (get (call nth (get t Tmpl.node) 1) compiler.Node.pos))
     (let env:(ptr Env) (call sealed_iface_env i ph at))
     (let fns:(ptr (vec.Vec (ptr compiler.Node))) (get i Iface.fns))
     (loop k 0 (- (call (vec.len (ptr compiler.Node)) fns) 1) 1
       (let g:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) fns k))
-      (let fname:(ptr str.Bytes) (call text st (call nth g 1)))
+      (let fname:str.Bytes (call text st (call nth g 1)))
       (call buf.push_str out "  ")
       (call origins.note (get st St.origins) out -1 at)
       (call buf.push_str out "(fn ")
@@ -1530,7 +1530,7 @@
   ;; a body that calls itself (generics.rs stub). `rename` names it (an
   ;; implementation's function); `inherited`: the interface's contracts come
   ;; before the clause, so it is not kept.
-  (fn print_stub [st:(ptr St) f:(ptr compiler.Node) rename:(ptr str.Bytes) inherited:bool out:(ptr buf.Buf)] -> void
+  (fn print_stub [st:(ptr St) f:(ptr compiler.Node) rename:str.Bytes inherited:bool out:(ptr buf.Buf)] -> void
     (call buf.push_str out "  ")
     (call note st f out)
     (call buf.push_byte out 40)

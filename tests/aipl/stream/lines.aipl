@@ -22,7 +22,7 @@
     (let total:i32 0)
     (while (call stream.next_line r)
       (set! n (+ n 1))
-      (let l:(ptr str.Bytes) (call stream.line r))
+      (let l:str.Bytes (call stream.line r))
       (set! total (+ total (get l str.Bytes.len)))
       (format_to w "{n:>5}|{(get l str.Bytes.len)}|")
       (call stream.write_bytes w l)

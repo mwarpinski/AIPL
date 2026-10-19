@@ -23,7 +23,7 @@
     (let d:bool (dbg (lt a 50)))
     (let e:str (dbg "tab\there"))
     (let f:Shade (dbg Shade.dark))
-    (let g:(ptr str.Bytes) (dbg (call str.from_str "bytes")))
+    (let g:str.Bytes (dbg (call str.from_str "bytes")))
     (let h:(arr i32) (dbg (arr.new i32 3)))
     (let v:V (dbg (make V 1 2.5)))
     (let o:(option.Option i32) (dbg (make (option.Option i32) some 9)))

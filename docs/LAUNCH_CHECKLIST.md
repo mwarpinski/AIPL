@@ -81,8 +81,8 @@ has evidence behind it.
   HTTP server for agents and the browser demo, with the `tiny_http` and
   `serde_json` dependencies; agents use the CLI).
 
-- [ ] **Views are not checked** (found 2026-10-19; blocking). A
-  `(ptr str.Bytes)` is an address and a length with no generation, so a
+- [x] **Views are not checked** (found and fixed 2026-10-19, MEMORY_PLAN.md M1; tests/test_memory.rs). A
+  `str.Bytes` is an address and a length with no generation, so a
   view of a freed buffer reads whatever reuses the memory, in code with
   no `unsafe` (a three-line program prints the next buffer's contents,
   in the VM and natively). The fix, with the never-freed allocations

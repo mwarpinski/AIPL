@@ -40,8 +40,8 @@ fn one_item_a_search_and_the_listing() {
     assert_eq!(out(&o), "fn (option.unwrap_or T) [o:(option.Option T) fallback:T] -> T\n    The value, or `fallback` for none.\n");
     let s = doc(&["--find", "WHITESPACE"]);
     assert_eq!(s.status.code(), Some(0));
-    assert!(out(&s).contains("fn str.trim [b:(ptr str.Bytes)] -> (ptr str.Bytes)\n"), "{}", out(&s));
-    assert!(out(&s).contains("fn text.fields [a:alloc.Allocator b:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes)))\n"), "{}", out(&s));
+    assert!(out(&s).contains("fn str.trim [b:str.Bytes] -> str.Bytes\n"), "{}", out(&s));
+    assert!(out(&s).contains("fn text.fields [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec str.Bytes))\n"), "{}", out(&s));
     let l = doc(&[]);
     for m in ["alloc", "stream", "text", "vec"] {
         assert!(out(&l).lines().any(|x| x.starts_with(&format!("  {m} "))), "{m} listed:\n{}", out(&l));

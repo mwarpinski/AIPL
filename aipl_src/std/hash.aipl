@@ -74,7 +74,7 @@
     (call (alloc.destroy Hasher) a x))
 
   ;; Gives b to the hash (not after finish_to).
-  (fn update [x:(ptr Hasher) b:(ptr str.Bytes)] -> void (pub)
+  (fn update [x:(ptr Hasher) b:str.Bytes] -> void (pub)
     (req (not (get x Hasher.done)))
     (for i 0 (get b str.Bytes.len) (call absorb x (call str.byte_at b i)))
     (put x Hasher.total (+ (get x Hasher.total) (i64.extend_u (get b str.Bytes.len)))))
@@ -128,7 +128,7 @@
     (put x Hasher.done true))
 
   ;; Appends the digest of b to o.
-  (fn digest_to [o:(ptr buf.Buf) alg:Algorithm b:(ptr str.Bytes)] -> void (pub)
+  (fn digest_to [o:(ptr buf.Buf) alg:Algorithm b:str.Bytes] -> void (pub)
     (let x:(ptr Hasher) (call make (call alloc.default) alg))
     (call update x b)
     (call finish_to x o)
@@ -153,12 +153,12 @@
 
   ;; Appends the HMAC of msg under key to o (digest_size bytes): a key
   ;; longer than a block is hashed first, as the RFC says.
-  (fn hmac_to [o:(ptr buf.Buf) alg:Algorithm key:(ptr str.Bytes) msg:(ptr str.Bytes)] -> void (pub)
+  (fn hmac_to [o:(ptr buf.Buf) alg:Algorithm key:str.Bytes msg:str.Bytes] -> void (pub)
     (let a:alloc.Allocator (call alloc.default))
     (let bs:i32 (call block_size alg))
     (let k:(ptr buf.Buf) (call buf.make a bs))
     (if (gt (get key str.Bytes.len) bs) (call digest_to k alg key) (call buf.push_bytes k key))
-    (let kb:(ptr str.Bytes) (call buf.bytes k))
+    (let kb:str.Bytes (call buf.bytes k))
     (let pad:(ptr buf.Buf) (call buf.make a bs))
     ;; inner: H((K xor 0x36...) || msg)
     (for i 0 bs (call buf.push_byte pad (^ (call key_byte kb i) 54)))
@@ -181,7 +181,7 @@
     (call buf.free k))
 
   ;; Byte i of the key, zero past its end.
-  (fn key_byte [kb:(ptr str.Bytes) i:i32] -> i32
+  (fn key_byte [kb:str.Bytes i:i32] -> i32
     (if (lt i (get kb str.Bytes.len)) (call str.byte_at kb i) 0))
 
   ;; The HMAC of msg under key as lowercase hex (Python's
@@ -193,7 +193,7 @@
 
   ;; Whether a and b hold the same bytes, taking the same time wherever
   ;; they differ (for digests and tokens; their lengths are not secret).
-  (fn constant_time_eq [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (pub)
+  (fn constant_time_eq [a:str.Bytes b:str.Bytes] -> bool (pub)
     (when (neq (get a str.Bytes.len) (get b str.Bytes.len)) (return false))
     (let diff:i32 0)
     (for i 0 (get a str.Bytes.len) (set! diff (bitor diff (^ (call str.byte_at a i) (call str.byte_at b i)))))
@@ -203,7 +203,7 @@
 
   ;; crc (a CRC-32 so far, 0 to start) continued over b: zlib's crc32
   ;; (the reflected polynomial 0xEDB88320, as PNG, gzip, and zip use).
-  (fn crc32_update [crc:i32 b:(ptr str.Bytes)] -> i32 (pub)
+  (fn crc32_update [crc:i32 b:str.Bytes] -> i32 (pub)
     (let c:i32 (^ crc -1))
     (for i 0 (get b str.Bytes.len)
       (set! c (^ c (call str.byte_at b i)))
@@ -212,11 +212,11 @@
     (^ c -1))
 
   ;; The CRC-32 of b (zlib.crc32(b), as a signed i32).
-  (fn crc32 [b:(ptr str.Bytes)] -> i32 (pub) (call crc32_update 0 b))
+  (fn crc32 [b:str.Bytes] -> i32 (pub) (call crc32_update 0 b))
 
   ;; adler (an Adler-32 so far, 1 to start) continued over b: zlib's
   ;; adler32.
-  (fn adler32_update [adler:i32 b:(ptr str.Bytes)] -> i32 (pub)
+  (fn adler32_update [adler:i32 b:str.Bytes] -> i32 (pub)
     (let lo:i32 (bitand adler 65535))
     (let hi:i32 (shru adler 16))
     (for i 0 (get b str.Bytes.len)
@@ -225,7 +225,7 @@
     (bitor (shl hi 16) lo))
 
   ;; The Adler-32 of b (zlib.adler32(b)).
-  (fn adler32 [b:(ptr str.Bytes)] -> i32 (pub) (call adler32_update 1 b))
+  (fn adler32 [b:str.Bytes] -> i32 (pub) (call adler32_update 1 b))
 
   ;; ===== the block functions =====
 

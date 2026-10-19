@@ -18,7 +18,7 @@
   (struct Entry [buffer:i32 at:i32 (read file:i32) (read pos:i32)] (pub))
   ;; name: the file's name in compiled code's line table (an entry file by
   ;; its file name, a module by its import path; the path until set).
-  (struct File [(read path:(ptr str.Bytes)) (read text:(ptr str.Bytes)) (pub name:(ptr str.Bytes))] (pub))
+  (struct File [(read path:str.Bytes) (read text:str.Bytes) (pub name:str.Bytes)] (pub))
 
   ;; Entries in the order printed; after `join`, final offsets in order.
   (struct Origins [entries:(ptr (vec.Vec (ptr Entry))) (read files:(ptr (vec.Vec (ptr File))))] (pub))
@@ -30,7 +30,7 @@
     o)
 
   ;; Registers a file; its index.
-  (fn add_file [o:(ptr Origins) path:(ptr str.Bytes) text:(ptr str.Bytes)] -> i32 (pub)
+  (fn add_file [o:(ptr Origins) path:str.Bytes text:str.Bytes] -> i32 (pub)
     (let f:(ptr File) (new File))
     (put f File.path path)
     (put f File.text text)

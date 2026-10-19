@@ -18,12 +18,12 @@
   (struct FuncType [(read params:(ptr (vec.Vec i32))) (read results:(ptr (vec.Vec i32)))] (pub))
   (struct Limits [(read min:i32) (read max:i32) (read has_max:bool) (read shared:bool)] (pub))
   ;; kind 0 = function (type_index), 2 = memory (limits)
-  (struct Import [(read module:(ptr str.Bytes)) (read name:(ptr str.Bytes)) (read kind:i32) (read type_index:i32) (read limits:(ptr Limits))] (pub))
+  (struct Import [(read module:str.Bytes) (read name:str.Bytes) (read kind:i32) (read type_index:i32) (read limits:(ptr Limits))] (pub))
   (struct Table [elem_type:i32 (read limits:(ptr Limits))] (pub))
   ;; init: the value of the constant initializer (i32.const or i64.const)
   (struct Global [valtype:i32 mutable:bool (read init:i64)] (pub))
   ;; kind 0 = function, 2 = memory
-  (struct Export [(read name:(ptr str.Bytes)) (read kind:i32) (read index:i32)] (pub))
+  (struct Export [(read name:str.Bytes) (read kind:i32) (read index:i32)] (pub))
   ;; an active segment for table 0 at `offset`
   (struct Elem [(read offset:i32) (read funcs:(ptr (vec.Vec i32)))] (pub))
   ;; the bytes are (addr, len) inside the module's own bytes
@@ -42,7 +42,7 @@
   ;; an instruction's offset in the body is head + its offset.
   (struct Body [(read locals:(ptr (vec.Vec (ptr Locals)))) (read code:(ptr (vec.Vec (ptr Instr)))) (read head:i32)] (pub))
 
-  (struct Wasm [(read ok:bool) (read error:(ptr str.Bytes))
+  (struct Wasm [(read ok:bool) (read error:str.Bytes)
                 (read types:(ptr (vec.Vec (ptr FuncType))))
                 (read imports:(ptr (vec.Vec (ptr Import))))
                 (read funcs:(ptr (vec.Vec i32)))
@@ -57,7 +57,7 @@
                 bodies:(ptr (vec.Vec (ptr Range)))
                 (read code:(ptr (vec.Vec (ptr Body))))
                 (read names:(ptr (vec.Vec (ptr FnName))))
-                (read line_files:(ptr (vec.Vec (ptr str.Bytes))))
+                (read line_files:(ptr (vec.Vec str.Bytes)))
                 line_fns:(ptr (vec.Vec (ptr FnLines)))] (pub))
 
   ;; The "aipl.lines" custom section (docs/design/LINES_PLAN.md): for a
@@ -76,11 +76,11 @@
 
   ;; A function's name from the "name" custom section (index in the
   ;; function index space), for naming functions in a trap's call chain.
-  (struct FnName [(read index:i32) (read name:(ptr str.Bytes))] (pub))
+  (struct FnName [(read index:i32) (read name:str.Bytes)] (pub))
 
   ;; ===== Reading bytes =====
 
-  (struct R [b:(ptr str.Bytes) pos:i32 failed:bool msg:(ptr buf.Buf)])
+  (struct R [b:str.Bytes pos:i32 failed:bool msg:(ptr buf.Buf)])
 
   ;; Records the first failure, with the offset where it happened.
   (fn fail [r:(ptr R) msg:str] -> void
@@ -151,20 +151,20 @@
         result))
 
   ;; A length-prefixed name, as a slice of the module.
-  (fn name [r:(ptr R)] -> (ptr str.Bytes)
+  (fn name [r:(ptr R)] -> str.Bytes
     (unsafe (let n:i32 (call u32 r))
     (let start:i32 (get r R.pos))
     (if (gt (+ start n) (get (get r R.b) str.Bytes.len))
         (block (call fail r "name runs past the end of the module") (return (call str.bytes 0 0)))
         (block))
     (put r R.pos (+ start n))
-    (call str.bytes (+ (get (get r R.b) str.Bytes.addr) start) n)))
+    (call str.bytes (+ (call str.addr (get r R.b)) start) n)))
 
   ;; A custom section ending at `end`: the function names of a "name"
   ;; section (subsection 1). A malformed name section is ignored, as the
   ;; wasm spec asks of custom sections.
   (fn read_custom [r:(ptr R) w:(ptr Wasm) end:i32] -> void
-    (let title:(ptr str.Bytes) (call name r))
+    (let title:str.Bytes (call name r))
     (if (get r R.failed) (return) (block))
     (if (call str.bytes_eq title (call str.from_str "aipl.lines")) (block (call read_lines r w end) (return)) (block))
     (if (not (call str.bytes_eq title (call str.from_str "name"))) (return) (block))
@@ -192,7 +192,7 @@
     (let files:i32 (call u32 r))
     (loop k 1 files 1
       (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
-      (call (vec.push (ptr str.Bytes)) (get w Wasm.line_files) (call name r)))
+      (call (vec.push str.Bytes) (get w Wasm.line_files) (call name r)))
     (let fns:i32 (call u32 r))
     (loop k 1 fns 1
       (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
@@ -216,7 +216,7 @@
     (if (or (get r R.failed) (neq (get r R.pos) end))
         (block
           ;; not this section's fault if a later one fails: forget it, go on
-          (call (vec.clear (ptr str.Bytes)) (get w Wasm.line_files))
+          (call (vec.clear str.Bytes) (get w Wasm.line_files))
           (call (vec.clear (ptr FnLines)) (get w Wasm.line_fns))
           (call buf.clear (get r R.msg))
           (put r R.failed false))
@@ -348,7 +348,7 @@
     (loop i 1 count 1
       (let size:i32 (call u32 r))
       (let body:(ptr Range) (new Range))
-      (put body Range.addr (+ (get (get r R.b) str.Bytes.addr) (get r R.pos)))
+      (put body Range.addr (+ (call str.addr (get r R.b)) (get r R.pos)))
       (put body Range.len size)
       (if (gt (+ (get r R.pos) size) (get (get r R.b) str.Bytes.len))
           (block (call fail r "function body runs past the end of the module") (return))
@@ -370,7 +370,7 @@
         ((eq flag 1) (block))
         (else (call fail r "unsupported data segment kind")))
       (let n:i32 (call u32 r))
-      (put d Data.addr (+ (get (get r R.b) str.Bytes.addr) (get r R.pos)))
+      (put d Data.addr (+ (call str.addr (get r R.b)) (get r R.pos)))
       (put d Data.len n)
       (if (gt (+ (get r R.pos) n) (get (get r R.b) str.Bytes.len))
           (block (call fail r "data segment runs past the end of the module") (return))
@@ -613,7 +613,7 @@
     (let body:(ptr Body) (new Body))
     (put body Body.locals (call (vec.make (ptr Locals)) (call alloc.default) 4))
     (put body Body.code (call (vec.make (ptr Instr)) (call alloc.default) 64))
-    (let start:i32 (- (get range Range.addr) (get (get r R.b) str.Bytes.addr)))
+    (let start:i32 (- (get range Range.addr) (call str.addr (get r R.b))))
     (let end:i32 (+ start (get range Range.len)))
     (put r R.pos start)
     (let groups:i32 (call u32 r))
@@ -649,12 +649,12 @@
     (put w Wasm.bodies (call (vec.make (ptr Range)) (call alloc.default) 64))
     (put w Wasm.code (call (vec.make (ptr Body)) (call alloc.default) 64))
     (put w Wasm.names (call (vec.make (ptr FnName)) (call alloc.default) 64))
-    (put w Wasm.line_files (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+    (put w Wasm.line_files (call (vec.make str.Bytes) (call alloc.default) 4))
     (put w Wasm.line_fns (call (vec.make (ptr FnLines)) (call alloc.default) 16))
     w))
 
   ;; Decodes `bytes`. On failure, ok is false and error says what and where.
-  (fn decode [bytes:(ptr str.Bytes)] -> (ptr Wasm) (pub)
+  (fn decode [bytes:str.Bytes] -> (ptr Wasm) (pub)
     (let w:(ptr Wasm) (call empty_module))
     (let r:(ptr R) (new R))
     (put r R.b bytes)
@@ -748,7 +748,7 @@
       (call buf.push_byte out 10)))
 
 
-  (fn summary [w:(ptr Wasm)] -> (ptr str.Bytes)
+  (fn summary [w:(ptr Wasm)] -> str.Bytes
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
     (if (not (get w Wasm.ok))
         (block (call buf.push_str out "error: ") (call buf.push_bytes out (get w Wasm.error)) (return (call buf.bytes out)))
@@ -832,13 +832,22 @@
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 
+  ;; Bytes for a Rust host (the tests), as a pointer to [addr len], the
+  ;; same however a str.Bytes is laid out.
+  (struct HostBytes [(read addr:i32) (read len:i32)])
+  (fn host_bytes [b:str.Bytes] -> (ptr HostBytes)
+    (let h:(ptr HostBytes) (new HostBytes))
+    (put h HostBytes.addr (call str.addr b))
+    (put h HostBytes.len (get b str.Bytes.len))
+    h)
+
   ;; The summary of the module at (addr, len).
-  (fn summarize [addr:i32 len:i32] -> (ptr str.Bytes)
-    (unsafe (call summary (call decode (call str.bytes addr len)))))
+  (fn summarize [addr:i32 len:i32] -> (ptr HostBytes)
+    (call host_bytes (unsafe (call summary (call decode (call str.bytes addr len))))))
 
   ;; ===== Self-test =====
 
-  (fn bytes_of [b:(ptr buf.Buf)] -> (ptr str.Bytes) (call buf.bytes b))
+  (fn bytes_of [b:(ptr buf.Buf)] -> str.Bytes (call buf.bytes b))
 
   ;; Pass count; test_suite.aipl expects 4.
   (fn run_reader_tests [] -> i32 (pub)
@@ -860,7 +869,7 @@
         (set! p (+ p 1))
         (block))
     ;; truncation is an error, not a short module
-    (let short:(ptr str.Bytes) (call str.bytes (get (call bytes_of m) str.Bytes.addr) 12))
+    (let short:str.Bytes (call str.bytes (call str.addr (call bytes_of m)) 12))
     (set! w (call decode short))
     (if (and (not (get w Wasm.ok)) (gt (get (get w Wasm.error) str.Bytes.len) 0)) (set! p (+ p 1)) (block))
     ;; signed LEB128: -1 in one byte, -129 in two, and an i64 near the minimum

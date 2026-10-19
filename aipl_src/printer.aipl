@@ -14,7 +14,7 @@
   (import buf)
 
   (fn s [b:(ptr buf.Buf) x:str] -> void (call buf.push_str b x))
-  (fn by [b:(ptr buf.Buf) x:(ptr str.Bytes)] -> void (call buf.push_bytes b x))
+  (fn by [b:(ptr buf.Buf) x:str.Bytes] -> void (call buf.push_bytes b x))
 
   (fn print_module [m:(ptr ast.Module)] -> (ptr buf.Buf) (pub)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
@@ -26,7 +26,7 @@
       (let im:(ptr ast.Import) (arr.get (ptr ast.Import) ims k))
       (call s b "  (import ")
       (call by b (get im ast.Import.name))
-      (if (neq (get im ast.Import.alias) (ptr.null str.Bytes))
+      (if (call str.present (get im ast.Import.alias))
           (block (call s b " as ") (call by b (get im ast.Import.alias)))
           (block))
       (call s b ")\n"))
@@ -149,7 +149,7 @@
       (ast.Type.arr [elem] (call print_type b elem))
       (else (call print_type b t))))
 
-  (fn print_raw_string [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+  (fn print_raw_string [b:(ptr buf.Buf) raw:str.Bytes] -> void
     (call s b "\"")
     (loop k 0 (- (get raw str.Bytes.len) 1) 1
       (let c:i32 (call str.byte_at raw k))
@@ -160,7 +160,7 @@
         (else (call buf.push_byte b c))))
     (call s b "\""))
 
-  (fn print_float [b:(ptr buf.Buf) t:(ptr str.Bytes)] -> void (call by b t))
+  (fn print_float [b:(ptr buf.Buf) t:str.Bytes] -> void (call by b t))
 
   ;; (head e1 e2 ...), or (head) for no expressions.
   (fn with_body [b:(ptr buf.Buf) body:(arr ast.Expr)] -> void
@@ -246,13 +246,13 @@
          (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms j))
          (call s b " (")
          (call by b (get arm ast.Arm.member))
-         (let names:(arr (ptr str.Bytes)) (get arm ast.Arm.binders))
-         (if (neq names (arr.null (ptr str.Bytes)))
+         (let names:(arr str.Bytes) (get arm ast.Arm.binders))
+         (if (neq names (arr.null str.Bytes))
              (block
                (call s b " [")
                (loop q 0 (- (arr.len names) 1) 1
                  (if (gt q 0) (call s b " ") (block))
-                 (call by b (arr.get (ptr str.Bytes) names q)))
+                 (call by b (arr.get str.Bytes names q)))
                (call s b "]"))
              (block))
          (call with_body b (get arm ast.Arm.body)))

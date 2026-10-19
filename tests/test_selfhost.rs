@@ -641,7 +641,7 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
   (import io)
   (import os)
   (fn main [] -> i64 (unsafe)
-    (let b:(ptr str.Bytes) (call io.read_stdin))
+    (let b:str.Bytes (call io.read_stdin))
     (let p:i32 (mem.alloc 8))
     (let ok:i32 (sys.random p 8))
     (let fd:i32 (fs.open (str.ptr "/tmp/x") (str.len "/tmp/x") 0))

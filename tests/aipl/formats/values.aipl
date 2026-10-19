@@ -9,7 +9,7 @@
   (struct V [a:i32 b:f64] (value))
   (struct Pair [left:V right:V] (value))
   (struct Small [tiny:u8 neg:i16 f:(fn [i32] -> i32)])
-  (struct Row [n:i32 name:str q:(ptr Q) xs:(arr i32) at:V sh:Shade label:(ptr str.Bytes) none:(ptr Q)])
+  (struct Row [n:i32 name:str q:(ptr Q) xs:(arr i32) at:V sh:Shade label:str.Bytes none:(ptr Q)])
   (struct (Box T) [item:T])
   (enum Shade [light dark])
   (union Shape [(circle r:f64) (boxed w:i32 h:i32) (empty)])

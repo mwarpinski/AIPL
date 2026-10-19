@@ -198,7 +198,7 @@ Because AIPL is a compiled, statically typed language with no top-level statemen
 ### 4.2. Return Type Inference (`T`)
 AIPL functions require explicit return types. When an expression is entered into the REPL without a wrapper:
 - **Strategy 1 (Static Expression Typing):** Add a helper function `checker.type_of_expr` to [`aipl_src/checker.aipl`](file:///home/matt/Projects/Repos/AIPL/aipl_src/checker.aipl) that determines the type of an expression AST node.
-- **Strategy 2 (Probe Fallback):** If `type_of_expr` is not yet available, probe standard scalar types (`void`, `i32`, `i64`, `f64`, `bool`, `str`, `(ptr str.Bytes)`) through `front.check`. The first type that passes verification is selected.
+- **Strategy 2 (Probe Fallback):** If `type_of_expr` is not yet available, probe standard scalar types (`void`, `i32`, `i64`, `f64`, `bool`, `str`, `str.Bytes`) through `front.check`. The first type that passes verification is selected.
 
 ### 4.3. Value Printing
 The REPL emits a type-directed printer for `res:T`:
@@ -206,7 +206,7 @@ The REPL emits a type-directed printer for `res:T`:
 - `i64`: `(call io.print_i64 res)`
 - `f64`: `(call io.print_float res)`
 - `bool`: Prints `"true"` or `"false"`
-- `str` / `(ptr str.Bytes)`: `(call io.println res)`
+- `str` / `str.Bytes`: `(call io.println res)`
 - Structs & Collections: Prints formatted address and type tag.
 
 ### 4.4. Multi-Line Input Balancing
