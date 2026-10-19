@@ -418,6 +418,7 @@
   ;; linear_regression), and r2, the correlation squared.
   (struct Fit [(read slope:f64) (read intercept:f64) (read r2:f64)] (value) (pub))
 
+  ;; The least-squares line through (xs[k], ys[k]).
   (fn linear_fit [xs:(arr f64) ys:(arr f64)] -> Fit (pub)
     (req (and (eq (arr.len xs) (arr.len ys)) (gt (arr.len xs) 1)))
     (let n:f64 (f64.convert_i32_s (arr.len xs)))
