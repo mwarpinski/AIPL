@@ -183,7 +183,7 @@
 
   ;; The number in the `n` digits at i of t, or -1 if one is not a digit
   ;; (or t ends first).
-  (fn digits [t:(ptr str.Bytes) i:i32 n:i32] -> i32
+  (fn digits [t:str.Bytes i:i32 n:i32] -> i32
     (if (gt (+ i n) (get t str.Bytes.len)) (return -1) (block))
     (let v:i32 0)
     (loop k 0 (- n 1) 1
@@ -193,7 +193,7 @@
     v)
 
   ;; Whether byte i of t is c.
-  (fn byte_is [t:(ptr str.Bytes) i:i32 c:i32] -> bool
+  (fn byte_is [t:str.Bytes i:i32 c:i32] -> bool
     (and (lt i (get t str.Bytes.len)) (eq (call str.byte_at t i) c)))
 
   ;; Reads RFC 3339 text: YYYY-MM-DD alone (midnight UTC), or
@@ -203,7 +203,7 @@
   ;; allows. A time without an offset is an error rather than a guess. The
   ;; error is the index of the first byte that does not fit (the length,
   ;; when the text ends too soon).
-  (fn parse [t:(ptr str.Bytes)] -> (result Date i32) (pub)
+  (fn parse [t:str.Bytes] -> (result Date i32) (pub)
     (let n:i32 (get t str.Bytes.len))
     (let year:i32 (call digits t 0 4))
     (if (lt year 0) (return (err:Date (call bad_digit t 0 4))) (block))
@@ -260,7 +260,7 @@
   ;; The index of the first non-digit in the n bytes at i (or the length,
   ;; if t ends first); the first of them when all are digits but the value
   ;; is out of range.
-  (fn bad_digit [t:(ptr str.Bytes) i:i32 n:i32] -> i32
+  (fn bad_digit [t:str.Bytes i:i32 n:i32] -> i32
     (loop k 0 (- n 1) 1
       (if (gte (+ i k) (get t str.Bytes.len)) (return (+ i k)) (block))
       (let c:i32 (call str.byte_at t (+ i k)))

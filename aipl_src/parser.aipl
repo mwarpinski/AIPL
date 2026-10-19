@@ -23,10 +23,10 @@
               ptr_make arr_make ptr_gen arr_gen fmt_surface])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
-             unions:(ptr (map.Map (ptr str.Bytes) i32))
-             values:(ptr (map.Map (ptr str.Bytes) i32))
-             forms:(ptr (map.Map (ptr str.Bytes) Form))
-             ops:(ptr (map.Map (ptr str.Bytes) i32))
+             unions:(ptr (map.Map str.Bytes i32))
+             values:(ptr (map.Map str.Bytes i32))
+             forms:(ptr (map.Map str.Bytes Form))
+             ops:(ptr (map.Map str.Bytes i32))
              err:(ptr buf.Buf) err_at:i32 last_at:i32 failed:bool])
 
   ;; ===== Tokens =====
@@ -53,12 +53,12 @@
   (fn tpos [p:(ptr P) i:i32] -> i32 (get (call tok p i) compiler.Token.pos))
 
   ;; A symbol-like token's text (symbol; a string's body; i64 and float literals).
-  (fn text [p:(ptr P) i:i32] -> (ptr str.Bytes)
+  (fn text [p:(ptr P) i:i32] -> str.Bytes
     (unsafe (let t:(ptr compiler.Token) (call tok p i))
     (call str.bytes (+ (get p P.src) (get t compiler.Token.a)) (get t compiler.Token.b))))
 
   ;; An int token's literal as written.
-  (fn int_text [p:(ptr P) i:i32] -> (ptr str.Bytes) (call text p i))
+  (fn int_text [p:(ptr P) i:i32] -> str.Bytes (call text p i))
 
   (fn is_sym [p:(ptr P) i:i32 s:str] -> bool
     (and (eq (call kind_at p i) compiler.Kind.symbol)
@@ -66,7 +66,7 @@
 
   ;; The value of an integer literal's text (an optional sign, then digits;
   ;; the tokenizer has checked it fits in i64).
-  (fn i64_value [b:(ptr str.Bytes)] -> i64
+  (fn i64_value [b:str.Bytes] -> i64
     (let c0:i32 (call str.byte_at b 0))
     (let start:i32 (if (or (eq c0 45) (eq c0 43)) 1 0))
     (let v:i64 0i64)
@@ -100,7 +100,7 @@
   ;; A string literal as AIPL writes it (src/parser.rs TokenKind's
   ;; Display): its escapes as written (only \" \\ \n \t \r \0 exist), a raw
   ;; newline, tab, return, or NUL escaped, other bytes as they are.
-  (fn push_string_text [b:(ptr buf.Buf) raw:(ptr str.Bytes)] -> void
+  (fn push_string_text [b:(ptr buf.Buf) raw:str.Bytes] -> void
     (call buf.push_byte b 34)
     (let k:i32 0)
     (while (lt k (get raw str.Bytes.len))
@@ -133,8 +133,8 @@
       ((eq k compiler.Kind.arrow) (call buf.push_str b "->"))
       ((eq k compiler.Kind.int) (call buf.push_i64 b (call i64_value (call int_text p i))))
       ((eq k compiler.Kind.int64)
-       (let s:(ptr str.Bytes) (call text p i))
-       (call buf.push_i64 b (call i64_value (call str.bytes (get s str.Bytes.addr) (- (get s str.Bytes.len) 3))))
+       (let s:str.Bytes (call text p i))
+       (call buf.push_i64 b (call i64_value (call str.bytes (call str.addr s) (- (get s str.Bytes.len) 3))))
        (call buf.push_str b "i64"))
       ((eq k compiler.Kind.bool) (call buf.push_str b (if (eq (get t compiler.Token.a) 0) "false" "true")))
       ((eq k compiler.Kind.string) (call push_string_text b (call text p i)))
@@ -177,7 +177,7 @@
     (block))
 
   ;; src/parser.rs expect_symbol (and the inline "Expected X name" matches).
-  (fn expect_symbol [p:(ptr P) what:str eof_at:i32] -> (ptr str.Bytes)
+  (fn expect_symbol [p:(ptr P) what:str eof_at:i32] -> str.Bytes
     (let i:i32 (call next p))
     (if (and (gte i 0) (eq (call kind_at p i) compiler.Kind.symbol)) (return (call text p i)) (block))
     (call fail_expected p i what eof_at)
@@ -201,7 +201,7 @@
 
   ;; ===== Types =====
 
-  (fn scalar_type [s:(ptr str.Bytes)] -> ast.MaybeType
+  (fn scalar_type [s:str.Bytes] -> ast.MaybeType
     (let t:ast.MaybeType (make ast.MaybeType.none))
     (if (call str.is s "i32") (set! t (make ast.MaybeType.some (make ast.Type.i32))) (block))
     (if (call str.is s "i64") (set! t (make ast.MaybeType.some (make ast.Type.i64))) (block))
@@ -216,7 +216,7 @@
     (if (call str.is s "i16") (set! t (make ast.MaybeType.some (make ast.Type.i16))) (block))
     t)
 
-  (fn is_scalar [s:(ptr str.Bytes)] -> bool
+  (fn is_scalar [s:str.Bytes] -> bool
     (match (call scalar_type s) (ast.MaybeType.none false) (ast.MaybeType.some [_] true)))
 
   ;; sizeof's operand: a struct by its bare name, or any type.
@@ -227,8 +227,8 @@
         (block))
     (if (eq k compiler.Kind.symbol)
         (block
-          (let s:(ptr str.Bytes) (call text p (get p P.pos)))
-          (if (and (not (call is_scalar s)) (not (call (map.has (ptr str.Bytes) i32) (get p P.unions) s)))
+          (let s:str.Bytes (call text p (get p P.pos)))
+          (if (and (not (call is_scalar s)) (not (call (map.has str.Bytes i32) (get p P.unions) s)))
               (block (call want_next p) (return (make ast.Type.struct_ s)))
               (block)))
         (block))
@@ -240,14 +240,14 @@
     (let k:compiler.Kind (call kind_at p i))
     (cond
       ((eq k compiler.Kind.symbol)
-       (let s:(ptr str.Bytes) (call text p i))
+       (let s:str.Bytes (call text p i))
        (match (call scalar_type s)
          (ast.MaybeType.some [t] t)
          (ast.MaybeType.none
           (let c0:i32 (call str.byte_at s 0))
           (cond
-            ((call (map.has (ptr str.Bytes) i32) (get p P.unions) s) (make ast.Type.union_ s))
-            ((call (map.has (ptr str.Bytes) i32) (get p P.values) s) (make ast.Type.struct_ s))
+            ((call (map.has str.Bytes i32) (get p P.unions) s) (make ast.Type.union_ s))
+            ((call (map.has str.Bytes i32) (get p P.values) s) (make ast.Type.struct_ s))
             ((not (or (and (gte c0 48) (lte c0 57)) (eq c0 45))) (make ast.Type.enum_ s))
             (else
              (let b:(ptr buf.Buf) (call msg p (call tpos p i)))
@@ -257,21 +257,21 @@
              (make ast.Type.i32))))))
       ((eq k compiler.Kind.lparen)
        (let at:i32 (call tpos p i))
-       (let ctor:(ptr str.Bytes) (call expect_symbol p "type constructor" at))
+       (let ctor:str.Bytes (call expect_symbol p "type constructor" at))
        (if (get p P.failed) (return (make ast.Type.i32)) (block))
        (cond
          ((call str.is ctor "result")
           (let ok_t:ast.Type (call parse_type p))
           (let err_t:ast.Type (call parse_type p))
           (call want p compiler.Kind.rparen)
-          (make ast.Type.result ok_t err_t))
+          (call ast.result_type (call alloc.default) ok_t err_t))
          ((call str.is ctor "arr")
           (let elem:ast.Type (call parse_type p))
           (if (eq (call peek p) compiler.Kind.int)
               (call fail_str p at "(arr T) takes no length; an array's length is set by (arr.new T n)")
               (block))
           (call want p compiler.Kind.rparen)
-          (make ast.Type.arr elem))
+          (call ast.arr_type (call alloc.default) elem))
          ((call str.is ctor "fn")
           (call want p compiler.Kind.lbracket)
           (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
@@ -281,9 +281,9 @@
           (call want p compiler.Kind.arrow)
           (let ret:ast.Type (call parse_type p))
           (call want p compiler.Kind.rparen)
-          (make ast.Type.fn_ (call (to_arr ast.Type) ps) ret))
+          (call ast.fn_type (call alloc.default) (call (to_arr ast.Type) ps) ret))
          ((call str.is ctor "ptr")
-          (let name:(ptr str.Bytes) (call expect_symbol p "struct name in (ptr S)" at))
+          (let name:str.Bytes (call expect_symbol p "struct name in (ptr S)" at))
           (if (and (not (get p P.failed)) (call is_scalar name))
               (block
                 (let b:(ptr buf.Buf) (call msg p at))
@@ -297,7 +297,7 @@
                 (call fail p b))
               (block))
           (call want p compiler.Kind.rparen)
-          (make ast.Type.ptr (make ast.Type.struct_ name)))
+          (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ name)))
          (else
           (let b:(ptr buf.Buf) (call msg p at))
           (call buf.push_str b "Unknown compound type: ")
@@ -350,7 +350,7 @@
     (call want p compiler.Kind.lparen)
     (call next p)
     (put im ast.Import.name (call expect_symbol p "module name in import" start))
-    (put im ast.Import.alias (ptr.null str.Bytes))
+    (put im ast.Import.alias (call str.absent))
     (if (call is_sym p (get p P.pos) "as")
         (block
           (call next p)
@@ -409,7 +409,7 @@
       (let i:i32 (call next p))
       (let k:compiler.Kind (call kind_at p i))
       (let value:i64 next_value)
-      (let name:(ptr str.Bytes) (ptr.null str.Bytes))
+      (let name:str.Bytes (call str.absent))
       (cond
         ((eq k compiler.Kind.rbracket) (break))
         ((eq k compiler.Kind.symbol) (set! name (call text p i)))
@@ -492,6 +492,7 @@
     (let cs:(ptr (vec.Vec ast.Contract)) (call (vec.make ast.Contract) (call alloc.default) 2))
     (let body:(ptr (vec.Vec ast.Expr)) (call exprs))
     (put f ast.FnDef.unsafe_ false)
+    (put f ast.FnDef.no_leak false)
     (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
       (cond
         ((and (eq (call peek p) compiler.Kind.lparen)
@@ -503,6 +504,12 @@
                    (and (lt (+ (get p P.pos) 2) (get p P.n)) (eq (call kind_at p (+ (get p P.pos) 2)) compiler.Kind.rparen))))
          (put p P.pos (+ (get p P.pos) 3))
          (put f ast.FnDef.unsafe_ true))
+        ;; the clause (no_leak)
+        ((and (eq (call peek p) compiler.Kind.lparen)
+              (and (call head_is p "no_leak")
+                   (and (lt (+ (get p P.pos) 2) (get p P.n)) (eq (call kind_at p (+ (get p P.pos) 2)) compiler.Kind.rparen))))
+         (put p P.pos (+ (get p P.pos) 3))
+         (put f ast.FnDef.no_leak true))
         (else (call (vec.push ast.Expr) body (call parse_expr p)))))
     (call want p compiler.Kind.rparen)
     (put f ast.FnDef.contracts (call (to_arr ast.Contract) cs))
@@ -551,8 +558,8 @@
        (make ast.Expr.lit_int at v))
       ((eq k compiler.Kind.int64)
        (call next p)
-       (let s:(ptr str.Bytes) (call text p i))
-       (make ast.Expr.lit_i64 at (call i64_value (call str.bytes (get s str.Bytes.addr) (- (get s str.Bytes.len) 3)))))
+       (let s:str.Bytes (call text p i))
+       (make ast.Expr.lit_i64 at (call i64_value (call str.bytes (call str.addr s) (- (get s str.Bytes.len) 3)))))
       ((eq k compiler.Kind.float) (call next p) (make ast.Expr.lit_float at (call text p i)))
       ((eq k compiler.Kind.float32) (call next p) (make ast.Expr.lit_f32 at (call text p i)))
       ((eq k compiler.Kind.bool) (call next p) (make ast.Expr.lit_bool at (neq (get (call tok p i) compiler.Token.a) 0)))
@@ -574,37 +581,37 @@
     (if (neq (call kind_at p hi) compiler.Kind.symbol)
         (block (call fail_expected p hi "operator or keyword in expr" at) (return (call placeholder at)))
         (block))
-    (let head:(ptr str.Bytes) (call text p hi))
-    (let form:Form (call (map.get_or (ptr str.Bytes) Form) (get p P.forms) head Form.none))
+    (let head:str.Bytes (call text p hi))
+    (let form:Form (call (map.get_or str.Bytes Form) (get p P.forms) head Form.none))
     (let e:ast.Expr (call parse_form p form head at))
     (call want p compiler.Kind.rparen)
     e)
 
-  (fn parse_form [p:(ptr P) form:Form head:(ptr str.Bytes) at:i32] -> ast.Expr
+  (fn parse_form [p:(ptr P) form:Form head:str.Bytes at:i32] -> ast.Expr
     (cond
       ((eq form Form.let_)
-       (let name:(ptr str.Bytes) (call expect_symbol p "variable name" at))
+       (let name:str.Bytes (call expect_symbol p "variable name" at))
        (call want p compiler.Kind.colon)
        (let ty:ast.Type (call parse_type p))
-       (make ast.Expr.let_ at name ty (call parse_expr p)))
+       (call ast.let_expr (call alloc.default) at name ty (call parse_expr p)))
       ((eq form Form.set)
-       (let name:(ptr str.Bytes) (call expect_symbol p "variable name" at))
-       (make ast.Expr.set at name (call parse_expr p)))
+       (let name:str.Bytes (call expect_symbol p "variable name" at))
+       (call ast.set_expr (call alloc.default) at name (call parse_expr p)))
       ((eq form Form.if_)
        (let c:ast.Expr (call parse_expr p))
        (let t:ast.Expr (call parse_expr p))
-       (make ast.Expr.if_ at c t (call parse_expr p)))
+       (call ast.if_expr (call alloc.default) at c t (call parse_expr p)))
       ((eq form Form.loop)
-       (let var:(ptr str.Bytes) (call expect_symbol p "loop var" at))
+       (let var:str.Bytes (call expect_symbol p "loop var" at))
        (let s:ast.Expr (call parse_expr p))
        (let e:ast.Expr (call parse_expr p))
        (let st:ast.Expr (call parse_expr p))
-       (make ast.Expr.loop at var s e st (call parse_body p)))
+       (call ast.loop_expr (call alloc.default) at var s e st (call parse_body p)))
       ((eq form Form.while_)
        (let c:ast.Expr (call parse_expr p))
-       (make ast.Expr.while_ at c (call parse_body p)))
+       (call ast.while_expr (call alloc.default) at c (call parse_body p)))
       ((eq form Form.call)
-       (let fname:(ptr str.Bytes) (call expect_symbol p "func name in call" at))
+       (let fname:str.Bytes (call expect_symbol p "func name in call" at))
        (make ast.Expr.call at fname (call parse_body p)))
       ((or (eq form Form.ok) (eq form Form.err))
        (let oty:ast.MaybeType (make ast.MaybeType.none))
@@ -612,11 +619,11 @@
            (block (call want_next p) (set! oty (make ast.MaybeType.some (call parse_type p))))
            (block))
        (let v:ast.Expr (call parse_expr p))
-       (if (eq form Form.ok) (make ast.Expr.ok at v oty) (make ast.Expr.err at v oty)))
+       (if (eq form Form.ok) (call ast.ok_expr (call alloc.default) at v oty) (call ast.err_expr (call alloc.default) at v oty)))
       ((eq form Form.make)
-       (let target:(ptr str.Bytes) (call expect_symbol p "Union.variant in make" at))
+       (let target:str.Bytes (call expect_symbol p "Union.variant in make" at))
        ;; a value struct's make: its fields
-       (if (call (map.has (ptr str.Bytes) i32) (get p P.values) target)
+       (if (call (map.has str.Bytes i32) (get p P.values) target)
            (return (make ast.Expr.record at target (call parse_body p)))
            (block))
        (let dot:i32 (call last_dot target))
@@ -628,7 +635,7 @@
              (call fail p b))
            (block))
        (let d:i32 (if (lt dot 0) 0 dot))
-       (make ast.Expr.make at (call prefix target d) (call suffix target (+ d 1)) (call parse_body p)))
+       (call ast.make_expr (call alloc.default) at (call prefix target d) (call suffix target (+ d 1)) (call parse_body p)))
       ((eq form Form.match_) (call parse_match p at))
       ((eq form Form.block) (make ast.Expr.block at (call parse_body p)))
       ((eq form Form.unsafe_) (make ast.Expr.unsafe_ at (call parse_body p)))
@@ -638,12 +645,12 @@
       ((eq form Form.with_)
        (let v:ast.Expr (call parse_expr p))
        (let fr:(ptr ast.Step) (call field_ref p "with" at))
-       (make ast.Expr.with_ at (get fr ast.Step.sname) (get fr ast.Step.fname) v (call parse_expr p)))
+       (call ast.with_expr (call alloc.default) at (get fr ast.Step.sname) (get fr ast.Step.fname) v (call parse_expr p)))
       ((eq form Form.sizeof) (make ast.Expr.sizeof at (call parse_sizeof_type p at)))
       ((eq form Form.return_)
        (if (eq (call peek p) compiler.Kind.rparen)
-           (make ast.Expr.return_ at (make ast.MaybeExpr.none))
-           (make ast.Expr.return_ at (make ast.MaybeExpr.some (call parse_expr p)))))
+           (call ast.return_expr (call alloc.default) at (make ast.MaybeExpr.none))
+           (call ast.return_expr (call alloc.default) at (make ast.MaybeExpr.some (call parse_expr p)))))
       ((eq form Form.break_) (make ast.Expr.break_ at))
       ((eq form Form.continue_) (make ast.Expr.continue_ at))
       ((eq form Form.cond) (call parse_cond p at))
@@ -651,44 +658,44 @@
       ((eq form Form.call_ref)
        (let sig:ast.Type (call parse_type p))
        (let callee:ast.Expr (call parse_expr p))
-       (make ast.Expr.call_ref at sig callee (call parse_body p)))
-      ((eq form Form.arr_len) (make ast.Expr.arr_len at (call parse_expr p)))
+       (call ast.call_ref_expr (call alloc.default) at sig callee (call parse_body p)))
+      ((eq form Form.arr_len) (call ast.arr_len_expr (call alloc.default) at (call parse_expr p)))
       ((eq form Form.ptr_null)
-       (make ast.Expr.null at (make ast.Type.ptr (make ast.Type.struct_ (call expect_symbol p "struct name in ptr.null" at)))))
-      ((eq form Form.arr_null) (make ast.Expr.null at (make ast.Type.arr (call parse_type p))))
+       (make ast.Expr.null at (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ (call expect_symbol p "struct name in ptr.null" at)))))
+      ((eq form Form.arr_null) (make ast.Expr.null at (call ast.arr_type (call alloc.default) (call parse_type p))))
       ((eq form Form.ptr_cast)
-       (let name:(ptr str.Bytes) (call expect_symbol p "struct name in ptr.cast" at))
-       (make ast.Expr.cast at (make ast.Type.ptr (make ast.Type.struct_ name)) (call parse_expr p)))
+       (let name:str.Bytes (call expect_symbol p "struct name in ptr.cast" at))
+       (call ast.cast_expr (call alloc.default) at (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ name)) (call parse_expr p)))
       ((eq form Form.arr_cast)
        (let elem:ast.Type (call parse_type p))
-       (make ast.Expr.cast at (make ast.Type.arr elem) (call parse_expr p)))
+       (call ast.cast_expr (call alloc.default) at (call ast.arr_type (call alloc.default) elem) (call parse_expr p)))
       ((eq form Form.ptr_make)
-       (let name:(ptr str.Bytes) (call expect_symbol p "struct name in ptr.make" at))
+       (let name:str.Bytes (call expect_symbol p "struct name in ptr.make" at))
        (let addr:ast.Expr (call parse_expr p))
-       (make ast.Expr.make_ptr at (make ast.Type.ptr (make ast.Type.struct_ name)) addr (call parse_expr p)))
+       (call ast.make_ptr_expr (call alloc.default) at (call ast.ptr_type (call alloc.default) (make ast.Type.struct_ name)) addr (call parse_expr p)))
       ((eq form Form.arr_make)
        (let elem:ast.Type (call parse_type p))
        (let addr:ast.Expr (call parse_expr p))
-       (make ast.Expr.make_ptr at (make ast.Type.arr elem) addr (call parse_expr p)))
-      ((eq form Form.ptr_gen) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.ptr_gen))
-      ((eq form Form.arr_gen) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.arr_gen))
-      ((eq form Form.ptr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.ptr))
-      ((eq form Form.arr_addr) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.arr))
-      ((eq form Form.enum_ord) (make ast.Expr.addr at (call parse_expr p) ast.AddrKind.enum_))
+       (call ast.make_ptr_expr (call alloc.default) at (call ast.arr_type (call alloc.default) elem) addr (call parse_expr p)))
+      ((eq form Form.ptr_gen) (call ast.addr_expr (call alloc.default) at (call parse_expr p) ast.AddrKind.ptr_gen))
+      ((eq form Form.arr_gen) (call ast.addr_expr (call alloc.default) at (call parse_expr p) ast.AddrKind.arr_gen))
+      ((eq form Form.ptr_addr) (call ast.addr_expr (call alloc.default) at (call parse_expr p) ast.AddrKind.ptr))
+      ((eq form Form.arr_addr) (call ast.addr_expr (call alloc.default) at (call parse_expr p) ast.AddrKind.arr))
+      ((eq form Form.enum_ord) (call ast.addr_expr (call alloc.default) at (call parse_expr p) ast.AddrKind.enum_))
       ((eq form Form.enum_cast)
-       (let name:(ptr str.Bytes) (call expect_symbol p "enum name in enum.cast" at))
-       (make ast.Expr.cast at (make ast.Type.enum_ name) (call parse_expr p)))
+       (let name:str.Bytes (call expect_symbol p "enum name in enum.cast" at))
+       (call ast.cast_expr (call alloc.default) at (make ast.Type.enum_ name) (call parse_expr p)))
       ((eq form Form.arr_new)
        (let ty:ast.Type (call parse_type p))
-       (make ast.Expr.arr_new at ty (call parse_expr p)))
+       (call ast.arr_new_expr (call alloc.default) at ty (call parse_expr p)))
       ((eq form Form.arr_get)
        (let ty:ast.Type (call parse_type p))
        (let a:ast.Expr (call parse_expr p))
-       (let e:ast.Expr (make ast.Expr.arr_get at ty a (call parse_expr p)))
+       (let e:ast.Expr (call ast.arr_get_expr (call alloc.default) at ty a (call parse_expr p)))
        ;; a path reads one field of a value struct element
        (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
          (let fr:(ptr ast.Step) (call field_ref p "arr.get" at))
-         (set! e (make ast.Expr.get_ at (get fr ast.Step.sname) (get fr ast.Step.fname) e)))
+         (set! e (call ast.get_expr (call alloc.default) at (get fr ast.Step.sname) (get fr ast.Step.fname) e)))
        e)
       ((eq form Form.arr_set)
        (let ty:ast.Type (call parse_type p))
@@ -696,7 +703,7 @@
        (let ix:ast.Expr (call parse_expr p))
        (let path:(ptr (vec.Vec (ptr ast.Step))) (call (vec.make (ptr ast.Step)) (call alloc.default) 2))
        (let val:ast.Expr (call path_and_value p "arr.set" at path))
-       (make ast.Expr.arr_set at ty a ix val (call (to_arr (ptr ast.Step)) path)))
+       (call ast.arr_set_expr (call alloc.default) at ty a ix val (call (to_arr (ptr ast.Step)) path)))
       ((eq form Form.fmt_surface)
        (let b:(ptr buf.Buf) (call msg p at))
        (call buf.push_str b "(")
@@ -715,7 +722,7 @@
        (call fail p b)
        (call placeholder at))
       (else
-       (if (not (call (map.has (ptr str.Bytes) i32) (get p P.ops) head))
+       (if (not (call (map.has str.Bytes i32) (get p P.ops) head))
            (block
              (let b:(ptr buf.Buf) (call msg p at))
              (call buf.push_str b "Unknown op/keyword: ")
@@ -723,16 +730,16 @@
              (call fail p b)
              (return (call placeholder at)))
            (block))
-       (let op:ast.Op (enum.cast ast.Op (call (map.get_or (ptr str.Bytes) i32) (get p P.ops) head 0)))
+       (let op:ast.Op (enum.cast ast.Op (call (map.get_or str.Bytes i32) (get p P.ops) head 0)))
        (make ast.Expr.op at op (call parse_body p)))))
 
-  (fn last_dot [s:(ptr str.Bytes)] -> i32
+  (fn last_dot [s:str.Bytes] -> i32
     (let d:i32 -1)
     (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
     d)
-  (fn prefix [s:(ptr str.Bytes) n:i32] -> (ptr str.Bytes) (unsafe (call str.bytes (get s str.Bytes.addr) n)))
-  (fn suffix [s:(ptr str.Bytes) from:i32] -> (ptr str.Bytes)
-    (unsafe (call str.bytes (+ (get s str.Bytes.addr) from) (- (get s str.Bytes.len) from))))
+  (fn prefix [s:str.Bytes n:i32] -> str.Bytes (unsafe (call str.bytes (call str.addr s) n)))
+  (fn suffix [s:str.Bytes from:i32] -> str.Bytes
+    (unsafe (call str.bytes (+ (call str.addr s) from) (- (get s str.Bytes.len) from))))
 
   ;; src/parser.rs field_ref: a Struct.field symbol split at its last '.'.
   (fn field_ref [p:(ptr P) form:str at:i32] -> (ptr ast.Step)
@@ -750,7 +757,7 @@
           (call fail p b)
           (return r))
         (block))
-    (let field:(ptr str.Bytes) (call text p i))
+    (let field:str.Bytes (call text p i))
     (let dot:i32 (call last_dot field))
     (if (or (lt dot 1) (eq dot (- (get field str.Bytes.len) 1)))
         (block
@@ -817,14 +824,14 @@
           (let fr:(ptr ast.Step) (call field_ref p "put" at))
           (let path:(ptr (vec.Vec (ptr ast.Step))) (call (vec.make (ptr ast.Step)) (call alloc.default) 2))
           (let val:ast.Expr (call path_and_value p "put" at path))
-          (return (make ast.Expr.put_ at (get fr ast.Step.sname) (get fr ast.Step.fname) ptr val (call (to_arr (ptr ast.Step)) path))))
+          (return (call ast.put_expr (call alloc.default) at (get fr ast.Step.sname) (get fr ast.Step.fname) ptr val (call (to_arr (ptr ast.Step)) path))))
         (block))
     ;; a path: one field of a value struct held in the field before it
     (let e:ast.Expr ptr)
     (let more:bool true)
     (while more
       (let fr:(ptr ast.Step) (call field_ref p "get" at))
-      (set! e (make ast.Expr.get_ at (get fr ast.Step.sname) (get fr ast.Step.fname) e))
+      (set! e (call ast.get_expr (call alloc.default) at (get fr ast.Step.sname) (get fr ast.Step.fname) e))
       (if (or (get p P.failed) (or (eq (call peek p) compiler.Kind.rparen) (eq (call peek p) compiler.Kind.none)))
           (set! more false)
           (block)))
@@ -837,25 +844,25 @@
     (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
       (let open:i32 (call expect p compiler.Kind.lparen))
       (let aat:i32 (if (gte open 0) (call tpos p open) at))
-      (let member:(ptr str.Bytes) (call expect_symbol p "Name.member or else in a match arm" aat))
+      (let member:str.Bytes (call expect_symbol p "Name.member or else in a match arm" aat))
       (if (and (not (get p P.failed)) (neq else_body (arr.null ast.Expr)))
           (call fail_str p aat "the (else ...) arm of a match comes last")
           (block))
-      (let binders:(arr (ptr str.Bytes)) (arr.null (ptr str.Bytes)))
+      (let binders:(arr str.Bytes) (arr.null str.Bytes))
       (if (eq (call peek p) compiler.Kind.lbracket)
           (block
             (call next p)
-            (let names:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 4))
+            (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
             (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
-              (call (vec.push (ptr str.Bytes)) names (call expect_symbol p "a binder name" aat)))
+              (call (vec.push str.Bytes) names (call expect_symbol p "a binder name" aat)))
             (call want p compiler.Kind.rbracket)
-            (set! binders (call (to_arr (ptr str.Bytes)) names)))
+            (set! binders (call (to_arr str.Bytes) names)))
           (block))
       (let body:(arr ast.Expr) (call parse_body p))
       (call want p compiler.Kind.rparen)
       (if (call str.is member "else")
           (block
-            (if (and (not (get p P.failed)) (neq binders (arr.null (ptr str.Bytes))))
+            (if (and (not (get p P.failed)) (neq binders (arr.null str.Bytes)))
                 (call fail_str p aat "the else arm of a match binds nothing")
                 (block))
             (set! else_body body))
@@ -866,23 +873,23 @@
             (put arm ast.Arm.body body)
             (put arm ast.Arm.at aat)
             (call (vec.push (ptr ast.Arm)) arms arm))))
-    (make ast.Expr.match_ at value (call (to_arr (ptr ast.Arm)) arms) else_body))
+    (call ast.match_expr (call alloc.default) at value (call (to_arr (ptr ast.Arm)) arms) else_body))
 
   (fn parse_match_result [p:(ptr P) at:i32] -> ast.Expr
     (let value:ast.Expr (call parse_expr p))
     (call want p compiler.Kind.lparen)
     (let i:i32 (call next p))
     (if (not (call is_sym p i "ok")) (call fail_expected p i "'ok' arm in match_result" at) (block))
-    (let ok_var:(ptr str.Bytes) (call expect_symbol p "ok var" at))
+    (let ok_var:str.Bytes (call expect_symbol p "ok var" at))
     (let ok_body:(arr ast.Expr) (call parse_body p))
     (call want p compiler.Kind.rparen)
     (call want p compiler.Kind.lparen)
     (let j:i32 (call next p))
     (if (not (call is_sym p j "err")) (call fail_expected p j "'err' arm in match_result" at) (block))
-    (let err_var:(ptr str.Bytes) (call expect_symbol p "err var" at))
+    (let err_var:str.Bytes (call expect_symbol p "err var" at))
     (let err_body:(arr ast.Expr) (call parse_body p))
     (call want p compiler.Kind.rparen)
-    (make ast.Expr.match_result at value ok_var ok_body err_var err_body))
+    (call ast.match_result_expr (call alloc.default) at value ok_var ok_body err_var err_body))
 
   ;; (cond (c1 e...) ... (else e...)) is (if c1 (block e...) (if ... (block e...))),
   ;; each if and block at its clause's '('.
@@ -923,18 +930,18 @@
     (let k:i32 (- (call (vec.len (ptr Clause)) clauses) 1))
     (while (gte k 0)
       (let cl:(ptr Clause) (call (vec.at (ptr Clause)) clauses k))
-      (set! acc (make ast.Expr.if_ (get cl Clause.at) (get cl Clause.test)
+      (set! acc (call ast.if_expr (call alloc.default) (get cl Clause.at) (get cl Clause.test)
                       (make ast.Expr.block (get cl Clause.at) (get cl Clause.body)) acc))
       (set! k (- k 1)))
     acc)
 
   ;; ===== Tables =====
 
-  (fn form [m:(ptr (map.Map (ptr str.Bytes) Form)) s:str f:Form] -> void
-    (call (map.set (ptr str.Bytes) Form) m (call str.from_str s) f))
+  (fn form [m:(ptr (map.Map str.Bytes Form)) s:str f:Form] -> void
+    (call (map.set str.Bytes Form) m (call str.from_str s) f))
 
-  (fn form_table [] -> (ptr (map.Map (ptr str.Bytes) Form))
-    (let m:(ptr (map.Map (ptr str.Bytes) Form)) (call (map.make (ptr str.Bytes) Form) (call alloc.default) 64))
+  (fn form_table [] -> (ptr (map.Map str.Bytes Form))
+    (let m:(ptr (map.Map str.Bytes Form)) (call (map.make str.Bytes Form) (call alloc.default) 64))
     (call form m "let" Form.let_) (call form m "set!" Form.set) (call form m "if" Form.if_)
     (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
@@ -955,12 +962,12 @@
     (call form m "println" Form.fmt_surface) (call form m "eprintln" Form.fmt_surface) (call form m "dbg" Form.fmt_surface) (call form m "expect" Form.fmt_surface)
     m)
 
-  (fn op [m:(ptr (map.Map (ptr str.Bytes) i32)) s:str o:ast.Op] -> void
-    (call (map.set (ptr str.Bytes) i32) m (call str.from_str s) (enum.ord o)))
+  (fn op [m:(ptr (map.Map str.Bytes i32)) s:str o:ast.Op] -> void
+    (call (map.set str.Bytes i32) m (call str.from_str s) (enum.ord o)))
 
   ;; Operator spellings (src/parser.rs parse_expr's op table).
-  (fn op_table [] -> (ptr (map.Map (ptr str.Bytes) i32))
-    (let m:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 128))
+  (fn op_table [] -> (ptr (map.Map str.Bytes i32))
+    (let m:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 128))
     (call op m "+" ast.Op.add) (call op m "-" ast.Op.sub) (call op m "*" ast.Op.mul) (call op m "/" ast.Op.div)
     (call op m "%" ast.Op.mod) (call op m "^" ast.Op.bitxor) (call op m "shl" ast.Op.shl) (call op m "shr" ast.Op.shr)
     (call op m "shru" ast.Op.shru) (call op m "bitand" ast.Op.bitand) (call op m "bitor" ast.Op.bitor)
@@ -1018,14 +1025,14 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put p P.unions (call (map.make str.Bytes i32) (call alloc.default) 16))
     ;; the program's unions: `( union NAME`
     (loop k 0 (- n 3) 1
       (if (and (eq (call kind_at p k) compiler.Kind.lparen) (and (call is_sym p (+ k 1) "union") (eq (call kind_at p (+ k 2)) compiler.Kind.symbol)))
-          (call (map.set (ptr str.Bytes) i32) (get p P.unions) (call text p (+ k 2)) 1)
+          (call (map.set str.Bytes i32) (get p P.unions) (call text p (+ k 2)) 1)
           (block)))
     ;; and its value structs: `( struct NAME [ ... ] ( value )` (src/parser.rs value_struct_names)
-    (put p P.values (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put p P.values (call (map.make str.Bytes i32) (call alloc.default) 16))
     (loop k 0 (- n 4) 1
       (if (and (eq (call kind_at p k) compiler.Kind.lparen)
                (and (call is_sym p (+ k 1) "struct")
@@ -1045,7 +1052,7 @@
               (if closed (block) (set! j (+ j 1))))
             (if (and (eq (call kind_at p (+ j 1)) compiler.Kind.lparen)
                      (and (call is_sym p (+ j 2) "value") (eq (call kind_at p (+ j 3)) compiler.Kind.rparen)))
-                (call (map.set (ptr str.Bytes) i32) (get p P.values) (call text p (+ k 2)) 1)
+                (call (map.set str.Bytes i32) (get p P.values) (call text p (+ k 2)) 1)
                 (block)))
           (block)))
     (let r:(ptr Parsed) (new Parsed))
@@ -1106,8 +1113,8 @@
     (put p P.failed false)
     (put p P.forms (call form_table))
     (put p P.ops (call op_table))
-    (put p P.unions (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
-    (put p P.values (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (put p P.unions (call (map.make str.Bytes i32) (call alloc.default) 16))
+    (put p P.values (call (map.make str.Bytes i32) (call alloc.default) 16))
     (call parse_expr p))
 
   ;; Tokenizes and parses len bytes at src.

@@ -43,6 +43,9 @@ pub fn print_module(m: &Module) -> String {
         if f.is_unsafe {
             out.push_str("\n    (unsafe)");
         }
+        if f.is_no_leak {
+            out.push_str("\n    (no_leak)");
+        }
         for c in &f.contracts {
             let (kw, e) = match c {
                 Contract::Requires(e) => ("req", e),

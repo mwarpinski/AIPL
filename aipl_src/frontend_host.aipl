@@ -13,9 +13,9 @@
   (import str)
 
   (fn put_result [out:i32 ok:bool b:(ptr buf.Buf)] -> i32
-    (unsafe (let bs:(ptr str.Bytes) (call buf.bytes b))
+    (unsafe (let bs:str.Bytes (call buf.bytes b))
     (mem.store32 out (if ok 1 0))
-    (mem.store32 (+ out 4) (get bs str.Bytes.addr))
+    (mem.store32 (+ out 4) (call str.addr bs))
     (mem.store32 (+ out 8) (get bs str.Bytes.len))
     0))
 

@@ -182,7 +182,7 @@ sequence read from stdin; frequency tables and occurrence counts). Its input
 comes from the Benchmarks Game's fasta generator (`fasta.py`, run by
 `tools/bench.py` through `stdin_cmd`). Ran with no language changes, using
 `std/strmap` (keys are slices of the sequence, no copies) and `vec.sort_by`;
-since 2026-10-14 `(map.Map (ptr str.Bytes) i32)`, the one generic map
+since 2026-10-14 `(map.Map str.Bytes i32)`, the one generic map
 (`strmap` is gone).
 What it showed:
 - **The 64 MiB memory cap.** At the benchmark's usual size (fasta 250000,

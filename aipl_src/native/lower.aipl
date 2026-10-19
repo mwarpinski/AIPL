@@ -191,7 +191,7 @@
     at)
 
   ;; Appends raw bytes to the data; returns their address once loaded.
-  (fn data_bytes [l:(ptr L) b:(ptr str.Bytes)] -> i32 (pub)
+  (fn data_bytes [l:(ptr L) b:str.Bytes] -> i32 (pub)
     (let at:i32 (+ (call elf.data_vaddr) (call buf.len (get l L.data))))
     (call buf.push_bytes (get l L.data) b)
     at)

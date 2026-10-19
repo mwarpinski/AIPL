@@ -7,8 +7,8 @@
 ;;   (match (call (map.find i32 i64) m 7)
 ;;     ((option.Option i64) some [v] ...) ((option.Option i64) none ...))
 ;; Keys hash and compare through (cmp.Hash K): i32, i64, str, and
-;; (ptr str.Bytes) (by contents) are implemented in std/cmp; a module
-;; implements it for its own key types. A (ptr str.Bytes) key is kept as the
+;; str.Bytes (by contents) are implemented in std/cmp; a module
+;; implements it for its own key types. A str.Bytes key is kept as the
 ;; pointer, so its bytes must not change while it is in the map.
 (module map
   (import alloc)
@@ -169,43 +169,43 @@
   (fn bytes_cases [] -> i32
     (unsafe (let p:i32 0)
     ;; word frequencies of a small text, splitting on spaces by hand
-    (let text:(ptr str.Bytes) (call str.from_str "the cat and the hat and the bat"))
-    (let m:(ptr (Map (ptr str.Bytes) i32)) (call (make (ptr str.Bytes) i32) (call alloc.default) 0))
+    (let text:str.Bytes (call str.from_str "the cat and the hat and the bat"))
+    (let m:(ptr (Map str.Bytes i32)) (call (make str.Bytes i32) (call alloc.default) 0))
     (let start:i32 0)
     (loop i 0 (get text str.Bytes.len) 1
-      (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (get text str.Bytes.addr) i)) 32))
+      (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (call str.addr text) i)) 32))
           (block
-            (let w:(ptr str.Bytes) (call str.bytes (+ (get text str.Bytes.addr) start) (- i start)))
-            (call (set (ptr str.Bytes) i32) m w (+ (call (get_or (ptr str.Bytes) i32) m w 0) 1))
+            (let w:str.Bytes (call str.bytes (+ (call str.addr text) start) (- i start)))
+            (call (set str.Bytes i32) m w (+ (call (get_or str.Bytes i32) m w 0) 1))
             (set! start (+ i 1)))
           (block)))
-    (if (and (eq (call (count (ptr str.Bytes) i32) m) 5)
-             (and (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "the") 0) 3)
-                  (and (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "and") 0) 2)
-                       (eq (call (get_or (ptr str.Bytes) i32) m (call str.from_str "dog") -1) -1))))
+    (if (and (eq (call (count str.Bytes i32) m) 5)
+             (and (eq (call (get_or str.Bytes i32) m (call str.from_str "the") 0) 3)
+                  (and (eq (call (get_or str.Bytes i32) m (call str.from_str "and") 0) 2)
+                       (eq (call (get_or str.Bytes i32) m (call str.from_str "dog") -1) -1))))
         (set! p (+ p 1))
         (block))
-    (if (and (call (remove (ptr str.Bytes) i32) m (call str.from_str "cat")) (and (not (call (has (ptr str.Bytes) i32) m (call str.from_str "cat"))) (eq (call (count (ptr str.Bytes) i32) m) 4)))
+    (if (and (call (remove str.Bytes i32) m (call str.from_str "cat")) (and (not (call (has str.Bytes i32) m (call str.from_str "cat"))) (eq (call (count str.Bytes i32) m) 4)))
         (set! p (+ p 1))
         (block))
     ;; 300 distinct generated keys survive resizing
-    (let big:(ptr (Map (ptr str.Bytes) i32)) (call (make (ptr str.Bytes) i32) (call alloc.default) 0))
+    (let big:(ptr (Map str.Bytes i32)) (call (make str.Bytes i32) (call alloc.default) 0))
     (loop i 0 299 1
       (let k:i32 (mem.alloc 2))
       (mem.store8 k (+ 65 (/ i 26)))
       (mem.store8 (+ k 1) (+ 65 (% i 26)))
-      (call (set (ptr str.Bytes) i32) big (call str.bytes k 2) i))
-    (let ok:bool (eq (call (count (ptr str.Bytes) i32) big) 300))
+      (call (set str.Bytes i32) big (call str.bytes k 2) i))
+    (let ok:bool (eq (call (count str.Bytes i32) big) 300))
     (loop i 0 299 1
       (let k:i32 (mem.alloc 2))
       (mem.store8 k (+ 65 (/ i 26)))
       (mem.store8 (+ k 1) (+ 65 (% i 26)))
-      (if (neq (call (get_or (ptr str.Bytes) i32) big (call str.bytes k 2) -1) i) (set! ok false) (block)))
+      (if (neq (call (get_or str.Bytes i32) big (call str.bytes k 2) -1) i) (set! ok false) (block)))
     (if ok (set! p (+ p 1)) (block))
     ;; non-i32 values: a map to byte strings
-    (let names:(ptr (Map (ptr str.Bytes) (ptr str.Bytes))) (call (make (ptr str.Bytes) (ptr str.Bytes)) (call alloc.default) 0))
-    (call (set (ptr str.Bytes) (ptr str.Bytes)) names (call str.from_str "k") (call str.from_str "value"))
-    (if (eq (get (call (get_or (ptr str.Bytes) (ptr str.Bytes)) names (call str.from_str "k") (call str.bytes 0 -1)) str.Bytes.len) 5)
+    (let names:(ptr (Map str.Bytes str.Bytes)) (call (make str.Bytes str.Bytes) (call alloc.default) 0))
+    (call (set str.Bytes str.Bytes) names (call str.from_str "k") (call str.from_str "value"))
+    (if (eq (get (call (get_or str.Bytes str.Bytes) names (call str.from_str "k") (call str.bytes 0 -1)) str.Bytes.len) 5)
         (set! p (+ p 1))
         (block))
     p)))

@@ -27,7 +27,7 @@
   (struct Error [(read at:i32) (read what:str)] (pub))
 
   ;; A header as it came (name and value without the spaces around it).
-  (struct Header [(read name:(ptr str.Bytes)) (read value:(ptr str.Bytes))] (value) (pub))
+  (struct Header [(read name:str.Bytes) (read value:str.Bytes)] (value) (pub))
 
   ;; The most a message may hold: bytes of head (the start line and the
   ;; headers), headers, and bytes of body.
@@ -38,9 +38,9 @@
   ;; (chunked bodies put together); and length, the bytes it took (another
   ;; message may follow). The views point into the text read, but a
   ;; chunked body is the message's own (free_message frees it).
-  (struct Message [(read is_request:bool) (read method:(ptr str.Bytes)) (read target:(ptr str.Bytes))
-                   (read status:i32) (read reason:(ptr str.Bytes)) (read version:(ptr str.Bytes))
-                   (read headers:(ptr (vec.Vec Header))) (read body:(ptr str.Bytes)) (read length:i32)
+  (struct Message [(read is_request:bool) (read method:str.Bytes) (read target:str.Bytes)
+                   (read status:i32) (read reason:str.Bytes) (read version:str.Bytes)
+                   (read headers:(ptr (vec.Vec Header))) (read body:str.Bytes) (read length:i32)
                    chunks:(ptr buf.Buf) a:alloc.Allocator] (pub))
 
   ;; 64 KiB of head, 100 headers, 8 MiB of body.
@@ -77,7 +77,7 @@
 
   ;; The end of the line starting at p (the index of its LF, or of the CR
   ;; before it), or -1 if no line ends before limit.
-  (fn line_end [b:(ptr str.Bytes) p:i32 limit:i32] -> i32
+  (fn line_end [b:str.Bytes p:i32 limit:i32] -> i32
     (let n:i32 (if (lt (get b str.Bytes.len) limit) (get b str.Bytes.len) limit))
     (for i p n
       (when (eq (call str.byte_at b i) 10)
@@ -85,12 +85,12 @@
     -1)
 
   ;; The index after the line ending at end.
-  (fn next_line [b:(ptr str.Bytes) end:i32] -> i32 (if (eq (call str.byte_at b end) 13) (+ end 2) (+ end 1)))
+  (fn next_line [b:str.Bytes end:i32] -> i32 (if (eq (call str.byte_at b end) 13) (+ end 2) (+ end 1)))
 
-  (fn view [b:(ptr str.Bytes) from:i32 to:i32] -> (ptr str.Bytes) (call str.slice b from (- to from)))
+  (fn view [b:str.Bytes from:i32 to:i32] -> str.Bytes (call str.slice b from (- to from)))
 
   ;; Whether b[from..to) is "HTTP/" digit "." digit.
-  (fn is_version [b:(ptr str.Bytes) from:i32 to:i32] -> bool
+  (fn is_version [b:str.Bytes from:i32 to:i32] -> bool
     (and (eq (- to from) 8)
          (and (call str.is_at b from "HTTP/")
               (and (call is_digit (call str.byte_at b (+ from 5)))
@@ -99,20 +99,20 @@
   (fn is_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
 
   ;; The request in text (from its start), or why it is not one.
-  (fn parse_request [a:alloc.Allocator text:(ptr str.Bytes) lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
+  (fn parse_request [a:alloc.Allocator text:str.Bytes lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
     (call parse a text lim true))
 
   ;; The response in text (from its start), or why it is not one. The body
   ;; of a response with neither Content-Length nor Transfer-Encoding is the
   ;; rest of text (it ends when the connection closes); a 1xx, 204, or 304
   ;; response has none.
-  (fn parse_response [a:alloc.Allocator text:(ptr str.Bytes) lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
+  (fn parse_response [a:alloc.Allocator text:str.Bytes lim:Limits] -> (result (ptr Message) (ptr Error)) (pub)
     (call parse a text lim false))
 
-  (fn parse [a:alloc.Allocator text:(ptr str.Bytes) lim:Limits request:bool] -> (result (ptr Message) (ptr Error))
+  (fn parse [a:alloc.Allocator text:str.Bytes lim:Limits request:bool] -> (result (ptr Message) (ptr Error))
     (let n:i32 (get text str.Bytes.len))
     (let head_limit:i32 (get lim Limits.head_bytes))
-    (let empty:(ptr str.Bytes) (call view text 0 0))
+    (let empty:str.Bytes (call view text 0 0))
     (let first:i32 (call line_end text 0 head_limit))
     (when (lt first 0) (return (err:(ptr Message) (call head_error a text head_limit))))
     ;; the start line: three parts with one space between each
@@ -120,11 +120,11 @@
     (when (eq s1 first) (return (err:(ptr Message) (call error a 0 "a start line without spaces"))))
     (let s2:i32 (call find_byte text (+ s1 1) first 32))
     (when (and request (eq s2 first)) (return (err:(ptr Message) (call error a s1 "a request line without a version"))))
-    (let method:(ptr str.Bytes) empty)
-    (let target:(ptr str.Bytes) empty)
-    (let version:(ptr str.Bytes) empty)
+    (let method:str.Bytes empty)
+    (let target:str.Bytes empty)
+    (let version:str.Bytes empty)
     (let status:i32 0)
-    (let reason:(ptr str.Bytes) empty)
+    (let reason:str.Bytes empty)
     (if request
         (block
           (when (eq s1 0) (return (err:(ptr Message) (call error a 0 "an empty method"))))
@@ -192,18 +192,18 @@
   (fn is_ows [c:i32] -> bool (or (eq c 32) (eq c 9)))
 
   ;; The index of byte c in b[from..to), or to.
-  (fn find_byte [b:(ptr str.Bytes) from:i32 to:i32 c:i32] -> i32
+  (fn find_byte [b:str.Bytes from:i32 to:i32 c:i32] -> i32
     (for i from to (when (eq (call str.byte_at b i) c) (return i)))
     to)
 
   ;; The error for a head with no end: past the limit, or cut short.
-  (fn head_error [a:alloc.Allocator text:(ptr str.Bytes) limit:i32] -> (ptr Error)
+  (fn head_error [a:alloc.Allocator text:str.Bytes limit:i32] -> (ptr Error)
     (if (gte (get text str.Bytes.len) limit)
         (call error a limit "a head over the limit")
         (call error a (get text str.Bytes.len) "the head ends early")))
 
   ;; Sets the body from text at p, by Transfer-Encoding or Content-Length.
-  (fn read_body [m:(ptr Message) text:(ptr str.Bytes) p:i32 lim:Limits] -> (result i32 (ptr Error))
+  (fn read_body [m:(ptr Message) text:str.Bytes p:i32 lim:Limits] -> (result i32 (ptr Error))
     (let a:alloc.Allocator (get m Message.a))
     (let n:i32 (get text str.Bytes.len))
     (let te:i32 -1)
@@ -211,12 +211,12 @@
     (let headers:(ptr (vec.Vec Header)) (get m Message.headers))
     (for k 0 (call (vec.len Header) headers)
       (let h:Header (call (vec.at Header) headers k))
-      (let name:(ptr str.Bytes) (get h Header.name))
+      (let name:str.Bytes (get h Header.name))
       (when (call str.eq_ignore_case name (call str.from_str "transfer-encoding"))
         (when (gte te 0) (return (err:i32 (call error a p "two Transfer-Encoding headers"))))
         (set! te k))
       (when (call str.eq_ignore_case name (call str.from_str "content-length"))
-        (let v:(ptr str.Bytes) (get h Header.value))
+        (let v:str.Bytes (get h Header.value))
         (when (eq (get v str.Bytes.len) 0) (return (err:i32 (call error a p "an empty Content-Length"))))
         (let declared:i64 0i64)
         (for i 0 (get v str.Bytes.len)
@@ -234,7 +234,7 @@
     (let body_limit:i32 (get lim Limits.body_bytes))
     (cond
       ((gte te 0)
-       (let v:(ptr str.Bytes) (get (call (vec.at Header) headers te) Header.value))
+       (let v:str.Bytes (get (call (vec.at Header) headers te) Header.value))
        (when (not (call str.eq_ignore_case v (call str.from_str "chunked"))) (return (err:i32 (call error a p "a transfer coding other than chunked"))))
        (call read_chunks m text p body_limit))
       ((gte cl 0i64)
@@ -254,7 +254,7 @@
   ;; A chunked body (RFC 9112, 7.1): chunks of a hex size (extensions
   ;; after ';' ignored), CRLF, the bytes, CRLF; a 0 chunk; trailer lines
   ;; (ignored); an empty line.
-  (fn read_chunks [m:(ptr Message) text:(ptr str.Bytes) p0:i32 limit:i32] -> (result i32 (ptr Error))
+  (fn read_chunks [m:(ptr Message) text:str.Bytes p0:i32 limit:i32] -> (result i32 (ptr Error))
     (let a:alloc.Allocator (get m Message.a))
     (let n:i32 (get text str.Bytes.len))
     (let o:(ptr buf.Buf) (call buf.make a 256))
@@ -301,19 +301,19 @@
       (else -1)))
 
   ;; The value of the first header named name (ignoring case), if any.
-  (fn header [m:(ptr Message) name:str] -> (option.Option (ptr str.Bytes)) (pub)
+  (fn header [m:(ptr Message) name:str] -> (option.Option str.Bytes) (pub)
     (let headers:(ptr (vec.Vec Header)) (get m Message.headers))
-    (let want:(ptr str.Bytes) (call str.from_str name))
+    (let want:str.Bytes (call str.from_str name))
     (for k 0 (call (vec.len Header) headers)
       (let h:Header (call (vec.at Header) headers k))
-      (when (call str.eq_ignore_case (get h Header.name) want) (return (make (option.Option (ptr str.Bytes)) some (get h Header.value)))))
-    (make (option.Option (ptr str.Bytes)) none))
+      (when (call str.eq_ignore_case (get h Header.name) want) (return (make (option.Option str.Bytes) some (get h Header.value)))))
+    (make (option.Option str.Bytes) none))
 
   ;; ===== writing =====
 
   ;; Whether s can go in a start line or header as it is: no CR, LF, or NUL.
   (fn clean [s:str] -> bool (pub)
-    (let b:(ptr str.Bytes) (call str.from_str s))
+    (let b:str.Bytes (call str.from_str s))
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (when (or (eq c 0) (or (eq c 13) (eq c 10))) (return false)))
@@ -322,7 +322,7 @@
   ;; Whether s is a token (RFC 9110, 5.6.2): what header names and
   ;; methods must be.
   (fn token [s:str] -> bool (pub)
-    (let b:(ptr str.Bytes) (call str.from_str s))
+    (let b:str.Bytes (call str.from_str s))
     (when (eq (get b str.Bytes.len) 0) (return false))
     (for i 0 (get b str.Bytes.len) (when (not (call tchar (call str.byte_at b i))) (return false)))
     true)
@@ -425,7 +425,7 @@
     (call buf.push_str o "\r\n"))
 
   ;; Appends Content-Length for body, the empty line, and body.
-  (fn end_head [o:(ptr buf.Buf) body:(ptr str.Bytes)] -> void (pub)
+  (fn end_head [o:(ptr buf.Buf) body:str.Bytes] -> void (pub)
     (call buf.push_str o "Content-Length: ")
     (call buf.push_int o (get body str.Bytes.len))
     (call buf.push_str o "\r\n\r\n")
@@ -435,14 +435,14 @@
   ;; from a fixed table of the common ones (text types with charset=utf-8);
   ;; application/octet-stream for others.
   (fn mime_type [name:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call str.from_str name))
+    (let b:str.Bytes (call str.from_str name))
     (let dot:i32 -1)
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (when (eq c 46) (set! dot i))
       (when (eq c 47) (set! dot -1)))
     (when (lt dot 0) (return "application/octet-stream"))
-    (let e:(ptr str.Bytes) (call str.slice b (+ dot 1) (- (- (get b str.Bytes.len) dot) 1)))
+    (let e:str.Bytes (call str.slice b (+ dot 1) (- (- (get b str.Bytes.len) dot) 1)))
     (cond
       ((call ext e "html") "text/html; charset=utf-8")
       ((call ext e "htm") "text/html; charset=utf-8")
@@ -477,4 +477,4 @@
       ((call ext e "webm") "video/webm")
       (else "application/octet-stream")))
 
-  (fn ext [e:(ptr str.Bytes) s:str] -> bool (call str.eq_ignore_case e (call str.from_str s))))
+  (fn ext [e:str.Bytes s:str] -> bool (call str.eq_ignore_case e (call str.from_str s))))

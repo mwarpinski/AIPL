@@ -3,7 +3,7 @@
   (import option)
   (fn digit [c:i32] -> (result i32 str)
     (if (and (gte c 48) (lte c 57)) (ok:str (- c 48)) (err:i32 "not a digit")))
-  (fn two [s:(ptr str.Bytes)] -> (result i32 str)
+  (fn two [s:str.Bytes] -> (result i32 str)
     (let a:i32 (try (call digit (call str.byte_at s 0))))
     (let b:i32 (try (call digit (call str.byte_at s 1))))
     (ok:str (+ (* a 10) b)))

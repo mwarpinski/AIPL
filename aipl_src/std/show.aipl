@@ -129,7 +129,7 @@
     b)
 
   ;; Appends the bytes of v under spec s; returns b.
-  (fn put_bytes [b:(ptr buf.Buf) v:(ptr str.Bytes) s:i32] -> (ptr buf.Buf) (pub)
+  (fn put_bytes [b:(ptr buf.Buf) v:str.Bytes s:i32] -> (ptr buf.Buf) (pub)
     (let from:i32 (call buf.len b))
     (call buf.push_bytes b v)
     (call pad b from s false)

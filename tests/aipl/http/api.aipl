@@ -11,11 +11,11 @@
 
   ;; the message read from text, briefly, or its error
   (fn read [a:alloc.Allocator text:str request:bool lim:http.Limits] -> str
-    (let b:(ptr str.Bytes) (call str.from_str text))
+    (let b:str.Bytes (call str.from_str text))
     (let r:(result (ptr http.Message) (ptr http.Error)) (if request (call http.parse_request a b lim) (call http.parse_response a b lim)))
     (match_result r
       (ok m
-        (let host:str (match (call http.header m "HOST") ((option.Option (ptr str.Bytes)) some [v] (call str.from_bytes v)) ((option.Option (ptr str.Bytes)) none [] "-")))
+        (let host:str (match (call http.header m "HOST") ((option.Option str.Bytes) some [v] (call str.from_bytes v)) ((option.Option str.Bytes) none [] "-")))
         (let s:str (if request
                        (format "{(get m http.Message.method)} {(get m http.Message.target)} {(get m http.Message.version)} host {host} body [{(get m http.Message.body)}] took {(get m http.Message.length)}")
                        (format "{(get m http.Message.status)} {(get m http.Message.reason)} body [{(get m http.Message.body)}] took {(get m http.Message.length)}")))

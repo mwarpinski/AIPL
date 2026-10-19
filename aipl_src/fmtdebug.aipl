@@ -14,12 +14,12 @@
   (import printer)
 
   ;; The definitions a printer reads: the checker's tables.
-  (struct Defs [(pub structs:(ptr (map.Map (ptr str.Bytes) (ptr ast.StructDef))))
-                (pub unions:(ptr (map.Map (ptr str.Bytes) (ptr ast.UnionDef))))
-                (pub enums:(ptr (map.Map (ptr str.Bytes) (ptr ast.EnumDef))))] (pub))
+  (struct Defs [(pub structs:(ptr (map.Map str.Bytes (ptr ast.StructDef))))
+                (pub unions:(ptr (map.Map str.Bytes (ptr ast.UnionDef))))
+                (pub enums:(ptr (map.Map str.Bytes (ptr ast.EnumDef))))] (pub))
 
   ;; One printer to write: its name and type.
-  (struct Need [name:(ptr str.Bytes) ty:ast.Type])
+  (struct Need [name:str.Bytes ty:ast.Type])
 
   ;; ===== Types =====
 
@@ -28,28 +28,28 @@
     (match t
       (ast.Type.i32 true) (ast.Type.i64 true) (ast.Type.f32 true) (ast.Type.f64 true) (ast.Type.bool true) (ast.Type.str true)
       (ast.Type.enum_ [_] true)
-      (ast.Type.ptr [inner] (call is_bytes inner))
+      (ast.Type.struct_ [_] (call is_bytes t))
       (else false)))
 
   ;; Whether the formatting forms print t at all (formats.rs prints).
   (fn prints [t:ast.Type] -> bool (pub)
-    (match t (ast.Type.void false) (ast.Type.fn_ [_ _] false) (else true)))
+    (match t (ast.Type.void false) (ast.Type.fn_ [_] false) (else true)))
 
   (fn is_bytes [t:ast.Type] -> bool
     (match t (ast.Type.struct_ [n] (call str.is n "str.Bytes")) (else false)))
 
   (fn is_value_kind [t:ast.Type] -> bool
-    (match t (ast.Type.struct_ [_] true) (ast.Type.union_ [_] true) (ast.Type.result [_ _] true) (else false)))
+    (match t (ast.Type.struct_ [_] true) (ast.Type.union_ [_] true) (ast.Type.result [_] true) (else false)))
 
-  (fn type_text [t:ast.Type] -> (ptr str.Bytes)
+  (fn type_text [t:ast.Type] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call printer.print_type b t)
     (call buf.bytes b))
 
   ;; A printer's name: show.debug. and its type, brackets and spaces as <,
   ;; >, and , (formats.rs debug_name).
-  (fn debug_name [t:ast.Type] -> (ptr str.Bytes) (pub)
-    (let s:(ptr str.Bytes) (call type_text t))
+  (fn debug_name [t:ast.Type] -> str.Bytes (pub)
+    (let s:str.Bytes (call type_text t))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 48))
     (call buf.push_str b "show.debug.")
     (loop k 0 (- (get s str.Bytes.len) 1) 1
@@ -62,7 +62,7 @@
   (fn source_type [out:(ptr buf.Buf) t:ast.Type] -> void (pub)
     (call convert out (call type_text t)))
 
-  (fn convert [out:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
+  (fn convert [out:(ptr buf.Buf) s:str.Bytes] -> void
     (let n:i32 (get s str.Bytes.len))
     (let open:i32 0)
     (while (and (lt open n) (neq (call str.byte_at s open) 60)) (set! open (+ open 1)))
@@ -104,14 +104,14 @@
 
   ;; ===== Which printers =====
 
-  (fn struct_fields [d:(ptr Defs) n:(ptr str.Bytes)] -> (arr (ptr ast.Field))
-    (let s:(ptr ast.StructDef) (call (map.get_or (ptr str.Bytes) (ptr ast.StructDef)) (get d Defs.structs) n (ptr.null ast.StructDef)))
+  (fn struct_fields [d:(ptr Defs) n:str.Bytes] -> (arr (ptr ast.Field))
+    (let s:(ptr ast.StructDef) (call (map.get_or str.Bytes (ptr ast.StructDef)) (get d Defs.structs) n (ptr.null ast.StructDef)))
     (if (eq s (ptr.null ast.StructDef)) (arr.new (ptr ast.Field) 0) (get s ast.StructDef.fields)))
 
-  (fn union_def [d:(ptr Defs) n:(ptr str.Bytes)] -> (ptr ast.UnionDef)
-    (call (map.get_or (ptr str.Bytes) (ptr ast.UnionDef)) (get d Defs.unions) n (ptr.null ast.UnionDef)))
+  (fn union_def [d:(ptr Defs) n:str.Bytes] -> (ptr ast.UnionDef)
+    (call (map.get_or str.Bytes (ptr ast.UnionDef)) (get d Defs.unions) n (ptr.null ast.UnionDef)))
 
-  (fn has [need:(ptr (vec.Vec (ptr Need))) name:(ptr str.Bytes)] -> bool
+  (fn has [need:(ptr (vec.Vec (ptr Need))) name:str.Bytes] -> bool
     (loop k 0 (- (call (vec.len (ptr Need)) need) 1) 1
       (if (call str.bytes_eq (get (call (vec.at (ptr Need)) need k) Need.name) name) (return true) (block)))
     false)
@@ -125,27 +125,27 @@
   ;; t's printer, and those of the values inside it, added to need
   ;; (formats.rs need_printer).
   (fn need_printer [d:(ptr Defs) t:ast.Type need:(ptr (vec.Vec (ptr Need)))] -> void
-    (let name:(ptr str.Bytes) (call debug_name t))
+    (let name:str.Bytes (call debug_name t))
     (if (or (call has need name) (or (call printable t) (not (call prints t)))) (return) (block))
     (let nd:(ptr Need) (new Need))
     (put nd Need.name name)
     (put nd Need.ty t)
     (call (vec.push (ptr Need)) need nd)
     (match t
-      (ast.Type.ptr [inner] (match inner (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need)) (else (block))))
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (match inner (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need)) (else (block))))
       (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need))
-      (ast.Type.arr [e] (call need_inside d e need))
+      (ast.Type.arr [n_arr] (let e:ast.Type (get n_arr ast.ArrType.elem)) (call need_inside d e need))
       (ast.Type.union_ [u]
        (let ud:(ptr ast.UnionDef) (call union_def d u))
        (if (neq ud (ptr.null ast.UnionDef))
            (loop k 0 (- (arr.len (get ud ast.UnionDef.variants)) 1) 1
              (call need_fields d (get (arr.get (ptr ast.Variant) (get ud ast.UnionDef.variants) k) ast.Variant.fields) need))
            (block)))
-      (ast.Type.result [a b] (call need_inside d a need) (call need_inside d b need))
+      (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let b:ast.Type (get n_result ast.ResultType.err)) (call need_inside d a need) (call need_inside d b need))
       (else (block))))
 
   ;; Bytewise order, as Rust orders strings.
-  (fn before [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool
+  (fn before [a:str.Bytes b:str.Bytes] -> bool
     (let n:i32 (if (lt (get a str.Bytes.len) (get b str.Bytes.len)) (get a str.Bytes.len) (get b str.Bytes.len)))
     (loop k 0 (- n 1) 1
       (let x:i32 (call str.byte_at a k))
@@ -182,26 +182,26 @@
     (call buf.push_str out s)
     (call buf.push_str out "\")"))
 
-  (fn lit_bytes [out:(ptr buf.Buf) s:(ptr str.Bytes)] -> void
+  (fn lit_bytes [out:(ptr buf.Buf) s:str.Bytes] -> void
     (call buf.push_str out "(call show.lit b \"")
     (call buf.push_bytes out s)
     (call buf.push_str out "\")"))
 
-  (fn put [out:(ptr buf.Buf) f:str e:(ptr str.Bytes)] -> void
+  (fn put [out:(ptr buf.Buf) f:str e:str.Bytes] -> void
     (call buf.push_str out "(call show.")
     (call buf.push_str out f)
     (call buf.push_str out " b ")
     (call buf.push_bytes out e)
     (call buf.push_str out " 0)"))
 
-  (fn quoted [out:(ptr buf.Buf) f:str e:(ptr str.Bytes)] -> void
+  (fn quoted [out:(ptr buf.Buf) f:str e:str.Bytes] -> void
     (call lit out "\\\"")
     (call buf.push_byte out 32)
     (call put out f e)
     (call buf.push_byte out 32)
     (call lit out "\\\""))
 
-  (fn addr [out:(ptr buf.Buf) t:ast.Type op:str e:(ptr str.Bytes)] -> void
+  (fn addr [out:(ptr buf.Buf) t:ast.Type op:str e:str.Bytes] -> void
     (call buf.push_str out "(call show.debug_addr b \"")
     (call source_type out t)
     (call buf.push_str out "\" (unsafe (")
@@ -212,7 +212,7 @@
 
   ;; The statements that append e, of type t, inside a printed value
   ;; (formats.rs elem_text).
-  (fn elem [d:(ptr Defs) out:(ptr buf.Buf) e:(ptr str.Bytes) t:ast.Type] -> void
+  (fn elem [d:(ptr Defs) out:(ptr buf.Buf) e:str.Bytes t:ast.Type] -> void
     (match t
       (ast.Type.i32 (call put out "put_i32" e))
       (ast.Type.u8 (call put out "put_i32" e)) (ast.Type.i8 (call put out "put_i32" e))
@@ -225,10 +225,10 @@
       (ast.Type.enum_ [n]
        (call buf.push_str out "(call show.put_str b (match ")
        (call buf.push_bytes out e)
-       (let ed:(ptr ast.EnumDef) (call (map.get_or (ptr str.Bytes) (ptr ast.EnumDef)) (get d Defs.enums) n (ptr.null ast.EnumDef)))
+       (let ed:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get d Defs.enums) n (ptr.null ast.EnumDef)))
        (if (neq ed (ptr.null ast.EnumDef))
            (loop k 0 (- (arr.len (get ed ast.EnumDef.members)) 1) 1
-             (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) (get ed ast.EnumDef.members) k) ast.Member.name))
+             (let mn:str.Bytes (get (arr.get (ptr ast.Member) (get ed ast.EnumDef.members) k) ast.Member.name))
              (call buf.push_str out " (")
              (call buf.push_bytes out n)
              (call buf.push_byte out 46)
@@ -238,15 +238,15 @@
              (call buf.push_str out "\")"))
            (block))
        (call buf.push_str out ") 0)"))
-      (ast.Type.ptr [inner] (if (call is_bytes inner) (call quoted out "put_bytes" e) (call addr out t "ptr.addr" e)))
+      (ast.Type.ptr [_] (call addr out t "ptr.addr" e))
       (ast.Type.arr [_] (call addr out t "arr.addr" e))
-      (ast.Type.struct_ [_] (call named out t e))
+      (ast.Type.struct_ [_] (if (call is_bytes t) (call quoted out "put_bytes" e) (call named out t e)))
       (ast.Type.union_ [_] (call named out t e))
-      (ast.Type.result [_ _] (call named out t e))
-      (ast.Type.fn_ [_ _] (call lit out "<fn>"))
+      (ast.Type.result [_] (call named out t e))
+      (ast.Type.fn_ [_] (call lit out "<fn>"))
       (else (call lit out "?"))))
 
-  (fn named [out:(ptr buf.Buf) t:ast.Type e:(ptr str.Bytes)] -> void
+  (fn named [out:(ptr buf.Buf) t:ast.Type e:str.Bytes] -> void
     (call buf.push_str out "(call ")
     (call buf.push_bytes out (call debug_name t))
     (call buf.push_str out " b ")
@@ -254,7 +254,7 @@
     (call buf.push_byte out 41))
 
   ;; (get v N.f) for a struct field, or a binder for a union variant's.
-  (fn field_get [n:(ptr str.Bytes) f:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn field_get [n:str.Bytes f:str.Bytes] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str b "(get v ")
     (call buf.push_bytes b n)
@@ -263,7 +263,7 @@
     (call buf.push_byte b 41)
     (call buf.bytes b))
 
-  (fn binder [k:i32 j:i32] -> (ptr str.Bytes)
+  (fn binder [k:i32 j:i32] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (call buf.push_str b "_d")
     (call buf.push_int b k)
@@ -273,7 +273,7 @@
 
   ;; head{f: value, ...}: each field read by (get v N.f), or, for a union
   ;; variant (n null), by binder k (formats.rs fields_text).
-  (fn fields [d:(ptr Defs) out:(ptr buf.Buf) head:(ptr str.Bytes) fs:(arr (ptr ast.Field)) n:(ptr str.Bytes) k:i32] -> void
+  (fn fields [d:(ptr Defs) out:(ptr buf.Buf) head:str.Bytes fs:(arr (ptr ast.Field)) n:str.Bytes k:i32] -> void
     (let h:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_bytes h head)
     (call buf.push_byte h 123)
@@ -287,26 +287,26 @@
       (call buf.push_byte out 32)
       (call lit_bytes out (call buf.bytes l))
       (call buf.push_byte out 32)
-      (call elem d out (if (eq n (ptr.null str.Bytes)) (call binder k j) (call field_get n (get f ast.Field.name))) (get f ast.Field.ty)))
+      (call elem d out (if (not (call str.present n)) (call binder k j) (call field_get n (get f ast.Field.name))) (get f ast.Field.ty)))
     (call buf.push_byte out 32)
     (call lit out "}"))
 
-  (fn shown [t:ast.Type] -> (ptr str.Bytes)
+  (fn shown [t:ast.Type] -> str.Bytes
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call source_type b t)
     (call buf.bytes b))
 
   ;; One printer: (fn NAME [b:(ptr buf.Buf) v:T] -> (ptr buf.Buf) BODY b)
   ;; (formats.rs printer_text).
-  (fn printer_text [d:(ptr Defs) out:(ptr buf.Buf) name:(ptr str.Bytes) t:ast.Type] -> void
+  (fn printer_text [d:(ptr Defs) out:(ptr buf.Buf) name:str.Bytes t:ast.Type] -> void
     (call buf.push_str out "(fn ")
     (call buf.push_bytes out name)
     (call buf.push_str out " [b:(ptr buf.Buf) v:")
     (call printer.print_type out t)
     (call buf.push_str out "] -> (ptr buf.Buf) ")
     (match t
-      (ast.Type.ptr [inner]
-       (let n:(ptr str.Bytes) (match inner (ast.Type.struct_ [s] s) (else (call str.from_str ""))))
+      (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner))
+       (let n:str.Bytes (match inner (ast.Type.struct_ [s] s) (else (call str.from_str ""))))
        (call buf.push_str out "(if (eq (unsafe (ptr.addr v)) 0) ")
        (call lit out "null")
        (call buf.push_str out " (block ")
@@ -332,11 +332,11 @@
                      (if (gt j 0) (call buf.push_byte out 32) (block))
                      (call buf.push_bytes out (call binder k j)))
                    (call buf.push_str out "] (block ")
-                   (call fields d out (get v ast.Variant.name) fs (ptr.null str.Bytes) k)
+                   (call fields d out (get v ast.Variant.name) fs (call str.absent) k)
                    (call buf.push_str out "))"))))
            (block))
        (call buf.push_byte out 41))
-      (ast.Type.result [a e]
+      (ast.Type.result [n_result] (let a:ast.Type (get n_result ast.ResultType.ok)) (let e:ast.Type (get n_result ast.ResultType.err))
        (call buf.push_str out "(match_result v (ok _ok (block ")
        (call lit out "ok(")
        (call buf.push_byte out 32)
@@ -350,7 +350,7 @@
        (call buf.push_byte out 32)
        (call lit out ")")
        (call buf.push_str out ")))"))
-      (ast.Type.arr [e]
+      (ast.Type.arr [n_arr] (let e:ast.Type (get n_arr ast.ArrType.elem))
        (call buf.push_str out "(if (eq (unsafe (arr.addr v)) 0) ")
        (call lit out "null")
        (call buf.push_str out " (block ")

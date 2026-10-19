@@ -2,64 +2,94 @@
 ;; AIPL over mem.* and str.*, so it behaves the same in the VM and compiled.
 (module str
   (import option)
-  ;; `len` bytes starting at address `addr`. A failed read has len -1.
-  (struct Bytes [(read addr:i32) (read len:i32)] (pub))
+  ;; A view of len bytes, a value (nothing is allocated to make one, and
+  ;; nothing to free). A checked view reads bytes start .. start + len - 1
+  ;; of the array data, so a view of memory that has been freed stops the
+  ;; program ("Use after free") as a pointer would. A view made by the
+  ;; unsafe bytes has no array (data is null) and reads the memory at the
+  ;; address start, unchecked: for memory that is never freed (literals,
+  ;; mem.alloc) or that the caller vouches for. A failed read has len -1.
+  (struct Bytes [(read data:(arr u8)) (read start:i32) (read len:i32)] (value) (pub))
 
-  ;; A view of len bytes at addr. Unsafe to call: the memory is the
-  ;; caller's word.
-  (fn bytes [addr:i32 len:i32] -> (ptr Bytes) (pub) (unsafe)
-    (let b:(ptr Bytes) (new Bytes))
-    (put b Bytes.addr addr)
-    (put b Bytes.len len)
-    b)
+  ;; A view of len bytes at the address addr, unchecked. Unsafe to call:
+  ;; the memory is the caller's word.
+  (fn bytes [addr:i32 len:i32] -> Bytes (pub) (unsafe)
+    (make Bytes (arr.null u8) addr len))
 
-  ;; Points b at len bytes at addr instead, without making a new Bytes (a
-  ;; lookup key reused for every lookup). Unsafe to call, as bytes is: the
-  ;; memory is the caller's word.
-  (fn repoint [b:(ptr Bytes) addr:i32 len:i32] -> void (pub) (unsafe)
-    (put b Bytes.addr addr)
-    (put b Bytes.len len))
+  ;; A checked view of bytes start .. start + len - 1 of a.
+  (fn of_array [a:(arr u8) start:i32 len:i32] -> Bytes (pub)
+    (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (arr.len a)))))
+    (make Bytes a start len))
 
-  ;; The bytes of a string (the VM copies them into the heap; wasm does not).
-  (fn from_str [s:str] -> (ptr Bytes) (pub)
+  ;; Whether b is checked (it has an array; see Bytes).
+  (fn checked [b:Bytes] -> bool (pub) (neq (get b Bytes.data) (arr.null u8)))
+
+  ;; The address of b's first byte, for mem.* in unsafe code. A checked
+  ;; view's array is checked here (a freed one stops the program), so a
+  ;; loop that frees nothing may read through the address after.
+  (fn addr [b:Bytes] -> i32 (pub)
+    (if (call checked b)
+        (block
+          (let _n:i32 (arr.len (get b Bytes.data)))
+          (+ (arr.addr (get b Bytes.data)) (get b Bytes.start)))
+        (get b Bytes.start)))
+
+  ;; The view that stands for no text where one may be missing (len -1, as
+  ;; a failed read is).
+  (fn absent [] -> Bytes (pub) (make Bytes (arr.null u8) 0 -1))
+  ;; Whether b is text (empty or not), not absent.
+  (fn present [b:Bytes] -> bool (pub) (gte (get b Bytes.len) 0))
+
+  ;; The bytes of a string, viewed in place (a str is never freed).
+  (fn from_str [s:str] -> Bytes (pub)
     (unsafe (call bytes (str.ptr s) (str.len s))))
 
   ;; Byte i of b (0-255); i must be in range.
-  (fn byte_at [b:(ptr Bytes) i:i32] -> i32 (pub)
+  (fn byte_at [b:Bytes i:i32] -> i32 (pub)
     (req (and (gte i 0) (lt i (get b Bytes.len))))
-    (unsafe (mem.load8 (+ (get b Bytes.addr) i))))
+    (let d:(arr u8) (get b Bytes.data))
+    (if (eq d (arr.null u8))
+        (unsafe (mem.load8 (+ (get b Bytes.start) i)))
+        (arr.get u8 d (+ (get b Bytes.start) i))))
 
-  ;; Bytes start .. start + len - 1 of b, as a view of the same memory.
-  (fn slice [b:(ptr Bytes) start:i32 len:i32] -> (ptr Bytes) (pub)
+  ;; Bytes start .. start + len - 1 of b, as a view of the same memory
+  ;; (a value: nothing is allocated).
+  (fn slice [b:Bytes start:i32 len:i32] -> Bytes (pub)
     (req (and (gte start 0) (and (gte len 0) (lte (+ start len) (get b Bytes.len)))))
-    (unsafe (call bytes (+ (get b Bytes.addr) start) len)))
+    (make Bytes (get b Bytes.data) (+ (get b Bytes.start) start) len))
 
   ;; Sets byte i of b to c (its low 8 bits).
-  (fn set_byte [b:(ptr Bytes) i:i32 c:i32] -> void (pub)
+  (fn set_byte [b:Bytes i:i32 c:i32] -> void (pub)
     (req (and (gte i 0) (lt i (get b Bytes.len))))
-    (unsafe (mem.store8 (+ (get b Bytes.addr) i) c)))
+    (if (call checked b)
+        (arr.set u8 (get b Bytes.data) (+ (get b Bytes.start) i) c)
+        (unsafe (mem.store8 (+ (get b Bytes.start) i) c))))
 
   ;; ASCII whitespace: space, \t \n \v \f \r.
   (fn is_space [c:i32] -> bool (pub)
     (or (eq c 32) (and (gte c 9) (lte c 13))))
 
   ;; Whether a and b hold the same bytes.
-  (fn bytes_eq [a:(ptr Bytes) b:(ptr Bytes)] -> bool (pub)
+  (fn bytes_eq [a:Bytes b:Bytes] -> bool (pub)
     (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
+    ;; each view checked once (addr), then a loop that frees nothing
+    (unsafe (let pa:i32 (call addr a))
+    (let pb:i32 (call addr b))
     (loop i 0 (- (get a Bytes.len) 1) 1
-      (if (neq (call byte_at a i) (call byte_at b i)) (return false) (block)))
-    true)
+      (if (neq (mem.load8 (+ pa i)) (mem.load8 (+ pb i))) (return false) (block)))
+    true))
 
   ;; Whether b spells the literal s, without allocating.
-  (fn is [b:(ptr Bytes) s:str] -> bool (pub)
+  (fn is [b:Bytes s:str] -> bool (pub)
     (unsafe (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
+    (let pb:i32 (call addr b))
     (loop i 0 (- (get b Bytes.len) 1) 1
-      (if (neq (call byte_at b i) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
+      (if (neq (mem.load8 (+ pb i)) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
 
   ;; Whether b holds the bytes of s at index i (false if they would run
   ;; past its end), without allocating.
-  (fn is_at [b:(ptr Bytes) i:i32 s:str] -> bool (pub)
+  (fn is_at [b:Bytes i:i32 s:str] -> bool (pub)
     (unsafe (if (or (lt i 0) (gt (+ i (str.len s)) (get b Bytes.len))) (return false) (block))
     (loop k 0 (- (str.len s) 1) 1
       (if (neq (call byte_at b (+ i k)) (mem.load8 (+ (str.ptr s) k))) (return false) (block)))
@@ -73,43 +103,43 @@
   ;; memmem, without its shift table).
 
   ;; Whether b's bytes from i are p's (i + |p| <= |b|).
-  (fn at_is [b:(ptr Bytes) p:(ptr Bytes) i:i32] -> bool
-    (unsafe (let ba:i32 (+ (get b Bytes.addr) i))
-    (let pa:i32 (get p Bytes.addr))
+  (fn at_is [b:Bytes p:Bytes i:i32] -> bool
+    (unsafe (let ba:i32 (+ (call addr b) i))
+    (let pa:i32 (call addr p))
     (loop k 0 (- (get p Bytes.len) 1) 1
       (if (neq (mem.load8 (+ ba k)) (mem.load8 (+ pa k))) (return false) (block)))
     true))
 
   ;; Whether b begins with p.
-  (fn starts_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
+  (fn starts_with [b:Bytes p:Bytes] -> bool (pub)
     (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p 0)))
 
   ;; Whether b ends with p.
-  (fn ends_with [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub)
+  (fn ends_with [b:Bytes p:Bytes] -> bool (pub)
     (and (lte (get p Bytes.len) (get b Bytes.len)) (call at_is b p (- (get b Bytes.len) (get p Bytes.len)))))
 
   ;; The first index at or after `from` where p occurs in b, or -1 (an
   ;; empty p occurs at `from`).
-  (fn find_from [b:(ptr Bytes) p:(ptr Bytes) from:i32] -> i32 (pub)
+  (fn find_from [b:Bytes p:Bytes from:i32] -> i32 (pub)
     (req (and (gte from 0) (lte from (get b Bytes.len))))
     (let n:i32 (get b Bytes.len))
     (let m:i32 (get p Bytes.len))
     (if (eq m 0) (return from) (block))
     (if (gt m 64) (return (call two_way b p from false)) (block))
-    (unsafe (let ba:i32 (get b Bytes.addr))
-    (let first:i32 (mem.load8 (get p Bytes.addr)))
+    (unsafe (let ba:i32 (call addr b))
+    (let first:i32 (mem.load8 (call addr p)))
     (loop i from (- n m) 1
       (if (and (eq (mem.load8 (+ ba i)) first) (call at_is b p i)) (return i) (block)))
     -1))
 
   ;; The first index where p occurs in b, or -1.
-  (fn find [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub) (call find_from b p 0))
+  (fn find [b:Bytes p:Bytes] -> i32 (pub) (call find_from b p 0))
 
   ;; Whether p occurs in b.
-  (fn contains [b:(ptr Bytes) p:(ptr Bytes)] -> bool (pub) (gte (call find b p) 0))
+  (fn contains [b:Bytes p:Bytes] -> bool (pub) (gte (call find b p) 0))
 
   ;; The last index where p occurs in b, or -1 (an empty p: b's length).
-  (fn rfind [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub)
+  (fn rfind [b:Bytes p:Bytes] -> i32 (pub)
     (let n:i32 (get b Bytes.len))
     (let m:i32 (get p Bytes.len))
     (if (eq m 0) (return n) (block))
@@ -125,8 +155,8 @@
     -1)
 
   ;; Byte i of x, or of x reversed (rev).
-  (fn nth [x:(ptr Bytes) i:i32 rev:bool] -> i32
-    (unsafe (mem.load8 (+ (get x Bytes.addr) (if rev (- (- (get x Bytes.len) 1) i) i)))))
+  (fn nth [x:Bytes i:i32 rev:bool] -> i32
+    (unsafe (mem.load8 (+ (call addr x) (if rev (- (- (get x Bytes.len) 1) i) i)))))
 
   ;; The first index at or after `from` where p occurs in h (reversed:
   ;; both read backwards, and the index counts from h's end), or -1. p has
@@ -135,7 +165,7 @@
   ;; right, then the left part right to left; a mismatch shifts by the
   ;; distance matched, or by the period, remembering the prefix a periodic
   ;; needle shares with itself (mem).
-  (fn two_way [h:(ptr Bytes) p:(ptr Bytes) from:i32 rev:bool] -> i32
+  (fn two_way [h:Bytes p:Bytes from:i32 rev:bool] -> i32
     (let l:i32 (get p Bytes.len))
     (let n:i32 (get h Bytes.len))
     ;; the maximal suffix for <, then for >
@@ -187,7 +217,7 @@
     -1)
 
   ;; How many times p occurs in b, not overlapping, from the left.
-  (fn count [b:(ptr Bytes) p:(ptr Bytes)] -> i32 (pub)
+  (fn count [b:Bytes p:Bytes] -> i32 (pub)
     (req (gt (get p Bytes.len) 0))
     (let k:i32 0)
     (let i:i32 (call find_from b p 0))
@@ -198,26 +228,26 @@
     k)
 
   ;; b without its leading, trailing, or both runs of ASCII whitespace.
-  (fn trim_start [b:(ptr Bytes)] -> (ptr Bytes) (pub)
+  (fn trim_start [b:Bytes] -> Bytes (pub)
     (let i:i32 0)
     (while (and (lt i (get b Bytes.len)) (call is_space (call byte_at b i))) (set! i (+ i 1)))
     (call slice b i (- (get b Bytes.len) i)))
 
   ;; b without trailing ASCII whitespace (a view).
-  (fn trim_end [b:(ptr Bytes)] -> (ptr Bytes) (pub)
+  (fn trim_end [b:Bytes] -> Bytes (pub)
     (let n:i32 (get b Bytes.len))
     (while (and (gt n 0) (call is_space (call byte_at b (- n 1)))) (set! n (- n 1)))
     (call slice b 0 n))
 
   ;; b without leading or trailing ASCII whitespace (a view).
-  (fn trim [b:(ptr Bytes)] -> (ptr Bytes) (pub) (call trim_end (call trim_start b)))
+  (fn trim [b:Bytes] -> Bytes (pub) (call trim_end (call trim_start b)))
 
   ;; The text before and after the first sep.
-  (struct Halves [(read before:(ptr Bytes)) (read after:(ptr Bytes))] (value) (pub))
+  (struct Halves [(read before:Bytes) (read after:Bytes)] (value) (pub))
 
   ;; The text before and after the first sep in b, or none if sep does
   ;; not occur.
-  (fn split_once [b:(ptr Bytes) sep:(ptr Bytes)] -> (option.Option Halves) (pub)
+  (fn split_once [b:Bytes sep:Bytes] -> (option.Option Halves) (pub)
     (req (gt (get sep Bytes.len) 0))
     (let i:i32 (call find b sep))
     (if (lt i 0) (return (make (option.Option Halves) none)) (block))
@@ -225,7 +255,7 @@
     (make (option.Option Halves) some (make Halves (call slice b 0 i) (call slice b j (- (get b Bytes.len) j)))))
 
   ;; Whether a and b are equal but for the case of ASCII letters.
-  (fn eq_ignore_case [a:(ptr Bytes) b:(ptr Bytes)] -> bool (pub)
+  (fn eq_ignore_case [a:Bytes b:Bytes] -> bool (pub)
     (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
     (loop i 0 (- (get a Bytes.len) 1) 1
       (if (neq (call lower (call byte_at a i)) (call lower (call byte_at b i))) (return false) (block)))
@@ -234,11 +264,13 @@
   (fn lower [c:i32] -> i32 (if (and (gte c 65) (lte c 90)) (+ c 32) c))
 
   ;; Byte order: -1, 0, or 1 (a prefix first).
-  (fn cmp [a:(ptr Bytes) b:(ptr Bytes)] -> i32 (pub)
+  (fn cmp [a:Bytes b:Bytes] -> i32 (pub)
     (let n:i32 (if (lt (get a Bytes.len) (get b Bytes.len)) (get a Bytes.len) (get b Bytes.len)))
+    (let pa:i32 (call addr a))
+    (let pb:i32 (call addr b))
     (loop i 0 (- n 1) 1
-      (let x:i32 (call byte_at a i))
-      (let y:i32 (call byte_at b i))
+      (let x:i32 (unsafe (mem.load8 (+ pa i))))
+      (let y:i32 (unsafe (mem.load8 (+ pb i))))
       (if (lt x y) (return -1) (block))
       (if (gt x y) (return 1) (block)))
     (cond ((lt (get a Bytes.len) (get b Bytes.len)) -1) ((gt (get a Bytes.len) (get b Bytes.len)) 1) (else 0)))
@@ -246,7 +278,7 @@
   ;; b as a decimal i64: an optional sign, then digits; or (err i), the
   ;; index of the first byte that is not a digit, or of the digit past which
   ;; the value no longer fits.
-  (fn parse_i64 [b:(ptr Bytes)] -> (result i64 i32) (pub)
+  (fn parse_i64 [b:Bytes] -> (result i64 i32) (pub)
     (let n:i32 (get b Bytes.len))
     (let c0:i32 (if (gt n 0) (call byte_at b 0) 0))
     (let neg:bool (eq c0 45))
@@ -266,7 +298,7 @@
         (if (eq v -9223372036854775808i64) (err:i64 (- n 1)) (ok:i32 (- 0i64 v)))))
 
   ;; "true" or "false"; else (err 0).
-  (fn parse_bool [b:(ptr Bytes)] -> (result bool i32) (pub)
+  (fn parse_bool [b:Bytes] -> (result bool i32) (pub)
     (cond ((call is b "true") (ok:i32 true)) ((call is b "false") (ok:i32 false)) (else (err:bool 0))))
 
 ;; ===== Making strings (AIPL_SPEC.md 4.B) =====
@@ -287,10 +319,10 @@
 
   ;; A str holding a copy of b's bytes, which must be UTF-8 (check untrusted
   ;; input with valid_utf8 first).
-  (fn from_bytes [b:(ptr Bytes)] -> str (pub)
+  (fn from_bytes [b:Bytes] -> str (pub)
     (req (call valid_utf8 b))
     (unsafe (let s:i32 (call room (get b Bytes.len)))
-    (call copy s (get b Bytes.addr) (get b Bytes.len))
+    (call copy s (call addr b) (get b Bytes.len))
     (call at s)))
 
   ;; a followed by b, as a new str.
@@ -319,26 +351,26 @@
     (unsafe (get (ptr.cast Cell (- s 8)) Cell.s)))
 
   ;; Index of the first byte equal to c, or -1.
-  (fn find_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
+  (fn find_byte [b:Bytes c:i32] -> i32 (pub)
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (eq (call byte_at b i) c) (return i) (block)))
     -1)
 
   ;; The number of bytes in b equal to c.
-  (fn count_byte [b:(ptr Bytes) c:i32] -> i32 (pub)
+  (fn count_byte [b:Bytes c:i32] -> i32 (pub)
     (let n:i32 0)
     (loop i 0 (- (get b Bytes.len) 1) 1
       (if (eq (call byte_at b i) c) (set! n (+ n 1)) (block)))
     n)
 
   ;; Newlines, plus one for a final line without a newline.
-  (fn count_lines [b:(ptr Bytes)] -> i32 (pub)
+  (fn count_lines [b:Bytes] -> i32 (pub)
     (unsafe (let len:i32 (get b Bytes.len))
     (let n:i32 (call count_byte b 10))
-    (if (and (gt len 0) (neq (mem.load8 (+ (get b Bytes.addr) (- len 1))) 10)) (+ n 1) n)))
+    (if (and (gt len 0) (neq (mem.load8 (+ (call addr b) (- len 1))) 10)) (+ n 1) n)))
 
   ;; Runs of non-whitespace bytes.
-  (fn count_words [b:(ptr Bytes)] -> i32 (pub)
+  (fn count_words [b:Bytes] -> i32 (pub)
     (let words:i32 0)
     (let in_word:bool false)
     (loop i 0 (- (get b Bytes.len) 1) 1
@@ -352,9 +384,9 @@
   ;; Decimal integer with an optional leading '-': (ok:i32 n), or (err:i32 i) where i
   ;; is the index of the first byte that is not part of a number (0 for an
   ;; empty input or a lone '-'). Values outside i32 wrap.
-  (fn parse_int [b:(ptr Bytes)] -> (result i32 i32) (pub)
+  (fn parse_int [b:Bytes] -> (result i32 i32) (pub)
     (unsafe (let len:i32 (get b Bytes.len))
-    (let neg:bool (and (gt len 0) (eq (mem.load8 (get b Bytes.addr)) 45)))
+    (let neg:bool (and (gt len 0) (eq (mem.load8 (call addr b)) 45)))
     (let start:i32 (if neg 1 0))
     (if (lte len start) (return (err:i32 0)) (block))
     (let n:i32 0)
@@ -365,12 +397,12 @@
     (ok:i32 (if neg n (- 0 n)))))
 
   ;; b as a decimal i32 (parse_int), or `default` if it is not one.
-  (fn parse_int_or [b:(ptr Bytes) default:i32] -> i32 (pub)
+  (fn parse_int_or [b:Bytes default:i32] -> i32 (pub)
     (match_result (call parse_int b) (ok n n) (err e default)))
 
   ;; Whether b is valid UTF-8 (as Rust's str::from_utf8 decides: no
   ;; overlong forms, no surrogates, nothing past U+10FFFF).
-  (fn valid_utf8 [b:(ptr Bytes)] -> bool (pub)
+  (fn valid_utf8 [b:Bytes] -> bool (pub)
     (let n:i32 (get b Bytes.len))
     (let i:i32 0)
     (while (lt i n)
@@ -393,7 +425,7 @@
 
   ;; Pass count; test_suite.aipl expects 10.
   (fn run_str_tests [] -> i32 (pub)
-    (unsafe (let ab:(ptr Bytes) (call from_str "a b\nc"))
+    (unsafe (let ab:Bytes (call from_str "a b\nc"))
     (let p:i32 0)
     (if (and (call is_space 9) (and (call is_space 32) (not (call is_space 97)))) (set! p (+ p 1)) (block))
     (if (and (call bytes_eq ab (call from_str "a b\nc")) (not (call bytes_eq ab (call from_str "a b")))) (set! p (+ p 1)) (block))

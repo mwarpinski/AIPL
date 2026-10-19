@@ -10,8 +10,8 @@
   (import str)
   (import os)
   (fn main [] -> i32
-    (let path:(ptr str.Bytes) (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
-    (let b:(ptr str.Bytes) (call io.read_path path))
+    (let path:str.Bytes (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
+    (let b:str.Bytes (call io.read_path path))
     (if (lt (get b str.Bytes.len) 0)
         (block (call io.eprintln "word_count: cannot read the input file") (return -1))
         (block))

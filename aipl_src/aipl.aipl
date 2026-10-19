@@ -34,10 +34,10 @@
     (call io.eprintln s)
     1)
 
-  (fn fail_bytes [prefix:str b:(ptr str.Bytes)] -> i32
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
     (call io.write_str 2 "Error: ")
     (call io.write_str 2 prefix)
-    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
     (call io.eprintln "")
     1)
 
@@ -48,7 +48,7 @@
   (fn main [] -> i32
     (let n:i32 (call os.arg_count))
     (if (lt n 2) (return (call usage)) (block))
-    (let cmd:(ptr str.Bytes) (call os.arg 1))
+    (let cmd:str.Bytes (call os.arg 1))
     (if (call str.is cmd "--version") (block (call io.println "aipl 0.1.0") (return 0)) (block))
     (if (call str.is cmd "doc") (return (call doc.command 2)) (block))
     (if (not (call str.is cmd "compile")) (return (call usage)) (block))
@@ -59,7 +59,7 @@
     (let out_i:i32 -1)
     (let i:i32 2)
     (while (lt i n)
-      (let a:(ptr str.Bytes) (call os.arg i))
+      (let a:str.Bytes (call os.arg i))
       (cond
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
@@ -73,15 +73,15 @@
       (set! i (+ i 1)))
     (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
     (if (and sandbox (not exe)) (return (call usage)) (block))
-    (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
-    (let entry:(ptr str.Bytes) (call os.arg in_i))
-    (let out:(ptr str.Bytes) (call os.arg out_i))
+    (let entry:str.Bytes (call os.arg in_i))
+    (let out:str.Bytes (call os.arg out_i))
     (let res:(ptr driver.Out) (if tests
-                                  (call driver.compile_tests (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                                             (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))
-                                  (call driver.compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                                            (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))))
+                                  (call driver.compile_tests (call str.addr entry) (get entry str.Bytes.len)
+                                                             (call str.addr std_dir) (get std_dir str.Bytes.len))
+                                  (call driver.compile_file (call str.addr entry) (get entry str.Bytes.len)
+                                                            (call str.addr std_dir) (get std_dir str.Bytes.len))))
     (let status:i32 (get res driver.Out.status))
     (if (or (eq status 1) (eq status 3))
         (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len)))))
@@ -93,7 +93,7 @@
           (call io.eprintln " (AIPL_SPEC.md 6.4)")
           (return 1))
         (block))
-    (let bytes:(ptr str.Bytes) (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
     (if exe
         (block
           (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
@@ -104,9 +104,9 @@
         (return (call fail_bytes "cannot write " out))
         (block))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
-    (unsafe (fs.write 1 (get entry str.Bytes.addr) (get entry str.Bytes.len)))
+    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")
-    (unsafe (fs.write 1 (get out str.Bytes.addr) (get out str.Bytes.len)))
+    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
     (call io.write_str 1 "' (")
     (call write_int 1 (get bytes str.Bytes.len))
     (call io.println " bytes)")

@@ -65,7 +65,7 @@
 
   ;; The executable: `code` runs from byte `entry` of the code; `data` is
   ;; loaded at data_vaddr with `bss` zero bytes after it.
-  (fn image [code:(ptr str.Bytes) entry:i32 data:(ptr str.Bytes) bss:i32] -> (ptr buf.Buf) (pub)
+  (fn image [code:str.Bytes entry:i32 data:str.Bytes bss:i32] -> (ptr buf.Buf) (pub)
     (req (and (gte entry 0) (lt entry (get code str.Bytes.len))))
     (let dlen:i32 (get data str.Bytes.len))
     (let clen:i32 (get code str.Bytes.len))

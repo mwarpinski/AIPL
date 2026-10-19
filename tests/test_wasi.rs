@@ -502,9 +502,9 @@ fn stdin_clocks_random_and_absolute_paths() {
     (loop i 0 63 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
     (+ (* 10 ok) nonzero))
   (fn absolute [] -> i32 (unsafe)
-    (let path:(ptr str.Bytes) (call str.from_str "{abs}"))
+    (let path:str.Bytes (call str.from_str "{abs}"))
     (let wrote:i32 (call io.write_path path (call str.from_str "absolute ok")))
-    (let back:(ptr str.Bytes) (call io.read_path path))
+    (let back:str.Bytes (call io.read_path path))
     (+ (* 100 wrote) (get back str.Bytes.len))))"#,
             abs = abs_file.display()
         ),

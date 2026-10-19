@@ -142,6 +142,7 @@ fn prepare(exprs: &str, with: Option<&Path>, backend: Backend) -> Result<(Module
         body,
         span,
         is_unsafe: true,
+        is_no_leak: false,
     };
     module.functions.push(def("__eval_print", body));
     if backend != Backend::Vm {

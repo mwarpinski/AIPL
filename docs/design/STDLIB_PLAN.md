@@ -38,7 +38,7 @@ libraries do everything but the sending and receiving.
    toolchain compiles it to the Rust toolchain's bytes.
 2. **Memory is the caller's.** A function that keeps memory takes an
    `alloc.Allocator` and says what to free; a function that can avoid
-   allocating returns a view (`(ptr str.Bytes)`) into its input.
+   allocating returns a view (`str.Bytes`) into its input.
 3. **Failure is a value.** Anything that can fail on its input (parsing a
    number, a CSV row, a URL, a pattern) returns a `result` or an
    `option.Option`, with the byte offset of the problem where there is one.
@@ -79,7 +79,7 @@ default for numbers), `<`, or `^` alignment, `0` to pad numbers with
 zeros, `x` / `X` for hexadecimal, `b` for binary: `{n:08x}`, `{label:<12}`.
 
 A value is printable if it is an `i32`, `i64`, `f32`, `f64`, `bool`, `str`,
-`(ptr str.Bytes)`, or an enum (its member's name). Anything else (a
+`str.Bytes`, or an enum (its member's name). Anything else (a
 pointer, an array, a value struct, a union) is a compile error that says
 what to do: `{p}: (ptr Point) is not printable; format its fields, e.g.
 {(get p Point.x)}`. So are a name that does not exist, an unclosed `{`, and
@@ -119,7 +119,7 @@ buf.push_str a slice.
 
 ## 2. Text (`str` additions, new `utf8`)
 
-`str` gains, on `(ptr str.Bytes)` views (nothing copied unless stated):
+`str` gains, on `str.Bytes` views (nothing copied unless stated):
 `starts_with`, `ends_with`, `contains`, `find [b needle] -> i32` (first
 index or -1; two-way search, linear time), `find_from`, `rfind`,
 `count`, `trim`, `trim_start`, `trim_end`, `split [a b sep] -> (ptr (vec.Vec (ptr Bytes)))`,
@@ -189,7 +189,7 @@ with the compiler's optimizer work rather than in a library batch.
   a function of your own) or sinks (a file descriptor, a `buf.Buf`, a
   function), as `alloc.Allocator` is a union of allocators. A custom source
   appends to a `buf.Buf` it is given and a custom sink takes a
-  `(ptr str.Bytes)`, so neither sees a raw address and neither needs
+  `str.Bytes`, so neither sees a raw address and neither needs
   `unsafe`. Reading a line allocates nothing: the line is a view into the
   reader's window, reused, good until the next read. A writer to a
   `buf.Buf` holds nothing back (its buffer is that buffer). Every OS error
@@ -201,7 +201,7 @@ with the compiler's optimizer work rather than in a library batch.
   over the next object's (fixed in both toolchains, ed12333).
 - **`csv`**: RFC 4180 reading (quoted fields, doubled quotes, newlines
   inside quotes, CRLF or LF, a chosen delimiter, an optional header row)
-  into rows of `(ptr str.Bytes)` fields, both all at once and one row at a
+  into rows of `str.Bytes` fields, both all at once and one row at a
   time for big files; a reader keyed by header name (`csv.column r "price"`);
   typed helpers (`csv.f64_at`, `csv.i64_at`, returning results with the
   row and column of a bad value); writing with quoting where needed.

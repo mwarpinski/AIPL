@@ -42,7 +42,7 @@
 
   ;; Whether s is a UUID's text: 8-4-4-4-12 hex digits (either case).
   (fn valid [s:str] -> bool (pub)
-    (let b:(ptr str.Bytes) (call str.from_str s))
+    (let b:str.Bytes (call str.from_str s))
     (when (neq (get b str.Bytes.len) 36) (return false))
     (for k 0 36
       (let c:i32 (call str.byte_at b k))

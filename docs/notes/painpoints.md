@@ -33,7 +33,7 @@ During the implementation of the standalone optimizing compiler ([`aipl_src/code
    - Enforcing binary-only `(and a b)` and `(or a b)` leads to deeply nested right-leaning trees. In functions checking multiple conditions, this requires balancing dozens of consecutive closing parentheses.
 
 3. **Repetition of Generic Type Arguments:**
-   - Repeatedly writing full generic parameters at call sites (e.g., `(call (map.get_or (ptr str.Bytes) (ptr InlineDef)) defs callee ...)`) introduces visual density and repetitive tokens across large modules.
+   - Repeatedly writing full generic parameters at call sites (e.g., `(call (map.get_or str.Bytes (ptr InlineDef)) defs callee ...)`) introduces visual density and repetitive tokens across large modules.
 
 4. **Heap Struct Construction Overhead:**
    - Constructing a heap struct requires calling `(new S)` followed by distinct `(put ...)` statements for each field. Adding a field requires updating all constructor call sites manually without exhaustive compile-time verification.

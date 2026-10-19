@@ -130,10 +130,6 @@ pub struct VM {
     /// Each function's source file name (Module::sources, file_names), for
     /// the positions in a call chain.
     places: Arc<HashMap<String, String>>,
-    /// The type of each `ok`/`err` payload, by the payload expression's
-    /// address (TypeChecker::payload_types): a result cell's size depends on
-    /// it and is claimed before the payload runs.
-    payloads: Arc<HashMap<usize, Type>>,
 }
 
 impl Default for VM {
@@ -174,7 +170,6 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::new(HashMap::new()),
-            payloads: Arc::new(HashMap::new()),
         }
     }
 
@@ -204,7 +199,6 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::clone(&self.places),
-            payloads: Arc::clone(&self.payloads),
             stdin: self.stdin.clone(),
         }
     }
@@ -306,10 +300,6 @@ impl VM {
             }
         }
         self.places = Arc::new(places);
-        // the payloads' boxes keep their addresses when the functions move below
-        let mut payloads = (*self.payloads).clone();
-        payloads.extend(crate::checker::TypeChecker::payload_types(&module));
-        self.payloads = Arc::new(payloads);
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -640,17 +630,9 @@ impl VM {
                 let name = self.fn_ref_name(func, scope, "call_ref")?;
                 self.invoke(&name, evaluated_args)
             }
-            // A result occupies 8 heap bytes [tag:i32 payload:i32] (tag 0 = ok,
-            // 1 = err), allocated before the payload is evaluated, exactly as the
-            // wasm backend lays it out, so both backends leave the same heap.
-            Expr::Ok(val, other, _) => {
-                let inner = self.eval_result_cell(0, val, other, scope)?;
-                Ok(Value::Ok(Box::new(inner)))
-            }
-            Expr::Err(err, other, _) => {
-                let inner = self.eval_result_cell(1, err, other, scope)?;
-                Ok(Value::Err(Box::new(inner)))
-            }
+            // a result is held by value (AIPL_SPEC.md 4.F): nothing allocated
+            Expr::Ok(val, ..) => Ok(Value::Ok(Box::new(self.eval_expr(val, scope)?))),
+            Expr::Err(err, ..) => Ok(Value::Err(Box::new(self.eval_expr(err, scope)?))),
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 let res_val = self.eval_expr(expr, scope)?;
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
@@ -677,24 +659,12 @@ impl VM {
             Expr::Make { union_name, variant, args, .. } => {
                 let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
                 let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
-                // a union by value: its fields, nothing allocated
-                if self.structs.is_value_union(union_name) {
-                    let mut fields = Vec::with_capacity(args.len());
-                    for a in args {
-                        fields.push(self.eval_expr(a, scope)?);
-                    }
-                    return Ok(Value::Union(tag, fields));
+                // a union is a value (AIPL_SPEC.md 4.J): its fields, nothing allocated
+                let mut fields = Vec::with_capacity(args.len());
+                for a in args {
+                    fields.push(self.eval_expr(a, scope)?);
                 }
-                let v = &def.variants[tag];
-                let (offsets, size) = crate::checker::variant_layout(v, &self.structs)?;
-                // the cell is claimed before the fields are evaluated, as in the wasm lowering
-                let cell = self.alloc_bytes(size) as u32 as usize;
-                self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
-                for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
-                    let val = self.eval_expr(a, scope)?;
-                    self.store_val_at(cell + off, &f.ty, val)?;
-                }
-                Ok(Value::Int(cell as i64))
+                Ok(Value::Union(tag, fields))
             }
             Expr::Record { args, .. } => {
                 let mut fields = Vec::with_capacity(args.len());
@@ -738,22 +708,7 @@ impl VM {
                     }
                     other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
                 };
-                if let Some(def) = self.unions.get(&tname).cloned() {
-                    let cell = v as u32 as usize;
-                    let tag = match self.load_val_at(cell, &Type::I32)? {
-                        Value::Int(t) => t as usize,
-                        _ => unreachable!(),
-                    };
-                    if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
-                        let var = &def.variants[tag];
-                        let (offsets, _) = crate::checker::variant_layout(var, &self.structs)?;
-                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
-                            let fv = self.load_val_at(cell + off, &f.ty)?;
-                            scope.insert(name.clone(), fv);
-                        }
-                        chosen = Some(&arm.body);
-                    }
-                } else if let Some(def) = self.enums.get(&tname) {
+                if let Some(def) = self.enums.get(&tname) {
                     chosen = arms
                         .iter()
                         .find(|a| def.members.iter().any(|(m, val)| *m == member(&a.member) && *val as i64 == v))
@@ -945,29 +900,6 @@ impl VM {
                 Ok(Value::Void)
             }
         }
-    }
-
-    /// tag 0 (ok) or 1 (err), the other side's type written as `other`.
-    fn eval_result_cell(&mut self, tag: i32, payload: &Expr, other: &Option<Type>, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
-        let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
-        // a result held by value: no cell (AIPL_SPEC.md 4.F)
-        let other = other.clone().unwrap_or(Type::I32);
-        let (ok, err) = if tag == 0 { (&ty, &other) } else { (&other, &ty) };
-        if self.structs.result_layout(ok, err).is_some() {
-            return self.eval_expr(payload, scope);
-        }
-        let (offset, size) = crate::checker::result_cell_layout(&ty, &self.structs);
-        let cell = self.alloc_bytes(size as usize) as u32 as usize;
-        self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
-        let inner = self.eval_expr(payload, scope)?;
-        let at = cell + offset as usize;
-        match (&ty, &inner) {
-            (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) | (Type::Union(_), Value::Union(..)) => self.store_val_at(at, &ty, inner.clone())?,
-            (Type::ResultType(a, b), Value::Ok(_) | Value::Err(_)) if self.structs.result_layout(a, b).is_some() => self.store_val_at(at, &ty, inner.clone())?,
-            (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
-            _ => {}
-        }
-        Ok(inner)
     }
 
     /// The address of `s`'s bytes: its interned literal (the same address as

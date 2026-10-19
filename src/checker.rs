@@ -66,16 +66,22 @@ impl Structs {
         self.by_value.contains_key(name)
     }
 
-    /// The layout of `(result ok err)` held by value (AIPL_SPEC.md 4.F): two
-    /// variants, ok and err, sharing slots as a union's do; None (a heap
-    /// cell) when a side is a str or it needs more than MAX_SCALARS slots.
+    /// The layout of `(result ok err)`, held by value (AIPL_SPEC.md 4.F): two
+    /// variants, ok and err, sharing slots as a union's do; None when it
+    /// needs more than MAX_SCALARS slots, which the checker refuses.
     pub fn result_layout(&self, ok: &Type, err: &Type) -> Option<SumLayout> {
-        if *ok == Type::Str || *err == Type::Str {
-            return None;
-        }
-        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
-        let l = sum_layout(&[side("ok", ok), side("err", err)], self);
+        let l = self.result_sum(ok, err);
         (l.slots.len() <= MAX_SCALARS).then_some(l)
+    }
+
+    /// How many slots `(result ok err)` needs.
+    pub fn result_slots(&self, ok: &Type, err: &Type) -> usize {
+        self.result_sum(ok, err).slots.len()
+    }
+
+    fn result_sum(&self, ok: &Type, err: &Type) -> SumLayout {
+        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
+        sum_layout(&[side("ok", ok), side("err", err)], self)
     }
 
     /// The layout of a union or result type held by value, if it is one.
@@ -167,41 +173,17 @@ pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
 }
 
 /// Which unions are values and how they are laid out (AIPL_SPEC.md 4.J): a
-/// union is a value unless a variant holds a str, it contains itself
+/// union is a value unless it contains itself
 /// (through other unions held inline), or it needs more than MAX_SCALARS
 /// slots, counting the unions it holds that are values as their slots and
 /// the others as one (each union is decided after the unions it holds).
 fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
-    // the unions each one holds inline
-    let holds = |u: &UnionDef| -> Vec<String> {
-        u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
-            Type::Union(n) => Some(n.clone()),
-            _ => None,
-        }).collect()
-    };
-    // a union that reaches itself through the unions it holds
-    let reaches_itself = |start: &String| -> bool {
-        let mut todo: Vec<String> = st.unions.get(start).map(holds).unwrap_or_default();
-        let mut seen: Vec<String> = Vec::new();
-        while let Some(n) = todo.pop() {
-            if &n == start {
-                return true;
-            }
-            if seen.contains(&n) {
-                continue;
-            }
-            if let Some(u) = st.unions.get(&n) {
-                todo.extend(holds(u));
-            }
-            seen.push(n);
-        }
-        false
-    };
+    let reaches_itself = |start: &String| reaches(st, std::slice::from_ref(start), start);
     let mut names: Vec<&String> = st.unions.keys().collect();
     names.sort();
     let candidates: Vec<String> = names
         .iter()
-        .filter(|n| !st.unions[**n].variants.iter().any(|v| v.fields.iter().any(|f| f.ty == Type::Str)) && !reaches_itself(n))
+        .filter(|n| !reaches_itself(n))
         .map(|n| n.to_string())
         .collect();
     fn decide(n: &str, candidates: &[String], st: &mut Structs, decided: &mut Vec<String>) {
@@ -230,6 +212,64 @@ fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
         decide(n, &candidates, &mut work, &mut decided);
     }
     work.by_value
+}
+
+/// The unions u holds inline, in its variants' fields.
+fn holds(u: &UnionDef) -> Vec<String> {
+    u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
+        Type::Union(n) => Some(n.clone()),
+        _ => None,
+    }).collect()
+}
+
+/// Whether `target` is among the unions `from` hold, directly or through
+/// the unions they hold.
+fn reaches(st: &Structs, from: &[String], target: &str) -> bool {
+    let mut todo: Vec<String> = from.iter().filter_map(|n| st.unions.get(n)).flat_map(holds).collect();
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(n) = todo.pop() {
+        if n == target {
+            return true;
+        }
+        if seen.contains(&n) {
+            continue;
+        }
+        if let Some(u) = st.unions.get(&n) {
+            todo.extend(holds(u));
+        }
+        seen.push(n);
+    }
+    false
+}
+
+/// Why union u cannot be held by value, if it cannot (AIPL_SPEC.md 4.J):
+/// it contains itself (named by the first field that leads back to it), or
+/// it needs more than MAX_SCALARS slots (named by its widest variant).
+pub fn union_error(u: &UnionDef, st: &Structs) -> Option<String> {
+    if st.by_value.contains_key(&u.name) {
+        return None;
+    }
+    let name = shown(&u.name);
+    for v in &u.variants {
+        for f in &v.fields {
+            if let Type::Union(m) = &f.ty {
+                if *m == u.name || reaches(st, std::slice::from_ref(m), &u.name) {
+                    return Some(format!(
+                        "union '{name}' contains itself ({name}.{}'s field '{}' has type {}): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it",
+                        v.name, f.name, shown(m)
+                    ));
+                }
+            }
+        }
+    }
+    let n = sum_layout(&u.variants, st).slots.len();
+    let width = |v: &Variant| v.fields.iter().map(|f| scalars(&f.ty, st).len()).sum::<usize>();
+    let widest = u.variants.iter().fold(&u.variants[0], |w, v| if width(v) > width(w) { v } else { w });
+    Some(format!(
+        "union '{name}' needs {n} slots, more than the {MAX_SCALARS} a value holds: move the fields of its widest variant, {name}.{} ({} slots), into a struct and hold a (ptr S)",
+        widest.name,
+        width(widest)
+    ))
 }
 
 /// The layout of a sum of variants (each a list of fields) held by value.
@@ -326,29 +366,6 @@ fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a result cell keeps its payload, and the cell's size: like a union
-/// variant with one field (AIPL_SPEC.md 4.F), after the 4-byte tag, so a
-/// 64-bit payload sits at 8 in a 16-byte cell and any other at 4 in an
-/// 8-byte one.
-pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
-    match payload {
-        Type::Struct(_) => value_cell(payload, structs),
-        Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
-        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => value_cell(payload, structs),
-        // a pointer or array is 8 bytes: its address, then its generation
-        Type::I64 | Type::F64 | Type::Ptr(_) | Type::Array(_) => (8, 16),
-        _ => (4, 8),
-    }
-}
-
-/// A value held in a result cell: aligned after the tag, the cell a
-/// multiple of 8.
-fn value_cell(payload: &Type, structs: &Structs) -> (u32, i32) {
-    let (size, align) = type_size_and_align(payload, structs).unwrap_or((4, 4));
-    let offset = (4 + align - 1) & !(align - 1);
-    (offset as u32, ((offset + size + 7) & !7) as i32)
-}
-
 /// A type parameter's placeholder, when a template is checked once with its
 /// type parameters sealed (generics.rs archetypes): `'vec.index_of.T`, an
 /// enum with no members (a value parameter) or a struct with no fields
@@ -411,23 +428,6 @@ pub fn get_field_offset(def: &StructDef, field_name: &str, structs: &Structs) ->
     Err(format!("Struct '{}' has no field '{}'", shown(&def.name), field_name))
 }
 
-/// Where each field of a union variant lives in its cell: the tag (i32) is
-/// at offset 0 and the fields follow from offset 4, laid out like a struct's.
-/// Returns the field offsets and the cell's size.
-pub fn variant_layout(v: &Variant, structs: &Structs) -> Result<(Vec<usize>, usize), String> {
-    let mut offset = 4;
-    let mut max_align = 4;
-    let mut offsets = Vec::new();
-    for f in &v.fields {
-        let (s, a) = type_size_and_align(&f.ty, structs)?;
-        max_align = max_align.max(a);
-        offset = (offset + a - 1) & !(a - 1);
-        offsets.push(offset);
-        offset += s;
-    }
-    Ok((offsets, (offset + max_align - 1) & !(max_align - 1)))
-}
-
 pub fn get_struct_size(def: &StructDef, structs: &Structs) -> Result<usize, String> {
     let mut offset = 0;
     let mut max_align = 1;
@@ -465,10 +465,6 @@ pub struct TypeChecker {
     /// `(unsafe ...)` block (depth > 0) or an `(unsafe)` function.
     unsafe_depth: std::cell::Cell<u32>,
     in_unsafe_fn: std::cell::Cell<bool>,
-    /// The type of each `ok`/`err` payload, by the payload's address: the VM
-    /// lays out a result cell before it evaluates the payload, so it needs
-    /// the payload's size from here (payload_types).
-    payloads: std::cell::RefCell<HashMap<usize, Type>>,
     /// The type of each formatting piece's value, by the value's address:
     /// lowering the forms to std/show calls (formats::lower) needs them.
     formats: std::cell::RefCell<HashMap<usize, Type>>,
@@ -499,20 +495,10 @@ impl TypeChecker {
             unsafe_fns: std::collections::HashSet::new(),
             unsafe_depth: std::cell::Cell::new(0),
             in_unsafe_fn: std::cell::Cell::new(false),
-            payloads: std::cell::RefCell::new(HashMap::new()),
             formats: std::cell::RefCell::new(HashMap::new()),
             in_defer: std::cell::Cell::new(false),
             bodies: std::cell::RefCell::new(HashMap::new()),
         }
-    }
-
-    /// The type of every `ok`/`err` payload in `module`, keyed by the
-    /// payload expression's address (stable while the module's boxes live).
-    /// Payloads in functions that do not check are left out.
-    pub fn payload_types(module: &Module) -> HashMap<usize, Type> {
-        let mut checker = TypeChecker::new();
-        let _ = checker.check_module(module);
-        checker.payloads.into_inner()
     }
 
     /// A defer's statements, each checked, in an environment of their own.
@@ -609,6 +595,13 @@ impl TypeChecker {
         for f in &module.functions {
             self.at_item("fn", &f.name);
             if let Err(e) = self.check_fn_def(f) {
+                errors.push(self.name_file(module, e));
+            }
+        }
+        if errors.is_empty() {
+            // (no_leak) promises, once every body checks (docs/design/MEMORY_PLAN.md M3)
+            for (name, e) in crate::leaks::check(module) {
+                self.at_item("fn", &name);
                 errors.push(self.name_file(module, e));
             }
         }
@@ -718,6 +711,8 @@ impl TypeChecker {
             }
             self.union_defs.insert(u.name.clone(), u.clone());
         }
+        // which unions are values, which a result's slots count
+        self.struct_defs = Structs::new(&module.structs, &module.unions);
 
         // Field types may name structs and unions defined later in the module.
         for s in &module.structs {
@@ -737,6 +732,13 @@ impl TypeChecker {
                     self.validate_type(&f.ty, u.span)
                         .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name))?;
                 }
+            }
+        }
+        // every union is a value (AIPL_SPEC.md 4.J)
+        for u in &module.unions {
+            self.at_item("union", &u.name);
+            if let Some(e) = union_error(u, &self.struct_defs) {
+                return Err(format!("{}:{}: {e}", u.span.0, u.span.1));
             }
         }
 
@@ -885,7 +887,8 @@ impl TypeChecker {
             }
             Type::ResultType(a, b) => {
                 self.validate_type(a, span)?;
-                self.validate_type(b, span)
+                self.validate_type(b, span)?;
+                self.result_fits(a, b, span)
             }
             Type::Fn(params, ret) => {
                 for p in params {
@@ -908,6 +911,19 @@ impl TypeChecker {
             Type::Enum(name) => Err(format!("{}:{}: Unknown type '{}' (not a scalar type or an enum)", span.0, span.1, name)),
             _ => Ok(()),
         }
+    }
+
+    /// A result is held by value (AIPL_SPEC.md 4.F), so one needing more
+    /// than MAX_SCALARS slots is refused.
+    fn result_fits(&self, ok: &Type, err: &Type, (l, c): (u32, u32)) -> Result<(), String> {
+        let n = self.struct_defs.result_slots(ok, err);
+        if n <= MAX_SCALARS {
+            return Ok(());
+        }
+        Err(format!(
+            "{l}:{c}: {} needs {n} slots, more than the {MAX_SCALARS} a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)",
+            Type::ResultType(Box::new(ok.clone()), Box::new(err.clone()))
+        ))
     }
 
     /// An op's operands: exactly `want.len()` of them, of those types.
@@ -1696,9 +1712,9 @@ impl TypeChecker {
                 }
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
-                self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
                 let err_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&err_ty, (l, c))?;
+                self.result_fits(&inner_ty, &err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
             Expr::Err(err, extra_ty, _) => {
@@ -1707,9 +1723,9 @@ impl TypeChecker {
                 }
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
-                self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
                 let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&ok_ty, (l, c))?;
+                self.result_fits(&ok_ty, &err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {

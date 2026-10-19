@@ -41,10 +41,16 @@
   (import lower)
   (import wasi)
 
-  (struct Output [(read ok:bool) (read error:(ptr str.Bytes)) (read exe:(ptr str.Bytes))] (pub))
+  ;; The result: the executable, or why there is none. addr and len are
+  ;; exe's bytes when ok, else error's, as plain numbers for the Rust host
+  ;; (src/native.rs), which reads them at offsets 0, 4, and 8 whatever a
+  ;; view looks like.
+  (struct Output [(read addr:i32) (read len:i32) (read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
 
-  (fn failure [msg:(ptr str.Bytes)] -> (ptr Output)
+  (fn failure [msg:str.Bytes] -> (ptr Output)
     (unsafe (let o:(ptr Output) (new Output))
+    (put o Output.addr (call str.addr msg))
+    (put o Output.len (get msg str.Bytes.len))
     (put o Output.ok false)
     (put o Output.error msg)
     (put o Output.exe (call str.bytes 0 0))
@@ -52,7 +58,7 @@
 
   ;; The export named `name` of kind function, or -1.
   (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32
-    (let want:(ptr str.Bytes) (call str.from_str name))
+    (let want:str.Bytes (call str.from_str name))
     (let found:i32 -1)
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports)) 1) 1
       (let e:(ptr wasm_reader.Export) (call (vec.at (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports) i))
@@ -89,7 +95,7 @@
 
   (fn import_stub [l:(ptr lower.L) wr:(ptr wasi.W) th:(ptr Threads) imp:(ptr wasm_reader.Import)] -> void
     (let c:(ptr buf.Buf) (get l lower.L.code))
-    (let name:(ptr str.Bytes) (get imp wasm_reader.Import.name))
+    (let name:str.Bytes (get imp wasm_reader.Import.name))
     (cond
       ;; proc_exit(code): exit_group with the argument, never returns. As
       ;; under wasmtime, a status outside 0..125 (unsigned) is an error
@@ -313,12 +319,12 @@
     (put t runtime.RegionTexts.tail_len (str.len tail))
     t)
 
-  (fn compile [wasm:(ptr str.Bytes)] -> (ptr Output)
+  (fn compile [wasm:str.Bytes] -> (ptr Output)
     (call compile_with wasm false))
 
   ;; `sandbox`: the program may use only the working directory (no `/`
   ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
-  (fn compile_with [wasm:(ptr str.Bytes) sandbox:bool] -> (ptr Output) (pub)
+  (fn compile_with [wasm:str.Bytes sandbox:bool] -> (ptr Output) (pub)
     (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))
@@ -444,9 +450,12 @@
     (call fill_chain_table l chain starts code_end)
     (call fill_position_table l positions)
     (let o:(ptr Output) (new Output))
+    (let exe:str.Bytes (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (put o Output.addr (call str.addr exe))
+    (put o Output.len (get exe str.Bytes.len))
     (put o Output.ok true)
     (put o Output.error (call str.bytes 0 0))
-    (put o Output.exe (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
+    (put o Output.exe exe)
     o))
 
 ;; ===== The call chain's function table (runtime.emit_backtrace_routine) =====
@@ -456,10 +465,10 @@
 
   ;; Whether a function's frame is shown in a call chain: it has a name, and
   ;; is not generated (aipl-run's call_chain rule).
-  (fn shown [n:(ptr str.Bytes)] -> bool
+  (fn shown [n:str.Bytes] -> bool
     (unsafe (let len:i32 (get n str.Bytes.len))
     (and (gt len 0)
-         (not (or (and (gte len 5) (call str.bytes_eq (call str.bytes (get n str.Bytes.addr) 5) (call str.from_str "aipl.")))
+         (not (or (and (gte len 5) (call str.bytes_eq (call str.bytes (call str.addr n) 5) (call str.from_str "aipl.")))
                   (or (call str.bytes_eq n (call str.from_str "_start")) (call str.bytes_eq n (call str.from_str "wasi_thread_start"))))))))
 
   ;; Puts each defined function's name, and room for the table, in the data,
@@ -510,15 +519,15 @@
   ;; fill_position_table fills them once the code's address is known.
   (fn reserve_position_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) cell:i32] -> i32
     (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
-    (let names:(ptr (vec.Vec (ptr str.Bytes))) (get w wasm_reader.Wasm.line_files))
-    (let nfiles:i32 (call (vec.len (ptr str.Bytes)) names))
+    (let names:(ptr (vec.Vec str.Bytes)) (get w wasm_reader.Wasm.line_files))
+    (let nfiles:i32 (call (vec.len str.Bytes) names))
     (let addrs:(arr i32) (arr.new i32 (+ nfiles 1)))
-    (loop k 0 (- nfiles 1) 1 (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at (ptr str.Bytes)) names k))))
+    (loop k 0 (- nfiles 1) 1 (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at str.Bytes) names k))))
     (while (neq (bitand (call buf.len data) 3) 0) (call buf.push_byte data 0))
     (let files:i32 (call lower.data_text l ""))
     (loop k 0 (- nfiles 1) 1
       (call push_word data (arr.get i32 addrs k))
-      (call push_word data (get (call (vec.at (ptr str.Bytes)) names k) str.Bytes.len)))
+      (call push_word data (get (call (vec.at str.Bytes) names k) str.Bytes.len)))
     (let n:i32 (call (vec.len (ptr lower.NPos)) (get l lower.L.positions)))
     (let entries:i32 (call lower.data_text l ""))
     (loop k 1 (* 16 n) 1 (call buf.push_byte data 0))

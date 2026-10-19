@@ -1,0 +1,27 @@
+;; A line kept after its reader is closed: a reader of memory views the
+;; caller's bytes, so its line outlives it; a reader with a window of its
+;; own (a file) frees the window, so its line stops the program when read.
+(module line_after_close
+  (import stream)
+  (import str)
+  (import alloc)
+  (import heap)
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.of_heap (call heap.make)))
+    (let r:(ptr stream.Reader) (call stream.of_bytes a (call str.from_str "a line\nnext\n")))
+    (let _m:bool (call stream.next_line r))
+    (let kept:str.Bytes (call stream.line r))
+    (call stream.close_reader r)
+    (println "memory: {kept}")
+    (match_result (call stream.create a "_lines.txt")
+      (ok w (call stream.write_str w "windowed\n") (let _c:bool (call stream.close_writer w)))
+      (err msg (println "{msg}")))
+    (match_result (call stream.open a "_lines.txt")
+      (ok f
+        (let _n:bool (call stream.next_line f))
+        (let line:str.Bytes (call stream.line f))
+        (println "before close: {line}")
+        (call stream.close_reader f)
+        (println "after close: {line}"))
+      (err msg (println "{msg}")))
+    0))

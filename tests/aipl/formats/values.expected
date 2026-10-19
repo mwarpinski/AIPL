@@ -3,7 +3,7 @@ null
 [0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ... 4 more]
 ["x", "y"] []
 boxed{w: 2, h: 3} empty circle{r: 0.5}
-node{left: leaf{n: 1}, right: node{left: leaf{n: 2}, right: leaf{n: 3}}}
+node{left: (ptr Branch) @ ADDR, right: (ptr Branch) @ ADDR}
 some{value: "x"} none
 ok(4) err("bad")
 Pair{left: V{a: 1, b: 0.5}, right: V{a: 2, b: 1.5}}

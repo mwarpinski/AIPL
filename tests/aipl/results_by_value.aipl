@@ -1,11 +1,12 @@
-;; Results held by value (AIPL_SPEC.md 4.F): which results are values and
-;; which stay heap cells, and every way one is made, matched, passed, and
-;; returned, in one program whose main returns a checksum.
+;; Results held by value (AIPL_SPEC.md 4.F): every result is a value, and
+;; every way one is made, matched, passed, and returned, in one program
+;; whose main returns a checksum.
 ;; tests/test_values.rs runs it in every backend.
 (module results_by_value
+  (import alloc)
   (struct Vec2 [x:f64 y:f64] (value))
   (union Shape [(dot) (circle r:f64) (box w:i32 h:i32)])
-  (struct Quad [a:f64 b:f64 c:f64 d:f64] (value))
+  (struct Quad [a:f64 b:f64 c:f64 d:f64])
   (struct Ints [a:i32 b:i32 c:i32 d:i32] (value))
 
   ;; two slots: the tag and an i32 slot both sides share
@@ -27,15 +28,21 @@
       ((lt n 20) (ok:bool (make Shape.box n 2)))
       (else (err:Shape false))))
 
-  ;; nine slots: a heap cell (the tag, four f64s, four i32s)
-  (fn wide [ok:bool] -> (result Quad Ints)
-    (if ok (ok:Ints (make Quad 1.0 2.0 3.0 4.0)) (err:Quad (make Ints 9 9 9 0))))
+  ;; four f64s beside four i32s would be nine slots, which is refused: the
+  ;; f64s behind a pointer, six (the tag, four i32s, an i64)
+  (fn wide [ok:bool] -> (result (ptr Quad) Ints)
+    (if ok
+        (block
+          (let q:(ptr Quad) (call (alloc.create Quad) (call alloc.default)))
+          (put q Quad.b 2.0)
+          (ok:Ints q))
+        (err:(ptr Quad) (make Ints 9 9 9 0))))
 
   ;; six slots, a value: Vec2's two f64s beside Shape's tag, two i32s, f64
   (fn either [ok:bool] -> (result Vec2 Shape)
     (if ok (ok:Shape (make Vec2 1.0 2.0)) (err:Vec2 (make Shape.circle 3.0))))
 
-  ;; a str side: a heap cell
+  ;; a str side: one i32 slot, shared with the other side's
   (fn named [n:i32] -> (result i32 str)
     (if (gt n 0) (ok:str n) (err:i32 "none")))
 

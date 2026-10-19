@@ -42,7 +42,7 @@
 
   ;; The pieces of raw content t: {{ and }} are braces; {name},
   ;; {(expression)}, and either followed by :format, are values.
-  (fn pieces [t:(ptr str.Bytes)] -> (ptr Split) (pub)
+  (fn pieces [t:str.Bytes] -> (ptr Split) (pub)
     (let len:i32 (get t str.Bytes.len))
     (let out:(ptr (vec.Vec Piece)) (call (vec.make Piece) (call alloc.default) 8))
     (let i:i32 0)
@@ -118,17 +118,17 @@
 
   (fn align_of [c:i32] -> i32 (cond ((eq c 60) 1) ((eq c 62) 2) ((eq c 94) 3) (else 0)))
 
-  (fn bad [t:(ptr str.Bytes) why:str] -> (ptr buf.Buf)
+  (fn bad [t:str.Bytes why:str] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
     (call buf.push_str b "bad format '")
     (call buf.push_bytes b t)
     (call buf.push_str b why)
     b)
 
-  (fn bad_shape [t:(ptr str.Bytes)] -> (ptr buf.Buf)
+  (fn bad_shape [t:str.Bytes] -> (ptr buf.Buf)
     (call bad t "': a format is [[fill]align][+][0][width][.decimals][x|X|b], e.g. {n:>8} or {x:.2}"))
 
-  (fn spec [t:(ptr str.Bytes)] -> (ptr Spec) (pub)
+  (fn spec [t:str.Bytes] -> (ptr Spec) (pub)
     (let s:(ptr Spec) (new Spec))
     (put s Spec.decimals -1)
     (put s Spec.err (ptr.null buf.Buf))

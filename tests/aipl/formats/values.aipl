@@ -5,15 +5,23 @@
 (module values
   (import str)
   (import option)
+  (import alloc)
   (struct Q [k:i32])
   (struct V [a:i32 b:f64] (value))
   (struct Pair [left:V right:V] (value))
   (struct Small [tiny:u8 neg:i16 f:(fn [i32] -> i32)])
-  (struct Row [n:i32 name:str q:(ptr Q) xs:(arr i32) at:V sh:Shade label:(ptr str.Bytes) none:(ptr Q)])
+  (struct Row [n:i32 name:str q:(ptr Q) xs:(arr i32) at:V sh:Shade label:str.Bytes none:(ptr Q)])
   (struct (Box T) [item:T])
   (enum Shade [light dark])
   (union Shape [(circle r:f64) (boxed w:i32 h:i32) (empty)])
-  (union Tree [(leaf n:i32) (node left:Tree right:Tree)])
+  ;; recursive: the branches behind pointers, which print as addresses
+  (union Tree [(leaf n:i32) (node left:(ptr Branch) right:(ptr Branch))])
+  (struct Branch [t:Tree])
+
+  (fn branch [t:Tree] -> (ptr Branch)
+    (let b:(ptr Branch) (call (alloc.create Branch) (call alloc.default)))
+    (put b Branch.t t)
+    b)
 
   (fn inc [x:i32] -> i32 (+ x 1))
 
@@ -37,7 +45,7 @@
     (arr.set str names 1 "y")
     (println "{names} {(arr.new f64 0)}")
     (println "{(make Shape.boxed 2 3)} {(make Shape.empty)} {(make Shape.circle 0.5)}")
-    (let t:Tree (make Tree.node (make Tree.leaf 1) (make Tree.node (make Tree.leaf 2) (make Tree.leaf 3))))
+    (let t:Tree (make Tree.node (call branch (make Tree.leaf 1)) (call branch (make Tree.node (call branch (make Tree.leaf 2)) (call branch (make Tree.leaf 3))))))
     (println "{t}")
     (let os:(option.Option str) (make (option.Option str) some "x"))
     (let no:(option.Option i32) (make (option.Option i32) none))

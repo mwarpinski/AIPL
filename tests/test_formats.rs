@@ -115,7 +115,7 @@ fn every_value_prints_through_a_generated_printer() {
 fn every_formatting_error_has_one_message_in_both_toolchains() {
     let cases: &[(&str, &str)] = &[
         ("(println \"{(ref main)}\")", "format cannot print (fn [] -> i32): it prints every value but void and function references"),
-        ("(println \"{p:>5}\")", "formats are for numbers, bool, str, (ptr str.Bytes), and enums, not (ptr P)"),
+        ("(println \"{p:>5}\")", "formats are for numbers, bool, str, str.Bytes, and enums, not (ptr P)"),
         ("(println \"{n:q}\")", "bad format 'q': a format is [[fill]align][+][0][width][.decimals][x|X|b], e.g. {n:>8} or {x:.2}"),
         ("(println \"{name:.2}\")", "decimals (.N) are for f32 and f64, not str"),
         ("(println \"{x:x}\")", "x, X, and b are for i32 and i64, not f64"),

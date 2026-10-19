@@ -39,14 +39,19 @@ pub fn executable(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
     mem.write(&mut store, addr as usize, wasm).map_err(|e| e.to_string())?;
     // a (ptr Output): the address in the low half (GENERATIONS_PLAN.md)
     let out = compile.call(&mut store, (addr, wasm.len() as i32)).map_err(|e| format!("native backend trapped: {e}"))? as u32 as usize;
-    // native.Output [ok:bool error:(ptr Bytes) exe:(ptr Bytes)], pointers 8
-    // bytes (address first); Bytes [addr len]
+    // native.Output starts [addr:i32 len:i32 ok:bool]: the executable's
+    // bytes when ok, else the error's
     let data = mem.data(&store);
     let word = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
-    let bytes = |p: usize| data[word(p)..word(p) + word(p + 4)].to_vec();
-    if word(out) != 0 {
-        Ok(bytes(word(out + 16)))
-    } else {
-        Err(String::from_utf8_lossy(&bytes(word(out + 8))).into_owned())
+    let (addr, len, ok) = (word(out), word(out + 4), word(out + 8) != 0);
+    let bytes = data.get(addr..addr + len).ok_or("native backend: its result is outside its memory")?.to_vec();
+    if !ok {
+        return Err(String::from_utf8_lossy(&bytes).into_owned());
     }
+    // never report an executable that is not one (a wrong reading of the
+    // result once wrote an empty file and said it had compiled)
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err(format!("native backend: its result is not an ELF executable ({} bytes)", bytes.len()));
+    }
+    Ok(bytes)
 }

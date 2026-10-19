@@ -21,7 +21,7 @@
   ;; Appends b with & < > written &amp; &lt; &gt;, and with quote also
   ;; " and ' as &quot; and &#x27; (for attribute values), as Python's
   ;; html.escape does.
-  (fn escape_to [o:(ptr buf.Buf) b:(ptr str.Bytes) quote:bool] -> void (pub)
+  (fn escape_to [o:(ptr buf.Buf) b:str.Bytes quote:bool] -> void (pub)
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (cond
@@ -58,7 +58,7 @@
       (else -1)))
 
   ;; Appends b with its character references replaced (b is UTF-8).
-  (fn unescape_to [o:(ptr buf.Buf) b:(ptr str.Bytes)] -> void (pub)
+  (fn unescape_to [o:(ptr buf.Buf) b:str.Bytes] -> void (pub)
     (let n:i32 (get b str.Bytes.len))
     (let i:i32 0)
     (while (lt i n)
@@ -69,7 +69,7 @@
 
   ;; After an '&' at i - 1: appends what the reference there means (or the
   ;; '&' alone if there is none); the index after it.
-  (fn reference [o:(ptr buf.Buf) b:(ptr str.Bytes) i:i32] -> i32
+  (fn reference [o:(ptr buf.Buf) b:str.Bytes i:i32] -> i32
     (let n:i32 (get b str.Bytes.len))
     (when (and (lt i n) (eq (call str.byte_at b i) 35)) (return (call numeric o b (+ i 1))))
     ;; a name: up to 32 characters that are not \t \n \f space < & # ;
@@ -83,7 +83,7 @@
     (when (eq end i) (call buf.push_byte o 38) (return i))
     (let semi:bool (and (lt end n) (eq (call str.byte_at b end) 59)))
     (let after:i32 (if semi (+ end 1) end))
-    (let name:(ptr str.Bytes) (call str.slice b i (- end i)))
+    (let name:str.Bytes (call str.slice b i (- end i)))
     (let cp:i32 (if semi (call named name) (if (call legacy name) (call named name) -1)))
     (when (gte cp 0) (call utf8.encode o cp) (return after))
     ;; the longest legacy name the text starts with (at least 2 characters)
@@ -92,7 +92,7 @@
     (while (gte (- x i) 2)
       ;; x on a character boundary
       (when (neq (bitand (call str.byte_at b x) 192) 128)
-        (let prefix:(ptr str.Bytes) (call str.slice b i (- x i)))
+        (let prefix:str.Bytes (call str.slice b i (- x i)))
         (when (call legacy prefix)
           (call utf8.encode o (call named prefix))
           (return x)))
@@ -102,7 +102,7 @@
 
   ;; After "&#" at i: a decimal or (after x or X) hex number, then an
   ;; optional ';'. No digits: the '&' alone.
-  (fn numeric [o:(ptr buf.Buf) b:(ptr str.Bytes) i:i32] -> i32
+  (fn numeric [o:(ptr buf.Buf) b:str.Bytes i:i32] -> i32
     (let n:i32 (get b str.Bytes.len))
     (let hex:bool (and (lt i n) (or (eq (call str.byte_at b i) 120) (eq (call str.byte_at b i) 88))))
     (let p:i32 (if hex (+ i 1) i))
@@ -127,7 +127,7 @@
 
   ;; @tables (tools/html_tables.py)
   ;; The code point of the named reference name (without its ';'), or -1.
-  (fn named [n:(ptr str.Bytes)] -> i32
+  (fn named [n:str.Bytes] -> i32
     (cond
       ((call str.is n "AElig") 198)
       ((call str.is n "AMP") 38)
@@ -391,7 +391,7 @@
       (else -1)))
 
   ;; Whether name may come without its ';' (HTML5's legacy names).
-  (fn legacy [n:(ptr str.Bytes)] -> bool
+  (fn legacy [n:str.Bytes] -> bool
     (cond
       ((call str.is n "AElig") true)
       ((call str.is n "AMP") true)

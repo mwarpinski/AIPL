@@ -450,7 +450,7 @@ impl Spec {
     /// Why this format does not fit a value of type `t`, if it does not.
     pub fn misfit(&self, t: &Type) -> Option<String> {
         if !printable(t) && *self != Spec::default() {
-            return Some(format!("formats are for numbers, bool, str, (ptr str.Bytes), and enums, not {t}"));
+            return Some(format!("formats are for numbers, bool, str, str.Bytes, and enums, not {t}"));
         }
         let float = matches!(t, Type::F32 | Type::F64);
         let int = matches!(t, Type::I32 | Type::I64);
@@ -478,7 +478,7 @@ pub fn prints(t: &Type) -> bool {
 /// alone (and so take a format).
 pub fn printable(t: &Type) -> bool {
     matches!(t, Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Bool | Type::Str | Type::Enum(_))
-        || matches!(t, Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()))
+        || matches!(t, Type::Struct(s) if s == "str.Bytes")
 }
 
 pub fn is_format(op: &OpCode) -> bool {
@@ -751,7 +751,7 @@ fn elem_text(e: &str, t: &Type, m: &Module) -> String {
         Type::F64 => put("put_f64"),
         Type::Bool => put("put_bool"),
         Type::Str => quoted("put_str"),
-        Type::Ptr(s) if **s == Type::Struct("str.Bytes".into()) => quoted("put_bytes"),
+        Type::Struct(s) if s == "str.Bytes" => quoted("put_bytes"),
         Type::Enum(n) => {
             let members: Vec<String> = m.enums.iter().find(|x| x.name == *n).map(|x| x.members.iter().map(|(k, _)| format!(" ({n}.{k} \"{k}\")")).collect()).unwrap_or_default();
             format!("(call show.put_str b (match {e}{}) 0)", members.concat())
