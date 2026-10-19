@@ -1,0 +1,15 @@
+tests/aipl/testing/rows.aipl
+  ok    an empty line has no fields
+  ok    three fields
+  FAIL  a wrong count shows both sides
+        rows.aipl:28:5: (expect (eq (call parse_row "a,b") 3)): left 2, right 3
+        rows.aipl:29:5: (expect (lt 2.5 1.0)): left 2.5, right 1.0
+  FAIL  a struct compares by pointer, and shows its fields
+        rows.aipl:32:5: (expect (eq (call make_row 1) (call make_row 1))): left Row{n: 1, name: "r"}, right Row{n: 1, name: "r"}
+  FAIL  a condition that is not a comparison
+        rows.aipl:36:5: (expect ok)
+  FAIL  a trap fails only its own test
+        Array index out of bounds: index 5 for array of length 2
+          at __test_5 (rows.aipl:40:17)
+  ok    each test starts afresh
+7 tests: 3 passed, 4 failed

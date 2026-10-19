@@ -30,7 +30,7 @@
   ;; defers: the current function's defers met so far (their '(' tokens),
   ;; which each return after them runs first; rets: the returns so wrapped.
   (struct L [src:i32 toks:i32 n:i32 out:(ptr buf.Buf) low:(ptr origins.Origins) fmts:(ptr (vec.Vec (ptr checker.Fmt)))
-             fn_at:i32 tries:i32 defers:(ptr (vec.Vec i32)) rets:i32 dbgs:i32])
+             fn_at:i32 tries:i32 defers:(ptr (vec.Vec i32)) rets:i32 dbgs:i32 expects:i32])
 
   (fn tok [l:(ptr L) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get l L.toks) i))
   (fn kind [l:(ptr L) i:i32] -> compiler.Kind
@@ -84,7 +84,7 @@
       ((call sym_is l i "format.str") 0) ((call sym_is l i "format.to") 1) ((call sym_is l i "format.print") 2)
       ((call sym_is l i "format.println") 3) ((call sym_is l i "format.eprintln") 4)
       ((call sym_is l i "try") 5) ((call sym_is l i "try_opt") 6) ((call sym_is l i "try_or") 7)
-      ((call sym_is l i "format.dbg") 8) (else -1)))
+      ((call sym_is l i "format.dbg") 8) ((call sym_is l i "format.expect") 9) (else -1)))
 
   (fn lowers [l:(ptr L) g:i32] -> bool
     (or (and (eq (call kind l g) compiler.Kind.lparen) (gte (call form l (+ g 1)) 0))
@@ -113,7 +113,7 @@
         (else
          (if (and (eq (call kind l i) compiler.Kind.lparen) (call sym_is l (+ i 1) "fn"))
              (block
-               (put l L.fn_at i) (put l L.tries 0) (put l L.rets 0) (put l L.dbgs 0)
+               (put l L.fn_at i) (put l L.tries 0) (put l L.rets 0) (put l L.dbgs 0) (put l L.expects 0)
                (call (vec.clear i32) (get l L.defers))
                (if (call has_defers l i)
                    (block
@@ -151,6 +151,7 @@
     (cond
       ((call sym_is l (+ g 1) "return") (call lower_return l g))
       ((eq op 8) (call lower_dbg l g))
+      ((eq op 9) (call lower_expect l g))
       ((gte op 5) (call lower_try l g op))
       (else (call lower_format l g op))))
 
@@ -375,6 +376,119 @@
       (if (and (eq (call kind l i) compiler.Kind.lparen) (and (gte (call form l (+ i 1)) 5) (lte (call form l (+ i 1)) 7))) (set! k (+ k 1)) (block)))
     k)
 
+  ;; The comparison an expect at group g shows both sides of: its Fmt (the
+  ;; left side's type, k -5) when the condition is one and the forms print
+  ;; it, else null (formats.rs lower_expect).
+  (fn expect_sides [l:(ptr L) g:i32] -> (ptr checker.Fmt)
+    (let cond:i32 (call elem_end l (+ g 2)))
+    (if (neq (call kind l cond) compiler.Kind.lparen) (return (ptr.null checker.Fmt)) (block))
+    (let left:i32 (+ cond 2))
+    (let f:(ptr checker.Fmt) (call fmt_at l (call pos l left)))
+    (if (or (eq f (ptr.null checker.Fmt)) (neq (get f checker.Fmt.k) -5)) (return (ptr.null checker.Fmt)) (block))
+    (if (call fmtdebug.prints (get f checker.Fmt.ty)) f (ptr.null checker.Fmt)))
+
+  ;; The expects showing both sides in tokens [from, to), lowered before
+  ;; the one around them.
+  (fn expects_in [l:(ptr L) from:i32 to:i32] -> i32
+    (let k:i32 0)
+    (loop i from (- to 2) 1
+      (if (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 9))
+          (if (neq (call expect_sides l i) (ptr.null checker.Fmt)) (set! k (+ k 1)) (block))
+          (block)))
+    k)
+
+  ;; (format.expect "LABEL" c) as (if c (block) (call testing.fail "LABEL"));
+  ;; a comparison (OP a b) the forms print as (block (let _x_N:T a) (let
+  ;; _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "LABEL" X
+  ;; Y))), X and Y each side as (call show.done CHAIN) (formats.rs
+  ;; lower_expect). N counts the function's expects that show their sides.
+  (fn lower_expect [l:(ptr L) g:i32] -> void
+    (let at:i32 (call pos l g))
+    (let lab:i32 (+ g 2))
+    (let cond:i32 (call elem_end l lab))
+    (let out:(ptr buf.Buf) (get l L.out))
+    (let lt:(ptr compiler.Token) (call tok l lab))
+    (let f:(ptr checker.Fmt) (call expect_sides l g))
+    (if (eq f (ptr.null checker.Fmt))
+        (block
+          (call gen l at "(if ")
+          (call emit_elem l cond)
+          (call gen l at " (block) (call testing.fail \"")
+          (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
+          (call buf.push_str out "\"))")
+          (return))
+        (block))
+    (let n:i32 (+ (+ (get l L.expects) (call expects_in l cond (call elem_end l cond))) 1))
+    (let t:ast.Type (get f checker.Fmt.ty))
+    (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call buf.push_int nb n)
+    (let num:(ptr str.Bytes) (call buf.bytes nb))
+    ;; (OP a b): the op's token, then each side
+    (let opt:i32 (+ cond 1))
+    (let a:i32 (+ cond 2))
+    (let b:i32 (call elem_end l a))
+    (call gen l at "(block (let _x_")
+    (call buf.push_bytes out num)
+    (call buf.push_byte out 58)
+    (call printer.print_type out t)
+    (call buf.push_byte out 32)
+    (call emit_elem l a)
+    (call gen l at ") (let _y_")
+    (call buf.push_bytes out num)
+    (call buf.push_byte out 58)
+    (call printer.print_type out t)
+    (call buf.push_byte out 32)
+    (call emit_elem l b)
+    (call gen l at ") (if (")
+    (let ot:(ptr compiler.Token) (call tok l opt))
+    (call raw l (get ot compiler.Token.a) (+ (get ot compiler.Token.a) (get ot compiler.Token.b)))
+    (call buf.push_str out " _x_")
+    (call buf.push_bytes out num)
+    (call buf.push_str out " _y_")
+    (call buf.push_bytes out num)
+    (call buf.push_str out ") (block) (call testing.fail_cmp \"")
+    (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
+    (call buf.push_str out "\" (call show.done ")
+    (call put_value l at f (call str.from_str "_x_") num)
+    (call buf.push_str out ") (call show.done ")
+    (call put_value l at f (call str.from_str "_y_") num)
+    (call buf.push_str out "))))")
+    (put l L.expects n))
+
+  ;; (call PUT (call show.start) VAR ...): the variable prefix num written
+  ;; onto a new buffer as the formatting forms write a value of f's type.
+  (fn put_value [l:(ptr L) at:i32 f:(ptr checker.Fmt) prefix:(ptr str.Bytes) num:(ptr str.Bytes)] -> void
+    (let out:(ptr buf.Buf) (get l L.out))
+    (let t:ast.Type (get f checker.Fmt.ty))
+    (let en:(ptr str.Bytes) (match t (ast.Type.enum_ [e] e) (else (ptr.null str.Bytes))))
+    (cond
+      ((neq en (ptr.null str.Bytes)) (call buf.push_str out "(call show.put_str (call show.start) (match "))
+      ((call fmtdebug.printable t)
+       (call buf.push_str out "(call ")
+       (call buf.push_str out (call put_fn t))
+       (call buf.push_str out " (call show.start) "))
+      (else
+       (call buf.push_str out "(call ")
+       (call buf.push_bytes out (call fmtdebug.debug_name t))
+       (call buf.push_str out " (call show.start) ")))
+    (call buf.push_bytes out prefix)
+    (call buf.push_bytes out num)
+    (cond
+      ((neq en (ptr.null str.Bytes))
+       (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
+       (loop k 0 (- (arr.len ms) 1) 1
+         (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
+         (call buf.push_str out " (")
+         (call buf.push_bytes out en)
+         (call buf.push_byte out 46)
+         (call buf.push_bytes out mn)
+         (call buf.push_str out " \"")
+         (call buf.push_bytes out mn)
+         (call buf.push_str out "\")"))
+       (call buf.push_str out ") 0)"))
+      ((call fmtdebug.printable t) (call buf.push_str out " 0)"))
+      (else (call buf.push_byte out 41))))
+
   ;; The dbgs in tokens [from, to), lowered before the one around them.
   (fn dbgs_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
@@ -530,6 +644,7 @@
     (put l L.fn_at 0)
     (put l L.tries 0)
     (put l L.dbgs 0)
+    (put l L.expects 0)
     (put l L.defers (call (vec.make i32) (call alloc.default) 4))
     (put l L.rets 0)
     (let any:bool false)

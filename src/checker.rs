@@ -1252,6 +1252,23 @@ impl TypeChecker {
                     Ok(if *op == OpCode::FormatStr { Type::Str } else { Type::Void })
                 }
                 OpCode::FormatPiece => Err(format!("{}:{}: format.piece is part of a format string", l, c)),
+                OpCode::FormatExpect => {
+                    let (Some(Expr::Lit(Literal::Str(_), _)), Some(cond), 2) = (args.first(), args.get(1), args.len()) else {
+                        return Err(format!("{}:{}: expect takes one condition, e.g. (expect (eq n 3))", l, c));
+                    };
+                    let t = self.infer_expr_type(cond, env)?;
+                    if t != Type::Bool {
+                        return Err(format!("{}:{}: expect takes a bool, e.g. (expect (eq n 3)), got {}", l, c, t));
+                    }
+                    // a comparison's sides, to show them when it fails (formats::lower)
+                    if let Expr::Op { op: cmp, args: sides, .. } = cond {
+                        if matches!(cmp, OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte) && sides.len() == 2 {
+                            let st = self.infer_expr_type(&sides[0], env)?;
+                            self.formats.borrow_mut().insert(&sides[0] as *const Expr as usize, st);
+                        }
+                    }
+                    Ok(Type::Void)
+                }
                 OpCode::FormatDbg => {
                     let (Some(Expr::Lit(Literal::Str(_), _)), Some(v), 2) = (args.first(), args.get(1), args.len()) else {
                         return Err(format!("{}:{}: dbg takes one expression, e.g. (dbg (call f x))", l, c));

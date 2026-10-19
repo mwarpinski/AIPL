@@ -37,7 +37,7 @@ pub fn uses_formats(items: &[Sx]) -> bool {
             return false;
         }
         if let Some(h) = sx.head() {
-            if FORMS.iter().any(|(f, _)| *f == h) || h == "dbg" {
+            if FORMS.iter().any(|(f, _)| *f == h) || h == "dbg" || h == "expect" {
                 return true;
             }
         }
@@ -67,6 +67,15 @@ pub fn split(sx: &mut Sx, src: &str, file: &str, err: &dyn Fn(&Sx, &str) -> Stri
             let (l, c) = sx.position();
             let label = format!("{file}:{l}:{c}: {}", form_text(src, items[1].position()));
             *sx = list_at(vec![Sx::symbol_at("format.dbg".into(), &items[0]), string_at(label, sx), items[1].clone()], sx);
+        } else if h == "expect" {
+            // labelled with the whole (expect c), as written
+            let items = sx.items();
+            if items.len() != 2 {
+                return Err(err(sx, "expect takes one condition, e.g. (expect (eq n 3))"));
+            }
+            let (l, c) = sx.position();
+            let label = format!("{file}:{l}:{c}: {}", form_text(src, (l, c)));
+            *sx = list_at(vec![Sx::symbol_at("format.expect".into(), &items[0]), string_at(label, sx), items[1].clone()], sx);
         }
     }
     if let Some(items) = sx.items_mut() {
@@ -329,7 +338,7 @@ fn list_at(items: Vec<Sx>, at: &Sx) -> Sx {
 }
 
 /// Every token of `sx` at `pos` (a placeholder's code is reported at its string).
-fn move_to(sx: &mut Sx, pos: (u32, u32)) {
+pub(crate) fn move_to(sx: &mut Sx, pos: (u32, u32)) {
     match sx {
         Sx::Atom(t) => (t.line, t.col) = pos,
         Sx::List { open, items, close } => {
@@ -479,7 +488,7 @@ pub fn is_format(op: &OpCode) -> bool {
 /// The ops this module lowers: the formatting forms, dbg, and the early
 /// returns.
 fn lowered(op: &OpCode) -> bool {
-    is_format(op) || matches!(op, OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg)
+    is_format(op) || matches!(op, OpCode::Try | OpCode::TryOpt | OpCode::TryOr | OpCode::Defer | OpCode::FormatDbg | OpCode::FormatExpect)
 }
 
 /// `(call show.put_T chain value spec)`: the call that writes `value`, of
@@ -537,6 +546,44 @@ fn lower_dbg(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
     Expr::Block(vec![Expr::Let { name: v.clone(), ty: t, val: Box::new(value), span }, call("show.eprintln", vec![chain]), var()], span)
 }
 
+/// `(format.expect "label" c)`: when c is false, `(call testing.fail
+/// "label")`; a comparison binds its sides once, `(block (let _x_N:T a) (let
+/// _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "label" X
+/// Y)))`, X and Y the sides as the formatting forms print them. N counts the
+/// function's expects (aipl_src/fmtlower.aipl lower_expect writes the same).
+fn lower_expect(mut args: Vec<Expr>, span: (u32, u32), lw: &mut Lower) -> Expr {
+    let cond = args.remove(1);
+    let Expr::Lit(Literal::Str(label), _) = args.remove(0) else { return cond };
+    let call = |func: &str, args: Vec<Expr>| Expr::Call { func: func.into(), args, span };
+    let label_lit = || Expr::Lit(Literal::Str(label.clone()), span);
+    let fail = |c: Expr, why: Expr| Expr::If { cond: Box::new(c), then_branch: Box::new(Expr::Block(vec![], span)), else_branch: Box::new(why), span };
+    let side_type = match &cond {
+        Expr::Op { op, args: sides, .. }
+            if matches!(op, OpCode::Eq | OpCode::Neq | OpCode::Lt | OpCode::Lte | OpCode::Gt | OpCode::Gte) && sides.len() == 2 =>
+        {
+            lw.types.get(&(&sides[0] as *const Expr as usize)).cloned()
+        }
+        _ => None,
+    };
+    let (Some(t), Expr::Op { op, args: mut sides, span: cs }) = (side_type.filter(prints), cond.clone()) else {
+        return fail(cond, call("testing.fail", vec![label_lit()]));
+    };
+    lw.expects += 1;
+    let (x, y) = (format!("_x_{}", lw.expects), format!("_y_{}", lw.expects));
+    let b = sides.pop().unwrap();
+    let a = sides.pop().unwrap();
+    let shown = |v: &str| call("show.done", vec![put(call("show.start", vec![]), Expr::Var(v.into(), span), &t, 0, lw, span)]);
+    let compare = Expr::Op { op, args: vec![Expr::Var(x.clone(), span), Expr::Var(y.clone(), span)], span: cs };
+    Expr::Block(
+        vec![
+            Expr::Let { name: x.clone(), ty: t.clone(), val: Box::new(a), span },
+            Expr::Let { name: y.clone(), ty: t.clone(), val: Box::new(b), span },
+            fail(compare, call("testing.fail_cmp", vec![label_lit(), shown(&x), shown(&y)])),
+        ],
+        span,
+    )
+}
+
 /// A type as source writes it: instances of generic types, which the flat
 /// program names `option.Option<i32>`, as `(option.Option i32)`
 /// (aipl_src/fmtlower.aipl source_type writes the same).
@@ -579,6 +626,7 @@ struct Lower<'a> {
     ret: Type,
     tries: u32,
     dbgs: u32,
+    expects: u32,
     /// the types printed through a generated printer (debug_functions)
     roots: &'a std::cell::RefCell<Vec<Type>>,
 }
@@ -604,7 +652,7 @@ pub fn lower(module: &mut Module) {
         module.enums.iter().map(|e| (e.name.clone(), e.members.iter().map(|(m, _)| m.clone()).collect())).collect();
     let roots = std::cell::RefCell::new(Vec::new());
     for f in &mut module.functions {
-        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0, dbgs: 0, roots: &roots };
+        let mut lw = Lower { types: &types, enums: &enums, ret: f.return_type.clone(), tries: 0, dbgs: 0, expects: 0, roots: &roots };
         for e in &mut f.body {
             match e {
                 // a defer's statements, lowered where they are
@@ -908,13 +956,13 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
             return;
         }
     };
-    if op == OpCode::FormatDbg {
+    if op == OpCode::FormatDbg || op == OpCode::FormatExpect {
         // the operand first (a dbg inside it is numbered before this one)
         for a in args.iter_mut() {
             lower_expr(a, lw);
         }
         let args = std::mem::take(args);
-        *e = lower_dbg(args, span, lw);
+        *e = if op == OpCode::FormatDbg { lower_dbg(args, span, lw) } else { lower_expect(args, span, lw) };
         return;
     }
     if !is_format(&op) {

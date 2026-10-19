@@ -240,6 +240,9 @@ pub enum OpCode {
     /// `(format.dbg "label" e)`, from `(dbg e)`: prints the label and e's
     /// value to stderr and gives the value (formats.rs).
     FormatDbg,
+    /// `(format.expect "label" c)`, from a test's `(expect c)`: a failure
+    /// counted and reported when c is false (formats.rs lower_expect).
+    FormatExpect,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

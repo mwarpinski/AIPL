@@ -1,0 +1,43 @@
+;; Tests for aipl test (tests/test_testing.rs): passing and failing expects,
+;; comparisons that show both sides, a trap, and tests that cannot see each
+;; other's state. A test may call the module's private functions.
+(module rows
+  (import str)
+  (struct Row [n:i32 name:str])
+
+  (fn parse_row [s:str] -> i32
+    (if (eq (str.len s) 0) 0 (+ 1 (call str.count_byte (call str.from_str s) 44))))
+
+  (fn make_row [n:i32] -> (ptr Row)
+    (let r:(ptr Row) (new Row))
+    (put r Row.n n)
+    (put r Row.name "r")
+    r)
+
+  (fn main [] -> i32 (call parse_row "a,b"))
+
+  (test "an empty line has no fields"
+    (expect (eq (call parse_row "") 0)))
+
+  (test "three fields"
+    (let n:i32 (call parse_row "a,b,c"))
+    (expect (eq n 3))
+    (expect (gt n 0)))
+
+  (test "a wrong count shows both sides"
+    (expect (eq (call parse_row "a,b") 3))
+    (expect (lt 2.5 1.0)))
+
+  (test "a struct compares by pointer, and shows its fields"
+    (expect (eq (call make_row 1) (call make_row 1))))
+
+  (test "a condition that is not a comparison"
+    (let ok:bool false)
+    (expect ok))
+
+  (test "a trap fails only its own test"
+    (let xs:(arr i32) (arr.new i32 2))
+    (expect (eq (arr.get i32 xs 5) 0)))
+
+  (test "each test starts afresh"
+    (expect (eq (call parse_row "x") 1))))

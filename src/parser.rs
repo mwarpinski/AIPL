@@ -1774,7 +1774,8 @@ impl Parser {
                                 "try_or" => OpCode::TryOr,
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" => {
+                                "format.expect" => OpCode::FormatExpect,
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str

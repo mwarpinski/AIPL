@@ -63,6 +63,10 @@ enum Commands {
         /// the default elsewhere)
         #[arg(long, requires = "exe", value_parser = ["native", "wasm"])]
         target: Option<String>,
+        /// Compile the file's test build: its (test ...) items as functions, and a _start
+        /// running the test its first argument names (aipl test runs this)
+        #[arg(long)]
+        tests: bool,
     },
     /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
     Run {
@@ -87,10 +91,29 @@ enum Commands {
     /// must return an i32 failure count: 0 = every group passed, N = N
     /// groups failed. This is deliberately thin on the Rust side - see
     /// aipl_src/test_suite.aipl for the actual test logic.
+    ///
+    /// A file with (test "name" ...) items, or a directory of them, runs each
+    /// test in a fresh process: aipl test FILE|DIR [-k TEXT] [--vm | --native
+    /// | --all-backends].
     Test {
         file: String,
         #[arg(short, long, default_value = "run_all")]
         func: String,
+        /// Only the tests whose names contain TEXT
+        #[arg(short = 'k')]
+        filter: Option<String>,
+        /// Run the tests in the VM instead of under aipl-run
+        #[arg(long, conflicts_with_all = ["native", "all_backends"])]
+        vm: bool,
+        /// Run the tests as a native executable instead of under aipl-run
+        #[arg(long, conflicts_with = "all_backends")]
+        native: bool,
+        /// Run each test in the VM, under aipl-run, and natively; it passes only if all agree and pass
+        #[arg(long)]
+        all_backends: bool,
+        /// (internal) run test K in the VM, in this process
+        #[arg(long, hide = true)]
+        run_one: Option<usize>,
     },
 }
 
@@ -283,8 +306,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let res = vm.invoke(&func, vec![]).map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?;
             println!("[AIPL Result]: {:?}", res);
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox, target } => {
-            let module = Resolver::resolve(Path::new(&file))?;
+        Commands::Compile { file, output, self_flag, exe, sandbox, target, tests } => {
+            let module = if tests { Resolver::resolve_tests(Path::new(&file))?.0 } else { Resolver::resolve(Path::new(&file))? };
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
@@ -355,7 +378,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             checker.check_module(&module)?;
             println!("[AIPL Verifier] OK: module '{}' type-checks. Contracts are type-checked, not proven; req/ens run on every call, in the VM and in compiled code.", module.name);
         }
-        Commands::Test { file, func } => {
+        Commands::Test { file, func, filter, vm, native, all_backends, run_one } => {
+            use aipl_core::testrun::{self, Backend};
+            if let Some(k) = run_one {
+                std::process::exit(testrun::run_one_in_vm(Path::new(&file), k)?);
+            }
+            let path = Path::new(&file);
+            let with_tests: Vec<std::path::PathBuf> = testrun::files(path)?.into_iter().filter(|f| !testrun::tests_in(f).is_empty()).collect();
+            if !with_tests.is_empty() {
+                let backends = if all_backends {
+                    vec![Backend::Vm, Backend::Wasm, Backend::Native]
+                } else if vm {
+                    vec![Backend::Vm]
+                } else if native {
+                    vec![Backend::Native]
+                } else {
+                    vec![Backend::Wasm]
+                };
+                let runner = if backends.contains(&Backend::Wasm) { runner_path()? } else { std::path::PathBuf::new() };
+                let me = std::env::current_exe().map_err(|e| e.to_string())?;
+                let (mut passed, mut failed) = (0, 0);
+                for f in &with_tests {
+                    let (p, q) = testrun::run_file(f, filter.as_deref(), &backends, &me, &runner)?;
+                    passed += p;
+                    failed += q;
+                }
+                let n = passed + failed;
+                println!("{n} test{}: {passed} passed, {failed} failed", if n == 1 { "" } else { "s" });
+                std::process::exit(if failed > 0 { 1 } else { 0 });
+            }
+            if path.is_dir() {
+                return Err(format!("{}: no (test ...) in any .aipl file below it", path.display()).into());
+            }
             let module = Resolver::resolve(Path::new(&file))?;
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;

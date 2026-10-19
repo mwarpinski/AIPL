@@ -1781,6 +1781,7 @@
       ((call is_format o) (call check_format c env at o args))
       ((eq o ast.Op.format_piece) (call fail_str c at "format.piece is part of a format string") (call void_t))
       ((eq o ast.Op.format_dbg) (call check_dbg c env at args))
+      ((eq o ast.Op.format_expect) (call check_expect c env at args))
       ((or (eq o ast.Op.try_) (or (eq o ast.Op.try_opt) (eq o ast.Op.try_or)))
        (if (get c C.in_defer)
            (block
@@ -2068,6 +2069,35 @@
         (block))
     (call note_fmt c v t -2)
     t)
+
+  ;; (format.expect "label" c), from a test's (expect c): c a bool; a
+  ;; comparison's left side's type noted for fmtlower (k -5), to show both
+  ;; sides when it fails (checker.rs FormatExpect).
+  (fn check_expect [c:(ptr C) env:(ptr Env) at:i32 args:(arr ast.Expr)] -> ast.Type
+    (let ok:bool (and (eq (arr.len args) 2) (match (arr.get ast.Expr args 0) (ast.Expr.lit_str [_ _] true) (else false))))
+    (if (not ok) (block (call fail_str c at "expect takes one condition, e.g. (expect (eq n 3))") (return (call void_t))) (block))
+    (let cond:ast.Expr (arr.get ast.Expr args 1))
+    (let t:ast.Type (call infer c cond env))
+    (if (get c C.failed) (return (call void_t)) (block))
+    (if (neq (call tag t) 4)
+        (block
+          (let b:(ptr buf.Buf) (call msg c at))
+          (call s b "expect takes a bool, e.g. (expect (eq n 3)), got ") (call ty b t)
+          (call fail c b)
+          (return (call void_t)))
+        (block))
+    (match cond
+      (ast.Expr.op [_ o sides]
+       (if (and (call is_cmp o) (eq (arr.len sides) 2))
+           (block
+             (let st:ast.Type (call infer c (arr.get ast.Expr sides 0) env))
+             (call note_fmt c (arr.get ast.Expr sides 0) st -5))
+           (block)))
+      (else (block)))
+    (call void_t))
+
+  (fn is_cmp [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.eq) (eq o ast.Op.neq)) (or (or (eq o ast.Op.lt) (eq o ast.Op.lte)) (or (eq o ast.Op.gt) (eq o ast.Op.gte)))))
 
   ;; Notes v's type t for fmtlower: k is a piece's index, -1 a format_to
   ;; target, -2 a dbg's value; an enum's members come with it.
@@ -2474,7 +2504,8 @@
     (let roots:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
     (loop k 0 (- (call (vec.len (ptr Fmt)) out) 1) 1
       (let f:(ptr Fmt) (call (vec.at (ptr Fmt)) out k))
-      (if (and (or (gte (get f Fmt.k) 0) (eq (get f Fmt.k) -2))
+      ;; a piece, a dbg's value, an expect's sides
+      (if (and (or (gte (get f Fmt.k) 0) (or (eq (get f Fmt.k) -2) (eq (get f Fmt.k) -5)))
                (and (not (call fmtdebug.printable (get f Fmt.ty))) (call fmtdebug.prints (get f Fmt.ty))))
           (call (vec.push ast.Type) roots (get f Fmt.ty))
           (block)))

@@ -1,6 +1,6 @@
 # Fast feedback without a REPL: doc, eval -e, dbg, test, watch
 
-**Status: approved 2026-10-18, every decision as recommended; F1, F2, F3, and F3b built 2026-10-18; F4 next.** It replaces a REPL as the
+**Status: approved 2026-10-18, every decision as recommended; F1-F4 built 2026-10-18; F5 next.** It replaces a REPL as the
 next developer-experience work. docs/design/REPL_PLAN.md (a wasm
 interpreter in AIPL) stays a separate, later question: it is what would let
 the self-hosted `aipl` run code itself (section 7).
@@ -197,6 +197,17 @@ rows.aipl
   `expect` lowered to calls into a small `std/testing` (as `format` lowers
   into `std/show`). The runner, which instantiates and reports, is in the
   Rust CLI for the reason F2 gives.
+
+As built (2026-10-18): `aipl test` runs tests under aipl-run by default
+(wasm's semantics are the specification), each as `PROGRAM K` in a fresh
+process; the VM runs a test through `aipl test --run-one K --vm`, the same
+binary again, so its output is captured like the others'. `expect` is
+labelled and lowered as `dbg` is: the resolver writes the label from the
+source, the checker notes a comparison's side type, and the lowering binds
+both sides once and prints them only on failure, through the same
+printers (so a struct's fields show). std/testing keeps the failure count
+in runtime cell 24. The call chain of a trap names the test's function,
+`__test_K`.
 
 ## F5. `aipl watch`: the editor as the session
 

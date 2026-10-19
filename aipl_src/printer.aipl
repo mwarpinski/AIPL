@@ -313,4 +313,4 @@
       (ast.Op.str_len "str.len") (ast.Op.str_ptr "str.ptr")
       (ast.Op.format_str "format.str") (ast.Op.format_to "format.to") (ast.Op.format_print "format.print")
       (ast.Op.format_println "format.println") (ast.Op.format_eprintln "format.eprintln") (ast.Op.format_piece "format.piece")
-      (ast.Op.try_ "try") (ast.Op.try_opt "try_opt") (ast.Op.try_or "try_or") (ast.Op.defer "defer") (ast.Op.format_dbg "format.dbg"))))
+      (ast.Op.try_ "try") (ast.Op.try_opt "try_opt") (ast.Op.try_or "try_or") (ast.Op.defer "defer") (ast.Op.format_dbg "format.dbg") (ast.Op.format_expect "format.expect"))))

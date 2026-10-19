@@ -12,4 +12,5 @@ pub mod evalexpr;
 pub mod formats;
 pub mod native;
 pub mod tools;
+pub mod testrun;
 pub mod vm;

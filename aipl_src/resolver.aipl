@@ -62,7 +62,8 @@
                  known:(ptr (map.Map (ptr str.Bytes) i32))
                  paths:(ptr (map.Map (ptr str.Bytes) (ptr str.Bytes)))
                  found:(ptr (map.Map (ptr str.Bytes) (ptr str.Bytes)))
-                 origins:(ptr origins.Origins) vis:(ptr Vis)])
+                 origins:(ptr origins.Origins) vis:(ptr Vis)
+                 tests:bool entry:(ptr Src)])
 
   ;; Host-facing result: ok 1 with the flat source, or ok 0 with an error message.
   (struct Out [ok:i32 addr:i32 len:i32])
@@ -306,7 +307,7 @@
     (let h:(ptr str.Bytes) (call head (get m Mod.src) g))
     (cond
       ((call str.is h "format") 0) ((call str.is h "format_to") 1) ((call str.is h "print") 2)
-      ((call str.is h "println") 3) ((call str.is h "eprintln") 4) ((call str.is h "dbg") 5) (else -1)))
+      ((call str.is h "println") 3) ((call str.is h "eprintln") 4) ((call str.is h "dbg") 5) ((call str.is h "expect") 6) (else -1)))
 
   ;; (dbg e) printed as (format.dbg "FILE:L:C: e" e) (formats.rs split):
   ;; the file's name, the (dbg's line and column, and e as written
@@ -339,6 +340,36 @@
     (call buf.push_byte out 34)
     (call buf.push_byte out 32)
     (call emit m e 0 out)
+    (call note_at m (get g compiler.Node.pos) out)
+    (call buf.push_byte out 41))
+
+  ;; (expect c) printed as (format.expect "FILE:L:C: (expect c)" c)
+  ;; (formats.rs split): labelled with the whole form, as written.
+  (fn emit_expect [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let src:(ptr Src) (get m Mod.src))
+    (let label:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_bytes label (call file_name (get src Src.path)))
+    (let lc:(ptr compiler.LineCol) (unsafe (call compiler.line_col (get (get src Src.text) str.Bytes.addr) (get g compiler.Node.pos))))
+    (call buf.push_byte label 58)
+    (call buf.push_int label (get lc compiler.LineCol.line))
+    (call buf.push_byte label 58)
+    (call buf.push_int label (get lc compiler.LineCol.col))
+    (call buf.push_str label ": ")
+    (call dbg_text (get src Src.text) (get g compiler.Node.pos) label)
+    (call note m g out)
+    (call buf.push_byte out 40)
+    (call note m (call first_child g) out)
+    (call buf.push_str out "format.expect ")
+    (call note m g out)
+    (call buf.push_byte out 34)
+    (let lb:(ptr str.Bytes) (call buf.bytes label))
+    (loop k 0 (- (get lb str.Bytes.len) 1) 1
+      (let c:i32 (call str.byte_at lb k))
+      (if (or (eq c 34) (eq c 92)) (call buf.push_byte out 92) (block))
+      (call buf.push_byte out c))
+    (call buf.push_byte out 34)
+    (call buf.push_byte out 32)
+    (call emit m (call nth g 1) 0 out)
     (call note_at m (get g compiler.Node.pos) out)
     (call buf.push_byte out 41))
 
@@ -486,6 +517,7 @@
 
   (fn emit_group [m:(ptr Mod) g:(ptr compiler.Node) own_role:i32 out:(ptr buf.Buf)] -> void
     (if (and (eq (get m Mod.square) 0) (eq (call format_head m g) 5)) (block (call emit_dbg m g out) (return)) (block))
+    (if (and (eq (get m Mod.square) 0) (eq (call format_head m g) 6)) (block (call emit_expect m g out) (return)) (block))
     (if (and (eq (get m Mod.square) 0) (gte (call format_head m g) 0)) (block (call emit_format m g (call format_head m g) out) (return)) (block))
     (unsafe (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (if square (put m Mod.square (+ (get m Mod.square) 1)) (block))
@@ -1120,12 +1152,29 @@
   ;; The formatting forms' shapes and strings (formats.rs split, which the
   ;; Rust resolver runs as it reads a module): the first error, or null.
   (fn format_error [src:i32 toks:i32 count:i32] -> (ptr buf.Buf)
+    (let te:(ptr buf.Buf) (call test_error src toks count))
+    (if (neq te (ptr.null buf.Buf)) (return te) (block))
     ;; inside a [...] list there are no forms (formats.rs split)
     (unsafe (let square:i32 0)
     (loop i 0 (- count 2) 1
       (if (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
       (if (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
       (let op:i32 (if (and (eq square 0) (eq (call kind_at toks i) compiler.Kind.lparen)) (call form_index src toks (+ i 1)) -1))
+      ;; (expect c): one condition
+      (if (and (eq square 0) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "expect")))
+          (block
+            (let eargs:i32 0)
+            (let ec:i32 (+ i 2))
+            (while (and (lt ec count) (not (call is_closer (call kind_at toks ec))))
+              (set! eargs (+ eargs 1))
+              (set! ec (call skip_form toks ec)))
+            (if (neq eargs 1)
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (call buf.push_str b "expect takes one condition, e.g. (expect (eq n 3))")
+                  (return b))
+                (block)))
+          (block))
       ;; (dbg e): one expression
       (if (and (eq square 0) (and (eq (call kind_at toks i) compiler.Kind.lparen) (call symbol_is src toks (+ i 1) "dbg")))
           (block
@@ -1186,6 +1235,39 @@
                     (return b))
                   (block))))
           (block)))
+    (ptr.null buf.Buf)))
+
+  ;; Each (test "name" body...) item's shape, and expect only inside one
+  ;; (resolver.rs read_module): the first error, or null.
+  (fn test_error [src:i32 toks:i32 count:i32] -> (ptr buf.Buf)
+    (unsafe (let depth:i32 0)
+    (let square:i32 0)
+    (let test_end:i32 -1)
+    (loop i 0 (- count 1) 1
+      (let k:compiler.Kind (call kind_at toks i))
+      (if (eq k compiler.Kind.lbracket) (set! square (+ square 1)) (block))
+      (if (eq k compiler.Kind.rbracket) (set! square (- square 1)) (block))
+      (if (eq k compiler.Kind.lparen)
+          (block
+            (if (and (eq depth 1) (call symbol_is src toks (+ i 1) "test"))
+                (block
+                  (if (neq (call kind_at toks (+ i 2)) compiler.Kind.string)
+                      (block
+                        (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                        (call buf.push_str b "a test is (test \"name\" body...)")
+                        (return b))
+                      (block))
+                  (set! test_end (call skip_form toks i)))
+                (block))
+            (if (and (eq square 0) (and (call symbol_is src toks (+ i 1) "expect") (or (lt test_end 0) (gte i test_end))))
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (call buf.push_str b "expect is only for a test's body: (test \"name\" ... (expect c))")
+                  (return b))
+                (block))
+            (set! depth (+ depth 1)))
+          (block))
+      (if (eq k compiler.Kind.rparen) (set! depth (- depth 1)) (block)))
     (ptr.null buf.Buf)))
 
   ;; The formatting forms: format format_to print println eprintln as 0-4,
@@ -1265,7 +1347,7 @@
     (let vis:(ptr Vis) (get st State.vis))
     (let mark:(ptr compiler.Node) (call first_item src))
     (while (neq mark (ptr.null compiler.Node))
-      (if (not (call eq_lit (call head src mark) "import"))
+      (if (not (or (call eq_lit (call head src mark) "import") (call eq_lit (call head src mark) "test")))
           (block
             (let public:bool (call take_pub m mark))
             (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
@@ -1301,6 +1383,8 @@
          (call buf.push_str (get st State.structs_out) "  ")
          (call emit m item 0 (get st State.structs_out))
          (call buf.push_byte (get st State.structs_out) 10))
+        ;; a test is left out, or in a test build made a function (below)
+        ((call eq_lit h "test") (block))
         ;; anything else but an import goes with the functions, as in
         ;; resolver.rs, where the parser reports what is wrong with it
         ((not (call eq_lit h "import"))
@@ -1310,6 +1394,9 @@
         (else (block)))
       (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
       (set! item (get item compiler.Node.next)))
+    (if (and (get st State.tests) (not (get m Mod.imported)))
+        (if (not (call emit_tests st m)) (return false) (block))
+        (block))
     ;; record this module's templates under their canonical names
     (let t:(ptr (map.Map (ptr str.Bytes) i32)) (get m Mod.templates))
     (loop i 0 (- (call (map.capacity (ptr str.Bytes) i32) t) 1) 1
@@ -1318,6 +1405,73 @@
                 (if (get m Mod.imported) (call concat (call concat (get m Mod.prefix) (call str.from_str ".")) (call (map.slot_key (ptr str.Bytes) i32) t i)) (call (map.slot_key (ptr str.Bytes) i32) t i))
                 1)
           (block)))
+    true)
+
+  ;; A test build's entry (resolver.rs test_functions): test K as (fn
+  ;; __test_K [] -> void body...), and a _start running the one argument 1
+  ;; names, then exiting with its failure count; the generated text at the
+  ;; test's place (the _start's at the first test's).
+  (fn emit_tests [st:(ptr State) m:(ptr Mod)] -> bool
+    (let src:(ptr Src) (get m Mod.src))
+    (let out:(ptr buf.Buf) (get st State.fns_out))
+    (let first:i32 -1)
+    (let arms:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let k:i32 0)
+    (let item:(ptr compiler.Node) (call first_item src))
+    (while (neq item (ptr.null compiler.Node))
+      (if (call eq_lit (call head src item) "test")
+          (block
+            (let at:i32 (get item compiler.Node.pos))
+            (if (lt first 0) (set! first at) (block))
+            (put m Mod.item item)
+            (call buf.push_str out "  ")
+            (call note_at m at out)
+            (call buf.push_str out "(fn __test_")
+            (call buf.push_int out k)
+            (call buf.push_str out " [] -> void")
+            (let c:(ptr compiler.Node) (call nth item 2))
+            (if (eq c (ptr.null compiler.Node))
+                (block (call buf.push_byte out 32) (call note_at m at out) (call buf.push_str out "(block)"))
+                (block))
+            (while (neq c (ptr.null compiler.Node))
+              (call buf.push_byte out 32)
+              (call emit m c 0 out)
+              (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
+              (set! c (get c compiler.Node.next)))
+            (call note_at m at out)
+            (call buf.push_byte out 41)
+            (call buf.push_byte out 10)
+            (call buf.push_str arms " ((eq k ")
+            (call buf.push_int arms k)
+            (call buf.push_str arms ") (call __test_")
+            (call buf.push_int arms k)
+            (call buf.push_str arms "))")
+            (set! k (+ k 1)))
+          (block))
+      (set! item (get item compiler.Node.next)))
+    (if (eq k 0) (return true) (block))
+    ;; a module with its own _start cannot have the one a test build makes
+    (let f:(ptr compiler.Node) (call first_item src))
+    (while (neq f (ptr.null compiler.Node))
+      (if (and (call eq_lit (call head src f) "fn") (call eq_lit (call text src (call nth f 1)) "_start"))
+          (block
+            (let e:(ptr buf.Buf) (get st State.err))
+            (call buf.push_bytes e (get src Src.path))
+            (call buf.push_str e ": ")
+            (let lc:(ptr compiler.LineCol) (unsafe (call compiler.line_col (get (get src Src.text) str.Bytes.addr) (get f compiler.Node.pos))))
+            (call buf.push_int e (get lc compiler.LineCol.line))
+            (call buf.push_byte e 58)
+            (call buf.push_int e (get lc compiler.LineCol.col))
+            (call buf.push_str e ": a test build makes its own _start: test a module without one")
+            (return false))
+          (block))
+      (set! f (get f compiler.Node.next)))
+    (call buf.push_str out "  ")
+    (call note_at m first out)
+    (call buf.push_str out "(fn _start [] -> void (let k:i32 (call os.arg_int 1 -1)) (cond")
+    (call buf.push_bytes out (call buf.bytes arms))
+    (call buf.push_str out " (else (block))) (sys.exit (call testing.status (call testing.failures))))")
+    (call buf.push_byte out 10)
     true)
 
   ;; Hands the module's visibility error to the state; false.
@@ -1359,14 +1513,32 @@
   (fn resolve_imports [st:(ptr State) src:(ptr Src) dir:(ptr str.Bytes)] -> bool
     (let item:(ptr compiler.Node) (call first_item src))
     (let has_show:bool false)
+    (let has_testing:bool false)
+    (let has_os:bool false)
     (let formats:bool false)
+    ;; a test build's entry: its tests are functions (resolver.rs test_functions)
+    (let testing:bool (and (get st State.tests) (eq src (get st State.entry))))
+    (let tests:i32 0)
     (while (neq item (ptr.null compiler.Node))
-      (if (call eq_lit (call head src item) "import")
-          (block
-            (if (call str.is (call module_name (call text src (call nth item 1))) "show") (set! has_show true) (block))
-            (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false)))
-          (if (call uses_formats src item) (set! formats true) (block)))
+      (cond
+        ((call eq_lit (call head src item) "import")
+         (let mn:(ptr str.Bytes) (call module_name (call text src (call nth item 1))))
+         (if (call str.is mn "show") (set! has_show true) (block))
+         (if (call str.is mn "testing") (set! has_testing true) (block))
+         (if (call str.is mn "os") (set! has_os true) (block))
+         (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false)))
+        ;; a test counts only in a test build
+        ((call eq_lit (call head src item) "test")
+         (set! tests (+ tests 1))
+         (if (and testing (call uses_formats src item)) (set! formats true) (block)))
+        (else (if (call uses_formats src item) (set! formats true) (block))))
       (set! item (get item compiler.Node.next)))
+    ;; a test build imports std/testing and std/os, after the module's own
+    (if (and testing (gt tests 0))
+        (block
+          (if (not has_testing) (if (call resolve_module st dir (call str.from_str "testing") (get src Src.path)) (block) (return false)) (block))
+          (if (not has_os) (if (call resolve_module st dir (call str.from_str "os") (get src Src.path)) (block) (return false)) (block)))
+        (block))
     ;; the formatting forms become std/show calls (formats.rs): a module
     ;; that uses one imports it, after its own imports
     (if (and formats (not has_show))
@@ -1378,7 +1550,7 @@
     ;; a [...] list holds no expression (formats.rs uses_formats)
     (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
     (let h:(ptr str.Bytes) (call head src n))
-    (if (or (or (call str.is h "format") (or (call str.is h "format_to") (call str.is h "dbg")))
+    (if (or (or (call str.is h "format") (or (call str.is h "format_to") (or (call str.is h "dbg") (call str.is h "expect"))))
             (or (call str.is h "print") (or (call str.is h "println") (call str.is h "eprintln"))))
         (return true)
         (block))
@@ -1530,10 +1702,22 @@
   ;; The flat program before generic expansion (resolver.rs flatten).
   (fn flatten_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) flat:(ptr buf.Buf) err:(ptr buf.Buf)
                       orig:(ptr origins.Origins)] -> bool (pub)
+    (call flatten_as entry std_dir flat err orig false))
+
+  ;; flatten_mapped for a test build (resolver.rs resolve_tests): the entry's
+  ;; tests are functions, with a _start running one.
+  (fn flatten_tests_mapped [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) flat:(ptr buf.Buf) err:(ptr buf.Buf)
+                            orig:(ptr origins.Origins)] -> bool (pub)
+    (call flatten_as entry std_dir flat err orig true))
+
+  (fn flatten_as [entry:(ptr str.Bytes) std_dir:(ptr str.Bytes) flat:(ptr buf.Buf) err:(ptr buf.Buf)
+                  orig:(ptr origins.Origins) tests:bool] -> bool
     (let src:(ptr Src) (call load entry orig))
     ;; the entry file's name in compiled code's line table is its file name
     (call name_file src (call slice entry (+ (call last_index entry 47) 1) (- (get entry str.Bytes.len) (+ (call last_index entry 47) 1))))
     (let st:(ptr State) (new State))
+    (put st State.tests tests)
+    (put st State.entry src)
     (put st State.origins orig)
     (put st State.entry_dir (call dirname entry))
     (put st State.lib_dirs (call library_dirs std_dir))

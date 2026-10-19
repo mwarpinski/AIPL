@@ -35,13 +35,24 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false))
+
+  ;; compile_file for the file's test build (resolver.rs resolve_tests): its
+  ;; (test ...) items as functions, and a _start running the one its first
+  ;; argument names.
+  (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true))
+
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool] -> (ptr Out)
     (unsafe (let res:(ptr Out) (new Out))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
     (let gen:(ptr origins.Origins) (call origins.make))
     (let pre:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-    (if (not (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig))
+    (if (not (if tests
+                 (call resolver.flatten_tests_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)
+                 (call resolver.flatten_mapped (call str.bytes path_addr path_len) (call str.bytes dirs_addr dirs_len) pre err orig)))
         (block (call put_text res 1 err) (return res))
         (block))
     ;; every template checked once, at placeholders for its type parameters
