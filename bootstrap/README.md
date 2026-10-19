@@ -47,18 +47,27 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-16 by the Rust toolchain, from the source of the commit
-that added generation checks (the compiler's own source uses `ptr.make`
-since then, which the previous seed did not know):
+Built 2026-10-19 by the Rust toolchain, from the source of commit
+61ca2b6 (the standard library through L6), so that the compiler's own
+source can use what the language gained since 2026-10-16: storage types
+(`(arr u8)`, which docs/design/MEMORY_PLAN.md's checked views need),
+`when`, `for`, `and`/`or` of more than two, the formatting forms, `dbg`,
+and `(test ...)`:
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `72a36ea2bdd10795c572916dd5f75ebbd3360984c1b8f841b61729edbe22e923`.
-Building that commit's source with the seed gives the same bytes, so for
-now the seed is its own stage 2.
+sha256 `e2f2b1f53e31cf246b989ec330e75c277f0a19f2d3f69c3113147569f9453169`.
+Building that commit's source with the seed gives the same bytes (stage
+3 is stage 2, and stage 2 is the seed), so for now the seed is its own
+stage 2.
+
+The seed before it (2026-10-16, sha256
+`72a36ea2bdd10795c572916dd5f75ebbd3360984c1b8f841b61729edbe22e923`) was
+built from the commit that added generation checks, whose source first
+used `ptr.make`.
 
 ## Replacing the seed
 

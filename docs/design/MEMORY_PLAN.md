@@ -142,7 +142,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | Step | What | Tests that show it |
 |---|---|---|
 | 0 | Correct the spec now: views are not checked, and `buf.free` does not end them (done 2026-10-19) | the docs check |
-| S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
+| S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 (done 2026-10-19) | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
 | M1 | checked views | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
 | M3 | `(no_leak)` | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
 | M2, M4 | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |

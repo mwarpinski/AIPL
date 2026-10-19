@@ -346,7 +346,7 @@ FAQ or ROADMAP.md.
   order, as `make` already does for value structs, so a missing or extra
   field is a compile error. The compiler's own source can use it only
   after the seed refresh below.
-- [ ] **Refresh the stage-0 seed** (noted 2026-10-18; when, is a decision).
+- [x] **Refresh the stage-0 seed** (done 2026-10-19, for MEMORY_PLAN.md's checked views, which need `(arr u8)`; bootstrap/README.md has the new hash; noted 2026-10-18).
   The compiler's source may use only what bootstrap/aipl-linux-x86_64
   knows, and that seed (2026-10-16) predates `when`, `for`, variadic
   `and`/`or`, `dbg`, `(test ...)`/`expect`, and the formatting forms, so
