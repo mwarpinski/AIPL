@@ -104,10 +104,10 @@ works, so a binary says what it may reach and cannot be talked into more.
 The VM and aipl-run take them at start.
 
 `std/net` wraps sockets as `stream.Reader` and `stream.Writer`, so
-std/http reads and writes over them unchanged. That needs decision 9 of
-MEMORY_PLAN.md first: a stream's callbacks are calls through function
-references, which `(no_leak)` cannot see into until function types can
-carry the promise; with it, a `(no_leak)` handler may use streams.
+std/http reads and writes over them unchanged. A stream's callbacks are
+calls through function references, whose types carry the `(no_leak)`
+promise since decision 9 of MEMORY_PLAN.md (built 2026-10-20), so a
+`(no_leak)` handler may use streams.
 
 ## 4. Fetching
 
@@ -140,7 +140,7 @@ and unaudited until audited.
 ## 5. Order of work
 
 1. **Decision 9** (MEMORY_PLAN.md): `(no_leak)` on function types, so
-   streams can be used in a handler.
+   streams can be used in a handler. Done 2026-10-20.
 2. **`aipl_net_v1`** listen, accept, recv, send, and close, in the three
    backends, with the grants; `std/net` streams over them.
 3. **`std/serve`** and the long-running server (A) in every backend; a

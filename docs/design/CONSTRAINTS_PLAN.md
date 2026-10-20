@@ -194,7 +194,8 @@ Then:
   benchmark move to it.
 - `vec.index_of` gets `(where (cmp.Eq T))`; `vec.sort_by` keeps its
   comparator argument (a sort by a key other than the type's order is
-  normal), and a `vec.sort` with `(where (cmp.Ord T))` joins it.
+  normal), and a `vec.sort` with `(where (cmp.Ord T))` joins it (built
+  2026-10-20).
 - `alloc`, `heap`, and `arena`: `create`, `destroy`, and `alloc` get
   `(where (struct T))`.
 

@@ -604,6 +604,9 @@ fn wasm_toolchain_checks_no_leak_function_types_like_rust() {
         // a (no_leak) function calling through an ordinary signature
         ("through", "(module through\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32 (no_leak)\n    (call_ref (fn [i32] -> i32) f x))\n  (fn main [] -> i32 0))".to_string(),
          "3:5: run is marked (no_leak) but uses a call through a function type without (no_leak), which may keep memory (a signature with (no_leak) takes only functions that keep none)"),
+        // a stream source of its own that keeps memory (std/stream takes only promising ones)
+        ("stream_src", "(module stream_src (import alloc) (import buf) (import str) (import stream)\n  (fn fill [n:i32 into:(ptr buf.Buf)] -> i32\n    (call buf.push_str into (call str.concat \"a\" \"b\"))\n    0)\n  (fn main [] -> i32\n    (let r:(ptr stream.Reader) (call (stream.reader_of i32) (call alloc.default) 0 (ref fill)))\n    0))".to_string(),
+         "6:32: Arg 2 of 'stream.reader_of<i32>' expects (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)), got (fn [i32 (ptr buf.Buf)] -> i32): fill may keep memory (fill calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
         // a call_ref whose signature promises more than the value's type
         ("sig", "(module sig\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32\n    (call_ref (fn [i32] -> i32 (no_leak)) f x))\n  (fn main [] -> i32 0))".to_string(),
          "3:5: call_ref signature (fn [i32] -> i32 (no_leak)) does not match the function's type (fn [i32] -> i32)"),

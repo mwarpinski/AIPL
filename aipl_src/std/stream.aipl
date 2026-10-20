@@ -36,12 +36,13 @@
 
   ;; A source of your own, for its state's type C: fill_fn appends some
   ;; bytes to the buffer it is given and returns how many (0 at the end,
-  ;; negative on an error).
-  (struct (FillOf C) [state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32)])
+  ;; negative on an error). It must keep no memory (its type promises
+  ;; (no_leak), AIPL_SPEC.md 4.G), so a (no_leak) function may read it.
+  (struct (FillOf C) [state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32 (no_leak))])
 
   ;; What a Reader holds for one, whatever C is: the FillOf<C> cell's
   ;; address and the functions that read it back as one.
-  (struct Fill [cell:i32 fill_fn:(fn [i32 (ptr buf.Buf)] -> i32) drop_fn:(fn [alloc.Allocator i32] -> void)
+  (struct Fill [cell:i32 fill_fn:(fn [i32 (ptr buf.Buf)] -> i32 (no_leak)) drop_fn:(fn [alloc.Allocator i32] -> void (no_leak))
                 scratch:(ptr buf.Buf)])
 
   (union Source [(fd n:i32) (memory) (custom f:(ptr Fill))])
@@ -107,7 +108,7 @@
 
   ;; A reader over fill_fn, called with `state` whenever the reader needs
   ;; more bytes.
-  (fn (reader_of C) [a:alloc.Allocator state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32)] -> (ptr Reader) (pub)
+  (fn (reader_of C) [a:alloc.Allocator state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32 (no_leak))] -> (ptr Reader) (pub)
     (let cell:(ptr (FillOf C)) (new (FillOf C) a))
     (put cell (FillOf C) state state)
     (put cell (FillOf C) fill_fn fill_fn)
@@ -120,7 +121,7 @@
 
   (fn (fill_through C) [cell:i32 into:(ptr buf.Buf)] -> i32
     (unsafe (let x:(ptr (FillOf C)) (ptr.cast (FillOf C) cell))
-    (call_ref (fn [C (ptr buf.Buf)] -> i32) (get x (FillOf C) fill_fn) (get x (FillOf C) state) into)))
+    (call_ref (fn [C (ptr buf.Buf)] -> i32 (no_leak)) (get x (FillOf C) fill_fn) (get x (FillOf C) state) into)))
 
   (fn (drop_fill C) [a:alloc.Allocator cell:i32] -> void
     (unsafe (call (alloc.destroy (FillOf C)) a (ptr.cast (FillOf C) cell))))
@@ -164,7 +165,7 @@
   (fn fill_custom [r:(ptr Reader) f:(ptr Fill)] -> i32
     (let sc:(ptr buf.Buf) (get f Fill.scratch))
     (call buf.clear sc)
-    (let got:i32 (call_ref (fn [i32 (ptr buf.Buf)] -> i32) (get f Fill.fill_fn) (get f Fill.cell) sc))
+    (let got:i32 (call_ref (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)) (get f Fill.fill_fn) (get f Fill.cell) sc))
     (if (lt got 0) (return got) (block))
     ;; what it appended, whatever it said
     (let n:i32 (call buf.len sc))
@@ -264,7 +265,7 @@
       (Source.memory (block))
       (Source.custom [f]
         (block
-          (call_ref (fn [alloc.Allocator i32] -> void) (get f Fill.drop_fn) a (get f Fill.cell))
+          (call_ref (fn [alloc.Allocator i32] -> void (no_leak)) (get f Fill.drop_fn) a (get f Fill.cell))
           (call buf.free (get f Fill.scratch))
           (call (alloc.destroy Fill) a f))))
     (when (neq (get r Reader.store) (arr.null u8)) (call (alloc.free_array u8) a (get r Reader.store)))
@@ -273,9 +274,10 @@
   ;; ===== Writing =====
 
   ;; A sink of your own, for its state's type C: write_fn takes the bytes
-  ;; and returns whether it took them all.
-  (struct (DrainOf C) [state:C write_fn:(fn [C str.Bytes] -> bool)])
-  (struct Drain [cell:i32 write_fn:(fn [i32 str.Bytes] -> bool) drop_fn:(fn [alloc.Allocator i32] -> void)])
+  ;; and returns whether it took them all. It must keep no memory, as a
+  ;; source's fill_fn.
+  (struct (DrainOf C) [state:C write_fn:(fn [C str.Bytes] -> bool (no_leak))])
+  (struct Drain [cell:i32 write_fn:(fn [i32 str.Bytes] -> bool (no_leak)) drop_fn:(fn [alloc.Allocator i32] -> void (no_leak))])
 
   (union Sink [(fd n:i32) (buffer) (custom d:(ptr Drain))])
 
@@ -317,7 +319,7 @@
 
   ;; A writer into write_fn, called with `state` and the bytes whenever the
   ;; writer writes out.
-  (fn (writer_of C) [a:alloc.Allocator state:C write_fn:(fn [C str.Bytes] -> bool)] -> (ptr Writer) (pub)
+  (fn (writer_of C) [a:alloc.Allocator state:C write_fn:(fn [C str.Bytes] -> bool (no_leak))] -> (ptr Writer) (pub)
     (let cell:(ptr (DrainOf C)) (new (DrainOf C) a))
     (put cell (DrainOf C) state state)
     (put cell (DrainOf C) write_fn write_fn)
@@ -329,7 +331,7 @@
 
   (fn (drain_through C) [cell:i32 b:str.Bytes] -> bool
     (unsafe (let x:(ptr (DrainOf C)) (ptr.cast (DrainOf C) cell))
-    (call_ref (fn [C str.Bytes] -> bool) (get x (DrainOf C) write_fn) (get x (DrainOf C) state) b)))
+    (call_ref (fn [C str.Bytes] -> bool (no_leak)) (get x (DrainOf C) write_fn) (get x (DrainOf C) state) b)))
 
   (fn (drop_drain C) [a:alloc.Allocator cell:i32] -> void
     (unsafe (call (alloc.destroy (DrainOf C)) a (ptr.cast (DrainOf C) cell))))
@@ -383,7 +385,7 @@
       (Sink.buffer true)
       (Sink.custom [d]
         (block
-          (if (eq n 0) true (call_ref (fn [i32 str.Bytes] -> bool) (get d Drain.write_fn) (get d Drain.cell) (call buf.bytes out)))))))
+          (if (eq n 0) true (call_ref (fn [i32 str.Bytes] -> bool (no_leak)) (get d Drain.write_fn) (get d Drain.cell) (call buf.bytes out)))))))
     (match (get w Writer.sink)
       (Sink.buffer (block))
       (else (call buf.clear out)))
@@ -409,7 +411,7 @@
       (Sink.buffer (block))
       (Sink.custom [d]
         (block
-          (call_ref (fn [alloc.Allocator i32] -> void) (get d Drain.drop_fn) a (get d Drain.cell))
+          (call_ref (fn [alloc.Allocator i32] -> void (no_leak)) (get d Drain.drop_fn) a (get d Drain.cell))
           (call (alloc.destroy Drain) a d)
           (call buf.free (get w Writer.out)))))
     (call (alloc.destroy Writer) a w)

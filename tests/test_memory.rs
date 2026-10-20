@@ -90,3 +90,16 @@ fn a_no_leak_handler_on_a_request_arena_keeps_memory_flat() {
         assert_eq!(stdout, "250000 bytes of replies; arena 4096 bytes after the first request, 4096 after the last\n", "{backend}");
     }
 }
+
+/// (no_leak) through streams (MEMORY_PLAN.md decision 9): a handler reading
+/// a str and a source of its own by lines and writing to a buf and a sink
+/// of its own is accepted, gives the same output in every backend, and run
+/// 1,000 times on an arena reset after each keeps the arena flat.
+#[test]
+fn a_no_leak_handler_reads_and_writes_through_streams() {
+    for (backend, o) in runs("no_leak_stream") {
+        let stdout: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(stdout, "3 lines, 14 bytes; drip 3 lines\ntally 31\nflat\n", "{backend}");
+    }
+}

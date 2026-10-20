@@ -119,9 +119,11 @@ bigint.free gives one back; growing frees the old limbs), so
 float.from_decimal (text.parse_f64, json.parse) and json.write of a
 number keep nothing (10,000 of each move the heap cursor 0 bytes); and
 io.read_fd frees each buffer it outgrows, its view now checked. Left:
-os.arg and os.env (a fresh copy per call); and std/stream, every call of which may leak because a
-custom reader or writer calls through a function reference, which
-decision 9 settles. By design, and documented: str.concat, format,
+os.arg and os.env (a fresh copy per call). std/stream, every call of
+which could leak through a custom reader's or writer's function
+reference, takes only promising ones since decision 9 (2026-10-20:
+tests/aipl/memory/no_leak_stream.aipl, a (no_leak) handler over four
+kinds of stream, flat over 1,000 requests in every backend). By design, and documented: str.concat, format,
 buf.to_str, io.read_file's buffer, the allocators' own cells.
 
 ### M3. `(no_leak)`: a checked promise
@@ -333,4 +335,9 @@ compiler's source can be migrated in the current language.
    call_ref), not inside other types. Branches and compared values meet
    at the type without the promise when that is all they differ in
    (`meet`; tools/run_fuzz.py found the first build refusing
-   `(if c (ref pure) (ref keeps))`). std/stream's switch is next.
+   `(if c (ref pure) (ref keeps))`). std/stream's callbacks take
+   promising types (2026-10-20); vec.sort calls cmp.Ord.compare directly,
+   so a (no_leak) function may sort. **Pending the next seed refresh:**
+   vec.sort_by's and sort_by_with's comparators take promising types too
+   (std/vec is in the compiler's imports, and the seed, from 7a55d99,
+   does not read the (no_leak) clause in a function type).
