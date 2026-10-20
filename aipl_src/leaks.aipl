@@ -29,6 +29,10 @@
   ;; in front).
   (struct Found [(read at:i32) (read text:(ptr buf.Buf))] (pub))
 
+  ;; A call through a function reference whose signature does not promise
+  ;; (no_leak): its target is not known, so it may keep memory.
+  (const THROUGH:str "a call through a function type without (no_leak)")
+
   (fn site [out:(ptr (vec.Vec (ptr Site))) at:i32 call:bool what:str.Bytes inside:bool] -> void
     (let s:(ptr Site) (new Site (call alloc.default)))
     (put s Site.at at)
@@ -84,7 +88,10 @@
        (call walk_all out else_body inside))
       (ast.Expr.return_ [n_return] (let rv:ast.MaybeExpr (get n_return ast.ReturnExpr.val)) (match rv (ast.MaybeExpr.some [x] (call walk out x inside)) (ast.MaybeExpr.none (block))))
       (ast.Expr.call_ref [n_call_ref] (let at:i32 (get n_call_ref ast.CallRefExpr.at)) (let f:ast.Expr (get n_call_ref ast.CallRefExpr.func)) (let args:(arr ast.Expr) (get n_call_ref ast.CallRefExpr.args))
-       (call leak out at "a call through a function reference (its target is not known)" inside)
+       ;; a reference whose type promises (no_leak) keeps no memory
+       ;; (MEMORY_PLAN.md decision 9): the checker let only such a function in
+       (when (not (call promises (get n_call_ref ast.CallRefExpr.sig)))
+         (call leak out at THROUGH inside))
        (call walk out f inside)
        (call walk_all out args inside))
       (ast.Expr.addr [n_addr] (let v:ast.Expr (get n_addr ast.AddrExpr.val)) (call walk out v inside))
@@ -117,10 +124,16 @@
           (block (call buf.push_str b " uses ") (call buf.push_bytes b (get w Why.what)) (return))
           (block (call buf.push_str b " calls ") (call buf.push_bytes b (get w Why.what)) (set! at (get w Why.what))))))
 
-  ;; The errors for the functions marked (no_leak) that may make memory
-  ;; that is never freed, one per function, in the module's order, each at
-  ;; its first offending site.
-  (fn check [m:(ptr ast.Module)] -> (ptr (vec.Vec (ptr Found))) (pub)
+  ;; Whether a function type promises (no_leak).
+  (fn promises [t:ast.Type] -> bool
+    (match t (ast.Type.fn_ [n] (get n ast.FnType.no_leak)) (else false)))
+
+  ;; Which functions may make memory that is never freed, and why
+  ;; (src/leaks.rs Analysis): what checker.aipl needs to type (ref f)
+  ;; (decision 9), and check to give its errors.
+  (struct Analysis [fns:(arr (ptr ast.FnDef)) all:(arr (ptr (vec.Vec (ptr Site)))) why:(ptr (map.Map str.Bytes (ptr Why)))] (pub))
+
+  (fn analyze [m:(ptr ast.Module)] -> (ptr Analysis) (pub)
     (let a:alloc.Allocator (call alloc.default))
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (let n:i32 (arr.len fns))
@@ -150,6 +163,31 @@
           (when (neq found (ptr.null Why))
             (call (map.set str.Bytes (ptr Why)) why name found)
             (set! more true)))))
+    (let an:(ptr Analysis) (new Analysis a))
+    (put an Analysis.fns fns)
+    (put an Analysis.all all)
+    (put an Analysis.why why)
+    an)
+
+  ;; Whether f may make memory that is never freed (a function marked
+  ;; (no_leak) does not, for its callers).
+  (fn may_leak [an:(ptr Analysis) f:str.Bytes] -> bool (pub)
+    (call why_of (get an Analysis.why) f))
+
+  ;; The chain from start down to the allocation, onto b.
+  (fn push_chain [b:(ptr buf.Buf) an:(ptr Analysis) start:str.Bytes] -> void (pub)
+    (call chain b (get an Analysis.why) start))
+
+  ;; The errors for the functions marked (no_leak) that may make memory
+  ;; that is never freed, one per function, in the module's order, each at
+  ;; its first offending site.
+  (fn check [m:(ptr ast.Module)] -> (ptr (vec.Vec (ptr Found))) (pub)
+    (let a:alloc.Allocator (call alloc.default))
+    (let an:(ptr Analysis) (call analyze m))
+    (let fns:(arr (ptr ast.FnDef)) (get an Analysis.fns))
+    (let n:i32 (arr.len fns))
+    (let all:(arr (ptr (vec.Vec (ptr Site)))) (get an Analysis.all))
+    (let why:(ptr (map.Map str.Bytes (ptr Why))) (get an Analysis.why))
     (let out:(ptr (vec.Vec (ptr Found))) (call (vec.make (ptr Found)) a 4))
     (for k 0 n
       (let f:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
@@ -176,7 +214,9 @@
               (block
                 (call buf.push_str b "uses ")
                 (call buf.push_bytes b (get hit Site.what))
-                (call buf.push_str b ", whose memory is never freed")))
+                (if (call str.bytes_eq (get hit Site.what) (call str.from_str THROUGH))
+                    (call buf.push_str b ", which may keep memory (a signature with (no_leak) takes only functions that keep none)")
+                    (call buf.push_str b ", whose memory is never freed"))))
           (let fd:(ptr Found) (new Found a))
           (put fd Found.at (get hit Site.at))
           (put fd Found.text b)

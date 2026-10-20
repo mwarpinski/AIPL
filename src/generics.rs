@@ -542,9 +542,10 @@ fn type_name(sx: &Sx) -> Result<String, String> {
     }
     let items = sx.items();
     match sx.head() {
-        Some("fn") if items.len() == 4 => {
+        Some("fn") if items.len() == 4 || items.len() == 5 => {
             let params = items[1].items().iter().map(type_name).collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("fn<{}->{}>", params.join(","), type_name(&items[3])?))
+            let promise = if items.len() == 5 { ",no_leak" } else { "" };
+            Ok(format!("fn<{}->{}{}>", params.join(","), type_name(&items[3])?, promise))
         }
         Some(h) if items.len() > 1 => {
             let args = items[1..].iter().map(type_name).collect::<Result<Vec<_>, _>>()?;

@@ -1033,7 +1033,7 @@ impl VM {
                 };
                 Ok(Value::Int(v))
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                 if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -1128,7 +1128,7 @@ impl VM {
                 mem.bytes[addr..addr + w].copy_from_slice(&v.to_le_bytes()[..w]);
                 Ok(())
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) | Type::Str => {
                 if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }

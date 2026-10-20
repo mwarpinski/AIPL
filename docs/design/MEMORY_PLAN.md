@@ -305,11 +305,32 @@ compiler's source can be migrated in the current language.
    raise it only if the showcase programs keep reaching it.
 9. **`(no_leak)` on function types (decided 2026-10-19, to build before
    M5).** A function reference's type may carry the promise, `(fn [C
-   (ptr buf.Buf)] -> i32 (no_leak))`: `(ref f)` gives that type only for
-   an f marked `(no_leak)`, and a `call_ref` through it is not a site
-   that may leak. std/stream's custom readers and writers take such
+   (ptr buf.Buf)] -> i32 (no_leak))`: `(ref f)` gives that type for an f
+   the checker proves keeps no memory (below), and a `call_ref` through
+   it is not a site that may leak. std/stream's custom readers and writers take such
    types, so a `(no_leak)` handler may use streams; until then it reads
    from buffers (std/http parses from one). Chosen over trusting the
    callback (a hole in the promise) because the promise is then written
    where the callback is passed, and checked there, with the error at
    the function that would leak.
+   **Which functions fit such a slot (decided 2026-10-19): any the
+   checker proves keeps no memory.** `(ref f)` has the promising type
+   when f is marked `(no_leak)` or, unmarked, is inferred not to leak
+   (the inference that names a may-leak chain today), so a small
+   callback needs no mark. A function that may leak is refused there,
+   with the chain down to the allocation ("f may keep memory: it calls
+   str.concat, which makes a str that is never freed"). A promising value
+   fits an ordinary slot too (dropping a promise is always safe), never
+   the reverse. Chosen over requiring the mark (more explicit, but
+   busywork for every comparison function) and over accepting any
+   function (the promise could be false).
+   **Built 2026-10-19** in both toolchains (src/checker.rs `fits`,
+   src/leaks.rs; aipl_src/checker.aipl, leaks.aipl, generics.aipl):
+   AIPL_SPEC.md 4.G; tests/aipl/memory/no_leak_slots.aipl through the
+   wasm toolchain at the Rust toolchain's bytes, and each refusal word
+   for word (test_resolver_aipl.rs). The promise counts only for the
+   whole value (fits at let, set!, put, make, arguments, returns, and
+   call_ref), not inside other types. Branches and compared values meet
+   at the type without the promise when that is all they differ in
+   (`meet`; tools/run_fuzz.py found the first build refusing
+   `(if c (ref pure) (ref keeps))`). std/stream's switch is next.

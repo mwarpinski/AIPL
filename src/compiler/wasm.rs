@@ -67,7 +67,7 @@ impl WasmCompiler {
         let mut fn_types: HashMap<String, Type> = HashMap::new();
         for f in &module.functions {
             let params = f.params.iter().map(|(_, t)| t.clone()).collect();
-            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone())));
+            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone()), false));
         }
         let mut uses_refs = false;
         let mut ref_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = Vec::new();
@@ -703,7 +703,7 @@ fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, Strin
 /// The wasm params/results of a `(fn [...] -> r)` type.
 fn wasm_signature(sig: &Type, structs: &crate::checker::Structs) -> (Vec<ValType>, Vec<ValType>) {
     match sig {
-        Type::Fn(params, ret) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
+        Type::Fn(params, ret, _) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
         _ => (vec![], vec![]),
     }
 }
@@ -1200,7 +1200,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => Type::Void,
         Expr::CallRef { sig, .. } => match sig {
-            Type::Fn(_, ret) => (**ret).clone(),
+            Type::Fn(_, ret, _) => (**ret).clone(),
             _ => Type::I32,
         },
         Expr::ArrGet { elem_ty, .. } => crate::checker::value_of(elem_ty),
@@ -1353,8 +1353,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Ne,
         // pointers and arrays: address and generation (a cast of 0 is null)
         (OpCode::Eq, Type::Ptr(_) | Type::Array(_)) => I64Eq,
         (OpCode::Neq, Type::Ptr(_) | Type::Array(_)) => I64Ne,
@@ -1605,7 +1605,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         // the high half (docs/design/GENERATIONS_PLAN.md).
         Type::Ptr(_) | Type::Array(_) => ValType::I64,
         // Results, unions, and function refs are i32 addresses/indices.
-        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
+        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => ValType::I32,
     }
 }
 
@@ -2379,7 +2379,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2443,7 +2443,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2593,7 +2593,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -2646,7 +2646,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 | Type::Ptr(_) | Type::Array(_) => {
@@ -3100,7 +3100,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Addr { .. }
         | Expr::Ref { .. } => false,
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
-        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
+        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret, _) if **ret == Type::Void),
     }
 }
 
@@ -3671,7 +3671,7 @@ enum MsgItem {
 fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
     match ty {
         Type::Union(_) => None,
-        Type::I32 | Type::Enum(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
+        Type::I32 | Type::Enum(_) | Type::Fn(..) => Some(MsgItem::Int(name.to_string())),
         Type::I64 => Some(MsgItem::Long(name.to_string())),
         Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Addr(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),

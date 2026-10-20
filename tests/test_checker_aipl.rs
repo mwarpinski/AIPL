@@ -529,6 +529,11 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32\u{000C}0))",
     "(module m (fn f [] -> i32\n  (+ é\u{00A0}1)))",
     "(module m\n  (fn f [] -> i32\n    (let s:str \"é日\")\n    (foo s)))",
+    // a function type's only clause is (no_leak) (MEMORY_PLAN.md decision 9)
+    "(module m (fn f [g:(fn [i32] -> i32 (nope))] -> i32 0))",
+    "(module m (fn f [g:(fn [i32] -> i32 (no_leak x))] -> i32 0))",
+    "(module m (fn f [g:(fn [i32] -> i32 no_leak)] -> i32 0))",
+    "(module m (fn f [g:(fn [i32] -> i32 (no_leak) (no_leak))] -> i32 0))",
 ];
 
 #[test]
@@ -708,6 +713,17 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// form, and definitions; full modules or bodies of `main` (wrapped with
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
+    // (no_leak) in function types: branches and compared values meet at the
+    // type without the promise (MEMORY_PLAN.md decision 9; tools/run_fuzz.py)
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (let g:(fn [i32] -> i32) (if true (ref pure) (ref keeps))) (call_ref (fn [i32] -> i32) g 1)))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (call take (if true (ref pure) (ref keeps)))))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (call take (if true (ref pure) (ref pure)))))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (if (eq (ref pure) (ref keeps)) 1 0)))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (if (lt (ref pure) (ref keeps)) 1 0)))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (call take (match_result (ok:bool 1) (ok a (ref pure)) (err e (ref keeps))))))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (enum E [a b c]) (fn main [] -> i32 (call take (match E.a (E.a (ref pure)) (E.b (ref pure)) (E.c (ref keeps))))))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (enum E [a b c]) (fn main [] -> i32 (call_ref (fn [i32] -> i32) (match E.a (E.a (ref pure)) (E.b (ref keeps)) (E.c (ref pure))) 1)))",
+    "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn two [x:i32 y:i32] -> i32 x) (fn main [] -> i32 (if (eq (ref pure) (ref two)) 1 0)))",
     // result payloads: any type but void
     "M:(module m (fn g [] -> void (block)) (fn main [] -> i32 (match_result (ok:i32 (call g)) (ok a 0) (err b 0))))",
     "M:(module m (fn main [] -> i32 (match_result (err:f64 5i64) (ok a (i32.wrap (i64.trunc_f64_s a))) (err b (i32.wrap b)))))",

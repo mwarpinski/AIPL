@@ -17,7 +17,9 @@ pub enum Type {
     ResultType(Box<Type>, Box<Type>),
     /// `(arr T)`: an `arr.new` array of `T`, whose length sits in the 4 bytes before it.
     Array(Box<Type>),
-    Fn(Vec<Type>, Box<Type>),
+    /// `(fn [params] -> ret)`, and with `(no_leak)` (true) a reference to
+    /// a function the checker proves keeps no memory (MEMORY_PLAN.md decision 9).
+    Fn(Vec<Type>, Box<Type>, bool),
     /// A value of the enum named (`(enum Name [members])`, AIPL_SPEC.md 4.I):
     /// an `i32` at run time, a distinct type to the checker.
     Enum(String),

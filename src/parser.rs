@@ -1023,8 +1023,19 @@ impl Parser {
                     self.expect_kind(TokenKind::RBracket)?;
                     self.expect_kind(TokenKind::Arrow)?;
                     let ret = self.parse_type()?;
+                    // (fn [..] -> r (no_leak)): only functions that keep no memory
+                    let no_leak = self.peek_kind() == Some(&TokenKind::LParen);
+                    if no_leak {
+                        self.expect_kind(TokenKind::LParen)?;
+                        let (l, c) = self.cur_pos();
+                        let w = self.expect_symbol("(no_leak) in a function type", (l, c))?;
+                        if w != "no_leak" {
+                            return Err(format!("{}:{}: a function type is (fn [params] -> ret), or (fn [params] -> ret (no_leak)); got ({} ...)", l, c, w));
+                        }
+                        self.expect_kind(TokenKind::RParen)?;
+                    }
                     self.expect_kind(TokenKind::RParen)?;
-                    Ok(Type::Fn(params, Box::new(ret)))
+                    Ok(Type::Fn(params, Box::new(ret), no_leak))
                 } else if kind == "ptr" {
                     let name = self.expect_symbol("struct name in (ptr S)", (line, col))?;
                     if parse_scalar_type_str(&name, (line, col)).is_ok() {

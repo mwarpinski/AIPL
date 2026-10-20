@@ -139,6 +139,7 @@
          (call print_type b (arr.get ast.Type params j)))
        (call s b "] -> ")
        (call print_type b ret)
+       (if (get n_fn ast.FnType.no_leak) (call s b " (no_leak)") (block))
        (call s b ")"))
       (ast.Type.enum_ [name] (call by b name))
       (ast.Type.union_ [name] (call by b name))))
