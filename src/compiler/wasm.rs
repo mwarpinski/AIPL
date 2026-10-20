@@ -108,11 +108,13 @@ impl WasmCompiler {
         }
         let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
         // A module with a zero-argument `main` and no `_start` of its own gets
-        // a WASI command entry point: `_start` calls `main` and discards its
-        // result (exit status 0 unless the program calls sys.exit). It comes
-        // after every other function, with its own [] -> [] type.
-        let main_fn = module.functions.iter().position(|f| f.name == "main" && f.params.is_empty());
-        let auto_start = main_fn.is_some() && !module.functions.iter().any(|f| f.name == "_start");
+        // a WASI command entry point: `_start` calls `main`, whose value is the
+        // exit status (AIPL_SPEC.md 6.5): an i32 is proc_exit'ed unless it is
+        // 0; a (result i32 str)'s ok likewise, and its err's message is
+        // written to fd 2 with a newline, then proc_exit(1). It comes after
+        // every other function, with its own [] -> [] type.
+        let main_fn = start_entry(module);
+        let auto_start = main_fn.is_some();
         let start_fn = import_count + n_user + if threaded { 2 } else { 0 };
         if auto_start {
             let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 };
@@ -361,10 +363,67 @@ impl WasmCompiler {
             }
         }
         if let (true, Some(m)) = (auto_start, main_fn) {
-            let mut f = Body::new(vec![]);
+            let ret = &module.functions[m].return_type;
+            let status = *ret == Type::I32;
+            let result = is_result_main(ret);
+            let mut f = Body::new(if result { vec![(2, ValType::I32)] } else if status { vec![(1, ValType::I32)] } else { vec![] });
             f.instruction(&Instruction::Call(import_count + m as u32));
-            for _ in 0..width(&module.functions[m].return_type, &structs) {
-                f.instruction(&Instruction::Drop);
+            if status || result {
+                let proc_exit = wasi_indices[&Wasi::ProcExit];
+                if result {
+                    // [tag, slot]: tag 0 is ok, its slot the status; else the
+                    // slot is err's str, written to fd 2 as sys.print writes
+                    let fd_write = wasi_indices[&Wasi::FdWrite];
+                    let rt = |f: &mut Body, cell: i32| {
+                        if threaded {
+                            f.instruction(&Instruction::GlobalGet(0));
+                            if cell != RT_IOV0_BUF {
+                                f.instruction(&Instruction::I32Const(cell - RT_IOV0_BUF));
+                                f.instruction(&Instruction::I32Add);
+                            }
+                        } else {
+                            f.instruction(&Instruction::I32Const(cell));
+                        }
+                    };
+                    f.instruction(&Instruction::LocalSet(1));
+                    f.instruction(&Instruction::If(BlockType::Empty));
+                    rt(&mut f, RT_IOV0_BUF);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV0_LEN);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Const(4));
+                    f.instruction(&Instruction::I32Sub);
+                    f.instruction(&Instruction::I32Load(M4));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_BUF);
+                    f.instruction(&Instruction::I32Const(newline_addr as i32));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_LEN);
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    for iov in [RT_IOV0_BUF, RT_IOV1_BUF] {
+                        f.instruction(&Instruction::I32Const(2));
+                        rt(&mut f, iov);
+                        f.instruction(&Instruction::I32Const(1));
+                        rt(&mut f, RT_NBYTES);
+                        f.instruction(&Instruction::Call(fd_write));
+                        f.instruction(&Instruction::Drop);
+                    }
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::Call(proc_exit));
+                    f.instruction(&Instruction::End);
+                    f.instruction(&Instruction::LocalGet(1));
+                }
+                f.instruction(&Instruction::LocalTee(0));
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(0));
+                f.instruction(&Instruction::Call(proc_exit));
+                f.instruction(&Instruction::End);
+            } else {
+                for _ in 0..width(&module.functions[m].return_type, &structs) {
+                    f.instruction(&Instruction::Drop);
+                }
             }
             f.instruction(&Instruction::End);
             codes.function(&f.f);
@@ -3882,7 +3941,9 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
         addr
     };
     let mut newline_addr = 0u32;
-    if collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+    // sys.print ends each line with it, and _start a result main's err
+    let result_main = start_entry(module).is_some_and(|m| is_result_main(&module.functions[m].return_type));
+    if (collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint)) || result_main {
         newline_addr = intern("\n", &mut blob, &mut addrs);
     }
     walk_module(module, &mut |e| {
@@ -4304,9 +4365,34 @@ fn module_uses_op(module: &Module, wanted: &OpCode) -> bool {
     found
 }
 
-/// The WASI functions this module needs, in a fixed canonical order.
+/// The function a compiler-made `_start` calls: a zero-argument `main`,
+/// unless the module has a `_start` of its own.
+fn start_entry(module: &Module) -> Option<usize> {
+    if module.functions.iter().any(|f| f.name == "_start") {
+        return None;
+    }
+    module.functions.iter().position(|f| f.name == "main" && f.params.is_empty())
+}
+
+/// A main returning (result i32 str) (AIPL_SPEC.md 6.5).
+fn is_result_main(ret: &Type) -> bool {
+    matches!(ret, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str)
+}
+
+/// The WASI functions this module needs, in a fixed canonical order:
+/// proc_exit too when `_start` exits with main's status, and fd_write when
+/// it may write a result main's err.
 fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
     let mut set: Vec<Wasi> = Vec::new();
+    if let Some(m) = start_entry(module) {
+        let ret = &module.functions[m].return_type;
+        if *ret == Type::I32 || is_result_main(ret) {
+            set.push(Wasi::ProcExit);
+        }
+        if is_result_main(ret) {
+            set.push(Wasi::FdWrite);
+        }
+    }
     walk_module(module, &mut |e| {
         if let Expr::Op { op, .. } = e {
             if let Some(w) = Wasi::for_op(op) {

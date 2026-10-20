@@ -463,7 +463,7 @@ fn allocating_programs_match_natively() {
         include_str!("../examples/quicksort.aipl"),
         &[],
         &[
-            ("main", &[]), ("median3", &[1, 5, 3]), ("median3", &[9, 2, 4]),
+            ("median3", &[1, 5, 3]), ("median3", &[9, 2, 4]),
             ("sorted_median", &[1000, 42]), ("sorted_median", &[1, 7]), ("handles_sorted_and_equal", &[500]),
         ],
     );
@@ -471,7 +471,7 @@ fn allocating_programs_match_natively() {
         "accounts",
         include_str!("../examples/accounts.aipl"),
         &[],
-        &[("main", &[]), ("frozen_is_atomic", &[]), ("simulate", &[100, 7, 20]), ("simulate", &[10, 5, 3])],
+        &[("frozen_is_atomic", &[]), ("simulate", &[10000, 2500, 3]), ("simulate", &[10000, 2500, 5]), ("simulate", &[100, 7, 20]), ("simulate", &[10, 5, 3])],
     );
 }
 

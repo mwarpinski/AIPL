@@ -59,7 +59,7 @@
       (Shape.circle [r] (* 3.0 (* r r)))
       (Shape.box [w h] (f64.convert_i64_s (i64.extend_s (* w h))))))
 
-  (fn main [] -> i32
+  (fn checksum [] -> i32
     (let total:f64 0.0)
     ;; a variable, matched in place
     (let h:(result i32 i32) (call halve 10))
@@ -95,4 +95,7 @@
     ;; a result through a value if, held in a variable
     (let pick:(result i32 i32) (if (gt total 100.0) (ok:i32 9) (err:i32 0)))
     (match_result pick (ok v (set! total (+ total (f64.convert_i64_s (i64.extend_s v))))) (err e (block)))  ;; +9 = 260.5
-    (i32.wrap (i64.trunc_f64_s (* total 2.0)))))                       ;; 521
+    (i32.wrap (i64.trunc_f64_s (* total 2.0))))                        ;; 521
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

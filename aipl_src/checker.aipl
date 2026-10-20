@@ -880,6 +880,14 @@
 
   ;; ===== Functions =====
 
+  ;; Whether t is a type main may return: i32, void, or (result i32 str).
+  (fn gives_status [t:ast.Type] -> bool
+    (match t
+      (ast.Type.i32 true)
+      (ast.Type.void true)
+      (ast.Type.result [r] (and (call teq (get r ast.ResultType.ok) (call i32_t)) (call teq (get r ast.ResultType.err) (make ast.Type.str))))
+      (else false)))
+
   (fn check_fn [c:(ptr C) f:(ptr ast.FnDef)] -> void
     (put c C.in_unsafe_fn (get f ast.FnDef.unsafe_))
     (put c C.unsafe_depth 0)
@@ -902,6 +910,14 @@
     (if (neq rb (ptr.null buf.Buf))
         (block (call s rb " (return type of '") (call by rb (call names.shown fname)) (call s rb "')") (call fail c rb) (return))
         (block))
+    ;; the program's main gives its exit status (checker.rs check_fn_def)
+    (when (and (call str.bytes_eq fname (call str.from_str "main"))
+               (and (eq (arr.len ps) 0) (not (call gives_status (get f ast.FnDef.ret)))))
+      (let b:(ptr buf.Buf) (call msg c at))
+      (call s b "main gives the program's exit status: it returns i32 (0 for success, 1-125 for a failure), (result i32 str) (ok with the status, or err with a message, printed to stderr, and status 1), or void (status 0); got ")
+      (call ty b (get f ast.FnDef.ret))
+      (call fail c b)
+      (return))
     ;; contracts
     (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
     (loop k 0 (- (arr.len cs) 1) 1

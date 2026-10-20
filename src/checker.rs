@@ -1027,6 +1027,15 @@ fn fits(got: &Type, want: &Type) -> bool {
         }
         self.validate_type(&f.return_type, f.span)
             .map_err(|e| format!("{} (return type of '{}')", e, shown(&f.name)))?;
+        // the program's main gives its exit status (AIPL_SPEC.md 6.5)
+        let status = matches!(&f.return_type, Type::I32 | Type::Void)
+            || matches!(&f.return_type, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str);
+        if f.name == "main" && f.params.is_empty() && !status {
+            return Err(format!(
+                "{}:{}: main gives the program's exit status: it returns i32 (0 for success, 1-125 for a failure), (result i32 str) (ok with the status, or err with a message, printed to stderr, and status 1), or void (status 0); got {}",
+                f.span.0, f.span.1, f.return_type
+            ));
+        }
 
         // Check contracts
         for c in &f.contracts {

@@ -35,7 +35,7 @@
   (fn found [ok:bool] -> (result Vec3 i32)
     (if ok (ok:i32 (make Vec3 1.0 2.0 3.0)) (err:Vec3 7)))
 
-  (fn main [] -> i32
+  (fn checksum [] -> i32
     (let a:Vec3 (make Vec3 1.0 2.0 3.0))
     (let b:Vec3 (with a Vec3.y 20.0))
     (let c:Vec3 (call add a b))                          ;; (2 22 6)
@@ -72,4 +72,7 @@
     (let s:Step (make Step Dir.south 3 true))
     (if (and (get s Step.on) (eq (get s Step.dir) Dir.south)) (set! total (+ total (f64.convert_i64_s (i64.extend_s (get s Step.len))))) (block))  ;; +3
     ;; 30 + 20 + 7.5 + 4 + 9 + 6 + 1 + 48 + 20 + 4.5 + 6.25 + 3 + 3 = 162.25
-    (i32.wrap (i64.trunc_f64_s (* total 4.0)))))                 ;; 649
+    (i32.wrap (i64.trunc_f64_s (* total 4.0))))                  ;; 649
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

@@ -36,7 +36,7 @@ fn check(name: &str, src: &str) -> Result<aipl_core::ast::Module, String> {
 }
 
 /// main's result under wasmtime, or the trap's message.
-fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+fn wasm_call(wasm: &[u8], name: &str) -> Result<i32, String> {
     use wasmtime::{Engine, Linker, Module, Store};
     use wasmtime_wasi::p1::WasiP1Ctx;
     let engine = Engine::default();
@@ -45,8 +45,12 @@ fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).unwrap();
-    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    let main = inst.get_typed_func::<(), i32>(&mut store, name).unwrap();
     main.call(&mut store, ()).map_err(|e| format!("{e:?}"))
+}
+
+fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+    wasm_call(wasm, "main")
 }
 
 /// tests/aipl/sum_types.aipl built as a native executable, through a
@@ -61,7 +65,7 @@ fn native_main() -> Option<i32> {
         std::fs::copy(root().join("tests/aipl").join(f), dir.join(f)).unwrap();
     }
     let wrap = dir.join("wrap.aipl");
-    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call sum_types.main)) 0))").unwrap();
+    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call sum_types.checksum)) 0))").unwrap();
     let m = Resolver::resolve(&wrap).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let exe = dir.join("prog");
@@ -85,9 +89,9 @@ fn sum_types_agree_in_every_backend() {
     TypeChecker::new().check_module(&module).unwrap();
     let mut vm = VM::new();
     vm.load_module(module.clone());
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(1103));
+    assert_eq!(vm.invoke("checksum", vec![]).unwrap(), Value::Int(1103));
     let wasm = WasmCompiler::compile(&module).unwrap();
-    assert_eq!(wasm_main(&wasm), Ok(1103));
+    assert_eq!(wasm_call(&wasm, "checksum"), Ok(1103));
     if let Some(n) = native_main() {
         assert_eq!(n, 1103);
     }

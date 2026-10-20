@@ -3,6 +3,8 @@
 ;; same code without the checks). Every function here is compared between the
 ;; VM and wasmtime by tests/test_differential.rs.
 (module math_core
+  (import buf)
+  (import alloc)
   (fn clamp [v:i32 lo:i32 hi:i32] -> i32
     (req (lte lo hi))
     (ens (and (gte res lo) (lte res hi)))
@@ -65,7 +67,12 @@
     (req (and (gte sensitivity 0) (lte sensitivity 100)))
     (gt (call clamp (call weighted_average load peak sensitivity) 10 2147483647) 75))
 
+  ;; One line per result, built in a buffer and printed at the end.
   (fn main [] -> i32
-    ;; 6 + 25 + 168 + 1 = 200
-    (+ (call gcd 48 18) (+ (call isqrt 625) (+ (call count_primes 1000)
-       (if (call should_throttle 90 80 50) 1 0))))))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 128))
+    (call buf.push_str out "gcd 48 18 = ") (call buf.push_int out (call gcd 48 18)) (call buf.push_byte out 10)
+    (call buf.push_str out "isqrt 625 = ") (call buf.push_int out (call isqrt 625)) (call buf.push_byte out 10)
+    (call buf.push_str out "primes below 1000: ") (call buf.push_int out (call count_primes 1000)) (call buf.push_byte out 10)
+    (call buf.push_str out "throttle at 90, 80, 50: ") (call buf.push_str out (if (call should_throttle 90 80 50) "yes" "no")) (call buf.push_byte out 10)
+    (call buf.print out)
+    0))

@@ -358,8 +358,11 @@ fn wasm_driver_is_a_wasi_command() {
     assert_eq!(status, 0);
     let engine = wasmtime::Engine::default();
     let m = wasmtime::Module::new(&engine, std::fs::read(work.join("app.wasm")).unwrap()).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let inst = wasmtime::Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
     assert_eq!(main.call(&mut store, ()).unwrap(), 10);
 

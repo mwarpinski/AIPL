@@ -2627,6 +2627,30 @@
           0)
         0))
 
+  ;; Whether node n is the symbol spelled s.
+  (fn node_is [cg:(ptr Cg) n:(ptr compiler.Node) s:str] -> bool
+    (unsafe (and (eq (call node_kind n) compiler.Kind.symbol) (call sym_eq cg (call node_a n) (call node_b n) (str.ptr s) (str.len s)))))
+
+  ;; What a compiler-made _start does with main's value (wasm.rs
+  ;; start_entry, is_result_main): 0 if there is no such _start, or main
+  ;; returns void; 1 if it returns i32, the status; 2 if it returns
+  ;; (result i32 str) (the checker allows no other result for main).
+  (fn start_kind [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
+    (let main:(ptr compiler.Node) (ptr.null compiler.Node))
+    (let item:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq item (ptr.null compiler.Node))
+      (when (and (eq (call node_kind item) compiler.Kind.paren) (eq (call group_head_keyword cg item) Kw.fn))
+        (let name:(ptr compiler.Node) (call nth_child item 1))
+        (when (call node_is cg name "_start") (return 0))
+        (when (and (call node_is cg name "main") (eq (call first_child (call nth_child item 2)) (ptr.null compiler.Node)))
+          (set! main item)))
+      (set! item (call node_next item)))
+    (when (eq main (ptr.null compiler.Node)) (return 0))
+    (let ret:(ptr compiler.Node) (call nth_child main 4))
+    (cond ((call node_is cg ret "i32") 1)
+          ((eq (call group_head_keyword cg ret) Kw.ty_result) 2)
+          (else 0)))
+
   (fn walk_module_prepass [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     ;; Pass 1: WASI detection
     (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
@@ -2639,11 +2663,15 @@
               (set! bchild (call node_next bchild))))
           (block))
       (set! child (call node_next child)))
+    (let sk:i32 (call start_kind cg root))
+    (if (gt sk 0) (call mark_wasi_used cg Wasi.proc_exit) 0)
+    (if (eq sk 2) (call mark_wasi_used cg Wasi.fd_write) 0)
 
     (call finalize_wasi_indices cg)
 
-    ;; Pass 2: Intern newline if sys.print is present and fd_write used
-    (if (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root))
+    ;; Pass 2: Intern newline if sys.print is present and fd_write used, or
+    ;; _start may write a result main's err
+    (if (or (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root)) (eq sk 2))
         (block (call intern_newline cg) 0)
         0)
 
@@ -5493,12 +5521,58 @@
         (block))
     (if auto_start
         (block
-          ;; no locals; call main; drop a non-void result; end
+          ;; call main; its value is the exit status (wasm.rs auto_start): an
+          ;; i32 is proc_exit'ed unless it is 0; a (result i32 str)'s ok
+          ;; likewise, and its err written to fd 2 with a newline, then
+          ;; proc_exit(1); anything else dropped; end
           (let fc:(ptr Out) (call out_at fcode_scratch))
-          (call put_byte fc 0)
-          (call emit_call fc (+ imports main_idx))
           (let main_fn:(ptr FnInfo) (call func_entry_ptr cg main_idx))
-          (loop k 1 (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1 (call put_op fc OP_DROP))
+          (let kind:i32 (call start_kind cg root))
+          (cond ((eq kind 2) (call put_u32 fc 1) (call put_u32 fc 2) (call put_byte fc 127))
+                ((eq kind 1) (call put_u32 fc 1) (call put_u32 fc 1) (call put_byte fc 127))
+                (else (call put_byte fc 0)))
+          (call emit_call fc (+ imports main_idx))
+          (when (eq kind 2)
+            ;; [tag, slot]: tag 0 is ok, its slot the status; else the slot
+            ;; is err's str, written to fd 2 as sys.print writes
+            (call emit_local_set fc 1)
+            (call put_op fc OP_IF)
+            (call put_byte fc BLOCK_EMPTY)
+            (call emit_rt cg fc 64)
+            (call emit_local_get fc 1)
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 68)
+            (call emit_local_get fc 1)
+            (call emit_i32_const fc 4)
+            (call put_op fc OP_I32_SUB)
+            (call emit_memop fc OP_I32_LOAD 2)
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 72)
+            (call emit_i32_const fc (get cg Cg.newline))
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 76)
+            (call emit_i32_const fc 1)
+            (call emit_memop fc OP_I32_STORE 2)
+            (for k 0 2
+              (call emit_i32_const fc 2)
+              (call emit_rt cg fc (if (eq k 0) 64 72))
+              (call emit_i32_const fc 1)
+              (call emit_rt cg fc 80)
+              (call emit_call fc (call get_wasi_index cg Wasi.fd_write))
+              (call put_op fc OP_DROP))
+            (call emit_i32_const fc 1)
+            (call emit_call fc (call get_wasi_index cg Wasi.proc_exit))
+            (call put_op fc OP_END)
+            (call emit_local_get fc 1))
+          (if (gt kind 0)
+              (block
+                (call emit_local_tee fc 0)
+                (call put_op fc OP_IF)
+                (call put_byte fc BLOCK_EMPTY)
+                (call emit_local_get fc 0)
+                (call emit_call fc (call get_wasi_index cg Wasi.proc_exit))
+                (call put_op fc OP_END))
+              (loop k 1 (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1 (call put_op fc OP_DROP)))
           (call put_op fc OP_END)
           (call emit_sized sec fc))
         (block))

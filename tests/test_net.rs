@@ -167,8 +167,8 @@ fn a_listen_not_granted_is_refused_everywhere() {
     elsewhere.arg(&at);
     for (backend, mut cmd) in [("VM", vm(None, &at)), ("VM, another grant", vm(Some(&other), &at)), ("aipl-run", runner), ("native", plain), ("native, another grant", elsewhere)] {
         let o = cmd.output().unwrap();
-        let printed: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
-        assert_eq!(printed, "not granted: run the program with --listen ADDR:PORT\n", "{backend}");
+        // main's err: the message on standard error, and status 1
+        assert_eq!(String::from_utf8_lossy(&o.stderr), "not granted: run the program with --listen ADDR:PORT\n", "{backend}");
         assert_eq!(o.status.code(), Some(1), "{backend}");
     }
     // a malformed grant, before anything is compiled or run

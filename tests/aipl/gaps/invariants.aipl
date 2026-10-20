@@ -10,4 +10,6 @@
   (fn main [] -> i32
     (let a:(ptr Acct) (new Acct (call alloc.forever)))
     (put a Acct.bal (call os.arg_int 1 10))
-    (call withdraw a 15)))
+    (let left:i32 (call withdraw a 15))
+    (println "{left} left")
+    0))

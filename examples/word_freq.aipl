@@ -83,13 +83,11 @@
       (call buf.push_byte out 10))
     (call buf.print out))
 
-  (fn main [] -> i32
+  (fn main [] -> (result i32 str)
     (let path:str.Bytes (if (gt (call os.arg_count) 1) (call os.arg 1) (call str.from_str "input.txt")))
     (let text:str.Bytes (call io.read_path path))
-    (if (lt (get text str.Bytes.len) 0)
-        (block (call io.eprintln "word_freq: cannot read the input file") (return -1))
-        (block))
+    (when (lt (get text str.Bytes.len) 0)
+      (return (err:i32 "word_freq: cannot read the input file")))
     (call lowercase text)
-    (let entries:(ptr (vec.Vec (ptr Entry))) (call ranked (call count_words text)))
-    (call print_top entries 5)
-    (call (vec.len (ptr Entry)) entries)))
+    (call print_top (call ranked (call count_words text)) 5)
+    (ok:str 0)))

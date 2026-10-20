@@ -39,4 +39,4 @@
     (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.x (dbg (get p P.x)))
     (println "{a} {b} {c} {d} {e} {f} {g} {n} {half} {w}")
-    (arr.len h)))
+    0))

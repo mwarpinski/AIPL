@@ -286,6 +286,17 @@ fn runner_path() -> Result<std::path::PathBuf, String> {
     }
 }
 
+/// Ends the process with exit status `n`, as compiled programs end: a
+/// status outside 0-125 is an error with status 134, as under wasmtime
+/// (shells keep 126 and up).
+fn exit_with(program: &str, n: i64) -> ! {
+    if (0..=125).contains(&n) {
+        std::process::exit(n as i32)
+    }
+    eprintln!("{program}: exit with invalid exit status outside of [0..126)");
+    std::process::exit(134)
+}
+
 /// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
 /// then the --listen grants (one ADDR:PORT a line), then a 20-byte trailer
 /// [flags u32 LE][grants length u32 LE][module length u32 LE]["AIPLEXE2"].
@@ -339,11 +350,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let res = match vm.invoke(&func, vec![]) {
                 // the VM's sys.exit ends the run with this error: exit as compiled code does
                 Err(e) if e.starts_with("sys.exit(") && e.ends_with(") requested") => {
-                    std::process::exit(e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
+                    exit_with(&file, e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
                 }
                 r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
             };
             println!("[AIPL Result]: {:?}", res);
+            // main's value is the exit status (AIPL_SPEC.md 6.5), as compiled
+            // programs exit: an i32, or a (result i32 str)'s ok, or 1 after
+            // err's message on standard error
+            if func == "main" {
+                use aipl_core::vm::Value;
+                match res {
+                    Value::Int(n) => exit_with(&file, n),
+                    Value::Ok(v) => {
+                        if let Value::Int(n) = *v {
+                            exit_with(&file, n)
+                        }
+                    }
+                    Value::Err(e) => {
+                        if let Value::Str(m) = *e {
+                            eprintln!("{m}");
+                            std::process::exit(1)
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         Commands::Compile { file, output, self_flag, exe, sandbox, listen, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)

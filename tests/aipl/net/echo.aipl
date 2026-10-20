@@ -5,7 +5,7 @@
 ;; sending. The handler keeps no memory, which the checker proves
 ;; ((no_leak)); the arena, grown for the third connection's long line,
 ;; holds no more after the fourth, which sends the same. A listen that
-;; fails prints why and exits with status 1.
+;; fails is main's err: why, on standard error, and status 1.
 (module echo
   (import alloc)
   (import arena)
@@ -32,7 +32,7 @@
     (call net.close c)
     n)
 
-  (fn main [] -> i32
+  (fn main [] -> (result i32 str)
     (match_result (call net.listen (call alloc.default) (call os.arg 1))
       (ok l
         (let ar:(ptr arena.Arena) (call arena.make 65536))
@@ -48,9 +48,6 @@
             (err e (call io.println (call net.message e)))))
         (call net.close l)
         (call io.println (if (eq (call arena.reserved ar) first) "arena flat" "arena grew"))
-        0)
-      (err e
-        (call io.println (call net.message e))
-        (sys.exit 1)
-        1)))
+        (ok:str 0))
+      (err e (err:i32 (call net.message e)))))
 )
