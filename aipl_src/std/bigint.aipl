@@ -1,17 +1,15 @@
 ;; std/bigint: arbitrarily large signed integers. Operations work in place on
-;; numbers you keep and reuse: its memory comes from mem.alloc, which never
-;; frees, so an API that returned a fresh number from every operation would
-;; leak.
+;; numbers you keep and reuse. A number's memory comes from the allocator it
+;; was made with, and goes back to it when the number grows or is freed.
 ;;
-;;   (let a:(ptr bigint.Int) (call bigint.from_i32 1))
+;;   (let a:(ptr bigint.Int) (call bigint.from_i32 (call alloc.default) 1))
 ;;   (loop k 1 30 1 (call bigint.mul_small a k))      ;; a = 30!
 ;;   (call bigint.push_decimal b a)                    ;; "265252859812191058636308480000000"
 ;;
 ;; Sign and magnitude. The magnitude's limbs are 32 bits, least significant
 ;; first, each held in an i64 so a limb times a multiplier below 2^31 plus a
 ;; carry still fits (AIPL has no unsigned comparison or 64x64 -> 128-bit
-;; multiply). A number's limb array grows by doubling (the old one is left
-;; behind); len is the count of limbs in use, with no leading zero limbs,
+;; multiply). A number's limb array grows by doubling (the old one freed); len is the count of limbs in use, with no leading zero limbs,
 ;; and every limb from len to the array's end is zero (so loops may read
 ;; past len without a check). Zero has len 0 and is never negative.
 (module bigint
@@ -19,24 +17,31 @@
   (import str)
   (import buf)
 
-  ;; An arbitrary-precision signed integer, changed in place.
-  (struct Int [limbs:(arr i64) len:i32 neg:bool] (pub))
+  ;; An arbitrary-precision signed integer, changed in place; a is the
+  ;; allocator its memory comes from.
+  (struct Int [limbs:(arr i64) len:i32 neg:bool a:alloc.Allocator] (pub))
 
-  ;; Zero, with room for `limbs` 64-bit limbs (at least 4) before it grows.
-  (fn with_capacity [limbs:i32] -> (ptr Int) (pub)
-    (let n:(ptr Int) (new Int (call alloc.forever)))
-    (let xs:(arr i64) (arr.new i64 (call alloc.forever) (if (lt limbs 4) 4 limbs)))
-    (loop i 0 (- (arr.len xs) 1) 1 (arr.set i64 xs i 0i64))
-    (put n Int.limbs xs)
+  ;; Zero from a, with room for `limbs` 64-bit limbs (at least 4) before it
+  ;; grows.
+  (fn with_capacity [a:alloc.Allocator limbs:i32] -> (ptr Int) (pub)
+    (let n:(ptr Int) (new Int a))
+    (put n Int.limbs (arr.new i64 a (if (lt limbs 4) 4 limbs)))
     (put n Int.len 0)
     (put n Int.neg false)
+    (put n Int.a a)
     n)
 
-  ;; A number from any i32.
-  (fn from_i32 [v:i32] -> (ptr Int) (pub)
-    (let n:(ptr Int) (call with_capacity 4))
+  ;; A number from any i32, from a.
+  (fn from_i32 [a:alloc.Allocator v:i32] -> (ptr Int) (pub)
+    (let n:(ptr Int) (call with_capacity a 4))
     (call set_i32 n v)
     n)
+
+  ;; Gives n's memory back to the allocator it came from.
+  (fn free [n:(ptr Int)] -> void (pub)
+    (let a:alloc.Allocator (get n Int.a))
+    (call (alloc.free_array i64) a (get n Int.limbs))
+    (call (alloc.destroy Int) a n))
 
   ;; a = v
   (fn set_i32 [a:(ptr Int) v:i32] -> void (pub)
@@ -64,10 +69,10 @@
     (if (lte limbs (arr.len old)) (return) (block))
     (let cap:i32 (arr.len old))
     (while (lt cap limbs) (set! cap (* cap 2)))
-    (let grown:(arr i64) (arr.new i64 (call alloc.forever) cap))
+    (let grown:(arr i64) (arr.new i64 (get a Int.a) cap))
     (loop i 0 (- (get a Int.len) 1) 1 (arr.set i64 grown i (arr.get i64 old i)))
-    (loop i (get a Int.len) (- cap 1) 1 (arr.set i64 grown i 0i64))
-    (put a Int.limbs grown))
+    (put a Int.limbs grown)
+    (call (alloc.free_array i64) (get a Int.a) old))
 
   ;; Drops leading zero limbs; zero is not negative.
   (fn trim [a:(ptr Int)] -> void
@@ -244,11 +249,11 @@
   (fn push_decimal [out:(ptr buf.Buf) a:(ptr Int)] -> void (pub)
     (if (call is_zero a) (block (call buf.push_byte out 48) (return)) (block))
     (if (get a Int.neg) (call buf.push_byte out 45) (block))
-    (let t:(ptr Int) (call with_capacity (get a Int.len)))
+    (let t:(ptr Int) (call with_capacity (get a Int.a) (get a Int.len)))
     (call assign t a)
     (put t Int.neg false)
     ;; nine digits at a time, least significant group first
-    (let groups:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let groups:(ptr buf.Buf) (call buf.make (get a Int.a) 64))
     (while (not (call is_zero t))
       (let g:i32 (call div_small t 1000000000))
       (loop k 1 9 1
@@ -258,7 +263,9 @@
     (let n:i32 (get digits str.Bytes.len))
     ;; skip the leading zeros of the most significant group
     (while (eq (call str.byte_at digits (- n 1)) 48) (set! n (- n 1)))
-    (loop k 1 n 1 (call buf.push_byte out (call str.byte_at digits (- n k)))))
+    (loop k 1 n 1 (call buf.push_byte out (call str.byte_at digits (- n k))))
+    (call buf.free groups)
+    (call free t))
 
   (fn decimal_is [a:(ptr Int) want:str] -> bool
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
@@ -267,34 +274,35 @@
 
   ;; Pass count; test_suite.aipl expects 13.
   (fn run_bigint_tests [] -> i32 (pub)
+    (let al:alloc.Allocator (call alloc.default))
     (let p:i32 0)
-    (let f:(ptr Int) (call from_i32 1))
+    (let f:(ptr Int) (call from_i32 al 1))
     (loop k 1 30 1 (call mul_small f k))
     (if (call decimal_is f "265252859812191058636308480000000") (set! p (+ p 1)) (block))
     ;; 2^100 by doubling, then back down
-    (let t:(ptr Int) (call from_i32 1))
+    (let t:(ptr Int) (call from_i32 al 1))
     (loop k 1 100 1 (call mul_small t 2))
     (if (call decimal_is t "1267650600228229401496703205376") (set! p (+ p 1)) (block))
     (loop k 1 100 1 (let _r:i32 (call div_small t 2)))
     (if (call decimal_is t "1") (set! p (+ p 1)) (block))
     ;; add and subtract with carries and borrows across limbs
-    (let a:(ptr Int) (call from_i32 2147483647))
+    (let a:(ptr Int) (call from_i32 al 2147483647))
     (call mul_small a 2147483647)
     (call mul_small a 2147483647)
-    (let b:(ptr Int) (call with_capacity 4))
+    (let b:(ptr Int) (call with_capacity al 4))
     (call assign b a)
     (call add a b)
     (call sub a b)
     (if (and (eq (call compare a b) 0) (call decimal_is a "9903520300447984150353281023")) (set! p (+ p 1)) (block))
     ;; crossing zero: 1 - a is negative, and adding a back gives 1
-    (let c:(ptr Int) (call from_i32 1))
+    (let c:(ptr Int) (call from_i32 al 1))
     (call sub c a)
     (if (call decimal_is c "-9903520300447984150353281022") (set! p (+ p 1)) (block))
     (call add c a)
     (if (call decimal_is c "1") (set! p (+ p 1)) (block))
     ;; signed comparison and zero
-    (let m:(ptr Int) (call from_i32 -5))
-    (let z:(ptr Int) (call from_i32 0))
+    (let m:(ptr Int) (call from_i32 al -5))
+    (let z:(ptr Int) (call from_i32 al 0))
     (if (and (eq (call compare m z) -1) (and (eq (call compare a m) 1) (and (eq (call sign z) 0) (call decimal_is z "0"))))
         (set! p (+ p 1)) (block))
     ;; a - a is zero, and zero is not negative
@@ -303,22 +311,22 @@
     (call add_mul_small b a 3)
     (if (and (call is_zero b) (eq (call sign b) 0)) (set! p (+ p 1)) (block))
     ;; negative multipliers and truncating division with a signed remainder
-    (let q:(ptr Int) (call from_i32 -7))
+    (let q:(ptr Int) (call from_i32 al -7))
     (call mul_small q -3)
     (call mul_small q 1000000)
     (call mul_small q -1000000)
     (let r:i32 (call div_small q 1000))
     (if (and (call decimal_is q "-21000000000") (eq r 0)) (set! p (+ p 1)) (block))
-    (let s:(ptr Int) (call from_i32 -2147483647))
+    (let s:(ptr Int) (call from_i32 al -2147483647))
     (if (and (eq (call div_small s 10) -7) (call decimal_is s "-214748364")) (set! p (+ p 1)) (block))
     ;; v = n * (2^31 - 1) + (n - 1): the largest quotient, and the
     ;; largest remainder, with n = (2^31 - 1)^5
-    (let n:(ptr Int) (call from_i32 1))
+    (let n:(ptr Int) (call from_i32 al 1))
     (loop k 1 5 1 (call mul_small n 2147483647))
-    (let w:(ptr Int) (call with_capacity 4))
+    (let w:(ptr Int) (call with_capacity al 4))
     (call assign w n)
-    (call sub w (call from_i32 1))
-    (let v:(ptr Int) (call with_capacity 4))
+    (call sub w (call from_i32 al 1))
+    (let v:(ptr Int) (call with_capacity al 4))
     (call assign v n)
     (call mul_small v 2147483647)
     (call add v w)
@@ -331,9 +339,9 @@
     (if (and (eq before -1) (and (eq (call compare v w) 0) (eq (call sign z) 0))) (set! p (+ p 1)) (block))
     ;; overwriting a large number with a small one leaves no stale limbs:
     ;; 5 + 2^100, where add reads the target's limbs past its length
-    (let big:(ptr Int) (call from_i32 1))
+    (let big:(ptr Int) (call from_i32 al 1))
     (loop k 1 100 1 (call mul_small big 2))
-    (let x:(ptr Int) (call with_capacity 4))
+    (let x:(ptr Int) (call with_capacity al 4))
     (call assign x big)
     (call mul_small x 3)
     (call set_i32 x 5)

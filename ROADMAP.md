@@ -128,3 +128,18 @@ than NULL's three-valued logic, and errors that say what to write. First
 a CSV query tool, its answers checked against SQLite's on the same data;
 the full language only if that lands. Not before launch: it would pull
 focus.
+
+### After launch: a 64-bit target
+
+Programs are limited to 2 GiB of memory (AIPL_SPEC.md 4.A: below it,
+every address is a non-negative i32). More would come as a second
+compilation target, not a second language (decided 2026-10-19): the
+same source compiled for wasm's 64-bit memory (memory64), as C and Rust
+compile one source for 32- and 64-bit machines. The checker, the
+language, and nearly every program stay as they are; what changes is the
+two code generators (a mode in each), the native backend's translation,
+the layout of a checked pointer (an address and a generation no longer
+share 64 bits), and std's unsafe code that handles raw addresses, which
+needs an address-sized integer type (launch checklist section 6).
+Wanted when a program needs more than 2 GiB in memory; a lower limit
+(`--max-memory`) comes first.

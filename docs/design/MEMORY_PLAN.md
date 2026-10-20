@@ -113,10 +113,13 @@ from the shared heap and give it back (30,000 prints move the heap cursor
 0 bytes); os.random_i32 the same; json.parse's state and errors and
 csv's errors come from the caller's allocator (json.free_error); std/par
 frees its job records. Also alloc.default's first use is atomic (two
-threads could each make a heap). Left: json.write of a number (its
-shortest-digits search and std/bigint, which has no allocator
-parameter); io.read_fd's abandoned buffers; os.arg and os.env (a fresh
-copy per call); and std/stream, every call of which may leak because a
+threads could each make a heap). Then std/bigint's numbers take the
+allocator they are made from (with_capacity and from_i32 name it;
+bigint.free gives one back; growing frees the old limbs), so
+float.from_decimal (text.parse_f64, json.parse) and json.write of a
+number keep nothing (10,000 of each move the heap cursor 0 bytes); and
+io.read_fd frees each buffer it outgrows, its view now checked. Left:
+os.arg and os.env (a fresh copy per call); and std/stream, every call of which may leak because a
 custom reader or writer calls through a function reference, which
 decision 9 settles. By design, and documented: str.concat, format,
 buf.to_str, io.read_file's buffer, the allocators' own cells.
