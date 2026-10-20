@@ -47,22 +47,24 @@ program to the same bytes as the Rust command, with the same errors.
 
 ## Where this seed came from
 
-Built 2026-10-19 by the Rust toolchain, from the source of commit
-7a55d99, so that the compiler's own source can write `(new S a)` and
-`(arr.new T a n)`, which name their allocator (docs/design/MEMORY_PLAN.md
-decision 8; the seed before read `(new S)`, which no longer exists):
+Built 2026-10-20 by the Rust toolchain, from the source of commit
+59e3286, so that the compiler's imports can write `(no_leak)` in a
+function type (docs/design/MEMORY_PLAN.md decision 9; std/vec's sort_by
+comparators):
 
 ```bash
 cargo build --release
 ./target/release/aipl compile --exe aipl_src/aipl.aipl -o bootstrap/aipl-linux-x86_64
 ```
 
-sha256 `cd16eff8d957f7733ad903b23110c3dc86ecefb75e5df09500ba9b9bee7dd593`.
+sha256 `65b27359549178d8d2faec8cecc42f945fde1e241ed46b55b1c18d294e46d01a`.
 Building that commit's source with the seed gives the same bytes (stage
-3 is stage 2, and stage 2 is the seed), so for now the seed is its own
-stage 2.
+2 is the seed), so for now the seed is its own stage 2.
 
-Earlier seeds: the one built the same day from 236220e (sha256
+Earlier seeds: the one built 2026-10-19 from 7a55d99 (sha256
+`cd16eff8d957f7733ad903b23110c3dc86ecefb75e5df09500ba9b9bee7dd593`), for
+`(new S a)` and `(arr.new T a n)`, which name their allocator (decision
+8); the one built that day from 236220e (sha256
 `f04d9082e75f9f1eceed897f720601bd0b6fc0dbb5c65bf191f771f27785e59e`), for
 the `(no_leak)` clause; the one built that day from 61ca2b6 (sha256
 `e2f2b1f53e31cf246b989ec330e75c277f0a19f2d3f69c3113147569f9453169`), for

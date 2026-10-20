@@ -89,7 +89,7 @@
 
   ;; Stable sort by cmp: a negative result puts a before b, positive puts b
   ;; before a, zero keeps their order. Bottom-up merge sort, O(n log n).
-  (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32)] -> void (pub)
+  (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32 (no_leak))] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))
     (let src:(arr T) (get v (Vec T) items))
@@ -111,7 +111,7 @@
             ((gte j hi)
              (arr.set T dst k (arr.get T src i))
              (set! i (+ i 1)))
-            ((lte (call_ref (fn [T T] -> i32) cmp (arr.get T src i) (arr.get T src j)) 0)
+            ((lte (call_ref (fn [T T] -> i32 (no_leak)) cmp (arr.get T src i) (arr.get T src j)) 0)
              (arr.set T dst k (arr.get T src i))
              (set! i (+ i 1)))
             (else
@@ -134,7 +134,7 @@
   ;; map of counts, say (AIPL_SPEC.md 4.G). The same merge sort as sort_by,
   ;; kept as its own copy: sort_by on top of this would cost an extra
   ;; indirect call per comparison (9% on a million i32s).
-  (fn (sort_by_with T C) [v:(ptr (Vec T)) ctx:C cmp:(fn [C T T] -> i32)] -> void (pub)
+  (fn (sort_by_with T C) [v:(ptr (Vec T)) ctx:C cmp:(fn [C T T] -> i32 (no_leak))] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))
     (let src:(arr T) (get v (Vec T) items))
@@ -156,7 +156,7 @@
             ((gte j hi)
              (arr.set T dst k (arr.get T src i))
              (set! i (+ i 1)))
-            ((lte (call_ref (fn [C T T] -> i32) cmp ctx (arr.get T src i) (arr.get T src j)) 0)
+            ((lte (call_ref (fn [C T T] -> i32 (no_leak)) cmp ctx (arr.get T src i) (arr.get T src j)) 0)
              (arr.set T dst k (arr.get T src i))
              (set! i (+ i 1)))
             (else
@@ -176,10 +176,9 @@
 
   ;; Ascending by T's order (std/cmp's Ord: i32, i64, str, or a type that
   ;; implements it), stable: (call (vec.sort str) names). The same merge
-  ;; sort as sort_by, calling T's compare directly: no indirect call, and a
-  ;; (no_leak) function may sort (a call through sort_by's comparator is
-  ;; one (no_leak) cannot see into; MEMORY_PLAN.md decision 9). A compare
-  ;; that keeps memory makes only this sort may-leak.
+  ;; sort as sort_by, calling T's compare directly: no indirect call, and
+  ;; any implementation of Ord sorts (sort_by's comparator must keep no
+  ;; memory; here a compare that keeps some makes only this sort may-leak).
   (fn (sort T) [v:(ptr (Vec T))] -> void (pub) (where (cmp.Ord T))
     (let n:i32 (get v (Vec T) len))
     (if (lt n 2) (return) (block))

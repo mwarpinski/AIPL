@@ -335,9 +335,8 @@ compiler's source can be migrated in the current language.
    call_ref), not inside other types. Branches and compared values meet
    at the type without the promise when that is all they differ in
    (`meet`; tools/run_fuzz.py found the first build refusing
-   `(if c (ref pure) (ref keeps))`). std/stream's callbacks take
-   promising types (2026-10-20); vec.sort calls cmp.Ord.compare directly,
-   so a (no_leak) function may sort. **Pending the next seed refresh:**
-   vec.sort_by's and sort_by_with's comparators take promising types too
-   (std/vec is in the compiler's imports, and the seed, from 7a55d99,
-   does not read the (no_leak) clause in a function type).
+   `(if c (ref pure) (ref keeps))`). std/stream's callbacks and
+   vec.sort_by's comparators take promising types (2026-10-20; the seed
+   refreshed from 59e3286 for std/vec, which the compiler imports);
+   vec.sort calls cmp.Ord.compare directly, so any Ord implementation
+   sorts.
