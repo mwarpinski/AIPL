@@ -152,3 +152,14 @@ share 64 bits), and std's unsafe code that handles raw addresses, which
 needs an address-sized integer type (launch checklist section 6).
 Wanted when a program needs more than 2 GiB in memory; a lower limit
 (`--max-memory`) comes first.
+
+### After launch: TLS written in AIPL
+
+Until then, HTTPS comes from rustls in the host (docs/design/NET_PLAN.md
+decision 4), which native executables cannot hold. A TLS 1.3 written in
+AIPL (X25519, AES-GCM or ChaCha20-Poly1305, signature checks, X.509
+chains) would give native executables HTTPS. It ships labelled
+experimental and unaudited until an outside audit, and is held first to
+Google's Wycheproof vectors, differential tests against rustls (the same
+handshakes, the same bytes), fuzzing of its parsers, and constant-time
+checks on the critical routines.

@@ -1,147 +1,118 @@
 # Networking: serving and fetching (stdlib batch L7)
 
-**Status: draft for review, 2026-10-19.** Nothing is built. STDLIB_PLAN.md
-asked for this document before any code: "an `aipl` host interface
-(versioned imports beside WASI preview 1: listening and connecting TCP
-sockets, permissions granted on the command line), in the VM, natively as
-Linux system calls, and in aipl-run; then `http` serving and fetching
-over it". Writing it changed the plan's first half; the reasons are
-below, and the decisions for the owner are at the end.
+**Status: approved 2026-10-19 (decisions in section 6), revised after the
+memory work.** Nothing is built. STDLIB_PLAN.md asked for this document before any code:
+"an `aipl` host interface (versioned imports beside WASI preview 1:
+listening and connecting TCP sockets, permissions granted on the command
+line), in the VM, natively as Linux system calls, and in aipl-run; then
+`http` serving and fetching over it". The first draft (this morning)
+argued that a long-running server was unsafe in AIPL and proposed only a
+fresh instance per request. MEMORY_PLAN.md has since removed the reasons;
+this version says what changed and what still differs between the two
+ways to serve. The decisions for the owner are at the end.
 
-## 1. The problem a server has that a compiler does not
+## 1. What the memory work changed
 
-AIPL programs so far run and exit: a compile, a test, a data job. A
-server runs for days. Three facts about memory today make that the hard
-part, harder than the sockets:
+The draft's case against a long-running server was memory:
 
-- `new`, `arr.new`, and every run-time `str` are never freed
-  (AIPL_SPEC.md 4.B, 4.E), by design: a program frees what it allocates
-  through `std/alloc`, and the rest goes when it exits.
-- Every `str.Bytes` view is made with `new` (std/str.aipl:10-14),
-  so `str.slice`, `str.from_str`, and `buf.bytes` leak 16 bytes per call.
-  Views are everywhere: `str.Bytes` appears 377 times in std and
-  1,308 times in the compiler's own source. std/http's reader makes a
-  view per header and per part of the start line.
-- Memory is at most 2 GiB (wasm32).
+| It said | Now (MEMORY_PLAN.md) |
+|---|---|
+| every view is made with `new` and never freed: 3.7 MB a second at 10,000 requests a second | a view is a value, three slots, nothing allocated (M1) |
+| `new`, `arr.new`, and run-time `str` are never freed | `new` and `arr.new` name their allocator (F); what is never freed says so, `alloc.forever` |
+| nothing shows which calls keep memory | `(no_leak)` proves a function, and everything it calls, gives back what it takes (M3) |
+| results and unions make hidden cells | they are values (M4) |
+| std leaks per call (io.print_int, float formatting, json numbers) | fixed, measured flat (M2); what remains is listed there |
+| a pointer kept across requests reads whatever came next | every pointer, array, and view is generation-checked: it stops the program with "Use after free" |
 
-A server reading 10,000 requests a second with ten headers each makes
-at least 23 views a request (three for the start line, a name and a value
-per header): 368 bytes, about 3.7 MB a second, so it fills 2 GiB in about
-ten minutes from views alone. Making `str.Bytes` a value struct fixes the
-views (it is two numbers) but changes about 1,700 places across std and
-the compiler, and the `str` values and `new` objects a handler makes would
-still pile up. Resetting the memory `new` uses between requests is not
-safe: a `new` object's generation is 0, which no check catches, so a
-pointer kept across requests would read whatever came next, silently.
+So a server can now run each request on an arena, reset it after, mark
+its handler `(no_leak)`, and the checker proves memory stays flat; a
+pointer kept by mistake past the reset traps on its next use instead of
+reading another request's data.
 
-## 2. The proposal: a fresh instance for every request
+What did not change: **a trap ends the program.** AIPL has no
+exceptions and no recovery from a failed contract, bounds check, or use
+after free, by design (the program's state may be wrong). In a server
+that runs for days, one bad request then takes the server down. That is
+the real difference between the two ways to serve.
 
-Do what CGI did and what WebAssembly's serverless hosts do (Fastly
-Compute, Fermyon Spin): the host owns the listening socket, and each
-request runs the program from the start in a fresh instance. The
-program reads one request on standard input and writes one response on
-standard output, exactly the shape std/http was built for ("a program
-can read a saved request, or one piped through stdin, and answer it on
-stdout", STDLIB_PLAN.md section 4).
+## 2. Two ways to serve, one handler
 
-```
-aipl serve shop.aipl --listen 127.0.0.1:8080        (the VM)
-aipl-run --listen 127.0.0.1:8080 shop.wasm          (wasmtime)
-./shop --listen 127.0.0.1:8080                      (native, compiled with --serve)
-```
-
-The host accepts a connection, reads one HTTP/1.1 request (with the
-limits std/http applies), starts the program with that request on stdin,
-sends what it writes to stdout back as the response, and closes the
-connection (no keep-alive in the first version). The handler is an
-ordinary AIPL program:
+A handler is written once, the same for both:
 
 ```lisp
-(module hello
-  (import http)
-  (import str)
-  (import stream)
-  (import buf)
-  (import alloc)
-  (fn main [] -> i32
-    (let a:alloc.Allocator (call alloc.default))
-    (let input:(ptr buf.Buf) (call buf.make a 4096))
-    (let r:(ptr stream.Reader) (call stream.stdin a))
-    (let _n:i32 (call stream.read_all r input))
-    (let o:(ptr buf.Buf) (call buf.make a 256))
-    (match_result (call http.parse_request a (call buf.bytes input) (call http.default_limits))
-      (ok m
-        (call http.start_response o 200)
-        (call http.add_header o "Content-Type" "text/plain; charset=utf-8")
-        (call http.end_head o (get m http.Message.target)))
-      (err e
-        (call http.start_response o 400)
-        (call http.end_head o (call str.from_str (get e http.Error.what)))))
-    (call buf.print o)
-    0))
+(fn handle [a:alloc.Allocator req:http.Message out:(ptr buf.Buf)] -> void (no_leak)
+  (call http.start_response out 200)
+  (call http.add_header out "Content-Type" "text/plain; charset=utf-8")
+  (call http.end_head out (get req http.Message.target)))
 ```
 
-What this buys:
+`a` is the request's arena, `req` the parsed request, `out` the
+response's buffer; `std/serve` (new) reads and writes the bytes, so the
+handler does no I/O. Which way it runs is chosen when it is started:
 
-- **Nothing leaks across requests**, whatever the handler allocates: the
-  instance is gone when the response is sent. The memory problem of
-  section 1 does not arise, now or later.
-- **A crash affects one request.** A failed contract, a bounds check, or
-  a use after free ends that request with a 500 and its message in the
-  server's log; the next request starts clean. A long-lived server
-  cannot promise that.
-- **No sockets, threads, or event loop in the program.** Concurrency is
-  the host's: it runs requests side by side, each in its own instance,
-  so a handler needs no `unsafe` and no locks.
-- **Every handler can be tested without a network.** A saved request
-  piped into the program is the whole test; `aipl test` and the
-  three-backend comparison work on it unchanged.
-- **The same in all three backends**, by construction: the host part is
-  small and the program is the program.
+**A. A long-running server.** The program owns the listening socket and
+loops: accept, read a request, run the handler on an arena, write the
+response, reset the arena. State lives in memory between requests (a
+cache, a counter, a session map), in the program's own allocator.
 
-What it costs, and what needs care:
+- Fast: no start-up per request.
+- Memory flat, proved by `(no_leak)` and checked by the generations.
+- **A trap in one request ends the server.** It needs a supervisor that
+  restarts it (systemd, a container's restart policy), and loses what it
+  held in memory.
 
-- **The VM's own lines.** `aipl eval` prints `[AIPL Result]: ...` on
-  standard output after a program (checked 2026-10-19 with the handler
-  above); under `aipl serve` that has to go to the log, not into the
-  response.
+**B. A fresh instance per request** (CGI, and WebAssembly's serverless
+hosts: Fastly Compute, Fermyon Spin). The host owns the socket and runs
+the program from the start for each request.
 
-- **No state in memory between requests.** A counter, a cache, or a
-  session lives in a file (or, later, a database). This is the model of
-  CGI, PHP, and serverless functions; it does not suit a chat server or
-  a game.
-- **Starting an instance per request.** Under wasmtime a module compiled
-  once is instantiated in microseconds (wasmtime's `InstancePre`); a
-  native program forks a copy of itself made before the first request
-  (Linux copies its memory only as it is written). Both are to be
-  measured; the target is thousands of requests a second on one core.
-- **Streaming bodies.** A request is read whole (up to the limit) before
-  the program starts; responses stream as the program writes them. Big
-  uploads wait for a later version.
+- **A trap ends one request** (a 500 and its message in the log); the
+  next starts clean.
+- Nothing can outlive a request, `(no_leak)` or not.
+- No state in memory between requests (a file or a database instead), and
+  a start-up per request: microseconds under wasmtime (a module compiled
+  once, instantiated per request); natively, a fork of a process made
+  before the first request (Linux copies its memory only as it is
+  written), which also keeps what was loaded at start-up.
 
-## 3. Fetching: TCP connections from the program
+```
+aipl serve shop.aipl --listen 127.0.0.1:8080              (A, in the VM)
+aipl serve --fresh shop.aipl --listen 127.0.0.1:8080      (B)
+aipl compile --exe --serve shop.aipl -o shop && ./shop --listen 127.0.0.1:8080
+```
 
-A program that calls another service needs an outgoing connection, and
-WASI preview 1 has no way to make one (it has `sock_accept`, `sock_recv`,
-and `sock_send` on sockets the host hands it, but no `connect`). So this
-part is the plan's host interface: a versioned import module,
-`aipl_net_v1`, beside `wasi_snapshot_preview1`, implemented in each
-backend:
+Both are tested without a network the same way: a saved request piped
+through the handler, in every backend.
+
+## 3. The host interface: `aipl_net_v1`
+
+WASI preview 1 has no way to listen or connect. A versioned import
+module beside `wasi_snapshot_preview1`, implemented in each backend (the
+VM in Rust's std::net, aipl-run as host functions, native executables as
+Linux system calls written in AIPL):
 
 | Function | Meaning |
 |---|---|
-| `connect(addr, len, port) -> fd` | a TCP connection to an IPv4 or IPv6 address given as text, or -1; refused unless granted |
-| `recv(fd, buf, max) -> n`, `send(fd, buf, len) -> n` | blocking reads and writes; `fs.close` closes it |
+| `listen(addr, len, port) -> fd` | a listening TCP socket, or -1; refused unless granted |
+| `accept(fd) -> fd` | the next connection (blocking) |
+| `connect(addr, len, port) -> fd` | a connection to an IPv4 or IPv6 address given as text, or -1; refused unless granted |
+| `recv(fd, buf, max) -> n`, `send(fd, buf, len) -> n` | blocking reads and writes; `fs.close` closes |
 
-Granted on the command line, nothing by default: `--allow-connect
-HOST:PORT` (repeatable; `*` for any port). A native executable gets its
-grants when it is compiled (`aipl compile --exe --allow-connect ...`),
-as `--sandbox` already works (aipl_src/native/native.aipl:319), so a
-binary says what it may reach and cannot be talked into more.
+Granted on the command line, nothing by default: `--listen ADDR:PORT`,
+`--allow-connect HOST:PORT` (repeatable; `*` for any port). A native
+executable gets its grants when it is compiled, as `--sandbox` already
+works, so a binary says what it may reach and cannot be talked into more.
+The VM and aipl-run take them at start.
 
-Then `std/net` wraps it (a `stream.Reader` and `stream.Writer` over a
-connection, so std/http's reader and writer work on it) and `http.fetch`
-sends a request and reads the response:
+`std/net` wraps sockets as `stream.Reader` and `stream.Writer`, so
+std/http reads and writes over them unchanged. That needs decision 9 of
+MEMORY_PLAN.md first: a stream's callbacks are calls through function
+references, which `(no_leak)` cannot see into until function types can
+carry the promise; with it, a `(no_leak)` handler may use streams.
+
+## 4. Fetching
+
+`http.fetch` over `connect`, a request written and the response read
+with std/http:
 
 ```lisp
 (match_result (call http.fetch a "http://127.0.0.1:9000/stock?item=7" (call http.default_limits))
@@ -149,65 +120,78 @@ sends a request and reads the response:
   (err e ...))
 ```
 
-Two things it will not do in this batch, and why:
+**HTTPS, from the host's TLS** (decision 4): the VM, aipl-run, and the
+executables that bundle it (`aipl compile --exe --target wasm`) make and
+accept TLS connections through rustls, an audited Rust library, with
+the usual root certificates; `aipl_net_v1` gains `tls_connect` and
+`tls_accept` (a certificate and key granted on the command line), and
+the program reads and writes plain bytes either way. Native executables
+cannot hold rustls, so a program that uses TLS is a compile-time error
+there, naming the two ways out (`--target wasm`, or a TLS proxy in
+front), as the backend support table has other explicit refusals. TLS
+written in AIPL comes after launch (ROADMAP.md), labelled experimental
+and unaudited until audited.
 
-- **No `https://`.** TLS is encryption, and STDLIB_PLAN.md decided
-  against encryption written here ("ours would be unaudited"). A program
-  fetches from services on the same machine or network over plain HTTP,
-  or through a local proxy that speaks TLS. Getting TLS from the host
-  instead (Rust's rustls under aipl-run and the VM) would leave native
-  executables without it and the backends different, which this project
-  does not allow.
-- **No names, only addresses, in the first version.** Natively there is
-  no libc, so no system resolver: looking up `example.com` needs a DNS
-  client written in AIPL (UDP, /etc/resolv.conf, /etc/hosts). The VM and
-  aipl-run could ask the system, but then the backends would differ.
-  `localhost` and /etc/hosts entries are cheap to support everywhere;
-  DNS proper is its own small batch.
+- **Addresses, not names, at first.** Natively there is no libc, so no
+  system resolver; a DNS client in AIPL (UDP, /etc/resolv.conf,
+  /etc/hosts) is its own small batch. `localhost` and /etc/hosts entries
+  are cheap everywhere.
 
-## 4. Order of work
+## 5. Order of work
 
-1. **`aipl serve` and `--listen`** in the VM, aipl-run, and native
-   (`--serve` on `aipl compile --exe`), with std/http as the handler's
-   reader and writer. Tests: real requests over loopback to a handler
-   in each backend, answers compared byte for byte; refusals (too big,
-   malformed, a handler that fails) get the same status everywhere; a
-   load test that serves a million requests and shows memory flat.
-2. **`aipl_net_v1.connect`** with `--allow-connect`, in the three
-   backends; `std/net` streams over it; `http.fetch`. Tests: fetch from
-   step 1's server in each backend; a refused grant fails with a clear
-   message.
-3. **Measure** requests a second per backend on a quiet machine and
-   write it in docs/BENCHMARKS.md, as for everything else.
+1. **Decision 9** (MEMORY_PLAN.md): `(no_leak)` on function types, so
+   streams can be used in a handler.
+2. **`aipl_net_v1`** listen, accept, recv, send, and close, in the three
+   backends, with the grants; `std/net` streams over them.
+3. **`std/serve`** and the long-running server (A) in every backend; a
+   lower memory limit (`--max-memory`, launch checklist section 6), so a
+   runaway request fails cleanly. Tests: real requests over loopback,
+   answers compared byte for byte across backends; refusals (too big,
+   malformed) the same status everywhere; **a million requests with
+   memory flat**; a handler that keeps a pointer past its request traps
+   on the next use.
+4. **The fresh instance per request (B)**, `aipl serve --fresh` and
+   native `--serve` forking: a handler that traps answers 500 and the
+   next request is served.
+5. **`connect`, `--allow-connect`, and `http.fetch`**, tested against
+   step 3's server in each backend.
+6. **TLS from the host:** `tls_connect` and `tls_accept`, `https://` in
+   `http.fetch`, a server with a certificate; native executables refuse
+   it at compile time with the way out. Tests: a fetch from step 3's
+   server over TLS with a test certificate, in the VM and under aipl-run;
+   the refusal's message.
+7. **Measure** requests a second per backend and mode on a quiet machine,
+   in docs/BENCHMARKS.md.
 
 Each step is tested in every backend and both toolchains, documented in
 AIPL_SPEC.md and the prompt guide, and merged before the next.
 
-## 5. Decisions for the owner
+## 6. Decisions (the owner's, 2026-10-19)
 
-1. **A fresh instance per request (recommended)**, or long-lived servers
-   with sockets in the program. The second needs, first, `str.Bytes` as
-   a value struct (about 1,700 places), an end to every per-call leak in
-   std, threads or an event loop in programs, and still cannot recover
-   from a crash in one request. It could come later for programs that
-   need memory between requests; the first serves the common case safely
-   now.
-2. **Fetching over plain HTTP to addresses only, in this batch
-   (recommended)**, with DNS as a later small batch; or DNS now (a
-   resolver in AIPL, about a week); or host-provided name lookup in the
-   VM and aipl-run only (the backends would differ: not recommended).
-3. **No TLS (recommended, as decided in STDLIB_PLAN.md)**, or TLS from
-   the host in the VM and aipl-run only (not recommended: native
-   executables would lack it).
-4. **Native grants at compile time (recommended, as `--sandbox`)**, or at
-   run time from the program's command line (simpler to use, but then a
-   binary's reach depends on how it is started).
+1. **Both ways to serve, long-running first:** a program uses whichever
+   fits; the long-running server (A) is built first, since the fresh
+   instance (B) reuses its parts (the handler, std/serve, the sockets)
+   and adds only how the program is started.
+2. **Concurrency: one request at a time, then a pool of worker threads**,
+   each with its own arena ("walk, then run"). An event loop, if ever,
+   later.
+3. **Fetching over plain HTTP to addresses first**; DNS as a later small
+   batch.
+4. **TLS from the host (rustls) before launch**, in the VM, aipl-run, and
+   the launcher-bundled executables; native executables refuse it at
+   compile time with the way out. A TLS written in AIPL comes after
+   launch: released as experimental and unaudited, its bar Google's
+   Wycheproof test vectors, differential tests against rustls, fuzzing
+   of the record and handshake parsers, and constant-time checks on the
+   critical routines, until an outside audit (firms such as Trail of
+   Bits, NCC Group, or Cure53; funds for open-source audits such as
+   OSTIF, the Sovereign Tech Fund, and OpenSSF Alpha-Omega).
+5. **Native grants at compile time**, as `--sandbox`.
 
-## 6. What stays open after this batch
+## 7. What stays open after this batch
 
-- `str.Bytes` as a value struct still matters for long batch jobs; it
-  stays on the launch checklist (from docs/notes/pitfalls.md), no longer
-  blocking networking.
-- Keep-alive and request streaming, if measurements show the need.
-- WebSockets, servers that hold state, UDP, and DNS: later batches,
-  each with its own short plan.
+- Keep-alive and streamed request bodies, if measurements show the need.
+- WebSockets, UDP, and DNS: later batches, each with its own short plan.
+- A server that recovers from a trap in one request without a fresh
+  instance would need the language to recover from failures, which AIPL
+  deliberately does not; the fresh instance (B) is the answer to that.
