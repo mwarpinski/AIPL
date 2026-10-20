@@ -1035,7 +1035,7 @@ fn lower_expr(e: &mut Expr, lw: &mut Lower) {
 /// An expression's direct subexpressions, to change in place.
 fn children_mut(e: &mut Expr) -> Vec<&mut Expr> {
     match e {
-        Expr::Lit(..) | Expr::Var(..) | Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => vec![],
+        Expr::Lit(..) | Expr::Var(..) | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => vec![],
         Expr::Break(_) | Expr::Continue(_) => vec![],
         Expr::Let { val, .. } | Expr::Set { val, .. } => vec![&mut **val],
         Expr::If { cond, then_branch, else_branch, .. } => vec![&mut **cond, &mut **then_branch, &mut **else_branch],
@@ -1075,7 +1075,7 @@ fn children_mut(e: &mut Expr) -> Vec<&mut Expr> {
             v.extend(args.iter_mut());
             v
         }
-        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Addr { val: ptr, .. } => vec![&mut **ptr],
+        Expr::GetField { ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Addr { val: ptr, .. } => vec![&mut **ptr],
         Expr::Cast { addr, gen, .. } => {
             let mut v: Vec<&mut Expr> = vec![&mut **addr];
             if let Some(g) = gen {

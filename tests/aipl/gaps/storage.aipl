@@ -4,7 +4,7 @@
   (import io)
   (struct Rec [tag:u8 delta:i8 len:u16 off:i16 x:i32])
   (fn main [] -> i32 (unsafe)
-    (let r:(ptr Rec) (call (alloc.create Rec) (call alloc.forever)))
+    (let r:(ptr Rec) (new Rec (call alloc.forever)))
     (put r Rec.tag 300)         ;; keeps the low 8 bits: 44
     (put r Rec.delta 200)       ;; -56 as i8
     (put r Rec.len 70000)       ;; 4464
@@ -16,15 +16,15 @@
     (call io.println_int "off " (get r Rec.off))
     (call io.println_int "sizeof Rec " (sizeof Rec))
     (call io.println_int "sizeof u16 " (sizeof u16))
-    (let bytes:(arr u8) (call (alloc.array u8) (call alloc.forever) 5))
+    (let bytes:(arr u8) (arr.new u8 (call alloc.forever) 5))
     (loop i 0 4 1 (arr.set u8 bytes i (* i 100)))
     (let t:i32 0)
     (loop i 0 4 1 (set! t (+ t (arr.get u8 bytes i))))
     (call io.println_int "sum of bytes " t)     ;; 0 100 200 44 144 = 488
-    (let s:(arr i16) (call (alloc.array i16) (call alloc.forever) 2))
+    (let s:(arr i16) (arr.new i16 (call alloc.forever) 2))
     (arr.set i16 s 1 -300)
     (call io.println_int "i16 " (arr.get i16 s 1))
-    (let p:(ptr pixel.Pixel) (call (alloc.create pixel.Pixel) (call alloc.forever)))
+    (let p:(ptr pixel.Pixel) (new pixel.Pixel (call alloc.forever)))
     (put p pixel.Pixel.r 30) (put p pixel.Pixel.g 60) (put p pixel.Pixel.b 90)
     (call io.println_int "gray " (call pixel.gray p))
     (let m:i32 (mem.alloc 8))

@@ -721,17 +721,6 @@ impl VM {
                 scope.retain(|k, _| keys_before.contains(k));
                 res
             }
-            Expr::NewStruct { struct_name, .. } => {
-                let def = self
-                    .structs
-                    .get(struct_name)
-                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
-                    .clone();
-                let size = crate::checker::get_struct_size(&def, &self.structs)?;
-                // [generation 0][unused][object], as compiled code lays it out
-                let ptr = self.alloc_bytes(size + 8) as u32 + 8;
-                Ok(Value::Int64(ptr as i64))
-            }
             Expr::GetField { struct_name, field_name, ptr, .. } => {
                 let def = self
                     .structs
@@ -786,19 +775,6 @@ impl VM {
                     other => crate::checker::type_size_and_align(other, &self.structs)?.0,
                 };
                 Ok(Value::Int(size as i64))
-            }
-            Expr::ArrNew { elem_ty, size, .. } => {
-                let count = match self.eval_expr(size, scope)? {
-                    Value::Int(i) if i >= 0 => i as usize,
-                    Value::Int(i) => return Err(format!("Array index out of bounds: invalid array size {}", i)),
-                    other => return Err(format!("VM: Expected Int size for arr.new, got {:?}", other)),
-                };
-                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
-                // [generation 0][count][elements]
-                let total_size = 8 + count * elem_size;
-                let raw_ptr = self.alloc_bytes(total_size) as u32 as usize;
-                self.store_val_at(raw_ptr + 4, &Type::I32, Value::Int(count as i64))?;
-                Ok(Value::Int64((raw_ptr + 8) as i64))
             }
             Expr::ArrGet { elem_ty, ptr, index, .. } => {
                 let ptr_val = self.eval_expr(ptr, scope)?;

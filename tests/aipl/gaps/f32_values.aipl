@@ -20,7 +20,7 @@
     (call io.println_int "trunc f64 " (i32.trunc_f64_s 2147483647.9))
     (call io.println_i64 "trunc f32 i64 " (i64.trunc_f32_s 1.0e10f32))
     (call show "reinterpret " (f32.reinterpret_i32 1078530011))
-    (let p:(ptr P) (call (alloc.create P) (call alloc.forever)))
+    (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.x 1.5f32)
     (put p P.y (* (get p P.x) 2.0f32))
     (call show "field " (get p P.y))

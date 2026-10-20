@@ -185,10 +185,10 @@ class Gen:
             return f"(make {t} {' '.join(self.literal(ft) for _, ft in self.values[t])})"
         # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
-            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]})"
+            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]} (call alloc.forever))"
         if t.startswith("(arr "):
             el = t[5:-1]
-            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
+            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} (call alloc.forever) {rng.randint(1, 5)})"
         if t == R:
             return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err:i32 {self.literal('bool')})"
         if t == F:

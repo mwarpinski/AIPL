@@ -172,5 +172,77 @@ def main():
             print(f"rewrote {p}", file=sys.stderr)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not (len(sys.argv) > 1 and sys.argv[1] == "--short"):
     main()
+
+
+# ---- step 3: the short form, (new T a) and (arr.new T a n) ----
+#
+# Once new and arr.new name their allocator (MEMORY_PLAN.md F, decided
+# 2026-10-19), what step 2 wrote reads better as the form again:
+#
+#   (call (alloc.create T) a)   -> (new T a)
+#   (call (alloc.array T) a n)  -> (arr.new T a n)
+#
+# python3 tools/migrate_new.py --short FILE...  (same file kinds as above)
+
+def shorten(src, code_ranges, aipl):
+    """src with each step-2 call inside code_ranges back in the short form,
+    inner ones first."""
+    out, at, i, n = [], 0, 0, len(src)
+
+    def in_code(k):
+        return any(a <= k < b for a, b in code_ranges)
+
+    while i < n:
+        if not in_code(i):
+            i += 1
+            continue
+        c = src[i]
+        if aipl and c == ";":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if aipl and c == '"':
+            i += 1
+            while i < n and src[i] != '"':
+                i += 2 if src[i] == "\\" else 1
+            i += 1
+            continue
+        m = re.match(r"\(call \(alloc\.(create|array) ", src[i:])
+        if m:
+            t0 = i + m.end()
+            t1 = skip_to_end_of_form(src, t0)
+            k = t1
+            while src[k].isspace():
+                k += 1
+            if src[k] == ")":
+                end = skip_to_end_of_form(src, i)
+                inner = lambda t: shorten(t, [(0, len(t))], aipl)
+                rest = inner(src[k + 1:end - 1].strip())
+                form = "new" if m.group(1) == "create" else "arr.new"
+                out.append(src[at:i])
+                out.append(f"({form} {inner(src[t0:t1])} {rest})")
+                at = i = end
+                continue
+        i += 1
+    out.append(src[at:])
+    return "".join(out)
+
+
+def main_short(paths):
+    for p in paths:
+        src = open(p).read()
+        if p.endswith(".md"):
+            ranges = [(m.start(1), m.end(1)) for m in re.finditer(r"```lisp\n(.*?)```", src, re.S)]
+            new = shorten(src, ranges, True)
+        else:
+            new = shorten(src, [(0, len(src))], not p.endswith(".rs"))
+        if new != src:
+            open(p, "w").write(new)
+            print(f"shortened {p}", file=sys.stderr)
+
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--short":
+    main_short(sys.argv[2:])
+    sys.exit(0)

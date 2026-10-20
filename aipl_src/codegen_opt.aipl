@@ -626,7 +626,7 @@
     (cond
       ((or (call str.is ht "struct") (or (call str.is ht "union") (or (call str.is ht "const") (call str.is ht "enum"))))
        false)
-      ((or (call str.is ht "new") (or (call str.is ht "sizeof") (or (call str.is ht "ptr.null") (or (call str.is ht "arr.null") (call str.is ht "ref")))))
+      ((or (call str.is ht "sizeof") (or (call str.is ht "ptr.null") (or (call str.is ht "arr.null") (call str.is ht "ref"))))
        false)
       ((call str.is ht "call") (gt idx 1))
       ((call str.is ht "call_ref") (gt idx 1))
@@ -635,7 +635,6 @@
       ((call str.is ht "loop") (gte idx 2))
       ((call str.is ht "get") (eq idx 1))
       ((call str.is ht "put") (or (eq idx 1) (eq idx (- total 1))))
-      ((call str.is ht "arr.new") (eq idx 2))
       ((call str.is ht "arr.get") (or (eq idx 2) (eq idx 3)))
       ((call str.is ht "arr.set") (or (eq idx 2) (or (eq idx 3) (eq idx (- total 1)))))
       ((or (call str.is ht "ptr.cast") (or (call str.is ht "ptr.make") (or (call str.is ht "arr.cast") (call str.is ht "arr.make"))))

@@ -276,7 +276,6 @@ pub fn expr_str(e: &Expr) -> String {
         ),
         Expr::Block(body, _) => with_body("block".to_string(), body),
         Expr::Unsafe(body, _) => with_body("unsafe".to_string(), body),
-        Expr::NewStruct { struct_name, .. } => format!("(new {})", struct_name),
         Expr::GetField { struct_name, field_name, ptr, .. } => {
             format!("(get {} {}.{})", expr_str(ptr), struct_name, field_name)
         }
@@ -284,7 +283,6 @@ pub fn expr_str(e: &Expr) -> String {
             format!("(put {} {}.{}{} {})", expr_str(ptr), struct_name, field_name, path_str(path), expr_str(val))
         }
         Expr::Sizeof { ty, .. } => format!("(sizeof {})", type_str(ty)),
-        Expr::ArrNew { elem_ty, size, .. } => format!("(arr.new {} {})", type_str(elem_ty), expr_str(size)),
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             format!("(arr.get {} {} {})", type_str(elem_ty), expr_str(ptr), expr_str(index))
         }

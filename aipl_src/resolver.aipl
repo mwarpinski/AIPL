@@ -225,8 +225,8 @@
       ((eq i 1)
        (cond
          ((or (call eq_lit h "fn") (or (call eq_lit h "call") (call eq_lit h "ref"))) 1)
-         ((or (call eq_lit h "struct") (or (call eq_lit h "new") (or (call eq_lit h "sizeof")
-            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (or (call eq_lit h "ptr.cast") (call eq_lit h "ptr.make"))))))) 2)
+         ((or (call eq_lit h "struct") (or (call eq_lit h "sizeof")
+            (or (call eq_lit h "ptr") (or (call eq_lit h "ptr.null") (or (call eq_lit h "ptr.cast") (call eq_lit h "ptr.make")))))) 2)
          (else 0)))
       ((eq i 2) (if (or (call eq_lit h "get") (or (call eq_lit h "put") (call eq_lit h "with"))) 3 0))
       (else 0)))
@@ -375,8 +375,9 @@
     (call note_at m (get g compiler.Node.pos) out)
     (call buf.push_byte out 41))
 
-  ;; 1 (when ...), 2 (for ...), 3 an and/or of three or more, else 0
-  ;; (sugar.rs); their shapes were checked when the file was read.
+  ;; 1 (when ...), 2 (for ...), 3 an and/or of three or more, 4 (new ...),
+  ;; 5 (arr.new ...), else 0 (sugar.rs); their shapes were checked when the
+  ;; file was read.
   (fn sugar_kind [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
     (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return 0) (block))
     (let h:str.Bytes (call head (get m Mod.src) g))
@@ -384,15 +385,33 @@
       ((call str.is h "when") 1)
       ((call str.is h "for") 2)
       ((and (or (call str.is h "and") (call str.is h "or")) (gt (call count_kids g) 3)) 3)
+      ((call str.is h "new") 4)
+      ((call str.is h "arr.new") 5)
       (else 0)))
 
   ;; The sugar.rs rewrites, every token they add at the form's place:
   ;; (when c b...) as (if c (block b...) (block)); (for i s e b...) as
-  ;; (loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...)).
+  ;; (loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...));
+  ;; (new S a) as (call (alloc.create S) a), (arr.new T a n) as
+  ;; (call (alloc.array T) a n).
   (fn emit_sugar [m:(ptr Mod) g:(ptr compiler.Node) kind:i32 out:(ptr buf.Buf)] -> void
     (let at:i32 (get g compiler.Node.pos))
     (let c:(ptr compiler.Node) (get (call first_child g) compiler.Node.next))
     (cond
+      ((or (eq kind 4) (eq kind 5))
+       (call note_at m at out)
+       (call buf.push_str out (if (eq kind 4) "(call (alloc.create " "(call (alloc.array "))
+       (call emit m c 2 out)
+       ;; a struct type argument lets the template make one, as for any
+       ;; template (emit_group)
+       (if (call is_symbol c) (call check_type_arg m (call rename m (call text (get m Mod.src) c) 2) c) (block))
+       (call note_at m at out) (call buf.push_byte out 41)
+       (set! c (get c compiler.Node.next))
+       (while (neq c (ptr.null compiler.Node))
+         (call buf.push_byte out 32)
+         (call emit m c 0 out)
+         (set! c (get c compiler.Node.next)))
+       (call note_at m at out) (call buf.push_byte out 41))
       ((eq kind 1)
        (call note_at m at out) (call buf.push_str out "(if ")
        (call emit m c 0 out)
@@ -639,7 +658,6 @@
              (block
                (let sym:str.Bytes (call rename m (call text (get m Mod.src) c) role))
                (cond
-                 ((and (eq i 1) (call eq_lit gh "new")) (call check_makes m sym c))
                  ;; (make V ...) of a value struct
                  ((and (eq i 1) (call eq_lit gh "make")) (call check_makes m sym c))
                  ;; (get p S.f), (put p S.f v)
@@ -1351,6 +1369,23 @@
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b "for is (for i start end body...): i from start up to end, end left out")
                   (return b))
+                (block))
+            ;; (new S a) and (arr.new T a n) name their allocator
+            (if (and (call symbol_is src toks (+ i 1) "new") (neq (call form_args toks count i) 2))
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (call buf.push_str b (if (eq (call form_args toks count i) 1)
+                                           "new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"
+                                           "new is (new S a): the struct, then the allocator to make it from"))
+                  (return b))
+                (block))
+            (if (and (call symbol_is src toks (+ i 1) "arr.new") (neq (call form_args toks count i) 3))
+                (block
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (call buf.push_str b (if (eq (call form_args toks count i) 2)
+                                           "arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"
+                                           "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"))
+                  (return b))
                 (block)))
           (block)))
     (ptr.null buf.Buf)))
@@ -1633,7 +1668,9 @@
     (let has_show:bool false)
     (let has_testing:bool false)
     (let has_os:bool false)
+    (let has_alloc:bool false)
     (let formats:bool false)
+    (let news:bool false)
     ;; a test build's entry: its tests are functions (resolver.rs test_functions)
     (let testing:bool (and (get st State.tests) (eq src (get st State.entry))))
     (let tests:i32 0)
@@ -1644,12 +1681,16 @@
          (if (call str.is mn "show") (set! has_show true) (block))
          (if (call str.is mn "testing") (set! has_testing true) (block))
          (if (call str.is mn "os") (set! has_os true) (block))
+         (if (call str.is mn "alloc") (set! has_alloc true) (block))
          (if (call resolve_module st dir (call text src (call nth item 1)) (get src Src.path)) (block) (return false)))
         ;; a test counts only in a test build
         ((call eq_lit (call head src item) "test")
          (set! tests (+ tests 1))
-         (if (and testing (call uses_formats src item)) (set! formats true) (block)))
-        (else (if (call uses_formats src item) (set! formats true) (block))))
+         (if (and testing (call uses_formats src item)) (set! formats true) (block))
+         (if (and testing (call uses_new src item)) (set! news true) (block)))
+        (else
+         (if (call uses_formats src item) (set! formats true) (block))
+         (if (call uses_new src item) (set! news true) (block))))
       (set! item (get item compiler.Node.next)))
     ;; a test build imports std/testing and std/os, after the module's own
     (if (and testing (gt tests 0))
@@ -1657,11 +1698,27 @@
           (if (not has_testing) (if (call resolve_module st dir (call str.from_str "testing") (get src Src.path)) (block) (return false)) (block))
           (if (not has_os) (if (call resolve_module st dir (call str.from_str "os") (get src Src.path)) (block) (return false)) (block)))
         (block))
+    ;; new and arr.new call std/alloc (sugar.rs), which a module that uses
+    ;; them imports, after its own imports and a test build's
+    (if (and news (and (not has_alloc) (not (call str.is (call text src (call nth (get src Src.root) 1)) "alloc"))))
+        (if (call resolve_module st dir (call str.from_str "alloc") (get src Src.path)) (block) (return false))
+        (block))
     ;; the formatting forms become std/show calls (formats.rs): a module
     ;; that uses one imports it, after its own imports
     (if (and formats (not has_show))
         (call resolve_module st dir (call str.from_str "show") (get src Src.path))
         true))
+
+  ;; Whether node n holds a (new ...) or (arr.new ...) outside a [...] list.
+  (fn uses_new [src:(ptr Src) n:(ptr compiler.Node)] -> bool
+    (if (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false) (block))
+    (let h:str.Bytes (call head src n))
+    (if (or (call str.is h "new") (call str.is h "arr.new")) (return true) (block))
+    (let c:(ptr compiler.Node) (call first_child n))
+    (while (neq c (ptr.null compiler.Node))
+      (if (call uses_new src c) (return true) (block))
+      (set! c (get c compiler.Node.next)))
+    false)
 
   ;; Whether node n holds a formatting form.
   (fn uses_formats [src:(ptr Src) n:(ptr compiler.Node)] -> bool

@@ -659,7 +659,7 @@ fn p8_structs_and_arrays() {
   (struct Named [id:i32 name:str])
 
   (fn test_point_ops [x:i32 y:i32] -> i32 (unsafe)
-    (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
@@ -673,7 +673,7 @@ fn p8_structs_and_arrays() {
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32 (unsafe)
-    (let m:(ptr Mixed) (call (alloc.create Mixed) (call alloc.forever)))
+    (let m:(ptr Mixed) (new Mixed (call alloc.forever)))
     (put m Mixed.flag true)
     (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
     (put m Mixed.tag 7)
@@ -682,12 +682,12 @@ fn p8_structs_and_arrays() {
         -1))
 
   (fn test_floats [] -> i32 (unsafe)
-    (let f:(ptr Floats) (call (alloc.create Floats) (call alloc.forever)))
+    (let f:(ptr Floats) (new Floats (call alloc.forever)))
     (put f Floats.b 2.5)
     (if (gt (get f Floats.b) 2.0) 1 0))
 
   (fn test_array_ops [n:i32] -> i32 (unsafe)
-    (let arr:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let arr:(arr i32) (arr.new i32 (call alloc.forever) n))
     (loop i 0 (- n 1) 1
       (arr.set i32 arr i (* (+ i 1) 10)))
     (let sum:i32 0)
@@ -697,13 +697,13 @@ fn p8_structs_and_arrays() {
 
   ;; header holds the count; the bump cursor advances by 4 + n * 8
   (fn test_i64_array [n:i32] -> i32 (unsafe)
-    (let a:(arr i64) (call (alloc.array i64) (call alloc.forever) n))
+    (let a:(arr i64) (arr.new i64 (call alloc.forever) n))
     (arr.set i64 a (- n 1) 5i64)
     (let next:i32 (mem.alloc 4))
     (+ (arr.len a) (+ (- next (arr.addr a)) (i32.wrap (arr.get i64 a (- n 1))))))
 
   (fn test_index_oob [i:i32] -> i32 (unsafe)
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) 3))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 3))
     (arr.get i32 a i))
 
   (fn alloc_four [] -> i32 (unsafe)
@@ -712,7 +712,7 @@ fn p8_structs_and_arrays() {
 
   ;; the size expression allocates; the array must not overlap that block
   (fn test_size_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) (call alloc_four)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call alloc_four)))
     (- (arr.addr a) (mem.load32 0)))
 
   ;; results are values (AIPL_SPEC.md 4.F), a str side included: making
@@ -726,15 +726,15 @@ fn p8_structs_and_arrays() {
   ;; the payload's array right at the cursor: its 8-byte prefix, then it
   (fn test_result_payload_allocates [] -> i32 (unsafe)
     (let before:i32 (mem.load32 0))
-    (match_result (ok:str (call (alloc.array i32) (call alloc.forever) 2))
+    (match_result (ok:str (arr.new i32 (call alloc.forever) 2))
       (ok v (- (arr.addr v) before))
       (err e 0)))
 
   ;; AIPL_SPEC.md 4.E example
   (fn test_points [] -> i32 (unsafe)
-    (let ps:(arr (ptr Point)) (call (alloc.array (ptr Point)) (call alloc.forever) 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (loop i 0 2 1
-      (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
+      (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
@@ -746,18 +746,18 @@ fn p8_structs_and_arrays() {
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
   (fn test_bool_word [] -> i32 (unsafe)
-    (let p:(ptr Mixed) (call (alloc.create Mixed) (call alloc.forever)))
+    (let p:(ptr Mixed) (new Mixed (call alloc.forever)))
     (mem.store32 (ptr.addr p) 2)
-    (let a:(arr bool) (call (alloc.array bool) (call alloc.forever) 1))
+    (let a:(arr bool) (arr.new bool (call alloc.forever) 1))
     (mem.store32 (arr.addr a) 7)
     (if (and (eq (get p Mixed.flag) true) (and (arr.get bool a 0) true)) 1 0))
 
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
   (fn test_str_field [] -> i32 (unsafe)
-    (let n:(ptr Named) (call (alloc.create Named) (call alloc.forever)))
+    (let n:(ptr Named) (new Named (call alloc.forever)))
     (put n Named.name "abc")
-    (let a:(arr str) (call (alloc.array str) (call alloc.forever) 2))
+    (let a:(arr str) (arr.new str (call alloc.forever) 2))
     (arr.set str a 1 (get n Named.name))
     (+ (str.len (arr.get str a 1)) (if (eq (mem.load8 (+ (str.ptr (get n Named.name)) 2)) 99) 10 0)))
 
@@ -870,9 +870,9 @@ fn allocation_grows_memory_identically() {
   (fn main [] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 1 3000 1
-      (let p:(ptr P) (call (alloc.create P) (call alloc.forever)))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x i)
-      (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) 100))
+      (let a:(arr i32) (arr.new i32 (call alloc.forever) 100))
       (arr.set i32 a 99 i)
       (let r:(result i32 i32) (ok:i32 i))
       (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
@@ -914,7 +914,7 @@ fn nested_allocations_do_not_overlap() {
     (mem.load32 (- q 8)))
   ;; the same through arr.new's length and a struct inside a result payload
   (fn arr_len_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) (call inner_size)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call inner_size)))
     (arr.set i32 a 0 5)
     ;; the array's block is [generation][length][elements], right after the 8 inner bytes
     (mem.load32 (- (arr.addr a) 16))))
@@ -1036,7 +1036,7 @@ const CONTRACTS: &str = r#"
     (req (gt (arr.get i32 a i) 0))
     i)
   (fn nested_i32 [i:i32] -> i32
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) 2))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 2))
     (arr.set i32 a 0 1)
     (call nested a i))
 )
@@ -1103,7 +1103,7 @@ fn value_structs_agree() {
 
   ;; written whole, then one field through a path; read as raw words
   (fn raw [] -> i32 (unsafe)
-    (let h:(ptr Holder) (call (alloc.create Holder) (call alloc.forever)))
+    (let h:(ptr Holder) (new Holder (call alloc.forever)))
     (put h Holder.w (make W (make V 7 2.5 true) 9i64))
     (put h Holder.w W.v V.a 11)
     (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
@@ -1125,14 +1125,14 @@ fn value_structs_agree() {
 
   ;; elements 24 bytes apart
   (fn elements [] -> i32 (unsafe)
-    (let xs:(arr V) (call (alloc.array V) (call alloc.forever) 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (arr.set V xs 1 V.a 5)
     (mem.load32 (+ (arr.addr xs) 24)))
 
   (fn read_null [] -> i64 (get (get (ptr.null Holder) Holder.w) W.n))
 
   (fn read_past [i:i32] -> i32
-    (let xs:(arr V) (call (alloc.array V) (call alloc.forever) 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (get (arr.get V xs i) V.a))
 
   (fn write_reserved [] -> i32 (unsafe)

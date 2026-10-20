@@ -115,7 +115,7 @@ fn typed_linked_list_runs_in_both_backends() {
 (module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next head)
     n)
@@ -137,9 +137,9 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
 (module arrs (import alloc)
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
-    (let ps:(arr (ptr P)) (call (alloc.array (ptr P)) (call alloc.forever) 4))
+    (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (loop i 0 3 1
-      (let p:(ptr P) (call (alloc.create P) (call alloc.forever)))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
@@ -147,8 +147,8 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
-    (let nested:(arr (arr i32)) (call (alloc.array (arr i32)) (call alloc.forever) 1))
-    (arr.set (arr i32) nested 0 (call (alloc.array i32) (call alloc.forever) 7))
+    (let nested:(arr (arr i32)) (arr.new (arr i32) (call alloc.forever) 1))
+    (arr.set (arr i32) nested 0 (arr.new i32 (call alloc.forever) 7))
     (+ (* 100 (arr.len (arr.get (arr i32) nested 0))) (+ total (get back P.x)))))
 "#;
     // 0 + 1 + 4 + 9 = 14, plus P.x of element 3 (9), plus 100 * 7
@@ -199,7 +199,7 @@ fn two_imported_modules_may_each_define_the_same_struct_name() {
 (module geo (import alloc)
   (struct Node [(read x:i32) y:i32] (pub))
   (fn make [x:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.x (call ident x))
     n)
   (fn ident [v:i32] -> i32 v))"#),
@@ -207,7 +207,7 @@ fn two_imported_modules_may_each_define_the_same_struct_name() {
 (module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)] (pub))
   (fn make [v:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next (ptr.null Node))
     n))"#),

@@ -3,10 +3,11 @@
 //! `(no_leak)` that does. Mirrored by aipl_src/leaks.aipl, message for
 //! message.
 //!
-//! A function may leak if its code uses `new`, `arr.new`, `mem.alloc`, or
-//! `format` (a str), calls `alloc.forever` (the allocator whose memory is
-//! never freed), calls through a function reference, or calls a
-//! function that may leak. (Results and unions are values, MEMORY_PLAN.md
+//! A function may leak if its code uses `mem.alloc` or `format` (a str),
+//! calls `alloc.forever` (the allocator whose memory is never freed; `new`
+//! and `arr.new` are calls of alloc.create and alloc.array by now, with
+//! the allocator they name), calls through a function reference, or calls
+//! a function that may leak. (Results and unions are values, MEMORY_PLAN.md
 //! M4, so nothing else allocates without saying so.) Inside
 //! `unsafe` this counts for the function's callers but not against its own
 //! `(no_leak)` promise: there it is the programmer's word, which is how an
@@ -55,8 +56,6 @@ fn sites(f: &FnDef) -> Vec<Sited> {
     let mut visit = |e: &Expr| {
         let at = span_of(e);
         let site = match e {
-            Expr::NewStruct { .. } => Some(Site::Leak("new".into())),
-            Expr::ArrNew { .. } => Some(Site::Leak("arr.new".into())),
             Expr::Op { op: OpCode::MemAlloc, .. } => Some(Site::Leak("mem.alloc".into())),
             Expr::Op { op: OpCode::FormatStr, .. } => Some(Site::Leak("format (a str)".into())),
             Expr::CallRef { .. } => Some(Site::Leak("a call through a function reference (its target is not known)".into())),

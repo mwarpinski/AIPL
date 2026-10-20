@@ -1454,27 +1454,6 @@ impl Parser {
                                 span,
                             }
                         }
-                        "new" => {
-                            let struct_name = match self.next() {
-                                Some(Token {
-                                    kind: TokenKind::Symbol(s),
-                                    ..
-                                }) => s,
-                                Some(tok) => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in new, got '{}'",
-                                        tok.line, tok.col, tok.kind
-                                    ))
-                                }
-                                None => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in new, got EOF",
-                                        span.0, span.1
-                                    ))
-                                }
-                            };
-                            Expr::NewStruct { struct_name, span }
-                        }
                         "get" => {
                             // (get e S.f), or a path (get e S.f V.g ...): one field of a
                             // value struct held in the field before it
@@ -1645,15 +1624,6 @@ impl Parser {
                             let val = self.parse_expr()?;
                             Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), gen: None, span }
                         }
-                        "arr.new" => {
-                            let elem_ty = self.parse_type()?;
-                            let size = self.parse_expr()?;
-                            Expr::ArrNew {
-                                elem_ty,
-                                size: Box::new(size),
-                                span,
-                            }
-                        }
                         "arr.get" => {
                             let elem_ty = self.parse_type()?;
                             let ptr = self.parse_expr()?;
@@ -1783,7 +1753,7 @@ impl Parser {
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
                                 "format.expect" => OpCode::FormatExpect,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" => {
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str

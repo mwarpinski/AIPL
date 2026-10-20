@@ -2,7 +2,8 @@
 //! tests/aipl/sugar/main.aipl prints the same in the VM, under aipl-run, and
 //! natively; the self-hosted aipl compiles it (and its test build) to the
 //! Rust toolchain's bytes; and each mistake is one message in both, a test's
-//! body read only in a test build.
+//! body read only in a test build. new and arr.new, which name their
+//! allocator, are rewritten here too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -73,6 +74,15 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(test \"t\" (for i 0))", true, "3:13: for is (for i start end body...): i from start up to end, end left out"),
         ("(test \"t\" (println \"{\"))", false, ""),
         ("(test \"t\" (println \"{\"))", true, "3:22: unclosed { in a format string (write {{ for a brace)"),
+        // new and arr.new name their allocator (sugar.rs), std/alloc imported for them
+        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, ""),
+        ("(struct P [x:i32]) (fn g [a:alloc.Allocator] -> i32 (arr.len (arr.new i32 a 4)))", false, ""),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a): the struct, then the allocator to make it from"),
+        ("(fn g [] -> void (let xs:(arr i32) (arr.new i32 3)))", false, "3:38: arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"),
+        ("(fn g [] -> void (let xs:(arr i32) (arr.new i32)))", false, "3:38: arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"),
+        ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", false, ""),
+        ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", true, "3:47: new takes the allocator to make it from"),
     ];
     for (k, (item, tests, msg)) in cases.iter().enumerate() {
         let file = dir.join(format!("e{k}.aipl"));

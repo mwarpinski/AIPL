@@ -1792,18 +1792,6 @@ impl TypeChecker {
                 self.unsafe_depth.set(self.unsafe_depth.get() - 1);
                 r.map(|_| last_ty)
             }
-            Expr::NewStruct { struct_name, span } => {
-                if !self.struct_defs.contains_key(struct_name) {
-                    return Err(not_a_struct(*span, struct_name));
-                }
-                if self.is_value(struct_name) {
-                    return Err(format!(
-                        "{}:{}: '{}' is a value struct: make one with (make {} field-values...), not new",
-                        span.0, span.1, shown(struct_name), shown(struct_name)
-                    ));
-                }
-                Ok(Type::Ptr(Box::new(Type::Struct(struct_name.clone()))))
-            }
             Expr::GetField {
                 struct_name,
                 field_name,
@@ -1938,17 +1926,6 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::I32)
-            }
-            Expr::ArrNew { elem_ty, size, span } => {
-                self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
-                let sz_ty = self.infer_expr_type(size, env)?;
-                if sz_ty != Type::I32 {
-                    return Err(format!(
-                        "{}:{}: arr.new size must be i32, got {}",
-                        span.0, span.1, sz_ty
-                    ));
-                }
-                Ok(Type::Array(Box::new(elem_ty.clone())))
             }
             Expr::ArrGet {
                 elem_ty,

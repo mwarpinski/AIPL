@@ -53,10 +53,10 @@ pub const REFS_PROGRAM: &str = r#"
   (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
     (call_ref (fn [i32 i32] -> i32) f x x))
   (fn main [] -> i32
-    (let ops:(arr (fn [i32 i32] -> i32)) (call (alloc.array (fn [i32 i32] -> i32)) (call alloc.forever) 2))
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (call (alloc.create Op) (call alloc.forever)))
+    (let o:(ptr Op) (new Op (call alloc.forever)))
     (put o Op.apply (ref mul))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)

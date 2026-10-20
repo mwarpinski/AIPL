@@ -239,7 +239,7 @@ fn self_hosted_bytes_match_f64_sqrt() {
 fn self_hosted_bytes_match_a_wide_struct() {
     let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
     let src = format!(
-        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (call (alloc.create W) (call alloc.forever))) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
+        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever))) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
         fields.join(" ")
     );
     assert_self_hosted_matches_rust("wide", &src);
@@ -291,15 +291,15 @@ fn self_hosted_bytes_match_struct() {
   (struct Point [x:i32 y:i32])
   (struct Flags [on:bool name:str])
   (fn make_point [x:i32 y:i32] -> i32
-    (let p:(ptr Point) (call (alloc.create Point) (call alloc.forever)))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
   (fn flags [] -> bool
-    (let f:(ptr Flags) (call (alloc.create Flags) (call alloc.forever)))
+    (let f:(ptr Flags) (new Flags (call alloc.forever)))
     (put f Flags.on true)
     (put f Flags.name "n")
-    (let a:(arr bool) (call (alloc.array bool) (call alloc.forever) 2))
+    (let a:(arr bool) (arr.new bool (call alloc.forever) 2))
     (arr.set bool a 1 (get f Flags.on))
     (and (arr.get bool a 1) (eq (str.len (get f Flags.name)) 1))))
 "#;
@@ -311,7 +311,7 @@ fn self_hosted_bytes_match_array() {
     let src = r#"
 (module test_array (import alloc)
   (fn sum_arr [n:i32] -> i32
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -402,7 +402,7 @@ fn self_hosted_bytes_match_wide_results() {
 fn self_hosted_bytes_match_with_visibility_marks() {
     assert_self_hosted_matches_rust(
         "marks",
-        "(module m (import alloc) (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (call (alloc.create P) (call alloc.forever))) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
+        "(module m (import alloc) (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P (call alloc.forever))) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
     );
 }
 
@@ -440,11 +440,11 @@ fn self_hosted_bytes_match_i64() {
   (fn cmp [a:i64 b:i64] -> i32 (unsafe)
     (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
   (fn acc [n:i32] -> i64 (unsafe)
-    (let s:(ptr Acc) (call (alloc.create Acc) (call alloc.forever)))
+    (let s:(ptr Acc) (new Acc (call alloc.forever)))
     (put s Acc.total 0i64)
     (loop i 1 n 1
       (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
-    (let arr:(arr i64) (call (alloc.array i64) (call alloc.forever) 4))
+    (let arr:(arr i64) (arr.new i64 (call alloc.forever) 4))
     (arr.set i64 arr 3 (get s Acc.total))
     (+ (arr.get i64 arr 3) (mem.load64 (+ (ptr.addr s) 8)))))
 "#;
@@ -565,7 +565,7 @@ fn self_hosted_bytes_match_pointers() {
 (module list (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next head)
     n)
@@ -582,9 +582,9 @@ fn self_hosted_bytes_match_pointers() {
 (module arrs (import alloc)
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
-    (let ps:(arr (ptr P)) (call (alloc.array (ptr P)) (call alloc.forever) 4))
+    (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (loop i 0 3 1
-      (let p:(ptr P) (call (alloc.create P) (call alloc.forever)))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
@@ -592,8 +592,8 @@ fn self_hosted_bytes_match_pointers() {
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
-    (let nested:(arr (arr i32)) (call (alloc.array (arr i32)) (call alloc.forever) 1))
-    (arr.set (arr i32) nested 0 (call (alloc.array i32) (call alloc.forever) 7))
+    (let nested:(arr (arr i32)) (arr.new (arr i32) (call alloc.forever) 1))
+    (arr.set (arr i32) nested 0 (arr.new i32 (call alloc.forever) 7))
     (+ (* 100 (arr.len (arr.get (arr i32) nested 0))) (+ total (get back P.x)))))
 "#);
     assert_self_hosted_matches_rust("pointers_2", r#"
@@ -737,10 +737,10 @@ fn self_hosted_bytes_match_function_refs() {
   (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
     (call_ref (fn [i32 i32] -> i32) f x x))
   (fn main [] -> i32
-    (let ops:(arr (fn [i32 i32] -> i32)) (call (alloc.array (fn [i32 i32] -> i32)) (call alloc.forever) 2))
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (call (alloc.create Op) (call alloc.forever)))
+    (let o:(ptr Op) (new Op (call alloc.forever)))
     (put o Op.apply (ref mul))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
@@ -879,7 +879,7 @@ fn self_hosted_bytes_match_complex() {
 (module complex (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn process [n:i32] -> (result i32 i32)
-    (let head:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let head:(ptr Node) (new Node (call alloc.forever)))
     (put head Node.val n)
     (put head Node.next (ptr.null Node))
     (if (gt (get head Node.val) 10)
@@ -988,7 +988,7 @@ fn self_hosted_arrays_and_results_execute() {
     let src = r#"
 (module ar (import alloc)
   (fn sum_arr [n:i32] -> i32
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -1038,13 +1038,9 @@ fn self_hosted_arrays_and_results_execute() {
 /// limit the Rust backend has too.
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
-    for src in [
-        "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))",
-        "(module m (fn f [] -> i32 (arr.new (result i32 i32) 3)))",
-    ] {
-        let err = self_host(src).unwrap_err();
-        assert!(err.contains("compile error 95"), "{src}: {err}");
-    }
+    let src = "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))";
+    let err = self_host(src).unwrap_err();
+    assert!(err.contains("compile error 95"), "{src}: {err}");
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();
     assert!(err.contains("compile error 96"), "{err}");
     let long = "x".repeat(1_100_000);
@@ -1194,9 +1190,9 @@ fn self_hosted_bytes_match_consts_and_enums() {
   (fn same [a:Kind b:Kind] -> bool (eq a b))
   (fn bump [k:Kind] -> (result Kind i32) (ok:i32 (enum.cast Kind (+ (enum.ord k) 1))))
   (fn main [] -> i32
-    (let n:(ptr Node) (call (alloc.create Node) (call alloc.forever)))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.kind Kind.group)
-    (let ks:(arr Kind) (call (alloc.array Kind) (call alloc.forever) 3))
+    (let ks:(arr Kind) (arr.new Kind (call alloc.forever) 3))
     (arr.set Kind ks 2 Kind.square)
     (let f:(fn [Kind Kind] -> bool) (ref same))
     (let w:str WORD)
@@ -1289,7 +1285,7 @@ fn self_hosted_bytes_match_sum_types() {
   (fn sum [l:List] -> i32 (unsafe)
     (match l (List.nil 0) (List.cons [x rest] (+ x (call sum (get rest Rest.l))))))
   (fn cons [x:i32 l:List] -> List (unsafe)
-    (let r:(ptr Rest) (call (alloc.create Rest) (call alloc.forever)))
+    (let r:(ptr Rest) (new Rest (call alloc.forever)))
     (put r Rest.l l)
     (make List.cons x r))
   (fn code [c:Color] -> i32 (unsafe) (match c (Color.red 1) (Color.blue 3) (else 2)))
@@ -1297,7 +1293,7 @@ fn self_hosted_bytes_match_sum_types() {
   (fn effect [s:Shape] -> void (unsafe)
     (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
   (fn main [] -> i32 (unsafe)
-    (let h:(ptr Holder) (call (alloc.create Holder) (call alloc.forever)))
+    (let h:(ptr Holder) (new Holder (call alloc.forever)))
     (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
     (put h Holder.c Color.blue)
     (call effect (get h Holder.s))

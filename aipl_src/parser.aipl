@@ -17,9 +17,9 @@
   (import map)
 
   ;; The forms of src/parser.rs parse_expr that are not operators.
-  (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
+  (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
-              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_ with_
+              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_get arr_set mem_free float_mem unsafe_ with_
               ptr_make arr_make ptr_gen arr_gen fmt_surface])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
@@ -640,7 +640,6 @@
       ((eq form Form.block) (make ast.Expr.block at (call parse_body p)))
       ((eq form Form.unsafe_) (make ast.Expr.unsafe_ at (call parse_body p)))
       ((eq form Form.match_result) (call parse_match_result p at))
-      ((eq form Form.new_) (make ast.Expr.new_ at (call expect_symbol p "struct name in new" at)))
       ((or (eq form Form.get_) (eq form Form.put_)) (call parse_get_put p (eq form Form.put_) at))
       ((eq form Form.with_)
        (let v:ast.Expr (call parse_expr p))
@@ -685,9 +684,6 @@
       ((eq form Form.enum_cast)
        (let name:str.Bytes (call expect_symbol p "enum name in enum.cast" at))
        (call ast.cast_expr (call alloc.default) at (make ast.Type.enum_ name) (call parse_expr p)))
-      ((eq form Form.arr_new)
-       (let ty:ast.Type (call parse_type p))
-       (call ast.arr_new_expr (call alloc.default) at ty (call parse_expr p)))
       ((eq form Form.arr_get)
        (let ty:ast.Type (call parse_type p))
        (let a:ast.Expr (call parse_expr p))
@@ -946,7 +942,7 @@
     (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
     (call form m "match" Form.match_) (call form m "block" Form.block) (call form m "unsafe" Form.unsafe_) (call form m "match_result" Form.match_result)
-    (call form m "new" Form.new_) (call form m "get" Form.get_) (call form m "put" Form.put_)
+    (call form m "new" Form.fmt_surface) (call form m "get" Form.get_) (call form m "put" Form.put_)
     (call form m "sizeof" Form.sizeof) (call form m "return" Form.return_) (call form m "break" Form.break_)
     (call form m "continue" Form.continue_) (call form m "cond" Form.cond) (call form m "ref" Form.ref)
     (call form m "call_ref" Form.call_ref) (call form m "arr.len" Form.arr_len) (call form m "ptr.null" Form.ptr_null)
@@ -954,7 +950,7 @@
     (call form m "ptr.addr" Form.ptr_addr) (call form m "arr.addr" Form.arr_addr) (call form m "enum.ord" Form.enum_ord)
     (call form m "ptr.make" Form.ptr_make) (call form m "arr.make" Form.arr_make)
     (call form m "ptr.gen" Form.ptr_gen) (call form m "arr.gen" Form.arr_gen)
-    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.arr_new) (call form m "arr.get" Form.arr_get)
+    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.fmt_surface) (call form m "arr.get" Form.arr_get)
     (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free) (call form m "with" Form.with_)
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)

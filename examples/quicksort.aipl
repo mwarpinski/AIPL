@@ -52,7 +52,7 @@
   ;; n pseudo-random values in 0..999 from a linear congruential generator
   ;; (i32 wrap-around is the same in the VM and wasm).
   (fn random_array [n:i32 seed:i32] -> (arr i32)
-    (let a:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let x:i32 seed)
     (loop i 0 (- n 1) 1
       (set! x (+ (* x 1103515245) 12345))
@@ -70,8 +70,8 @@
   ;; Already-sorted and all-equal input stay fast and correct.
   (fn handles_sorted_and_equal [n:i32] -> bool
     (req (and (gt n 0) (lte n 100000)))
-    (let up:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
-    (let same:(arr i32) (call (alloc.array i32) (call alloc.forever) n))
+    (let up:(arr i32) (arr.new i32 (call alloc.forever) n))
+    (let same:(arr i32) (arr.new i32 (call alloc.forever) n))
     (loop i 0 (- n 1) 1
       (arr.set i32 up i i)
       (arr.set i32 same i 7))

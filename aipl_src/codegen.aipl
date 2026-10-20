@@ -226,7 +226,7 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (get 51) (put 52) (sizeof 53) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309)])
   (import alloc)
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
@@ -299,11 +299,9 @@
     (call reg m "i32.wrap" Kw.i32_wrap)
     (call reg m "ok" Kw.ok)
     (call reg m "err" Kw.err)
-    (call reg m "new" Kw.new)
     (call reg m "get" Kw.get)
     (call reg m "put" Kw.put)
     (call reg m "sizeof" Kw.sizeof)
-    (call reg m "arr.new" Kw.arr_new)
     (call reg m "arr.get" Kw.arr_get)
     (call reg m "arr.set" Kw.arr_set)
     (call reg m "f64.convert_i64_s" Kw.f64_convert_i64_s)
@@ -2653,7 +2651,7 @@
           (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
-      ((or (eq k Kw.arr_new) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
+      ((or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock))) true)
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
 
   ;; Check if function uses I/O ops
@@ -2793,8 +2791,8 @@
     (if (or (eq kw Kw.atomic_lock) (eq kw Kw.atomic_unlock)) (set! res Ty.void) (block))
     (if (eq kw Kw.call_ref) (set! res (call type_node_id cg (call nth_child (call nth_child node 1) 3))) (block))
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
-    (if (or (eq kw Kw.new) (or (eq kw Kw.ptr_null) (or (eq kw Kw.ptr_cast) (eq kw Kw.ptr_make)))) (set! res Ty.ptr) (block))
-    (if (or (eq kw Kw.arr_new) (or (eq kw Kw.arr_null) (or (eq kw Kw.arr_cast) (eq kw Kw.arr_make)))) (set! res Ty.arr) (block))
+    (if (or (eq kw Kw.ptr_null) (or (eq kw Kw.ptr_cast) (eq kw Kw.ptr_make))) (set! res Ty.ptr) (block))
+    (if (or (eq kw Kw.arr_null) (or (eq kw Kw.arr_cast) (eq kw Kw.arr_make))) (set! res Ty.arr) (block))
     ;; f64.convert_i64_s, f64.reinterpret_i64, f64.sqrt
     (if (or (eq kw Kw.f64_convert_i64_s) (or (eq kw Kw.f64_reinterpret_i64) (eq kw Kw.f64_sqrt))) (set! res Ty.f64) (block))
     ;; the f32 conversions (checker.rs conversion)
@@ -4131,20 +4129,6 @@
         (block))
     (if (eq op_id Kw.ok) (block (call compile_value_result cg node 0 o) (set! done true)) (block))
     (if (eq op_id Kw.err) (block (call compile_value_result cg node 1 o) (set! done true)) (block))
-    (if (eq op_id Kw.new) ;; new Struct
-        (block
-          (let snode:(ptr compiler.Node) (call nth_child node 1))
-          (let size:i32 (call get_struct_size cg (call node_a snode) (call node_b snode)))
-          ;; [generation 0][unused][object] (wasm.rs Expr::NewStruct)
-          (call emit_i32_const o 0)
-          (call emit_i32_const o (+ (bitand (+ size 7) -8) 8))
-          (call emit_rmw_add o)
-          (call emit_grow_to_cursor o)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call put_op o OP_I64_EXTEND_I32_U)
-          (set! done true))
-        (block))
     (if (eq op_id Kw.get) ;; get ptr Struct.field: load by field type at its offset
         (block
           (let ptr_node:(ptr compiler.Node) (call nth_child node 1))
@@ -4198,42 +4182,6 @@
                             (call get_struct_size cg (call node_a snode) (call node_b snode))
                             (call ty_size (call elem_type_id cg snode) (call type_node_struct cg snode))))
           (call emit_i32_const o size) (set! done true))
-        (block))
-    (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
-        (block
-          (let etype:Ty (call elem_type_id cg (call nth_child node 1)))
-          (let esize:i32 (call ty_size etype (call type_node_struct cg (call nth_child node 1))))
-          (let size_node:(ptr compiler.Node) (call nth_child node 2))
-          (call compile_expr cg size_node o)
-          (call emit_local_set o (get cg Cg.scratch))
-          ;; if n < 0: unreachable
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_i32_const o 0)
-          (call put_op o OP_I32_LT_S)
-          (call put_op o OP_IF)
-          (call put_byte o BLOCK_EMPTY)
-          (call put_op o OP_UNREACHABLE)
-          (call put_op o OP_END)
-          ;; claim 8 + n * sizeof(type) bytes atomically; the block starts at old
-          (call emit_i32_const o 0)
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_i32_const o esize)
-          (call put_op o OP_I32_MUL)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call emit_round8 o)
-          (call emit_rmw_add o)
-          (call emit_local_set o io_a)
-          (call emit_grow_to_cursor o)
-          ;; [generation 0][n][elements]: mem[old + 4] = n; the array is old + 8
-          (call emit_local_get o io_a)
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_memop_offset o OP_I32_STORE 2 4)
-          (call emit_local_get o io_a)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call put_op o OP_I64_EXTEND_I32_U)
-          (set! done true))
         (block))
     (if (eq op_id Kw.arr_get) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
         (block

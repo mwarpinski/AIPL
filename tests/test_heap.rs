@@ -99,7 +99,7 @@ fn free_of_memory_no_heap_allocated() {
     assert_fails(
         "not_a_heap_block",
         "    (let h:(ptr heap.Heap) (call heap.make))
-    (call (heap.destroy P) h (call (alloc.create P) (call alloc.forever)))",
+    (call (heap.destroy P) h (new P (call alloc.forever)))",
         "(req (call heap.allocated_by h p))",
     );
 }

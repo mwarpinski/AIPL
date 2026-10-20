@@ -80,7 +80,7 @@ fn test_suite_resolves_and_checks() {
 fn aliases_diamonds_and_struct_names() {
     let dir = std::env::temp_dir().join(format!("aipl_p14_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("base.aipl"), "(module base (import alloc)\n  (struct P [(read x:i32) y:i32] (pub))\n  (fn mk [x:i32] -> (ptr P) (pub) (let p:(ptr P) (call (alloc.create P) (call alloc.forever))) (put p P.x x) p)\n  (fn px [p:(ptr P)] -> i32 (pub) (get p P.x)))").unwrap();
+    std::fs::write(dir.join("base.aipl"), "(module base (import alloc)\n  (struct P [(read x:i32) y:i32] (pub))\n  (fn mk [x:i32] -> (ptr P) (pub) (let p:(ptr P) (new P (call alloc.forever))) (put p P.x x) p)\n  (fn px [p:(ptr P)] -> i32 (pub) (get p P.x)))").unwrap();
     std::fs::write(dir.join("left.aipl"), "(module left (import base as b)\n  (fn l [] -> i32 (pub) (call b.px (call b.mk 3))))").unwrap();
     std::fs::write(dir.join("right.aipl"), "(module right (import base)\n  (fn r [] -> i32 (pub) (let p:(ptr base.P) (call base.mk 4)) (+ (get p base.P.x) (sizeof base.P))))").unwrap();
     std::fs::write(dir.join("main.aipl"), "(module main (import left) (import right as rr)\n  (fn main [] -> i32 (+ (call left.l) (call rr.r))))").unwrap();
@@ -434,7 +434,7 @@ fn wasm_toolchain_reports_type_errors_in_the_users_files() {
         // at an atom: an undefined variable on its own line
         ("atom", "(module atom\n  (import shapes)\n  (fn main [] -> i32\n    (let n:i32 1)\n        zz))", "atom.aipl"),
         // in an imported module (shapes.area)
-        ("uses_area", "(module uses_area (import alloc)\n  (import shapes)\n  (import broken)\n  (fn main [] -> i32 (call broken.area (call (alloc.create shapes.Box) (call alloc.forever)))))", "broken.aipl"),
+        ("uses_area", "(module uses_area (import alloc)\n  (import shapes)\n  (import broken)\n  (fn main [] -> i32 (call broken.area (new shapes.Box (call alloc.forever)))))", "broken.aipl"),
         // inside a generic template, reported at the template
         ("uses_bad", "(module uses_bad\n  (import tmpl)\n  (fn main [] -> i32 (call (tmpl.bad bool) true)))", "tmpl.aipl"),
         // and the same without a use
@@ -539,7 +539,7 @@ fn malformed_files_are_rejected_like_rust() {
         ("generic_lowercase_param", b"(module m\n  (fn (f t) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
         ("generic_no_params", b"(module m\n  (fn (f) [x:i32] -> i32 x)\n  (fn main [] -> i32 0))"),
         ("generic_twice", b"(module m\n  (fn (f T) [x:T] -> T x)\n  (fn (f T) [x:T] -> T x)\n  (fn main [] -> i32 0))"),
-        ("generic_field_form", b"(module m (import alloc)\n  (struct (B T) [v:T])\n  (fn main [] -> i32 (let b:(ptr (B i32)) (call (alloc.create (B i32)) (call alloc.forever))) (get b (B i32) 5)))"),
+        ("generic_field_form", b"(module m (import alloc)\n  (struct (B T) [v:T])\n  (fn main [] -> i32 (let b:(ptr (B i32)) (new (B i32) (call alloc.forever))) (get b (B i32) 5)))"),
         ("not_a_type", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec (ptr))) (ptr.null (vec.Vec i32)))\n    0))"),
         // an error inside a type argument, reported where the argument is written
         ("bad_type_argument", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec 0x)) (call (vec.make 0x) (call alloc.default) 1))\n    0))"),

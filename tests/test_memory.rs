@@ -74,7 +74,7 @@ fn no_leak_names_each_broken_promise_and_its_chain() {
     let want = format!(
         "Error: {f}: 10:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)\n\
          {f}: 12:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n\
-         {f}: 14:43: uses_forever is marked (no_leak) but uses alloc.forever, whose memory is never freed\n"
+         {f}: 14:27: uses_forever is marked (no_leak) but uses alloc.forever, whose memory is never freed\n"
     );
     assert_eq!(String::from_utf8_lossy(&o.stderr), want);
 }

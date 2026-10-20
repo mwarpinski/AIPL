@@ -311,10 +311,6 @@ pub enum Expr {
     /// casts, atomics, threads, raw-address I/O) and calls to `(unsafe)`
     /// functions are allowed (AIPL_SPEC.md 3).
     Unsafe(Vec<Expr>, (u32, u32)),
-    NewStruct {
-        struct_name: String,
-        span: (u32, u32),
-    },
     GetField {
         struct_name: String,
         field_name: String,
@@ -337,11 +333,6 @@ pub enum Expr {
     /// stored in memory (`Type::Struct` for a struct name).
     Sizeof {
         ty: Type,
-        span: (u32, u32),
-    },
-    ArrNew {
-        elem_ty: Type,
-        size: Box<Expr>,
         span: (u32, u32),
     },
     ArrGet {
@@ -460,11 +451,9 @@ impl Expr {
             Expr::Err(_, _, span) => *span,
             Expr::MatchResult { span, .. } => *span,
             Expr::Block(_, span) | Expr::Unsafe(_, span) => *span,
-            Expr::NewStruct { span, .. } => *span,
             Expr::GetField { span, .. } => *span,
             Expr::PutField { span, .. } => *span,
             Expr::Sizeof { span, .. } => *span,
-            Expr::ArrNew { span, .. } => *span,
             Expr::ArrGet { span, .. } => *span,
             Expr::ArrSet { span, .. } => *span,
             Expr::ArrLen { span, .. } => *span,

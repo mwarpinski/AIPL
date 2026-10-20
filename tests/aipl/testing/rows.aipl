@@ -10,7 +10,7 @@
     (if (eq (str.len s) 0) 0 (+ 1 (call str.count_byte (call str.from_str s) 44))))
 
   (fn make_row [n:i32] -> (ptr Row)
-    (let r:(ptr Row) (call (alloc.create Row) (call alloc.forever)))
+    (let r:(ptr Row) (new Row (call alloc.forever)))
     (put r Row.n n)
     (put r Row.name "r")
     r)
@@ -37,7 +37,7 @@
     (expect ok))
 
   (test "a trap fails only its own test"
-    (let xs:(arr i32) (call (alloc.array i32) (call alloc.forever) 2))
+    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 2))
     (expect (eq (arr.get i32 xs 5) 0)))
 
   (test "each test starts afresh"

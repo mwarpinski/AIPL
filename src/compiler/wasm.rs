@@ -1091,7 +1091,7 @@ fn stored_values<'e>(e: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &crate::c
 /// An expression's direct subexpressions, in source (evaluation) order.
 fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     match e {
-        Expr::Lit(..) | Expr::Var(..) | Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Lit(..) | Expr::Var(..) | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
         Expr::Break(_) | Expr::Continue(_) => {}
         Expr::Let { val, .. } | Expr::Set { val, .. } => out.push(val),
         Expr::If { cond, then_branch, else_branch, .. } => out.extend([cond.as_ref(), then_branch, else_branch]),
@@ -1112,7 +1112,7 @@ fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         }
         Expr::Block(b, _) | Expr::Unsafe(b, _) => out.extend(b.iter()),
         Expr::Cast { addr, gen: Some(g), .. } => out.extend([addr.as_ref(), g]),
-        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
+        Expr::GetField { ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
         Expr::PutField { ptr, val, .. } => out.extend([ptr.as_ref(), val]),
         Expr::ArrGet { ptr, index, .. } => out.extend([ptr.as_ref(), index]),
         Expr::ArrSet { ptr, index, val, .. } => out.extend([ptr.as_ref(), index, val]),
@@ -1182,7 +1182,6 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             let body = if crate::checker::body_diverges(ok_body) { err_body } else { ok_body };
             body.last().map_or(Type::Void, |e| expr_type(e, ctx))
         }
-        Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
         Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(Type::Void, |e| expr_type(e, ctx)),
@@ -1196,7 +1195,6 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         }
         Expr::PutField { .. } => Type::Void,
         Expr::Sizeof { .. } => Type::I32,
-        Expr::ArrNew { elem_ty, .. } => Type::Array(Box::new(elem_ty.clone())),
         Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
         Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
@@ -1524,7 +1522,6 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             | Expr::Err(e, _, _)
             | Expr::Return { val: Some(e), .. }
             | Expr::GetField { ptr: e, .. }
-            | Expr::ArrNew { size: e, .. }
             | Expr::ArrLen { arr: e, .. }
             | Expr::Cast { addr: e, gen: None, .. }
             | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets, unions),
@@ -1588,7 +1585,6 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             }
             Expr::Lit(..)
             | Expr::Var(..)
-            | Expr::NewStruct { .. }
             | Expr::Sizeof { .. }
             | Expr::Null { .. }
             | Expr::Ref { .. }
@@ -2361,22 +2357,6 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_match(value, arms, else_body, None, ctx, func)?;
             }
         }
-        Expr::NewStruct { struct_name, .. } => {
-            let def = ctx
-                .structs
-                .get(struct_name)
-                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let size = crate::checker::get_struct_size(def, ctx.structs)?;
-            // [generation 0][unused][object]: a bump allocation is never
-            // freed, so its generation word stays 0 (fresh memory)
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(round8(size as i32) + 8));
-            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-            emit_grow_to_cursor(func);
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I64ExtendI32U);
-        }
         Expr::GetField {
             struct_name,
             field_name,
@@ -2507,39 +2487,6 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 other => crate::checker::type_size_and_align(other, ctx.structs)?.0,
             };
             func.instruction(&Instruction::I32Const(size as i32));
-        }
-        Expr::ArrNew { elem_ty, size, .. } => {
-            // Same order as the VM: evaluate n, trap if n < 0, then allocate
-            // [n:i32][n elements] and return the address just past the header.
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
-            compile_expr(size, ctx, func)?;
-            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32LtS);
-            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
-            func.instruction(&Instruction::Unreachable);
-            func.instruction(&Instruction::End);
-            // claim 8 + n * elem_size bytes atomically; the block starts at `old`
-            let (block, _) = io_locals(ctx)?;
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Const(elem_size as i32));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            emit_round8(func);
-            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-            func.instruction(&Instruction::LocalSet(block));
-            emit_grow_to_cursor(func);
-            // [generation 0][n][elements]: mem[old + 4] = n; the array is old + 8
-            func.instruction(&Instruction::LocalGet(block));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalGet(block));
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I64ExtendI32U);
         }
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -3144,10 +3091,8 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Var(..)
         | Expr::Ok(..)
         | Expr::Err(..)
-        | Expr::NewStruct { .. }
         | Expr::GetField { .. }
         | Expr::Sizeof { .. }
-        | Expr::ArrNew { .. }
         | Expr::ArrGet { .. }
         | Expr::ArrLen { .. }
         | Expr::Null { .. }
@@ -3984,14 +3929,9 @@ fn emit_rt(func: &mut Body, ctx: &Ctx, cell: i32) {
 /// Bytes each spawned thread allocates for its runtime scratch cells (64..88).
 const RT_SCRATCH_SIZE: i32 = 24;
 
-/// Every allocation is a multiple of 8 bytes, so with an 8-aligned heap start
-/// every block is 8-aligned: atomics (which trap when unaligned), i64/f64
-/// fields, and WASI out-parameters are always aligned.
-fn round8(n: i32) -> i32 {
-    (n + 7) & -8
-}
-
-/// Rounds the i32 on the stack up to a multiple of 8.
+/// Rounds the i32 on the stack up to a multiple of 8: every allocation is,
+/// so with an 8-aligned heap start every block is 8-aligned (atomics, which
+/// trap when unaligned, i64/f64 fields, and WASI out-parameters).
 fn emit_round8(func: &mut Body) {
     func.instruction(&Instruction::I32Const(7));
     func.instruction(&Instruction::I32Add);
@@ -4261,7 +4201,7 @@ pub(crate) fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
         Expr::Break(_) | Expr::Continue(_) => {}
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -4276,7 +4216,6 @@ pub(crate) fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::GetField { ptr, .. }
-        | Expr::ArrNew { size: ptr, .. }
         | Expr::ArrLen { arr: ptr, .. }
         | Expr::Cast { addr: ptr, gen: None, .. }
         | Expr::Addr { val: ptr, .. } => walk_expr(ptr, visit),
@@ -4344,15 +4283,13 @@ fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
 }
 
 /// True if a function body needs the two extra scratch locals: an op lowered
-/// through WASI, `arr.new` (which keeps its block address in one), or an
-/// atomic op that needs its address or operands twice.
+/// through WASI, or an atomic op that needs its address or operands twice.
 fn fn_uses_io(body: &[Expr]) -> bool {
     let mut found = false;
     for e in body {
         walk_expr(e, &mut |x| match x {
             Expr::Op { op, .. } if Wasi::for_op(op).is_some() => found = true,
             Expr::Op { op: OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock, .. } => found = true,
-            Expr::ArrNew { .. } => found = true,
             _ => {}
         });
     }

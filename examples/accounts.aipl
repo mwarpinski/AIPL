@@ -13,7 +13,7 @@
 
   (fn open [id:i32 initial:i32] -> (ptr Account)
     (req (gte initial 0))
-    (let a:(ptr Account) (call (alloc.create Account) (call alloc.forever)))
+    (let a:(ptr Account) (new Account (call alloc.forever)))
     (put a Account.id id)
     (put a Account.balance initial)
     (put a Account.frozen false)

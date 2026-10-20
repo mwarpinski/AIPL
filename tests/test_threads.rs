@@ -104,7 +104,7 @@ const THREADS: &str = r#"
 
   (fn atomic_counter [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
-    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref add_worker) c)))
     (loop t 0 3 1
@@ -128,8 +128,8 @@ const THREADS: &str = r#"
       (atomic.unlock lock))
     0)
   (fn mutex_counter [] -> i32 (unsafe)
-    (let job:(ptr Job) (call (alloc.create Job) (call alloc.forever)))
-    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
+    (let job:(ptr Job) (new Job (call alloc.forever)))
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref locked_worker) (ptr.addr job))))
     (loop t 0 3 1
@@ -138,7 +138,7 @@ const THREADS: &str = r#"
 
   ;; concurrent allocation: every block keeps the value its thread wrote
   (fn alloc_worker [tag:i32] -> i32 (unsafe)
-    (let blocks:(arr i32) (call (alloc.array i32) (call alloc.forever) 500))
+    (let blocks:(arr i32) (arr.new i32 (call alloc.forever) 500))
     (loop i 0 499 1
       (let p:i32 (mem.alloc 8))
       (mem.store32 p tag)
@@ -150,7 +150,7 @@ const THREADS: &str = r#"
       (if (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i)) (block) (set! ok 0)))
     ok)
   (fn concurrent_alloc [] -> i32 (unsafe)
-    (let hs:(arr i32) (call (alloc.array i32) (call alloc.forever) 4))
+    (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (loop t 0 3 1
       (arr.set i32 hs t (thread.spawn (ref alloc_worker) (+ t 100))))
     (let good:i32 0)
@@ -278,7 +278,7 @@ fn spawn_with_passes_a_typed_context() {
     (loop i (get t Tally.from) (get t Tally.to) 1 (put t Tally.sum (+ (get t Tally.sum) i)))
     (get t Tally.sum))
   (fn tally [from:i32 to:i32] -> (ptr Tally)
-    (let t:(ptr Tally) (call (alloc.create Tally) (call alloc.forever)))
+    (let t:(ptr Tally) (new Tally (call alloc.forever)))
     (put t Tally.from from)
     (put t Tally.to to)
     t)

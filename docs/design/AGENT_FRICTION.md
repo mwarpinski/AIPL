@@ -47,13 +47,5 @@ rule earns its cost), **open** (for a decision).
 | 19 | Writing `(ok "yes")` without the err side's type | The checker asked for `(ok:E v)`, clearly | The rule is right (the whole type is written where a result is made); nothing to change. | keep |
 | 20 | Expecting a union of an i32 variant and an eight-i64 variant to be 9 slots (tests/test_values.rs) | The checker said 10, rightly: slots of different kinds never share | Counting slots by hand is error-prone; `aipl eval -e '(slots T)'` (or `aipl doc` showing a type's slots) would answer it in one call, as `(sizeof T)` does for bytes. | open |
 | 21 | Using `alloc.create` in tests/aipl/formats/values.aipl, which never imports alloc | Accepted: the module reached alloc through std/option's import | Import visibility (launch checklist): a module should use only what it imports. | open |
-
-## What a corpus would fix instead
-
-Most of the remaining slowness was not a mistake but recall: the exact
-name of a std function (`str.find_from`, `vec.at`), whether a module has
-one (`buf.byte_at` did not exist), and the argument order. `aipl doc
-MODULE` answers each in one call, and the agent used it less than it
-should have. A larger body of AIPL to learn from would make this
-disappear; until then the prompt guide's rule 14 carries the most-used
-names.
+| 22 | Pushing the M4 merge to development having run only `cargo test`, not every step of .github/workflows/ci.yml | CI's generated-program fuzzer (tools/run_fuzz.py) failed: its generator still made unions over 8 slots | Not the language: a rule change has to reach the program generators in tools/. Now every CI step runs before a push (memory). | keep |
+| 23 | Writing expected `L:C` positions in new tests by counting columns by hand (test_sugar.rs, test_memory.rs), off by one each time | The tests failed until the real positions were read from the toolchain | `aipl verify` already reports them; write the case, run it, then pin what it says. | keep |
