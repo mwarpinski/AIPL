@@ -205,7 +205,7 @@ An unsafe context is the inside of an `(unsafe e...)` block, which is a `block` 
       (call put_answer p)
       (mem.load32 p)))
 
-  (fn main [] -> i32 (call answer)))    ;; => 42
+  (fn main [] -> i32 (println "{(call answer)}") 0))    ;; prints 42
 ```
 
 Outside an unsafe context the checker rejects the operation and says how to allow it: `3:5: mem.store32 is unchecked: write it inside (unsafe ...), or mark the function (unsafe)`, and for a call, `'put_answer' is marked (unsafe): use it inside (unsafe ...), or mark this function (unsafe)`. `unsafe` changes nothing at run time: both forms compile exactly as `block` does.
@@ -350,7 +350,8 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
     (loop i 0 (- (arr.len ps) 1) 1
       (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
-    sum))                                 ;; => Int(33) in both backends
+    (println "{sum}")                     ;; prints 33 in both backends
+    0))
 ```
 
 #### Value structs
@@ -373,7 +374,8 @@ A struct declared with `(value)` after its fields is a **value struct**: a value
     (let p:Particle (arr.get Particle ps 0))
     (let moved:Particle (with p Particle.pos (call add (get p Particle.pos) (get p Particle.vel))))
     (let y:f64 (+ (get moved Particle.pos Vec2.y) (arr.get Particle ps 1 Particle.vel Vec2.y)))
-    (i32.wrap (i64.trunc_f64_s (* y 10.0)))))           ;; => 55
+    (println "y = {y}")                                 ;; prints y = 5.5
+    0))
 ```
 
 | Form | Type | Semantics |
@@ -416,7 +418,8 @@ Every backend runs value structs with the same results. The VM keeps a value as 
     (let b:i32 (try (call digit (call str.byte_at s 1))))
     (ok:str (+ (* a 10) b)))
   (fn main [] -> i32
-    (match_result (call two (call str.from_str "42")) (ok v v) (err e -1))))   ;; => 42
+    (match_result (call two (call str.from_str "42")) (ok v (println "{v}")) (err e (println "not a number")))   ;; prints 42
+    0))
 ```
 
 | Form | Gives | Or returns from the function |
@@ -442,7 +445,8 @@ Each is a `match_result` or `match` with a `return` in the failing arm, written 
     (format_to b "v={v}")
     (ok:str (call buf.len b)))
   (fn main [] -> i32
-    (match_result (call report 7) (ok n n) (err e -1))))   ;; => 3
+    (match_result (call report 7) (ok n (println "{n}")) (err e (println "failed")))   ;; prints 3
+    0))
 ```
 
 `(defer e ...)` is a statement of a function's body. When the function returns after it, by falling off its end, by `return`, or by a `try`, its statements run, the last defer's first, after the return value is computed. A return before the defer in the text does not run it. A defer elsewhere is an error (`defer is a statement of a function's body (it runs when the function returns), not part of an expression or a block`), and so is a defer that would itself return (`a defer cannot return: it runs as the function returns`; likewise `try`). A trap does not run defers: it stops the program. The resolver writes each defer out where it runs (src/formats.rs lower_defers): `(return v)` after one becomes `(block (let _defer_ret_1:R v) D... (return _defer_ret_1))`, and the body's value is kept in `_defer_val` while the defers run.
@@ -453,7 +457,7 @@ Each is a `match_result` or `match` with a `return` in the failing arm, written 
 (fn add [a:i32 b:i32] -> i32 (+ a b))
 (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
   (call_ref (fn [i32 i32] -> i32) f x x))
-(fn main [] -> i32 (call twice (ref add) 20))      ;; => 40
+(fn main [] -> i32 (println "{(call twice (ref add) 20)}") 0)      ;; prints 40
 ```
 
 | Form | Type | Semantics |
@@ -475,7 +479,7 @@ A promising reference fits an ordinary slot (it promises more than the slot asks
 (fn apply [f:(fn [i32] -> i32 (no_leak)) x:i32] -> i32 (no_leak)
   (call_ref (fn [i32] -> i32 (no_leak)) f x))
 (fn double [x:i32] -> i32 (* 2 x))                   ;; proven: no mark needed
-(fn main [] -> i32 (call apply (ref double) 21))     ;; => 42
+(fn main [] -> i32 (println "{(call apply (ref double) 21)}") 0)     ;; prints 42
 ```
 
 **No closures; a context argument instead.** A function sees only its parameters: there are no anonymous functions, nothing captures the variables of the code around it, and there are no global variables. Data a callback needs is passed to it explicitly, as a typed *context*, its first parameter, which the code calling it passes through. This is a design decision, not a gap: a closure would allocate its captured variables behind the program's back (AIPL allocates only through allocators the program names), make every function value larger and every call through one slower, and add rules for what a capture copies or shares. The standard library follows one convention: a function taking a callback with a context has `_with` in its name and takes the context right before the callback, and the callback takes the context first.
@@ -497,7 +501,8 @@ A promising reference fits an ordinary slot (it promises more than the slot asks
     (let order:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 3))
     (loop i 0 2 1 (call (vec.push i32) order i))
     (call (vec.sort_by_with i32 (arr i32)) order scores (ref by_score))
-    (+ (* 100 (call (vec.at i32) order 0)) (+ (* 10 (call (vec.at i32) order 1)) (call (vec.at i32) order 2)))))   ;; 1, 2, 0 => 120
+    (println "{(call (vec.at i32) order 0)} {(call (vec.at i32) order 1)} {(call (vec.at i32) order 2)}")   ;; prints 1 2 0
+    0))
 ```
 
 In the library: `vec.sort_by_with` (a comparison with a context; `vec.sort_by` for one without), `thread.spawn_with` (a worker's context, section 4.D), and `alloc.custom` (a custom allocator's state, section 12.6).
@@ -518,7 +523,8 @@ A generic struct or function takes type parameters in its header, and every use 
 
 (fn main [] -> i32
   (let b:(ptr (Box i64)) (call (make i64) 5i64))
-  (i32.wrap (get b (Box i64) value)))
+  (println "{(get b (Box i64) value)}")
+  0)
 ```
 
 | Form | Meaning |
@@ -577,8 +583,9 @@ An interface names functions a type can have; an implementation provides them fo
     (call (map.set (ptr Point) i32) seen (call point 1 2) 20)     ;; the same point: replaces 10
     (let xs:(arr i64) (arr.new i64 (call alloc.forever) 3))
     (arr.set i64 xs 1 7i64)
-    (+ (call (map.get_or (ptr Point) i32) seen (call point 1 2) 0)
-       (+ (call (map.count (ptr Point) i32) seen) (i32.wrap (call (largest i64) xs))))))   ;; 20 + 1 + 7 => 28
+    (let v:i32 (call (map.get_or (ptr Point) i32) seen (call point 1 2) 0))
+    (println "{v}, {(call (map.count (ptr Point) i32) seen)} key, largest {(call (largest i64) xs)}")   ;; prints 20, 1 key, largest 7
+    0))
 ```
 
 | Form | Meaning |
@@ -631,8 +638,8 @@ What can still fail where a template is used is the use itself: a missing implem
     (let ks:(arr Kind) (arr.new Kind (call alloc.forever) 2))
     (arr.set Kind ks 0 Kind.square)
     (arr.set Kind ks 1 (enum.cast Kind 7))
-    (+ (call sides (arr.get Kind ks 0))
-       (+ (call sides (arr.get Kind ks 1)) (+ MAX_SIDES (str.len LABEL))))))   ;; => 28
+    (println "{(call sides (arr.get Kind ks 0))} {(call sides (arr.get Kind ks 1))} {MAX_SIDES} {(str.len LABEL)}")   ;; prints 4 7 12 5
+    0))
 ```
 
 | Form | Meaning |
@@ -688,7 +695,8 @@ A union is a type whose value is exactly one of several variants, each carrying 
     (let shapes:List (call cons a (make Shape.rect 2 5)
                       (call cons a (make Shape.circle 1)
                       (call cons a (make Shape.dot) (make List.nil)))))
-    (+ (call total shapes) (call turns Dir.south))))     ;; 10 + 3 + 0 + 2 => 15
+    (println "total {(call total shapes)}, turns {(call turns Dir.south)}")     ;; prints total 13, turns 2
+    0))
 ```
 
 | Form | Meaning |
@@ -754,10 +762,11 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
     (let t:(Tree f64) (call (node f64) a empty 1.5 (call (node f64) a empty 2.5 empty)))
     (let xs:(arr i64) (arr.new i64 (call alloc.forever) 4))
     (arr.set i64 xs 3 9i64)
-    (+ (* 10 (call (count f64) t))
-       (match (call find xs 9i64)
-         ((option.Option i32) some [i] i)
-         ((option.Option i32) none -1)))))     ;; 2 nodes, found at 3 => 23
+    (let at:i32 (match (call find xs 9i64)
+                  ((option.Option i32) some [i] i)
+                  ((option.Option i32) none -1)))
+    (println "{(call (count f64) t)} nodes, 9 at {at}")     ;; prints 2 nodes, 9 at 3
+    0))
 ```
 
 Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `option.Option<i32>`), with the same layout, rules, and messages as any union: every instance is a value, and one that would contain itself or need more than 8 slots is refused (`(option.Option i64)` is 2 slots, `(option.Option str)` 2). A form written wrongly is an error: `a generic union variant is written (make (Name T...) variant fields...)`, `a generic union arm is written ((Name T...) variant [binders] body...)`.
@@ -895,7 +904,7 @@ The self-hosted toolchain mirrors every stage in AIPL: resolving and generics (`
 | Command | Stages run | Success output |
 |---|---|---|
 | `aipl verify FILE` | 1-4 | `[AIPL Verifier] OK: module 'NAME' type-checks. Contracts are type-checked, not proven; ...` (nothing is proved: `req`/`ens` run on every call, in the VM and in compiled code, section 3) |
-| `aipl eval FILE [--func NAME] [--listen ADDR:PORT]... [-- ARGS...]` | 1-4, 5a | `[AIPL VM] Executing function 'main' from 'FILE'...` then `[AIPL Result]: Int(42)` (Rust `Debug` of the returned `Value`; default `--func main`). The program's argv is `FILE ARGS...` (`std/os`); it may listen only on the addresses and ports `--listen` grants (std/net) |
+| `aipl eval FILE [--func NAME] [--listen ADDR:PORT]... [-- ARGS...]` | 1-4, 5a | `[AIPL VM] Executing function 'main' from 'FILE'...` then `[AIPL Result]: Int(0)` (Rust `Debug` of the returned `Value`; default `--func main`), and exits with main's status, as a compiled program does (section 6.5). The program's argv is `FILE ARGS...` (`std/os`); it may listen only on the addresses and ports `--listen` grants (std/net) |
 | `aipl eval -e EXPRS [--with FILE] [--wasm \| --native] [-- ARGS...]` | 1-4, then 5a (or 5b and the launcher, or 6) | the program's own output, then the last expression's value and type, `42 : i32` (any value as the formatting forms print it, `Row{n: 2} : (ptr Row)`; a function reference `<value> : T`; nothing for `void`). The expressions are the body of a function `__eval` added at the end of FILE's module (its private functions in scope; its `main` not run), or of an empty module; standard modules they name (`str.find`) are imported for them. Errors on their lines are at `-e:LINE:COL`, and a call chain leaves out the generated printer. `--wasm` and `--native` run them as the program's `_start` (refused for a FILE that defines one). Exit 0, or 1 on an error (134 for a trap under `--wasm` and `--native`, as any program) |
 | `aipl compile FILE [-o out.wasm]` | 1-4, 5b | `[AIPL Compiler] Successfully compiled 'FILE' -> 'out.wasm' (N bytes)` |
 | `aipl compile --exe [--sandbox] [--listen ADDR:PORT]... [--target native\|wasm] FILE -o prog` | 1-4, 5b, then 6 for native | a standalone executable `prog`: native machine code on Linux x86-64 (section 6.6), else the launcher bundle (section 6.5). Its grants are fixed in it: it may listen where `--listen` said, and nowhere else |
@@ -1603,7 +1612,7 @@ Every ```` ```lisp ```` block in `PROMPT_GUIDE_FOR_AIS.md`, `README.md`, and thi
 ;; main.aipl
 (module app
   (import util)
-  (fn main [] -> i32 (call util.double 21)))      ;; => Int(42)
+  (fn main [] -> i32 (println "{(call util.double 21)}") 0))      ;; prints 42
 ```
 
 - `(import name)` finds `name.aipl` by searching, in order: the importing file's directory, the entry file's directory, the standard library (`aipl_src/std/`), then each directory listed in the colon-separated `AIPL_PATH` environment variable. The first match wins, so a local `io.aipl` shadows the standard one. The resolver parses it and merges its functions into the entry module renamed as `name.fn`. `(import name as u)` lets you write `(call u.double ...)` locally; it is rewritten to `util.double` before checking.
@@ -1672,16 +1681,17 @@ Each example is complete and runs with the command shown. Expected output is wha
       (set! x t))
     x)
 
-  (fn main [] -> i32 (call gcd 1071 462)))
+  (fn main [] -> i32 (println "{(call gcd 1071 462)}") 0))
 ```
 ```
 $ aipl eval gcd.aipl
 [AIPL VM] Executing function 'main' from 'gcd.aipl'...
-[AIPL Result]: Int(21)
+21
+[AIPL Result]: Int(0)
 $ aipl compile gcd.aipl -o gcd.wasm
 [AIPL Compiler] Successfully compiled 'gcd.aipl' -> 'gcd.wasm' (N bytes)
 ```
-The `.wasm` exports `gcd`, `main`, and `memory`. Note the `let t` inside the `while` body: it becomes a wasm local of the function and is re-assigned each iteration, which is the intended semantics.
+The `.wasm` exports `gcd`, `main`, `memory`, and `_start`, which runs `main` and exits with its status (section 6.5). Note the `let t` inside the `while` body: it becomes a wasm local of the function and is re-assigned each iteration, which is the intended semantics.
 
 ### 12.2 Memory as a data structure, both backends
 
@@ -1707,7 +1717,10 @@ Raw memory, laid out by hand. Every function takes a raw address, which nothing 
     (let s:i32 (call stack_new 4))
     (call stack_push s 10)
     (call stack_push s 32)
-    (+ (call stack_pop s) (call stack_pop s))))     ;; => Int(42)
+    (let a:i32 (call stack_pop s))
+    (let b:i32 (call stack_pop s))
+    (println "{(+ a b)}")     ;; prints 42
+    0))
 ```
 
 ### 12.3 Printing and strings, both backends
@@ -1716,9 +1729,9 @@ Raw memory, laid out by hand. Every function takes a raw address, which nothing 
 (module hello
   (fn main [] -> i32
     (sys.print "hello, aipl")
-    (str.len "hello, aipl")))
+    0))
 ```
-`aipl eval hello.aipl` prints `hello, aipl` then `[AIPL Result]: Int(11)`. `aipl compile hello.aipl` produces a module importing `wasi_snapshot_preview1::fd_write`; run it with `aipl run hello.wasm`, or any WASI host, and it prints the same line. There is no string concatenation: `(+ "a" "b")` is a checker error, and text is built with `std/buf`.
+`aipl eval hello.aipl` prints `hello, aipl` then `[AIPL Result]: Int(0)`, and exits with status 0. `aipl compile hello.aipl` produces a module importing `wasi_snapshot_preview1::fd_write`; run it with `aipl run hello.wasm`, or any WASI host, and it prints the same line. `(+ "a" "b")` is a checker error: text is built with the formatting forms (section 4.K), `std/buf`, or `str.concat` (which makes a `str` that is never freed).
 
 ### 12.4 Threads and atomics, both backends
 
@@ -1738,7 +1751,8 @@ The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32`
     (let t2:i32 (thread.spawn (ref worker) counter))
     (let _a:i32 (thread.join t1))
     (let _b:i32 (thread.join t2))
-    (mem.load32 counter)))            ;; => Int(2000), deterministically
+    (println "{(mem.load32 counter)}")   ;; prints 2000, deterministically
+    0))
 ```
 `atomic.add` returns the previous value; the call above is in statement position so the value is dropped. Threads share linear memory (and therefore the allocator) and the function table, but not locals. Compiled, this is a threaded module (section 4.D): it runs under AIPL's runner, not the stock `wasmtime` CLI.
 
@@ -1763,7 +1777,8 @@ Paths are `(ptr, len)` pairs into linear memory, matching the WASI convention, s
     (let _m:i32 (fs.read r in 4))
     (let _d:i32 (fs.close r))
     (let _x:i32 (fs.delete path 5))
-    (if (eq (mem.load32 in) (mem.load32 out)) 1 0)))   ;; => Int(1)
+    (println "read back: {(eq (mem.load32 in) (mem.load32 out))}")   ;; prints read back: true
+    0))
 ```
 
 ---
@@ -1829,29 +1844,29 @@ From outside, the slice type is `str.Bytes`: `str.Bytes`, `(get b str.Bytes.len)
 (module word_count
   (import io)
   (import str)
-  (fn main [] -> i32
+  (fn main [] -> (result i32 str)
     (let b:str.Bytes (call io.read_file "input.txt"))
     (if (lt (get b str.Bytes.len) 0)
-        (block (call io.eprintln "word_count: cannot open input.txt") -1)
+        (err:i32 "word_count: cannot open input.txt")
         (block
           (call io.println_int "lines: " (call str.count_lines b))
           (call io.println_int "words: " (call str.count_words b))
           (call io.println_int "bytes: " (get b str.Bytes.len))
-          (call str.count_lines b)))))
+          (ok:str 0)))))
 ```
 ```
 $ cd examples && ../target/debug/aipl eval word_count.aipl
 lines: 4
 words: 15
 bytes: 81
-[AIPL Result]: Int(4)
+[AIPL Result]: Ok(Int(0))
 $ aipl compile --exe examples/word_count.aipl -o word_count
 $ cd examples && ../word_count
 lines: 4
 words: 15
 bytes: 81
 ```
-`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and return value; `aipl compile --self` reports byte parity for it and for each `std` module.
+`tests/test_wasi.rs` runs this program in both backends against a generated input and against the shipped `examples/input.txt`, and asserts the exact stdout and exit status; `aipl compile --self` reports byte parity for it and for each `std` module.
 
 ## 13. Pitfalls for Code Generators
 

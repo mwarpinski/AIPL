@@ -74,9 +74,10 @@ RULES:
     (let a:(arr i32) (arr.new i32 (call alloc.forever) 8))
     (loop i 0 7 1
       (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
-    (+ (* 10 (call binary_search a 15)) (call binary_search a 4))))
+    (println "15 is at {(call binary_search a 15)}, 4 is at {(call binary_search a 4)}")
+    0))
 ```
-`main` returns `49`: 15 is found at index 5, and 4 is not found, giving `50 + -1`.
+Prints `15 is at 5, 4 is at -1` (4 is not in the array) and exits with status 0: `main`'s value is the exit status, so a program prints its answers.
 
 ### 3. A struct-based linked list
 ```lisp
@@ -102,9 +103,10 @@ RULES:
     (let h:(ptr Node) (ptr.null Node))
     (loop i 1 10 1
       (set! h (call push h i)))
-    (call sum h)))
+    (println "sum: {(call sum h)}")
+    0))
 ```
-`main` returns `55`.
+Prints `sum: 55`.
 
 ### 4. Fallible parsing with results
 ```lisp
@@ -127,22 +129,25 @@ RULES:
     (if bad -1 n))
 
   (fn main [] -> i32
-    (+ (call parse_uint "1234") (call parse_uint "12x"))))
+    (let good:i32 (call parse_uint "1234"))
+    (let bad:i32 (call parse_uint "12x"))
+    (println "1234 parses to {good}; 12x to {bad}")
+    0))
 ```
-`main` returns `1233`, which is `1234 + -1`.
+Prints `1234 parses to 1234; 12x to -1`.
 
 ### 5. Printing and files (compiled with WASI)
 ```lisp
 (module io_demo
   (import io)
   (import str)
-  (fn main [] -> i32
+  (fn main [] -> (result i32 str)
     (let n:i32 (call io.write_file "note.txt" (call str.from_str "hello from AIPL")))
     (if (lt n 0)
-        (block (call io.eprintln "could not write note.txt") -1)
-        (block (call io.println "wrote note.txt") n))))
+        (err:i32 "could not write note.txt")
+        (block (println "wrote {n} bytes to note.txt") (ok:str 0)))))
 ```
-Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`.
+Prints `wrote 15 bytes to note.txt`. If the file cannot be written, `main`'s `err` puts its message on standard error and the program exits with status 1. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl run io.wasm`, or `aipl compile --exe io_demo.aipl -o io_demo && ./io_demo`.
 
 ### 6. The standard library
 ```lisp
@@ -153,9 +158,9 @@ Returns `15`. To run it compiled: `aipl compile io_demo.aipl -o io.wasm && aipl 
     (let b:str.Bytes (call str.from_str "one two\nthree\n"))
     (call io.println_int "words: " (call str.count_words b))
     (call io.println_int "lines: " (call str.count_lines b))
-    (+ (* 10 (call str.count_words b)) (call str.count_lines b))))
+    0))
 ```
-Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.txt")` gives the same `str.Bytes` for a file (see `examples/word_count.aipl`).
+Prints `words: 3` and `lines: 2`. `(call io.read_file "input.txt")` gives the same `str.Bytes` for a file (see `examples/word_count.aipl`).
 
 ### 7. Generics: a typed list of structs
 ```lisp
@@ -184,9 +189,11 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
     (put pair (Pair i32 bool) first 7)
     (put pair (Pair i32 bool) second true)
     (let flipped:(ptr (Pair bool i32)) (call (swap i32 bool) pair))
-    (+ (get (call (vec.at (ptr Point)) pts 0) Point.x) (get flipped (Pair bool i32) second))))
+    (let smallest:i32 (get (call (vec.at (ptr Point)) pts 0) Point.x))
+    (println "smallest x: {smallest}, swapped second: {(get flipped (Pair bool i32) second)}")
+    0))
 ```
-`main` returns `17`: the smallest `x` is `10`, and the swapped pair's `second` is `7`. Every instantiation (`vec.Vec<ptr<Point>>`, `Pair<i32,bool>`, `swap<i32,bool>`, ...) is an ordinary concrete struct or function after expansion.
+Prints `smallest x: 10, swapped second: 7`. Every instantiation (`vec.Vec<ptr<Point>>`, `Pair<i32,bool>`, `swap<i32,bool>`, ...) is an ordinary concrete struct or function after expansion.
 
 ### 8. Constants and enums
 ```lisp
@@ -210,9 +217,10 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
     (let sum:i32 0)
     (loop i 0 (- MAX_TOKENS 1) 1
       (set! sum (+ sum (call value (arr.get Tok ts i)))))
-    (+ (* 100 sum) (enum.ord Tok.minus))))
+    (println "sum {sum}, Tok.minus is {(enum.ord Tok.minus)}")
+    0))
 ```
-`main` returns `110`: the values sum to `1`, and `Tok.minus` is `10`. `(+ t 1)` or `(lt t Tok.plus)` on a `Tok` is a type error.
+Prints `sum 1, Tok.minus is 10`. `(+ t 1)` or `(lt t Tok.plus)` on a `Tok` is a type error.
 
 ### 9. Unions and match
 ```lisp
@@ -251,9 +259,10 @@ Prints `words: 3` and `lines: 2` and returns `32`. `(call io.read_file "input.tx
     ;; (2 + 3) * -(4)
     (let e:Expr (make Expr.mul (call pair al (make Expr.add (call pair al (make Expr.num 2) (make Expr.num 3)))
                                              (make Expr.neg (call sub al (make Expr.num 4))))))
-    (+ (call eval e) (if (call is_leaf (make Expr.num 7)) 100 0))))
+    (println "{(call eval e)}; a num is a leaf: {(call is_leaf (make Expr.num 7))}")
+    0))
 ```
-`main` returns `80`: `(2 + 3) * -4` is `-20`, plus `100` because a `num` is a leaf. A union that held `Expr` directly would contain itself, and the checker refuses it, naming the field; the pointer is the program's own allocation, from the allocator it names (`alloc.default` here; a server building one tree per request passes its request arena). The binder `p` is reused by two arms with the same type, which is allowed; binding `p` as an `f64` in one arm and a `(ptr Pair)` in another is not.
+Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held `Expr` directly would contain itself, and the checker refuses it, naming the field; the pointer is the program's own allocation, from the allocator it names (`alloc.default` here; a server building one tree per request passes its request arena). The binder `p` is reused by two arms with the same type, which is allowed; binding `p` as an `f64` in one arm and a `(ptr Pair)` in another is not.
 
 ---
 
