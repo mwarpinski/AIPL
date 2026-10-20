@@ -23,8 +23,12 @@
   (import vec)
   (import option)
 
-  ;; Why a message was refused, and the byte offset where.
-  (struct Error [(read at:i32) (read what:str)] (pub))
+  ;; Why a message was refused, and the byte offset where; the response
+  ;; status the refusal calls for (400, or 413 for a body over the limit,
+  ;; 431 for a head or header count over it); and whether the bytes were
+  ;; only cut short, so that more of them could make a whole message (a
+  ;; server reading a request a piece at a time reads on).
+  (struct Error [(read at:i32) (read what:str) (read status:i32) (read incomplete:bool)] (pub))
 
   ;; A header as it came (name and value without the spaces around it).
   (struct Header [(read name:str.Bytes) (read value:str.Bytes)] (value) (pub))
@@ -52,10 +56,19 @@
     (make Limits head_bytes headers body_bytes))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
+    (call error_as a at what 400 false))
+
+  (fn error_as [a:alloc.Allocator at:i32 what:str status:i32 incomplete:bool] -> (ptr Error)
     (let e:(ptr Error) (new Error a))
     (put e Error.at at)
     (put e Error.what what)
+    (put e Error.status status)
+    (put e Error.incomplete incomplete)
     e)
+
+  ;; Cut short: more bytes could complete the message.
+  (fn short [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
+    (call error_as a at what 400 true))
 
   ;; Frees an Error parse_request or parse_response gave.
   (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (call (alloc.destroy Error) a e))
@@ -170,7 +183,7 @@
               (when (or (eq c 0) (or (eq c 13) (eq c 10))) (call (vec.free Header) headers) (return (err:(ptr Message) (call error a i "a NUL, CR, or LF in a header value")))))
             (when (gte (call (vec.len Header) headers) (get lim Limits.headers))
               (call (vec.free Header) headers)
-              (return (err:(ptr Message) (call error a p "more headers than the limit"))))
+              (return (err:(ptr Message) (call error_as a p "more headers than the limit" 431 false))))
             (call (vec.push Header) headers (make Header (call view text p colon) (call view text vs ve)))))
       (set! p (call next_line text end)))
     (let m:(ptr Message) (new Message a))
@@ -199,8 +212,8 @@
   ;; The error for a head with no end: past the limit, or cut short.
   (fn head_error [a:alloc.Allocator text:str.Bytes limit:i32] -> (ptr Error)
     (if (gte (get text str.Bytes.len) limit)
-        (call error a limit "a head over the limit")
-        (call error a (get text str.Bytes.len) "the head ends early")))
+        (call error_as a limit "a head over the limit" 431 false)
+        (call short a (get text str.Bytes.len) "the head ends early")))
 
   ;; Sets the body from text at p, by Transfer-Encoding or Content-Length.
   (fn read_body [m:(ptr Message) text:str.Bytes p:i32 lim:Limits] -> (result i32 (ptr Error))
@@ -238,15 +251,15 @@
        (when (not (call str.eq_ignore_case v (call str.from_str "chunked"))) (return (err:i32 (call error a p "a transfer coding other than chunked"))))
        (call read_chunks m text p body_limit))
       ((gte cl 0i64)
-       (when (gt cl (i64.extend_u body_limit)) (return (err:i32 (call error a p "a body over the limit"))))
+       (when (gt cl (i64.extend_u body_limit)) (return (err:i32 (call error_as a p "a body over the limit" 413 false))))
        (let len:i32 (i32.wrap cl))
-       (when (gt (+ p len) n) (return (err:i32 (call error a n "the body ends early"))))
+       (when (gt (+ p len) n) (return (err:i32 (call short a n "the body ends early"))))
        (put m Message.body (call view text p (+ p len)))
        (put m Message.length (+ p len))
        (ok:(ptr Error) len))
       (request (ok:(ptr Error) 0))
       (else
-        (when (gt (- n p) body_limit) (return (err:i32 (call error a p "a body over the limit"))))
+        (when (gt (- n p) body_limit) (return (err:i32 (call error_as a p "a body over the limit" 413 false))))
         (put m Message.body (call view text p n))
         (put m Message.length n)
         (ok:(ptr Error) (- n p)))))
@@ -262,7 +275,7 @@
     (let p:i32 p0)
     (while true
       (let end:i32 (call line_end text p n))
-      (when (lt end 0) (return (err:i32 (call error a n "the body ends early"))))
+      (when (lt end 0) (return (err:i32 (call short a n "the body ends early"))))
       (let size:i64 0i64)
       (let i:i32 p)
       (while (and (lt i end) (gte (call hex_value (call str.byte_at text i)) 0))
@@ -278,13 +291,13 @@
         (while (gt tend p)
           (set! p (call next_line text tend))
           (set! tend (call line_end text p n)))
-        (when (lt tend 0) (return (err:i32 (call error a n "the body ends early"))))
+        (when (lt tend 0) (return (err:i32 (call short a n "the body ends early"))))
         (put m Message.body (call buf.bytes o))
         (put m Message.length (call next_line text tend))
         (return (ok:(ptr Error) (call buf.len o))))
-      (when (gt (+ (i64.extend_u (call buf.len o)) size) (i64.extend_u limit)) (return (err:i32 (call error a p "a body over the limit"))))
+      (when (gt (+ (i64.extend_u (call buf.len o)) size) (i64.extend_u limit)) (return (err:i32 (call error_as a p "a body over the limit" 413 false))))
       (let len:i32 (i32.wrap size))
-      (when (gt (+ p len) n) (return (err:i32 (call error a n "the body ends early"))))
+      (when (gt (+ p len) n) (return (err:i32 (call short a n "the body ends early"))))
       (call buf.push_bytes o (call view text p (+ p len)))
       (set! p (+ p len))
       ;; the chunk's CRLF

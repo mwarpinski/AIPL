@@ -10,6 +10,10 @@ use std::process::Command;
 const AIPL: &str = env!("CARGO_BIN_EXE_aipl");
 const RUNNER: &str = env!("CARGO_BIN_EXE_aipl-run");
 
+/// The programs whose bytes both toolchains are compared on: one of each
+/// shape `_start` takes (an i32, void, a result's ok, and its err).
+const PARITY: &[&str] = &["three", "void", "ok_five", "err"];
+
 /// (name, program, exit status, standard output, standard error after the
 /// program's path, which each backend names its own way)
 const CASES: &[(&str, &str, i32, &str, &str)] = &[
@@ -53,6 +57,9 @@ fn every_backend_exits_alike() {
             // a failure names the program first; the message after it is the same
             let err = if stderr.starts_with(':') { err.split_once(':').map(|(_, m)| format!(":{m}")).unwrap_or(err) } else { err };
             assert_eq!(err, *stderr, "{name}, {backend}");
+        }
+        if !PARITY.contains(name) {
+            continue;
         }
         let rust = {
             let m = aipl_core::resolver::Resolver::resolve(&file).unwrap();

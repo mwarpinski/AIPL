@@ -118,8 +118,11 @@ allocator they are made from (with_capacity and from_i32 name it;
 bigint.free gives one back; growing frees the old limbs), so
 float.from_decimal (text.parse_f64, json.parse) and json.write of a
 number keep nothing (10,000 of each move the heap cursor 0 bytes); and
-io.read_fd frees each buffer it outgrows, its view now checked. Left:
-os.arg and os.env (a fresh copy per call). std/stream, every call of
+io.read_fd frees each buffer it outgrows, its view now checked. std/http's
+request path (parse_request, header, the response writers) is proven
+(no_leak): std/serve's per-request function is marked, and calls them
+(2026-10-20). Left: os.arg and os.env (a fresh copy per call), and
+marking std/url, std/json, and std/text's request paths. std/stream, every call of
 which could leak through a custom reader's or writer's function
 reference, takes only promising ones since decision 9 (2026-10-20:
 tests/aipl/memory/no_leak_stream.aipl, a (no_leak) handler over four
@@ -233,7 +236,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` name their allocator, `(new S a)` and `(arr.new T a n)` (decision 8). Done 2026-10-19 but the last step: `alloc.forever` and `gen.forever` (8298bd3); every `new` and `arr.new` moved to `alloc.create` / `alloc.array` by tools/migrate_new.py (the compiler's output unchanged, compiling itself 1.5% slower); then the short form in both resolvers (sugar.rs, resolver.aipl), std/alloc imported for a module that uses it, the one-operand forms errors with the fix, the old forms gone from the VM and every code generator, and tests, examples, and the tested docs back in the short form (migrate_new.py --short). The seed was refreshed from 7a55d99 and the compiler's own source and std moved to the short form. Left: a format placeholder cannot yet hold a `new` (placeholders are split after the rewrite) | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
 | M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
 | M2, M4 (b) | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
-| M5 | servers | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
+| M5 | servers (done 2026-10-20: std/serve, tests/test_serve.rs; a million requests natively and under aipl-run passed 2026-10-20 (100,000 in CI, a million with AIPL_MILLION=1), 20,000 in the VM, the heap unchanged after the first thousand; a kept view traps in every backend) | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
 
 M1 is the largest; the rest are each about the size of one stdlib
 batch. The seed refresh (launch checklist section 6) comes first, so the

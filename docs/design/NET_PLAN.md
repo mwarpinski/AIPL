@@ -3,7 +3,8 @@
 **Status: approved 2026-10-19 (decisions in section 6), revised after the
 memory work.** Steps 1 and 2 built 2026-10-20 (decision 9; aipl_net_v1 in
 the VM, aipl-run, and native executables, std/ip, std/net:
-tests/test_net.rs); step 3 next. STDLIB_PLAN.md asked for this document before any code:
+tests/test_net.rs); step 3's std/serve too (tests/test_serve.rs), its
+`--max-memory` next. STDLIB_PLAN.md asked for this document before any code:
 "an `aipl` host interface (versioned imports beside WASI preview 1:
 listening and connecting TCP sockets, permissions granted on the command
 line), in the VM, natively as Linux system calls, and in aipl-run; then
@@ -176,7 +177,11 @@ and unaudited until audited.
    answers compared byte for byte across backends; refusals (too big,
    malformed) the same status everywhere; **a million requests with
    memory flat**; a handler that keeps a pointer past its request traps
-   on the next use.
+   on the next use. std/serve and its tests done 2026-10-20
+   (tests/test_serve.rs: a million requests natively and under aipl-run
+   passed 2026-10-20, 100,000 each in CI and a million with
+   AIPL_MILLION=1; 20,000 in the VM; the heap unchanged; the kept view trapping in every
+   backend); `--max-memory` next.
 4. **The fresh instance per request (B)**, `aipl serve --fresh` and
    native `--serve` forking: a handler that traps answers 500 and the
    next request is served.

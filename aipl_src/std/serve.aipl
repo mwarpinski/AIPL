@@ -1,0 +1,124 @@
+;; std/serve: a long-running HTTP/1.1 server (docs/design/NET_PLAN.md,
+;; mode A) over std/net and std/http: it accepts a connection, reads one
+;; request, runs your handler, writes its response, and closes the
+;; connection, one at a time.
+;;
+;;   (fn handle [a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)
+;;     (call http.start_response out 200)
+;;     (call http.add_header out "Content-Type" "text/plain; charset=utf-8")
+;;     (call http.end_head out (get req http.Message.target)))
+;;
+;;   (match_result (call net.listen (call alloc.default) (call str.from_str "127.0.0.1:8080"))
+;;     (ok l (let s:serve.Stats (call serve.run l (ref handle) (call serve.options))) ...)
+;;     (err e ...))
+;;
+;; Each request is read into, and handled on, an arena that is reset after
+;; it: `a` is that arena, the request and every view of it point into it,
+;; and the handler writes its whole response to `out` (std/http's
+;; start_response, add_header, end_head). State kept between requests (a
+;; counter, a cache) goes in a context of the program's own, from its own
+;; allocator: (call (serve.run_with C) l ctx (ref handle) o), the handler
+;; taking ctx first, as AIPL's _with functions do (AIPL_SPEC.md 4.G). The handler's type promises
+;; (no_leak), and so does everything here on a request's path, which the
+;; checker proves: a server's memory stays flat however long it runs. A
+;; pointer kept past its request reads freed memory, which the generation
+;; checks stop ("Use after free") on its next use.
+;;
+;; Each call of run makes its own request arena, which the program keeps
+;; until it ends (a server calls run once).
+;;
+;; A request std/http refuses is answered with the status the refusal
+;; calls for (400, 413, or 431) and its reason; a connection that closes
+;; before a whole request is closed without an answer. A trap in a handler
+;; ends the server (mode A; NET_PLAN.md section 2).
+(module serve
+  (import alloc)
+  (import arena)
+  (import buf)
+  (import str)
+  (import net)
+  (import http)
+
+  ;; How a server runs: the limits on a request (std/http), the size of the
+  ;; request arena's chunks, and how many requests to serve before run
+  ;; returns (-1: no end).
+  (struct Options [(read limits:http.Limits) (read arena_bytes:i32) (read requests:i32)] (value) (pub))
+
+  ;; std/http's default limits, 64 KiB arena chunks, and no end.
+  (fn options [] -> Options (pub) (no_leak)
+    (make Options (call http.default_limits) 65536 -1))
+
+  ;; o, serving n requests and then returning.
+  (fn requests [o:Options n:i32] -> Options (pub) (no_leak)
+    (req (gte n 0))
+    (with o Options.requests n))
+
+  ;; o with these request limits.
+  (fn limits [o:Options lim:http.Limits] -> Options (pub) (no_leak)
+    (with o Options.limits lim))
+
+  ;; What run did: the requests answered (the handler's and the refusals),
+  ;; and the bytes the request arena holds at the end (its high-water mark:
+  ;; resetting it keeps its chunks for the next request).
+  (struct Stats [(read served:i32) (read arena_bytes:i32)] (value) (pub))
+
+  ;; Serves on listening socket l with handler until o's request count is
+  ;; reached (never, by default).
+  (fn run [l:net.Socket handler:(fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) o:Options] -> Stats (pub)
+    (call (run_with (fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak))) l handler (ref plain) o))
+
+  (fn plain [h:(fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)
+    (call_ref (fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) h a req out))
+
+  ;; run, with a context the handler is given first, for state kept
+  ;; between requests.
+  (fn (run_with C) [l:net.Socket ctx:C handler:(fn [C alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) o:Options] -> Stats (pub)
+    (let ar:(ptr arena.Arena) (call arena.make (get o Options.arena_bytes)))
+    (let a:alloc.Allocator (call alloc.of_arena ar))
+    (let served:i32 0)
+    (while (or (lt (get o Options.requests) 0) (lt served (get o Options.requests)))
+      (match_result (call net.accept l)
+        (ok c
+          (when (call (one C) a c ctx handler (get o Options.limits)) (set! served (+ served 1)))
+          (call arena.reset ar))
+        (err e (block))))
+    (make Stats served (call arena.reserved ar)))
+
+  ;; One connection: reads a request a piece at a time until std/http reads
+  ;; it whole or refuses it, answers, and closes. Whether it answered.
+  (fn (one C) [a:alloc.Allocator c:net.Socket ctx:C handler:(fn [C alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) lim:http.Limits] -> bool (no_leak)
+    (let in:(ptr buf.Buf) (call buf.make a 4096))
+    (let out:(ptr buf.Buf) (call buf.make a 4096))
+    (let answered:bool false)
+    (let reading:bool true)
+    (while reading
+      (let n:i32 (call net.recv c in 8192))
+      (if (lt n 0)
+          (set! reading false)
+          (match_result (call http.parse_request a (call buf.bytes in) lim)
+            (ok m
+              (call_ref (fn [C alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) handler ctx a m out)
+              (set! answered true)
+              (set! reading false))
+            (err e
+              (cond
+                ;; cut short: read on, unless the client has stopped sending
+                ((and (get e http.Error.incomplete) (gt n 0)) (block))
+                ;; closed before sending anything: nothing to answer
+                ((and (get e http.Error.incomplete) (eq (call buf.len in) 0)) (set! reading false))
+                (else
+                 (call refuse out (get e http.Error.status) (get e http.Error.what))
+                 (set! answered true)
+                 (set! reading false)))))))
+    (when answered (let _sent:bool (call net.send c (call buf.bytes out))))
+    (call net.close c)
+    answered)
+
+  ;; A refusal: its status, and the reason as the body.
+  (fn refuse [out:(ptr buf.Buf) status:i32 why:str] -> void (no_leak)
+    (call buf.clear out)
+    (call http.start_response out status)
+    (call http.add_header out "Content-Type" "text/plain; charset=utf-8")
+    (call http.add_header out "Connection" "close")
+    (call http.end_head out (call str.from_str why)))
+)
