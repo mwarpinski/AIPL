@@ -113,3 +113,42 @@ Still true from the original analysis, updated for what has landed:
 ### The longer-term ambition (a PDF viewer or browser in AIPL)
 
 A PDF reader or rasteriser is a realistic first "real systems program" now that the standard library, control flow, and the compiled self-hosted toolchain exist. It needs binary parsing, vector rasterisation into a memory buffer, and file I/O, all of which compile to wasm today. A browser additionally needs a windowing/graphics host, which wasm alone cannot provide, plus HTML/CSS/layout/font/image/network stacks. Neither is near-term; the path runs through the sections above.
+
+### After launch: AI-SQL, a query language written in AIPL
+
+An idea, not a plan (2026-10-19): a small SQL in AIPL, as AIPL is written
+with Rust as its bootstrap, to show the language building a real tool in
+the data domain. It would use most of std (csv for tables, map for GROUP
+BY and hash joins, vec.sort_by for ORDER BY, regex for LIKE, stats for
+aggregates, `(no_leak)` per query in a server mode) and ship as one native
+binary built by AIPL. "AI" because it would drop SQL's traps the way AIPL
+drops C's: typed columns and no implicit casts, qualified names in joins,
+output in a stated order, a missing value as an explicit option rather
+than NULL's three-valued logic, and errors that say what to write. First
+a CSV query tool, its answers checked against SQLite's on the same data;
+the full language only if that lands. Not before launch: it would pull
+focus.
+
+Then, perhaps, a storage engine under it, in the manner of SQLite: pages
+and B-trees for tables and indexes, a page cache, a journal or
+write-ahead log so a crash loses no committed data, file locking, and a
+planner that uses the indexes. Months, not days (SQLite's strength is
+its test suite), and it needs host operations AIPL lacks today: forcing
+data to disk (WASI's fd_sync), file locks, and random-access file I/O.
+The order: the CSV query tool, AI-SQL, then the engine, each worth
+having alone.
+
+### After launch: a 64-bit target
+
+Programs are limited to 2 GiB of memory (AIPL_SPEC.md 4.A: below it,
+every address is a non-negative i32). More would come as a second
+compilation target, not a second language (decided 2026-10-19): the
+same source compiled for wasm's 64-bit memory (memory64), as C and Rust
+compile one source for 32- and 64-bit machines. The checker, the
+language, and nearly every program stay as they are; what changes is the
+two code generators (a mode in each), the native backend's translation,
+the layout of a checked pointer (an address and a generation no longer
+share 64 bits), and std's unsafe code that handles raw addresses, which
+needs an address-sized integer type (launch checklist section 6).
+Wanted when a program needs more than 2 GiB in memory; a lower limit
+(`--max-memory`) comes first.

@@ -19,7 +19,7 @@
 
   ;; An empty set with room for about `capacity` items, from a.
   (fn (make K) [a:alloc.Allocator capacity:i32] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
-    (let s:(ptr (Set K)) (call (alloc.create (Set K)) a))
+    (let s:(ptr (Set K)) (new (Set K) a))
     (put s (Set K) m (call (map.make K bool) a capacity))
     (put s (Set K) a a)
     s)

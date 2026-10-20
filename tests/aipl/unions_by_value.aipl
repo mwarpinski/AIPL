@@ -63,7 +63,7 @@
 
   ;; head before rest, the cell from a
   (fn cons [a:alloc.Allocator head:i32 rest:List] -> List
-    (let t:(ptr Tail) (call (alloc.create Tail) a))
+    (let t:(ptr Tail) (new Tail a))
     (put t Tail.l rest)
     (make List.cons head t))
 
@@ -80,15 +80,15 @@
     (set! total (+ total (call area (call grow c))))                          ;; +14
     (set! total (+ total (call area (make Shape.big 40i64 Color.blue))))  ;; +40
     (set! total (+ total (call area (make Shape.dot))))                       ;; +0
-    (let held:(ptr Held) (call (alloc.create Held) a))
+    (let held:(ptr Held) (new Held a))
     (put held Held.s c)
     (set! total (+ total (call tagged_area (make Tagged.plain held))))         ;; +5
     (set! total (+ total (call tagged_area (make Tagged.count 7))))           ;; +7 = 71
     ;; in a heap struct's field, and an array
-    (let b:(ptr Box) (new Box))
+    (let b:(ptr Box) (new Box (call alloc.forever)))
     (put b Box.shape (make Shape.big 9i64 Color.blue))
     (set! total (+ total (call area (get b Box.shape))))                      ;; +9
-    (let shapes:(arr Shape) (arr.new Shape 3))
+    (let shapes:(arr Shape) (arr.new Shape (call alloc.forever) 3))
     (arr.set Shape shapes 2 c)
     (set! total (+ total (call area (arr.get Shape shapes 2))))               ;; +5
     (set! total (+ total (call area (arr.get Shape shapes 0))))               ;; zero: dot, +0 = 85
@@ -97,13 +97,13 @@
     (set! total (+ total (f64.convert_i64_s (i64.extend_s (call list_sum l)))))  ;; +7
     (let nm:Named (make Named.name "abc"))
     (match nm (Named.name [text] (set! total (+ total (f64.convert_i64_s (i64.extend_s (str.len text)))))) (Named.anon (block)))  ;; +3
-    (let nine:(ptr Nine) (call (alloc.create Nine) a))
+    (let nine:(ptr Nine) (new Nine a))
     (put nine Nine.h 8i64)
     (let hw:HoldsWide (make HoldsWide.w (make Wide.nine nine)))
     (match hw
       (HoldsWide.w [x] (match x (Wide.nine [w9] (set! total (+ total (f64.convert_i64_s (get w9 Nine.h)))))))  ;; +8
       (HoldsWide.none (block)))
-    (let link:(ptr Link) (call (alloc.create Link) a))
+    (let link:(ptr Link) (new Link a))
     (put link Link.s (make Shape.big 2i64 Color.blue))
     (put link Link.next (make Chain.end))
     (let ch:Chain (make Chain.link link))

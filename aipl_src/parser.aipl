@@ -17,9 +17,9 @@
   (import map)
 
   ;; The forms of src/parser.rs parse_expr that are not operators.
-  (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result new_ get_ put_
+  (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
-              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_new arr_get arr_set mem_free float_mem unsafe_ with_
+              arr_cast ptr_addr arr_addr enum_ord enum_cast arr_get arr_set mem_free float_mem unsafe_ with_
               ptr_make arr_make ptr_gen arr_gen fmt_surface])
 
   (struct P [src:i32 toks:i32 n:i32 pos:i32
@@ -186,7 +186,7 @@
   ;; ===== Building arrays =====
 
   (fn (to_arr T) [v:(ptr (vec.Vec T))] -> (arr T)
-    (let a:(arr T) (arr.new T (call (vec.len T) v)))
+    (let a:(arr T) (arr.new T (call alloc.forever) (call (vec.len T) v)))
     (loop k 0 (- (call (vec.len T) v) 1) 1 (arr.set T a k (call (vec.at T) v k)))
     a)
 
@@ -313,7 +313,7 @@
   (fn head_is [p:(ptr P) s:str] -> bool (call is_sym p (+ (get p P.pos) 1) s))
 
   (fn parse_module [p:(ptr P)] -> (ptr ast.Module)
-    (let m:(ptr ast.Module) (new ast.Module))
+    (let m:(ptr ast.Module) (new ast.Module (call alloc.forever)))
     (let start:i32 (call cur_pos p))
     (call want p compiler.Kind.lparen)
     (let i:i32 (call next p))
@@ -346,7 +346,7 @@
 
   (fn parse_import [p:(ptr P)] -> (ptr ast.Import)
     (let start:i32 (call cur_pos p))
-    (let im:(ptr ast.Import) (new ast.Import))
+    (let im:(ptr ast.Import) (new ast.Import (call alloc.forever)))
     (call want p compiler.Kind.lparen)
     (call next p)
     (put im ast.Import.name (call expect_symbol p "module name in import" start))
@@ -363,7 +363,7 @@
   (fn parse_fields [p:(ptr P) what:str eof_at:i32 close:compiler.Kind] -> (arr (ptr ast.Field))
     (let v:(ptr (vec.Vec (ptr ast.Field))) (call (vec.make (ptr ast.Field)) (call alloc.default) 4))
     (while (and (neq (call peek p) close) (neq (call peek p) compiler.Kind.none))
-      (let f:(ptr ast.Field) (new ast.Field))
+      (let f:(ptr ast.Field) (new ast.Field (call alloc.forever)))
       (put f ast.Field.name (call expect_symbol p what eof_at))
       (call want p compiler.Kind.colon)
       (put f ast.Field.ty (call parse_type p))
@@ -371,7 +371,7 @@
     (call (to_arr (ptr ast.Field)) v))
 
   (fn parse_struct [p:(ptr P)] -> (ptr ast.StructDef)
-    (let s:(ptr ast.StructDef) (new ast.StructDef))
+    (let s:(ptr ast.StructDef) (new ast.StructDef (call alloc.forever)))
     (let open:i32 (call expect p compiler.Kind.lparen))
     (let at:i32 (call tpos p open))
     (put s ast.StructDef.at at)
@@ -395,7 +395,7 @@
     s)
 
   (fn parse_enum [p:(ptr P)] -> (ptr ast.EnumDef)
-    (let e:(ptr ast.EnumDef) (new ast.EnumDef))
+    (let e:(ptr ast.EnumDef) (new ast.EnumDef (call alloc.forever)))
     (let open:i32 (call expect p compiler.Kind.lparen))
     (let at:i32 (call tpos p open))
     (put e ast.EnumDef.at at)
@@ -435,7 +435,7 @@
             (call buf.push_str b " is not an i32")
             (call fail p b))
           (block))
-      (let mem:(ptr ast.Member) (new ast.Member))
+      (let mem:(ptr ast.Member) (new ast.Member (call alloc.forever)))
       (put mem ast.Member.name name)
       (put mem ast.Member.value (i32.wrap value))
       (call (vec.push (ptr ast.Member)) members mem)
@@ -445,7 +445,7 @@
     e)
 
   (fn parse_union [p:(ptr P)] -> (ptr ast.UnionDef)
-    (let u:(ptr ast.UnionDef) (new ast.UnionDef))
+    (let u:(ptr ast.UnionDef) (new ast.UnionDef (call alloc.forever)))
     (let open:i32 (call expect p compiler.Kind.lparen))
     (let at:i32 (call tpos p open))
     (put u ast.UnionDef.at at)
@@ -459,7 +459,7 @@
           (call fail_str p vat "a union variant is (name field:type ...), e.g. (circle radius:f64) or (empty)")
           (block))
       (call next p)
-      (let v:(ptr ast.Variant) (new ast.Variant))
+      (let v:(ptr ast.Variant) (new ast.Variant (call alloc.forever)))
       (put v ast.Variant.name (call expect_symbol p "variant name" vat))
       (put v ast.Variant.fields (call parse_fields p "field name" vat compiler.Kind.rparen))
       (call want p compiler.Kind.rparen)
@@ -470,7 +470,7 @@
     u)
 
   (fn parse_fn [p:(ptr P)] -> (ptr ast.FnDef)
-    (let f:(ptr ast.FnDef) (new ast.FnDef))
+    (let f:(ptr ast.FnDef) (new ast.FnDef (call alloc.forever)))
     (let open:i32 (call expect p compiler.Kind.lparen))
     (let at:i32 (if (gte open 0) (call tpos p open) 0))
     (put f ast.FnDef.at at)
@@ -480,7 +480,7 @@
     (call want p compiler.Kind.lbracket)
     (let ps:(ptr (vec.Vec (ptr ast.Param))) (call (vec.make (ptr ast.Param)) (call alloc.default) 4))
     (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
-      (let prm:(ptr ast.Param) (new ast.Param))
+      (let prm:(ptr ast.Param) (new ast.Param (call alloc.forever)))
       (put prm ast.Param.name (call expect_symbol p "param name" at))
       (call want p compiler.Kind.colon)
       (put prm ast.Param.ty (call parse_type p))
@@ -640,7 +640,6 @@
       ((eq form Form.block) (make ast.Expr.block at (call parse_body p)))
       ((eq form Form.unsafe_) (make ast.Expr.unsafe_ at (call parse_body p)))
       ((eq form Form.match_result) (call parse_match_result p at))
-      ((eq form Form.new_) (make ast.Expr.new_ at (call expect_symbol p "struct name in new" at)))
       ((or (eq form Form.get_) (eq form Form.put_)) (call parse_get_put p (eq form Form.put_) at))
       ((eq form Form.with_)
        (let v:ast.Expr (call parse_expr p))
@@ -685,9 +684,6 @@
       ((eq form Form.enum_cast)
        (let name:str.Bytes (call expect_symbol p "enum name in enum.cast" at))
        (call ast.cast_expr (call alloc.default) at (make ast.Type.enum_ name) (call parse_expr p)))
-      ((eq form Form.arr_new)
-       (let ty:ast.Type (call parse_type p))
-       (call ast.arr_new_expr (call alloc.default) at ty (call parse_expr p)))
       ((eq form Form.arr_get)
        (let ty:ast.Type (call parse_type p))
        (let a:ast.Expr (call parse_expr p))
@@ -743,7 +739,7 @@
 
   ;; src/parser.rs field_ref: a Struct.field symbol split at its last '.'.
   (fn field_ref [p:(ptr P) form:str at:i32] -> (ptr ast.Step)
-    (let r:(ptr ast.Step) (new ast.Step))
+    (let r:(ptr ast.Step) (new ast.Step (call alloc.forever)))
     (put r ast.Step.sname (call str.from_str ""))
     (put r ast.Step.fname (call str.from_str ""))
     (let i:i32 (call next p))
@@ -805,7 +801,7 @@
                 (call buf.push_byte b 39)
                 (call fail p b))
               (block
-                (let st:(ptr ast.Step) (new ast.Step))
+                (let st:(ptr ast.Step) (new ast.Step (call alloc.forever)))
                 (put st ast.Step.sname (call prefix name dot))
                 (put st ast.Step.fname (call suffix name (+ dot 1)))
                 (call (vec.push (ptr ast.Step)) path st))))
@@ -867,7 +863,7 @@
                 (block))
             (set! else_body body))
           (block
-            (let arm:(ptr ast.Arm) (new ast.Arm))
+            (let arm:(ptr ast.Arm) (new ast.Arm (call alloc.forever)))
             (put arm ast.Arm.member member)
             (put arm ast.Arm.binders binders)
             (put arm ast.Arm.body body)
@@ -912,7 +908,7 @@
       (if is_else
           (block (set! else_body body) (set! else_at cat))
           (block
-            (let cl:(ptr Clause) (new Clause))
+            (let cl:(ptr Clause) (new Clause (call alloc.forever)))
             (put cl Clause.test test)
             (put cl Clause.body body)
             (put cl Clause.at cat)
@@ -946,7 +942,7 @@
     (call form m "loop" Form.loop) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
     (call form m "match" Form.match_) (call form m "block" Form.block) (call form m "unsafe" Form.unsafe_) (call form m "match_result" Form.match_result)
-    (call form m "new" Form.new_) (call form m "get" Form.get_) (call form m "put" Form.put_)
+    (call form m "new" Form.fmt_surface) (call form m "get" Form.get_) (call form m "put" Form.put_)
     (call form m "sizeof" Form.sizeof) (call form m "return" Form.return_) (call form m "break" Form.break_)
     (call form m "continue" Form.continue_) (call form m "cond" Form.cond) (call form m "ref" Form.ref)
     (call form m "call_ref" Form.call_ref) (call form m "arr.len" Form.arr_len) (call form m "ptr.null" Form.ptr_null)
@@ -954,7 +950,7 @@
     (call form m "ptr.addr" Form.ptr_addr) (call form m "arr.addr" Form.arr_addr) (call form m "enum.ord" Form.enum_ord)
     (call form m "ptr.make" Form.ptr_make) (call form m "arr.make" Form.arr_make)
     (call form m "ptr.gen" Form.ptr_gen) (call form m "arr.gen" Form.arr_gen)
-    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.arr_new) (call form m "arr.get" Form.arr_get)
+    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.fmt_surface) (call form m "arr.get" Form.arr_get)
     (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free) (call form m "with" Form.with_)
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)
@@ -1017,7 +1013,7 @@
   ;; token (always last) is the tokenizer's error, reported first, as Rust's
   ;; tokenizer fails before its parser runs.
   (fn parse_tokens [src:i32 toks:i32 n:i32] -> (ptr Parsed) (pub)
-    (let p:(ptr P) (new P))
+    (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.src src)
     (put p P.toks toks)
     (put p P.n n)
@@ -1055,11 +1051,11 @@
                 (call (map.set str.Bytes i32) (get p P.values) (call text p (+ k 2)) 1)
                 (block)))
           (block)))
-    (let r:(ptr Parsed) (new Parsed))
+    (let r:(ptr Parsed) (new Parsed (call alloc.forever)))
     (if (and (gt n 0) (eq (call kind_at p (- n 1)) compiler.Kind.bad))
         (block
           (call tokenizer_error p (- n 1))
-          (put r Parsed.module (new ast.Module))
+          (put r Parsed.module (new ast.Module (call alloc.forever)))
           (put r Parsed.ok false)
           (put r Parsed.err (get p P.err))
           (put r Parsed.err_at (get p P.err_at))
@@ -1105,7 +1101,7 @@
   (fn parse_expr_text [src:i32 len:i32] -> ast.Expr (pub)
     (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
     (let n:i32 (call compiler.tokenize src len toks))
-    (let p:(ptr P) (new P))
+    (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.src src)
     (put p P.toks toks)
     (put p P.n n)

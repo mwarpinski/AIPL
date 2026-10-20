@@ -62,8 +62,8 @@
   (struct Kids [at:(arr i32) n:i32])
 
   (fn kids [x:(ptr X) g:i32] -> (ptr Kids)
-    (let ks:(ptr Kids) (new Kids))
-    (put ks Kids.at (arr.new i32 8))
+    (let ks:(ptr Kids) (new Kids (call alloc.forever)))
+    (put ks Kids.at (arr.new i32 (call alloc.forever) 8))
     (put ks Kids.n 0)
     (let c:i32 (+ g 1))
     (while (and (lt c (get x X.n)) (not (call is_close x c)))
@@ -385,7 +385,7 @@
 
   ;; Expands the n tokens at toks (from compiler.tokenize over src).
   (fn expand [src:i32 toks:i32 n:i32] -> (ptr Expanded) (pub)
-    (let x:(ptr X) (new X))
+    (let x:(ptr X) (new X (call alloc.forever)))
     (put x X.src src)
     (put x X.toks toks)
     (put x X.n n)
@@ -401,7 +401,7 @@
     (put x X.deferred (call (vec.make str.Bytes) (call alloc.default) 8))
     (put x X.deferred_at (call (vec.make i32) (call alloc.default) 8))
     (put x X.folded (call (map.make str.Bytes cexpr.Val) (call alloc.default) 8))
-    (let r:(ptr Expanded) (new Expanded))
+    (let r:(ptr Expanded) (new Expanded (call alloc.forever)))
     (put r Expanded.toks toks)
     (put r Expanded.n n)
     (put r Expanded.ok true)

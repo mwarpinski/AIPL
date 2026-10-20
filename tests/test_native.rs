@@ -128,8 +128,8 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("trap_store_into_reserved_block", "(module m (fn main [] -> i32 (unsafe) (let a:i32 (* 8 64)) (mem.store32 a 7) 0))"),
     ("exit_status_126_is_an_error", "(module m (fn main [] -> i32 (sys.exit 126) 0))"),
     // compiled bounds checks fail with the VM's message (cells 92/96)
-    ("trap_index_past_the_end", "(module m (fn main [] -> i32 (let a:(arr i32) (arr.new i32 5)) (arr.get i32 a 5)))"),
-    ("trap_negative_index_store", "(module m (fn main [] -> i32 (let a:(arr i64) (arr.new i64 3)) (arr.set i64 a -2147483648 1i64) 0))"),
+    ("trap_index_past_the_end", "(module m (import alloc) (fn main [] -> i32 (let a:(arr i32) (arr.new i32 (call alloc.forever) 5)) (arr.get i32 a 5)))"),
+    ("trap_negative_index_store", "(module m (import alloc) (fn main [] -> i32 (let a:(arr i64) (arr.new i64 (call alloc.forever) 3)) (arr.set i64 a -2147483648 1i64) 0))"),
     // a call chain longer than the 32 frames shown, and one in a spawned thread
     ("trap_deep_recursion", "(module m (fn down [n:i32] -> i32 (if (eq n 0) (/ 1 n) (+ 1 (call down (- n 1))))) (fn main [] -> i32 (call down 40)))"),
     ("trap_null_get", "(module m (struct P [x:i32]) (fn main [] -> i32 (get (ptr.null P) P.x)))"),
@@ -844,13 +844,13 @@ fn thread_programs_match_natively() {
     assert_native_matches("main_thread_prints", main_prints);
     // concurrent memory.grow: 8 threads x 50 one-page grows; every grow
     // returns a different old size, so they sum to 16 + 17 + ... + 415
-    let growers = "(module m
+    let growers = "(module m (import alloc)
        (fn grower [total:i32] -> i32 (unsafe)
          (loop i 1 50 1 (let _a:i32 (atomic.add total (mem.grow 1))))
          0)
        (fn main [] -> i32 (unsafe)
          (let total:i32 (mem.alloc 8))
-         (let hs:(arr i32) (arr.new i32 8))
+         (let hs:(arr i32) (arr.new i32 (call alloc.forever) 8))
          (loop i 0 7 1 (arr.set i32 hs i (thread.spawn (ref grower) total)))
          (loop i 0 7 1 (let _j:i32 (thread.join (arr.get i32 hs i))))
          (sys.exit (+ (if (eq (atomic.add total 0) 86200) 1 0) (if (eq (mem.grow 0) 416) 2 0)))
@@ -864,10 +864,10 @@ fn thread_programs_match_natively() {
     assert_wasm_native_matches("thread_global_initial_value", &wasm);
     assert_eq!(run_native(&scratch("global_checked"), &to_native(&wasm).unwrap()).status.code(), Some(42));
     // many threads, each joined, results summed
-    let many = "(module m
+    let many = "(module m (import alloc)
        (fn sq [x:i32] -> i32 (unsafe) (* x x))
        (fn main [] -> i32 (unsafe)
-         (let hs:(arr i32) (arr.new i32 40))
+         (let hs:(arr i32) (arr.new i32 (call alloc.forever) 40))
          (loop i 0 39 1 (arr.set i32 hs i (thread.spawn (ref sq) i)))
          (let sum:i32 0)
          (loop i 0 39 1 (set! sum (+ sum (thread.join (arr.get i32 hs i)))))
@@ -1112,7 +1112,7 @@ fn table_module(index: i32, call_type: u32, elem_offset: i32) -> Vec<u8> {
 fn float_programs_match_natively() {
     assert_functions_match(
         "f64_cases",
-        "(module m
+        "(module m (import alloc)
            (struct P [x:f64 y:f32 z:f64])
            (fn convert_neg [] -> f64 (f64.convert_i64_s -7i64))
            (fn convert_rounds_to_even [] -> f64 (f64.convert_i64_s 9007199254740993i64))
@@ -1144,7 +1144,7 @@ fn float_programs_match_natively() {
            (fn uses_lerp [] -> f64 (call lerp 1.0 3.0 0.25))
            (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
            (fn uses_pick [] -> f64 (+ (call pick 4.0 2.0) (call pick 2.0 4.0)))
-           (fn struct_field [] -> f64 (let p:(ptr P) (new P)) (put p P.z 6.5) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
+           (fn struct_field [] -> f64 (let p:(ptr P) (new P (call alloc.forever))) (put p P.z 6.5) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
            (fn struct_size [] -> i32 (sizeof P))
            (fn sqrt_two [] -> f64 (f64.sqrt 2.0))
            (fn sqrt_neg_zero [] -> f64 (f64.sqrt -0.0))
@@ -2060,7 +2060,7 @@ fn traps_name_their_source_positions() {
         ("trap_unlock_a_free_lock", "  at main (prog.aipl:1:65)\n"),
         // the store guard (wasmtime reports its trap at the if)
         ("trap_store_into_reserved_block", "  at main (prog.aipl:1:60)\n"),
-        ("trap_index_past_the_end", "  at main (prog.aipl:1:64)\n"),
+        ("trap_index_past_the_end", "  at main (prog.aipl:1:100)\n"),
         // a contract at its condition, then the call
         ("trap_failed_req", "  at f (prog.aipl:1:45)\n  at main (prog.aipl:1:77)\n"),
         ("trap_in_a_thread", "  at work (prog.aipl:1:44)\n"),

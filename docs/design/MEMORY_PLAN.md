@@ -105,6 +105,25 @@ std/stream's writer; every std function that builds text takes an
 allocator and returns a view or a buffer, with the `str`-returning
 forms kept for programs that run and exit and marked as such (M3).
 
+Started 2026-10-19. The checker's own inference listed the std functions
+that may make memory never freed (470, from about 90 roots). Fixed so
+far: io.print_int, print_i64, and print_f64 and fmt.f64_fixed (so
+buf.push_f64 and a float in the formatting forms) borrow their scratch
+from the shared heap and give it back (30,000 prints move the heap cursor
+0 bytes); os.random_i32 the same; json.parse's state and errors and
+csv's errors come from the caller's allocator (json.free_error); std/par
+frees its job records. Also alloc.default's first use is atomic (two
+threads could each make a heap). Then std/bigint's numbers take the
+allocator they are made from (with_capacity and from_i32 name it;
+bigint.free gives one back; growing frees the old limbs), so
+float.from_decimal (text.parse_f64, json.parse) and json.write of a
+number keep nothing (10,000 of each move the heap cursor 0 bytes); and
+io.read_fd frees each buffer it outgrows, its view now checked. Left:
+os.arg and os.env (a fresh copy per call); and std/stream, every call of which may leak because a
+custom reader or writer calls through a function reference, which
+decision 9 settles. By design, and documented: str.concat, format,
+buf.to_str, io.read_file's buffer, the allocators' own cells.
+
 ### M3. `(no_leak)`: a checked promise
 
 ```lisp
@@ -209,7 +228,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | S | Refresh the stage-0 seed, so the compiler's source can use storage types, value views, and the forms added since 2026-10-16 (done 2026-10-19) | test_bootstrap: the new seed is the Rust build of its source, and builds itself to the same bytes |
 | M1 | checked views (done 2026-10-19: the three ways a view outlived its memory each stop the program in every backend, tests/test_memory.rs; every other test and parity check unchanged; the compiler compiling itself natively 1.73 s to 1.78 s; benchmarks the same but knucleotide, 0.80 s to 0.59 s, since views no longer allocate and bytes_eq reads raw after one check) | the program above traps with "Use after free" in all three backends; every existing test and parity check unchanged; benchmark and self-compile times reported |
 | M3 | `(no_leak)` (done 2026-10-19: both checkers, word for word; std's allocators marked after a second seed refresh; tests/test_memory.rs) | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
-| F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` leave the language, the compiler's 209 uses and every other moving to `alloc.create` / `alloc.array` on `alloc.forever` | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
+| F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` name their allocator, `(new S a)` and `(arr.new T a n)` (decision 8). Done 2026-10-19 but the last step: `alloc.forever` and `gen.forever` (8298bd3); every `new` and `arr.new` moved to `alloc.create` / `alloc.array` by tools/migrate_new.py (the compiler's output unchanged, compiling itself 1.5% slower); then the short form in both resolvers (sugar.rs, resolver.aipl), std/alloc imported for a module that uses it, the one-operand forms errors with the fix, the old forms gone from the VM and every code generator, and tests, examples, and the tested docs back in the short form (migrate_new.py --short). The seed was refreshed from 7a55d99 and the compiler's own source and std moved to the short form. Left: a format placeholder cannot yet hold a `new` (placeholders are split after the rewrite) | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
 | M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
 | M2, M4 (b) | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
 | M5 | servers | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
@@ -247,6 +266,17 @@ compiler's source can be migrated in the current language.
    only from `alloc.forever` (they have no generation, so nothing else
    could free them safely); text built per request is a view of a
    buffer from the request's allocator.
+8. **`new` stays, naming its allocator (decided 2026-10-19).** Removing
+   `new` made the most basic operation `(call (alloc.create P)
+   (call alloc.forever))` plus an import, and broke every program read
+   by the bare parser (44 test failures in one run). So `new` keeps its
+   name with the allocator as a required operand, `(new P a)` and
+   `(arr.new T a n)`: the resolver writes the alloc.create and
+   alloc.array calls and imports std/alloc for the module (only when it
+   is used, so a program that allocates nothing does not carry the
+   allocators), and `(new P)` is an error that shows both choices. In
+   most code `a` is the allocator the function was handed, so the form
+   costs two characters more than before.
 6. **Unions held by address (M4 b; decided 2026-10-19: (i)).** Either (i) every union is a
    value, and recursion or width goes through a pointer the program
    allocates: `(union List [(nil) (cons head:i32 tail:(ptr Cell))])`
@@ -273,3 +303,13 @@ compiler's source can be migrated in the current language.
    span (start, len: 2 slots), and text from a fixed set an enum (1).
    A cap can be raised later without breaking a program, never lowered:
    raise it only if the showcase programs keep reaching it.
+9. **`(no_leak)` on function types (decided 2026-10-19, to build before
+   M5).** A function reference's type may carry the promise, `(fn [C
+   (ptr buf.Buf)] -> i32 (no_leak))`: `(ref f)` gives that type only for
+   an f marked `(no_leak)`, and a `call_ref` through it is not a site
+   that may leak. std/stream's custom readers and writers take such
+   types, so a `(no_leak)` handler may use streams; until then it reads
+   from buffers (std/http parses from one). Chosen over trusting the
+   callback (a hole in the promise) because the promise is then written
+   where the callback is passed, and checked there, with the error at
+   the function that would leak.

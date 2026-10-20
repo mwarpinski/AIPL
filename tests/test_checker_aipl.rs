@@ -317,10 +317,10 @@ const EVERY_FORM: &str = r#"(module every
     (let r:(result i32 str) (ok:str 5))
     (let r2:(result bool i32) (err:bool 7))
     (match_result r (ok v (set! n v)) (err m (block)))
-    (let q:(ptr P) (new P))
+    (let q:(ptr P) (ptr.null P))
     (put q P.x (get p P.x))
     (let z:i32 (sizeof P))
-    (let arr2:(arr f64) (arr.new f64 3))
+    (let arr2:(arr f64) (arr.null f64))
     (arr.set f64 arr2 0 (arr.get f64 arr2 1))
     (let l:i32 (arr.len arr2))
     (let np:(ptr P) (ptr.null P))
@@ -369,7 +369,9 @@ const EVERY_FORM: &str = r#"(module every
 
 /// The same source parsed directly by both parsers (no resolver), printed by
 /// both printers: the same text, for the corpus above and for every
-/// repository file Parser::parse accepts (those without constants).
+/// repository file Parser::parse accepts (those without constants or
+/// calls of generic functions, such as alloc.create, which only the
+/// resolver reads).
 #[test]
 fn parsers_agree_on_original_sources() {
     let front = front::load();
@@ -391,7 +393,7 @@ fn parsers_agree_on_original_sources() {
         assert_eq!(ours, theirs, "{name}");
         compared += 1;
     }
-    assert!(compared >= 25, "{compared}");
+    assert!(compared >= 15, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the
@@ -663,7 +665,7 @@ const HEADER: &str = "(struct P [x:i32 f:f64 n:(ptr P)]) (enum E [a b]) (union U
 fn checkers_agree_on_every_operator_and_operand() {
     let front = front::load();
     let ops = "+ - * / % ^ shl shr shru bitand bitor mem.load8 mem.load32 mem.load64 mem.store8 mem.store32 mem.store64 mem.alloc mem.grow str.len str.ptr atomic.add atomic.cas atomic.lock atomic.unlock eq neq lt lte ltu lteu gtu gteu gt gte checked.add checked.sub checked.mul and or not sys.print sys.time sys.monotonic sys.random sys.exit fs.open fs.read fs.write fs.close fs.delete fs.opendir fs.readdir fs.stat args.sizes args.get env.sizes env.get thread.spawn thread.join divu remu i64.extend_s i64.extend_u i32.wrap f64.convert_i64_s f64.sqrt i64.trunc_f64_s f64.reinterpret_i64 i64.reinterpret_f64";
-    let pool = ["2000", "2000i64", "1.5", "\"s\"", "true", "(ref w)", "(new P)", "(arr.new i32 1)", "E.a", "(make U.w)", "0", "70", "6"];
+    let pool = ["2000", "2000i64", "1.5", "\"s\"", "true", "(ref w)", "(ptr.null P)", "(arr.null i32)", "E.a", "(make U.w)", "0", "70", "6"];
     let mut programs = Vec::new();
     for op in ops.split_whitespace() {
         programs.push(format!("({op})"));
@@ -724,10 +726,10 @@ const FORMS: &[&str] = &[
     "(unsafe (let q:(ptr P) (ptr.make P 2048 7i64)) 0)",
     "(unsafe (let q:(ptr P) (ptr.make P 1.5 7)) 0)",
     "(unsafe (let a:(arr i32) (arr.make void 2048 7)) 0)",
-    "(ptr.gen (new P))",
-    "(arr.gen (arr.new i32 1))",
+    "(ptr.gen (ptr.null P))",
+    "(arr.gen (arr.null i32))",
     "(ptr.gen 5)",
-    "(arr.gen (new P))",
+    "(arr.gen (ptr.null P))",
     "(enum.ord (enum.cast E 1))",
     "(thread.join 0)",
     "(atomic.add 2048 1)",
@@ -840,16 +842,16 @@ const FORMS: &[&str] = &[
     "(match_result (ok:i32 1) (ok v v) (err e (block)))",
     "(let v:bool true) (match_result (ok:i32 1) (ok v2 v2) (err v e3)) ",
     // structs
-    "(let p:(ptr Q) (new Q)) 0",
-    "(get (new Q) Q.x)",
+    "(let p:(ptr Q) (ptr.null Q)) 0",
+    "(get (ptr.null Q) Q.x)",
     "(get 5 P.x)",
-    "(get (new P) P.zz)",
-    "(i32.wrap (i64.trunc_f64_s (get (new P) P.f)))",
-    "(put (new Q) Q.x 1) 0",
+    "(get (ptr.null P) P.zz)",
+    "(i32.wrap (i64.trunc_f64_s (get (ptr.null P) P.f)))",
+    "(put (ptr.null Q) Q.x 1) 0",
     "(put 5 P.x 1) 0",
-    "(put (new P) P.zz 1) 0",
-    "(put (new P) P.x 1.5) 0",
-    "(put (new P) P.n (ptr.null P)) 0",
+    "(put (ptr.null P) P.zz 1) 0",
+    "(put (ptr.null P) P.x 1.5) 0",
+    "(put (ptr.null P) P.n (ptr.null P)) 0",
     "(sizeof Q)",
     "(sizeof P)",
     "(+ (sizeof i64) (+ (sizeof (ptr P)) (sizeof (arr f64))))",
@@ -860,16 +862,15 @@ const FORMS: &[&str] = &[
     "(match_result (ok:i32 1i64) (ok v 0) (err e 1))",
     "(match_result (err:i32 2.5) (ok v 0) (err e 1))",
     // arrays
-    "(arr.len (arr.new i32 1i64))",
-    "(arr.len (arr.new void 1))",
-    "(arr.len (arr.new Nope 1))",
-    "(arr.get i32 (arr.new i64 1) 0)",
+    "(arr.len (arr.null void))",
+    "(arr.len (arr.null Nope))",
+    "(arr.get i32 (arr.null i64) 0)",
     "(arr.get i32 5 0)",
-    "(arr.get i32 (arr.new i32 1) true)",
-    "(arr.get Nope (arr.new i32 1) 0)",
-    "(arr.set i32 (arr.new i32 1) 0 1.5) 0",
-    "(arr.set i32 (arr.new f64 1) 0 1) 0",
-    "(arr.set i32 (arr.new i32 1) 1.5 1) 0",
+    "(arr.get i32 (arr.null i32) true)",
+    "(arr.get Nope (arr.null i32) 0)",
+    "(arr.set i32 (arr.null i32) 0 1.5) 0",
+    "(arr.set i32 (arr.null f64) 0 1) 0",
+    "(arr.set i32 (arr.null i32) 1.5 1) 0",
     "(arr.len 5)",
     "(arr.len (arr.null i32))",
     "(arr.len (arr.null void))",
@@ -879,11 +880,11 @@ const FORMS: &[&str] = &[
     "(let p:(ptr P) (ptr.cast Q 4096)) 0",
     "(let a:(arr i32) (arr.cast void 4096)) 0",
     "(ptr.addr 5)",
-    "(arr.addr (new P))",
+    "(arr.addr (ptr.null P))",
     "(enum.ord 5)",
     "(enum.ord (enum.cast E 1i64))",
     "(enum.ord (enum.cast Nope 1))",
-    "(+ (ptr.addr (new P)) (+ (arr.addr (arr.new i32 1)) (enum.ord E.b)))",
+    "(+ (ptr.addr (ptr.null P)) (+ (arr.addr (arr.null i32)) (enum.ord E.b)))",
     // enums and unions
     "(match 5 (else 0))",
     "(match E.a (E.a 1))",
@@ -921,35 +922,35 @@ const FORMS: &[&str] = &[
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (struct Big [a:V b:V c:V d:V e:i32] (value)) (fn main [] -> i32 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (struct W [p:Q] (value)) (fn main [] -> i32 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (new V)) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (ptr.null V)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 true)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (put v V.x 3) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (if (eq v v) 1 0)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.z 3)) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.x true)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (let w:V (with p V.x 1)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (let w:(ptr Q) (with p Q.n 1)) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (get p V.x)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.n V.x 3) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.v V.x true) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.v V.z 1) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr i32) (arr.new i32 2)) (arr.set i32 a 0 V.x 3) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.x true) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.q 1) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (let w:V (with p V.x 1)) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (let w:(ptr Q) (with p Q.n 1)) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (get p V.x)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.n V.x 3) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v V.x true) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v V.z 1) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr i32) (arr.null i32)) (arr.set i32 a 0 V.x 3) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0 V.x true) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0 V.q 1) 0))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (make Q 1 2)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (make m.Q 1 2)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (get p Q.v V.x)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (get p Q.v V.x)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V 1 2)) V.x)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (struct W [a:V b:(ptr Q) c:(arr V) d:(fn [V] -> V)] (value)) (fn main [] -> i32 (sizeof W)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (match_result (ok:i32 v) (ok a (get a V.x)) (err e e))))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (get v V.x V.y)))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.v nodot 1) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.v (+ 1 2) 1) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (new Q)) (put p Q.v) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0) 0))",
-    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.get V a 0 1)))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v nodot 1) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v (+ 1 2) 1) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let p:(ptr Q) (ptr.null Q)) (put p Q.v) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.set V a 0) 0))",
+    "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let a:(arr V) (arr.null V)) (arr.get V a 0 1)))",
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (with v 3 4)))",
     "M:(module m (struct V [x:i32] (pub2)) (fn main [] -> i32 0))",
     "M:(module m (struct V [x:i32] (value) (other)) (fn main [] -> i32 0))",

@@ -14,7 +14,7 @@
   ;; for 32 bits each), with version 4 and variant 10 set.
   (fn text [w0:i32 w1:i32 w2:i32 w3:i32] -> str
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 40))
-    (let ws:(arr i32) (arr.new i32 4))
+    (let ws:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (arr.set i32 ws 0 w0)
     ;; byte 6 (the high byte of word 1's low half) holds the version
     (arr.set i32 ws 1 (bitor (bitand w1 -61441) 16384))

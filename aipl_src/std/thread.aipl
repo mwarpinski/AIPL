@@ -21,7 +21,7 @@
   ;; which gives the worker's result.
   (fn (spawn_with C) [worker:(fn [C] -> i32) ctx:C] -> i32 (pub) (unsafe)
     (let a:alloc.Allocator (call alloc.default))
-    (let j:(ptr (Job C)) (call (alloc.create (Job C)) a))
+    (let j:(ptr (Job C)) (new (Job C) a))
     (put j (Job C) worker worker)
     (put j (Job C) ctx ctx)
     (put j (Job C) a a)
@@ -47,7 +47,7 @@
     s)
 
   (fn part [from:i32 to:i32] -> (ptr Part)
-    (let p:(ptr Part) (new Part))
+    (let p:(ptr Part) (new Part (call alloc.forever)))
     (put p Part.from from)
     (put p Part.to to)
     p)

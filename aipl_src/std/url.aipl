@@ -39,7 +39,7 @@
                (read has_fragment:bool) (read fragment:str.Bytes) a:alloc.Allocator] (pub))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
-    (let e:(ptr Error) (call (alloc.create Error) a))
+    (let e:(ptr Error) (new Error a))
     (put e Error.at at)
     (put e Error.what what)
     e)
@@ -127,7 +127,7 @@
           (set! v (+ (* v 10) (- d 48)))
           (when (gt v 65535) (return (err:(ptr Url) (call error a port_from "a port past 65535")))))
         (set! port v)))
-    (let u:(ptr Url) (call (alloc.create Url) a))
+    (let u:(ptr Url) (new Url a))
     (put u Url.scheme scheme)
     (put u Url.has_authority has_authority)
     (put u Url.authority (call view text auth_from auth_to))
@@ -221,7 +221,7 @@
   ;; ref resolved against base (RFC 3986, 5.2.2, strict), as a new Url
   ;; from a.
   (fn resolve [a:alloc.Allocator base:(ptr Url) ref:(ptr Url)] -> (ptr Url) (pub)
-    (let t:(ptr Url) (call (alloc.create Url) a))
+    (let t:(ptr Url) (new Url a))
     (put t Url.a a)
     (call copy_parts t ref)
     (when (gt (get (get ref Url.scheme) str.Bytes.len) 0)

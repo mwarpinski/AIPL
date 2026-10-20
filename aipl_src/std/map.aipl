@@ -22,9 +22,9 @@
 
   (fn (alloc_slots K V) [m:(ptr (Map K V)) cap:i32] -> void (where (cmp.Hash K))
     (let a:alloc.Allocator (get m (Map K V) allocator))
-    (put m (Map K V) keys (call (alloc.array K) a cap))
-    (put m (Map K V) vals (call (alloc.array V) a cap))
-    (put m (Map K V) states (call (alloc.array i32) a cap))
+    (put m (Map K V) keys (arr.new K a cap))
+    (put m (Map K V) vals (arr.new V a cap))
+    (put m (Map K V) states (arr.new i32 a cap))
     (put m (Map K V) count 0)
     (put m (Map K V) used 0))
 
@@ -32,7 +32,7 @@
   (fn (make K V) [a:alloc.Allocator capacity:i32] -> (ptr (Map K V)) (pub) (where (cmp.Hash K))
     (let cap:i32 8)
     (while (lt cap capacity) (set! cap (* cap 2)))
-    (let m:(ptr (Map K V)) (call (alloc.create (Map K V)) a))
+    (let m:(ptr (Map K V)) (new (Map K V) a))
     (put m (Map K V) allocator a)
     (call (alloc_slots K V) m cap)
     m)

@@ -29,7 +29,7 @@
 
   (fn mem [base:i32 disp:i32] -> (ptr Mem) (pub)
     (req (and (gte base 0) (lte base 15)))
-    (let m:(ptr Mem) (new Mem))
+    (let m:(ptr Mem) (new Mem (call alloc.forever)))
     (put m Mem.base base)
     (put m Mem.index -1)
     (put m Mem.scale 1)
@@ -41,7 +41,7 @@
     (req (and (gte base 0) (lte base 15)))
     (req (and (and (gte index 0) (lte index 15)) (neq index 4)))
     (req (or (eq scale 1) (or (eq scale 2) (or (eq scale 4) (eq scale 8)))))
-    (let m:(ptr Mem) (new Mem))
+    (let m:(ptr Mem) (new Mem (call alloc.forever)))
     (put m Mem.base base)
     (put m Mem.index index)
     (put m Mem.scale scale)

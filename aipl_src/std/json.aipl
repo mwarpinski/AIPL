@@ -38,7 +38,7 @@
 
   ;; A member for building an object: key and value.
   (fn field [a:alloc.Allocator key:str.Bytes value:Value] -> (ptr Field) (pub)
-    (let f:(ptr Field) (call (alloc.create Field) a))
+    (let f:(ptr Field) (new Field a))
     (put f Field.key key)
     (put f Field.value value)
     f)
@@ -157,8 +157,10 @@
 
   ;; Parses text as JSON (strict RFC 8259), or says where and why it is
   ;; not JSON.
+  ;; An error, and the parser's own state, come from a (free an error with
+  ;; free_error).
   (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub)
-    (let p:(ptr P) (new P))
+    (let p:(ptr P) (new P a))
     (put p P.text text)
     (put p P.pos 0)
     (put p P.a a)
@@ -171,12 +173,18 @@
           (call skip_ws p)
           (if (lt (get p P.pos) (get text str.Bytes.len)) (call fail p (get p P.pos) "unexpected text after the value") (block)))
         (block))
-    (if (eq (get p P.err) (ptr.null Error)) (ok:(ptr Error) v) (err:Value (get p P.err))))
+    (let e:(ptr Error) (get p P.err))
+    (call (alloc.destroy P) a p)
+    (if (eq e (ptr.null Error)) (ok:(ptr Error) v) (err:Value e)))
+
+  ;; Frees an error parse returned, given the allocator parse was given.
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub)
+    (call (alloc.destroy Error) a e))
 
   ;; The first error wins.
   (fn fail [p:(ptr P) at:i32 what:str] -> void
     (if (neq (get p P.err) (ptr.null Error)) (return) (block))
-    (let e:(ptr Error) (new Error))
+    (let e:(ptr Error) (new Error (get p P.a)))
     (put e Error.at at)
     (put e Error.what what)
     (put p P.err e))
@@ -442,8 +450,10 @@
     (if (and (lt x 9007199254740992.0) (eq x (f64.convert_i64_s (i64.trunc_f64_s x))))
         (block (call buf.push_i64 b (i64.trunc_f64_s x)) (return))
         (block))
-    (let d:Decimal (call shortest x))
-    (call layout b (get d Decimal.digits) (get d Decimal.n)))
+    (let digits:(ptr buf.Buf) (call buf.make (call alloc.default) 24))
+    (let d:Decimal (call shortest x digits))
+    (call layout b (get d Decimal.digits) (get d Decimal.n))
+    (call buf.free digits))
 
   ;; x = 0.digits * 10^n, with no trailing zero in digits (null digits:
   ;; none found yet).
@@ -456,8 +466,9 @@
   ;; p = 1, 2, ... 17 digits the candidates are x's digits cut to p, and one
   ;; more in the last place: the nearer first (half to even), then the other,
   ;; which can read back alone when x is a power of two (its lower neighbour
-  ;; is half as far as its upper one).
-  (fn shortest [x:f64] -> Decimal
+  ;; is half as far as its upper one). The digits are written to out; the
+  ;; scratch comes from the shared heap and goes back to it.
+  (fn shortest [x:f64 out:(ptr buf.Buf)] -> Decimal
     (unsafe (let a:alloc.Allocator (call alloc.default))
     (let bits:i64 (i64.reinterpret_f64 x))
     (let field:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
@@ -465,9 +476,11 @@
     (let m:i64 (if (eq field 0) frac (bitor frac 4503599627370496i64)))
     (let e:i32 (if (eq field 0) -1074 (- field 1075)))
     ;; N = m, in two parts below 2^26 and 2^27
-    (let big:(ptr bigint.Int) (call bigint.from_i32 (i32.wrap (shru m 26i64))))
+    (let big:(ptr bigint.Int) (call bigint.from_i32 a (i32.wrap (shru m 26i64))))
     (call bigint.mul_small big 67108864)
-    (call bigint.add big (call bigint.from_i32 (i32.wrap (bitand m 67108863i64))))
+    (let low:(ptr bigint.Int) (call bigint.from_i32 a (i32.wrap (bitand m 67108863i64))))
+    (call bigint.add big low)
+    (call bigint.free low)
     (let k:i32 (if (lt e 0) (- 0 e) 0))
     (let twos:i32 (if (lt e 0) 0 e))
     ;; times 5^k, 13 fives at a time (5^13 < 2^31); or times 2^e
@@ -486,8 +499,8 @@
     (let found:Decimal (make Decimal (call str.absent) 0))
     (loop p 1 17 1
       ;; down: the first p digits; up: down plus one in the last place
-      (let down:(arr i32) (arr.new i32 p))
-      (let up:(arr i32) (arr.new i32 p))
+      (let down:(arr i32) (arr.new i32 a p))
+      (let up:(arr i32) (arr.new i32 a p))
       (loop q 0 (- p 1) 1
         (let d:i32 (if (lt q n_all) (- (call str.byte_at all q) 48) 0))
         (arr.set i32 down q d)
@@ -502,11 +515,16 @@
       (let exact:bool (and (eq next 0) (not rest)))
       (let nearer_up:bool (or (gt next 5) (and (eq next 5) (or rest (eq (% (arr.get i32 down (- p 1)) 2) 1)))))
       (cond
-        ((and nearer_up (call reads_back text up p up_n x)) (set! found (call decimal_of a up p up_n)))
-        ((call reads_back text down p n x) (set! found (call decimal_of a down p n)))
-        ((and (not nearer_up) (and (not exact) (call reads_back text up p up_n x))) (set! found (call decimal_of a up p up_n)))
+        ((and nearer_up (call reads_back text up p up_n x)) (set! found (call decimal_of out up p up_n)))
+        ((call reads_back text down p n x) (set! found (call decimal_of out down p n)))
+        ((and (not nearer_up) (and (not exact) (call reads_back text up p up_n x))) (set! found (call decimal_of out up p up_n)))
         (else (block)))
+      (call (alloc.free_array i32) a up)
+      (call (alloc.free_array i32) a down)
       (if (call str.present (get found Decimal.digits)) (break) (block)))
+    (call buf.free text)
+    (call buf.free ds)
+    (call bigint.free big)
     found))
 
   ;; Whether 0.r * 10^n (p digits) reads back as x; text is scratch.
@@ -519,11 +537,12 @@
     (let t:str.Bytes (call buf.bytes text))
     (unsafe (eq (call float.from_decimal (call str.addr t) (get t str.Bytes.len)) x)))
 
-  ;; 0.r * 10^n (p digits) as a Decimal, its trailing zeros dropped.
-  (fn decimal_of [a:alloc.Allocator r:(arr i32) p:i32 n:i32] -> Decimal
+  ;; 0.r * 10^n (p digits) as a Decimal, its trailing zeros dropped, its
+  ;; digits written to out.
+  (fn decimal_of [out:(ptr buf.Buf) r:(arr i32) p:i32 n:i32] -> Decimal
     (let kept:i32 p)
     (while (and (gt kept 1) (eq (arr.get i32 r (- kept 1)) 0)) (set! kept (- kept 1)))
-    (let out:(ptr buf.Buf) (call buf.make a 20))
+    (call buf.clear out)
     (loop q 0 (- kept 1) 1 (call buf.push_byte out (+ 48 (arr.get i32 r q))))
     (make Decimal (call buf.bytes out) n))
 

@@ -72,9 +72,9 @@ fn no_leak_names_each_broken_promise_and_its_chain() {
     assert!(!o.status.success());
     let f = "tests/aipl/memory/no_leak_refused.aipl";
     let want = format!(
-        "Error: {f}: 10:20: uses_new is marked (no_leak) but uses new, whose memory is never freed\n\
-         {f}: 13:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)\n\
-         {f}: 15:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n"
+        "Error: {f}: 10:5: uses_concat is marked (no_leak) but calls str.concat, which may make memory that is never freed (str.concat calls str.room; str.room uses mem.alloc)\n\
+         {f}: 12:5: uses_format is marked (no_leak) but uses format (a str), whose memory is never freed\n\
+         {f}: 14:27: uses_forever is marked (no_leak) but uses alloc.forever, whose memory is never freed\n"
     );
     assert_eq!(String::from_utf8_lossy(&o.stderr), want);
 }

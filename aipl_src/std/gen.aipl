@@ -25,6 +25,18 @@
     (unsafe (let g:i32 (* (+ (atomic.add COUNTER 1) 1) -1640531535))
     (if (or (eq g 0) (or (eq g -1) (eq g DEAD))) 1 g)))
 
+  ;; A zeroed T that is never freed, from the bump cursor (mem.alloc):
+  ;; what alloc.forever hands out, here for the allocators std/alloc is
+  ;; made of, which cannot import it. Its generation is fresh, so a pointer
+  ;; kept past alloc.destroy still stops the program.
+  (fn (forever T) [] -> (ptr T) (pub) (where (struct T))
+    (unsafe (call (adopt T) (mem.alloc (+ (sizeof T) 8)))))
+
+  ;; n zeroed Ts that are never freed, as forever.
+  (fn (forever_array T) [n:i32] -> (arr T) (pub)
+    (req (gte n 0))
+    (unsafe (call (adopt_array T) (mem.alloc (checked.add 8 (checked.mul n (sizeof T)))) n)))
+
   ;; A T in the zeroed block at `base` (sizeof T + 8 bytes).
   (fn (adopt T) [base:i32] -> (ptr T) (pub) (where (struct T)) (unsafe)
     (let g:i32 (call fresh))

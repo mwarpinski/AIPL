@@ -35,7 +35,7 @@
     (if (get x expand.Expanded.ok)
         (call parser.parse_tokens src (get x expand.Expanded.toks) (get x expand.Expanded.n))
         (block
-          (let r:(ptr parser.Parsed) (new parser.Parsed))
+          (let r:(ptr parser.Parsed) (new parser.Parsed (call alloc.forever)))
           (put r parser.Parsed.ok false)
           (put r parser.Parsed.err (get x expand.Expanded.err))
           (put r parser.Parsed.err_at (get x expand.Expanded.err_at))

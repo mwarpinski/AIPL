@@ -16,7 +16,7 @@
       (Shape.dot 0)))
   ;; a step, then rest, its cell from a
   (fn step [a:alloc.Allocator dx:i32 dy:i32 rest:Path] -> Path (pub)
-    (let r:(ptr Rest) (call (alloc.create Rest) a))
+    (let r:(ptr Rest) (new Rest a))
     (put r Rest.path rest)
     (make Path.step dx dy r))
   (fn length [p:Path] -> i32 (pub)

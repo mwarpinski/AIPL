@@ -35,7 +35,7 @@
 
   ;; A parser for the program `name`, which does `about`.
   (fn parser [a:alloc.Allocator name:str about:str] -> (ptr Parser) (pub)
-    (let p:(ptr Parser) (call (alloc.create Parser) a))
+    (let p:(ptr Parser) (new Parser a))
     (put p Parser.name name)
     (put p Parser.about about)
     (put p Parser.specs (call (vec.make (ptr Spec)) a 8))
@@ -43,7 +43,7 @@
     p)
 
   (fn add [p:(ptr Parser) kind:Kind name:str short:str help:str default:str] -> void
-    (let s:(ptr Spec) (new Spec))
+    (let s:(ptr Spec) (new Spec (call alloc.forever)))
     (put s Spec.kind kind)
     (put s Spec.name name)
     (put s Spec.short short)
@@ -158,7 +158,7 @@
   ;; first that does not fit, with a hint; "help" when --help was asked.
   (fn parse_list [p:(ptr Parser) argv:(ptr (vec.Vec str))] -> (result (ptr Args) str) (pub)
     (let a:alloc.Allocator (get p Parser.a))
-    (let args:(ptr Args) (new Args))
+    (let args:(ptr Args) (new Args (call alloc.forever)))
     (put args Args.names (call (vec.make str) a 8))
     (put args Args.values (call (vec.make str) a 8))
     (put args Args.rest (call (vec.make str) a 4))
@@ -246,7 +246,7 @@
           (if (call str.same why "help")
               (block (print "{(call usage p)}") (sys.exit 0))
               (block (eprintln "{(get p Parser.name)}: {why} ({(get p Parser.name)} --help shows the options)") (sys.exit 2)))
-          (new Args)))))
+          (new Args (call alloc.forever))))))
 
   ;; ===== Values =====
 

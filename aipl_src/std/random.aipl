@@ -18,7 +18,7 @@
 
   ;; A generator from a seed, on the stream `seq` (pcg32_srandom_r).
   (fn seeded_stream [a:alloc.Allocator seed:i64 seq:i64] -> (ptr Rng) (pub)
-    (let r:(ptr Rng) (call (alloc.create Rng) a))
+    (let r:(ptr Rng) (new Rng a))
     (put r Rng.state 0i64)
     (put r Rng.inc (bitor (shl seq 1i64) 1i64))
     (put r Rng.a a)
@@ -103,9 +103,9 @@
   ;; k of xs, without repeats, in random order, as a new array from a.
   (fn (sample T) [a:alloc.Allocator r:(ptr Rng) xs:(arr T) k:i32] -> (arr T) (pub)
     (req (and (gte k 0) (lte k (arr.len xs))))
-    (let pool:(arr T) (call (alloc.array T) a (arr.len xs)))
+    (let pool:(arr T) (arr.new T a (arr.len xs)))
     (for i 0 (arr.len xs) (arr.set T pool i (arr.get T xs i)))
-    (let out:(arr T) (call (alloc.array T) a k))
+    (let out:(arr T) (arr.new T a k))
     (for i 0 k
       (let j:i32 (+ i (call below r (- (arr.len xs) i))))
       (let t:T (arr.get T pool i))

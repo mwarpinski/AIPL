@@ -52,7 +52,7 @@
     (make Limits head_bytes headers body_bytes))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
-    (let e:(ptr Error) (call (alloc.create Error) a))
+    (let e:(ptr Error) (new Error a))
     (put e Error.at at)
     (put e Error.what what)
     e)
@@ -173,7 +173,7 @@
               (return (err:(ptr Message) (call error a p "more headers than the limit"))))
             (call (vec.push Header) headers (make Header (call view text p colon) (call view text vs ve)))))
       (set! p (call next_line text end)))
-    (let m:(ptr Message) (call (alloc.create Message) a))
+    (let m:(ptr Message) (new Message a))
     (put m Message.is_request request)
     (put m Message.method method)
     (put m Message.target target)

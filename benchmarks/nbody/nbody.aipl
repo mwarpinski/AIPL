@@ -6,6 +6,7 @@
 ;;
 ;;   ./nbody 1000   ->   -0.169075164 / -0.169087605
 (module nbody
+  (import alloc)
   (import io)
   (import os)
   (import time)
@@ -24,7 +25,7 @@
     (* (* 4.0 pi) pi))
 
   (fn system [] -> (arr Body)
-    (let bs:(arr Body) (arr.new Body 5))
+    (let bs:(arr Body) (arr.new Body (call alloc.forever) 5))
     (let sm:f64 (call solar_mass))
     (arr.set Body bs 0 (make Body (make Vec3 0.0 0.0 0.0) (make Vec3 0.0 0.0 0.0) sm))
     ;; jupiter, saturn, uranus, neptune

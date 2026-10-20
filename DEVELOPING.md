@@ -25,7 +25,7 @@ and the 2026-10 audit.
 | `examples/` | Tested example programs: `math_core` (contracts), `quicksort`, `matrix_mult` (structs, `f64` arrays), `accounts` (results), `word_count` and `word_freq` (files, collections, a sort comparator) |
 | `benchmarks/` | Eight benchmark programs, each in AIPL, C, and Python with expected output ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) |
 | `tests/` | Rust integration, differential, WASI, self-hosting, native-backend, and benchmark tests; `tests/aipl/` holds AIPL programs they run |
-| `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python) |
+| `tools/` | Development helpers not used by the build or `cargo test`: `fuzz.py` (the two toolchains against each other on mutated programs), `run_fuzz.py` (generated programs in the VM, as wasm, and natively, against each other; CI runs it), `bench.py` (benchmark timing), `x64_vectors.py` (the encoder's test vectors, from GNU as), `bigint_vectors.py` (the bigint test's expected hash, from Python), `make_kit.sh` (a self-contained toolchain kit for another Linux machine or agent: `sh tools/make_kit.sh [COMMIT]` builds it in a private worktree, tests it with the source hidden, and writes `target/kit/aipl-kit-COMMIT.tar.gz`) |
 
 ## Environment
 

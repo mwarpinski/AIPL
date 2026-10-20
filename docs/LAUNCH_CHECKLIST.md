@@ -271,6 +271,22 @@ is a small, honest experiment:
 Not all need building before a post; each needs an honest answer in the
 FAQ or ROADMAP.md.
 
+- [ ] **A lower memory limit** (decided 2026-10-19): `aipl compile
+  --max-memory 512M` (and `--exe`) records the limit in the module's
+  memory declaration, its max pages, so the VM, aipl-run, native
+  executables, and any wasm host stop at the same place, with the
+  message they give at the 2 GiB cap today; the default stays 2 GiB.
+  Only lowering: below 2 GiB every address is a non-negative i32, which
+  the signed address comparisons in std and the compiler rely on. Wanted
+  with the servers (MEMORY_PLAN.md M5): a runaway request fails cleanly
+  instead of taking the machine.
+- [ ] **An address-sized integer, decided on purpose** (before launch):
+  `ptr.addr`, `mem.*`, and `mem.alloc` use `i32` addresses, a promise to
+  users' (unsafe) code. A 64-bit target (ROADMAP.md, after launch) wants
+  an address-sized type such as Rust's `usize`; adding it later breaks
+  only unsafe code. Decide whether to add it now or say in the FAQ why
+  not.
+
 - [x] **Option types / generic unions** (done 2026-10-12): generic unions
   (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
   `result` payloads of any type (the 32-bit limit is gone; `result` stays

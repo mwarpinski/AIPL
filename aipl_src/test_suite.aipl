@@ -84,7 +84,7 @@
     (set! failures (+ failures (call report "std/stream: readers and writers over files, memory, and functions (7 tests)" (call stream.run_stream_tests) 7)))
     (set! failures (+ failures (call report "std/arena: typed region allocator (7 tests)" (call arena.run_arena_tests) 7)))
     (set! failures (+ failures (call report "std/heap: general-purpose allocator (8 tests)" (call heap.run_heap_tests) 8)))
-    (set! failures (+ failures (call report "std/alloc: any allocator as one value (7 tests)" (call alloc.run_alloc_tests) 7)))
+    (set! failures (+ failures (call report "std/alloc: any allocator as one value (9 tests)" (call alloc.run_alloc_tests) 9)))
     (set! failures (+ failures (call report "std/bigint: arbitrary-precision integers (13 tests)" (call bigint.run_bigint_tests) 13)))
     (set! failures (+ failures (call report "std/option: Option T, a generic union (7 tests)" (call option.run_option_tests) 7)))
     (set! failures (+ failures (call report "std/cmp: Eq, Ord, Hash for built-in types (10 tests)" (call cmp.run_cmp_tests) 10)))

@@ -27,7 +27,7 @@ fn failures(name: &str, body: &str) -> [String; 3] {
     let src = dir.join("prog.aipl");
     std::fs::write(
         &src,
-        format!("(module prog (import heap)\n  (struct P [a:i32 b:i32])\n  (struct Q [a:i64 b:i64])\n  (fn main [] -> i32 (unsafe)\n{body}\n    0))"),
+        format!("(module prog (import alloc) (import heap)\n  (struct P [a:i32 b:i32])\n  (struct Q [a:i64 b:i64])\n  (fn main [] -> i32 (unsafe)\n{body}\n    0))"),
     )
     .unwrap();
     let vm = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();
@@ -99,7 +99,7 @@ fn free_of_memory_no_heap_allocated() {
     assert_fails(
         "not_a_heap_block",
         "    (let h:(ptr heap.Heap) (call heap.make))
-    (call (heap.destroy P) h (new P))",
+    (call (heap.destroy P) h (new P (call alloc.forever)))",
         "(req (call heap.allocated_by h p))",
     );
 }

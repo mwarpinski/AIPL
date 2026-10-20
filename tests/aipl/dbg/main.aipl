@@ -1,6 +1,7 @@
 ;; (dbg e) in every backend and both toolchains (tests/test_dbg.rs): each
 ;; prints FILE:LINE:COL: e = value to standard error and gives the value.
 (module main
+  (import alloc)
   (import lib)
   (import str)
   (import option)
@@ -24,7 +25,7 @@
     (let e:str (dbg "tab\there"))
     (let f:Shade (dbg Shade.dark))
     (let g:str.Bytes (dbg (call str.from_str "bytes")))
-    (let h:(arr i32) (dbg (arr.new i32 3)))
+    (let h:(arr i32) (dbg (arr.new i32 (call alloc.forever) 3)))
     (let v:V (dbg (make V 1 2.5)))
     (let o:(option.Option i32) (dbg (make (option.Option i32) some 9)))
     ;; nested, over two lines, with a comment
@@ -35,7 +36,7 @@
     (match_result (call twice_parsed "abc")
       (ok k (block (let k1:i32 (dbg (+ k 1))) (println "twice: {k} {k1}")))
       (err m (println "error: {m}")))
-    (let p:(ptr P) (new P))
+    (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.x (dbg (get p P.x)))
     (println "{a} {b} {c} {d} {e} {f} {g} {n} {half} {w}")
     (arr.len h)))

@@ -149,7 +149,9 @@ fn doc_examples_run_in_both_backends() {
             if code.contains("aipl_heap_alloc") {
                 continue;
             }
-            std::fs::write(&file, format!("(module fragment\n{code}\n)")).unwrap();
+            // a fragment that allocates names its allocator, from std/alloc
+            let imports = if code.contains("alloc.") { "  (import alloc)\n" } else { "" };
+            std::fs::write(&file, format!("(module fragment\n{imports}{code}\n)")).unwrap();
             let checked = Resolver::resolve(&file).and_then(|m| TypeChecker::new().check_module(&m).map(|_| m));
             match SPEC_INVALID.iter().find(|(head, _)| code.trim_start().starts_with(head)) {
                 Some((_, msg)) => {

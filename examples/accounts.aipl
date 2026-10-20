@@ -2,6 +2,7 @@
 ;; programming errors. A failed operation returns (err:i32 code) and changes
 ;; nothing; callers branch with match_result.
 (module accounts
+  (import alloc)
   ;; balance in cents
   (struct Account [id:i32 balance:i32 frozen:bool])
 
@@ -12,7 +13,7 @@
 
   (fn open [id:i32 initial:i32] -> (ptr Account)
     (req (gte initial 0))
-    (let a:(ptr Account) (new Account))
+    (let a:(ptr Account) (new Account (call alloc.forever)))
     (put a Account.id id)
     (put a Account.balance initial)
     (put a Account.frozen false)

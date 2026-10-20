@@ -93,10 +93,11 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 ```lisp
 (module tour_structs
+  (import alloc)
   (struct Point [x:i32 y:i32])
 
   (fn make_point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     p)
@@ -109,7 +110,7 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
     sum)
 
   (fn main [] -> i32
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (loop i 0 2 1
       (arr.set (ptr Point) ps i (call make_point i (* i 10))))
     (call total ps)))
@@ -117,7 +118,11 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 It returns `33`: the points are (0, 0), (1, 10), and (2, 20).
 
-`(new Point)` makes a struct and gives a `(ptr Point)`. A pointer to one
+`(new Point a)` makes a struct from the allocator `a` and gives a `(ptr
+Point)`; every allocation names where its memory comes from, and
+`(call alloc.forever)` is memory kept until the program exits (a function
+that allocates usually takes the allocator as a parameter, so its caller
+decides). A pointer to one
 struct can never be used as another, or as a number. `get` and `put` name
 the field as `Struct.field`. An `(arr T)` holds values of type `T`, and
 `arr.get` and `arr.set` repeat the element type. Every index is checked: an
@@ -129,13 +134,14 @@ nothing allocated, copied where it goes, never changed in place.
 
 ```lisp
 (module tour_values
+  (import alloc)
   (struct Point [x:i32 y:i32] (value))
 
   (fn shift [p:Point dx:i32] -> Point
     (with p Point.x (+ (get p Point.x) dx)))
 
   (fn main [] -> i32
-    (let ps:(arr Point) (arr.new Point 3))
+    (let ps:(arr Point) (arr.new Point (call alloc.forever) 3))
     (loop i 0 2 1 (arr.set Point ps i (make Point i (* i 10))))
     (let q:Point (call shift (arr.get Point ps 2) 5))
     (+ (get q Point.x) (arr.get Point ps 1 Point.y))))

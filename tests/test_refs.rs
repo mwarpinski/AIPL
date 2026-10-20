@@ -4,18 +4,27 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use wasmtime::{Engine, Instance, Module as WasmModule, Store, TypedFunc};
 
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
+
 fn check_err(src: &str) -> String {
-    let m = Parser::parse(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
+    let m = parse_program(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
     TypeChecker::new().check_module(&m).expect_err("expected a checker error")
 }
 
 fn run_both(src: &str, f: &str) -> i32 {
-    let module = Parser::parse(src).unwrap();
+    let module = parse_program(src).unwrap();
     TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("check failed: {e}"));
     let mut vm = VM::new();
     vm.load_module(module.clone());
@@ -36,7 +45,7 @@ fn run_both(src: &str, f: &str) -> i32 {
 }
 
 pub const REFS_PROGRAM: &str = r#"
-(module refs
+(module refs (import alloc)
   (struct Op [apply:(fn [i32 i32] -> i32) name:str])
   (fn add [a:i32 b:i32] -> i32 (+ a b))
   (fn mul [a:i32 b:i32] -> i32 (* a b))
@@ -44,10 +53,10 @@ pub const REFS_PROGRAM: &str = r#"
   (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
     (call_ref (fn [i32 i32] -> i32) f x x))
   (fn main [] -> i32
-    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) 2))
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (new Op))
+    (let o:(ptr Op) (new Op (call alloc.forever)))
     (put o Op.apply (ref mul))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)

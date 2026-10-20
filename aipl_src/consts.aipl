@@ -203,7 +203,7 @@
     (let count:i32 (call compiler.tokenize (call str.addr src) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
-    (let st:(ptr St) (new St))
+    (let st:(ptr St) (new St (call alloc.forever)))
     (put st St.text src)
     (put st St.consts (call (map.make str.Bytes (ptr compiler.Node)) (call alloc.default) 16))
     (put st St.enums (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 16))

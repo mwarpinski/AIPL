@@ -3,6 +3,7 @@
 (module io
   (import str)
   (import fmt)
+  (import alloc)
 
   ;; Writes s to file descriptor fd (1 is stdout, 2 stderr).
   (fn write_str [fd:i32 s:str] -> void (pub)
@@ -18,15 +19,20 @@
     (call write_str 2 s)
     (call write_str 2 "\n"))
 
-  ;; Decimal, with '-' when negative. Each call allocates 11 bytes (never freed).
+  ;; Decimal, with '-' when negative. Its scratch bytes come from the
+  ;; shared heap and go back to it, as in print_i64 and print_f64.
   (fn print_int [n:i32] -> void (pub)
-    (unsafe (let buf:i32 (mem.alloc 11))
-    (fs.write 1 buf (call fmt.int_to_bytes n buf))))
+    (let a:alloc.Allocator (call alloc.default))
+    (unsafe (let buf:i32 (call alloc.raw a 16))
+    (fs.write 1 buf (call fmt.int_to_bytes n buf))
+    (call alloc.free_raw a buf 16)))
 
-  ;; An i64 in decimal. Each call allocates 21 bytes (never freed).
+  ;; An i64 in decimal.
   (fn print_i64 [n:i64] -> void (pub)
-    (unsafe (let buf:i32 (mem.alloc 21))
-    (fs.write 1 buf (call fmt.int64_to_bytes n buf))))
+    (let a:alloc.Allocator (call alloc.default))
+    (unsafe (let buf:i32 (call alloc.raw a 24))
+    (fs.write 1 buf (call fmt.int64_to_bytes n buf))
+    (call alloc.free_raw a buf 24)))
 
   ;; label, then the i64 n, then a newline.
   (fn println_i64 [label:str n:i64] -> void (pub)
@@ -37,8 +43,10 @@
   ;; An f64 with `digits` decimals, as printf("%.*f") prints it.
   (fn print_f64 [x:f64 digits:i32] -> void (pub)
     (req (and (gte digits 0) (lte digits 40)))
-    (unsafe (let buf:i32 (mem.alloc (+ 312 digits)))
-    (fs.write 1 buf (call fmt.f64_fixed x digits buf))))
+    (let a:alloc.Allocator (call alloc.default))
+    (unsafe (let buf:i32 (call alloc.raw a (+ 312 digits)))
+    (fs.write 1 buf (call fmt.f64_fixed x digits buf))
+    (call alloc.free_raw a buf (+ 312 digits))))
 
   ;; label, then x with `digits` decimals, then a newline.
   (fn println_f64 [label:str x:f64 digits:i32] -> void (pub)
@@ -52,7 +60,8 @@
     (call print_int n)
     (call write_str 1 "\n"))
 
-  ;; The whole file in a fresh buffer, or len -1 if it cannot be opened or read.
+  ;; The whole file in a buffer that is never freed (read_fd), or len -1 if
+  ;; it cannot be opened or read.
   (fn read_file [path:str] -> str.Bytes (pub)
     (call read_path (call str.from_str path)))
 
@@ -68,26 +77,26 @@
   (fn read_stdin [] -> str.Bytes (pub)
     (call read_fd 0))
 
-  ;; Reads fd to its end into a fresh buffer that doubles as it fills.
+  ;; Reads fd to its end into a buffer from the shared heap that doubles
+  ;; as it fills (each outgrown one freed); the view is checked. The last
+  ;; buffer is never freed: for a program that reads as it goes for a long
+  ;; time, use std/stream with an allocator of its own.
   (fn read_fd [fd:i32] -> str.Bytes (pub)
-    (unsafe (let cap:i32 4096)
-    (let buf:i32 (mem.alloc cap))
+    (let a:alloc.Allocator (call alloc.default))
+    (let data:(arr u8) (arr.new u8 a 4096))
     (let len:i32 0)
     (while true
-      (if (eq len cap)
-          (block
-            (let bigger:i32 (mem.alloc (* cap 2)))
-            (loop i 0 (- len 1) 1
-              (mem.store8 (+ bigger i) (mem.load8 (+ buf i))))
-            (set! buf bigger)
-            (set! cap (* cap 2)))
-          (block))
-      (let n:i32 (fs.read fd (+ buf len) (- cap len)))
+      (when (eq len (arr.len data))
+        (let bigger:(arr u8) (arr.new u8 a (* 2 (arr.len data))))
+        (unsafe (loop i 0 (- len 1) 1 (mem.store8 (+ (arr.addr bigger) i) (mem.load8 (+ (arr.addr data) i)))))
+        (call (alloc.free_array u8) a data)
+        (set! data bigger))
+      (let n:i32 (unsafe (fs.read fd (+ (arr.addr data) len) (- (arr.len data) len))))
       (cond
-        ((lt n 0) (return (call str.bytes 0 -1)))
+        ((lt n 0) (call (alloc.free_array u8) a data) (return (call str.absent)))
         ((eq n 0) (break))
         (else (set! len (+ len n)))))
-    (call str.bytes buf len)))
+    (call str.of_array data 0 len))
 
   ;; Creates or truncates the file; returns bytes written, or -1.
   (fn write_file [path:str b:str.Bytes] -> i32 (pub)

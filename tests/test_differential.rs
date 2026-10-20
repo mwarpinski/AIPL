@@ -13,11 +13,20 @@
 use aipl_core::ast::{Module, Type};
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::Path;
 use wasmtime::{Engine, Module as WasmModule, Store, Val, ValType};
+
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -144,7 +153,7 @@ fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Ou
 }
 
 fn compile_checked(src: &str) -> (Module, Vec<u8>) {
-    let module = Parser::parse(src).expect("parse");
+    let module = parse_program(src).expect("parse");
     TypeChecker::new().check_module(&module).expect("check");
     let wasm = WasmCompiler::compile(&module).expect("wasm compile");
     (module, wasm)
@@ -597,7 +606,7 @@ fn p7_typing_and_scoping_rules() {
       (err e -1)))
 )
 "#;
-    let module = Parser::parse(src).expect("p7_test parses");
+    let module = parse_program(src).expect("p7_test parses");
     let mut checker = TypeChecker::new();
     checker.check_module(&module).expect("p7_test type-checks");
 
@@ -623,7 +632,7 @@ fn p7_typing_and_scoping_rules() {
     x)
 )
 "#;
-    let m = Parser::parse(shadow_src).expect("shadow_test parses");
+    let m = parse_program(shadow_src).expect("shadow_test parses");
     let err = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(err.contains("Cannot shadow"), "expected shadowing error, got: {err}");
 
@@ -635,7 +644,7 @@ fn p7_typing_and_scoping_rules() {
     0)
 )
 "#;
-    let m2 = Parser::parse(set_err_src).expect("set_test parses");
+    let m2 = parse_program(set_err_src).expect("set_test parses");
     let err2 = TypeChecker::new().check_module(&m2).unwrap_err();
     assert!(err2.contains("Undefined variable"), "expected undefined variable error, got: {err2}");
 }
@@ -643,14 +652,14 @@ fn p7_typing_and_scoping_rules() {
 #[test]
 fn p8_structs_and_arrays() {
     let src = r#"
-(module p8_test
+(module p8_test (import alloc)
   (struct Point [x:i32 y:i32])
   (struct Mixed [flag:bool val:i64 tag:i32])
   (struct Floats [a:f32 b:f64])
   (struct Named [id:i32 name:str])
 
   (fn test_point_ops [x:i32 y:i32] -> i32 (unsafe)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
@@ -664,7 +673,7 @@ fn p8_structs_and_arrays() {
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32 (unsafe)
-    (let m:(ptr Mixed) (new Mixed))
+    (let m:(ptr Mixed) (new Mixed (call alloc.forever)))
     (put m Mixed.flag true)
     (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
     (put m Mixed.tag 7)
@@ -673,12 +682,12 @@ fn p8_structs_and_arrays() {
         -1))
 
   (fn test_floats [] -> i32 (unsafe)
-    (let f:(ptr Floats) (new Floats))
+    (let f:(ptr Floats) (new Floats (call alloc.forever)))
     (put f Floats.b 2.5)
     (if (gt (get f Floats.b) 2.0) 1 0))
 
   (fn test_array_ops [n:i32] -> i32 (unsafe)
-    (let arr:(arr i32) (arr.new i32 n))
+    (let arr:(arr i32) (arr.new i32 (call alloc.forever) n))
     (loop i 0 (- n 1) 1
       (arr.set i32 arr i (* (+ i 1) 10)))
     (let sum:i32 0)
@@ -688,13 +697,13 @@ fn p8_structs_and_arrays() {
 
   ;; header holds the count; the bump cursor advances by 4 + n * 8
   (fn test_i64_array [n:i32] -> i32 (unsafe)
-    (let a:(arr i64) (arr.new i64 n))
+    (let a:(arr i64) (arr.new i64 (call alloc.forever) n))
     (arr.set i64 a (- n 1) 5i64)
     (let next:i32 (mem.alloc 4))
     (+ (arr.len a) (+ (- next (arr.addr a)) (i32.wrap (arr.get i64 a (- n 1))))))
 
   (fn test_index_oob [i:i32] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 3))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 3))
     (arr.get i32 a i))
 
   (fn alloc_four [] -> i32 (unsafe)
@@ -703,27 +712,29 @@ fn p8_structs_and_arrays() {
 
   ;; the size expression allocates; the array must not overlap that block
   (fn test_size_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 (call alloc_four)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call alloc_four)))
     (- (arr.addr a) (mem.load32 0)))
 
-  ;; ok/err take 8 heap bytes in both backends, before the payload runs
-  ;; results with a str side are heap cells (a result without is held by
-  ;; value, AIPL_SPEC.md 4.F)
+  ;; results are values (AIPL_SPEC.md 4.F), a str side included: making
+  ;; them takes no heap, so the next block is at the cursor they found
   (fn test_result_heap [] -> i32 (unsafe)
+    (let before:i32 (mem.load32 0))
     (let r:(result i32 str) (ok:str 5))
     (let e:(result str i32) (err:str 6))
-    (mem.alloc 4))
+    (- (mem.alloc 4) before))
 
+  ;; the payload's array right at the cursor: its 8-byte prefix, then it
   (fn test_result_payload_allocates [] -> i32 (unsafe)
-    (match_result (ok:str (arr.new i32 2))
-      (ok v (arr.addr v))
+    (let before:i32 (mem.load32 0))
+    (match_result (ok:str (arr.new i32 (call alloc.forever) 2))
+      (ok v (- (arr.addr v) before))
       (err e 0)))
 
   ;; AIPL_SPEC.md 4.E example
   (fn test_points [] -> i32 (unsafe)
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (loop i 0 2 1
-      (let p:(ptr Point) (new Point))
+      (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
@@ -735,18 +746,18 @@ fn p8_structs_and_arrays() {
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
   (fn test_bool_word [] -> i32 (unsafe)
-    (let p:(ptr Mixed) (new Mixed))
+    (let p:(ptr Mixed) (new Mixed (call alloc.forever)))
     (mem.store32 (ptr.addr p) 2)
-    (let a:(arr bool) (arr.new bool 1))
+    (let a:(arr bool) (arr.new bool (call alloc.forever) 1))
     (mem.store32 (arr.addr a) 7)
     (if (and (eq (get p Mixed.flag) true) (and (arr.get bool a 0) true)) 1 0))
 
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
   (fn test_str_field [] -> i32 (unsafe)
-    (let n:(ptr Named) (new Named))
+    (let n:(ptr Named) (new Named (call alloc.forever)))
     (put n Named.name "abc")
-    (let a:(arr str) (arr.new str 2))
+    (let a:(arr str) (arr.new str (call alloc.forever) 2))
     (arr.set str a 1 (get n Named.name))
     (+ (str.len (arr.get str a 1)) (if (eq (mem.load8 (+ (str.ptr (get n Named.name)) 2)) 99) 10 0)))
 
@@ -759,7 +770,7 @@ fn p8_structs_and_arrays() {
     0)
 )
 "#;
-    let module = Parser::parse(src).expect("p8_test parses");
+    let module = parse_program(src).expect("p8_test parses");
     TypeChecker::new().check_module(&module).expect("p8_test type-checks");
     let wasm = WasmCompiler::compile(&module).expect("p8_test compiles to WASM");
 
@@ -783,12 +794,10 @@ fn p8_structs_and_arrays() {
     // to 8), then the array block at H+8 (8 + 2 * 4 = 16 bytes): array at
     // H+16, cursor H+24, so array - cursor = -8
     assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
-    // The module's string literal occupies 1024..1032, so the heap starts at
-    // 1032 in both backends; results are values (AIPL_SPEC.md 4.F), so the
-    // two take no memory and the 4-byte block is at 1032.
-    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1032)));
-    // the array's 8-byte prefix at 1032, the array at 1040: no result cell
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1040)));
+    // results take no heap: the block is at the cursor they found, and the
+    // array 8 past it (its prefix), in both backends
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(0)));
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(8)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -834,7 +843,7 @@ fn results_carry_payloads_of_any_type() {
     (let d:(result f64 i64) (call half 5.0))
     (- (mem.load32 0) before))))
 "#;
-    let module = Parser::parse(src).expect("parses");
+    let module = parse_program(src).expect("parses");
     TypeChecker::new().check_module(&module).expect("checks");
     let wasm = WasmCompiler::compile(&module).expect("compiles");
     assert_eq!(differential(&module, &wasm, "wide", &[2]), Ok(Value::Int(6_000_000)));
@@ -845,7 +854,7 @@ fn results_carry_payloads_of_any_type() {
     assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(0)));
 
     let err = TypeChecker::new()
-        .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
+        .check_module(&parse_program("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
         .unwrap_err();
     assert!(err.ends_with("1:60: a result payload must be a value, got void"), "got {err}");
 }
@@ -856,14 +865,14 @@ fn results_carry_payloads_of_any_type() {
 #[test]
 fn allocation_grows_memory_identically() {
     let src = r#"
-(module grow
+(module grow (import alloc)
   (struct P [x:i32 y:i64])
   (fn main [] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 1 3000 1
-      (let p:(ptr P) (new P))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x i)
-      (let a:(arr i32) (arr.new i32 100))
+      (let a:(arr i32) (arr.new i32 (call alloc.forever) 100))
       (arr.set i32 a 99 i)
       (let r:(result i32 i32) (ok:i32 i))
       (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
@@ -894,7 +903,7 @@ fn allocation_grows_memory_identically() {
 #[test]
 fn nested_allocations_do_not_overlap() {
     let src = r#"
-(module nest
+(module nest (import alloc)
   (fn inner_size [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 8))
     (mem.store32 p 99)
@@ -905,7 +914,7 @@ fn nested_allocations_do_not_overlap() {
     (mem.load32 (- q 8)))
   ;; the same through arr.new's length and a struct inside a result payload
   (fn arr_len_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 (call inner_size)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call inner_size)))
     (arr.set i32 a 0 5)
     ;; the array's block is [generation][length][elements], right after the 8 inner bytes
     (mem.load32 (- (arr.addr a) 16))))
@@ -952,7 +961,7 @@ fn unsigned_comparisons_agree() {
     yes("(gtu -9223372036854775808i64 9223372036854775807i64)");
     no("(lteu -1i64 0i64)");
     yes("(gteu 7i64 7i64)");
-    let m = Parser::parse("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
+    let m = parse_program("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("ltu compares integers (i32 or i64) as unsigned, got f64"), "{e}");
 }
@@ -996,13 +1005,13 @@ fn checked_arithmetic_agrees_with_rust() {
     assert_eq!(checked, 864);
     // nested: an operand that is itself checked
     assert_eq!(expr("i64", "(checked.add (checked.mul 3i64 4i64) (checked.sub 10i64 (checked.add 1i64 2i64)))").unwrap(), Value::Int64(19));
-    let m = Parser::parse("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
+    let m = parse_program("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("checked.add is integer arithmetic (i32 or i64), got f64"), "{e}");
 }
 
 const CONTRACTS: &str = r#"
-(module contracts
+(module contracts (import alloc)
   (fn safe_div [num:i32 den:i32] -> i32
     (req (neq den 0))
     (/ num den))
@@ -1027,7 +1036,7 @@ const CONTRACTS: &str = r#"
     (req (gt (arr.get i32 a i) 0))
     i)
   (fn nested_i32 [i:i32] -> i32
-    (let a:(arr i32) (arr.new i32 2))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 2))
     (arr.set i32 a 0 1)
     (call nested a i))
 )
@@ -1081,7 +1090,7 @@ fn contracts_fail_in_both() {
 /// null pointer, past an array's end, or into the reserved block.
 #[test]
 fn value_structs_agree() {
-    let src = r#"(module v
+    let src = r#"(module v (import alloc)
   (struct V [a:i32 b:f64 c:bool] (value))
   (struct W [v:V n:i64] (value))
   (struct Holder [w:W k:i32])
@@ -1094,7 +1103,7 @@ fn value_structs_agree() {
 
   ;; written whole, then one field through a path; read as raw words
   (fn raw [] -> i32 (unsafe)
-    (let h:(ptr Holder) (new Holder))
+    (let h:(ptr Holder) (new Holder (call alloc.forever)))
     (put h Holder.w (make W (make V 7 2.5 true) 9i64))
     (put h Holder.w W.v V.a 11)
     (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
@@ -1116,14 +1125,14 @@ fn value_structs_agree() {
 
   ;; elements 24 bytes apart
   (fn elements [] -> i32 (unsafe)
-    (let xs:(arr V) (arr.new V 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (arr.set V xs 1 V.a 5)
     (mem.load32 (+ (arr.addr xs) 24)))
 
   (fn read_null [] -> i64 (get (get (ptr.null Holder) Holder.w) W.n))
 
   (fn read_past [i:i32] -> i32
-    (let xs:(arr V) (arr.new V 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (get (arr.get V xs i) V.a))
 
   (fn write_reserved [] -> i32 (unsafe)

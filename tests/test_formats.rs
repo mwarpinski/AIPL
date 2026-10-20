@@ -140,7 +140,7 @@ fn every_formatting_error_has_one_message_in_both_toolchains() {
     for (k, (body, want)) in cases.iter().enumerate() {
         let file = dir.join(format!("e{k}.aipl"));
         let src = format!(
-            "(module e\n  (struct P [a:i32])\n  (fn main [] -> i32\n    (let p:(ptr P) (new P)) (let n:i32 1) (let x:f64 1.5) (let name:str \"a\")\n    {body}\n    0))\n"
+            "(module e (import alloc)\n  (struct P [a:i32])\n  (fn main [] -> i32\n    (let p:(ptr P) (new P (call alloc.forever))) (let n:i32 1) (let x:f64 1.5) (let name:str \"a\")\n    {body}\n    0))\n"
         );
         std::fs::write(&file, &src).unwrap();
         let rust = aipl_core::resolver::Resolver::resolve(&file)

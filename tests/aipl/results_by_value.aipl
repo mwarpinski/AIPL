@@ -33,7 +33,7 @@
   (fn wide [ok:bool] -> (result (ptr Quad) Ints)
     (if ok
         (block
-          (let q:(ptr Quad) (call (alloc.create Quad) (call alloc.default)))
+          (let q:(ptr Quad) (new Quad (call alloc.default)))
           (put q Quad.b 2.0)
           (ok:Ints q))
         (err:(ptr Quad) (make Ints 9 9 9 0))))

@@ -63,7 +63,7 @@
     (loop i 0 (- (call (map.capacity str.Bytes i32) counts) 1) 1
       (if (call (map.slot_used str.Bytes i32) counts i)
           (block
-            (let e:(ptr Entry) (new Entry))
+            (let e:(ptr Entry) (new Entry (call alloc.forever)))
             (put e Entry.word (call (map.slot_key str.Bytes i32) counts i))
             (put e Entry.count (call (map.slot_val str.Bytes i32) counts i))
             (call (vec.push (ptr Entry)) entries e))

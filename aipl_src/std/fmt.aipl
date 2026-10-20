@@ -2,6 +2,7 @@
 ;; must have room: 10 bytes for uint/hex, 11 for int, 20 for uint64, 21 for
 ;; int64, 312 + digits for f64_fixed) and returns the count.
 (module fmt
+  (import alloc)
   ;; Decimal digits of n read as unsigned, so -1 is 4294967295.
   (fn uint_to_bytes [n:i32 out:i32] -> i32 (pub) (unsafe)
     (ens (and (gte res 1) (lte res 10)))
@@ -60,10 +61,9 @@
 
   (fn big_limbs [] -> i32 40)
 
-  (fn big_new [] -> (arr i64)
-    (let a:(arr i64) (arr.new i64 (call big_limbs)))
-    (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 a i 0i64))
-    a)
+  ;; A zeroed big integer from a.
+  (fn big_new [a:alloc.Allocator] -> (arr i64)
+    (arr.new i64 a (call big_limbs)))
 
   (fn big_bit [a:(arr i64) k:i32] -> i32
     (i32.wrap (bitand (shru (arr.get i64 a (/ k 32)) (i64.extend_s (% k 32))) 1i64)))
@@ -121,9 +121,22 @@
 
   ;; Writes x with `digits` decimals (0-40) at `out`, exactly rounded with
   ;; ties to even, as printf("%.*f") does; returns the bytes written. `out`
-  ;; must have room for 312 + digits bytes.
+  ;; must have room for 312 + digits bytes. Its three big integers come from
+  ;; the shared heap and go back to it, so a call keeps no memory.
   (fn f64_fixed [x:f64 digits:i32 out:i32] -> i32 (pub) (unsafe)
     (req (and (gte digits 0) (lte digits 40)))
+    (let a:alloc.Allocator (call alloc.default))
+    (let whole:(arr i64) (call big_new a))
+    (let frac:(arr i64) (call big_new a))
+    (let rest:(arr i64) (call big_new a))
+    (let n:i32 (call f64_fixed_into x digits out whole frac rest))
+    (call (alloc.free_array i64) a rest)
+    (call (alloc.free_array i64) a frac)
+    (call (alloc.free_array i64) a whole)
+    n)
+
+  ;; f64_fixed with its big integers given, each zero.
+  (fn f64_fixed_into [x:f64 digits:i32 out:i32 whole:(arr i64) frac:(arr i64) rest:(arr i64)] -> i32 (unsafe)
     (let bits:i64 (i64.reinterpret_f64 x))
     (let neg:bool (lt bits 0i64))
     (let ex:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
@@ -136,10 +149,8 @@
     ;; x = m * 2^e
     (let m:i64 (if (eq ex 0) mant (bitor mant 4503599627370496i64)))
     (let e:i32 (if (eq ex 0) -1074 (- ex 1075)))
-    (let whole:(arr i64) (call big_new))
     (arr.set i64 whole 0 (bitand m 4294967295i64))
     (arr.set i64 whole 1 (shru m 32i64))
-    (let frac:(arr i64) (call big_new))
     (let k:i32 0)
     (if (gte e 0)
         (call big_shl whole e)
@@ -182,7 +193,6 @@
     (if (gt k 0)
         (block
           (let half_bit:i32 (call big_bit frac (- k 1)))
-          (let rest:(arr i64) (call big_new))
           (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 rest i (arr.get i64 frac i)))
           (call big_mask rest (- k 1))
           (let above:bool (and (eq half_bit 1) (not (call big_is_zero rest))))
