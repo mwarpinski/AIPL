@@ -44,7 +44,7 @@
     (call compile_as path_addr path_len dirs_addr dirs_len true))
 
   (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool] -> (ptr Out)
-    (unsafe (let res:(ptr Out) (call (alloc.create Out) (call alloc.forever)))
+    (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))

@@ -38,7 +38,7 @@
 
   ;; A member for building an object: key and value.
   (fn field [a:alloc.Allocator key:str.Bytes value:Value] -> (ptr Field) (pub)
-    (let f:(ptr Field) (call (alloc.create Field) a))
+    (let f:(ptr Field) (new Field a))
     (put f Field.key key)
     (put f Field.value value)
     f)
@@ -158,7 +158,7 @@
   ;; Parses text as JSON (strict RFC 8259), or says where and why it is
   ;; not JSON.
   (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub)
-    (let p:(ptr P) (call (alloc.create P) (call alloc.forever)))
+    (let p:(ptr P) (new P (call alloc.forever)))
     (put p P.text text)
     (put p P.pos 0)
     (put p P.a a)
@@ -176,7 +176,7 @@
   ;; The first error wins.
   (fn fail [p:(ptr P) at:i32 what:str] -> void
     (if (neq (get p P.err) (ptr.null Error)) (return) (block))
-    (let e:(ptr Error) (call (alloc.create Error) (call alloc.forever)))
+    (let e:(ptr Error) (new Error (call alloc.forever)))
     (put e Error.at at)
     (put e Error.what what)
     (put p P.err e))
@@ -486,8 +486,8 @@
     (let found:Decimal (make Decimal (call str.absent) 0))
     (loop p 1 17 1
       ;; down: the first p digits; up: down plus one in the last place
-      (let down:(arr i32) (call (alloc.array i32) (call alloc.forever) p))
-      (let up:(arr i32) (call (alloc.array i32) (call alloc.forever) p))
+      (let down:(arr i32) (arr.new i32 (call alloc.forever) p))
+      (let up:(arr i32) (arr.new i32 (call alloc.forever) p))
       (loop q 0 (- p 1) 1
         (let d:i32 (if (lt q n_all) (- (call str.byte_at all q) 48) 0))
         (arr.set i32 down q d)

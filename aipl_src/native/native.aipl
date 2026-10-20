@@ -48,7 +48,7 @@
   (struct Output [(read addr:i32) (read len:i32) (read ok:bool) (read error:str.Bytes) (read exe:str.Bytes)] (pub))
 
   (fn failure [msg:str.Bytes] -> (ptr Output)
-    (unsafe (let o:(ptr Output) (call (alloc.create Output) (call alloc.forever)))
+    (unsafe (let o:(ptr Output) (new Output (call alloc.forever)))
     (put o Output.addr (call str.addr msg))
     (put o Output.len (get msg str.Bytes.len))
     (put o Output.ok false)
@@ -301,7 +301,7 @@
 
   ;; The region trap routine's texts, as wasmtime words them.
   (fn region_texts [l:(ptr lower.L)] -> (ptr runtime.RegionTexts)
-    (let t:(ptr runtime.RegionTexts) (call (alloc.create runtime.RegionTexts) (call alloc.forever)))
+    (let t:(ptr runtime.RegionTexts) (new runtime.RegionTexts (call alloc.forever)))
     (let oob:str "Pointer out of bounds: Region { start: ")
     (let al4:str "Pointer not aligned to 4: Region { start: ")
     (let al8:str "Pointer not aligned to 8: Region { start: ")
@@ -366,7 +366,7 @@
     (put l lower.L.stack_limit_off (call buf.len gb))
     (loop k 0 (+ 7 (call lower.results_size)) 1 (call buf.push_byte gb 0))
     (let globals_block:i32 (call lower.data_bytes l (call buf.bytes gb)))
-    (let th:(ptr Threads) (call (alloc.create Threads) (call alloc.forever)))
+    (let th:(ptr Threads) (new Threads (call alloc.forever)))
     (put th Threads.start_fn (get w wasm_reader.Wasm.start))
     (put th Threads.thread_start (call export_func w "wasi_thread_start"))
     (if (and (lt (get th Threads.thread_start) 0) (call imports_thread_spawn l))
@@ -387,7 +387,7 @@
     ;; the call-chain routine, and the cell that will point at its table
     (let chain_cell:i32 (call lower.data_text l ""))
     (loop k 1 8 1 (call buf.push_byte data 0))
-    (let ct:(ptr runtime.ChainTexts) (call (alloc.create runtime.ChainTexts) (call alloc.forever)))
+    (let ct:(ptr runtime.ChainTexts) (new runtime.ChainTexts (call alloc.forever)))
     (put ct runtime.ChainTexts.at (call lower.data_text l "  at "))
     (put ct runtime.ChainTexts.dots (call lower.data_text l "  ... "))
     (put ct runtime.ChainTexts.more (call lower.data_text l " more\n"))
@@ -449,7 +449,7 @@
     (call fill_table l w starts)
     (call fill_chain_table l chain starts code_end)
     (call fill_position_table l positions)
-    (let o:(ptr Output) (call (alloc.create Output) (call alloc.forever)))
+    (let o:(ptr Output) (new Output (call alloc.forever)))
     (let exe:str.Bytes (call buf.bytes (call elf.image (call buf.bytes c) entry (call buf.bytes data) 0)))
     (put o Output.addr (call str.addr exe))
     (put o Output.len (get exe str.Bytes.len))
@@ -475,11 +475,11 @@
   ;; and points `cell` at it. The entries are filled once the code's address
   ;; is known (fill_chain_table): the data must be complete before then.
   (fn reserve_chain_table [l:(ptr lower.L) w:(ptr wasm_reader.Wasm) nimports:i32 nfuncs:i32 cell:i32] -> (ptr Chain)
-    (unsafe (let ch:(ptr Chain) (call (alloc.create Chain) (call alloc.forever)))
+    (unsafe (let ch:(ptr Chain) (new Chain (call alloc.forever)))
     (put ch Chain.first nimports)
     (put ch Chain.last (- nfuncs 1))
-    (put ch Chain.names (call (alloc.array i32) (call alloc.forever) (+ nfuncs 1)))
-    (put ch Chain.lens (call (alloc.array i32) (call alloc.forever) (+ nfuncs 1)))
+    (put ch Chain.names (arr.new i32 (call alloc.forever) (+ nfuncs 1)))
+    (put ch Chain.lens (arr.new i32 (call alloc.forever) (+ nfuncs 1)))
     (let ns:(ptr (vec.Vec (ptr wasm_reader.FnName))) (get w wasm_reader.Wasm.names))
     (loop k 0 (- (call (vec.len (ptr wasm_reader.FnName)) ns) 1) 1
       (let fn_name:(ptr wasm_reader.FnName) (call (vec.at (ptr wasm_reader.FnName)) ns k))
@@ -521,7 +521,7 @@
     (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let names:(ptr (vec.Vec str.Bytes)) (get w wasm_reader.Wasm.line_files))
     (let nfiles:i32 (call (vec.len str.Bytes) names))
-    (let addrs:(arr i32) (call (alloc.array i32) (call alloc.forever) (+ nfiles 1)))
+    (let addrs:(arr i32) (arr.new i32 (call alloc.forever) (+ nfiles 1)))
     (loop k 0 (- nfiles 1) 1 (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at str.Bytes) names k))))
     (while (neq (bitand (call buf.len data) 3) 0) (call buf.push_byte data 0))
     (let files:i32 (call lower.data_text l ""))

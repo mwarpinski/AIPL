@@ -16,7 +16,7 @@
   (fn fetch [is_env:bool] -> (ptr Table)
     (unsafe (let sizes:i32 (mem.alloc 8))
     (let ok:i32 (if is_env (env.sizes sizes (+ sizes 4)) (args.sizes sizes (+ sizes 4))))
-    (let t:(ptr Table) (call (alloc.create Table) (call alloc.forever)))
+    (let t:(ptr Table) (new Table (call alloc.forever)))
     (put t Table.count 0)
     (put t Table.argv 0)
     (if (neq ok 0) (return t) (block))

@@ -634,7 +634,7 @@
   ;; in low; false (out untouched) when it has none.
   (fn lower [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt))) out:(ptr buf.Buf) low:(ptr origins.Origins)] -> bool (pub)
     (unsafe (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let l:(ptr L) (call (alloc.create L) (call alloc.forever)))
+    (let l:(ptr L) (new L (call alloc.forever)))
     (put l L.src src)
     (put l L.toks toks)
     (put l L.n (call compiler.tokenize src len toks))

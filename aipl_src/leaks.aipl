@@ -30,7 +30,7 @@
   (struct Found [(read at:i32) (read text:(ptr buf.Buf))] (pub))
 
   (fn site [out:(ptr (vec.Vec (ptr Site))) at:i32 call:bool what:str.Bytes inside:bool] -> void
-    (let s:(ptr Site) (call (alloc.create Site) (call alloc.default)))
+    (let s:(ptr Site) (new Site (call alloc.default)))
     (put s Site.at at)
     (put s Site.call call)
     (put s Site.what what)
@@ -124,7 +124,7 @@
     (let a:alloc.Allocator (call alloc.default))
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
     (let n:i32 (arr.len fns))
-    (let all:(arr (ptr (vec.Vec (ptr Site)))) (call (alloc.array (ptr (vec.Vec (ptr Site)))) a n))
+    (let all:(arr (ptr (vec.Vec (ptr Site)))) (arr.new (ptr (vec.Vec (ptr Site))) a n))
     (for k 0 n (arr.set (ptr (vec.Vec (ptr Site))) all k (call sites_of (arr.get (ptr ast.FnDef) fns k))))
     ;; which unmarked functions may leak, and why, to a fixed point (as
     ;; src/leaks.rs: each round sees what earlier ones, and the round so
@@ -143,7 +143,7 @@
           (while (and (lt j (call (vec.len (ptr Site)) ss)) (eq found (ptr.null Why)))
             (let s:(ptr Site) (call (vec.at (ptr Site)) ss j))
             (when (or (not (get s Site.call)) (call why_of why (get s Site.what)))
-              (set! found (call (alloc.create Why) a))
+              (set! found (new Why a))
               (put found Why.uses (not (get s Site.call)))
               (put found Why.what (get s Site.what)))
             (set! j (+ j 1)))
@@ -177,7 +177,7 @@
                 (call buf.push_str b "uses ")
                 (call buf.push_bytes b (get hit Site.what))
                 (call buf.push_str b ", whose memory is never freed")))
-          (let fd:(ptr Found) (call (alloc.create Found) a))
+          (let fd:(ptr Found) (new Found a))
           (put fd Found.at (get hit Site.at))
           (put fd Found.text b)
           (call (vec.push (ptr Found)) out fd))))

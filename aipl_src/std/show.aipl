@@ -218,7 +218,7 @@
           (call set_u64 whole (if (lt k 64) (shru m (i64.extend_s k)) 0i64))))
     (let start:i32 (call buf.len b))
     ;; the whole part, least significant digit first, then reversed
-    (let ints:(arr i32) (call (alloc.array i32) (call alloc.default) 320))
+    (let ints:(arr i32) (arr.new i32 (call alloc.default) 320))
     (let ni:i32 0)
     (let first:bool true)
     (while (or first (not (call is_zero whole)))
@@ -292,7 +292,7 @@
           (call mask fr k)
           (call set_u64 whole (if (lt k 64) (shru m (i64.extend_s k)) 0i64))))
     ;; the integer part's digits, least significant first
-    (let ints:(arr i32) (call (alloc.array i32) (call alloc.default) 320))
+    (let ints:(arr i32) (arr.new i32 (call alloc.default) 320))
     (let ni:i32 0)
     (while (not (call is_zero whole))
       (arr.set i32 ints ni (i32.wrap (call divmod10 whole)))
@@ -328,7 +328,7 @@
   ;; the nearer first (half to even), then the other, which can read back
   ;; alone when x is a power of two.
   (fn shortest [b:(ptr buf.Buf) x:f64 single:bool] -> void
-    (let ds:(arr i32) (call (alloc.array i32) (call alloc.default) 20))
+    (let ds:(arr i32) (arr.new i32 (call alloc.default) 20))
     (let ex:Exact (call exact x ds))
     (let n:i32 (get ex Exact.n))
     (let count:i32 (get ex Exact.count))
@@ -471,7 +471,7 @@
   ;; ===== Fixed-size big numbers: 40 limbs of 32 bits, least first =====
 
   (fn limbs [] -> i32 40)
-  (fn big [] -> (arr i64) (call (alloc.array i64) (call alloc.default) (call limbs)))
+  (fn big [] -> (arr i64) (arr.new i64 (call alloc.default) (call limbs)))
   (fn drop [a:(arr i64)] -> void (call (alloc.free_array i64) (call alloc.default) a))
 
   ;; a = v (v >= 0)

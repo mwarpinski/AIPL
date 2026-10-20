@@ -54,7 +54,7 @@
                   view:str.Bytes a:alloc.Allocator] (pub))
 
   (fn make_reader [a:alloc.Allocator src:Source owns_fd:bool store:(arr u8) win:str.Bytes end:i32 at_end:bool] -> (ptr Reader)
-    (let r:(ptr Reader) (call (alloc.create Reader) a))
+    (let r:(ptr Reader) (new Reader a))
     (put r Reader.src src)
     (put r Reader.owns_fd owns_fd)
     (put r Reader.store store)
@@ -69,7 +69,7 @@
 
   ;; A reader with a window of its own, 8 KiB to start.
   (fn owned_reader [a:alloc.Allocator src:Source owns_fd:bool] -> (ptr Reader)
-    (let store:(arr u8) (call (alloc.array u8) a 8192))
+    (let store:(arr u8) (arr.new u8 a 8192))
     (call make_reader a src owns_fd store (call str.of_array store 0 8192) 0 false))
 
   (fn cap [r:(ptr Reader)] -> i32 (get (get r Reader.win) str.Bytes.len))
@@ -108,10 +108,10 @@
   ;; A reader over fill_fn, called with `state` whenever the reader needs
   ;; more bytes.
   (fn (reader_of C) [a:alloc.Allocator state:C fill_fn:(fn [C (ptr buf.Buf)] -> i32)] -> (ptr Reader) (pub)
-    (let cell:(ptr (FillOf C)) (call (alloc.create (FillOf C)) a))
+    (let cell:(ptr (FillOf C)) (new (FillOf C) a))
     (put cell (FillOf C) state state)
     (put cell (FillOf C) fill_fn fill_fn)
-    (let f:(ptr Fill) (call (alloc.create Fill) a))
+    (let f:(ptr Fill) (new Fill a))
     (put f Fill.cell (unsafe (ptr.addr cell)))
     (put f Fill.fill_fn (ref (fill_through C)))
     (put f Fill.drop_fn (ref (drop_fill C)))
@@ -140,7 +140,7 @@
     (let bigger:i32 (* cap 2))
     (while (lt bigger (+ n need)) (set! bigger (* bigger 2)))
     (let old:(arr u8) (get r Reader.store))
-    (let store:(arr u8) (call (alloc.array u8) (get r Reader.a) bigger))
+    (let store:(arr u8) (arr.new u8 (get r Reader.a) bigger))
     (for i 0 n (arr.set u8 store i (arr.get u8 old i)))
     (call (alloc.free_array u8) (get r Reader.a) old)
     (put r Reader.store store)
@@ -284,7 +284,7 @@
   (struct Writer [sink:Sink owns_fd:bool out:(ptr buf.Buf) failed:bool a:alloc.Allocator] (pub))
 
   (fn make_writer [a:alloc.Allocator sink:Sink owns_fd:bool out:(ptr buf.Buf)] -> (ptr Writer)
-    (let w:(ptr Writer) (call (alloc.create Writer) a))
+    (let w:(ptr Writer) (new Writer a))
     (put w Writer.sink sink)
     (put w Writer.owns_fd owns_fd)
     (put w Writer.out out)
@@ -318,10 +318,10 @@
   ;; A writer into write_fn, called with `state` and the bytes whenever the
   ;; writer writes out.
   (fn (writer_of C) [a:alloc.Allocator state:C write_fn:(fn [C str.Bytes] -> bool)] -> (ptr Writer) (pub)
-    (let cell:(ptr (DrainOf C)) (call (alloc.create (DrainOf C)) a))
+    (let cell:(ptr (DrainOf C)) (new (DrainOf C) a))
     (put cell (DrainOf C) state state)
     (put cell (DrainOf C) write_fn write_fn)
-    (let d:(ptr Drain) (call (alloc.create Drain) a))
+    (let d:(ptr Drain) (new Drain a))
     (put d Drain.cell (unsafe (ptr.addr cell)))
     (put d Drain.write_fn (ref (drain_through C)))
     (put d Drain.drop_fn (ref (drop_drain C)))
@@ -457,7 +457,7 @@
     (if (call str.same (call joined (call of_str a "one\ntwo\r\n\nthree")) "one|two||three") (set! p (+ p 1)) (block))
     (if (call str.same (call joined (call of_str a "a\n")) "a") (set! p (+ p 1)) (block))
     ;; a source 3 bytes at a time, lines longer than what it gives
-    (let d:(ptr Drip) (call (alloc.create Drip) (call alloc.forever)))
+    (let d:(ptr Drip) (new Drip (call alloc.forever)))
     (put d Drip.text (call str.from_str "alpha\nbe\r\ngamma delta\r"))
     (put d Drip.at 0)
     (if (call str.same (call joined (call (reader_of (ptr Drip)) a d (ref drip))) "alpha|be|gamma delta\r") (set! p (+ p 1)) (block))
@@ -478,7 +478,7 @@
     (call write_byte w 33)
     (if (and (call close_writer w) (call str.same (call buf.to_str b) "n=42,true!")) (set! p (+ p 1)) (block))
     ;; a custom sink gets 8 KB at a time, and the rest at close
-    (let t:(ptr Tally) (call (alloc.create Tally) (call alloc.forever)))
+    (let t:(ptr Tally) (new Tally (call alloc.forever)))
     (put t Tally.bytes 0)
     (put t Tally.calls 0)
     (let tw:(ptr Writer) (call (writer_of (ptr Tally)) a t (ref tally)))

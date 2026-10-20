@@ -50,7 +50,7 @@
   (struct Exact [parts:(ptr (vec.Vec f64))])
 
   (fn exact [] -> (ptr Exact)
-    (let e:(ptr Exact) (call (alloc.create Exact) (call alloc.default)))
+    (let e:(ptr Exact) (new Exact (call alloc.default)))
     (put e Exact.parts (call (vec.make f64) (call alloc.default) 16))
     e)
 
@@ -300,7 +300,7 @@
   ;; by Python's 'exclusive' method (its default), or 'inclusive'.
   (fn quantiles [a:alloc.Allocator xs:(arr f64) n:i32 inclusive:bool] -> (arr f64) (pub)
     (req (and (gt n 0) (gt (arr.len xs) 0)))
-    (let out:(arr f64) (call (alloc.array f64) a (- n 1)))
+    (let out:(arr f64) (arr.new f64 a (- n 1)))
     (let v:(ptr (vec.Vec f64)) (call sorted xs))
     (let ld:i32 (arr.len xs))
     (let nf:f64 (f64.convert_i32_s n))
@@ -439,7 +439,7 @@
   ;; (hi in the last; values outside left out).
   (fn histogram [a:alloc.Allocator xs:(arr f64) lo:f64 hi:f64 bins:i32] -> (arr i32) (pub)
     (req (and (gt bins 0) (lt lo hi)))
-    (let out:(arr i32) (call (alloc.array i32) a bins))
+    (let out:(arr i32) (arr.new i32 a bins))
     (let width:f64 (/ (- hi lo) (f64.convert_i32_s bins)))
     (for k 0 (arr.len xs)
       (let x:f64 (arr.get f64 xs k))

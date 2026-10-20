@@ -34,7 +34,7 @@
         (or (and (gte c 48) (lte c 57)) (or (or (eq c 95) (eq c 46)) (or (eq c 43) (eq c 45))))))
 
   (fn fail [msg:str] -> (ptr Split)
-    (let s:(ptr Split) (call (alloc.create Split) (call alloc.forever)))
+    (let s:(ptr Split) (new Split (call alloc.forever)))
     (put s Split.ok false)
     (put s Split.err msg)
     (put s Split.pieces (ptr.null (vec.Vec Piece)))
@@ -103,7 +103,7 @@
          (set! lit j))
         (else (set! i (+ i 1)))))
     (if (gt len lit) (call (vec.push Piece) out (make Piece false lit (- len lit) 0 0)) (block))
-    (let s:(ptr Split) (call (alloc.create Split) (call alloc.forever)))
+    (let s:(ptr Split) (new Split (call alloc.forever)))
     (put s Split.ok true)
     (put s Split.err "")
     (put s Split.pieces out)
@@ -129,7 +129,7 @@
     (call bad t "': a format is [[fill]align][+][0][width][.decimals][x|X|b], e.g. {n:>8} or {x:.2}"))
 
   (fn spec [t:str.Bytes] -> (ptr Spec) (pub)
-    (let s:(ptr Spec) (call (alloc.create Spec) (call alloc.forever)))
+    (let s:(ptr Spec) (new Spec (call alloc.forever)))
     (put s Spec.decimals -1)
     (put s Spec.err (ptr.null buf.Buf))
     (let n:i32 (get t str.Bytes.len))

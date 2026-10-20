@@ -48,7 +48,7 @@
 
   ;; reader with another delimiter byte (9 for tab-separated values).
   (fn reader_with [a:alloc.Allocator r:(ptr stream.Reader) delim:i32] -> (ptr Reader) (pub)
-    (let cr:(ptr Reader) (call (alloc.create Reader) a))
+    (let cr:(ptr Reader) (new Reader a))
     (put cr Reader.src r)
     (put cr Reader.owns false)
     (put cr Reader.delim delim)
@@ -229,7 +229,7 @@
         (make (option.Option str.Bytes) none)))
 
   (fn fail [cr:(ptr Reader) i:i32 why:str] -> (ptr Error)
-    (let e:(ptr Error) (call (alloc.create Error) (call alloc.forever)))
+    (let e:(ptr Error) (new Error (call alloc.forever)))
     (put e Error.row (get cr Reader.row))
     (put e Error.column (+ i 1))
     (let what:str (if (lt i (get cr Reader.n))
@@ -295,7 +295,7 @@
 
   ;; writer with another delimiter byte.
   (fn writer_with [a:alloc.Allocator w:(ptr stream.Writer) delim:i32] -> (ptr Writer) (pub)
-    (let cw:(ptr Writer) (call (alloc.create Writer) a))
+    (let cw:(ptr Writer) (new Writer a))
     (put cw Writer.out w)
     (put cw Writer.delim delim)
     (put cw Writer.fields 0)

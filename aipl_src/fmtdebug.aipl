@@ -106,7 +106,7 @@
 
   (fn struct_fields [d:(ptr Defs) n:str.Bytes] -> (arr (ptr ast.Field))
     (let s:(ptr ast.StructDef) (call (map.get_or str.Bytes (ptr ast.StructDef)) (get d Defs.structs) n (ptr.null ast.StructDef)))
-    (if (eq s (ptr.null ast.StructDef)) (call (alloc.array (ptr ast.Field)) (call alloc.forever) 0) (get s ast.StructDef.fields)))
+    (if (eq s (ptr.null ast.StructDef)) (arr.new (ptr ast.Field) (call alloc.forever) 0) (get s ast.StructDef.fields)))
 
   (fn union_def [d:(ptr Defs) n:str.Bytes] -> (ptr ast.UnionDef)
     (call (map.get_or str.Bytes (ptr ast.UnionDef)) (get d Defs.unions) n (ptr.null ast.UnionDef)))
@@ -127,7 +127,7 @@
   (fn need_printer [d:(ptr Defs) t:ast.Type need:(ptr (vec.Vec (ptr Need)))] -> void
     (let name:str.Bytes (call debug_name t))
     (if (or (call has need name) (or (call printable t) (not (call prints t)))) (return) (block))
-    (let nd:(ptr Need) (call (alloc.create Need) (call alloc.forever)))
+    (let nd:(ptr Need) (new Need (call alloc.forever)))
     (put nd Need.name name)
     (put nd Need.ty t)
     (call (vec.push (ptr Need)) need nd)

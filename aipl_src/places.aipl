@@ -25,7 +25,7 @@
   (struct Place [(read file:str.Bytes) (read line:i32) (read col:i32)] (pub))
 
   (fn text_of [name:str.Bytes text:str.Bytes] -> (ptr Text)
-    (let t:(ptr Text) (call (alloc.create Text) (call alloc.forever)))
+    (let t:(ptr Text) (new Text (call alloc.forever)))
     (put t Text.name name)
     (put t Text.text text)
     (put t Text.starts (ptr.null (vec.Vec i32)))
@@ -33,7 +33,7 @@
 
   ;; Positions in one file's text, under that name.
   (fn single [name:str.Bytes text:str.Bytes] -> (ptr Places) (pub)
-    (let p:(ptr Places) (call (alloc.create Places) (call alloc.forever)))
+    (let p:(ptr Places) (new Places (call alloc.forever)))
     (put p Places.consts (call origins.make))
     (put p Places.low (ptr.null origins.Origins))
     (put p Places.gen (ptr.null origins.Origins))
@@ -102,7 +102,7 @@
     (loop k start (- pos 1) 1
       ;; a UTF-8 continuation byte is part of the character before it
       (if (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1)) (block)))
-    (let r:(ptr Place) (call (alloc.create Place) (call alloc.forever)))
+    (let r:(ptr Place) (new Place (call alloc.forever)))
     (put r Place.file (get t Text.name))
     (put r Place.line (+ lo 1))
     (put r Place.col col)
