@@ -129,6 +129,15 @@ a CSV query tool, its answers checked against SQLite's on the same data;
 the full language only if that lands. Not before launch: it would pull
 focus.
 
+Then, perhaps, a storage engine under it, in the manner of SQLite: pages
+and B-trees for tables and indexes, a page cache, a journal or
+write-ahead log so a crash loses no committed data, file locking, and a
+planner that uses the indexes. Months, not days (SQLite's strength is
+its test suite), and it needs host operations AIPL lacks today: forcing
+data to disk (WASI's fd_sync), file locks, and random-access file I/O.
+The order: the CSV query tool, AI-SQL, then the engine, each worth
+having alone.
+
 ### After launch: a 64-bit target
 
 Programs are limited to 2 GiB of memory (AIPL_SPEC.md 4.A: below it,
