@@ -96,7 +96,9 @@
 
   ;; The shared general-purpose heap, made on first use. AIPL has no
   ;; globals, so runtime cell 52 (AIPL_SPEC.md 7.9) points to a Shared
-  ;; holding it. Like any heap it is not safe to use from two threads at once.
+  ;; holding it. A heap takes its lock to allocate and free, so threads
+  ;; may share it; two threads making it at once agree on one (the first
+  ;; to store it wins, and the other's is never used).
   (struct Shared [a:Allocator])
 
   ;; The shared general-purpose heap, made on first use ((no_leak): it
@@ -106,7 +108,7 @@
         (block
           (let s:(ptr Shared) (call (create Shared) (call forever)))
           (put s Shared.a (call of_heap (call heap.make)))
-          (mem.store32 52 (ptr.addr s)))
+          (let _won:bool (atomic.cas 52 0 (ptr.addr s))))
         (block))
     (get (ptr.cast Shared (mem.load32 52)) Shared.a)))
 

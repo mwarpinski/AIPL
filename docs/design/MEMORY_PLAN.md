@@ -105,6 +105,22 @@ std/stream's writer; every std function that builds text takes an
 allocator and returns a view or a buffer, with the `str`-returning
 forms kept for programs that run and exit and marked as such (M3).
 
+Started 2026-10-19. The checker's own inference listed the std functions
+that may make memory never freed (470, from about 90 roots). Fixed so
+far: io.print_int, print_i64, and print_f64 and fmt.f64_fixed (so
+buf.push_f64 and a float in the formatting forms) borrow their scratch
+from the shared heap and give it back (30,000 prints move the heap cursor
+0 bytes); os.random_i32 the same; json.parse's state and errors and
+csv's errors come from the caller's allocator (json.free_error); std/par
+frees its job records. Also alloc.default's first use is atomic (two
+threads could each make a heap). Left: json.write of a number (its
+shortest-digits search and std/bigint, which has no allocator
+parameter); io.read_fd's abandoned buffers; os.arg and os.env (a fresh
+copy per call); and std/stream, every call of which may leak because a
+custom reader or writer calls through a function reference, which
+decision 9 settles. By design, and documented: str.concat, format,
+buf.to_str, io.read_file's buffer, the allocators' own cells.
+
 ### M3. `(no_leak)`: a checked promise
 
 ```lisp
@@ -284,3 +300,13 @@ compiler's source can be migrated in the current language.
    span (start, len: 2 slots), and text from a fixed set an enum (1).
    A cap can be raised later without breaking a program, never lowered:
    raise it only if the showcase programs keep reaching it.
+9. **`(no_leak)` on function types (decided 2026-10-19, to build before
+   M5).** A function reference's type may carry the promise, `(fn [C
+   (ptr buf.Buf)] -> i32 (no_leak))`: `(ref f)` gives that type only for
+   an f marked `(no_leak)`, and a `call_ref` through it is not a site
+   that may leak. std/stream's custom readers and writers take such
+   types, so a `(no_leak)` handler may use streams; until then it reads
+   from buffers (std/http parses from one). Chosen over trusting the
+   callback (a hole in the promise) because the promise is then written
+   where the callback is passed, and checked there, with the error at
+   the function that would leak.

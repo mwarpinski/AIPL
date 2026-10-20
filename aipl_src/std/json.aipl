@@ -157,8 +157,10 @@
 
   ;; Parses text as JSON (strict RFC 8259), or says where and why it is
   ;; not JSON.
+  ;; An error, and the parser's own state, come from a (free an error with
+  ;; free_error).
   (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub)
-    (let p:(ptr P) (new P (call alloc.forever)))
+    (let p:(ptr P) (new P a))
     (put p P.text text)
     (put p P.pos 0)
     (put p P.a a)
@@ -171,12 +173,18 @@
           (call skip_ws p)
           (if (lt (get p P.pos) (get text str.Bytes.len)) (call fail p (get p P.pos) "unexpected text after the value") (block)))
         (block))
-    (if (eq (get p P.err) (ptr.null Error)) (ok:(ptr Error) v) (err:Value (get p P.err))))
+    (let e:(ptr Error) (get p P.err))
+    (call (alloc.destroy P) a p)
+    (if (eq e (ptr.null Error)) (ok:(ptr Error) v) (err:Value e)))
+
+  ;; Frees an error parse returned, given the allocator parse was given.
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub)
+    (call (alloc.destroy Error) a e))
 
   ;; The first error wins.
   (fn fail [p:(ptr P) at:i32 what:str] -> void
     (if (neq (get p P.err) (ptr.null Error)) (return) (block))
-    (let e:(ptr Error) (new Error (call alloc.forever)))
+    (let e:(ptr Error) (new Error (get p P.a)))
     (put e Error.at at)
     (put e Error.what what)
     (put p P.err e))

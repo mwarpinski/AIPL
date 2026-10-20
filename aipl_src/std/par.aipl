@@ -49,7 +49,7 @@
     (let extra:i32 (% n parts))
     (let copy:(arr T) (arr.new T (call alloc.default) (arr.len xs)))
     (loop i 0 (- (arr.len xs) 1) 1 (arr.set T copy i (arr.get T xs i)))
-    (let j:(ptr (Job T U C)) (new (Job T U C) (call alloc.forever)))
+    (let j:(ptr (Job T U C)) (new (Job T U C) (call alloc.default)))
     (put j (Job T U C) out out)
     (put j (Job T U C) f f)
     (put j (Job T U C) ctx ctx)
@@ -67,16 +67,20 @@
     (let n:i32 (arr.len out))
     (let parts:i32 (cond ((or (lt threads 1) (eq n 0)) 1) ((gt threads n) n) (else threads)))
     (let a:alloc.Allocator (call alloc.default))
-    (let jobs:(arr (ptr (Job T U C))) (arr.new (ptr (Job T U C)) (call alloc.forever) parts))
+    (let jobs:(arr (ptr (Job T U C))) (arr.new (ptr (Job T U C)) a parts))
     (loop k 0 (- parts 1) 1 (arr.set (ptr (Job T U C)) jobs k (call (job T U C) out f ctx xs k parts)))
-    (let handles:(arr i32) (arr.new i32 (call alloc.forever) parts))
+    (let handles:(arr i32) (arr.new i32 a parts))
     (loop k 1 (- parts 1) 1
       (arr.set i32 handles k (unsafe (call (thread.spawn_with (ptr (Job T U C))) (ref (run T U C)) (arr.get (ptr (Job T U C)) jobs k)))))
     (let _r:i32 (call (run T U C) (arr.get (ptr (Job T U C)) jobs 0)))
     (loop k 1 (- parts 1) 1
       (let _j:i32 (unsafe (thread.join (arr.get i32 handles k)))))
     (loop k 0 (- parts 1) 1
-      (call (alloc.free_array T) a (get (arr.get (ptr (Job T U C)) jobs k) (Job T U C) xs))))
+      (let jk:(ptr (Job T U C)) (arr.get (ptr (Job T U C)) jobs k))
+      (call (alloc.free_array T) a (get jk (Job T U C) xs))
+      (call (alloc.destroy (Job T U C)) a jk))
+    (call (alloc.free_array (ptr (Job T U C))) a jobs)
+    (call (alloc.free_array i32) a handles))
 
   ;; ===== Folding: one result from every index =====
 
@@ -110,11 +114,11 @@
     (let a:alloc.Allocator (call alloc.default))
     (let base:i32 (/ n parts))
     (let extra:i32 (% n parts))
-    (let jobs:(arr (ptr (Fold T U C))) (arr.new (ptr (Fold T U C)) (call alloc.forever) parts))
+    (let jobs:(arr (ptr (Fold T U C))) (arr.new (ptr (Fold T U C)) a parts))
     (loop k 0 (- parts 1) 1
       (let copy:(arr T) (arr.new T a (arr.len xs)))
       (loop i 0 (- (arr.len xs) 1) 1 (arr.set T copy i (arr.get T xs i)))
-      (let j:(ptr (Fold T U C)) (new (Fold T U C) (call alloc.forever)))
+      (let j:(ptr (Fold T U C)) (new (Fold T U C) a))
       (put j (Fold T U C) f f)
       (put j (Fold T U C) ctx ctx)
       (put j (Fold T U C) xs copy)
@@ -122,7 +126,7 @@
       (put j (Fold T U C) hi (+ (get j (Fold T U C) lo) (+ base (if (lt k extra) 1 0))))
       (put j (Fold T U C) acc init)
       (arr.set (ptr (Fold T U C)) jobs k j))
-    (let handles:(arr i32) (arr.new i32 (call alloc.forever) parts))
+    (let handles:(arr i32) (arr.new i32 a parts))
     (loop k 1 (- parts 1) 1
       (arr.set i32 handles k (unsafe (call (thread.spawn_with (ptr (Fold T U C))) (ref (fold T U C)) (arr.get (ptr (Fold T U C)) jobs k)))))
     (let _r:i32 (call (fold T U C) (arr.get (ptr (Fold T U C)) jobs 0)))
@@ -132,7 +136,11 @@
     (loop k 1 (- parts 1) 1
       (set! out (call_ref (fn [U U] -> U) join out (get (arr.get (ptr (Fold T U C)) jobs k) (Fold T U C) acc))))
     (loop k 0 (- parts 1) 1
-      (call (alloc.free_array T) a (get (arr.get (ptr (Fold T U C)) jobs k) (Fold T U C) xs)))
+      (let jk:(ptr (Fold T U C)) (arr.get (ptr (Fold T U C)) jobs k))
+      (call (alloc.free_array T) a (get jk (Fold T U C) xs))
+      (call (alloc.destroy (Fold T U C)) a jk))
+    (call (alloc.free_array (ptr (Fold T U C))) a jobs)
+    (call (alloc.free_array i32) a handles)
     out)
 
   ;; ===== Tests =====

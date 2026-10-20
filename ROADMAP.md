@@ -113,3 +113,18 @@ Still true from the original analysis, updated for what has landed:
 ### The longer-term ambition (a PDF viewer or browser in AIPL)
 
 A PDF reader or rasteriser is a realistic first "real systems program" now that the standard library, control flow, and the compiled self-hosted toolchain exist. It needs binary parsing, vector rasterisation into a memory buffer, and file I/O, all of which compile to wasm today. A browser additionally needs a windowing/graphics host, which wasm alone cannot provide, plus HTML/CSS/layout/font/image/network stacks. Neither is near-term; the path runs through the sections above.
+
+### After launch: AI-SQL, a query language written in AIPL
+
+An idea, not a plan (2026-10-19): a small SQL in AIPL, as AIPL is written
+with Rust as its bootstrap, to show the language building a real tool in
+the data domain. It would use most of std (csv for tables, map for GROUP
+BY and hash joins, vec.sort_by for ORDER BY, regex for LIKE, stats for
+aggregates, `(no_leak)` per query in a server mode) and ship as one native
+binary built by AIPL. "AI" because it would drop SQL's traps the way AIPL
+drops C's: typed columns and no implicit casts, qualified names in joins,
+output in a stated order, a missing value as an explicit option rather
+than NULL's three-valued logic, and errors that say what to write. First
+a CSV query tool, its answers checked against SQLite's on the same data;
+the full language only if that lands. Not before launch: it would pull
+focus.
