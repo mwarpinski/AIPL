@@ -1,7 +1,9 @@
 # Networking: serving and fetching (stdlib batch L7)
 
 **Status: approved 2026-10-19 (decisions in section 6), revised after the
-memory work.** Nothing is built. STDLIB_PLAN.md asked for this document before any code:
+memory work.** Steps 1 and 2 built 2026-10-20 (decision 9; aipl_net_v1 in
+the VM, aipl-run, and native executables, std/ip, std/net:
+tests/test_net.rs); step 3 next. STDLIB_PLAN.md asked for this document before any code:
 "an `aipl` host interface (versioned imports beside WASI preview 1:
 listening and connecting TCP sockets, permissions granted on the command
 line), in the VM, natively as Linux system calls, and in aipl-run; then
@@ -92,10 +94,29 @@ Linux system calls written in AIPL):
 
 | Function | Meaning |
 |---|---|
-| `listen(addr, len, port) -> fd` | a listening TCP socket, or -1; refused unless granted |
-| `accept(fd) -> fd` | the next connection (blocking) |
-| `connect(addr, len, port) -> fd` | a connection to an IPv4 or IPv6 address given as text, or -1; refused unless granted |
-| `recv(fd, buf, max) -> n`, `send(fd, buf, len) -> n` | blocking reads and writes; `fs.close` closes |
+| `listen(addr, len, port) -> h` | a listening TCP socket; -1 if the system refuses it, -2 if it was not granted |
+| `accept(h) -> h` | the next connection (blocking), or -1 |
+| `connect(addr, len, port) -> h` | a connection; -1, or -2 if not granted (step 5) |
+| `recv(h, buf, max) -> n`, `send(h, buf, len) -> n` | blocking reads and writes: bytes moved, 0 at the end, -1 on an error |
+| `close(h) -> i32` | closes a socket: 0, or -1 |
+
+An address is given as its bytes, 4 for IPv4 or 16 for IPv6, in network
+order; std/net parses the text (`127.0.0.1`, `::1`) in AIPL, so no backend
+parses addresses. A handle is a socket's, numbered apart from WASI's file
+descriptors: aipl-run hosts WASI through wasmtime-wasi, whose descriptor
+table a host function cannot add a socket to, so `fs.close` could not
+close one there, and `fs.close` given a socket's number would close
+whatever file has that number. (Natively a handle is the Linux
+descriptor itself; what a raw handle's number means is each backend's,
+and only std/net's `Socket` is portable.) So sockets close through
+`close` here,
+and std/net keeps the handle in its own type, `net.Socket`, whose field
+is private: a program cannot hand a socket to `fs` or a file to `net`.
+In AIPL these are the operations `net.listen`, `net.accept`, `net.recv`,
+`net.send`, and `net.close`, usable only inside `unsafe` (they take raw
+addresses, as `fs.read` does); std/net is the safe interface, and turns
+-2 into an error naming the grant to add ("not granted: run with
+--listen 127.0.0.1:8080").
 
 Granted on the command line, nothing by default: `--listen ADDR:PORT`,
 `--allow-connect HOST:PORT` (repeatable; `*` for any port). A native
@@ -142,7 +163,13 @@ and unaudited until audited.
 1. **Decision 9** (MEMORY_PLAN.md): `(no_leak)` on function types, so
    streams can be used in a handler. Done 2026-10-20.
 2. **`aipl_net_v1`** listen, accept, recv, send, and close, in the three
-   backends, with the grants; `std/net` streams over them.
+   backends, with the grants; `std/net` (`Socket`, address parsing)
+   and streams over it. Tests: a loopback exchange in each backend, the
+   same bytes everywhere; a listen without a grant refused; both
+   toolchains' bytes alike. Done 2026-10-20 (src/net.rs for the VM and
+   aipl-run, aipl_src/native/sockets.aipl natively; grants through
+   `--listen` on eval, run, aipl-run, and compile --exe, the last fixed in
+   the executable, and in the launcher bundle's trailer, now AIPLEXE2).
 3. **`std/serve`** and the long-running server (A) in every backend; a
    lower memory limit (`--max-memory`, launch checklist section 6), so a
    runaway request fails cleanly. Tests: real requests over loopback,

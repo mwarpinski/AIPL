@@ -165,6 +165,19 @@ pub enum OpCode {
     FsReaddir,
     /// `(fs.stat ptr len out)`: a file's WASI filestat (64 bytes at `out`).
     FsStat,
+    /// `(net.listen addr len port)`: a listening TCP socket on the address
+    /// whose `len` (4 or 16) bytes are at `addr`; its handle, -1, or -2 if
+    /// not granted (docs/design/NET_PLAN.md, `aipl_net_v1`).
+    NetListen,
+    /// `(net.accept h)`: the next connection on listening socket h, or -1.
+    NetAccept,
+    /// `(net.recv h buf max)`: up to max bytes into buf; how many, 0 at the
+    /// end, -1 on an error.
+    NetRecv,
+    /// `(net.send h buf len)`: bytes written from buf, or -1.
+    NetSend,
+    /// `(net.close h)`: closes a socket; 0, or -1.
+    NetClose,
     /// `(args.sizes count_ptr size_ptr)`: WASI `args_sizes_get`. Writes the
     /// argument count and the total bytes of the NUL-terminated arguments;
     /// returns 0, or -1 on failure. std/os wraps the four args/env ops.

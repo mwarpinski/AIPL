@@ -5,7 +5,7 @@
 ;; builds the next version of itself with no Rust involved.
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
-;;   aipl compile --exe [--sandbox] FILE.aipl -o OUT
+;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -22,9 +22,11 @@
   (import str)
   (import fmt)
   (import doc)
+  (import buf)
+  (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox]] [--tests] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]...] [--tests] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -55,6 +57,8 @@
     (let exe:bool false)
     (let tests:bool false)
     (let sandbox:bool false)
+    ;; --listen grants, one ADDR:PORT a line (native.compile_with)
+    (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let in_i:i32 -1)
     (let out_i:i32 -1)
     (let i:i32 2)
@@ -64,6 +68,20 @@
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
         ((call str.is a "--sandbox") (set! sandbox true))
+        ((call str.is a "--listen")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         ;; checked before anything is compiled, with src/net.rs parse_grant's message
+         (if (not (call native.valid_grant (call os.arg (+ i 1))))
+             (block
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--listen ")
+               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+               (return (call fail_bytes "" (call buf.bytes m))))
+             (block))
+         (call buf.push_bytes listen (call os.arg (+ i 1)))
+         (call buf.push_byte listen 10)
+         (set! i (+ i 1)))
         ((call str.is a "-o")
          (if (gte (+ i 1) n) (return (call usage)) (block))
          (set! out_i (+ i 1))
@@ -72,7 +90,7 @@
         (else (return (call usage))))
       (set! i (+ i 1)))
     (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
-    (if (and sandbox (not exe)) (return (call usage)) (block))
+    (if (and (or sandbox (gt (call buf.len listen) 0)) (not exe)) (return (call usage)) (block))
     (let std_dir:str.Bytes (call os.env "AIPL_STD"))
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
     (let entry:str.Bytes (call os.arg in_i))
@@ -96,7 +114,7 @@
     (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
     (if exe
         (block
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen)))
           (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
           (set! bytes (get o native.Output.exe)))
         (block))

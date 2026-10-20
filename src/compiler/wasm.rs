@@ -1282,6 +1282,11 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
+            | OpCode::NetListen
+            | OpCode::NetAccept
+            | OpCode::NetRecv
+            | OpCode::NetSend
+            | OpCode::NetClose
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -2040,6 +2045,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_expr(&args[1], ctx, func)?;
                 func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, ctx, None);
+            }
+            OpCode::NetListen | OpCode::NetAccept | OpCode::NetRecv | OpCode::NetSend | OpCode::NetClose => {
+                // aipl_net_v1 returns the result itself (a handle, a count, or
+                // -1/-2), so the call is the whole operation
+                let host = wasi_index(ctx, Wasi::for_op(op).expect("a net op has an import"))?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::Call(host));
             }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
@@ -4058,13 +4072,25 @@ enum Wasi {
     RandomGet,
     FdReaddir,
     PathFilestatGet,
+    /// AIPL's own host interface, module "aipl_net_v1" (docs/design/NET_PLAN.md
+    /// section 3): sockets, provided by aipl-run and lowered to Linux system
+    /// calls natively.
+    NetListen,
+    NetAccept,
+    NetRecv,
+    NetSend,
+    NetClose,
 }
 
 impl Wasi {
     /// The import module: wasi-threads' spawn lives in "wasi", the rest in
     /// "wasi_snapshot_preview1".
     fn module(self) -> &'static str {
-        if self == Wasi::ThreadSpawn { "wasi" } else { "wasi_snapshot_preview1" }
+        match self {
+            Wasi::ThreadSpawn => "wasi",
+            Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            _ => "wasi_snapshot_preview1",
+        }
     }
 
     fn name(self) -> &'static str {
@@ -4084,6 +4110,11 @@ impl Wasi {
             Wasi::RandomGet => "random_get",
             Wasi::FdReaddir => "fd_readdir",
             Wasi::PathFilestatGet => "path_filestat_get",
+            Wasi::NetListen => "listen",
+            Wasi::NetAccept => "accept",
+            Wasi::NetRecv => "recv",
+            Wasi::NetSend => "send",
+            Wasi::NetClose => "close",
         }
     }
 
@@ -4102,6 +4133,8 @@ impl Wasi {
             Wasi::RandomGet => (vec![I32, I32], vec![I32]),
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
+            Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
 
@@ -4123,6 +4156,11 @@ impl Wasi {
             OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
             OpCode::SysTime | OpCode::SysMonotonic => Some(Wasi::ClockTimeGet),
             OpCode::SysRandom => Some(Wasi::RandomGet),
+            OpCode::NetListen => Some(Wasi::NetListen),
+            OpCode::NetAccept => Some(Wasi::NetAccept),
+            OpCode::NetRecv => Some(Wasi::NetRecv),
+            OpCode::NetSend => Some(Wasi::NetSend),
+            OpCode::NetClose => Some(Wasi::NetClose),
             _ => None,
         }
     }

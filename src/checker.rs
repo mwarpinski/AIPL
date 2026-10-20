@@ -1671,6 +1671,26 @@ fn fits(got: &Type, want: &Type) -> bool {
                     self.expect_operands("fs.stat", "(fs.stat ptr len out)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
+                OpCode::NetListen => {
+                    self.expect_operands("net.listen", "(net.listen addr len port)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetAccept => {
+                    self.expect_operands("net.accept", "(net.accept h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetRecv => {
+                    self.expect_operands("net.recv", "(net.recv h buf max)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetSend => {
+                    self.expect_operands("net.send", "(net.send h buf len)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetClose => {
+                    self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
@@ -2334,6 +2354,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
+            | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

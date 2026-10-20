@@ -2419,7 +2419,7 @@
     (let bytes:str.Bytes (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))
     (if exe
         (block
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call str.from_str "")))
           (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
           (set! bytes (get o native.Output.exe)))
         (block))

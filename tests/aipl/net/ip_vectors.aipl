@@ -1,0 +1,40 @@
+;; std/ip against Rust's parser (tests/test_web.rs): each line of standard
+;; input is `A TEXT` (parse an address) or `E TEXT` (parse an endpoint);
+;; each answer is a line: the address's bytes in decimal, then for an
+;; endpoint ` port N`, or `-` if the text is refused.
+(module ip_vectors
+  (import alloc)
+  (import buf)
+  (import str)
+  (import stream)
+  (import option)
+  (import ip)
+
+  (fn push_addr [out:(ptr buf.Buf) a:ip.Addr] -> void
+    (for i 0 (call ip.len a)
+      (when (gt i 0) (call buf.push_byte out 32))
+      (call buf.push_int out (call ip.byte_at a i))))
+
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let r:(ptr stream.Reader) (call stream.stdin a))
+    (let out:(ptr buf.Buf) (call buf.make a 4096))
+    (while (call stream.next_line r)
+      (let line:str.Bytes (call stream.line r))
+      (let text:str.Bytes (call str.slice line 2 (- (get line str.Bytes.len) 2)))
+      (if (eq (call str.byte_at line 0) 65)
+          (match (call ip.parse text)
+            ((option.Option ip.Addr) some [x] (call push_addr out x))
+            ((option.Option ip.Addr) none (call buf.push_byte out 45)))
+          (match (call ip.parse_endpoint text)
+            ((option.Option ip.Endpoint) some [e]
+             (call push_addr out (get e ip.Endpoint.addr))
+             (call buf.push_str out " port ")
+             (call buf.push_int out (get e ip.Endpoint.port)))
+            ((option.Option ip.Endpoint) none (call buf.push_byte out 45))))
+      (call buf.push_byte out 10)
+      (when (gt (call buf.len out) 3000)
+        (call buf.print out)
+        (call buf.clear out)))
+    (call buf.print out)
+    0))

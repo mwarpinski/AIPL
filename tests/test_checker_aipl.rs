@@ -713,6 +713,16 @@ fn checkers_agree_on_every_operator_and_operand() {
 /// form, and definitions; full modules or bodies of `main` (wrapped with
 /// HEADER). Both checkers must give the same verdict and message.
 const FORMS: &[&str] = &[
+    // aipl_net_v1 (docs/design/NET_PLAN.md): unsafe only, i32 operands
+    "M:(module m (fn main [] -> i32 (net.listen 0 4 80)))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.listen 0 4 80))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.listen 0 4))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.accept true))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.recv 3 0 1i64))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.send 3 0 1 2))))",
+    "M:(module m (fn main [] -> i32 (unsafe (net.close 3))))",
+    "M:(module m (fn main [] -> i32 (net.close 3)))",
+    "M:(module m (fn main [] -> bool (unsafe (net.close 3))))",
     // (no_leak) in function types: branches and compared values meet at the
     // type without the promise (MEMORY_PLAN.md decision 9; tools/run_fuzz.py)
     "M:(module m (fn pure [x:i32] -> i32 x) (fn keeps [x:i32] -> i32 (let p:i32 (mem.alloc 8)) x) (fn take [f:(fn [i32] -> i32 (no_leak))] -> i32 (call_ref (fn [i32] -> i32 (no_leak)) f 1)) (fn main [] -> i32 (let g:(fn [i32] -> i32) (if true (ref pure) (ref keeps))) (call_ref (fn [i32] -> i32) g 1)))",

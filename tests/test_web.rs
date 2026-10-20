@@ -81,3 +81,124 @@ fn std_url_queries_and_json_paths_work_alike_everywhere() {
         assert_eq!(got, want, "{backend}");
     }
 }
+
+/// Texts for std/ip: IPv4 and IPv6 shapes (groups of every length, `::`
+/// anywhere, an IPv4 tail, leading zeros, numbers past the limits), ports,
+/// brackets, zone indexes, and random strings of the characters involved.
+fn ip_texts() -> Vec<String> {
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let mut out: Vec<String> = ["", "0.0.0.0", "255.255.255.255", "::", "::1", "1::", "::ffff:1.2.3.4", "1:2:3:4:5:6:7:8", "1:2:3:4:5:6:1.2.3.4", "1:2:3:4:5:6:7::", "::2:3:4:5:6:7:8", "1:2:3:4:5:6:7:8::", "[::1]:80", "127.0.0.1:0", "127.0.0.1:65535", "127.0.0.1:65536", "[::1%3]:80", "::1%3", "01.2.3.4", "1.2.3.04"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let num = |next: &mut dyn FnMut(u64) -> u64, radix: u64| -> String {
+        // mostly 1 to 4 digits; sometimes none, or 5
+        let digits = if next(8) == 0 { next(6) } else { 1 + next(4) };
+        let mut s = String::new();
+        for _ in 0..digits {
+            let c = std::char::from_digit(next(radix) as u32, radix as u32).unwrap();
+            s.push(if next(4) == 0 { c.to_ascii_uppercase() } else { c });
+        }
+        s
+    };
+    for _ in 0..4000 {
+        let v4 = |next: &mut dyn FnMut(u64) -> u64| -> String {
+            let parts = if next(5) == 0 { 3 + next(3) } else { 4 };
+            (0..parts).map(|_| match next(8) { 0 => num(next, 10), 1 => next(300).to_string(), _ => next(256).to_string() }).collect::<Vec<_>>().join(".")
+        };
+        let v6 = |next: &mut dyn FnMut(u64) -> u64| -> String {
+            let n = if next(4) == 0 { next(10) } else { 1 + next(8) };
+            let mut g: Vec<String> = (0..n).map(|_| num(next, 16)).collect();
+            if next(2) == 0 {
+                let at = next(n + 1) as usize;
+                g.insert(at, String::new());
+                if at == 0 || at == g.len() - 1 {
+                    g.insert(at, String::new());
+                }
+            }
+            let mut s = g.join(":");
+            if next(4) == 0 {
+                s += if s.is_empty() || s.ends_with(':') { "" } else { ":" };
+                s += &v4(next);
+            }
+            s
+        };
+        let port = |next: &mut dyn FnMut(u64) -> u64| -> String { if next(3) == 0 { num(next, 10) } else { next(70000).to_string() } };
+        let t = match next(6) {
+            0 => v4(&mut next),
+            1 | 2 => v6(&mut next),
+            3 => format!("{}:{}", v4(&mut next), port(&mut next)),
+            4 => format!("[{}]:{}", v6(&mut next), port(&mut next)),
+            _ => {
+                let chars = b"0123456789abcdefABCDEF.:[]%";
+                (0..next(24)).map(|_| chars[next(chars.len() as u64) as usize] as char).collect()
+            }
+        };
+        out.push(t);
+    }
+    out
+}
+
+/// std/ip reads every generated text as Rust's IpAddr and SocketAddr
+/// parsers do (refusing zone indexes, which Rust reads), in every backend.
+#[test]
+fn std_ip_reads_addresses_as_rust_does() {
+    use std::net::{IpAddr, SocketAddr};
+    let bytes = |ip: IpAddr| -> String {
+        let b: Vec<u8> = match ip {
+            IpAddr::V4(a) => a.octets().to_vec(),
+            IpAddr::V6(a) => a.octets().to_vec(),
+        };
+        b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" ")
+    };
+    let (mut input, mut want) = (String::new(), Vec::new());
+    for t in ip_texts() {
+        input += &format!("A {t}\nE {t}\n");
+        want.push(match t.parse::<IpAddr>() {
+            Ok(ip) if !t.contains('%') => bytes(ip),
+            _ => "-".to_string(),
+        });
+        want.push(match t.parse::<SocketAddr>() {
+            Ok(sa) if !t.contains('%') => format!("{} port {}", bytes(sa.ip()), sa.port()),
+            _ => "-".to_string(),
+        });
+    }
+    let accepted = want.iter().filter(|w| *w != "-").count();
+    assert!(accepted > 1200, "the generator should make many valid addresses: {accepted}");
+    let dir = std::env::temp_dir().join(format!("aipl_ip_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = root().join("tests/aipl/net/ip_vectors.aipl");
+    let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
+    assert!(Command::new(AIPL).arg("compile").arg(&src).arg("-o").arg(&wasm).status().unwrap().success());
+    assert!(Command::new(AIPL).args(["compile", "--exe"]).arg(&src).arg("-o").arg(&exe).status().unwrap().success());
+    let run = |mut c: Command| -> String {
+        use std::io::Write;
+        let mut child = c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let text = input.clone();
+        let feeder = std::thread::spawn(move || stdin.write_all(text.as_bytes()).unwrap());
+        let o = child.wait_with_output().unwrap();
+        feeder.join().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect()
+    };
+    let mut vm = Command::new(AIPL);
+    vm.arg("eval").arg(&src);
+    let mut rt = Command::new(RUNNER);
+    rt.arg(&wasm);
+    for (backend, got) in [("VM", run(vm)), ("aipl-run", run(rt)), ("native", run(Command::new(&exe)))] {
+        let texts: Vec<&str> = input.lines().collect();
+        for (k, (g, w)) in got.lines().zip(&want).enumerate() {
+            assert_eq!(g, w, "{backend}: {:?}", texts[k]);
+        }
+        assert_eq!(got.lines().count(), want.len(), "{backend}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

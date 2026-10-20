@@ -4,11 +4,11 @@ There are two primary approaches to building and running AIPL on ARM64 / macOS *
 
 ---
 
-## 1. Immediate Approach: The `AIPLEXE1` Wasm-Launcher Bundle + GitHub Actions
+## 1. Immediate Approach: The `AIPLEXE2` Wasm-Launcher Bundle + GitHub Actions
 
 As implemented in [`src/main.rs`](file:///home/matt/Projects/Repos/AIPL/src/main.rs#L217-L236), AIPL includes a cross-platform standalone executable format:
-- On platforms without a native machine-code backend, `aipl compile --exe --target wasm` takes the `aipl-run` binary (which embeds Wasmtime), appends the compiled `.wasm` bytecode to the end of the file, and tacks on a 16-byte `AIPLEXE1` footer.
-- When executed, the binary inspects its own trailing `AIPLEXE1` footer and runs the embedded `.wasm` payload directly at near-native speed via Wasmtime's AArch64 Cranelift JIT.
+- On platforms without a native machine-code backend, `aipl compile --exe --target wasm` takes the `aipl-run` binary (which embeds Wasmtime), appends the compiled `.wasm` bytecode to the end of the file, and tacks on a 16-byte `AIPLEXE2` footer.
+- When executed, the binary inspects its own trailing `AIPLEXE2` footer and runs the embedded `.wasm` payload directly at near-native speed via Wasmtime's AArch64 Cranelift JIT.
 
 ### Building via CI Without a Mac
 GitHub Actions provides free **`macos-14` (Apple Silicon M1 ARM64)** and **`ubuntu-24.04-arm` (Linux ARM64)** runners. A 15-line `.github/workflows/release.yml` workflow can build `aipl-darwin-arm64` and `aipl-linux-arm64` automatically on every release or push.

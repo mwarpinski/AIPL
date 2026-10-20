@@ -60,6 +60,21 @@
     (put b Buf.data (arr.addr store))
     (put b Buf.cap cap))
 
+  ;; For a writer outside AIPL, such as a system call: makes room for n
+  ;; more bytes and gives the address they go to; `grew` then counts the
+  ;; ones written. Unsafe to call: the address is good only until the
+  ;; buffer next grows, and nothing checks what is written there.
+  (fn room [b:(ptr Buf) n:i32] -> i32 (pub) (unsafe)
+    (req (gte n 0))
+    (call ensure b n)
+    (+ (get b Buf.data) (get b Buf.len)))
+
+  ;; Counts n bytes written at the address `room` gave (n at most what it
+  ;; made room for).
+  (fn grew [b:(ptr Buf) n:i32] -> void (pub) (unsafe)
+    (req (and (gte n 0) (lte (+ (get b Buf.len) n) (get b Buf.cap))))
+    (put b Buf.len (+ (get b Buf.len) n)))
+
   ;; Appends the byte c (its low 8 bits).
   (fn push_byte [b:(ptr Buf) c:i32] -> void (pub)
     (unsafe (call ensure b 1)

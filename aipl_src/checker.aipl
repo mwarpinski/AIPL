@@ -1937,7 +1937,13 @@
     (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
-        (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat)))))))))))
+        (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
+            (call is_net_op o)))))))))
+
+  ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
+  (fn is_net_op [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.net_listen) (eq o ast.Op.net_accept))
+        (or (or (eq o ast.Op.net_recv) (eq o ast.Op.net_send)) (eq o ast.Op.net_close))))
 
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
     (if (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)) (block))
@@ -1982,6 +1988,11 @@
       ((eq o ast.Op.atomic_add) (call operands c env at "atomic.add" "(atomic.add p v)" args 2) (call i32_t))
       ((eq o ast.Op.fs_opendir) (call operands c env at "fs.opendir" "(fs.opendir ptr len)" args 2) (call i32_t))
       ((eq o ast.Op.fs_stat) (call operands c env at "fs.stat" "(fs.stat ptr len out)" args 3) (call i32_t))
+      ((eq o ast.Op.net_listen) (call operands c env at "net.listen" "(net.listen addr len port)" args 3) (call i32_t))
+      ((eq o ast.Op.net_accept) (call operands c env at "net.accept" "(net.accept h)" args 1) (call i32_t))
+      ((eq o ast.Op.net_recv) (call operands c env at "net.recv" "(net.recv h buf max)" args 3) (call i32_t))
+      ((eq o ast.Op.net_send) (call operands c env at "net.send" "(net.send h buf len)" args 3) (call i32_t))
+      ((eq o ast.Op.net_close) (call operands c env at "net.close" "(net.close h)" args 1) (call i32_t))
       ((eq o ast.Op.fs_readdir) (call readdir_operands c env at args) (call i32_t))
       ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
       ((eq o ast.Op.atomic_lock) (call operands c env at "atomic.lock" "(atomic.lock p)" args 1) (call void_t))

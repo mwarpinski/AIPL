@@ -39,6 +39,7 @@
             f64_convert_i64_s f32_demote f64_promote f32_convert_i32_s f32_convert_i64_s f64_convert_i32_s
             i32_trunc_f32_s i32_trunc_f64_s i64_trunc_f32_s f32_reinterpret_i32 i32_reinterpret_f32 f64_sqrt i64_trunc_f64_s f64_reinterpret_i64 i64_reinterpret_f64
             str_len str_ptr fs_opendir fs_readdir fs_stat
+            net_listen net_accept net_recv net_send net_close
             format_str format_to format_print format_println format_eprintln format_piece
             try_ try_opt try_or defer format_dbg format_expect] (pub))
 
