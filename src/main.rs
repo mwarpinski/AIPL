@@ -52,7 +52,8 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
-        /// Also compile with the self-hosted toolchain (resolver.aipl + codegen.aipl, in the VM)
+        /// Also compile with the self-hosted toolchain (driver.aipl: resolver, checker, codegen;
+        /// compiled to wasm by the Rust toolchain and run under wasmtime)
     /// and fail unless its bytes equal the Rust compiler's
         #[arg(long = "self")]
         self_flag: bool,
