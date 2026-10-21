@@ -72,6 +72,11 @@ enum Commands {
         /// executable (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
         listen: Vec<String>,
+        /// With --exe: serve on this address a fresh copy of the program per connection,
+        /// its standard input the connection and its output the answer (std/serve's once);
+        /// a trap answers 500 and the next connection is served (docs/design/NET_PLAN.md mode B)
+        #[arg(long = "serve", value_name = "ADDR:PORT", requires = "exe")]
+        serve: Option<String>,
         /// The most memory the program may use, from 1M to 2G (the default) in whole
         /// 64K pages, as 512M; recorded in the module, so every host stops there
         #[arg(long = "max-memory", value_name = "SIZE")]
@@ -84,6 +89,26 @@ enum Commands {
         /// running the test its first argument names (aipl test runs this)
         #[arg(long)]
         tests: bool,
+    },
+    /// Serve a program a fresh instance per connection (docs/design/NET_PLAN.md
+    /// mode B): aipl serve --fresh FILE --listen ADDR:PORT [--requests N]. The
+    /// program reads one request from standard input and answers on standard
+    /// output (std/serve's once); a trap answers 500 and the next request is
+    /// served. A long-running server is a program that calls serve.run: run it
+    /// with aipl eval --listen ADDR:PORT FILE.
+    Serve {
+        file: String,
+        /// A fresh instance per connection (the only way aipl serve runs)
+        #[arg(long)]
+        fresh: bool,
+        /// The address and port to serve on
+        #[arg(long = "listen", value_name = "ADDR:PORT")]
+        listen: String,
+        /// Stop after answering this many connections (no end by default)
+        #[arg(long)]
+        requests: Option<usize>,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
     Run {
@@ -309,8 +334,10 @@ fn exit_with(program: &str, n: i64) -> ! {
 /// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
 /// then the --listen grants (one ADDR:PORT a line), then a 20-byte trailer
 /// [flags u32 LE][grants length u32 LE][module length u32 LE]["AIPLEXE2"].
-/// Rust only because WASI cannot set the executable bit; the format is plain.
-fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+/// Flags: bit 0 sandbox, bit 1 --serve, whose address is then the grants'
+/// first line. Rust only because WASI cannot set the executable bit; the
+/// format is plain.
+fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = fs::read(runner_path()?)?;
     if bytes.ends_with(b"AIPLEXE1") || bytes.ends_with(b"AIPLEXE2") {
         return Err("the aipl-run launcher already has a program appended".into());
@@ -318,10 +345,17 @@ fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String])
     for g in listen {
         aipl_core::net::Net::parse_grant(g)?;
     }
-    let grants: String = listen.iter().map(|g| format!("{g}\n")).collect();
+    // refused when compiled, as the native backend refuses it
+    if serve.is_some() {
+        let module = wasmtime::Module::new(&wasmtime::Engine::default(), wasm)?;
+        if module.imports().any(|i| i.module() == "wasi" && i.name() == "thread-spawn") {
+            return Err("a threaded module cannot be served a fresh instance per connection yet".into());
+        }
+    }
+    let grants: String = serve.iter().map(|s| s.to_string()).chain(listen.iter().cloned()).map(|g| format!("{g}\n")).collect();
     bytes.extend_from_slice(wasm);
     bytes.extend_from_slice(grants.as_bytes());
-    bytes.extend_from_slice(&(sandbox as u32).to_le_bytes());
+    bytes.extend_from_slice(&(sandbox as u32 | (serve.is_some() as u32) << 1).to_le_bytes());
     bytes.extend_from_slice(&(grants.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
     bytes.extend_from_slice(b"AIPLEXE2");
@@ -389,10 +423,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox, listen, max_memory, target, tests } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox, listen, serve, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
+            }
+            if let Some(s) = &serve {
+                aipl_core::net::Net::parse_address("--serve", s)?;
             }
             let max_pages = match &max_memory {
                 Some(m) => aipl_core::compiler::memory_pages(m)?,
@@ -435,7 +472,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 if native {
                     // on failure, no module is left where the executable was asked for
-                    let exe_bytes = aipl_core::native::executable_with(&wasm, sandbox, &listen).inspect_err(|_| {
+                    let exe_bytes = aipl_core::native::executable_with(&wasm, sandbox, &listen, serve.as_deref()).inspect_err(|_| {
                         let _ = fs::remove_file(&output);
                     })?;
                     fs::write(&output, &exe_bytes)?;
@@ -447,10 +484,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     // launcher + module + trailer
-                    write_executable(&output, &wasm, sandbox, &listen)?;
+                    write_executable(&output, &wasm, sandbox, &listen, serve.as_deref()).inspect_err(|_| {
+                        let _ = fs::remove_file(&output);
+                    })?;
                 }
             }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+        }
+        Commands::Serve { file, fresh, listen, requests, args } => {
+            if !fresh {
+                return Err(format!("aipl serve runs a fresh instance per connection: add --fresh. A long-running server is a program that calls serve.run: run it with aipl eval --listen {listen} {file}").into());
+            }
+            aipl_core::net::Net::parse_grant(&listen)?;
+            let module = Resolver::resolve(Path::new(&file))?;
+            TypeChecker::new().check_module(&module)?;
+            let wasm = WasmCompiler::compile(&module)?;
+            let dir = std::env::temp_dir().join(format!("aipl_serve_{}", std::process::id()));
+            fs::create_dir_all(&dir)?;
+            let module_path = dir.join("program.wasm");
+            fs::write(&module_path, &wasm)?;
+            let mut cmd = std::process::Command::new(runner_path()?);
+            cmd.args(["--serve-fresh", &listen]);
+            if let Some(n) = requests {
+                cmd.args(["--requests", &n.to_string()]);
+            }
+            let status = cmd.arg("--name").arg(&file).arg(&module_path).args(&args).status()?;
+            let _ = fs::remove_dir_all(&dir);
+            std::process::exit(status.code().unwrap_or(1));
         }
         Commands::Run { file, sandbox, listen, args } => {
             let mut cmd = std::process::Command::new(runner_path()?);

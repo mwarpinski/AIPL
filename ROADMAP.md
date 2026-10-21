@@ -169,13 +169,24 @@ needs an address-sized integer type (launch checklist section 6).
 Wanted when a program needs more than 2 GiB in memory; a lower limit
 (`--max-memory`) comes first.
 
-### After launch: TLS written in AIPL
+### Not planned: TLS written in AIPL
 
-Until then, HTTPS comes from rustls in the host (docs/design/NET_PLAN.md
-decision 4), which native executables cannot hold. A TLS 1.3 written in
-AIPL (X25519, AES-GCM or ChaCha20-Poly1305, signature checks, X.509
-chains) would give native executables HTTPS. It ships labelled
-experimental and unaudited until an outside audit, and is held first to
-Google's Wycheproof vectors, differential tests against rustls (the same
-handshakes, the same bytes), fuzzing of its parsers, and constant-time
-checks on the critical routines.
+HTTPS comes from rustls in the host (docs/design/NET_PLAN.md decision 4):
+the VM, aipl-run, and the launcher-bundled executables; a native
+executable refuses TLS at compile time, with the ways out (`--target
+wasm`, or a TLS proxy in front, as most servers are deployed). A TLS
+written in AIPL would add only HTTPS inside a native executable with no
+proxy, and hand-written cryptography is not fit for real traffic without
+an outside audit, which the project will not pay for (decided
+2026-10-20). Revisit if AIPL gains the kind of use that grant-funded
+audits go to.
+
+An idea for then, useful on its own before it: **secret types**, a
+qualifier the checker enforces (as it proves `(no_leak)`) so that a
+secret value never decides a branch, an index, a loop count, or a
+division, and leaves only through an explicit declassify; with `select`
+in both code generators and `cmov` in the native backend, and tests that
+compare the branches and addresses a compiled routine takes for
+different secrets. That would make constant time a property the
+compiler proves rather than a matter of expert review (as CT-Wasm,
+Jasmin, and FaCT do in research).

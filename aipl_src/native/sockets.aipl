@@ -71,7 +71,7 @@
   (fn arg [c:(ptr buf.Buf) n:i32 i:i32 reg:i32] -> void
     (call x64.load c 32 reg (call x64.mem (call rsp) (+ 8 (* 8 (- (- n 1) i))))))
 
-  (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void
+  (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void (pub)
     (for k 0 (call (vec.len i32) at)
       (call x64.patch_rel32 c (call (vec.at i32) at k) (call buf.len c))))
 

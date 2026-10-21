@@ -1,0 +1,290 @@
+;; fresh: the host of an executable built with `aipl compile --exe --serve
+;; ADDR:PORT` (docs/design/NET_PLAN.md, mode B, step 4): a fresh instance
+;; of the program per connection, as aipl-run --serve-fresh gives
+;; (src/bin/aipl_run.rs serve_fresh).
+;;
+;; Emitted into start-up once linear memory is ready and before the
+;; program's start function and _start run, so each copy begins where a
+;; plain run would. The host listens on the address fixed when the
+;; executable was compiled, then for each connection:
+;;   - fork(2) a copy of itself (Linux copies memory only as it is written);
+;;   - the copy (the child) gets the connection as its standard input and a
+;;     pipe as its standard output, closes everything else of the host's,
+;;     and goes on with start-up: the program runs from the beginning;
+;;   - the host reads the pipe to its end (at most `cap` bytes kept), waits
+;;     for the child, and sends what it wrote if it exited with status 0;
+;;     otherwise (another status, a trap, a signal, or more output than it
+;;     keeps) a plain 500. The child's standard error is the host's, so a
+;;     trap's message and call chain are logged there;
+;;   - then shuts the connection down and closes it.
+;; One connection at a time; until the process is ended.
+(module fresh
+  (import alloc)
+  (import str)
+  (import buf)
+  (import vec)
+  (import x64)
+  (import lower)
+  (import runtime)
+  (import sockets)
+
+  ;; Registers (x64.aipl numbering)
+  (fn rax [] -> i32 0) (fn rcx [] -> i32 1) (fn rdx [] -> i32 2) (fn rbx [] -> i32 3)
+  (fn rsp [] -> i32 4) (fn rsi [] -> i32 6) (fn rdi [] -> i32 7)
+  (fn r8 [] -> i32 8) (fn r9 [] -> i32 9) (fn r10 [] -> i32 10)
+  (fn r12 [] -> i32 12) (fn r13 [] -> i32 13) (fn r14 [] -> i32 14)
+
+  ;; The most output kept for one answer: 64 MiB, as aipl-run keeps.
+  (fn cap [] -> i32 67108864)
+
+  ;; The host's frame on the stack: the pipe's two descriptors, the child,
+  ;; its wait status, the output buffer, whether the output was too long,
+  ;; and setsockopt's 1.
+  (fn pipe_r [] -> i32 0) (fn pipe_w [] -> i32 4) (fn pid [] -> i32 8)
+  (fn wstatus [] -> i32 16) (fn out [] -> i32 24) (fn over [] -> i32 32)
+  (fn one [] -> i32 40) (fn frame [] -> i32 48)
+
+  ;; What Linux's strerror says for the errors a listen meets, as Rust's
+  ;; io::Error prints them (aipl-run's message); others are "os error N".
+  (struct Why [errno:i32 text:i32 len:i32] (value))
+
+  (fn why [l:(ptr lower.L) errno:i32 text:str] -> Why
+    (make Why errno (call lower.data_text l text) (str.len text)))
+
+  (fn syscall [c:(ptr buf.Buf) n:i32] -> void
+    (call x64.mov_ri32 c (call rax) n)
+    (call x64.syscall c))
+
+  ;; close(the descriptor in register `r`)
+  (fn emit_close_reg [c:(ptr buf.Buf) r:i32] -> void
+    (call x64.mov_rr c 64 (call rdi) r)
+    (call syscall c 3))
+
+  ;; close(the 32-bit descriptor in the frame slot `slot`)
+  (fn emit_close_slot [c:(ptr buf.Buf) slot:i32] -> void
+    (call x64.load c 32 (call rdi) (call x64.mem (call rsp) slot))
+    (call syscall c 3))
+
+  ;; Jumps back to `at` while rax is -EINTR (a signal interrupted the call).
+  (fn emit_again [c:(ptr buf.Buf) at:i32] -> void
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -4)
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_e)) at))
+
+  ;; `g`: the address to listen on. `argv0_cell` and `sep` as
+  ;; runtime.emit_trap_routine takes them; `at` is the grant as written,
+  ;; for the message when the address cannot be listened on.
+  (fn emit_host [l:(ptr lower.L) g:sockets.Grant at:str.Bytes argv0_cell:i32 sep:i32] -> void (pub)
+    (let c:(ptr buf.Buf) (get l lower.L.code))
+    (let refused:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
+    ;; the socket address, built now: sockaddr_in (16 bytes) or
+    ;; sockaddr_in6 (28), the port in network order
+    (let v4:bool (eq (get g sockets.Grant.len) 4))
+    (let sa:(ptr buf.Buf) (call buf.make (call alloc.default) 28))
+    (let port:i32 (get g sockets.Grant.port))
+    (call buf.push_byte sa (if v4 2 10))
+    (call buf.push_byte sa 0)
+    (call buf.push_byte sa (bitand (shru port 8) 255))
+    (call buf.push_byte sa (bitand port 255))
+    (if v4 (block) (for k 0 4 (call buf.push_byte sa 0)))
+    (for k 0 (get g sockets.Grant.len) (call buf.push_byte sa (arr.get u8 (get g sockets.Grant.addr) k)))
+    (if v4 (for k 0 8 (call buf.push_byte sa 0)) (for k 0 4 (call buf.push_byte sa 0)))
+    (let sa_addr:i32 (call lower.data_bytes l (call buf.bytes sa)))
+    (let sa_len:i32 (call buf.len sa))
+    (let failed_text:str "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
+    (let failed:i32 (call lower.data_text l failed_text))
+    (call x64.alu_ri c 64 (call x64.op_sub) (call rsp) (call frame))
+    ;; socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0)
+    (call x64.mov_ri32 c (call rdi) (if v4 2 10))
+    (call x64.mov_ri32 c (call rsi) 524289)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call syscall c 41)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) refused (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call r12) (call rax))
+    ;; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, 4), as Rust's bind does
+    (call x64.mov_ri32 c (call rax) 1)
+    (call x64.store c 32 (call x64.mem (call rsp) (call one)) (call rax))
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.mov_ri32 c (call rsi) 1)
+    (call x64.mov_ri32 c (call rdx) 2)
+    (call x64.lea c 64 (call r10) (call x64.mem (call rsp) (call one)))
+    (call x64.mov_ri32 c (call r8) 4)
+    (call syscall c 54)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) refused (call x64.jcc c (call x64.cc_s)))
+    ;; bind(fd, address, size); listen(fd, 128)
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.mov_ri32 c (call rsi) sa_addr)
+    (call x64.mov_ri32 c (call rdx) sa_len)
+    (call syscall c 49)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) refused (call x64.jcc c (call x64.cc_s)))
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.mov_ri32 c (call rsi) 128)
+    (call syscall c 50)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) refused (call x64.jcc c (call x64.cc_s)))
+    ;; the output buffer: mmap(0, cap, RW, PRIVATE|ANONYMOUS|NORESERVE, -1, 0)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdi) (call rdi))
+    (call x64.mov_ri32 c (call rsi) (call cap))
+    (call x64.mov_ri32 c (call rdx) 3)
+    (call x64.mov_ri32 c (call r10) 16418)
+    (call x64.mov_ri64 c (call r8) -1i64)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r9) (call r9))
+    (call syscall c 9)
+    (call x64.alu_ri c 64 (call x64.op_cmp) (call rax) -4096)
+    (call (vec.push i32) refused (call x64.jcc c (call x64.cc_a)))
+    (call x64.store c 64 (call x64.mem (call rsp) (call out)) (call rax))
+    ;; the next connection: accept4(fd, 0, 0, SOCK_CLOEXEC); an error is
+    ;; passed over, as aipl-run passes over a failed accept
+    (let next:i32 (call buf.len c))
+    (call x64.mov_rr c 64 (call rdi) (call r12))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rsi) (call rsi))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.mov_ri32 c (call r10) 524288)
+    (call syscall c 288)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_s)) next)
+    (call x64.mov_rr c 64 (call r13) (call rax))
+    ;; pipe2(fds, O_CLOEXEC), then fork(); either failing drops the connection
+    (let drop:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))
+    (call x64.lea c 64 (call rdi) (call x64.mem (call rsp) (call pipe_r)))
+    (call x64.mov_ri32 c (call rsi) 524288)
+    (call syscall c 293)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call (vec.push i32) drop (call x64.jcc c (call x64.cc_s)))
+    (call syscall c 57)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let forked:i32 (call x64.jcc c (call x64.cc_ns)))
+    (call emit_close_slot c (call pipe_r))
+    (call emit_close_slot c (call pipe_w))
+    (call (vec.push i32) drop (call x64.jmp c))
+    (call x64.patch_rel32 c forked (call buf.len c))
+    (let parent:i32 (call x64.jcc c (call x64.cc_ne)))
+    ;; the child: the connection is its standard input, the pipe its
+    ;; standard output (dup2 leaves both without close-on-exec); the rest
+    ;; of the host's descriptors closed; then the program starts
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rsi) (call rsi))
+    (call syscall c 33)
+    (call x64.load c 32 (call rdi) (call x64.mem (call rsp) (call pipe_w)))
+    (call x64.mov_ri32 c (call rsi) 1)
+    (call syscall c 33)
+    (call emit_close_reg c (call r12))
+    (call emit_close_reg c (call r13))
+    (call emit_close_slot c (call pipe_r))
+    (call emit_close_slot c (call pipe_w))
+    (call x64.alu_ri c 64 (call x64.op_add) (call rsp) (call frame))
+    (let child:i32 (call x64.jmp c))
+    ;; the host: read what the child writes until it closes its end
+    (call x64.patch_rel32 c parent (call buf.len c))
+    (call x64.store c 64 (call x64.mem (call rsp) (call pid)) (call rax))
+    (call emit_close_slot c (call pipe_w))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r14) (call r14))
+    (call x64.store c 32 (call x64.mem (call rsp) (call over)) (call r14))
+    (let more:i32 (call buf.len c))
+    (call x64.load c 64 (call rbx) (call x64.mem (call rsp) (call out)))
+    (call x64.load c 32 (call rdi) (call x64.mem (call rsp) (call pipe_r)))
+    (call x64.alu_ri c 32 (call x64.op_cmp) (call r14) (call cap))
+    (let full:i32 (call x64.jcc c (call x64.cc_ae)))
+    (call x64.lea c 64 (call rsi) (call x64.mem_index (call rbx) (call r14) 1 0))
+    (call x64.mov_ri32 c (call rdx) (call cap))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call rdx) (call r14))
+    (call syscall c 0)
+    (call emit_again c more)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let ended:i32 (call x64.jcc c (call x64.cc_le)))
+    (call x64.alu_rr c 64 (call x64.op_add) (call r14) (call rax))
+    (call x64.patch_rel32 c (call x64.jmp c) more)
+    ;; past `cap`: what follows is read and dropped, and the answer is 500
+    (call x64.patch_rel32 c full (call buf.len c))
+    (call x64.mov_ri32 c (call rax) 1)
+    (call x64.store c 32 (call x64.mem (call rsp) (call over)) (call rax))
+    (call x64.mov_rr c 64 (call rsi) (call rbx))
+    (call x64.mov_ri32 c (call rdx) 65536)
+    (call syscall c 0)
+    (call emit_again c more)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (call x64.patch_rel32 c (call x64.jcc c (call x64.cc_g)) more)
+    (call x64.patch_rel32 c ended (call buf.len c))
+    (call emit_close_slot c (call pipe_r))
+    ;; wait4(child, &status, 0, 0); a failed wait counts as a failed child
+    (call x64.mov_ri32 c (call rax) -1)
+    (call x64.store c 32 (call x64.mem (call rsp) (call wstatus)) (call rax))
+    (let wait:i32 (call buf.len c))
+    (call x64.load c 64 (call rdi) (call x64.mem (call rsp) (call pid)))
+    (call x64.lea c 64 (call rsi) (call x64.mem (call rsp) (call wstatus)))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r10) (call r10))
+    (call syscall c 61)
+    (call emit_again c wait)
+    ;; status 0 (exited with 0) and all of it kept: send it; else the 500
+    (call x64.load c 32 (call rax) (call x64.mem (call rsp) (call wstatus)))
+    (call x64.alu_rm c 32 (call x64.op_or) (call rax) (call x64.mem (call rsp) (call over)))
+    (let send:i32 (call x64.jcc c (call x64.cc_e)))
+    (call x64.mov_ri32 c (call rbx) failed)
+    (call x64.mov_ri32 c (call r14) (str.len failed_text))
+    (call x64.patch_rel32 c send (call buf.len c))
+    ;; send all r14 bytes at rbx: sendto(conn, p, n, MSG_NOSIGNAL, 0, 0)
+    (let sending:i32 (call buf.len c))
+    (call x64.test_rr c 64 (call r14) (call r14))
+    (let sent:i32 (call x64.jcc c (call x64.cc_le)))
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.mov_rr c 64 (call rsi) (call rbx))
+    (call x64.mov_rr c 64 (call rdx) (call r14))
+    (call x64.mov_ri32 c (call r10) 16384)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r8) (call r8))
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r9) (call r9))
+    (call syscall c 44)
+    (call emit_again c sending)
+    (call x64.test_rr c 64 (call rax) (call rax))
+    (let lost:i32 (call x64.jcc c (call x64.cc_le)))
+    (call x64.alu_rr c 64 (call x64.op_add) (call rbx) (call rax))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call r14) (call rax))
+    (call x64.patch_rel32 c (call x64.jmp c) sending)
+    (call x64.patch_rel32 c sent (call buf.len c))
+    (call x64.patch_rel32 c lost (call buf.len c))
+    (call sockets.patch_all c drop)
+    ;; shutdown(conn, SHUT_RDWR); close(conn); the next connection
+    (call x64.mov_rr c 64 (call rdi) (call r13))
+    (call x64.mov_ri32 c (call rsi) 2)
+    (call syscall c 48)
+    (call emit_close_reg c (call r13))
+    (call x64.patch_rel32 c (call x64.jmp c) next)
+    ;; refused: `<argv[0]>: cannot listen on ADDR:PORT: <why> (os error N)`, exit 1
+    (call sockets.patch_all c refused)
+    (call x64.alu_rr c 32 (call x64.op_xor) (call r12) (call r12))
+    (call x64.alu_rr c 64 (call x64.op_sub) (call r12) (call rax))
+    (call runtime.emit_write_argv0 c argv0_cell sep)
+    (let head:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (call buf.push_str head "cannot listen on ")
+    (call buf.push_bytes head at)
+    (call buf.push_str head ": ")
+    (call runtime.emit_write c 2 (call lower.data_bytes l (call buf.bytes head)) (call buf.len head))
+    (let whys:(arr Why) (arr.new Why (call alloc.default) 4))
+    (arr.set Why whys 0 (call why l 98 "Address already in use"))
+    (arr.set Why whys 1 (call why l 13 "Permission denied"))
+    (arr.set Why whys 2 (call why l 99 "Cannot assign requested address"))
+    (arr.set Why whys 3 (call why l 12 "Cannot allocate memory"))
+    (let told:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))
+    (for k 0 (arr.len whys)
+      (let w:Why (arr.get Why whys k))
+      (call x64.alu_ri c 32 (call x64.op_cmp) (call r12) (get w Why.errno))
+      (let other:i32 (call x64.jcc c (call x64.cc_ne)))
+      (call runtime.emit_write c 2 (get w Why.text) (get w Why.len))
+      (call (vec.push i32) told (call x64.jmp c))
+      (call x64.patch_rel32 c other (call buf.len c)))
+    (let code:str " (os error ")
+    (let anon:i32 (call lower.data_text l "os error "))
+    (call runtime.emit_write c 2 anon 9)
+    (call runtime.emit_write_decimal c (call r12))
+    (let end:i32 (call lower.data_text l "\n"))
+    (call runtime.emit_write c 2 end 1)
+    (call runtime.emit_exit c 1)
+    (call sockets.patch_all c told)
+    (call runtime.emit_write c 2 (call lower.data_text l code) (str.len code))
+    (call runtime.emit_write_decimal c (call r12))
+    (call runtime.emit_write c 2 (call lower.data_text l ")\n") 2)
+    (call runtime.emit_exit c 1)
+    (call x64.patch_rel32 c child (call buf.len c)))
+)

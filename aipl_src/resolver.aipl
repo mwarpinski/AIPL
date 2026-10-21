@@ -1314,6 +1314,11 @@
             (let ps:(ptr (vec.Vec fmtsplit.Piece)) (get sp fmtsplit.Split.pieces))
             (loop k 0 (- (call (vec.len fmtsplit.Piece) ps) 1) 1
               (let p:fmtsplit.Piece (call (vec.at fmtsplit.Piece) ps k))
+              (if (get p fmtsplit.Piece.value)
+                  (block
+                    (let mb:(ptr buf.Buf) (call at_token src toks last ""))
+                    (if (call hole_mismatch (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n)) mb) (return mb) (block)))
+                  (block))
               (if (and (get p fmtsplit.Piece.value) (call code_has_dbg (call slice raw (get p fmtsplit.Piece.a) (get p fmtsplit.Piece.n))))
                   (block
                     (let b:(ptr buf.Buf) (call at_token src toks last ""))
@@ -1322,6 +1327,39 @@
                   (block))))
           (block)))
     (ptr.null buf.Buf)))
+
+  ;; Whether a placeholder's code closes a bracket with the other kind ([
+  ;; closed by ), or ( by ]); if so, its line and column in the code and
+  ;; the message go in b, as formats.rs reads the code alone (Sx::read_one:
+  ;; "mismatched closing bracket"), columns counted in characters as
+  ;; parser.rs counts them. fmtsplit has checked that the brackets balance.
+  (fn hole_mismatch [code:str.Bytes b:(ptr buf.Buf)] -> bool
+    (let n:i32 (get code str.Bytes.len))
+    ;; the open brackets, innermost last: true for (
+    (let parens:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
+    (let top:i32 0)
+    (let line:i32 1)
+    (let col:i32 1)
+    (loop i 0 (- n 1) 1
+      (let c:i32 (call str.byte_at code i))
+      (if (or (eq c 40) (eq c 91)) (block (arr.set bool parens top (eq c 40)) (set! top (+ top 1))) (block))
+      (if (and (or (eq c 41) (eq c 93)) (gt top 0))
+          (block
+            (if (neq (arr.get bool parens (- top 1)) (eq c 41))
+                (block
+                  (call buf.push_int b line)
+                  (call buf.push_byte b 58)
+                  (call buf.push_int b col)
+                  (call buf.push_str b ": mismatched closing bracket")
+                  (return true))
+                (block))
+            (set! top (- top 1)))
+          (block))
+      ;; the next character's place (a UTF-8 continuation byte is not one)
+      (if (eq c 10)
+          (block (set! line (+ line 1)) (set! col 1))
+          (if (neq (bitand c 192) 128) (set! col (+ col 1)) (block))))
+    false)
 
   ;; Which tokens are inside a (test ...) item that is not read: every test
   ;; but a test build's (resolver.rs drops them before reading forms).

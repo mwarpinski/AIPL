@@ -114,3 +114,37 @@ not about this repository), **unchecked** (with why).
 | An ARM64 backend would reuse wasm_reader.aipl unchanged; fixed 32-bit instructions are simpler | true as a design | The native backend reads WebAssembly, so a second target shares the reader. |
 | ARM64's `sdiv` does not trap on division by zero or INT_MIN / -1, unlike x86 | true about the hardware, wrong as an advantage | WebAssembly requires those traps, so an ARM64 backend has to add the checks that x86's `idiv` gives for free. |
 | 31 registers mean normal functions never spill | partly | Fewer spills; "never" depends on the function. |
+
+## sonnet (2026-10-19)
+
+A second outside review: Sonnet, after reading AI-SQL (4,100 lines of
+AIPL Gemini wrote), wrote 11 programs from the prompt guide alone and
+reported on the language's duplicate forms, its docs, and syntax
+proposals, against the kit of 2026-10-19 (173cf89 or a46fa09). Checked
+2026-10-20 against features/net (c661bdd and after). The owner's
+decisions on it: docs/design/CANONICAL_PLAN.md.
+
+| Claim | Verdict | Evidence and action |
+|---|---|---|
+| 9 of 11 first-try programs type-checked; both failures guessed an array literal (`arr.of`) | true | No array literal exists: `(arr.of i32 1 2 3)` gives `Unknown op/keyword: arr.of`. CANONICAL_PLAN.md step 5 adds `(arr.of T a x...)`. |
+| Gemini used `loop` 96 times and `for` never; `loop`'s inclusive end is a known trap | true | The repository itself has 736 `loop`s and 278 `for`s. Owner's decision: retire `loop` (CANONICAL_PLAN.md step 3). |
+| `(new S a)` and `(call (alloc.create S) a)` are two ways to make a struct | partly | `new` is the documented form, and the resolver writes `alloc.create` for it (AIPL_SPEC.md 4.E); the repository calls `alloc.create` directly twice. The review itself traces Gemini's use to its prompt. A template taking `S` as a type argument needs `alloc.create`; no change. |
+| Interpolation vs `buf.push_str` chains, `defer`, `try` vs `match_result`, nested vs variadic `and`/`or` are duplicate forms | partly | Not duplicates: `try` passes an error up and `match_result` handles it; `defer` has no other form; nesting two-operand `and`s is composition. Building text has two forms for two jobs (`format_to` for a template, `buf.push_str` for one piece). The guide should say which to use when (CANONICAL_PLAN.md step 6). |
+| `when` and `(if c x (block))` are the same | true | 426 `when`s and 2,382 `(block))` in the repository. Owner's decision: `when` only (CANONICAL_PLAN.md step 4). |
+| The guide says `and`/`or` take two or more operands (rule 15) and exactly two (checklist) | true | PROMPT_GUIDE_FOR_AIS.md lines 30 and 279; the checklist is wrong (CANONICAL_PLAN.md step 1). |
+| Two copies of the spec and the guide, one stale | external | Both copies were in the AI-SQL project folder; the kit (tools/make_kit.sh) ships one of each. |
+| No version stamp in the spec or guide | true | CANONICAL_PLAN.md step 1. |
+| The pitfall table documents most of the mistakes models make, and is too long to absorb | true | 62 rows (AIPL_SPEC.md section 13). The most-hit ones move to the top of the guide (step 1), and each that is a compile error gets a message naming the fix (step 2): today `(f 1)` gives `Unknown op/keyword: f`, `(let x 5)` `Expected ':', got '5'`, `(if c x)` `Unexpected token parsing expression: ')'`, and a union variant without a field name `Expected ':', got ')'`. |
+| `(no_leak)` code cannot sort: `vec.sort_by`, `sort_by_with`, and `stats.median` call through function references | fixed since | MEMORY_PLAN.md decision 9 and `vec.sort` over `cmp.Ord` (2026-10-20): a `(no_leak)` function calling `vec.sort_by` with a `(no_leak)` comparator, `vec.sort`, and `stats.median` type-checks (tried 2026-10-20). |
+| AI-SQL hand-wrote a float parser std/text already has | true | The guide's pointer to `aipl doc --find` is near its end (line 289); it moves to the top (step 1). |
+| `+`, `-`, `*` wrap silently | true, by design for now | WebAssembly's semantics (AIPL_SPEC.md's first line); `checked.*` stops on overflow. Whether checked should be the default is its own question (speed, and a departure from wasm), not part of this batch. |
+| Syntax proposals: inferred `let` types, inferred generic arguments, `(f x)` without `call`, `p.f`, a bytes literal; together 19-22% fewer tokens | unchecked (estimates), decided by measurement | The review's own estimates, on lexical tokens. Inferred generic arguments were declined on 2026-10-18 (explicit redundancy, above). Owner's decision: build the review's A/B harness and test each one at a time, across model families (CANONICAL_PLAN.md step 7). |
+| Match arms repeat the full type, `((option.Option T) some [v] ...)` | true, by design | The explicit-redundancy rule, as for generic arguments. |
+
+AI-SQL's own mistake log (AI-SQL/mistake_log.md, Gemini's) is a source
+for step 2's messages. One entry is wrong: **Mistake 1** quotes `Union
+'Expr' exceeds maximum allowed variant count (8 variants max per
+union)`, an error neither compiler has (no such text in src/ or
+aipl_src/); a union of 11 variants type-checks and runs in the VM and
+natively (tried 2026-10-20). Its other entries are checked as step 2
+uses them.

@@ -6,6 +6,9 @@
 //!
 //!   aipl-run [--sandbox] [--listen ADDR:PORT]... prog.wasm [args...]
 //!                                               run a compiled module
+//!   aipl-run --serve-fresh ADDR:PORT [--requests N] prog.wasm [args...]
+//!                                               serve it, a fresh instance
+//!                                               per connection (serve_fresh)
 //!   ./prog [args...]                            run the module appended to
 //!                                               this file by `aipl compile --exe`
 //!
@@ -31,16 +34,22 @@ use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
 /// An executable made by `aipl compile --exe --target wasm` is this runner
 /// followed by the wasm module, its --listen grants (one ADDR:PORT a line),
-/// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox), the grants'
-/// length and the module's (u32 LE each), and this magic.
+/// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox, bit 1 = serve a
+/// fresh instance per connection on the address that is then the grants'
+/// first line: --serve), the grants' length and the module's (u32 LE
+/// each), and this magic.
 const MAGIC: &[u8; 8] = b"AIPLEXE2";
 const FLAG_SANDBOX: u32 = 1;
+const FLAG_SERVE: u32 = 2;
 
 struct Program {
     wasm: Vec<u8>,
     argv: Vec<String>,
     sandbox: bool,
     listen: Vec<std::net::SocketAddr>,
+    /// --serve-fresh: the address to serve on, and how many connections to
+    /// answer before stopping (none: no end)
+    fresh: Option<(std::net::SocketAddr, Option<usize>)>,
 }
 
 fn main() {
@@ -55,7 +64,7 @@ fn main() {
             }
         },
     };
-    std::process::exit(run(program));
+    std::process::exit(if program.fresh.is_some() { serve_fresh(program) } else { run(program) });
 }
 
 /// The module appended to this executable, if there is one.
@@ -70,15 +79,33 @@ fn embedded(args: &[String]) -> Option<Program> {
     let grants_at = n.checked_sub(20 + glen)?;
     let start = grants_at.checked_sub(len)?;
     // write_executable checked each grant
-    let listen = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok()).collect();
-    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen })
+    let mut lines = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok());
+    let fresh = if flags & FLAG_SERVE != 0 { Some((lines.next()?, None)) } else { None };
+    let listen = lines.collect();
+    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, fresh })
 }
 
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
-    let (mut sandbox, mut listen) = (false, Vec::new());
+    let (mut sandbox, mut listen, mut fresh, mut requests, mut name) = (false, Vec::new(), None, None, None);
     loop {
         match rest.first().map(String::as_str) {
+            Some("--serve-fresh") => {
+                let g = rest.get(1).ok_or("--serve-fresh needs ADDR:PORT")?;
+                fresh = Some(aipl_core::net::Net::parse_address("--serve-fresh", g)?);
+                rest = &rest[2..];
+            }
+            // the program's argv[0], in place of the module's path (aipl
+            // serve names it by its source, as aipl eval does)
+            Some("--name") => {
+                name = Some(rest.get(1).ok_or("--name needs the program's name")?.clone());
+                rest = &rest[2..];
+            }
+            Some("--requests") => {
+                let n = rest.get(1).and_then(|n| n.parse::<usize>().ok()).ok_or("--requests needs a count")?;
+                requests = Some(n);
+                rest = &rest[2..];
+            }
             Some("--sandbox") => {
                 sandbox = true;
                 rest = &rest[1..];
@@ -91,9 +118,16 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
             _ => break,
         }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-    Ok(Program { wasm, argv: rest.to_vec(), sandbox, listen })
+    if requests.is_some() && fresh.is_none() {
+        return Err("--requests goes with --serve-fresh".into());
+    }
+    let mut argv = rest.to_vec();
+    if let Some(n) = name {
+        argv[0] = n;
+    }
+    Ok(Program { wasm, argv, sandbox, listen, fresh: fresh.map(|at| (at, requests)) })
 }
 
 /// What one thread's instance needs: shared by the main thread and every
@@ -380,6 +414,83 @@ impl LineTable {
         }
         Some(out)
     }
+}
+
+/// A fresh instance per connection (docs/design/NET_PLAN.md mode B): the
+/// module is compiled once; each connection gets a new instance whose
+/// standard input is the connection and whose standard output is held
+/// back. An instance that exits with 0 has what it wrote sent; one that
+/// traps or exits otherwise has the client sent a bare 500, and its message
+/// (with the call chain) goes to this process's standard error. Nothing
+/// outlives a request. A threaded module is refused.
+fn serve_fresh(p: Program) -> i32 {
+    use std::io::Write;
+    let (at, requests) = p.fresh.expect("serve_fresh needs --serve-fresh");
+    let argv0 = p.argv.first().cloned().unwrap_or_else(|| "aipl-run".into());
+    let fail = |e: String| -> i32 {
+        eprintln!("{argv0}: {e}");
+        1
+    };
+    let mut config = Config::new();
+    config.wasm_backtrace_max_frames(std::num::NonZeroUsize::new(1 << 24));
+    let engine = match Engine::new(&config) {
+        Ok(e) => e,
+        Err(e) => return fail(e.to_string()),
+    };
+    let module = match Module::new(&engine, &p.wasm) {
+        Ok(m) => m,
+        Err(e) => return fail(format!("not a valid module: {e}")),
+    };
+    if module.imports().any(|i| i.module() == "wasi" && i.name() == "thread-spawn") {
+        return fail("a threaded module cannot be served a fresh instance per connection yet".into());
+    }
+    let imported = module.imports().filter(|i| matches!(i.ty(), wasmtime::ExternType::Func(_))).count() as u32;
+    let _ = LINES.set(LineTable::read(&p.wasm, imported));
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    if let Err(e) = wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t) {
+        return fail(e.to_string());
+    }
+    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &None) {
+        return fail(e.to_string());
+    }
+    let listener = match std::net::TcpListener::bind(at) {
+        Ok(l) => l,
+        Err(e) => return fail(format!("cannot listen on {at}: {e}")),
+    };
+    let mut served = 0usize;
+    while requests.is_none_or(|n| served < n) {
+        let Ok((conn, _)) = listener.accept() else { continue };
+        served += 1;
+        let Ok(input) = conn.try_clone() else { continue };
+        let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(64 << 20);
+        let mut b = WasiCtxBuilder::new();
+        b.stdin(wasmtime_wasi::cli::InputFile::new(std::fs::File::from(std::os::fd::OwnedFd::from(input))));
+        b.stdout(output.clone()).inherit_stderr().inherit_env().args(&p.argv);
+        let opened = b.preopened_dir(".", ".", FsPerms::ReadWrite).is_ok() && (p.sandbox || b.preopened_dir("/", "/", FsPerms::ReadWrite).is_ok());
+        if !opened {
+            return fail("cannot open the working directory".into());
+        }
+        let mut store = Store::new(&engine, b.build_p1());
+        let code = match linker.instantiate(&mut store, &module).and_then(|i| i.get_typed_func::<(), ()>(&mut store, "_start").map(|f| (i, f))) {
+            Ok((inst, start)) => {
+                let r = start.call(&mut store, ());
+                let data = inst.get_memory(&mut store, "memory").map(|m| m.data(&store).to_vec()).unwrap_or_default();
+                status(r, &argv0, &move |at, n| data.get(at..at.checked_add(n)?).map(|b| b.to_vec()))
+            }
+            Err(e) => {
+                eprintln!("{argv0}: cannot start: {e}");
+                1
+            }
+        };
+        let mut conn = conn;
+        let _ = if code == 0 {
+            conn.write_all(&output.contents())
+        } else {
+            conn.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
+        };
+        let _ = conn.shutdown(std::net::Shutdown::Both);
+    }
+    0
 }
 
 fn run(p: Program) -> i32 {

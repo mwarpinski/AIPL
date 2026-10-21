@@ -41,6 +41,7 @@
   (import lower)
   (import wasi)
   (import sockets)
+  (import fresh)
   (import ip)
   (import option)
 
@@ -326,17 +327,17 @@
     t)
 
   (fn compile [wasm:str.Bytes] -> (ptr Output)
-    (call compile_with wasm false (call str.from_str "")))
+    (call compile_with wasm false (call str.from_str "") (call str.from_str "")))
 
   ;; Whether `g` is a grant: ADDR:PORT, as std/ip reads it (src/net.rs
   ;; parse_grant reads the same).
   (fn valid_grant [g:str.Bytes] -> bool (pub)
     (call (option.is_some ip.Endpoint) (call ip.parse_endpoint g)))
 
-  ;; The grants in `text`, one ADDR:PORT a line (`--listen`, std/ip's
-  ;; parse_endpoint); null, with the message in `problem`, for a line that
-  ;; is not one.
-  (fn grants [text:str.Bytes problem:(ptr buf.Buf)] -> (ptr (vec.Vec sockets.Grant))
+  ;; The grants in `text`, one ADDR:PORT a line (`flag`: `--listen` or
+  ;; `--serve`; std/ip's parse_endpoint); null, with the message in
+  ;; `problem`, for a line that is not one.
+  (fn grants [flag:str text:str.Bytes problem:(ptr buf.Buf)] -> (ptr (vec.Vec sockets.Grant))
     (let out:(ptr (vec.Vec sockets.Grant)) (call (vec.make sockets.Grant) (call alloc.default) 4))
     (let start:i32 0)
     (let n:i32 (get text str.Bytes.len))
@@ -352,7 +353,8 @@
              (for k 0 (call ip.len a) (arr.set u8 bytes k (call ip.byte_at a k)))
              (call (vec.push sockets.Grant) out (make sockets.Grant (call ip.len a) (get e ip.Endpoint.port) bytes)))
             ((option.Option ip.Endpoint) none
-             (call buf.push_str problem "--listen ")
+             (call buf.push_str problem flag)
+             (call buf.push_byte problem 32)
              (call buf.push_bytes problem line)
              (call buf.push_str problem ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
              (return (ptr.null (vec.Vec sockets.Grant))))))))
@@ -361,11 +363,16 @@
   ;; `sandbox`: the program may use only the working directory (no `/`
   ;; preopen), as `aipl-run --sandbox` / `aipl compile --exe --sandbox`.
   ;; `listen`: the addresses and ports it may listen on, one ADDR:PORT a
-  ;; line, fixed in the executable (`--listen`).
-  (fn compile_with [wasm:str.Bytes sandbox:bool listen:str.Bytes] -> (ptr Output) (pub)
+  ;; line, fixed in the executable (`--listen`). `serve`: empty, or the
+  ;; ADDR:PORT the executable serves on, a fresh copy of the program per
+  ;; connection (`--serve`, fresh.aipl).
+  (fn compile_with [wasm:str.Bytes sandbox:bool listen:str.Bytes serve:str.Bytes] -> (ptr Output) (pub)
     (let problem:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants listen problem))
+    (let granted:(ptr (vec.Vec sockets.Grant)) (call grants "--listen" listen problem))
     (if (eq granted (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))) (block))
+    (let served:(ptr (vec.Vec sockets.Grant)) (call grants "--serve" serve problem))
+    (if (eq served (ptr.null (vec.Vec sockets.Grant))) (return (call failure (call buf.bytes problem))) (block))
+    (let serving:bool (gt (call (vec.len sockets.Grant) served) 0))
     (unsafe (let w:(ptr wasm_reader.Wasm) (call wasm_reader.decode wasm))
     (if (not (get w wasm_reader.Wasm.ok)) (return (call failure (get w wasm_reader.Wasm.error))) (block))
     (let mem_problem:str (call memory_problem w))
@@ -412,6 +419,9 @@
     (put th Threads.thread_start (call export_func w "wasi_thread_start"))
     (if (and (lt (get th Threads.thread_start) 0) (call imports_thread_spawn l))
         (return (call failure (call str.from_str "a module importing thread-spawn must export wasi_thread_start")))
+        (block))
+    (if (and serving (call imports_thread_spawn l))
+        (return (call failure (call str.from_str "a threaded module cannot be served a fresh instance per connection yet")))
         (block))
     (put th Threads.globals gs)
     (put th Threads.tid_cell (call lower.data_text l ""))
@@ -470,6 +480,8 @@
     (if has_memory
         (block (call emit_memory_setup l w base_cell) (call runtime.emit_install_fault_handler c handler restorer))
         (block))
+    ;; --serve: the host forks a copy per connection here, which goes on
+    (if serving (call fresh.emit_host l (call (vec.at sockets.Grant) served 0) serve argv0_cell sep) (block))
     (if (gte (get w wasm_reader.Wasm.start) 0) (call lower.emit_call l (get w wasm_reader.Wasm.start)) (block))
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)
@@ -662,12 +674,13 @@
 
   ;; compile_at with sandbox (only the working directory).
   (fn compile_sandboxed_at [addr:i32 len:i32] -> (ptr Output)
-    (unsafe (call compile_with (call str.bytes addr len) true (call str.from_str ""))))
+    (unsafe (call compile_with (call str.bytes addr len) true (call str.from_str "") (call str.from_str ""))))
 
-  ;; compile_at with sandbox (non-zero: only the working directory) and the
-  ;; `glen` bytes at `gaddr`: the --listen grants, one ADDR:PORT a line.
-  (fn compile_full_at [addr:i32 len:i32 sandbox:i32 gaddr:i32 glen:i32] -> (ptr Output)
-    (unsafe (call compile_with (call str.bytes addr len) (neq sandbox 0) (call str.bytes gaddr glen))))
+  ;; compile_at with sandbox (non-zero: only the working directory), the
+  ;; `glen` bytes at `gaddr`: the --listen grants, one ADDR:PORT a line,
+  ;; and the `slen` at `saddr`: the --serve address, or none.
+  (fn compile_full_at [addr:i32 len:i32 sandbox:i32 gaddr:i32 glen:i32 saddr:i32 slen:i32] -> (ptr Output)
+    (unsafe (call compile_with (call str.bytes addr len) (neq sandbox 0) (call str.bytes gaddr glen) (call str.bytes saddr slen))))
 
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
 )

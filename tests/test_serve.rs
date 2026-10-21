@@ -22,8 +22,23 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// A port nothing listens on now (the system's choice, released), and
+/// one no other test here was given: the system may hand a released port
+/// out again at once (2.6% of runs of 30 picks did, 2026-10-20), and two
+/// tests running at the same time with the same port talk to each
+/// other's servers. One did: a native server took a VM test's port while
+/// the VM started, answered its first requests, and the VM server, short
+/// of them, waited for ever.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut given = GIVEN.lock().unwrap();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -90,6 +105,23 @@ fn exchange(at: &str, server: &mut Child, request: &[u8]) -> Vec<u8> {
     got
 }
 
+/// Waits for a server that was sent all its requests to stop, for at most
+/// two minutes; one that does not is killed and the test fails, rather
+/// than holding CI for ever. (A test waited 42 minutes for a server that
+/// got fewer connections than were sent, 2026-10-20.)
+fn finish(mut server: Child) -> std::process::Output {
+    let start = Instant::now();
+    while server.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(120) {
+            let _ = server.kill();
+            let o = server.wait_with_output().unwrap();
+            panic!("the server did not stop after its last request: it did not get every connection sent to it\n{}", String::from_utf8_lossy(&o.stderr));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    server.wait_with_output().unwrap()
+}
+
 fn body(r: &[u8]) -> String {
     let t = String::from_utf8_lossy(r).to_string();
     t.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or(t)
@@ -141,11 +173,19 @@ fn every_backend_answers_alike() {
                 None => assert!(got.is_empty(), "{backend}, request {k}: an empty request has no answer"),
             }
         }
-        let o = server.wait_with_output().unwrap();
+        let o = finish(server);
         assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
         let printed: String = String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.starts_with("[AIPL")).collect();
-        // 64 KiB to start, and a chunk for the 70,000-byte head
-        assert_eq!(printed, format!("served {answered}, arena 262160 bytes"), "{backend}");
+        // 64 KiB to start, and chunks for the 70,000-byte head as its
+        // buffer grows, which depends on how its bytes arrive (262,160
+        // when they come at once, 458,784 seen under load): a bound, not
+        // a number
+        let arena: usize = printed
+            .strip_prefix(&format!("served {answered}, arena "))
+            .and_then(|r| r.strip_suffix(" bytes"))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{backend}: {printed}"));
+        assert!((65_552..=8 * 65_552).contains(&arena), "{backend}: {printed}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -177,7 +217,7 @@ fn memory_stays_flat(backend: &str, n: usize) {
     let after = body(&exchange(&at, &mut server, b"GET /memory HTTP/1.1\r\n\r\n"));
     assert!(before.starts_with("heap top "), "{backend}: {before}");
     assert_eq!(after, before, "{backend}: the heap grew over {n} requests");
-    let o = server.wait_with_output().unwrap();
+    let o = finish(server);
     assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -212,10 +252,15 @@ fn a_view_kept_past_its_request_stops_the_program() {
         let at = format!("127.0.0.1:{}", free_port());
         let mut server = start(backend, &src, &dir, &at, &[]);
         let first = exchange(&at, &mut server, b"GET /first HTTP/1.1\r\n\r\n");
-        assert!(first.ends_with(b"/first"), "{backend}: {:?}", String::from_utf8_lossy(&first));
+        if !first.ends_with(b"/first") {
+            // what the server said: an empty answer under load, once (2026-10-20), cause unknown
+            let _ = server.kill();
+            let o = server.wait_with_output().unwrap();
+            panic!("{backend}: {:?}\nserver ({}): {}{}", String::from_utf8_lossy(&first), o.status, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        }
         let second = exchange(&at, &mut server, b"GET /second HTTP/1.1\r\n\r\n");
         assert!(second.is_empty(), "{backend}: the second request is not answered");
-        let o = server.wait_with_output().unwrap();
+        let o = finish(server);
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && err.contains("Use after free"), "{backend}: {err}");
         assert!(err.contains("serve_keep.aipl:19:41"), "{backend}: the trap names the handler's read: {err}");
@@ -232,4 +277,166 @@ fn both_toolchains_compile_the_server_alike() {
         let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
         assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust, "{name}");
     }
+}
+
+// ---- A fresh instance per request (NET_PLAN.md step 4) ----
+
+/// serve.once answers one request from standard input on standard output,
+/// alike in the VM, under aipl-run, and natively: a saved request piped
+/// through it, no network needed. A trap stops it with its message; input
+/// that ends before a request begins gives status 1.
+#[test]
+fn once_answers_a_piped_request_alike_everywhere() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let dir = scratch("once");
+    let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
+    compile(&src, &wasm, &[]);
+    compile(&src, &exe, &["--exe"]);
+    let pipe = |mut c: Command, input: &[u8]| -> (Option<i32>, String, String) {
+        let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let o = child.wait_with_output().unwrap();
+        // the VM's banner comes first, on its own line, and its result line
+        // last, after the program's output
+        let all = String::from_utf8_lossy(&o.stdout).to_string();
+        let body = match all.split_once('\n') {
+            Some((first, rest)) if first.starts_with("[AIPL VM]") => rest,
+            _ => &all,
+        };
+        let out = body.rfind("[AIPL Result]:").map_or(body, |i| &body[..i]).to_string();
+        (o.status.code(), out, String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let cases: [(&[u8], &str); 4] = [
+        (b"GET /echo?a=1 HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 9\r\n\r\n/echo?a=1"),
+        (b"GET /nowhere HTTP/1.1\r\n\r\n", "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 10\r\n\r\nnot found\n"),
+        (b"GARBAGE\r\n\r\n", "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 27\r\n\r\na start line without spaces"),
+        (b"", ""),
+    ];
+    for backend in ["VM", "aipl-run", "native"] {
+        let cmd = || match backend {
+            "VM" => {
+                let mut c = Command::new(AIPL);
+                c.arg("eval").arg(&src);
+                c
+            }
+            "aipl-run" => {
+                let mut c = Command::new(RUNNER);
+                c.arg(&wasm);
+                c
+            }
+            _ => Command::new(&exe),
+        };
+        for (input, want) in cases {
+            let (status, out, err) = pipe(cmd(), input);
+            assert_eq!(out, want, "{backend}: {:?}", String::from_utf8_lossy(input));
+            assert_eq!(status, Some(if input.is_empty() { 1 } else { 0 }), "{backend}: {err}");
+        }
+        let (status, out, err) = pipe(cmd(), b"GET /crash HTTP/1.1\r\n\r\n");
+        assert!(status != Some(0) && out.is_empty(), "{backend}: the crash writes nothing");
+        assert!(err.contains("Array index out of bounds: index 5 for array of length 1") && err.contains("at handle (fresh_demo.aipl:32:54)"), "{backend}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fresh instance per connection, from each host: `aipl serve --fresh`
+/// (aipl-run), a native executable built with `--serve`, which forks a copy
+/// of itself per connection, and the launcher bundle built with it. A
+/// handler that traps answers 500 (its message and call chain go to the
+/// server's standard error), and the next request is served; so does an
+/// answer longer than a host keeps.
+#[test]
+fn a_fresh_instance_per_request_isolates_a_crash() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let dir = scratch("fresh");
+    let failed = b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n".to_vec();
+    // /big's answer is more than the 64 MiB a host keeps: 500, not part of it
+    let requests: [(&str, Vec<u8>); 5] = [
+        ("/", text_response("200 OK", "hello\n")),
+        ("/crash", failed.clone()),
+        ("/echo?after=crash", text_response("200 OK", "/echo?after=crash")),
+        ("/big", failed),
+        ("/", text_response("200 OK", "hello\n")),
+    ];
+    for host in ["aipl serve --fresh", "native", "bundle"] {
+        let at = format!("127.0.0.1:{}", free_port());
+        let mut cmd = match host {
+            "native" | "bundle" => {
+                let exe = dir.join(host);
+                let target = if host == "native" { "native" } else { "wasm" };
+                compile(&src, &exe, &["--exe", "--target", target, "--serve", &at]);
+                Command::new(exe)
+            }
+            _ => {
+                let mut c = Command::new(AIPL);
+                c.args(["serve", "--fresh", "--listen", &at, "--requests", "5"]).arg(&src);
+                c
+            }
+        };
+        let mut server = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        for (path, want) in &requests {
+            let got = exchange(&at, &mut server, format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes());
+            assert!(got == *want, "{host} {path}: {:?}", String::from_utf8_lossy(&got));
+        }
+        // the executables serve until they are ended; aipl serve stops after --requests
+        if host != "aipl serve --fresh" {
+            server.kill().unwrap();
+        }
+        let o = finish(server);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(host != "aipl serve --fresh" || o.status.success(), "{host}: {err}");
+        assert!(err.contains(": Array index out of bounds: index 5 for array of length 1\n  at handle (fresh_demo.aipl:32:54)\n"), "{host}: {err}");
+        assert_eq!(err.matches("Array index").count(), 1, "{host}: {err}");
+    }
+    // without --fresh, the way to a long-running server
+    let o = Command::new(AIPL).args(["serve", "--listen", "127.0.0.1:1"]).arg(&src).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("add --fresh"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An address that cannot be listened on stops each host with the same
+/// message and status 1; an address that is not one is refused when the
+/// executable is compiled, and --serve needs --exe.
+#[test]
+fn a_fresh_server_that_cannot_listen_says_so() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let dir = scratch("fresh_busy");
+    let busy = TcpListener::bind(("127.0.0.1", free_port())).unwrap();
+    let at = busy.local_addr().unwrap().to_string();
+    let why = format!(": cannot listen on {at}: Address already in use (os error 98)\n");
+    let (native, bundle) = (dir.join("native"), dir.join("bundle"));
+    compile(&src, &native, &["--exe", "--target", "native", "--serve", &at]);
+    compile(&src, &bundle, &["--exe", "--target", "wasm", "--serve", &at]);
+    let mut serve = Command::new(AIPL);
+    serve.args(["serve", "--fresh", "--listen", &at]).arg(&src);
+    for (name, mut cmd) in [(native.display().to_string(), Command::new(&native)), (bundle.display().to_string(), Command::new(&bundle)), (src.display().to_string(), serve)] {
+        let o = cmd.output().unwrap();
+        assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stderr).to_string()), (Some(1), format!("{name}{why}")));
+    }
+    drop(busy);
+    let o = Command::new(AIPL).args(["compile", "--exe", "--serve", "127.0.0.1"]).arg(&src).arg("-o").arg(dir.join("x")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), "Error: --serve 127.0.0.1: expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080");
+    let o = Command::new(AIPL).args(["compile", "--serve", "127.0.0.1:1"]).arg(&src).arg("-o").arg(dir.join("x")).output().unwrap();
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--exe"));
+    // a threaded program: refused when compiled, natively and as a bundle,
+    // leaving no file, and by aipl serve
+    let par = root().join("examples/spectralnorm_par.aipl");
+    let threaded = "a threaded module cannot be served a fresh instance per connection yet";
+    for target in ["native", "wasm"] {
+        let out = dir.join(format!("par_{target}"));
+        let o = Command::new(AIPL).args(["compile", "--exe", "--target", target, "--serve", "127.0.0.1:1"]).arg(&par).arg("-o").arg(&out).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), format!("Error: {threaded}"), "{target}");
+        assert!(!out.exists(), "{target}");
+    }
+    let o = Command::new(AIPL).args(["serve", "--fresh", "--listen", "127.0.0.1:1"]).arg(&par).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stderr).to_string()), (Some(1), format!("{}: {threaded}\n", par.display())));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn both_toolchains_compile_the_fresh_server_alike() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let m = aipl_core::resolver::Resolver::resolve(&src).unwrap();
+    aipl_core::checker::TypeChecker::new().check_module(&m).unwrap();
+    let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust);
 }

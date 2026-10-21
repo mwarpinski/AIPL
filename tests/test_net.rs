@@ -24,9 +24,23 @@ fn echo() -> PathBuf {
     root().join("tests/aipl/net/echo.aipl")
 }
 
-/// A port nothing listens on now (the system's choice, released).
+/// A port nothing listens on now (the system's choice, released), and
+/// one no other test here was given: the system may hand a released port
+/// out again at once (2.6% of runs of 30 picks did, 2026-10-20), and two
+/// tests running at the same time with the same port talk to each
+/// other's servers. One did: a native server took a VM test's port while
+/// the VM started, answered its first requests, and the VM server, short
+/// of them, waited for ever.
 fn free_port(ip: &str) -> u16 {
-    TcpListener::bind((ip, 0)).unwrap().local_addr().unwrap().port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    loop {
+        let port = TcpListener::bind((ip, 0)).unwrap().local_addr().unwrap().port();
+        let mut given = GIVEN.lock().unwrap();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 /// What each of the four connections sends, and the reply it must get: the
@@ -57,6 +71,23 @@ fn connect(at: &str, server: &mut Child) -> TcpStream {
     }
 }
 
+/// Waits for a server that was sent all its requests to stop, for at most
+/// two minutes; one that does not is killed and the test fails, rather
+/// than holding CI for ever. (A test waited 42 minutes for a server that
+/// got fewer connections than were sent, 2026-10-20.)
+fn finish(mut server: Child) -> std::process::Output {
+    let start = Instant::now();
+    while server.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(120) {
+            let _ = server.kill();
+            let o = server.wait_with_output().unwrap();
+            panic!("the server did not stop after its last request: it did not get every connection sent to it\n{}", String::from_utf8_lossy(&o.stderr));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    server.wait_with_output().unwrap()
+}
+
 /// Runs the server, holds the four exchanges with it, and returns the
 /// replies and what it printed.
 fn serve(mut cmd: Command, at: &str) -> (Vec<Vec<u8>>, String) {
@@ -71,7 +102,7 @@ fn serve(mut cmd: Command, at: &str) -> (Vec<Vec<u8>>, String) {
         s.read_to_end(&mut got).unwrap();
         replies.push(got);
     }
-    let o = server.wait_with_output().unwrap();
+    let o = finish(server);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     (replies, String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect())
 }

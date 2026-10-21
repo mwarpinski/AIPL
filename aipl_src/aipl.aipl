@@ -27,7 +27,7 @@
   (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]...] [--tests] [--max-memory SIZE] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]... [--serve ADDR:PORT]] [--tests] [--max-memory SIZE] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -60,6 +60,8 @@
     (let sandbox:bool false)
     ;; --listen grants, one ADDR:PORT a line (native.compile_with)
     (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    ;; --serve: the address the executable serves on, a fresh copy per connection
+    (let serve:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     ;; memory's maximum in pages (--max-memory; src/compiler/mod.rs memory_pages)
     (let max_pages:i32 32768)
     (let in_i:i32 -1)
@@ -97,6 +99,18 @@
          (call buf.push_bytes listen (call os.arg (+ i 1)))
          (call buf.push_byte listen 10)
          (set! i (+ i 1)))
+        ((call str.is a "--serve")
+         (if (or (gte (+ i 1) n) (gt (call buf.len serve) 0)) (return (call usage)) (block))
+         (if (not (call native.valid_grant (call os.arg (+ i 1))))
+             (block
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--serve ")
+               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+               (return (call fail_bytes "" (call buf.bytes m))))
+             (block))
+         (call buf.push_bytes serve (call os.arg (+ i 1)))
+         (set! i (+ i 1)))
         ((call str.is a "-o")
          (if (gte (+ i 1) n) (return (call usage)) (block))
          (set! out_i (+ i 1))
@@ -105,7 +119,7 @@
         (else (return (call usage))))
       (set! i (+ i 1)))
     (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
-    (if (and (or sandbox (gt (call buf.len listen) 0)) (not exe)) (return (call usage)) (block))
+    (if (and (or sandbox (or (gt (call buf.len listen) 0) (gt (call buf.len serve) 0))) (not exe)) (return (call usage)) (block))
     (let std_dir:str.Bytes (call os.env "AIPL_STD"))
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
     (let entry:str.Bytes (call os.arg in_i))
@@ -129,7 +143,7 @@
     (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
     (if exe
         (block
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen)))
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen) (call buf.bytes serve)))
           (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
           (set! bytes (get o native.Output.exe)))
         (block))
