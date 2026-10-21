@@ -12,7 +12,7 @@
   ;; newlines, tabs, and carriage returns escaped, so each case is one line
   (fn pb1 [s:str.Bytes] -> void
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
-    (loop i 0 (- (get s str.Bytes.len) 1) 1
+    (for i 0 (get s str.Bytes.len)
       (let c:i32 (call str.byte_at s i))
       (cond ((eq c 10) (call buf.push_str o "\\n")) ((eq c 9) (call buf.push_str o "\\t")) ((eq c 13) (call buf.push_str o "\\r")) (else (call buf.push_byte o c))))
     (call buf.push_byte o 10)

@@ -75,7 +75,7 @@
     (let old_states:(arr i32) (get m (Map K V) states))
     (let old_cap:i32 (arr.len old_keys))
     (call (alloc_slots K V) m (if (gt (* 2 (get m (Map K V) count)) old_cap) (* 2 old_cap) old_cap))
-    (loop i 0 (- old_cap 1) 1
+    (for i 0 old_cap
       (if (eq (arr.get i32 old_states i) 1)
           (call (set K V) m (arr.get K old_keys i) (arr.get V old_vals i))
           (block)))
@@ -139,7 +139,7 @@
     (let p:i32 0)
     (let m:(ptr (Map i32 i32)) (call (make i32 i32) (call alloc.default) 0))
     ;; 2000 keys including 0 and negatives, forcing several resizes
-    (loop i -1000 999 1 (call (set i32 i32) m i (* i 2)))
+    (for i -1000 1000 (call (set i32 i32) m i (* i 2)))
     (if (and (eq (call (count i32 i32) m) 2000) (and (eq (call (get_or i32 i32) m -1000 0) -2000) (and (eq (call (get_or i32 i32) m 0 7) 0) (eq (call (get_or i32 i32) m 5000 -1) -1))))
         (set! p (+ p 1))
         (block))
@@ -150,7 +150,7 @@
     (let missing:bool (call (option.is_none i32) (call (find i32 i32) m 5000)))
     (if (and (eq found 70) missing) (set! p (+ p 1)) (block))
     ;; remove every even key, then check membership and the count
-    (loop i -1000 999 1
+    (for i -1000 1000
       (if (eq (% i 2) 0) (call (remove i32 i32) m i) false))
     (if (and (eq (call (count i32 i32) m) 1000) (and (not (call (has i32 i32) m 10)) (and (call (has i32 i32) m 11) (not (call (remove i32 i32) m 10)))))
         (set! p (+ p 1))
@@ -158,7 +158,7 @@
     ;; iteration sees exactly the live entries
     (let seen:i32 0)
     (let vsum:i32 0)
-    (loop i 0 (- (call (capacity i32 i32) m) 1) 1
+    (for i 0 (call (capacity i32 i32) m)
       (if (call (slot_used i32 i32) m i)
           (block (set! seen (+ seen 1)) (set! vsum (+ vsum (- (call (slot_val i32 i32) m i) (* 2 (call (slot_key i32 i32) m i))))))
           (block)))
@@ -172,7 +172,7 @@
     (let text:str.Bytes (call str.from_str "the cat and the hat and the bat"))
     (let m:(ptr (Map str.Bytes i32)) (call (make str.Bytes i32) (call alloc.default) 0))
     (let start:i32 0)
-    (loop i 0 (get text str.Bytes.len) 1
+    (for i 0 (+ (get text str.Bytes.len) 1)
       (if (or (eq i (get text str.Bytes.len)) (eq (mem.load8 (+ (call str.addr text) i)) 32))
           (block
             (let w:str.Bytes (call str.bytes (+ (call str.addr text) start) (- i start)))
@@ -190,13 +190,13 @@
         (block))
     ;; 300 distinct generated keys survive resizing
     (let big:(ptr (Map str.Bytes i32)) (call (make str.Bytes i32) (call alloc.default) 0))
-    (loop i 0 299 1
+    (for i 0 300
       (let k:i32 (mem.alloc 2))
       (mem.store8 k (+ 65 (/ i 26)))
       (mem.store8 (+ k 1) (+ 65 (% i 26)))
       (call (set str.Bytes i32) big (call str.bytes k 2) i))
     (let ok:bool (eq (call (count str.Bytes i32) big) 300))
-    (loop i 0 299 1
+    (for i 0 300
       (let k:i32 (mem.alloc 2))
       (mem.store8 k (+ 65 (/ i 26)))
       (mem.store8 (+ k 1) (+ 65 (% i 26)))

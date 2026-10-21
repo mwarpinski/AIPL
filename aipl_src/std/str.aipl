@@ -75,7 +75,7 @@
     ;; each view checked once (addr), then a loop that frees nothing
     (unsafe (let pa:i32 (call addr a))
     (let pb:i32 (call addr b))
-    (loop i 0 (- (get a Bytes.len) 1) 1
+    (for i 0 (get a Bytes.len)
       (if (neq (mem.load8 (+ pa i)) (mem.load8 (+ pb i))) (return false) (block)))
     true))
 
@@ -83,7 +83,7 @@
   (fn is [b:Bytes s:str] -> bool (pub)
     (unsafe (if (neq (get b Bytes.len) (str.len s)) (return false) (block))
     (let pb:i32 (call addr b))
-    (loop i 0 (- (get b Bytes.len) 1) 1
+    (for i 0 (get b Bytes.len)
       (if (neq (mem.load8 (+ pb i)) (mem.load8 (+ (str.ptr s) i))) (return false) (block)))
     true))
 
@@ -91,7 +91,7 @@
   ;; past its end), without allocating.
   (fn is_at [b:Bytes i:i32 s:str] -> bool (pub)
     (unsafe (if (or (lt i 0) (gt (+ i (str.len s)) (get b Bytes.len))) (return false) (block))
-    (loop k 0 (- (str.len s) 1) 1
+    (for k 0 (str.len s)
       (if (neq (call byte_at b (+ i k)) (mem.load8 (+ (str.ptr s) k))) (return false) (block)))
     true))
 
@@ -106,7 +106,7 @@
   (fn at_is [b:Bytes p:Bytes i:i32] -> bool
     (unsafe (let ba:i32 (+ (call addr b) i))
     (let pa:i32 (call addr p))
-    (loop k 0 (- (get p Bytes.len) 1) 1
+    (for k 0 (get p Bytes.len)
       (if (neq (mem.load8 (+ ba k)) (mem.load8 (+ pa k))) (return false) (block)))
     true))
 
@@ -128,7 +128,7 @@
     (if (gt m 64) (return (call two_way b p from false)) (block))
     (unsafe (let ba:i32 (call addr b))
     (let first:i32 (mem.load8 (call addr p)))
-    (loop i from (- n m) 1
+    (for i from (+ (- n m) 1)
       (if (and (eq (mem.load8 (+ ba i)) first) (call at_is b p i)) (return i) (block)))
     -1))
 
@@ -149,7 +149,7 @@
           (let r:i32 (call two_way b p 0 true))
           (return (if (lt r 0) -1 (- (- n m) r))))
         (block))
-    (loop j 0 (- n m) 1
+    (for j 0 (+ (- n m) 1)
       (let i:i32 (- (- n m) j))
       (if (call at_is b p i) (return i) (block)))
     -1)
@@ -193,7 +193,7 @@
     (if (gt (+ ip 1) (+ ms 1)) (set! ms ip) (set! per p0))
     ;; periodic: the needle's first ms+1 bytes recur after one period
     (let periodic:bool true)
-    (loop i 0 ms 1
+    (for i 0 (+ ms 1)
       (if (neq (call nth p i rev) (call nth p (+ i per) rev)) (set! periodic false) (block)))
     (let mem0:i32 0)
     (if periodic
@@ -257,7 +257,7 @@
   ;; Whether a and b are equal but for the case of ASCII letters.
   (fn eq_ignore_case [a:Bytes b:Bytes] -> bool (pub)
     (if (neq (get a Bytes.len) (get b Bytes.len)) (return false) (block))
-    (loop i 0 (- (get a Bytes.len) 1) 1
+    (for i 0 (get a Bytes.len)
       (if (neq (call lower (call byte_at a i)) (call lower (call byte_at b i))) (return false) (block)))
     true)
 
@@ -268,7 +268,7 @@
     (let n:i32 (if (lt (get a Bytes.len) (get b Bytes.len)) (get a Bytes.len) (get b Bytes.len)))
     (let pa:i32 (call addr a))
     (let pb:i32 (call addr b))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let x:i32 (unsafe (mem.load8 (+ pa i))))
       (let y:i32 (unsafe (mem.load8 (+ pb i))))
       (if (lt x y) (return -1) (block))
@@ -286,7 +286,7 @@
     (if (lte n start) (return (err:i64 n)) (block))
     ;; built negative, which reaches the lowest i64
     (let v:i64 0i64)
-    (loop i start (- n 1) 1
+    (for i start n
       (let c:i32 (call byte_at b i))
       (if (or (lt c 48) (gt c 57)) (return (err:i64 i)) (block))
       (let d:i64 (i64.extend_s (- c 48)))
@@ -313,7 +313,7 @@
     (unsafe (if (neq (str.len a) (str.len b)) (return false) (block))
     (let pa:i32 (str.ptr a))
     (let pb:i32 (str.ptr b))
-    (loop i 0 (- (str.len a) 1) 1
+    (for i 0 (str.len a)
       (if (neq (mem.load8 (+ pa i)) (mem.load8 (+ pb i))) (return false) (block)))
     true))
 
@@ -341,7 +341,7 @@
     (+ base 8)))
 
   (fn copy [to:i32 from:i32 n:i32] -> void (unsafe)
-    (unsafe (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ from i))))))
+    (unsafe (for i 0 n (mem.store8 (+ to i) (mem.load8 (+ from i))))))
 
   ;; The str whose bytes room returned at s: the word before its length
   ;; holds its address, read as a str field (in wasm that is the address
@@ -352,14 +352,14 @@
 
   ;; Index of the first byte equal to c, or -1.
   (fn find_byte [b:Bytes c:i32] -> i32 (pub)
-    (loop i 0 (- (get b Bytes.len) 1) 1
+    (for i 0 (get b Bytes.len)
       (if (eq (call byte_at b i) c) (return i) (block)))
     -1)
 
   ;; The number of bytes in b equal to c.
   (fn count_byte [b:Bytes c:i32] -> i32 (pub)
     (let n:i32 0)
-    (loop i 0 (- (get b Bytes.len) 1) 1
+    (for i 0 (get b Bytes.len)
       (if (eq (call byte_at b i) c) (set! n (+ n 1)) (block)))
     n)
 
@@ -373,7 +373,7 @@
   (fn count_words [b:Bytes] -> i32 (pub)
     (let words:i32 0)
     (let in_word:bool false)
-    (loop i 0 (- (get b Bytes.len) 1) 1
+    (for i 0 (get b Bytes.len)
       (if (call is_space (call byte_at b i))
           (set! in_word false)
           (if in_word
@@ -390,7 +390,7 @@
     (let start:i32 (if neg 1 0))
     (if (lte len start) (return (err:i32 0)) (block))
     (let n:i32 0)
-    (loop i start (- len 1) 1
+    (for i start len
       (let c:i32 (call byte_at b i))
       (if (or (lt c 48) (gt c 57)) (return (err:i32 i)) (block))
       (set! n (- (* n 10) (- c 48))))
@@ -416,7 +416,7 @@
             (let lo:i32 (cond ((eq c 224) 160) ((eq c 240) 144) (else 128)))
             (let hi:i32 (cond ((eq c 237) 159) ((eq c 244) 143) (else 191)))
             (if (or (lt c1 lo) (gt c1 hi)) (return false) (block))
-            (loop k 2 need 1
+            (for k 2 (+ need 1)
               (let ck:i32 (call byte_at b (+ i k)))
               (if (or (lt ck 128) (gt ck 191)) (return false) (block))))
           (block))

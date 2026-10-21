@@ -88,7 +88,7 @@
     (while true
       (when (eq len (arr.len data))
         (let bigger:(arr u8) (arr.new u8 a (* 2 (arr.len data))))
-        (unsafe (loop i 0 (- len 1) 1 (mem.store8 (+ (arr.addr bigger) i) (mem.load8 (+ (arr.addr data) i)))))
+        (unsafe (for i 0 len (mem.store8 (+ (arr.addr bigger) i) (mem.load8 (+ (arr.addr data) i)))))
         (call (alloc.free_array u8) a data)
         (set! data bigger))
       (let n:i32 (unsafe (fs.read fd (+ (arr.addr data) len) (- (arr.len data) len))))

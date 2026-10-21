@@ -549,6 +549,9 @@ fn malformed_files_are_rejected_like_rust() {
         // errors at a closing bracket
         ("if_without_else", b"(module m\n  (fn main [] -> i32\n    (if true 1)))"),
         ("type_without_constructor", b"(module m\n  (fn main [x:()] -> i32 1))"),
+        // CANONICAL_PLAN.md step 3: loop is retired in source, in both resolvers
+        ("loop_retired", b"(module m\n  (fn main [] -> i32\n    (let s:i32 0)\n    (loop i 0 3 1 (set! s (+ s i)))\n    s))"),
+        ("loop_retired_with_a_step", b"(module m\n  (fn main [] -> i32\n    (loop i 0 9 3 (break))\n    0))"),
         // CANONICAL_PLAN.md step 2: a generic written without its type arguments
         ("generic_call_without_types", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))\n    (call vec.push v 1)\n    0))"),
         ("generic_ref_without_types", b"(module m (import vec)\n  (fn main [] -> i32 (let f:i32 (ref vec.len)) 0))"),

@@ -321,10 +321,10 @@ fn a_million_map_finds_allocate_nothing() {
         "(module main (import map) (import alloc) (import option)
           (fn main [] -> i32
             (let m:(ptr (map.Map i32 i64)) (call (map.make i32 i64) (call alloc.default) 16))
-            (loop k 0 99 1 (call (map.set i32 i64) m k (i64.extend_s (* k 3))))
+            (for k 0 100 (call (map.set i32 i64) m k (i64.extend_s (* k 3))))
             (let before:i32 (unsafe (mem.load32 0)))
             (let sum:i64 0i64)
-            (loop i 1 1000000 1
+            (for i 1 1000001
               (match (call (map.find i32 i64) m (% i 128))
                 ((option.Option i64) some [v] (set! sum (+ sum v)))
                 ((option.Option i64) none (set! sum (- sum 1i64)))))

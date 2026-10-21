@@ -2,8 +2,10 @@
 //! module (AIPL_SPEC.md 4.M), so nothing after it sees them:
 //!
 //! - `(when c body...)` is `(if c (block body...) (block))`;
-//! - `(for i start end body...)` is `(loop i start (- end 1) 1 body...)`: i
-//!   from start up to, but not including, end;
+//! - `(for i start end body...)` is `(counted_loop i start (- end 1) 1 body...)`:
+//!   i from start up to, but not including, end (the internal form, which
+//!   counts to its end inclusive and has a step, is not for programs: `loop`
+//!   is an error, CANONICAL_PLAN.md step 3);
 //! - `(and a b c ...)` is `(and a (and b c ...))`, and `or` the same;
 //! - `(new S a)` is `(call (alloc.create S) a)` and `(arr.new T a n)` is
 //!   `(call (alloc.array T) a n)`: every allocation names its allocator
@@ -71,7 +73,7 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
         }
         Some("for") => {
             let end = list_at(vec![symbol_at("-", at), items[3].clone(), int_at(1, at)], at);
-            let mut out = vec![symbol_at("loop", at), items[1].clone(), items[2].clone(), end, int_at(1, at)];
+            let mut out = vec![symbol_at("counted_loop", at), items[1].clone(), items[2].clone(), end, int_at(1, at)];
             out.extend(items[4..].iter().cloned());
             *sx = list_at(out, at);
         }

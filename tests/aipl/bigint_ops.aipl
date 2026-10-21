@@ -64,7 +64,7 @@
     (put rs Regs.part (call bigint.from_i32 (call alloc.forever) 0))
     (put rs Regs.one (call bigint.from_i32 (call alloc.forever) 1))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
-    (loop step 1 4000 1
+    (for step 1 4001
       (let op:i32 (% (call next r) 10))
       (let a:(ptr bigint.Int) (call reg rs (% (call next r) 4)))
       (let b:(ptr bigint.Int) (call reg rs (% (call next r) 4)))

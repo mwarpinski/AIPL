@@ -80,7 +80,7 @@
             (put c Chunk.used (get a Arena.used))
             (put a Arena.current (get c Chunk.next))
             (put a Arena.used 0))))
-    (loop i 0 (- (/ size 8) 2) 1 (mem.store64 (+ found (* 8 i)) 0i64))
+    (for i 0 (- (/ size 8) 1) (mem.store64 (+ found (* 8 i)) 0i64))
     found))
 
   ;; A zeroed T from the arena. Everything allocated between two resets
@@ -144,7 +144,7 @@
                 (block))
             (put f Fast.current (get c Chunk.next))
             (put f Fast.used 0))))
-    (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ found (* 8 i)) 0i64))
+    (for i 0 (/ size 8) (mem.store64 (+ found (* 8 i)) 0i64))
     found))
 
   ;; A zeroed T, with the fast arena's generation until its next reset.
@@ -181,7 +181,7 @@
     (put x Pair.left 7)
     (if (and (eq (get y Pair.left) 0) (neq (ptr.addr x) (ptr.addr y))) (set! p (+ p 1)) (block))
     ;; a full chunk moves on to a new one
-    (loop i 1 10 1 (let _z:(ptr Pair) (call (alloc Pair) a)))
+    (for i 1 11 (let _z:(ptr Pair) (call (alloc Pair) a)))
     (if (gt (call reserved a) 64) (set! p (+ p 1)) (block))
     ;; reset reuses the memory: the next allocation is where the first was
     (let before:i32 (call reserved a))
@@ -192,7 +192,7 @@
     (if (eq (get x2 Pair.left) 0) (set! p (+ p 1)) (block))
     ;; refilling after reset takes no new memory; an oversized request gets
     ;; a chunk of its own
-    (loop i 1 10 1 (let _z:(ptr Pair) (call (alloc Pair) a)))
+    (for i 1 11 (let _z:(ptr Pair) (call (alloc Pair) a)))
     (let big:i32 (call raw a 1000))
     (if (and (gte (- (call reserved a) before) 1000) (eq (bitand big 7) 0)) (set! p (+ p 1)) (block))
     ;; a fast arena packs objects without headers: 8 bytes closer together

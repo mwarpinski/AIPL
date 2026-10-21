@@ -331,7 +331,7 @@
     (req (and (gte at 0) (lte (+ at 4) (call buf.len c))))
     (unsafe (let rel:i32 (- target (+ at 4)))
     (let p:i32 (+ (get c buf.Buf.data) at))
-    (loop k 0 3 1
+    (for k 0 4
       (mem.store8 (+ p k) (bitand (shru rel (* 8 k)) 255)))))
 
   ;; call r (indirect)
@@ -348,7 +348,7 @@
   ;; The buffer as lowercase hex, two digits per byte, no separators.
   (fn hex [c:(ptr buf.Buf)] -> str.Bytes
     (unsafe (let out:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 2 (* 2 (call buf.len c)))))
-    (loop i 0 (- (call buf.len c) 1) 1
+    (for i 0 (call buf.len c)
       (let v:i32 (mem.load8 (+ (get c buf.Buf.data) i)))
       (call buf.push_byte out (call hex_digit (shru v 4)))
       (call buf.push_byte out (call hex_digit (bitand v 15))))
@@ -386,7 +386,7 @@
 
   (fn test_moves [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
-    (loop r 0 15 1
+    (for r 0 16
       (call mov_rr c 64 r (call p r))
       (call mov_rr c 32 r (call p r))
       (call mov_ri32 c r -5)
@@ -405,10 +405,10 @@
 
   (fn test_alu [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 4096))
-    (loop k 0 5 1
+    (for k 0 6
       (let op:i32 (cond ((eq k 0) (call op_add)) ((eq k 1) (call op_or)) ((eq k 2) (call op_and))
                         ((eq k 3) (call op_sub)) ((eq k 4) (call op_xor)) (else (call op_cmp))))
-      (loop r 0 15 1
+      (for r 0 16
         (call alu_rr c 32 op r (call p r))
         (call alu_rr c 64 op (call p r) r)
         (call alu_ri c 32 op r 5)
@@ -419,7 +419,7 @@
         (call alu_ri c 64 op r -128)
         (call alu_ri c 32 op r 128)
         (call alu_ri c 64 op r -129)))
-    (loop r 0 15 1
+    (for r 0 16
       (call test_rr c 32 r (call p r))
       (call test_rr c 64 r (call p r))
       (call test_ri c 32 r 255)
@@ -428,8 +428,8 @@
 
   (fn test_muldiv [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
-    (loop r 0 15 1
-      (loop k 0 2 1
+    (for r 0 16
+      (for k 0 3
         (let kind:i32 (cond ((eq k 0) (call sh_shl)) ((eq k 1) (call sh_shr)) (else (call sh_sar))))
         (call shift_ri c 32 kind r 1)
         (call shift_ri c 64 kind r 5)
@@ -451,7 +451,7 @@
 
   (fn test_memory [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
-    (loop b 0 15 1
+    (for b 0 16
       (let r:i32 (call p b))
       (call load c 32 r (call mem b 0))
       (call load c 64 r (call mem b 8))
@@ -469,7 +469,7 @@
 
   (fn test_atomics [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
-    (loop b 0 15 1
+    (for b 0 16
       (let r:i32 (call p b))
       (call lock c) (call xadd c 32 (call mem b 0) r)
       (call lock c) (call xadd c 64 (call mem_index b (call ix b) (call sc b) 8) r)
@@ -490,7 +490,7 @@
     (call patch_rel32 c je (call buf.len c))
     (call ret c)
     (call syscall c)
-    (loop k 0 15 1 (call patch_rel32 c (call jcc c k) 0))
+    (for k 0 16 (call patch_rel32 c (call jcc c k) 0))
     (call patch_rel32 c (call jmp c) 0)
     (call check "control" c "e90d0000000f8407000000e8f0ffffff0f0bc30f050f80e5ffffff0f81dfffffff0f82d9ffffff0f83d3ffffff0f84cdffffff0f85c7ffffff0f86c1ffffff0f87bbffffff0f88b5ffffff0f89afffffff0f8aa9ffffff0f8ba3ffffff0f8c9dffffff0f8d97ffffff0f8e91ffffff0f8f8bffffffe986ffffff"))
 
@@ -559,7 +559,7 @@
   ;; Every form over every register pair p(r) (vectors: tools/x64_vectors.py sse)
   (fn test_sse [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
-    (loop r 0 15 1
+    (for r 0 16
       (call movq_xr c r (call p r))
       (call movq_rx c (call p r) r)
       (call movd_xr c r (call p r))
@@ -587,7 +587,7 @@
 
   (fn test_tls [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-    (loop r 0 15 1
+    (for r 0 16
       (call fs c) (call load c 64 r (call mem (call p r) 8))
       (call fs c) (call store c 64 (call mem (call p r) 16) r)
       (call fs c) (call load c 32 r (call mem (call p r) 0)))
@@ -654,7 +654,7 @@
 
   (fn test_nops [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (loop n 1 9 1 (call nop c n))
+    (for n 1 10 (call nop c n))
     (call check "nops" c "9066900f1f000f1f40000f1f440000660f1f4400000f1f80000000000f1f840000000000660f1f840000000000"))
 
   ;; ===== Memory operands (NATIVE_SPEED_PLAN.md F2) =====
@@ -708,7 +708,7 @@
   ;; expected bytes from GNU as (movsbl, movzwl, movswl, movw)
   (fn test_narrow [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
-    (loop b 0 15 1
+    (for b 0 16
       (let r:i32 (call p b))
       (call load8s c r (call mem b 0))
       (call load16u c r (call mem b 2))
@@ -738,7 +738,7 @@
   ;; expected bytes from GNU as
   (fn test_float_conv [] -> i32
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 2048))
-    (loop x 0 15 1
+    (for x 0 16
       (let r:i32 (call p x))
       (call cvtsd2ss c x r)
       (call cvtss2sd c x r)

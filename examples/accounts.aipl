@@ -52,7 +52,7 @@
     (req (gte start 0))
     (let a:(ptr Account) (call open 1 start))
     (let b:(ptr Account) (call open 2 start))
-    (loop i 1 times 1
+    (for i 1 (+ times 1)
       (match_result (call transfer a b amount)
         (ok left (block))
         (err code (return (- 0 code)))))

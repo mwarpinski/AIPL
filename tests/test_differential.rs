@@ -258,7 +258,7 @@ fn loop_end_bound_is_inclusive() {
     (module m
       (fn f [] -> i32
         (let acc:i32 0)
-        (loop i 0 5 1 (set! acc (+ acc i)))
+        (for i 0 6 (set! acc (+ acc i)))
         acc))
     "#;
     let (module, wasm) = compile_checked(src);
@@ -272,7 +272,8 @@ fn loop_with_step_and_negative_start() {
       (fn f [] -> i32
         (let acc:i32 0)
         (let n:i32 0)
-        (loop i -6 6 3 (set! acc (+ acc i)) (set! n (+ n 1)))
+        (let i:i32 -6)
+        (while (lte i 6) (set! acc (+ acc i)) (set! n (+ n 1)) (set! i (+ i 3)))
         (+ (* n 1000) acc)))
     "#;
     let (module, wasm) = compile_checked(src);
@@ -695,10 +696,10 @@ fn p8_structs_and_arrays() {
 
   (fn test_array_ops [n:i32] -> i32 (unsafe)
     (let arr:(arr i32) (arr.new i32 (call alloc.forever) n))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (arr.set i32 arr i (* (+ i 1) 10)))
     (let sum:i32 0)
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (set! sum (+ sum (arr.get i32 arr i))))
     sum)
 
@@ -740,13 +741,13 @@ fn p8_structs_and_arrays() {
   ;; AIPL_SPEC.md 4.E example
   (fn test_points [] -> i32 (unsafe)
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
-    (loop i 0 2 1
+    (for i 0 3
       (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
-    (loop i 0 2 1
+    (for i 0 3
       (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
     sum)
@@ -876,7 +877,7 @@ fn allocation_grows_memory_identically() {
   (struct P [x:i32 y:i64])
   (fn main [] -> i32 (unsafe)
     (let total:i32 0)
-    (loop i 1 3000 1
+    (for i 1 3001
       (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x i)
       (let a:(arr i32) (arr.new i32 (call alloc.forever) 100))
@@ -939,7 +940,7 @@ const NESTED_LOCALS: &str = "(module nested
   (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok:i32 n) (err:i32 n)))
   (fn main [] -> i32
     (let total:i32 0)
-    (loop i 0 (block (let last:i32 3) last) 1
+    (for i 0 (+ (block (let last:i32 3) last) 1)
       (set! total (+ total (match_result (call g i) (ok k (+ k 1)) (err e (- e 1))))))
     (+ total
        (+ (block (let x:i32 40) (+ x 2))

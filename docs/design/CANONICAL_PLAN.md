@@ -23,7 +23,7 @@ decides the larger syntax questions with numbers.
 |---|---|---|
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
 | 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (one row not built, in section 2) |
-| 3 | Retire `loop`: `for` is the only counted loop | Not started |
+| 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (internal Loop node kept, see section 3) |
 | 4 | `when` is the only `if` with one branch | Not started |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
@@ -159,6 +159,51 @@ step:
 What a loop compiles to may change (an exclusive bound is one compare,
 not a subtract and a compare); both toolchains' bytes stay equal to each
 other, and the benchmarks are measured again.
+
+Built 2026-10-21. Two choices differ from the text above, and are the
+owner's to overrule:
+
+- `loop` written in a program is an error from both parsers: `Unknown
+  op/keyword: loop; loop is retired: (for i start end body...) counts from
+  start up to end, end left out; for another step, use while`. It could not
+  be refused where source is read (src/sugar.rs, resolver.aipl), because the
+  toolchain's own output is read again as source (the printer's text, the
+  text `dbg` and `show` lower to, the flat program the code generator
+  parses), and that output has a counted loop in it. So the internal form,
+  which counts to its end inclusive and has a step, now has its own head,
+  `counted_loop`: the resolver's `for` rewrite, the printer, the lowering of
+  `dbg`, and the code generators' tables write and read it. A program that
+  writes `counted_loop` gets the old semantics; it is not documented.
+- The AST keeps its Loop node and no backend changed: `for` still becomes
+  `(counted_loop i start (- end 1) 1 body...)`, so `(for i 0 end)` is still
+  a subtract and an inclusive test, and `end` = i32's least value wraps and
+  runs about 2^32 times (the spec's `for` row says so). Making `for` a node
+  of its own (an exclusive compare, no subtract) is a change to the checker,
+  the VM, wasm.rs, codegen.aipl, the leaks pass, and the printer in both
+  toolchains; do it when a benchmark shows it matters. What was done as the
+  plan says: both bare parsers (Parser::parse, parser.aipl) read `for`
+  directly now, into that same node.
+- Every `loop` in the repository was rewritten by tools/retire_loop.py:
+  727 in aipl_src, tests/aipl, benchmarks and examples; 69 in tests/*.rs;
+  18 in the spec, guide and tour. A step of 1 became `for` with the end
+  plus one (`(- X 1)` became `X`, `(- X k)` became `(- X k-1)`, a number
+  became the next, anything else `(+ E 1)`: 89 loops in the compiler, so
+  the compiled compiler differs from before only by those adds). The four
+  with another step were done by hand as `while` (tests/aipl/
+  results_by_value.aipl is the one in a program; three more in tests). The
+  tests that feed the bare parser or the self-hosted code generator a
+  program keep the inclusive form as `counted_loop` (tests/test_selfhost.rs,
+  the corpus in tests/test_checker_aipl.rs); test_selfhost's helpers now
+  resolve a program that has a `for`. The generators tools/fuzz.py,
+  run_fuzz.py (its loops had steps 1 or 2, now only 1; its `while` loops
+  stay) and text_vectors.py write `for`.
+- The seed (bootstrap/) did not need a refresh: it reads `for`, and the
+  compiler's source has no `loop` now. A new seed would only make the
+  checked-in binary the one that refuses `loop`; ask the owner when one is
+  wanted for another reason.
+- Not measured: the benchmarks' times. Their outputs are checked by the
+  suite; times are as before apart from the adds above, which run once per
+  loop, not per pass.
 
 ## 4. `when` is the only one-branch `if`
 

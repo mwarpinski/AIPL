@@ -35,7 +35,7 @@
     (arr.set Body bs 4 (call body 15.3796971148509165 -25.9193146099879641 0.179258772950371181 0.00268067772490389322 0.00162824170038242295 -0.0000951592254519715870 0.0000515138902046611451))
     ;; the Sun takes the momentum that makes the total zero
     (let px:f64 0.0) (let py:f64 0.0) (let pz:f64 0.0)
-    (loop i 0 4 1
+    (for i 0 5
       (let b:Body (arr.get Body bs i))
       (set! px (+ px (* (get b Body.vel Vec3.x) (get b Body.mass))))
       (set! py (+ py (* (get b Body.vel Vec3.y) (get b Body.mass))))
@@ -45,13 +45,13 @@
 
   (fn energy [bs:(arr Body)] -> f64
     (let e:f64 0.0)
-    (loop i 0 4 1
+    (for i 0 5
       (let b:Body (arr.get Body bs i))
       (let v:Vec3 (get b Body.vel))
       (set! e (+ e (* (* 0.5 (get b Body.mass))
                       (+ (+ (* (get v Vec3.x) (get v Vec3.x)) (* (get v Vec3.y) (get v Vec3.y)))
                          (* (get v Vec3.z) (get v Vec3.z))))))
-      (loop j (+ i 1) 4 1
+      (for j (+ i 1) 5
         (let c:Body (arr.get Body bs j))
         (let dx:f64 (- (get b Body.pos Vec3.x) (get c Body.pos Vec3.x)))
         (let dy:f64 (- (get b Body.pos Vec3.y) (get c Body.pos Vec3.y)))
@@ -61,8 +61,8 @@
     e)
 
   (fn advance [bs:(arr Body) dt:f64] -> void
-    (loop i 0 4 1
-      (loop j (+ i 1) 4 1
+    (for i 0 5
+      (for j (+ i 1) 5
         ;; body i read again for each j: its velocity changes as it goes
         (let a:Body (arr.get Body bs i))
         (let b:Body (arr.get Body bs j))
@@ -80,7 +80,7 @@
           (make Vec3 (- (get va Vec3.x) (* (* dx mj) mag)) (- (get va Vec3.y) (* (* dy mj) mag)) (- (get va Vec3.z) (* (* dz mj) mag))))
         (arr.set Body bs j Body.vel
           (make Vec3 (+ (get vb Vec3.x) (* (* dx mi) mag)) (+ (get vb Vec3.y) (* (* dy mi) mag)) (+ (get vb Vec3.z) (* (* dz mi) mag))))))
-    (loop i 0 4 1
+    (for i 0 5
       (let b:Body (arr.get Body bs i))
       (let p:Vec3 (get b Body.pos))
       (let v:Vec3 (get b Body.vel))
@@ -93,7 +93,7 @@
     (let bs:(arr Body) (call system))
     (call io.print_f64 (call energy bs) 9)
     (call io.println "")
-    (loop s 1 n 1 (call advance bs 0.01))
+    (for s 1 (+ n 1) (call advance bs 0.01))
     (call io.print_f64 (call energy bs) 9)
     (call io.println "")
     (call time.report "nbody computed in" started)

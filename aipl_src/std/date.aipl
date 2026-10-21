@@ -136,7 +136,7 @@
 
   (fn push_digits [b:(ptr buf.Buf) n:i32 width:i32] -> void
     (let p:i32 1)
-    (loop k 2 width 1 (set! p (* p 10)))
+    (for k 2 (+ width 1) (set! p (* p 10)))
     (while (gt p 0)
       (call buf.push_byte b (+ 48 (% (/ n p) 10)))
       (set! p (/ p 10))))
@@ -186,7 +186,7 @@
   (fn digits [t:str.Bytes i:i32 n:i32] -> i32
     (if (gt (+ i n) (get t str.Bytes.len)) (return -1) (block))
     (let v:i32 0)
-    (loop k 0 (- n 1) 1
+    (for k 0 n
       (let c:i32 (call str.byte_at t (+ i k)))
       (if (or (lt c 48) (gt c 57)) (return -1) (block))
       (set! v (+ (* v 10) (- c 48))))
@@ -233,7 +233,7 @@
             (if (lt (- i start) 9) (set! nano (+ (* nano 10) (- (call str.byte_at t i) 48))) (block))
             (set! i (+ i 1)))
           (if (or (eq i start) (gt (- i start) 9)) (return (err:Date (if (eq i start) (call min_at n i) (+ start 9)))) (block))
-          (loop k (- i start) 8 1 (set! nano (* nano 10))))
+          (for k (- i start) 9 (set! nano (* nano 10))))
         (block))
     ;; the offset: Z, or a sign and HH:MM, which is subtracted to give UTC
     (let off:i32 0)
@@ -261,7 +261,7 @@
   ;; if t ends first); the first of them when all are digits but the value
   ;; is out of range.
   (fn bad_digit [t:str.Bytes i:i32 n:i32] -> i32
-    (loop k 0 (- n 1) 1
+    (for k 0 n
       (if (gte (+ i k) (get t str.Bytes.len)) (return (+ i k)) (block))
       (let c:i32 (call str.byte_at t (+ i k)))
       (if (or (lt c 48) (gt c 57)) (return (+ i k)) (block)))
@@ -291,7 +291,7 @@
         (set! p (+ p 1))
         (block))
     (let ok:bool true)
-    (loop k -700 2900 1
+    (for k -700 2901
       (let s:i64 (* (i64.extend_s k) 86399999i64))
       (if (neq (call to_unix (call from_unix s)) s) (set! ok false) (block)))
     (if (and ok (and (eq (call to_unix (call from_unix FIRST)) FIRST) (eq (call to_unix (call from_unix (- END 1i64))) (- END 1i64))))

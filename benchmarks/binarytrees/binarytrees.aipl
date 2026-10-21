@@ -51,7 +51,7 @@
     (while (lte d max_depth)
       (let iterations:i32 (shl 1 (+ (- max_depth d) min_depth)))
       (let checked:i32 0)
-      (loop i 1 iterations 1
+      (for i 1 (+ iterations 1)
         (set! checked (+ checked (call check (call bottom_up scratch d))))
         (call arena.reset scratch))
       (call buf.push_int out iterations)

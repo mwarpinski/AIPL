@@ -153,7 +153,7 @@
          (ast.Type.fn_ [n_fn2] (let pb:(arr ast.Type) (get n_fn2 ast.FnType.params)) (let rb:ast.Type (get n_fn2 ast.FnType.ret))
           (if (neq (arr.len pa) (arr.len pb)) (return false) (block))
           (if (neq (get n_fn ast.FnType.no_leak) (get n_fn2 ast.FnType.no_leak)) (return false) (block))
-          (loop k 0 (- (arr.len pa) 1) 1
+          (for k 0 (arr.len pa)
             (if (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k)) (block) (return false)))
           (call teq ra rb))
          (else false)))
@@ -177,7 +177,7 @@
        (if (and (lt depth 64) (call is_value c n))
            (block
              (let fs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
-             (loop k 0 (- (arr.len fs) 1) 1
+             (for k 0 (arr.len fs)
                (if (call layout_error_at c b (get (arr.get (ptr ast.Field) fs k) ast.Field.ty) (+ depth 1)) (return true) (block)))
              false)
            (block (call s b "Unsupported type for memory layout: ") (call ty b t) true)))
@@ -251,31 +251,31 @@
   ;; src/checker.rs check_module.
   (fn check_module [c:(ptr C) m:(ptr ast.Module)] -> void
     (let es:(arr (ptr ast.EnumDef)) (get m ast.Module.enums))
-    (loop k 0 (- (arr.len es) 1) 1
+    (for k 0 (arr.len es)
       (if (get c C.failed) (return) (block))
       (call register_enum c m (arr.get (ptr ast.EnumDef) es k)))
     (let ss:(arr (ptr ast.StructDef)) (get m ast.Module.structs))
-    (loop k 0 (- (arr.len ss) 1) 1
+    (for k 0 (arr.len ss)
       (if (get c C.failed) (return) (block))
       (call register_struct c (arr.get (ptr ast.StructDef) ss k)))
-    (loop k 0 (- (arr.len ss) 1) 1
+    (for k 0 (arr.len ss)
       (if (get c C.failed) (return) (block))
       (if (get (arr.get (ptr ast.StructDef) ss k) ast.StructDef.value) (call check_value_struct c (arr.get (ptr ast.StructDef) ss k)) (block)))
-    (loop k 0 (- (arr.len ss) 1) 1
+    (for k 0 (arr.len ss)
       (if (get c C.failed) (return) (block))
       (call check_layout c (arr.get (ptr ast.StructDef) ss k)))
     (let us:(arr (ptr ast.UnionDef)) (get m ast.Module.unions))
-    (loop k 0 (- (arr.len us) 1) 1
+    (for k 0 (arr.len us)
       (if (get c C.failed) (return) (block))
       (call register_union c (arr.get (ptr ast.UnionDef) us k)))
     (if (get c C.failed) (return) (block))
     ;; which unions are values, which a result's slots count
     (call decide_unions c us)
     ;; field types may name structs and unions defined later
-    (loop k 0 (- (arr.len ss) 1) 1
+    (for k 0 (arr.len ss)
       (let sd:(ptr ast.StructDef) (arr.get (ptr ast.StructDef) ss k))
       (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
-      (loop j 0 (- (arr.len fs) 1) 1
+      (for j 0 (arr.len fs)
         (if (get c C.failed) (return) (block))
         (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
         ;; a storage type is a field's type only (not a value struct's)
@@ -288,13 +288,13 @@
               (call by b (call names.shown (get sd ast.StructDef.name))) (call s b "')")
               (call fail c b))
             (block))))
-    (loop k 0 (- (arr.len us) 1) 1
+    (for k 0 (arr.len us)
       (let ud:(ptr ast.UnionDef) (arr.get (ptr ast.UnionDef) us k))
       (let vs:(arr (ptr ast.Variant)) (get ud ast.UnionDef.variants))
-      (loop j 0 (- (arr.len vs) 1) 1
+      (for j 0 (arr.len vs)
         (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs j))
         (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
-        (loop q 0 (- (arr.len fs) 1) 1
+        (for q 0 (arr.len fs)
           (if (get c C.failed) (return) (block))
           (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs q))
           (let b:(ptr buf.Buf) (call validate c (get f ast.Field.ty) (get ud ast.UnionDef.at)))
@@ -309,7 +309,7 @@
       (if (get c C.failed) (return) (block))
       (call fail_if c (call union_error c (arr.get (ptr ast.UnionDef) us k))))
     (let fns:(arr (ptr ast.FnDef)) (get m ast.Module.fns))
-    (loop k 0 (- (arr.len fns) 1) 1
+    (for k 0 (arr.len fns)
       (let fd:(ptr ast.FnDef) (arr.get (ptr ast.FnDef) fns k))
       (if (call (map.has str.Bytes (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name))
           (block
@@ -330,7 +330,7 @@
               (block))))
       (let sig:(ptr Sig) (new Sig (call alloc.forever)))
       (let pts:(arr ast.Type) (arr.new ast.Type (call alloc.forever) (arr.len ps)))
-      (loop j 0 (- (arr.len ps) 1) 1 (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
+      (for j 0 (arr.len ps) (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
       (put sig Sig.params pts)
       (put sig Sig.ret (get fd ast.FnDef.ret))
       (put sig Sig.unsafe_ (get fd ast.FnDef.unsafe_))
@@ -338,7 +338,7 @@
     ;; a definition's error is reported alone
     (if (get c C.failed) (return) (block))
     (put c C.leaks (call leaks.analyze m))
-    (loop k 0 (- (arr.len fns) 1) 1
+    (for k 0 (arr.len fns)
       (call check_fn c (arr.get (ptr ast.FnDef) fns k))
       (if (get c C.failed)
           (block
@@ -365,7 +365,7 @@
         (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Duplicate enum definition '") (call by b name) (call s b "'") (call fail c b) (return))
         (block))
     (let ss:(arr (ptr ast.StructDef)) (get m ast.Module.structs))
-    (loop k 0 (- (arr.len ss) 1) 1
+    (for k 0 (arr.len ss)
       (if (call beq (get (arr.get (ptr ast.StructDef) ss k) ast.StructDef.name) name)
           (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "'") (call by b name) (call s b "' is defined as both a struct and an enum") (call fail c b) (return))
           (block)))
@@ -373,7 +373,7 @@
     (if (and (eq (arr.len ms) 0) (not (call names.is_sealed name)))
         (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "enum '") (call by b name) (call s b "' has no members") (call fail c b) (return))
         (block))
-    (loop i 0 (- (arr.len ms) 1) 1
+    (for i 0 (arr.len ms)
       (let mi:(ptr ast.Member) (arr.get (ptr ast.Member) ms i))
       (let mn:str.Bytes (get mi ast.Member.name))
       (if (not (call lower_start mn))
@@ -382,7 +382,7 @@
             (call s b "enum member '") (call by b name) (call s b ".") (call by b mn) (call s b "' must start with a lowercase letter or '_'")
             (call fail c b) (return))
           (block))
-      (loop j 0 (- i 1) 1
+      (for j 0 i
         (let mj:(ptr ast.Member) (arr.get (ptr ast.Member) ms j))
         (if (call beq (get mj ast.Member.name) mn)
             (block
@@ -390,7 +390,7 @@
               (call s b "enum '") (call by b name) (call s b "' has two members named '") (call by b mn) (call s b "'")
               (call fail c b) (return))
             (block)))
-      (loop j 0 (- i 1) 1
+      (for j 0 i
         (let mj:(ptr ast.Member) (arr.get (ptr ast.Member) ms j))
         (if (eq (get mj ast.Member.value) (get mi ast.Member.value))
             (block
@@ -408,9 +408,9 @@
         (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "Duplicate struct definition '") (call by b name) (call s b "'") (call fail c b) (return))
         (block))
     (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
-    (loop i 0 (- (arr.len fs) 1) 1
+    (for i 0 (arr.len fs)
       (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
-      (loop j 0 (- i 1) 1
+      (for j 0 i
         (if (call beq (get (arr.get (ptr ast.Field) fs j) ast.Field.name) (get fi ast.Field.name))
             (block
               (let b:(ptr buf.Buf) (call msg c at))
@@ -424,7 +424,7 @@
   (fn check_layout [c:(ptr C) sd:(ptr ast.StructDef)] -> void
     (let at:i32 (get sd ast.StructDef.at))
     (let fs:(arr (ptr ast.Field)) (get sd ast.StructDef.fields))
-    (loop i 0 (- (arr.len fs) 1) 1
+    (for i 0 (arr.len fs)
       (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
       (let b:(ptr buf.Buf) (call msg c at))
       (call s b "Field '") (call by b (get fi ast.Field.name)) (call s b "' in struct '") (call by b (call names.shown (get sd ast.StructDef.name))) (call s b "': ")
@@ -440,7 +440,7 @@
     (if (eq (arr.len fs) 0)
         (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "value struct '") (call by b (call names.shown name)) (call s b "' has no fields") (call fail c b) (return))
         (block))
-    (loop i 0 (- (arr.len fs) 1) 1
+    (for i 0 (arr.len fs)
       (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
       (let k:i32 (call tag (get fi ast.Field.ty)))
       (if (or (or (or (eq k 5) (eq k 13)) (or (eq k 9) (eq k 6))) (gte k 14))
@@ -454,7 +454,7 @@
     ;; order as src/checker.rs, so the same field is named)
     (let names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (let firsts:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
-    (loop i 0 (- (arr.len fs) 1) 1
+    (for i 0 (arr.len fs)
       (let fi:(ptr ast.Field) (arr.get (ptr ast.Field) fs i))
       (let vn:str.Bytes (call value_field c (get fi ast.Field.ty)))
       (if (call str.present vn)
@@ -477,7 +477,7 @@
             (if (call has_struct c n)
                 (block
                   (let dfs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
-                  (loop j 0 (- (arr.len dfs) 1) 1
+                  (for j 0 (arr.len dfs)
                     (let m:str.Bytes (call value_field c (get (arr.get (ptr ast.Field) dfs j) ast.Field.ty)))
                     (if (call str.present m)
                         (block (call (vec.push str.Bytes) names m) (call (vec.push str.Bytes) firsts first))
@@ -507,7 +507,7 @@
            (block
              (let fs:(arr (ptr ast.Field)) (get (call struct_def c n) ast.StructDef.fields))
              (let total:i32 0)
-             (loop k 0 (- (arr.len fs) 1) 1 (set! total (+ total (call scalars c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty)))))
+             (for k 0 (arr.len fs) (set! total (+ total (call scalars c (get (arr.get (ptr ast.Field) fs k) ast.Field.ty)))))
              total)
            1))
       (else 1)))
@@ -525,7 +525,7 @@
     (if (eq (arr.len vs) 0)
         (block (let b:(ptr buf.Buf) (call msg c at)) (call s b "union '") (call by b name) (call s b "' has no variants") (call fail c b) (return))
         (block))
-    (loop i 0 (- (arr.len vs) 1) 1
+    (for i 0 (arr.len vs)
       (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) vs i))
       (let vn:str.Bytes (get v ast.Variant.name))
       (if (not (call lower_start vn))
@@ -534,7 +534,7 @@
             (call s b "union variant '") (call by b name) (call s b ".") (call by b vn) (call s b "' must start with a lowercase letter or '_'")
             (call fail c b) (return))
           (block))
-      (loop j 0 (- i 1) 1
+      (for j 0 i
         (if (call beq (get (arr.get (ptr ast.Variant) vs j) ast.Variant.name) vn)
             (block
               (let b:(ptr buf.Buf) (call msg c at))
@@ -542,9 +542,9 @@
               (call fail c b) (return))
             (block)))
       (let fs:(arr (ptr ast.Field)) (get v ast.Variant.fields))
-      (loop j 0 (- (arr.len fs) 1) 1
+      (for j 0 (arr.len fs)
         (let fj:(ptr ast.Field) (arr.get (ptr ast.Field) fs j))
-        (loop q 0 (- j 1) 1
+        (for q 0 j
           (if (call beq (get (arr.get (ptr ast.Field) fs q) ast.Field.name) (get fj ast.Field.name))
               (block
                 (let b:(ptr buf.Buf) (call msg c at))
@@ -788,7 +788,7 @@
        (let second:(ptr buf.Buf) (call validate c err_t at))
        (if (neq second (ptr.null buf.Buf)) second (call result_error c ok_t err_t at)))
       (ast.Type.fn_ [n_fn] (let params:(arr ast.Type) (get n_fn ast.FnType.params)) (let ret:ast.Type (get n_fn ast.FnType.ret))
-       (loop k 0 (- (arr.len params) 1) 1
+       (for k 0 (arr.len params)
          (let pe:(ptr buf.Buf) (call validate c (arr.get ast.Type params k) at))
          (if (neq pe (ptr.null buf.Buf)) (return pe) (block)))
        (call validate c ret at))
@@ -941,7 +941,7 @@
     (let at:i32 (get f ast.FnDef.at))
     (let fname:str.Bytes (get f ast.FnDef.name))
     (let ps:(arr (ptr ast.Param)) (get f ast.FnDef.params))
-    (loop k 0 (- (arr.len ps) 1) 1
+    (for k 0 (arr.len ps)
       (let prm:(ptr ast.Param) (arr.get (ptr ast.Param) ps k))
       (call (map.set str.Bytes ast.Type) (get c C.declared) (get prm ast.Param.name) (get prm ast.Param.ty))
       (let b:(ptr buf.Buf) (call validate c (get prm ast.Param.ty) at))
@@ -965,7 +965,7 @@
       (return))
     ;; contracts
     (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
-    (loop k 0 (- (arr.len cs) 1) 1
+    (for k 0 (arr.len cs)
       (match (arr.get ast.Contract cs k)
         (ast.Contract.ensures [ee]
          (let m:i32 (call mark env))
@@ -988,7 +988,7 @@
     (let last:ast.Type (call void_t))
     (let body:(arr ast.Expr) (get f ast.FnDef.body))
     (let last_stmt:i32 -1)
-    (loop k 0 (- (arr.len body) 1) 1
+    (for k 0 (arr.len body)
       (if (not (get c C.failed))
           ;; a defer is a statement of the body, and not its value
           (if (call is_defer (arr.get ast.Expr body k))
@@ -1035,7 +1035,7 @@
   ;; The type of the last of a sequence (void if empty), each checked in env.
   (fn infer_seq [c:(ptr C) body:(arr ast.Expr) env:(ptr Env)] -> ast.Type
     (let t:ast.Type (call void_t))
-    (loop k 0 (- (arr.len body) 1) 1
+    (for k 0 (arr.len body)
       (if (not (get c C.failed)) (set! t (call infer c (arr.get ast.Expr body k) env)) (block)))
     t)
 
@@ -1459,7 +1459,7 @@
           (call s b ", got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
-    (loop k 0 (- (arr.len args) 1) 1
+    (for k 0 (arr.len args)
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (if (not (call fits t (arr.get ast.Type ps k)))
@@ -1570,7 +1570,7 @@
   ;; get_field_offset's message if there is none.
   (fn field_type [c:(ptr C) at:i32 sname:str.Bytes fname:str.Bytes] -> ast.MaybeType
     (let fs:(arr (ptr ast.Field)) (get (call struct_def c sname) ast.StructDef.fields))
-    (loop k 0 (- (arr.len fs) 1) 1
+    (for k 0 (arr.len fs)
       (if (call beq (get (arr.get (ptr ast.Field) fs k) ast.Field.name) fname)
           (return (make ast.MaybeType.some (get (arr.get (ptr ast.Field) fs k) ast.Field.ty)))
           (block)))
@@ -1590,7 +1590,7 @@
     (put w Walked.fname fname)
     (put w Walked.ty ty)
     (if (eq path (arr.null (ptr ast.Step))) (return w) (block))
-    (loop k 0 (- (arr.len path) 1) 1
+    (for k 0 (arr.len path)
       (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
       (if (not (and (call teq (get w Walked.ty) (make ast.Type.struct_ (get st ast.Step.sname))) (call is_value c (get st ast.Step.sname))))
           (block
@@ -1622,13 +1622,13 @@
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "make ") (call by b (call names.shown sname)) (call s b " takes ") (call buf.push_int b (arr.len fs)) (call s b " field value(s) (")
-          (loop k 0 (- (arr.len fs) 1) 1
+          (for k 0 (arr.len fs)
             (if (gt k 0) (call s b " ") (block))
             (call by b (get (arr.get (ptr ast.Field) fs k) ast.Field.name)))
           (call s b "), got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
-    (loop k 0 (- (arr.len args) 1) 1
+    (for k 0 (arr.len args)
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
@@ -1693,7 +1693,7 @@
           (if (get c C.failed) (return (call void_t)) (block))
           (let ft:ast.Type (match ft0 (ast.MaybeType.some [t] t) (ast.MaybeType.none (call void_t))))
           (let tail:(arr (ptr ast.Step)) (arr.new (ptr ast.Step) (call alloc.forever) (- (arr.len path) 1)))
-          (loop k 1 (- (arr.len path) 1) 1 (arr.set (ptr ast.Step) tail (- k 1) (arr.get (ptr ast.Step) path k)))
+          (for k 1 (arr.len path) (arr.set (ptr ast.Step) tail (- k 1) (arr.get (ptr ast.Step) path k)))
           (let w:(ptr Walked) (call walk_path c at (get st ast.Step.sname) (get st ast.Step.fname) ft tail "arr.set"))
           (if (get c C.failed) (return (call void_t)) (block))
           (set! target (get w Walked.ty)))
@@ -1770,7 +1770,7 @@
           (call s b "call_ref expects ") (call buf.push_int b (arr.len ps)) (call s b " arguments, got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
-    (loop k 0 (- (arr.len args) 1) 1
+    (for k 0 (arr.len args)
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (if (not (call fits t (arr.get ast.Type ps k)))
@@ -1784,7 +1784,7 @@
 
   (fn find_variant [u:(ptr ast.UnionDef) name:str.Bytes] -> (ptr ast.Variant)
     (let vs:(arr (ptr ast.Variant)) (get u ast.UnionDef.variants))
-    (loop k 0 (- (arr.len vs) 1) 1
+    (for k 0 (arr.len vs)
       (if (call beq (get (arr.get (ptr ast.Variant) vs k) ast.Variant.name) name) (return (arr.get (ptr ast.Variant) vs k)) (block)))
     (ptr.null ast.Variant))
 
@@ -1819,7 +1819,7 @@
           (call buf.push_int b (arr.len fs)) (call s b " values (its fields), got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
-    (loop k 0 (- (arr.len args) 1) 1
+    (for k 0 (arr.len args)
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
@@ -1846,7 +1846,7 @@
        (put ms Members.is_union true)
        (put ms Members.names (arr.new str.Bytes (call alloc.forever) (arr.len vs)))
        (put ms Members.fields (arr.new (arr (ptr ast.Field)) (call alloc.forever) (arr.len vs)))
-       (loop k 0 (- (arr.len vs) 1) 1
+       (for k 0 (arr.len vs)
          (arr.set str.Bytes (get ms Members.names) k (get (arr.get (ptr ast.Variant) vs k) ast.Variant.name))
          (arr.set (arr (ptr ast.Field)) (get ms Members.fields) k (get (arr.get (ptr ast.Variant) vs k) ast.Variant.fields)))
        ms)
@@ -1855,7 +1855,7 @@
        (put ms Members.type_name en)
        (put ms Members.is_union false)
        (put ms Members.names (arr.new str.Bytes (call alloc.forever) (arr.len mems)))
-       (loop k 0 (- (arr.len mems) 1) 1
+       (for k 0 (arr.len mems)
          (arr.set str.Bytes (get ms Members.names) k (get (arr.get (ptr ast.Member) mems k) ast.Member.name)))
        ms)
       (else (ptr.null Members))))
@@ -1883,14 +1883,14 @@
     (let nseen:i32 0)
     (let arm_names:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (let arm_types:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 8))
-    (loop k 0 (- (arr.len arms) 1) 1
+    (for k 0 (arr.len arms)
       (if (get c C.failed) (return (call void_t)) (block))
       (let arm:(ptr ast.Arm) (arr.get (ptr ast.Arm) arms k))
       (let aat:i32 (get arm ast.Arm.at))
       (let full:str.Bytes (get arm ast.Arm.member))
       ;; Name.member, Name being the matched type
       (let dot:i32 -1)
-      (loop q 0 (- (get full str.Bytes.len) 1) 1 (if (eq (call str.byte_at full q) 46) (set! dot q) (block)))
+      (for q 0 (get full str.Bytes.len) (if (eq (call str.byte_at full q) 46) (set! dot q) (block)))
       (if (or (lt dot 0) (not (call beq (call str.bytes (call str.addr full) dot) tname)))
           (block
             (let b:(ptr buf.Buf) (call msg c aat))
@@ -1899,7 +1899,7 @@
           (block))
       (let member:str.Bytes (call str.bytes (+ (call str.addr full) (+ dot 1)) (- (get full str.Bytes.len) (+ dot 1))))
       (let mi:i32 -1)
-      (loop q 0 (- (arr.len names) 1) 1 (if (and (lt mi 0) (call beq (arr.get str.Bytes names q) member)) (set! mi q) (block)))
+      (for q 0 (arr.len names) (if (and (lt mi 0) (call beq (arr.get str.Bytes names q) member)) (set! mi q) (block)))
       (if (lt mi 0)
           (block
             (let b:(ptr buf.Buf) (call msg c aat))
@@ -1959,7 +1959,7 @@
               (let b:(ptr buf.Buf) (call msg c at))
               (call s b "match is missing ")
               (let first:bool true)
-              (loop q 0 (- (arr.len names) 1) 1
+              (for q 0 (arr.len names)
                 (if (arr.get bool seen q)
                     (block)
                     (block
@@ -1972,7 +1972,7 @@
     (if (eq (call (vec.len ast.Type) arm_types) 0) (return (call void_t)) (block))
     (let t0:ast.Type (call (vec.at ast.Type) arm_types 0))
     (let joined:ast.Type t0)
-    (loop k 1 (- (call (vec.len ast.Type) arm_types) 1) 1
+    (for k 1 (call (vec.len ast.Type) arm_types)
       (let tk:ast.Type (call (vec.at ast.Type) arm_types k))
       (if (and (not (get c C.failed)) (not (call meets joined tk)))
           (block
@@ -1992,13 +1992,13 @@
           (let b:(ptr buf.Buf) (call msg c aat))
           (call s b "the ") (call by b tname) (call s b ".") (call by b member) (call s b " arm binds its ")
           (call buf.push_int b (arr.len fs)) (call s b " fields in order: [")
-          (loop q 0 (- (arr.len fs) 1) 1
+          (for q 0 (arr.len fs)
             (if (gt q 0) (call s b " ") (block))
             (call by b (get (arr.get (ptr ast.Field) fs q) ast.Field.name)))
           (call s b "], got ") (call buf.push_int b nb) (call s b " names")
           (call fail c b) (return))
         (block))
-    (loop q 0 (- nb 1) 1
+    (for q 0 nb
       (let n:str.Bytes (arr.get str.Bytes binders q))
       (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs q))
       (if (and (not (get c C.failed)) (not (call lit n "_")))
@@ -2113,7 +2113,7 @@
              (call s b "; nest them: (") (call s b name) (call s b " a (") (call s b name) (call s b " b c))")
              (call fail c b) (return (call void_t)))
            (block))
-       (loop k 0 1 1
+       (for k 0 2
          (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
          (if (get c C.failed) (return (call void_t)) (block))
          (if (not (call teq t (call bool_t)))
@@ -2129,7 +2129,7 @@
            (block))
        (call bool_t))
       ((eq o ast.Op.sys_print)
-       (loop k 0 (- n 1) 1
+       (for k 0 n
          (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
          (if (get c C.failed) (return (call void_t)) (block))
          (if (neq (call tag t) 5)
@@ -2258,7 +2258,7 @@
            (block))
        (let d:(ptr ast.UnionDef) (call union_def c u))
        (if (eq d (ptr.null ast.UnionDef)) (return (ptr.null ast.Field)) (block))
-       (loop k 0 (- (arr.len (get d ast.UnionDef.variants)) 1) 1
+       (for k 0 (arr.len (get d ast.UnionDef.variants))
          (let v:(ptr ast.Variant) (arr.get (ptr ast.Variant) (get d ast.UnionDef.variants) k))
          (if (and (call lit (get v ast.Variant.name) "some") (gt (arr.len (get v ast.Variant.fields)) 0))
              (return (arr.get (ptr ast.Field) (get v ast.Variant.fields) 0))
@@ -2404,7 +2404,7 @@
           (set! first 1))
         (block))
     (let k:i32 0)
-    (loop i first (- (arr.len args) 1) 1
+    (for i first (arr.len args)
       (let p:ast.Expr (arr.get ast.Expr args i))
       (let piece:bool false)
       (match p
@@ -2589,7 +2589,7 @@
     (if (neq (arr.len args) count)
         (block (let b:(ptr buf.Buf) (call msg c at)) (call words b o pre arity) (call fail c b) (return))
         (block))
-    (loop k 0 (- count 1) 1
+    (for k 0 count
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return) (block))
       (if (not (call is_i32 t))
@@ -2608,7 +2608,7 @@
           (call s b "; got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return))
         (block))
-    (loop k 0 (- count 1) 1
+    (for k 0 count
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return) (block))
       (if (not (call is_i32 t))
@@ -2627,7 +2627,7 @@
           (call s b "fs.readdir takes 4 operands, (fs.readdir fd buf len cookie); got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return))
         (block))
-    (loop k 0 3 1
+    (for k 0 4
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return) (block))
       (if (not (if (eq k 3) (eq (call tag t) 1) (call is_i32 t)))
@@ -2882,7 +2882,7 @@
   ;; (fmtdebug.aipl), as a Fmt with k -3 and their text, if any are needed.
   (fn note_printers [c:(ptr C) out:(ptr (vec.Vec (ptr Fmt)))] -> void
     (let roots:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
-    (loop k 0 (- (call (vec.len (ptr Fmt)) out) 1) 1
+    (for k 0 (call (vec.len (ptr Fmt)) out)
       (let f:(ptr Fmt) (call (vec.at (ptr Fmt)) out k))
       ;; a piece, a dbg's value, an expect's sides
       (if (and (or (gte (get f Fmt.k) 0) (or (eq (get f Fmt.k) -2) (eq (get f Fmt.k) -5)))

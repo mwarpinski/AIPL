@@ -221,7 +221,7 @@
       (let first:i32 (mem.load8 (+ src_ptr pos)))
       (let start:i32 (if (or (eq first 45) (eq first 43)) 1 0))
       (let neg_val:i64 0i64)
-      (loop i start (- dlen 1) 1
+      (for i start dlen
         (let d:i64 (i64.extend_s (- (mem.load8 (+ src_ptr (+ pos i))) 48)))
         (set! neg_val (- (* neg_val 10i64) d)))
       (if (eq first 45) neg_val (- 0i64 neg_val))))
@@ -239,7 +239,7 @@
     (if (lt nd 10) (return true) (block))
     (if (gt nd 10) (return false) (block))
     (let lim:str (if (eq b0 45) "2147483648" "2147483647"))
-    (loop i 0 9 1
+    (for i 0 10
       (let ca:i32 (call str.byte_at t (+ start i)))
       (let cb:i32 (unsafe (mem.load8 (+ (str.ptr lim) i))))
       (if (lt ca cb) (return true) (block))
@@ -632,7 +632,7 @@
       ((call str.is ht "call_ref") (gt idx 1))
       ((call str.is ht "let") (eq idx 4))
       ((call str.is ht "set!") (eq idx 2))
-      ((call str.is ht "loop") (gte idx 2))
+      ((call str.is ht "counted_loop") (gte idx 2))
       ((call str.is ht "get") (eq idx 1))
       ((call str.is ht "put") (or (eq idx 1) (eq idx (- total 1))))
       ((call str.is ht "arr.get") (or (eq idx 2) (eq idx 3)))
@@ -843,7 +843,7 @@
           (put g ONode.first nh)
           (return g))
         (block))
-    (if (call str.is ht "loop")
+    (if (call str.is ht "counted_loop")
         (block
           (let raw_var:(ptr ONode) (call onode_nth n 1))
           (let raw_s:(ptr ONode) (get raw_var ONode.next))
@@ -856,7 +856,7 @@
           (let st_e:(ptr ONode) (call opt_expr raw_st stats))
           (let body:(ptr ONode) (call opt_stmt_list bhead stats))
           (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
-          (let nh:(ptr ONode) (call make_sym "loop" pos))
+          (let nh:(ptr ONode) (call make_sym "counted_loop" pos))
           (put nh ONode.next var)
           (put var ONode.next s_e)
           (put s_e ONode.next e_e)
@@ -1313,7 +1313,7 @@
                 (if (or (call str.is ht "let")
                     (or (call str.is ht "set!")
                     (or (call str.is ht "return")
-                    (or (call str.is ht "loop")
+                    (or (call str.is ht "counted_loop")
                     (or (call str.is ht "while")
                     (or (call str.is ht "match")
                     (or (call str.is ht "match_result")
@@ -1399,7 +1399,7 @@
                         (or (call is_form n "mem.store32")
                             (or (call is_form n "mem.store64")
                                 (or (call is_form n "while")
-                                    (or (call is_form n "loop")
+                                    (or (call is_form n "counted_loop")
                                         (or (call is_form n "block")
                                             (or (call is_form n "sys.print")
                                                 (or (call is_form n "sys.exit")
@@ -1503,7 +1503,7 @@
 
     ;; Count parameter uses across the body
     (let p_uses:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (call (vec.len str.Bytes) params)))
-    (loop i 0 (- (call (vec.len str.Bytes) params) 1) 1
+    (for i 0 (call (vec.len str.Bytes) params)
       (let pname:str.Bytes (call (vec.at str.Bytes) params i))
       (let u:i32 0)
       (let s:(ptr ONode) cur)
@@ -1684,7 +1684,7 @@
     ;; Verify call-site argument hygiene
     (let env:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 8))
     (let multi_stmt:bool (gt (get def InlineDef.stmt_count) 1))
-    (loop i 0 (- nparams 1) 1
+    (for i 0 nparams
       (let arg:(ptr ONode) (call onode_nth n (+ i 2)))
       (let uses:i32 (call (vec.at i32) (get def InlineDef.param_uses) i))
       (if multi_stmt
@@ -1740,7 +1740,7 @@
                    (let vt:str.Bytes (get v ONode.text))
                    (call (map.set str.Bytes i32) decls vt (+ 1 (call (map.get_or str.Bytes i32) decls vt 0))))
                  (block)))
-            ((call str.is ht "loop")
+            ((call str.is ht "counted_loop")
              (let v:(ptr ONode) (call onode_nth n 1))
              (if (and (neq v (ptr.null ONode)) (eq (get v ONode.kind) OKind.sym))
                  (block
@@ -1963,16 +1963,16 @@
     (let nitems:i32 (call (vec.len (ptr ONode)) items))
 
     ;; Pass 1: Optimize expressions and statements in every function
-    (loop i 0 (- nitems 1) 1
+    (for i 0 nitems
       (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
       (if (call is_form item "fn")
           (call optimize_fn_locals item stats)
           (block)))
 
     ;; Pass 2: Two rounds of hygienic function inlining + local re-optimization
-    (loop round 1 2 1
+    (for round 1 3
       (let call_counts:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 64))
-      (loop i 0 (- nitems 1) 1
+      (for i 0 nitems
         (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
         (if (call is_form item "fn")
             (block
@@ -1982,7 +1982,7 @@
                 (set! c (get c ONode.next))))
             (block)))
       (let defs:(ptr (map.Map str.Bytes (ptr InlineDef))) (call (map.make str.Bytes (ptr InlineDef)) (call alloc.default) 32))
-      (loop i 0 (- nitems 1) 1
+      (for i 0 nitems
         (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
         (if (call is_form item "fn")
             (block
@@ -1994,7 +1994,7 @@
                   (block)))
             (block)))
       (if (gt (call (map.count str.Bytes (ptr InlineDef)) defs) 0)
-          (loop i 0 (- nitems 1) 1
+          (for i 0 nitems
             (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
             (if (call is_form item "fn")
                 (block
@@ -2018,7 +2018,7 @@
     ;; Pass 4: Whole-Program Call-Graph Reachability & Dead Function Elimination
     (let fn_by_name:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 64))
     (let total_fns:i32 0)
-    (loop i 0 (- nitems 1) 1
+    (for i 0 nitems
       (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
       (if (call is_form item "fn")
           (block
@@ -2053,7 +2053,7 @@
            (block)))
       (else
        ;; Library module (no main or _start): keep all functions
-       (loop i 0 (- nitems 1) 1
+       (for i 0 nitems
          (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
          (if (call is_form item "fn")
              (block
@@ -2071,7 +2071,7 @@
           (block
             (let callees:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
             (call collect_callees fn_node callees)
-            (loop k 0 (- (call (vec.len str.Bytes) callees) 1) 1
+            (for k 0 (call (vec.len str.Bytes) callees)
               (let cal:str.Bytes (call (vec.at str.Bytes) callees k))
               (if (and (call (map.has str.Bytes (ptr ONode)) fn_by_name cal)
                        (not (call (map.has str.Bytes bool) reachable cal)))
@@ -2091,7 +2091,7 @@
     (call buf.push_byte out 10)
     (let kept:i32 0)
     (let elim:i32 0)
-    (loop i 0 (- nitems 1) 1
+    (for i 0 nitems
       (let item:(ptr ONode) (call (vec.at (ptr ONode)) items i))
       (if (call is_form item "fn")
           (block

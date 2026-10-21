@@ -67,7 +67,7 @@
                              (else -1i64))))
     (if (lt shift 0i64) (return -1) (block))
     (let v:i64 0i64)
-    (loop i 0 (- digits 1) 1
+    (for i 0 digits
       (set! v (+ (* v 10i64) (i64.extend_s (- (call str.byte_at t i) 48)))))
     ;; at most 10 digits: v < 2^34, and shifted by 30 < 2^64
     (let bytes:i64 (shl v shift))

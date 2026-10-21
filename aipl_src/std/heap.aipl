@@ -47,7 +47,7 @@
     (let h:(ptr Heap) (call (gen.forever Heap)))
     (put h Heap.lock 0)
     (put h Heap.heads (call (gen.forever_array i32) NCLASSES))
-    (loop c 0 (- NCLASSES 1) 1 (arr.set i32 (get h Heap.heads) c 0))
+    (for c 0 NCLASSES (arr.set i32 (get h Heap.heads) c 0))
     (put h Heap.cur 0)
     (put h Heap.end 0)
     (put h Heap.nlive 0)
@@ -98,7 +98,7 @@
         (set! p (call carve h size)))
     (mem.store32 (- p 8) (^ (ptr.addr h) LIVE))
     (mem.store32 (- p 4) n)
-    (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
+    (for i 0 (/ (bitand (+ n 7) -8) 8) (mem.store64 (+ p (* 8 i)) 0i64))
     (put h Heap.nlive (+ (get h Heap.nlive) 1))
     (put h Heap.live_bytes (+ (get h Heap.live_bytes) n))
     (atomic.unlock (ptr.addr h))
@@ -202,7 +202,7 @@
     (unsafe (let p:i32 0)
     ;; size classes: every size fits its class, and the class below is too small
     (let classes_ok:bool true)
-    (loop n 1 5000 1
+    (for n 1 5001
       (let c:i32 (call class_of n))
       (if (or (lt (call class_size c) n) (and (gt c 0) (gte (call class_size (- c 1)) (bitand (+ n 7) -8))))
           (set! classes_ok false)
@@ -238,7 +238,7 @@
     ;; churn: memory is reused, so a thousand allocations of 1 KiB, each freed,
     ;; take no more than the first chunk
     (let before:i32 (call reserved h))
-    (loop i 1 1000 1
+    (for i 1 1001
       (let b:i32 (call raw h 1024))
       (call free_raw h b 1024))
     (if (eq (call reserved h) before) (set! p (+ p 1)) (block))

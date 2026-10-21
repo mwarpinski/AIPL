@@ -121,7 +121,7 @@ fn typed_linked_list_runs_in_both_backends() {
     n)
   (fn sum [] -> i32
     (let h:(ptr Node) (ptr.null Node))
-    (loop i 1 10 1 (set! h (call push h i)))
+    (for i 1 11 (set! h (call push h i)))
     (let total:i32 0)
     (while (neq h (ptr.null Node))
       (set! total (+ total (get h Node.val)))
@@ -138,12 +138,12 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
-    (loop i 0 3 1
+    (for i 0 4
       (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
-    (loop i 0 (- (arr.len ps) 1) 1
+    (for i 0 (arr.len ps)
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))

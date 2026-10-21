@@ -22,7 +22,7 @@
 
   ;; Lowercases ASCII letters in place.
   (fn lowercase [b:str.Bytes] -> void
-    (loop i 0 (- (get b str.Bytes.len) 1) 1
+    (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (if (and (gte c 65) (lte c 90)) (call str.set_byte b i (+ c 32)) (block))))
 
@@ -32,7 +32,7 @@
     (let n:i32 (get text str.Bytes.len))
     (let start:i32 -1)
     ;; i runs one past the end so a final word is closed too
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (let inside:bool (and (lt i n) (call is_word_byte (call str.byte_at text i))))
       (cond
         ((and inside (lt start 0)) (set! start i))
@@ -47,7 +47,7 @@
   (fn compare_bytes [a:str.Bytes b:str.Bytes] -> i32
     (let la:i32 (get a str.Bytes.len))
     (let lb:i32 (get b str.Bytes.len))
-    (loop i 0 (- (if (lt la lb) la lb) 1) 1
+    (for i 0 (if (lt la lb) la lb)
       (let d:i32 (- (call str.byte_at a i) (call str.byte_at b i)))
       (if (neq d 0) (return d) (block)))
     (- la lb))
@@ -60,7 +60,7 @@
 
   (fn ranked [counts:(ptr (map.Map str.Bytes i32))] -> (ptr (vec.Vec (ptr Entry)))
     (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (call (map.count str.Bytes i32) counts)))
-    (loop i 0 (- (call (map.capacity str.Bytes i32) counts) 1) 1
+    (for i 0 (call (map.capacity str.Bytes i32) counts)
       (if (call (map.slot_used str.Bytes i32) counts i)
           (block
             (let e:(ptr Entry) (new Entry (call alloc.forever)))
@@ -75,7 +75,7 @@
   (fn print_top [entries:(ptr (vec.Vec (ptr Entry))) limit:i32] -> void
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let n:i32 (if (lt (call (vec.len (ptr Entry)) entries) limit) (call (vec.len (ptr Entry)) entries) limit))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))
       (call buf.push_bytes out (get e Entry.word))
       (call buf.push_byte out 32)

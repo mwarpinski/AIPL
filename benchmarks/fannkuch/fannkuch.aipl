@@ -17,7 +17,7 @@
     (let perm:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let perm1:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let count:(arr i32) (arr.new i32 (call alloc.forever) n))
-    (loop i 0 (- n 1) 1 (arr.set i32 perm1 i i))
+    (for i 0 n (arr.set i32 perm1 i i))
     (let max_flips:i32 0)
     (let checksum:i32 0)
     (let perm_count:i32 0)
@@ -27,7 +27,7 @@
       (while (neq r 1)
         (arr.set i32 count (- r 1) r)
         (set! r (- r 1)))
-      (loop i 0 (- n 1) 1 (arr.set i32 perm i (arr.get i32 perm1 i)))
+      (for i 0 n (arr.set i32 perm i (arr.get i32 perm1 i)))
       ;; flip until 0 is first
       (let flips:i32 0)
       (let k:i32 (arr.get i32 perm 0))
@@ -51,7 +51,7 @@
             (block (set! done true) (set! next true))
             (block
               (let perm0:i32 (arr.get i32 perm1 0))
-              (loop i 0 (- r 1) 1 (arr.set i32 perm1 i (arr.get i32 perm1 (+ i 1))))
+              (for i 0 r (arr.set i32 perm1 i (arr.get i32 perm1 (+ i 1))))
               (arr.set i32 perm1 r perm0)
               (arr.set i32 count r (- (arr.get i32 count r) 1))
               (if (gt (arr.get i32 count r) 0) (set! next true) (set! r (+ r 1))))))

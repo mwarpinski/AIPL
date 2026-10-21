@@ -94,7 +94,7 @@
   (fn read_digits [n:(ptr bigint.Int) chunk:(ptr bigint.Int) addr:i32 from:i32 to:i32] -> void (unsafe)
     (let acc:i32 0)
     (let count:i32 0)
-    (loop i from (- to 1) 1
+    (for i from to
       (let c:i32 (mem.load8 (+ addr i)))
       (if (neq c 46)
           (block
@@ -114,13 +114,13 @@
 
   (fn pow10_i32 [n:i32] -> i32
     (let v:i32 1)
-    (loop k 1 n 1 (set! v (* v 10)))
+    (for k 1 (+ n 1) (set! v (* v 10)))
     v)
 
   ;; 10^n, exact, for 0 <= n <= 22.
   (fn pow10_f64 [n:i32] -> f64
     (let v:f64 1.0)
-    (loop k 1 n 1 (set! v (* v 10.0)))
+    (for k 1 (+ n 1) (set! v (* v 10.0)))
     v)
 
   ;; big = big * 10^n
@@ -157,7 +157,7 @@
     ;; the significand's bits by long division, then the next bit and
     ;; whether anything remains
     (let mant:i64 0i64)
-    (loop k 1 bits 1
+    (for k 1 (+ bits 1)
       (set! mant (* mant 2i64))
       (if (gte (call bigint.compare_magnitude n d) 0)
           (block (call bigint.sub n d) (set! mant (+ mant 1i64)))

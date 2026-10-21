@@ -63,7 +63,7 @@
     (unsafe (let key:str.Bytes (call str.from_str name))
     (let klen:i32 (get key str.Bytes.len))
     (let t:(ptr Table) (call table true))
-    (loop i 0 (- (get t Table.count) 1) 1
+    (for i 0 (get t Table.count)
       (let e:str.Bytes (call entry t i))
       (if (and (gt (get e str.Bytes.len) klen)
                (and (eq (call str.byte_at e klen) 61)

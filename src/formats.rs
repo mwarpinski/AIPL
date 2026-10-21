@@ -815,7 +815,7 @@ fn printer_text(name: &str, t: &Type, m: &Module) -> String {
             lit_text(")")
         ),
         Type::Array(e) => format!(
-            "(if (eq (unsafe (arr.addr v)) 0) {} (block {} (let n:i32 (arr.len v)) (loop i 0 (- (if (gt n 16) 16 n) 1) 1 (if (gt i 0) {} b) {}) (if (gt n 16) (block {} (call show.put_i32 b (- n 16) 0) {}) b) {}))",
+            "(if (eq (unsafe (arr.addr v)) 0) {} (block {} (let n:i32 (arr.len v)) (counted_loop i 0 (- (if (gt n 16) 16 n) 1) 1 (if (gt i 0) {} b) {}) (if (gt n 16) (block {} (call show.put_i32 b (- n 16) 0) {}) b) {}))",
             lit_text("null"),
             lit_text("["),
             lit_text(", "),

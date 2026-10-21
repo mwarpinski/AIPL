@@ -340,7 +340,7 @@
     (call x64.patch_rel32 c outside (call buf.len c))
     (call x64.alu_ri c 64 (call x64.op_sub) rsp 32)
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
-    (loop k 0 3 1 (call x64.store c 64 (call x64.mem rsp (* 8 k)) (call rax)))
+    (for k 0 4 (call x64.store c 64 (call x64.mem rsp (* 8 k)) (call rax)))
     (call x64.mov_ri32 c (call rdi) 11)
     (call x64.mov_rr c 64 (call rsi) rsp)
     (call x64.alu_rr c 32 (call x64.op_xor) (call rdx) (call rdx))

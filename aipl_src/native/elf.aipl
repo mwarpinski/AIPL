@@ -74,7 +74,7 @@
     ;; ELF header: identification (64-bit, little-endian, version 1, System V)
     (call u8 b 127) (call buf.push_str b "ELF")
     (call u8 b 2) (call u8 b 1) (call u8 b 1) (call u8 b 0)
-    (loop i 1 8 1 (call u8 b 0))
+    (for i 1 9 (call u8 b 0))
     (call u16 b 2)                                     ;; e_type: executable
     (call u16 b 62)                                    ;; e_machine: x86-64
     (call u32 b 1)                                     ;; e_version

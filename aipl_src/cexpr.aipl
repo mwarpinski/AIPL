@@ -96,7 +96,7 @@
 
   (fn base_of [name:str.Bytes] -> str.Bytes
     (let dot:i32 -1)
-    (loop i 0 (- (get name str.Bytes.len) 1) 1 (if (eq (call str.byte_at name i) 46) (set! dot i) (block)))
+    (for i 0 (get name str.Bytes.len) (if (eq (call str.byte_at name i) 46) (set! dot i) (block)))
     (call str.slice name (+ dot 1) (- (get name str.Bytes.len) (+ dot 1))))
 
   ;; Starts constant base's message, at offset `at`, unless one is there.
@@ -193,7 +193,7 @@
   (fn digits [t:str.Bytes] -> i64
     (let neg:bool (eq (call str.byte_at t 0) 45))
     (let v:i64 0i64)
-    (loop k (if (or neg (eq (call str.byte_at t 0) 43)) 1 0) (- (get t str.Bytes.len) 1) 1
+    (for k (if (or neg (eq (call str.byte_at t 0) 43)) 1 0) (get t str.Bytes.len)
       (set! v (- (* v 10i64) (i64.extend_s (- (call str.byte_at t k) 48)))))
     (if neg v (- 0i64 v)))
 

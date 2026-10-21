@@ -12,7 +12,7 @@
       (set! count (+ count 1))
       (set! v (divu v 10)))
     (set! v n)
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (mem.store8 (+ out (- count i)) (+ 48 (remu v 10)))
       (set! v (divu v 10)))
     count)
@@ -35,7 +35,7 @@
       (set! count (+ count 1))
       (set! v (divu v 10i64)))
     (set! v n)
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (mem.store8 (+ out (- count i)) (+ 48 (i32.wrap (remu v 10i64))))
       (set! v (divu v 10i64)))
     count)
@@ -69,7 +69,7 @@
     (i32.wrap (bitand (shru (arr.get i64 a (/ k 32)) (i64.extend_s (% k 32))) 1i64)))
 
   (fn big_is_zero [a:(arr i64)] -> bool
-    (loop i 0 (- (call big_limbs) 1) 1
+    (for i 0 (call big_limbs)
       (if (neq (arr.get i64 a i) 0i64) (return false) (block)))
     true)
 
@@ -77,7 +77,7 @@
   (fn big_shl [a:(arr i64) s:i32] -> void
     (let q:i32 (/ s 32))
     (let r:i64 (i64.extend_s (% s 32)))
-    (loop j 0 (- (call big_limbs) 1) 1
+    (for j 0 (call big_limbs)
       (let i:i32 (- (- (call big_limbs) 1) j))
       (let hi:i64 (if (gte (- i q) 0) (arr.get i64 a (- i q)) 0i64))
       (let lo:i64 (if (and (gte (- (- i q) 1) 0) (neq r 0i64)) (arr.get i64 a (- (- i q) 1)) 0i64))
@@ -86,7 +86,7 @@
   ;; keeps only the low k bits of a, in place
   (fn big_mask [a:(arr i64) k:i32] -> void
     (let q:i32 (/ k 32))
-    (loop i 0 (- (call big_limbs) 1) 1
+    (for i 0 (call big_limbs)
       (cond
         ((gt i q) (arr.set i64 a i 0i64))
         ((eq i q) (arr.set i64 a i (bitand (arr.get i64 a i) (- (shl 1i64 (i64.extend_s (% k 32))) 1i64))))
@@ -95,7 +95,7 @@
   ;; a = a * f (f <= 10), in place
   (fn big_mul_small [a:(arr i64) f:i64] -> void
     (let carry:i64 0i64)
-    (loop i 0 (- (call big_limbs) 1) 1
+    (for i 0 (call big_limbs)
       (let t:i64 (+ (* (arr.get i64 a i) f) carry))
       (arr.set i64 a i (bitand t 4294967295i64))
       (set! carry (shru t 32i64))))
@@ -103,7 +103,7 @@
   ;; a = a / d, returns a % d (d <= 10), in place
   (fn big_divmod_small [a:(arr i64) d:i64] -> i64
     (let rem:i64 0i64)
-    (loop j 0 (- (call big_limbs) 1) 1
+    (for j 0 (call big_limbs)
       (let i:i32 (- (- (call big_limbs) 1) j))
       (let t:i64 (bitor (shl rem 32i64) (arr.get i64 a i)))
       (arr.set i64 a i (divu t d))
@@ -116,7 +116,7 @@
 
   (fn put_str [out:i32 s:str] -> i32 (unsafe)
     (let p:i32 (str.ptr s))
-    (loop i 0 (- (str.len s) 1) 1 (mem.store8 (+ out i) (mem.load8 (+ p i))))
+    (for i 0 (str.len s) (mem.store8 (+ out i) (mem.load8 (+ p i))))
     (str.len s))
 
   ;; Writes x with `digits` decimals (0-40) at `out`, exactly rounded with
@@ -173,7 +173,7 @@
       (set! first false)
       (mem.store8 (+ out n) (+ 48 (i32.wrap (call big_divmod_small whole 10i64))))
       (set! n (+ n 1)))
-    (loop i 0 (- (/ (- n start) 2) 1) 1
+    (for i 0 (/ (- n start) 2)
       (let a:i32 (+ start i))
       (let b:i32 (- (- n 1) i))
       (let t:i32 (mem.load8 (+ out a)))
@@ -181,7 +181,7 @@
       (mem.store8 (+ out b) t))
     ;; fraction digits: times ten, take the digit above bit k, keep the rest
     (if (gt digits 0) (block (mem.store8 (+ out n) 46) (set! n (+ n 1))) (block))
-    (loop d 1 digits 1
+    (for d 1 (+ digits 1)
       (if (eq k 0)
           (mem.store8 (+ out n) 48)
           (block
@@ -193,7 +193,7 @@
     (if (gt k 0)
         (block
           (let half_bit:i32 (call big_bit frac (- k 1)))
-          (loop i 0 (- (call big_limbs) 1) 1 (arr.set i64 rest i (arr.get i64 frac i)))
+          (for i 0 (call big_limbs) (arr.set i64 rest i (arr.get i64 frac i)))
           (call big_mask rest (- k 1))
           (let above:bool (and (eq half_bit 1) (not (call big_is_zero rest))))
           (let tie:bool (and (eq half_bit 1) (call big_is_zero rest)))
@@ -217,7 +217,7 @@
       (set! i (- i 1)))
     (if carry
         (block
-          (loop j 0 (- (- n start) 1) 1
+          (for j 0 (- n start)
             (let from:i32 (- (- n 1) j))
             (mem.store8 (+ out (+ from 1)) (mem.load8 (+ out from))))
           (mem.store8 (+ out start) 49)
@@ -236,7 +236,7 @@
       (set! count (+ count 1))
       (set! v (shru v 4)))
     (set! v n)
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (mem.store8 (+ out (- count i)) (call hex_digit (bitand v 15)))
       (set! v (shru v 4)))
     count)
@@ -245,7 +245,7 @@
   (fn spells [out:i32 n:i32 s:str] -> bool (unsafe)
     (if (neq n (str.len s)) (return false) (block))
     (let p:i32 (str.ptr s))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (return false) (block)))
     true)
 

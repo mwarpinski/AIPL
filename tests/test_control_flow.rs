@@ -39,7 +39,7 @@ pub const PROGRAM: &str = r#"
 (module flow
   ;; early return inside a loop: index of the first multiple of 7 at or above n
   (fn first_mult7 [n:i32] -> i32 (unsafe)
-    (loop i n (+ n 100) 1
+    (for i n (+ n 101)
       (if (eq (% i 7) 0) (return i) (block)))
     -1)
 
@@ -57,7 +57,7 @@ pub const PROGRAM: &str = r#"
   ;; continue in a counted loop still applies the step: sum of odd i in 0..n
   (fn sum_odd [n:i32] -> i32 (unsafe)
     (let total:i32 0)
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (if (eq (% i 2) 0) (continue) (block))
       (set! total (+ total i)))
     total)
@@ -76,8 +76,8 @@ pub const PROGRAM: &str = r#"
   ;; break and continue in nested loops target the innermost loop
   (fn nested [n:i32] -> i32 (unsafe)
     (let hits:i32 0)
-    (loop i 1 n 1
-      (loop j 1 n 1
+    (for i 1 (+ n 1)
+      (for j 1 (+ n 1)
         (if (gt j i) (break) (block))
         (if (eq j 2) (continue) (block))
         (set! hits (+ hits 1))))
@@ -87,7 +87,7 @@ pub const PROGRAM: &str = r#"
   (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
     (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
   (fn first_non_digit [n:i32] -> i32 (unsafe)
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (match_result (call parse_digit (+ 46 i))
         (ok d (block))
         (err e (return e))))
@@ -105,7 +105,7 @@ pub const PROGRAM: &str = r#"
   (fn bucket_sum [n:i32] -> i32 (unsafe)
     (let small:i32 0)
     (let big:i32 0)
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (cond
         ((lt i 5) (set! small (+ small 1)))
         (else (set! big (+ big 1)))))
@@ -130,7 +130,7 @@ pub const PROGRAM: &str = r#"
   (fn moving_bounds [n:i32] -> i32 (unsafe)
     (let limit:i32 n)
     (let count:i32 0)
-    (loop i 0 limit 1
+    (for i 0 (+ limit 1)
       (set! count (+ count 1))
       (if (eq i 2) (set! limit (- limit 1)) (block))
       (if (eq i 0) (set! i 1) (block)))
@@ -249,7 +249,7 @@ pub const SHORT_CIRCUIT: &str = r#"
   (fn bump [p:i32] -> bool (unsafe) (mem.store32 p (+ (mem.load32 p) 1)) true)
   (fn side_effects [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let a:bool (and (lt i 3) (call bump p)))
       (let b:bool (or (lt i 3) (call bump p))))
     (mem.load32 p))
@@ -259,14 +259,14 @@ pub const SHORT_CIRCUIT: &str = r#"
   ;; inside the and's second operand
   (fn first_index_over [n:i32] -> i32 (unsafe)
     (let found:i32 -1)
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (if (and (gt i 3) (block (set! found i) (break) true)) (block) (block)))
     found)
 
   ;; break and return inside arithmetic operands: later operands must not run
   (fn jump_in_operand [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
     (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
 
@@ -284,7 +284,7 @@ pub const SHORT_CIRCUIT: &str = r#"
   ;; a break inside a set!'s value assigns nothing
   (fn break_in_assignment [n:i32] -> i32 (unsafe)
     (let x:i32 5)
-    (loop i 0 n 1
+    (for i 0 (+ n 1)
       (set! x (+ (block (if (eq i 2) (break) (block)) i) 10)))
     x)
 
@@ -333,9 +333,10 @@ fn a_call_in_the_loop_bound_runs_once() {
   (fn f [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (let passes:i32 0)
-    (loop i 1 (call next_count p) (+ 0 1) (set! passes (+ passes 1)))
+    (for i 1 (call next_count p) (set! passes (+ passes 1)))
     (+ (* 10 (mem.load32 p)) passes)))"#;
-    assert_eq!(run_both(src, "f", 0), 13);
+    // next_count gives 3, so i runs 1 and 2: two passes, one call
+    assert_eq!(run_both(src, "f", 0), 12);
 }
 
 /// Recursion that does not end fails with an error naming the function,

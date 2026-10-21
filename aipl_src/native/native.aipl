@@ -64,7 +64,7 @@
   (fn export_func [w:(ptr wasm_reader.Wasm) name:str] -> i32
     (let want:str.Bytes (call str.from_str name))
     (let found:i32 -1)
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports)) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports))
       (let e:(ptr wasm_reader.Export) (call (vec.at (ptr wasm_reader.Export)) (get w wasm_reader.Wasm.exports) i))
       (if (and (eq (get e wasm_reader.Export.kind) 0) (call str.bytes_eq (get e wasm_reader.Export.name) want))
           (set! found (get e wasm_reader.Export.index))
@@ -159,7 +159,7 @@
     ;; the thread's globals at the low end, above the guard page, with their
     ;; initial values
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get th Threads.globals))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Global)) gs)
       (call x64.mov_ri64 c 0 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
       (call x64.store c 64 (call x64.mem rbx (* 8 i)) 0))
     ;; and its stack limit, after them (then its results area, far below
@@ -228,7 +228,7 @@
     (call x64.patch_rel32 c no_stack (call buf.len c)))
 
   (fn imports_thread_spawn [l:(ptr lower.L)] -> bool
-    (loop i 0 (- (call lower.n_fimports l) 1) 1
+    (for i 0 (call lower.n_fimports l)
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i))
       (if (call str.bytes_eq (get imp wasm_reader.Import.name) (call str.from_str "thread-spawn")) (return true) (block)))
     false)
@@ -237,7 +237,7 @@
   (fn memory_limits [w:(ptr wasm_reader.Wasm)] -> (ptr wasm_reader.Limits)
     (let mems:(ptr (vec.Vec (ptr wasm_reader.Limits))) (get w wasm_reader.Wasm.memories))
     (if (gt (call (vec.len (ptr wasm_reader.Limits)) mems) 0) (return (call (vec.at (ptr wasm_reader.Limits)) mems 0)) (block))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports))
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
       (if (eq (get imp wasm_reader.Import.kind) 2) (return (get imp wasm_reader.Import.limits)) (block)))
     (ptr.null wasm_reader.Limits))
@@ -251,7 +251,7 @@
     (if (not (get lim wasm_reader.Limits.has_max)) (return "a memory without a maximum size") (block))
     (if (gt (get lim wasm_reader.Limits.max) 32768) (return "a memory maximum above 32768 pages (2 GiB)") (block))
     (let datas:(ptr (vec.Vec (ptr wasm_reader.Data))) (get w wasm_reader.Wasm.datas))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Data)) datas) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
       (if (and (not (get d wasm_reader.Data.passive)) (or (lt (get d wasm_reader.Data.offset) 0)
               (gt (+ (get d wasm_reader.Data.offset) (get d wasm_reader.Data.len)) (* 65536 (get lim wasm_reader.Limits.min)))))
@@ -295,7 +295,7 @@
     (call x64.store c 64 (call x64.mem 1 0) 0)
     ;; the active data segments: rep movsb from the data segment
     (let datas:(ptr (vec.Vec (ptr wasm_reader.Data))) (get w wasm_reader.Wasm.datas))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Data)) datas) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
       (let src:i32 (call (vec.at i32) (get l lower.L.seg_addrs) i))
       (if (and (not (get d wasm_reader.Data.passive)) (gt (get d wasm_reader.Data.len) 0))
@@ -387,9 +387,9 @@
     (let data:(ptr buf.Buf) (get l lower.L.data))
     ;; data: the argv[0] cell, then the trap routine's separators
     (let argv0_cell:i32 (call lower.data_text l ""))
-    (loop k 1 8 1 (call buf.push_byte data 0))
+    (for k 1 9 (call buf.push_byte data 0))
     (put l lower.L.mem_cell (call lower.data_text l ""))
-    (loop k 1 8 1 (call buf.push_byte data 0))
+    (for k 1 9 (call buf.push_byte data 0))
     (let lim:(ptr wasm_reader.Limits) (call memory_limits w))
     (let has_memory:bool (neq lim (ptr.null wasm_reader.Limits)))
     (if has_memory
@@ -399,7 +399,7 @@
         (block))
     ;; every data segment's bytes (memory.init needs passive ones' addresses)
     (let datas:(ptr (vec.Vec (ptr wasm_reader.Data))) (get w wasm_reader.Wasm.datas))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Data)) datas) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Data)) datas)
       (let d:(ptr wasm_reader.Data) (call (vec.at (ptr wasm_reader.Data)) datas i))
       (call (vec.push i32) (get l lower.L.seg_addrs) (call lower.data_bytes l (call str.bytes (get d wasm_reader.Data.addr) (get d wasm_reader.Data.len))))
       (call (vec.push i32) (get l lower.L.seg_lens) (get d wasm_reader.Data.len)))
@@ -408,11 +408,11 @@
     ;; lower.results_off), and the thread-id counter (starts at 1)
     (let gs:(ptr (vec.Vec (ptr wasm_reader.Global))) (get w wasm_reader.Wasm.globals))
     (let gb:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Global)) gs) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Global)) gs)
       (let v:i64 (get (call (vec.at (ptr wasm_reader.Global)) gs i) wasm_reader.Global.init))
-      (loop k 0 7 1 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
+      (for k 0 8 (call buf.push_byte gb (i32.wrap (bitand (shru v (i64.extend_s (* 8 k))) 255i64)))))
     (put l lower.L.stack_limit_off (call buf.len gb))
-    (loop k 0 (+ 7 (call lower.results_size)) 1 (call buf.push_byte gb 0))
+    (for k 0 (+ (+ 7 (call lower.results_size)) 1) (call buf.push_byte gb 0))
     (let globals_block:i32 (call lower.data_bytes l (call buf.bytes gb)))
     (let th:(ptr Threads) (new Threads (call alloc.forever)))
     (put th Threads.start_fn (get w wasm_reader.Wasm.start))
@@ -426,7 +426,7 @@
     (put th Threads.globals gs)
     (put th Threads.tid_cell (call lower.data_text l ""))
     (call buf.push_byte data 1)
-    (loop k 1 7 1 (call buf.push_byte data 0))
+    (for k 1 8 (call buf.push_byte data 0))
     (let sep:i32 (call lower.data_text l ": "))
     (let nl:i32 (call lower.data_text l "\n"))
     (let wr:(ptr wasi.W) (call wasi.make l))
@@ -438,7 +438,7 @@
     (call runtime.emit_trap_routine c argv0_cell sep nl)
     ;; the call-chain routine, and the cell that will point at its table
     (let chain_cell:i32 (call lower.data_text l ""))
-    (loop k 1 8 1 (call buf.push_byte data 0))
+    (for k 1 9 (call buf.push_byte data 0))
     (let ct:(ptr runtime.ChainTexts) (new runtime.ChainTexts (call alloc.forever)))
     (put ct runtime.ChainTexts.at (call lower.data_text l "  at "))
     (put ct runtime.ChainTexts.dots (call lower.data_text l "  ... "))
@@ -447,7 +447,7 @@
     (put ct runtime.ChainTexts.colon (call lower.data_text l ":"))
     (put ct runtime.ChainTexts.close (call lower.data_text l ")"))
     (put ct runtime.ChainTexts.positions (call lower.data_text l ""))
-    (loop k 1 12 1 (call buf.push_byte data 0))
+    (for k 1 13 (call buf.push_byte data 0))
     (put l lower.L.backtrace_routine (call buf.len c))
     (call runtime.emit_backtrace_routine c argv0_cell sep nl ct chain_cell)
     (let unreachable_at:i32 (call buf.len c))
@@ -457,7 +457,7 @@
     (call runtime.emit_region_trap_routine c argv0_cell sep texts)
     ;; the memory fault handler, and the cell holding the memory's base
     (let base_cell:i32 (call lower.data_text l ""))
-    (loop k 1 8 1 (call buf.push_byte data 0))
+    (for k 1 9 (call buf.push_byte data 0))
     (let oob:(ptr lower.Reason) (call lower.reason l "wasm trap: out of bounds memory access"))
     (let handler:i32 (call buf.len c))
     (call runtime.emit_fault_handler c base_cell (get oob lower.Reason.addr) (get oob lower.Reason.len) (get l lower.L.backtrace_routine))
@@ -485,10 +485,10 @@
     (if (gte (get w wasm_reader.Wasm.start) 0) (call lower.emit_call l (get w wasm_reader.Wasm.start)) (block))
     (call lower.emit_call l entry_fn)
     (call runtime.emit_exit c 0)
-    (loop i 0 (- nimports 1) 1
+    (for i 0 nimports
       (call (vec.push i32) starts (call buf.len c))
       (call import_stub l wr sk th (call (vec.at (ptr wasm_reader.Import)) (get l lower.L.fimports) i)))
-    (loop i nimports (- nfuncs 1) 1
+    (for i nimports nfuncs
       (if (get l lower.L.failed) (break) (block))
       (call (vec.push i32) starts (call buf.len c))
       (call lower.function l w i (call (vec.at (ptr wasm_reader.Body)) (get w wasm_reader.Wasm.code) (- i nimports))))
@@ -497,7 +497,7 @@
     (let chain:(ptr Chain) (call reserve_chain_table l w nimports nfuncs chain_cell))
     (let positions:i32 (call reserve_position_table l w (get ct runtime.ChainTexts.positions)))
     ;; every call now knows where its target starts
-    (loop i 0 (- (call (vec.len (ptr lower.Fixup)) (get l lower.L.fixups)) 1) 1
+    (for i 0 (call (vec.len (ptr lower.Fixup)) (get l lower.L.fixups))
       (let f:(ptr lower.Fixup) (call (vec.at (ptr lower.Fixup)) (get l lower.L.fixups) i))
       (call x64.patch_rel32 c (get f lower.Fixup.at) (call (vec.at i32) starts (get f lower.Fixup.func))))
     (call fill_table l w starts)
@@ -535,7 +535,7 @@
     (put ch Chain.names (arr.new i32 (call alloc.forever) (+ nfuncs 1)))
     (put ch Chain.lens (arr.new i32 (call alloc.forever) (+ nfuncs 1)))
     (let ns:(ptr (vec.Vec (ptr wasm_reader.FnName))) (get w wasm_reader.Wasm.names))
-    (loop k 0 (- (call (vec.len (ptr wasm_reader.FnName)) ns) 1) 1
+    (for k 0 (call (vec.len (ptr wasm_reader.FnName)) ns)
       (let fn_name:(ptr wasm_reader.FnName) (call (vec.at (ptr wasm_reader.FnName)) ns k))
       (let i:i32 (get fn_name wasm_reader.FnName.index))
       (if (and (gte i nimports) (and (lt i nfuncs) (call shown (get fn_name wasm_reader.FnName.name))))
@@ -545,7 +545,7 @@
           (block)))
     (let n:i32 (- nfuncs nimports))
     (let zeros:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (* 16 n) 8)))
-    (loop k 1 (* 16 n) 1 (call buf.push_byte zeros 0))
+    (for k 1 (+ (* 16 n) 1) (call buf.push_byte zeros 0))
     ;; entries hold 32-bit words: keep them 4-aligned
     (while (neq (bitand (call buf.len (get l lower.L.data)) 3) 0) (call buf.push_byte (get l lower.L.data) 0))
     (put ch Chain.addr (call lower.data_bytes l (call buf.bytes zeros)))
@@ -559,7 +559,7 @@
     (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- (get ch Chain.addr) (call elf.data_vaddr))))
-    (loop i (get ch Chain.first) (get ch Chain.last) 1
+    (for i (get ch Chain.first) (+ (get ch Chain.last) 1)
       (let entry:i32 (+ base (* 16 (- i (get ch Chain.first)))))
       (let end:i32 (if (lt i (get ch Chain.last)) (call (vec.at i32) starts (+ i 1)) code_end))
       (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts i)))
@@ -576,15 +576,15 @@
     (let names:(ptr (vec.Vec str.Bytes)) (get w wasm_reader.Wasm.line_files))
     (let nfiles:i32 (call (vec.len str.Bytes) names))
     (let addrs:(arr i32) (arr.new i32 (call alloc.forever) (+ nfiles 1)))
-    (loop k 0 (- nfiles 1) 1 (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at str.Bytes) names k))))
+    (for k 0 nfiles (arr.set i32 addrs k (call lower.data_bytes l (call (vec.at str.Bytes) names k))))
     (while (neq (bitand (call buf.len data) 3) 0) (call buf.push_byte data 0))
     (let files:i32 (call lower.data_text l ""))
-    (loop k 0 (- nfiles 1) 1
+    (for k 0 nfiles
       (call push_word data (arr.get i32 addrs k))
       (call push_word data (get (call (vec.at str.Bytes) names k) str.Bytes.len)))
     (let n:i32 (call (vec.len (ptr lower.NPos)) (get l lower.L.positions)))
     (let entries:i32 (call lower.data_text l ""))
-    (loop k 1 (* 16 n) 1 (call buf.push_byte data 0))
+    (for k 1 (+ (* 16 n) 1) (call buf.push_byte data 0))
     (let cell_at:i32 (+ (get data buf.Buf.data) (- cell (call elf.data_vaddr))))
     (mem.store32 cell_at entries)
     (mem.store32 (+ cell_at 4) n)
@@ -592,14 +592,14 @@
     entries))
 
   (fn push_word [b:(ptr buf.Buf) v:i32] -> void
-    (loop k 0 3 1 (call buf.push_byte b (bitand (shr v (* 8 k)) 255))))
+    (for k 0 4 (call buf.push_byte b (bitand (shr v (* 8 k)) 255))))
 
   (fn fill_position_table [l:(ptr lower.L) entries:i32] -> void
     (unsafe (let data:(ptr buf.Buf) (get l lower.L.data))
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- entries (call elf.data_vaddr))))
     (let ps:(ptr (vec.Vec (ptr lower.NPos))) (get l lower.L.positions))
-    (loop k 0 (- (call (vec.len (ptr lower.NPos)) ps) 1) 1
+    (for k 0 (call (vec.len (ptr lower.NPos)) ps)
       (let p:(ptr lower.NPos) (call (vec.at (ptr lower.NPos)) ps k))
       (let at:i32 (+ base (* 16 k)))
       (mem.store32 at (+ code_vaddr (get p lower.NPos.code)))
@@ -617,17 +617,17 @@
     (let size:i32 (get (get (call (vec.at (ptr wasm_reader.Table)) tables 0) wasm_reader.Table.limits) wasm_reader.Limits.min))
     (if (gt size 65536) (return "a table with more than 65536 entries") (block))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) (+ 16 (* 16 size))))
-    (loop i 1 size 1
-      (loop k 1 8 1 (call buf.push_byte b 0))
-      (loop k 1 4 1 (call buf.push_byte b 255))
-      (loop k 1 4 1 (call buf.push_byte b 0)))
+    (for i 1 (+ size 1)
+      (for k 1 9 (call buf.push_byte b 0))
+      (for k 1 5 (call buf.push_byte b 255))
+      (for k 1 5 (call buf.push_byte b 0)))
     ;; 16-aligned in the data, for tidy entries
     (let data:(ptr buf.Buf) (get l lower.L.data))
     (while (neq (bitand (call buf.len data) 15) 0) (call buf.push_byte data 0))
     (put l lower.L.table_addr (call lower.data_bytes l (call buf.bytes b)))
     (put l lower.L.table_size size)
     (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Elem)) elems) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Elem)) elems)
       (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
       (if (gt (+ (get e wasm_reader.Elem.offset) (call (vec.len i32) (get e wasm_reader.Elem.funcs))) size)
           (return "an element segment outside the table")
@@ -635,7 +635,7 @@
       ;; call_indirect passes arguments as defined functions take them; an
       ;; import's routine takes them on the stack (AIPL never puts one in
       ;; a table: references are to its own functions)
-      (loop k 0 (- (call (vec.len i32) (get e wasm_reader.Elem.funcs)) 1) 1
+      (for k 0 (call (vec.len i32) (get e wasm_reader.Elem.funcs))
         (if (lt (call (vec.at i32) (get e wasm_reader.Elem.funcs) k) (call lower.n_fimports l))
             (return "a table entry that is an imported function")
             (block))))
@@ -649,10 +649,10 @@
     (let code_vaddr:i32 (get (call elf.layout (call buf.len data) 0) elf.Layout.code_vaddr))
     (let base:i32 (+ (get data buf.Buf.data) (- (get l lower.L.table_addr) (call elf.data_vaddr))))
     (let elems:(ptr (vec.Vec (ptr wasm_reader.Elem))) (get w wasm_reader.Wasm.elems))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Elem)) elems) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Elem)) elems)
       (let e:(ptr wasm_reader.Elem) (call (vec.at (ptr wasm_reader.Elem)) elems i))
       (let funcs:(ptr (vec.Vec i32)) (get e wasm_reader.Elem.funcs))
-      (loop k 0 (- (call (vec.len i32) funcs) 1) 1
+      (for k 0 (call (vec.len i32) funcs)
         (let f:i32 (call (vec.at i32) funcs k))
         (let entry:i32 (+ base (* 16 (+ (get e wasm_reader.Elem.offset) k))))
         (mem.store32 entry (+ code_vaddr (call (vec.at i32) starts f)))

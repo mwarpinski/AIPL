@@ -148,7 +148,7 @@ fn threads_run_under_the_runner() {
         dir.join("th.aipl"),
         r#"(module th
   (import io)
-  (fn work [c:i32] -> i32 (unsafe) (loop i 1 1000 1 (let _o:i32 (atomic.add c 1))) 0)
+  (fn work [c:i32] -> i32 (unsafe) (for i 1 1001 (let _o:i32 (atomic.add c 1))) 0)
   (fn main [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
     (let a:i32 (thread.spawn (ref work) c))

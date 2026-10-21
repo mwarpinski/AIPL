@@ -45,7 +45,7 @@
   ;; Counts every k-letter substring.
   (fn count_kmers [seq:str.Bytes k:i32] -> (ptr (map.Map str.Bytes i32))
     (let m:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 64))
-    (loop i 0 (- (get seq str.Bytes.len) k) 1
+    (for i 0 (+ (- (get seq str.Bytes.len) k) 1)
       (let key:str.Bytes (call str.slice seq i k))
       (call (map.set str.Bytes i32) m key (+ 1 (call (map.get_or str.Bytes i32) m key 0))))
     m)
@@ -55,7 +55,7 @@
     (let la:i32 (get a str.Bytes.len))
     (let lb:i32 (get b str.Bytes.len))
     (let n:i32 (if (lt la lb) la lb))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let d:i32 (- (call str.byte_at a i) (call str.byte_at b i)))
       (if (neq d 0) (return d) (block)))
     (- la lb))
@@ -71,7 +71,7 @@
   (fn frequencies [out:(ptr buf.Buf) seq:str.Bytes k:i32] -> void
     (let m:(ptr (map.Map str.Bytes i32)) (call count_kmers seq k))
     (let entries:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) 16))
-    (loop s 0 (- (call (map.capacity str.Bytes i32) m) 1) 1
+    (for s 0 (call (map.capacity str.Bytes i32) m)
       (if (call (map.slot_used str.Bytes i32) m s)
           (block
             (let e:(ptr Entry) (new Entry (call alloc.forever)))
@@ -81,7 +81,7 @@
           (block)))
     (call (vec.sort_by (ptr Entry)) entries (ref by_count))
     (let total:f64 (call to_f64 (+ (- (get seq str.Bytes.len) k) 1)))
-    (loop i 0 (- (call (vec.len (ptr Entry)) entries) 1) 1
+    (for i 0 (call (vec.len (ptr Entry)) entries)
       (let e:(ptr Entry) (call (vec.at (ptr Entry)) entries i))
       (call buf.push_bytes out (get e Entry.key))
       (call buf.push_byte out 32)

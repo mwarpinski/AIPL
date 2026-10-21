@@ -72,10 +72,12 @@
     (match_result (call locate 500)
       (ok p (set! total -1000.0))
       (err big (set! total (+ total (f64.convert_i64_s (/ big 100i64))))))  ;; +5 = 21.5
-    (loop i 0 21 7
+    (let i:i32 0)
+    (while (lte i 21)
       (match_result (call shape_of i)
         (ok s (set! total (+ total (call area s))))                      ;; 0, 3*49=147, 14*2=28
-        (err none (if none (block) (set! total (+ total 1.0))))))        ;; i=21: +1 = 197.5
+        (err none (if none (block) (set! total (+ total 1.0)))))        ;; i=21: +1 = 197.5
+      (set! i (+ i 7)))
     (match_result (call wide true) (ok q (set! total (+ total (get q Quad.b)))) (err ns (block)))  ;; +2
     (match_result (call wide false) (ok q (block))
       (err ns (set! total (+ total (f64.convert_i64_s (i64.extend_s (+ (get ns Ints.a) (+ (get ns Ints.b) (get ns Ints.c))))))))) ;; +27 = 226.5

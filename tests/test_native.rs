@@ -517,7 +517,7 @@ fn wasi_programs_match_natively() {
             "(module m (import io) (import os) (import str)
                (fn main [] -> i32
                  (call io.println_int \"argc: \" (call os.arg_count))
-                 (loop i 0 (- (call os.arg_count) 1) 1 (call io.println_int \"len: \" (get (call os.arg i) str.Bytes.len)))
+                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (get (call os.arg i) str.Bytes.len)))
                  (call io.println_int \"byte: \" (call str.byte_at (call os.arg 2) 1))
                  (call io.println_int \"missing: \" (get (call os.arg 9) str.Bytes.len))
                  (call io.println_int \"probe: \" (match_result (call str.parse_int (call os.env \"AIPL_PROBE\")) (ok v v) (err e -1000)))
@@ -554,7 +554,7 @@ fn wasi_programs_match_natively() {
             "(module m (import io) (import os) (fn main [] -> i32 (unsafe)
                (let p:i32 (mem.alloc 4096)) (let ok:i32 (sys.random p 4096))
                (let nonzero:i32 0)
-               (loop i 0 4095 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1)) (block)))
+               (for i 0 4096 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero (+ nonzero 1)) (block)))
                (call io.println_int \"result: \" ok)
                (call io.println_int \"mostly nonzero: \" (if (gt nonzero 3900) 1 0))
                (call io.println_int \"differ: \" (if (neq (call os.random_i32) (call os.random_i32)) 1 0))
@@ -846,13 +846,13 @@ fn thread_programs_match_natively() {
     // returns a different old size, so they sum to 16 + 17 + ... + 415
     let growers = "(module m (import alloc)
        (fn grower [total:i32] -> i32 (unsafe)
-         (loop i 1 50 1 (let _a:i32 (atomic.add total (mem.grow 1))))
+         (for i 1 51 (let _a:i32 (atomic.add total (mem.grow 1))))
          0)
        (fn main [] -> i32 (unsafe)
          (let total:i32 (mem.alloc 8))
          (let hs:(arr i32) (arr.new i32 (call alloc.forever) 8))
-         (loop i 0 7 1 (arr.set i32 hs i (thread.spawn (ref grower) total)))
-         (loop i 0 7 1 (let _j:i32 (thread.join (arr.get i32 hs i))))
+         (for i 0 8 (arr.set i32 hs i (thread.spawn (ref grower) total)))
+         (for i 0 8 (let _j:i32 (thread.join (arr.get i32 hs i))))
          (sys.exit (+ (if (eq (atomic.add total 0) 86200) 1 0) (if (eq (mem.grow 0) 416) 2 0)))
          0))";
     for round in 0..10 {
@@ -868,9 +868,9 @@ fn thread_programs_match_natively() {
        (fn sq [x:i32] -> i32 (unsafe) (* x x))
        (fn main [] -> i32 (unsafe)
          (let hs:(arr i32) (arr.new i32 (call alloc.forever) 40))
-         (loop i 0 39 1 (arr.set i32 hs i (thread.spawn (ref sq) i)))
+         (for i 0 40 (arr.set i32 hs i (thread.spawn (ref sq) i)))
          (let sum:i32 0)
-         (loop i 0 39 1 (set! sum (+ sum (thread.join (arr.get i32 hs i)))))
+         (for i 0 40 (set! sum (+ sum (thread.join (arr.get i32 hs i)))))
          (sys.exit (% sum 101)) 0))";
     assert_native_matches("forty_threads", many);
     // concurrent printing: whole texts intact, line order free (as in
@@ -1396,7 +1396,7 @@ fn i64_programs_match_natively() {
            (fn memory_round_trip [] -> i64 (unsafe) (let p:i32 (mem.alloc 8)) (mem.store64 p 1311768467294899696i64) (mem.load64 p))
            (fn add64 [a:i64 b:i64] -> i64 (unsafe) (+ a b))
            (fn calls [] -> i64 (unsafe) (call add64 4294967296i64 4294967296i64))
-           (fn accumulate [] -> i64 (unsafe) (let s:i64 0i64) (loop i 1 10 1 (set! s (+ s 1000000000i64))) s)
+           (fn accumulate [] -> i64 (unsafe) (let s:i64 0i64) (for i 1 11 (set! s (+ s 1000000000i64))) s)
            (fn if_branches [n:i32] -> i64 (unsafe) (if (gt n 0) 4294967296i64 -4294967296i64))
            (fn param_order [a:i64 b:i64 c:i32] -> i64 (unsafe) (- (* a 3i64) (+ b (i64.extend_s c))))
            (fn uses_param_order [] -> i64 (unsafe) (call param_order 5000000000i64 7i64 -3)))",
@@ -2333,11 +2333,13 @@ fn directories_and_file_information_match_natively() {
     (match (call fs.list (call alloc.default) "big")
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
         (call io.println_int "names " (call (vec.len str.Bytes) names))
-        (loop i 0 (- (call (vec.len str.Bytes) names) 1) 37
+        (let i:i32 0)
+        (while (lt i (call (vec.len str.Bytes) names))
           (let n:str.Bytes (call (vec.at str.Bytes) names i))
           (call io.println_int "  length " (get n str.Bytes.len))
           (call io.println_int "  first byte " (call str.byte_at n 0))
-          (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))))
+          (call io.println_int "  last byte " (call str.byte_at n (- (get n str.Bytes.len) 1)))
+          (set! i (+ i 37))))
       ((option.Option (ptr (vec.Vec str.Bytes))) none (call io.println "no listing")))
     (call show "big/f007")
     (call show "big/sub")
@@ -2372,7 +2374,7 @@ fn float_locals_survive_calls_natively() {
     let src = "(module m (import io)
       (fn inner [x:f64 n:i32] -> f64
         (let a:f64 x) (let b:f64 1.5) (let c:f64 0.25)
-        (loop i 1 n 1 (set! a (+ (* a b) c)) (set! b (- b 0.125)) (set! c (* c 2.0)))
+        (for i 1 (+ n 1) (set! a (+ (* a b) c)) (set! b (- b 0.125)) (set! c (* c 2.0)))
         (+ a (+ b c)))
       (fn depth [k:i32 acc:f64] -> f64
         (let here:f64 (* acc 1.0625))
@@ -2380,7 +2382,7 @@ fn float_locals_survive_calls_natively() {
         (+ r here))
       (fn outer [] -> f64
         (let p:f64 3.0) (let q:f64 -2.0) (let s:f64 0.0)
-        (loop i 1 6 1
+        (for i 1 7
           (set! s (+ s (* p (call inner q i))))
           (set! p (+ p 0.5))
           (set! q (- q (call inner p 2))))
@@ -2401,7 +2403,7 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
     let src = "(module m (import io)
       (fn busy [w:i32] -> i32 (unsafe)
         (let a:i32 1) (let b:i32 2) (let c:i32 3) (let d:i32 4) (let e:i32 5) (let f:i32 6) (let g:i32 7)
-        (loop i 1 20 1
+        (for i 1 21
           (set! a (+ a i)) (set! b (+ b a)) (set! c (^ c b)) (set! d (+ d c)) (set! e (- e d)) (set! f (+ f e)) (set! g (+ g f))
           (let _x:i32 (atomic.add w (+ a g)))
           (if (atomic.cas w 0 1) (set! b (+ b 1)) (set! c (+ c 1)))
@@ -2411,7 +2413,7 @@ fn register_locals_survive_atomics_grow_and_imports_natively() {
       (fn caller [] -> i32 (unsafe)
         (let p:i32 11) (let q:i32 22) (let r:i32 33) (let s:i32 44) (let t:i32 55) (let u:i32 66)
         (let w:i32 (mem.alloc 8))
-        (loop k 1 3 1
+        (for k 1 4
           (set! p (+ p (call busy w))) (set! q (+ q p)) (set! r (+ r q)) (set! s (^ s r)) (set! t (+ t s)) (set! u (- u t)))
         (+ p (+ q (+ r (+ s (+ t u))))))
       (fn main [] -> i32 (unsafe)

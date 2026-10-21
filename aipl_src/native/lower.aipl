@@ -142,7 +142,7 @@
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L) (pub)
     (let l:(ptr L) (new L (call alloc.forever)))
     (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) (call alloc.default) 16))
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports))
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
       (if (eq (get imp wasm_reader.Import.kind) 0)
           (call (vec.push (ptr wasm_reader.Import)) (get l L.fimports) imp)
@@ -348,7 +348,7 @@
   ;; The registers virtual values hold.
   (fn used_regs [l:(ptr L)] -> i32
     (let m:i32 0)
-    (loop i 0 (- (call vlen l) 1) 1
+    (for i 0 (call vlen l)
       (if (eq (call (vec.at i32) (get l L.vk) i) 1)
           (set! m (bitor m (shl 1 (i32.wrap (call (vec.at i64) (get l L.vv) i)))))
           (block)))
@@ -361,7 +361,7 @@
     (let r:i32 -1)
     (while (lt r 0)
       (let u:i32 (bitor (bitor busy (get l L.taken)) (call used_regs l)))
-      (loop k 0 4 1
+      (for k 0 5
         (if (and (lt r 0) (eq (bitand u (shl 1 (call pool_reg k))) 0)) (set! r (call pool_reg k)) (block)))
       (if (lt r 0)
           (if (gt (call vlen l) 0) (call spill_bottom l) (block (call fail l "native: out of value registers") (set! r 0)))
@@ -371,7 +371,7 @@
 ;; The xmm registers float values hold.
   (fn used_xmms [l:(ptr L)] -> i32
     (let m:i32 0)
-    (loop i 0 (- (call vlen l) 1) 1
+    (for i 0 (call vlen l)
       (if (eq (call (vec.at i32) (get l L.vk) i) 5)
           (set! m (bitor m (shl 1 (i32.wrap (call (vec.at i64) (get l L.vv) i)))))
           (block)))
@@ -383,7 +383,7 @@
     (let r:i32 -1)
     (while (lt r 0)
       (let u:i32 (bitor (bitor busy (get l L.taken_x)) (call used_xmms l)))
-      (loop k 2 7 1
+      (for k 2 8
         (if (and (lt r 0) (eq (bitand u (shl 1 k)) 0)) (set! r k) (block)))
       (if (lt r 0)
           (if (gt (call vlen l) 0) (call spill_bottom l) (block (call fail l "native: out of float registers") (set! r 2)))
@@ -417,7 +417,7 @@
     (let vk:(ptr (vec.Vec i32)) (get l L.vk))
     (let vv:(ptr (vec.Vec i64)) (get l L.vv))
     (call emit_push_value l (call (vec.at i32) vk 0) (call (vec.at i64) vv 0))
-    (loop i 1 (- (call (vec.len i32) vk) 1) 1
+    (for i 1 (call (vec.len i32) vk)
       (call (vec.set i32) vk (- i 1) (call (vec.at i32) vk i))
       (call (vec.set i64) vv (- i 1) (call (vec.at i64) vv i)))
     (let _k:i32 (call (vec.pop i32) vk))
@@ -425,7 +425,7 @@
 
   ;; Every value onto the machine stack, as control flow and calls need.
   (fn flush [l:(ptr L)] -> void
-    (loop i 0 (- (call vlen l) 1) 1
+    (for i 0 (call vlen l)
       (call emit_push_value l (call (vec.at i32) (get l L.vk) i) (call (vec.at i64) (get l L.vv) i)))
     (call vclear l))
 
@@ -438,11 +438,11 @@
   (fn flush_for_call [l:(ptr L) n:i32] -> void
     (let len:i32 (call vlen l))
     (let keep:bool (gte len n))
-    (loop i 0 (- (- len n) 1) 1
+    (for i 0 (- len n)
       (let k:i32 (call (vec.at i32) (get l L.vk) i))
       (if (not (or (eq k 3) (or (eq k 2) (eq k 4)))) (set! keep false) (block)))
     (if (not keep) (block (call flush l) (return)) (block))
-    (loop i (- len n) (- len 1) 1
+    (for i (- len n) len
       (call emit_push_value l (call (vec.at i32) (get l L.vk) i) (call (vec.at i64) (get l L.vv) i)))
     (call (vec.truncate i32) (get l L.vk) (- len n))
     (call (vec.truncate i64) (get l L.vv) (- len n)))
@@ -458,12 +458,12 @@
         ;; some on the machine stack: all there, then popped, last first
         (block
           (call flush l)
-          (loop j 1 n 1 (call x64.pop c (call arg_reg (- n j))))
+          (for j 1 (+ n 1) (call x64.pop c (call arg_reg (- n j))))
           (return))
         (block))
     (let len:i32 (call vlen l))
     (let keep:bool true)
-    (loop i 0 (- (- len n) 1) 1
+    (for i 0 (- len n)
       (let k:i32 (call (vec.at i32) (get l L.vk) i))
       (if (not (or (eq k 3) (or (eq k 2) (eq k 4)))) (set! keep false) (block)))
     (if keep (block) (call keep_top l n))
@@ -471,7 +471,7 @@
     ;; register to register first
     (let src:(arr i32) (arr.new i32 (call alloc.forever) (+ n 1)))
     (let left:i32 0)
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let k:i32 (call (vec.at i32) (get l L.vk) (+ base i)))
       (let r:i32 (i32.wrap (call (vec.at i64) (get l L.vv) (+ base i))))
       (if (and (eq k 1) (neq r (call arg_reg i)))
@@ -480,7 +480,7 @@
     (let parked:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))
     (while (gt left 0)
       (let moved:bool false)
-      (loop i 0 (- n 1) 1
+      (for i 0 n
         (if (and (gte (arr.get i32 src i) 0) (not (call read_by_other src n (call arg_reg i) i)))
             (block
               (call x64.mov_rr c 64 (call arg_reg i) (arr.get i32 src i))
@@ -492,17 +492,17 @@
           ;; a cycle: park one source on the machine stack, pop it last
           (block
             (let first:i32 -1)
-            (loop i 0 (- n 1) 1 (if (and (lt first 0) (gte (arr.get i32 src i) 0)) (set! first i) (block)))
+            (for i 0 n (if (and (lt first 0) (gte (arr.get i32 src i) 0)) (set! first i) (block)))
             (call x64.push c (arr.get i32 src first))
             (call (vec.push i32) parked first)
             (arr.set i32 src first -1)
             (set! left (- left 1)))
           (block)))
-    (loop j 1 (call (vec.len i32) parked) 1
+    (for j 1 (+ (call (vec.len i32) parked) 1)
       (call x64.pop c (call arg_reg (call (vec.at i32) parked (- (call (vec.len i32) parked) j)))))
     ;; then constants, locals, and floats, which read no argument register
     (let o:(ptr Op) (get l L.oa))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let k:i32 (call (vec.at i32) (get l L.vk) (+ base i)))
       (if (neq k 1)
           (block
@@ -516,7 +516,7 @@
   ;; Whether a pending move other than i reads register r.
   (fn read_by_other [src:(arr i32) n:i32 r:i32 i:i32] -> bool
     (let found:bool false)
-    (loop j 0 (- n 1) 1
+    (for j 0 n
       (if (and (neq j i) (eq (arr.get i32 src j) r)) (set! found true) (block)))
     found)
 
@@ -582,9 +582,9 @@
     (let types:(ptr (vec.Vec (ptr wasm_reader.FuncType))) (get w wasm_reader.Wasm.types))
     (let n:i32 (call (vec.len (ptr wasm_reader.FuncType)) types))
     (let out:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) (+ n 1)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let first:i32 i)
-      (loop j 0 (- i 1) 1
+      (for j 0 i
         (if (and (eq first i) (call same_type (call (vec.at (ptr wasm_reader.FuncType)) types i) (call (vec.at (ptr wasm_reader.FuncType)) types j)))
             (set! first j)
             (block)))
@@ -597,7 +597,7 @@
 
   (fn same_list [a:(ptr (vec.Vec i32)) b:(ptr (vec.Vec i32))] -> bool
     (if (neq (call (vec.len i32) a) (call (vec.len i32) b)) (return false) (block))
-    (loop i 0 (- (call (vec.len i32) a) 1) 1
+    (for i 0 (call (vec.len i32) a)
       (if (neq (call (vec.at i32) a i) (call (vec.at i32) b i)) (return false) (block)))
     true)
 
@@ -617,7 +617,7 @@
       ((eq n 1) (call push_rax l))
       ((gt n 1)
        (if (gt n 8) (call fail l "native: more than 8 results") (block))
-       (loop i 0 (- n 1) 1
+       (for i 0 n
          (let r:i32 (call scratch l 0))
          (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11))
          (call x64.fs c)
@@ -687,14 +687,14 @@
     (let weight:(arr i32) (arr.new i32 (call alloc.forever) (+ n 1)))
     (put l L.reg_of (arr.new i32 (call alloc.forever) (+ n 1)))
     (put l L.xreg_of (arr.new i32 (call alloc.forever) (+ n 1)))
-    (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1) (arr.set i32 (get l L.xreg_of) i -1))
+    (for i 0 (+ n 1) (arr.set i32 (get l L.reg_of) i -1) (arr.set i32 (get l L.xreg_of) i -1))
     ;; which locals are floats: the parameters', then the declared groups' types
     (let float:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
-    (loop i 0 (- np 1) 1 (arr.set bool float i (call is_float_type (call (vec.at i32) (get t wasm_reader.FuncType.params) i))))
+    (for i 0 np (arr.set bool float i (call is_float_type (call (vec.at i32) (get t wasm_reader.FuncType.params) i))))
     (let at:i32 np)
-    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+    (for g 0 (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals))
       (let grp:(ptr wasm_reader.Locals) (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g))
-      (loop k 1 (get grp wasm_reader.Locals.count) 1
+      (for k 1 (+ (get grp wasm_reader.Locals.count) 1)
         (arr.set bool float at (call is_float_type (get grp wasm_reader.Locals.type)))
         (set! at (+ at 1))))
     ;; per open block: 1 for a loop; the loop depth is their sum
@@ -702,7 +702,7 @@
     (let loops:i32 0)
     (let code:(ptr (vec.Vec (ptr wasm_reader.Instr))) (get body wasm_reader.Body.code))
     (let calls_import:bool false)
-    (loop j 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
+    (for j 0 (call (vec.len (ptr wasm_reader.Instr)) code)
       (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code j))
       (let op:i32 (get ins wasm_reader.Instr.op))
       (if (and (eq op 16) (lt (get ins wasm_reader.Instr.a) (call n_fimports l))) (set! calls_import true) (block))
@@ -723,9 +723,9 @@
         (else (block))))
     ;; the six heaviest integer locals, in order
     (put l L.nregs 0)
-    (loop k 0 5 1
+    (for k 0 6
       (let best:i32 -1)
-      (loop i 0 (- n 1) 1
+      (for i 0 n
         (if (and (and (lt (call reg_of l i) 0) (not (arr.get bool float i)))
                  (and (gte (arr.get i32 weight i) 3)
                       (or (lt best 0) (gt (arr.get i32 weight i) (arr.get i32 weight best)))))
@@ -739,9 +739,9 @@
     (put l L.nsaved (if calls_import 6 (get l L.nregs)))
     ;; the eight heaviest float locals, in xmm8-xmm15
     (put l L.nxregs 0)
-    (loop k 0 7 1
+    (for k 0 8
       (let best:i32 -1)
-      (loop i 0 (- n 1) 1
+      (for i 0 n
         (if (and (and (lt (call xreg_of l i) 0) (arr.get bool float i))
                  (and (gte (arr.get i32 weight i) 3)
                       (or (lt best 0) (gt (arr.get i32 weight i) (arr.get i32 weight best)))))
@@ -757,7 +757,7 @@
   ;; reloads them, around code that uses rbx and r12-r14.
   (fn sync_locals [l:(ptr L) np:i32 to_slots:bool] -> void
     (let c:(ptr buf.Buf) (get l L.code))
-    (loop i 0 (- (get l L.nall) 1) 1
+    (for i 0 (get l L.nall)
       (let r:i32 (call reg_of l i))
       (if (gte r 0)
           (if to_slots
@@ -771,7 +771,7 @@
     (let c:(ptr buf.Buf) (get l L.code))
     (if (eq nres 1) (call pop_rax l) (block))
     (if (gt nres 1)
-        (loop j 1 nres 1
+        (for j 1 (+ nres 1)
           (call vpop l (get l L.oa))
           (let v:i32 (call read_reg l (get l L.oa) (call r10)))
           (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11))
@@ -779,9 +779,9 @@
           (call x64.store c 64 (call x64.mem (call r11) (+ (call results_off l) (* 8 (- nres j)))) v))
         (block))
     ;; the caller's values of the registers that held locals
-    (loop k 0 (- (get l L.nsaved) 1) 1
+    (for k 0 (get l L.nsaved)
       (call x64.load c 64 (call alloc_reg k) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ k 1))))))
-    (loop k 0 (- (get l L.nxregs) 1) 1
+    (for k 0 (get l L.nxregs)
       (call x64.load c 64 (call r11) (call x64.mem (call rbp) (* -8 (+ (get l L.frame_locals) (+ (get l L.nsaved) (+ k 1))))))
       (call x64.movq_xr c (+ 8 k) (call r11)))
     (call x64.mov_rr c 64 (call rsp) (call rbp))
@@ -799,7 +799,7 @@
     (put l L.np np)
     (put l L.regcall (call regcall_params np))
     (let declared:i32 0)
-    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+    (for g 0 (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals))
       (set! declared (+ declared (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count))))
     (put l L.nall (+ np declared))
     (call note_position l -1 0 0)
@@ -807,13 +807,13 @@
     ;; slots, then zeroed locals
     (call x64.push c (call rbp))
     (call x64.mov_rr c 64 (call rbp) (call rsp))
-    (if (get l L.regcall) (loop i 0 (- np 1) 1 (call x64.push c (call arg_reg i))) (block))
+    (if (get l L.regcall) (for i 0 np (call x64.push c (call arg_reg i))) (block))
     ;; the stack check: trap unless the frame (the locals, and up to four
     ;; six saved registers and eight saved xmm registers) ends above the
     ;; thread's limit, which leaves room below it for the operand stack, the
     ;; host routines, and the trap's own
     (let frame:i32 112)
-    (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
+    (for g 0 (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals))
       (set! frame (+ frame (* 8 (get (call (vec.at (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals) g) wasm_reader.Locals.count)))))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rcx) (call rcx))
     (call x64.fs c)
@@ -822,7 +822,7 @@
     (call x64.alu_rr c 64 (call x64.op_cmp) (call rax) (call rcx))
     (call emit_trap_if l (call x64.cc_b) (get l L.stack_exhausted))
     (call x64.alu_rr c 32 (call x64.op_xor) (call rax) (call rax))
-    (loop k 1 declared 1 (call x64.push c (call rax)))
+    (for k 1 (+ declared 1) (call x64.push c (call rax)))
     ;; frame slots below rbp: the parameters' (regcall), the locals'
     (put l L.nlocals (+ (if (get l L.regcall) np 0) declared))
     ;; the most used locals live in rbx, r12-r14; their old values are saved
@@ -830,13 +830,13 @@
     ;; reset the stack below them), then the locals are loaded
     (call choose_registers l np body t)
     (put l L.frame_locals (get l L.nlocals))
-    (loop k 0 (- (get l L.nsaved) 1) 1 (call x64.push c (call alloc_reg k)))
-    (loop k 0 (- (get l L.nxregs) 1) 1
+    (for k 0 (get l L.nsaved) (call x64.push c (call alloc_reg k)))
+    (for k 0 (get l L.nxregs)
       (call x64.movq_rx c (call r11) (+ 8 k))
       (call x64.push c (call r11)))
     (put l L.nlocals (+ (get l L.nlocals) (+ (get l L.nsaved) (get l L.nxregs))))
     ;; float locals into their xmm registers: a parameter's bits, or zero
-    (loop i 0 (- (get l L.nall) 1) 1
+    (for i 0 (get l L.nall)
       (let xi:i32 (call xreg_of l i))
       (if (gte xi 0)
           (block
@@ -845,7 +845,7 @@
                 (call x64.alu_rr c 32 (call x64.op_xor) (call r11) (call r11)))
             (call x64.movq_xr c xi (call r11)))
           (block)))
-    (loop i 0 (- (get l L.nall) 1) 1
+    (for i 0 (get l L.nall)
       (let ri:i32 (call reg_of l i))
       (if (gte ri 0)
           (if (lt i np)
@@ -866,7 +866,7 @@
     (let nlines:i32 (if (eq lines (ptr.null (vec.Vec (ptr wasm_reader.LinePos)))) 0 (call (vec.len (ptr wasm_reader.LinePos)) lines)))
     (call (vec.clear (ptr Cold)) (get l L.colds))
     (put l L.skip_to -1)
-    (loop i 0 (- (call (vec.len (ptr wasm_reader.Instr)) code) 1) 1
+    (for i 0 (call (vec.len (ptr wasm_reader.Instr)) code)
       (if (get l L.failed) (break) (block))
       ;; a failed check's branch, left for later (out_of_line)
       (if (lte i (get l L.skip_to)) (continue) (block))
@@ -888,15 +888,15 @@
           (block (put l L.next_op -1) (put l L.next_a -1)))
       (call instr l w np nres ins))
     ;; the failed checks' code, after the function's own
-    (loop k 0 (- (call (vec.len (ptr Cold)) (get l L.colds)) 1) 1
+    (for k 0 (call (vec.len (ptr Cold)) (get l L.colds))
       (let cd:(ptr Cold) (call (vec.at (ptr Cold)) (get l L.colds) k))
       (call x64.patch_rel32 c (get cd Cold.jump) (call buf.len c))
       (call vclear l)
-      (loop q 0 (- (call (vec.len i32) (get cd Cold.snap_k)) 1) 1
+      (for q 0 (call (vec.len i32) (get cd Cold.snap_k))
         (call vpush l (call (vec.at i32) (get cd Cold.snap_k) q) (call (vec.at i64) (get cd Cold.snap_v) q)))
       (put l L.depth (get cd Cold.depth))
       (put l L.dead false)
-      (loop j (get cd Cold.from) (get cd Cold.to) 1
+      (for j (get cd Cold.from) (+ (get cd Cold.to) 1)
         (if (get l L.failed) (break) (block))
         (let ins:(ptr wasm_reader.Instr) (call (vec.at (ptr wasm_reader.Instr)) code j))
         (call note_line l lines nlines (+ (get body wasm_reader.Body.head) (get ins wasm_reader.Instr.offset)))
@@ -910,7 +910,7 @@
   ;; last line-table entry at or before it), for code emitted out of order.
   (fn note_line [l:(ptr L) lines:(ptr (vec.Vec (ptr wasm_reader.LinePos))) nlines:i32 at:i32] -> void
     (let best:i32 -1)
-    (loop q 0 (- nlines 1) 1
+    (for q 0 nlines
       (if (lte (get (call (vec.at (ptr wasm_reader.LinePos)) lines q) wasm_reader.LinePos.at) at) (set! best q) (block)))
     (if (lt best 0)
         (call note_position l -1 0 0)
@@ -978,7 +978,7 @@
   ;; The index of a virtual value that is local i, or -1.
   (fn find_local [l:(ptr L) i:i32] -> i32
     (let at:i32 -1)
-    (loop j 0 (- (call vlen l) 1) 1
+    (for j 0 (call vlen l)
       (if (and (eq (call (vec.at i32) (get l L.vk) j) 3) (eq (call (vec.at i64) (get l L.vv) j) (i64.extend_s i)))
           (set! at j)
           (block)))
@@ -1214,7 +1214,7 @@
                    (put cd Cold.depth (get l L.depth))
                    (put cd Cold.snap_k (call (vec.make i32) (call alloc.default) (+ (call vlen l) 1)))
                    (put cd Cold.snap_v (call (vec.make i64) (call alloc.default) (+ (call vlen l) 1)))
-                   (loop q 0 (- (call vlen l) 1) 1
+                   (for q 0 (call vlen l)
                      (call (vec.push i32) (get cd Cold.snap_k) (call (vec.at i32) (get l L.vk) q))
                      (call (vec.push i64) (get cd Cold.snap_v) (call (vec.at i64) (get l L.vv) q)))
                    (call (vec.push (ptr Cold)) (get l L.colds) cd)
@@ -1232,7 +1232,7 @@
                    (put lab Label.cold true)
                    (put lab Label.snap_k (call (vec.make i32) (call alloc.default) (+ (call vlen l) 1)))
                    (put lab Label.snap_v (call (vec.make i64) (call alloc.default) (+ (call vlen l) 1)))
-                   (loop q 0 (- (call vlen l) 1) 1
+                   (for q 0 (call vlen l)
                      (call (vec.push i32) (get lab Label.snap_k) (call (vec.at i32) (get l L.vk) q))
                      (call (vec.push i64) (get lab Label.snap_v) (call (vec.at i64) (get l L.vv) q))))
                  (block)))
@@ -1271,7 +1271,7 @@
              (put lab Label.reached true))
            (block))
        (let fx:(ptr (vec.Vec i32)) (get lab Label.fixups))
-       (loop k 0 (- (call (vec.len i32) fx) 1) 1
+       (for k 0 (call (vec.len i32) fx)
          (call x64.patch_rel32 c (call (vec.at i32) fx k) (call buf.len c)))
        (put l L.depth (+ (get lab Label.height) (get lab Label.arity)))
        (put l L.dead (not (get lab Label.reached)))
@@ -1279,7 +1279,7 @@
        (if (and (get lab Label.cold) (not (get l L.dead)))
            (block
              (call vclear l)
-             (loop q 0 (- (call (vec.len i32) (get lab Label.snap_k)) 1) 1
+             (for q 0 (call (vec.len i32) (get lab Label.snap_k))
                (call vpush l (call (vec.at i32) (get lab Label.snap_k) q) (call (vec.at i64) (get lab Label.snap_v) q))))
            (block))
        (if (and (eq (get lab Label.kind) 3) (get lab Label.reached)) (call emit_return l nres) (block))
@@ -1681,7 +1681,7 @@
     ;; rcx and rdx (rax holds the target)
     (let regcall:bool (call regcall_params (call nparams t)))
     (if regcall
-        (loop j 1 (call nparams t) 1 (call x64.pop c (call arg_reg (- (call nparams t) j))))
+        (for j 1 (+ (call nparams t) 1) (call x64.pop c (call arg_reg (- (call nparams t) j))))
         (block))
     (call x64.call_r c (call rax))
     (if (and (not regcall) (gt (call nparams t) 0))
@@ -2145,7 +2145,7 @@
   (fn log2_exact [v:i64 sz:i32] -> i32
     (let x:i64 (if (eq sz 32) (i64.extend_u (i32.wrap v)) v))
     (let k:i32 -1)
-    (loop i 1 (- sz 1) 1
+    (for i 1 sz
       (if (eq x (shl 1i64 (i64.extend_s i))) (set! k i) (block)))
     k)
 

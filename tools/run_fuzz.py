@@ -468,7 +468,7 @@ class Gen:
             inner.vars[i] = ("i32", False)
             lo = rng.randint(-2, 3)
             hi = lo + rng.randint(-1, 4)
-            return f"(loop {i} {lo} {hi} {rng.randint(1, 2)} {self.stmts(inner, d - 1)})"
+            return f"(for {i} {lo} {hi + 1} {self.stmts(inner, d - 1)})"
         if r < 0.72:
             c = self.fresh("w")
             inner = ctx.child(loop=True)
@@ -550,7 +550,7 @@ class Gen:
             i = self.fresh("i")
             out.append(self.print_value("i32", f"(arr.addr {v})"))
             out.append(self.print_value("i32", f"(arr.len {v})"))
-            out.append(f"(loop {i} 0 (- (arr.len {v}) 1) 1 {self.show(ctx, el, f'(arr.get {el} {v} {i})')})")
+            out.append(f"(for {i} 0 (arr.len {v}) {self.show(ctx, el, f'(arr.get {el} {v} {i})')})")
         return " ".join(out)
 
     def print_value(self, t, e):

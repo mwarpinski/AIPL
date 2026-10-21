@@ -15,17 +15,17 @@
 
   ;; out = A v
   (fn times [n:i32 v:(arr f64) out:(arr f64)] -> void
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let sum:f64 0.0)
-      (loop j 0 (- n 1) 1
+      (for j 0 n
         (set! sum (+ sum (* (call a i j) (arr.get f64 v j)))))
       (arr.set f64 out i sum)))
 
   ;; out = A' v
   (fn times_transposed [n:i32 v:(arr f64) out:(arr f64)] -> void
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let sum:f64 0.0)
-      (loop j 0 (- n 1) 1
+      (for j 0 n
         (set! sum (+ sum (* (call a j i) (arr.get f64 v j)))))
       (arr.set f64 out i sum)))
 
@@ -40,13 +40,13 @@
     (let u:(arr f64) (arr.new f64 (call alloc.forever) n))
     (let v:(arr f64) (arr.new f64 (call alloc.forever) n))
     (let tmp:(arr f64) (arr.new f64 (call alloc.forever) n))
-    (loop i 0 (- n 1) 1 (arr.set f64 u i 1.0))
-    (loop round 1 10 1
+    (for i 0 n (arr.set f64 u i 1.0))
+    (for round 1 11
       (call times_ata n u v tmp)
       (call times_ata n v u tmp))
     (let vbv:f64 0.0)
     (let vv:f64 0.0)
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (set! vbv (+ vbv (* (arr.get f64 u i) (arr.get f64 v i))))
       (set! vv (+ vv (* (arr.get f64 v i) (arr.get f64 v i)))))
     (call io.print_f64 (f64.sqrt (/ vbv vv)) 9)

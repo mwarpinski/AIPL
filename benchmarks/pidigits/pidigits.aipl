@@ -49,7 +49,7 @@
     (let left:i32 (% (get o Out.count) 10))
     (if (neq left 0)
         (block
-          (loop k left 9 1 (call buf.push_byte b 32))
+          (for k left 10 (call buf.push_byte b 32))
           (call buf.push_str b "\t:")
           (call buf.push_int b (get o Out.count))
           (call buf.push_byte b 10))

@@ -292,7 +292,7 @@ fn regroup(name: String, files: HashMap<std::path::PathBuf, String>, work: Vec<(
 
 /// Built-in forms and types: a template with one of these names would be
 /// indistinguishable from the form itself, e.g. `(get p (Vec i32) len)`.
-const BUILT_IN: &[&str] = &["module", "import", "fn", "struct", "let", "set!", "if", "while", "loop", "block", "call", "ref", "call_ref", "new", "get", "put", "sizeof", "ptr", "arr", "result", "ok", "err", "match_result", "return", "break", "continue", "cond", "else", "req", "ens", "inv", "+", "-", "*", "/", "%", "^", "eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not", "shl", "shr", "shru", "bitand", "bitor", "divu", "remu", "i32", "i64", "f32", "f64", "bool", "str", "void"];
+const BUILT_IN: &[&str] = &["module", "import", "fn", "struct", "let", "set!", "if", "while", "loop", "counted_loop", "block", "call", "ref", "call_ref", "new", "get", "put", "sizeof", "ptr", "arr", "result", "ok", "err", "match_result", "return", "break", "continue", "cond", "else", "req", "ens", "inv", "+", "-", "*", "/", "%", "^", "eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not", "shl", "shr", "shru", "bitand", "bitor", "divu", "remu", "i32", "i64", "f32", "f64", "bool", "str", "void"];
 
 /// `Some((name, params))` for a template item.
 fn generic_header(item: &Item) -> Result<Option<(String, Vec<String>)>, String> {

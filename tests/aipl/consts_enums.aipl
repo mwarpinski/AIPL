@@ -24,7 +24,7 @@
       (err e (block)))
     (let f:(fn [Op i32 i32] -> i32) (ref apply))
     (let total:i32 0)
-    (loop i 0 (- (call (vec.len Op) ops) 1) 1
+    (for i 0 (call (vec.len Op) ops)
       (set! total (+ total (call_ref (fn [Op i32 i32] -> i32) f (call (vec.at Op) ops i) 6 3))))
     ;; total: 6 - 3 + 6 * 3 = 21
     (let s:(ptr pal.Swatch) (new pal.Swatch (call alloc.forever)))

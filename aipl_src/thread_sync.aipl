@@ -38,7 +38,7 @@
   ;; address is passed as the thread argument, 1000 times. (The counter is
   ;; heap-allocated by the test; nothing below address 1024 is ours to use.)
   (fn worker_increment [counter_ptr:i32] -> i32
-    (loop i 0 999 1
+    (for i 0 1000
       (let _r:i32 (call atomic_add counter_ptr 1)))
     0)
 
