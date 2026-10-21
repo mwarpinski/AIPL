@@ -316,8 +316,18 @@
             (call s b "Duplicate function definition '") (call by b (get fd ast.FnDef.name)) (call s b "'")
             (call fail c b) (return))
           (block))
-      (let sig:(ptr Sig) (new Sig (call alloc.forever)))
       (let ps:(arr (ptr ast.Param)) (get fd ast.FnDef.params))
+      ;; two parameters of one name: the VM read the last, compiled code the first
+      (for j 1 (arr.len ps)
+        (let pn:str.Bytes (get (arr.get (ptr ast.Param) ps j) ast.Param.name))
+        (for q 0 j
+          (if (call str.bytes_eq pn (get (arr.get (ptr ast.Param) ps q) ast.Param.name))
+              (block
+                (let b:(ptr buf.Buf) (call msg c (get fd ast.FnDef.at)))
+                (call s b "function '") (call by b (call names.shown (get fd ast.FnDef.name))) (call s b "' has two parameters named '") (call by b pn) (call s b "'")
+                (call fail c b) (return))
+              (block))))
+      (let sig:(ptr Sig) (new Sig (call alloc.forever)))
       (let pts:(arr ast.Type) (arr.new ast.Type (call alloc.forever) (arr.len ps)))
       (loop j 0 (- (arr.len ps) 1) 1 (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
       (put sig Sig.params pts)

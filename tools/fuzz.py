@@ -140,10 +140,12 @@ def main():
     built = subprocess.run([AIPL, "compile", "--exe", "aipl_src/driver.aipl", "-o", AIPLC], capture_output=True, cwd=ROOT)
     if built.returncode != 0:
         sys.exit("could not build aiplc: " + built.stderr.decode())
-    sources = [p for p in glob.glob(os.path.join(ROOT, "examples", "*.aipl"))
-               + glob.glob(os.path.join(ROOT, "tests", "aipl", "*.aipl"))
-               + glob.glob(os.path.join(ROOT, "benchmarks", "*", "*.aipl"))
-               if os.path.getsize(p) < 20000]
+    # sorted: glob gives the filesystem's order, so the same seed chose
+    # other files on GitHub than here (a case only CI found, 2026-10-20)
+    sources = sorted(p for p in glob.glob(os.path.join(ROOT, "examples", "*.aipl"))
+                     + glob.glob(os.path.join(ROOT, "tests", "aipl", "*.aipl"))
+                     + glob.glob(os.path.join(ROOT, "benchmarks", "*", "*.aipl"))
+                     if os.path.getsize(p) < 20000)
     os.makedirs(OUT, exist_ok=True)
     failures = 0
     kinds = {}

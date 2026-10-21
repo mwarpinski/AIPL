@@ -989,7 +989,33 @@ const FORMS: &[&str] = &[
     "M:(module m (struct V [x:i32 y:i32] (value)) (struct Q [v:V n:i32]) (fn main [] -> i32 (let v:V (make V 1 2)) (with v 3 4)))",
     "M:(module m (struct V [x:i32] (pub2)) (fn main [] -> i32 0))",
     "M:(module m (struct V [x:i32] (value) (other)) (fn main [] -> i32 0))",
+    // two parameters of one name (fuzz.py, 2026-10-20: accepted, and the VM
+    // read the second where compiled code read the first)
+    "M:(module m (fn f [a:i32 a:i32] -> i32 a) (fn main [] -> i32 (call f 1 2)))",
+    "M:(module m (fn f [a:i32 b:i32 a:bool] -> i32 b) (fn main [] -> i32 0))",
 ];
+
+/// A function with two parameters of one name is refused, naming it, by
+/// both toolchains from source (a generic function shown as written).
+#[test]
+fn two_parameters_of_one_name_are_refused() {
+    let dir = std::env::temp_dir().join(format!("aipl_params_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (k, (src, want)) in [
+        ("(module m\n  (fn f [a:i32 a:i32] -> i32 a)\n  (fn main [] -> i32 (call f 1 2)))\n", "2:3: function 'f' has two parameters named 'a'"),
+        ("(module m\n  (fn (g T) [x:T x:T] -> T x)\n  (fn main [] -> i32 0))\n", "2:3: function 'g<T>' has two parameters named 'x'"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let file = dir.join(format!("p{k}.aipl"));
+        std::fs::write(&file, src).unwrap();
+        let rust = aipl_core::resolver::Resolver::resolve(&file).and_then(|m| aipl_core::checker::TypeChecker::new().check_module(&m)).unwrap_err();
+        assert!(rust.ends_with(want), "{rust}");
+        assert_eq!(aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).unwrap_err(), rust);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn checkers_agree_on_every_form() {

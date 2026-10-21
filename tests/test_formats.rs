@@ -134,6 +134,11 @@ fn every_formatting_error_has_one_message_in_both_toolchains() {
         ("(println \"{n:5000}\")", "bad format '5000': a width is at most 4095"),
         ("(println \"{x:.41}\")", "bad format '.41': at most 40 decimals"),
         ("(println \"{(+ n 1}\")", "unclosed { in a format string (write {{ for a brace)"),
+        // brackets that balance but close with the other kind, found by
+        // fuzz.py on GitHub (2026-10-20); the position is in the code
+        ("(println \"{(+ n [1)}\")", "1:8: mismatched closing bracket"),
+        ("(println \"{(+ n 1])}\")", "1:7: mismatched closing bracket"),
+        ("(println \"{(+ é [1)}\")", "1:8: mismatched closing bracket"),
         ("(let q:i32 (format \"x\")) 0", "Type mismatch in 'let': expected i32, got str"),
     ];
     let dir = scratch("errors");

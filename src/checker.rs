@@ -753,6 +753,10 @@ impl TypeChecker {
             if self.fn_signatures.contains_key(&f.name) {
                 return Err(format!("{}:{}: Duplicate function definition '{}'", f.span.0, f.span.1, f.name));
             }
+            // two parameters of one name: the VM read the last, compiled code the first
+            if let Some(dup) = f.params.iter().enumerate().find_map(|(i, (n, _))| f.params[..i].iter().any(|(m, _)| m == n).then_some(n)) {
+                return Err(format!("{}:{}: function '{}' has two parameters named '{}'", f.span.0, f.span.1, shown(&f.name), dup));
+            }
             if f.is_unsafe {
                 self.unsafe_fns.insert(f.name.clone());
             }
