@@ -94,6 +94,7 @@ Do not edit a worktree while a suite runs on it.
 ## Open problems
 
 - One intermittent failure with no known cause: `a_view_kept_past_its_request_stops_the_program` (tests/test_serve.rs) got an empty first answer once under the full suite's load. It now prints the server's output if it recurs; investigate then.
+- Measured 2026-10-21 on a clean `origin/development` (`7e5d7c7`): running tests/test_serve.rs alone, 2 of 10 runs failed, each with one test (`twenty_thousand_requests_leave_memory_flat_in_the_vm`, then `a_fresh_server_that_cannot_listen_says_so`); `every_backend_answers_alike` (an empty first answer, as above) failed in a CI run of the loop work. Each test passes 12 of 12 when run alone with one other, so it is the whole file's load (several servers and ports at once), about one run in five, and not a change in what a test checks. Before trusting a red `test_serve`, run it again; the thing to find is what shares state or a port across those ten tests.
 - The Rust compiler stays for now as the independent second compiler that keeps the seed trustworthy (bootstrap/README.md); retiring it is a later decision.
 
 ## Things that are deliberately odd
