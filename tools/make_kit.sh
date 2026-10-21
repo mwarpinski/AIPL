@@ -48,7 +48,12 @@ cp "$WORK/target/release/aipl" "$WORK/target/release/aipl-run" "$KIT/libexec/"
 cp "$WORK/target/bootstrap/aipl" "$KIT/bin/aipl-native"
 chmod +x "$KIT/bin/aipl-native"
 cp -r "$WORK/aipl_src/std" "$KIT/std"
-cp "$WORK/PROMPT_GUIDE_FOR_AIS.md" "$WORK/AIPL_SPEC.md" "$WORK/docs/TOUR.md" "$KIT/docs/"
+# Each doc starts with the line `aipl --version` prints, so a copy that is
+# older than the toolchain beside it shows itself.
+STAMP="aipl $(sed -n 's/^version = "\(.*\)"/\1/p' "$WORK/Cargo.toml" | head -1) ($SHORT)"
+for doc in PROMPT_GUIDE_FOR_AIS.md AIPL_SPEC.md docs/TOUR.md; do
+  { echo "$STAMP"; echo; cat "$WORK/$doc"; } > "$KIT/docs/$(basename "$doc")"
+done
 "$KIT/libexec/aipl" compile "$WORK/aipl_src/doc.aipl" -o "$KIT/libexec/doc.wasm" > /dev/null
 
 cat > "$KIT/bin/aipl" <<'EOF'
@@ -155,6 +160,11 @@ check "native executable" "$(./p)"
 "$A" compile --tests prog.aipl -o pt.wasm > /dev/null && say "  ok  test build"
 "$A" doc vec 2>&1 | grep -q "std/vec" && say "  ok  doc" || { say "  FAIL doc"; exit 1; }
 [ "$("$A" eval -e '(+ 40 2)' 2>&1 | tail -1)" = "42 : i32" ] && say "  ok  eval -e" || { say "  FAIL eval -e"; exit 1; }
+v="$("$A" --version)"
+for doc in PROMPT_GUIDE_FOR_AIS.md AIPL_SPEC.md TOUR.md; do
+  [ "$(head -1 "$T/kit/docs/$doc")" = "$v" ] || { say "  FAIL stamp: $doc does not start with '$v'"; exit 1; }
+done
+say "  ok  version stamp ($v)"
 cd "$OUT"
 restore
 trap - EXIT
