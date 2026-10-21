@@ -3,7 +3,8 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Step 1 built 2026-10-21.
+step 5). Step 1 built 2026-10-21; step 2 built 2026-10-21 apart from the
+rows listed under it.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
@@ -21,7 +22,7 @@ decides the larger syntax questions with numbers.
 | Step | What | Status |
 |---|---|---|
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
-| 2 | Errors that name the right form, for every guess a model makes | Not started |
+| 2 | Errors that name the right form, for every guess a model makes | **Mostly done** 2026-10-21 (rows left in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | Not started |
 | 4 | `when` is the only `if` with one branch | Not started |
 | 5 | An array literal, `arr.of` | Not started |
@@ -89,6 +90,48 @@ with two types ("rename one"). Still bad: the four rows above, `(ok
 [v] ...)` in `match_result` ("Expected ok var, got '['"), and a string
 literal inside a placeholder ("unexpected input after the module's
 closing ')'", far from the cause; AGENT_FRICTION.md rows 25 and 33).
+
+Built 2026-10-21, in both toolchains with the same text (the BAD_PARSES
+list and FORMS in tests/test_checker_aipl.rs, tests/test_visibility.rs,
+and tests/test_resolver_aipl.rs compare them word for word):
+
+- Parser: an unknown head says `to call a function, write (call f
+  args...)`, or `did you mean ltu?` for `lt_u` (underscores ignored, then
+  1 edit for 3 to 5 bytes, 2 for longer; `HEAD_NAMES` in src/parser.rs and
+  `suggest.aipl` are the one rule), or names `cond` for `else if`, `elif`,
+  `switch`, `case`, or says there is no array literal (`arr.of`, until step
+  5). A `let` without its type, an `if` without its else (names `when`),
+  a function type with parentheses or no `->`, `call_ref` without its
+  type, `(get p Point x)`, `arr.get` without its element type, `arr.set`
+  without a value, `(ok [v] ...)`, and a contract that is not one
+  expression each say what to write.
+- Checker: an unknown function names the nearest (`did you mean`), or says
+  to use `call_ref` when it is a function reference in scope; a body that
+  gives void for a value says to end in the value; a pointer or array given
+  where an i32 goes, an i32 where a pointer or array goes (for null), i32
+  against i64 or a float, and a comparison of a pointer with 0 say how to
+  convert; `(ptr U)` for a union says unions are values and never null;
+  `result` in a contract says it is `res`; an argument count lists the
+  parameter types.
+- Resolver: `text.splt` says `'text.splt' is not an item of module text:
+  did you mean text.split?` (it used to say private); a string literal
+  inside a placeholder says where the string ends inside it (it used to say
+  `unexpected input after the module's closing ')'`). `aipl run x.aipl`
+  says run takes a .wasm.
+- Docs: AIPL_SPEC.md 4.x and section 13 and the guide's rule 7 and checklist
+  said `(if c (return v) x)` is an error; it is accepted (section 7.1
+  rule 2: a branch that always leaves fits any type) and runs the same in
+  the VM, wasm, and native. Corrected.
+
+Left for step 2 (not built): a generic function or struct written without
+its type arguments (`(call vec.push v x)`, `(get b Box.value)`: after
+expansion the checker no longer knows the template exists, so this needs
+the generics pass to say it), `(make option.Option.some 5)` for a generic
+union, an unknown module name in `(import nosuch)` (did you mean), and
+`(req (gt x 0))` placed after a `let` in a body (reported as `Undefined
+variable 'x'`, since a contract sees only the parameters). The compiler's
+own messages for `for` with a step (`(for i 0 3 1 ...)` takes the 1 as a
+statement) belong to step 3.
 
 The step: every row of the spec's pitfall table (section 13) that is a
 compile error gets a message naming the fix, the same in both

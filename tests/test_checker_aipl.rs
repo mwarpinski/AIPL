@@ -534,6 +534,32 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [g:(fn [i32] -> i32 (no_leak x))] -> i32 0))",
     "(module m (fn f [g:(fn [i32] -> i32 no_leak)] -> i32 0))",
     "(module m (fn f [g:(fn [i32] -> i32 (no_leak) (no_leak))] -> i32 0))",
+    // CANONICAL_PLAN.md step 2: messages that name the form to write
+    "(module m (fn main [] -> i32 (f 1)))",
+    "(module m (fn main [] -> i32 (lt_u 1 2)))",
+    "(module m (fn main [] -> i32 (callref f 1)))",
+    "(module m (fn main [] -> i32 (matchresult x)))",
+    "(module m (fn main [] -> i32 (elif true 1)))",
+    "(module m (fn main [] -> i32 (else if true 1)))",
+    "(module m (fn main [] -> i32 (switch 1 (1 2))))",
+    "(module m (fn main [] -> i32 (arr.of i32 1 2)))",
+    "(module m (fn main [] -> i32 (if true 1)))",
+    "(module m (fn main [] -> i32 (if true)))",
+    "(module m (fn main [] -> i32 (let x 5) x))",
+    "(module m (fn main [] -> i32 (let x",
+    "(module m (fn g [f:(fn (i32) -> i32)] -> i32 0))",
+    "(module m (fn g [f:(fn [i32] i32)] -> i32 0))",
+    "(module m (fn main [] -> i32 (call_ref f 1)))",
+    "(module m (struct Point [x:i32]) (fn main [p:(ptr Point)] -> i32 (get p Point x)))",
+    "(module m (struct Point [x:i32]) (fn main [p:(ptr Point)] -> i32 (put p Point x 1) 0))",
+    "(module m (struct Point [x:i32]) (fn main [p:(ptr Point)] -> i32 (put p Point.x) 0))",
+    "(module m (fn main [a:(arr i32)] -> i32 (arr.set a 0 5) 0))",
+    "(module m (fn main [a:(arr i32)] -> i32 (arr.get a 0)))",
+    "(module m (fn main [] -> i32 (match_result r (ok [v] 1) (err e 2))))",
+    "(module m (fn main [] -> i32 (match_result r (ok v 1) (err [e] 2))))",
+    "(module m (fn main [] -> i32 (match_result r (ok",
+    "(module m (fn f [n:i32] -> i32 (req n > 0) n))",
+    "(module m (fn f [n:i32] -> i32 (ens res 0) n))",
 ];
 
 #[test]
@@ -549,6 +575,24 @@ fn parse_errors_match_word_for_word() {
             Err(e) => e,
         };
         assert_eq!(ours, theirs, "{src:?}");
+    }
+}
+
+/// The "did you mean" candidates are the same names in both parsers.
+#[test]
+fn both_parsers_know_the_same_heads() {
+    use aipl_core::parser::HEAD_NAMES;
+    let front = front::load();
+    let theirs = front.run("head_names", "").unwrap();
+    let mut theirs: Vec<&str> = theirs.lines().collect();
+    theirs.sort_unstable();
+    let mut ours: Vec<&str> = HEAD_NAMES.to_vec();
+    ours.sort_unstable();
+    assert_eq!(ours, theirs);
+    // and each is one the Rust parser reads as a head (never "Unknown op/keyword")
+    for name in HEAD_NAMES {
+        let err = Parser::parse(&format!("(module m (fn f [] -> i32 ({name})))")).err().unwrap_or_default();
+        assert!(!err.contains("Unknown op/keyword"), "{name}: {err}");
     }
 }
 
@@ -993,6 +1037,26 @@ const FORMS: &[&str] = &[
     // read the second where compiled code read the first)
     "M:(module m (fn f [a:i32 a:i32] -> i32 a) (fn main [] -> i32 (call f 1 2)))",
     "M:(module m (fn f [a:i32 b:i32 a:bool] -> i32 b) (fn main [] -> i32 0))",
+    // CANONICAL_PLAN.md step 2: messages that name the form to write
+    "(let p:i32 (ptr.null P)) 0",
+    "(let p:(ptr P) 0) 0",
+    "(let a:(arr i32) 0) 0",
+    "(let x:i64 5) 0",
+    "(let x:i32 5i64) 0",
+    "(let x:f64 5) 0",
+    "(let x:f32 5i64) 0",
+    "(call w (ptr.null P))",
+    "(eq (ptr.null P) 0)",
+    "(eq 0 (arr.null i32))",
+    "(+ 1 1.5)",
+    "(checked.add 1 2i64)",
+    "(call nothin)",
+    "(call nosuchfunction 1)",
+    "(let f:(fn [i32] -> i32) (ref w)) (call f 1)",
+    "(let q:(ptr U) (ptr.null U)) 0",
+    "(+ result 1)",
+    "M:(module m (fn main [] -> i32 (let x:i32 1)))",
+    "M:(module m (fn main [] -> i32 (let i:i32 0) (while (lt i 3) (set! i (+ i 1)))))",
 ];
 
 /// A function with two parameters of one name is refused, naming it, by
@@ -1044,12 +1108,12 @@ fn checkers_report_each_failing_function() {
         // two failing functions around a good one
         (
             "(module m\n  (fn a [] -> i32 (+ 1 true))\n  (fn good [] -> i32 1)\n  (fn b [] -> i32 (set! zz 1) 0)\n  (fn main [] -> i32 0))",
-            "2:19: Type mismatch in binary op: i32 vs bool\n4:19: Undefined variable 'zz' in set!",
+            "2:19: Type mismatch in binary op: i32 vs bool; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)\n4:19: Undefined variable 'zz' in set!",
         ),
         // a function failing inside a loop leaves no loop behind for the next
         (
             "(module m\n  (fn a [] -> i32 (while true (+ 1 true)) 0)\n  (fn b [] -> i32 (break) 0)\n  (fn main [] -> i32 0))",
-            "2:31: Type mismatch in binary op: i32 vs bool\n3:19: break is only allowed inside a while or loop body",
+            "2:31: Type mismatch in binary op: i32 vs bool; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)\n3:19: break is only allowed inside a while or loop body",
         ),
         // a definition's error is the only one, though later functions fail
         (

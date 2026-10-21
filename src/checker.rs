@@ -1,5 +1,6 @@
 use crate::ast::*;
 use std::collections::HashMap;
+use crate::parser::nearest_name;
 
 /// A `match` subject's member: its name, and a union variant's fields.
 type MatchMember<'a> = (String, Option<&'a Vec<StructField>>);
@@ -396,6 +397,9 @@ pub fn shown(text: &str) -> String {
     }
     out
 }
+
+/// What to add when the two operands of an arithmetic op have different types.
+const BINARY_HINT: &str = "; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)";
 
 /// "T is a type parameter that is not a struct", for a struct position.
 fn not_a_struct((l, c): (u32, u32), name: &str) -> String {
@@ -880,6 +884,10 @@ impl TypeChecker {
                 )),
                 Type::Struct(name) if self.struct_defs.contains_key(name) => Ok(()),
                 Type::Struct(name) if is_sealed(name) => Err(not_a_struct(span, name)),
+                Type::Struct(name) if self.struct_defs.unions.contains_key(name) => Err(format!(
+                    "{}:{}: '{}' is a union, which is a value: write {}, not (ptr {}); a union is never null, so use a variant such as (none) for no value",
+                    span.0, span.1, shown(name), shown(name), shown(name)
+                )),
                 Type::Struct(name) => Err(format!("{}:{}: Unknown struct '{}' in (ptr {})", span.0, span.1, name, name)),
                 other => Err(format!("{}:{}: ptr must point to a struct, got {}", span.0, span.1, other)),
             },
@@ -953,7 +961,22 @@ fn fits(got: &Type, want: &Type) -> bool {
                 };
             }
         }
-        String::new()
+        match (got, want) {
+            (Type::Ptr(_) | Type::Array(_), Type::I32) => format!(": a pointer or array is not an i32: declare it as {got}"),
+            (Type::I32, Type::Ptr(inner)) => match inner.as_ref() {
+                Type::Struct(n) => format!(": an i32 is not a pointer: for null write (ptr.null {})", shown(n)),
+                _ => String::new(),
+            },
+            (Type::I32, Type::Array(elem)) => format!(": an i32 is not an array: for null write (arr.null {elem})"),
+            (Type::I32, Type::I64) => ": no implicit widening: write a literal as 5i64, or convert with (i64.extend_s x)".to_string(),
+            (Type::I64, Type::I32) => ": no implicit narrowing: convert with (i32.wrap x)".to_string(),
+            (Type::I32 | Type::I64, Type::F64 | Type::F32) => format!(
+                ": integers do not become floats by themselves: write a literal as 1.0, or convert with ({}.convert_{}_s x)",
+                if *want == Type::F64 { "f64" } else { "f32" },
+                if *got == Type::I32 { "i32" } else { "i64" }
+            ),
+            _ => String::new(),
+        }
     }
 
     /// A result is held by value (AIPL_SPEC.md 4.F), so one needing more
@@ -1095,9 +1118,10 @@ fn fits(got: &Type, want: &Type) -> bool {
         // A body may end in (return v) instead of a bare value.
         let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));
         if f.return_type != Type::Void && !Self::fits(&last_ty, &f.return_type) && !ends_in_return {
+            let hint = if last_ty == Type::Void { "; end the body with the value to return (a let, a set!, or a loop gives void)" } else { "" };
             return Err(format!(
-                "{}:{}: Function '{}' expects return type {}, but body returned {}",
-                f.span.0, f.span.1, shown(&f.name), f.return_type, last_ty
+                "{}:{}: Function '{}' expects return type {}, but body returned {}{}",
+                f.span.0, f.span.1, shown(&f.name), f.return_type, last_ty, hint
             ));
         }
 
@@ -1139,7 +1163,8 @@ fn fits(got: &Type, want: &Type) -> bool {
                 if let Some(ty) = env.get(name) {
                     Ok(ty.clone())
                 } else {
-                    Err(format!("{}:{}: Undefined variable '{}'", l, c, name))
+                    let hint = if name == "result" { "; a function's result is named res, in its (ens ...)" } else { "" };
+                    Err(format!("{}:{}: Undefined variable '{}'{}", l, c, name, hint))
                 }
             }
             Expr::Let { name, ty, val, .. } => {
@@ -1247,15 +1272,26 @@ fn fits(got: &Type, want: &Type) -> bool {
                 Ok(Type::Void)
             }
             Expr::Call { func, args, .. } => {
-                let (param_types, ret_type) = self
-                    .fn_signatures
-                    .get(func)
-                    .ok_or_else(|| format!("{}:{}: Call to unknown function '{}'", l, c, func))?;
+                let (param_types, ret_type) = self.fn_signatures.get(func).ok_or_else(|| {
+                    let hint = match env.get(func) {
+                        Some(t @ Type::Fn(..)) => format!("; {func} is a function reference: call it with (call_ref {t} {func} args...)"),
+                        _ => match nearest_name(func, self.fn_signatures.keys().filter(|k| !k.contains('<')).map(|k| k.as_str())) {
+                            Some(near) => format!("; did you mean {}?", shown(near)),
+                            None => String::new(),
+                        },
+                    };
+                    format!("{}:{}: Call to unknown function '{}'{}", l, c, func, hint)
+                })?;
                 self.require_unsafe_fn(func, l, c)?;
                 if args.len() != param_types.len() {
+                    let takes = if param_types.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", param_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" "))
+                    };
                     return Err(format!(
-                        "{}:{}: Function '{}' expects {} arguments, got {}",
-                        l, c, shown(func), param_types.len(), args.len()
+                        "{}:{}: Function '{}' expects {} arguments{}, got {}",
+                        l, c, shown(func), param_types.len(), takes, args.len()
                     ));
                 }
                 for (i, arg) in args.iter().enumerate() {
@@ -1366,7 +1402,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                     let t1 = self.infer_expr_type(&args[0], env)?;
                     let t2 = self.infer_expr_type(&args[1], env)?;
                     if t1 != t2 {
-                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}{}", l, c, t1, t2, BINARY_HINT));
                     }
                     if !matches!(t1, Type::I32 | Type::I64) {
                         return Err(format!("{}:{}: {} is integer arithmetic (i32 or i64), got {}", l, c, op, t1));
@@ -1388,7 +1424,7 @@ fn fits(got: &Type, want: &Type) -> bool {
                     let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(..) | Type::Enum(_) | Type::Union(_));
                     let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
                     if t1 != t2 && !special(&t1) {
-                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
+                        return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}{}", l, c, t1, t2, BINARY_HINT));
                     }
                     if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(..)) {
                         return Err(format!(
@@ -1507,7 +1543,13 @@ fn fits(got: &Type, want: &Type) -> bool {
                         });
                     }
                     let Some(t1) = Self::meet(&t1, &t2) else {
-                        return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}", l, c, t1, t2));
+                        let null_hint = match (&t1, &t2) {
+                            (Type::Ptr(_) | Type::Array(_), Type::I32) | (Type::I32, Type::Ptr(_) | Type::Array(_)) => {
+                                "; to test for null, compare with (ptr.null S) or (arr.null T)"
+                            }
+                            _ => "",
+                        };
+                        return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}{}", l, c, t1, t2, null_hint));
                     };
                     if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
                         return Err(format!("{}:{}: {} compares integers (i32 or i64) as unsigned, got {}", l, c, op, t1));

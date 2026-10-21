@@ -488,7 +488,7 @@ fn wasm_toolchain_reports_each_failing_function_with_its_file() {
             .collect()
     };
     let expected = vec![
-        ("lib".to_string(), "3:5: Type mismatch in binary op: i32 vs bool".to_string()),
+        ("lib".to_string(), "3:5: Type mismatch in binary op: i32 vs bool; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)".to_string()),
         ("main".to_string(), "3:19: Undefined variable 'zz'".to_string()),
     ];
     assert_eq!(lines(&rust), expected, "{rust}");
@@ -549,6 +549,9 @@ fn malformed_files_are_rejected_like_rust() {
         // errors at a closing bracket
         ("if_without_else", b"(module m\n  (fn main [] -> i32\n    (if true 1)))"),
         ("type_without_constructor", b"(module m\n  (fn main [x:()] -> i32 1))"),
+        // CANONICAL_PLAN.md step 2: a string literal inside a placeholder ends the string
+        ("placeholder_string", b"(module m (fn f [s:str] -> str s)\n  (fn main [] -> i32 (println \"{(call f \"x\")}\") 0))"),
+        ("placeholder_string_two_closers", b"(module m (fn f [s:str] -> str s)\n  (fn main [] -> i32 (println \"a {{b}} {(call f \"x\")}\"))))"),
     ];
     let driver = driver_wasm();
     for (name, src) in cases {

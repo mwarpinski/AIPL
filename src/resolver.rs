@@ -14,7 +14,7 @@
 //! item is parsed with the positions of the file it came from.
 
 use crate::ast::*;
-use crate::parser::{Parser, Token, TokenKind};
+use crate::parser::{nearest_name, Parser, Token, TokenKind};
 use crate::sexpr::Sx;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -64,6 +64,8 @@ struct State<'a> {
 /// are value structs.
 #[derive(Default)]
 struct Vis {
+    /// every named item of every module (what exists, whether or not (pub))
+    all: HashSet<String>,
     public: HashSet<String>,
     fields: HashMap<String, HashMap<String, Level>>,
     values: HashSet<String>,
@@ -449,6 +451,9 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     for item in module.items.iter_mut() {
         let public = take_pub(item, file)?;
         let named = item_name(item).map(|(n, _)| n.to_string());
+        if let (Some(n), true) = (&named, item.head() != Some("import")) {
+            st.vis.all.insert(canonical(n));
+        }
         if item.head() == Some("struct") {
             let levels = take_field_marks(item, file)?;
             if let Some(n) = &named {
@@ -719,7 +724,16 @@ impl Names<'_> {
     fn check_item(&self, name: &str, at: (u32, u32)) {
         if let Some(m) = self.foreign(name) {
             if !self.vis.public.contains(name) {
-                self.fail(at, format!("'{}' is private to module {}: mark it (pub) there to use it here", name, m));
+                if self.vis.all.contains(name) {
+                    self.fail(at, format!("'{}' is private to module {}: mark it (pub) there to use it here", name, m));
+                } else {
+                    let prefix = format!("{m}.");
+                    let hint = match nearest_name(&name[prefix.len()..], self.vis.public.iter().filter_map(|p| p.strip_prefix(prefix.as_str()))) {
+                        Some(near) => format!("did you mean {m}.{near}?"),
+                        None => format!("aipl doc {m} lists what it has"),
+                    };
+                    self.fail(at, format!("'{}' is not an item of module {}: {}", name, m, hint));
+                }
             }
         }
     }

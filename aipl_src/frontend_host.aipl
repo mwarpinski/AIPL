@@ -37,6 +37,9 @@
         (block (let okb:(ptr buf.Buf) (call buf.make (call alloc.default) 4)) (call buf.push_str okb "ok") (call put_result out true okb))
         (call put_result out false (call front.render src pr))))
 
+  ;; parser.aipl's operator and keyword names, one per line.
+  (fn head_names [src:i32 len:i32 out:i32] -> i32 (call put_result out true (call parser.head_names_text)))
+
   (fn host_alloc [n:i32] -> i32 (mem.alloc n))
   (fn token_size [] -> i32 (sizeof compiler.Token))
   (fn tokenize [src:i32 len:i32 out:i32] -> i32 (call compiler.tokenize src len out))

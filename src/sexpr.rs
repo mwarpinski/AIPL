@@ -12,6 +12,28 @@ pub enum Sx {
     List { open: Token, items: Vec<Sx>, close: Token },
 }
 
+/// What a bracket error says when a string literal ends inside a placeholder.
+const OPEN_PLACEHOLDER: &str =
+    "this string ends inside a placeholder whose { is never closed: a placeholder cannot hold a string literal; bind the value with let first";
+
+/// Whether a string's last `{` placeholder is never closed (`{{` and `}}`
+/// are braces, not placeholders).
+fn ends_in_placeholder(s: &str) -> bool {
+    let b = s.as_bytes();
+    let (mut open, mut i) = (false, 0);
+    while i < b.len() {
+        match b[i] {
+            b'{' if !open && b.get(i + 1) == Some(&b'{') => i += 1,
+            b'{' => open = true,
+            b'}' if open => open = false,
+            b'}' if b.get(i + 1) == Some(&b'}') => i += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    open
+}
+
 impl Sx {
     /// Reads one form from `tokens` starting at `*pos`.
     pub fn read(tokens: &[Token], pos: &mut usize) -> Result<Sx, String> {
@@ -42,13 +64,22 @@ impl Sx {
     }
 
     /// The whole input as one form; anything after it is an error (as in the parser).
+    /// A bracket error in a program with a string that ends inside a
+    /// placeholder says so instead: the quote that ended the string is
+    /// what unbalanced the brackets (aipl_src/resolver.aipl bracket_error).
     pub fn read_one(tokens: &[Token]) -> Result<Sx, String> {
-        let mut pos = 0;
-        let sx = Sx::read(tokens, &mut pos)?;
-        if let Some(t) = tokens.get(pos) {
-            return Err(format!("{}:{}: unexpected input after the module's closing ')'", t.line, t.col));
-        }
-        Ok(sx)
+        let read = || {
+            let mut pos = 0;
+            let sx = Sx::read(tokens, &mut pos)?;
+            if let Some(t) = tokens.get(pos) {
+                return Err(format!("{}:{}: unexpected input after the module's closing ')'", t.line, t.col));
+            }
+            Ok(sx)
+        };
+        read().map_err(|e| match tokens.iter().find(|t| matches!(&t.kind, TokenKind::StringLit(s) if ends_in_placeholder(s))) {
+            Some(t) => format!("{}:{}: {}", t.line, t.col, OPEN_PLACEHOLDER),
+            None => e,
+        })
     }
 
     /// Appends this form's tokens to `out`.

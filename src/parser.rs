@@ -62,6 +62,73 @@ pub struct Token {
     pub col: u32,
 }
 
+/// Every operator and keyword that can head a form `(head ...)`, for the
+/// "did you mean" in the unknown-head error. aipl_src/parser.aipl's
+/// form_table and op_table list the same names (tests/test_checker_aipl.rs
+/// compares them).
+pub const HEAD_NAMES: &[&str] = &[
+    "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
+    "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.set", "atomic.add",
+    "atomic.cas", "atomic.lock", "atomic.unlock", "bitand", "bitor", "block", "break", "call",
+    "call_ref", "checked.add", "checked.mul", "checked.sub", "cond", "continue", "dbg", "defer",
+    "divu", "enum.cast", "enum.ord", "env.get", "env.sizes", "eprintln", "eq", "err", "expect",
+    "f32.convert_i32_s", "f32.convert_i64_s", "f32.demote", "f32.reinterpret_i32",
+    "f64.convert_i32_s", "f64.convert_i64_s", "f64.promote", "f64.reinterpret_i64", "f64.sqrt",
+    "format", "format.dbg", "format.eprintln", "format.expect", "format.piece", "format.print",
+    "format.println", "format.str", "format.to", "format_to", "fs.close", "fs.delete",
+    "fs.open", "fs.opendir", "fs.read", "fs.readdir", "fs.stat", "fs.write", "get", "gt", "gte",
+    "gteu", "gtu", "i32.reinterpret_f32", "i32.trunc_f32_s", "i32.trunc_f64_s", "i32.wrap",
+    "i64.extend_s", "i64.extend_u", "i64.reinterpret_f64", "i64.trunc_f32_s", "i64.trunc_f64_s",
+    "if", "let", "loop", "lt", "lte", "lteu", "ltu", "make", "match", "match_result",
+    "mem.alloc", "mem.free", "mem.grow", "mem.load16_s", "mem.load16_u", "mem.load32",
+    "mem.load64", "mem.load8", "mem.load8_s", "mem.load_f32", "mem.load_f64", "mem.store16",
+    "mem.store32", "mem.store64", "mem.store8", "mem.store_f32", "mem.store_f64", "neq",
+    "net.accept", "net.close", "net.listen", "net.recv", "net.send", "new", "not", "ok", "or",
+    "print", "println", "ptr.addr", "ptr.cast", "ptr.gen", "ptr.make", "ptr.null", "put", "ref",
+    "remu", "return", "set!", "shl", "shr", "shru", "sizeof", "str.len", "str.ptr", "sys.exit",
+    "sys.monotonic", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
+    "try", "try_opt", "try_or", "unsafe", "while", "with",
+];
+
+/// Edit distance between two names, by bytes (aipl_src/suggest.aipl is the
+/// same rule).
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, &ca) in a.iter().enumerate() {
+        let mut diag = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let up = row[j + 1];
+            row[j + 1] = (diag + usize::from(ca != cb)).min(up + 1).min(row[j] + 1);
+            diag = up;
+        }
+    }
+    row[b.len()]
+}
+
+/// The candidate nearest to a misspelled name, if one is near enough to be
+/// worth naming. Underscores are left out of both names before they are
+/// compared (`lt_u` is `ltu`); then at most 1 edit for a name of 3 to 5
+/// bytes, 2 for a longer one, none for a shorter one. The closest wins; of
+/// equal ones, the one that sorts first (aipl_src/suggest.aipl is the same
+/// rule, so both toolchains name the same one).
+pub fn nearest_name<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let squeeze = |s: &str| s.replace('_', "");
+    let plain = squeeze(name);
+    let limit = match plain.len() {
+        0..=2 => return None,
+        3..=5 => 1,
+        _ => 2,
+    };
+    candidates
+        .filter(|c| *c != name)
+        .map(|c| (edit_distance(&plain, &squeeze(c)), c))
+        .filter(|(d, _)| *d <= limit)
+        .min()
+        .map(|(_, c)| c)
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -426,6 +493,11 @@ impl Parser {
                 pos.0, pos.1, expected
             ))
         }
+    }
+
+    /// expect_kind, with `hint` after the usual message: what to write.
+    fn expect_kind_hint(&mut self, expected: TokenKind, hint: &str) -> Result<Token, String> {
+        self.expect_kind(expected).map_err(|e| format!("{e}; {hint}"))
     }
 
     fn parse_module(&mut self) -> Result<Module, String> {
@@ -892,7 +964,7 @@ impl Parser {
             }
         };
         let expr = self.parse_expr()?;
-        self.expect_kind(TokenKind::RParen)?;
+        self.expect_kind_hint(TokenKind::RParen, &format!("a contract is one expression: ({kind} (gt n 0))"))?;
 
         match kind.as_str() {
             "req" => Ok(Contract::Requires(expr)),
@@ -917,14 +989,20 @@ impl Parser {
         match self.next() {
             Some(Token { kind: TokenKind::Symbol(s), .. }) => match s.rsplit_once('.') {
                 Some((st, f)) if !st.is_empty() && !f.is_empty() => Ok((st.to_string(), f.to_string())),
-                _ => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", span.0, span.1, form, s)),
+                _ => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'{}", span.0, span.1, form, s, Self::FIELD_HINT)),
             },
-            Some(tok) => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", tok.line, tok.col, form, tok.kind)),
+            Some(tok) => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'{}", tok.line, tok.col, form, tok.kind, Self::FIELD_HINT)),
             None => Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got EOF", span.0, span.1, form)),
         }
     }
 
-    /// The rest of a put or arr.set: field references, then the value (the
+    /// What to add when a function type is written wrongly.
+const FN_TYPE_HINT: &str = "a function type is (fn [i32] -> i32): the parameters in brackets, then ->";
+
+/// What to add to a field-reference error: the struct and field are one symbol.
+const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Point.x)";
+
+/// The rest of a put or arr.set: field references, then the value (the
     /// last item before the closing parenthesis).
     fn path_and_value(&mut self, form: &str, span: (u32, u32)) -> Result<(Vec<(String, String)>, Expr), String> {
         let mut items = Vec::new();
@@ -932,14 +1010,15 @@ impl Parser {
             items.push(self.parse_expr()?);
         }
         let Some(val) = items.pop() else {
-            return Err(format!("{}:{}: {} needs a value to store", span.0, span.1, form));
+            let hint = if form == "arr.set" { "(arr.set i32 a i v) names the element type first" } else { "(put p Point.x v)" };
+            return Err(format!("{}:{}: {} needs a value to store: {}", span.0, span.1, form, hint));
         };
         let mut path = Vec::new();
         for item in items {
             match &item {
                 Expr::Var(name, at) => match name.rsplit_once('.') {
                     Some((st, f)) if !st.is_empty() && !f.is_empty() => path.push((st.to_string(), f.to_string())),
-                    _ => return Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'", at.0, at.1, form, name)),
+                    _ => return Err(format!("{}:{}: Expected 'Struct.field' symbol in {}, got '{}'{}", at.0, at.1, form, name, Self::FIELD_HINT)),
                 },
                 other => {
                     let at = other.span();
@@ -1012,7 +1091,7 @@ impl Parser {
                     Ok(Type::Array(Box::new(elem_ty)))
                 } else if kind == "fn" {
                     // (fn [t1 t2] -> r)
-                    self.expect_kind(TokenKind::LBracket)?;
+                    self.expect_kind_hint(TokenKind::LBracket, Self::FN_TYPE_HINT)?;
                     let mut params = Vec::new();
                     while let Some(k) = self.peek_kind() {
                         if *k == TokenKind::RBracket {
@@ -1021,7 +1100,7 @@ impl Parser {
                         params.push(self.parse_type()?);
                     }
                     self.expect_kind(TokenKind::RBracket)?;
-                    self.expect_kind(TokenKind::Arrow)?;
+                    self.expect_kind_hint(TokenKind::Arrow, Self::FN_TYPE_HINT)?;
                     let ret = self.parse_type()?;
                     // (fn [..] -> r (no_leak)): only functions that keep no memory
                     let no_leak = self.peek_kind() == Some(&TokenKind::LParen);
@@ -1144,7 +1223,7 @@ impl Parser {
                                     ))
                                 }
                             };
-                            self.expect_kind(TokenKind::Colon)?;
+                            self.expect_kind_hint(TokenKind::Colon, &format!("every let names its type: (let {name}:i32 5)"))?;
                             let ty = self.parse_type()?;
                             let val = self.parse_expr()?;
                             Expr::Let {
@@ -1183,6 +1262,12 @@ impl Parser {
                         "if" => {
                             let cond = self.parse_expr()?;
                             let then_b = self.parse_expr()?;
+                            if let Some(tok) = self.peek().filter(|t| t.kind == TokenKind::RParen) {
+                                return Err(format!(
+                                    "{}:{}: Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)",
+                                    tok.line, tok.col
+                                ));
+                            }
                             let else_b = self.parse_expr()?;
                             Expr::If {
                                 cond: Box::new(cond),
@@ -1390,7 +1475,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected ok var, got '{}'",
+                                        "{}:{}: Expected ok var, got '{}'; match_result arms bind without brackets: (ok v ...) (err e ...)",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1436,7 +1521,7 @@ impl Parser {
                                 }) => s,
                                 Some(tok) => {
                                     return Err(format!(
-                                        "{}:{}: Expected err var, got '{}'",
+                                        "{}:{}: Expected err var, got '{}'; match_result arms bind without brackets: (ok v ...) (err e ...)",
                                         tok.line, tok.col, tok.kind
                                     ))
                                 }
@@ -1574,6 +1659,12 @@ impl Parser {
                             Expr::Ref { name, span }
                         }
                         "call_ref" => {
+                            if let Some(tok) = self.peek().filter(|t| matches!(t.kind, TokenKind::Symbol(_))) {
+                                return Err(format!(
+                                    "{}:{}: Expected the function's type, got '{}'; call_ref names the type first: (call_ref (fn [i32] -> i32) f args...)",
+                                    tok.line, tok.col, tok.kind
+                                ));
+                            }
                             let sig = self.parse_type()?;
                             let func = self.parse_expr()?;
                             let mut args = Vec::new();
@@ -1638,6 +1729,12 @@ impl Parser {
                         "arr.get" => {
                             let elem_ty = self.parse_type()?;
                             let ptr = self.parse_expr()?;
+                            if let Some(tok) = self.peek().filter(|t| t.kind == TokenKind::RParen) {
+                                return Err(format!(
+                                    "{}:{}: Unexpected token parsing expression: ')'; arr.get names the element type first: (arr.get i32 a i)",
+                                    tok.line, tok.col
+                                ));
+                            }
                             let index = self.parse_expr()?;
                             // a path reads one field of a value struct element
                             let mut e = Expr::ArrGet { elem_ty, ptr: Box::new(ptr), index: Box::new(index), span };
@@ -1776,9 +1873,18 @@ impl Parser {
                                     ))
                                 }
                                 other => {
+                                    let hint = if matches!(other, "else" | "elif" | "switch" | "case" | "default") {
+                                        "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))".to_string()
+                                    } else if other == "arr.of" {
+                                        "there is no array literal: make the array with (arr.new T a n) and fill it with (arr.set T xs i v)".to_string()
+                                    } else if let Some(near) = nearest_name(other, HEAD_NAMES.iter().copied()) {
+                                        format!("did you mean {near}?")
+                                    } else {
+                                        format!("to call a function, write (call {other} args...)")
+                                    };
                                     return Err(format!(
-                                        "{}:{}: Unknown op/keyword: {}",
-                                        span.0, span.1, other
+                                        "{}:{}: Unknown op/keyword: {}; {}",
+                                        span.0, span.1, other, hint
                                     ))
                                 }
                             };
