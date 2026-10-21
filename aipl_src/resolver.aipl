@@ -1207,11 +1207,15 @@
       (set! k (+ k 1)))
     open))
 
-  ;; A bracket error at token i; when a string ends inside a placeholder
-  ;; (its closing quote is what unbalanced the brackets), that is the error.
+  ;; A bracket error at token i; when a string ends inside a placeholder and
+  ;; more code follows it (its closing quote is what unbalanced the
+  ;; brackets), that is the error. A string followed by a closing bracket is
+  ;; an ordinary one (src/sexpr.rs read_one).
   (fn bracket_error [src:i32 toks:i32 count:i32 i:i32 what:str] -> (ptr buf.Buf)
     (for k 0 count
-      (when (and (eq (call kind_at toks k) compiler.Kind.string) (call string_ends_open src toks k))
+      (when (and (eq (call kind_at toks k) compiler.Kind.string)
+                 (and (call string_ends_open src toks k)
+                      (and (lt (+ k 1) count) (not (call is_closer (call kind_at toks (+ k 1)))))))
         (return (call at_token src toks k "this string ends inside a placeholder whose { is never closed: a placeholder cannot hold a string literal; bind the value with let first"))))
     (call at_token src toks i what))
   (fn is_opener [k:compiler.Kind] -> bool (or (eq k compiler.Kind.lparen) (eq k compiler.Kind.lbracket)))

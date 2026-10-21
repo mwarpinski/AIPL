@@ -16,6 +16,7 @@
   (import buf)
   (import map)
   (import vec)
+  (import suggest)
   (import origins)
   (import names)
 
@@ -336,7 +337,28 @@
     (if (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (block (call print_atom st n env out) (return)) (block))
     (if (and callee (call is_iface_call st n)) (block (call print_iface_call st n env out) (return)) (block))
     (if (call is_app st n callee) (block (call note st n out) (call buf.push_bytes out (call instance st n env)) (return)) (block))
+    (if (and callee (eq k compiler.Kind.paren)) (call check_not_generic st n) (block))
     (call print_group st n env (call str.bytes 0 -1) out)))
+
+  ;; (call (vec.psh i32) ...): a callee written as a generic's application
+  ;; that names no generic function (src/generics.rs rewrite), with the
+  ;; nearest generic function's name.
+  (fn check_not_generic [st:(ptr St) n:(ptr compiler.Node)] -> void
+    (let h:str.Bytes (call head st n))
+    (if (lt (get h str.Bytes.len) 0) (return) (block))
+    (let fns:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 32))
+    (let ts:(ptr (map.Map str.Bytes (ptr Tmpl))) (get st St.templates))
+    (for k 0 (call (map.capacity str.Bytes (ptr Tmpl)) ts)
+      (when (and (call (map.slot_used str.Bytes (ptr Tmpl)) ts k)
+                 (not (get (call (map.slot_val str.Bytes (ptr Tmpl)) ts k) Tmpl.is_struct)))
+        (call (vec.push str.Bytes) fns (call (map.slot_key str.Bytes (ptr Tmpl)) ts k))))
+    (let near:i32 (call suggest.nearest fns h))
+    (let b:(ptr buf.Buf) (call quoted (call msg "") h))
+    (call buf.push_str b " is not a generic function")
+    (if (gte near 0)
+        (block (call buf.push_str b "; did you mean ") (call buf.push_bytes b (call (vec.at str.Bytes) fns near)) (call buf.push_str b "?"))
+        (call buf.push_str b ": call a function as (call f args...), or a generic one as (call (f T) args...)"))
+    (call fail_at st (get n compiler.Node.pos) b))
 
   ;; Children separated by spaces, except none around ':'. A non-empty
   ;; `rename` replaces child 1 (an instance's header). (get p (Name T) f) and

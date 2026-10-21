@@ -111,8 +111,9 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 /// worth naming. Underscores are left out of both names before they are
 /// compared (`lt_u` is `ltu`); then at most 1 edit for a name of 3 to 5
 /// bytes, 2 for a longer one, none for a shorter one. The closest wins; of
-/// equal ones, the one that sorts first (aipl_src/suggest.aipl is the same
-/// rule, so both toolchains name the same one).
+/// equal ones, the one that begins with more of the name as written (`set`
+/// is `set!`, not `get`), then the one that sorts first (aipl_src/suggest.aipl
+/// is the same rule, so both toolchains name the same one).
 pub fn nearest_name<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     let squeeze = |s: &str| s.replace('_', "");
     let plain = squeeze(name);
@@ -121,12 +122,13 @@ pub fn nearest_name<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -
         3..=5 => 1,
         _ => 2,
     };
+    let shared = |c: &str| name.bytes().zip(c.bytes()).take_while(|(a, b)| a == b).count();
     candidates
         .filter(|c| *c != name)
-        .map(|c| (edit_distance(&plain, &squeeze(c)), c))
-        .filter(|(d, _)| *d <= limit)
+        .map(|c| (edit_distance(&plain, &squeeze(c)), std::cmp::Reverse(shared(c)), c))
+        .filter(|(d, _, _)| *d <= limit)
         .min()
-        .map(|(_, c)| c)
+        .map(|(_, _, c)| c)
 }
 
 pub struct Parser {

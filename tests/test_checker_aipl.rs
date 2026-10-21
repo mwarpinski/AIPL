@@ -544,6 +544,7 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn main [] -> i32 (f 1)))",
     "(module m (fn main [] -> i32 (lt_u 1 2)))",
     "(module m (fn main [] -> i32 (callref f 1)))",
+    "(module m (fn main [] -> i32 (let x:i32 0) (set x 1) x))",
     "(module m (fn main [] -> i32 (matchresult x)))",
     "(module m (fn main [] -> i32 (elif true 1)))",
     "(module m (fn main [] -> i32 (else if true 1)))",
