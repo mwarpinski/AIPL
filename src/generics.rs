@@ -319,6 +319,38 @@ fn generic_header(item: &Item) -> Result<Option<(String, Vec<String>)>, String> 
 /// its instance (creating the instance the first time), and the 3-part
 /// generic field forms of get/put become `Instance.field`.
 ///
+/// A generic written without its type arguments, where a model leaves them
+/// out: `(call vec.push v x)`, `(get b Box.value)`, `(make option.Option.some
+/// 5)`. The child that names it, and what to write instead (aipl_src/
+/// generics.aipl check_bare_generic is the same).
+fn bare_generic(sx: &Sx, templates: &HashMap<String, Template>) -> Option<(usize, String)> {
+    let head = sx.head()?;
+    let items = sx.items();
+    let (k, kind) = match head {
+        "call" | "ref" => (1, "fn"),
+        "get" | "put" | "with" => (2, "struct"),
+        "make" => (1, "union"),
+        _ => return None,
+    };
+    let name = items.get(k)?.symbol()?;
+    // a field or variant is Name.member: the template is the part before the last '.'
+    let base = if kind == "fn" { name } else { name.rsplit_once('.')?.0 };
+    let t = templates.get(base)?;
+    let is_kind = match kind {
+        "fn" => !t.is_struct,
+        other => t.item.sx.head() == Some(other),
+    };
+    if !is_kind {
+        return None;
+    }
+    let how = match head {
+        "call" | "ref" => format!("({head} ({base} T) ...)"),
+        "make" => format!("(make ({base} T) variant ...)"),
+        _ => format!("({head} p ({base} T) field ...)"),
+    };
+    Some((k, format!("'{base}' is generic: name its types, as in {how}")))
+}
+
 /// A struct template is applied anywhere; a function template only as a
 /// callee (`callee`: child 1 of `call` or `ref`), so that `(make U.v x)`
 /// stays a union constructor beside a generic named `make`.
@@ -338,6 +370,12 @@ fn rewrite(
     let is_app = applies(head.as_deref(), callee);
     let calls = matches!(head.as_deref(), Some("call" | "ref"));
     let paren = sx.is_paren();
+    if paren {
+        if let Some((k, msg)) = bare_generic(sx, templates) {
+            let child = &sx.items()[k];
+            return Err(at(foreign.get(&child.position()).map(|p| p.as_path()).unwrap_or(file), child, &msg));
+        }
+    }
     let items = sx.items_mut().unwrap();
     // the head of an application is the template's name, not something to rewrite
     let start = if is_app { 1 } else { 0 };

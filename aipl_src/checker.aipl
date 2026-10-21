@@ -1063,7 +1063,11 @@
            (block
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Undefined variable '") (call by b name) (call s b "'")
-             (when (call str.is name "result") (call s b "; a function's result is named res, in its (ens ...)"))
+             (cond
+               ((call str.is name "result") (call s b "; a function's result is named res, in its (ens ...)"))
+               ((match (get c C.ret) (ast.MaybeType.none true) (ast.MaybeType.some [_] false))
+                (call s b "; a contract sees only the function's parameters, and res in (ens ...)"))
+               (else (block)))
              (call fail c b)
              (call void_t))))
       (ast.Expr.let_ [n_let] (let name:str.Bytes (get n_let ast.LetExpr.name)) (let lty:ast.Type (get n_let ast.LetExpr.ty)) (let val:ast.Expr (get n_let ast.LetExpr.val)) (call infer_let c env at name lty val))

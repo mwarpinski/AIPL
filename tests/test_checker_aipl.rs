@@ -1056,6 +1056,8 @@ const FORMS: &[&str] = &[
     "(let q:(ptr U) (ptr.null U)) 0",
     "(+ result 1)",
     "M:(module m (fn main [] -> i32 (let x:i32 1)))",
+    "M:(module m (fn f [n:i32] -> i32 (let k:i32 1) (req (gt k 0)) n) (fn main [] -> i32 0))",
+    "M:(module m (fn f [n:i32] -> i32 (ens (gt result 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn main [] -> i32 (let i:i32 0) (while (lt i 3) (set! i (+ i 1)))))",
 ];
 

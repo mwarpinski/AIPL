@@ -357,9 +357,46 @@
     (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) (call head st n) (ptr.null Tmpl)))
     (and (neq t (ptr.null Tmpl)) (call lit (call head st (get t Tmpl.node)) "union")))
 
+  ;; A generic written without its type arguments (src/generics.rs
+  ;; bare_generic): (call vec.push v x), (get b Box.value), (make
+  ;; option.Option.some 5).
+  (fn check_bare_generic [st:(ptr St) g:(ptr compiler.Node) h:str.Bytes] -> void
+    (if (lt (get h str.Bytes.len) 0) (return) (block))
+    (let is_fn:bool (or (call lit h "call") (call lit h "ref")))
+    (let is_make:bool (call lit h "make"))
+    (let is_field:bool (or (call lit h "get") (or (call lit h "put") (call lit h "with"))))
+    (if (not (or is_fn (or is_make is_field))) (return) (block))
+    (let c:(ptr compiler.Node) (call nth g (if (or is_fn is_make) 1 2)))
+    (if (not (call is_symbol c)) (return) (block))
+    (let name:str.Bytes (call text st c))
+    (let base:str.Bytes name)
+    (when (not is_fn)
+      (let dot:i32 -1)
+      (unsafe (let k:i32 0)
+      (while (lt k (get name str.Bytes.len))
+        (when (eq (call str.byte_at name k) 46) (set! dot k))
+        (set! k (+ k 1))))
+      (if (lt dot 0) (return) (block))
+      (set! base (unsafe (call str.bytes (call str.addr name) dot))))
+    (let t:(ptr Tmpl) (call (map.get_or str.Bytes (ptr Tmpl)) (get st St.templates) base (ptr.null Tmpl)))
+    (if (eq t (ptr.null Tmpl)) (return) (block))
+    (let th:str.Bytes (call head st (get t Tmpl.node)))
+    (let ok:bool (cond (is_fn (not (get t Tmpl.is_struct)))
+                       (is_make (call lit th "union"))
+                       (else (call lit th "struct"))))
+    (if (not ok) (return) (block))
+    (let b:(ptr buf.Buf) (call quoted (call msg "") base))
+    (call buf.push_str b " is generic: name its types, as in (")
+    (cond
+      (is_fn (call buf.push_bytes b h) (call buf.push_str b " (") (call buf.push_bytes b base) (call buf.push_str b " T) ...)"))
+      (is_make (call buf.push_str b "make (") (call buf.push_bytes b base) (call buf.push_str b " T) variant ...)"))
+      (else (call buf.push_bytes b h) (call buf.push_str b " p (") (call buf.push_bytes b base) (call buf.push_str b " T) field ...)")))
+    (call fail_at st (get c compiler.Node.pos) b))
+
   (fn print_group [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) rename:str.Bytes out:(ptr buf.Buf)] -> void
     (let square:bool (eq (get g compiler.Node.kind) compiler.Kind.bracket))
     (let h:str.Bytes (call head st g))
+    (call check_bare_generic st g h)
     (let generic_field:bool (and (gte (get h str.Bytes.len) 0)
                                  (and (or (call lit h "get") (or (call lit h "put") (call lit h "with")))
                                       (call is_app st (call nth g 2) false))))

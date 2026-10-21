@@ -3,8 +3,8 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Step 1 built 2026-10-21; step 2 built 2026-10-21 apart from the
-rows listed under it.
+step 5). Step 1 built 2026-10-21; step 2 built 2026-10-21 apart from one
+row listed under it.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
@@ -22,7 +22,7 @@ decides the larger syntax questions with numbers.
 | Step | What | Status |
 |---|---|---|
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
-| 2 | Errors that name the right form, for every guess a model makes | **Mostly done** 2026-10-21 (rows left in section 2) |
+| 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (one row not built, in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | Not started |
 | 4 | `when` is the only `if` with one branch | Not started |
 | 5 | An array literal, `arr.of` | Not started |
@@ -123,21 +123,19 @@ and tests/test_resolver_aipl.rs compare them word for word):
   rule 2: a branch that always leaves fits any type) and runs the same in
   the VM, wasm, and native. Corrected.
 
-Left for step 2 (not built): a generic function or struct written without
-its type arguments (`(call vec.push v x)`, `(get b Box.value)`: after
-expansion the checker no longer knows the template exists, so this needs
-the generics pass to say it), `(make option.Option.some 5)` for a generic
-union, an unknown module name in `(import nosuch)` (did you mean), and
-`(req (gt x 0))` placed after a `let` in a body (reported as `Undefined
-variable 'x'`, since a contract sees only the parameters). The compiler's
-own messages for `for` with a step (`(for i 0 3 1 ...)` takes the 1 as a
-statement) belong to step 3.
+Also built later the same day: a generic written without its type
+arguments (`(call vec.push v x)`, `(ref vec.len)`, `(get b Box.value)`,
+`(put b Box.value 1)`, `(make option.Option.some 5)`) says `'vec.push' is
+generic: name its types, as in (call (vec.push T) ...)`, from both generics
+passes (the checker never sees a template, so it is said there); and a
+name that is not a parameter inside a contract (`(req (gt k 0))` after a
+`let`) says a contract sees only the parameters, and res in (ens ...).
 
-The step: every row of the spec's pitfall table (section 13) that is a
-compile error gets a message naming the fix, the same in both
-toolchains (tests/test_checker_aipl.rs checks messages for parity), and
-a test per row. An unknown op or function close to a real one names
-the nearest (`text.splt`: `did you mean text.split?`).
+Not built: an unknown module in `(import nosuch)` does not get a "did you
+mean" (it needs a directory listing in both resolvers, and the parity test
+deliberately leaves the searched paths out of the comparison; `aipl doc
+--find` and the guide list the modules). `(for i 0 3 1 ...)` taking the 1
+as a statement belongs to step 3, which retires `loop`.
 
 ## 3. Retire `loop`
 
