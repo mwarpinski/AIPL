@@ -513,6 +513,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(status.code().unwrap_or(1));
         }
         Commands::Run { file, sandbox, listen, args } => {
+            if file.ends_with(".aipl") {
+                return Err(format!(
+                    "aipl run takes a compiled .wasm file, not source: run {file} with `aipl eval {file}`, or compile it first with `aipl compile {file} -o out.wasm`"
+                )
+                .into());
+            }
             let mut cmd = std::process::Command::new(runner_path()?);
             if sandbox {
                 cmd.arg("--sandbox");

@@ -1,0 +1,93 @@
+;; The nearest known name to a misspelled one, for the "did you mean" in
+;; error messages. src/parser.rs nearest_name is the same rule, so both
+;; toolchains name the same one: underscores are left out of both names
+;; before they are compared (lt_u is ltu); then at most 1 edit (insert,
+;; delete, or change one byte) for a name of 3 to 5 bytes, 2 for a longer
+;; one, none for a shorter one. The closest wins; of equal ones, the one
+;; that sorts first.
+(module suggest
+  (import alloc)
+  (import str)
+  (import vec)
+
+  ;; The number of bytes of s that are not underscores.
+  (fn plain_len [s:str.Bytes] -> i32
+    (let n:i32 0)
+    (let k:i32 0)
+    (while (lt k (get s str.Bytes.len))
+      (if (neq (call str.byte_at s k) 95) (set! n (+ n 1)) (block))
+      (set! k (+ k 1)))
+    n)
+
+  ;; The bytes of s without its underscores.
+  (fn plain [s:str.Bytes] -> (arr i32)
+    (let out:(arr i32) (arr.new i32 (call alloc.forever) (call plain_len s)))
+    (let n:i32 0)
+    (let k:i32 0)
+    (while (lt k (get s str.Bytes.len))
+      (let c:i32 (call str.byte_at s k))
+      (if (neq c 95)
+          (block (arr.set i32 out n c) (set! n (+ n 1)))
+          (block))
+      (set! k (+ k 1)))
+    out)
+
+  (fn min2 [a:i32 b:i32] -> i32 (if (lt a b) a b))
+
+  ;; Edit distance between two byte arrays: one row of the table at a time.
+  (fn distance [x:(arr i32) y:(arr i32)] -> i32
+    (let row:(arr i32) (arr.new i32 (call alloc.forever) (+ (arr.len y) 1)))
+    (let j:i32 0)
+    (while (lte j (arr.len y))
+      (arr.set i32 row j j)
+      (set! j (+ j 1)))
+    (let i:i32 0)
+    (while (lt i (arr.len x))
+      (let diag:i32 (arr.get i32 row 0))
+      (arr.set i32 row 0 (+ i 1))
+      (let jj:i32 0)
+      (while (lt jj (arr.len y))
+        (let up:i32 (arr.get i32 row (+ jj 1)))
+        (let cost:i32 (if (eq (arr.get i32 x i) (arr.get i32 y jj)) 0 1))
+        (arr.set i32 row (+ jj 1)
+                 (call min2 (call min2 (+ diag cost) (+ up 1)) (+ (arr.get i32 row jj) 1)))
+        (set! diag up)
+        (set! jj (+ jj 1)))
+      (set! i (+ i 1)))
+    (arr.get i32 row (arr.len y)))
+
+  ;; a sorts before b, byte by byte (a prefix sorts first).
+  (fn bytes_less [a:str.Bytes b:str.Bytes] -> bool
+    (let k:i32 0)
+    (while (and (lt k (get a str.Bytes.len)) (lt k (get b str.Bytes.len)))
+      (let ca:i32 (call str.byte_at a k))
+      (let cb:i32 (call str.byte_at b k))
+      (if (neq ca cb) (return (lt ca cb)) (block))
+      (set! k (+ k 1)))
+    (lt (get a str.Bytes.len) (get b str.Bytes.len)))
+
+  ;; The index in names of the one nearest to name, or -1 if none is near
+  ;; enough to be worth naming.
+  (fn nearest [names:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> i32 (pub)
+    (let x:(arr i32) (call plain name))
+    (let limit:i32 (cond ((lt (arr.len x) 3) -1) ((lt (arr.len x) 6) 1) (else 2)))
+    (if (lt limit 0) (return -1) (block))
+    (let best:i32 -1)
+    (let best_d:i32 0)
+    (let k:i32 0)
+    (while (lt k (call (vec.len str.Bytes) names))
+      (let c:str.Bytes (call (vec.at str.Bytes) names k))
+      (if (call str.bytes_eq c name)
+          (block)
+          (block
+            (let d:i32 (call distance x (call plain c)))
+            (if (lte d limit)
+                (if (or (lt best 0)
+                        (or (lt d best_d)
+                            (and (eq d best_d) (call bytes_less c (call (vec.at str.Bytes) names best)))))
+                    (block (set! best k) (set! best_d d))
+                    (block))
+                (block))))
+      (set! k (+ k 1)))
+    best)
+)

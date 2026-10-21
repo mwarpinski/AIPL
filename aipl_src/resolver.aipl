@@ -25,6 +25,7 @@
   (import origins)
   (import parser)
   (import fmtsplit)
+  (import suggest)
   (import vec)
 
   ;; A parsed file: its text, its (module ...) tree, and where its tokens'
@@ -52,7 +53,8 @@
   ;; What modules give each other (resolver.rs Vis): the canonical names of
   ;; (pub) items, and each struct's fields with their levels (0 private,
   ;; 1 (read x:T), 2 (pub x:T)).
-  (struct Vis [public:(ptr (map.Map str.Bytes i32))
+  (struct Vis [all:(ptr (map.Map str.Bytes i32))
+               public:(ptr (map.Map str.Bytes i32))
                fields:(ptr (map.Map str.Bytes (ptr (map.Map str.Bytes i32))))
                values:(ptr (map.Map str.Bytes i32))])
 
@@ -754,11 +756,47 @@
         (block
           (let b:(ptr buf.Buf) (call vis_msg "'"))
           (call buf.push_bytes b name)
-          (call buf.push_str b "' is private to module ")
-          (call buf.push_bytes b fm)
-          (call buf.push_str b ": mark it (pub) there to use it here")
+          (if (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.all) name)
+              (block
+                (call buf.push_str b "' is private to module ")
+                (call buf.push_bytes b fm)
+                (call buf.push_str b ": mark it (pub) there to use it here"))
+              (block
+                (call buf.push_str b "' is not an item of module ")
+                (call buf.push_bytes b fm)
+                (call buf.push_str b ": ")
+                (call push_item_hint m b fm name)))
           (call vis_fail m n b))
         (block)))
+
+  ;; What follows "is not an item of module M: " (src/resolver.rs check_item):
+  ;; the module's public name nearest to the one written, or where to look.
+  (fn push_item_hint [m:(ptr Mod) b:(ptr buf.Buf) fm:str.Bytes name:str.Bytes] -> void
+    (let pub:(ptr (map.Map str.Bytes i32)) (get (get m Mod.vis) Vis.public))
+    (let shorts:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 32))
+    (let k:i32 0)
+    (while (lt k (call (map.capacity str.Bytes i32) pub))
+      (when (call (map.slot_used str.Bytes i32) pub k)
+        (let key:str.Bytes (call (map.slot_key str.Bytes i32) pub k))
+        (when (and (gt (get key str.Bytes.len) (+ (get fm str.Bytes.len) 1))
+                   (and (eq (call str.byte_at key (get fm str.Bytes.len)) 46)
+                        (call str.bytes_eq (call slice key 0 (get fm str.Bytes.len)) fm)))
+          (call (vec.push str.Bytes) shorts
+                (call slice key (+ (get fm str.Bytes.len) 1) (- (get key str.Bytes.len) (+ (get fm str.Bytes.len) 1))))))
+      (set! k (+ k 1)))
+    (let near:i32 (call suggest.nearest shorts
+                        (call slice name (+ (get fm str.Bytes.len) 1) (- (get name str.Bytes.len) (+ (get fm str.Bytes.len) 1)))))
+    (if (gte near 0)
+        (block
+          (call buf.push_str b "did you mean ")
+          (call buf.push_bytes b fm)
+          (call buf.push_byte b 46)
+          (call buf.push_bytes b (call (vec.at str.Bytes) shorts near))
+          (call buf.push_str b "?"))
+        (block
+          (call buf.push_str b "aipl doc ")
+          (call buf.push_bytes b fm)
+          (call buf.push_str b " lists what it has"))))
 
   ;; A constant, enum, union, or one of their members: the declaration is
   ;; the first two parts.
@@ -1145,6 +1183,37 @@
     b)
 
   (fn kind_at [toks:i32 i:i32] -> compiler.Kind (get (call compiler.token_at toks i) compiler.Token.kind))
+
+  ;; Whether string token i ends inside a placeholder whose { is never
+  ;; closed ({{ and }} are braces; src/sexpr.rs ends_in_placeholder).
+  (fn string_ends_open [src:i32 toks:i32 i:i32] -> bool
+    (unsafe (let t:(ptr compiler.Token) (call compiler.token_at toks i))
+    (let s:str.Bytes (call str.bytes (+ src (get t compiler.Token.a)) (get t compiler.Token.b)))
+    (let open:bool false)
+    (let k:i32 0)
+    (while (lt k (get s str.Bytes.len))
+      (let c:i32 (call str.byte_at s k))
+      (cond
+        ((eq c 123)
+         (if (and (not open) (and (lt (+ k 1) (get s str.Bytes.len)) (eq (call str.byte_at s (+ k 1)) 123)))
+             (set! k (+ k 1))
+             (set! open true)))
+        ((eq c 125)
+         (cond
+           (open (set! open false))
+           ((and (lt (+ k 1) (get s str.Bytes.len)) (eq (call str.byte_at s (+ k 1)) 125)) (set! k (+ k 1)))
+           (else (block))))
+        (else (block)))
+      (set! k (+ k 1)))
+    open))
+
+  ;; A bracket error at token i; when a string ends inside a placeholder
+  ;; (its closing quote is what unbalanced the brackets), that is the error.
+  (fn bracket_error [src:i32 toks:i32 count:i32 i:i32 what:str] -> (ptr buf.Buf)
+    (for k 0 count
+      (when (and (eq (call kind_at toks k) compiler.Kind.string) (call string_ends_open src toks k))
+        (return (call at_token src toks k "this string ends inside a placeholder whose { is never closed: a placeholder cannot hold a string literal; bind the value with let first"))))
+    (call at_token src toks i what))
   (fn is_opener [k:compiler.Kind] -> bool (or (eq k compiler.Kind.lparen) (eq k compiler.Kind.lbracket)))
   (fn is_closer [k:compiler.Kind] -> bool (or (eq k compiler.Kind.rparen) (eq k compiler.Kind.rbracket)))
 
@@ -1190,21 +1259,21 @@
     (let i:i32 0)
     (if (call is_opener (call kind_at toks 0))
         (while true
-          (if (eq i count) (return (call at_token src toks (arr.get i32 stack (- top 1)) "this bracket is never closed")) (block))
+          (if (eq i count) (return (call bracket_error src toks count (arr.get i32 stack (- top 1)) "this bracket is never closed")) (block))
           (let k:compiler.Kind (call kind_at toks i))
           (cond
             ((call is_opener k) (arr.set i32 stack top i) (set! top (+ top 1)))
             ((call is_closer k)
              (let opened:compiler.Kind (call kind_at toks (arr.get i32 stack (- top 1))))
              (if (neq (eq opened compiler.Kind.lparen) (eq k compiler.Kind.rparen))
-                 (return (call at_token src toks i "mismatched closing bracket"))
+                 (return (call bracket_error src toks count i "mismatched closing bracket"))
                  (block))
              (set! top (- top 1)))
             (else (block)))
           (set! i (+ i 1))
           (if (eq top 0) (break) (block)))
         (set! i 1))
-    (if (lt i count) (return (call at_token src toks i "unexpected input after the module's closing ')'")) (block))
+    (if (lt i count) (return (call bracket_error src toks count i "unexpected input after the module's closing ')'")) (block))
     ;; (module NAME item...)
     (if (or (neq (call kind_at toks 0) compiler.Kind.lparen) (or (lt count 3) (not (call symbol_is src toks 1 "module"))))
         (return (call at_token src toks 0 "a file must be one (module NAME ...) form"))
@@ -1543,6 +1612,8 @@
             (let public:bool (call take_pub m mark))
             (if (neq (get m Mod.err) (ptr.null buf.Buf)) (return (call vis_stop st m)) (block))
             (let named:str.Bytes (call item_name m mark))
+            (when (gte (get named str.Bytes.len) 0)
+              (call (map.set str.Bytes i32) (get vis Vis.all) (call canonical_of m named) 1))
             (if (call eq_lit (call head src mark) "struct")
                 (block
                   (let levels:(ptr (map.Map str.Bytes i32)) (call field_levels m mark))
@@ -1943,6 +2014,7 @@
     (put st State.paths (call (map.make str.Bytes str.Bytes) (call alloc.default) 16))
     (put st State.found (call (map.make str.Bytes str.Bytes) (call alloc.default) 32))
     (let vis:(ptr Vis) (new Vis (call alloc.forever)))
+    (put vis Vis.all (call (map.make str.Bytes i32) (call alloc.default) 256))
     (put vis Vis.public (call (map.make str.Bytes i32) (call alloc.default) 256))
     (put vis Vis.fields (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 64))
     (put vis Vis.values (call (map.make str.Bytes i32) (call alloc.default) 16))

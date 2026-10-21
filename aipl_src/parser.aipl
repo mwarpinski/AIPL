@@ -15,6 +15,7 @@
   (import buf)
   (import vec)
   (import map)
+  (import suggest)
 
   ;; The forms of src/parser.rs parse_expr that are not operators.
   (enum Form [none let_ set if_ loop while_ call ok err make match_ block match_result get_ put_
@@ -142,14 +143,21 @@
       (else (call buf.push_bytes b (call text p i))))
     (call buf.push_byte b 39)))
 
-  ;; "Expected WHAT, got TOKEN" at the token, or "got EOF" at `eof_at`.
-  (fn fail_expected [p:(ptr P) i:i32 what:str eof_at:i32] -> void
+  ;; "Expected WHAT, got TOKEN" at the token, or "got EOF" at `eof_at`
+  ;; (the message, to add to before it fails).
+  (fn expected_msg [p:(ptr P) i:i32 what:str eof_at:i32] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call msg p (if (gte i 0) (call tpos p i) eof_at)))
     (call buf.push_str b "Expected ")
     (call buf.push_str b what)
     (call buf.push_str b ", got ")
     (if (gte i 0) (call push_token_text p b i) (call buf.push_str b "EOF"))
-    (call fail p b))
+    b)
+
+  (fn fail_expected [p:(ptr P) i:i32 what:str eof_at:i32] -> void
+    (call fail p (call expected_msg p i what eof_at)))
+
+  ;; An error at the next token, or the last one.
+  (fn fail_here [p:(ptr P) s:str] -> void (call fail_str p (call cur_pos p) s))
 
   (fn kind_name [k:compiler.Kind] -> str
     (cond
@@ -168,6 +176,32 @@
     (call fail_expected p i (call kind_name k) at)
     -1)
 
+  ;; expect, with what to write after the usual message (src/parser.rs
+  ;; expect_kind_hint).
+  (fn want_hint [p:(ptr P) k:compiler.Kind hint:str] -> void
+    (let at:i32 (call cur_pos p))
+    (let i:i32 (call next p))
+    (if (and (gte i 0) (eq (call kind_at p i) k))
+        (return)
+        (block))
+    (let b:(ptr buf.Buf) (call expected_msg p i (call kind_name k) at))
+    (call buf.push_str b "; ")
+    (call buf.push_str b hint)
+    (call fail p b))
+
+  ;; The ':' after a let's name.
+  (fn want_let_colon [p:(ptr P) name:str.Bytes] -> void
+    (let at:i32 (call cur_pos p))
+    (let i:i32 (call next p))
+    (if (and (gte i 0) (eq (call kind_at p i) compiler.Kind.colon))
+        (return)
+        (block))
+    (let b:(ptr buf.Buf) (call expected_msg p i "':'" at))
+    (call buf.push_str b "; every let names its type: (let ")
+    (call buf.push_bytes b name)
+    (call buf.push_str b ":i32 5)")
+    (call fail p b))
+
   ;; next, as a statement.
   (fn want_next [p:(ptr P)] -> void (let _i:i32 (call next p)) (block))
 
@@ -181,6 +215,17 @@
     (let i:i32 (call next p))
     (if (and (gte i 0) (eq (call kind_at p i) compiler.Kind.symbol)) (return (call text p i)) (block))
     (call fail_expected p i what eof_at)
+    (call str.from_str ""))
+
+  ;; expect_symbol, with a hint after the message unless the tokens ran out.
+  (fn expect_symbol_hint [p:(ptr P) what:str eof_at:i32 hint:str] -> str.Bytes
+    (let i:i32 (call next p))
+    (if (and (gte i 0) (eq (call kind_at p i) compiler.Kind.symbol)) (return (call text p i)) (block))
+    (let b:(ptr buf.Buf) (call expected_msg p i what eof_at))
+    (when (gte i 0)
+      (call buf.push_str b "; ")
+      (call buf.push_str b hint))
+    (call fail p b)
     (call str.from_str ""))
 
   ;; ===== Building arrays =====
@@ -273,12 +318,12 @@
           (call want p compiler.Kind.rparen)
           (call ast.arr_type (call alloc.default) elem))
          ((call str.is ctor "fn")
-          (call want p compiler.Kind.lbracket)
+          (call want_hint p compiler.Kind.lbracket "a function type is (fn [i32] -> i32): the parameters in brackets, then ->")
           (let ps:(ptr (vec.Vec ast.Type)) (call (vec.make ast.Type) (call alloc.default) 4))
           (while (and (neq (call peek p) compiler.Kind.rbracket) (neq (call peek p) compiler.Kind.none))
             (call (vec.push ast.Type) ps (call parse_type p)))
           (call want p compiler.Kind.rbracket)
-          (call want p compiler.Kind.arrow)
+          (call want_hint p compiler.Kind.arrow "a function type is (fn [i32] -> i32): the parameters in brackets, then ->")
           (let ret:ast.Type (call parse_type p))
           ;; (fn [..] -> r (no_leak)): only functions that keep no memory
           (let promise:bool (eq (call peek p) compiler.Kind.lparen))
@@ -533,7 +578,14 @@
     (call want p compiler.Kind.lparen)
     (let i:i32 (call next p))
     (let e:ast.Expr (call parse_expr p))
-    (call want p compiler.Kind.rparen)
+    (let close_at:i32 (call cur_pos p))
+    (let close:i32 (call next p))
+    (when (not (and (gte close 0) (eq (call kind_at p close) compiler.Kind.rparen)))
+      (let b:(ptr buf.Buf) (call expected_msg p close "')'" close_at))
+      (call buf.push_str b "; a contract is one expression: (")
+      (if (eq (call kind_at p i) compiler.Kind.symbol) (call buf.push_bytes b (call text p i)) (block))
+      (call buf.push_str b " (gt n 0))")
+      (call fail p b))
     (cond
       ((call is_sym p i "req") (make ast.Contract.requires e))
       ((call is_sym p i "ens") (make ast.Contract.ensures e))
@@ -604,7 +656,7 @@
     (cond
       ((eq form Form.let_)
        (let name:str.Bytes (call expect_symbol p "variable name" at))
-       (call want p compiler.Kind.colon)
+       (call want_let_colon p name)
        (let ty:ast.Type (call parse_type p))
        (call ast.let_expr (call alloc.default) at name ty (call parse_expr p)))
       ((eq form Form.set)
@@ -613,6 +665,11 @@
       ((eq form Form.if_)
        (let c:ast.Expr (call parse_expr p))
        (let t:ast.Expr (call parse_expr p))
+       (if (eq (call peek p) compiler.Kind.rparen)
+           (block
+             (call fail_here p "Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)")
+             (return (call placeholder at)))
+           (block))
        (call ast.if_expr (call alloc.default) at c t (call parse_expr p)))
       ((eq form Form.loop)
        (let var:str.Bytes (call expect_symbol p "loop var" at))
@@ -668,6 +725,13 @@
       ((eq form Form.cond) (call parse_cond p at))
       ((eq form Form.ref) (make ast.Expr.ref at (call expect_symbol p "function name in ref" at)))
       ((eq form Form.call_ref)
+       (if (eq (call peek p) compiler.Kind.symbol)
+           (block
+             (let b:(ptr buf.Buf) (call expected_msg p (get p P.pos) "the function's type" at))
+             (call buf.push_str b "; call_ref names the type first: (call_ref (fn [i32] -> i32) f args...)")
+             (call fail p b)
+             (return (call placeholder at)))
+           (block))
        (let sig:ast.Type (call parse_type p))
        (let callee:ast.Expr (call parse_expr p))
        (call ast.call_ref_expr (call alloc.default) at sig callee (call parse_body p)))
@@ -700,6 +764,11 @@
       ((eq form Form.arr_get)
        (let ty:ast.Type (call parse_type p))
        (let a:ast.Expr (call parse_expr p))
+       (if (eq (call peek p) compiler.Kind.rparen)
+           (block
+             (call fail_here p "Unexpected token parsing expression: ')'; arr.get names the element type first: (arr.get i32 a i)")
+             (return (call placeholder at)))
+           (block))
        (let e:ast.Expr (call ast.arr_get_expr (call alloc.default) at ty a (call parse_expr p)))
        ;; a path reads one field of a value struct element
        (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
@@ -736,11 +805,59 @@
              (let b:(ptr buf.Buf) (call msg p at))
              (call buf.push_str b "Unknown op/keyword: ")
              (call buf.push_bytes b head)
+             (call buf.push_str b "; ")
+             (call push_head_hint p b head)
              (call fail p b)
              (return (call placeholder at)))
            (block))
        (let op:ast.Op (enum.cast ast.Op (call (map.get_or str.Bytes i32) (get p P.ops) head 0)))
        (make ast.Expr.op at op (call parse_body p)))))
+
+  ;; Every operator and keyword that can head a form, for "did you mean".
+  (fn head_names [forms:(ptr (map.Map str.Bytes Form)) ops:(ptr (map.Map str.Bytes i32))] -> (ptr (vec.Vec str.Bytes))
+    (let v:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 160))
+    (let k:i32 0)
+    (while (lt k (call (map.capacity str.Bytes Form) forms))
+      (when (call (map.slot_used str.Bytes Form) forms k)
+        (call (vec.push str.Bytes) v (call (map.slot_key str.Bytes Form) forms k)))
+      (set! k (+ k 1)))
+    (set! k 0)
+    (while (lt k (call (map.capacity str.Bytes i32) ops))
+      (when (call (map.slot_used str.Bytes i32) ops k)
+        (call (vec.push str.Bytes) v (call (map.slot_key str.Bytes i32) ops k)))
+      (set! k (+ k 1)))
+    v)
+
+  ;; The names, one per line, in no order (tests/test_checker_aipl.rs checks
+  ;; them against src/parser.rs HEAD_NAMES).
+  (fn head_names_text [] -> (ptr buf.Buf) (pub)
+    (let names:(ptr (vec.Vec str.Bytes)) (call head_names (call form_table) (call op_table)))
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
+    (let k:i32 0)
+    (while (lt k (call (vec.len str.Bytes) names))
+      (call buf.push_bytes b (call (vec.at str.Bytes) names k))
+      (call buf.push_str b "\n")
+      (set! k (+ k 1)))
+    b)
+
+  ;; What to write after "Unknown op/keyword: HEAD; " (src/parser.rs).
+  (fn push_head_hint [p:(ptr P) b:(ptr buf.Buf) head:str.Bytes] -> void
+    (let names:(ptr (vec.Vec str.Bytes)) (call head_names (get p P.forms) (get p P.ops)))
+    (let near:i32 (call suggest.nearest names head))
+    (cond
+      ((or (call str.is head "else") (call str.is head "elif") (call str.is head "switch")
+           (call str.is head "case") (call str.is head "default"))
+       (call buf.push_str b "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))"))
+      ((call str.is head "arr.of")
+       (call buf.push_str b "there is no array literal: make the array with (arr.new T a n) and fill it with (arr.set T xs i v)"))
+      ((gte near 0)
+       (call buf.push_str b "did you mean ")
+       (call buf.push_bytes b (call (vec.at str.Bytes) names near))
+       (call buf.push_str b "?"))
+      (else
+       (call buf.push_str b "to call a function, write (call ")
+       (call buf.push_bytes b head)
+       (call buf.push_str b " args...)"))))
 
   (fn last_dot [s:str.Bytes] -> i32
     (let d:i32 -1)
@@ -749,6 +866,10 @@
   (fn prefix [s:str.Bytes n:i32] -> str.Bytes (unsafe (call str.bytes (call str.addr s) n)))
   (fn suffix [s:str.Bytes from:i32] -> str.Bytes
     (unsafe (call str.bytes (+ (call str.addr s) from) (- (get s str.Bytes.len) from))))
+
+  ;; What follows a field-reference error (src/parser.rs FIELD_HINT).
+  (fn push_field_hint [b:(ptr buf.Buf)] -> void
+    (call buf.push_str b "; the struct and field are one symbol, as in (get p Point.x)"))
 
   ;; src/parser.rs field_ref: a Struct.field symbol split at its last '.'.
   (fn field_ref [p:(ptr P) form:str at:i32] -> (ptr ast.Step)
@@ -763,6 +884,7 @@
           (call buf.push_str b form)
           (call buf.push_str b ", got ")
           (if (gte i 0) (call push_token_text p b i) (call buf.push_str b "EOF"))
+          (call push_field_hint b)
           (call fail p b)
           (return r))
         (block))
@@ -776,6 +898,7 @@
           (call buf.push_str b ", got '")
           (call buf.push_bytes b field)
           (call buf.push_byte b 39)
+          (call push_field_hint b)
           (call fail p b)
           (return r))
         (block))
@@ -794,7 +917,8 @@
         (block
           (let b:(ptr buf.Buf) (call msg p at))
           (call buf.push_str b form)
-          (call buf.push_str b " needs a value to store")
+          (call buf.push_str b " needs a value to store: ")
+          (call buf.push_str b (if (call str.same form "arr.set") "(arr.set i32 a i v) names the element type first" "(put p Point.x v)"))
           (call fail p b)
           (return (call placeholder at)))
         (block))
@@ -812,6 +936,7 @@
                 (call buf.push_str b ", got '")
                 (call buf.push_bytes b name)
                 (call buf.push_byte b 39)
+                (call push_field_hint b)
                 (call fail p b))
               (block
                 (let st:(ptr ast.Step) (new ast.Step (call alloc.forever)))
@@ -889,13 +1014,13 @@
     (call want p compiler.Kind.lparen)
     (let i:i32 (call next p))
     (if (not (call is_sym p i "ok")) (call fail_expected p i "'ok' arm in match_result" at) (block))
-    (let ok_var:str.Bytes (call expect_symbol p "ok var" at))
+    (let ok_var:str.Bytes (call expect_symbol_hint p "ok var" at "match_result arms bind without brackets: (ok v ...) (err e ...)"))
     (let ok_body:(arr ast.Expr) (call parse_body p))
     (call want p compiler.Kind.rparen)
     (call want p compiler.Kind.lparen)
     (let j:i32 (call next p))
     (if (not (call is_sym p j "err")) (call fail_expected p j "'err' arm in match_result" at) (block))
-    (let err_var:str.Bytes (call expect_symbol p "err var" at))
+    (let err_var:str.Bytes (call expect_symbol_hint p "err var" at "match_result arms bind without brackets: (ok v ...) (err e ...)"))
     (let err_body:(arr ast.Expr) (call parse_body p))
     (call want p compiler.Kind.rparen)
     (call ast.match_result_expr (call alloc.default) at value ok_var ok_body err_var err_body))

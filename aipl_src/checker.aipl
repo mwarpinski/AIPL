@@ -26,6 +26,7 @@
   (import fmtsplit)
   (import fmtdebug)
   (import leaks)
+  (import suggest)
 
   ;; unsafe_: the function has the (unsafe) clause.
   (struct Sig [params:(arr ast.Type) ret:ast.Type unsafe_:bool])
@@ -751,6 +752,12 @@
              b)
             ((call has_struct c name) (ptr.null buf.Buf))
             ((call names.is_sealed name) (call not_a_struct c at name))
+            ((call has_union c name)
+             (let b:(ptr buf.Buf) (call msg c at))
+             (call s b "'") (call by b (call names.shown name)) (call s b "' is a union, which is a value: write ")
+             (call by b (call names.shown name)) (call s b ", not (ptr ") (call by b (call names.shown name))
+             (call s b "); a union is never null, so use a variant such as (none) for no value")
+             b)
             (else
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Unknown struct '") (call by b name) (call s b "' in (ptr ") (call by b name) (call s b ")")
@@ -882,7 +889,35 @@
                    (call s b ": this function value's type does not promise (no_leak)")))
               (else (call s b ": this function value's type does not promise (no_leak)")))))
          (else (block))))
+      (ast.Type.ptr [_]
+       (when (call is_i32_type want)
+         (call s b ": a pointer or array is not an i32: declare it as ") (call ty b got)))
+      (ast.Type.arr [_]
+       (when (call is_i32_type want)
+         (call s b ": a pointer or array is not an i32: declare it as ") (call ty b got)))
+      (ast.Type.i32
+       (match want
+         (ast.Type.ptr [n_ptr]
+          (match (get n_ptr ast.PtrType.inner)
+            (ast.Type.struct_ [sname]
+             (call s b ": an i32 is not a pointer: for null write (ptr.null ") (call by b (call names.shown sname)) (call s b ")"))
+            (else (block))))
+         (ast.Type.arr [n_arr]
+          (call s b ": an i32 is not an array: for null write (arr.null ") (call ty b (get n_arr ast.ArrType.elem)) (call s b ")"))
+         (ast.Type.i64 (call s b ": no implicit widening: write a literal as 5i64, or convert with (i64.extend_s x)"))
+         (ast.Type.f64 (call s b ": integers do not become floats by themselves: write a literal as 1.0, or convert with (f64.convert_i32_s x)"))
+         (ast.Type.f32 (call s b ": integers do not become floats by themselves: write a literal as 1.0, or convert with (f32.convert_i32_s x)"))
+         (else (block))))
+      (ast.Type.i64
+       (match want
+         (ast.Type.i32 (call s b ": no implicit narrowing: convert with (i32.wrap x)"))
+         (ast.Type.f64 (call s b ": integers do not become floats by themselves: write a literal as 1.0, or convert with (f64.convert_i64_s x)"))
+         (ast.Type.f32 (call s b ": integers do not become floats by themselves: write a literal as 1.0, or convert with (f32.convert_i64_s x)"))
+         (else (block))))
       (else (block))))
+
+  (fn is_i32_type [t:ast.Type] -> bool (match t (ast.Type.i32 true) (else false)))
+  (fn is_ptr_or_arr [t:ast.Type] -> bool (match t (ast.Type.ptr [_] true) (ast.Type.arr [_] true) (else false)))
 
   ;; Fails with b, if b is an error (not null).
   (fn fail_if [c:(ptr C) b:(ptr buf.Buf)] -> void
@@ -971,6 +1006,7 @@
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Function '") (call by b (call names.shown fname)) (call s b "' expects return type ") (call ty b (get f ast.FnDef.ret))
           (call s b ", but body returned ") (call ty b last)
+          (when (call is_void last) (call s b "; end the body with the value to return (a let, a set!, or a loop gives void)"))
           (call fail c b))
         (block)))
 
@@ -1027,6 +1063,7 @@
            (block
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Undefined variable '") (call by b name) (call s b "'")
+             (when (call str.is name "result") (call s b "; a function's result is named res, in its (ens ...)"))
              (call fail c b)
              (call void_t))))
       (ast.Expr.let_ [n_let] (let name:str.Bytes (get n_let ast.LetExpr.name)) (let lty:ast.Type (get n_let ast.LetExpr.ty)) (let val:ast.Expr (get n_let ast.LetExpr.val)) (call infer_let c env at name lty val))
@@ -1361,11 +1398,43 @@
         (block))
     (call void_t))
 
+  ;; Whether a function's name is an instance of a template (vec.make<i32>).
+  (fn is_instance [name:str.Bytes] -> bool
+    (let k:i32 0)
+    (while (lt k (get name str.Bytes.len))
+      (if (eq (call str.byte_at name k) 60) (return true) (block))
+      (set! k (+ k 1)))
+    false)
+
+  ;; What follows "Call to unknown function 'f'" (src/checker.rs, Expr::Call):
+  ;; f is a function reference in scope, or the nearest function's name.
+  (fn unknown_fn_hint [c:(ptr C) b:(ptr buf.Buf) env:(ptr Env) func:str.Bytes] -> void
+    (if (call has env func)
+        (match (call type_of env func)
+          (ast.Type.fn_ [g]
+           (call s b "; ") (call by b func) (call s b " is a function reference: call it with (call_ref ")
+           (call ty b (call type_of env func)) (call s b " ") (call by b func) (call s b " args...)")
+           (return))
+          (else (block)))
+        (block))
+    (let known:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 64))
+    (let m:(ptr (map.Map str.Bytes (ptr Sig))) (get c C.fns))
+    (let k:i32 0)
+    (while (lt k (call (map.capacity str.Bytes (ptr Sig)) m))
+      (when (call (map.slot_used str.Bytes (ptr Sig)) m k)
+        (let key:str.Bytes (call (map.slot_key str.Bytes (ptr Sig)) m k))
+        (when (not (call is_instance key)) (call (vec.push str.Bytes) known key)))
+      (set! k (+ k 1)))
+    (let near:i32 (call suggest.nearest known func))
+    (when (gte near 0)
+      (call s b "; did you mean ") (call by b (call names.shown (call (vec.at str.Bytes) known near))) (call s b "?")))
+
   (fn infer_call [c:(ptr C) env:(ptr Env) at:i32 func:str.Bytes args:(arr ast.Expr)] -> ast.Type
     (if (not (call (map.has str.Bytes (ptr Sig)) (get c C.fns) func))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Call to unknown function '") (call by b func) (call s b "'")
+          (call unknown_fn_hint c b env func)
           (call fail c b) (return (call void_t)))
         (block))
     (let sig:(ptr Sig) (call (map.get_or str.Bytes (ptr Sig)) (get c C.fns) func (ptr.null Sig)))
@@ -1376,7 +1445,14 @@
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Function '") (call by b (call names.shown func)) (call s b "' expects ") (call buf.push_int b (arr.len ps))
-          (call s b " arguments, got ") (call buf.push_int b (arr.len args))
+          (call s b " arguments")
+          (when (gt (arr.len ps) 0)
+            (call s b " (")
+            (for k 0 (arr.len ps)
+              (when (gt k 0) (call s b " "))
+              (call ty b (arr.get ast.Type ps k)))
+            (call s b ")"))
+          (call s b ", got ") (call buf.push_int b (arr.len args))
           (call fail c b) (return (call void_t)))
         (block))
     (loop k 0 (- (arr.len args) 1) 1
@@ -1984,7 +2060,7 @@
        (if (get c C.failed) (return (call void_t)) (block))
        (let t2:ast.Type (call infer c (arr.get ast.Expr args 1) env))
        (if (get c C.failed) (return (call void_t)) (block))
-       (if (not (call teq t1 t2)) (block (call pair_msg c at "Type mismatch in binary op: " t1 " vs " t2) (return (call void_t))) (block))
+       (if (not (call teq t1 t2)) (block (call pair_msg_hint c at "Type mismatch in binary op: " t1 " vs " t2 "; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)") (return (call void_t))) (block))
        (if (not (call is_int t1))
            (block
              (let b:(ptr buf.Buf) (call msg c at))
@@ -2470,8 +2546,11 @@
     (call fail c b))
 
   (fn pair_msg [c:(ptr C) at:i32 x:str t1:ast.Type y:str t2:ast.Type] -> void
+    (call pair_msg_hint c at x t1 y t2 ""))
+
+  (fn pair_msg_hint [c:(ptr C) at:i32 x:str t1:ast.Type y:str t2:ast.Type hint:str] -> void
     (let b:(ptr buf.Buf) (call msg c at))
-    (call s b x) (call ty b t1) (call s b y) (call ty b t2)
+    (call s b x) (call ty b t1) (call s b y) (call ty b t2) (call s b hint)
     (call fail c b))
 
   ;; One operand of type `want`: arity's message, or mismatch's then the type.
@@ -2614,7 +2693,7 @@
         (block))
     (let t1:ast.Type (if (and (not (call is_special a1)) (call is_special t2)) t2 a1))
     (if (and (not (call teq t1 t2)) (not (call is_special t1)))
-        (block (call pair_msg c at "Type mismatch in binary op: " t1 " vs " t2) (return (call void_t)))
+        (block (call pair_msg_hint c at "Type mismatch in binary op: " t1 " vs " t2 "; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)") (return (call void_t)))
         (block))
     (let k:i32 (call tag t1))
     (if (or (eq k 7) (or (eq k 10) (eq k 11)))
@@ -2680,7 +2759,10 @@
           (call fail c b)
           (return (call void_t)))
         (block))
-    (if (not (call meets t1 t2)) (block (call pair_msg c at "Type mismatch in comparison: " t1 " vs " t2) (return (call void_t))) (block))
+    (if (not (call meets t1 t2)) (block (call pair_msg_hint c at "Type mismatch in comparison: " t1 " vs " t2
+                                                                       (if (or (and (call is_ptr_or_arr t1) (call is_i32_type t2)) (and (call is_i32_type t1) (call is_ptr_or_arr t2)))
+                                                                           "; to test for null, compare with (ptr.null S) or (arr.null T)"
+                                                                           "")) (return (call void_t))) (block))
     (set! t1 (call meet t1 t2))
     (let k:i32 (call tag t1))
     (let equality:bool (or (eq o ast.Op.eq) (eq o ast.Op.neq)))

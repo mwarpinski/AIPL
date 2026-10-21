@@ -87,6 +87,9 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         // a struct type argument lets the template make one (alloc.create)
         (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.default))) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),
         (LIB, r#"(call lib.hidden)"#, r#"1:67: 'lib.hidden' is private to module lib: mark it (pub) there to use it here"#),
+        // CANONICAL_PLAN.md step 2: a name the module does not have
+        (LIB, r#"(call lib.shwn)"#, r#"1:67: 'lib.shwn' is not an item of module lib: did you mean lib.shown?"#),
+        (LIB, r#"(call lib.zzzzzzzz)"#, r#"1:67: 'lib.zzzzzzzz' is not an item of module lib: aipl doc lib lists what it has"#),
         (LIB, r#"(let s:(ptr lib.S) (call lib.make_s)) (put s lib.S.r 1) 0"#, r#"1:106: field 'r' of lib.S is read-only outside module lib"#),
         (LIB, r#"(let s:(ptr lib.S) (call lib.make_s)) (get s lib.S.p)"#, r#"1:106: field 'p' of lib.S is private to module lib"#),
         (LIB, r#"(let s:(ptr lib.S) (new lib.S (call alloc.forever))) 0"#, r#"1:85: 'lib.S' has fields private to module lib, so only lib can make one"#),

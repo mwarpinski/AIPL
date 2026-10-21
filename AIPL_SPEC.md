@@ -1265,7 +1265,7 @@ Rules that follow from this:
 | `(and a b)` / `(or a b)` | short-circuit: `b` runs only if `a` is `true` (for `and`) or `false` (for `or`). Two or more `bool` operands, left to right (more than two are rewritten as nested pairs, section 4.M). So `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(cond (c1 e...) (c2 e...) ... (else e...))` | the first clause whose test is true runs its body; `else` is required, like `if`'s else branch. The parser rewrites it to `(if c1 (block e...) (if c2 (block e...) ... (block e...)))`, so the `if` typing rules apply |
 
-`return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or a void `if`. An early exit is therefore written `(if (lt i 0) (return -1) (block))`, not `(if (lt i 0) (return -1) i)`, which mixes `void` and `i32`. A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
+`return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or an `if`. An early exit is written `(if (lt i 0) (return -1) (block))`; where the `if` gives a value, a branch that always returns, breaks, or continues fits any type (section 7.1), so `(let x:i32 (if (lt i 0) (return -1) i))` is fine too (checked in the VM, wasm, and native, 2026-10-21). A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
 
 ```lisp
 (fn index_of [a:(arr i32) target:i32] -> i32
@@ -1877,7 +1877,7 @@ bytes: 81
 
 ## 13. Pitfalls for Code Generators
 
-Each of these is a real failure mode observed when LLMs write AIPL. The fix is in the second column.
+Each of these is a real failure mode observed when LLMs write AIPL. The fix is in the second column. The compiler's message for most of them names the fix too (CANONICAL_PLAN.md step 2), and a name close to a real one (an operator, a function, a module's item) gets a "did you mean".
 
 | Mistake | Correct form |
 |---|---|
@@ -1920,7 +1920,6 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(get b Box.value)` on a generic struct | name the instance: `(get b (Box i32) value)` |
 | calling `mem.grow` before allocating | not needed: allocation grows memory itself (up to 32768 pages, 2 GiB) |
 | passing a `str` literal where a `(ptr, len)` path or buffer is expected, e.g. `(fs.open "t.bin" 5 0)` | type error: `fs.*` take `i32` pointers. Write `(fs.open (str.ptr "t.bin") (str.len "t.bin") 0)` |
-| `(if (lt i 0) (return -1) i)` | `return` is a statement (void): `(if (lt i 0) (return -1) (block))`, then the value |
 | `(cond ((lt n 0) -1) ((eq n 0) 0))` without `else` | `cond` needs a final `(else ...)` clause; use `(else (block))` when the clauses are statements |
 | `else if`, `elif`, `switch`, `case` | do not exist; use `cond` |
 | a zero-argument function or a bare number standing for a fixed value | `(const PAGE_SIZE:i32 65536)`; for a set of related codes, `(enum Kind [a b c])` (section 4.I) |

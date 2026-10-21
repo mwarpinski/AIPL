@@ -75,7 +75,7 @@ fn a_struct_prints_its_fields_and_a_pointer_inside_it_its_address() {
 fn errors_are_at_the_expressions_own_lines_and_columns() {
     let o = eval("", None, "(let x:i32 1)\n  (+ x true)");
     assert_eq!(o.status.code(), Some(1));
-    assert_eq!(stderr(&o), "Error: -e:2:3: Type mismatch in binary op: i32 vs bool\n");
+    assert_eq!(stderr(&o), "Error: -e:2:3: Type mismatch in binary op: i32 vs bool; both operands must have one type: convert one (i64.extend_s, f64.convert_i32_s, ...) or write the literal in that type (5i64, 1.0)\n");
     let o = eval("", Some(ROWS), "(call parse_row 5)");
     assert_eq!(stderr(&o), "Error: -e:1:1: Arg 0 of 'parse_row' expects str, got i32\n");
     // a trap: its call chain, without the generated printer

@@ -210,7 +210,7 @@ fn every_rule_has_its_message() {
         // union values
         (format!("{u} (fn f [a:S b:S] -> bool (eq a b))"), "eq on union 'S': union values do not compare; take them apart with match"),
         (format!("{u} (fn f [a:S] -> i32 (+ a 1))"), "+ on union 'S': unions have no arithmetic; take them apart with match"),
-        (format!("{u} (fn f [] -> S (ptr.null S))"), "Unknown struct 'S' in (ptr S)"),
+        (format!("{u} (fn f [] -> S (ptr.null S))"), "'S' is a union, which is a value: write S, not (ptr S); a union is never null, so use a variant such as (none) for no value"),
         (format!("{u} (fn f [] -> S (enum.cast S 1))"), "'S' is a union, not an enum: its values are made with (make S.variant ...)"),
         // a name keeps one type per function
         (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] x) (else 0)))"), "'x' is i32 here but f64 elsewhere in this function; a name keeps one type per function (rename one)"),
