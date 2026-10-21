@@ -37,7 +37,7 @@ fn self_host_named(src: &str, name: &str) -> Result<Vec<u8>, String> {
 /// src as the code generator takes it: a program that imports (std/alloc,
 /// to allocate) resolved and printed flat, as the front end hands it over.
 fn flat(src: &str) -> String {
-    if !src.contains("(import ") {
+    if !src.contains("(import ") && !src.contains("(for ") {
         return src.to_string();
     }
     let path = std::env::temp_dir().join(format!("aipl_selfhost_flat_{}.aipl", std::process::id()));
@@ -192,7 +192,9 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             fs::write(&temp_src, &src).unwrap();
             // a program that imports (std/alloc, to allocate) goes to the
             // code generators flat, as the front end hands it over
-            let src = if src.contains("(import ") {
+            // a program with imports or a `for` is resolved first: the code generator reads
+            // what the resolver prints (counted_loop), not the sugar
+            let src = if src.contains("(import ") || src.contains("(for ") {
                 let flat = aipl_core::printer::print_module(&Resolver::resolve(&temp_src).expect("resolve test src"));
                 fs::write(&temp_src, &flat).unwrap();
                 flat
@@ -355,7 +357,7 @@ fn self_hosted_bytes_match_compute() {
   (fn compute [x:i32] -> i32
     (let y:i32 (call add x))
     (let z:i32 0)
-    (loop i 0 9 1
+    (counted_loop i 0 9 1
       (set! z (+ z i)))
     (+ y z)))
 "#;
@@ -520,7 +522,7 @@ fn self_hosted_bytes_match_i64() {
   (fn acc [n:i32] -> i64 (unsafe)
     (let s:(ptr Acc) (new Acc (call alloc.forever)))
     (put s Acc.total 0i64)
-    (loop i 1 n 1
+    (counted_loop i 1 n 1
       (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
     (let arr:(arr i64) (arr.new i64 (call alloc.forever) 4))
     (arr.set i64 arr 3 (get s Acc.total))
@@ -649,7 +651,7 @@ fn self_hosted_bytes_match_pointers() {
     n)
   (fn sum [] -> i32
     (let h:(ptr Node) (ptr.null Node))
-    (loop i 1 10 1 (set! h (call push h i)))
+    (counted_loop i 1 10 1 (set! h (call push h i)))
     (let total:i32 0)
     (while (neq h (ptr.null Node))
       (set! total (+ total (get h Node.val)))
@@ -661,12 +663,12 @@ fn self_hosted_bytes_match_pointers() {
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
-    (loop i 0 3 1
+    (counted_loop i 0 3 1
       (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
-    (loop i 0 (- (arr.len ps) 1) 1
+    (counted_loop i 0 (- (arr.len ps) 1) 1
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
@@ -837,7 +839,7 @@ fn self_hosted_bytes_match_control_flow() {
 (module flow
   ;; early return inside a loop: index of the first multiple of 7 at or above n
   (fn first_mult7 [n:i32] -> i32 (unsafe)
-    (loop i n (+ n 100) 1
+    (counted_loop i n (+ n 100) 1
       (if (eq (% i 7) 0) (return i) (block)))
     -1)
 
@@ -855,7 +857,7 @@ fn self_hosted_bytes_match_control_flow() {
   ;; continue in a counted loop still applies the step: sum of odd i in 0..n
   (fn sum_odd [n:i32] -> i32 (unsafe)
     (let total:i32 0)
-    (loop i 0 n 1
+    (counted_loop i 0 n 1
       (if (eq (% i 2) 0) (continue) (block))
       (set! total (+ total i)))
     total)
@@ -874,8 +876,8 @@ fn self_hosted_bytes_match_control_flow() {
   ;; break and continue in nested loops target the innermost loop
   (fn nested [n:i32] -> i32 (unsafe)
     (let hits:i32 0)
-    (loop i 1 n 1
-      (loop j 1 n 1
+    (counted_loop i 1 n 1
+      (counted_loop j 1 n 1
         (if (gt j i) (break) (block))
         (if (eq j 2) (continue) (block))
         (set! hits (+ hits 1))))
@@ -885,7 +887,7 @@ fn self_hosted_bytes_match_control_flow() {
   (fn parse_digit [c:i32] -> (result i32 i32) (unsafe)
     (if (and (gte c 48) (lte c 57)) (ok:i32 (- c 48)) (err:i32 c)))
   (fn first_non_digit [n:i32] -> i32 (unsafe)
-    (loop i 0 n 1
+    (counted_loop i 0 n 1
       (match_result (call parse_digit (+ 46 i))
         (ok d (block))
         (err e (return e))))
@@ -903,7 +905,7 @@ fn self_hosted_bytes_match_control_flow() {
   (fn bucket_sum [n:i32] -> i32 (unsafe)
     (let small:i32 0)
     (let big:i32 0)
-    (loop i 0 n 1
+    (counted_loop i 0 n 1
       (cond
         ((lt i 5) (set! small (+ small 1)))
         (else (set! big (+ big 1)))))
@@ -927,7 +929,7 @@ fn self_hosted_bytes_match_control_flow() {
   (fn moving_bounds [n:i32] -> i32 (unsafe)
     (let limit:i32 n)
     (let count:i32 0)
-    (loop i 0 limit 1
+    (counted_loop i 0 limit 1
       (set! count (+ count 1))
       (if (eq i 2) (set! limit (- limit 1)) (block))
       (if (eq i 0) (set! i 1) (block)))
@@ -1296,7 +1298,7 @@ fn self_hosted_bytes_match_nested_locals() {
   (fn g [n:i32] -> (result i32 i32) (if (gt n 0) (ok:i32 n) (err:i32 n)))
   (fn main [] -> i32
     (let total:i32 0)
-    (loop i 0 (block (let last:i32 3) last) 1
+    (counted_loop i 0 (block (let last:i32 3) last) 1
       (set! total (+ total (match_result (call g i) (ok k (+ k 1)) (err e (- e 1))))))
     (+ total
        (+ (block (let x:i32 40) (+ x 2))
@@ -1338,7 +1340,7 @@ fn self_hosted_bytes_match_checked_arithmetic() {
         "(module ck
   (fn f [a:i32 b:i32] -> i32 (let x:i32 (checked.add a b)) (checked.sub (checked.mul x 3) b))
   (fn g [a:i64 b:i64] -> i64 (checked.add (checked.mul a b) (checked.sub a b)))
-  (fn h [] -> i32 (let n:i32 1) (loop i 0 3 1 (set! n (checked.mul n 2))) n))",
+  (fn h [] -> i32 (let n:i32 1) (counted_loop i 0 3 1 (set! n (checked.mul n 2))) n))",
     );
 }
 

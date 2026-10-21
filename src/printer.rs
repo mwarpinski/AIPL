@@ -259,7 +259,7 @@ pub fn expr_str(e: &Expr) -> String {
             format!("(if {} {} {})", expr_str(cond), expr_str(then_branch), expr_str(else_branch))
         }
         Expr::Loop { var, start, end, step, body, .. } => with_body(
-            format!("loop {} {} {} {}", var, expr_str(start), expr_str(end), expr_str(step)),
+            format!("counted_loop {} {} {} {}", var, expr_str(start), expr_str(end), expr_str(step)),
             body,
         ),
         Expr::While { cond, body, .. } => with_body(format!("while {}", expr_str(cond)), body),

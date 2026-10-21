@@ -49,7 +49,7 @@
   (fn get [v:Value key:str] -> (option.Option Value) (pub) (no_leak)
     (match v
       (Value.object [fields]
-        (loop i 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+        (for i 0 (call (vec.len (ptr Field)) fields)
           (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
           (if (call str.is (get f Field.key) key) (return (make (option.Option Value) some (get f Field.value))) (block)))
         (make (option.Option Value) none))
@@ -131,13 +131,13 @@
   (fn member [v:Value b:str.Bytes from:i32 to:i32] -> (option.Option Value)
     (match v
       (Value.object [fields]
-        (loop f 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+        (for f 0 (call (vec.len (ptr Field)) fields)
           (let fd:(ptr Field) (call (vec.at (ptr Field)) fields f))
           (let key:str.Bytes (get fd Field.key))
           (if (eq (get key str.Bytes.len) (- to from))
               (block
                 (let same:bool true)
-                (loop c 0 (- (- to from) 1) 1
+                (for c 0 (- to from)
                   (if (neq (call str.byte_at key c) (call str.byte_at b (+ from c))) (set! same false) (block)))
                 (if same (return (make (option.Option Value) some (get fd Field.value))) (block)))
               (block)))
@@ -311,7 +311,7 @@
   ;; Four hex digits as a number.
   (fn hex4 [p:(ptr P)] -> i32
     (let v:i32 0)
-    (loop k 0 3 1
+    (for k 0 4
       (let c:i32 (call peek p))
       (let d:i32 (cond ((call is_digit c) (- c 48)) ((and (gte c 97) (lte c 102)) (- c 87)) ((and (gte c 65) (lte c 70)) (- c 55)) (else -1)))
       (if (lt d 0) (block (call fail p (get p P.pos) "\\u needs four hex digits") (return 0)) (block))
@@ -399,13 +399,13 @@
       (Value.text [s] (call write_string b s))
       (Value.list [items]
         (call buf.push_byte b 91)
-        (loop i 0 (- (call (vec.len Value) items) 1) 1
+        (for i 0 (call (vec.len Value) items)
           (if (gt i 0) (call buf.push_byte b 44) (block))
           (call write b (call (vec.at Value) items i)))
         (call buf.push_byte b 93))
       (Value.object [fields]
         (call buf.push_byte b 123)
-        (loop i 0 (- (call (vec.len (ptr Field)) fields) 1) 1
+        (for i 0 (call (vec.len (ptr Field)) fields)
           (let f:(ptr Field) (call (vec.at (ptr Field)) fields i))
           (if (gt i 0) (call buf.push_byte b 44) (block))
           (call write_string b (get f Field.key))
@@ -417,7 +417,7 @@
   ;; characters as \u00xx; every other byte as it is.
   (fn write_string [b:(ptr buf.Buf) s:str.Bytes] -> void
     (call buf.push_byte b 34)
-    (loop i 0 (- (get s str.Bytes.len) 1) 1
+    (for i 0 (get s str.Bytes.len)
       (let c:i32 (call str.byte_at s i))
       (cond
         ((eq c 34) (call buf.push_str b "\\\""))
@@ -486,10 +486,10 @@
     ;; times 5^k, 13 fives at a time (5^13 < 2^31); or times 2^e
     (let left:i32 k)
     (while (gte left 13) (call bigint.mul_small big 1220703125) (set! left (- left 13)))
-    (loop i 1 left 1 (call bigint.mul_small big 5))
+    (for i 1 (+ left 1) (call bigint.mul_small big 5))
     (set! left twos)
     (while (gte left 30) (call bigint.mul_small big 1073741824) (set! left (- left 30)))
-    (loop i 1 left 1 (call bigint.mul_small big 2))
+    (for i 1 (+ left 1) (call bigint.mul_small big 2))
     (let ds:(ptr buf.Buf) (call buf.make a 800))
     (call bigint.push_decimal ds big)
     (let all:str.Bytes (call buf.bytes ds))
@@ -497,17 +497,17 @@
     (let n:i32 (- n_all k))
     (let text:(ptr buf.Buf) (call buf.make a 40))
     (let found:Decimal (make Decimal (call str.absent) 0))
-    (loop p 1 17 1
+    (for p 1 18
       ;; down: the first p digits; up: down plus one in the last place
       (let down:(arr i32) (arr.new i32 a p))
       (let up:(arr i32) (arr.new i32 a p))
-      (loop q 0 (- p 1) 1
+      (for q 0 p
         (let d:i32 (if (lt q n_all) (- (call str.byte_at all q) 48) 0))
         (arr.set i32 down q d)
         (arr.set i32 up q d))
       (let next:i32 (if (lt p n_all) (- (call str.byte_at all p) 48) 0))
       (let rest:bool false)
-      (loop q (+ p 1) (- n_all 1) 1 (if (neq (call str.byte_at all q) 48) (set! rest true) (block)))
+      (for q (+ p 1) n_all (if (neq (call str.byte_at all q) 48) (set! rest true) (block)))
       (let up_n:i32 n)
       (let q:i32 (- p 1))
       (while (and (gte q 0) (eq (arr.get i32 up q) 9)) (arr.set i32 up q 0) (set! q (- q 1)))
@@ -531,7 +531,7 @@
   (fn reads_back [text:(ptr buf.Buf) r:(arr i32) p:i32 n:i32 x:f64] -> bool
     (call buf.clear text)
     (call buf.push_str text "0.")
-    (loop q 0 (- p 1) 1 (call buf.push_byte text (+ 48 (arr.get i32 r q))))
+    (for q 0 p (call buf.push_byte text (+ 48 (arr.get i32 r q))))
     (call buf.push_byte text 101)
     (call buf.push_int text n)
     (let t:str.Bytes (call buf.bytes text))
@@ -543,7 +543,7 @@
     (let kept:i32 p)
     (while (and (gt kept 1) (eq (arr.get i32 r (- kept 1)) 0)) (set! kept (- kept 1)))
     (call buf.clear out)
-    (loop q 0 (- kept 1) 1 (call buf.push_byte out (+ 48 (arr.get i32 r q))))
+    (for q 0 kept (call buf.push_byte out (+ 48 (arr.get i32 r q))))
     (make Decimal (call buf.bytes out) n))
 
   ;; ECMAScript's Number::toString for 0.digits * 10^n (k digits): plain
@@ -553,14 +553,14 @@
     (cond
       ((and (lte k n) (lte n 21))
        (call buf.push_bytes b digits)
-       (loop i 1 (- n k) 1 (call buf.push_byte b 48)))
+       (for i 1 (+ (- n k) 1) (call buf.push_byte b 48)))
       ((and (gt n 0) (lte n 21))
        (call buf.push_bytes b (call str.slice digits 0 n))
        (call buf.push_byte b 46)
        (call buf.push_bytes b (call str.slice digits n (- k n))))
       ((and (gt n -6) (lte n 0))
        (call buf.push_str b "0.")
-       (loop i 1 (- 0 n) 1 (call buf.push_byte b 48))
+       (for i 1 (+ (- 0 n) 1) (call buf.push_byte b 48))
        (call buf.push_bytes b digits))
       (else
        (call buf.push_byte b (call str.byte_at digits 0))
@@ -630,7 +630,7 @@
     (if (and (call fails_at "" 0) (and (call fails_at "\"tab\there\"" 4) (call fails_at "{\"a\" 1}" 5))) (set! p (+ p 1)) (block))
     ;; deep nesting stops cleanly
     (let deep:(ptr buf.Buf) (call buf.make (call alloc.default) 1200))
-    (loop i 1 600 1 (call buf.push_byte deep 91))
+    (for i 1 601 (call buf.push_byte deep 91))
     (if (call fails_at_bytes (call buf.bytes deep) 513) (set! p (+ p 1)) (block))
     p)
 

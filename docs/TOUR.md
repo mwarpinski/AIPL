@@ -67,7 +67,7 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
   ;; the sum of the even numbers from 1 to n
   (fn sum_even [n:i32] -> i32
     (let total:i32 0)
-    (loop i 1 n 1                     ;; i = 1, 2, ..., n (the end is included)
+    (for i 1 (+ n 1)                     ;; i = 1, 2, ..., n (the end, n + 1, is left out)
       (if (eq (% i 2) 0)
           (set! total (+ total i))
           (block)))
@@ -86,9 +86,9 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
 
 It prints `evens up to 10 add to 30; the sign of -5 is -1`.
 
-`if` always has both branches; `(block)` is an empty one. `loop` counts
-from its start to its end, both included, by its step; `while` repeats
-while a condition holds. `cond` picks the first clause whose test is true,
+`if` always has both branches; `(block)` is an empty one. `for` counts
+from its start up to its end, the end left out; `while` repeats
+while a condition holds (and is the loop for any other step). `cond` picks the first clause whose test is true,
 and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 `gt`, `gte`.
 
@@ -107,14 +107,14 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
   (fn total [ps:(arr (ptr Point))] -> i32
     (let sum:i32 0)
-    (loop i 0 (- (arr.len ps) 1) 1
+    (for i 0 (arr.len ps)
       (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
     sum)
 
   (fn main [] -> i32
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
-    (loop i 0 2 1
+    (for i 0 3
       (arr.set (ptr Point) ps i (call make_point i (* i 10))))
     (println "total: {(call total ps)}")
     0))
@@ -146,7 +146,7 @@ nothing allocated, copied where it goes, never changed in place.
 
   (fn main [] -> i32
     (let ps:(arr Point) (arr.new Point (call alloc.forever) 3))
-    (loop i 0 2 1 (arr.set Point ps i (make Point i (* i 10))))
+    (for i 0 3 (arr.set Point ps i (make Point i (* i 10))))
     (let q:Point (call shift (arr.get Point ps 2) 5))
     (println "shifted: ({(get q Point.x)}, {(get q Point.y)}); second y: {(arr.get Point ps 1 Point.y)}")
     0))

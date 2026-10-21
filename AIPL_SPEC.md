@@ -60,7 +60,7 @@ expr           ::= literal
                  | "(" "let" identifier ":" type expr ")"
                  | "(" "set!" identifier expr ")"
                  | "(" "if" expr expr expr ")"
-                 | "(" "loop" identifier expr expr expr expr* ")"
+                 | "(" "for" identifier expr expr expr* ")"
                  | "(" "while" expr expr* ")"
                  | "(" "call" fn_name expr* ")"
                  | "(" "block" expr* ")"
@@ -341,13 +341,13 @@ Field and element types are the scalars, `(ptr S)`, `(arr T)`, unions, enums, an
   (struct Point [x:i32 y:i32])
   (fn main [] -> i32
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
-    (loop i 0 2 1
+    (for i 0 3
       (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
-    (loop i 0 (- (arr.len ps) 1) 1
+    (for i 0 (arr.len ps)
       (let p:(ptr Point) (arr.get (ptr Point) ps i))
       (set! sum (+ sum (+ (get p Point.x) (get p Point.y)))))
     (println "{sum}")                     ;; prints 33 in both backends
@@ -499,7 +499,7 @@ A promising reference fits an ordinary slot (it promises more than the slot asks
     (let scores:(arr i32) (arr.new i32 (call alloc.forever) 3))
     (arr.set i32 scores 0 40) (arr.set i32 scores 1 90) (arr.set i32 scores 2 60)
     (let order:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 3))
-    (loop i 0 2 1 (call (vec.push i32) order i))
+    (for i 0 3 (call (vec.push i32) order i))
     (call (vec.sort_by_with i32 (arr i32)) order scores (ref by_score))
     (println "{(call (vec.at i32) order 0)} {(call (vec.at i32) order 1)} {(call (vec.at i32) order 2)}")   ;; prints 1 2 0
     0))
@@ -573,7 +573,7 @@ An interface names functions a type can have; an implementation provides them fo
   (fn (largest T) [xs:(arr T)] -> T (where (cmp.Ord T))
     (req (gt (arr.len xs) 0))
     (let best:T (arr.get T xs 0))
-    (loop i 1 (- (arr.len xs) 1) 1
+    (for i 1 (arr.len xs)
       (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
     best)
 
@@ -752,7 +752,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
 
   ;; the first index of `want`, or none
   (fn find [xs:(arr i64) want:i64] -> (option.Option i32)
-    (loop i 0 (- (arr.len xs) 1) 1
+    (for i 0 (arr.len xs)
       (if (eq (arr.get i64 xs i) want) (return (make (option.Option i32) some i)) (block)))
     (make (option.Option i32) none))
 
@@ -790,7 +790,7 @@ Each instance is an ordinary union named like a struct instance (`Tree<f64>`, `o
     (put p Point.x 1.5)
     (let s:str (format "{n:>5}|{(get p Point.x)}|{{}}"))      ;; "    3|1.5|{}"
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
-    (loop i 1 2 1 (format_to b "row {i}: {(call score i):03};"))
+    (for i 1 3 (format_to b "row {i}: {(call score i):03};"))
     (println "{s} {(call buf.bytes b)}")                      ;; "    3|1.5|{} row 1: 001;row 2: 004;"
     0))
 ```
@@ -850,7 +850,7 @@ Three forms are written for the reader and rewritten as the resolver reads a mod
 | Form | Is | |
 |---|---|---|
 | `(when c body...)` | `(if c (block body...) (block))` | an `if` with nothing to do otherwise (`void`) |
-| `(for i start end body...)` | `(loop i start (- end 1) 1 body...)` | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `loop` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
+| `(for i start end body...)` | an internal counted loop, `(loop i start (- end 1) 1 body...)` (`loop` written in a program is an error: CANONICAL_PLAN.md step 3) | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `while` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
 | `(and a b c ...)`, `(or a b c ...)` | `(and a (and b c ...))` | left to right, stopping at the first operand that decides |
 
 Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
@@ -1085,7 +1085,7 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `(let x:T v)` | `void` (declares `x` as `T`; `v` must be `T`) | `(let n:i32 (+ 1 2))` |
 | `(set! x v)` | `void` (`v` must match `x`; `x` must be declared) | `(set! n 5)` |
 | `(if c a b)` | `void` if both `a`,`b` are `void`; else `T` where `typeof(a)==typeof(b)==T` | |
-| `(loop i s e st body*)` | `void`; `s e st` must be `i32`; `i` is block-scoped to the body | |
+| `(for i s e body*)` | `void`; `s e` must be `i32`; `i` is block-scoped to the body | |
 | `(while c body*)` | `void` | |
 | `(block e1 ... en)` | type of `en` (or `void` if empty); introduces a block scope | |
 | `(call f args)` | declared return type of `f`; arity and arg types must match | |
@@ -1144,16 +1144,16 @@ Void `if` statements compile cleanly to `if` (empty block type) in wasm.
 
 ### 7.5 Loops
 
-`loop` is **inclusive** of its end bound and always steps by the third argument:
+`for` counts `i` from its start up to its end, **leaving the end out**, one at a time (for another step, use a `while` and `set!` its counter). There is no `loop`: it counted to its end inclusive, the most repeated mistake in this document's table of pitfalls, and written in a program it is an error that names `for`.
 
 ```lisp
 (fn sum_to_ten [] -> i32
   (let acc:i32 0)
-  (loop i 1 10 1
+  (for i 1 11
     (set! acc (+ acc i)))
-  acc)          ;; => 55, because the bound is inclusive: 1+2+...+10
+  acc)          ;; => 55: i is 1, 2, ..., 10; the end, 11, is left out
 ```
-`(loop i 0 9 1 ...)` runs 10 times. `(loop i 0 0 1 ...)` runs once. `start`, `end`, and `step` are each evaluated **once**, in that order, before the first pass (like Python's `range`), so `(loop i 0 (- (call count r) 1) 1 ...)` calls `count` once. Changing a variable used in the bound inside the body does not change the bound. The body may still `set!` the loop variable itself. Leave a loop early with `break`, or skip to the next iteration with `continue` (section 7.10).
+`(for i 0 10 ...)` runs 10 times. `(for i 0 0 ...)` does not run. `start` and `end` are each evaluated **once**, in that order, before the first pass (like Python's `range`), so `(for i 0 (call count r) ...)` calls `count` once. Changing a variable used in the bound inside the body does not change the bound. The body may still `set!` the loop variable itself. Leave a loop early with `break`, or skip to the next iteration with `continue` (section 7.10).
 
 ```lisp
 (fn count_down [start:i32] -> i32
@@ -1260,8 +1260,8 @@ Rules that follow from this:
 | Form | Meaning |
 |---|---|
 | `(return v)` / `(return)` | leaves the function with `v` (which must have the function's return type), or with nothing from a `void` function; `ens` contracts still run on the returned value |
-| `(break)` | leaves the innermost `while` or `loop` |
-| `(continue)` | starts the next iteration of the innermost loop: a `while` re-tests its condition; a `loop` still applies its step first |
+| `(break)` | leaves the innermost `while` or `for` |
+| `(continue)` | starts the next iteration of the innermost loop: a `while` re-tests its condition; a `for` goes on to its next value |
 | `(and a b)` / `(or a b)` | short-circuit: `b` runs only if `a` is `true` (for `and`) or `false` (for `or`). Two or more `bool` operands, left to right (more than two are rewritten as nested pairs, section 4.M). So `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(cond (c1 e...) (c2 e...) ... (else e...))` | the first clause whose test is true runs its body; `else` is required, like `if`'s else branch. The parser rewrites it to `(if c1 (block e...) (if c2 (block e...) ... (block e...)))`, so the `if` typing rules apply |
 
@@ -1269,7 +1269,7 @@ Rules that follow from this:
 
 ```lisp
 (fn index_of [a:(arr i32) target:i32] -> i32
-  (loop i 0 (- (arr.len a) 1) 1
+  (for i 0 (arr.len a)
     (if (eq (arr.get i32 a i) target) (return i) (block)))
   -1)
 
@@ -1579,7 +1579,7 @@ Contract and bounds failures must happen in both: the compiled message (read fro
 Coverage:
 
 - Every edge case in section 8 and 8.1 as a single-expression program.
-- Control flow: inclusive `loop` bound, stepped and negative-start loops, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
+- Control flow: `for` bounds (the end left out), negative-start loops, `while` with a stepped counter, `while` with `set!`, nested `if`/`block` values, recursion, memory round trips through the bump allocator.
 - Typing and scoping (P7): one case per rule.
 - Structs and arrays (P8): `i32`, `bool`, `i64`, `f32`, `f64` fields at their aligned offsets; `sizeof` with padding; `i32` and `i64` arrays including the length header and cursor advance; a size expression that itself allocates; the heap addresses left by `ok`/`err` cells and by an allocation inside a result payload; negative `arr.new` sizes and `put`/`arr.set` into the reserved block failing in both; out-of-range indexes failing in both with the same message; and the section 4.E example.
 - Value structs held inline (docs/design/VALUES_PLAN.md): their sizes and offsets, raw words written through a field path, that results and unions holding one take no heap, array element spacing, and reads through a null pointer or past an array's end and writes into the reserved block failing in both.
@@ -1746,7 +1746,7 @@ The worker is a function reference of type `(fn [i32] -> i32)`; the single `i32`
 ```lisp
 (module counter_demo
   (fn worker [counter:i32] -> i32 (unsafe)
-    (loop i 1 1000 1
+    (for i 1 1001
       (atomic.add counter 1))
     0)
 
@@ -1799,7 +1799,7 @@ Written in AIPL over `fs.*`, `mem.*`, `str.len`, and `str.ptr` (no Rust opcodes)
 | `fmt` | `uint_to_bytes [n out] -> i32` (n read as unsigned), `int_to_bytes` (leading `-`), `hex_to_bytes` (lowercase, no prefix), and for `i64`: `uint64_to_bytes`, `int64_to_bytes`: each writes ASCII at `out` and returns the count (at most 10, 11, 8, 20, and 21 bytes); `f64_fixed [x digits out]` writes `x` with `digits` decimals exactly as C's `printf("%.*f")` (the exact decimal value of the double, rounded half to even; `inf`, `nan`, a `-` for any negative sign bit; at most 312 + digits bytes) |
 | `io` | `read_stdin [] -> str.Bytes` (all of stdin), `write_str [fd s]`, `println [s]`, `eprintln [s]` (stderr), `print_int [n]`, `println_int [label n]` (prints `label`, then `n`, then a newline), `print_i64 [n:i64]`, `println_i64 [label n:i64]`, `print_f64 [x digits]`, `println_f64 [label x digits]`, `read_file [path:str] -> str.Bytes` (whole file, in a buffer that is never freed; `len` -1 on failure), `read_fd [fd] -> str.Bytes` (reads an open descriptor to its end, freeing each buffer it outgrows), `write_file [path:str b:str.Bytes] -> i32` (bytes written or -1), and `read_path` / `write_path`, the same for a path held as `str.Bytes` |
 | `vec` | generic growable list `(vec.Vec T)`: `(call (vec.make T) a capacity)` with `a` an `alloc.Allocator` (growing frees the old storage through it), `(call (vec.free T) v)`, `push`, `pop`, `at [v i]`, `set [v i x]`, `len`, `truncate [v n]`, `clear`, `index_of`, `(sort T) [v]` (ascending by `T`'s `cmp.Ord`, stable), `sort_by [v cmp:(fn [T T] -> i32 (no_leak))]` (stable merge sort; `cmp` negative puts the first argument first; any comparison that keeps no memory: section 4.G), `(sort_by_with T C) [v ctx:C cmp:(fn [C T T] -> i32 (no_leak))]` (the same, `cmp` given `ctx` first), each called as `(call (vec.push T) v x)`; plus `sort_i32 [v:(ptr (vec.Vec i32))]` and `cmp_i32` |
-| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `str.Bytes` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `find [m k] -> (option.Option V)` (held by value when `V` fits, so a lookup allocates nothing), `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `str.Bytes` key is kept as the pointer, so its bytes must not change while it is stored |
+| `map` | generic hash map `(map.Map K V)` from keys of any type with a `cmp.Hash` implementation (`i32`, `i64`, `str`, and `str.Bytes` by its contents, from `std/cmp`; a module implements it for its own types): `(call (map.make K V) a capacity)` (an allocator, as for `vec`), `free`, `set [m k v]`, `get_or [m k default]`, `find [m k] -> (option.Option V)` (held by value when `V` fits, so a lookup allocates nothing), `has`, `remove -> bool`, `count`, each called as `(call (map.set K V) m k v)`; iterate with `(for i 0 (call (map.capacity K V) m) (if (call (map.slot_used K V) m i) ... (block)))` reading `slot_key` / `slot_val`. A `str.Bytes` key is kept as the pointer, so its bytes must not change while it is stored |
 | `cmp` | the interfaces `(cmp.Eq T)` (`same`), `(cmp.Ord T)` (`compare`: -1, 0, or 1), and `(cmp.Hash T)` (`hash`, `same`), implemented for `i32`, `i64`, `bool` (Eq), `str` (bytewise), and `str.Bytes` (Hash, by contents); none for floats (section 4.H) |
 | `os` | the command line and environment: `arg_count [] -> i32` (argv[0], the program, included), `arg [i] -> str.Bytes` (`len` -1 past the end), `arg_int [i default] -> i32` (argument `i` as a number, or `default` if it is missing or not one: `(call os.arg_int 1 1000)`), `env [name:str] -> str.Bytes` (`len` -1 if unset), each table read once and kept, so they allocate nothing after the first call and are `(no_leak)`; `random_i32 [] -> i32` from the OS generator |
 | `buf` | string builder: `make [a:alloc.Allocator capacity] -> (ptr buf.Buf)`, `free [b]` (a view taken before then stops the program when read: "Use after free"; so does one taken before a push that moved the bytes), `push_byte`, `push_str [b s:str]`, `insert [b at n c]` (n copies of byte c at index at), `push_unsigned [b u:i64 base upper]` (base 2, 8, 10, or 16, read as unsigned), `push_bytes [b str.Bytes]`, `push_int`, `push_i64`, `push_f64 [b x digits]`, `len`, `byte_at [b i]` (checked; no view made), `clear`, `truncate [b n]` (keeps the first n bytes), `bytes [b] -> str.Bytes` (a view of the contents; take it after building), `room [b n] -> i32` and `grew [b n]` (unsafe to call: the address where n more bytes go, for a system call to write, then how many it wrote), `write [b fd] -> i32`, `print [b]` (the contents to standard output), `to_str [b] -> str` (a copy of the contents, which must be UTF-8; later pushes and `free` leave it alone) |
@@ -1888,9 +1888,9 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(let x:i32 5)` inside a block when `x` is already in scope | shadowing is a type error (`Cannot shadow existing variable`); `let` is block-scoped, so reuse a name only in sibling blocks |
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |
 | `(+ n 1.0)` or `(eq n 0.0)` on an `i32` | all operands to one op share one type; write `1` or convert explicitly |
-| returning `void` from an `-> i32` function (body ends in `while`/`loop`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
+| returning `void` from an `-> i32` function (body ends in `while`/`for`/`set!` to a `void`) | end the body with a value expression, e.g. the accumulator name |
 | recursion over a long list or a deep tree (100,000 nodes) | it stops with `call stack exhausted` (section 7.11); iterate with `while` and an explicit cursor or work list |
-| `(loop i 0 n 1 ...)` meaning n iterations | `loop`'s end is inclusive: that runs n + 1 times. Write `(for i 0 n ...)`, which leaves its end out (section 4.M). `and`/`or` short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
+| `(loop i 0 n 1 ...)`, a counted loop with an inclusive end | `loop` is retired and refused (`loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while`): `(for i 0 n ...)` runs n times, its end left out (section 4.M). `and`/`or` short-circuit, so `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(fn (i32) -> i32)` or `(fn [i32] i32)` | the function type is `(fn [i32] -> i32)`: brackets around the parameters, then `->` |
 | `(call_ref f x)` or `(call f x)` where `f` is a reference | `(call_ref (fn [i32] -> i32) f x)`: the signature is part of the call |
 | `(thread.spawn name len arg)` with a name in memory | `(thread.spawn (ref worker) arg)`, `worker` of type `(fn [i32] -> i32)` |
@@ -1902,7 +1902,6 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | a struct from an imported module written bare | qualify it: `(ptr geo.Point)`, `(get p geo.Point.x)` |
 | `(mem.store32 512 x)`, `(atomic.lock 0)`, any literal address below 1024 | rejected by the checker: address 0 is the heap cursor and 64-1023 is reserved. Take memory from `(mem.alloc n)` and pass the pointer. A computed address that lands on a non-lock word fails at runtime in the VM instead of hanging |
 | `(let x:i64 5)` or `(+ n 1i64)` where `n` is `i32` | no implicit widening: write `5i64`, or convert with `(i64.extend_s n)`; narrow back with `(i32.wrap x)` |
-| `(loop i 0 n 1 ...)` expecting `n` iterations | `loop` is inclusive: this runs `n + 1` times; use `(- n 1)` |
 | `(% a b)` with negative `a` expecting a positive result | `%` is `rem_s`; add `b` and take `%` again for a modulo |
 | `(+ str str)` | there is no string `+`; build strings with `std/buf` |
 | a program using `thread.spawn` run with the stock `wasmtime` CLI | threaded modules need AIPL's runner (`aipl run`, or `aipl compile --exe`) or another wasi-threads host |
@@ -1933,7 +1932,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | the same name declared with two types in one function (`(let x:f64 ...)` in one block, `(let x:i32 ...)` in another, or as binders of two arms) | a name keeps one type per function; rename one, or bind a field you do not read as `_` |
 | `(lt size limit)` on sizes or hashes that may pass `2^31` | `(ltu size limit)`: compares as unsigned |
 | `(+ balance amount)` where wrapping would be a silent wrong answer | `(checked.add balance amount)`: stops the program on overflow |
-| `(break)` in a `while` condition or outside any loop | only inside a `while` or `loop` body |
+| `(break)` in a `while` condition or outside any loop | only inside a `while` or `for` body |
 | a `done`/`found` flag variable to stop a loop | `(break)`, or `(return v)` from the function |
 | an extra `)` after the closing `(module` paren | reported as `L:C: unexpected input after the module's closing ')'` |
 | `inf`, `nan`, `1e9` as literals | not literals; `1e9` is a symbol and will be reported as an undefined variable |

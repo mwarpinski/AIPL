@@ -42,7 +42,7 @@
   (struct Part [from:i32 to:i32 sum:i32])
   (fn sum_part [p:(ptr Part)] -> i32
     (let s:i32 0)
-    (loop i (get p Part.from) (get p Part.to) 1 (set! s (+ s i)))
+    (for i (get p Part.from) (+ (get p Part.to) 1) (set! s (+ s i)))
     (put p Part.sum s)
     s)
 

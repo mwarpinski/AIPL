@@ -234,7 +234,7 @@
                (if (call is_type_kind (get it Item.kind)) (call (vec.push str.Bytes) (get m Mod.types) (get it Item.bare)) (block)))
              (block))
          (set! pending (call buf.make a 64))
-         (loop k i (- e 1) 1 (if (eq (call str.byte_at b k) 10) (set! line (+ line 1)) (block)))
+         (for k i e (if (eq (call str.byte_at b k) 10) (set! line (+ line 1)) (block)))
          (set! blank 0)
          (set! line_start false)
          (set! i e))
@@ -246,7 +246,7 @@
 
   (fn own_type [m:(ptr Mod) w:str.Bytes] -> bool
     (let ts:(ptr (vec.Vec str.Bytes)) (get m Mod.types))
-    (loop k 0 (- (call (vec.len str.Bytes) ts) 1) 1
+    (for k 0 (call (vec.len str.Bytes) ts)
       (if (call str.bytes_eq (call (vec.at str.Bytes) ts k) w) (return true) (block)))
     false)
 
@@ -385,7 +385,7 @@
   (fn push_indented [out:(ptr buf.Buf) doc:(ptr buf.Buf)] -> void
     (let d:str.Bytes (call buf.bytes doc))
     (let start:bool true)
-    (loop k 0 (- (get d str.Bytes.len) 1) 1
+    (for k 0 (get d str.Bytes.len)
       (let c:i32 (call str.byte_at d k))
       (if (and start (neq c 10)) (call buf.push_str out "    ") (block))
       (call buf.push_byte out c)
@@ -408,7 +408,7 @@
     (call buf.push_str out ")\n")
     (call push_indented out (get m Mod.doc))
     (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
-    (loop k 0 (- (call (vec.len (ptr Item)) items) 1) 1
+    (for k 0 (call (vec.len (ptr Item)) items)
       (let it:(ptr Item) (call (vec.at (ptr Item)) items k))
       (if (or private (get it Item.public))
           (block (call buf.push_byte out 10) (call print_item m it out))
@@ -449,7 +449,7 @@
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 32))
     (match (call fs.list_path (call alloc.default) std)
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
-       (loop k 0 (- (call (vec.len str.Bytes) names) 1) 1
+       (for k 0 (call (vec.len str.Bytes) names)
          (let f:str.Bytes (call (vec.at str.Bytes) names k))
          (if (call str.ends_with f (call str.from_str ".aipl"))
              (call (vec.push str.Bytes) out (call str.slice f 0 (- (get f str.Bytes.len) 5)))
@@ -493,12 +493,12 @@
     (if (eq (call (vec.len str.Bytes) names) 0)
         (block (call err_bytes "no standard modules in " std) (return 1))
         (block))
-    (loop k 0 (- (call (vec.len str.Bytes) names) 1) 1
+    (for k 0 (call (vec.len str.Bytes) names)
       (let nm:str.Bytes (call (vec.at str.Bytes) names k))
       (let m:(ptr Mod) (call load (call join std nm ".aipl")))
       (call buf.push_str out "  ")
       (call buf.push_bytes out nm)
-      (loop p (get nm str.Bytes.len) 9 1 (call buf.push_byte out 32))
+      (for p (get nm str.Bytes.len) 10 (call buf.push_byte out 32))
       (call buf.push_byte out 32)
       (if (neq m (ptr.null Mod)) (call buf.push_bytes out (call summary m)) (block))
       (call buf.push_byte out 10))
@@ -508,7 +508,7 @@
   ;; b in ASCII lower case.
   (fn lower [b:str.Bytes] -> str.Bytes
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get b str.Bytes.len) 1)))
-    (loop k 0 (- (get b str.Bytes.len) 1) 1
+    (for k 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b k))
       (call buf.push_byte o (if (and (gte c 65) (lte c 90)) (+ c 32) c)))
     (call buf.bytes o))
@@ -518,12 +518,12 @@
     (let w:str.Bytes (call lower word))
     (let names:(ptr (vec.Vec str.Bytes)) (call std_names std))
     (let found:i32 0)
-    (loop k 0 (- (call (vec.len str.Bytes) names) 1) 1
+    (for k 0 (call (vec.len str.Bytes) names)
       (let m:(ptr Mod) (call load (call join std (call (vec.at str.Bytes) names k) ".aipl")))
       (if (neq m (ptr.null Mod))
           (block
             (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
-            (loop j 0 (- (call (vec.len (ptr Item)) items) 1) 1
+            (for j 0 (call (vec.len (ptr Item)) items)
               (let it:(ptr Item) (call (vec.at (ptr Item)) items j))
               (if (and (or private (get it Item.public))
                        (or (call str.contains (call lower (get it Item.bare)) w)
@@ -542,7 +542,7 @@
   (fn check_files [files:(ptr (vec.Vec str.Bytes)) out:(ptr buf.Buf)] -> i32
     (let missing:i32 0)
     (let documented:i32 0)
-    (loop k 0 (- (call (vec.len str.Bytes) files) 1) 1
+    (for k 0 (call (vec.len str.Bytes) files)
       (let path:str.Bytes (call (vec.at str.Bytes) files k))
       (let m:(ptr Mod) (call load path))
       (cond
@@ -555,7 +555,7 @@
                (set! missing (+ missing 1)))
              (block))
          (let items:(ptr (vec.Vec (ptr Item))) (get m Mod.items))
-         (loop j 0 (- (call (vec.len (ptr Item)) items) 1) 1
+         (for j 0 (call (vec.len (ptr Item)) items)
            (let it:(ptr Item) (call (vec.at (ptr Item)) items j))
            (if (get it Item.public)
                (if (eq (call buf.len (get it Item.doc)) 0)
@@ -607,7 +607,7 @@
     (let find:bool false)
     (let check:bool false)
     (let args:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
-    (loop i first (- (call os.arg_count) 1) 1
+    (for i first (call os.arg_count)
       (let x:str.Bytes (call os.arg i))
       (cond
         ((call str.is x "--private") (set! private true))
@@ -644,7 +644,7 @@
     (let want:str.Bytes (call str.slice name (+ dot 1) (- (- (get name str.Bytes.len) dot) 1)))
     (let items:(ptr (vec.Vec (ptr Item))) (get mm Mod.items))
     (let found:bool false)
-    (loop k 0 (- (call (vec.len (ptr Item)) items) 1) 1
+    (for k 0 (call (vec.len (ptr Item)) items)
       (let it:(ptr Item) (call (vec.at (ptr Item)) items k))
       (if (and (call str.bytes_eq (get it Item.bare) want) (or private (get it Item.public)))
           (block

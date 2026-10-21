@@ -1163,7 +1163,14 @@ fn fits(got: &Type, want: &Type) -> bool {
                 if let Some(ty) = env.get(name) {
                     Ok(ty.clone())
                 } else {
-                    let hint = if name == "result" { "; a function's result is named res, in its (ens ...)" } else { "" };
+                    // outside a function body (return_type is None) is a contract
+                    let hint = if name == "result" {
+                        "; a function's result is named res, in its (ens ...)"
+                    } else if self.return_type.borrow().is_none() {
+                        "; a contract sees only the function's parameters, and res in (ens ...)"
+                    } else {
+                        ""
+                    };
                     Err(format!("{}:{}: Undefined variable '{}'{}", l, c, name, hint))
                 }
             }

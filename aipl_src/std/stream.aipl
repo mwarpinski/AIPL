@@ -172,7 +172,7 @@
     (call make_room r n)
     (unsafe (let to:i32 (+ (call str.addr (get r Reader.win)) (get r Reader.end)))
     (let from:i32 (get sc buf.Buf.data))
-    (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ from i)))))
+    (for i 0 n (mem.store8 (+ to i) (mem.load8 (+ from i)))))
     n)
 
   ;; The next byte (0 .. 255), or -1 at the end.
@@ -484,13 +484,13 @@
     (put t Tally.bytes 0)
     (put t Tally.calls 0)
     (let tw:(ptr Writer) (call (writer_of (ptr Tally)) a t (ref tally)))
-    (loop i 1 10000 1 (call write_byte tw 46))
+    (for i 1 10001 (call write_byte tw 46))
     (if (and (call close_writer tw) (and (eq (get t Tally.bytes) 10000) (eq (get t Tally.calls) 2))) (set! p (+ p 1)) (block))
     ;; a file written and read back, line by line
     (match_result (call create a "_stream_test.tmp")
       (ok fw
         (block
-          (loop i 1 3000 1 (format_to (call buffer fw) "line {i}\n") (call wrote fw))
+          (for i 1 3001 (format_to (call buffer fw) "line {i}\n") (call wrote fw))
           (if (call close_writer fw)
               (match_result (call open a "_stream_test.tmp")
                 (ok fr

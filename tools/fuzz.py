@@ -38,7 +38,7 @@ TIMEOUT = 20
 # fragments a mutation may insert: brackets, keywords, odd literals
 PIECES = [b"(", b")", b"[", b"]", b'"', b":", b"->", b" ", b"0", b"-1", b"i32", b"(ptr", b"(arr i32)",
           b"call", b"let", b"x", b"1.5", b"9999999999", b"\\", b";", b".", b"(match ", b"(make ",
-          b"(loop i 0 3 1 ", b"(return)", b"(break)", b"(import ", b"\xff", b"\xc2\xa0"]
+          b"(for i 0 3 ", b"(return)", b"(break)", b"(import ", b"\xff", b"\xc2\xa0"]
 
 
 def mutate(data, rng):

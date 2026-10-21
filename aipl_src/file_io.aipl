@@ -99,7 +99,7 @@
     (let read_n:i32 (call fs_read_file path path_len readbuf 64))
 
     (let mismatch:i32 0)
-    (loop i 0 16 1
+    (for i 0 17
       (if (neq (mem.load8 (+ readbuf i)) (mem.load8 (+ payload i)))
           (set! mismatch (+ mismatch 1))
           (set! mismatch mismatch)))

@@ -34,7 +34,7 @@
     (if (or (lt c1 lo) (gt c1 hi)) (return (make Char c 0)) (block))
     (let cp:i32 (bitand c (cond ((eq need 1) 31) ((eq need 2) 15) (else 7))))
     (set! cp (bitor (shl cp 6) (bitand c1 63)))
-    (loop k 2 need 1
+    (for k 2 (+ need 1)
       (let ck:i32 (call str.byte_at b (+ i k)))
       (if (or (lt ck 128) (gt ck 191)) (return (make Char c 0)) (block))
       (set! cp (bitor (shl cp 6) (bitand ck 63))))

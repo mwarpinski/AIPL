@@ -69,7 +69,7 @@
   ;; The function's entries, or null.
   (fn lines_of [w:(ptr Wasm) index:i32] -> (ptr (vec.Vec (ptr LinePos))) (pub)
     (let fs:(ptr (vec.Vec (ptr FnLines))) (get w Wasm.line_fns))
-    (loop k 0 (- (call (vec.len (ptr FnLines)) fs) 1) 1
+    (for k 0 (call (vec.len (ptr FnLines)) fs)
       (let f:(ptr FnLines) (call (vec.at (ptr FnLines)) fs k))
       (if (eq (get f FnLines.index) index) (return (get f FnLines.entries)) (block)))
     (ptr.null (vec.Vec (ptr LinePos))))
@@ -176,7 +176,7 @@
       (if (eq sub 1)
           (block
             (let count:i32 (call u32 r))
-            (loop k 1 count 1
+            (for k 1 (+ count 1)
               (let fn_name:(ptr FnName) (new FnName (call alloc.forever)))
               (put fn_name FnName.index (call u32 r))
               (put fn_name FnName.name (call name r))
@@ -190,11 +190,11 @@
   ;; The line table; a malformed one is left out (the module is still read).
   (fn read_lines [r:(ptr R) w:(ptr Wasm) end:i32] -> void
     (let files:i32 (call u32 r))
-    (loop k 1 files 1
+    (for k 1 (+ files 1)
       (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
       (call (vec.push str.Bytes) (get w Wasm.line_files) (call name r)))
     (let fns:i32 (call u32 r))
-    (loop k 1 fns 1
+    (for k 1 (+ fns 1)
       (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
       (let f:(ptr FnLines) (new FnLines (call alloc.forever)))
       (put f FnLines.index (call u32 r))
@@ -202,7 +202,7 @@
       (let n:i32 (call u32 r))
       (let at:i32 0)
       (let line:i32 0)
-      (loop j 1 n 1
+      (for j 1 (+ n 1)
         (if (or (get r R.failed) (gt (get r R.pos) end)) (break) (block))
         (let e:(ptr LinePos) (new LinePos (call alloc.forever)))
         (set! at (+ at (call u32 r)))
@@ -254,21 +254,21 @@
   (fn read_types [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (if (neq (call byte r) 96) (block (call fail r "type is not a function type") (return)) (block))
       (let t:(ptr FuncType) (new FuncType (call alloc.forever)))
       (put t FuncType.params (call (vec.make i32) (call alloc.default) 4))
       (put t FuncType.results (call (vec.make i32) (call alloc.default) 1))
       (let np:i32 (call u32 r))
-      (loop k 1 np 1 (call (vec.push i32) (get t FuncType.params) (call valtype r)))
+      (for k 1 (+ np 1) (call (vec.push i32) (get t FuncType.params) (call valtype r)))
       (let nr:i32 (call u32 r))
-      (loop k 1 nr 1 (call (vec.push i32) (get t FuncType.results) (call valtype r)))
+      (for k 1 (+ nr 1) (call (vec.push i32) (get t FuncType.results) (call valtype r)))
       (call (vec.push (ptr FuncType)) (get w Wasm.types) t)))
 
   (fn read_imports [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let im:(ptr Import) (new Import (call alloc.forever)))
       (put im Import.module (call name r))
       (put im Import.name (call name r))
@@ -284,13 +284,13 @@
   (fn read_functions [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (call (vec.push i32) (get w Wasm.funcs) (call u32 r))))
 
   (fn read_tables [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let t:(ptr Table) (new Table (call alloc.forever)))
       (put t Table.elem_type (call byte r))
       (if (neq (get t Table.elem_type) 112) (call fail r "unsupported table element type (only funcref)") (block))
@@ -300,13 +300,13 @@
   (fn read_memories [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (call (vec.push (ptr Limits)) (get w Wasm.memories) (call limits r))))
 
   (fn read_globals [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let g:(ptr Global) (new Global (call alloc.forever)))
       (put g Global.valtype (call valtype r))
       (let m:i32 (call byte r))
@@ -318,7 +318,7 @@
   (fn read_exports [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let e:(ptr Export) (new Export (call alloc.forever)))
       (put e Export.name (call name r))
       (put e Export.kind (call byte r))
@@ -332,20 +332,20 @@
   (fn read_elems [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (if (neq (call u32 r) 0) (block (call fail r "unsupported element segment kind") (return)) (block))
       (let e:(ptr Elem) (new Elem (call alloc.forever)))
       (put e Elem.offset (i32.wrap (call const_expr r)))
       (put e Elem.funcs (call (vec.make i32) (call alloc.default) 16))
       (let nf:i32 (call u32 r))
-      (loop k 1 nf 1 (call (vec.push i32) (get e Elem.funcs) (call u32 r)))
+      (for k 1 (+ nf 1) (call (vec.push i32) (get e Elem.funcs) (call u32 r)))
       (call (vec.push (ptr Elem)) (get w Wasm.elems) e)))
 
   ;; Function bodies stay as byte ranges for NE2.
   (fn read_code [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let size:i32 (call u32 r))
       (let body:(ptr Range) (new Range (call alloc.forever)))
       (put body Range.addr (+ (call str.addr (get r R.b)) (get r R.pos)))
@@ -360,7 +360,7 @@
   (fn read_datas [r:(ptr R) w:(ptr Wasm)] -> void
     ;; read the count once: a loop's end bound is re-evaluated every iteration
     (let count:i32 (call u32 r))
-    (loop i 1 count 1
+    (for i 1 (+ count 1)
       (let d:(ptr Data) (new Data (call alloc.forever)))
       (let flag:i32 (call u32 r))
       (put d Data.passive (eq flag 1))
@@ -593,13 +593,13 @@
       ((eq kind 7)
        ;; eight little-endian bytes: the f64's bits
        (let bits:i64 0i64)
-       (loop k 0 7 1
+       (for k 0 8
          (set! bits (bitor bits (shl (i64.extend_u (call byte r)) (i64.extend_s (* 8 k))))))
        (put ins Instr.c bits))
       ((eq kind 10)
        ;; four little-endian bytes: the f32's bits
        (let bits32:i64 0i64)
-       (loop k 0 3 1
+       (for k 0 4
          (set! bits32 (bitor bits32 (shl (i64.extend_u (call byte r)) (i64.extend_s (* 8 k))))))
        (put ins Instr.c bits32))
       ((eq kind 8) (put ins Instr.b (call byte r)))
@@ -617,7 +617,7 @@
     (let end:i32 (+ start (get range Range.len)))
     (put r R.pos start)
     (let groups:i32 (call u32 r))
-    (loop i 1 groups 1
+    (for i 1 (+ groups 1)
       (let l:(ptr Locals) (new Locals (call alloc.forever)))
       (put l Locals.count (call u32 r))
       (put l Locals.type (call valtype r))
@@ -697,7 +697,7 @@
           (block)))
     ;; then every function body
     (let nb:i32 (call (vec.len (ptr Range)) (get w Wasm.bodies)))
-    (loop i 0 (- nb 1) 1
+    (for i 0 nb
       (if (get r R.failed) (break) (block))
       (call (vec.push (ptr Body)) (get w Wasm.code) (call read_body r (call (vec.at (ptr Range)) (get w Wasm.bodies) i))))
     (put w Wasm.ok (not (get r R.failed)))
@@ -711,7 +711,7 @@
 
   (fn push_types [out:(ptr buf.Buf) ts:(ptr (vec.Vec i32))] -> void
     (call buf.push_byte out 91)
-    (loop i 0 (- (call (vec.len i32) ts) 1) 1
+    (for i 0 (call (vec.len i32) ts)
       (if (gt i 0) (call buf.push_byte out 32) (block))
       (call buf.push_str out (call type_name (call (vec.at i32) ts i))))
     (call buf.push_byte out 93))
@@ -726,14 +726,14 @@
 
   ;; "  locals 2 i32" lines, then "  @offset op a b c" per instruction.
   (fn push_body [out:(ptr buf.Buf) body:(ptr Body)] -> void
-    (loop i 0 (- (call (vec.len (ptr Locals)) (get body Body.locals)) 1) 1
+    (for i 0 (call (vec.len (ptr Locals)) (get body Body.locals))
       (let l:(ptr Locals) (call (vec.at (ptr Locals)) (get body Body.locals) i))
       (call buf.push_str out "  locals ")
       (call buf.push_int out (get l Locals.count))
       (call buf.push_byte out 32)
       (call buf.push_str out (call type_name (get l Locals.type)))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Instr)) (get body Body.code)) 1) 1
+    (for i 0 (call (vec.len (ptr Instr)) (get body Body.code))
       (let ins:(ptr Instr) (call (vec.at (ptr Instr)) (get body Body.code) i))
       (call buf.push_str out "  @")
       (call buf.push_int out (get ins Instr.offset))
@@ -753,14 +753,14 @@
     (if (not (get w Wasm.ok))
         (block (call buf.push_str out "error: ") (call buf.push_bytes out (get w Wasm.error)) (return (call buf.bytes out)))
         (block))
-    (loop i 0 (- (call (vec.len (ptr FuncType)) (get w Wasm.types)) 1) 1
+    (for i 0 (call (vec.len (ptr FuncType)) (get w Wasm.types))
       (let t:(ptr FuncType) (call (vec.at (ptr FuncType)) (get w Wasm.types) i))
       (call buf.push_str out "type ")
       (call push_types out (get t FuncType.params))
       (call buf.push_str out " -> ")
       (call push_types out (get t FuncType.results))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Import)) (get w Wasm.imports)) 1) 1
+    (for i 0 (call (vec.len (ptr Import)) (get w Wasm.imports))
       (let im:(ptr Import) (call (vec.at (ptr Import)) (get w Wasm.imports) i))
       (call buf.push_str out "import ")
       (call buf.push_bytes out (get im Import.module))
@@ -771,26 +771,26 @@
           (block (call buf.push_str out "func ") (call buf.push_int out (get im Import.type_index)))
           (block (call buf.push_str out "memory ") (call push_limits out (get im Import.limits))))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len i32) (get w Wasm.funcs)) 1) 1
+    (for i 0 (call (vec.len i32) (get w Wasm.funcs))
       (call buf.push_str out "func type ")
       (call buf.push_int out (call (vec.at i32) (get w Wasm.funcs) i))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Table)) (get w Wasm.tables)) 1) 1
+    (for i 0 (call (vec.len (ptr Table)) (get w Wasm.tables))
       (call buf.push_str out "table funcref ")
       (call push_limits out (get (call (vec.at (ptr Table)) (get w Wasm.tables) i) Table.limits))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Limits)) (get w Wasm.memories)) 1) 1
+    (for i 0 (call (vec.len (ptr Limits)) (get w Wasm.memories))
       (call buf.push_str out "memory ")
       (call push_limits out (call (vec.at (ptr Limits)) (get w Wasm.memories) i))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Global)) (get w Wasm.globals)) 1) 1
+    (for i 0 (call (vec.len (ptr Global)) (get w Wasm.globals))
       (let g:(ptr Global) (call (vec.at (ptr Global)) (get w Wasm.globals) i))
       (call buf.push_str out "global ")
       (call buf.push_str out (call type_name (get g Global.valtype)))
       (call buf.push_str out (if (get g Global.mutable) " mut " " const "))
       (call buf.push_int out (i32.wrap (get g Global.init)))
       (call buf.push_byte out 10))
-    (loop i 0 (- (call (vec.len (ptr Export)) (get w Wasm.exports)) 1) 1
+    (for i 0 (call (vec.len (ptr Export)) (get w Wasm.exports))
       (let e:(ptr Export) (call (vec.at (ptr Export)) (get w Wasm.exports) i))
       (call buf.push_str out "export ")
       (call buf.push_bytes out (get e Export.name))
@@ -802,24 +802,24 @@
     (if (gte (get w Wasm.start) 0)
         (block (call buf.push_str out "start ") (call buf.push_int out (get w Wasm.start)) (call buf.push_byte out 10))
         (block))
-    (loop i 0 (- (call (vec.len (ptr Elem)) (get w Wasm.elems)) 1) 1
+    (for i 0 (call (vec.len (ptr Elem)) (get w Wasm.elems))
       (let el:(ptr Elem) (call (vec.at (ptr Elem)) (get w Wasm.elems) i))
       (call buf.push_str out "elem offset ")
       (call buf.push_int out (get el Elem.offset))
       (call buf.push_str out " funcs")
-      (loop k 0 (- (call (vec.len i32) (get el Elem.funcs)) 1) 1
+      (for k 0 (call (vec.len i32) (get el Elem.funcs))
         (call buf.push_byte out 32)
         (call buf.push_int out (call (vec.at i32) (get el Elem.funcs) k)))
       (call buf.push_byte out 10))
     (if (gte (get w Wasm.data_count) 0)
         (block (call buf.push_str out "datacount ") (call buf.push_int out (get w Wasm.data_count)) (call buf.push_byte out 10))
         (block))
-    (loop i 0 (- (call (vec.len (ptr Range)) (get w Wasm.bodies)) 1) 1
+    (for i 0 (call (vec.len (ptr Range)) (get w Wasm.bodies))
       (call buf.push_str out "code len ")
       (call buf.push_int out (get (call (vec.at (ptr Range)) (get w Wasm.bodies) i) Range.len))
       (call buf.push_byte out 10)
       (call push_body out (call (vec.at (ptr Body)) (get w Wasm.code) i)))
-    (loop i 0 (- (call (vec.len (ptr Data)) (get w Wasm.datas)) 1) 1
+    (for i 0 (call (vec.len (ptr Data)) (get w Wasm.datas))
       (let d:(ptr Data) (call (vec.at (ptr Data)) (get w Wasm.datas) i))
       (if (get d Data.passive)
           (call buf.push_str out "data passive len ")
@@ -876,7 +876,7 @@
     (let lb:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (call buf.push_byte lb 127)
     (call buf.push_byte lb 255) (call buf.push_byte lb 126)
-    (loop k 1 9 1 (call buf.push_byte lb 128))
+    (for k 1 10 (call buf.push_byte lb 128))
     (call buf.push_byte lb 127)
     (let r:(ptr R) (new R (call alloc.forever)))
     (put r R.b (call bytes_of lb))
@@ -896,7 +896,7 @@
     (call buf.push_byte mb 65) (call buf.push_byte mb 126)
     (call buf.push_byte mb 33) (call buf.push_byte mb 0)
     (call buf.push_byte mb 68)
-    (loop k 1 6 1 (call buf.push_byte mb 0))
+    (for k 1 7 (call buf.push_byte mb 0))
     (call buf.push_byte mb 240) (call buf.push_byte mb 63)
     (call buf.push_byte mb 26) (call buf.push_byte mb 11)
     (set! w (call decode (call bytes_of mb)))

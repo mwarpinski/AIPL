@@ -17,9 +17,9 @@
     (call io.println_int "sizeof Rec " (sizeof Rec))
     (call io.println_int "sizeof u16 " (sizeof u16))
     (let bytes:(arr u8) (arr.new u8 (call alloc.forever) 5))
-    (loop i 0 4 1 (arr.set u8 bytes i (* i 100)))
+    (for i 0 5 (arr.set u8 bytes i (* i 100)))
     (let t:i32 0)
-    (loop i 0 4 1 (set! t (+ t (arr.get u8 bytes i))))
+    (for i 0 5 (set! t (+ t (arr.get u8 bytes i))))
     (call io.println_int "sum of bytes " t)     ;; 0 100 200 44 144 = 488
     (let s:(arr i16) (arr.new i16 (call alloc.forever) 2))
     (arr.set i16 s 1 -300)

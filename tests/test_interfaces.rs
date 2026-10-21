@@ -177,12 +177,12 @@ const WHERE: &str = r#"(module main (import alloc)
   (import cmp)
   (struct (Set K) [items:(arr K) n:i32] (where (cmp.Eq K)))
   (fn (contains K) [xs:(arr K) x:K] -> bool (where (cmp.Eq K))
-    (loop i 0 (- (arr.len xs) 1) 1
+    (for i 0 (arr.len xs)
       (if (call (cmp.Eq.same K) (arr.get K xs i) x) (return true) (block)))
     false)
   (fn (largest T) [xs:(arr T)] -> T (where (cmp.Ord T)) (where (cmp.Eq T)) (req (gt (arr.len xs) 0))
     (let best:T (arr.get T xs 0))
-    (loop i 1 (- (arr.len xs) 1) 1
+    (for i 1 (arr.len xs)
       (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
     best)
   (fn main [] -> i32

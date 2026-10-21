@@ -54,7 +54,7 @@
     (while (lt cap need) (set! cap (* cap 2)))
     (let old:(arr u8) (get b Buf.store))
     (let store:(arr u8) (arr.new u8 (get b Buf.allocator) cap))
-    (loop i 0 (- (get b Buf.len) 1) 1 (arr.set u8 store i (arr.get u8 old i)))
+    (for i 0 (get b Buf.len) (arr.set u8 store i (arr.get u8 old i)))
     (call (alloc.free_array u8) (get b Buf.allocator) old)
     (put b Buf.store store)
     (put b Buf.data (arr.addr store))
@@ -86,7 +86,7 @@
     (unsafe (let n:i32 (get s str.Bytes.len))
     (call ensure b n)
     (let at:i32 (+ (get b Buf.data) (get b Buf.len)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (mem.store8 (+ at i) (call str.byte_at s i)))
     (put b Buf.len (+ (get b Buf.len) n))))
 
@@ -96,7 +96,7 @@
     (call ensure b n)
     (let at:i32 (+ (get b Buf.data) (get b Buf.len)))
     (let from:i32 (str.ptr s))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (mem.store8 (+ at i) (mem.load8 (+ from i))))
     (put b Buf.len (+ (get b Buf.len) n))))
 
@@ -107,10 +107,10 @@
     (unsafe (call ensure b n)
     (let d:i32 (get b Buf.data))
     (let len:i32 (get b Buf.len))
-    (loop j 0 (- (- len at) 1) 1
+    (for j 0 (- len at)
       (let i:i32 (- (- len 1) j))
       (mem.store8 (+ d (+ i n)) (mem.load8 (+ d i))))
-    (loop i 0 (- n 1) 1 (mem.store8 (+ d (+ at i)) c))
+    (for i 0 n (mem.store8 (+ d (+ at i)) c))
     (put b Buf.len (+ len n))))
 
   ;; u read as unsigned (so -1i64 is 2^64 - 1), in base 2, 8, 10, or 16
@@ -131,7 +131,7 @@
       (set! n (+ n 1))
       (set! v (divu v bb)))
     ;; the digits went in least significant first
-    (loop i 0 (- (/ n 2) 1) 1
+    (for i 0 (/ n 2)
       (let x:i32 (+ d (+ start i)))
       (let y:i32 (+ d (+ start (- (- n 1) i))))
       (let t:i32 (mem.load8 x))
@@ -186,9 +186,9 @@
     (if (call str.bytes_eq (call bytes b) (call str.from_str "x=-42!")) (set! p (+ p 1)) (block))
     ;; growth: 1000 pushes from a 16-byte start keep every byte
     (call clear b)
-    (loop i 0 999 1 (call push_byte b (+ 97 (% i 26))))
+    (for i 0 1000 (call push_byte b (+ 97 (% i 26))))
     (let ok:bool (eq (call len b) 1000))
-    (loop i 0 999 1
+    (for i 0 1000
       (if (neq (call str.byte_at (call bytes b) i) (+ 97 (% i 26))) (set! ok false) (block)))
     (if ok (set! p (+ p 1)) (block))
     ;; numbers round-trip through text

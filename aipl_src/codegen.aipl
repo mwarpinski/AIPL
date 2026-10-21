@@ -20,7 +20,7 @@
   ;; ===== Generic byte-span comparison =====
   (fn sym_eq [cg:(ptr Cg) pos:i32 len:i32 lit_ptr:i32 lit_len:i32] -> bool
     (unsafe (if (neq len lit_len) (return false) (block))
-    (loop i 0 (- len 1) 1
+    (for i 0 len
       (if (neq (mem.load8 (+ (get cg Cg.src) (+ pos i))) (mem.load8 (+ lit_ptr i))) (return false) (block)))
     true))
 
@@ -150,7 +150,7 @@
     (put cg Cg.unions (arr.new (ptr UnionInfo) (call alloc.forever) 255))
     (put cg Cg.nunions 0)
     (put cg Cg.wasi (arr.new i32 (call alloc.forever) NWASI))
-    (loop w 0 (- NWASI 1) 1 (arr.set i32 (get cg Cg.wasi) w -1))
+    (for w 0 NWASI (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
     (put cg Cg.labels (arr.new Label (call alloc.forever) 255))
     (put cg Cg.nlabels 0)
@@ -197,7 +197,7 @@
     (if (gte n (arr.len (get cg Cg.labels)))
         (block
           (let bigger:(arr Label) (arr.new Label (call alloc.forever) (* 2 n)))
-          (loop i 0 (- n 1) 1 (arr.set Label bigger i (arr.get Label (get cg Cg.labels) i)))
+          (for i 0 n (arr.set Label bigger i (arr.get Label (get cg Cg.labels) i)))
           (put cg Cg.labels bigger))
         (block))
     (arr.set Label (get cg Cg.labels) n l)
@@ -209,7 +209,7 @@
   ;; Branch depth to the innermost label a or b (compile error 101 if none).
   (fn label_depth [cg:(ptr Cg) a:Label b:Label] -> i32
     (let n:i32 (get cg Cg.nlabels))
-    (loop d 0 (- n 1) 1
+    (for d 0 n
       (let l:Label (arr.get Label (get cg Cg.labels) (- (- n 1) d)))
       (if (or (eq l a) (eq l b)) (return d) (block)))
     (call set_compile_error CgErr.jump_outside_loop)
@@ -367,7 +367,7 @@
     (call reg m "let" Kw.let)
     (call reg m "set!" Kw.set)
     (call reg m "if" Kw.if)
-    (call reg m "loop" Kw.loop)
+    (call reg m "counted_loop" Kw.loop)
     (call reg m "while" Kw.while)
     (call reg m "call" Kw.call)
     (call reg m "block" Kw.block)
@@ -617,7 +617,7 @@
 
   ;; Exact name match, as in the checker: `a.f` never resolves to a bare `f`.
   (fn find_function [cg:(ptr Cg) name_ptr:i32 name_len:i32] -> i32
-    (loop i 0 (- (get cg Cg.nfns) 1) 1
+    (for i 0 (get cg Cg.nfns)
       (let entry:(ptr FnInfo) (call func_entry_ptr cg i))
       (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get entry FnInfo.name_pos)) (get entry FnInfo.name_len))
           (return i)
@@ -629,7 +629,7 @@
     (arr.get (ptr Local) (get cg Cg.locals) idx))
 
   (fn find_local [cg:(ptr Cg) name_ptr:i32 name_len:i32] -> i32
-    (loop i 0 (- (get cg Cg.nlocals) 1) 1
+    (for i 0 (get cg Cg.nlocals)
       (let l:(ptr Local) (call local_at cg i))
       (if (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get l Local.name_pos)) (get l Local.name_len))
           (return i)
@@ -668,7 +668,7 @@
   ;; value struct is one per scalar. Returns how many there are.
   (fn assign_slots [cg:(ptr Cg)] -> i32
     (let n:i32 0)
-    (loop i 0 (- (get cg Cg.nlocals) 1) 1
+    (for i 0 (get cg Cg.nlocals)
       (let l:(ptr Local) (call local_at cg i))
       (put l Local.slot n)
       (set! n (+ n (call local_width l))))
@@ -681,7 +681,7 @@
   ;; per name like any local. Lookups by name find the variable itself,
   ;; which is always added first.
   (fn find_hidden [cg:(ptr Cg) name_ptr:i32 name_len:i32 marker:Ty] -> i32
-    (loop i 0 (- (get cg Cg.nlocals) 1) 1
+    (for i 0 (get cg Cg.nlocals)
       (let l:(ptr Local) (call local_at cg i))
       (if (and (eq (get l Local.ty) marker)
                (call sym_eq cg name_ptr name_len (+ (get cg Cg.src) (get l Local.name_pos)) (get l Local.name_len)))
@@ -823,7 +823,7 @@
     (if (eq (call group_head_keyword cg node) Kw.match_result)
         (block
           (let scrutinee:(ptr Desc) (call desc (call nth_child node 1) true))
-          (loop side 0 1 1
+          (for side 0 2
             (let var:(ptr compiler.Node) (call nth_child (call nth_child node (+ 2 side)) 1))
             (let l:(ptr Local) (call local_at cg (call find_local cg (call node_a var) (call node_b var))))
             (if (not (get l Local.bound))
@@ -1077,25 +1077,25 @@
   ;; deltas.
   (fn emit_lines [sec:(ptr Out) fns:(ptr (vec.Vec (ptr FnLines)))] -> void
     (let files:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
-    (loop f 0 (- (call (vec.len (ptr FnLines)) fns) 1) 1
+    (for f 0 (call (vec.len (ptr FnLines)) fns)
       (let es:(ptr (vec.Vec (ptr LEntry))) (get (call (vec.at (ptr FnLines)) fns f) FnLines.entries))
-      (loop k 0 (- (call (vec.len (ptr LEntry)) es) 1) 1
+      (for k 0 (call (vec.len (ptr LEntry)) es)
         (let name:str.Bytes (get (call (vec.at (ptr LEntry)) es k) LEntry.file))
         (if (lt (call file_index files name) 0) (call (vec.push str.Bytes) files name) (block))))
     (call put_u32 sec (call (vec.len str.Bytes) files))
-    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+    (for i 0 (call (vec.len str.Bytes) files)
       (let name:str.Bytes (call (vec.at str.Bytes) files i))
       (call put_u32 sec (get name str.Bytes.len))
-      (loop k 0 (- (get name str.Bytes.len) 1) 1 (call put_byte sec (call str.byte_at name k))))
+      (for k 0 (get name str.Bytes.len) (call put_byte sec (call str.byte_at name k))))
     (call put_u32 sec (call (vec.len (ptr FnLines)) fns))
-    (loop f 0 (- (call (vec.len (ptr FnLines)) fns) 1) 1
+    (for f 0 (call (vec.len (ptr FnLines)) fns)
       (let fl:(ptr FnLines) (call (vec.at (ptr FnLines)) fns f))
       (let es:(ptr (vec.Vec (ptr LEntry))) (get fl FnLines.entries))
       (call put_u32 sec (get fl FnLines.index))
       (call put_u32 sec (call (vec.len (ptr LEntry)) es))
       (let off:i32 0)
       (let line:i32 0)
-      (loop k 0 (- (call (vec.len (ptr LEntry)) es) 1) 1
+      (for k 0 (call (vec.len (ptr LEntry)) es)
         (let e:(ptr LEntry) (call (vec.at (ptr LEntry)) es k))
         (call put_u32 sec (- (get e LEntry.at) off))
         (call put_u32 sec (call file_index files (get e LEntry.file)))
@@ -1105,7 +1105,7 @@
         (set! line (get e LEntry.line)))))
 
   (fn file_index [files:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> i32
-    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+    (for i 0 (call (vec.len str.Bytes) files)
       (if (call str.bytes_eq (call (vec.at str.Bytes) files i) name) (return i) (block)))
     -1)
 
@@ -1178,7 +1178,7 @@
     (unsafe (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) len))
     (let bits:i64 (i64.reinterpret_f64 v))
     (call put_op o OP_F64_CONST)
-    (loop b 0 7 1
+    (for b 0 8
       (call put_byte o (i32.wrap (bitand (shru bits (i64.extend_u (* b 8))) 255i64))))))
 
   ;; `1.5f32`: the nearest f64, then the nearest f32 (wasm.rs: `f as f32`).
@@ -1186,7 +1186,7 @@
     (unsafe (let v:f64 (call float.from_decimal (+ (get cg Cg.src) pos) (- len 3)))
     (let bits:i32 (call f32_bits (i64.reinterpret_f64 v)))
     (call put_op o OP_F32_CONST)
-    (loop b 0 3 1
+    (for b 0 4
       (call put_byte o (bitand (shru bits (* b 8)) 255)))))
 
   ;; The f32 nearest a double (its bits d), ties to even, as IEEE 754 (and
@@ -1626,7 +1626,7 @@
   ;; Index of the last `target` byte in the span, or -1.
   (fn find_last_char [cg:(ptr Cg) pos:i32 len:i32 target:i32] -> i32
     (unsafe (let found:i32 -1)
-    (loop i 0 (- len 1) 1
+    (for i 0 len
       (if (eq (mem.load8 (+ (get cg Cg.src) (+ pos i))) target) (set! found i) (block)))
     found))
 
@@ -1663,7 +1663,7 @@
 
   ;; Lays out every struct not laid out yet.
   (fn collect_structs [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
-    (loop i 0 (- (get cg Cg.nstructs) 1) 1
+    (for i 0 (get cg Cg.nstructs)
       (call layout_struct cg (arr.get (ptr StructInfo) (get cg Cg.structs) i)))
     (get cg Cg.nstructs))
 
@@ -1720,7 +1720,7 @@
     (let n:i32 nflat)
     (let vs:(ptr StructInfo) (get f Field.vs))
     (if (and (eq (get f Field.ty) Ty.value) (neq vs (ptr.null StructInfo)))
-        (loop k 0 (- (get vs StructInfo.width) 1) 1
+        (for k 0 (get vs StructInfo.width)
           (call flat_push si n (arr.get Ty (get vs StructInfo.flat_ty) k) (+ (get f Field.offset) (arr.get i32 (get vs StructInfo.flat_off) k)))
           (set! n (+ n 1)))
         (block
@@ -1735,7 +1735,7 @@
 
   ;; The struct with this name, or null.
   (fn find_struct [cg:(ptr Cg) s_pos:i32 s_len:i32] -> (ptr StructInfo)
-    (loop i 0 (- (get cg Cg.nstructs) 1) 1
+    (for i 0 (get cg Cg.nstructs)
       (let si:(ptr StructInfo) (arr.get (ptr StructInfo) (get cg Cg.structs) i))
       (if (call sym_eq cg s_pos s_len (+ (get cg Cg.src) (get si StructInfo.name_pos)) (get si StructInfo.name_len))
           (return si)
@@ -1746,7 +1746,7 @@
   (fn find_field [cg:(ptr Cg) s_pos:i32 s_len:i32 f_pos:i32 f_len:i32] -> (ptr Field)
     (let si:(ptr StructInfo) (call find_struct cg s_pos s_len))
     (if (eq si (ptr.null StructInfo)) (return (ptr.null Field)) (block))
-    (loop fj 0 (- (get si StructInfo.nfields) 1) 1
+    (for fj 0 (get si StructInfo.nfields)
       (let f:(ptr Field) (arr.get (ptr Field) (get si StructInfo.fields) fj))
       (if (call sym_eq cg f_pos f_len (+ (get cg Cg.src) (get f Field.name_pos)) (get f Field.name_len))
           (return f)
@@ -1798,9 +1798,9 @@
     ;; which unions are values, then every variant's fields (whose types
     ;; that decides)
     (call decide_unions cg)
-    (loop i 0 (- ucount 1) 1
+    (for i 0 ucount
       (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) i))
-      (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
+      (for k 0 (get u UnionInfo.nvariants)
         (call layout_variant cg (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k))))
     ucount)
 
@@ -1839,10 +1839,10 @@
     (let n:i32 (get cg Cg.nunions))
     (let cand:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
     (let decided:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let u:(ptr UnionInfo) (call union_at cg i))
       (arr.set bool cand i (not (call reaches_itself cg u))))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (if (arr.get bool cand i) (call decide_union cg cand decided (call union_at cg i)) (block))))
 
   ;; u after the candidates it holds: a value if it fits.
@@ -1852,7 +1852,7 @@
     (arr.set bool decided ui true)
     (let held:(ptr (vec.Vec (ptr UnionInfo))) (call (vec.make (ptr UnionInfo)) (call alloc.default) 4))
     (call push_held cg u held)
-    (loop k 0 (- (call (vec.len (ptr UnionInfo)) held) 1) 1
+    (for k 0 (call (vec.len (ptr UnionInfo)) held)
       (let w:(ptr UnionInfo) (call (vec.at (ptr UnionInfo)) held k))
       (if (arr.get bool cand (call union_index cg w)) (call decide_union cg cand decided w) (block)))
     (if (lte (call union_width cg u) 8) (call build_union cg u) (block)))
@@ -1871,7 +1871,7 @@
     (let ok_k:(ptr (vec.Vec Ty)) (call desc_kinds cg ok ot))
     (let er_k:(ptr (vec.Vec Ty)) (call desc_kinds cg er et))
     (let rs:(ptr (vec.Vec (ptr StructInfo))) (get cg Cg.results))
-    (loop i 0 (- (call (vec.len (ptr StructInfo)) rs) 1) 1
+    (for i 0 (call (vec.len (ptr StructInfo)) rs)
       (let si:(ptr StructInfo) (call (vec.at (ptr StructInfo)) rs i))
       (let vs:(arr (ptr VariantInfo)) (get (get si StructInfo.union_of) UnionInfo.variants))
       (if (and (call same_kinds (get (arr.get (ptr VariantInfo) vs 0) VariantInfo.kinds) ok_k)
@@ -1879,7 +1879,7 @@
           (return si)
           (block)))
     (let n:i32 1)
-    (loop k 0 3 1 (set! n (+ n (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))))))
+    (for k 0 4 (set! n (+ n (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))))))
     (if (gt n 8) (return (ptr.null StructInfo)) (block))
     (put cg Cg.has_values true)
     (let si:(ptr StructInfo) (call build_sum cg ok_k er_k))
@@ -1890,12 +1890,12 @@
 
   (fn count_kind [ks:(ptr (vec.Vec Ty)) kind:Ty] -> i32
     (let c:i32 0)
-    (loop j 0 (- (call (vec.len Ty) ks) 1) 1 (if (eq (call (vec.at Ty) ks j) kind) (set! c (+ c 1)) (block)))
+    (for j 0 (call (vec.len Ty) ks) (if (eq (call (vec.at Ty) ks j) kind) (set! c (+ c 1)) (block)))
     c)
 
   (fn same_kinds [a:(ptr (vec.Vec Ty)) b:(ptr (vec.Vec Ty))] -> bool
     (if (neq (call (vec.len Ty) a) (call (vec.len Ty) b)) (return false) (block))
-    (loop j 0 (- (call (vec.len Ty) a) 1) 1 (if (neq (call (vec.at Ty) a j) (call (vec.at Ty) b j)) (return false) (block)))
+    (for j 0 (call (vec.len Ty) a) (if (neq (call (vec.at Ty) a j) (call (vec.at Ty) b j)) (return false) (block)))
     true)
 
   ;; The slot kinds of a value of type t, described where d says.
@@ -1903,7 +1903,7 @@
     (let out:(ptr (vec.Vec Ty)) (call (vec.make Ty) (call alloc.default) 8))
     (let vs:(ptr StructInfo) (if (eq t Ty.value) (call desc_struct cg d) (ptr.null StructInfo)))
     (if (neq vs (ptr.null StructInfo))
-        (loop k 0 (- (get vs StructInfo.width) 1) 1 (call (vec.push Ty) out (call slot_kind (arr.get Ty (get vs StructInfo.flat_ty) k))))
+        (for k 0 (get vs StructInfo.width) (call (vec.push Ty) out (call slot_kind (arr.get Ty (get vs StructInfo.flat_ty) k))))
         (call (vec.push Ty) out (call slot_kind t)))
     out)
 
@@ -1920,14 +1920,14 @@
     (let base:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (let n:i32 1)
     (arr.set Ty (get si StructInfo.flat_ty) 0 Ty.i32)
-    (loop k 0 3 1
+    (for k 0 4
       (arr.set i32 base k n)
-      (loop q 1 (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))) 1
+      (for q 1 (+ (call max_i32 (call count_kind ok_k (call kind_at k)) (call count_kind er_k (call kind_at k))) 1)
         (arr.set Ty (get si StructInfo.flat_ty) n (call kind_at k))
         (set! n (+ n 1))))
     (let off:i32 0)
     (let align:i32 4)
-    (loop k 0 (- n 1) 1
+    (for k 0 n
       (let a:i32 (call type_size (arr.get Ty (get si StructInfo.flat_ty) k)))
       (if (gt a align) (set! align a) (block))
       (set! off (bitand (+ off (- a 1)) (- 0 a)))
@@ -1953,7 +1953,7 @@
     (let used:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (put v VariantInfo.slots (arr.new i32 (call alloc.forever) (+ (call (vec.len Ty) ks) 1)))
     (put v VariantInfo.nslots (call (vec.len Ty) ks))
-    (loop j 0 (- (call (vec.len Ty) ks) 1) 1
+    (for j 0 (call (vec.len Ty) ks)
       (let kind:Ty (call (vec.at Ty) ks j))
       (let ki:i32 (cond ((eq kind Ty.i32) 0) ((eq kind Ty.f32) 1) ((eq kind Ty.i64) 2) (else 3)))
       (arr.set i32 (get v VariantInfo.slots) j (+ (arr.get i32 base ki) (arr.get i32 used ki)))
@@ -1963,7 +1963,7 @@
   (fn union_at [cg:(ptr Cg) i:i32] -> (ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) i))
 
   (fn union_index [cg:(ptr Cg) u:(ptr UnionInfo)] -> i32
-    (loop i 0 (- (get cg Cg.nunions) 1) 1 (if (eq (call union_at cg i) u) (return i) (block)))
+    (for i 0 (get cg Cg.nunions) (if (eq (call union_at cg i) u) (return i) (block)))
     -1)
 
   ;; Each field's type node of variant v, in order, to f (with the type node).
@@ -1996,9 +1996,9 @@
     false)
 
   (fn push_held [cg:(ptr Cg) u:(ptr UnionInfo) todo:(ptr (vec.Vec (ptr UnionInfo)))] -> void
-    (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
+    (for k 0 (get u UnionInfo.nvariants)
       (let ts:(ptr (vec.Vec (ptr compiler.Node))) (call variant_types (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k)))
-      (loop j 0 (- (call (vec.len (ptr compiler.Node)) ts) 1) 1
+      (for j 0 (call (vec.len (ptr compiler.Node)) ts)
         (let w:(ptr UnionInfo) (call type_node_union cg (call (vec.at (ptr compiler.Node)) ts j)))
         (if (neq w (ptr.null UnionInfo)) (call (vec.push (ptr UnionInfo)) todo w) (block)))))
 
@@ -2010,15 +2010,15 @@
     (if (and (neq w (ptr.null UnionInfo)) (get w UnionInfo.value))
         (block
           (call (vec.push Ty) out Ty.i32)
-          (loop k 0 3 1
+          (for k 0 4
             (let kind:Ty (call kind_at k))
-            (loop q 1 (call kind_count cg w kind) 1 (call (vec.push Ty) out kind)))
+            (for q 1 (+ (call kind_count cg w kind) 1) (call (vec.push Ty) out kind)))
           (return))
         (block))
     (let vs:(ptr StructInfo) (call type_node_struct cg t))
     (if (neq vs (ptr.null StructInfo))
         (block
-          (loop k 0 (- (get vs StructInfo.width) 1) 1 (call (vec.push Ty) out (call slot_kind (arr.get Ty (get vs StructInfo.flat_ty) k))))
+          (for k 0 (get vs StructInfo.width) (call (vec.push Ty) out (call slot_kind (arr.get Ty (get vs StructInfo.flat_ty) k))))
           (return))
         (block))
     (call (vec.push Ty) out (call slot_kind (if (neq w (ptr.null UnionInfo)) Ty.i32 (call type_node_id cg t)))))
@@ -2032,24 +2032,24 @@
   (fn variant_kinds [cg:(ptr Cg) v:(ptr VariantInfo)] -> (ptr (vec.Vec Ty))
     (let out:(ptr (vec.Vec Ty)) (call (vec.make Ty) (call alloc.default) 8))
     (let ts:(ptr (vec.Vec (ptr compiler.Node))) (call variant_types v))
-    (loop j 0 (- (call (vec.len (ptr compiler.Node)) ts) 1) 1
+    (for j 0 (call (vec.len (ptr compiler.Node)) ts)
       (call field_kinds cg (call (vec.at (ptr compiler.Node)) ts j) out))
     out)
 
   ;; How many slots of `kind` union u needs: the most any variant uses.
   (fn kind_count [cg:(ptr Cg) u:(ptr UnionInfo) kind:Ty] -> i32
     (let most:i32 0)
-    (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
+    (for k 0 (get u UnionInfo.nvariants)
       (let ks:(ptr (vec.Vec Ty)) (call variant_kinds cg (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k)))
       (let c:i32 0)
-      (loop j 0 (- (call (vec.len Ty) ks) 1) 1 (if (eq (call (vec.at Ty) ks j) kind) (set! c (+ c 1)) (block)))
+      (for j 0 (call (vec.len Ty) ks) (if (eq (call (vec.at Ty) ks j) kind) (set! c (+ c 1)) (block)))
       (if (gt c most) (set! most c) (block)))
     most)
 
   ;; u's slots: the tag and every kind's.
   (fn union_width [cg:(ptr Cg) u:(ptr UnionInfo)] -> i32
     (let n:i32 1)
-    (loop k 0 3 1 (set! n (+ n (call kind_count cg u (call kind_at k)))))
+    (for k 0 4 (set! n (+ n (call kind_count cg u (call kind_at k)))))
     n)
 
   ;; u's layout as a value (checker.rs sum_layout): its slots (the tag, then
@@ -2070,15 +2070,15 @@
     (let base:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (let n:i32 1)
     (arr.set Ty (get si StructInfo.flat_ty) 0 Ty.i32)
-    (loop k 0 3 1
+    (for k 0 4
       (arr.set i32 base k n)
-      (loop q 1 (call kind_count cg u (call kind_at k)) 1
+      (for q 1 (+ (call kind_count cg u (call kind_at k)) 1)
         (if (lt n 8) (arr.set Ty (get si StructInfo.flat_ty) n (call kind_at k)) (block))
         (set! n (+ n 1))))
     ;; offsets: each slot aligned to its size
     (let off:i32 0)
     (let align:i32 4)
-    (loop k 0 (- n 1) 1
+    (for k 0 n
       (let a:i32 (call type_size (arr.get Ty (get si StructInfo.flat_ty) k)))
       (if (gt a align) (set! align a) (block))
       (set! off (bitand (+ off (- a 1)) (- 0 a)))
@@ -2088,13 +2088,13 @@
     (put si StructInfo.align align)
     (put si StructInfo.size (bitand (+ off (- align 1)) (- 0 align)))
     ;; each variant's scalars, to the next free slot of their kind
-    (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
+    (for k 0 (get u UnionInfo.nvariants)
       (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k))
       (let ks:(ptr (vec.Vec Ty)) (call variant_kinds cg v))
       (let used:(arr i32) (arr.new i32 (call alloc.forever) 4))
       (put v VariantInfo.slots (arr.new i32 (call alloc.forever) (+ (call (vec.len Ty) ks) 1)))
       (put v VariantInfo.nslots (call (vec.len Ty) ks))
-      (loop j 0 (- (call (vec.len Ty) ks) 1) 1
+      (for j 0 (call (vec.len Ty) ks)
         (let kind:Ty (call (vec.at Ty) ks j))
         (let ki:i32 (cond ((eq kind Ty.i32) 0) ((eq kind Ty.f32) 1) ((eq kind Ty.i64) 2) (else 3)))
         (arr.set i32 (get v VariantInfo.slots) j (+ (arr.get i32 base ki) (arr.get i32 used ki)))
@@ -2104,7 +2104,7 @@
 
   ;; The union with this name, or null.
   (fn find_union [cg:(ptr Cg) pos:i32 len:i32] -> (ptr UnionInfo)
-    (loop i 0 (- (get cg Cg.nunions) 1) 1
+    (for i 0 (get cg Cg.nunions)
       (let u:(ptr UnionInfo) (arr.get (ptr UnionInfo) (get cg Cg.unions) i))
       (if (call sym_eq cg pos len (+ (get cg Cg.src) (get u UnionInfo.name_pos)) (get u UnionInfo.name_len))
           (return u)
@@ -2121,7 +2121,7 @@
     (if (lt dot 0) (return -1) (block))
     (let u:(ptr UnionInfo) (call find_union cg pos dot))
     (if (eq u (ptr.null UnionInfo)) (return -1) (block))
-    (loop i 0 (- (get u UnionInfo.nvariants) 1) 1
+    (for i 0 (get u UnionInfo.nvariants)
       (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get u UnionInfo.variants) i))
       (if (call sym_eq cg (+ pos (+ dot 1)) (- len (+ dot 1)) (+ (get cg Cg.src) (get v VariantInfo.name_pos)) (get v VariantInfo.name_len))
           (return i)
@@ -2311,7 +2311,7 @@
   ;; ===== String Interning =====
   ;; The address of the literal spelled by this span, or -1 if not interned.
   (fn find_interned_string [cg:(ptr Cg) pos:i32 len:i32] -> i32
-    (loop i 0 (- (get cg Cg.nstrs) 1) 1
+    (for i 0 (get cg Cg.nstrs)
       (let e:(ptr StrLit) (arr.get (ptr StrLit) (get cg Cg.strs) i))
       (if (and (neq (get e StrLit.pos) -1) (call sym_eq cg pos len (+ (get cg Cg.src) (get e StrLit.pos)) (get e StrLit.len)))
           (return (get e StrLit.addr))
@@ -2332,7 +2332,7 @@
     -1))
 
   (fn bytes_equal [a:i32 b:i32 n:i32] -> bool
-    (unsafe (loop i 0 (- n 1) 1
+    (unsafe (for i 0 n
       (if (neq (mem.load8 (+ a i)) (mem.load8 (+ b i))) (return false) (block)))
     true))
 
@@ -2342,7 +2342,7 @@
     (if (eq n (arr.len (get cg Cg.strs)))
         (block
           (let bigger:(arr (ptr StrLit)) (arr.new (ptr StrLit) (call alloc.forever) (* n 2)))
-          (loop i 0 (- n 1) 1
+          (for i 0 n
             (arr.set (ptr StrLit) bigger i (arr.get (ptr StrLit) (get cg Cg.strs) i)))
           (put cg Cg.strs bigger))
         (block))
@@ -2363,7 +2363,7 @@
     (call buf.push_byte blob (bitand (shr n 8) 255))
     (call buf.push_byte blob (bitand (shr n 16) 255))
     (call buf.push_byte blob (bitand (shr n 24) 255))
-    (loop i 0 (- n 1) 1 (call buf.push_byte blob (mem.load8 (+ bytes i))))
+    (for i 0 n (call buf.push_byte blob (mem.load8 (+ bytes i))))
     (if (gt (call heap_start cg) 1048576) (call set_compile_error CgErr.too_many_literals) 0)
     addr))
 
@@ -2412,7 +2412,7 @@
   ;; A wasm name: its length (LEB128), then its bytes. Returns the byte count.
   (fn emit_name [o:(ptr Out) s:str] -> void
     (unsafe (call put_u32 o (str.len s))
-    (loop i 0 (- (str.len s) 1) 1
+    (for i 0 (str.len s)
       (call put_byte o (mem.load8 (+ (str.ptr s) i))))))
 
 
@@ -2475,7 +2475,7 @@
 
   (fn finalize_wasi_indices [cg:(ptr Cg)] -> i32
     (let count:i32 0)
-    (loop i 0 (- NWASI 1) 1
+    (for i 0 NWASI
       (if (eq (arr.get i32 (get cg Cg.wasi) i) 1)
           (block
             (arr.set i32 (get cg Cg.wasi) i count)
@@ -2563,7 +2563,7 @@
 
   ;; A parameter of type t (struct vs): its value types appended.
   (fn sig_add_param [s:(ptr Sig) t:Ty vs:(ptr StructInfo)] -> void
-    (loop k 0 (- (call width t vs) 1) 1
+    (for k 0 (call width t vs)
       (let n:i32 (get s Sig.nparams))
       (if (lt n 128)
           (block
@@ -2574,7 +2574,7 @@
   ;; The result of type t (struct vs): none for void, else its value types.
   (fn sig_set_result [s:(ptr Sig) t:Ty vs:(ptr StructInfo)] -> void
     (put s Sig.nresults 0)
-    (loop k 0 (- (call width t vs) 1) 1
+    (for k 0 (call width t vs)
       (if (lt k 8) (arr.set i32 (get s Sig.results) k (call scalar_valtype t vs k)) (block))
       (put s Sig.nresults (+ k 1))))
 
@@ -2588,9 +2588,9 @@
     (if (or (neq (get a Sig.nparams) (get b Sig.nparams)) (neq (get a Sig.nresults) (get b Sig.nresults)))
         (return false)
         (block))
-    (loop i 0 (- (get a Sig.nparams) 1) 1
+    (for i 0 (get a Sig.nparams)
       (if (neq (arr.get i32 (get a Sig.params) i) (arr.get i32 (get b Sig.params) i)) (return false) (block)))
-    (loop i 0 (- (get a Sig.nresults) 1) 1
+    (for i 0 (get a Sig.nresults)
       (if (neq (arr.get i32 (get a Sig.results) i) (arr.get i32 (get b Sig.results) i)) (return false) (block)))
     true)
 
@@ -2598,7 +2598,7 @@
   ;; it if new (past 31: compile error 94).
   (fn add_sig [cg:(ptr Cg) s:(ptr Sig)] -> i32
     (let count:i32 (get cg Cg.nsigs))
-    (loop i 0 (- count 1) 1
+    (for i 0 count
       (if (call sig_eq (arr.get (ptr Sig) (get cg Cg.sigs) i) s) (return i) (block)))
     (if (gte count 31) (block (call set_compile_error CgErr.table_full) (return 30)) (block))
     (arr.set (ptr Sig) (get cg Cg.sigs) count s)
@@ -2761,8 +2761,8 @@
     (call emit_local_set o g)
     (call compile_expr cg (call result_payload node) o)
     (let n:i32 (get v VariantInfo.nslots))
-    (loop q 1 n 1 (call emit_local_set o (+ g (arr.get i32 (get v VariantInfo.slots) (- n q)))))
-    (loop slot 1 (- (get vs StructInfo.width) 1) 1
+    (for q 1 (+ n 1) (call emit_local_set o (+ g (arr.get i32 (get v VariantInfo.slots) (- n q)))))
+    (for slot 1 (get vs StructInfo.width)
       (if (call uses_slot v slot)
           (block)
           (block
@@ -3032,7 +3032,7 @@
   ;; one is compile error 97.
   (fn group_slot [cg:(ptr Cg) node:(ptr compiler.Node) spill:bool] -> i32
     (let gs:(ptr (vec.Vec (ptr Group))) (get cg Cg.groups))
-    (loop i 0 (- (call (vec.len (ptr Group)) gs) 1) 1
+    (for i 0 (call (vec.len (ptr Group)) gs)
       (let g:(ptr Group) (call (vec.at (ptr Group)) gs i))
       (if (and (eq (get g Group.node) node) (eq (get g Group.spill) spill)) (return (get g Group.slot)) (block)))
     (call set_compile_error CgErr.no_value_group)
@@ -3236,29 +3236,29 @@
       (set! item (call node_next item)))
     (let gs:(ptr (vec.Vec (ptr Group))) (get cg Cg.groups))
     (let n:i32 0)
-    (loop i 0 (- (call (vec.len (ptr Group)) gs) 1) 1
+    (for i 0 (call (vec.len (ptr Group)) gs)
       (let g:(ptr Group) (call (vec.at (ptr Group)) gs i))
       (put g Group.slot (+ base n))
       (set! n (+ n (call width Ty.value (get g Group.vs)))))
     n)
 
   (fn emit_get_slots [o:(ptr Out) base:i32 n:i32] -> void
-    (loop k 0 (- n 1) 1 (call emit_local_get o (+ base k))))
+    (for k 0 n (call emit_local_get o (+ base k))))
 
   ;; The last scalar first: it is on top.
   (fn emit_set_slots [o:(ptr Out) base:i32 n:i32] -> void
-    (loop k 1 n 1 (call emit_local_set o (- (+ base n) k))))
+    (for k 1 (+ n 1) (call emit_local_set o (- (+ base n) k))))
 
   ;; Drops what an expression of width n leaves (at least one value).
   (fn emit_drops [o:(ptr Out) n:i32] -> void
-    (loop k 1 (if (lt n 1) 1 n) 1 (call put_op o OP_DROP)))
+    (for k 1 (+ (if (lt n 1) 1 n) 1) (call put_op o OP_DROP)))
 
   ;; The scalars of value struct vs (or the one scalar of type t), loaded
   ;; from `offset` bytes past the address in the scratch local; a bool is
   ;; normalised.
   (fn emit_load_scalars [cg:(ptr Cg) o:(ptr Out) t:Ty vs:(ptr StructInfo) offset:i32] -> void
     (if (eq t Ty.value)
-        (loop k 0 (- (get vs StructInfo.width) 1) 1
+        (for k 0 (get vs StructInfo.width)
           (call emit_load_scalar cg o (arr.get Ty (get vs StructInfo.flat_ty) k) (+ offset (arr.get i32 (get vs StructInfo.flat_off) k))))
         (call emit_load_scalar cg o t offset)))
 
@@ -3277,7 +3277,7 @@
     (call compile_expr cg val o)
     (call emit_set_slots o g n)
     (call emit_local_set o (get cg Cg.scratch))
-    (loop k 0 (- n 1) 1
+    (for k 0 n
       (let t:Ty (arr.get Ty (get vs StructInfo.flat_ty) k))
       (call emit_local_get o (get cg Cg.scratch))
       (call emit_local_get o (+ g k))
@@ -3506,7 +3506,7 @@
     (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
     (if (eq idx -1) (return) (block))
     (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get (get rvs StructInfo.union_of) UnionInfo.variants) side))
-    (loop q 0 (- (get v VariantInfo.nslots) 1) 1 (call emit_local_get o (+ base (arr.get i32 (get v VariantInfo.slots) q))))
+    (for q 0 (get v VariantInfo.nslots) (call emit_local_get o (+ base (arr.get i32 (get v VariantInfo.slots) q))))
     (call emit_set_slots o (call slot_of cg idx) (get v VariantInfo.nslots)))
 
   ;; A match_result arm's body: its last expression left as the if's value,
@@ -3551,14 +3551,14 @@
     (call emit_local_set o g)
     (let at:i32 0)
     (let arg:(ptr compiler.Node) (call node_next target))
-    (loop k 0 (- (get v VariantInfo.nfields) 1) 1
+    (for k 0 (get v VariantInfo.nfields)
       (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
       (call compile_expr cg arg o)
       (let w:i32 (call width (get f Field.ty) (get f Field.vs)))
-      (loop q 1 w 1 (call emit_local_set o (+ g (arr.get i32 (get v VariantInfo.slots) (- (+ at w) q)))))
+      (for q 1 (+ w 1) (call emit_local_set o (+ g (arr.get i32 (get v VariantInfo.slots) (- (+ at w) q)))))
       (set! at (+ at w))
       (set! arg (call node_next arg)))
-    (loop slot 1 (- (get vs StructInfo.width) 1) 1
+    (for slot 1 (get vs StructInfo.width)
       (if (call uses_slot v slot)
           (block)
           (block
@@ -3567,15 +3567,15 @@
     (call emit_get_slots o g (get vs StructInfo.width)))
 
   (fn uses_slot [v:(ptr VariantInfo) slot:i32] -> bool
-    (loop j 0 (- (get v VariantInfo.nslots) 1) 1 (if (eq (arr.get i32 (get v VariantInfo.slots) j) slot) (return true) (block)))
+    (for j 0 (get v VariantInfo.nslots) (if (eq (arr.get i32 (get v VariantInfo.slots) j) slot) (return true) (block)))
     false)
 
   ;; A zero of scalar type t (wasm.rs emit_zero).
   (fn emit_zero [o:(ptr Out) t:Ty] -> void
     (cond
       ((eq t Ty.i64) (call put_op o OP_I64_CONST) (call put_s64 o 0i64))
-      ((eq t Ty.f32) (call put_op o OP_F32_CONST) (loop b 1 4 1 (call put_byte o 0)))
-      ((eq t Ty.f64) (call put_op o OP_F64_CONST) (loop b 1 8 1 (call put_byte o 0)))
+      ((eq t Ty.f32) (call put_op o OP_F32_CONST) (for b 1 5 (call put_byte o 0)))
+      ((eq t Ty.f64) (call put_op o OP_F64_CONST) (for b 1 9 (call put_byte o 0)))
       (else (call emit_i32_const o 0))))
 
   ;; The union held by value an expression is, or null.
@@ -3619,12 +3619,12 @@
             (let binders:(ptr compiler.Node) (call node_next head))
             (let b:(ptr compiler.Node) (if (eq (call node_kind binders) compiler.Kind.bracket) (call first_child binders) (ptr.null compiler.Node)))
             (let at:i32 0)
-            (loop k 0 (- (get v VariantInfo.nfields) 1) 1
+            (for k 0 (get v VariantInfo.nfields)
               (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
               (let w:i32 (call width (get f Field.ty) (get f Field.vs)))
               (if (and (neq b (ptr.null compiler.Node)) (not (call is_wildcard cg b)))
                   (block
-                    (loop q 0 (- w 1) 1 (call emit_local_get o (+ base (arr.get i32 (get v VariantInfo.slots) (+ at q)))))
+                    (for q 0 w (call emit_local_get o (+ base (arr.get i32 (get v VariantInfo.slots) (+ at q)))))
                     (call emit_set_slots o (call node_slot cg b) w))
                   (block))
               (set! at (+ at w))
@@ -3633,7 +3633,7 @@
             (call put_op o OP_ELSE)))
       (set! arm (call node_next arm)))
     (if has_else (block) (call put_op o OP_UNREACHABLE))
-    (loop k 1 opened 1
+    (for k 1 (+ opened 1)
       (call label_pop cg)
       (call put_op o OP_END)))
 
@@ -3681,7 +3681,7 @@
             (call put_op o OP_ELSE)))
       (set! arm (call node_next arm)))
     (if has_else (block) (call put_op o OP_UNREACHABLE))
-    (loop k 1 opened 1
+    (for k 1 (+ opened 1)
       (call label_pop cg)
       (call put_op o OP_END)))
 
@@ -4579,7 +4579,7 @@
     (call sym_eq cg (call node_a a) (call node_b a) (+ (get cg Cg.src) (call node_a b)) (call node_b b)))
 
   (fn names_contain [cg:(ptr Cg) names:(ptr (vec.Vec (ptr compiler.Node))) n:(ptr compiler.Node)] -> bool
-    (loop i 0 (- (call (vec.len (ptr compiler.Node)) names) 1) 1
+    (for i 0 (call (vec.len (ptr compiler.Node)) names)
       (if (call same_name cg (call (vec.at (ptr compiler.Node)) names i) n) (return true) (block)))
     false)
 
@@ -4591,7 +4591,7 @@
     (unsafe (let la:i32 (call node_b a))
     (let lb:i32 (call node_b b))
     (let n:i32 (if (lt la lb) la lb))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let x:i32 (mem.load8 (+ (get cg Cg.src) (+ (call node_a a) i))))
       (let y:i32 (mem.load8 (+ (get cg Cg.src) (+ (call node_a b) i))))
       (if (neq x y) (return (lt x y)) (block)))
@@ -4643,18 +4643,18 @@
     (let n:i32 (get cg Cg.nfns))
     (let may:(arr bool) (arr.new bool (call alloc.forever) (if (gt n 0) n 1)))
     (let callees:(arr (ptr (vec.Vec i32))) (arr.new (ptr (vec.Vec i32)) (call alloc.forever) (if (gt n 0) n 1)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let calls:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
       (arr.set bool may i (call scan_effects cg (get (call func_entry_ptr cg i) FnInfo.node) calls))
       (arr.set (ptr (vec.Vec i32)) callees i calls))
     (let changed:bool true)
     (while changed
       (set! changed false)
-      (loop i 0 (- n 1) 1
+      (for i 0 n
         (if (not (arr.get bool may i))
             (block
               (let calls:(ptr (vec.Vec i32)) (arr.get (ptr (vec.Vec i32)) callees i))
-              (loop j 0 (- (call (vec.len i32) calls) 1) 1
+              (for j 0 (call (vec.len i32) calls)
                 (let c:i32 (call (vec.at i32) calls j))
                 (if (and (not (arr.get bool may i)) (or (lt c 0) (arr.get bool may c)))
                     (block (arr.set bool may i true) (set! changed true))
@@ -4708,7 +4708,7 @@
     (let assigned:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
     (let out:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
     (if (call loop_scan cg lp used assigned) (return out) (block))
-    (loop i 0 (- (call (vec.len (ptr compiler.Node)) used) 1) 1
+    (for i 0 (call (vec.len (ptr compiler.Node)) used)
       (let u:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) used i))
       (let idx:i32 (call find_local cg (call node_a u) (call node_b u)))
       (if (and (gte idx 0)
@@ -4734,7 +4734,7 @@
   (fn compile_versioned_loop [cg:(ptr Cg) node:(ptr compiler.Node) names:(ptr (vec.Vec (ptr compiler.Node))) o:(ptr Out)] -> void
     (let a:i32 (get cg Cg.scratch))
     (let fat:i32 (+ a 2))
-    (loop k 0 (- (call (vec.len (ptr compiler.Node)) names) 1) 1
+    (for k 0 (call (vec.len (ptr compiler.Node)) names)
       (call emit_local_get o (call node_slot cg (call (vec.at (ptr compiler.Node)) names k)))
       (call emit_local_tee o fat)
       (call put_op o OP_I32_WRAP_I64)
@@ -4760,7 +4760,7 @@
     (let _l:i32 (call label_push cg Label.if_else))
     (let proven:(ptr (vec.Vec (ptr compiler.Node))) (get cg Cg.proven))
     (let before:i32 (call (vec.len (ptr compiler.Node)) proven))
-    (loop k 0 (- (call (vec.len (ptr compiler.Node)) names) 1) 1
+    (for k 0 (call (vec.len (ptr compiler.Node)) names)
       (call (vec.push (ptr compiler.Node)) proven (call (vec.at (ptr compiler.Node)) names k)))
     (call compile_loop_node cg node o)
     (call (vec.truncate (ptr compiler.Node)) proven before)
@@ -4953,7 +4953,7 @@
 ;; The first wasm local of parameter k: after the scalars of those before.
   (fn param_slot [f:(ptr FnInfo) k:i32] -> i32
     (let n:i32 0)
-    (loop p 0 (- k 1) 1
+    (for p 0 k
       (if (lt p 16) (set! n (+ n (call width (arr.get Ty (get f FnInfo.params) p) (arr.get (ptr StructInfo) (get f FnInfo.pvs) p)))) (block)))
     n)
 
@@ -5062,7 +5062,7 @@
   ;; Interns every contract message's texts, function by function (wasm.rs
   ;; string_layout, after the literals).
   (fn intern_contract_texts [cg:(ptr Cg)] -> void
-    (loop f 0 (- (get cg Cg.nfns) 1) 1
+    (for f 0 (get cg Cg.nfns)
       (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
       (let item:(ptr compiler.Node) (call nth_child (get entry FnInfo.node) 5))
       (while (neq item (ptr.null compiler.Node))
@@ -5081,7 +5081,7 @@
           (block
             (let m:(ptr Msg) (call contract_msg cg entry item (eq kind Kw.ens)))
             (let max:i32 (get m Msg.len))
-            (loop j 0 (- (get m Msg.n) 1) 1
+            (for j 0 (get m Msg.n)
               (let it:(ptr Item) (arr.get (ptr Item) (get m Msg.items) j))
               (set! max (+ max (cond
                                  ((eq (get it Item.kind) ItemKind.text) (get it Item.len))
@@ -5096,7 +5096,7 @@
             (call emit_i32_const o (get m Msg.len))
             (call emit_i32_const o max)
             (call emit_call o (+ base 3))
-            (loop j 0 (- (get m Msg.n) 1) 1
+            (for j 0 (get m Msg.n)
               (let it:(ptr Item) (arr.get (ptr Item) (get m Msg.items) j))
               (let ik:ItemKind (get it Item.kind))
               (cond
@@ -5144,7 +5144,7 @@
 
   ;; Appends the bytes src has written.
   (fn copy_out [dst:(ptr Out) src:(ptr Out)] -> void
-    (unsafe (loop i 0 (- (get src Out.pos) 1) 1
+    (unsafe (for i 0 (get src Out.pos)
       (call put_byte dst (mem.load8 (+ (get src Out.base) i))))))
 
   ;; A size-prefixed copy of what sub has written (a function body).
@@ -5159,15 +5159,15 @@
 
   ;; A 4-byte little-endian word.
   (fn put_word [o:(ptr Out) v:i32] -> void
-    (loop k 0 3 1 (call put_byte o (bitand (shr v (* k 8)) 255))))
+    (for k 0 4 (call put_byte o (bitand (shr v (* k 8)) 255))))
 
   ;; A function type: 0x60, the parameter value types, the result types.
   (fn emit_func_type [o:(ptr Out) s:(ptr Sig)] -> void
     (call put_byte o FUNC_TYPE)
     (call put_u32 o (get s Sig.nparams))
-    (loop i 0 (- (get s Sig.nparams) 1) 1 (call put_byte o (arr.get i32 (get s Sig.params) i)))
+    (for i 0 (get s Sig.nparams) (call put_byte o (arr.get i32 (get s Sig.params) i)))
     (call put_u32 o (get s Sig.nresults))
-    (loop i 0 (- (get s Sig.nresults) 1) 1 (call put_byte o (arr.get i32 (get s Sig.results) i))))
+    (for i 0 (get s Sig.nresults) (call put_byte o (arr.get i32 (get s Sig.results) i))))
 
   ;; A signature from a pattern of parameter types, i for i32 and l for i64,
   ;; and a result value type (0 for none).
@@ -5175,7 +5175,7 @@
     (unsafe (let s:(ptr Sig) (new Sig (call alloc.forever)))
     (let n:i32 (str.len params))
     (put s Sig.params (arr.new i32 (call alloc.forever) (if (eq n 0) 1 n)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (arr.set i32 (get s Sig.params) i (if (eq (mem.load8 (+ (str.ptr params) i)) 108) 126 127)))
     (put s Sig.nparams n)
     (put s Sig.results (arr.new i32 (call alloc.forever) 1))
@@ -5203,7 +5203,7 @@
   ;; The wasm type of a module function.
   (fn fn_sig [f:(ptr FnInfo)] -> (ptr Sig)
     (let s:(ptr Sig) (call new_sig))
-    (loop p 0 (- (if (gt (get f FnInfo.nparams) 16) 16 (get f FnInfo.nparams)) 1) 1
+    (for p 0 (if (gt (get f FnInfo.nparams) 16) 16 (get f FnInfo.nparams))
       (call sig_add_param s (arr.get Ty (get f FnInfo.params) p) (arr.get (ptr StructInfo) (get f FnInfo.pvs) p)))
     (call sig_set_result s (get f FnInfo.ret) (get f FnInfo.ret_vs))
     s)
@@ -5228,13 +5228,13 @@
     ;; locals, the i64 one a generation check uses, the two I/O ones, the
     ;; groups' locals
     (call put_u32 fc (+ (- nslots pslots) (+ (if uses_io 3 2) ngroup)))
-    (loop l pcount (- total_locals 1) 1
+    (for l pcount total_locals
       (call emit_local_entries fc (get (call local_at cg l) Local.ty) (get (call local_at cg l) Local.vs)))
     (call put_u32 fc 2) (call put_byte fc VT_I32)
     (call put_u32 fc 1) (call put_byte fc VT_I64)
     (if uses_io (block (call put_u32 fc 2) (call put_byte fc VT_I32)) (block))
     (let gs:(ptr (vec.Vec (ptr Group))) (get cg Cg.groups))
-    (loop i 0 (- (call (vec.len (ptr Group)) gs) 1) 1
+    (for i 0 (call (vec.len (ptr Group)) gs)
       (call emit_local_entries fc Ty.value (get (call (vec.at (ptr Group)) gs i) Group.vs)))
     (call compile_function_body cg entry fc)
     (call put_op fc OP_END))
@@ -5243,7 +5243,7 @@
   ;; for a value struct.
   (fn emit_local_entries [fc:(ptr Out) t:Ty vs:(ptr StructInfo)] -> void
     (if (eq t Ty.value)
-        (loop k 0 (- (get vs StructInfo.width) 1) 1
+        (for k 0 (get vs StructInfo.width)
           (call put_u32 fc 1)
           (call put_byte fc (call type_id_to_valtype (arr.get Ty (get vs StructInfo.flat_ty) k))))
         (block
@@ -5344,10 +5344,10 @@
     ;; signatures, a threaded module's two, and _start's
     (let sec:(ptr Out) (call out_at scratch))
     (call put_u32 sec (+ imports (+ nfns (+ nsigs (+ before_checks (if uses_checks 7 0))))))
-    (loop w 0 (- NWASI 1) 1
+    (for w 0 NWASI
       (if (neq (call get_wasi_index cg (enum.cast Wasi w)) -1) (call emit_func_type sec (call wasi_sig (enum.cast Wasi w))) (block)))
-    (loop f 0 (- nfns 1) 1 (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
-    (loop si 0 (- nsigs 1) 1 (call emit_func_type sec (arr.get (ptr Sig) (get cg Cg.sigs) si)))
+    (for f 0 nfns (call emit_func_type sec (call fn_sig (call func_entry_ptr cg f))))
+    (for si 0 nsigs (call emit_func_type sec (arr.get (ptr Sig) (get cg Cg.sigs) si)))
     (if threaded
         (block
           (call emit_func_type sec (call sig_from "" 0))       ;; start function: [] -> []
@@ -5373,7 +5373,7 @@
           (set! sec (call out_at scratch))
           (call put_u32 sec (if threaded (+ imports 1) imports))
           (let type_idx:i32 0)
-          (loop w 0 (- NWASI 1) 1
+          (for w 0 NWASI
             (let wv:Wasi (enum.cast Wasi w))
             (if (neq (call get_wasi_index cg wv) -1)
                 (block
@@ -5398,14 +5398,14 @@
     ;; Function (3): each function's type index
     (set! sec (call out_at scratch))
     (call put_u32 sec n_fns)
-    (loop f 0 (- nfns 1) 1 (call put_u32 sec (+ imports f)))
+    (for f 0 nfns (call put_u32 sec (+ imports f)))
     (let generated_types:i32 (+ imports (+ nfns nsigs)))
     (if threaded
         (block (call put_u32 sec generated_types) (call put_u32 sec (+ generated_types 1)))
         (block))
     (if auto_start (call put_u32 sec (+ generated_types extra_fns)) (block))
     (if uses_checks
-        (loop k 0 6 1 (call put_u32 sec (+ generated_types (+ before_checks k))))
+        (for k 0 7 (call put_u32 sec (+ generated_types (+ before_checks k))))
         (block))
     (call emit_section o 3 sec)
 
@@ -5442,10 +5442,10 @@
     ;; Export (7): every function by name, the memory, wasi_thread_start, _start
     (set! sec (call out_at scratch))
     (call put_u32 sec (+ nfns (+ 1 (+ (if threaded 1 0) (if auto_start 1 0)))))
-    (loop f 0 (- nfns 1) 1
+    (for f 0 nfns
       (let entry:(ptr FnInfo) (call func_entry_ptr cg f))
       (call put_u32 sec (get entry FnInfo.name_len))
-      (loop k 0 (- (get entry FnInfo.name_len) 1) 1
+      (for k 0 (get entry FnInfo.name_len)
         (call put_byte sec (mem.load8 (+ src_ptr (+ (get entry FnInfo.name_pos) k)))))
       (call put_byte sec 0)    ;; a function
       (call put_u32 sec (+ imports f)))
@@ -5482,7 +5482,7 @@
           (call emit_i32_const sec 0)
           (call put_byte sec 11)
           (call put_u32 sec nfns)
-          (loop f 0 (- nfns 1) 1 (call put_u32 sec (+ imports f)))
+          (for f 0 nfns (call put_u32 sec (+ imports f)))
           (call emit_section o 9 sec))
         (block))
 
@@ -5499,7 +5499,7 @@
     (set! sec (call out_at scratch))
     (call put_u32 sec n_fns)
     (let fn_lines:(ptr (vec.Vec (ptr FnLines))) (call (vec.make (ptr FnLines)) (call alloc.default) (+ nfns 1)))
-    (loop f 0 (- nfns 1) 1
+    (for f 0 nfns
       (let fc:(ptr Out) (call out_at fcode_scratch))
       ;; a printer formatting generates (show.debug.*) has no positions (wasm.rs Body.quiet)
       (let quiet:bool (call is_debug_fn cg (call func_entry_ptr cg f)))
@@ -5577,12 +5577,12 @@
                 (call emit_local_get fc 0)
                 (call emit_call fc (call get_wasi_index cg Wasi.proc_exit))
                 (call put_op fc OP_END))
-              (loop k 1 (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1 (call put_op fc OP_DROP)))
+              (for k 1 (+ (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1) (call put_op fc OP_DROP)))
           (call put_op fc OP_END)
           (call emit_sized sec fc))
         (block))
     (if uses_checks
-        (loop k 0 6 1
+        (for k 0 7
           (let fc:(ptr Out) (call out_at fcode_scratch))
           (call check_body fc k (get cg Cg.checks_base))
           (call emit_sized sec fc))
@@ -5605,7 +5605,7 @@
               (call put_byte sec 1)
               (block (call put_byte sec 0) (call emit_i32_const sec 1024) (call put_byte sec 11)))
           (call put_u32 sec (call buf.len (get cg Cg.blob)))
-          (loop k 0 (- (call buf.len (get cg Cg.blob)) 1) 1
+          (for k 0 (call buf.len (get cg Cg.blob))
             (call put_byte sec (mem.load8 (+ (get (get cg Cg.blob) buf.Buf.data) k)))))
         (block))
     (call emit_section o 11 sec)
@@ -5614,11 +5614,11 @@
     ;; say where it happened (wasm.rs); the generated ones as wasm.rs names them
     (let fnames:(ptr Out) (call out_at fcode_scratch))
     (call put_u32 fnames (+ nfns (+ extra_fns (+ (if auto_start 1 0) (if uses_checks 7 0)))))
-    (loop f 0 (- nfns 1) 1
+    (for f 0 nfns
       (let fentry:(ptr FnInfo) (call func_entry_ptr cg f))
       (call put_u32 fnames (+ imports f))
       (call put_u32 fnames (get fentry FnInfo.name_len))
-      (loop k 0 (- (get fentry FnInfo.name_len) 1) 1
+      (for k 0 (get fentry FnInfo.name_len)
         (call put_byte fnames (mem.load8 (+ src_ptr (+ (get fentry FnInfo.name_pos) k))))))
     (if threaded
         (block
@@ -5729,7 +5729,7 @@
     ;; ===== Harnesses =====
   (fn test_signatures_and_locals [] -> i32
     (let _kw_init:i32 (call init_keywords))
-    (let text:str "(module test_mod (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (loop i 0 9 1 (set! z (+ z i))) (+ y z)))")
+    (let text:str "(module test_mod (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (counted_loop i 0 9 1 (set! z (+ z i))) (+ y z)))")
     (let src:i32 (str.ptr text))
     (let tok:i32 (mem.alloc (* (sizeof compiler.Token) (+ (str.len text) 1))))
     (let n:i32 (call compiler.tokenize src (str.len text) tok))
@@ -5761,7 +5761,7 @@
     (call compiles "(module add (fn add [a:i32 b:i32] -> i32 (+ a b)))"))
 
   (fn test_compile_compute [] -> i32
-    (call compiles "(module compute (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (loop i 0 9 1 (set! z (+ z i))) (+ y z)))"))
+    (call compiles "(module compute (fn add [a:i32 b:i32] -> i32 (+ a b)) (fn compute [x:i32] -> i32 (let y:i32 (call add x 5)) (let z:i32 0) (counted_loop i 0 9 1 (set! z (+ z i))) (+ y z)))"))
 
   (fn test_compile_store [] -> i32
     (call compiles "(module store (fn add [a:i32 b:i32] -> i32 (mem.store32 a b) (mem.load32 a)))"))
@@ -5790,7 +5790,7 @@
     (let k:i32 0)
     (while (lt k n)
       (let word:i64 0i64)
-      (loop j 0 7 1
+      (for j 0 8
         (if (lt (+ k j) n)
             (set! word (bitor word (shl (i64.extend_u (mem.load8 (+ p (+ k j)))) (i64.extend_u (* j 8)))))
             (block)))
@@ -5889,7 +5889,7 @@
     (call emit_local_get o 2) (call put_op o OP_I32_EQZ)
     (call put_op o OP_BR_IF) (call put_u32 o 1)
     (call emit_local_get o 0) (call emit_local_get o 1) (call emit_memop o OP_I32_LOAD8_U 0) (call emit_memop o OP_I32_STORE8 0)
-    (loop k 0 1 1 (call emit_local_get o k) (call emit_i32_const o 1) (call put_op o OP_I32_ADD) (call emit_local_set o k))
+    (for k 0 2 (call emit_local_get o k) (call emit_i32_const o 1) (call put_op o OP_I32_ADD) (call emit_local_set o k))
     (call emit_local_get o 2) (call emit_i32_const o 1) (call put_op o OP_I32_SUB) (call emit_local_set o 2)
     (call put_op o OP_BR) (call put_u32 o 0)
     (call put_op o OP_END)

@@ -53,9 +53,9 @@
   (fn join [o:(ptr Origins) parts:(arr (ptr buf.Buf)) bases:(arr i32)] -> void (pub)
     (let es:(ptr (vec.Vec (ptr Entry))) (get o Origins.entries))
     (let out:(ptr (vec.Vec (ptr Entry))) (call (vec.make (ptr Entry)) (call alloc.default) (+ (call (vec.len (ptr Entry)) es) 1)))
-    (loop k 0 (- (arr.len parts) 1) 1
+    (for k 0 (arr.len parts)
       (let id:i32 (ptr.addr (arr.get (ptr buf.Buf) parts k)))
-      (loop i 0 (- (call (vec.len (ptr Entry)) es) 1) 1
+      (for i 0 (call (vec.len (ptr Entry)) es)
         (let e:(ptr Entry) (call (vec.at (ptr Entry)) es i))
         (if (eq (get e Entry.buffer) id)
             (block

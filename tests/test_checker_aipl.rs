@@ -312,7 +312,8 @@ const EVERY_FORM: &str = r#"(module every
     (let n:i32 (+ +1 -2))
     (set! n (cond ((lt n 0) 1) ((eq n 0) (block 2)) (else 3)))
     (if d (block) (block (return 1)))
-    (loop i 0 10 2 (if (eq i 4) (continue) (block)) (if (eq i 8) (break) (block)))
+    (counted_loop i 0 10 2 (if (eq i 4) (continue) (block)) (if (eq i 8) (break) (block)))
+    (for k 0 3 (if (eq k 1) (continue) (block)))
     (while false)
     (let r:(result i32 str) (ok:str 5))
     (let r2:(result bool i32) (err:bool 7))
@@ -472,7 +473,9 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32 (let x 1)))",
     "(module m (fn f [] -> i32 (let x:i32)))",
     "(module m (fn f [] -> i32 (set! 5 1)))",
-    "(module m (fn f [] -> i32 (loop 5 0 1 1)))",
+    "(module m (fn f [] -> i32 (counted_loop 5 0 1 1)))",
+    "(module m (fn f [] -> i32 (for 5 0 1)))",
+    "(module m (fn f [] -> i32 (loop i 0 3 1)))",
     "(module m (fn f [] -> i32 (call 5)))",
     "(module m (fn f [] -> i32 (ok:5 1)))",
     "(module m (fn f [] -> i32 (err:)))",
@@ -881,16 +884,18 @@ const FORMS: &[&str] = &[
     "(if true (let q:i32 1) (let q:i32 2)) 0",
     "(match E.a (E.a (let q:i32 1)) (E.b (let q:i32 2))) 0",
     "(block (let q:i32 1)) q",
-    "(loop i 0 2i64 1) 0",
-    "(loop i 0 2 1.5) 0",
-    "(let i:i32 0) (loop i 0 2 1) 0",
-    "(loop i 0 2 1 (let i2:i64 1i64)) (let i2:i32 0) i2",
+    // loop is retired (CANONICAL_PLAN.md step 3): the same refusal from both resolvers
+    "(loop i 0 2 1) 0",
+    "(for i 0 2i64) 0",
+    "(for i 0.5 2) 0",
+    "(let i:i32 0) (for i 0 2) 0",
+    "(for i 0 3 (let i2:i64 1i64)) (let i2:i32 0) i2",
     "(while 1) 0",
     "(while true (break)) (break) 0",
     "(continue) 0",
-    "(loop i 0 1 1 (while true (break)) (continue)) 0",
+    "(for i 0 2 (while true (break)) (continue)) 0",
     "(let x:f64 1.5) (block (let y:i32 1)) (block (let y:f64 1.5)) 0",
-    "(let x:i32 0) (loop x 0 1 1) 0",
+    "(let x:i32 0) (for x 0 2) 0",
     // calls and references
     "(call nope)",
     "(call w)",
@@ -1056,6 +1061,8 @@ const FORMS: &[&str] = &[
     "(let q:(ptr U) (ptr.null U)) 0",
     "(+ result 1)",
     "M:(module m (fn main [] -> i32 (let x:i32 1)))",
+    "M:(module m (fn f [n:i32] -> i32 (let k:i32 1) (req (gt k 0)) n) (fn main [] -> i32 0))",
+    "M:(module m (fn f [n:i32] -> i32 (ens (gt result 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn main [] -> i32 (let i:i32 0) (while (lt i 3) (set! i (+ i 1)))))",
 ];
 

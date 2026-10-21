@@ -145,7 +145,7 @@
   ;; n bytes from a custom allocator, zeroed here.
   (fn custom_raw [c:(ptr Custom) n:i32] -> i32
     (unsafe (let p:i32 (call custom_result (call_ref (fn [i32 i32] -> i32) (get c Custom.alloc_fn) (get c Custom.cell) n)))
-    (loop i 0 (- (/ (bitand (+ n 7) -8) 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
+    (for i 0 (/ (bitand (+ n 7) -8) 8) (mem.store64 (+ p (* 8 i)) 0i64))
     p))
 
   ;; What a custom allocator returned, which must be 8-aligned.
@@ -159,7 +159,7 @@
     (unsafe (let size:i32 (bitand (+ n 7) -8))
     (let p:i32 (+ (get f Fixed.base) (get f Fixed.used)))
     (put f Fixed.used (+ (get f Fixed.used) size))
-    (loop i 0 (- (/ size 8) 1) 1 (mem.store64 (+ p (* 8 i)) 0i64))
+    (for i 0 (/ size 8) (mem.store64 (+ p (* 8 i)) 0i64))
     p))
 
   ;; Whether n more bytes fit in the buffer.

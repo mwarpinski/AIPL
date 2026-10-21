@@ -25,7 +25,7 @@
     (let a:alloc.Allocator (call alloc.default))
     (let shapes:(ptr (vec.Vec geometry.Shape)) (call geometry.some))
     (let total:i32 0)
-    (loop i 0 (- (call (vec.len geo.Shape) shapes) 1) 1
+    (for i 0 (call (vec.len geo.Shape) shapes)
       (let s:geometry.Shape (call (vec.at geometry.Shape) shapes i))
       (set! total (+ total (+ (call geo.area s) (call sides s)))))
     ;; total: (10 + 4) + (3 + 0) + (0 + 1) = 18

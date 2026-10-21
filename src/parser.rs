@@ -79,7 +79,7 @@ pub const HEAD_NAMES: &[&str] = &[
     "fs.open", "fs.opendir", "fs.read", "fs.readdir", "fs.stat", "fs.write", "get", "gt", "gte",
     "gteu", "gtu", "i32.reinterpret_f32", "i32.trunc_f32_s", "i32.trunc_f64_s", "i32.wrap",
     "i64.extend_s", "i64.extend_u", "i64.reinterpret_f64", "i64.trunc_f32_s", "i64.trunc_f64_s",
-    "if", "let", "loop", "lt", "lte", "lteu", "ltu", "make", "match", "match_result",
+    "for", "if", "let", "counted_loop", "lt", "lte", "lteu", "ltu", "make", "match", "match_result",
     "mem.alloc", "mem.free", "mem.grow", "mem.load16_s", "mem.load16_u", "mem.load32",
     "mem.load64", "mem.load8", "mem.load8_s", "mem.load_f32", "mem.load_f64", "mem.store16",
     "mem.store32", "mem.store64", "mem.store8", "mem.store_f32", "mem.store_f64", "neq",
@@ -1276,7 +1276,7 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 span,
                             }
                         }
-                        "loop" => {
+                        "counted_loop" => {
                             let var = match self.next() {
                                 Some(Token {
                                     kind: TokenKind::Symbol(s),
@@ -1310,6 +1310,30 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 start: Box::new(start),
                                 end: Box::new(end),
                                 step: Box::new(step),
+                                body,
+                                span,
+                            }
+                        }
+                        // (for i start end body...): the resolver rewrites it as
+                        // counted_loop (src/sugar.rs); read here too, for a module
+                        // parsed on its own, with the same end and step
+                        "for" => {
+                            let var = self.expect_symbol("loop var", span)?;
+                            let start = self.parse_expr()?;
+                            let end = self.parse_expr()?;
+                            let mut body = Vec::new();
+                            while let Some(kind) = self.peek_kind() {
+                                if *kind == TokenKind::RParen {
+                                    break;
+                                }
+                                body.push(self.parse_expr()?);
+                            }
+                            let one = || Expr::Lit(Literal::Int(1), span);
+                            Expr::Loop {
+                                var,
+                                start: Box::new(start),
+                                end: Box::new(Expr::Op { op: OpCode::Sub, args: vec![end, one()], span }),
+                                step: Box::new(one()),
                                 body,
                                 span,
                             }
@@ -1875,6 +1899,8 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 other => {
                                     let hint = if matches!(other, "else" | "elif" | "switch" | "case" | "default") {
                                         "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))".to_string()
+                                    } else if other == "loop" {
+                                        "loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while".to_string()
                                     } else if other == "arr.of" {
                                         "there is no array literal: make the array with (arr.new T a n) and fill it with (arr.set T xs i v)".to_string()
                                     } else if let Some(near) = nearest_name(other, HEAD_NAMES.iter().copied()) {

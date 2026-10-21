@@ -88,7 +88,7 @@
   ;; The name after the last '.'.
   (fn base [s:str.Bytes] -> str.Bytes
     (unsafe (let d:i32 -1)
-    (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
+    (for k 0 (get s str.Bytes.len) (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
     (call str.bytes (+ (call str.addr s) (+ d 1)) (- (get s str.Bytes.len) (+ d 1)))))
 
   ;; At least two characters of A-Z, 0-9, _, starting with A-Z.
@@ -96,7 +96,7 @@
     (if (lt (get s str.Bytes.len) 2) (return false) (block))
     (let c0:i32 (call str.byte_at s 0))
     (if (or (lt c0 65) (gt c0 90)) (return false) (block))
-    (loop k 0 (- (get s str.Bytes.len) 1) 1
+    (for k 0 (get s str.Bytes.len)
       (let c:i32 (call str.byte_at s k))
       (if (not (or (and (gte c 65) (lte c 90)) (or (and (gte c 48) (lte c 57)) (eq c 95)))) (return false) (block)))
     true)
@@ -105,7 +105,7 @@
     (let s:str.Bytes (call text x i))
     (let c0:i32 (call str.byte_at s 0))
     (let v:i64 0i64)
-    (loop k (if (or (eq c0 45) (eq c0 43)) 1 0) (- (get s str.Bytes.len) 1) 1
+    (for k (if (or (eq c0 45) (eq c0 43)) 1 0) (get s str.Bytes.len)
       (set! v (- (* v 10i64) (i64.extend_s (- (call str.byte_at s k) 48)))))
     (if (eq c0 45) v (- 0i64 v)))
 
@@ -244,7 +244,7 @@
 
   ;; The whole element at i, unchanged.
   (fn copy [x:(ptr X) i:i32] -> void
-    (loop k i (- (call elem_end x i) 1) 1 (call emit x k (call pos x k))))
+    (for k i (call elem_end x i) (call emit x k (call pos x k))))
 
   ;; One element: a constant's literal, an enum member's (enum.cast E v),
   ;; a group rewritten, or the token itself.
@@ -269,7 +269,7 @@
              (return))
            (block))
        (let d:i32 -1)
-       (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
+       (for k 0 (get s str.Bytes.len) (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
        (let e:str.Bytes (call str.bytes (call str.addr s) (if (lt d 0) 0 d)))
        (if (and (gte d 0) (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get x X.enums) e))
            (block
@@ -346,7 +346,7 @@
   ;; Every item from `first` on, then the module's closing tokens.
   (fn rewrite_all [x:(ptr X) first:i32] -> void
     (let n:i32 (get x X.n))
-    (loop k 0 (- first 1) 1 (call emit x k (call pos x k)))
+    (for k 0 first (call emit x k (call pos x k)))
     (let it:i32 first)
     ;; a stray atom among the items is copied as it is, as src/consts.rs
     ;; leaves it, and the items after it are expanded; the parser rejects it
@@ -358,19 +358,19 @@
         (else (call rewrite_group x it)))
       (if (get x X.failed) (break) (block))
       (set! it (call elem_end x it)))
-    (loop k it (- n 1) 1 (call emit x k (call pos x k))))
+    (for k it n (call emit x k (call pos x k))))
 
   ;; Folds the deferred constants in order; a failure is reported at the
   ;; value of the constant it is about.
   (fn fold_all [x:(ptr X)] -> void
     (let d:(ptr cexpr.Defs) (get x X.defs))
-    (loop k 0 (- (call (vec.len str.Bytes) (get x X.deferred)) 1) 1
+    (for k 0 (call (vec.len str.Bytes) (get x X.deferred))
       (let name:str.Bytes (call (vec.at str.Bytes) (get x X.deferred) k))
       (let v:cexpr.Val (call cexpr.value d name))
       (if (get d cexpr.Defs.failed)
           (block
             (let at:i32 (call (vec.at i32) (get x X.deferred_at) k))
-            (loop j 0 (- (call (vec.len i32) (get x X.deferred_at)) 1) 1
+            (for j 0 (call (vec.len i32) (get x X.deferred_at))
               (if (eq (call pos x (call (vec.at i32) (get x X.deferred_at) j)) (get d cexpr.Defs.err_at))
                   (set! at (call (vec.at i32) (get x X.deferred_at) j))
                   (block)))

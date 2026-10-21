@@ -49,7 +49,7 @@
     (put p Places.gen gen)
     (put p Places.orig orig)
     (let fs:(ptr (vec.Vec (ptr origins.File))) (get orig origins.Origins.files))
-    (loop i 0 (- (call (vec.len (ptr origins.File)) fs) 1) 1
+    (for i 0 (call (vec.len (ptr origins.File)) fs)
       (let f:(ptr origins.File) (call (vec.at (ptr origins.File)) fs i))
       (call (vec.push (ptr Text)) (get p Places.files) (call text_of (get f origins.File.name) (get f origins.File.text))))
     p)
@@ -99,7 +99,7 @@
     (let start:i32 (call (vec.at i32) starts lo))
     (let col:i32 1)
     (let src:i32 (call str.addr (get t Text.text)))
-    (loop k start (- pos 1) 1
+    (for k start pos
       ;; a UTF-8 continuation byte is part of the character before it
       (if (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1)) (block)))
     (let r:(ptr Place) (new Place (call alloc.forever)))
@@ -112,6 +112,6 @@
     (unsafe (let s:str.Bytes (get t Text.text))
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 64))
     (call (vec.push i32) starts 0)
-    (loop k 0 (- (get s str.Bytes.len) 1) 1
+    (for k 0 (get s str.Bytes.len)
       (if (eq (mem.load8 (+ (call str.addr s) k)) 10) (call (vec.push i32) starts (+ k 1)) (block)))
     (put t Text.starts starts))))

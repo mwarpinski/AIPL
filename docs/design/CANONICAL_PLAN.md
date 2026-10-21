@@ -3,8 +3,8 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Step 1 built 2026-10-21; step 2 built 2026-10-21 apart from the
-rows listed under it.
+step 5). Steps 1 to 3 built 2026-10-21; what each still has outstanding is
+listed at the end of its section.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
@@ -21,9 +21,9 @@ decides the larger syntax questions with numbers.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
-| 2 | Errors that name the right form, for every guess a model makes | **Mostly done** 2026-10-21 (rows left in section 2) |
-| 3 | Retire `loop`: `for` is the only counted loop | Not started |
+| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 (two small items outstanding, in section 1) |
+| 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
+| 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
 | 4 | `when` is the only `if` with one branch | Not started |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
@@ -64,11 +64,23 @@ tools/make_kit.sh):
   Chosen from AGENT_FRICTION.md rows 1, 2, 18, 19, 25 and 33, the
   review's two first-try failures, and the spec's table; each checked
   against the compiler on 2026-10-21. AI-SQL's mistake log is not in this
-  repository, so it was not used: when it is, revisit the list. Rows 2,
-  4 and 8 change when steps 3 to 5 land (the table must follow them).
+  repository, so it was not used: when it is, revisit the list. Row 4
+  followed step 3 (`loop` is gone); rows 2 and 8 must follow steps 4 and 5.
 - `aipl doc --find` is the first thing under "Start here", the first
   line of the system prompt module, and the start of the guide's last
   paragraph.
+
+**Outstanding in step 1:**
+
+- The guide's pitfall table: row 2 (`if` with one branch) says `when` is the
+  way, which step 4 makes an error rather than a habit, and row 8 says there
+  is no array literal, which step 5 ends. Edit both rows, and the intro
+  line's "a form that no longer exists", when those steps land.
+- AI-SQL's mistake log (AI-SQL/mistake_log.md) was meant to be a source for
+  the ten and is not in this repository. When it is, check the ten against
+  it.
+- The self-hosted `aipl --version` prints no commit (see above); the Rust
+  command, which the kit ships, does.
 
 ## 2. Errors that name the right form
 
@@ -123,21 +135,37 @@ and tests/test_resolver_aipl.rs compare them word for word):
   rule 2: a branch that always leaves fits any type) and runs the same in
   the VM, wasm, and native. Corrected.
 
-Left for step 2 (not built): a generic function or struct written without
-its type arguments (`(call vec.push v x)`, `(get b Box.value)`: after
-expansion the checker no longer knows the template exists, so this needs
-the generics pass to say it), `(make option.Option.some 5)` for a generic
-union, an unknown module name in `(import nosuch)` (did you mean), and
-`(req (gt x 0))` placed after a `let` in a body (reported as `Undefined
-variable 'x'`, since a contract sees only the parameters). The compiler's
-own messages for `for` with a step (`(for i 0 3 1 ...)` takes the 1 as a
-statement) belong to step 3.
+Also built later the same day: a generic written without its type
+arguments (`(call vec.push v x)`, `(ref vec.len)`, `(get b Box.value)`,
+`(put b Box.value 1)`, `(make option.Option.some 5)`) says `'vec.push' is
+generic: name its types, as in (call (vec.push T) ...)`, from both generics
+passes (the checker never sees a template, so it is said there); and a
+name that is not a parameter inside a contract (`(req (gt k 0))` after a
+`let`) says a contract sees only the parameters, and res in (ens ...).
 
-The step: every row of the spec's pitfall table (section 13) that is a
-compile error gets a message naming the fix, the same in both
-toolchains (tests/test_checker_aipl.rs checks messages for parity), and
-a test per row. An unknown op or function close to a real one names
-the nearest (`text.splt`: `did you mean text.split?`).
+Not built: an unknown module in `(import nosuch)` does not get a "did you
+mean" (it needs a directory listing in both resolvers, and the parity test
+deliberately leaves the searched paths out of the comparison; `aipl doc
+--find` and the guide list the modules). `(for i 0 3 1 ...)` taking the 1
+as a statement belongs to step 3, which retires `loop`.
+
+**Outstanding in step 2:**
+
+- The "did you mean" for `(import nosuch)`, above: a directory listing in
+  both resolvers, compared in a test that today ignores the searched paths.
+- Messages that still say `loop` or `step` to a program that wrote `for`:
+  `Loop bounds and step must be i32`, `Cannot shadow existing variable 'i' in
+  loop`, and `break is only allowed inside a while or loop body` (both
+  checkers, and the tests that pin them: tests/test_control_flow.rs,
+  tests/test_checker_aipl.rs, tests/test_diagnostics.rs). They should say
+  `for`.
+- The survey covered the rows of section 13 that are compile errors and a
+  few more (about 80 programs, 2026-10-21); rows that are runtime traps or
+  behaviours (a stack that is exhausted, `%` on a negative, a program run
+  with the stock wasmtime) have no message to improve. A row added to
+  section 13 later needs its message and test the same way.
+- Step 5 replaces the `arr.of` message ("there is no array literal") with
+  the literal itself, and step 4 adds the message for an empty `else`.
 
 ## 3. Retire `loop`
 
@@ -161,6 +189,78 @@ step:
 What a loop compiles to may change (an exclusive bound is one compare,
 not a subtract and a compare); both toolchains' bytes stay equal to each
 other, and the benchmarks are measured again.
+
+Built 2026-10-21. Two choices differ from the text above, and are the
+owner's to overrule:
+
+- `loop` written in a program is an error from both parsers: `Unknown
+  op/keyword: loop; loop is retired: (for i start end body...) counts from
+  start up to end, end left out; for another step, use while`. It could not
+  be refused where source is read (src/sugar.rs, resolver.aipl), because the
+  toolchain's own output is read again as source (the printer's text, the
+  text `dbg` and `show` lower to, the flat program the code generator
+  parses), and that output has a counted loop in it. So the internal form,
+  which counts to its end inclusive and has a step, now has its own head,
+  `counted_loop`: the resolver's `for` rewrite, the printer, the lowering of
+  `dbg`, and the code generators' tables write and read it. A program that
+  writes `counted_loop` gets the old semantics; it is not documented.
+- The AST keeps its Loop node and no backend changed: `for` still becomes
+  `(counted_loop i start (- end 1) 1 body...)`, so `(for i 0 end)` is still
+  a subtract and an inclusive test, and `end` = i32's least value wraps and
+  runs about 2^32 times (the spec's `for` row says so). Making `for` a node
+  of its own (an exclusive compare, no subtract) is a change to the checker,
+  the VM, wasm.rs, codegen.aipl, the leaks pass, and the printer in both
+  toolchains; do it when a benchmark shows it matters. What was done as the
+  plan says: both bare parsers (Parser::parse, parser.aipl) read `for`
+  directly now, into that same node.
+- Every `loop` in the repository was rewritten by tools/retire_loop.py:
+  727 in aipl_src, tests/aipl, benchmarks and examples; 69 in tests/*.rs;
+  18 in the spec, guide and tour. A step of 1 became `for` with the end
+  plus one (`(- X 1)` became `X`, `(- X k)` became `(- X k-1)`, a number
+  became the next, anything else `(+ E 1)`: 89 loops in the compiler, so
+  the compiled compiler differs from before only by those adds). The four
+  with another step were done by hand as `while` (tests/aipl/
+  results_by_value.aipl is the one in a program; three more in tests). The
+  tests that feed the bare parser or the self-hosted code generator a
+  program keep the inclusive form as `counted_loop` (tests/test_selfhost.rs,
+  the corpus in tests/test_checker_aipl.rs); test_selfhost's helpers now
+  resolve a program that has a `for`. The generators tools/fuzz.py,
+  run_fuzz.py (its loops had steps 1 or 2, now only 1; its `while` loops
+  stay) and text_vectors.py write `for`.
+- The seed (bootstrap/) did not need a refresh: it reads `for`, and the
+  compiler's source has no `loop` now. A new seed would only make the
+  checked-in binary the one that refuses `loop`; ask the owner when one is
+  wanted for another reason.
+- Not measured: the benchmarks' times. Their outputs are checked by the
+  suite; times are as before apart from the adds above, which run once per
+  loop, not per pass.
+
+**Outstanding in step 3:**
+
+- `(for i 0 n 1 ...)`, a step carried over from `loop`: the `1` is taken as
+  the first statement of the body and dropped, so the loop runs and does
+  the wrong thing without a message. A body that begins with a bare literal
+  is almost certainly this; refuse it in both parsers and the resolver's
+  `for` shape check with a message naming `while` for another step.
+- `for` as a node of its own (the decision above, not built): an exclusive
+  compare in the checker (src/checker.rs, aipl_src/checker.aipl), the VM
+  (src/vm.rs), the wasm backend (src/compiler/wasm.rs), the self-hosted code
+  generator (aipl_src/codegen.aipl, codegen_opt.aipl), the leaks pass, and the
+  printer, in both toolchains with byte-equal output. It fixes `end` = i32's
+  least value, and drops a subtract per loop entry. Do it if the benchmarks
+  below show the subtract matters, or when the owner asks for it.
+- Measure the benchmarks again (docs/BENCHMARKS.md): the plan asked for it
+  after the loop changes, and 89 loops in the compiler now add 1 to their
+  end. Compare against the table dated 2026-10-16.
+- `counted_loop` is readable by a program and undocumented. If a model finds
+  it, it gets the old inclusive, stepped loop. To close it, the parser
+  would have to know whether its text came from a program or from the
+  resolver; today it cannot. Revisit if it turns up in generated code.
+- A seed refresh is optional (above); do it with the next change that needs
+  one, and with the owner's approval.
+- Prose that still describes `loop` as a live form, left as history: docs/
+  notes/, docs/history/, docs/NOTES_REVIEW.md, and the other plans in
+  docs/design/. The spec's and the guide's live text was updated.
 
 ## 4. `when` is the only one-branch `if`
 

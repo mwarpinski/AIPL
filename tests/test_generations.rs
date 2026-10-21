@@ -36,7 +36,7 @@ fn run3(name: &str, body: &str) -> [Run; 3] {
     std::fs::write(
         &src,
         format!(
-            "(module prog (import heap) (import arena) (import alloc) (import io)\n  (struct P [x:i32 y:i32])\n  (fn sum [xs:(arr i32)] -> i32\n    (let t:i32 0)\n    (loop i 0 (- (arr.len xs) 1) 1 (set! t (+ t (arr.get i32 xs i))))\n    t)\n  (fn main [] -> i32 (unsafe)\n{body}\n    0))"
+            "(module prog (import heap) (import arena) (import alloc) (import io)\n  (struct P [x:i32 y:i32])\n  (fn sum [xs:(arr i32)] -> i32\n    (let t:i32 0)\n    (for i 0 (arr.len xs) (set! t (+ t (arr.get i32 xs i))))\n    t)\n  (fn main [] -> i32 (unsafe)\n{body}\n    0))"
         ),
     )
     .unwrap();
@@ -172,7 +172,7 @@ fn a_versioned_loop_fails_at_the_access() {
     (call (heap.free_array i32) h xs)
     (call io.println_int \"sum: \" (call sum xs))",
         "",
-        "  at sum (prog.aipl:5:18)\n  at main (prog.aipl:11:34)",
+        "  at sum (prog.aipl:5:14)\n  at main (prog.aipl:11:34)",
     );
 }
 
@@ -187,7 +187,7 @@ fn a_versioned_loop_fails_only_where_it_uses_the_pointer() {
     (call (heap.destroy P) h p)
     (let n:(ptr P) (ptr.null P))
     (let t:i32 0)
-    (loop i 0 9 1 (if (gt i 100) (set! t (+ (get p P.x) (get n P.x))) (set! t (+ t i))))
+    (for i 0 10 (if (gt i 100) (set! t (+ (get p P.x) (get n P.x))) (set! t (+ t i))))
     (call io.println_int \"t: \" t)",
         "t: 45\n",
         "",
@@ -198,9 +198,9 @@ fn a_versioned_loop_fails_only_where_it_uses_the_pointer() {
     (let p:(ptr P) (call (heap.create P) h))
     (call (heap.destroy P) h p)
     (let t:i32 0)
-    (loop i 0 9 1 (call io.println_int \"pass \" i) (if (eq i 3) (set! t (get p P.x)) (set! t (+ t i))))",
+    (for i 0 10 (call io.println_int \"pass \" i) (if (eq i 3) (set! t (get p P.x)) (set! t (+ t i))))",
         "pass 0\npass 1\npass 2\npass 3\n",
-        "  at main (prog.aipl:12:72)",
+        "  at main (prog.aipl:12:70)",
     );
 }
 

@@ -47,7 +47,7 @@
     (let w:(ptr W) (new W (call alloc.forever)))
     (put w W.region_routine -1)
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
-    (loop i 0 (- (call fd_slots) 1) 1
+    (for i 0 (call fd_slots)
       (call push_u32 fds (if (lte i 2) i -1)))
     (put w W.fd_table (call lower.data_bytes l (call buf.bytes fds)))
     (put w W.errno_table (call lower.data_bytes l (call buf.bytes (call errno_bytes))))
@@ -59,7 +59,7 @@
 
   (fn cell [l:(ptr lower.L)] -> i32
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 8))
-    (loop k 1 8 1 (call buf.push_byte b 0))
+    (for k 1 9 (call buf.push_byte b 0))
     (call lower.data_bytes l (call buf.bytes b)))
 
   (fn push_u32 [b:(ptr buf.Buf) v:i32] -> void
@@ -71,7 +71,7 @@
   ;; Linux errno (0-63) -> WASI errno; anything unlisted is EIO (29).
   (fn errno_bytes [] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
-    (loop e 0 63 1
+    (for e 0 64
       (call buf.push_byte b
         (cond ((eq e 0) 0)
               ((eq e 1) 63)  ((eq e 2) 44)  ((eq e 4) 27)  ((eq e 5) 29)  ((eq e 9) 8)
@@ -148,7 +148,7 @@
     (call (vec.push i32) badf (call x64.jcc c (call x64.cc_s))))
 
   (fn patch_all [c:(ptr buf.Buf) at:(ptr (vec.Vec i32))] -> void
-    (loop k 0 (- (call (vec.len i32) at) 1) 1
+    (for k 0 (call (vec.len i32) at)
       (call x64.patch_rel32 c (call (vec.at i32) at k) (call buf.len c))))
 
   ;; rdx = strlen of the NUL-terminated string at rsi (host address).

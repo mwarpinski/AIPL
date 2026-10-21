@@ -8,14 +8,14 @@ A system-prompt module and verified examples for LLMs writing **AIPL**. Every ex
 
 **First, look before you write.** Before writing any helper (a parser, a splitter, a formatter, a sort, a hash table), search the standard library: `aipl doc --find WORD` searches every module's functions (`aipl doc --find split`), `aipl doc MODULE` lists one module's functions with their exact parameters, and `aipl doc MODULE.NAME` shows one. A program that hand-wrote a float parser did it beside `text.parse_f64`.
 
-**The ten mistakes models make most.** Each is a compile error, a wrong answer, or a form being retired (`loop`, an empty `else`); the fix is the right-hand side.
+**The ten mistakes models make most.** Each is a compile error, a wrong answer, or a form that no longer exists (`loop`); the fix is the right-hand side.
 
 | # | You write | Write |
 |---|---|---|
 | 1 | `(f x)` to call your own function | `(call f x)`. Only built-in operations are written bare. |
 | 2 | `(if c (set! x 1))`, or `(if c x (block))` | An `if` has two real branches. For one, `(when c (set! x 1))`. |
 | 3 | `(let x 5)` | `(let x:i32 5)`. Every `let`, parameter, return and field names its type. |
-| 4 | `(loop i 0 n 1 ...)` for n iterations | `(for i 0 n ...)`: the end is left out. `loop`'s end is inclusive, so that loop runs n + 1 times. |
+| 4 | `(loop i 0 n 1 ...)` | `loop` is gone (an error). `(for i 0 n ...)` runs n times: the end is left out. For another step, use `while`. |
 | 5 | A string literal inside a placeholder: `{(call f "x")}` | `(let s:str (call f "x"))`, then `{s}`. A placeholder cannot hold a string literal. |
 | 6 | One name with two types in a function: `v` as an `i32` in one `match` arm and a `str` in the next | A name keeps one type per function: rename one binder, or write `_` for a field you do not read. |
 | 7 | `(new S)` or `(arr.new T n)` | Every allocation names its allocator: `(new S a)`, `(arr.new T a n)`, with `a:alloc.Allocator` passed in as a parameter. |
@@ -41,7 +41,7 @@ RULES:
 4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).
 5. (let x:T v) declares and is void; (set! x v) assigns and is void. let is block-scoped; shadowing an outer name is an error. A name reused in a sibling scope must keep its type within the function.
 6. (if c a b) always has three parts; both branches are void or both the same type. Use (block ...) to sequence. For an if with nothing to do otherwise, write (when c body...): it is (if c (block body...) (block)).
-7. Loops: (for i 0 n body...) runs i from 0 up to n, n left out (n times; the end evaluated once), so (for i 0 (arr.len xs) ...) visits every element; (while cond body...); or (loop i start end step body...), where end is INCLUSIVE, for another step. (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These have no value, so a branch that ends in one fits any type: (if c (return v) (block)) as a statement, or (let x:i32 (if ok v (return -1))) for a value. For 3+ branches use (cond (test body...) ... (else body...)); else is required.
+7. Loops: (for i 0 n body...) runs i from 0 up to n, n left out (n times; the end evaluated once), so (for i 0 (arr.len xs) ...) visits every element; (while cond body...) for another step or a condition (there is no loop form). (break) leaves the loop, (continue) goes to the next iteration, (return v) leaves the function. These have no value, so a branch that ends in one fits any type: (if c (return v) (block)) as a statement, or (let x:i32 (if ok v (return -1))) for a value. For 3+ branches use (cond (test body...) ... (else body...)); else is required.
 8. Literals: 42 is i32, 42i64 is i64, 1.5 is f64 (needs a dot), 1.5f32 is f32, "s" is str. Never mix number types without converting: (i64.extend_s x) / (i32.wrap x) between i32 and i64, (f64.promote x) / (f32.demote x) between f32 and f64, and f64.convert_i32_s, f32.convert_i32_s, i32.trunc_f64_s and the like between integers and floats.
 9. Memory: every allocation names its allocator. (new S a) gives a zeroed (ptr S) from the alloc.Allocator a; (arr.new T a n) gives an (arr T) of n zeroed Ts. A function that allocates takes the allocator as a parameter, a:alloc.Allocator, and passes it on; the program picks one, usually in main: (call alloc.default) (a shared heap; free with (call (alloc.destroy S) a p)), (call alloc.forever) (never freed: what a program makes once and keeps), or an arena it resets. (new S) without one is an error. (ptr.null S) / (arr.null T) are typed nulls. Raw bytes come from (mem.alloc n), which is an i32; convert explicitly with (ptr.cast S addr) / (arr.cast T addr) (an unchecked pointer: no use-after-free check) and back with (ptr.addr p) / (arr.addr a). Never store to a literal address below 1024. mem.load*/mem.store* and the casts are unchecked: they need (unsafe ...) (rule 20), so prefer (new S a) and (arr.new T a n).
 10. Structs: (get p S.f), (put p S.f v), (sizeof S), with p a (ptr S). Arrays: (arr.get T a i), (arr.set T a i v), (arr.len a), with a an (arr T). Every index is bounds-checked, compiled code included: an index out of range stops the program (`Array index out of bounds: ...`), so check it first where it may be out of range. Structs from an imported module m are m.S: (ptr m.S), (get p m.S.f).
@@ -97,7 +97,7 @@ RULES:
 
   (fn main [] -> i32
     (let a:(arr i32) (arr.new i32 (call alloc.forever) 8))
-    (loop i 0 7 1
+    (for i 0 8
       (arr.set i32 a i (* i 3)))                  ;; 0 3 6 ... 21
     (println "15 is at {(call binary_search a 15)}, 4 is at {(call binary_search a 4)}")
     0))
@@ -126,7 +126,7 @@ Prints `15 is at 5, 4 is at -1` (4 is not in the array) and exits with status 0:
 
   (fn main [] -> i32
     (let h:(ptr Node) (ptr.null Node))
-    (loop i 1 10 1
+    (for i 1 11
       (set! h (call push h i)))
     (println "sum: {(call sum h)}")
     0))
@@ -147,7 +147,7 @@ Prints `sum: 55`.
     (let b:str.Bytes (call str.from_str s))
     (let n:i32 0)
     (let bad:bool false)
-    (loop i 0 (- (str.len s) 1) 1
+    (for i 0 (str.len s)
       (match_result (call digit (call str.byte_at b i))
         (ok d (set! n (+ (* n 10) d)))
         (err e (set! bad true))))
@@ -205,7 +205,7 @@ Prints `words: 3` and `lines: 2`. `(call io.read_file "input.txt")` gives the sa
 
   (fn main [] -> i32
     (let pts:(ptr (vec.Vec (ptr Point))) (call (vec.make (ptr Point)) (call alloc.default) 0))
-    (loop i 1 3 1
+    (for i 1 4
       (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x (* i 10))
       (call (vec.push (ptr Point)) pts p))
@@ -240,7 +240,7 @@ Prints `smallest x: 10, swapped second: 7`. Every instantiation (`vec.Vec<ptr<Po
     (arr.set Tok ts 2 Tok.minus)
     (arr.set Tok ts 3 Tok.num)
     (let sum:i32 0)
-    (loop i 0 (- MAX_TOKENS 1) 1
+    (for i 0 MAX_TOKENS
       (set! sum (+ sum (call value (arr.get Tok ts i)))))
     (println "sum {sum}, Tok.minus is {(enum.ord Tok.minus)}")
     0))
@@ -298,7 +298,7 @@ Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held 
 - [ ] Each function body ends in a value of its return type (not a `let`, `set!`, or loop), unless the return type is `void`.
 - [ ] Both `if` branches are void, or both are the same type.
 - [ ] No name is `let` twice in nested scopes.
-- [ ] `for` leaves out its end: `(for i 0 n ...)` runs `n` times; `loop`'s end is inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
+- [ ] `for` leaves out its end: `(for i 0 n ...)` runs `n` times; there is no `loop` (for another step, use `while`).
 - [ ] `return`/`break`/`continue` end a branch or a statement (`(if c (return v) (block))`), and every `cond` ends with `(else ...)`.
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
 - [ ] `and`/`or` have two or more operands: `(and a b c)`, not nested pairs.

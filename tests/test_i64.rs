@@ -161,7 +161,7 @@ fn i64_loop_accumulator() {
     (module m
       (fn f [] -> i64
         (let acc:i64 0i64)
-        (loop i 1 100 1
+        (for i 1 101
           (set! acc (+ acc 100000000i64)))
         acc))
     "#;

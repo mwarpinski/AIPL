@@ -25,16 +25,16 @@
     (let k:i32 (get a Matrix.cols))
     (let m:i32 (get b Matrix.cols))
     (let c:(ptr Matrix) (call make n m))
-    (loop i 0 (- n 1) 1
-      (loop p 0 (- k 1) 1
+    (for i 0 n
+      (for p 0 k
         (let aip:f64 (call at a i p))
-        (loop j 0 (- m 1) 1
+        (for j 0 m
           (call set_at c i j (+ (call at c i j) (* aip (call at b p j)))))))
     c)
 
   (fn trace [m:(ptr Matrix)] -> f64
     (let t:f64 0.0)
-    (loop i 0 (- (get m Matrix.rows) 1) 1
+    (for i 0 (get m Matrix.rows)
       (set! t (+ t (call at m i i))))
     t)
 
@@ -44,8 +44,8 @@
     (req (and (gte n 0) (lte n 200)))
     (let a:(ptr Matrix) (call make n n))
     (let b:(ptr Matrix) (call make n n))
-    (loop i 0 (- n 1) 1
-      (loop j 0 (- n 1) 1
+    (for i 0 n
+      (for j 0 n
         (call set_at a i j (f64.convert_i64_s (i64.extend_s (+ i j))))
         (call set_at b i j (f64.convert_i64_s (i64.extend_s (- (* i j) 1))))))
     (i64.trunc_f64_s (call trace (call mul a b))))

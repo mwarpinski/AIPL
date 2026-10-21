@@ -33,7 +33,7 @@
     (match_result (call stream.create a "_lines_test.tmp")
       (ok f
         (block
-          (loop i 1 5000 1 (format_to f "row {i},{(* i i)}\n"))
+          (for i 1 5001 (format_to f "row {i},{(* i i)}\n"))
           (let _ok:bool (call stream.close_writer f))))
       (err e (format_to w "{e}\n")))
     (match_result (call count_lines a "_lines_test.tmp")

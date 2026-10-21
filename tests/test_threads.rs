@@ -98,16 +98,16 @@ const THREADS: &str = r#"
 
   ;; 1000 atomic increments of the shared counter
   (fn add_worker [counter:i32] -> i32 (unsafe)
-    (loop i 1 1000 1
+    (for i 1 1001
       (let _old:i32 (atomic.add counter 1)))
     0)
 
   (fn atomic_counter [] -> i32 (unsafe)
     (let c:i32 (mem.alloc 4))
     (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
-    (loop t 0 3 1
+    (for t 0 4
       (arr.set i32 hs t (thread.spawn (ref add_worker) c)))
-    (loop t 0 3 1
+    (for t 0 4
       (let _r:i32 (thread.join (arr.get i32 hs t))))
     (mem.load32 c))
 
@@ -122,7 +122,7 @@ const THREADS: &str = r#"
   (fn locked_worker [job_addr:i32] -> i32 (unsafe)
     (let job:(ptr Job) (ptr.cast Job job_addr))
     (let lock:i32 (+ job_addr 4))
-    (loop i 1 1000 1
+    (for i 1 1001
       (atomic.lock lock)
       (put job Job.plain (+ (get job Job.plain) 1))
       (atomic.unlock lock))
@@ -130,37 +130,37 @@ const THREADS: &str = r#"
   (fn mutex_counter [] -> i32 (unsafe)
     (let job:(ptr Job) (new Job (call alloc.forever)))
     (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
-    (loop t 0 3 1
+    (for t 0 4
       (arr.set i32 hs t (thread.spawn (ref locked_worker) (ptr.addr job))))
-    (loop t 0 3 1
+    (for t 0 4
       (let _r:i32 (thread.join (arr.get i32 hs t))))
     (get job Job.plain))
 
   ;; concurrent allocation: every block keeps the value its thread wrote
   (fn alloc_worker [tag:i32] -> i32 (unsafe)
     (let blocks:(arr i32) (arr.new i32 (call alloc.forever) 500))
-    (loop i 0 499 1
+    (for i 0 500
       (let p:i32 (mem.alloc 8))
       (mem.store32 p tag)
       (mem.store32 (+ p 4) i)
       (arr.set i32 blocks i p))
     (let ok:i32 1)
-    (loop i 0 499 1
+    (for i 0 500
       (let p:i32 (arr.get i32 blocks i))
       (if (and (eq (mem.load32 p) tag) (eq (mem.load32 (+ p 4)) i)) (block) (set! ok 0)))
     ok)
   (fn concurrent_alloc [] -> i32 (unsafe)
     (let hs:(arr i32) (arr.new i32 (call alloc.forever) 4))
-    (loop t 0 3 1
+    (for t 0 4
       (arr.set i32 hs t (thread.spawn (ref alloc_worker) (+ t 100))))
     (let good:i32 0)
-    (loop t 0 3 1
+    (for t 0 4
       (set! good (+ good (thread.join (arr.get i32 hs t)))))
     good)
 
   ;; printing from several threads: each thread's text arrives intact
   (fn print_worker [n:i32] -> i32 (unsafe)
-    (loop i 1 50 1
+    (for i 1 51
       (if (eq n 1) (sys.print "one one one one one one") (sys.print "two two two two two two")))
     0)
   (fn concurrent_print [] -> i32 (unsafe)
@@ -275,7 +275,7 @@ fn spawn_with_passes_a_typed_context() {
   (import thread)
   (struct Tally [from:i32 to:i32 sum:i32])
   (fn add_up [t:(ptr Tally)] -> i32
-    (loop i (get t Tally.from) (get t Tally.to) 1 (put t Tally.sum (+ (get t Tally.sum) i)))
+    (for i (get t Tally.from) (+ (get t Tally.to) 1) (put t Tally.sum (+ (get t Tally.sum) i)))
     (get t Tally.sum))
   (fn tally [from:i32 to:i32] -> (ptr Tally)
     (let t:(ptr Tally) (new Tally (call alloc.forever)))

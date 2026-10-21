@@ -79,13 +79,13 @@
   ;; n bytes at addr, copied into memory from a.
   (fn copy [a:alloc.Allocator addr:i32 n:i32] -> str.Bytes (unsafe)
     (let to:i32 (call alloc.raw a (if (gt n 0) n 1)))
-    (loop i 0 (- n 1) 1 (mem.store8 (+ to i) (mem.load8 (+ addr i))))
+    (for i 0 n (mem.store8 (+ to i) (mem.load8 (+ addr i))))
     (call str.bytes to n))
 
   ;; byte order, a prefix first
   (fn by_bytes [x:str.Bytes y:str.Bytes] -> i32
     (let n:i32 (if (lt (get x str.Bytes.len) (get y str.Bytes.len)) (get x str.Bytes.len) (get y str.Bytes.len)))
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (let d:i32 (- (call str.byte_at x i) (call str.byte_at y i)))
       (if (neq d 0) (return d) (block)))
     (- (get x str.Bytes.len) (get y str.Bytes.len)))
@@ -123,7 +123,7 @@
       ((option.Option (ptr (vec.Vec str.Bytes))) some [names]
         (let sorted:bool true)
         (let found:bool false)
-        (loop i 0 (- (call (vec.len str.Bytes) names) 1) 1
+        (for i 0 (call (vec.len str.Bytes) names)
           (let n:str.Bytes (call (vec.at str.Bytes) names i))
           (if (call str.bytes_eq n (call str.from_str "fs.aipl")) (set! found true) (block))
           (if (and (gt i 0) (gt (call by_bytes (call (vec.at str.Bytes) names (- i 1)) n) 0)) (set! sorted false) (block)))

@@ -510,7 +510,7 @@ fn stdin_clocks_random_and_absolute_paths() {
     (let ok:i32 (sys.random p 64))
     ;; 64 random bytes are not all zero
     (let nonzero:i32 0)
-    (loop i 0 63 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
+    (for i 0 64 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
     (+ (* 10 ok) nonzero))
   (fn absolute [] -> i32 (unsafe)
     (let path:str.Bytes (call str.from_str "{abs}"))

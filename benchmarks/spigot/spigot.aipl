@@ -27,7 +27,7 @@
     (let left:i32 (% (get o Out.count) 10))
     (if (neq left 0)
         (block
-          (loop k left 9 1 (call buf.push_byte b 32))
+          (for k left 10 (call buf.push_byte b 32))
           (call buf.push_str b "\t:")
           (call buf.push_int b (get o Out.count))
           (call buf.push_byte b 10))
@@ -39,7 +39,7 @@
     ;; one array cell per term of the series, each starting at 2
     (let len:i32 (+ (/ (* n 10) 3) 1))
     (let a:(arr i64) (arr.new i64 (call alloc.forever) len))
-    (loop i 0 (- len 1) 1 (arr.set i64 a i 2i64))
+    (for i 0 len (arr.set i64 a i 2i64))
     (let o:(ptr Out) (new Out (call alloc.forever)))
     (put o Out.b (call buf.make (call alloc.default) (+ (* n 2) 64)))
     (put o Out.count 0)
@@ -48,9 +48,9 @@
     (let nines:i32 0)
     (let predigit:i32 0)
     (let first:bool true)
-    (loop j 1 n 1
+    (for j 1 (+ n 1)
       (let q:i64 0i64)
-      (loop k 1 len 1
+      (for k 1 (+ len 1)
         (let i:i32 (- (+ len 1) k))
         (let x:i64 (+ (* 10i64 (arr.get i64 a (- i 1))) (* q (i64.extend_s i))))
         (let d:i64 (i64.extend_s (- (* 2 i) 1)))
@@ -62,13 +62,13 @@
         ((eq q 9i64) (set! nines (+ nines 1)))
         ((eq q 10i64)
          (call emit o (+ predigit 1))
-         (loop m 1 nines 1 (call emit o 0))
+         (for m 1 (+ nines 1) (call emit o 0))
          (set! predigit 0)
          (set! nines 0))
         (else
          (if first (set! first false) (call emit o predigit))
          (set! predigit (i32.wrap q))
-         (loop m 1 nines 1 (call emit o 9))
+         (for m 1 (+ nines 1) (call emit o 9))
          (set! nines 0))))
     (call emit o predigit)
     (call finish o)

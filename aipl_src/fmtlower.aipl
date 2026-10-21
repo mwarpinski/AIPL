@@ -63,15 +63,15 @@
     (let at:i32 from)
     (while (and (lt i (get l L.n)) (lt (call pos l i) to))
       (let p:i32 (call pos l i))
-      (loop k at (- p 1) 1 (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))
+      (for k at p (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))
       (call origins.note (get l L.low) out -1 p)
       (set! at p)
       (set! i (+ i 1)))
-    (loop k at (- to 1) 1 (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))))
+    (for k at to (call buf.push_byte out (mem.load8 (+ (get l L.src) k))))))
 
   ;; The input's bytes [from, to), not noted (a type inside generated text).
   (fn raw [l:(ptr L) from:i32 to:i32] -> void
-    (unsafe (loop k from (- to 1) 1 (call buf.push_byte (get l L.out) (mem.load8 (+ (get l L.src) k))))))
+    (unsafe (for k from to (call buf.push_byte (get l L.out) (mem.load8 (+ (get l L.src) k))))))
 
   ;; Generated text, at the form's place.
   (fn gen [l:(ptr L) at:i32 s:str] -> void
@@ -136,7 +136,7 @@
   ;; The noted type of the value whose first token is at offset at.
   (fn fmt_at [l:(ptr L) at:i32] -> (ptr checker.Fmt)
     (let fs:(ptr (vec.Vec (ptr checker.Fmt))) (get l L.fmts))
-    (loop k 0 (- (call (vec.len (ptr checker.Fmt)) fs) 1) 1
+    (for k 0 (call (vec.len (ptr checker.Fmt)) fs)
       (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fs k))
       (if (eq (get f checker.Fmt.at) at) (return f) (block)))
     (ptr.null checker.Fmt))
@@ -199,7 +199,7 @@
   ;; The defers met so far, the last first, each statement in order.
   (fn emit_defers [l:(ptr L)] -> void
     (let ds:(ptr (vec.Vec i32)) (get l L.defers))
-    (loop j 0 (- (call (vec.len i32) ds) 1) 1
+    (for j 0 (call (vec.len i32) ds)
       (let d:i32 (call (vec.at i32) ds (- (- (call (vec.len i32) ds) 1) j)))
       (let close:i32 (- (call elem_end l d) 1))
       (let c:i32 (+ d 2))
@@ -309,7 +309,7 @@
           (call gen l at " "))
         (call gen l at (cond ((eq op 0) "(call show.done ") ((eq op 1) "(call show.end_to ") ((eq op 2) "(call show.print ")
                              ((eq op 3) "(call show.println ") (else "(call show.eprintln "))))
-    (loop j 0 (- (- n first) 1) 1
+    (for j 0 (- n first)
       (let a:i32 (call (vec.at i32) args (- (- n 1) j)))
       (if (eq (call kind l a) compiler.Kind.string)
           (call gen l at "(call show.lit ")
@@ -330,7 +330,7 @@
       ((eq op 1) (call emit_elem l (call (vec.at i32) args 0)))
       (else (call gen l at "(call show.start)")))
     ;; each piece's own arguments, then its call's ')'
-    (loop j first (- n 1) 1
+    (for j first n
       (let a:i32 (call (vec.at i32) args j))
       (call buf.push_byte (get l L.out) 32)
       (if (eq (call kind l a) compiler.Kind.string)
@@ -345,7 +345,7 @@
             (if (call str.present enum_name)
                 (block
                   (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
-                  (loop k 0 (- (arr.len ms) 1) 1
+                  (for k 0 (arr.len ms)
                     (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
                     (call gen l at " (")
                     (call buf.push_bytes (get l L.out) enum_name)
@@ -372,7 +372,7 @@
   ;; The tries in tokens [from, to), lowered before the one around them.
   (fn tries_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
-    (loop i from (- to 2) 1
+    (for i from (- to 1)
       (if (and (eq (call kind l i) compiler.Kind.lparen) (and (gte (call form l (+ i 1)) 5) (lte (call form l (+ i 1)) 7))) (set! k (+ k 1)) (block)))
     k)
 
@@ -391,7 +391,7 @@
   ;; the one around them.
   (fn expects_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
-    (loop i from (- to 2) 1
+    (for i from (- to 1)
       (if (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 9))
           (if (neq (call expect_sides l i) (ptr.null checker.Fmt)) (set! k (+ k 1)) (block))
           (block)))
@@ -476,7 +476,7 @@
     (cond
       ((call str.present en)
        (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
-       (loop k 0 (- (arr.len ms) 1) 1
+       (for k 0 (arr.len ms)
          (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
          (call buf.push_str out " (")
          (call buf.push_bytes out en)
@@ -492,7 +492,7 @@
   ;; The dbgs in tokens [from, to), lowered before the one around them.
   (fn dbgs_in [l:(ptr L) from:i32 to:i32] -> i32
     (let k:i32 0)
-    (loop i from (- to 2) 1
+    (for i from (- to 1)
       (if (and (eq (call kind l i) compiler.Kind.lparen) (eq (call form l (+ i 1)) 8)) (set! k (+ k 1)) (block)))
     k)
 
@@ -544,7 +544,7 @@
        (call buf.push_str out " (match ")
        (call buf.push_bytes out var)
        (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
-       (loop k 0 (- (arr.len ms) 1) 1
+       (for k 0 (arr.len ms)
          (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
          (call buf.push_str out " (")
          (call buf.push_bytes out en)
@@ -649,7 +649,7 @@
     (put l L.rets 0)
     (let any:bool false)
     (let square:i32 0)
-    (loop i 0 (- (get l L.n) 2) 1
+    (for i 0 (- (get l L.n) 1)
       (if (eq (call kind l i) compiler.Kind.lbracket) (set! square (+ square 1)) (block))
       (if (eq (call kind l i) compiler.Kind.rbracket) (set! square (- square 1)) (block))
       (if (and (eq square 0) (call lowers l i)) (set! any true) (block)))
@@ -657,7 +657,7 @@
     ;; the printers formatting generates (fmtdebug.aipl), before the
     ;; module's closing paren
     (let printers:(ptr buf.Buf) (ptr.null buf.Buf))
-    (loop k 0 (- (call (vec.len (ptr checker.Fmt)) fmts) 1) 1
+    (for k 0 (call (vec.len (ptr checker.Fmt)) fmts)
       (let f:(ptr checker.Fmt) (call (vec.at (ptr checker.Fmt)) fmts k))
       (if (eq (get f checker.Fmt.k) -3) (set! printers (get f checker.Fmt.text)) (block)))
     (if (eq printers (ptr.null buf.Buf))

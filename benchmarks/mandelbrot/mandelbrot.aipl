@@ -24,9 +24,9 @@
     (let w:f64 (call to_f64 n))
     (let bits:i32 0)
     (let count:i32 0)
-    (loop y 0 (- n 1) 1
+    (for y 0 n
       (let ci:f64 (- (/ (* 2.0 (call to_f64 y)) w) 1.0))
-      (loop x 0 (- n 1) 1
+      (for x 0 n
         (let cr:f64 (- (/ (* 2.0 (call to_f64 x)) w) 1.5))
         (let zr:f64 0.0) (let zi:f64 0.0) (let tr:f64 0.0) (let ti:f64 0.0)
         (let i:i32 0)

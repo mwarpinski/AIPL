@@ -14,7 +14,7 @@
     (get v V.y))
   (fn sum_pos [n:i32] -> i32
     (let s:i32 0)
-    (loop i 1 n 1
+    (for i 1 (+ n 1)
       (let x:i32 (if (eq (% i 3) 0) (block (continue)) i))
       (set! s (+ s x)))
     s)

@@ -48,7 +48,7 @@
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 16))
     (let n:i32 (get b str.Bytes.len))
     (let s:i32 0)
-    (loop i 0 (- n 1) 1
+    (for i 0 n
       (if (eq (call str.byte_at b i) 10)
           (block
             (let e:i32 (if (and (gt i s) (eq (call str.byte_at b (- i 1)) 13)) (- i 1) i))
@@ -62,7 +62,7 @@
   ;; The parts with sep between each.
   (fn join [a:alloc.Allocator parts:(ptr (vec.Vec str.Bytes)) sep:str.Bytes] -> (ptr buf.Buf) (pub) (no_leak)
     (let out:(ptr buf.Buf) (call buf.make a 64))
-    (loop i 0 (- (call (vec.len str.Bytes) parts) 1) 1
+    (for i 0 (call (vec.len str.Bytes) parts)
       (if (gt i 0) (call buf.push_bytes out sep) (block))
       (call buf.push_bytes out (call (vec.at str.Bytes) parts i)))
     out)
@@ -85,7 +85,7 @@
   (fn repeat [a:alloc.Allocator b:str.Bytes n:i32] -> (ptr buf.Buf) (pub) (no_leak)
     (req (gte n 0))
     (let out:(ptr buf.Buf) (call buf.make a (+ (* (get b str.Bytes.len) n) 1)))
-    (loop i 1 n 1 (call buf.push_bytes out b))
+    (for i 1 (+ n 1) (call buf.push_bytes out b))
     out)
 
   ;; b with ASCII letters in upper or lower case (other bytes as they are).
@@ -95,7 +95,7 @@
 
   (fn with_case [a:alloc.Allocator b:str.Bytes upper:bool] -> (ptr buf.Buf)
     (let out:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 1)))
-    (loop i 0 (- (get b str.Bytes.len) 1) 1
+    (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (call buf.push_byte out
         (cond ((and upper (and (gte c 97) (lte c 122))) (- c 32))
