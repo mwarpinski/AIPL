@@ -132,7 +132,7 @@
   (struct NPos [(read code:i32) (read file:i32) (read line:i32) (read col:i32)] (pub))
 
   (fn note_position [l:(ptr L) file:i32 line:i32 col:i32] -> void
-    (let p:(ptr NPos) (new NPos))
+    (let p:(ptr NPos) (new NPos (call alloc.forever)))
     (put p NPos.code (call buf.len (get l L.code)))
     (put p NPos.file file)
     (put p NPos.line line)
@@ -140,7 +140,7 @@
     (call (vec.push (ptr NPos)) (get l L.positions) p))
 
   (fn make [w:(ptr wasm_reader.Wasm)] -> (ptr L) (pub)
-    (let l:(ptr L) (new L))
+    (let l:(ptr L) (new L (call alloc.forever)))
     (put l L.fimports (call (vec.make (ptr wasm_reader.Import)) (call alloc.default) 16))
     (loop i 0 (- (call (vec.len (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports)) 1) 1
       (let imp:(ptr wasm_reader.Import) (call (vec.at (ptr wasm_reader.Import)) (get w wasm_reader.Wasm.imports) i))
@@ -158,8 +158,8 @@
     (put l L.labels (call (vec.make (ptr Label)) (call alloc.default) 16))
     (put l L.vk (call (vec.make i32) (call alloc.default) 16))
     (put l L.vv (call (vec.make i64) (call alloc.default) 16))
-    (put l L.oa (new Op))
-    (put l L.ob (new Op))
+    (put l L.oa (new Op (call alloc.forever)))
+    (put l L.ob (new Op (call alloc.forever)))
     (put l L.colds (call (vec.make (ptr Cold)) (call alloc.default) 16))
     (put l L.out_of_bounds (call reason l "wasm trap: out of bounds memory access"))
     (put l L.unaligned (call reason l "wasm trap: unaligned atomic"))
@@ -191,13 +191,13 @@
     at)
 
   ;; Appends raw bytes to the data; returns their address once loaded.
-  (fn data_bytes [l:(ptr L) b:(ptr str.Bytes)] -> i32 (pub)
+  (fn data_bytes [l:(ptr L) b:str.Bytes] -> i32 (pub)
     (let at:i32 (+ (call elf.data_vaddr) (call buf.len (get l L.data))))
     (call buf.push_bytes (get l L.data) b)
     at)
 
   (fn reason [l:(ptr L) text:str] -> (ptr Reason) (pub)
-    (let r:(ptr Reason) (new Reason))
+    (let r:(ptr Reason) (new Reason (call alloc.forever)))
     (put r Reason.addr (call data_text l text))
     (put r Reason.len (str.len text))
     (put r Reason.frames true)
@@ -469,7 +469,7 @@
     (if keep (block) (call keep_top l n))
     (let base:i32 (- (call vlen l) n))
     ;; register to register first
-    (let src:(arr i32) (arr.new i32 (+ n 1)))
+    (let src:(arr i32) (arr.new i32 (call alloc.forever) (+ n 1)))
     (let left:i32 0)
     (loop i 0 (- n 1) 1
       (let k:i32 (call (vec.at i32) (get l L.vk) (+ base i)))
@@ -571,7 +571,7 @@
 
   ;; `call` to function index `func`, patched once every function is placed.
   (fn emit_call [l:(ptr L) func:i32] -> void (pub)
-    (let f:(ptr Fixup) (new Fixup))
+    (let f:(ptr Fixup) (new Fixup (call alloc.forever)))
     (put f Fixup.at (call x64.call_rel (get l L.code)))
     (put f Fixup.func func)
     (call (vec.push (ptr Fixup)) (get l L.fixups) f))
@@ -684,12 +684,12 @@
 
   (fn choose_registers [l:(ptr L) np:i32 body:(ptr wasm_reader.Body) t:(ptr wasm_reader.FuncType)] -> void
     (let n:i32 (get l L.nall))
-    (let weight:(arr i32) (arr.new i32 (+ n 1)))
-    (put l L.reg_of (arr.new i32 (+ n 1)))
-    (put l L.xreg_of (arr.new i32 (+ n 1)))
+    (let weight:(arr i32) (arr.new i32 (call alloc.forever) (+ n 1)))
+    (put l L.reg_of (arr.new i32 (call alloc.forever) (+ n 1)))
+    (put l L.xreg_of (arr.new i32 (call alloc.forever) (+ n 1)))
     (loop i 0 n 1 (arr.set i32 (get l L.reg_of) i -1) (arr.set i32 (get l L.xreg_of) i -1))
     ;; which locals are floats: the parameters', then the declared groups' types
-    (let float:(arr bool) (arr.new bool (+ n 1)))
+    (let float:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
     (loop i 0 (- np 1) 1 (arr.set bool float i (call is_float_type (call (vec.at i32) (get t wasm_reader.FuncType.params) i))))
     (let at:i32 np)
     (loop g 0 (- (call (vec.len (ptr wasm_reader.Locals)) (get body wasm_reader.Body.locals)) 1) 1
@@ -1087,7 +1087,7 @@
   ;; ===== Control flow (NE7) =====
 
   (fn open_label [l:(ptr L) kind:i32 arity:i32] -> (ptr Label)
-    (let lab:(ptr Label) (new Label))
+    (let lab:(ptr Label) (new Label (call alloc.forever)))
     (put lab Label.kind kind)
     (put lab Label.arity arity)
     (put lab Label.height (get l L.depth))
@@ -1207,7 +1207,7 @@
                  ;; function's (the hot path falls through)
                  (block
                    (if (lt cc 0) (block (call x64.test_rr c 32 (call r10) (call r10)) (set! cc (call x64.cc_ne))) (block))
-                   (let cd:(ptr Cold) (new Cold))
+                   (let cd:(ptr Cold) (new Cold (call alloc.forever)))
                    (put cd Cold.jump (call x64.jcc c cc))
                    (put cd Cold.from (+ (get l L.at) 1))
                    (put cd Cold.to (- out_end 1))

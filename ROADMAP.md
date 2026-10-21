@@ -90,7 +90,7 @@ versioning (once packages exist).
 - **`sys.print` takes only `str`.** Numbers print through the standard library (`io.print_int`, `io.println_int`, `fmt.*`), and strings become byte slices with `str.from_str`. The library (AIPL_SPEC.md 12.6) has text I/O, `i32` formatting and parsing (`fmt`, `str.parse_int`), a string builder (`buf`), and generic collections (`vec`, `map`); floats print with a fixed number of decimals (`fmt.f64_fixed`, exact) or, in `std/json`, as the shortest digits that read back, and `float.from_decimal` parses them; still missing are a shortest-digits printer outside JSON, and sets.
 - **VM `str` values are Rust strings, not pointers.** The VM lays out the first loaded module's literals at the same addresses as wasm, so `str.ptr` agrees; a string that is not one of those literals (from a module loaded later into the same VM) is copied onto the heap each time it is used.
 - **`sys.exit` in the VM returns an error** (`sys.exit(N) requested`) instead of setting the process exit code.
-- **Three kinds of text** (audit D7): `str` (immutable), `(ptr str.Bytes)` (a slice), and `buf.Buf` (a builder), converted by calling a function each way (`str.from_str`, `str.from_bytes`, `buf.bytes`, `buf.to_str`; AIPL_SPEC.md 4.B says which to use when). A `str` made at run time is never freed.
+- **Three kinds of text** (audit D7): `str` (immutable), `str.Bytes` (a slice), and `buf.Buf` (a builder), converted by calling a function each way (`str.from_str`, `str.from_bytes`, `buf.bytes`, `buf.to_str`; AIPL_SPEC.md 4.B says which to use when). A `str` made at run time is never freed.
 - **No time zones, no sockets, no starting processes.** `std/date` (since 2026-10-16) has UTC dates and ISO 8601; there is no time-zone database. The runtime surface is preopened files and directories, stdio, args, environment, two clocks, and randomness: WASI preview 1 has no listening sockets and no way to start a process.
 
 ### Concurrency
@@ -113,3 +113,69 @@ Still true from the original analysis, updated for what has landed:
 ### The longer-term ambition (a PDF viewer or browser in AIPL)
 
 A PDF reader or rasteriser is a realistic first "real systems program" now that the standard library, control flow, and the compiled self-hosted toolchain exist. It needs binary parsing, vector rasterisation into a memory buffer, and file I/O, all of which compile to wasm today. A browser additionally needs a windowing/graphics host, which wasm alone cannot provide, plus HTML/CSS/layout/font/image/network stacks. Neither is near-term; the path runs through the sections above.
+
+### After launch: AI-SQL, a query language written in AIPL
+
+An idea, not a plan (2026-10-19): a small SQL in AIPL, as AIPL is written
+with Rust as its bootstrap, to show the language building a real tool in
+the data domain. It would use most of std (csv for tables, map for GROUP
+BY and hash joins, vec.sort_by for ORDER BY, regex for LIKE, stats for
+aggregates, `(no_leak)` per query in a server mode) and ship as one native
+binary built by AIPL. "AI" because it would drop SQL's traps the way AIPL
+drops C's: typed columns and no implicit casts, qualified names in joins,
+output in a stated order, a missing value as an explicit option rather
+than NULL's three-valued logic, and errors that say what to write. First
+a CSV query tool, its answers checked against SQLite's on the same data;
+the full language only if that lands. Not before launch: it would pull
+focus.
+
+**Timeline, re-estimated 2026-10-20.** An agent wrote the CSV query tool
+(about 4,700 lines of AIPL, outside this repository in ../AI-SQL) in an
+hour, and a second model's review and the fixes took fifteen minutes.
+That first draft also had silent wrong answers (trailing input ignored,
+so `LIMTI 2` dropped the limit; float join keys colliding; `none`
+handled two ways), found only by reading and running it. So writing is
+no longer the schedule; earning trust in the answers is. In calendar
+time, with agents writing and a person deciding:
+
+- **The CSV query tool, trustworthy: days.** What is left is evidence:
+  differential testing against SQLite on generated queries as well as
+  generated data (in the manner of SQLancer), the semantics written
+  down and decided (none, typing, ordering), and a cold review.
+- **The full language** (INSERT, UPDATE, DELETE, subqueries, window
+  functions, typed DDL): **one to two weeks**, each part landing with
+  its differential tests.
+- **The storage engine: weeks to a couple of months**, set by testing,
+  not code: crash and power-loss simulation, fault injection, and
+  concurrent access, against a durable format that must stay readable.
+  It needs host operations first (fd_sync, file locks, random-access
+  I/O), each a few days in three backends and both toolchains.
+
+The order is unchanged: the CSV query tool, AI-SQL, then the engine,
+each worth having alone.
+
+### After launch: a 64-bit target
+
+Programs are limited to 2 GiB of memory (AIPL_SPEC.md 4.A: below it,
+every address is a non-negative i32). More would come as a second
+compilation target, not a second language (decided 2026-10-19): the
+same source compiled for wasm's 64-bit memory (memory64), as C and Rust
+compile one source for 32- and 64-bit machines. The checker, the
+language, and nearly every program stay as they are; what changes is the
+two code generators (a mode in each), the native backend's translation,
+the layout of a checked pointer (an address and a generation no longer
+share 64 bits), and std's unsafe code that handles raw addresses, which
+needs an address-sized integer type (launch checklist section 6).
+Wanted when a program needs more than 2 GiB in memory; a lower limit
+(`--max-memory`) comes first.
+
+### After launch: TLS written in AIPL
+
+Until then, HTTPS comes from rustls in the host (docs/design/NET_PLAN.md
+decision 4), which native executables cannot hold. A TLS 1.3 written in
+AIPL (X25519, AES-GCM or ChaCha20-Poly1305, signature checks, X.509
+chains) would give native executables HTTPS. It ships labelled
+experimental and unaudited until an outside audit, and is held first to
+Google's Wycheproof vectors, differential tests against rustls (the same
+handshakes, the same bytes), fuzzing of its parsers, and constant-time
+checks on the critical routines.

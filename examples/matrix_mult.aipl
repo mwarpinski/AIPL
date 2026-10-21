@@ -1,14 +1,15 @@
 ;; Dense f64 matrices: a struct holding a row-major (arr f64), and the
 ;; i-k-j multiplication order, which walks both inputs' rows sequentially.
 (module matrix_mult
+  (import alloc)
   (struct Matrix [rows:i32 cols:i32 data:(arr f64)])
 
   (fn make [rows:i32 cols:i32] -> (ptr Matrix)
     (req (and (gte rows 0) (gte cols 0)))
-    (let m:(ptr Matrix) (new Matrix))
+    (let m:(ptr Matrix) (new Matrix (call alloc.forever)))
     (put m Matrix.rows rows)
     (put m Matrix.cols cols)
-    (put m Matrix.data (arr.new f64 (* rows cols)))
+    (put m Matrix.data (arr.new f64 (call alloc.forever) (* rows cols)))
     m)
 
   (fn at [m:(ptr Matrix) r:i32 c:i32] -> f64
@@ -50,9 +51,12 @@
     (i64.trunc_f64_s (call trace (call mul a b))))
 
   ;; 2x2 check: [[1 2] [3 4]] * [[5 6] [7 8]] = [[19 22] [43 50]], trace 69.
-  (fn main [] -> i64
+  ;; [[1 2] [3 4]] times [[5 6] [7 8]] is [[19 22] [43 50]]: trace 69.
+  (fn main [] -> i32
     (let a:(ptr Matrix) (call make 2 2))
     (let b:(ptr Matrix) (call make 2 2))
     (call set_at a 0 0 1.0) (call set_at a 0 1 2.0) (call set_at a 1 0 3.0) (call set_at a 1 1 4.0)
     (call set_at b 0 0 5.0) (call set_at b 0 1 6.0) (call set_at b 1 0 7.0) (call set_at b 1 1 8.0)
-    (i64.trunc_f64_s (call trace (call mul a b)))))
+    (println "trace of the product: {(call trace (call mul a b)):.1}")
+    (println "trace for 9 x 9: {(call trace_of_product 9)}")
+    0))

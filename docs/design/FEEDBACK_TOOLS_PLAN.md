@@ -38,7 +38,7 @@ still wanted afterwards, is `eval -e` in a loop over a growing session.
 $ aipl doc text
 std/text: the text functions that build something, over byte slices ...
 
-  split [a:alloc.Allocator b:(ptr str.Bytes) sep:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes)))
+  split [a:alloc.Allocator b:str.Bytes sep:str.Bytes] -> (ptr (vec.Vec str.Bytes))
     The pieces of b between each sep: "a,,b" gives "a", "", "b"; "" gives
     one empty piece.
   ...
@@ -54,7 +54,7 @@ $ aipl doc path/to/mod.aipl    # any module
   their readable fields, unions, enums, constants, interfaces);
   `--private` shows the rest.
 - Signatures print as written, with the module's own names qualified as
-  a caller writes them (`(ptr str.Bytes)`, `(vec.Vec T)`).
+  a caller writes them (`str.Bytes`, `(vec.Vec T)`).
 - `aipl doc --check FILE` fails on a public item with no comment;
   `cargo test` runs it over std, so the standard library stays documented.
 - Written in AIPL (`aipl_src/doc.aipl`): it needs no execution, only parsing,

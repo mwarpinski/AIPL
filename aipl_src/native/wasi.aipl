@@ -44,7 +44,7 @@
 
   ;; The data the routines use: the fd table (stdio open) and the errno table.
   (fn make [l:(ptr lower.L)] -> (ptr W) (pub)
-    (let w:(ptr W) (new W))
+    (let w:(ptr W) (new W (call alloc.forever)))
     (put w W.region_routine -1)
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (loop i 0 (- (call fd_slots) 1) 1
@@ -827,7 +827,7 @@
     (call x64.store c 32 (call x64.mem (call rcx) 0) (call rax)))
 
   ;; Emits the routine for import `name`; false if it is not one of these.
-  (fn emit_import [l:(ptr lower.L) w:(ptr W) name:(ptr str.Bytes)] -> bool (pub)
+  (fn emit_import [l:(ptr lower.L) w:(ptr W) name:str.Bytes] -> bool (pub)
     (cond
       ((call is name "fd_write") (call emit_fd_rw l w false) true)
       ((call is name "fd_read") (call emit_fd_rw l w true) true)
@@ -844,6 +844,6 @@
       ((call is name "path_filestat_get") (call emit_path_filestat l w) true)
       (else false)))
 
-  (fn is [name:(ptr str.Bytes) want:str] -> bool
+  (fn is [name:str.Bytes want:str] -> bool
     (call str.bytes_eq name (call str.from_str want)))
 )

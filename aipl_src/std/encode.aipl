@@ -43,7 +43,7 @@
       (else (cond ((eq c 45) 62) ((eq c 95) 63) (else -1)))))
 
   ;; Appends the base64 text of b to o.
-  (fn base64_to [o:(ptr buf.Buf) b:(ptr str.Bytes) alphabet:Alphabet padding:Padding] -> void (pub)
+  (fn base64_to [o:(ptr buf.Buf) b:str.Bytes alphabet:Alphabet padding:Padding] -> void (pub)
     (let n:i32 (get b str.Bytes.len))
     (let i:i32 0)
     (while (lte (+ i 3) n)
@@ -63,7 +63,7 @@
   ;; character outside the alphabet, data of 1 more than a multiple of 4
   ;; characters, or (padded) other than the `=`s that make a multiple of 4
   ;; (unpadded: any `=`).
-  (fn base64_error [b:(ptr str.Bytes) alphabet:Alphabet padding:Padding] -> i32
+  (fn base64_error [b:str.Bytes alphabet:Alphabet padding:Padding] -> i32
     (let n:i32 (get b str.Bytes.len))
     (let p:i32 0)
     (while (and (lt p n) (neq (call str.byte_at b p) 61))
@@ -83,7 +83,7 @@
   ;; Appends the bytes the base64 text b stands for; how many, or where b
   ;; goes wrong (with nothing appended). Bits left over in the last
   ;; character are ignored, as Python does.
-  (fn base64_decode_to [o:(ptr buf.Buf) b:(ptr str.Bytes) alphabet:Alphabet padding:Padding] -> (result i32 i32) (pub)
+  (fn base64_decode_to [o:(ptr buf.Buf) b:str.Bytes alphabet:Alphabet padding:Padding] -> (result i32 i32) (pub)
     (let bad:i32 (call base64_error b alphabet padding))
     (when (gte bad 0) (return (err:i32 bad)))
     (let n:i32 (get b str.Bytes.len))
@@ -135,7 +135,7 @@
       (else -1)))
 
   ;; Appends two hex digits for each byte of b (A-F if upper, else a-f).
-  (fn hex_to [o:(ptr buf.Buf) b:(ptr str.Bytes) upper:bool] -> void (pub)
+  (fn hex_to [o:(ptr buf.Buf) b:str.Bytes upper:bool] -> void (pub)
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (call buf.push_byte o (call hex_digit (shru c 4) upper))
@@ -143,7 +143,7 @@
 
   ;; Appends the bytes whose hex digits (either case, no spaces) are b; how
   ;; many, or where b goes wrong (its length if that is odd).
-  (fn hex_decode_to [o:(ptr buf.Buf) b:(ptr str.Bytes)] -> (result i32 i32) (pub)
+  (fn hex_decode_to [o:(ptr buf.Buf) b:str.Bytes] -> (result i32 i32) (pub)
     (let n:i32 (get b str.Bytes.len))
     (for i 0 n (when (lt (call hex_value (call str.byte_at b i)) 0) (return (err:i32 i))))
     (when (eq (% n 2) 1) (return (err:i32 n)))
@@ -176,8 +176,8 @@
   ;; characters of `keep` written as `%` and two uppercase hex digits; with
   ;; plus, a space is written `+` (as HTML forms send it), as Python's
   ;; urllib.parse.quote(b, safe=keep) and quote_plus do.
-  (fn percent_encode_to [o:(ptr buf.Buf) b:(ptr str.Bytes) keep:str plus:bool] -> void (pub)
-    (let ks:(ptr str.Bytes) (call str.from_str keep))
+  (fn percent_encode_to [o:(ptr buf.Buf) b:str.Bytes keep:str plus:bool] -> void (pub)
+    (let ks:str.Bytes (call str.from_str keep))
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))
       (cond
@@ -192,7 +192,7 @@
   ;; case) becoming that byte and, with plus, each `+` a space; how many,
   ;; or the index of a `%` without two hex digits after it. (Python's
   ;; unquote leaves such a `%` as it is; this stops instead.)
-  (fn percent_decode_to [o:(ptr buf.Buf) b:(ptr str.Bytes) plus:bool] -> (result i32 i32) (pub)
+  (fn percent_decode_to [o:(ptr buf.Buf) b:str.Bytes plus:bool] -> (result i32 i32) (pub)
     (let n:i32 (get b str.Bytes.len))
     (for i 0 n
       (when (eq (call str.byte_at b i) 37)

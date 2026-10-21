@@ -44,9 +44,9 @@
 
   ;; A new, empty heap.
   (fn make [] -> (ptr Heap) (pub)
-    (let h:(ptr Heap) (new Heap))
+    (let h:(ptr Heap) (call (gen.forever Heap)))
     (put h Heap.lock 0)
-    (put h Heap.heads (arr.new i32 NCLASSES))
+    (put h Heap.heads (call (gen.forever_array i32) NCLASSES))
     (loop c 0 (- NCLASSES 1) 1 (arr.set i32 (get h Heap.heads) c 0))
     (put h Heap.cur 0)
     (put h Heap.end 0)
@@ -82,7 +82,9 @@
   ;; ===== Allocating and freeing =====
 
   ;; n zeroed bytes, 8-aligned.
-  (fn raw [h:(ptr Heap) n:i32] -> i32 (pub)
+  ;; (no_leak): the heap grows only when no freed block of the size is
+  ;; left to reuse.
+  (fn raw [h:(ptr Heap) n:i32] -> i32 (pub) (no_leak)
     (req (gt n 0))
     (req (lte n 1879048184))
     (unsafe (atomic.lock (ptr.addr h))

@@ -14,39 +14,39 @@
   (import alloc)
   (import vec)
 
-  (fn bytes [s:str] -> (ptr str.Bytes) (call str.from_str s))
+  (fn bytes [s:str] -> str.Bytes (call str.from_str s))
 
-  (fn piece [b:(ptr str.Bytes) from:i32 to:i32] -> str
+  (fn piece [b:str.Bytes from:i32 to:i32] -> str
     (call str.from_bytes (call str.slice b from (- to from))))
 
   ;; The index after the last '/' of b (0 if none).
-  (fn after_slash [b:(ptr str.Bytes)] -> i32
+  (fn after_slash [b:str.Bytes] -> i32
     (let i:i32 (get b str.Bytes.len))
     (while (and (gt i 0) (neq (call str.byte_at b (- i 1)) 47)) (set! i (- i 1)))
     i)
 
   ;; Whether p starts at the root ('/').
   (fn is_absolute [p:str] -> bool (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (and (gt (get b str.Bytes.len) 0) (eq (call str.byte_at b 0) 47)))
 
   ;; b after a: b itself if it is absolute (posixpath.join).
   (fn join [a:str b:str] -> str (pub)
     (when (call is_absolute b) (return b))
-    (let ab:(ptr str.Bytes) (call bytes a))
+    (let ab:str.Bytes (call bytes a))
     (let n:i32 (get ab str.Bytes.len))
     (if (or (eq n 0) (eq (call str.byte_at ab (- n 1)) 47)) (call str.concat a b) (call str.concat (call str.concat a "/") b)))
 
   ;; What follows the last '/' (posixpath.basename): "" for "a/".
   (fn file_name [p:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (call piece b (call after_slash b) (get b str.Bytes.len)))
 
   ;; What comes before the last '/', without the slashes ending it unless
   ;; it is all slashes (posixpath.dirname): "a" for "a/b", "/" for "/a",
   ;; "" for "a".
   (fn parent [p:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (let i:i32 (call after_slash b))
     (let head:i32 i)
     (let all_slashes:bool true)
@@ -57,7 +57,7 @@
 
   ;; Where the file name's extension starts (posixpath.splitext: the last
   ;; '.' that is not among its leading dots), or the path's length.
-  (fn ext_at [b:(ptr str.Bytes)] -> i32
+  (fn ext_at [b:str.Bytes] -> i32
     (let n:i32 (get b str.Bytes.len))
     (let start:i32 (call after_slash b))
     ;; leading dots of the name are not an extension
@@ -70,19 +70,19 @@
   ;; The file name's extension with its dot, or "" (posixpath.splitext):
   ;; ".gz" for "b.tar.gz", "" for ".bashrc".
   (fn extension [p:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (call piece b (call ext_at b) (get b str.Bytes.len)))
 
   ;; The file name without its extension: "b.tar" for "a/b.tar.gz".
   (fn stem [p:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (call piece b (call after_slash b) (call ext_at b)))
 
   ;; p with "." parts and repeated slashes left out and each ".." taking
   ;; the part before it (posixpath.normpath): "a/c" for "a/./b/../c", ".."
   ;; for "a/../..", "/" for "/..", "." for "".
   (fn normalize [p:str] -> str (pub)
-    (let b:(ptr str.Bytes) (call bytes p))
+    (let b:str.Bytes (call bytes p))
     (let n:i32 (get b str.Bytes.len))
     (when (eq n 0) (return "."))
     ;; one leading slash, or exactly two (POSIX leaves "//" to the system)
@@ -90,30 +90,30 @@
     (while (and (lt lead n) (eq (call str.byte_at b lead) 47)) (set! lead (+ lead 1)))
     (let root:str (cond ((eq lead 0) "") ((eq lead 2) "//") (else "/")))
     (let a:alloc.Allocator (call alloc.default))
-    (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 8))
+    (let parts:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (let i:i32 lead)
     (while (lt i n)
       (let e:i32 i)
       (while (and (lt e n) (neq (call str.byte_at b e) 47)) (set! e (+ e 1)))
-      (let part:(ptr str.Bytes) (call str.slice b i (- e i)))
+      (let part:str.Bytes (call str.slice b i (- e i)))
       (cond
         ((or (eq (get part str.Bytes.len) 0) (call str.is part ".")) (block))
         ((call str.is part "..")
-         (let k:i32 (call (vec.len (ptr str.Bytes)) parts))
+         (let k:i32 (call (vec.len str.Bytes) parts))
          (cond
            ;; ".." after a name takes it
-           ((and (gt k 0) (not (call str.is (call (vec.at (ptr str.Bytes)) parts (- k 1)) ".."))) (let _p:(ptr str.Bytes) (call (vec.pop (ptr str.Bytes)) parts)))
+           ((and (gt k 0) (not (call str.is (call (vec.at str.Bytes) parts (- k 1)) ".."))) (let _p:str.Bytes (call (vec.pop str.Bytes) parts)))
            ;; above the root is the root
            ((gt (str.len root) 0) (block))
-           (else (call (vec.push (ptr str.Bytes)) parts part))))
-        (else (call (vec.push (ptr str.Bytes)) parts part)))
+           (else (call (vec.push str.Bytes) parts part))))
+        (else (call (vec.push str.Bytes) parts part)))
       (set! i (+ e 1)))
     (let o:(ptr buf.Buf) (call buf.make a (+ n 2)))
     (call buf.push_str o root)
-    (for k 0 (call (vec.len (ptr str.Bytes)) parts)
+    (for k 0 (call (vec.len str.Bytes) parts)
       (when (gt k 0) (call buf.push_byte o 47))
-      (call buf.push_bytes o (call (vec.at (ptr str.Bytes)) parts k)))
+      (call buf.push_bytes o (call (vec.at str.Bytes) parts k)))
     (let s:str (if (eq (call buf.len o) 0) "." (call buf.to_str o)))
     (call buf.free o)
-    (call (vec.free (ptr str.Bytes)) parts)
+    (call (vec.free str.Bytes) parts)
     s))

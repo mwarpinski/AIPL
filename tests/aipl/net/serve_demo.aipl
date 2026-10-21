@@ -1,0 +1,68 @@
+;; A std/serve server for tests/test_serve.rs: `serve_demo ADDR:PORT N`
+;; answers N requests on ADDR:PORT, then prints how many it served and the
+;; bytes its request arena holds. Routes: GET / says hello, GET /echo...
+;; gives back its target, GET /count how many requests came before (state
+;; kept between requests, in the program's own memory), GET /memory the
+;; top of the heap (the memory the program has taken from the system,
+;; which a server whose memory is flat keeps the same), POST /length
+;; counts the body's bytes; anything else is 404.
+(module serve_demo
+  (import alloc)
+  (import buf)
+  (import str)
+  (import os)
+  (import net)
+  (import http)
+  (import serve)
+
+  (fn starts [b:str.Bytes s:str] -> bool (no_leak)
+    (let p:str.Bytes (call str.from_str s))
+    (and (gte (get b str.Bytes.len) (get p str.Bytes.len))
+         (call str.bytes_eq (call str.slice b 0 (get p str.Bytes.len)) p)))
+
+  (fn text [out:(ptr buf.Buf) status:i32 body:str.Bytes] -> void (no_leak)
+    (call http.start_response out status)
+    (call http.add_header out "Content-Type" "text/plain; charset=utf-8")
+    (call http.end_head out body))
+
+  ;; The requests answered so far.
+  (struct Counter [n:i32])
+
+  (fn handle [k:(ptr Counter) a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)
+    (let method:str.Bytes (get req http.Message.method))
+    (let target:str.Bytes (get req http.Message.target))
+    (let before:i32 (get k Counter.n))
+    (put k Counter.n (+ before 1))
+    (cond
+      ((and (call str.bytes_eq method (call str.from_str "GET")) (call str.bytes_eq target (call str.from_str "/")))
+       (call text out 200 (call str.from_str "hello\n")))
+      ((and (call str.bytes_eq method (call str.from_str "GET")) (call starts target "/echo"))
+       (call text out 200 target))
+      ((and (call str.bytes_eq method (call str.from_str "GET")) (call str.bytes_eq target (call str.from_str "/count")))
+       (let b:(ptr buf.Buf) (call buf.make a 32))
+       (format_to b "{before} before this one\n")
+       (call text out 200 (call buf.bytes b)))
+      ((and (call str.bytes_eq method (call str.from_str "GET")) (call str.bytes_eq target (call str.from_str "/memory")))
+       (let b:(ptr buf.Buf) (call buf.make a 32))
+       (format_to b "heap top {(call heap_top)}\n")
+       (call text out 200 (call buf.bytes b)))
+      ((and (call str.bytes_eq method (call str.from_str "POST")) (call str.bytes_eq target (call str.from_str "/length")))
+       (let b:(ptr buf.Buf) (call buf.make a 32))
+       (format_to b "{(get (get req http.Message.body) str.Bytes.len)} bytes\n")
+       (call text out 200 (call buf.bytes b)))
+      (else (call text out 404 (call str.from_str "not found\n")))))
+
+  ;; The top of the heap: where mem.alloc takes memory from next.
+  (fn heap_top [] -> i32 (no_leak) (unsafe (mem.load32 0)))
+
+  (fn main [] -> (result i32 str)
+    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+      (ok l
+        (let k:(ptr Counter) (new Counter (call alloc.default)))
+        (let o:serve.Options (call serve.requests (call serve.options) (call os.arg_int 2 1)))
+        (let s:serve.Stats (call (serve.run_with (ptr Counter)) l k (ref handle) o))
+        (call net.close l)
+        (println "served {(get s serve.Stats.served)}, arena {(get s serve.Stats.arena_bytes)} bytes")
+        (ok:str 0))
+      (err e (err:i32 (call net.message e)))))
+)

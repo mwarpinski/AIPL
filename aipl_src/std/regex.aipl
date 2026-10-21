@@ -87,14 +87,14 @@
                  lo:(ptr (vec.Vec i32)) hi:(ptr (vec.Vec i32))
                  cstart:(ptr (vec.Vec i32)) ccount:(ptr (vec.Vec i32)) cneg:(ptr (vec.Vec i32))
                  ngroups:i32 names:(ptr (vec.Vec str)) name_group:(ptr (vec.Vec i32))
-                 prefix:(ptr buf.Buf) lit:(ptr str.Bytes)
+                 prefix:(ptr buf.Buf) lit:str.Bytes
                  ready:bool cur:(ptr Threads) nxt:(ptr Threads) scratch:(arr i32) found:(arr i32)] (pub))
 
   ;; A match's groups: spans[2i] and spans[2i + 1] are group i's start and
   ;; end, -1 if it took no part (group 0 is the whole match).
   (struct Captures [spans:(arr i32) n:i32 a:alloc.Allocator] (pub))
 
-  (struct Parser [b:(ptr str.Bytes) pos:i32 re:(ptr Regex)
+  (struct Parser [b:str.Bytes pos:i32 re:(ptr Regex)
                   kind:(ptr (vec.Vec i32)) na:(ptr (vec.Vec i32)) nb:(ptr (vec.Vec i32)) nc:(ptr (vec.Vec i32)) nd:(ptr (vec.Vec i32))
                   icase:bool multi:bool dotall:bool flags_end:i32 depth:i32
                   failed:bool err_at:i32 err_what:str])
@@ -103,7 +103,7 @@
 
   ;; The program for pattern, from a, or why and where pattern is refused.
   (fn compile [a:alloc.Allocator pattern:str] -> (result (ptr Regex) (ptr Error)) (pub)
-    (let re:(ptr Regex) (call (alloc.create Regex) a))
+    (let re:(ptr Regex) (new Regex a))
     (put re Regex.a a)
     (put re Regex.op (call (vec.make i32) a 32))
     (put re Regex.x (call (vec.make i32) a 32))
@@ -118,7 +118,7 @@
     (put re Regex.name_group (call (vec.make i32) a 4))
     (put re Regex.prefix (call buf.make a 16))
     (put re Regex.ready false)
-    (let p:(ptr Parser) (call (alloc.create Parser) a))
+    (let p:(ptr Parser) (new Parser a))
     (put p Parser.b (call str.from_str pattern))
     (put p Parser.pos 0)
     (put p Parser.re re)
@@ -151,7 +151,7 @@
     (call free_parser p)
     (when failed
       (call free re)
-      (let e:(ptr Error) (call (alloc.create Error) a))
+      (let e:(ptr Error) (new Error a))
       (put e Error.at at)
       (put e Error.what what)
       (return (err:(ptr Regex) e)))
@@ -228,19 +228,19 @@
 
   ;; The character at the parser's position, or -1 at the end.
   (fn peek [p:(ptr Parser)] -> i32
-    (let b:(ptr str.Bytes) (get p Parser.b))
+    (let b:str.Bytes (get p Parser.b))
     (if (lt (get p Parser.pos) (get b str.Bytes.len))
         (get (call utf8.decode b (get p Parser.pos)) utf8.Char.cp)
         -1))
 
   ;; The byte at offset k past the position, or -1 past the end.
   (fn byte_ahead [p:(ptr Parser) k:i32] -> i32
-    (let b:(ptr str.Bytes) (get p Parser.b))
+    (let b:str.Bytes (get p Parser.b))
     (let i:i32 (+ (get p Parser.pos) k))
     (if (lt i (get b str.Bytes.len)) (call str.byte_at b i) -1))
 
   (fn advance [p:(ptr Parser)] -> void
-    (let b:(ptr str.Bytes) (get p Parser.b))
+    (let b:str.Bytes (get p Parser.b))
     (put p Parser.pos (+ (get p Parser.pos) (call utf8.step (call utf8.decode b (get p Parser.pos))))))
 
   ;; alternatives: concat ('|' concat)*
@@ -534,8 +534,8 @@
   ;; Adds \d (which = 0), \w (1), or \s (2), or with neg every character
   ;; not in it.
   (fn add_set [re:(ptr Regex) which:i32 neg:bool] -> void
-    (let los:(arr i32) (call (alloc.array i32) (get re Regex.a) 4))
-    (let his:(arr i32) (call (alloc.array i32) (get re Regex.a) 4))
+    (let los:(arr i32) (arr.new i32 (get re Regex.a) 4))
+    (let his:(arr i32) (arr.new i32 (get re Regex.a) 4))
     (let n:i32 0)
     (cond
       ((eq which 0) (arr.set i32 los 0 48) (arr.set i32 his 0 57) (set! n 1))
@@ -742,10 +742,10 @@
   ;; ===== the machine =====
 
   (fn make_threads [a:alloc.Allocator nprog:i32 ncap:i32] -> (ptr Threads)
-    (let t:(ptr Threads) (call (alloc.create Threads) a))
-    (put t Threads.pcs (call (alloc.array i32) a nprog))
-    (put t Threads.caps (call (alloc.array i32) a (* nprog ncap)))
-    (let mark:(arr i32) (call (alloc.array i32) a nprog))
+    (let t:(ptr Threads) (new Threads a))
+    (put t Threads.pcs (arr.new i32 a nprog))
+    (put t Threads.caps (arr.new i32 a (* nprog ncap)))
+    (let mark:(arr i32) (arr.new i32 a nprog))
     (for i 0 nprog (arr.set i32 mark i -1))
     (put t Threads.mark mark)
     (put t Threads.count 0)
@@ -764,8 +764,8 @@
     (let ncap:i32 (call ncap re))
     (put re Regex.cur (call make_threads a nprog ncap))
     (put re Regex.nxt (call make_threads a nprog ncap))
-    (put re Regex.scratch (call (alloc.array i32) a ncap))
-    (put re Regex.found (call (alloc.array i32) a ncap))
+    (put re Regex.scratch (arr.new i32 a ncap))
+    (put re Regex.found (arr.new i32 a ncap))
     (put re Regex.ready true))
 
   (fn ncap [re:(ptr Regex)] -> i32 (* 2 (+ (get re Regex.ngroups) 1)))
@@ -782,10 +782,10 @@
     (put t Threads.gen gen))
 
   ;; Whether byte i of text is a word byte (false outside the text).
-  (fn word_at [text:(ptr str.Bytes) i:i32] -> bool
+  (fn word_at [text:str.Bytes i:i32] -> bool
     (and (and (gte i 0) (lt i (get text str.Bytes.len))) (call is_word (call str.byte_at text i))))
 
-  (fn holds [kind:i32 text:(ptr str.Bytes) pos:i32] -> bool
+  (fn holds [kind:i32 text:str.Bytes pos:i32] -> bool
     (let n:i32 (get text str.Bytes.len))
     (cond
       ((eq kind AT_START) (eq pos 0))
@@ -801,7 +801,7 @@
   ;; first: t gets only the instructions that read a character, and
   ;; MATCH. A pc already on t is not added again (the thread there came
   ;; first, so it is preferred).
-  (fn add [re:(ptr Regex) t:(ptr Threads) pc:i32 pos:i32 caps:(arr i32) text:(ptr str.Bytes)] -> void
+  (fn add [re:(ptr Regex) t:(ptr Threads) pc:i32 pos:i32 caps:(arr i32) text:str.Bytes] -> void
     (let mark:(arr i32) (get t Threads.mark))
     (when (eq (arr.get i32 mark pc) (get t Threads.gen)) (return))
     (arr.set i32 mark pc (get t Threads.gen))
@@ -841,14 +841,14 @@
   ;; groups then in re's found. must_advance: not an empty match at from
   ;; (Python's rule for the match after an empty one). first: stop at the
   ;; first match seen (for is_match; its groups are not the preferred).
-  (fn search [re:(ptr Regex) text:(ptr str.Bytes) from:i32 must_advance:bool first:bool] -> bool
+  (fn search [re:(ptr Regex) text:str.Bytes from:i32 must_advance:bool first:bool] -> bool
     (let n:i32 (get text str.Bytes.len))
     (let cur:(ptr Threads) (get re Regex.cur))
     (let nxt:(ptr Threads) (get re Regex.nxt))
     (let scratch:(arr i32) (get re Regex.scratch))
     (let found:(arr i32) (get re Regex.found))
     (let ncap:i32 (arr.len scratch))
-    (let prefix:(ptr str.Bytes) (get re Regex.lit))
+    (let prefix:str.Bytes (get re Regex.lit))
     (let skip:bool (gt (get prefix str.Bytes.len) 0))
     (call clear cur)
     (let matched:bool false)
@@ -915,16 +915,16 @@
   ;; ===== searching =====
 
   ;; Whether text has a match.
-  (fn is_match [re:(ptr Regex) text:(ptr str.Bytes)] -> bool (pub)
+  (fn is_match [re:(ptr Regex) text:str.Bytes] -> bool (pub)
     (call search re text 0 false true))
 
   ;; The leftmost match, if any.
-  (fn find [re:(ptr Regex) text:(ptr str.Bytes)] -> (option.Option Span) (pub)
+  (fn find [re:(ptr Regex) text:str.Bytes] -> (option.Option Span) (pub)
     (call find_at re text 0))
 
   ;; The leftmost match starting at byte start or later (^, \b, and the
   ;; like still see the text before start).
-  (fn find_at [re:(ptr Regex) text:(ptr str.Bytes) start:i32] -> (option.Option Span) (pub)
+  (fn find_at [re:(ptr Regex) text:str.Bytes start:i32] -> (option.Option Span) (pub)
     (req (and (gte start 0) (lte start (get text str.Bytes.len))))
     (if (call search re text start false false)
         (make (option.Option Span) some (make Span (arr.get i32 (get re Regex.found) 0) (arr.get i32 (get re Regex.found) 1)))
@@ -932,11 +932,11 @@
 
   ;; The leftmost match's groups, from a (free_captures), if there is a
   ;; match.
-  (fn captures [a:alloc.Allocator re:(ptr Regex) text:(ptr str.Bytes)] -> (option.Option (ptr Captures)) (pub)
+  (fn captures [a:alloc.Allocator re:(ptr Regex) text:str.Bytes] -> (option.Option (ptr Captures)) (pub)
     (when (not (call search re text 0 false false)) (return (make (option.Option (ptr Captures)) none)))
     (let ncap:i32 (call ncap re))
-    (let c:(ptr Captures) (call (alloc.create Captures) a))
-    (let spans:(arr i32) (call (alloc.array i32) a ncap))
+    (let c:(ptr Captures) (new Captures a))
+    (let spans:(arr i32) (arr.new i32 a ncap))
     (for i 0 ncap (arr.set i32 spans i (arr.get i32 (get re Regex.found) i)))
     (put c Captures.spans spans)
     (put c Captures.n (/ ncap 2))
@@ -964,7 +964,7 @@
   ;; Every match, left to right, not overlapping, as a new vector from a
   ;; (Python's re.finditer: an empty match may follow a match, and the
   ;; match after an empty one is not empty at the same place).
-  (fn find_all [a:alloc.Allocator re:(ptr Regex) text:(ptr str.Bytes)] -> (ptr (vec.Vec Span)) (pub)
+  (fn find_all [a:alloc.Allocator re:(ptr Regex) text:str.Bytes] -> (ptr (vec.Vec Span)) (pub)
     (let out:(ptr (vec.Vec Span)) (call (vec.make Span) a 8))
     (let pos:i32 0)
     (let must:bool false)
@@ -977,28 +977,28 @@
   ;; The text between the matches (as find_all finds them), as slices of
   ;; text in a new vector from a. (Python's re.split also gives each
   ;; group's text between them; this does not.)
-  (fn split [a:alloc.Allocator re:(ptr Regex) text:(ptr str.Bytes)] -> (ptr (vec.Vec (ptr str.Bytes))) (pub)
-    (let out:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) a 8))
+  (fn split [a:alloc.Allocator re:(ptr Regex) text:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+    (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (let pos:i32 0)
     (let prev:i32 0)
     (let must:bool false)
     (while (call search re text pos must false)
       (let s:i32 (arr.get i32 (get re Regex.found) 0))
-      (call (vec.push (ptr str.Bytes)) out (call str.slice text prev (- s prev)))
+      (call (vec.push str.Bytes) out (call str.slice text prev (- s prev)))
       (set! prev (call after re))
       (set! must (call was_empty re))
       (set! pos (call after re)))
-    (call (vec.push (ptr str.Bytes)) out (call str.slice text prev (- (get text str.Bytes.len) prev)))
+    (call (vec.push str.Bytes) out (call str.slice text prev (- (get text str.Bytes.len) prev)))
     out)
 
   ;; text with each match (as find_all finds them) replaced by template,
   ;; in which $1 (or ${1}) is group 1's text, $name (or ${name}) a named
   ;; group's, $0 the match's, and $$ a '$'; a group that took no part is
   ;; empty. A template naming no group the pattern has is an error.
-  (fn replace_all [re:(ptr Regex) text:(ptr str.Bytes) template:str] -> (result str (ptr Error)) (pub)
+  (fn replace_all [re:(ptr Regex) text:str.Bytes template:str] -> (result str (ptr Error)) (pub)
     (let a:alloc.Allocator (get re Regex.a))
     (let o:(ptr buf.Buf) (call buf.make a (+ (get text str.Bytes.len) 16)))
-    (let tb:(ptr str.Bytes) (call str.from_str template))
+    (let tb:str.Bytes (call str.from_str template))
     ;; check the template before using it
     (let bad:(ptr Error) (call expand re tb text o false))
     (when (neq bad (ptr.null Error)) (call buf.free o) (return (err:str bad)))
@@ -1019,7 +1019,7 @@
 
   ;; Appends the template with re's found groups put in (when write), or
   ;; only checks it: the error, or ptr.null.
-  (fn expand [re:(ptr Regex) tb:(ptr str.Bytes) text:(ptr str.Bytes) o:(ptr buf.Buf) write:bool] -> (ptr Error)
+  (fn expand [re:(ptr Regex) tb:str.Bytes text:str.Bytes o:(ptr buf.Buf) write:bool] -> (ptr Error)
     (let n:i32 (get tb str.Bytes.len))
     (let i:i32 0)
     (while (lt i n)
@@ -1038,7 +1038,7 @@
                (set! i (+ i 1)))
               (else
                 (while (and (lt i n) (call is_word (call str.byte_at tb i))) (set! i (+ i 1)))
-                (let name:(ptr str.Bytes) (call str.slice tb start (- i start)))
+                (let name:str.Bytes (call str.slice tb start (- i start)))
                 (when (eq (get name str.Bytes.len) 0) (return (call template_error re at "a $ in the template names no group (write $$ for a $)")))
                 (when braced
                   (when (or (gte i n) (neq (call str.byte_at tb i) 125)) (return (call template_error re at "missing } in the template")))
@@ -1052,7 +1052,7 @@
     (ptr.null Error))
 
   ;; The group a template names (digits: by number), or -1.
-  (fn group_number [re:(ptr Regex) name:(ptr str.Bytes)] -> i32
+  (fn group_number [re:(ptr Regex) name:str.Bytes] -> i32
     (let all_digits:bool true)
     (for k 0 (get name str.Bytes.len) (when (not (call is_digit (call str.byte_at name k))) (set! all_digits false)))
     (if all_digits
@@ -1065,7 +1065,7 @@
         (call group_index re (call str.from_bytes name))))
 
   (fn template_error [re:(ptr Regex) at:i32 what:str] -> (ptr Error)
-    (let e:(ptr Error) (call (alloc.create Error) (get re Regex.a)))
+    (let e:(ptr Error) (new Error (get re Regex.a)))
     (put e Error.at at)
     (put e Error.what what)
     e))

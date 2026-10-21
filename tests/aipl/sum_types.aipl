@@ -6,28 +6,39 @@
   (import geometry)
   (import geometry as geo)
   (import vec)
-  (union Op [(lit v:i32) (neg e:Op) (add a:Op b:Op)])
+  (import alloc)
+  ;; a recursive union: its operands behind pointers
+  (union Op [(lit v:i32) (neg e:(ptr Sub)) (add a:(ptr Sub) b:(ptr Sub))])
+  (struct Sub [op:Op])
+  (fn sub [a:alloc.Allocator o:Op] -> (ptr Sub)
+    (let s:(ptr Sub) (new Sub a))
+    (put s Sub.op o)
+    s)
   (fn eval [e:Op] -> i32
     (match e
       (Op.lit [v] v)
-      (Op.neg [x] (- 0 (call eval x)))
-      (Op.add [a b] (+ (call eval a) (call eval b)))))
+      (Op.neg [x] (- 0 (call eval (get x Sub.op))))
+      (Op.add [l r] (+ (call eval (get l Sub.op)) (call eval (get r Sub.op))))))
   (fn sides [s:geo.Shape] -> i32
     (match s (geometry.Shape.rect [w h] 4) (geo.Shape.circle [r] 0) (else 1)))
-  (fn main [] -> i32 (pub)
+  (fn checksum [] -> i32 (pub)
+    (let a:alloc.Allocator (call alloc.default))
     (let shapes:(ptr (vec.Vec geometry.Shape)) (call geometry.some))
     (let total:i32 0)
     (loop i 0 (- (call (vec.len geo.Shape) shapes) 1) 1
       (let s:geometry.Shape (call (vec.at geometry.Shape) shapes i))
       (set! total (+ total (+ (call geo.area s) (call sides s)))))
     ;; total: (10 + 4) + (3 + 0) + (0 + 1) = 18
-    (let l:(ptr geo.Labelled) (new geo.Labelled))
+    (let l:(ptr geo.Labelled) (new geo.Labelled (call alloc.forever)))
     (put l geometry.Labelled.shape (make geo.Shape.rect 3 3))
     (put l geo.Labelled.turn geometry.Turn.back)
-    (let p:geo.Path (make geometry.Path.step 1 2 (make geo.Path.step 3 4 (make geo.Path.stop))))
+    (let p:geo.Path (call geometry.step a 1 2 (call geo.step a 3 4 (make geo.Path.stop))))
     (+ total                                                          ;; 18
        (+ (call geometry.area (get l geo.Labelled.shape))              ;; 9
           (+ (call geo.degrees (get l geometry.Labelled.turn))         ;; 180
              (+ (call geometry.length p)                               ;; 10
                 (+ (match (get l geo.Labelled.turn) (geo.Turn.back 800) (else 0))
-                   (call eval (make Op.add (make Op.lit 90) (make Op.neg (make Op.lit 4))))))))))) ;; 86
+                   (call eval (make Op.add (call sub a (make Op.lit 90)) (call sub a (make Op.neg (call sub a (make Op.lit 4))))))))))))  ;; 86
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

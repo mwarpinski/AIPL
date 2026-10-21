@@ -12,7 +12,7 @@
     ;; pcg32's demo, seed 42 on stream 54: a15c02b7 7b47f409 ba1d3330
     (let w:i64 (bitand (i64.extend_s (call random.next_u32 r)) 4294967295i64))
     (println "{w:x}")
-    (let dice:(arr i32) (arr.new i32 7))
+    (let dice:(arr i32) (arr.new i32 (call alloc.forever) 7))
     (for k 0 6000 (let d:i32 (call random.range r 1 7)) (arr.set i32 dice d (+ (arr.get i32 dice d) 1)))
     (println "dice {(arr.get i32 dice 1)} {(arr.get i32 dice 2)} {(arr.get i32 dice 3)} {(arr.get i32 dice 4)} {(arr.get i32 dice 5)} {(arr.get i32 dice 6)}")
     (let lo:f64 1.0)
@@ -22,7 +22,7 @@
       (when (lt x lo) (set! lo x))
       (when (gt x hi) (set! hi x)))
     (println "f64 in [{lo:.3}, {hi:.3}]")
-    (let xs:(arr i32) (arr.new i32 8))
+    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 8))
     (for k 0 8 (arr.set i32 xs k k))
     (call (random.shuffle i32) r xs)
     (println "shuffled {xs}")

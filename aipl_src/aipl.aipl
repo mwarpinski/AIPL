@@ -5,7 +5,8 @@
 ;; builds the next version of itself with no Rust involved.
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
-;;   aipl compile --exe [--sandbox] FILE.aipl -o OUT
+;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
+;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -22,9 +23,11 @@
   (import str)
   (import fmt)
   (import doc)
+  (import buf)
+  (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox]] [--tests] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]...] [--tests] [--max-memory SIZE] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -34,10 +37,10 @@
     (call io.eprintln s)
     1)
 
-  (fn fail_bytes [prefix:str b:(ptr str.Bytes)] -> i32
+  (fn fail_bytes [prefix:str b:str.Bytes] -> i32
     (call io.write_str 2 "Error: ")
     (call io.write_str 2 prefix)
-    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len)))
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len)))
     (call io.eprintln "")
     1)
 
@@ -48,22 +51,52 @@
   (fn main [] -> i32
     (let n:i32 (call os.arg_count))
     (if (lt n 2) (return (call usage)) (block))
-    (let cmd:(ptr str.Bytes) (call os.arg 1))
+    (let cmd:str.Bytes (call os.arg 1))
     (if (call str.is cmd "--version") (block (call io.println "aipl 0.1.0") (return 0)) (block))
     (if (call str.is cmd "doc") (return (call doc.command 2)) (block))
     (if (not (call str.is cmd "compile")) (return (call usage)) (block))
     (let exe:bool false)
     (let tests:bool false)
     (let sandbox:bool false)
+    ;; --listen grants, one ADDR:PORT a line (native.compile_with)
+    (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    ;; memory's maximum in pages (--max-memory; src/compiler/mod.rs memory_pages)
+    (let max_pages:i32 32768)
     (let in_i:i32 -1)
     (let out_i:i32 -1)
     (let i:i32 2)
     (while (lt i n)
-      (let a:(ptr str.Bytes) (call os.arg i))
+      (let a:str.Bytes (call os.arg i))
       (cond
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
         ((call str.is a "--sandbox") (set! sandbox true))
+        ((call str.is a "--max-memory")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         (set! max_pages (call driver.memory_pages (call os.arg (+ i 1))))
+         (if (lt max_pages 0)
+             (block
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--max-memory ")
+               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_str m ": expected a size from 1M to 2G in whole 64K pages, as 512M")
+               (return (call fail_bytes "" (call buf.bytes m))))
+             (block))
+         (set! i (+ i 1)))
+        ((call str.is a "--listen")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         ;; checked before anything is compiled, with src/net.rs parse_grant's message
+         (if (not (call native.valid_grant (call os.arg (+ i 1))))
+             (block
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--listen ")
+               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_str m ": expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080")
+               (return (call fail_bytes "" (call buf.bytes m))))
+             (block))
+         (call buf.push_bytes listen (call os.arg (+ i 1)))
+         (call buf.push_byte listen 10)
+         (set! i (+ i 1)))
         ((call str.is a "-o")
          (if (gte (+ i 1) n) (return (call usage)) (block))
          (set! out_i (+ i 1))
@@ -72,16 +105,16 @@
         (else (return (call usage))))
       (set! i (+ i 1)))
     (if (or (lt in_i 0) (lt out_i 0)) (return (call usage)) (block))
-    (if (and sandbox (not exe)) (return (call usage)) (block))
-    (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (if (and (or sandbox (gt (call buf.len listen) 0)) (not exe)) (return (call usage)) (block))
+    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
-    (let entry:(ptr str.Bytes) (call os.arg in_i))
-    (let out:(ptr str.Bytes) (call os.arg out_i))
+    (let entry:str.Bytes (call os.arg in_i))
+    (let out:str.Bytes (call os.arg out_i))
     (let res:(ptr driver.Out) (if tests
-                                  (call driver.compile_tests (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                                             (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))
-                                  (call driver.compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                                            (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len))))
+                                  (call driver.compile_tests_limited (call str.addr entry) (get entry str.Bytes.len)
+                                                                     (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)
+                                  (call driver.compile_file_limited (call str.addr entry) (get entry str.Bytes.len)
+                                                                    (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)))
     (let status:i32 (get res driver.Out.status))
     (if (or (eq status 1) (eq status 3))
         (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len)))))
@@ -93,10 +126,10 @@
           (call io.eprintln " (AIPL_SPEC.md 6.4)")
           (return 1))
         (block))
-    (let bytes:(ptr str.Bytes) (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
+    (let bytes:str.Bytes (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len))))
     (if exe
         (block
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call buf.bytes listen)))
           (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
           (set! bytes (get o native.Output.exe)))
         (block))
@@ -104,9 +137,9 @@
         (return (call fail_bytes "cannot write " out))
         (block))
     (call io.write_str 1 "[AIPL Compiler] Successfully compiled '")
-    (unsafe (fs.write 1 (get entry str.Bytes.addr) (get entry str.Bytes.len)))
+    (unsafe (fs.write 1 (call str.addr entry) (get entry str.Bytes.len)))
     (call io.write_str 1 "' -> '")
-    (unsafe (fs.write 1 (get out str.Bytes.addr) (get out str.Bytes.len)))
+    (unsafe (fs.write 1 (call str.addr out) (get out str.Bytes.len)))
     (call io.write_str 1 "' (")
     (call write_int 1 (get bytes str.Bytes.len))
     (call io.println " bytes)")

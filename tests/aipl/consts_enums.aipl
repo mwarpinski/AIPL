@@ -16,7 +16,7 @@
       ((eq op Op.sub) (- a b))
       (else (* a b))))
   (fn pick [yes:bool] -> (result Op i32) (if yes (ok:i32 Op.mul) (err:Op -1)))
-  (fn main [] -> i32 (pub)
+  (fn checksum [] -> i32 (pub)
     (let ops:(ptr (vec.Vec Op)) (call (vec.make Op) (call alloc.default) 2))
     (call (vec.push Op) ops Op.sub)
     (match_result (call pick ON)
@@ -27,7 +27,7 @@
     (loop i 0 (- (call (vec.len Op) ops) 1) 1
       (set! total (+ total (call_ref (fn [Op i32 i32] -> i32) f (call (vec.at Op) ops i) 6 3))))
     ;; total: 6 - 3 + 6 * 3 = 21
-    (let s:(ptr pal.Swatch) (new pal.Swatch))
+    (let s:(ptr pal.Swatch) (new pal.Swatch (call alloc.forever)))
     (put s palette.Swatch.c (call palette.next pal.Color.blue))
     (put s pal.Swatch.weight (/ SCALE 1000000000i64))
     (let colours:(ptr (vec.Vec palette.Color)) (call palette.all))
@@ -39,4 +39,7 @@
                    (+ (if (call palette.is_red (call palette.favourite)) 1000 0)
                       (+ (i32.wrap (i64.trunc_f64_s (* RATIO 400.0)))           ;; 100
                          (+ (enum.ord (call (vec.at palette.Color) colours 2))  ;; blue: 10
-                            (call (vec.len palette.Color) colours)))))))))))    ;; 4
+                            (call (vec.len palette.Color) colours))))))))))     ;; 4
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

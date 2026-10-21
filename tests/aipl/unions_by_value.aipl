@@ -1,9 +1,10 @@
-;; Unions held by value (AIPL_SPEC.md 4.J): which unions are values and
-;; which stay heap cells, and every way a union by value is made, matched,
-;; passed, stored, and returned, in one program whose main returns a
-;; checksum. tests/test_values.rs runs it in every backend.
+;; Unions are values (AIPL_SPEC.md 4.J): every way one is made, matched,
+;; passed, stored, and returned, and how a union that would contain itself
+;; or need more than 8 slots holds a pointer instead, in one program whose
+;; main returns a checksum. tests/test_values.rs runs it in every backend.
 (module unions_by_value
   (import option)
+  (import alloc)
 
   (struct Vec2 [x:f64 y:f64] (value))
   (struct Box [shape:Shape count:i32])
@@ -12,18 +13,24 @@
   ;; every kind of slot (eight in all: the tag, an i32, two f32s, an i64,
   ;; three f64s); a value struct and an enum in a variant
   (union Shape [(dot) (circle at:Vec2 r:f64) (rect w:f32 h:f32) (big n:i64 color:Color)])
-  ;; a union held in another by value
-  (union Tagged [(plain s:Shape) (count n:i32)])
-  ;; stays a cell: it contains itself
-  (union List [(nil) (cons head:i32 tail:List)])
-  ;; stays a cell: a str
+  ;; a whole Shape (eight slots) and a tag would be nine: the Shape is
+  ;; behind a pointer
+  (union Tagged [(plain s:(ptr Held)) (count n:i32)])
+  (struct Held [s:Shape])
+  ;; a union that would contain itself holds the rest through a pointer
+  (union List [(nil) (cons head:i32 tail:(ptr Tail))])
+  (struct Tail [l:List])
+  ;; a value: a str is one slot
   (union Named [(name s:str) (anon)])
-  ;; stays a cell: nine slots
-  (union Wide [(nine a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64)])
-  ;; a value: what it holds is a cell (one slot)
+  ;; eight i64s and a tag would be nine slots: the fields are in a struct
+  (union Wide [(nine n:(ptr Nine))])
+  (struct Nine [a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64])
+  ;; a union holding another
   (union HoldsWide [(w x:Wide) (none)])
-  ;; a cell holding a union by value
-  (union Chain [(link s:Shape next:Chain) (end)])
+  ;; a list of Shapes: a link's Shape and the rest beside it would be ten
+  ;; slots, so both are in a struct
+  (union Chain [(link n:(ptr Link)) (end)])
+  (struct Link [s:Shape next:Chain])
   ;; a union holding one declared after it: decided after it (Inner's three
   ;; slots, then Outer's tag: four)
   (union Outer [(holds i:Inner) (empty)])
@@ -46,61 +53,84 @@
 
   (fn tagged_area [t:Tagged] -> f64
     (match t
-      (Tagged.plain [s] (call area s))
+      (Tagged.plain [h] (call area (get h Held.s)))
       (Tagged.count [n] (f64.convert_i64_s (i64.extend_s n)))))
 
   (fn list_sum [l:List] -> i32
     (match l
       (List.nil 0)
-      (List.cons [h t] (+ h (call list_sum t)))))
+      (List.cons [h t] (+ h (call list_sum (get t Tail.l))))))
 
-  (fn found [ok:bool] -> (result Shape i32)
-    (if ok (ok:i32 (make Shape.circle (make Vec2 1.0 0.0) 1.0)) (err:Shape 5)))
+  ;; head before rest, the cell from a
+  (fn cons [a:alloc.Allocator head:i32 rest:List] -> List
+    (let t:(ptr Tail) (new Tail a))
+    (put t Tail.l rest)
+    (make List.cons head t))
 
-  (fn main [] -> i32
+  ;; a result holding a union by value: five slots (Shape's eight with the
+  ;; result's tag would be nine, which is refused)
+  (fn found [ok:bool] -> (result Outer i32)
+    (if ok (ok:i32 (make Outer.holds (make Inner.pair 4 0.0))) (err:Outer 5)))
+
+  (fn checksum [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
     (let total:f64 0.0)
     (let c:Shape (make Shape.circle (make Vec2 2.0 3.0) 1.0))
     (set! total (+ total (call area c)))                                      ;; 5
     (set! total (+ total (call area (call grow c))))                          ;; +14
     (set! total (+ total (call area (make Shape.big 40i64 Color.blue))))  ;; +40
     (set! total (+ total (call area (make Shape.dot))))                       ;; +0
-    (set! total (+ total (call tagged_area (make Tagged.plain c))))            ;; +5
+    (let held:(ptr Held) (new Held a))
+    (put held Held.s c)
+    (set! total (+ total (call tagged_area (make Tagged.plain held))))         ;; +5
     (set! total (+ total (call tagged_area (make Tagged.count 7))))           ;; +7 = 71
     ;; in a heap struct's field, and an array
-    (let b:(ptr Box) (new Box))
+    (let b:(ptr Box) (new Box (call alloc.forever)))
     (put b Box.shape (make Shape.big 9i64 Color.blue))
     (set! total (+ total (call area (get b Box.shape))))                      ;; +9
-    (let shapes:(arr Shape) (arr.new Shape 3))
+    (let shapes:(arr Shape) (arr.new Shape (call alloc.forever) 3))
     (arr.set Shape shapes 2 c)
     (set! total (+ total (call area (arr.get Shape shapes 2))))               ;; +5
     (set! total (+ total (call area (arr.get Shape shapes 0))))               ;; zero: dot, +0 = 85
-    ;; cells: a list, a name, a wide one, and a value holding one
-    (let l:List (make List.cons 3 (make List.cons 4 (make List.nil))))
+    ;; a list, a name, a wide one, and a union holding it
+    (let l:List (call cons a 3 (call cons a 4 (make List.nil))))
     (set! total (+ total (f64.convert_i64_s (i64.extend_s (call list_sum l)))))  ;; +7
     (let nm:Named (make Named.name "abc"))
     (match nm (Named.name [text] (set! total (+ total (f64.convert_i64_s (i64.extend_s (str.len text)))))) (Named.anon (block)))  ;; +3
-    (let wd:Wide (make Wide.nine 1i64 2i64 3i64 4i64 5i64 6i64 7i64 8i64))
-    (let hw:HoldsWide (make HoldsWide.w wd))
+    (let nine:(ptr Nine) (new Nine a))
+    (put nine Nine.h 8i64)
+    (let hw:HoldsWide (make HoldsWide.w (make Wide.nine nine)))
     (match hw
-      (HoldsWide.w [x] (match x (Wide.nine [w1 w2 w3 w4 w5 w6 w7 h] (set! total (+ total (f64.convert_i64_s h))))))  ;; +8
+      (HoldsWide.w [x] (match x (Wide.nine [w9] (set! total (+ total (f64.convert_i64_s (get w9 Nine.h)))))))  ;; +8
       (HoldsWide.none (block)))
-    (let ch:Chain (make Chain.link (make Shape.big 2i64 Color.blue) (make Chain.end)))
-    (match ch (Chain.link [s n] (set! total (+ total (call area s)))) (Chain.end (block)))  ;; +2 = 105
+    (let link:(ptr Link) (new Link a))
+    (put link Link.s (make Shape.big 2i64 Color.blue))
+    (put link Link.next (make Chain.end))
+    (let ch:Chain (make Chain.link link))
+    (match ch (Chain.link [k] (set! total (+ total (call area (get k Link.s))))) (Chain.end (block)))  ;; +2 = 105
     ;; a result holding a union by value
     (match_result (call found true)
-      (ok s (set! total (+ total (call area s))))                             ;; +4
+      (ok fo (match fo
+               (Outer.holds [inner] (match inner (Inner.pair [pn pf] (set! total (+ total (+ (f64.convert_i64_s (i64.extend_s pn)) pf))))))
+               (Outer.empty (block))))                                         ;; +4
       (err e (set! total (- total 100.0))))
     ;; Option of a value struct, and of a union
     (let o:(option.Option Vec2) (make (option.Option Vec2) some (make Vec2 0.5 0.25)))
     (match o
       ((option.Option Vec2) some [v] (set! total (+ total (* 4.0 (get v Vec2.y)))))  ;; +1
       ((option.Option Vec2) none (block)))
-    (let os:(option.Option Shape) (make (option.Option Shape) some c))
+    (let os:(option.Option Outer) (make (option.Option Outer) some (make Outer.holds (make Inner.pair 5 0.0))))
     (match os
-      ((option.Option Shape) some [s] (set! total (+ total (call area s))))  ;; +5 = 115
-      ((option.Option Shape) none (block)))
+      ((option.Option Outer) some [so]
+       (match so
+         (Outer.holds [inner] (match inner (Inner.pair [pn pf] (set! total (+ total (+ (f64.convert_i64_s (i64.extend_s pn)) pf))))))
+         (Outer.empty (block))))                                               ;; +5 = 115
+      ((option.Option Outer) none (block)))
     (let ou:Outer (make Outer.holds (make Inner.pair 3 1.5)))
     (match ou
       (Outer.holds [inner] (match inner (Inner.pair [pn pf] (set! total (+ total (+ (f64.convert_i64_s (i64.extend_s pn)) pf))))))  ;; +4.5
       (Outer.empty (block)))
-    (i32.wrap (i64.trunc_f64_s (* total 2.0)))))                              ;; 239
+    (i32.wrap (i64.trunc_f64_s (* total 2.0))))                               ;; 239
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

@@ -1,10 +1,12 @@
-;; Imported by tests/aipl/sum_types.aipl: a union, a recursive union, and an
-;; enum, matched both here and in the importing module.
+;; Imported by tests/aipl/sum_types.aipl: a union, a recursive one (its rest
+;; behind a pointer, since every union is a value), and an enum, matched
+;; both here and in the importing module.
 (module geometry
   (import alloc)
   (import vec)
   (union Shape [(circle r:f64) (rect w:i32 h:i32) (dot)] (pub))
-  (union Path [(stop) (step dx:i32 dy:i32 rest:Path)] (pub))
+  (union Path [(stop) (step dx:i32 dy:i32 rest:(ptr Rest))] (pub))
+  (struct Rest [(read path:Path)] (pub))
   (enum Turn [left right (back 4)] (pub))
   (struct Labelled [(pub shape:Shape) (pub turn:Turn)] (pub))
   (fn area [s:Shape] -> i32 (pub)
@@ -12,8 +14,13 @@
       (Shape.circle [r] (i32.wrap (i64.trunc_f64_s (* 3.0 (* r r)))))
       (Shape.rect [w h] (* w h))
       (Shape.dot 0)))
+  ;; a step, then rest, its cell from a
+  (fn step [a:alloc.Allocator dx:i32 dy:i32 rest:Path] -> Path (pub)
+    (let r:(ptr Rest) (new Rest a))
+    (put r Rest.path rest)
+    (make Path.step dx dy r))
   (fn length [p:Path] -> i32 (pub)
-    (match p (Path.stop 0) (Path.step [dx dy rest] (+ (+ dx dy) (call length rest)))))
+    (match p (Path.stop 0) (Path.step [dx dy rest] (+ (+ dx dy) (call length (get rest Rest.path))))))
   (fn degrees [t:Turn] -> i32 (pub) (match t (Turn.left 90) (Turn.right 270) (Turn.back 180)))
   ;; a list of shapes: a union as a generic type argument
   (fn some [] -> (ptr (vec.Vec Shape)) (pub)

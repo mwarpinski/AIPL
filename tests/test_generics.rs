@@ -8,7 +8,7 @@ use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::{Path, PathBuf};
-use wasmtime::{Engine, Instance, Module as WasmModule, Store};
+use wasmtime::{Engine, Module as WasmModule};
 
 /// Writes `files` into a fresh directory; returns the path of the first.
 fn write_program(name: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -34,8 +34,11 @@ fn run_both(entry: &Path, f: &str) -> i32 {
     let wasm = WasmCompiler::compile(&module).unwrap();
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let w = inst.get_typed_func::<(), i32>(&mut store, f).unwrap().call(&mut store, ()).unwrap();
     assert_eq!(v, w, "VM and wasm disagree on {f}");
     v
@@ -48,17 +51,21 @@ fn rust_bytes(entry: &Path) -> Vec<u8> {
 /// The AIPL resolver's flat program compiles to the Rust resolver's bytes.
 fn assert_aipl_resolver_agrees(entry: &Path) {
     let flat = aipl_core::selfhost::resolve_with_aipl(entry).unwrap_or_else(|e| panic!("aipl resolve: {e}"));
-    let m = aipl_core::parser::Parser::parse(&flat).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
+    // resolved again, not just parsed: the flat program keeps its constants
+    // (std/gen's, through std/alloc), which resolving expands
+    let flat_file = entry.with_file_name("flat.aipl");
+    std::fs::write(&flat_file, &flat).unwrap();
+    let m = Resolver::resolve(&flat_file).unwrap_or_else(|e| panic!("flat output: {e}\n{flat}"));
     TypeChecker::new().check_module(&m).unwrap_or_else(|e| panic!("flat output does not check: {e}\n{flat}"));
     // positions are in the flat text there: compare without them
     let same = |w: &[u8]| aipl_core::compiler::wasm::without_lines(w);
     assert!(same(&WasmCompiler::compile(&m).unwrap()) == same(&rust_bytes(entry)), "AIPL and Rust resolvers disagree:\n{flat}");
 }
 
-const BOX: &str = r#"(module box
+const BOX: &str = r#"(module box (import alloc)
   (struct (Box T) [value:T next:(ptr (Box T))] (pub))
   (fn (make T) [v:T] -> (ptr (Box T)) (pub)
-    (let b:(ptr (Box T)) (new (Box T)))
+    (let b:(ptr (Box T)) (new (Box T) (call alloc.forever)))
     (put b (Box T) value v)
     (put b (Box T) next (ptr.null (Box T)))
     b)
@@ -66,14 +73,14 @@ const BOX: &str = r#"(module box
   ;; a generic calling a generic, and a two-parameter struct
   (struct (Pair A B) [(read first:A) (read second:B)] (pub))
   (fn (pair A B) [a:A b:B] -> (ptr (Pair A B))
-    (let p:(ptr (Pair A B)) (new (Pair A B)))
+    (let p:(ptr (Pair A B)) (new (Pair A B) (call alloc.forever)))
     (put p (Pair A B) first a)
     (put p (Pair A B) second b)
     p)
   (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B)))) (pub)
     (call (make (ptr (Pair A B))) (call (pair A B) a b))))"#;
 
-const MAIN: &str = r#"(module main
+const MAIN: &str = r#"(module main (import alloc)
   (import box as bx)
   (struct Point [x:i32 y:i32])
   (fn (twice T) [f:(fn [T] -> T) x:T] -> T (call_ref (fn [T] -> T) f (call_ref (fn [T] -> T) f x)))
@@ -83,7 +90,7 @@ const MAIN: &str = r#"(module main
     (let b:(ptr (bx.Box i64)) (call (bx.make i64) 2i64))
     (+ (call (bx.value i32) a) (i32.wrap (call (bx.value i64) b))))
   (fn structs [] -> i32
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x 7)
     (let c:(ptr (bx.Box (ptr Point))) (call (bx.make (ptr Point)) p))
     (get (call (bx.value (ptr Point)) c) Point.x))
@@ -165,10 +172,10 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
             ("main.aipl", "(module main (import lib) (fn main [] -> i32 (+ (call lib.use_own) (call lib.nested))))"),
             (
                 "lib.aipl",
-                "(module lib
+                "(module lib (import alloc)
                    (struct Item [x:i32 y:i64])
                    (struct (Wrap T) [inner:(ptr T)] (where (struct T)))
-                   (fn (make T) [] -> (ptr T) (where (struct T)) (new T))
+                   (fn (make T) [] -> (ptr T) (where (struct T)) (new T (call alloc.forever)))
                    (fn use_own [] -> i32 (pub) (let it:(ptr Item) (call (make Item))) (put it Item.x 40) (+ (get it Item.x) (sizeof Item)))
                    (fn nested [] -> i32 (pub)
                      (let w:(ptr (Wrap Item)) (call (make (Wrap Item))))
@@ -184,22 +191,30 @@ fn a_modules_own_struct_as_a_type_argument_is_qualified() {
 /// Generic unions (AIPL_SPEC.md 4.J): `(union (Name T...) [...])`, built with
 /// `(make (Name t...) variant ...)` and taken apart with the arm
 /// `((Name t...) variant [binders] ...)`; across an import and an alias,
-/// recursive, with 64-bit and float fields, and std/option.
+/// recursive (the rest behind a pointer to a generic struct), with 64-bit
+/// and float fields, and std/option.
 const UNIONS: &str = r#"(module main
   (import option)
   (import shapes as sh)
-  (union (List T) [(cons head:T tail:(List T)) (nil)])
+  (import alloc)
+  (union (List T) [(cons head:T tail:(ptr (Rest T))) (nil)])
+  (struct (Rest T) [l:(List T)])
 
+  (fn (cons T) [a:alloc.Allocator h:T t:(List T)] -> (List T)
+    (let r:(ptr (Rest T)) (new (Rest T) a))
+    (put r (Rest T) l t)
+    (make (List T) cons h r))
   (fn (sum T) [l:(List T) f:(fn [T] -> i64)] -> i64
     (match l
-      ((List T) cons [h t] (+ (call_ref (fn [T] -> i64) f h) (call (sum T) t f)))
+      ((List T) cons [h t] (+ (call_ref (fn [T] -> i64) f h) (call (sum T) (get t (Rest T) l) f)))
       ((List T) nil 0i64)))
   (fn id [x:i64] -> i64 x)
   (fn tenth [x:f64] -> i64 (i64.trunc_f64_s (* x 10.0)))
 
   (fn lists [] -> i32
-    (let a:(List i64) (make (List i64) cons 40i64 (make (List i64) cons 2i64 (make (List i64) nil))))
-    (let b:(List f64) (make (List f64) cons 0.5 (make (List f64) nil)))
+    (let al:alloc.Allocator (call alloc.default))
+    (let a:(List i64) (call (cons i64) al 40i64 (call (cons i64) al 2i64 (make (List i64) nil))))
+    (let b:(List f64) (call (cons f64) al 0.5 (make (List f64) nil)))
     (i32.wrap (+ (call (sum i64) a (ref id)) (call (sum f64) b (ref tenth)))))
 
   (fn options [] -> i32
@@ -222,11 +237,11 @@ const UNIONS: &str = r#"(module main
         (match inner ((option.Option bool) some [b] (if b 1 2)) (else 3)))
       (else 4))))"#;
 
-const SHAPES: &str = r#"(module shapes
+const SHAPES: &str = r#"(module shapes (import alloc)
   (struct Point [(read x:i32) y:i32] (pub))
   (union (Either L R) [(left value:L) (right value:R)] (pub))
   (fn right_point [x:i32] -> (Either i32 (ptr Point)) (pub)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (make (Either i32 (ptr Point)) right p)))"#;
 

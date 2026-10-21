@@ -81,6 +81,15 @@ has evidence behind it.
   HTTP server for agents and the browser demo, with the `tiny_http` and
   `serde_json` dependencies; agents use the CLI).
 
+- [x] **Views are not checked** (found and fixed 2026-10-19, MEMORY_PLAN.md M1; tests/test_memory.rs). A
+  `str.Bytes` is an address and a length with no generation, so a
+  view of a freed buffer reads whatever reuses the memory, in code with
+  no `unsafe` (a three-line program prints the next buffer's contents,
+  in the VM and natively). The fix, with the never-freed allocations
+  that keep long-running programs from being possible:
+  docs/design/MEMORY_PLAN.md (M1, checked views as value structs; then
+  `(no_leak)`). The spec no longer claims `buf.free` ends views.
+
 ## 2. When something goes wrong (crash locations and errors)
 
 The pitch is that agents fix code from error messages, so these matter
@@ -262,6 +271,28 @@ is a small, honest experiment:
 Not all need building before a post; each needs an honest answer in the
 FAQ or ROADMAP.md.
 
+- [x] **A lower memory limit** (decided 2026-10-19, done 2026-10-20: tests/test_memory.rs, test_bootstrap.rs): `aipl compile
+  --max-memory 512M` (and `--exe`) records the limit in the module's
+  memory declaration, its max pages, so the VM, aipl-run, native
+  executables, and any wasm host stop at the same place, with the
+  message they give at the 2 GiB cap today; the default stays 2 GiB.
+  Only lowering: below 2 GiB every address is a non-negative i32, which
+  the signed address comparisons in std and the compiler rely on. Wanted
+  with the servers (MEMORY_PLAN.md M5): a runaway request fails cleanly
+  instead of taking the machine.
+- [ ] **"Out of memory" said as such**: at the limit (2 GiB, or
+  `--max-memory`'s) `mem.alloc` does not fail, so the program stops at its
+  first access past the end, with "Memory store out of bounds" (VM) or
+  "wasm trap: out of bounds memory access" (compiled) and a call chain into
+  std/heap. A failed grow should stop at `mem.alloc` with "out of memory:
+  the limit is N MiB", alike in every backend and both toolchains.
+- [ ] **An address-sized integer, decided on purpose** (before launch):
+  `ptr.addr`, `mem.*`, and `mem.alloc` use `i32` addresses, a promise to
+  users' (unsafe) code. A 64-bit target (ROADMAP.md, after launch) wants
+  an address-sized type such as Rust's `usize`; adding it later breaks
+  only unsafe code. Decide whether to add it now or say in the FAQ why
+  not.
+
 - [x] **Option types / generic unions** (done 2026-10-12): generic unions
   (`(union (Tree T) ...)`), `std/option`'s `(option.Option T)`, and
   `result` payloads of any type (the 32-bit limit is gone; `result` stays
@@ -320,6 +351,15 @@ FAQ or ROADMAP.md.
   blocks it crashed instead of giving error 100), and a refusal should
   say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
   then the two compilers agree only below those sizes.
+- [ ] **Using a module without importing it** (found 2026-10-19; a
+  decision). A module that imports `io` can call `str.from_str` without
+  `(import str)`, because io imports str and imports are flattened into
+  one program (AIPL_SPEC.md 11); with no imports at all, `str.Bytes` is
+  "Unknown struct". The spec says neither that this is allowed nor that it
+  is not. For a language that wants every dependency written down, the
+  rule should be: `m.x` needs `(import m)` in that module, checked by
+  both resolvers; existing programs that lean on an import's imports
+  would need the missing lines.
 - [ ] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and
@@ -328,7 +368,7 @@ FAQ or ROADMAP.md.
   order, as `make` already does for value structs, so a missing or extra
   field is a compile error. The compiler's own source can use it only
   after the seed refresh below.
-- [ ] **Refresh the stage-0 seed** (noted 2026-10-18; when, is a decision).
+- [x] **Refresh the stage-0 seed** (done 2026-10-19, for MEMORY_PLAN.md's checked views, which need `(arr u8)`; bootstrap/README.md has the new hash; noted 2026-10-18).
   The compiler's source may use only what bootstrap/aipl-linux-x86_64
   knows, and that seed (2026-10-16) predates `when`, `for`, variadic
   `and`/`or`, `dbg`, `(test ...)`/`expect`, and the formatting forms, so

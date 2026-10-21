@@ -51,7 +51,7 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
   (fn main [] -> i32
     (call io.println_int "argc: " (call os.arg_count))
     (call io.println_int "stdin words: " (call str.count_words (call io.read_stdin)))
-    (let f:(ptr str.Bytes) (call io.read_path (call os.arg 1)))
+    (let f:str.Bytes (call io.read_path (call os.arg 1)))
     (call io.println_int "file bytes: " (get f str.Bytes.len))
     (if (gt (call os.arg_count) 2) (sys.exit 3) (block))
     0))"#,
@@ -189,11 +189,11 @@ fn assert_kind(path: &Path, target: &str) {
     assert!(bytes.starts_with(b"\x7fELF"), "{}: not an executable", path.display());
     match target {
         "native" => {
-            assert!(!bytes.ends_with(b"AIPLEXE1"), "{}: a launcher bundle, not native code", path.display());
+            assert!(!bytes.ends_with(b"AIPLEXE2"), "{}: a launcher bundle, not native code", path.display());
             // native code is a few MB at most; a launcher bundle is about 18 MB
             assert!(bytes.len() < 5_000_000, "{}: {} bytes is not a native AIPL executable", path.display(), bytes.len());
         }
-        _ => assert!(bytes.ends_with(b"AIPLEXE1"), "{}: not a launcher bundle", path.display()),
+        _ => assert!(bytes.ends_with(b"AIPLEXE2"), "{}: not a launcher bundle", path.display()),
     }
 }
 

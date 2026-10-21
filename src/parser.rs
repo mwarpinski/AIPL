@@ -816,6 +816,7 @@ impl Parser {
         let mut contracts = Vec::new();
         let mut body = Vec::new();
         let mut is_unsafe = false;
+        let mut is_no_leak = false;
 
         while let Some(kind) = self.peek_kind() {
             if *kind == TokenKind::RParen {
@@ -827,9 +828,14 @@ impl Parser {
                     continue;
                 }
             // the clause (unsafe), which an (unsafe e...) block is not
-            if self.is_unsafe_clause_ahead() {
+            if self.is_clause_ahead("unsafe") {
                 self.pos += 3;
                 is_unsafe = true;
+                continue;
+            }
+            if self.is_clause_ahead("no_leak") {
+                self.pos += 3;
+                is_no_leak = true;
                 continue;
             }
             body.push(self.parse_expr()?);
@@ -843,13 +849,15 @@ impl Parser {
             contracts,
             body,
             is_unsafe,
+            is_no_leak,
             span,
         })
     }
 
-    fn is_unsafe_clause_ahead(&self) -> bool {
+    /// Whether `(word)` is next: a clause such as (unsafe) or (no_leak).
+    fn is_clause_ahead(&self, word: &str) -> bool {
         matches!(self.tokens.get(self.pos).map(|t| &t.kind), Some(TokenKind::LParen))
-            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Symbol(s)) if s == "unsafe")
+            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Symbol(s)) if s == word)
             && matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::RParen))
     }
 
@@ -1015,8 +1023,19 @@ impl Parser {
                     self.expect_kind(TokenKind::RBracket)?;
                     self.expect_kind(TokenKind::Arrow)?;
                     let ret = self.parse_type()?;
+                    // (fn [..] -> r (no_leak)): only functions that keep no memory
+                    let no_leak = self.peek_kind() == Some(&TokenKind::LParen);
+                    if no_leak {
+                        self.expect_kind(TokenKind::LParen)?;
+                        let (l, c) = self.cur_pos();
+                        let w = self.expect_symbol("(no_leak) in a function type", (l, c))?;
+                        if w != "no_leak" {
+                            return Err(format!("{}:{}: a function type is (fn [params] -> ret), or (fn [params] -> ret (no_leak)); got ({} ...)", l, c, w));
+                        }
+                        self.expect_kind(TokenKind::RParen)?;
+                    }
                     self.expect_kind(TokenKind::RParen)?;
-                    Ok(Type::Fn(params, Box::new(ret)))
+                    Ok(Type::Fn(params, Box::new(ret), no_leak))
                 } else if kind == "ptr" {
                     let name = self.expect_symbol("struct name in (ptr S)", (line, col))?;
                     if parse_scalar_type_str(&name, (line, col)).is_ok() {
@@ -1446,27 +1465,6 @@ impl Parser {
                                 span,
                             }
                         }
-                        "new" => {
-                            let struct_name = match self.next() {
-                                Some(Token {
-                                    kind: TokenKind::Symbol(s),
-                                    ..
-                                }) => s,
-                                Some(tok) => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in new, got '{}'",
-                                        tok.line, tok.col, tok.kind
-                                    ))
-                                }
-                                None => {
-                                    return Err(format!(
-                                        "{}:{}: Expected struct name in new, got EOF",
-                                        span.0, span.1
-                                    ))
-                                }
-                            };
-                            Expr::NewStruct { struct_name, span }
-                        }
                         "get" => {
                             // (get e S.f), or a path (get e S.f V.g ...): one field of a
                             // value struct held in the field before it
@@ -1637,15 +1635,6 @@ impl Parser {
                             let val = self.parse_expr()?;
                             Expr::Cast { ty: Type::Enum(name), addr: Box::new(val), gen: None, span }
                         }
-                        "arr.new" => {
-                            let elem_ty = self.parse_type()?;
-                            let size = self.parse_expr()?;
-                            Expr::ArrNew {
-                                elem_ty,
-                                size: Box::new(size),
-                                span,
-                            }
-                        }
                         "arr.get" => {
                             let elem_ty = self.parse_type()?;
                             let ptr = self.parse_expr()?;
@@ -1737,6 +1726,11 @@ impl Parser {
                                 "fs.opendir" => OpCode::FsOpendir,
                                 "fs.readdir" => OpCode::FsReaddir,
                                 "fs.stat" => OpCode::FsStat,
+                                "net.listen" => OpCode::NetListen,
+                                "net.accept" => OpCode::NetAccept,
+                                "net.recv" => OpCode::NetRecv,
+                                "net.send" => OpCode::NetSend,
+                                "net.close" => OpCode::NetClose,
                                 "args.sizes" => OpCode::ArgsSizes,
                                 "args.get" => OpCode::ArgsGet,
                                 "env.sizes" => OpCode::EnvSizes,
@@ -1775,7 +1769,7 @@ impl Parser {
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
                                 "format.expect" => OpCode::FormatExpect,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" => {
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str

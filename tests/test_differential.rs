@@ -13,11 +13,20 @@
 use aipl_core::ast::{Module, Type};
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::Path;
 use wasmtime::{Engine, Module as WasmModule, Store, Val, ValType};
+
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -144,7 +153,7 @@ fn differential(module: &Module, wasm: &[u8], fn_name: &str, args: &[i32]) -> Ou
 }
 
 fn compile_checked(src: &str) -> (Module, Vec<u8>) {
-    let module = Parser::parse(src).expect("parse");
+    let module = parse_program(src).expect("parse");
     TypeChecker::new().check_module(&module).expect("check");
     let wasm = WasmCompiler::compile(&module).expect("wasm compile");
     (module, wasm)
@@ -492,17 +501,24 @@ fn every_example_agrees_between_vm_and_wasmtime() {
         };
         // Examples that do I/O (they import from WASI) depend on host files
         // and stdout; their VM-vs-wasm agreement is checked with a preopened
-        // directory and captured output in tests/test_wasi.rs instead.
-        let has_imports = wasmparser::Parser::new(0)
-            .parse_all(&wasm)
-            .any(|p| matches!(p, Ok(wasmparser::Payload::ImportSection(_))));
+        // directory and captured output in tests/test_wasi.rs instead. An
+        // example whose main prints its answers (fd_write) and gives its exit
+        // status (proc_exit, AIPL_SPEC.md 6.5) has its other functions
+        // compared; main itself is left out.
+        let mut imports = Vec::new();
+        for p in wasmparser::Parser::new(0).parse_all(&wasm) {
+            if let Ok(wasmparser::Payload::ImportSection(r)) = p {
+                imports.extend(r.into_iter().flatten().map(|i| i.name.to_string()));
+            }
+        }
+        let has_imports = imports.iter().any(|n| n != "proc_exit" && n != "fd_write");
         if has_imports {
             eprintln!("SKIP {name}: does I/O (WASI imports); compared in tests/test_wasi.rs");
             continue;
         }
 
         let mut compared_here = 0;
-        for f in &module.functions {
+        for f in module.functions.iter().filter(|f| f.name != "main") {
             if !matches!(f.return_type, Type::I32 | Type::I64 | Type::Bool) {
                 continue;
             }
@@ -597,7 +613,7 @@ fn p7_typing_and_scoping_rules() {
       (err e -1)))
 )
 "#;
-    let module = Parser::parse(src).expect("p7_test parses");
+    let module = parse_program(src).expect("p7_test parses");
     let mut checker = TypeChecker::new();
     checker.check_module(&module).expect("p7_test type-checks");
 
@@ -623,7 +639,7 @@ fn p7_typing_and_scoping_rules() {
     x)
 )
 "#;
-    let m = Parser::parse(shadow_src).expect("shadow_test parses");
+    let m = parse_program(shadow_src).expect("shadow_test parses");
     let err = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(err.contains("Cannot shadow"), "expected shadowing error, got: {err}");
 
@@ -635,7 +651,7 @@ fn p7_typing_and_scoping_rules() {
     0)
 )
 "#;
-    let m2 = Parser::parse(set_err_src).expect("set_test parses");
+    let m2 = parse_program(set_err_src).expect("set_test parses");
     let err2 = TypeChecker::new().check_module(&m2).unwrap_err();
     assert!(err2.contains("Undefined variable"), "expected undefined variable error, got: {err2}");
 }
@@ -643,14 +659,14 @@ fn p7_typing_and_scoping_rules() {
 #[test]
 fn p8_structs_and_arrays() {
     let src = r#"
-(module p8_test
+(module p8_test (import alloc)
   (struct Point [x:i32 y:i32])
   (struct Mixed [flag:bool val:i64 tag:i32])
   (struct Floats [a:f32 b:f64])
   (struct Named [id:i32 name:str])
 
   (fn test_point_ops [x:i32 y:i32] -> i32 (unsafe)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
@@ -664,7 +680,7 @@ fn p8_structs_and_arrays() {
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32 (unsafe)
-    (let m:(ptr Mixed) (new Mixed))
+    (let m:(ptr Mixed) (new Mixed (call alloc.forever)))
     (put m Mixed.flag true)
     (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
     (put m Mixed.tag 7)
@@ -673,12 +689,12 @@ fn p8_structs_and_arrays() {
         -1))
 
   (fn test_floats [] -> i32 (unsafe)
-    (let f:(ptr Floats) (new Floats))
+    (let f:(ptr Floats) (new Floats (call alloc.forever)))
     (put f Floats.b 2.5)
     (if (gt (get f Floats.b) 2.0) 1 0))
 
   (fn test_array_ops [n:i32] -> i32 (unsafe)
-    (let arr:(arr i32) (arr.new i32 n))
+    (let arr:(arr i32) (arr.new i32 (call alloc.forever) n))
     (loop i 0 (- n 1) 1
       (arr.set i32 arr i (* (+ i 1) 10)))
     (let sum:i32 0)
@@ -688,13 +704,13 @@ fn p8_structs_and_arrays() {
 
   ;; header holds the count; the bump cursor advances by 4 + n * 8
   (fn test_i64_array [n:i32] -> i32 (unsafe)
-    (let a:(arr i64) (arr.new i64 n))
+    (let a:(arr i64) (arr.new i64 (call alloc.forever) n))
     (arr.set i64 a (- n 1) 5i64)
     (let next:i32 (mem.alloc 4))
     (+ (arr.len a) (+ (- next (arr.addr a)) (i32.wrap (arr.get i64 a (- n 1))))))
 
   (fn test_index_oob [i:i32] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 3))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 3))
     (arr.get i32 a i))
 
   (fn alloc_four [] -> i32 (unsafe)
@@ -703,27 +719,29 @@ fn p8_structs_and_arrays() {
 
   ;; the size expression allocates; the array must not overlap that block
   (fn test_size_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 (call alloc_four)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call alloc_four)))
     (- (arr.addr a) (mem.load32 0)))
 
-  ;; ok/err take 8 heap bytes in both backends, before the payload runs
-  ;; results with a str side are heap cells (a result without is held by
-  ;; value, AIPL_SPEC.md 4.F)
+  ;; results are values (AIPL_SPEC.md 4.F), a str side included: making
+  ;; them takes no heap, so the next block is at the cursor they found
   (fn test_result_heap [] -> i32 (unsafe)
+    (let before:i32 (mem.load32 0))
     (let r:(result i32 str) (ok:str 5))
     (let e:(result str i32) (err:str 6))
-    (mem.alloc 4))
+    (- (mem.alloc 4) before))
 
+  ;; the payload's array right at the cursor: its 8-byte prefix, then it
   (fn test_result_payload_allocates [] -> i32 (unsafe)
-    (match_result (ok:str (arr.new i32 2))
-      (ok v (arr.addr v))
+    (let before:i32 (mem.load32 0))
+    (match_result (ok:str (arr.new i32 (call alloc.forever) 2))
+      (ok v (- (arr.addr v) before))
       (err e 0)))
 
   ;; AIPL_SPEC.md 4.E example
   (fn test_points [] -> i32 (unsafe)
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (loop i 0 2 1
-      (let p:(ptr Point) (new Point))
+      (let p:(ptr Point) (new Point (call alloc.forever)))
       (put p Point.x i)
       (put p Point.y (* i 10))
       (arr.set (ptr Point) ps i p))
@@ -735,18 +753,18 @@ fn p8_structs_and_arrays() {
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
   (fn test_bool_word [] -> i32 (unsafe)
-    (let p:(ptr Mixed) (new Mixed))
+    (let p:(ptr Mixed) (new Mixed (call alloc.forever)))
     (mem.store32 (ptr.addr p) 2)
-    (let a:(arr bool) (arr.new bool 1))
+    (let a:(arr bool) (arr.new bool (call alloc.forever) 1))
     (mem.store32 (arr.addr a) 7)
     (if (and (eq (get p Mixed.flag) true) (and (arr.get bool a 0) true)) 1 0))
 
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
   (fn test_str_field [] -> i32 (unsafe)
-    (let n:(ptr Named) (new Named))
+    (let n:(ptr Named) (new Named (call alloc.forever)))
     (put n Named.name "abc")
-    (let a:(arr str) (arr.new str 2))
+    (let a:(arr str) (arr.new str (call alloc.forever) 2))
     (arr.set str a 1 (get n Named.name))
     (+ (str.len (arr.get str a 1)) (if (eq (mem.load8 (+ (str.ptr (get n Named.name)) 2)) 99) 10 0)))
 
@@ -759,7 +777,7 @@ fn p8_structs_and_arrays() {
     0)
 )
 "#;
-    let module = Parser::parse(src).expect("p8_test parses");
+    let module = parse_program(src).expect("p8_test parses");
     TypeChecker::new().check_module(&module).expect("p8_test type-checks");
     let wasm = WasmCompiler::compile(&module).expect("p8_test compiles to WASM");
 
@@ -783,13 +801,10 @@ fn p8_structs_and_arrays() {
     // to 8), then the array block at H+8 (8 + 2 * 4 = 16 bytes): array at
     // H+16, cursor H+24, so array - cursor = -8
     assert_eq!(differential(&module, &wasm, "test_size_allocates", &[]), Ok(Value::Int(-8)));
-    // The module's string literal occupies 1024..1032, so the heap starts at
-    // 1032 in both backends: two 8-byte result cells at 1032 and 1040, then
-    // the 4-byte block.
-    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(1048)));
-    // result cell at 1032 (16 bytes: an array is 8, its address and
-    // generation, at 8), the array's 8-byte prefix at 1048, array at 1056
-    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(1056)));
+    // results take no heap: the block is at the cursor they found, and the
+    // array 8 past it (its prefix), in both backends
+    assert_eq!(differential(&module, &wasm, "test_result_heap", &[]), Ok(Value::Int(0)));
+    assert_eq!(differential(&module, &wasm, "test_result_payload_allocates", &[]), Ok(Value::Int(8)));
 
     // Negative array size: VM error, wasm trap.
     assert!(differential(&module, &wasm, "test_array_ops", &[-1]).is_err());
@@ -807,11 +822,9 @@ fn p8_structs_and_arrays() {
     }
 }
 
-/// Result payloads of any type (AIPL_SPEC.md 4.F): in a heap cell (a result
-/// with a str side) a 64-bit one sits at 8 in a 16-byte cell, anything else
-/// at 4 in an 8-byte one, the same in both backends; a result without a str
-/// side is held by value and takes no memory; only a void payload is
-/// rejected.
+/// Result payloads of any type (AIPL_SPEC.md 4.F): a result is held by
+/// value, a str side included, and takes no memory, the same in both
+/// backends; only a void payload is rejected.
 #[test]
 fn results_carry_payloads_of_any_type() {
     let src = r#"
@@ -837,36 +850,36 @@ fn results_carry_payloads_of_any_type() {
     (let d:(result f64 i64) (call half 5.0))
     (- (mem.load32 0) before))))
 "#;
-    let module = Parser::parse(src).expect("parses");
+    let module = parse_program(src).expect("parses");
     TypeChecker::new().check_module(&module).expect("checks");
     let wasm = WasmCompiler::compile(&module).expect("compiles");
     assert_eq!(differential(&module, &wasm, "wide", &[2]), Ok(Value::Int(6_000_000)));
     assert_eq!(differential(&module, &wasm, "wide", &[0]), Ok(Value::Int(12)));
     assert_eq!(differential(&module, &wasm, "float", &[]), Ok(Value::Int(25)));
     assert_eq!(differential(&module, &wasm, "inner", &[]), Ok(Value::Int(5)));
-    // big's is a cell with an i64 payload (16 bytes); the others are values
-    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(16)));
+    // none takes a cell, big's (a str side) included
+    assert_eq!(differential(&module, &wasm, "cells", &[]), Ok(Value::Int(0)));
 
     let err = TypeChecker::new()
-        .check_module(&Parser::parse("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
+        .check_module(&parse_program("(module m (fn g [] -> void 0) (fn f [] -> (result i32 i32) (ok:i32 (call g))))").unwrap())
         .unwrap_err();
     assert!(err.ends_with("1:60: a result payload must be a value, got void"), "got {err}");
 }
 
-// Allocation grows memory: new, arr.new, ok/err cells, and mem.alloc past the
+// Allocation grows memory: new, arr.new, and mem.alloc past the
 // initial 1 MiB need no explicit mem.grow, and both backends end with the same
 // number of pages.
 #[test]
 fn allocation_grows_memory_identically() {
     let src = r#"
-(module grow
+(module grow (import alloc)
   (struct P [x:i32 y:i64])
   (fn main [] -> i32 (unsafe)
     (let total:i32 0)
     (loop i 1 3000 1
-      (let p:(ptr P) (new P))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x i)
-      (let a:(arr i32) (arr.new i32 100))
+      (let a:(arr i32) (arr.new i32 (call alloc.forever) 100))
       (arr.set i32 a 99 i)
       (let r:(result i32 i32) (ok:i32 i))
       (set! total (+ total (- (arr.get i32 a 99) (get p P.x)))))
@@ -897,7 +910,7 @@ fn allocation_grows_memory_identically() {
 #[test]
 fn nested_allocations_do_not_overlap() {
     let src = r#"
-(module nest
+(module nest (import alloc)
   (fn inner_size [] -> i32 (unsafe)
     (let p:i32 (mem.alloc 8))
     (mem.store32 p 99)
@@ -908,7 +921,7 @@ fn nested_allocations_do_not_overlap() {
     (mem.load32 (- q 8)))
   ;; the same through arr.new's length and a struct inside a result payload
   (fn arr_len_allocates [] -> i32 (unsafe)
-    (let a:(arr i32) (arr.new i32 (call inner_size)))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) (call inner_size)))
     (arr.set i32 a 0 5)
     ;; the array's block is [generation][length][elements], right after the 8 inner bytes
     (mem.load32 (- (arr.addr a) 16))))
@@ -955,7 +968,7 @@ fn unsigned_comparisons_agree() {
     yes("(gtu -9223372036854775808i64 9223372036854775807i64)");
     no("(lteu -1i64 0i64)");
     yes("(gteu 7i64 7i64)");
-    let m = Parser::parse("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
+    let m = parse_program("(module m (fn f [] -> bool (ltu 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("ltu compares integers (i32 or i64) as unsigned, got f64"), "{e}");
 }
@@ -999,13 +1012,13 @@ fn checked_arithmetic_agrees_with_rust() {
     assert_eq!(checked, 864);
     // nested: an operand that is itself checked
     assert_eq!(expr("i64", "(checked.add (checked.mul 3i64 4i64) (checked.sub 10i64 (checked.add 1i64 2i64)))").unwrap(), Value::Int64(19));
-    let m = Parser::parse("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
+    let m = parse_program("(module m (fn f [] -> f64 (checked.add 1.0 2.0)))").unwrap();
     let e = TypeChecker::new().check_module(&m).unwrap_err();
     assert!(e.contains("checked.add is integer arithmetic (i32 or i64), got f64"), "{e}");
 }
 
 const CONTRACTS: &str = r#"
-(module contracts
+(module contracts (import alloc)
   (fn safe_div [num:i32 den:i32] -> i32
     (req (neq den 0))
     (/ num den))
@@ -1030,7 +1043,7 @@ const CONTRACTS: &str = r#"
     (req (gt (arr.get i32 a i) 0))
     i)
   (fn nested_i32 [i:i32] -> i32
-    (let a:(arr i32) (arr.new i32 2))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) 2))
     (arr.set i32 a 0 1)
     (call nested a i))
 )
@@ -1084,12 +1097,12 @@ fn contracts_fail_in_both() {
 /// null pointer, past an array's end, or into the reserved block.
 #[test]
 fn value_structs_agree() {
-    let src = r#"(module v
+    let src = r#"(module v (import alloc)
   (struct V [a:i32 b:f64 c:bool] (value))
   (struct W [v:V n:i64] (value))
   (struct Holder [w:W k:i32])
   ;; U contains itself, so it is a heap cell; X is held by value
-  (union U [(p v:V) (q) (r next:U)])
+  (union U [(p v:V) (q) (r next:(ptr Holder))])
   (union X [(p v:V) (q)])
 
   ;; V 24 (b aligned to 8, rounded to 8), W 32, Holder 40
@@ -1097,20 +1110,20 @@ fn value_structs_agree() {
 
   ;; written whole, then one field through a path; read as raw words
   (fn raw [] -> i32 (unsafe)
-    (let h:(ptr Holder) (new Holder))
+    (let h:(ptr Holder) (new Holder (call alloc.forever)))
     (put h Holder.w (make W (make V 7 2.5 true) 9i64))
     (put h Holder.w W.v V.a 11)
     (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
 
-  ;; a result's cell holding a V (a cell: its err side is a str): the
-  ;; payload at 8, the cell 32 bytes
+  ;; a result holding a V beside a str takes no cell (it is a value): the
+  ;; two 4-byte blocks, each rounded to 8, are 8 apart
   (fn result_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
     (let r:(result V str) (ok:str (make V 1 2.0 false)))
     (- (mem.alloc 4) a0))
 
-  ;; a union's cell holding a V: the payload at 8, the cell 32 bytes (a
-  ;; variant's cell is its own size); a union held by value takes none
+  ;; a union holding a V takes no cell, whether or not it also holds a
+  ;; pointer (every union is a value): the two 4-byte blocks are 8 apart
   (fn union_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
     (let u:U (make U.p (make V 3 1.5 true)))
@@ -1119,14 +1132,14 @@ fn value_structs_agree() {
 
   ;; elements 24 bytes apart
   (fn elements [] -> i32 (unsafe)
-    (let xs:(arr V) (arr.new V 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (arr.set V xs 1 V.a 5)
     (mem.load32 (+ (arr.addr xs) 24)))
 
   (fn read_null [] -> i64 (get (get (ptr.null Holder) Holder.w) W.n))
 
   (fn read_past [i:i32] -> i32
-    (let xs:(arr V) (arr.new V 2))
+    (let xs:(arr V) (arr.new V (call alloc.forever) 2))
     (get (arr.get V xs i) V.a))
 
   (fn write_reserved [] -> i32 (unsafe)
@@ -1138,9 +1151,9 @@ fn value_structs_agree() {
     assert_eq!(differential(&module, &wasm, "sizes", &[]), Ok(Value::Int(2400 + 320 + 40)));
     // a 11, c true (1), n 9
     assert_eq!(differential(&module, &wasm, "raw", &[]), Ok(Value::Int(21)));
-    // the 4-byte block rounded to 8, then the 32-byte cell
-    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(40)));
-    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(40)));
+    // the 4-byte block rounded to 8, and no result cell
+    assert_eq!(differential(&module, &wasm, "result_cell", &[]), Ok(Value::Int(8)));
+    assert_eq!(differential(&module, &wasm, "union_cell", &[]), Ok(Value::Int(8)));
     assert_eq!(differential(&module, &wasm, "elements", &[]), Ok(Value::Int(5)));
     assert!(differential(&module, &wasm, "read_null", &[]).is_err());
     assert_eq!(differential(&module, &wasm, "read_past", &[1]), Ok(Value::Int(0)));

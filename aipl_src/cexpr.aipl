@@ -21,18 +21,18 @@
 
   ;; The constants to fold: for each (by name) its declared type and where
   ;; its value starts; state 0 not yet, 1 being folded, 2 done.
-  (struct Defs [text:(ptr str.Bytes) index:(ptr (map.Map (ptr str.Bytes) i32))
-                names:(ptr (vec.Vec (ptr str.Bytes))) tys:(ptr (vec.Vec (ptr str.Bytes))) ats:(ptr (vec.Vec i32))
+  (struct Defs [text:str.Bytes index:(ptr (map.Map str.Bytes i32))
+                names:(ptr (vec.Vec str.Bytes)) tys:(ptr (vec.Vec str.Bytes)) ats:(ptr (vec.Vec i32))
                 state:(ptr (vec.Vec i32)) vals:(ptr (vec.Vec Val))
                 (read failed:bool) (read err:(ptr buf.Buf)) (read err_at:i32)] (pub))
 
-  (fn make [text:(ptr str.Bytes)] -> (ptr Defs) (pub)
+  (fn make [text:str.Bytes] -> (ptr Defs) (pub)
     (let a:alloc.Allocator (call alloc.default))
-    (let d:(ptr Defs) (new Defs))
+    (let d:(ptr Defs) (new Defs (call alloc.forever)))
     (put d Defs.text text)
-    (put d Defs.index (call (map.make (ptr str.Bytes) i32) a 16))
-    (put d Defs.names (call (vec.make (ptr str.Bytes)) a 16))
-    (put d Defs.tys (call (vec.make (ptr str.Bytes)) a 16))
+    (put d Defs.index (call (map.make str.Bytes i32) a 16))
+    (put d Defs.names (call (vec.make str.Bytes) a 16))
+    (put d Defs.tys (call (vec.make str.Bytes) a 16))
     (put d Defs.ats (call (vec.make i32) a 16))
     (put d Defs.state (call (vec.make i32) a 16))
     (put d Defs.vals (call (vec.make Val) a 16))
@@ -42,24 +42,24 @@
     d)
 
   ;; Constant `name`, declared `ty`, its value starting at offset `at`.
-  (fn add [d:(ptr Defs) name:(ptr str.Bytes) ty:(ptr str.Bytes) at:i32] -> void (pub)
-    (call (map.set (ptr str.Bytes) i32) (get d Defs.index) name (call (vec.len (ptr str.Bytes)) (get d Defs.names)))
-    (call (vec.push (ptr str.Bytes)) (get d Defs.names) name)
-    (call (vec.push (ptr str.Bytes)) (get d Defs.tys) ty)
+  (fn add [d:(ptr Defs) name:str.Bytes ty:str.Bytes at:i32] -> void (pub)
+    (call (map.set str.Bytes i32) (get d Defs.index) name (call (vec.len str.Bytes) (get d Defs.names)))
+    (call (vec.push str.Bytes) (get d Defs.names) name)
+    (call (vec.push str.Bytes) (get d Defs.tys) ty)
     (call (vec.push i32) (get d Defs.ats) at)
     (call (vec.push i32) (get d Defs.state) 0)
     (call (vec.push Val) (get d Defs.vals) (make Val K.i32 0i64 0.0)))
 
-  (fn has [d:(ptr Defs) name:(ptr str.Bytes)] -> bool (pub)
-    (call (map.has (ptr str.Bytes) i32) (get d Defs.index) name))
+  (fn has [d:(ptr Defs) name:str.Bytes] -> bool (pub)
+    (call (map.has str.Bytes i32) (get d Defs.index) name))
 
   ;; Constant `name`'s value, folded once; on a failure, failed, err, and
   ;; err_at (the offset of the value whose constant is wrong) say why.
-  (fn value [d:(ptr Defs) name:(ptr str.Bytes)] -> Val (pub)
-    (let k:i32 (call (map.get_or (ptr str.Bytes) i32) (get d Defs.index) name 0))
+  (fn value [d:(ptr Defs) name:str.Bytes] -> Val (pub)
+    (let k:i32 (call (map.get_or str.Bytes i32) (get d Defs.index) name 0))
     (let st:i32 (call (vec.at i32) (get d Defs.state) k))
     (if (eq st 2) (return (call (vec.at Val) (get d Defs.vals) k)) (block))
-    (let base:(ptr str.Bytes) (call base_of name))
+    (let base:str.Bytes (call base_of name))
     (let at:i32 (call (vec.at i32) (get d Defs.ats) k))
     (if (eq st 1)
         (block (call fail d at base "': its value depends on itself") (return (make Val K.i32 0i64 0.0)))
@@ -68,7 +68,7 @@
     (let v:Val (call eval d at at base))
     (if (get d Defs.failed) (return v) (block))
     (call (vec.set i32) (get d Defs.state) k 2)
-    (let ty:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) (get d Defs.tys) k))
+    (let ty:str.Bytes (call (vec.at str.Bytes) (get d Defs.tys) k))
     (if (not (call str.is ty (call kind_name (get v Val.k))))
         (block
           (call begin d at base)
@@ -94,26 +94,26 @@
 
   (fn kind_name [k:K] -> str (cond ((eq k K.i32) "i32") ((eq k K.i64) "i64") ((eq k K.f64) "f64") (else "bool")))
 
-  (fn base_of [name:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn base_of [name:str.Bytes] -> str.Bytes
     (let dot:i32 -1)
     (loop i 0 (- (get name str.Bytes.len) 1) 1 (if (eq (call str.byte_at name i) 46) (set! dot i) (block)))
     (call str.slice name (+ dot 1) (- (get name str.Bytes.len) (+ dot 1))))
 
   ;; Starts constant base's message, at offset `at`, unless one is there.
-  (fn begin [d:(ptr Defs) at:i32 base:(ptr str.Bytes)] -> void
+  (fn begin [d:(ptr Defs) at:i32 base:str.Bytes] -> void
     (put d Defs.failed true)
     (put d Defs.err_at at)
     (call buf.clear (get d Defs.err))
     (call buf.push_str (get d Defs.err) "constant '")
     (call buf.push_bytes (get d Defs.err) base))
 
-  (fn fail [d:(ptr Defs) at:i32 base:(ptr str.Bytes) rest:str] -> void
+  (fn fail [d:(ptr Defs) at:i32 base:str.Bytes rest:str] -> void
     (if (get d Defs.failed) (return) (block))
     (call begin d at base)
     (call buf.push_str (get d Defs.err) rest))
 
   ;; Fails with "constant 'base': " then the text of b.
-  (fn fail_buf [d:(ptr Defs) at:i32 base:(ptr str.Bytes) b:(ptr buf.Buf)] -> void
+  (fn fail_buf [d:(ptr Defs) at:i32 base:str.Bytes b:(ptr buf.Buf)] -> void
     (if (get d Defs.failed) (return) (block))
     (call begin d at base)
     (call buf.push_str (get d Defs.err) "': ")
@@ -151,7 +151,7 @@
 
   ;; The value starting at offset i, in constant base's value (at `at`,
   ;; where its errors are reported, as src/consts.rs does).
-  (fn eval [d:(ptr Defs) i:i32 at:i32 base:(ptr str.Bytes)] -> Val
+  (fn eval [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
     (if (eq (call byte d i) 40) (return (call eval_group d i at base)) (block))
     (call eval_atom d i at base))
 
@@ -161,9 +161,9 @@
 
   ;; An atom, read as the tokenizer reads it (compiler.aipl, src/parser.rs):
   ;; an int, an i64 (ends in i64), an f64, a bool, or a constant's name.
-  (fn eval_atom [d:(ptr Defs) i:i32 at:i32 base:(ptr str.Bytes)] -> Val
-    (let t:(ptr str.Bytes) (call str.slice (get d Defs.text) i (- (call atom_end d i) i)))
-    (let p:i32 (get t str.Bytes.addr))
+  (fn eval_atom [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
+    (let t:str.Bytes (call str.slice (get d Defs.text) i (- (call atom_end d i) i)))
+    (let p:i32 (call str.addr t))
     (let n:i32 (get t str.Bytes.len))
     (cond
       ((call str.is t "true") (make Val K.bool 1i64 0.0))
@@ -190,7 +190,7 @@
        (call none))))
 
   ;; An int's text as an i64 (an optional sign, then digits).
-  (fn digits [t:(ptr str.Bytes)] -> i64
+  (fn digits [t:str.Bytes] -> i64
     (let neg:bool (eq (call str.byte_at t 0) 45))
     (let v:i64 0i64)
     (loop k (if (or neg (eq (call str.byte_at t 0) 43)) 1 0) (- (get t str.Bytes.len) 1) 1
@@ -198,9 +198,9 @@
     (if neg v (- 0i64 v)))
 
   ;; (op a b) or (not a).
-  (fn eval_group [d:(ptr Defs) i:i32 at:i32 base:(ptr str.Bytes)] -> Val
+  (fn eval_group [d:(ptr Defs) i:i32 at:i32 base:str.Bytes] -> Val
     (let j:i32 (call skip_space d (+ i 1)))
-    (let op:(ptr str.Bytes) (call str.slice (get d Defs.text) j (- (call atom_end d j) j)))
+    (let op:str.Bytes (call str.slice (get d Defs.text) j (- (call atom_end d j) j)))
     (set! j (call skip_space d (call atom_end d j)))
     (let args:(ptr (vec.Vec Val)) (call (vec.make Val) (call alloc.default) 2))
     (while (neq (call byte d j) 41)
@@ -212,13 +212,13 @@
     (if (gt (call buf.len b) 0) (call fail_buf d at base b) (block))
     r)
 
-  (fn is_op [op:(ptr str.Bytes)] -> bool
+  (fn is_op [op:str.Bytes] -> bool
     (or (or (or (call str.is op "+") (call str.is op "-")) (or (call str.is op "*") (call str.is op "/")))
         (or (or (or (call str.is op "%") (call str.is op "^")) (or (call str.is op "shl") (call str.is op "shr")))
             (or (or (call str.is op "shru") (call str.is op "bitand")) (or (call str.is op "bitor") (or (call str.is op "and") (or (call str.is op "or") (call str.is op "not"))))))))
 
   ;; op on args (src/consts.rs fold); a failure's text goes to b.
-  (fn fold [op:(ptr str.Bytes) args:(ptr (vec.Vec Val)) b:(ptr buf.Buf)] -> Val
+  (fn fold [op:str.Bytes args:(ptr (vec.Vec Val)) b:(ptr buf.Buf)] -> Val
     (if (not (call is_op op))
         (block
           (call buf.push_str b "a constant expression takes + - * / % ^ shl shr shru bitand bitor on numbers, and and or not on bools; not (")
@@ -263,15 +263,15 @@
          ((call str.is op "or") (make Val K.bool (if (or (eq (get a Val.i) 1i64) (eq (get c Val.i) 1i64)) 1i64 0i64) 0.0))
          (else (call does_not_apply b op k))))))
 
-  (fn does_not_apply [b:(ptr buf.Buf) op:(ptr str.Bytes) k:K] -> Val
+  (fn does_not_apply [b:(ptr buf.Buf) op:str.Bytes k:K] -> Val
     (call buf.push_bytes b op) (call buf.push_str b " does not apply to ") (call buf.push_str b (call kind_name k))
     (call none))
 
-  (fn by_zero [b:(ptr buf.Buf) op:(ptr str.Bytes)] -> Val
+  (fn by_zero [b:(ptr buf.Buf) op:str.Bytes] -> Val
     (call buf.push_bytes b op) (call buf.push_str b " by zero")
     (call none))
 
-  (fn fold_i32 [b:(ptr buf.Buf) op:(ptr str.Bytes) x:i32 y:i32] -> Val
+  (fn fold_i32 [b:(ptr buf.Buf) op:str.Bytes x:i32 y:i32] -> Val
     (let r:i32 0)
     (cond
       ((call str.is op "+") (set! r (+ x y)))
@@ -290,7 +290,7 @@
       (else (return (call does_not_apply b op K.i32))))
     (make Val K.i32 (i64.extend_s r) 0.0))
 
-  (fn fold_i64 [b:(ptr buf.Buf) op:(ptr str.Bytes) x:i64 y:i64] -> Val
+  (fn fold_i64 [b:(ptr buf.Buf) op:str.Bytes x:i64 y:i64] -> Val
     (let r:i64 0i64)
     (cond
       ((call str.is op "+") (set! r (+ x y)))

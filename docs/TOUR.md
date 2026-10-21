@@ -20,16 +20,18 @@ an example as `tour.aipl`, and run it with `aipl eval tour.aipl`.
 
   (fn main [] -> i32
     (call io.println_int "7 squared is " (call square 7))
-    (+ (call square 3) (call square 4))))
+    (call io.println_int "3 squared plus 4 squared is " (+ (call square 3) (call square 4)))
+    0))
 ```
 
-It prints `7 squared is 49` and returns `25`.
+It prints `7 squared is 49` and `3 squared plus 4 squared is 25`.
 
 Everything is a parenthesized form with its operator first: `(* x x)`, not
 `x * x`. There is no operator precedence to remember, because there are no
 infix operators. Calling your own function is always `(call f args...)`,
 which keeps a user function apart from a built-in operation like `+`. A
-function's last expression is its value.
+function's last expression is its value. `main`'s value is the program's
+exit status, 0 for success, so a program prints its answers and returns 0.
 
 A file is one `(module name ...)`. `(import io)` brings in a module from the
 standard library; its functions are then `io.something`.
@@ -45,10 +47,11 @@ standard library; its functions are then `io.something`.
     (let total:i32 40)
     (let big:i64 (i64.extend_s total))
     (let avg:f64 (call average big 3i64))
-    (i32.wrap (i64.trunc_f64_s (* avg 2.0)))))
+    (println "the average of {total} and 3 is {avg}")
+    0))
 ```
 
-It returns `43`.
+It prints `the average of 40 and 3 is 21.5`.
 
 Every parameter, return value, and local has its type: `i32`, `i64`, `f32`,
 `f64`, `bool`, `str`. Literals say their type too: `40` is an `i32`, `3i64`
@@ -77,11 +80,11 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
       (else 1)))
 
   (fn main [] -> i32
-    (+ (call sum_even 10) (call sign -5))))
+    (println "evens up to 10 add to {(call sum_even 10)}; the sign of -5 is {(call sign -5)}")
+    0))
 ```
 
-It returns `29`: the even numbers up to 10 add to 30, and the sign of -5 is
--1.
+It prints `evens up to 10 add to 30; the sign of -5 is -1`.
 
 `if` always has both branches; `(block)` is an empty one. `loop` counts
 from its start to its end, both included, by its step; `while` repeats
@@ -93,10 +96,11 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
 
 ```lisp
 (module tour_structs
+  (import alloc)
   (struct Point [x:i32 y:i32])
 
   (fn make_point [x:i32 y:i32] -> (ptr Point)
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     p)
@@ -109,15 +113,20 @@ and must end with `else`. Comparisons are words: `eq`, `neq`, `lt`, `lte`,
     sum)
 
   (fn main [] -> i32
-    (let ps:(arr (ptr Point)) (arr.new (ptr Point) 3))
+    (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (loop i 0 2 1
       (arr.set (ptr Point) ps i (call make_point i (* i 10))))
-    (call total ps)))
+    (println "total: {(call total ps)}")
+    0))
 ```
 
-It returns `33`: the points are (0, 0), (1, 10), and (2, 20).
+It prints `total: 33`: the points are (0, 0), (1, 10), and (2, 20).
 
-`(new Point)` makes a struct and gives a `(ptr Point)`. A pointer to one
+`(new Point a)` makes a struct from the allocator `a` and gives a `(ptr
+Point)`; every allocation names where its memory comes from, and
+`(call alloc.forever)` is memory kept until the program exits (a function
+that allocates usually takes the allocator as a parameter, so its caller
+decides). A pointer to one
 struct can never be used as another, or as a number. `get` and `put` name
 the field as `Struct.field`. An `(arr T)` holds values of type `T`, and
 `arr.get` and `arr.set` repeat the element type. Every index is checked: an
@@ -129,20 +138,22 @@ nothing allocated, copied where it goes, never changed in place.
 
 ```lisp
 (module tour_values
+  (import alloc)
   (struct Point [x:i32 y:i32] (value))
 
   (fn shift [p:Point dx:i32] -> Point
     (with p Point.x (+ (get p Point.x) dx)))
 
   (fn main [] -> i32
-    (let ps:(arr Point) (arr.new Point 3))
+    (let ps:(arr Point) (arr.new Point (call alloc.forever) 3))
     (loop i 0 2 1 (arr.set Point ps i (make Point i (* i 10))))
     (let q:Point (call shift (arr.get Point ps 2) 5))
-    (+ (get q Point.x) (arr.get Point ps 1 Point.y))))
+    (println "shifted: ({(get q Point.x)}, {(get q Point.y)}); second y: {(arr.get Point ps 1 Point.y)}")
+    0))
 ```
 
-It returns `17`: the third point shifted is (7, 20), and the second point's
-`y` is 10. `make` gives every field in order, `with` makes a copy with one
+It prints `shifted: (7, 20); second y: 10`: the third point moved 5 to the
+right, and the second point's `y`. `make` gives every field in order, `with` makes a copy with one
 field changed, and the array holds the points themselves, not pointers to
 them. A value struct holds at most eight numbers; larger records, and
 anything changed in place, stay behind pointers.
@@ -168,11 +179,12 @@ anything changed in place, stay behind pointers.
     (let d:i32 (match_result (call digit 55)
                  (ok v v)
                  (err c -1)))
-    (+ (i32.wrap (i64.trunc_f64_s a)) (* 10 d))))
+    (println "areas: {a}, digit: {d}")
+    0))
 ```
 
-It returns `79`: the areas add to 9, and the character 55 (`'7'`) is the
-digit 7.
+It prints `areas: 9.0, digit: 7`: the areas add to 9, and the character 55
+(`'7'`) is the digit 7.
 
 A union is a value that is exactly one of several variants, each with its
 own fields. `make` builds one; `match` takes it apart, and must handle every
@@ -197,10 +209,13 @@ function that can fail says so in its type. A union can be generic, like
     r)
 
   (fn main [] -> i32
-    (+ (call isqrt 99) (call isqrt 100))))
+    (let a:i32 (call isqrt 99))
+    (let b:i32 (call isqrt 100))
+    (println "isqrt 99 = {a}, isqrt 100 = {b}")
+    0))
 ```
 
-It returns `19` (9 + 10).
+It prints `isqrt 99 = 9, isqrt 100 = 10`.
 
 `req` states what must be true when the function is called, and `ens` what
 must be true when it returns, with `res` naming the result. They are checked
@@ -212,7 +227,7 @@ program gives:
 ```
 ./tour: Pre-condition failed in 'isqrt': (req (gte n 0)) with n = -4
   at isqrt (tour.aipl:4:10)
-  at main (tour.aipl:12:24)
+  at main (tour.aipl:13:16)
 ```
 
 ## 7. Generics and the standard library
@@ -233,10 +248,11 @@ program gives:
     (let first:i32 (call (vec.at i32) v 0))
     (let n:i32 (call (vec.len i32) v))
     (call (vec.free i32) v)
-    (+ first n)))
+    (println "first {first}, {n} elements")
+    0))
 ```
 
-It returns `13`: after sorting, the first element is 10, and there are 3.
+It prints `first 10, 3 elements`: the smallest after sorting.
 
 `vec.Vec` is a generic growable list. Every use names its type, as in
 `(vec.push i32)`: wordy, but nothing is inferred, so nothing is guessed.

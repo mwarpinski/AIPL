@@ -29,9 +29,9 @@ def cond(fn, rows, default):
 
 text = "\n".join([
     "  ;; The code point of the named reference name (without its ';'), or -1.\n" +
-    cond("  (fn named [n:(ptr str.Bytes)] -> i32", [(f"(call str.is n {lit(k)})", cp) for k, cp in sorted(named.items())], -1),
+    cond("  (fn named [n:str.Bytes] -> i32", [(f"(call str.is n {lit(k)})", cp) for k, cp in sorted(named.items())], -1),
     "  ;; Whether name may come without its ';' (HTML5's legacy names).\n" +
-    cond("  (fn legacy [n:(ptr str.Bytes)] -> bool", [(f"(call str.is n {lit(k)})", "true") for k in legacy], "false"),
+    cond("  (fn legacy [n:str.Bytes] -> bool", [(f"(call str.is n {lit(k)})", "true") for k in legacy], "false"),
     "  ;; The character a numeric reference to n means instead of n, or -1\n  ;; (html._invalid_charrefs: mostly the Windows-1252 range).\n" +
     cond("  (fn replaced [n:i32] -> i32", [(f"(eq n {k})", ord(v)) for k, v in sorted(html._invalid_charrefs.items())], -1),
 ])

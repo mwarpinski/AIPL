@@ -448,7 +448,7 @@ fn json_numbers_are_shortest_and_laid_out_as_javascript() {
            (fn number_at [lo:i32 hi:i32 out:i32] -> i32 (unsafe)
              (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
              (call json.write b (make json.Value.number (f64.reinterpret_i64 (bitor (i64.extend_u lo) (shl (i64.extend_s hi) 32i64)))))
-             (let t:(ptr str.Bytes) (call buf.bytes b))
+             (let t:str.Bytes (call buf.bytes b))
              (loop i 0 (- (get t str.Bytes.len) 1) 1 (mem.store8 (+ out i) (call str.byte_at t i)))
              (get t str.Bytes.len))
            (fn alloc [n:i32] -> i32 (mem.alloc n)))",

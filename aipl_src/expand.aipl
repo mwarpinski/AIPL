@@ -16,14 +16,14 @@
   (import cexpr)
 
   (struct X [src:i32 toks:i32 n:i32 out:i32 count:i32
-             consts:(ptr (map.Map (ptr str.Bytes) i32))
-             enums:(ptr (map.Map (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))))
+             consts:(ptr (map.Map str.Bytes i32))
+             enums:(ptr (map.Map str.Bytes (ptr (map.Map str.Bytes i32))))
              spare:(ptr buf.Buf) err:(ptr buf.Buf) err_at:i32 failed:bool
              ;; constants whose value is a name or an expression, folded
              ;; (cexpr.aipl) once all are known: their names, value tokens,
              ;; and values
-             defs:(ptr cexpr.Defs) deferred:(ptr (vec.Vec (ptr str.Bytes))) deferred_at:(ptr (vec.Vec i32))
-             folded:(ptr (map.Map (ptr str.Bytes) cexpr.Val))])
+             defs:(ptr cexpr.Defs) deferred:(ptr (vec.Vec str.Bytes)) deferred_at:(ptr (vec.Vec i32))
+             folded:(ptr (map.Map str.Bytes cexpr.Val))])
 
   ;; The result: the expanded tokens, or the first error.
   (struct Expanded [(read toks:i32) (read n:i32) (read ok:bool) (read err:(ptr buf.Buf)) (read err_at:i32)] (pub))
@@ -33,7 +33,7 @@
   (fn tok [x:(ptr X) i:i32] -> (ptr compiler.Token) (call compiler.token_at (get x X.toks) i))
   (fn kind [x:(ptr X) i:i32] -> compiler.Kind
     (if (and (gte i 0) (lt i (get x X.n))) (get (call tok x i) compiler.Token.kind) compiler.Kind.none))
-  (fn text [x:(ptr X) i:i32] -> (ptr str.Bytes)
+  (fn text [x:(ptr X) i:i32] -> str.Bytes
     (unsafe (let t:(ptr compiler.Token) (call tok x i))
     (call str.bytes (+ (get x X.src) (get t compiler.Token.a)) (get t compiler.Token.b))))
   (fn is_sym [x:(ptr X) i:i32 s:str] -> bool
@@ -62,8 +62,8 @@
   (struct Kids [at:(arr i32) n:i32])
 
   (fn kids [x:(ptr X) g:i32] -> (ptr Kids)
-    (let ks:(ptr Kids) (new Kids))
-    (put ks Kids.at (arr.new i32 8))
+    (let ks:(ptr Kids) (new Kids (call alloc.forever)))
+    (put ks Kids.at (arr.new i32 (call alloc.forever) 8))
     (put ks Kids.n 0)
     (let c:i32 (+ g 1))
     (while (and (lt c (get x X.n)) (not (call is_close x c)))
@@ -86,13 +86,13 @@
   ;; ===== Collecting =====
 
   ;; The name after the last '.'.
-  (fn base [s:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn base [s:str.Bytes] -> str.Bytes
     (unsafe (let d:i32 -1)
     (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
-    (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1)))))
+    (call str.bytes (+ (call str.addr s) (+ d 1)) (- (get s str.Bytes.len) (+ d 1)))))
 
   ;; At least two characters of A-Z, 0-9, _, starting with A-Z.
-  (fn well_formed [s:(ptr str.Bytes)] -> bool
+  (fn well_formed [s:str.Bytes] -> bool
     (if (lt (get s str.Bytes.len) 2) (return false) (block))
     (let c0:i32 (call str.byte_at s 0))
     (if (or (lt c0 65) (gt c0 90)) (return false) (block))
@@ -102,7 +102,7 @@
     true)
 
   (fn i64_of [x:(ptr X) i:i32] -> i64
-    (let s:(ptr str.Bytes) (call text x i))
+    (let s:str.Bytes (call text x i))
     (let c0:i32 (call str.byte_at s 0))
     (let v:i64 0i64)
     (loop k (if (or (eq c0 45) (eq c0 43)) 1 0) (- (get s str.Bytes.len) 1) 1
@@ -117,8 +117,8 @@
                                         (neq (call kind x (call kid ks 1)) compiler.Kind.symbol)))
         (block (let b:(ptr buf.Buf) (call words)) (call buf.push_str b shape) (call fail x item b) (return))
         (block))
-    (let name:(ptr str.Bytes) (call text x (call kid ks 1)))
-    (let bs:(ptr str.Bytes) (call base name))
+    (let name:str.Bytes (call text x (call kid ks 1)))
+    (let bs:str.Bytes (call base name))
     (if (not (call well_formed bs))
         (block
           (let b:(ptr buf.Buf) (call words))
@@ -129,23 +129,23 @@
           (return))
         (block))
     (let ti:i32 (call kid ks 3))
-    (let ty:(ptr str.Bytes) (if (eq (call kind x ti) compiler.Kind.symbol) (call text x ti) (call str.from_str "")))
+    (let ty:str.Bytes (if (eq (call kind x ti) compiler.Kind.symbol) (call text x ti) (call str.from_str "")))
     (let vi:i32 (call kid ks 4))
     (let vk:compiler.Kind (call kind x vi))
     ;; a name or an expression: folded once every constant is known
     (if (and (or (eq vk compiler.Kind.symbol) (eq vk compiler.Kind.lparen))
              (or (or (call str.is ty "i32") (call str.is ty "i64")) (or (call str.is ty "f64") (call str.is ty "bool"))))
         (block
-          (if (call (map.has (ptr str.Bytes) i32) (get x X.consts) name)
+          (if (call (map.has str.Bytes i32) (get x X.consts) name)
               (block
                 (let b:(ptr buf.Buf) (call words))
                 (call buf.push_str b "constant '") (call buf.push_bytes b name) (call buf.push_str b "' is defined twice")
                 (call fail x item b)
                 (return))
               (block))
-          (call (map.set (ptr str.Bytes) i32) (get x X.consts) name vi)
+          (call (map.set str.Bytes i32) (get x X.consts) name vi)
           (call cexpr.add (get x X.defs) name ty (call pos x vi))
-          (call (vec.push (ptr str.Bytes)) (get x X.deferred) name)
+          (call (vec.push str.Bytes) (get x X.deferred) name)
           (call (vec.push i32) (get x X.deferred_at) vi)
           (return))
         (block))
@@ -180,7 +180,7 @@
           (call fail x vi b)
           (return))
         (block))
-    (if (call (map.has (ptr str.Bytes) i32) (get x X.consts) name)
+    (if (call (map.has str.Bytes i32) (get x X.consts) name)
         (block
           (let b:(ptr buf.Buf) (call words))
           (call buf.push_str b "constant '")
@@ -188,7 +188,7 @@
           (call buf.push_str b "' is defined twice")
           (call fail x item b))
         (block
-          (call (map.set (ptr str.Bytes) i32) (get x X.consts) name vi)
+          (call (map.set str.Bytes i32) (get x X.consts) name vi)
           ;; a literal, for the constants that name it
           (call cexpr.add (get x X.defs) name ty (call pos x vi)))))
 
@@ -197,7 +197,7 @@
   (fn read_enum [x:(ptr X) item:i32] -> void
     (let ks:(ptr Kids) (call kids x item))
     (if (neq (call kind x (call kid ks 1)) compiler.Kind.symbol) (return) (block))
-    (let members:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
+    (let members:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 16))
     (let next:i64 0i64)
     (let li:i32 (call kid ks 2))
     (if (call is_open x li)
@@ -206,15 +206,15 @@
           (while (and (lt m (get x X.n)) (not (call is_close x m)))
             (let value:i64 next)
             (cond
-              ((eq (call kind x m) compiler.Kind.symbol) (call (map.set (ptr str.Bytes) i32) members (call text x m) (i32.wrap value)))
+              ((eq (call kind x m) compiler.Kind.symbol) (call (map.set str.Bytes i32) members (call text x m) (i32.wrap value)))
               ((and (call is_open x m) (and (eq (call kind x (+ m 1)) compiler.Kind.symbol) (eq (call kind x (+ m 2)) compiler.Kind.int)))
                (set! value (call i64_of x (+ m 2)))
-               (call (map.set (ptr str.Bytes) i32) members (call text x (+ m 1)) (i32.wrap value)))
+               (call (map.set str.Bytes i32) members (call text x (+ m 1)) (i32.wrap value)))
               (else (return)))
             (set! next (+ value 1i64))
             (set! m (call elem_end x m))))
         (block))
-    (call (map.set (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (get x X.enums) (call text x (call kid ks 1)) members))
+    (call (map.set str.Bytes (ptr (map.Map str.Bytes i32))) (get x X.enums) (call text x (call kid ks 1)) members))
 
   ;; ===== Rewriting =====
 
@@ -252,8 +252,8 @@
     (unsafe (cond
       ((call is_open x i) (call rewrite_group x i))
       ((eq (call kind x i) compiler.Kind.symbol)
-       (let s:(ptr str.Bytes) (call text x i))
-       (if (call (map.has (ptr str.Bytes) i32) (get x X.consts) s)
+       (let s:str.Bytes (call text x i))
+       (if (call (map.has str.Bytes i32) (get x X.consts) s)
            (block
              (if next_is_colon
                  (block
@@ -263,19 +263,19 @@
                    (call buf.push_str b "' is a constant; it cannot also name a variable, parameter, or field")
                    (call fail x i b))
                  (block))
-             (if (call (map.has (ptr str.Bytes) cexpr.Val) (get x X.folded) s)
-                 (call emit_folded x (call (map.get_or (ptr str.Bytes) cexpr.Val) (get x X.folded) s (call cexpr.zero)) (call pos x i))
-                 (call emit x (call (map.get_or (ptr str.Bytes) i32) (get x X.consts) s 0) (call pos x i)))
+             (if (call (map.has str.Bytes cexpr.Val) (get x X.folded) s)
+                 (call emit_folded x (call (map.get_or str.Bytes cexpr.Val) (get x X.folded) s (call cexpr.zero)) (call pos x i))
+                 (call emit x (call (map.get_or str.Bytes i32) (get x X.consts) s 0) (call pos x i)))
              (return))
            (block))
        (let d:i32 -1)
        (loop k 0 (- (get s str.Bytes.len) 1) 1 (if (eq (call str.byte_at s k) 46) (set! d k) (block)))
-       (let e:(ptr str.Bytes) (call str.bytes (get s str.Bytes.addr) (if (lt d 0) 0 d)))
-       (if (and (gte d 0) (call (map.has (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (get x X.enums) e))
+       (let e:str.Bytes (call str.bytes (call str.addr s) (if (lt d 0) 0 d)))
+       (if (and (gte d 0) (call (map.has str.Bytes (ptr (map.Map str.Bytes i32))) (get x X.enums) e))
            (block
-             (let members:(ptr (map.Map (ptr str.Bytes) i32)) (call (map.get_or (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (get x X.enums) e (ptr.null (map.Map (ptr str.Bytes) i32))))
-             (let m:(ptr str.Bytes) (call str.bytes (+ (get s str.Bytes.addr) (+ d 1)) (- (get s str.Bytes.len) (+ d 1))))
-             (if (not (call (map.has (ptr str.Bytes) i32) members m))
+             (let members:(ptr (map.Map str.Bytes i32)) (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get x X.enums) e (ptr.null (map.Map str.Bytes i32))))
+             (let m:str.Bytes (call str.bytes (+ (call str.addr s) (+ d 1)) (- (get s str.Bytes.len) (+ d 1))))
+             (if (not (call (map.has str.Bytes i32) members m))
                  (block
                    (let b:(ptr buf.Buf) (call words))
                    (call buf.push_str b "enum '")
@@ -292,7 +292,7 @@
              (call emit_new x compiler.Kind.symbol (call spare_text x 0) 9 at)
              (call emit_new x compiler.Kind.symbol (get t compiler.Token.a) d at)
              (let vstart:i32 (call buf.len (get x X.spare)))
-             (call buf.push_int (get x X.spare) (call (map.get_or (ptr str.Bytes) i32) members m 0))
+             (call buf.push_int (get x X.spare) (call (map.get_or str.Bytes i32) members m 0))
              (call emit_new x compiler.Kind.int (call spare_text x vstart) (- (call buf.len (get x X.spare)) vstart) at)
              (call emit_new x compiler.Kind.rparen 0 0 at))
            (call emit x i (call pos x i))))
@@ -364,8 +364,8 @@
   ;; value of the constant it is about.
   (fn fold_all [x:(ptr X)] -> void
     (let d:(ptr cexpr.Defs) (get x X.defs))
-    (loop k 0 (- (call (vec.len (ptr str.Bytes)) (get x X.deferred)) 1) 1
-      (let name:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) (get x X.deferred) k))
+    (loop k 0 (- (call (vec.len str.Bytes) (get x X.deferred)) 1) 1
+      (let name:str.Bytes (call (vec.at str.Bytes) (get x X.deferred) k))
       (let v:cexpr.Val (call cexpr.value d name))
       (if (get d cexpr.Defs.failed)
           (block
@@ -379,29 +379,29 @@
             (call fail x at b)
             (return))
           (block))
-      (call (map.set (ptr str.Bytes) cexpr.Val) (get x X.folded) name v)))
+      (call (map.set str.Bytes cexpr.Val) (get x X.folded) name v)))
 
   ;; ===== Driver =====
 
   ;; Expands the n tokens at toks (from compiler.tokenize over src).
   (fn expand [src:i32 toks:i32 n:i32] -> (ptr Expanded) (pub)
-    (let x:(ptr X) (new X))
+    (let x:(ptr X) (new X (call alloc.forever)))
     (put x X.src src)
     (put x X.toks toks)
     (put x X.n n)
     (put x X.out 0)
     (put x X.count 0)
-    (put x X.consts (call (map.make (ptr str.Bytes) i32) (call alloc.default) 16))
-    (put x X.enums (call (map.make (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (call alloc.default) 16))
+    (put x X.consts (call (map.make str.Bytes i32) (call alloc.default) 16))
+    (put x X.enums (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 16))
     (put x X.spare (call buf.make (call alloc.default) 4096))
     (call buf.push_str (get x X.spare) "enum.cast")
     (put x X.failed false)
     (let last:i32 (if (gt n 0) (get (call tok x (- n 1)) compiler.Token.pos) 0))
     (put x X.defs (call cexpr.make (unsafe (call str.bytes src (+ last 1)))))
-    (put x X.deferred (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (put x X.deferred (call (vec.make str.Bytes) (call alloc.default) 8))
     (put x X.deferred_at (call (vec.make i32) (call alloc.default) 8))
-    (put x X.folded (call (map.make (ptr str.Bytes) cexpr.Val) (call alloc.default) 8))
-    (let r:(ptr Expanded) (new Expanded))
+    (put x X.folded (call (map.make str.Bytes cexpr.Val) (call alloc.default) 8))
+    (let r:(ptr Expanded) (new Expanded (call alloc.forever)))
     (put r Expanded.toks toks)
     (put r Expanded.n n)
     (put r Expanded.ok true)
@@ -417,7 +417,7 @@
     (if (get x X.failed)
         (block (put r Expanded.ok false) (put r Expanded.err (get x X.err)) (put r Expanded.err_at (get x X.err_at)) (return r))
         (block))
-    (if (and (eq (call (map.count (ptr str.Bytes) i32) (get x X.consts)) 0) (eq (call (map.count (ptr str.Bytes) (ptr (map.Map (ptr str.Bytes) i32))) (get x X.enums)) 0))
+    (if (and (eq (call (map.count str.Bytes i32) (get x X.consts)) 0) (eq (call (map.count str.Bytes (ptr (map.Map str.Bytes i32))) (get x X.enums)) 0))
         (return r)
         (block))
     ;; once to count the tokens, then into a buffer of that size

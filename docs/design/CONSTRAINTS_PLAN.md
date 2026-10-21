@@ -95,7 +95,7 @@ byte parity between the toolchains works as it does today.
 - Implementations are for concrete types only. A generic implementation
   (`(impl (Hash (ptr T)) ...)` for every struct) can come later. It needs
   a rule against overlap first: a "hash any pointer by address"
-  implementation would clash with "hash a `(ptr str.Bytes)` by its
+  implementation would clash with "hash a `str.Bytes` by its
   contents", and the correct answer is to forbid the overlap, not to pick
   a winner.
 - An implementation expands to ordinary functions named
@@ -179,7 +179,7 @@ types:
 - `(cmp.Ord T)`: `compare`, with the contract above. Implemented for `i32`,
   `i64`, and `str` (bytewise).
 - `(cmp.Hash T)`: `hash` and `same`. Implemented for `i32`, `i64`, `str`,
-  and `(ptr str.Bytes)` (by contents, as `strmap` hashes today).
+  and `str.Bytes` (by contents, as `strmap` hashes today).
 - **Not for `f32`/`f64`.** NaN is not equal to itself, so equality on
   floats breaks the law every hash map relies on (`same x x`). Rust makes
   the same choice. A program that needs float keys writes a wrapper type
@@ -194,7 +194,8 @@ Then:
   benchmark move to it.
 - `vec.index_of` gets `(where (cmp.Eq T))`; `vec.sort_by` keeps its
   comparator argument (a sort by a key other than the type's order is
-  normal), and a `vec.sort` with `(where (cmp.Ord T))` joins it.
+  normal), and a `vec.sort` with `(where (cmp.Ord T))` joins it (built
+  2026-10-20).
 - `alloc`, `heap`, and `arena`: `create`, `destroy`, and `alloc` get
   `(where (struct T))`.
 

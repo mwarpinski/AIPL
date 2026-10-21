@@ -72,6 +72,15 @@ fn call_i32(w: &mut Wasi, name: &str) -> Result<i32, wasmtime::Error> {
     f.call(&mut w.store, ())
 }
 
+/// Runs `_start`: the program's exit status (AIPL_SPEC.md 6.5).
+fn exit_status(w: &mut Wasi) -> i32 {
+    let f: TypedFunc<(), ()> = w.instance.get_typed_func(&mut w.store, "_start").expect("_start");
+    match f.call(&mut w.store, ()) {
+        Ok(()) => 0,
+        Err(e) => e.downcast_ref::<wasmtime_wasi::I32Exit>().map(|x| x.0).unwrap_or_else(|| panic!("{e:?}")),
+    }
+}
+
 fn import_names(wasm: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
@@ -129,7 +138,8 @@ fn sys_print_writes_each_argument_and_a_newline_to_stdout() {
                (sys.print "hello, wasi")
                0))"#,
     );
-    assert_eq!(import_names(&wasm), vec!["wasi_snapshot_preview1::fd_write".to_string()]);
+    // proc_exit: _start exits with main's status (AIPL_SPEC.md 6.5)
+    assert_eq!(import_names(&wasm), vec!["wasi_snapshot_preview1::fd_write".to_string(), "wasi_snapshot_preview1::proc_exit".to_string()]);
     let dir = scratch_dir("print");
     let mut w = instantiate(&wasm, &dir);
     assert_eq!(call_i32(&mut w, "main").unwrap(), 0);
@@ -284,12 +294,13 @@ fn word_count_example_reads_counts_and_prints_in_both_backends() {
 
     let vm_dir = scratch_dir("wc_vm");
     std::fs::write(vm_dir.join("input.txt"), WC_INPUT).unwrap();
-    assert_eq!(vm_run_in(&module, "main", &vm_dir).unwrap(), Value::Int(4));
+    // main returns (result i32 str): ok, with status 0
+    assert_eq!(vm_run_in(&module, "main", &vm_dir).unwrap(), Value::Ok(Box::new(Value::Int(0))));
 
     let wasi_dir = scratch_dir("wc_wasi");
     std::fs::write(wasi_dir.join("input.txt"), WC_INPUT).unwrap();
     let mut w = instantiate(&wasm, &wasi_dir);
-    assert_eq!(call_i32(&mut w, "main").unwrap(), 4);
+    assert_eq!(exit_status(&mut w), 0);
     let out = String::from_utf8(w.stdout.contents().to_vec()).unwrap();
     assert_eq!(out, expected_stdout);
 
@@ -303,9 +314,9 @@ fn word_count_example_reports_a_missing_input_file_in_both_backends() {
     let module = Resolver::resolve(&root.join("examples/word_count.aipl")).unwrap();
     let wasm = WasmCompiler::compile(&module).unwrap();
     let dir = scratch_dir("wc_missing");
-    assert_eq!(vm_run_in(&module, "main", &dir).unwrap(), Value::Int(-1));
+    assert_eq!(vm_run_in(&module, "main", &dir).unwrap(), Value::Err(Box::new(Value::Str("word_count: cannot read the input file".into()))));
     let mut w = instantiate(&wasm, &dir);
-    assert_eq!(call_i32(&mut w, "main").unwrap(), -1);
+    assert_eq!(exit_status(&mut w), 1);
     assert!(w.stdout.contents().is_empty(), "error goes to stderr, not stdout");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -320,7 +331,7 @@ fn the_shipped_sample_input_gives_the_documented_counts() {
     let dir = scratch_dir("wc_sample");
     std::fs::copy(root.join("examples/input.txt"), dir.join("input.txt")).unwrap();
     let mut w = instantiate(&wasm, &dir);
-    assert_eq!(call_i32(&mut w, "main").unwrap(), 4);
+    assert_eq!(exit_status(&mut w), 0);
     let out = String::from_utf8(w.stdout.contents().to_vec()).unwrap();
     assert_eq!(out, "lines: 4\nwords: 15\nbytes: 81\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -463,12 +474,12 @@ fn word_freq_example_agrees_in_both_backends() {
     let dir = scratch_dir("freq_wasi");
     std::fs::write(dir.join("input.txt"), input).unwrap();
     let mut w = instantiate(&wasm, &dir);
-    assert_eq!(call_i32(&mut w, "main").unwrap(), 4);
+    assert_eq!(exit_status(&mut w), 0);
     assert_eq!(String::from_utf8(w.stdout.contents().to_vec()).unwrap(), expected);
 
     let vm_dir = scratch_dir("freq_vm");
     std::fs::write(vm_dir.join("input.txt"), input).unwrap();
-    assert_eq!(vm_run_in(&module, "main", &vm_dir).unwrap(), Value::Int(4));
+    assert_eq!(vm_run_in(&module, "main", &vm_dir).unwrap(), Value::Ok(Box::new(Value::Int(0))));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&vm_dir);
 }
@@ -502,9 +513,9 @@ fn stdin_clocks_random_and_absolute_paths() {
     (loop i 0 63 1 (if (neq (mem.load8 (+ p i)) 0) (set! nonzero 1) (block)))
     (+ (* 10 ok) nonzero))
   (fn absolute [] -> i32 (unsafe)
-    (let path:(ptr str.Bytes) (call str.from_str "{abs}"))
+    (let path:str.Bytes (call str.from_str "{abs}"))
     (let wrote:i32 (call io.write_path path (call str.from_str "absolute ok")))
-    (let back:(ptr str.Bytes) (call io.read_path path))
+    (let back:str.Bytes (call io.read_path path))
     (+ (* 100 wrote) (get back str.Bytes.len))))"#,
             abs = abs_file.display()
         ),

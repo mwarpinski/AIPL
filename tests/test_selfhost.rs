@@ -12,26 +12,115 @@ fn run_self_hosted(src: &str, name: &str) -> Vec<u8> {
     self_host_named(src, name).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// Runs `codegen.compile_module` over `src` in the VM. Returns the module bytes
-/// or the compile error code it reported (AIPL_SPEC.md 6.4).
+/// Runs `codegen.compile_module` over `src`: codegen.aipl compiled to wasm
+/// by the Rust toolchain, under wasmtime (in the VM until 2026-10-20, many
+/// times slower; codegen.aipl compiling itself, below, still runs in the
+/// VM). Returns the module bytes or the compile error code it reported
+/// (AIPL_SPEC.md 6.4).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
     self_host_named(src, "")
 }
 
 /// self_host, naming the source file in the line table (codegen.compile_named).
 fn self_host_named(src: &str, name: &str) -> Result<Vec<u8>, String> {
-    // The tree-walking VM recurses once per nested AIPL call; give the compile a big stack.
-    let src = src.to_string();
+    let src = flat(src);
     let name = name.to_string();
+    // the code generator recurses once per nesting level of what it compiles
     std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
+        .stack_size(128 << 20)
         .spawn(move || self_host_on_this_thread(&src, &name))
         .unwrap()
         .join()
         .unwrap()
 }
 
+/// src as the code generator takes it: a program that imports (std/alloc,
+/// to allocate) resolved and printed flat, as the front end hands it over.
+fn flat(src: &str) -> String {
+    if !src.contains("(import ") {
+        return src.to_string();
+    }
+    let path = std::env::temp_dir().join(format!("aipl_selfhost_flat_{}.aipl", std::process::id()));
+    let m = Resolver::resolve_source(src, &path).expect("resolve test src");
+    aipl_core::printer::print_module(&m)
+}
+
+/// codegen.aipl as wasm, compiled once per process.
+fn codegen_wasm() -> &'static (wasmtime::Engine, wasmtime::Module) {
+    static CODEGEN: std::sync::OnceLock<(wasmtime::Engine, wasmtime::Module)> = std::sync::OnceLock::new();
+    CODEGEN.get_or_init(|| {
+        let module = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
+        TypeChecker::new().check_module(&module).expect("check codegen.aipl");
+        let wasm = WasmCompiler::compile(&module).expect("compile codegen.aipl");
+        let mut config = wasmtime::Config::new();
+        config.async_stack_size(80 << 20).max_wasm_stack(64 << 20);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let m = wasmtime::Module::new(&engine, &wasm).unwrap();
+        (engine, m)
+    })
+}
+
 fn self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
+    use wasmtime::Val;
+    let (engine, module) = codegen_wasm();
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(engine, wasmtime_wasi::WasiCtxBuilder::new().inherit_stderr().build_p1());
+    let inst = linker.instantiate(&mut store, module).expect("instantiate codegen.aipl");
+    let memory = inst.get_memory(&mut store, "memory").unwrap();
+    // each export's one result as an i32 (a pointer's address: the low half)
+    let call = |store: &mut wasmtime::Store<_>, f: &str, args: &[i32]| -> i32 {
+        let func = inst.get_func(&mut *store, f).unwrap_or_else(|| panic!("no export {f}"));
+        let args: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
+        let mut out = [Val::I32(0)];
+        func.call(&mut *store, &args, &mut out).unwrap_or_else(|e| panic!("{f} trapped: {e}"));
+        match out[0] {
+            Val::I32(v) => v,
+            Val::I64(v) => v as i32,
+            ref other => panic!("{f} gave {other:?}"),
+        }
+    };
+    let res = call(&mut store, "init_keywords", &[]);
+    assert!(res >= 0, "init_keywords failed with {}", res);
+    let src_bytes = src.as_bytes();
+    let src_ptr = call(&mut store, "alloc_src", &[(src_bytes.len() + 16) as i32]);
+    memory.write(&mut store, src_ptr as usize, src_bytes).unwrap();
+    let name_ptr = call(&mut store, "alloc_src", &[(name.len() + 16) as i32]);
+    memory.write(&mut store, name_ptr as usize, name.as_bytes()).unwrap();
+    let out_len = call(&mut store, "compile_named", &[src_ptr, src_bytes.len() as i32, name_ptr, name.len() as i32]);
+    let data = memory.data(&store);
+    let word = |addr: usize| u32::from_le_bytes(data[addr..addr + 4].try_into().unwrap()) as usize;
+    if out_len <= 0 {
+        let code = word(4);
+        // compile_call records the unresolved callee's source span in cells 44/48.
+        let detail = if code == 1452 {
+            let (pos, len) = (word(44), word(48));
+            format!(" (unknown function '{}')", String::from_utf8_lossy(&src_bytes[pos..(pos + len).min(src_bytes.len())]))
+        } else {
+            String::new()
+        };
+        return Err(format!("compile_module returned {} with compile error {}{}", out_len, code, detail));
+    }
+    let out_ptr = word(60);
+    let bytes = data[out_ptr..out_ptr + out_len as usize].to_vec();
+    wasmparser::Validator::new().validate_all(&bytes).map_err(|e| format!("self-hosted output does not validate: {e}"))?;
+    Ok(bytes)
+}
+
+/// codegen.compile_named run in the VM, for the one test that keeps the VM
+/// tested on the whole compiler (self_hosted_bytes_match_codegen).
+fn vm_self_host(src: &str) -> Result<Vec<u8>, String> {
+    let src = flat(src);
+    // the tree-walking VM recurses once per nested AIPL call
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || vm_self_host_on_this_thread(&src, ""))
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn vm_self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
@@ -101,6 +190,15 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             fs::create_dir_all(&temp_dir).unwrap();
             let temp_src = temp_dir.join(format!("{}.aipl", test_name));
             fs::write(&temp_src, &src).unwrap();
+            // a program that imports (std/alloc, to allocate) goes to the
+            // code generators flat, as the front end hands it over
+            let src = if src.contains("(import ") {
+                let flat = aipl_core::printer::print_module(&Resolver::resolve(&temp_src).expect("resolve test src"));
+                fs::write(&temp_src, &flat).unwrap();
+                flat
+            } else {
+                src
+            };
 
             let rust_bytes = run_rust_backend(&temp_src);
             let self_bytes = run_self_hosted(&src, &format!("{}.aipl", test_name));
@@ -219,7 +317,7 @@ fn self_hosted_bytes_match_f64_sqrt() {
 fn self_hosted_bytes_match_a_wide_struct() {
     let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
     let src = format!(
-        "(module wide (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W)) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
+        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever))) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
         fields.join(" ")
     );
     assert_self_hosted_matches_rust("wide", &src);
@@ -267,19 +365,19 @@ fn self_hosted_bytes_match_compute() {
 #[test]
 fn self_hosted_bytes_match_struct() {
     let src = r#"
-(module test_struct
+(module test_struct (import alloc)
   (struct Point [x:i32 y:i32])
   (struct Flags [on:bool name:str])
   (fn make_point [x:i32 y:i32] -> i32
-    (let p:(ptr Point) (new Point))
+    (let p:(ptr Point) (new Point (call alloc.forever)))
     (put p Point.x x)
     (put p Point.y y)
     (+ (get p Point.x) (get p Point.y)))
   (fn flags [] -> bool
-    (let f:(ptr Flags) (new Flags))
+    (let f:(ptr Flags) (new Flags (call alloc.forever)))
     (put f Flags.on true)
     (put f Flags.name "n")
-    (let a:(arr bool) (arr.new bool 2))
+    (let a:(arr bool) (arr.new bool (call alloc.forever) 2))
     (arr.set bool a 1 (get f Flags.on))
     (and (arr.get bool a 1) (eq (str.len (get f Flags.name)) 1))))
 "#;
@@ -289,9 +387,9 @@ fn self_hosted_bytes_match_struct() {
 #[test]
 fn self_hosted_bytes_match_array() {
     let src = r#"
-(module test_array
+(module test_array (import alloc)
   (fn sum_arr [n:i32] -> i32
-    (let a:(arr i32) (arr.new i32 n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -382,7 +480,7 @@ fn self_hosted_bytes_match_wide_results() {
 fn self_hosted_bytes_match_with_visibility_marks() {
     assert_self_hosted_matches_rust(
         "marks",
-        "(module m (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P)) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
+        "(module m (import alloc) (struct P [(read x:i32) (pub y:i32) z:i32] (pub)) (fn f [] -> i32 (pub) (let p:(ptr P) (new P (call alloc.forever))) (put p P.y 4) (+ (get p P.y) (get p P.x))))",
     );
 }
 
@@ -407,7 +505,7 @@ fn self_hosted_bytes_match_strings_alloc_grow_exit() {
 #[test]
 fn self_hosted_bytes_match_i64() {
     let src = r#"
-(module i64demo
+(module i64demo (import alloc)
   (struct Acc [flag:bool total:i64 n:i32])
   (fn add [a:i64 b:i64] -> i64 (unsafe) (+ a b))
   (fn mix [x:i32] -> i64 (unsafe)
@@ -420,11 +518,11 @@ fn self_hosted_bytes_match_i64() {
   (fn cmp [a:i64 b:i64] -> i32 (unsafe)
     (if (and (lte a b) (neq a 0i64)) (i32.wrap (shru b 1i64)) -1))
   (fn acc [n:i32] -> i64 (unsafe)
-    (let s:(ptr Acc) (new Acc))
+    (let s:(ptr Acc) (new Acc (call alloc.forever)))
     (put s Acc.total 0i64)
     (loop i 1 n 1
       (put s Acc.total (+ (get s Acc.total) (i64.extend_u i))))
-    (let arr:(arr i64) (arr.new i64 4))
+    (let arr:(arr i64) (arr.new i64 (call alloc.forever) 4))
     (arr.set i64 arr 3 (get s Acc.total))
     (+ (arr.get i64 arr 3) (mem.load64 (+ (ptr.addr s) 8)))))
 "#;
@@ -542,10 +640,10 @@ fn self_hosted_line_table_matches_rust() {
 #[test]
 fn self_hosted_bytes_match_pointers() {
     assert_self_hosted_matches_rust("pointers_0", r#"
-(module list
+(module list (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next head)
     n)
@@ -559,12 +657,12 @@ fn self_hosted_bytes_match_pointers() {
     total))
 "#);
     assert_self_hosted_matches_rust("pointers_1", r#"
-(module arrs
+(module arrs (import alloc)
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
-    (let ps:(arr (ptr P)) (arr.new (ptr P) 4))
+    (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (loop i 0 3 1
-      (let p:(ptr P) (new P))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
@@ -572,8 +670,8 @@ fn self_hosted_bytes_match_pointers() {
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
-    (let nested:(arr (arr i32)) (arr.new (arr i32) 1))
-    (arr.set (arr i32) nested 0 (arr.new i32 7))
+    (let nested:(arr (arr i32)) (arr.new (arr i32) (call alloc.forever) 1))
+    (arr.set (arr i32) nested 0 (arr.new i32 (call alloc.forever) 7))
     (+ (* 100 (arr.len (arr.get (arr i32) nested 0))) (+ total (get back P.x)))))
 "#);
     assert_self_hosted_matches_rust("pointers_2", r#"
@@ -640,8 +738,8 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
     std::fs::write(&path, r#"(module surface
   (import io)
   (import os)
-  (fn main [] -> i64 (unsafe)
-    (let b:(ptr str.Bytes) (call io.read_stdin))
+  (fn surface [] -> i64 (unsafe)
+    (let b:str.Bytes (call io.read_stdin))
     (let p:i32 (mem.alloc 8))
     (let ok:i32 (sys.random p 8))
     (let fd:i32 (fs.open (str.ptr "/tmp/x") (str.len "/tmp/x") 0))
@@ -709,7 +807,7 @@ fn self_hosted_bytes_match_args_and_env() {
 #[test]
 fn self_hosted_bytes_match_function_refs() {
     assert_self_hosted_matches_rust("refs", r#"
-(module refs
+(module refs (import alloc)
   (struct Op [apply:(fn [i32 i32] -> i32) name:str])
   (fn add [a:i32 b:i32] -> i32 (+ a b))
   (fn mul [a:i32 b:i32] -> i32 (* a b))
@@ -717,10 +815,10 @@ fn self_hosted_bytes_match_function_refs() {
   (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
     (call_ref (fn [i32 i32] -> i32) f x x))
   (fn main [] -> i32
-    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) 2))
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (new Op))
+    (let o:(ptr Op) (new Op (call alloc.forever)))
     (put o Op.apply (ref mul))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
@@ -856,10 +954,10 @@ fn self_hosted_bytes_match_file_io() {
 #[test]
 fn self_hosted_bytes_match_complex() {
     let src = r#"
-(module complex
+(module complex (import alloc)
   (struct Node [val:i32 next:(ptr Node)])
   (fn process [n:i32] -> (result i32 i32)
-    (let head:(ptr Node) (new Node))
+    (let head:(ptr Node) (new Node (call alloc.forever)))
     (put head Node.val n)
     (put head Node.next (ptr.null Node))
     (if (gt (get head Node.val) 10)
@@ -966,9 +1064,9 @@ fn self_hosted_store_guard_traps_on_the_reserved_block() {
 #[test]
 fn self_hosted_arrays_and_results_execute() {
     let src = r#"
-(module ar
+(module ar (import alloc)
   (fn sum_arr [n:i32] -> i32
-    (let a:(arr i32) (arr.new i32 n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let i:i32 0)
     (while (lt i n)
       (arr.set i32 a i (* i 2))
@@ -1005,7 +1103,7 @@ fn self_hosted_arrays_and_results_execute() {
     assert_eq!(call("safe_div", 84, 2).unwrap(), 42);
     assert_eq!(call("safe_div", 1, 0).unwrap(), -100);
 
-    let module_ast = aipl_core::parser::Parser::parse(src).unwrap();
+    let module_ast = aipl_core::parser::Parser::parse(&flat(src)).unwrap();
     let mut vm = VM::new();
     vm.load_module(module_ast);
     assert_eq!(vm.invoke("sum_arr", vec![Value::Int(5)]).unwrap(), Value::Int(20));
@@ -1018,20 +1116,16 @@ fn self_hosted_arrays_and_results_execute() {
 /// limit the Rust backend has too.
 #[test]
 fn self_hosted_rejects_what_it_cannot_compile() {
-    for src in [
-        "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))",
-        "(module m (fn f [] -> i32 (arr.new (result i32 i32) 3)))",
-    ] {
-        let err = self_host(src).unwrap_err();
-        assert!(err.contains("compile error 95"), "{src}: {err}");
-    }
+    let src = "(module m (struct S [a:i32 b:(result i32 i32)]) (fn f [] -> i32 (sizeof S)))";
+    let err = self_host(src).unwrap_err();
+    assert!(err.contains("compile error 95"), "{src}: {err}");
     let err = self_host("(module m (fn f [] -> i32 (sizeof Missing)))").unwrap_err();
     assert!(err.contains("compile error 96"), "{err}");
     let long = "x".repeat(1_100_000);
     let src = format!("(module m (fn f [] -> i32 (str.len \"{long}\")))");
     let err = self_host(&src).unwrap_err();
     assert!(err.contains("compile error 768"), "{err}");
-    let m = aipl_core::parser::Parser::parse(&src).unwrap();
+    let m = aipl_core::parser::Parser::parse(&flat(&src)).unwrap();
     assert!(WasmCompiler::compile(&m).unwrap_err().contains("string literals need"));
 }
 
@@ -1070,7 +1164,7 @@ fn self_hosted_string_literals_past_the_old_area_are_read_only() {
     let trap = call("poke").unwrap_err().downcast::<wasmtime::Trap>().unwrap();
     assert_eq!(trap, wasmtime::Trap::UnreachableCodeReached);
     // the VM places the literals identically and rejects the same store
-    let m = aipl_core::parser::Parser::parse(&src).unwrap();
+    let m = aipl_core::parser::Parser::parse(&flat(&src)).unwrap();
     let mut vm = VM::new();
     vm.load_module(m);
     assert_eq!(vm.invoke("first_free", vec![]).unwrap(), Value::Int(1832));
@@ -1102,11 +1196,15 @@ fn codegen_combined_source() -> String {
     src
 }
 
-/// The self-hosted compiler, run in the VM, compiles itself to the same bytes
-/// as the Rust backend.
+/// The self-hosted compiler compiles itself to the same bytes as the Rust
+/// backend, under wasmtime and, run in the VM, there too: the one test that
+/// keeps the VM running the whole compiler.
 #[test]
 fn self_hosted_bytes_match_codegen() {
-    assert_self_hosted_matches_rust("codegen", &codegen_combined_source());
+    let src = codegen_combined_source();
+    assert_self_hosted_matches_rust("codegen", &src);
+    let rust = WasmCompiler::compile(&aipl_core::parser::Parser::parse(&flat(&src)).unwrap()).unwrap();
+    assert!(vm_self_host(&src).unwrap() == rust, "codegen.aipl run in the VM: its bytes differ from the Rust backend's");
 }
 
 /// Bootstrap fixpoint: compile the self-hosted compiler with the Rust backend,
@@ -1119,7 +1217,7 @@ fn self_hosted_compiler_reproduces_itself_under_wasmtime() {
     use wasmtime_wasi::p1::WasiP1Ctx;
 
     let src = codegen_combined_source();
-    let module_ast = aipl_core::parser::Parser::parse(&src).unwrap();
+    let module_ast = aipl_core::parser::Parser::parse(&flat(&src)).unwrap();
     TypeChecker::new().check_module(&module_ast).unwrap();
     let stage1 = WasmCompiler::compile(&module_ast).unwrap();
 
@@ -1162,7 +1260,7 @@ fn self_hosted_compiler_reproduces_itself_under_wasmtime() {
 fn self_hosted_bytes_match_consts_and_enums() {
     assert_self_hosted_matches_rust(
         "consts_enums",
-        "(module ce
+        "(module ce (import alloc)
   (const LIMIT:i32 -12)
   (const WIDE:i64 4294967296i64)
   (const HALF:f64 0.5)
@@ -1174,9 +1272,9 @@ fn self_hosted_bytes_match_consts_and_enums() {
   (fn same [a:Kind b:Kind] -> bool (eq a b))
   (fn bump [k:Kind] -> (result Kind i32) (ok:i32 (enum.cast Kind (+ (enum.ord k) 1))))
   (fn main [] -> i32
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.kind Kind.group)
-    (let ks:(arr Kind) (arr.new Kind 3))
+    (let ks:(arr Kind) (arr.new Kind (call alloc.forever) 3))
     (arr.set Kind ks 2 Kind.square)
     (let f:(fn [Kind Kind] -> bool) (ref same))
     (let w:str WORD)
@@ -1245,7 +1343,8 @@ fn self_hosted_bytes_match_checked_arithmetic() {
 }
 
 /// Unions, make, and match: variant layouts (i64/f64 fields aligned to 8,
-/// bool fields normalized when read), a recursive union, enum arms (their
+/// bool fields normalized when read), a recursive union (its rest behind a
+/// pointer), enum arms (their
 /// heads numbers after consts.aipl), an else-only match, void arms, and
 /// make/match nested in each other's operands, so the scratch local is
 /// reused while a cell is being filled.
@@ -1253,9 +1352,10 @@ fn self_hosted_bytes_match_checked_arithmetic() {
 fn self_hosted_bytes_match_sum_types() {
     assert_self_hosted_matches_rust(
         "sum_types",
-        "(module sum
+        "(module sum (import alloc)
   (union Shape [(circle r:f64) (rect w:i32 h:i32) (big n:i64 flag:bool) (empty)])
-  (union List [(nil) (cons head:i32 tail:List)])
+  (union List [(nil) (cons head:i32 tail:(ptr Rest))])
+  (struct Rest [l:List])
   (enum Color [red green (blue 10)])
   (struct Holder [s:Shape c:Color])
   (fn area [s:Shape] -> i64 (unsafe)
@@ -1265,17 +1365,21 @@ fn self_hosted_bytes_match_sum_types() {
       (Shape.big [n flag] (if flag n 0i64))
       (Shape.empty -1i64)))
   (fn sum [l:List] -> i32 (unsafe)
-    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum rest)))))
+    (match l (List.nil 0) (List.cons [x rest] (+ x (call sum (get rest Rest.l))))))
+  (fn cons [x:i32 l:List] -> List (unsafe)
+    (let r:(ptr Rest) (new Rest (call alloc.forever)))
+    (put r Rest.l l)
+    (make List.cons x r))
   (fn code [c:Color] -> i32 (unsafe) (match c (Color.red 1) (Color.blue 3) (else 2)))
   (fn always [c:Color] -> i32 (unsafe) (match c (else 7)))
   (fn effect [s:Shape] -> void (unsafe)
     (match s (Shape.empty (mem.store32 2048 1)) (else (mem.store32 2048 2))))
   (fn main [] -> i32 (unsafe)
-    (let h:(ptr Holder) (new Holder))
+    (let h:(ptr Holder) (new Holder (call alloc.forever)))
     (put h Holder.s (make Shape.rect 3 (match (make Shape.circle 2.0) (Shape.circle [q] (i32.wrap (i64.trunc_f64_s q))) (else 0))))
     (put h Holder.c Color.blue)
     (call effect (get h Holder.s))
-    (let l:List (make List.cons 1 (make List.cons 2 (make List.nil))))
+    (let l:List (call cons 1 (call cons 2 (make List.nil))))
     (+ (i32.wrap (call area (get h Holder.s))) (+ (call sum l) (+ (call code (get h Holder.c)) (call always Color.red))))))",
     );
 }

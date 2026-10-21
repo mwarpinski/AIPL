@@ -54,11 +54,11 @@
   (struct Tables [lbase:(arr i32) lext:(arr i32) dbase:(arr i32) dext:(arr i32)])
 
   (fn make_tables [a:alloc.Allocator] -> (ptr Tables)
-    (let t:(ptr Tables) (call (alloc.create Tables) a))
-    (let lbase:(arr i32) (call (alloc.array i32) a 29))
-    (let lext:(arr i32) (call (alloc.array i32) a 29))
-    (let dbase:(arr i32) (call (alloc.array i32) a 30))
-    (let dext:(arr i32) (call (alloc.array i32) a 30))
+    (let t:(ptr Tables) (new Tables a))
+    (let lbase:(arr i32) (arr.new i32 a 29))
+    (let lext:(arr i32) (arr.new i32 a 29))
+    (let dbase:(arr i32) (arr.new i32 a 30))
+    (let dext:(arr i32) (arr.new i32 a 30))
     (for k 0 29 (arr.set i32 lbase k (call len_base k)) (arr.set i32 lext k (call len_extra k)))
     (for k 0 30 (arr.set i32 dbase k (call dist_base k)) (arr.set i32 dext k (call dist_extra k)))
     (put t Tables.lbase lbase)
@@ -80,7 +80,7 @@
   ;; (bitcnt of them), the output o from byte start, and a Huffman code
   ;; for literals and lengths (lcnt: codes of each length, lsym: symbols in
   ;; code order) and one for distances.
-  (struct Inflate [a:alloc.Allocator input:(ptr str.Bytes) pos:i32 bitbuf:i32 bitcnt:i32
+  (struct Inflate [a:alloc.Allocator input:str.Bytes pos:i32 bitbuf:i32 bitcnt:i32
                    o:(ptr buf.Buf) start:i32 limit:i32
                    lcnt:(arr i32) lsym:(arr i32) dcnt:(arr i32) dsym:(arr i32) lengths:(arr i32) offs:(arr i32)
                    t:(ptr Tables) failed:bool at:i32 what:str])
@@ -96,7 +96,7 @@
   (fn bits [s:(ptr Inflate) need:i32] -> i32
     (let buf_:i32 (get s Inflate.bitbuf))
     (let cnt:i32 (get s Inflate.bitcnt))
-    (let input:(ptr str.Bytes) (get s Inflate.input))
+    (let input:str.Bytes (get s Inflate.input))
     (while (lt cnt need)
       (when (gte (get s Inflate.pos) (get input str.Bytes.len))
         (call stop s "the data ends early")
@@ -113,7 +113,7 @@
     ;; the rest of the current byte is unused
     (put s Inflate.bitbuf 0)
     (put s Inflate.bitcnt 0)
-    (let input:(ptr str.Bytes) (get s Inflate.input))
+    (let input:str.Bytes (get s Inflate.input))
     (let p:i32 (get s Inflate.pos))
     (when (gt (+ p 4) (get input str.Bytes.len)) (call stop s "the data ends early") (return))
     (let len:i32 (bitor (call str.byte_at input p) (shl (call str.byte_at input (+ p 1)) 8)))
@@ -247,8 +247,8 @@
 
   ;; Appends what the raw DEFLATE stream at in[from] stands for to o (at
   ;; most limit bytes); the offset just past the stream, or the error.
-  (fn inflate_at [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) from:i32 limit:i32] -> (result i32 (ptr Error))
-    (let s:(ptr Inflate) (call (alloc.create Inflate) a))
+  (fn inflate_at [a:alloc.Allocator o:(ptr buf.Buf) input:str.Bytes from:i32 limit:i32] -> (result i32 (ptr Error))
+    (let s:(ptr Inflate) (new Inflate a))
     (put s Inflate.a a)
     (put s Inflate.input input)
     (put s Inflate.pos from)
@@ -257,12 +257,12 @@
     (put s Inflate.o o)
     (put s Inflate.start (call buf.len o))
     (put s Inflate.limit limit)
-    (put s Inflate.lcnt (call (alloc.array i32) a 16))
-    (put s Inflate.lsym (call (alloc.array i32) a 288))
-    (put s Inflate.dcnt (call (alloc.array i32) a 16))
-    (put s Inflate.dsym (call (alloc.array i32) a 30))
-    (put s Inflate.lengths (call (alloc.array i32) a 320))
-    (put s Inflate.offs (call (alloc.array i32) a 16))
+    (put s Inflate.lcnt (arr.new i32 a 16))
+    (put s Inflate.lsym (arr.new i32 a 288))
+    (put s Inflate.dcnt (arr.new i32 a 16))
+    (put s Inflate.dsym (arr.new i32 a 30))
+    (put s Inflate.lengths (arr.new i32 a 320))
+    (put s Inflate.offs (arr.new i32 a 16))
     (put s Inflate.t (call make_tables a))
     (put s Inflate.failed false)
     (put s Inflate.at 0)
@@ -292,7 +292,7 @@
     (if failed (err:i32 (call error a at what)) (ok:(ptr Error) end)))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
-    (let e:(ptr Error) (call (alloc.create Error) a))
+    (let e:(ptr Error) (new Error a))
     (put e Error.at at)
     (put e Error.what what)
     e)
@@ -302,23 +302,23 @@
 
   ;; Appends what the raw DEFLATE stream in stands for to o (at most limit
   ;; bytes); how many bytes of in the stream took, or the error.
-  (fn inflate_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+  (fn inflate_to [a:alloc.Allocator o:(ptr buf.Buf) input:str.Bytes limit:i32] -> (result i32 (ptr Error)) (pub)
     (call inflate_at a o input 0 limit))
 
   ;; The big-endian 32 bits at in[p].
-  (fn be32 [b:(ptr str.Bytes) p:i32] -> i32
+  (fn be32 [b:str.Bytes p:i32] -> i32
     (bitor (bitor (shl (call str.byte_at b p) 24) (shl (call str.byte_at b (+ p 1)) 16)) (bitor (shl (call str.byte_at b (+ p 2)) 8) (call str.byte_at b (+ p 3)))))
-  (fn le32 [b:(ptr str.Bytes) p:i32] -> i32
+  (fn le32 [b:str.Bytes p:i32] -> i32
     (bitor (bitor (call str.byte_at b p) (shl (call str.byte_at b (+ p 1)) 8)) (bitor (shl (call str.byte_at b (+ p 2)) 16) (shl (call str.byte_at b (+ p 3)) 24))))
 
   ;; o's bytes from start as a view (for the checksums)
-  (fn tail [o:(ptr buf.Buf) start:i32] -> (ptr str.Bytes)
+  (fn tail [o:(ptr buf.Buf) start:i32] -> str.Bytes
     (call str.slice (call buf.bytes o) start (- (call buf.len o) start)))
 
   ;; Appends what the zlib stream in stands for to o (at most limit bytes);
   ;; how many bytes of in the stream took, or the error (a bad header, a
   ;; preset dictionary, or a wrong Adler-32 among them).
-  (fn zlib_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+  (fn zlib_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:str.Bytes limit:i32] -> (result i32 (ptr Error)) (pub)
     (let n:i32 (get input str.Bytes.len))
     (when (lt n 2) (return (err:i32 (call error a n "the data ends early"))))
     (let cmf:i32 (call str.byte_at input 0))
@@ -336,7 +336,7 @@
   ;; each member in turn to the end of in (zero bytes may pad the end, as
   ;; tape archives do; an empty in is no members); in's length, or the
   ;; error (a bad header, a wrong CRC-32 or length among them).
-  (fn gzip_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:(ptr str.Bytes) limit:i32] -> (result i32 (ptr Error)) (pub)
+  (fn gzip_decompress_to [a:alloc.Allocator o:(ptr buf.Buf) input:str.Bytes limit:i32] -> (result i32 (ptr Error)) (pub)
     (let n:i32 (get input str.Bytes.len))
     (let p:i32 0)
     (let first:bool true)
@@ -367,7 +367,7 @@
       (let left:i32 (- limit (- member start)))
       (let end:i32 (try (call inflate_at a o input p left)))
       (when (gt (+ end 8) n) (return (err:i32 (call error a n "the data ends early"))))
-      (let made:(ptr str.Bytes) (call tail o member))
+      (let made:str.Bytes (call tail o member))
       (when (neq (call le32 input end) (call hash.crc32 made)) (return (err:i32 (call error a end "a CRC-32 that does not match"))))
       (when (neq (call le32 input (+ end 4)) (get made str.Bytes.len)) (return (err:i32 (call error a (+ end 4) "a length that does not match"))))
       (set! p (+ end 8)))
@@ -412,18 +412,18 @@
   ;; last position with each hash; prev: the position before with the same
   ;; hash, by position mod WINDOW), and the block's symbols (lens 0: a
   ;; literal vals; else a match of lens bytes at distance vals).
-  (struct Deflate [a:alloc.Allocator input:(ptr str.Bytes) w:(ptr Bits) t:(ptr Tables)
+  (struct Deflate [a:alloc.Allocator input:str.Bytes w:(ptr Bits) t:(ptr Tables)
                    head:(arr i32) prev:(arr i32) lens:(arr i32) vals:(arr i32) count:i32 block_start:i32
                    lfreq:(arr i32) dfreq:(arr i32) llen:(arr i32) dlen:(arr i32) lcode:(arr i32) dcode:(arr i32)
                    cfreq:(arr i32) clen:(arr i32) ccode:(arr i32) runs:(arr i32) runx:(arr i32) nruns:i32
                    hfreq:(arr i32) hparent:(arr i32) hlive:(arr i32)])
 
-  (fn hash3 [b:(ptr str.Bytes) p:i32] -> i32
+  (fn hash3 [b:str.Bytes p:i32] -> i32
     (bitand (^ (^ (shl (call str.byte_at b p) 10) (shl (call str.byte_at b (+ p 1)) 5)) (call str.byte_at b (+ p 2))) (- HASH 1)))
 
   ;; Adds position p to its hash chain.
   (fn insert [d:(ptr Deflate) p:i32] -> void
-    (let input:(ptr str.Bytes) (get d Deflate.input))
+    (let input:str.Bytes (get d Deflate.input))
     (when (gt (+ p 3) (get input str.Bytes.len)) (return))
     (let h:i32 (call hash3 input p))
     (arr.set i32 (get d Deflate.prev) (bitand p (- WINDOW 1)) (arr.get i32 (get d Deflate.head) h))
@@ -433,7 +433,7 @@
   ;; its chain (at most chain of them, in the window): its length (0 if
   ;; under 3) and, in dist_out[0], its distance. The nearest wins a tie.
   (fn longest [d:(ptr Deflate) p:i32 chain:i32 nice:i32 dist_out:(arr i32)] -> i32
-    (let input:(ptr str.Bytes) (get d Deflate.input))
+    (let input:str.Bytes (get d Deflate.input))
     (let n:i32 (get input str.Bytes.len))
     (let most:i32 (if (lt (- n p) 258) (- n p) 258))
     (when (lt most 3) (return 0))
@@ -463,9 +463,9 @@
 
   ;; Appends the raw DEFLATE stream of b at level (0: stored, 1 fastest to
   ;; 9 smallest) to o.
-  (fn compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+  (fn compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:str.Bytes level:i32] -> void (pub)
     (req (and (gte level 0) (lte level 9)))
-    (let w:(ptr Bits) (call (alloc.create Bits) a))
+    (let w:(ptr Bits) (new Bits a))
     (put w Bits.o o)
     (put w Bits.acc 0)
     (put w Bits.cnt 0)
@@ -484,7 +484,7 @@
     (call align w)
     (call (alloc.destroy Bits) a w))
 
-  (fn stored_block [w:(ptr Bits) b:(ptr str.Bytes) from:i32 len:i32 last:bool] -> void
+  (fn stored_block [w:(ptr Bits) b:str.Bytes from:i32 len:i32 last:bool] -> void
     (call put_bits w (if last 1 0) 1)
     (call put_bits w 0 2)
     (call align w)
@@ -495,14 +495,14 @@
     (call buf.push_byte o (bitand (shru (^ len -1) 8) 255))
     (call buf.push_bytes o (call str.slice b from len)))
 
-  (fn lz77 [a:alloc.Allocator w:(ptr Bits) b:(ptr str.Bytes) level:i32] -> void
+  (fn lz77 [a:alloc.Allocator w:(ptr Bits) b:str.Bytes level:i32] -> void
     (let d:(ptr Deflate) (call make_deflate a w b))
     (let n:i32 (get b str.Bytes.len))
     (let chain:i32 (call chain_for level))
     (let nice:i32 (call nice_for level))
     (let lazy:i32 (call lazy_for level))
-    (let dist:(arr i32) (call (alloc.array i32) a 1))
-    (let dist2:(arr i32) (call (alloc.array i32) a 1))
+    (let dist:(arr i32) (arr.new i32 a 1))
+    (let dist2:(arr i32) (arr.new i32 a 1))
     (let p:i32 0)
     (while (lt p n)
       (let len:i32 (call longest d p chain nice dist))
@@ -534,35 +534,35 @@
     (call (alloc.free_array i32) a dist2)
     (call free_deflate d))
 
-  (fn make_deflate [a:alloc.Allocator w:(ptr Bits) b:(ptr str.Bytes)] -> (ptr Deflate)
-    (let d:(ptr Deflate) (call (alloc.create Deflate) a))
+  (fn make_deflate [a:alloc.Allocator w:(ptr Bits) b:str.Bytes] -> (ptr Deflate)
+    (let d:(ptr Deflate) (new Deflate a))
     (put d Deflate.a a)
     (put d Deflate.input b)
     (put d Deflate.w w)
     (put d Deflate.t (call make_tables a))
-    (let head:(arr i32) (call (alloc.array i32) a HASH))
+    (let head:(arr i32) (arr.new i32 a HASH))
     (for i 0 HASH (arr.set i32 head i -1))
     (put d Deflate.head head)
-    (put d Deflate.prev (call (alloc.array i32) a WINDOW))
-    (put d Deflate.lens (call (alloc.array i32) a BLOCK))
-    (put d Deflate.vals (call (alloc.array i32) a BLOCK))
+    (put d Deflate.prev (arr.new i32 a WINDOW))
+    (put d Deflate.lens (arr.new i32 a BLOCK))
+    (put d Deflate.vals (arr.new i32 a BLOCK))
     (put d Deflate.count 0)
     (put d Deflate.block_start 0)
-    (put d Deflate.lfreq (call (alloc.array i32) a 286))
-    (put d Deflate.dfreq (call (alloc.array i32) a 30))
-    (put d Deflate.llen (call (alloc.array i32) a 286))
-    (put d Deflate.dlen (call (alloc.array i32) a 30))
-    (put d Deflate.lcode (call (alloc.array i32) a 288))
-    (put d Deflate.dcode (call (alloc.array i32) a 30))
-    (put d Deflate.cfreq (call (alloc.array i32) a 19))
-    (put d Deflate.clen (call (alloc.array i32) a 19))
-    (put d Deflate.ccode (call (alloc.array i32) a 19))
-    (put d Deflate.runs (call (alloc.array i32) a 320))
-    (put d Deflate.runx (call (alloc.array i32) a 320))
+    (put d Deflate.lfreq (arr.new i32 a 286))
+    (put d Deflate.dfreq (arr.new i32 a 30))
+    (put d Deflate.llen (arr.new i32 a 286))
+    (put d Deflate.dlen (arr.new i32 a 30))
+    (put d Deflate.lcode (arr.new i32 a 288))
+    (put d Deflate.dcode (arr.new i32 a 30))
+    (put d Deflate.cfreq (arr.new i32 a 19))
+    (put d Deflate.clen (arr.new i32 a 19))
+    (put d Deflate.ccode (arr.new i32 a 19))
+    (put d Deflate.runs (arr.new i32 a 320))
+    (put d Deflate.runx (arr.new i32 a 320))
     (put d Deflate.nruns 0)
-    (put d Deflate.hfreq (call (alloc.array i32) a 600))
-    (put d Deflate.hparent (call (alloc.array i32) a 600))
-    (put d Deflate.hlive (call (alloc.array i32) a 600))
+    (put d Deflate.hfreq (arr.new i32 a 600))
+    (put d Deflate.hparent (arr.new i32 a 600))
+    (put d Deflate.hlive (arr.new i32 a 600))
     d)
 
   (fn free_deflate [d:(ptr Deflate)] -> void
@@ -714,8 +714,8 @@
   ;; be written first bit lowest; codes may be lengths itself (read first).
   (fn make_codes [lengths:(arr i32) codes:(arr i32) n:i32] -> void
     (let a:alloc.Allocator (call alloc.default))
-    (let count:(arr i32) (call (alloc.array i32) a 16))
-    (let next:(arr i32) (call (alloc.array i32) a 16))
+    (let count:(arr i32) (arr.new i32 a 16))
+    (let next:(arr i32) (arr.new i32 a 16))
     (for i 0 n (let l:i32 (arr.get i32 lengths i)) (when (gt l 0) (call bump count l)))
     (let code:i32 0)
     (for l 1 16
@@ -799,7 +799,7 @@
   ;; their frequencies.
   (fn make_runs [d:(ptr Deflate) nlen:i32 ndist:i32] -> void
     (let total:i32 (+ nlen ndist))
-    (let all:(arr i32) (call (alloc.array i32) (get d Deflate.a) 316))
+    (let all:(arr i32) (arr.new i32 (get d Deflate.a) 316))
     (for i 0 nlen (arr.set i32 all i (arr.get i32 (get d Deflate.llen) i)))
     (for i 0 ndist (arr.set i32 all (+ nlen i) (arr.get i32 (get d Deflate.dlen) i)))
     (let cfreq:(arr i32) (get d Deflate.cfreq))
@@ -838,7 +838,7 @@
 
   ;; Appends the zlib stream of b at level to o (a header, the DEFLATE
   ;; stream, and b's Adler-32).
-  (fn zlib_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+  (fn zlib_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:str.Bytes level:i32] -> void (pub)
     (req (and (gte level 0) (lte level 9)))
     (call buf.push_byte o 120)
     ;; the level's FLEVEL, as zlib writes it, with the check bits
@@ -849,7 +849,7 @@
 
   ;; Appends the gzip data of b at level to o: one member with no name
   ;; and no time, then b's CRC-32 and length.
-  (fn gzip_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:(ptr str.Bytes) level:i32] -> void (pub)
+  (fn gzip_compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:str.Bytes level:i32] -> void (pub)
     (req (and (gte level 0) (lte level 9)))
     (call buf.push_byte o 31)
     (call buf.push_byte o 139)

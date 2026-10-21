@@ -1,0 +1,13 @@
+;; A view taken before a buffer grows (which moves its bytes and frees the
+;; old storage) stops the program when read after.
+(module view_after_grow
+  (import buf)
+  (import str)
+  (import alloc)
+  (fn main [] -> i32
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call buf.push_str b "first")
+    (let v:str.Bytes (call buf.bytes b))
+    (for _i 0 100 (call buf.push_str b " and more"))
+    (println "{(call str.byte_at v 0)}")
+    0))

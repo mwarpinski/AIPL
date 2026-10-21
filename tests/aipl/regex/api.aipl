@@ -32,7 +32,7 @@
     (match_result (call regex.compile a "(?P<key>\\w+)=(?P<value>\\d+)")
       (ok re
         (block
-          (let text:(ptr str.Bytes) (call str.from_str "x: width=640, height=480"))
+          (let text:str.Bytes (call str.from_str "x: width=640, height=480"))
           (match (call regex.captures a re text)
             ((option.Option (ptr regex.Captures)) some [c]
               (let k:i32 (call regex.group_index re "key"))
@@ -53,22 +53,22 @@
     (match_result (call regex.compile a ",\\s*")
       (ok re
         (block
-          (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call regex.split a re (call str.from_str "a, b,c,  d")))
+          (let parts:(ptr (vec.Vec str.Bytes)) (call regex.split a re (call str.from_str "a, b,c,  d")))
           (let o:(ptr buf.Buf) (call buf.make a 32))
-          (for k 0 (call (vec.len (ptr str.Bytes)) parts)
+          (for k 0 (call (vec.len str.Bytes) parts)
             (call buf.push_byte o 91)
-            (call buf.push_bytes o (call (vec.at (ptr str.Bytes)) parts k))
+            (call buf.push_bytes o (call (vec.at str.Bytes) parts k))
             (call buf.push_byte o 93))
           (println "split {(call buf.to_str o)}")
           (call buf.free o)
-          (call (vec.free (ptr str.Bytes)) parts)
+          (call (vec.free str.Bytes) parts)
           (call regex.free re)))
       (err e (println "{(get e regex.Error.what)}")))
     ;; spans are bytes: "é" is two
     (match_result (call regex.compile a "(?i)caf.")
       (ok re
         (block
-          (let cafe:(ptr str.Bytes) (call str.from_str "au CAFé"))
+          (let cafe:str.Bytes (call str.from_str "au CAFé"))
           (println "utf-8: {(call span_of (call regex.find re cafe))}")
           (call regex.free re)))
       (err e (println "{(get e regex.Error.what)}")))

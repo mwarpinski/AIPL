@@ -2,6 +2,7 @@
 ;; comparisons that show both sides, a trap, and tests that cannot see each
 ;; other's state. A test may call the module's private functions.
 (module rows
+  (import alloc)
   (import str)
   (struct Row [n:i32 name:str])
 
@@ -9,12 +10,12 @@
     (if (eq (str.len s) 0) 0 (+ 1 (call str.count_byte (call str.from_str s) 44))))
 
   (fn make_row [n:i32] -> (ptr Row)
-    (let r:(ptr Row) (new Row))
+    (let r:(ptr Row) (new Row (call alloc.forever)))
     (put r Row.n n)
     (put r Row.name "r")
     r)
 
-  (fn main [] -> i32 (call parse_row "a,b"))
+  (fn main [] -> i32 (let n:i32 (call parse_row "a,b")) (println "a,b has {n} fields") 0)
 
   (test "an empty line has no fields"
     (expect (eq (call parse_row "") 0)))
@@ -36,7 +37,7 @@
     (expect ok))
 
   (test "a trap fails only its own test"
-    (let xs:(arr i32) (arr.new i32 2))
+    (let xs:(arr i32) (arr.new i32 (call alloc.forever) 2))
     (expect (eq (arr.get i32 xs 5) 0)))
 
   (test "each test starts afresh"

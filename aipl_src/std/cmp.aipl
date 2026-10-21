@@ -85,9 +85,9 @@
     (fn hash [k:str] -> i32 (unsafe (call fnv (str.ptr k) (str.len k))))
     (fn same [a:str b:str] -> bool (call (Eq.same str) a b)))
   ;; byte strings by their contents (std/map's word counts and symbol tables)
-  (impl (Hash (ptr str.Bytes))
-    (fn hash [k:(ptr str.Bytes)] -> i32 (unsafe (call fnv (get k str.Bytes.addr) (get k str.Bytes.len))))
-    (fn same [a:(ptr str.Bytes) b:(ptr str.Bytes)] -> bool (call str.bytes_eq a b)))
+  (impl (Hash str.Bytes)
+    (fn hash [k:str.Bytes] -> i32 (unsafe (call fnv (call str.addr k) (get k str.Bytes.len))))
+    (fn same [a:str.Bytes b:str.Bytes] -> bool (call str.bytes_eq a b)))
 
   ;; ===== Tests =====
 
@@ -103,6 +103,6 @@
     (if (eq (call (Ord.compare i32) 7 7) 0) (set! p (+ p 1)) (block))
     ;; equal keys hash alike, and a str and its bytes alike
     (if (eq (call (Hash.hash i64) 42i64) (call (Hash.hash i64) 42i64)) (set! p (+ p 1)) (block))
-    (if (eq (call (Hash.hash str) "word") (call (Hash.hash (ptr str.Bytes)) (call str.from_str "word"))) (set! p (+ p 1)) (block))
-    (if (call (Hash.same (ptr str.Bytes)) (call str.from_str "x") (call str.from_str "x")) (set! p (+ p 1)) (block))
+    (if (eq (call (Hash.hash str) "word") (call (Hash.hash str.Bytes) (call str.from_str "word"))) (set! p (+ p 1)) (block))
+    (if (call (Hash.same str.Bytes) (call str.from_str "x") (call str.from_str "x")) (set! p (+ p 1)) (block))
     p))

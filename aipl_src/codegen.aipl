@@ -62,7 +62,8 @@
               uses_checks:bool checks_base:i32 ens_block:bool src_len:i32
               places:(ptr places.Places) scratch:i32 groups:(ptr (vec.Vec (ptr Group))) has_values:bool
               results:(ptr (vec.Vec (ptr StructInfo)))
-              may_free:(arr bool) proven:(ptr (vec.Vec (ptr compiler.Node))) versioning:bool])
+              may_free:(arr bool) proven:(ptr (vec.Vec (ptr compiler.Node))) versioning:bool
+              max_pages:i32])
 
   ;; A string literal's spelling (a span of the source; pos -1 for the
   ;; newline sys.print reserves) and the address of its interned bytes. The
@@ -80,10 +81,12 @@
   ;; wasm.rs enum Wasi.
   (enum Wasi [(none -1) fd_write fd_read path_open fd_close proc_exit path_unlink_file
               args_sizes_get args_get environ_sizes_get environ_get thread_spawn
-              clock_time_get random_get fd_readdir path_filestat_get])
+              clock_time_get random_get fd_readdir path_filestat_get
+              net_listen net_accept net_recv net_send net_close])
 
-  ;; How many WASI functions there are (enum Wasi, none aside).
-  (const NWASI:i32 15)
+  ;; How many WASI functions there are (enum Wasi, none aside), AIPL's own
+  ;; aipl_net_v1 among them.
+  (const NWASI:i32 20)
 
   ;; A struct of the module and its layout (checker.rs get_field_offset):
   ;; fields in declaration order, each aligned to its alignment (a scalar's
@@ -136,37 +139,38 @@
   (struct Group [node:(ptr compiler.Node) spill:bool ty:Ty vs:(ptr StructInfo) slot:i32])
 
   (fn new_cg [src:i32] -> (ptr Cg)
-    (let cg:(ptr Cg) (new Cg))
+    (let cg:(ptr Cg) (new Cg (call alloc.forever)))
     (put cg Cg.src src)
-    (put cg Cg.locals (arr.new (ptr Local) 1024))
+    (put cg Cg.locals (arr.new (ptr Local) (call alloc.forever) 1024))
     (put cg Cg.nlocals 0)
-    (put cg Cg.fns (arr.new (ptr FnInfo) MAX_FNS))
+    (put cg Cg.fns (arr.new (ptr FnInfo) (call alloc.forever) MAX_FNS))
     (put cg Cg.nfns 0)
-    (put cg Cg.structs (arr.new (ptr StructInfo) 255))
+    (put cg Cg.structs (arr.new (ptr StructInfo) (call alloc.forever) 255))
     (put cg Cg.nstructs 0)
-    (put cg Cg.unions (arr.new (ptr UnionInfo) 255))
+    (put cg Cg.unions (arr.new (ptr UnionInfo) (call alloc.forever) 255))
     (put cg Cg.nunions 0)
-    (put cg Cg.wasi (arr.new i32 NWASI))
+    (put cg Cg.wasi (arr.new i32 (call alloc.forever) NWASI))
     (loop w 0 (- NWASI 1) 1 (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
-    (put cg Cg.labels (arr.new Label 255))
+    (put cg Cg.labels (arr.new Label (call alloc.forever) 255))
     (put cg Cg.nlabels 0)
     (put cg Cg.uses_refs false)
     (put cg Cg.uses_checks false)
     (put cg Cg.checks_base 0)
     (put cg Cg.ens_block false)
     (put cg Cg.src_len 0)
-    (put cg Cg.sigs (arr.new (ptr Sig) 31))
+    (put cg Cg.sigs (arr.new (ptr Sig) (call alloc.forever) 31))
     (put cg Cg.nsigs 0)
-    (put cg Cg.strs (arr.new (ptr StrLit) 256))
+    (put cg Cg.strs (arr.new (ptr StrLit) (call alloc.forever) 256))
     (put cg Cg.nstrs 0)
     (put cg Cg.blob (call buf.make (call alloc.default) 4096))
     (put cg Cg.newline 0)
+    (put cg Cg.max_pages MAX_PAGES)
     (put cg Cg.scratch 0)
     (put cg Cg.has_values false)
     (put cg Cg.results (call (vec.make (ptr StructInfo)) (call alloc.default) 8))
     (put cg Cg.groups (call (vec.make (ptr Group)) (call alloc.default) 16))
-    (put cg Cg.may_free (arr.new bool MAX_FNS))
+    (put cg Cg.may_free (arr.new bool (call alloc.forever) MAX_FNS))
     (put cg Cg.proven (call (vec.make (ptr compiler.Node)) (call alloc.default) 8))
     (put cg Cg.versioning true)
     cg)
@@ -192,7 +196,7 @@
     (let n:i32 (get cg Cg.nlabels))
     (if (gte n (arr.len (get cg Cg.labels)))
         (block
-          (let bigger:(arr Label) (arr.new Label (* 2 n)))
+          (let bigger:(arr Label) (arr.new Label (call alloc.forever) (* 2 n)))
           (loop i 0 (- n 1) 1 (arr.set Label bigger i (arr.get Label (get cg Cg.labels) i)))
           (put cg Cg.labels bigger))
         (block))
@@ -226,28 +230,28 @@
   ;; Every word with a meaning of its own: ops (0-86), forms (100-115), and
   ;; type names (200-209); none for any other symbol. The values are the ids
   ;; the code generator has always used.
-  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (new 50) (get 51) (put 52) (sizeof 53) (arr_new 54) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309)])
+  (enum Kw [(none -1) (add 0) (sub 1) (mul 2) (div 3) (xor 4) (shl 5) (shr 6) (bitand 7) (bitor 8) (mem_load8 9) (mem_load32 10) (mem_load64 11) (mem_store8 12) (mem_store32 13) (mem_store64 14) (eq 15) (neq 16) (lt 17) (lte 18) (gt 19) (gte 20) (and 21) (or 22) (not 23) (mem_load8_s 24) (mem_load16_u 25) (mem_load16_s 26) (mem_store16 27) (arr_gen 28) (str_len 30) (str_ptr 31) (sys_print 32) (sys_exit 33) (fs_open 34) (fs_read 35) (fs_write 36) (fs_close 37) (fs_delete 38) (rem 39) (divu 40) (remu 41) (shru 42) (mem_alloc 43) (mem_grow 44) (i64_extend_s 45) (i64_extend_u 46) (i32_wrap 47) (ok 48) (err 49) (get 51) (put 52) (sizeof 53) (arr_get 55) (arr_set 56) (f64_convert_i64_s 57) (i64_trunc_f64_s 58) (f64_reinterpret_i64 59) (i64_reinterpret_f64 60) (ptr_null 61) (ptr_cast 62) (ptr_addr 63) (arr_null 64) (arr_cast 65) (arr_addr 66) (arr_len 67) (ref 68) (call_ref 69) (return 70) (break 71) (continue 72) (args_sizes 73) (args_get 74) (env_sizes 75) (env_get 76) (thread_spawn 77) (thread_join 78) (atomic_add 79) (atomic_cas 80) (atomic_lock 81) (atomic_unlock 82) (sys_time 83) (sys_monotonic 84) (sys_random 85) (f64_sqrt 86) (ltu 87) (lteu 88) (gtu 89) (gteu 90) (checked_add 91) (checked_sub 92) (checked_mul 93) (fs_opendir 94) (fs_readdir 95) (fs_stat 96) (ptr_make 97) (arr_make 98) (ptr_gen 99) (let 100) (set 101) (if 102) (loop 103) (while 104) (call 105) (block 106) (req 107) (ens 108) (inv 109) (module 110) (fn 111) (match_result 112) (struct 113) (cond 114) (else 115) (union 116) (match 117) (make 118) (with 119) (ty_i32 200) (ty_i64 201) (ty_f32 202) (ty_f64 203) (ty_bool 204) (ty_void 205) (ty_str 206) (ty_result 207) (ty_ptr 208) (ty_arr 209) (ty_u8 210) (ty_i8 211) (ty_u16 212) (ty_i16 213) (f32_demote 300) (f64_promote 301) (f32_convert_i32_s 302) (f32_convert_i64_s 303) (f64_convert_i32_s 304) (i32_trunc_f32_s 305) (i32_trunc_f64_s 306) (i64_trunc_f32_s 307) (f32_reinterpret_i32 308) (i32_reinterpret_f32 309) (net_listen 310) (net_accept 311) (net_recv 312) (net_send 313) (net_close 314)])
+  (import alloc)
 
   ;; The keyword map, at cell 16: keyword text -> Kw, plus one scratch slice
   ;; so that a lookup allocates nothing.
-  (struct Keywords [map:(ptr (map.Map (ptr str.Bytes) Kw)) key:(ptr str.Bytes)])
+  (struct Keywords [map:(ptr (map.Map str.Bytes Kw))])
 
   (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
-    (unsafe (let ks:(ptr Keywords) (new Keywords))
-    (put ks Keywords.map (call (map.make (ptr str.Bytes) Kw) (call alloc.default) 256))
-    (put ks Keywords.key (call str.bytes 0 0))
+    (unsafe (let ks:(ptr Keywords) (new Keywords (call alloc.forever)))
+    (put ks Keywords.map (call (map.make str.Bytes Kw) (call alloc.default) 256))
     ks))
 
-  (fn reg [m:(ptr (map.Map (ptr str.Bytes) Kw)) word:str k:Kw] -> void
-    (call (map.set (ptr str.Bytes) Kw) m (call str.from_str word) k))
+  (fn reg [m:(ptr (map.Map str.Bytes Kw)) word:str k:Kw] -> void
+    (call (map.set str.Bytes Kw) m (call str.from_str word) k))
 
   ;; Fills the keyword map once (it also runs codegen_init, every time).
   (fn init_keywords [] -> i32
     (let _init:i32 (call codegen_init))
-    (let m:(ptr (map.Map (ptr str.Bytes) Kw)) (get (call keywords) Keywords.map))
-    (if (gt (call (map.count (ptr str.Bytes) Kw) m) 0) (return 0) (block))
+    (let m:(ptr (map.Map str.Bytes Kw)) (get (call keywords) Keywords.map))
+    (if (gt (call (map.count str.Bytes Kw) m) 0) (return 0) (block))
     (call reg m "+" Kw.add)
     (call reg m "-" Kw.sub)
     (call reg m "*" Kw.mul)
@@ -288,6 +292,11 @@
     (call reg m "fs.opendir" Kw.fs_opendir)
     (call reg m "fs.readdir" Kw.fs_readdir)
     (call reg m "fs.stat" Kw.fs_stat)
+    (call reg m "net.listen" Kw.net_listen)
+    (call reg m "net.accept" Kw.net_accept)
+    (call reg m "net.recv" Kw.net_recv)
+    (call reg m "net.send" Kw.net_send)
+    (call reg m "net.close" Kw.net_close)
     (call reg m "%" Kw.rem)
     (call reg m "divu" Kw.divu)
     (call reg m "remu" Kw.remu)
@@ -299,11 +308,9 @@
     (call reg m "i32.wrap" Kw.i32_wrap)
     (call reg m "ok" Kw.ok)
     (call reg m "err" Kw.err)
-    (call reg m "new" Kw.new)
     (call reg m "get" Kw.get)
     (call reg m "put" Kw.put)
     (call reg m "sizeof" Kw.sizeof)
-    (call reg m "arr.new" Kw.arr_new)
     (call reg m "arr.get" Kw.arr_get)
     (call reg m "arr.set" Kw.arr_set)
     (call reg m "f64.convert_i64_s" Kw.f64_convert_i64_s)
@@ -366,6 +373,8 @@
     (call reg m "block" Kw.block)
     ;; (unsafe e...) compiles as a block; the (unsafe) clause, as an empty one
     (call reg m "unsafe" Kw.block)
+    ;; the (no_leak) clause compiles to nothing, as (unsafe) does
+    (call reg m "no_leak" Kw.block)
     (call reg m "req" Kw.req)
     (call reg m "ens" Kw.ens)
     (call reg m "inv" Kw.inv)
@@ -436,9 +445,8 @@
   ;; The keyword spelled by len bytes at src_ptr + pos, or Kw.none.
   (fn classify_keyword [cg:(ptr Cg) pos:i32 len:i32] -> Kw
     (let ks:(ptr Keywords) (call keywords))
-    (let key:(ptr str.Bytes) (get ks Keywords.key))
-    (unsafe (call str.repoint key (+ (get cg Cg.src) pos) len))
-    (call (map.get_or (ptr str.Bytes) Kw) (get ks Keywords.map) key Kw.none))
+    (let key:str.Bytes (unsafe (call str.bytes (+ (get cg Cg.src) pos) len)))
+    (call (map.get_or str.Bytes Kw) (get ks Keywords.map) key Kw.none))
 
 ;; ===== Types =====
   ;; A value's static type, as expr_type in wasm.rs computes it. bool, str,
@@ -582,15 +590,15 @@
             (let fname_node:(ptr compiler.Node) (call nth_child child 1))
             (let params_node:(ptr compiler.Node) (call nth_child child 2))
             (if (gte count MAX_FNS) (call set_compile_error CgErr.too_many_functions) 0)
-            (let f:(ptr FnInfo) (new FnInfo))
+            (let f:(ptr FnInfo) (new FnInfo (call alloc.forever)))
             (put f FnInfo.name_pos (call node_a fname_node))
             (put f FnInfo.name_len (call node_b fname_node))
             (put f FnInfo.ret (call type_node_id cg (call nth_child child 4)))
             (put f FnInfo.ret_vs (call type_node_struct cg (call nth_child child 4)))
             (put f FnInfo.index count)
             (put f FnInfo.node child)
-            (put f FnInfo.params (arr.new Ty 16))
-            (put f FnInfo.pvs (arr.new (ptr StructInfo) 16))
+            (put f FnInfo.params (arr.new Ty (call alloc.forever) 16))
+            (put f FnInfo.pvs (arr.new (ptr StructInfo) (call alloc.forever) 16))
             (let pcount:i32 0)
             (let pchild:(ptr compiler.Node) (call first_child params_node))
             (while (neq pchild (ptr.null compiler.Node))
@@ -633,7 +641,7 @@
   (fn add_local [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty vs:(ptr StructInfo)] -> void
     (let count:i32 (get cg Cg.nlocals))
     (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
-    (let l:(ptr Local) (new Local))
+    (let l:(ptr Local) (new Local (call alloc.forever)))
     (put l Local.name_pos name_ptr)
     (put l Local.name_len name_len)
     (put l Local.ty ty)
@@ -744,7 +752,7 @@
     (if (eq (get l Local.from) (ptr.null Desc)) (put l Local.from (call desc type_node false)) (block)))
 
   (fn desc [node:(ptr compiler.Node) expr:bool] -> (ptr Desc)
-    (let d:(ptr Desc) (new Desc))
+    (let d:(ptr Desc) (new Desc (call alloc.forever)))
     (put d Desc.node node)
     (put d Desc.expr expr)
     d)
@@ -989,7 +997,7 @@
   (struct Out [base:i32 pos:i32 lines:(ptr Lines)])
 
   (fn out_at [addr:i32] -> (ptr Out)
-    (let o:(ptr Out) (new Out))
+    (let o:(ptr Out) (new Out (call alloc.forever)))
     (put o Out.base addr)
     (put o Out.pos 0)
     (put o Out.lines (ptr.null Lines))
@@ -998,7 +1006,7 @@
   ;; ===== Line table (docs/design/LINES_PLAN.md; wasm.rs Body) =====
 
   ;; From offset `at` in a function's body, its code is at file:line:col.
-  (struct LEntry [at:i32 file:(ptr str.Bytes) line:i32 col:i32])
+  (struct LEntry [at:i32 file:str.Bytes line:i32 col:i32])
 
   ;; A body's line table as it is written: the offsets in the source of the
   ;; expressions being compiled (innermost last), and the entries so far.
@@ -1008,7 +1016,7 @@
   (struct FnLines [index:i32 entries:(ptr (vec.Vec (ptr LEntry)))])
 
   (fn new_lines [p:(ptr places.Places)] -> (ptr Lines)
-    (let ls:(ptr Lines) (new Lines))
+    (let ls:(ptr Lines) (new Lines (call alloc.forever)))
     (put ls Lines.places p)
     (put ls Lines.at (call (vec.make i32) (call alloc.default) 32))
     (put ls Lines.entries (call (vec.make (ptr LEntry)) (call alloc.default) 32))
@@ -1051,7 +1059,7 @@
               (return)
               (block)))
         (block))
-    (let e:(ptr LEntry) (new LEntry))
+    (let e:(ptr LEntry) (new LEntry (call alloc.forever)))
     (put e LEntry.at at)
     (put e LEntry.file (get p places.Place.file))
     (put e LEntry.line (get p places.Place.line))
@@ -1068,15 +1076,15 @@
   ;; first-use order, then each function's entries, offsets and lines as
   ;; deltas.
   (fn emit_lines [sec:(ptr Out) fns:(ptr (vec.Vec (ptr FnLines)))] -> void
-    (let files:(ptr (vec.Vec (ptr str.Bytes))) (call (vec.make (ptr str.Bytes)) (call alloc.default) 8))
+    (let files:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 8))
     (loop f 0 (- (call (vec.len (ptr FnLines)) fns) 1) 1
       (let es:(ptr (vec.Vec (ptr LEntry))) (get (call (vec.at (ptr FnLines)) fns f) FnLines.entries))
       (loop k 0 (- (call (vec.len (ptr LEntry)) es) 1) 1
-        (let name:(ptr str.Bytes) (get (call (vec.at (ptr LEntry)) es k) LEntry.file))
-        (if (lt (call file_index files name) 0) (call (vec.push (ptr str.Bytes)) files name) (block))))
-    (call put_u32 sec (call (vec.len (ptr str.Bytes)) files))
-    (loop i 0 (- (call (vec.len (ptr str.Bytes)) files) 1) 1
-      (let name:(ptr str.Bytes) (call (vec.at (ptr str.Bytes)) files i))
+        (let name:str.Bytes (get (call (vec.at (ptr LEntry)) es k) LEntry.file))
+        (if (lt (call file_index files name) 0) (call (vec.push str.Bytes) files name) (block))))
+    (call put_u32 sec (call (vec.len str.Bytes) files))
+    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+      (let name:str.Bytes (call (vec.at str.Bytes) files i))
       (call put_u32 sec (get name str.Bytes.len))
       (loop k 0 (- (get name str.Bytes.len) 1) 1 (call put_byte sec (call str.byte_at name k))))
     (call put_u32 sec (call (vec.len (ptr FnLines)) fns))
@@ -1096,9 +1104,9 @@
         (set! off (get e LEntry.at))
         (set! line (get e LEntry.line)))))
 
-  (fn file_index [files:(ptr (vec.Vec (ptr str.Bytes))) name:(ptr str.Bytes)] -> i32
-    (loop i 0 (- (call (vec.len (ptr str.Bytes)) files) 1) 1
-      (if (call str.bytes_eq (call (vec.at (ptr str.Bytes)) files i) name) (return i) (block)))
+  (fn file_index [files:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> i32
+    (loop i 0 (- (call (vec.len str.Bytes) files) 1) 1
+      (if (call str.bytes_eq (call (vec.at str.Bytes) files i) name) (return i) (block)))
     -1)
 
   ;; The address of the next byte, for code that still writes at an address
@@ -1634,17 +1642,17 @@
           (block
             (let sname_node:(ptr compiler.Node) (call nth_child child 1))
             (if (gte scount 255) (call set_compile_error CgErr.table_full) 0)
-            (let si:(ptr StructInfo) (new StructInfo))
+            (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
             (put si StructInfo.name_pos (call node_a sname_node))
             (put si StructInfo.name_len (call node_b sname_node))
-            (put si StructInfo.fields (arr.new (ptr Field) 64))
+            (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 64))
             (put si StructInfo.node child)
             (let mark:(ptr compiler.Node) (call nth_child child 3))
             (put si StructInfo.value (and (neq mark (ptr.null compiler.Node))
                                           (and (eq (call node_kind mark) compiler.Kind.paren)
                                                (call sym_eq cg (call node_a (call first_child mark)) (call node_b (call first_child mark)) (str.ptr "value") 5))))
-            (put si StructInfo.flat_ty (arr.new Ty 8))
-            (put si StructInfo.flat_off (arr.new i32 8))
+            (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
+            (put si StructInfo.flat_off (arr.new i32 (call alloc.forever) 8))
             (if (get si StructInfo.value) (put cg Cg.has_values true) (block))
             (arr.set (ptr StructInfo) (get cg Cg.structs) (if (gte scount 255) 254 scount) si)
             (if (lt scount 255) (set! scount (+ scount 1)) (block)))
@@ -1698,7 +1706,7 @@
   (fn new_field [cg:(ptr Cg) fchild:(ptr compiler.Node) type_node:(ptr compiler.Node)] -> (ptr Field)
     (let ftype:Ty (call type_node_id cg type_node))
     (if (and (call is_memory_type ftype) (neq (call group_head_keyword cg type_node) Kw.ty_result)) 0 (call set_compile_error CgErr.not_a_memory_type))
-    (let f:(ptr Field) (new Field))
+    (let f:(ptr Field) (new Field (call alloc.forever)))
     (put f Field.name_pos (call node_a fchild))
     (put f Field.name_len (call node_b fchild))
     (put f Field.ty ftype)
@@ -1756,10 +1764,10 @@
           (block
             (let name_node:(ptr compiler.Node) (call nth_child child 1))
             (if (gte ucount 255) (call set_compile_error CgErr.table_full) 0)
-            (let u:(ptr UnionInfo) (new UnionInfo))
+            (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever)))
             (put u UnionInfo.name_pos (call node_a name_node))
             (put u UnionInfo.name_len (call node_b name_node))
-            (put u UnionInfo.variants (arr.new (ptr VariantInfo) 255))
+            (put u UnionInfo.variants (arr.new (ptr VariantInfo) (call alloc.forever) 255))
             (put u UnionInfo.nvariants 0)
             (arr.set (ptr UnionInfo) (get cg Cg.unions) (if (gte ucount 255) 254 ucount) u)
             (if (lt ucount 255) (set! ucount (+ ucount 1)) (block)))
@@ -1776,7 +1784,7 @@
             (let vnode:(ptr compiler.Node) (call first_child (call nth_child child 2)))
             (while (neq vnode (ptr.null compiler.Node))
               (if (gte vcount 255) (call set_compile_error CgErr.table_full) 0)
-              (let v:(ptr VariantInfo) (new VariantInfo))
+              (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever)))
               (put v VariantInfo.name_pos (call node_a (call first_child vnode)))
               (put v VariantInfo.name_len (call node_b (call first_child vnode)))
               (put v VariantInfo.node vnode)
@@ -1801,7 +1809,7 @@
   ;; up to the largest (at least 4, the tag's).
   (fn layout_variant [cg:(ptr Cg) v:(ptr VariantInfo)] -> void
     (let name_node:(ptr compiler.Node) (call first_child (get v VariantInfo.node)))
-    (put v VariantInfo.fields (arr.new (ptr Field) 64))
+    (put v VariantInfo.fields (arr.new (ptr Field) (call alloc.forever) 64))
     (let cur_offset:i32 4)
     (let max_align:i32 4)
     (let fcount:i32 0)
@@ -1823,17 +1831,17 @@
     (put v VariantInfo.nfields fcount))
 
   ;; ===== Unions held by value (checker.rs union_layouts, sum_layout) =====
-  ;; A union is a value unless a variant holds a str, it contains itself
-  ;; (through unions it holds), or it needs more than 8 slots, counting the
+  ;; A union is a value unless it contains itself (through unions it
+  ;; holds), or it needs more than 8 slots, counting the
   ;; unions it holds that are values as their slots and the others as one
   ;; (each union is decided after the unions it holds).
   (fn decide_unions [cg:(ptr Cg)] -> void
     (let n:i32 (get cg Cg.nunions))
-    (let cand:(arr bool) (arr.new bool (+ n 1)))
-    (let decided:(arr bool) (arr.new bool (+ n 1)))
+    (let cand:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
+    (let decided:(arr bool) (arr.new bool (call alloc.forever) (+ n 1)))
     (loop i 0 (- n 1) 1
       (let u:(ptr UnionInfo) (call union_at cg i))
-      (arr.set bool cand i (and (not (call holds_str cg u)) (not (call reaches_itself cg u)))))
+      (arr.set bool cand i (not (call reaches_itself cg u))))
     (loop i 0 (- n 1) 1
       (if (arr.get bool cand i) (call decide_union cg cand decided (call union_at cg i)) (block))))
 
@@ -1860,7 +1868,6 @@
     (let er:(ptr Desc) (call result_side cg d 1))
     (let ot:Ty (call desc_ty cg ok))
     (let et:Ty (call desc_ty cg er))
-    (if (or (eq ot Ty.str) (eq et Ty.str)) (return (ptr.null StructInfo)) (block))
     (let ok_k:(ptr (vec.Vec Ty)) (call desc_kinds cg ok ot))
     (let er_k:(ptr (vec.Vec Ty)) (call desc_kinds cg er et))
     (let rs:(ptr (vec.Vec (ptr StructInfo))) (get cg Cg.results))
@@ -1903,14 +1910,14 @@
   ;; The StructInfo of a result's slots, its sides' kinds ok_k and er_k
   ;; (checker.rs sum_layout).
   (fn build_sum [cg:(ptr Cg) ok_k:(ptr (vec.Vec Ty)) er_k:(ptr (vec.Vec Ty))] -> (ptr StructInfo)
-    (let si:(ptr StructInfo) (new StructInfo))
+    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
     (put si StructInfo.value true)
     (put si StructInfo.laid true)
     (put si StructInfo.result true)
-    (put si StructInfo.fields (arr.new (ptr Field) 1))
-    (put si StructInfo.flat_ty (arr.new Ty 8))
-    (put si StructInfo.flat_off (arr.new i32 8))
-    (let base:(arr i32) (arr.new i32 4))
+    (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 1))
+    (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
+    (put si StructInfo.flat_off (arr.new i32 (call alloc.forever) 8))
+    (let base:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (let n:i32 1)
     (arr.set Ty (get si StructInfo.flat_ty) 0 Ty.i32)
     (loop k 0 3 1
@@ -1929,8 +1936,8 @@
     (put si StructInfo.width n)
     (put si StructInfo.align align)
     (put si StructInfo.size (bitand (+ off (- align 1)) (- 0 align)))
-    (let u:(ptr UnionInfo) (new UnionInfo))
-    (put u UnionInfo.variants (arr.new (ptr VariantInfo) 2))
+    (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever)))
+    (put u UnionInfo.variants (arr.new (ptr VariantInfo) (call alloc.forever) 2))
     (put u UnionInfo.nvariants 2)
     (put u UnionInfo.value true)
     (put u UnionInfo.vs si)
@@ -1941,10 +1948,10 @@
 
   ;; A side's scalars to the next free slot of their kind.
   (fn side_slots [ks:(ptr (vec.Vec Ty)) base:(arr i32)] -> (ptr VariantInfo)
-    (let v:(ptr VariantInfo) (new VariantInfo))
+    (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever)))
     (put v VariantInfo.kinds ks)
-    (let used:(arr i32) (arr.new i32 4))
-    (put v VariantInfo.slots (arr.new i32 (+ (call (vec.len Ty) ks) 1)))
+    (let used:(arr i32) (arr.new i32 (call alloc.forever) 4))
+    (put v VariantInfo.slots (arr.new i32 (call alloc.forever) (+ (call (vec.len Ty) ks) 1)))
     (put v VariantInfo.nslots (call (vec.len Ty) ks))
     (loop j 0 (- (call (vec.len Ty) ks) 1) 1
       (let kind:Ty (call (vec.at Ty) ks j))
@@ -1974,17 +1981,9 @@
     (if (neq (call node_kind t) compiler.Kind.symbol) (return (ptr.null UnionInfo)) (block))
     (call find_union cg (call node_a t) (call node_b t)))
 
-  (fn holds_str [cg:(ptr Cg) u:(ptr UnionInfo)] -> bool
-    (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
-      (let ts:(ptr (vec.Vec (ptr compiler.Node))) (call variant_types (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k)))
-      (loop j 0 (- (call (vec.len (ptr compiler.Node)) ts) 1) 1
-        (let t:(ptr compiler.Node) (call (vec.at (ptr compiler.Node)) ts j))
-        (if (and (eq (call node_kind t) compiler.Kind.symbol) (eq (call classify_keyword cg (call node_a t) (call node_b t)) Kw.ty_str)) (return true) (block))))
-    false)
-
   ;; Whether u reaches itself through the unions its variants hold.
   (fn reaches_itself [cg:(ptr Cg) u:(ptr UnionInfo)] -> bool
-    (let seen:(arr bool) (arr.new bool (+ (get cg Cg.nunions) 1)))
+    (let seen:(arr bool) (arr.new bool (call alloc.forever) (+ (get cg Cg.nunions) 1)))
     (let todo:(ptr (vec.Vec (ptr UnionInfo))) (call (vec.make (ptr UnionInfo)) (call alloc.default) 8))
     (call push_held cg u todo)
     (while (gt (call (vec.len (ptr UnionInfo)) todo) 0)
@@ -2058,17 +2057,17 @@
   (fn build_union [cg:(ptr Cg) u:(ptr UnionInfo)] -> void
     (if (get u UnionInfo.value) (return) (block))
     (put cg Cg.has_values true)
-    (let si:(ptr StructInfo) (new StructInfo))
+    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
     (put si StructInfo.name_pos (get u UnionInfo.name_pos))
     (put si StructInfo.name_len (get u UnionInfo.name_len))
     (put si StructInfo.value true)
     (put si StructInfo.laid true)
     (put si StructInfo.union_of u)
-    (put si StructInfo.fields (arr.new (ptr Field) 1))
+    (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 1))
     (put si StructInfo.nfields 0)
-    (put si StructInfo.flat_ty (arr.new Ty 8))
-    (put si StructInfo.flat_off (arr.new i32 8))
-    (let base:(arr i32) (arr.new i32 4))
+    (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
+    (put si StructInfo.flat_off (arr.new i32 (call alloc.forever) 8))
+    (let base:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (let n:i32 1)
     (arr.set Ty (get si StructInfo.flat_ty) 0 Ty.i32)
     (loop k 0 3 1
@@ -2092,8 +2091,8 @@
     (loop k 0 (- (get u UnionInfo.nvariants) 1) 1
       (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get u UnionInfo.variants) k))
       (let ks:(ptr (vec.Vec Ty)) (call variant_kinds cg v))
-      (let used:(arr i32) (arr.new i32 4))
-      (put v VariantInfo.slots (arr.new i32 (+ (call (vec.len Ty) ks) 1)))
+      (let used:(arr i32) (arr.new i32 (call alloc.forever) 4))
+      (put v VariantInfo.slots (arr.new i32 (call alloc.forever) (+ (call (vec.len Ty) ks) 1)))
       (put v VariantInfo.nslots (call (vec.len Ty) ks))
       (loop j 0 (- (call (vec.len Ty) ks) 1) 1
         (let kind:Ty (call (vec.at Ty) ks j))
@@ -2342,12 +2341,12 @@
     (let n:i32 (get cg Cg.nstrs))
     (if (eq n (arr.len (get cg Cg.strs)))
         (block
-          (let bigger:(arr (ptr StrLit)) (arr.new (ptr StrLit) (* n 2)))
+          (let bigger:(arr (ptr StrLit)) (arr.new (ptr StrLit) (call alloc.forever) (* n 2)))
           (loop i 0 (- n 1) 1
             (arr.set (ptr StrLit) bigger i (arr.get (ptr StrLit) (get cg Cg.strs) i)))
           (put cg Cg.strs bigger))
         (block))
-    (let e:(ptr StrLit) (new StrLit))
+    (let e:(ptr StrLit) (new StrLit (call alloc.forever)))
     (put e StrLit.pos pos)
     (put e StrLit.len len)
     (put e StrLit.addr addr)
@@ -2437,7 +2436,35 @@
       ((eq w Wasi.clock_time_get) "clock_time_get")
       ((eq w Wasi.fd_readdir) "fd_readdir")
       ((eq w Wasi.path_filestat_get) "path_filestat_get")
+      ((eq w Wasi.net_listen) "listen")
+      ((eq w Wasi.net_accept) "accept")
+      ((eq w Wasi.net_recv) "recv")
+      ((eq w Wasi.net_send) "send")
+      ((eq w Wasi.net_close) "close")
       (else "random_get")))
+
+  ;; The import module of WASI function w (wasm.rs Wasi::module).
+  (fn wasi_module [w:Wasi] -> str
+    (cond
+      ((eq w Wasi.thread_spawn) "wasi")
+      ((call is_net_wasi w) "aipl_net_v1")
+      (else "wasi_snapshot_preview1")))
+
+  (fn is_net_wasi [w:Wasi] -> bool
+    (or (or (eq w Wasi.net_listen) (eq w Wasi.net_accept))
+        (or (or (eq w Wasi.net_recv) (eq w Wasi.net_send)) (eq w Wasi.net_close))))
+
+  ;; The aipl_net_v1 operations, and the import each calls.
+  (fn is_net_kw [k:Kw] -> bool
+    (or (or (eq k Kw.net_listen) (eq k Kw.net_accept))
+        (or (or (eq k Kw.net_recv) (eq k Kw.net_send)) (eq k Kw.net_close))))
+  (fn net_wasi [k:Kw] -> Wasi
+    (cond
+      ((eq k Kw.net_listen) Wasi.net_listen)
+      ((eq k Kw.net_accept) Wasi.net_accept)
+      ((eq k Kw.net_recv) Wasi.net_recv)
+      ((eq k Kw.net_send) Wasi.net_send)
+      (else Wasi.net_close)))
 
   ;; ===== WASI Import Detection =====
   ;; Cg.wasi holds, per WASI function, -1 (unused), 1 while marking it used,
@@ -2489,6 +2516,7 @@
             ((eq kw Kw.thread_spawn) (call mark_wasi_used cg Wasi.thread_spawn) 0)
             ((or (eq kw Kw.sys_time) (eq kw Kw.sys_monotonic)) (call mark_wasi_used cg Wasi.clock_time_get) 0)
             ((eq kw Kw.sys_random) (call mark_wasi_used cg Wasi.random_get) 0)
+            ((call is_net_kw kw) (call mark_wasi_used cg (call net_wasi kw)) 0)
             ;; an array index, req, or ens: the module needs the check helpers
             ((or (or (eq kw Kw.arr_get) (eq kw Kw.arr_set)) (or (eq kw Kw.req) (or (eq kw Kw.ens) (eq kw Kw.inv)))) (put cg Cg.uses_checks true) 0)
             ;; and a struct access or arr.len (the null check)
@@ -2526,10 +2554,10 @@
     out)
 
   (fn new_sig [] -> (ptr Sig)
-    (let s:(ptr Sig) (new Sig))
-    (put s Sig.params (arr.new i32 128))
+    (let s:(ptr Sig) (new Sig (call alloc.forever)))
+    (put s Sig.params (arr.new i32 (call alloc.forever) 128))
     (put s Sig.nparams 0)
-    (put s Sig.results (arr.new i32 8))
+    (put s Sig.results (arr.new i32 (call alloc.forever) 8))
     (put s Sig.nresults 0)
     s)
 
@@ -2601,6 +2629,30 @@
           0)
         0))
 
+  ;; Whether node n is the symbol spelled s.
+  (fn node_is [cg:(ptr Cg) n:(ptr compiler.Node) s:str] -> bool
+    (unsafe (and (eq (call node_kind n) compiler.Kind.symbol) (call sym_eq cg (call node_a n) (call node_b n) (str.ptr s) (str.len s)))))
+
+  ;; What a compiler-made _start does with main's value (wasm.rs
+  ;; start_entry, is_result_main): 0 if there is no such _start, or main
+  ;; returns void; 1 if it returns i32, the status; 2 if it returns
+  ;; (result i32 str) (the checker allows no other result for main).
+  (fn start_kind [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
+    (let main:(ptr compiler.Node) (ptr.null compiler.Node))
+    (let item:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
+    (while (neq item (ptr.null compiler.Node))
+      (when (and (eq (call node_kind item) compiler.Kind.paren) (eq (call group_head_keyword cg item) Kw.fn))
+        (let name:(ptr compiler.Node) (call nth_child item 1))
+        (when (call node_is cg name "_start") (return 0))
+        (when (and (call node_is cg name "main") (eq (call first_child (call nth_child item 2)) (ptr.null compiler.Node)))
+          (set! main item)))
+      (set! item (call node_next item)))
+    (when (eq main (ptr.null compiler.Node)) (return 0))
+    (let ret:(ptr compiler.Node) (call nth_child main 4))
+    (cond ((call node_is cg ret "i32") 1)
+          ((eq (call group_head_keyword cg ret) Kw.ty_result) 2)
+          (else 0)))
+
   (fn walk_module_prepass [cg:(ptr Cg) root:(ptr compiler.Node)] -> i32
     ;; Pass 1: WASI detection
     (let child:(ptr compiler.Node) (call node_next (call node_next (call first_child root))))
@@ -2613,11 +2665,15 @@
               (set! bchild (call node_next bchild))))
           (block))
       (set! child (call node_next child)))
+    (let sk:i32 (call start_kind cg root))
+    (if (gt sk 0) (call mark_wasi_used cg Wasi.proc_exit) 0)
+    (if (eq sk 2) (call mark_wasi_used cg Wasi.fd_write) 0)
 
     (call finalize_wasi_indices cg)
 
-    ;; Pass 2: Intern newline if sys.print is present and fd_write used
-    (if (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root))
+    ;; Pass 2: Intern newline if sys.print is present and fd_write used, or
+    ;; _start may write a result main's err
+    (if (or (and (neq (call get_wasi_index cg Wasi.fd_write) -1) (call ast_uses_sys_print cg root)) (eq sk 2))
         (block (call intern_newline cg) 0)
         0)
 
@@ -2661,7 +2717,8 @@
           (or (eq k Kw.fs_write) (or (eq k Kw.fs_close) (eq k Kw.fs_delete))))))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (or (eq k Kw.env_get) (eq k Kw.thread_spawn))))) true)
-      ((or (eq k Kw.arr_new) (or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock)))) true)
+      ((or (eq k Kw.atomic_cas) (or (eq k Kw.atomic_lock) (eq k Kw.atomic_unlock))) true)
+      ((call is_net_kw k) true)
       (else (or (eq k Kw.sys_time) (or (eq k Kw.sys_monotonic) (eq k Kw.sys_random))))))
 
   ;; Check if function uses I/O ops
@@ -2691,42 +2748,14 @@
       (set! bchild (call node_next bchild)))
     found)
 
-  ;; Where a result cell keeps a payload of type t (checker.rs
-  ;; result_cell_layout): at 8 in a 16-byte cell if it is 64-bit (i64, f64,
-  ;; or a pointer or array: an address, then a generation), else at 4 in an
-  ;; 8-byte one. A result payload is its cell's address, an i32.
-  (fn payload_offset [t:Ty] -> i32
-    (if (or (or (eq t Ty.i64) (eq t Ty.f64)) (or (eq t Ty.ptr) (eq t Ty.arr))) 8 4))
-
-  ;; (ok v) / (err e) (wasm.rs compile_result_cell): claim the cell before
-  ;; evaluating the payload, store the tag, then the payload.
-  (fn compile_result_cell [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
-    (if (call is_value_node cg node) (return (call compile_value_result cg node tag o)) (block))
-    (let t:Ty (call node_type cg (call result_payload node)))
-    (let vs:(ptr StructInfo) (if (eq t Ty.value) (call node_struct cg (call result_payload node)) (ptr.null StructInfo)))
-    (let at:i32 (call cell_offset t vs))
-    (call emit_i32_const o 0)
-    (call emit_i32_const o (call cell_size t vs))
-    (call emit_rmw_add o)
-    (call emit_local_set o (get cg Cg.scratch))
-    (call emit_grow_to_cursor o)
-    (call emit_local_get o (get cg Cg.scratch))
-    (call emit_i32_const o tag)
-    (call emit_memop o OP_I32_STORE 2)
-    (call emit_local_get o (get cg Cg.scratch))
-    (call emit_local_get o (get cg Cg.scratch))
-    (if (eq t Ty.value)
-        (return (call emit_store_value cg o vs at (call result_payload node)))
-        (block))
-    (call compile_expr cg (call result_payload node) o)
-    (call emit_memop_offset o (call store_opcode t) (call mem_align t) at))
-
-;; (ok:E v) / (err:T e) of a result held by value (wasm.rs
+  ;; (ok:E v) / (err:T e), a result held by value (AIPL_SPEC.md 4.F; wasm.rs
   ;; compile_value_result): into its group, the tag, the payload's scalars in
   ;; their slots, zero in the others; then the group pushed.
   (fn compile_value_result [cg:(ptr Cg) node:(ptr compiler.Node) tag:i32 o:(ptr Out)] -> void
-    (let g:i32 (call group_slot cg node false))
     (let vs:(ptr StructInfo) (call node_struct cg node))
+    ;; wider than the checker allows
+    (if (eq vs (ptr.null StructInfo)) (block (call set_compile_error CgErr.table_full) (return)) (block))
+    (let g:i32 (call group_slot cg node false))
     (let v:(ptr VariantInfo) (arr.get (ptr VariantInfo) (get (get vs StructInfo.union_of) UnionInfo.variants) tag))
     (call emit_i32_const o tag)
     (call emit_local_set o g)
@@ -2829,8 +2858,8 @@
     (if (or (eq kw Kw.atomic_lock) (eq kw Kw.atomic_unlock)) (set! res Ty.void) (block))
     (if (eq kw Kw.call_ref) (set! res (call type_node_id cg (call nth_child (call nth_child node 1) 3))) (block))
     ;; new, ptr.null, ptr.cast -> (ptr S); arr.new, arr.null, arr.cast -> (arr T)
-    (if (or (eq kw Kw.new) (or (eq kw Kw.ptr_null) (or (eq kw Kw.ptr_cast) (eq kw Kw.ptr_make)))) (set! res Ty.ptr) (block))
-    (if (or (eq kw Kw.arr_new) (or (eq kw Kw.arr_null) (or (eq kw Kw.arr_cast) (eq kw Kw.arr_make)))) (set! res Ty.arr) (block))
+    (if (or (eq kw Kw.ptr_null) (or (eq kw Kw.ptr_cast) (eq kw Kw.ptr_make))) (set! res Ty.ptr) (block))
+    (if (or (eq kw Kw.arr_null) (or (eq kw Kw.arr_cast) (eq kw Kw.arr_make))) (set! res Ty.arr) (block))
     ;; f64.convert_i64_s, f64.reinterpret_i64, f64.sqrt
     (if (or (eq kw Kw.f64_convert_i64_s) (or (eq kw Kw.f64_reinterpret_i64) (eq kw Kw.f64_sqrt))) (set! res Ty.f64) (block))
     ;; the f32 conversions (checker.rs conversion)
@@ -2964,7 +2993,7 @@
   ;; Follows the path symbols (S.f ...) from `first` up to (not including)
   ;; `stop`, starting from a value of type t (struct vs) at offset off.
   (fn follow_path [cg:(ptr Cg) first:(ptr compiler.Node) stop:(ptr compiler.Node) t:Ty vs:(ptr StructInfo) off:i32] -> (ptr Target)
-    (let tg:(ptr Target) (new Target))
+    (let tg:(ptr Target) (new Target (call alloc.forever)))
     (put tg Target.ty t)
     (put tg Target.vs vs)
     (put tg Target.offset off)
@@ -2992,7 +3021,7 @@
   ;; The groups of the function being compiled, found in source order (its
   ;; body, then its req and ens conditions), as wasm.rs value_groups.
   (fn add_group [cg:(ptr Cg) node:(ptr compiler.Node) spill:bool vs:(ptr StructInfo)] -> void
-    (let g:(ptr Group) (new Group))
+    (let g:(ptr Group) (new Group (call alloc.forever)))
     (put g Group.node node)
     (put g Group.spill spill)
     (put g Group.ty Ty.value)
@@ -3148,7 +3177,7 @@
   (struct Root [kind:RootKind node:(ptr compiler.Node) slot:i32 off:i32])
 
   (fn find_root [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr Root)
-    (let rt:(ptr Root) (new Root))
+    (let rt:(ptr Root) (new Root (call alloc.forever)))
     (put rt Root.slot 0)
     (put rt Root.off 0)
     (let cur:(ptr compiler.Node) node)
@@ -3349,17 +3378,6 @@
     (call put_op o OP_END)
     (call at_pop o))
 
-  ;; Where a result cell keeps a payload (checker.rs result_cell_layout): a
-  ;; value struct after the tag, aligned; the cell's size a multiple of 8.
-  (fn cell_offset [t:Ty vs:(ptr StructInfo)] -> i32
-    (if (eq t Ty.value)
-        (if (eq (get vs StructInfo.align) 8) 8 4)
-        (call payload_offset t)))
-  (fn cell_size [t:Ty vs:(ptr StructInfo)] -> i32
-    (if (eq t Ty.value)
-        (bitand (+ (+ (call cell_offset t vs) (get vs StructInfo.size)) 7) -8)
-        (* 2 (call payload_offset t))))
-
   ;; ===== Expression / statement codegen =====
   ;; Compiles one expression, its position the innermost one while it is
   ;; compiled (for the line table).
@@ -3446,37 +3464,25 @@
     (call emit_get_slots o g n))
 
   ;; (match_result r (ok v ...) (err e ...)) (wasm.rs compile_match_result):
-  ;; the cell's tag picks the arm; its binder is loaded from the cell. With
+  ;; the result's tag picks the arm; its binder is its side's slots. With
   ;; dest (a local, else -1), a value struct result goes into the locals
   ;; from there (compile_into) and the if yields nothing.
   (fn compile_match_result [cg:(ptr Cg) node:(ptr compiler.Node) dest:i32 o:(ptr Out)] -> void
     (let expr_node:(ptr compiler.Node) (call nth_child node 1))
     (let ok_group:(ptr compiler.Node) (call nth_child node 2))
     (let err_group:(ptr compiler.Node) (call nth_child node 3))
-    (let scratch:i32 (get cg Cg.scratch))
-    ;; each side's payload type picks its load and offset (result_cell_layout)
-    (let ok_side:(ptr Desc) (call result_side cg (call desc expr_node true) 0))
-    (let err_side:(ptr Desc) (call result_side cg (call desc expr_node true) 1))
-    (let ok_ty:Ty (call desc_ty cg ok_side))
-    (let err_ty:Ty (call desc_ty cg err_side))
-    ;; a result by value: its tag and binders from its slots (a variable's
-    ;; own locals, else its spill group)
-    (let rvs:(ptr StructInfo) (if (call is_value_node cg expr_node) (call node_struct cg expr_node) (ptr.null StructInfo)))
+    ;; a result is held by value: its tag and binders from its slots (a
+    ;; variable's own locals, else its spill group)
+    (let rvs:(ptr StructInfo) (call node_struct cg expr_node))
+    (if (eq rvs (ptr.null StructInfo)) (block (call set_compile_error CgErr.table_full) (return)) (block))
     (let base:i32 0)
-    (if (neq rvs (ptr.null StructInfo))
+    (if (eq (call node_kind expr_node) compiler.Kind.symbol)
+        (set! base (call node_slot cg expr_node))
         (block
-          (if (eq (call node_kind expr_node) compiler.Kind.symbol)
-              (set! base (call node_slot cg expr_node))
-              (block
-                (set! base (call group_slot cg expr_node true))
-                (call compile_expr cg expr_node o)
-                (call emit_set_slots o base (get rvs StructInfo.width))))
-          (call emit_local_get o base))
-        (block
+          (set! base (call group_slot cg expr_node true))
           (call compile_expr cg expr_node o)
-          (call emit_local_set o scratch)
-          (call emit_local_get o scratch)
-          (call emit_memop o OP_I32_LOAD 2)))
+          (call emit_set_slots o base (get rvs StructInfo.width))))
+    (call emit_local_get o base)
     (call put_op o OP_I32_EQZ)
     (let ok_last:(ptr compiler.Node) (call last_of (call mr_typed cg node)))
     (let is_void:bool (call is_void_node cg ok_last))
@@ -3484,36 +3490,17 @@
     (if (or is_void (gte dest 0)) (set! block_ty 64) (set! block_ty (call block_type_byte (call node_type cg ok_last))))
     (call put_op o OP_IF) (call put_byte o block_ty)
     (call label_push cg Label.if_else)
-    (if (neq rvs (ptr.null StructInfo))
-        (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
-        (call emit_load_binder cg o (call nth_child ok_group 1) ok_ty (call desc_struct cg ok_side)))
+    (call slot_binder cg o (call nth_child ok_group 1) rvs 0 base)
     (call compile_arm_seq cg (call node_next (call node_next (call first_child ok_group))) dest o)
     (call seal_body cg (call node_next (call node_next (call first_child ok_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call put_op o OP_ELSE)
-    (if (neq rvs (ptr.null StructInfo))
-        (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
-        (call emit_load_binder cg o (call nth_child err_group 1) err_ty (call desc_struct cg err_side)))
+    (call slot_binder cg o (call nth_child err_group 1) rvs 1 base)
     (call compile_arm_seq cg (call node_next (call node_next (call first_child err_group))) dest o)
     (call seal_body cg (call node_next (call node_next (call first_child err_group))) (and (neq block_ty 64) (lt dest 0)) o)
     (call label_pop cg)
     (call put_op o OP_END))
 
-  ;; A match_result binder (named by var) of type t loaded from the cell in
-  ;; the scratch local into its local, or locals for a value struct.
-  (fn emit_load_binder [cg:(ptr Cg) o:(ptr Out) var:(ptr compiler.Node) t:Ty vs:(ptr StructInfo)] -> void
-    (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
-    (if (eq idx -1) (return) (block))
-    (let slot:i32 (call slot_of cg idx))
-    (if (eq t Ty.value)
-        (block
-          (call emit_load_scalars cg o t vs (call cell_offset t vs))
-          (call emit_set_slots o slot (call width t vs)))
-        (block
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_memop_offset o (call load_opcode t) (call mem_align t) (call payload_offset t))
-          (call emit_local_set o slot))))
-
-;; A match_result binder of a result by value (described by rvs), side 0
+  ;; A match_result binder of a result by value (described by rvs), side 0
   ;; (ok) or 1 (err), from the slots from `base`.
   (fn slot_binder [cg:(ptr Cg) o:(ptr Out) var:(ptr compiler.Node) rvs:(ptr StructInfo) side:i32 base:i32] -> void
     (let idx:i32 (call find_local cg (call node_a var) (call node_b var)))
@@ -3547,30 +3534,11 @@
             (set! a (call node_next a)))
           (return))
         (block))
-    (let v:(ptr VariantInfo) (call find_variant cg target))
-    (if (eq v (ptr.null VariantInfo))
-        (block (call set_compile_error CgErr.unknown_variant) (call emit_i32_const o 0) (return))
-        (block))
-    (let scratch:i32 (get cg Cg.scratch))
-    (call emit_i32_const o 0)
-    (call emit_i32_const o (bitand (+ (get v VariantInfo.size) 7) -8))
-    (call emit_rmw_add o)
-    (call emit_local_set o scratch)
-    (call emit_grow_to_cursor o)
-    (loop k 0 (+ (get v VariantInfo.nfields) 1) 1 (call emit_local_get o scratch))
-    (call emit_i32_const o (call variant_index cg target))
-    (call emit_memop o OP_I32_STORE 2)
-    (let arg:(ptr compiler.Node) (call node_next target))
-    (loop k 0 (- (get v VariantInfo.nfields) 1) 1
-      (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
-      (if (eq (get f Field.ty) Ty.value)
-          (call emit_store_value cg o (get f Field.vs) (get f Field.offset) arg)
-          (block
-            (call compile_expr cg arg o)
-            (call emit_memop_offset o (call store_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))))
-      (set! arg (call node_next arg))))
+    ;; a union is a value (AIPL_SPEC.md 4.J): an unknown variant
+    (call set_compile_error CgErr.unknown_variant)
+    (call emit_i32_const o 0))
 
-;; (make U.v args...) of a union held by value (wasm.rs
+  ;; (make U.v args...), a union (a value; wasm.rs
   ;; compile_value_make): into its group, the tag, each field's scalars in
   ;; their slots, zero in the slots v does not use; then the group pushed.
   (fn compile_value_make [cg:(ptr Cg) node:(ptr compiler.Node) u:(ptr UnionInfo) o:(ptr Out)] -> void
@@ -3699,39 +3667,16 @@
             (call compile_arm_body cg (call arm_body arm) block_ty dest o))
           (block
             (call emit_local_get o scratch)
-            (let v:(ptr VariantInfo) (ptr.null VariantInfo))
+            ;; an enum member, a number by now (a union's arms are
+            ;; compile_value_match's)
             (if (eq (call node_kind head) compiler.Kind.int)
                 (call emit_i32_const o (call int_node_value cg head))
-                (block
-                  (set! v (call find_variant cg head))
-                  (if (eq v (ptr.null VariantInfo)) (call set_compile_error CgErr.unknown_variant) 0)
-                  (call emit_memop o OP_I32_LOAD 2)
-                  (call emit_i32_const o (call variant_index cg head))))
+                (block (call set_compile_error CgErr.unknown_variant) (call emit_i32_const o 0)))
             (call put_op o OP_I32_EQ)
             (call put_op o OP_IF)
             (call put_byte o block_ty)
             (call label_push cg Label.if_else)
             (set! opened (+ opened 1))
-            (let binders:(ptr compiler.Node) (call node_next head))
-            (if (and (neq v (ptr.null VariantInfo)) (eq (call node_kind binders) compiler.Kind.bracket))
-                (block
-                  (let b:(ptr compiler.Node) (call first_child binders))
-                  (let k:i32 0)
-                  (while (and (neq b (ptr.null compiler.Node)) (lt k (get v VariantInfo.nfields)))
-                    (let f:(ptr Field) (arr.get (ptr Field) (get v VariantInfo.fields) k))
-                    (cond
-                      ((call is_wildcard cg b) (block))
-                      ((eq (get f Field.ty) Ty.value)
-                       (call emit_load_scalars cg o Ty.value (get f Field.vs) (get f Field.offset))
-                       (call emit_set_slots o (call node_slot cg b) (call width Ty.value (get f Field.vs))))
-                      (else
-                       (call emit_local_get o scratch)
-                       (call emit_memop_offset o (call load_opcode (get f Field.ty)) (call mem_align (get f Field.ty)) (get f Field.offset))
-                       (if (eq (get f Field.ty) Ty.bool) (call emit_normalize_bool o) (block))
-                       (call emit_local_set o (call node_slot cg b))))
-                    (set! k (+ k 1))
-                    (set! b (call node_next b))))
-                (block))
             (call compile_arm_body cg (call arm_body arm) block_ty dest o)
             (call put_op o OP_ELSE)))
       (set! arm (call node_next arm)))
@@ -4249,22 +4194,8 @@
           (call put_op o OP_BR)
           (call put_u32 o (call label_depth cg Label.loop_header Label.loop_body)) (set! done true))
         (block))
-    (if (eq op_id Kw.ok) (block (call compile_result_cell cg node 0 o) (set! done true)) (block))
-    (if (eq op_id Kw.err) (block (call compile_result_cell cg node 1 o) (set! done true)) (block))
-    (if (eq op_id Kw.new) ;; new Struct
-        (block
-          (let snode:(ptr compiler.Node) (call nth_child node 1))
-          (let size:i32 (call get_struct_size cg (call node_a snode) (call node_b snode)))
-          ;; [generation 0][unused][object] (wasm.rs Expr::NewStruct)
-          (call emit_i32_const o 0)
-          (call emit_i32_const o (+ (bitand (+ size 7) -8) 8))
-          (call emit_rmw_add o)
-          (call emit_grow_to_cursor o)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call put_op o OP_I64_EXTEND_I32_U)
-          (set! done true))
-        (block))
+    (if (eq op_id Kw.ok) (block (call compile_value_result cg node 0 o) (set! done true)) (block))
+    (if (eq op_id Kw.err) (block (call compile_value_result cg node 1 o) (set! done true)) (block))
     (if (eq op_id Kw.get) ;; get ptr Struct.field: load by field type at its offset
         (block
           (let ptr_node:(ptr compiler.Node) (call nth_child node 1))
@@ -4318,42 +4249,6 @@
                             (call get_struct_size cg (call node_a snode) (call node_b snode))
                             (call ty_size (call elem_type_id cg snode) (call type_node_struct cg snode))))
           (call emit_i32_const o size) (set! done true))
-        (block))
-    (if (eq op_id Kw.arr_new) ;; arr.new type size: same sequence as wasm.rs Expr::ArrNew
-        (block
-          (let etype:Ty (call elem_type_id cg (call nth_child node 1)))
-          (let esize:i32 (call ty_size etype (call type_node_struct cg (call nth_child node 1))))
-          (let size_node:(ptr compiler.Node) (call nth_child node 2))
-          (call compile_expr cg size_node o)
-          (call emit_local_set o (get cg Cg.scratch))
-          ;; if n < 0: unreachable
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_i32_const o 0)
-          (call put_op o OP_I32_LT_S)
-          (call put_op o OP_IF)
-          (call put_byte o BLOCK_EMPTY)
-          (call put_op o OP_UNREACHABLE)
-          (call put_op o OP_END)
-          ;; claim 8 + n * sizeof(type) bytes atomically; the block starts at old
-          (call emit_i32_const o 0)
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_i32_const o esize)
-          (call put_op o OP_I32_MUL)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call emit_round8 o)
-          (call emit_rmw_add o)
-          (call emit_local_set o io_a)
-          (call emit_grow_to_cursor o)
-          ;; [generation 0][n][elements]: mem[old + 4] = n; the array is old + 8
-          (call emit_local_get o io_a)
-          (call emit_local_get o (get cg Cg.scratch))
-          (call emit_memop_offset o OP_I32_STORE 2 4)
-          (call emit_local_get o io_a)
-          (call emit_i32_const o 8)
-          (call put_op o OP_I32_ADD)
-          (call put_op o OP_I64_EXTEND_I32_U)
-          (set! done true))
         (block))
     (if (eq op_id Kw.arr_get) ;; arr.get type ptr index: load at ptr + index * sizeof(type)
         (block
@@ -4538,6 +4433,16 @@
           (call emit_memop o OP_I64_LOAD 3)
           (set! done true))
         (block))
+    ;; aipl_net_v1 gives the result itself (a handle, a count, -1 or -2)
+    (if (call is_net_kw op_id)
+        (block
+          (let k:i32 1)
+          (while (neq (call nth_child node k) (ptr.null compiler.Node))
+            (call compile_expr cg (call nth_child node k) o)
+            (set! k (+ k 1)))
+          (call emit_call o (call get_wasi_index cg (call net_wasi op_id)))
+          (set! done true))
+        (block))
     (if (eq op_id Kw.sys_random) ;; sys.random ptr len -> random_get, errno -> 0 / -1
         (block
           (call compile_expr cg (call nth_child node 1) o)
@@ -4711,6 +4616,7 @@
       ((or (eq k Kw.fs_open) (or (eq k Kw.fs_read) (or (eq k Kw.fs_write) (eq k Kw.fs_delete)))) true)
       ((or (eq k Kw.fs_opendir) (or (eq k Kw.fs_readdir) (eq k Kw.fs_stat))) true)
       ((or (eq k Kw.args_sizes) (or (eq k Kw.args_get) (or (eq k Kw.env_sizes) (eq k Kw.env_get)))) true)
+      ((call is_net_kw k) true)
       (else (eq k Kw.sys_random))))
 
   ;; Whether node writes memory itself or calls through a reference; the
@@ -4735,8 +4641,8 @@
   ;; one that may.
   (fn compute_may_free [cg:(ptr Cg)] -> void
     (let n:i32 (get cg Cg.nfns))
-    (let may:(arr bool) (arr.new bool (if (gt n 0) n 1)))
-    (let callees:(arr (ptr (vec.Vec i32))) (arr.new (ptr (vec.Vec i32)) (if (gt n 0) n 1)))
+    (let may:(arr bool) (arr.new bool (call alloc.forever) (if (gt n 0) n 1)))
+    (let callees:(arr (ptr (vec.Vec i32))) (arr.new (ptr (vec.Vec i32)) (call alloc.forever) (if (gt n 0) n 1)))
     (loop i 0 (- n 1) 1
       (let calls:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 8))
       (arr.set bool may i (call scan_effects cg (get (call func_entry_ptr cg i) FnInfo.node) calls))
@@ -5030,7 +4936,7 @@
     (call append_to_blob cg data len))
 
   (fn add_item [cg:(ptr Cg) m:(ptr Msg) kind:ItemKind b:(ptr buf.Buf) local:i32] -> void
-    (let it:(ptr Item) (new Item))
+    (let it:(ptr Item) (new Item (call alloc.forever)))
     (put it Item.kind kind)
     (put it Item.local local)
     (if (eq kind ItemKind.text)
@@ -5123,11 +5029,11 @@
     (let at:i32 (get e compiler.Node.pos))
     (call printer.print_expr t (call parser.parse_expr_text (+ src at) (call expr_text_len cg at)))
     (call buf.push_str t ")")
-    (let m:(ptr Msg) (new Msg))
+    (let m:(ptr Msg) (new Msg (call alloc.forever)))
     (put m Msg.addr (call intern_raw cg (get t buf.Buf.data) (call buf.len t)))
     (put m Msg.len (call buf.len t))
     (let np:i32 (get entry FnInfo.nparams))
-    (put m Msg.items (arr.new (ptr Item) (+ (* 3 (+ np 1)) 1)))
+    (put m Msg.items (arr.new (ptr Item) (call alloc.forever) (+ (* 3 (+ np 1)) 1)))
     (put m Msg.n 0)
     (let pchild:(ptr compiler.Node) (call first_child (call nth_child (get entry FnInfo.node) 2)))
     (let k:i32 0)
@@ -5266,13 +5172,13 @@
   ;; A signature from a pattern of parameter types, i for i32 and l for i64,
   ;; and a result value type (0 for none).
   (fn sig_from [params:str result:i32] -> (ptr Sig)
-    (unsafe (let s:(ptr Sig) (new Sig))
+    (unsafe (let s:(ptr Sig) (new Sig (call alloc.forever)))
     (let n:i32 (str.len params))
-    (put s Sig.params (arr.new i32 (if (eq n 0) 1 n)))
+    (put s Sig.params (arr.new i32 (call alloc.forever) (if (eq n 0) 1 n)))
     (loop i 0 (- n 1) 1
       (arr.set i32 (get s Sig.params) i (if (eq (mem.load8 (+ (str.ptr params) i)) 108) 126 127)))
     (put s Sig.nparams n)
-    (put s Sig.results (arr.new i32 1))
+    (put s Sig.results (arr.new i32 (call alloc.forever) 1))
     (arr.set i32 (get s Sig.results) 0 result)
     (put s Sig.nresults (if (eq result 0) 0 1))
     s))
@@ -5289,6 +5195,8 @@
       ((eq w Wasi.thread_spawn) (call sig_from "i" 127))
       ((eq w Wasi.fd_readdir) (call sig_from "iiili" 127))
       ((eq w Wasi.path_filestat_get) (call sig_from "iiiii" 127))
+      ((or (eq w Wasi.net_listen) (or (eq w Wasi.net_recv) (eq w Wasi.net_send))) (call sig_from "iii" 127))
+      ((or (eq w Wasi.net_accept) (eq w Wasi.net_close)) (call sig_from "i" 127))
       ;; random_get, args_sizes_get, args_get, environ_sizes_get, environ_get
       (else (call sig_from "ii" 127))))
 
@@ -5351,28 +5259,31 @@
 
   ;; One file's text, named (name_ptr, name_len) in the line table.
   (fn compile_named [src_ptr:i32 src_len:i32 name_ptr:i32 name_len:i32] -> i32
-    (unsafe (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len)))))
+    (unsafe (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len)) MAX_PAGES)))
 
   ;; The flat program the resolver (orig) and the generics pass (gen)
   ;; printed: the line table names the files they read.
-  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32 (pub)
-    (call compile_at src_ptr src_len (call places.mapped gen orig)))
+  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) max_pages:i32] -> i32 (pub)
+    (call compile_at src_ptr src_len (call places.mapped gen orig) max_pages))
 
   ;; The same for a program whose formatting forms were lowered (low maps
   ;; the lowered text back to the program the generics pass printed).
-  (fn compile_lowered [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins)] -> i32 (pub)
-    (call compile_at src_ptr src_len (call places.lowered gen orig low)))
+  (fn compile_lowered [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins) max_pages:i32] -> i32 (pub)
+    (call compile_at src_ptr src_len (call places.lowered gen orig low) max_pages))
 
-  (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
+  ;; max_pages: memory's declared maximum (wasm.rs compile_limited; at most
+  ;; MAX_PAGES, which --max-memory may only lower).
+  (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places) max_pages:i32] -> i32
     (unsafe (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
     (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
     (if (not (call consts.expand (call str.bytes src_ptr src_len) plain (call buf.make (call alloc.default) 64) (get where places.Places.consts)))
         (block (call set_compile_error CgErr.unknown_enum_member) (return -1))
         (block))
-    (set! src_ptr (get (call buf.bytes plain) str.Bytes.addr))
+    (set! src_ptr (call str.addr (call buf.bytes plain)))
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (put cg Cg.places where)
+    (put cg Cg.max_pages (if (lt max_pages MAX_PAGES) max_pages MAX_PAGES))
     (set! src_len (call buf.len plain))
     (put cg Cg.src_len src_len)
     ;; Buffers are sized from the input: a token is at least one source byte
@@ -5466,7 +5377,7 @@
             (let wv:Wasi (enum.cast Wasi w))
             (if (neq (call get_wasi_index cg wv) -1)
                 (block
-                  (call emit_name sec (if (eq wv Wasi.thread_spawn) "wasi" "wasi_snapshot_preview1"))
+                  (call emit_name sec (call wasi_module wv))
                   (call emit_name sec (call wasi_name wv))
                   (call put_byte sec 0)   ;; a function, of type
                   (call put_u32 sec type_idx)
@@ -5479,7 +5390,7 @@
                 (call emit_name sec "memory")
                 (call put_byte sec 2) (call put_byte sec 3)
                 (call put_u32 sec 16)
-                (call put_u32 sec MAX_PAGES))
+                (call put_u32 sec (get cg Cg.max_pages)))
               (block))
           (call emit_section o 2 sec))
         (block))
@@ -5525,7 +5436,7 @@
           (call put_byte sec 1)     ;; one memory
           (call put_byte sec 1)     ;; with a max
           (call put_u32 sec 16)
-          (call put_u32 sec MAX_PAGES)
+          (call put_u32 sec (get cg Cg.max_pages))
           (call emit_section o 5 sec)))
 
     ;; Export (7): every function by name, the memory, wasi_thread_start, _start
@@ -5597,7 +5508,7 @@
       (call emit_function cg (call func_entry_ptr cg f) fc)
       (if (not quiet)
           (block
-            (let fl:(ptr FnLines) (new FnLines))
+            (let fl:(ptr FnLines) (new FnLines (call alloc.forever)))
             (put fl FnLines.index (+ imports f))
             (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
             (if (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl) (block)))
@@ -5615,12 +5526,58 @@
         (block))
     (if auto_start
         (block
-          ;; no locals; call main; drop a non-void result; end
+          ;; call main; its value is the exit status (wasm.rs auto_start): an
+          ;; i32 is proc_exit'ed unless it is 0; a (result i32 str)'s ok
+          ;; likewise, and its err written to fd 2 with a newline, then
+          ;; proc_exit(1); anything else dropped; end
           (let fc:(ptr Out) (call out_at fcode_scratch))
-          (call put_byte fc 0)
-          (call emit_call fc (+ imports main_idx))
           (let main_fn:(ptr FnInfo) (call func_entry_ptr cg main_idx))
-          (loop k 1 (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1 (call put_op fc OP_DROP))
+          (let kind:i32 (call start_kind cg root))
+          (cond ((eq kind 2) (call put_u32 fc 1) (call put_u32 fc 2) (call put_byte fc 127))
+                ((eq kind 1) (call put_u32 fc 1) (call put_u32 fc 1) (call put_byte fc 127))
+                (else (call put_byte fc 0)))
+          (call emit_call fc (+ imports main_idx))
+          (when (eq kind 2)
+            ;; [tag, slot]: tag 0 is ok, its slot the status; else the slot
+            ;; is err's str, written to fd 2 as sys.print writes
+            (call emit_local_set fc 1)
+            (call put_op fc OP_IF)
+            (call put_byte fc BLOCK_EMPTY)
+            (call emit_rt cg fc 64)
+            (call emit_local_get fc 1)
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 68)
+            (call emit_local_get fc 1)
+            (call emit_i32_const fc 4)
+            (call put_op fc OP_I32_SUB)
+            (call emit_memop fc OP_I32_LOAD 2)
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 72)
+            (call emit_i32_const fc (get cg Cg.newline))
+            (call emit_memop fc OP_I32_STORE 2)
+            (call emit_rt cg fc 76)
+            (call emit_i32_const fc 1)
+            (call emit_memop fc OP_I32_STORE 2)
+            (for k 0 2
+              (call emit_i32_const fc 2)
+              (call emit_rt cg fc (if (eq k 0) 64 72))
+              (call emit_i32_const fc 1)
+              (call emit_rt cg fc 80)
+              (call emit_call fc (call get_wasi_index cg Wasi.fd_write))
+              (call put_op fc OP_DROP))
+            (call emit_i32_const fc 1)
+            (call emit_call fc (call get_wasi_index cg Wasi.proc_exit))
+            (call put_op fc OP_END)
+            (call emit_local_get fc 1))
+          (if (gt kind 0)
+              (block
+                (call emit_local_tee fc 0)
+                (call put_op fc OP_IF)
+                (call put_byte fc BLOCK_EMPTY)
+                (call emit_local_get fc 0)
+                (call emit_call fc (call get_wasi_index cg Wasi.proc_exit))
+                (call put_op fc OP_END))
+              (loop k 1 (call width (get main_fn FnInfo.ret) (get main_fn FnInfo.ret_vs)) 1 (call put_op fc OP_DROP)))
           (call put_op fc OP_END)
           (call emit_sized sec fc))
         (block))

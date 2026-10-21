@@ -1,30 +1,35 @@
 ;; std/buf: a growable byte buffer for building text (a string builder).
-;; (call buf.bytes b) views the contents as a (ptr str.Bytes) without copying;
-;; later pushes may move the data (and free the old storage), so take the
-;; view after building. Its memory comes from the allocator it is made with
-;; (std/alloc); free releases it.
+;; (call buf.bytes b) views the contents as a str.Bytes without copying.
+;; The view is checked: a push that moves the data frees the old storage,
+;; and free frees it all, after which reading an older view stops the
+;; program ("Use after free"), so take the view after building. Its memory
+;; comes from the allocator it is made with (std/alloc); free releases it.
 (module buf
   (import str)
   (import fmt)
   (import alloc)
 
-  ;; A growable byte buffer; `data` is where its bytes start (they move
-  ;; as it grows).
-  (struct Buf [(read data:i32) len:i32 cap:i32 allocator:alloc.Allocator] (pub))
+  ;; A growable byte buffer: its bytes are the first len of store (cap
+  ;; long, from allocator), and data is store's address, for mem.* in
+  ;; unsafe code (it moves as the buffer grows).
+  (struct Buf [(read data:i32) (read store:(arr u8)) len:i32 cap:i32 allocator:alloc.Allocator] (pub))
 
   ;; An empty buffer with room for `capacity` bytes (at least 16), from a.
   (fn make [a:alloc.Allocator capacity:i32] -> (ptr Buf) (pub)
     (let cap:i32 (if (lt capacity 16) 16 capacity))
-    (let b:(ptr Buf) (call (alloc.create Buf) a))
-    (put b Buf.data (call alloc.raw a cap))
+    (let b:(ptr Buf) (new Buf a))
+    (let store:(arr u8) (arr.new u8 a cap))
+    (put b Buf.store store)
+    (put b Buf.data (arr.addr store))
     (put b Buf.len 0)
     (put b Buf.cap cap)
     (put b Buf.allocator a)
     b)
 
-  ;; Frees the storage and the buffer itself (and so any view of them).
+  ;; Frees the storage and the buffer itself; any view of them then stops
+  ;; the program when read.
   (fn free [b:(ptr Buf)] -> void (pub)
-    (unsafe (call alloc.free_raw (get b Buf.allocator) (get b Buf.data) (get b Buf.cap)))
+    (call (alloc.free_array u8) (get b Buf.allocator) (get b Buf.store))
     (call (alloc.destroy Buf) (get b Buf.allocator) b))
 
   ;; The number of bytes in b.
@@ -32,7 +37,7 @@
   ;; Byte i of b (0 <= i < len), without making a view.
   (fn byte_at [b:(ptr Buf) i:i32] -> i32 (pub)
     (req (and (gte i 0) (lt i (get b Buf.len))))
-    (unsafe (mem.load8 (+ (get b Buf.data) i))))
+    (arr.get u8 (get b Buf.store) i))
   ;; Empties b, keeping its storage.
   (fn clear [b:(ptr Buf)] -> void (pub) (put b Buf.len 0))
   ;; Keeps only the first n bytes (0 <= n <= len), keeping the storage.
@@ -40,18 +45,35 @@
     (req (and (gte n 0) (lte n (get b Buf.len))))
     (put b Buf.len n))
 
-  ;; Makes room for `extra` more bytes, doubling the storage as needed.
+  ;; Makes room for `extra` more bytes, doubling the storage as needed;
+  ;; the old storage is freed, so views of it stop the program when read.
   (fn ensure [b:(ptr Buf) extra:i32] -> void
-    (unsafe (let need:i32 (+ (get b Buf.len) extra))
+    (let need:i32 (+ (get b Buf.len) extra))
     (if (lte need (get b Buf.cap)) (return) (block))
     (let cap:i32 (* 2 (get b Buf.cap)))
     (while (lt cap need) (set! cap (* cap 2)))
-    (let data:i32 (call alloc.raw (get b Buf.allocator) cap))
-    (loop i 0 (- (get b Buf.len) 1) 1
-      (mem.store8 (+ data i) (mem.load8 (+ (get b Buf.data) i))))
-    (call alloc.free_raw (get b Buf.allocator) (get b Buf.data) (get b Buf.cap))
-    (put b Buf.data data)
-    (put b Buf.cap cap)))
+    (let old:(arr u8) (get b Buf.store))
+    (let store:(arr u8) (arr.new u8 (get b Buf.allocator) cap))
+    (loop i 0 (- (get b Buf.len) 1) 1 (arr.set u8 store i (arr.get u8 old i)))
+    (call (alloc.free_array u8) (get b Buf.allocator) old)
+    (put b Buf.store store)
+    (put b Buf.data (arr.addr store))
+    (put b Buf.cap cap))
+
+  ;; For a writer outside AIPL, such as a system call: makes room for n
+  ;; more bytes and gives the address they go to; `grew` then counts the
+  ;; ones written. Unsafe to call: the address is good only until the
+  ;; buffer next grows, and nothing checks what is written there.
+  (fn room [b:(ptr Buf) n:i32] -> i32 (pub) (unsafe)
+    (req (gte n 0))
+    (call ensure b n)
+    (+ (get b Buf.data) (get b Buf.len)))
+
+  ;; Counts n bytes written at the address `room` gave (n at most what it
+  ;; made room for).
+  (fn grew [b:(ptr Buf) n:i32] -> void (pub) (unsafe)
+    (req (and (gte n 0) (lte (+ (get b Buf.len) n) (get b Buf.cap))))
+    (put b Buf.len (+ (get b Buf.len) n)))
 
   ;; Appends the byte c (its low 8 bits).
   (fn push_byte [b:(ptr Buf) c:i32] -> void (pub)
@@ -60,7 +82,7 @@
     (put b Buf.len (+ (get b Buf.len) 1))))
 
   ;; Appends the bytes of s.
-  (fn push_bytes [b:(ptr Buf) s:(ptr str.Bytes)] -> void (pub)
+  (fn push_bytes [b:(ptr Buf) s:str.Bytes] -> void (pub)
     (unsafe (let n:i32 (get s str.Bytes.len))
     (call ensure b n)
     (let at:i32 (+ (get b Buf.data) (get b Buf.len)))
@@ -136,9 +158,11 @@
     (let k:i32 (call fmt.f64_fixed x digits (+ (get b Buf.data) (get b Buf.len))))
     (put b Buf.len (+ (get b Buf.len) k))))
 
-  ;; The contents as a view (no copy): good until the next push or free.
-  (fn bytes [b:(ptr Buf)] -> (ptr str.Bytes) (pub)
-    (unsafe (call str.bytes (get b Buf.data) (get b Buf.len))))
+  ;; The contents as a checked view (no copy, nothing allocated): good
+  ;; until the next push that moves the data, or free; reading it after
+  ;; either stops the program.
+  (fn bytes [b:(ptr Buf)] -> str.Bytes (pub)
+    (call str.of_array (get b Buf.store) 0 (get b Buf.len)))
 
   ;; The contents as a new str: a copy, so later pushes and free leave it
   ;; alone. Never freed (str.from_bytes); the contents must be UTF-8.

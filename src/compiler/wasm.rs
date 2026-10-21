@@ -9,6 +9,13 @@ pub struct WasmCompiler;
 
 impl WasmCompiler {
     pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
+        Self::compile_limited(module, crate::vm::MAX_PAGES as u32)
+    }
+
+    /// compile, with memory's maximum lowered to `max_pages`
+    /// (`--max-memory`; at most vm::MAX_PAGES): the module declares it, so
+    /// every host stops at the same place.
+    pub fn compile_limited(module: &Module, max_pages: u32) -> Result<Vec<u8>, String> {
         let mut wasm_module = WasmModule::new();
         let mut types = TypeSection::new();
         let mut functions = FunctionSection::new();
@@ -67,7 +74,7 @@ impl WasmCompiler {
         let mut fn_types: HashMap<String, Type> = HashMap::new();
         for f in &module.functions {
             let params = f.params.iter().map(|(_, t)| t.clone()).collect();
-            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone())));
+            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone()), false));
         }
         let mut uses_refs = false;
         let mut ref_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = Vec::new();
@@ -108,11 +115,13 @@ impl WasmCompiler {
         }
         let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
         // A module with a zero-argument `main` and no `_start` of its own gets
-        // a WASI command entry point: `_start` calls `main` and discards its
-        // result (exit status 0 unless the program calls sys.exit). It comes
-        // after every other function, with its own [] -> [] type.
-        let main_fn = module.functions.iter().position(|f| f.name == "main" && f.params.is_empty());
-        let auto_start = main_fn.is_some() && !module.functions.iter().any(|f| f.name == "_start");
+        // a WASI command entry point: `_start` calls `main`, whose value is the
+        // exit status (AIPL_SPEC.md 6.5): an i32 is proc_exit'ed unless it is
+        // 0; a (result i32 str)'s ok likewise, and its err's message is
+        // written to fd 2 with a newline, then proc_exit(1). It comes after
+        // every other function, with its own [] -> [] type.
+        let main_fn = start_entry(module);
+        let auto_start = main_fn.is_some();
         let start_fn = import_count + n_user + if threaded { 2 } else { 0 };
         if auto_start {
             let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 };
@@ -265,7 +274,7 @@ impl WasmCompiler {
             // The last statement's value (if any) is the function's implicit
             // return, so it's kept - unless the function is declared void, in
             // which case it must be dropped too.
-            let checks = contract_messages(f, &structs);
+            let checks = contract_messages(f);
             for (is_ens, expr, msg) in &checks {
                 if !is_ens {
                     emit_contract_check(expr, msg, &ctx, &mut func, &strings)?;
@@ -321,7 +330,7 @@ impl WasmCompiler {
         // thread's instance uses the same memory.
         let memory_type = wasm_encoder::MemoryType {
             minimum: 16,
-            maximum: Some(crate::vm::MAX_PAGES as u64),
+            maximum: Some(max_pages.min(crate::vm::MAX_PAGES as u32) as u64),
             memory64: false,
             shared: threaded,
             page_size_log2: None,
@@ -361,10 +370,67 @@ impl WasmCompiler {
             }
         }
         if let (true, Some(m)) = (auto_start, main_fn) {
-            let mut f = Body::new(vec![]);
+            let ret = &module.functions[m].return_type;
+            let status = *ret == Type::I32;
+            let result = is_result_main(ret);
+            let mut f = Body::new(if result { vec![(2, ValType::I32)] } else if status { vec![(1, ValType::I32)] } else { vec![] });
             f.instruction(&Instruction::Call(import_count + m as u32));
-            for _ in 0..width(&module.functions[m].return_type, &structs) {
-                f.instruction(&Instruction::Drop);
+            if status || result {
+                let proc_exit = wasi_indices[&Wasi::ProcExit];
+                if result {
+                    // [tag, slot]: tag 0 is ok, its slot the status; else the
+                    // slot is err's str, written to fd 2 as sys.print writes
+                    let fd_write = wasi_indices[&Wasi::FdWrite];
+                    let rt = |f: &mut Body, cell: i32| {
+                        if threaded {
+                            f.instruction(&Instruction::GlobalGet(0));
+                            if cell != RT_IOV0_BUF {
+                                f.instruction(&Instruction::I32Const(cell - RT_IOV0_BUF));
+                                f.instruction(&Instruction::I32Add);
+                            }
+                        } else {
+                            f.instruction(&Instruction::I32Const(cell));
+                        }
+                    };
+                    f.instruction(&Instruction::LocalSet(1));
+                    f.instruction(&Instruction::If(BlockType::Empty));
+                    rt(&mut f, RT_IOV0_BUF);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV0_LEN);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Const(4));
+                    f.instruction(&Instruction::I32Sub);
+                    f.instruction(&Instruction::I32Load(M4));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_BUF);
+                    f.instruction(&Instruction::I32Const(newline_addr as i32));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_LEN);
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    for iov in [RT_IOV0_BUF, RT_IOV1_BUF] {
+                        f.instruction(&Instruction::I32Const(2));
+                        rt(&mut f, iov);
+                        f.instruction(&Instruction::I32Const(1));
+                        rt(&mut f, RT_NBYTES);
+                        f.instruction(&Instruction::Call(fd_write));
+                        f.instruction(&Instruction::Drop);
+                    }
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::Call(proc_exit));
+                    f.instruction(&Instruction::End);
+                    f.instruction(&Instruction::LocalGet(1));
+                }
+                f.instruction(&Instruction::LocalTee(0));
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(0));
+                f.instruction(&Instruction::Call(proc_exit));
+                f.instruction(&Instruction::End);
+            } else {
+                for _ in 0..width(&module.functions[m].return_type, &structs) {
+                    f.instruction(&Instruction::Drop);
+                }
             }
             f.instruction(&Instruction::End);
             codes.function(&f.f);
@@ -703,7 +769,7 @@ fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, Strin
 /// The wasm params/results of a `(fn [...] -> r)` type.
 fn wasm_signature(sig: &Type, structs: &crate::checker::Structs) -> (Vec<ValType>, Vec<ValType>) {
     match sig {
-        Type::Fn(params, ret) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
+        Type::Fn(params, ret, _) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
         _ => (vec![], vec![]),
     }
 }
@@ -797,7 +863,7 @@ fn emit_set_slots(func: &mut Body, base: u32, n: u32) {
 fn emit_load_scalars(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32) -> Result<(), String> {
     for (t, o) in flat(ty, ctx.structs) {
         func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&load_instruction(&in_cell(&t), (offset + o) as u64)?);
+        func.instruction(&load_instruction(&t, (offset + o) as u64)?);
         if t == Type::Bool {
             normalize_bool(func);
         }
@@ -817,7 +883,7 @@ fn emit_store_value(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, val: &Ex
     for (k, (t, o)) in flat(ty, ctx.structs).iter().enumerate() {
         func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
         func.instruction(&Instruction::LocalGet(g + k as u32));
-        func.instruction(&store_instruction(&in_cell(t), (offset + o) as u64)?);
+        func.instruction(&store_instruction(t, (offset + o) as u64)?);
     }
     Ok(())
 }
@@ -1091,7 +1157,7 @@ fn stored_values<'e>(e: &'e Expr, ty: &dyn Fn(&Expr) -> Type, structs: &crate::c
 /// An expression's direct subexpressions, in source (evaluation) order.
 fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
     match e {
-        Expr::Lit(..) | Expr::Var(..) | Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Lit(..) | Expr::Var(..) | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
         Expr::Break(_) | Expr::Continue(_) => {}
         Expr::Let { val, .. } | Expr::Set { val, .. } => out.push(val),
         Expr::If { cond, then_branch, else_branch, .. } => out.extend([cond.as_ref(), then_branch, else_branch]),
@@ -1112,7 +1178,7 @@ fn children<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         }
         Expr::Block(b, _) | Expr::Unsafe(b, _) => out.extend(b.iter()),
         Expr::Cast { addr, gen: Some(g), .. } => out.extend([addr.as_ref(), g]),
-        Expr::GetField { ptr, .. } | Expr::ArrNew { size: ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
+        Expr::GetField { ptr, .. } | Expr::ArrLen { arr: ptr, .. } | Expr::Cast { addr: ptr, .. } | Expr::Addr { val: ptr, .. } => out.push(ptr),
         Expr::PutField { ptr, val, .. } => out.extend([ptr.as_ref(), val]),
         Expr::ArrGet { ptr, index, .. } => out.extend([ptr.as_ref(), index]),
         Expr::ArrSet { ptr, index, val, .. } => out.extend([ptr.as_ref(), index, val]),
@@ -1182,7 +1248,6 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             let body = if crate::checker::body_diverges(ok_body) { err_body } else { ok_body };
             body.last().map_or(Type::Void, |e| expr_type(e, ctx))
         }
-        Expr::NewStruct { struct_name, .. } => Type::Ptr(Box::new(Type::Struct(struct_name.clone()))),
         Expr::Make { union_name, .. } => Type::Union(union_name.clone()),
         Expr::Record { struct_name, .. } | Expr::With { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::Match { arms, else_body, .. } => match_type_body(arms, else_body).last().map_or(Type::Void, |e| expr_type(e, ctx)),
@@ -1196,13 +1261,12 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         }
         Expr::PutField { .. } => Type::Void,
         Expr::Sizeof { .. } => Type::I32,
-        Expr::ArrNew { elem_ty, .. } => Type::Array(Box::new(elem_ty.clone())),
         Expr::ArrLen { .. } | Expr::Addr { .. } => Type::I32,
         Expr::Null { ty, .. } | Expr::Cast { ty, .. } => ty.clone(),
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => Type::Void,
         Expr::CallRef { sig, .. } => match sig {
-            Type::Fn(_, ret) => (**ret).clone(),
+            Type::Fn(_, ret, _) => (**ret).clone(),
             _ => Type::I32,
         },
         Expr::ArrGet { elem_ty, .. } => crate::checker::value_of(elem_ty),
@@ -1284,6 +1348,11 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
+            | OpCode::NetListen
+            | OpCode::NetAccept
+            | OpCode::NetRecv
+            | OpCode::NetSend
+            | OpCode::NetClose
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -1355,8 +1424,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Ne,
         // pointers and arrays: address and generation (a cast of 0 is null)
         (OpCode::Eq, Type::Ptr(_) | Type::Array(_)) => I64Eq,
         (OpCode::Neq, Type::Ptr(_) | Type::Array(_)) => I64Ne,
@@ -1524,7 +1593,6 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             | Expr::Err(e, _, _)
             | Expr::Return { val: Some(e), .. }
             | Expr::GetField { ptr: e, .. }
-            | Expr::ArrNew { size: e, .. }
             | Expr::ArrLen { arr: e, .. }
             | Expr::Cast { addr: e, gen: None, .. }
             | Expr::Addr { val: e, .. } => collect_lets(std::slice::from_ref(e.as_ref()), lets, unions),
@@ -1588,7 +1656,6 @@ fn collect_lets(exprs: &[Expr], lets: &mut Vec<(String, Type)>, unions: &HashMap
             }
             Expr::Lit(..)
             | Expr::Var(..)
-            | Expr::NewStruct { .. }
             | Expr::Sizeof { .. }
             | Expr::Null { .. }
             | Expr::Ref { .. }
@@ -1609,7 +1676,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         // the high half (docs/design/GENERATIONS_PLAN.md).
         Type::Ptr(_) | Type::Array(_) => ValType::I64,
         // Results, unions, and function refs are i32 addresses/indices.
-        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
+        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => ValType::I32,
     }
 }
 
@@ -2045,6 +2112,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, ctx, None);
             }
+            OpCode::NetListen | OpCode::NetAccept | OpCode::NetRecv | OpCode::NetSend | OpCode::NetClose => {
+                // aipl_net_v1 returns the result itself (a handle, a count, or
+                // -1/-2), so the call is the whole operation
+                let host = wasi_index(ctx, Wasi::for_op(op).expect("a net op has an import"))?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::Call(host));
+            }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
                 compile_expr(&args[0], ctx, func)?;
@@ -2321,9 +2397,8 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
             func.instruction(&Instruction::End);
             func.instruction(&Instruction::End);
         }
-        Expr::Ok(inner, ..) | Expr::Err(inner, ..) if is_value_type(&expr_type(expr, ctx), ctx.structs) => compile_value_result(expr, inner, ctx, func)?,
-        Expr::Ok(inner, ..) => compile_result_cell(0, inner, ctx, func)?,
-        Expr::Err(inner, ..) => compile_result_cell(1, inner, ctx, func)?,
+        // a result is held by value (AIPL_SPEC.md 4.F)
+        Expr::Ok(inner, ..) | Expr::Err(inner, ..) => compile_value_result(expr, inner, ctx, func)?,
         Expr::MatchResult { .. } => {
             let t = expr_type(expr, ctx);
             if is_value_type(&t, ctx.structs) {
@@ -2334,8 +2409,8 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_match_result(expr, None, ctx, func)?;
             }
         }
-        Expr::Make { union_name, variant, args, .. } if ctx.structs.is_value_union(union_name) => compile_value_make(expr, union_name, variant, args, ctx, func)?,
-        Expr::Make { union_name, variant, args, .. } => compile_make(union_name, variant, args, ctx, func)?,
+        // a union is a value (AIPL_SPEC.md 4.J)
+        Expr::Make { union_name, variant, args, .. } => compile_value_make(expr, union_name, variant, args, ctx, func)?,
         // a value struct: its fields' scalars, in order
         Expr::Record { args, .. } => {
             for a in args {
@@ -2362,22 +2437,6 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 compile_match(value, arms, else_body, None, ctx, func)?;
             }
         }
-        Expr::NewStruct { struct_name, .. } => {
-            let def = ctx
-                .structs
-                .get(struct_name)
-                .ok_or_else(|| format!("Wasm Codegen: Unknown struct '{}'", struct_name))?;
-            let size = crate::checker::get_struct_size(def, ctx.structs)?;
-            // [generation 0][unused][object]: a bump allocation is never
-            // freed, so its generation word stays 0 (fresh memory)
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32Const(round8(size as i32) + 8));
-            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-            emit_grow_to_cursor(func);
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I64ExtendI32U);
-        }
         Expr::GetField {
             struct_name,
             field_name,
@@ -2400,7 +2459,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2464,7 +2523,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2508,39 +2567,6 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 other => crate::checker::type_size_and_align(other, ctx.structs)?.0,
             };
             func.instruction(&Instruction::I32Const(size as i32));
-        }
-        Expr::ArrNew { elem_ty, size, .. } => {
-            // Same order as the VM: evaluate n, trap if n < 0, then allocate
-            // [n:i32][n elements] and return the address just past the header.
-            let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, ctx.structs)?;
-            compile_expr(size, ctx, func)?;
-            func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::I32LtS);
-            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
-            func.instruction(&Instruction::Unreachable);
-            func.instruction(&Instruction::End);
-            // claim 8 + n * elem_size bytes atomically; the block starts at `old`
-            let (block, _) = io_locals(ctx)?;
-            func.instruction(&Instruction::I32Const(0));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Const(elem_size as i32));
-            func.instruction(&Instruction::I32Mul);
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            emit_round8(func);
-            func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-            func.instruction(&Instruction::LocalSet(block));
-            emit_grow_to_cursor(func);
-            // [generation 0][n][elements]: mem[old + 4] = n; the array is old + 8
-            func.instruction(&Instruction::LocalGet(block));
-            func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-            func.instruction(&Instruction::I32Store(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
-            func.instruction(&Instruction::LocalGet(block));
-            func.instruction(&Instruction::I32Const(8));
-            func.instruction(&Instruction::I32Add);
-            func.instruction(&Instruction::I64ExtendI32U);
         }
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -2647,7 +2673,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -2700,7 +2726,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 | Type::Ptr(_) | Type::Array(_) => {
@@ -2769,35 +2795,6 @@ fn emit_grow_to_cursor(func: &mut Body) {
     func.instruction(&End);
 }
 
-/// `ok`/`err`: allocate a cell `[tag:i32 payload]` (tag 0 = ok, 1 = err;
-/// checker::result_cell_layout: the payload at 4 in 8 bytes, or a 64-bit one
-/// (i64, f64, a pointer, an array) at 8 in 16) from the heap cursor before evaluating the payload, and leave
-/// the cell pointer on the stack. The pointer is pushed twice before the
-/// payload is compiled, so a payload that itself uses the scratch local
-/// cannot clobber it. The VM allocates the same cell in the same order.
-fn compile_result_cell(tag: i32, inner: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
-    let payload_ty = expr_type(inner, ctx);
-    let (offset, size) = crate::checker::result_cell_layout(&payload_ty, ctx.structs);
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(size));
-    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-    emit_grow_to_cursor(func);
-
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    func.instruction(&Instruction::I32Const(tag));
-    func.instruction(&Instruction::I32Store(M4));
-
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    if is_value_type(&payload_ty, ctx.structs) {
-        return emit_store_value(func, ctx, &payload_ty, offset, inner);
-    }
-    compile_expr(inner, ctx, func)?;
-    func.instruction(&store_instruction(&in_cell(&payload_ty), offset as u64)?);
-    Ok(())
-}
-
 /// The ok and err payload types of a result-typed expression (i32 for
 /// anything else, which the checker has ruled out).
 fn result_sides(ty: Type) -> (Type, Type) {
@@ -2805,12 +2802,6 @@ fn result_sides(ty: Type) -> (Type, Type) {
         Type::ResultType(a, b) => (*a, *b),
         _ => (Type::I32, Type::I32),
     }
-}
-
-/// How a payload of type `ty` sits in a result cell: a result payload is
-/// the address of its own cell.
-fn in_cell(ty: &Type) -> Type {
-    if matches!(ty, Type::ResultType(..)) { Type::I32 } else { ty.clone() }
 }
 
 /// Gives each match_result binder its payload's type, which collect_lets
@@ -2897,8 +2888,8 @@ fn store_instruction(ty: &Type, offset: u64) -> Result<Instruction<'static>, Str
     })
 }
 
-/// `(match_result r (ok v ...) (err e ...))`: the cell's tag picks the arm;
-/// its binder is loaded from the cell. With `dest`, a value struct result
+/// `(match_result r (ok v ...) (err e ...))`: the result's tag picks the
+/// arm; its binder is its side's slots. With `dest`, a value struct result
 /// goes into the locals from there (compile_into) and the if yields nothing.
 fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } = this else {
@@ -2906,43 +2897,26 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
     };
     let rt = expr_type(expr, ctx);
     let (ok_ty, err_ty) = result_sides(rt.clone());
-    // a result by value: its tag and binders from its slots (a variable's
-    // own locals, else its spill group)
-    let by_value = ctx.structs.sum_of(&rt);
-    let mut base = 0;
-    if by_value.is_some() {
-        base = match expr.as_ref() {
-            Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
-            _ => {
-                let g = *ctx.groups.get(&(2 * (expr.as_ref() as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match_result has no spill group")?;
-                compile_expr(expr, ctx, func)?;
-                emit_set_slots(func, g, width(&rt, ctx.structs));
-                g
-            }
-        };
-        func.instruction(&Instruction::LocalGet(base));
-    } else {
-        compile_expr(expr, ctx, func)?;
-        func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
-            offset: 0,
-            align: 2,
-            memory_index: 0,
-        }));
-    }
+    // a result is held by value: its tag and binders from its slots (a
+    // variable's own locals, else its spill group)
+    let l = ctx.structs.sum_of(&rt).ok_or("Wasm Codegen: a result wider than its checker allows")?;
+    let base = match expr.as_ref() {
+        Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
+        _ => {
+            let g = *ctx.groups.get(&(2 * (expr.as_ref() as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match_result has no spill group")?;
+            compile_expr(expr, ctx, func)?;
+            emit_set_slots(func, g, width(&rt, ctx.structs));
+            g
+        }
+    };
+    func.instruction(&Instruction::LocalGet(base));
     func.instruction(&Instruction::I32Eqz);
     let load_binder = |func: &mut Body, side: usize, ty: &Type, idx: u32| -> Result<(), String> {
-        match &by_value {
-            Some(l) => {
-                for slot in &l.variants[side] {
-                    func.instruction(&Instruction::LocalGet(base + slot));
-                }
-                emit_set_slots(func, idx, width(ty, ctx.structs));
-                Ok(())
-            }
-            None => emit_load_binder(func, ctx, ty, crate::checker::result_cell_layout(ty, ctx.structs).0, idx),
+        for slot in &l.variants[side] {
+            func.instruction(&Instruction::LocalGet(base + slot));
         }
+        emit_set_slots(func, idx, width(ty, ctx.structs));
+        Ok(())
     };
 
     // the arm that does not always leave gives the block's type
@@ -2971,20 +2945,6 @@ fn compile_match_result(this: &Expr, dest: Option<u32>, ctx: &Ctx, func: &mut Bo
 
     ctx.labels.borrow_mut().pop();
     func.instruction(&Instruction::End);
-    Ok(())
-}
-
-/// A binder of type `ty` loaded from the cell in addr_scratch, `offset`
-/// bytes on, into its local (or locals, for a value struct).
-fn emit_load_binder(func: &mut Body, ctx: &Ctx, ty: &Type, offset: u32, idx: u32) -> Result<(), String> {
-    if is_value_type(ty, ctx.structs) {
-        emit_load_scalars(func, ctx, ty, offset)?;
-        emit_set_slots(func, idx, width(ty, ctx.structs));
-    } else {
-        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        func.instruction(&load_instruction(&in_cell(ty), offset as u64)?);
-        func.instruction(&Instruction::LocalSet(idx));
-    }
     Ok(())
 }
 
@@ -3017,33 +2977,7 @@ fn compile_arm(body: &[Expr], block_ty: BlockType, dest: Option<u32>, ctx: &Ctx,
 /// field. The address is pushed n+2 times at once (the result, the tag store,
 /// one per field), so fields that use the scratch local cannot clobber it.
 /// The cell is fresh heap memory, so the stores need no write-address check.
-fn compile_make(union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
-    let def = ctx.unions.get(union_name).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", union_name))?;
-    let tag = def.variants.iter().position(|v| v.name == variant).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", variant))?;
-    let v = &def.variants[tag];
-    let (offsets, size) = crate::checker::variant_layout(v, ctx.structs)?;
-    func.instruction(&Instruction::I32Const(0));
-    func.instruction(&Instruction::I32Const(round8(size as i32)));
-    func.instruction(&Instruction::I32AtomicRmwAdd(M4));
-    func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
-    emit_grow_to_cursor(func);
-    for _ in 0..v.fields.len() + 2 {
-        func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-    }
-    func.instruction(&Instruction::I32Const(tag as i32));
-    func.instruction(&Instruction::I32Store(M4));
-    for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
-        if is_value_type(&f.ty, ctx.structs) {
-            emit_store_value(func, ctx, &f.ty, off as u32, a)?;
-            continue;
-        }
-        compile_expr(a, ctx, func)?;
-        func.instruction(&store_instruction(&f.ty, off as u64)?);
-    }
-    Ok(())
-}
-
-/// `(make U.v args...)` of a union held by value: into its group, the tag,
+/// `(make U.v args...)`, a union (a value): into its group, the tag,
 /// each field's scalars in their slots (checker::SumLayout), zero in the
 /// slots v does not use; then the group pushed.
 fn compile_value_make(this: &Expr, union_name: &str, variant: &str, args: &[Expr], ctx: &Ctx, func: &mut Body) -> Result<(), String> {
@@ -3118,12 +3052,11 @@ fn match_type_body<'e>(arms: &'e [MatchArm], else_body: &'e Option<Vec<Expr>>) -
     bodies.find(|b| !crate::checker::body_diverges(b)).unwrap_or(first)
 }
 
-/// `(match v arms... [(else ...)])`: v goes to the scratch local, then an
-/// if/else chain tests each arm in order (a union's tag at offset 0 of its
-/// cell, an enum's value) by reloading the scratch, before any arm body
-/// runs. A union arm loads its binders from the cell first. The chain ends
-/// in the else body, or in `unreachable` (only an enum.cast value that is no
-/// member gets there).
+/// `(match v arms... [(else ...)])`: an if/else chain tests each arm in
+/// order, before any arm body runs: a union's tag in its first slot (its
+/// binders from the variant's slots), or an enum's value, from the scratch
+/// local. The chain ends in the else body, or in `unreachable` (only an
+/// enum.cast value that is no member gets there).
 fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>, dest: Option<u32>, ctx: &Ctx, func: &mut Body) -> Result<(), String> {
     let body_of = match_type_body(arms, else_body);
     let block_ty = match body_of.last() {
@@ -3135,92 +3068,66 @@ fn compile_match(value: &Expr, arms: &[MatchArm], else_body: &Option<Vec<Expr>>,
     // variable's own locals, else its spill group)
     let vt = expr_type(value, ctx);
     if let Type::Union(un) = &vt {
-        if ctx.structs.is_value_union(un) {
-            let base = match value {
-                Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
-                _ => {
-                    let g = *ctx.groups.get(&(2 * (value as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match has no spill group")?;
-                    compile_expr(value, ctx, func)?;
-                    emit_set_slots(func, g, width(&vt, ctx.structs));
-                    g
-                }
-            };
-            let def = ctx.unions.get(un).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", un))?;
-            let layout = &ctx.structs.by_value[un];
-            for arm in arms {
-                let member = &arm.member[arm.member.rfind('.').map_or(0, |d| d + 1)..];
-                let tag = def.variants.iter().position(|v| v.name == member).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", arm.member))?;
-                func.instruction(&Instruction::LocalGet(base));
-                func.instruction(&Instruction::I32Const(tag as i32));
-                func.instruction(&Instruction::I32Eq);
-                func.instruction(&Instruction::If(block_ty));
-                ctx.labels.borrow_mut().push(Label::Plain);
-                let map = &layout.variants[tag];
-                let mut at = 0;
-                for (k, f) in def.variants[tag].fields.iter().enumerate() {
-                    let w = width(&f.ty, ctx.structs) as usize;
-                    if let Some(n) = arm.binders.as_ref().and_then(|b| b.get(k)).filter(|n| n.as_str() != "_") {
-                        let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
-                        for slot in &map[at..at + w] {
-                            func.instruction(&Instruction::LocalGet(base + slot));
-                        }
-                        emit_set_slots(func, idx, w as u32);
+        let base = match value {
+            Expr::Var(name, _) => *ctx.locals.get(name).ok_or_else(|| format!("Wasm Codegen: Unbound local variable '{}'", name))?,
+            _ => {
+                let g = *ctx.groups.get(&(2 * (value as *const Expr as usize) + 1)).ok_or("Wasm Codegen: a value match has no spill group")?;
+                compile_expr(value, ctx, func)?;
+                emit_set_slots(func, g, width(&vt, ctx.structs));
+                g
+            }
+        };
+        let def = ctx.unions.get(un).ok_or_else(|| format!("Wasm Codegen: Unknown union '{}'", un))?;
+        let layout = &ctx.structs.by_value[un];
+        for arm in arms {
+            let member = &arm.member[arm.member.rfind('.').map_or(0, |d| d + 1)..];
+            let tag = def.variants.iter().position(|v| v.name == member).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", arm.member))?;
+            func.instruction(&Instruction::LocalGet(base));
+            func.instruction(&Instruction::I32Const(tag as i32));
+            func.instruction(&Instruction::I32Eq);
+            func.instruction(&Instruction::If(block_ty));
+            ctx.labels.borrow_mut().push(Label::Plain);
+            let map = &layout.variants[tag];
+            let mut at = 0;
+            for (k, f) in def.variants[tag].fields.iter().enumerate() {
+                let w = width(&f.ty, ctx.structs) as usize;
+                if let Some(n) = arm.binders.as_ref().and_then(|b| b.get(k)).filter(|n| n.as_str() != "_") {
+                    let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
+                    for slot in &map[at..at + w] {
+                        func.instruction(&Instruction::LocalGet(base + slot));
                     }
-                    at += w;
+                    emit_set_slots(func, idx, w as u32);
                 }
-                compile_body(&arm.body, func)?;
-                func.instruction(&Instruction::Else);
+                at += w;
             }
-            match else_body {
-                Some(body) => compile_body(body, func)?,
-                None => {
-                    func.instruction(&Instruction::Unreachable);
-                }
-            }
-            for _ in arms {
-                ctx.labels.borrow_mut().pop();
-                func.instruction(&Instruction::End);
-            }
-            return Ok(());
+            compile_body(&arm.body, func)?;
+            func.instruction(&Instruction::Else);
         }
+        match else_body {
+            Some(body) => compile_body(body, func)?,
+            None => {
+                func.instruction(&Instruction::Unreachable);
+            }
+        }
+        for _ in arms {
+            ctx.labels.borrow_mut().pop();
+            func.instruction(&Instruction::End);
+        }
+        return Ok(());
     }
+    // an enum: its value, compared with each arm's member
     compile_expr(value, ctx, func)?;
     func.instruction(&Instruction::LocalSet(ctx.addr_scratch));
     for arm in arms {
         let dot = arm.member.rfind('.').unwrap_or(0);
         let (tname, member) = (&arm.member[..dot], &arm.member[dot + 1..]);
         func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-        let fields = if let Some(u) = ctx.unions.get(tname) {
-            let tag = u.variants.iter().position(|v| v.name == member).ok_or_else(|| format!("Wasm Codegen: Unknown variant '{}'", arm.member))?;
-            func.instruction(&Instruction::I32Load(M4));
-            func.instruction(&Instruction::I32Const(tag as i32));
-            Some(&u.variants[tag])
-        } else {
-            let e = ctx.enums.get(tname).ok_or_else(|| format!("Wasm Codegen: Unknown enum '{}'", tname))?;
-            let value = e.members.iter().find(|(m, _)| m == member).ok_or_else(|| format!("Wasm Codegen: Unknown member '{}'", arm.member))?.1;
-            func.instruction(&Instruction::I32Const(value));
-            None
-        };
+        let e = ctx.enums.get(tname).ok_or_else(|| format!("Wasm Codegen: Unknown enum '{}'", tname))?;
+        let value = e.members.iter().find(|(m, _)| m == member).ok_or_else(|| format!("Wasm Codegen: Unknown member '{}'", arm.member))?.1;
+        func.instruction(&Instruction::I32Const(value));
         func.instruction(&Instruction::I32Eq);
         func.instruction(&Instruction::If(block_ty));
         ctx.labels.borrow_mut().push(Label::Plain);
-        if let (Some(v), Some(names)) = (fields, &arm.binders) {
-            let (offsets, _) = crate::checker::variant_layout(v, ctx.structs)?;
-            for ((n, f), off) in names.iter().zip(v.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
-                let idx = *ctx.locals.get(n).ok_or_else(|| format!("Wasm Codegen: Unbound binder '{}'", n))?;
-                if is_value_type(&f.ty, ctx.structs) {
-                    emit_load_scalars(func, ctx, &f.ty, off as u32)?;
-                    emit_set_slots(func, idx, width(&f.ty, ctx.structs));
-                    continue;
-                }
-                func.instruction(&Instruction::LocalGet(ctx.addr_scratch));
-                func.instruction(&load_instruction(&f.ty, off as u64)?);
-                if f.ty == Type::Bool {
-                    normalize_bool(func);
-                }
-                func.instruction(&Instruction::LocalSet(idx));
-            }
-        }
         compile_body(&arm.body, func)?;
         func.instruction(&Instruction::Else);
     }
@@ -3264,10 +3171,8 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Var(..)
         | Expr::Ok(..)
         | Expr::Err(..)
-        | Expr::NewStruct { .. }
         | Expr::GetField { .. }
         | Expr::Sizeof { .. }
-        | Expr::ArrNew { .. }
         | Expr::ArrGet { .. }
         | Expr::ArrLen { .. }
         | Expr::Null { .. }
@@ -3275,7 +3180,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Addr { .. }
         | Expr::Ref { .. } => false,
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
-        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
+        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret, _) if **ret == Type::Void),
     }
 }
 
@@ -3843,10 +3748,10 @@ enum MsgItem {
 
 /// How the VM shows a value of type `ty` in a contract message, if compiled
 /// code can show it the same way (floats, strings, and results it cannot).
-fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<MsgItem> {
+fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
     match ty {
-        Type::Union(n) if structs.is_value_union(n) => None,
-        Type::I32 | Type::Enum(_) | Type::Union(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
+        Type::Union(_) => None,
+        Type::I32 | Type::Enum(_) | Type::Fn(..) => Some(MsgItem::Int(name.to_string())),
         Type::I64 => Some(MsgItem::Long(name.to_string())),
         Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Addr(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),
@@ -3862,7 +3767,7 @@ fn shown_as(ty: &Type, name: &str, structs: &crate::checker::Structs) -> Option<
 /// text the resolver flattened, which the Rust and AIPL resolvers lay out
 /// differently (and which is not the user's file once there are imports):
 /// with it, the bytes would depend on that layout.
-fn contract_messages<'f>(f: &'f FnDef, structs: &crate::checker::Structs) -> Vec<ContractCheck<'f>> {
+fn contract_messages<'f>(f: &'f FnDef) -> Vec<ContractCheck<'f>> {
     let mut out = Vec::new();
     // an inv is checked twice: with the req checks on entry, and with the
     // ens checks on return (the entry message first)
@@ -3879,9 +3784,9 @@ fn contract_messages<'f>(f: &'f FnDef, structs: &crate::checker::Structs) -> Vec
         let text = format!("{} failed in '{}': ({} {})", kind, f.name, form, crate::printer::expr_str(expr));
         let mut items = Vec::new();
         let mut shown: Vec<(String, Option<MsgItem>)> =
-            f.params.iter().map(|(n, t)| (n.clone(), shown_as(t, n, structs))).collect();
+            f.params.iter().map(|(n, t)| (n.clone(), shown_as(t, n))).collect();
         if is_ens {
-            shown.push(("res".to_string(), if f.return_type == Type::Void { None } else { shown_as(&f.return_type, "res", structs) }));
+            shown.push(("res".to_string(), if f.return_type == Type::Void { None } else { shown_as(&f.return_type, "res") }));
         }
         for (name, item) in shown {
             let sep = if items.is_empty() { " with " } else { ", " };
@@ -4043,7 +3948,9 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
         addr
     };
     let mut newline_addr = 0u32;
-    if collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+    // sys.print ends each line with it, and _start a result main's err
+    let result_main = start_entry(module).is_some_and(|m| is_result_main(&module.functions[m].return_type));
+    if (collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint)) || result_main {
         newline_addr = intern("\n", &mut blob, &mut addrs);
     }
     walk_module(module, &mut |e| {
@@ -4052,9 +3959,8 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
         }
     });
     // then the texts of compiled contract messages, function by function
-    let structs = crate::checker::Structs::new(&module.structs, &module.unions);
     for f in &module.functions {
-        for (_, _, (text, items)) in contract_messages(f, &structs) {
+        for (_, _, (text, items)) in contract_messages(f) {
             intern(&text, &mut blob, &mut addrs);
             for item in &items {
                 match item {
@@ -4105,14 +4011,9 @@ fn emit_rt(func: &mut Body, ctx: &Ctx, cell: i32) {
 /// Bytes each spawned thread allocates for its runtime scratch cells (64..88).
 const RT_SCRATCH_SIZE: i32 = 24;
 
-/// Every allocation is a multiple of 8 bytes, so with an 8-aligned heap start
-/// every block is 8-aligned: atomics (which trap when unaligned), i64/f64
-/// fields, and WASI out-parameters are always aligned.
-fn round8(n: i32) -> i32 {
-    (n + 7) & -8
-}
-
-/// Rounds the i32 on the stack up to a multiple of 8.
+/// Rounds the i32 on the stack up to a multiple of 8: every allocation is,
+/// so with an 8-aligned heap start every block is 8-aligned (atomics, which
+/// trap when unaligned, i64/f64 fields, and WASI out-parameters).
 fn emit_round8(func: &mut Body) {
     func.instruction(&Instruction::I32Const(7));
     func.instruction(&Instruction::I32Add);
@@ -4239,13 +4140,25 @@ enum Wasi {
     RandomGet,
     FdReaddir,
     PathFilestatGet,
+    /// AIPL's own host interface, module "aipl_net_v1" (docs/design/NET_PLAN.md
+    /// section 3): sockets, provided by aipl-run and lowered to Linux system
+    /// calls natively.
+    NetListen,
+    NetAccept,
+    NetRecv,
+    NetSend,
+    NetClose,
 }
 
 impl Wasi {
     /// The import module: wasi-threads' spawn lives in "wasi", the rest in
     /// "wasi_snapshot_preview1".
     fn module(self) -> &'static str {
-        if self == Wasi::ThreadSpawn { "wasi" } else { "wasi_snapshot_preview1" }
+        match self {
+            Wasi::ThreadSpawn => "wasi",
+            Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            _ => "wasi_snapshot_preview1",
+        }
     }
 
     fn name(self) -> &'static str {
@@ -4265,6 +4178,11 @@ impl Wasi {
             Wasi::RandomGet => "random_get",
             Wasi::FdReaddir => "fd_readdir",
             Wasi::PathFilestatGet => "path_filestat_get",
+            Wasi::NetListen => "listen",
+            Wasi::NetAccept => "accept",
+            Wasi::NetRecv => "recv",
+            Wasi::NetSend => "send",
+            Wasi::NetClose => "close",
         }
     }
 
@@ -4283,6 +4201,8 @@ impl Wasi {
             Wasi::RandomGet => (vec![I32, I32], vec![I32]),
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
+            Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
 
@@ -4304,6 +4224,11 @@ impl Wasi {
             OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
             OpCode::SysTime | OpCode::SysMonotonic => Some(Wasi::ClockTimeGet),
             OpCode::SysRandom => Some(Wasi::RandomGet),
+            OpCode::NetListen => Some(Wasi::NetListen),
+            OpCode::NetAccept => Some(Wasi::NetAccept),
+            OpCode::NetRecv => Some(Wasi::NetRecv),
+            OpCode::NetSend => Some(Wasi::NetSend),
+            OpCode::NetClose => Some(Wasi::NetClose),
             _ => None,
         }
     }
@@ -4382,7 +4307,7 @@ pub(crate) fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
                 walk_expr(e, visit);
             }
         }
-        Expr::NewStruct { .. } | Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
+        Expr::Sizeof { .. } | Expr::Null { .. } | Expr::Ref { .. } => {}
         Expr::Break(_) | Expr::Continue(_) => {}
         Expr::Return { val, .. } => {
             if let Some(v) = val {
@@ -4397,7 +4322,6 @@ pub(crate) fn walk_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::GetField { ptr, .. }
-        | Expr::ArrNew { size: ptr, .. }
         | Expr::ArrLen { arr: ptr, .. }
         | Expr::Cast { addr: ptr, gen: None, .. }
         | Expr::Addr { val: ptr, .. } => walk_expr(ptr, visit),
@@ -4448,9 +4372,34 @@ fn module_uses_op(module: &Module, wanted: &OpCode) -> bool {
     found
 }
 
-/// The WASI functions this module needs, in a fixed canonical order.
+/// The function a compiler-made `_start` calls: a zero-argument `main`,
+/// unless the module has a `_start` of its own.
+fn start_entry(module: &Module) -> Option<usize> {
+    if module.functions.iter().any(|f| f.name == "_start") {
+        return None;
+    }
+    module.functions.iter().position(|f| f.name == "main" && f.params.is_empty())
+}
+
+/// A main returning (result i32 str) (AIPL_SPEC.md 6.5).
+fn is_result_main(ret: &Type) -> bool {
+    matches!(ret, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str)
+}
+
+/// The WASI functions this module needs, in a fixed canonical order:
+/// proc_exit too when `_start` exits with main's status, and fd_write when
+/// it may write a result main's err.
 fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
     let mut set: Vec<Wasi> = Vec::new();
+    if let Some(m) = start_entry(module) {
+        let ret = &module.functions[m].return_type;
+        if *ret == Type::I32 || is_result_main(ret) {
+            set.push(Wasi::ProcExit);
+        }
+        if is_result_main(ret) {
+            set.push(Wasi::FdWrite);
+        }
+    }
     walk_module(module, &mut |e| {
         if let Expr::Op { op, .. } = e {
             if let Some(w) = Wasi::for_op(op) {
@@ -4465,15 +4414,13 @@ fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
 }
 
 /// True if a function body needs the two extra scratch locals: an op lowered
-/// through WASI, `arr.new` (which keeps its block address in one), or an
-/// atomic op that needs its address or operands twice.
+/// through WASI, or an atomic op that needs its address or operands twice.
 fn fn_uses_io(body: &[Expr]) -> bool {
     let mut found = false;
     for e in body {
         walk_expr(e, &mut |x| match x {
             Expr::Op { op, .. } if Wasi::for_op(op).is_some() => found = true,
             Expr::Op { op: OpCode::AtomicCas | OpCode::AtomicLock | OpCode::AtomicUnlock, .. } => found = true,
-            Expr::ArrNew { .. } => found = true,
             _ => {}
         });
     }

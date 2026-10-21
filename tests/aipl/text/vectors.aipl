@@ -5,12 +5,12 @@
   (import vec)
   (import buf)
   (import alloc)
-  (fn pr [v:(ptr (vec.Vec (ptr str.Bytes)))] -> void
+  (fn pr [v:(ptr (vec.Vec str.Bytes))] -> void
     (let b:(ptr buf.Buf) (call text.join (call alloc.default) v (call str.from_str "|")))
     (call pb b))
   (fn pb [b:(ptr buf.Buf)] -> void (call pb1 (call buf.bytes b)))
   ;; newlines, tabs, and carriage returns escaped, so each case is one line
-  (fn pb1 [s:(ptr str.Bytes)] -> void
+  (fn pb1 [s:str.Bytes] -> void
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (loop i 0 (- (get s str.Bytes.len) 1) 1
       (let c:i32 (call str.byte_at s i))

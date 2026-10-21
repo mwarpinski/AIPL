@@ -78,8 +78,11 @@ class Gen:
             self.structs[f"S{k}"] = fields
         self.enum = ["a", "b", ("c", rng.choice([2, 5, 10])), "d"]
         self.variants = [("p", [("x", "i32"), ("y", "i64")]), ("q", [("z", "f64")]), ("r", [])]
-        if self.values:
-            self.variants.append(("v", [("w", rng.choice(list(self.values))), ("n", "i32")]))
+        # a variant holding a value struct, if one fits: every union is a
+        # value of at most 8 slots (AIPL_SPEC.md 4.J)
+        fits = [v for v in self.values if self.union_slots(self.variants + [("v", [("w", v), ("n", "i32")])]) <= 8]
+        if fits:
+            self.variants.append(("v", [("w", rng.choice(fits)), ("n", "i32")]))
         # (name, [(param, type)], ret, recursive); a recursive function's
         # first parameter counts down to 0, from at most 3
         self.fns = []
@@ -89,6 +92,30 @@ class Gen:
     def fresh(self, base="v"):
         self.n += 1
         return f"{base}{self.n}"
+
+    def kinds(self, t):
+        """A value of type t's scalars by slot kind (checker.rs slot_kind):
+        i64, f32, and f64 their own, everything else i32-sized."""
+        if t in self.values:
+            out = {}
+            for _, ft in self.values[t]:
+                for k, n in self.kinds(ft).items():
+                    out[k] = out.get(k, 0) + n
+            return out
+        return {t if t in ("i64", "f32", "f64") else "i32": 1}
+
+    def union_slots(self, variants):
+        """The slots a union of these variants needs: its tag, then of each
+        kind the most any variant needs (checker.rs sum_layout)."""
+        need = {}
+        for _, fields in variants:
+            have = {}
+            for _, ft in fields:
+                for k, n in self.kinds(ft).items():
+                    have[k] = have.get(k, 0) + n
+            for k, n in have.items():
+                need[k] = max(need.get(k, 0), n)
+        return 1 + sum(need.values())
 
     def width(self, t):
         """How many scalars a value of type t is."""
@@ -158,10 +185,10 @@ class Gen:
             return f"(make {t} {' '.join(self.literal(ft) for _, ft in self.values[t])})"
         # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
-            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]})"
+            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]} (call alloc.forever))"
         if t.startswith("(arr "):
             el = t[5:-1]
-            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} {rng.randint(1, 5)})"
+            return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} (call alloc.forever) {rng.randint(1, 5)})"
         if t == R:
             return f"(ok:bool {self.literal('i32')})" if rng.random() < 0.5 else f"(err:i32 {self.literal('bool')})"
         if t == F:

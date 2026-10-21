@@ -4,6 +4,7 @@
 ;; passed through a function reference, in one program whose main returns a
 ;; checksum. tests/test_values.rs runs it in every backend.
 (module values_flow
+  (import alloc)
   (struct V2 [x:i32 y:i32] (value))
   (struct Seg [a:V2 b:V2 on:bool] (value))
   (struct Box [seg:Seg tag:i64])
@@ -58,7 +59,7 @@
           (+ (+ (get o Oct.f) (i32.wrap (get o Oct.h)))
              (i32.wrap (i64.trunc_f64_s (* 4.0 (+ (get o Oct.c) (get o Oct.g)))))))))
 
-  (fn main [] -> i32
+  (fn checksum [] -> i32
     (let total:i32 0)
     (let a:V2 (call pick 5))                                            ;; (10 11)
     (let b:V2 (call pick -3))                                           ;; (-1 -1)
@@ -75,7 +76,7 @@
     (let c:V2 (if (gt total 60) (with (with a V2.x 1) V2.y 2) b))       ;; (1 2)
     (set! total (+ total (* 10 (get c V2.y))))                          ;; +20 = 87
     ;; a heap struct holding a value that holds values; paths
-    (let bx:(ptr Box) (new Box))
+    (let bx:(ptr Box) (new Box (call alloc.forever)))
     (put bx Box.seg (make Seg c (call v 7 8) true))
     (put bx Box.seg Seg.b (call pick 2))                                ;; (4 5)
     (put bx Box.seg Seg.a V2.y 30)
@@ -84,7 +85,7 @@
     (set! total (+ total (get (get (get bx Box.seg) Seg.a) V2.y)))      ;; +30
     (if (get (get bx Box.seg) Seg.on) (set! total (+ total 1)) (block)) ;; +1 = 123
     ;; an array of them
-    (let segs:(arr Seg) (arr.new Seg 3))
+    (let segs:(arr Seg) (arr.new Seg (call alloc.forever) 3))
     (arr.set Seg segs 0 (get bx Box.seg))
     (arr.set Seg segs 1 Seg.a (call v 3 4))
     (arr.set Seg segs 2 Seg.on true)
@@ -104,4 +105,7 @@
     (set! total (+ total (call oct_sum (call oct 3))))                  ;; +39
     (let g:(fn [i32] -> Oct) (ref oct))
     (set! total (+ total (get (call_ref (fn [i32] -> Oct) g 3) Oct.f)))  ;; +7
-    (+ total (i32.wrap (get bx Box.tag)))))                             ;; 219
+    (+ total (i32.wrap (get bx Box.tag))))                              ;; 219
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

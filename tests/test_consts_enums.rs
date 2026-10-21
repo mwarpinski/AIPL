@@ -34,7 +34,7 @@ fn check(name: &str, src: &str) -> Result<aipl_core::ast::Module, String> {
     Ok(m)
 }
 
-fn wasm_main(wasm: &[u8]) -> i32 {
+fn wasm_call(wasm: &[u8], name: &str) -> i32 {
     use wasmtime::{Engine, Linker, Module, Store};
     use wasmtime_wasi::p1::WasiP1Ctx;
     let engine = Engine::default();
@@ -43,7 +43,11 @@ fn wasm_main(wasm: &[u8]) -> i32 {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).unwrap();
-    inst.get_typed_func::<(), i32>(&mut store, "main").unwrap().call(&mut store, ()).unwrap()
+    inst.get_typed_func::<(), i32>(&mut store, name).unwrap().call(&mut store, ()).unwrap()
+}
+
+fn wasm_main(wasm: &[u8]) -> i32 {
+    wasm_call(wasm, "main")
 }
 
 /// tests/aipl/consts_enums.aipl built as a native executable, through a
@@ -58,7 +62,7 @@ fn native_main() -> Option<i32> {
         std::fs::copy(root().join("tests/aipl").join(f), dir.join(f)).unwrap();
     }
     let wrap = dir.join("wrap.aipl");
-    std::fs::write(&wrap, "(module wrap (import consts_enums) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call consts_enums.main)) 0))").unwrap();
+    std::fs::write(&wrap, "(module wrap (import consts_enums) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call consts_enums.checksum)) 0))").unwrap();
     let m = Resolver::resolve(&wrap).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let exe = dir.join("prog");
@@ -82,9 +86,9 @@ fn constants_and_enums_agree_in_every_backend() {
     TypeChecker::new().check_module(&module).unwrap();
     let mut vm = VM::new();
     vm.load_module(module.clone());
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(2294));
+    assert_eq!(vm.invoke("checksum", vec![]).unwrap(), Value::Int(2294));
     let wasm = WasmCompiler::compile(&module).unwrap();
-    assert_eq!(wasm_main(&wasm), 2294);
+    assert_eq!(wasm_call(&wasm, "checksum"), 2294);
     if let Some(n) = native_main() {
         assert_eq!(n, 2294);
     }

@@ -37,7 +37,7 @@
           (call url.free u)))
       (err e (call url.free_error a e) (sys.print "err"))))
 
-  (fn lower [b:(ptr str.Bytes)] -> (ptr str.Bytes)
+  (fn lower [b:str.Bytes] -> str.Bytes
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (for i 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b i))

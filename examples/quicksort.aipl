@@ -2,6 +2,7 @@
 ;; pivot, so sorted input and runs of equal values both stay O(n log n), and
 ;; recursion only into the smaller side, so the call depth stays O(log n).
 (module quicksort
+  (import alloc)
   (fn swap [a:(arr i32) i:i32 j:i32] -> void
     (let t:i32 (arr.get i32 a i))
     (arr.set i32 a i (arr.get i32 a j))
@@ -51,7 +52,7 @@
   ;; n pseudo-random values in 0..999 from a linear congruential generator
   ;; (i32 wrap-around is the same in the VM and wasm).
   (fn random_array [n:i32 seed:i32] -> (arr i32)
-    (let a:(arr i32) (arr.new i32 n))
+    (let a:(arr i32) (arr.new i32 (call alloc.forever) n))
     (let x:i32 seed)
     (loop i 0 (- n 1) 1
       (set! x (+ (* x 1103515245) 12345))
@@ -69,8 +70,8 @@
   ;; Already-sorted and all-equal input stay fast and correct.
   (fn handles_sorted_and_equal [n:i32] -> bool
     (req (and (gt n 0) (lte n 100000)))
-    (let up:(arr i32) (arr.new i32 n))
-    (let same:(arr i32) (arr.new i32 n))
+    (let up:(arr i32) (arr.new i32 (call alloc.forever) n))
+    (let same:(arr i32) (arr.new i32 (call alloc.forever) n))
     (loop i 0 (- n 1) 1
       (arr.set i32 up i i)
       (arr.set i32 same i 7))
@@ -78,5 +79,10 @@
     (call sort same)
     (and (call is_sorted up) (call is_sorted same)))
 
-  (fn main [] -> i32
-    (if (call handles_sorted_and_equal 2000) (call sorted_median 5000 42) -1)))
+  (fn main [] -> (result i32 str)
+    (when (not (call handles_sorted_and_equal 2000))
+      (return (err:i32 "quicksort: sorted or all-equal input came out wrong")))
+    (let m:i32 (call sorted_median 5000 42))
+    (when (lt m 0) (return (err:i32 "quicksort: the result is not sorted")))
+    (println "median of 5000 random values: {m}")
+    (ok:str 0)))

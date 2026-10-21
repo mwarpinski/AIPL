@@ -154,7 +154,7 @@ fn an_allocator_pointer_after_destroy() {
     assert_runs(
         "allocator",
         "    (let a:alloc.Allocator (call alloc.of_heap (call heap.make)))
-    (let p:(ptr P) (call (alloc.create P) a))
+    (let p:(ptr P) (new P a))
     (call (alloc.destroy P) a p)
     (get p P.y)",
         "",
@@ -229,9 +229,9 @@ fn a_pointer_in_a_result_cell_stays_in_its_cell() {
     assert_runs(
         "result_cell",
         "    (let a:alloc.Allocator (call alloc.default))
-    (let _warm:(ptr P) (call (alloc.create P) a))
+    (let _warm:(ptr P) (new P a))
     (let inner:(ptr P) (ptr.null P))
-    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (call (alloc.create P) a)) (set! inner (new P)) q)))
+    (let r:(result (ptr P) str) (ok:str (block (let q:(ptr P) (new P a)) (set! inner (new P (call alloc.forever))) q)))
     (put inner P.x 5)
     (call io.println_int \"x: \" (get inner P.x))
     (match_result r (ok q (call io.println_int \"q: \" (get q P.x))) (err _e (block)))",

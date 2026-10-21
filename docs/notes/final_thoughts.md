@@ -23,7 +23,7 @@ Syntactic characteristics that appear verbose from a human-ergonomics perspectiv
 1. **Explicit Types at Call Sites Provide Local Context:**
    ```lisp
    (let def:(ptr InlineDef)
-     (call (map.get_or (ptr str.Bytes) (ptr InlineDef)) defs callee (ptr.null InlineDef)))
+     (call (map.get_or str.Bytes (ptr InlineDef)) defs callee (ptr.null InlineDef)))
    ```
    Rather than requiring the model to trace type inference backwards across distant declarations, the expected signature is stated directly at the call site.
 2. **Absence of Borrow-Checking Constraints:**

@@ -158,14 +158,14 @@
   ;; ===== Defers (formats.rs lower_defers) =====
 
   ;; The first statement of function f's body: after the header (fn NAME
-  ;; [params] -> RET) and its clauses (req, ens, inv, (unsafe)).
+  ;; [params] -> RET) and its clauses (req, ens, inv, (unsafe), (no_leak)).
   (fn body_start [l:(ptr L) f:i32] -> i32
     (let c:i32 (+ f 1))
     (while (neq (call kind l c) compiler.Kind.arrow) (set! c (call elem_end l c)))
     (set! c (call elem_end l (+ c 1)))
     (while (and (eq (call kind l c) compiler.Kind.lparen)
-                (or (or (call sym_is l (+ c 1) "req") (call sym_is l (+ c 1) "ens"))
-                    (or (call sym_is l (+ c 1) "inv") (and (call sym_is l (+ c 1) "unsafe") (call is_close l (+ c 2))))))
+                (or (call sym_is l (+ c 1) "req") (call sym_is l (+ c 1) "ens") (call sym_is l (+ c 1) "inv")
+                    (and (or (call sym_is l (+ c 1) "unsafe") (call sym_is l (+ c 1) "no_leak")) (call is_close l (+ c 2)))))
       (set! c (call elem_end l c)))
     c)
 
@@ -339,14 +339,14 @@
             (let v:i32 (+ a 2))
             (let ve:i32 (call elem_end l v))
             (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
-            (let enum_name:(ptr str.Bytes) (match (get f checker.Fmt.ty) (ast.Type.enum_ [e] e) (else (ptr.null str.Bytes))))
-            (if (neq enum_name (ptr.null str.Bytes)) (call gen l at "(match ") (block))
+            (let enum_name:str.Bytes (match (get f checker.Fmt.ty) (ast.Type.enum_ [e] e) (else (call str.absent))))
+            (if (call str.present enum_name) (call gen l at "(match ") (block))
             (call emit_elem l v)
-            (if (neq enum_name (ptr.null str.Bytes))
+            (if (call str.present enum_name)
                 (block
                   (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
                   (loop k 0 (- (arr.len ms) 1) 1
-                    (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
+                    (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
                     (call gen l at " (")
                     (call buf.push_bytes (get l L.out) enum_name)
                     (call buf.push_byte (get l L.out) 46)
@@ -422,7 +422,7 @@
     (let t:ast.Type (get f checker.Fmt.ty))
     (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (call buf.push_int nb n)
-    (let num:(ptr str.Bytes) (call buf.bytes nb))
+    (let num:str.Bytes (call buf.bytes nb))
     ;; (OP a b): the op's token, then each side
     (let opt:i32 (+ cond 1))
     (let a:i32 (+ cond 2))
@@ -457,12 +457,12 @@
 
   ;; (call PUT (call show.start) VAR ...): the variable prefix num written
   ;; onto a new buffer as the formatting forms write a value of f's type.
-  (fn put_value [l:(ptr L) at:i32 f:(ptr checker.Fmt) prefix:(ptr str.Bytes) num:(ptr str.Bytes)] -> void
+  (fn put_value [l:(ptr L) at:i32 f:(ptr checker.Fmt) prefix:str.Bytes num:str.Bytes] -> void
     (let out:(ptr buf.Buf) (get l L.out))
     (let t:ast.Type (get f checker.Fmt.ty))
-    (let en:(ptr str.Bytes) (match t (ast.Type.enum_ [e] e) (else (ptr.null str.Bytes))))
+    (let en:str.Bytes (match t (ast.Type.enum_ [e] e) (else (call str.absent))))
     (cond
-      ((neq en (ptr.null str.Bytes)) (call buf.push_str out "(call show.put_str (call show.start) (match "))
+      ((call str.present en) (call buf.push_str out "(call show.put_str (call show.start) (match "))
       ((call fmtdebug.printable t)
        (call buf.push_str out "(call ")
        (call buf.push_str out (call put_fn t))
@@ -474,10 +474,10 @@
     (call buf.push_bytes out prefix)
     (call buf.push_bytes out num)
     (cond
-      ((neq en (ptr.null str.Bytes))
+      ((call str.present en)
        (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
        (loop k 0 (- (arr.len ms) 1) 1
-         (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
+         (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
          (call buf.push_str out " (")
          (call buf.push_bytes out en)
          (call buf.push_byte out 46)
@@ -510,7 +510,7 @@
     (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (call buf.push_str nb "_dbg_")
     (call buf.push_int nb n)
-    (let var:(ptr str.Bytes) (call buf.bytes nb))
+    (let var:str.Bytes (call buf.bytes nb))
     (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
     (let t:ast.Type (get f checker.Fmt.ty))
     (call gen l at "(block (let ")
@@ -540,12 +540,12 @@
     (cond
       ((eq how 0) (call buf.push_byte out 32) (call buf.push_bytes out var) (call buf.push_str out " 0)"))
       ((eq how 1)
-       (let en:(ptr str.Bytes) (match t (ast.Type.enum_ [e] e) (else (call str.from_str ""))))
+       (let en:str.Bytes (match t (ast.Type.enum_ [e] e) (else (call str.from_str ""))))
        (call buf.push_str out " (match ")
        (call buf.push_bytes out var)
        (let ms:(arr (ptr ast.Member)) (get f checker.Fmt.members))
        (loop k 0 (- (arr.len ms) 1) 1
-         (let mn:(ptr str.Bytes) (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
+         (let mn:str.Bytes (get (arr.get (ptr ast.Member) ms k) ast.Member.name))
          (call buf.push_str out " (")
          (call buf.push_bytes out en)
          (call buf.push_byte out 46)
@@ -580,7 +580,7 @@
     (let n:i32 (+ (+ (get l L.tries) (call tries_in l v (- (call elem_end l g) 1))) 1))
     (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 8))
     (call buf.push_int nb n)
-    (let num:(ptr str.Bytes) (call buf.bytes nb))
+    (let num:str.Bytes (call buf.bytes nb))
     (let re:i32 (call ret_elem l))
     ;; R: the second element of (result R E)
     (let r:i32 (+ re 2))
@@ -602,7 +602,7 @@
           (call buf.push_str (get l L.out) "))"))
         (block
           (let f:(ptr checker.Fmt) (call fmt_at l (call pos l v)))
-          (let u:(ptr str.Bytes) (match (get f checker.Fmt.ty) (ast.Type.union_ [nm] nm) (else (call str.from_str ""))))
+          (let u:str.Bytes (match (get f checker.Fmt.ty) (ast.Type.union_ [nm] nm) (else (call str.from_str ""))))
           (call gen l at "(match ")
           (call emit_elem l v)
           (call gen l at "(")
@@ -634,7 +634,7 @@
   ;; in low; false (out untouched) when it has none.
   (fn lower [src:i32 len:i32 fmts:(ptr (vec.Vec (ptr checker.Fmt))) out:(ptr buf.Buf) low:(ptr origins.Origins)] -> bool (pub)
     (unsafe (let toks:i32 (mem.alloc (* (sizeof compiler.Token) (+ (call compiler.count_tokens src len) 1))))
-    (let l:(ptr L) (new L))
+    (let l:(ptr L) (new L (call alloc.forever)))
     (put l L.src src)
     (put l L.toks toks)
     (put l L.n (call compiler.tokenize src len toks))

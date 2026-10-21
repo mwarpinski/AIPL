@@ -1,0 +1,69 @@
+;; std/url, std/json, and std/text on a request's path keep no memory
+;; (MEMORY_PLAN.md M2, tests/test_memory.rs): a (no_leak) handler parses a
+;; URL, reads a query value, resolves a reference, reads a JSON body and a
+;; value at a path in it, splits and rewrites text, and writes it all to
+;; out, on an arena; run 10,000 times with the arena reset after each, the
+;; arena and the heap stay where the first request left them.
+(module request_paths
+  (import alloc)
+  (import arena)
+  (import buf)
+  (import str)
+  (import option)
+  (import url)
+  (import json)
+  (import text)
+
+  (fn handle [a:alloc.Allocator target:str.Bytes body:str.Bytes out:(ptr buf.Buf)] -> void (no_leak)
+    (match_result (call url.parse a target)
+      (ok u
+        (let q:(ptr buf.Buf) (call buf.make a 64))
+        (match_result (call url.query_get_into a q (get u url.Url.query) "name")
+          (ok found
+            (match found
+              ((option.Option str.Bytes) some [v] (format_to out "name={v} "))
+              ((option.Option str.Bytes) none (format_to out "no name "))))
+          (err qe (format_to out "bad query ")))
+        (match_result (call url.parse a (call str.from_str "../up/./there"))
+          (ok r
+            (let t:(ptr url.Url) (call url.resolve a u r))
+            (call buf.push_str out "resolved=")
+            (call url.write out t)
+            (call buf.push_byte out 32)
+            (call url.free t)
+            (call url.free r))
+          (err re (format_to out "bad ref ")))
+        (call url.free u))
+      (err ue (format_to out "bad url ")))
+    (match_result (call json.parse a body)
+      (ok doc
+        (match (call json.get_path doc "items[1].id")
+          ((option.Option json.Value) some [x] (call buf.push_str out "id=") (call json.write out x))
+          ((option.Option json.Value) none (call buf.push_str out "no id"))))
+      (err je (call buf.push_str out "bad json")))
+    (let words:(ptr (vec.Vec str.Bytes)) (call text.split a (call str.from_str "a,b,c") (call str.from_str ",")))
+    (let shouted:(ptr buf.Buf) (call text.to_upper a (call str.from_str "flat")))
+    (format_to out " words={(call (vec.len str.Bytes) words)} {(call buf.bytes shouted)}"))
+
+  (fn heap_top [] -> i32 (unsafe (mem.load32 0)))
+
+  (fn main [] -> i32
+    (let ar:(ptr arena.Arena) (call arena.make 65536))
+    (let a:alloc.Allocator (call alloc.of_arena ar))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
+    (let target:str.Bytes (call str.from_str "http://example.com/a/b/c?name=two%20words&x=1"))
+    (let body:str.Bytes (call str.from_str "{\"items\": [{\"id\": 7}, {\"id\": 42.5}]}"))
+    (call handle a target body out)
+    (println "{(call buf.bytes out)}")
+    (call arena.reset ar)
+    (let arena_first:i32 (call arena.reserved ar))
+    (let heap_first:i32 (call heap_top))
+    (for i 0 10000
+      (call buf.clear out)
+      (call handle a target body out)
+      (call arena.reset ar))
+    (if (and (eq (call arena.reserved ar) arena_first) (eq (call heap_top) heap_first))
+        (println "flat")
+        (println "grew"))
+    0)
+)

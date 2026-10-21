@@ -288,12 +288,26 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
     if tests && !test_items.is_empty() {
         test_functions(&test_items, &mut imports, &mut items)?;
     }
-    // when, for, and variadic and/or (sugar.rs)
+    // when, for, variadic and/or, and new and arr.new (sugar.rs): new and
+    // arr.new call std/alloc, which a module that uses them imports, after
+    // its own imports (and a test build's). (std/alloc's own allocators,
+    // which it imports, would make a cycle, reported as one.)
+    let alloc: Result<String, String> = match name {
+        "alloc" => Ok(String::new()),
+        _ => Ok(match imports.iter().find(|(m, _)| module_name(m) == "alloc") {
+            Some((_, Some(alias))) => format!("{alias}."),
+            _ => "alloc.".to_string(),
+        }),
+    };
+    let mut uses_new = false;
     for item in items.iter_mut() {
-        crate::sugar::rewrite(item, &|sx, msg| {
+        crate::sugar::rewrite(item, &alloc, &mut uses_new, &|sx, msg| {
             let (l, c) = sx.position();
             format!("{}:{}: {}", l, c, msg)
         })?;
+    }
+    if uses_new && name != "alloc" && !imports.iter().any(|(m, _)| module_name(m) == "alloc") {
+        imports.push(("alloc".to_string(), None));
     }
     // the formatting forms become std/show calls (formats.rs): a module that
     // uses one imports it, after its own imports; their strings are split
@@ -946,8 +960,9 @@ impl Names<'_> {
                         // `new`); a value struct's does not (a value-kind argument)
                         (Some(n), _) if template.is_some() && !self.vis.values.contains(n) => self.check_makes(n, child_at),
                         (Some(n), 1) if head.as_deref() == Some("new") => self.check_makes(n, child_at),
-                        // (make V ...) of a value struct
-                        (Some(n), 1) if head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
+                        // (make V ...) of a value struct (not std/vec's make
+                        // called with a value struct, (call (make V) ...))
+                        (Some(n), 1) if template.is_none() && head.as_deref() == Some("make") && self.vis.fields.contains_key(n) => self.check_makes(n, child_at),
                         // (get p S.f), (put p S.f v)
                         (Some(n), 2) if field_op => {
                             if let Some((st, f)) = n.rsplit_once('.') {

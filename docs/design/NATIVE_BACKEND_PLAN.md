@@ -90,7 +90,7 @@ Order: NE1 → NE2 → NE3 → NE4 → NE5, then NE6-NE9 in order, then NE10-NE1
 ### Group A: reading wasm
 
 **NE1: wasm_reader, module structure.** Depends on: nothing.
-Create `aipl_src/native/wasm_reader.aipl`: decode a wasm module (bytes as `(ptr str.Bytes)`) into typed records: header check, type section (function signatures), imports (module, name, kind, type index; memory imports with limits and the shared flag), function section, table, memory, global (type, mutability, init), exports, start, element (active, function indices), data count, and data segments (active with offset, or passive). Code bodies are kept as byte ranges for NE2. Use generic `std/vec` collections. Unknown sections or encodings our compiler never emits are a clear error naming them.
+Create `aipl_src/native/wasm_reader.aipl`: decode a wasm module (bytes as `str.Bytes`) into typed records: header check, type section (function signatures), imports (module, name, kind, type index; memory imports with limits and the shared flag), function section, table, memory, global (type, mutability, init), exports, start, element (active, function indices), data count, and data segments (active with offset, or passive). Code bodies are kept as byte ranges for NE2. Use generic `std/vec` collections. Unknown sections or encodings our compiler never emits are a clear error naming them.
 Done when: a Rust test decodes the wasm of every repository program plus the thread and generics test programs and checks each section's counts and contents against `wasmparser`.
 
 **NE2: wasm_reader, function bodies.** Depends on: NE1.

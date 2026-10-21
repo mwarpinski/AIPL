@@ -11,7 +11,7 @@ Four specific constraints currently tie user workflows to the repository root:
 1. **Standard Library Path Lookup:**
    In [`aipl_src/aipl.aipl:70-71`](file:///home/matt/Projects/Repos/AIPL/aipl_src/aipl.aipl#L70-L71) and [`codegen_opt.aipl:2357-2358`](file:///home/matt/Projects/Repos/AIPL/aipl_src/codegen_opt.aipl#L2357-L2358):
    ```lisp
-   (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+   (let std_dir:str.Bytes (call os.env "AIPL_STD"))
    (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
    ```
    If executed outside the repository root without `$AIPL_STD` set, import resolution defaults to `./aipl_src/std/` in the current working directory. Additionally, the Rust CLI ([`src/resolver.rs:880`](file:///home/matt/Projects/Repos/AIPL/src/resolver.rs#L880)) hardcodes `env!("CARGO_MANIFEST_DIR")/aipl_src/std` at compile time.

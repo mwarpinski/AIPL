@@ -1,7 +1,8 @@
 //! Every ```lisp block in PROMPT_GUIDE_FOR_AIS.md and README.md is a complete
-//! module whose `main` must return the value the document states, in the VM
-//! and compiled under wasmtime (with WASI and a scratch directory, since some
-//! examples do I/O). AIPL_SPEC.md's blocks are checked too: complete modules
+//! module that, run as a program, must print what the document states and
+//! exit with its status (AIPL_SPEC.md 6.5), in the VM (`aipl eval`) and
+//! compiled under wasmtime (`_start`, with WASI and a scratch directory,
+//! since some examples do I/O). AIPL_SPEC.md's blocks are checked too: complete modules
 //! run like the others (with the exceptions in SPEC_SPECIAL), and fragments
 //! (a few definitions) are wrapped in a module and type-checked, the one
 //! deliberately invalid fragment failing with its documented message. A doc
@@ -11,49 +12,50 @@
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
-use aipl_core::vm::{Value, VM};
+use aipl_core::vm::VM;
 use std::path::Path;
 use wasmtime::{Engine, Linker, Module as WasmModule, Store, TypedFunc};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
-/// Module name -> value `main` returns, as stated in the docs. Modules without
-/// a `main` (library-style examples) are checked and compiled only.
-const EXPECTED: &[(&str, i32)] = &[
-    ("search", 49),
-    ("list_demo", 55),
-    ("parse_demo", 1233),
-    ("io_demo", 15),
-    ("std_demo", 32),
-    ("generics_demo", 17),
-    ("expr_demo", 80),
+/// Module name -> the exit status and output of the program, as stated in
+/// the docs. Modules without a `main` (library-style examples) are checked
+/// and compiled only.
+const EXPECTED: &[(&str, i32, &str)] = &[
+    ("search", 0, "15 is at 5, 4 is at -1\n"),
+    ("list_demo", 0, "sum: 55\n"),
+    ("parse_demo", 0, "1234 parses to 1234; 12x to -1\n"),
+    ("io_demo", 0, "wrote 15 bytes to note.txt\n"),
+    ("std_demo", 0, "words: 3\nlines: 2\n"),
+    ("generics_demo", 0, "smallest x: 10, swapped second: 7\n"),
+    ("expr_demo", 0, "-20; a num is a leaf: true\n"),
     // AIPL_SPEC.md
-    ("points", 33),
-    ("gcd_demo", 21),
-    ("stack_demo", 42),
-    ("hello", 11),
-    ("file_demo", 1),
-    ("word_count", -1), // no input.txt in the scratch directory
-    ("shapes", 28),
-    ("formatting", 0),
-    ("parse_two", 42),
-    ("cleanup", 3),
-    ("geom", 15),
-    ("tokens_demo", 110),
-    ("unsafe_demo", 42),
-    ("option_demo", 23),
-    ("interface_demo", 28),
-    ("context_demo", 120),
-    ("values_demo", 55),
+    ("points", 0, "33\n"),
+    ("gcd_demo", 0, "21\n"),
+    ("stack_demo", 0, "42\n"),
+    ("hello", 0, "hello, aipl\n"),
+    ("file_demo", 0, "read back: true\n"),
+    ("word_count", 1, ""), // no input.txt in the scratch directory: main's err, on standard error
+    ("shapes", 0, "4 7 12 5\n"),
+    ("formatting", 0, "Ada ran 3 tests, mean 2.72\n    3|1.5|{} row 1: 001;row 2: 004;\n"),
+    ("parse_two", 0, "42\n"),
+    ("cleanup", 0, "3\n"),
+    ("geom", 0, "total 13, turns 2\n"),
+    ("tokens_demo", 0, "sum 1, Tok.minus is 10\n"),
+    ("unsafe_demo", 0, "42\n"),
+    ("option_demo", 0, "2 nodes, 9 at 3\n"),
+    ("interface_demo", 0, "20, 1 key, largest 7\n"),
+    ("context_demo", 0, "1 2 0\n"),
+    ("values_demo", 0, "y = 5.5\n"),
     // docs/TOUR.md
-    ("tour_hello", 25),
-    ("tour_types", 43),
-    ("tour_control", 29),
-    ("tour_structs", 33),
-    ("tour_values", 17),
-    ("tour_results", 79),
-    ("tour_contracts", 19),
-    ("tour_generics", 13),
+    ("tour_hello", 0, "7 squared is 49\n3 squared plus 4 squared is 25\n"),
+    ("tour_types", 0, "the average of 40 and 3 is 21.5\n"),
+    ("tour_control", 0, "evens up to 10 add to 30; the sign of -5 is -1\n"),
+    ("tour_structs", 0, "total: 33\n"),
+    ("tour_values", 0, "shifted: (7, 20); second y: 10\n"),
+    ("tour_results", 0, "areas: 9.0, digit: 7\n"),
+    ("tour_contracts", 0, "isqrt 99 = 9, isqrt 100 = 10\n"),
+    ("tour_generics", 0, "first 10, 3 elements\n"),
 ];
 
 /// README.md and PROMPT_GUIDE_FOR_AIS.md examples whose `main` must fail, as
@@ -77,16 +79,29 @@ fn lisp_blocks(doc: &str) -> Vec<String> {
     text.split("```lisp\n").skip(1).map(|b| b.split("```").next().unwrap().to_string()).collect()
 }
 
-fn run_wasm(wasm: &[u8], dir: &Path) -> i32 {
+/// The compiled program run under wasmtime: its exit status and output.
+fn run_wasm(wasm: &[u8], dir: &Path) -> (i32, String) {
     let engine = Engine::default();
     let module = WasmModule::new(&engine, wasm).unwrap();
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
-    let ctx = WasiCtxBuilder::new().preopened_dir(dir, ".", FsPerms::ReadWrite).unwrap().build_p1();
+    let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(1 << 20);
+    let ctx = WasiCtxBuilder::new().stdout(stdout.clone()).preopened_dir(dir, ".", FsPerms::ReadWrite).unwrap().build_p1();
     let mut store = Store::new(&engine, ctx);
     let instance = linker.instantiate(&mut store, &module).unwrap();
-    let main: TypedFunc<(), i32> = instance.get_typed_func(&mut store, "main").unwrap();
-    main.call(&mut store, ()).unwrap()
+    let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start").unwrap();
+    let status = match start.call(&mut store, ()) {
+        Ok(()) => 0,
+        Err(e) => e.downcast_ref::<wasmtime_wasi::I32Exit>().map(|x| x.0).unwrap_or_else(|| panic!("{e:?}")),
+    };
+    (status, String::from_utf8(stdout.contents().to_vec()).unwrap())
+}
+
+/// The program run by `aipl eval` in `dir`: its exit status and output.
+fn run_vm(file: &Path, dir: &Path) -> (i32, String) {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_aipl")).arg("eval").arg(file).current_dir(dir).output().unwrap();
+    let out: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+    (o.status.code().unwrap_or(-1), out)
 }
 
 /// Whether the module's main traps when compiled.
@@ -129,14 +144,12 @@ fn doc_examples_run_in_both_backends() {
                 seen.push(module.name.clone());
                 continue;
             }
-            let Some(&(_, want)) = EXPECTED.iter().find(|(n, _)| *n == module.name) else {
+            let Some(&(_, status, out)) = EXPECTED.iter().find(|(n, _, _)| *n == module.name) else {
                 assert!(!module.functions.iter().any(|f| f.name == "main"), "{doc}: add '{}' to EXPECTED", module.name);
                 continue;
             };
-            let mut vm = VM::new();
-            vm.load_module(module.clone());
-            assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(want as i64), "{doc}: VM, module {}", module.name);
-            assert_eq!(run_wasm(&wasm, &scratch), want, "{doc}: wasm, module {}", module.name);
+            assert_eq!(run_vm(&file, &scratch), (status, out.to_string()), "{doc}: VM, module {}", module.name);
+            assert_eq!(run_wasm(&wasm, &scratch), (status, out.to_string()), "{doc}: wasm, module {}", module.name);
             seen.push(module.name.clone());
         }
     }
@@ -149,7 +162,9 @@ fn doc_examples_run_in_both_backends() {
             if code.contains("aipl_heap_alloc") {
                 continue;
             }
-            std::fs::write(&file, format!("(module fragment\n{code}\n)")).unwrap();
+            // a fragment that allocates names its allocator, from std/alloc
+            let imports = if code.contains("alloc.") { "  (import alloc)\n" } else { "" };
+            std::fs::write(&file, format!("(module fragment\n{imports}{code}\n)")).unwrap();
             let checked = Resolver::resolve(&file).and_then(|m| TypeChecker::new().check_module(&m).map(|_| m));
             match SPEC_INVALID.iter().find(|(head, _)| code.trim_start().starts_with(head)) {
                 Some((_, msg)) => {
@@ -180,9 +195,7 @@ fn doc_examples_run_in_both_backends() {
                     let module = Resolver::resolve(&file).unwrap();
                     TypeChecker::new().check_module(&module).unwrap();
                     WasmCompiler::compile(&module).unwrap();
-                    let mut vm = VM::new();
-                    vm.load_module(module);
-                    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(2000));
+                    assert_eq!(run_vm(&file, &scratch), (0, "2000\n".to_string()), "counter_demo");
                 }
                 _ => eprintln!("AIPL_SPEC.md: not run: {name}: {why}"),
             }
@@ -193,11 +206,9 @@ fn doc_examples_run_in_both_backends() {
         let module = Resolver::resolve(&file).unwrap_or_else(|e| panic!("AIPL_SPEC.md: {e}\n{src}"));
         TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("AIPL_SPEC.md: {e}\n{src}"));
         let wasm = WasmCompiler::compile(&module).unwrap_or_else(|e| panic!("AIPL_SPEC.md: {e}\n{src}"));
-        if let Some(&(_, want)) = EXPECTED.iter().find(|(n, _)| *n == module.name) {
-            let mut vm = VM::new();
-            vm.load_module(module.clone());
-            assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(want as i64), "AIPL_SPEC.md: VM, module {}", module.name);
-            assert_eq!(run_wasm(&wasm, &scratch), want, "AIPL_SPEC.md: wasm, module {}", module.name);
+        if let Some(&(_, status, out)) = EXPECTED.iter().find(|(n, _, _)| *n == module.name) {
+            assert_eq!(run_vm(&file, &scratch), (status, out.to_string()), "AIPL_SPEC.md: VM, module {}", module.name);
+            assert_eq!(run_wasm(&wasm, &scratch), (status, out.to_string()), "AIPL_SPEC.md: wasm, module {}", module.name);
         } else {
             assert!(!module.functions.iter().any(|f| f.name == "main"), "AIPL_SPEC.md: add '{}' to EXPECTED", module.name);
         }
@@ -210,7 +221,7 @@ fn doc_examples_run_in_both_backends() {
 
     std::env::set_current_dir(prev).unwrap();
     let _ = std::fs::remove_dir_all(&scratch);
-    for name in EXPECTED.iter().map(|(n, _)| n).chain(FAILING.iter().map(|(n, _)| n)) {
+    for name in EXPECTED.iter().map(|(n, _, _)| n).chain(FAILING.iter().map(|(n, _)| n)) {
         assert!(seen.iter().any(|s| s == name), "documented example '{name}' not found in the docs");
     }
 }

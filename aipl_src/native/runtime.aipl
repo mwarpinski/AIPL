@@ -280,14 +280,23 @@
 
   ;; The first native executable (NE4): writes "hello from native AIPL\n" to
   ;; stdout and exits with status 7.
-  (fn hello_exe [] -> (ptr str.Bytes)
+  ;; Bytes for a Rust host (the tests), as a pointer to [addr len], the
+  ;; same however a str.Bytes is laid out.
+  (struct HostBytes [(read addr:i32) (read len:i32)])
+  (fn host_bytes [b:str.Bytes] -> (ptr HostBytes)
+    (let h:(ptr HostBytes) (new HostBytes (call alloc.forever)))
+    (put h HostBytes.addr (call str.addr b))
+    (put h HostBytes.len (get b str.Bytes.len))
+    h)
+
+  (fn hello_exe [] -> (ptr HostBytes)
     (let data:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (call buf.push_str data "hello from native AIPL")
     (call buf.push_byte data 10)
     (let c:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (call emit_write c 1 (call elf.data_vaddr) (call buf.len data))
     (call emit_exit c 7)
-    (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0)))
+    (call host_bytes (call buf.bytes (call elf.image (call buf.bytes c) 0 (call buf.bytes data) 0))))
 
   ;; ===== Memory faults (docs/design/NATIVE_SPEED_PLAN.md F4) =====
 

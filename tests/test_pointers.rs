@@ -3,24 +3,33 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::fs;
 use wasmtime::{Engine, Instance, Module as WasmModule, Store, TypedFunc};
 
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
+
 fn check_err(src: &str) -> String {
-    let module = Parser::parse(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
+    let module = parse_program(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
     TypeChecker::new().check_module(&module).expect_err("expected a checker error")
 }
 
 fn parse_err(src: &str) -> String {
-    Parser::parse(src).expect_err("expected a parse error")
+    parse_program(src).expect_err("expected a parse error")
 }
 
 /// Runs a zero-arg i32 function in the VM and in wasmtime; both must agree.
 fn run_both(src: &str, f: &str) -> i32 {
-    let module = Parser::parse(src).unwrap();
+    let module = parse_program(src).unwrap();
     TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("check failed: {e}"));
     let mut vm = VM::new();
     vm.load_module(module.clone());
@@ -48,7 +57,7 @@ const STRUCTS: &str = "(struct Point [x:i32 y:i32]) (struct Node [val:i32 next:(
 
 #[test]
 fn get_through_the_wrong_struct_pointer_is_rejected() {
-    let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [] -> i32\n    (let n:(ptr Node) (new Node))\n    (get n Point.x)))"));
+    let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [] -> i32\n    (let n:(ptr Node) (ptr.null Node))\n    (get n Point.x)))"));
     assert!(err.starts_with("4:5: get Point.x needs a (ptr Point)"), "{err}");
 }
 
@@ -70,7 +79,7 @@ fn pointers_have_no_arithmetic_or_ordering() {
 
 #[test]
 fn arrays_are_typed_by_element_and_distinct_from_pointers() {
-    let err = check_err("(module m\n  (fn f [] -> i64\n    (let a:(arr i32) (arr.new i32 3))\n    (arr.get i64 a 0)))");
+    let err = check_err("(module m\n  (fn f [] -> i64\n    (let a:(arr i32) (arr.null i32))\n    (arr.get i64 a 0)))");
     assert!(err.starts_with("4:5: arr.get i64 needs an (arr i64)"), "{err}");
     let err = check_err(&format!("(module m {STRUCTS}\n  (fn f [p:(ptr Point)] -> i32\n    (arr.len p)))"));
     assert!(err.contains("arr.len needs an (arr T)"), "{err}");
@@ -103,10 +112,10 @@ fn casts_must_start_from_an_i32() {
 #[test]
 fn typed_linked_list_runs_in_both_backends() {
     let src = r#"
-(module list
+(module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next head)
     n)
@@ -125,12 +134,12 @@ fn typed_linked_list_runs_in_both_backends() {
 #[test]
 fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
     let src = r#"
-(module arrs
+(module arrs (import alloc)
   (struct P [x:i32])
   (fn f [] -> i32 (unsafe)
-    (let ps:(arr (ptr P)) (arr.new (ptr P) 4))
+    (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (loop i 0 3 1
-      (let p:(ptr P) (new P))
+      (let p:(ptr P) (new P (call alloc.forever)))
       (put p P.x (* i i))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
@@ -138,8 +147,8 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
       (set! total (+ total (get (arr.get (ptr P) ps i) P.x))))
     ;; round trip through an address: same pointer, same field
     (let back:(ptr P) (ptr.cast P (ptr.addr (arr.get (ptr P) ps 3))))
-    (let nested:(arr (arr i32)) (arr.new (arr i32) 1))
-    (arr.set (arr i32) nested 0 (arr.new i32 7))
+    (let nested:(arr (arr i32)) (arr.new (arr i32) (call alloc.forever) 1))
+    (arr.set (arr i32) nested 0 (arr.new i32 (call alloc.forever) 7))
     (+ (* 100 (arr.len (arr.get (arr i32) nested 0))) (+ total (get back P.x)))))
 "#;
     // 0 + 1 + 4 + 9 = 14, plus P.x of element 3 (9), plus 100 * 7
@@ -187,24 +196,25 @@ fn two_imported_modules_may_each_define_the_same_struct_name() {
     (let q:(ptr l.Node) (call l.make 2))
     (+ (get p geo.Node.x) (get q l.Node.val))))"#),
         ("geo", r#"
-(module geo
+(module geo (import alloc)
   (struct Node [(read x:i32) y:i32] (pub))
   (fn make [x:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.x (call ident x))
     n)
   (fn ident [v:i32] -> i32 v))"#),
         ("list", r#"
-(module list
+(module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)] (pub))
   (fn make [v:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (new Node))
+    (let n:(ptr Node) (new Node (call alloc.forever)))
     (put n Node.val v)
     (put n Node.next (ptr.null Node))
     n))"#),
     ])
     .expect("resolve");
-    let names: Vec<&str> = module.structs.iter().map(|s| s.name.as_str()).collect();
+    // the program's own structs (std/alloc brings its own)
+    let names: Vec<&str> = module.structs.iter().map(|s| s.name.as_str()).filter(|n| n.starts_with("geo.") || n.starts_with("list.")).collect();
     assert_eq!(names, ["geo.Node", "list.Node"]);
     TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("check failed: {e}"));
     let mut vm = VM::new();

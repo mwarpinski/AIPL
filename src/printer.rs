@@ -43,6 +43,9 @@ pub fn print_module(m: &Module) -> String {
         if f.is_unsafe {
             out.push_str("\n    (unsafe)");
         }
+        if f.is_no_leak {
+            out.push_str("\n    (no_leak)");
+        }
         for c in &f.contracts {
             let (kw, e) = match c {
                 Contract::Requires(e) => ("req", e),
@@ -75,9 +78,9 @@ pub fn type_str(t: &Type) -> String {
         Type::Struct(name) => name.clone(),
         Type::Array(e) => format!("(arr {})", type_str(e)),
         Type::ResultType(a, b) => format!("(result {} {})", type_str(a), type_str(b)),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, no_leak) => {
             let ps: Vec<String> = params.iter().map(type_str).collect();
-            format!("(fn [{}] -> {})", ps.join(" "), type_str(ret))
+            format!("(fn [{}] -> {}{})", ps.join(" "), type_str(ret), if *no_leak { " (no_leak)" } else { "" })
         }
         Type::Enum(name) | Type::Union(name) => name.clone(),
     }
@@ -214,6 +217,11 @@ pub fn op_name(op: &OpCode) -> &'static str {
         FsOpendir => "fs.opendir",
         FsReaddir => "fs.readdir",
         FsStat => "fs.stat",
+        NetListen => "net.listen",
+        NetAccept => "net.accept",
+        NetRecv => "net.recv",
+        NetSend => "net.send",
+        NetClose => "net.close",
         ArgsSizes => "args.sizes",
         ArgsGet => "args.get",
         EnvSizes => "env.sizes",
@@ -273,7 +281,6 @@ pub fn expr_str(e: &Expr) -> String {
         ),
         Expr::Block(body, _) => with_body("block".to_string(), body),
         Expr::Unsafe(body, _) => with_body("unsafe".to_string(), body),
-        Expr::NewStruct { struct_name, .. } => format!("(new {})", struct_name),
         Expr::GetField { struct_name, field_name, ptr, .. } => {
             format!("(get {} {}.{})", expr_str(ptr), struct_name, field_name)
         }
@@ -281,7 +288,6 @@ pub fn expr_str(e: &Expr) -> String {
             format!("(put {} {}.{}{} {})", expr_str(ptr), struct_name, field_name, path_str(path), expr_str(val))
         }
         Expr::Sizeof { ty, .. } => format!("(sizeof {})", type_str(ty)),
-        Expr::ArrNew { elem_ty, size, .. } => format!("(arr.new {} {})", type_str(elem_ty), expr_str(size)),
         Expr::ArrGet { elem_ty, ptr, index, .. } => {
             format!("(arr.get {} {} {})", type_str(elem_ty), expr_str(ptr), expr_str(index))
         }

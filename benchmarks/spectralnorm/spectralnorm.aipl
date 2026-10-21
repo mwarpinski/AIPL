@@ -5,6 +5,7 @@
 ;;
 ;;   ./spectralnorm 100   ->   1.274219991
 (module spectralnorm
+  (import alloc)
   (import io)
   (import os)
   (import time)
@@ -36,9 +37,9 @@
   (fn main [] -> i32
     (let started:i64 (call time.now))
     (let n:i32 (call os.arg_int 1 100))
-    (let u:(arr f64) (arr.new f64 n))
-    (let v:(arr f64) (arr.new f64 n))
-    (let tmp:(arr f64) (arr.new f64 n))
+    (let u:(arr f64) (arr.new f64 (call alloc.forever) n))
+    (let v:(arr f64) (arr.new f64 (call alloc.forever) n))
+    (let tmp:(arr f64) (arr.new f64 (call alloc.forever) n))
     (loop i 0 (- n 1) 1 (arr.set f64 u i 1.0))
     (loop round 1 10 1
       (call times_ata n u v tmp)

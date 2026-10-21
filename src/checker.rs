@@ -66,16 +66,22 @@ impl Structs {
         self.by_value.contains_key(name)
     }
 
-    /// The layout of `(result ok err)` held by value (AIPL_SPEC.md 4.F): two
-    /// variants, ok and err, sharing slots as a union's do; None (a heap
-    /// cell) when a side is a str or it needs more than MAX_SCALARS slots.
+    /// The layout of `(result ok err)`, held by value (AIPL_SPEC.md 4.F): two
+    /// variants, ok and err, sharing slots as a union's do; None when it
+    /// needs more than MAX_SCALARS slots, which the checker refuses.
     pub fn result_layout(&self, ok: &Type, err: &Type) -> Option<SumLayout> {
-        if *ok == Type::Str || *err == Type::Str {
-            return None;
-        }
-        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
-        let l = sum_layout(&[side("ok", ok), side("err", err)], self);
+        let l = self.result_sum(ok, err);
         (l.slots.len() <= MAX_SCALARS).then_some(l)
+    }
+
+    /// How many slots `(result ok err)` needs.
+    pub fn result_slots(&self, ok: &Type, err: &Type) -> usize {
+        self.result_sum(ok, err).slots.len()
+    }
+
+    fn result_sum(&self, ok: &Type, err: &Type) -> SumLayout {
+        let side = |name: &str, t: &Type| Variant { name: name.to_string(), fields: vec![StructField { name: "v".to_string(), ty: t.clone() }] };
+        sum_layout(&[side("ok", ok), side("err", err)], self)
     }
 
     /// The layout of a union or result type held by value, if it is one.
@@ -167,41 +173,17 @@ pub fn scalars(t: &Type, st: &Structs) -> Vec<Type> {
 }
 
 /// Which unions are values and how they are laid out (AIPL_SPEC.md 4.J): a
-/// union is a value unless a variant holds a str, it contains itself
+/// union is a value unless it contains itself
 /// (through other unions held inline), or it needs more than MAX_SCALARS
 /// slots, counting the unions it holds that are values as their slots and
 /// the others as one (each union is decided after the unions it holds).
 fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
-    // the unions each one holds inline
-    let holds = |u: &UnionDef| -> Vec<String> {
-        u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
-            Type::Union(n) => Some(n.clone()),
-            _ => None,
-        }).collect()
-    };
-    // a union that reaches itself through the unions it holds
-    let reaches_itself = |start: &String| -> bool {
-        let mut todo: Vec<String> = st.unions.get(start).map(holds).unwrap_or_default();
-        let mut seen: Vec<String> = Vec::new();
-        while let Some(n) = todo.pop() {
-            if &n == start {
-                return true;
-            }
-            if seen.contains(&n) {
-                continue;
-            }
-            if let Some(u) = st.unions.get(&n) {
-                todo.extend(holds(u));
-            }
-            seen.push(n);
-        }
-        false
-    };
+    let reaches_itself = |start: &String| reaches(st, std::slice::from_ref(start), start);
     let mut names: Vec<&String> = st.unions.keys().collect();
     names.sort();
     let candidates: Vec<String> = names
         .iter()
-        .filter(|n| !st.unions[**n].variants.iter().any(|v| v.fields.iter().any(|f| f.ty == Type::Str)) && !reaches_itself(n))
+        .filter(|n| !reaches_itself(n))
         .map(|n| n.to_string())
         .collect();
     fn decide(n: &str, candidates: &[String], st: &mut Structs, decided: &mut Vec<String>) {
@@ -230,6 +212,64 @@ fn union_layouts(st: &Structs) -> HashMap<String, SumLayout> {
         decide(n, &candidates, &mut work, &mut decided);
     }
     work.by_value
+}
+
+/// The unions u holds inline, in its variants' fields.
+fn holds(u: &UnionDef) -> Vec<String> {
+    u.variants.iter().flat_map(|v| v.fields.iter()).filter_map(|f| match &f.ty {
+        Type::Union(n) => Some(n.clone()),
+        _ => None,
+    }).collect()
+}
+
+/// Whether `target` is among the unions `from` hold, directly or through
+/// the unions they hold.
+fn reaches(st: &Structs, from: &[String], target: &str) -> bool {
+    let mut todo: Vec<String> = from.iter().filter_map(|n| st.unions.get(n)).flat_map(holds).collect();
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(n) = todo.pop() {
+        if n == target {
+            return true;
+        }
+        if seen.contains(&n) {
+            continue;
+        }
+        if let Some(u) = st.unions.get(&n) {
+            todo.extend(holds(u));
+        }
+        seen.push(n);
+    }
+    false
+}
+
+/// Why union u cannot be held by value, if it cannot (AIPL_SPEC.md 4.J):
+/// it contains itself (named by the first field that leads back to it), or
+/// it needs more than MAX_SCALARS slots (named by its widest variant).
+pub fn union_error(u: &UnionDef, st: &Structs) -> Option<String> {
+    if st.by_value.contains_key(&u.name) {
+        return None;
+    }
+    let name = shown(&u.name);
+    for v in &u.variants {
+        for f in &v.fields {
+            if let Type::Union(m) = &f.ty {
+                if *m == u.name || reaches(st, std::slice::from_ref(m), &u.name) {
+                    return Some(format!(
+                        "union '{name}' contains itself ({name}.{}'s field '{}' has type {}): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it",
+                        v.name, f.name, shown(m)
+                    ));
+                }
+            }
+        }
+    }
+    let n = sum_layout(&u.variants, st).slots.len();
+    let width = |v: &Variant| v.fields.iter().map(|f| scalars(&f.ty, st).len()).sum::<usize>();
+    let widest = u.variants.iter().fold(&u.variants[0], |w, v| if width(v) > width(w) { v } else { w });
+    Some(format!(
+        "union '{name}' needs {n} slots, more than the {MAX_SCALARS} a value holds: move the fields of its widest variant, {name}.{} ({} slots), into a struct and hold a (ptr S)",
+        widest.name,
+        width(widest)
+    ))
 }
 
 /// The layout of a sum of variants (each a list of fields) held by value.
@@ -285,7 +325,7 @@ fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize
         // a pointer or array: the address, then the generation (GENERATIONS_PLAN.md)
         Type::Ptr(_) | Type::Array(_) => Ok((8, 8)),
         Type::Narrow(n) => Ok((n.size(), n.size())),
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
             Some(def) if def.is_value => {
@@ -324,29 +364,6 @@ fn check_result_payload(t: &Type, (l, c): (u32, u32)) -> Result<(), String> {
         return Err(format!("{}:{}: a result payload must be a value, got void", l, c));
     }
     Ok(())
-}
-
-/// Where a result cell keeps its payload, and the cell's size: like a union
-/// variant with one field (AIPL_SPEC.md 4.F), after the 4-byte tag, so a
-/// 64-bit payload sits at 8 in a 16-byte cell and any other at 4 in an
-/// 8-byte one.
-pub fn result_cell_layout(payload: &Type, structs: &Structs) -> (u32, i32) {
-    match payload {
-        Type::Struct(_) => value_cell(payload, structs),
-        Type::Union(n) if structs.by_value.contains_key(n) => value_cell(payload, structs),
-        Type::ResultType(a, b) if structs.result_layout(a, b).is_some() => value_cell(payload, structs),
-        // a pointer or array is 8 bytes: its address, then its generation
-        Type::I64 | Type::F64 | Type::Ptr(_) | Type::Array(_) => (8, 16),
-        _ => (4, 8),
-    }
-}
-
-/// A value held in a result cell: aligned after the tag, the cell a
-/// multiple of 8.
-fn value_cell(payload: &Type, structs: &Structs) -> (u32, i32) {
-    let (size, align) = type_size_and_align(payload, structs).unwrap_or((4, 4));
-    let offset = (4 + align - 1) & !(align - 1);
-    (offset as u32, ((offset + size + 7) & !7) as i32)
 }
 
 /// A type parameter's placeholder, when a template is checked once with its
@@ -411,23 +428,6 @@ pub fn get_field_offset(def: &StructDef, field_name: &str, structs: &Structs) ->
     Err(format!("Struct '{}' has no field '{}'", shown(&def.name), field_name))
 }
 
-/// Where each field of a union variant lives in its cell: the tag (i32) is
-/// at offset 0 and the fields follow from offset 4, laid out like a struct's.
-/// Returns the field offsets and the cell's size.
-pub fn variant_layout(v: &Variant, structs: &Structs) -> Result<(Vec<usize>, usize), String> {
-    let mut offset = 4;
-    let mut max_align = 4;
-    let mut offsets = Vec::new();
-    for f in &v.fields {
-        let (s, a) = type_size_and_align(&f.ty, structs)?;
-        max_align = max_align.max(a);
-        offset = (offset + a - 1) & !(a - 1);
-        offsets.push(offset);
-        offset += s;
-    }
-    Ok((offsets, (offset + max_align - 1) & !(max_align - 1)))
-}
-
 pub fn get_struct_size(def: &StructDef, structs: &Structs) -> Result<usize, String> {
     let mut offset = 0;
     let mut max_align = 1;
@@ -465,10 +465,6 @@ pub struct TypeChecker {
     /// `(unsafe ...)` block (depth > 0) or an `(unsafe)` function.
     unsafe_depth: std::cell::Cell<u32>,
     in_unsafe_fn: std::cell::Cell<bool>,
-    /// The type of each `ok`/`err` payload, by the payload's address: the VM
-    /// lays out a result cell before it evaluates the payload, so it needs
-    /// the payload's size from here (payload_types).
-    payloads: std::cell::RefCell<HashMap<usize, Type>>,
     /// The type of each formatting piece's value, by the value's address:
     /// lowering the forms to std/show calls (formats::lower) needs them.
     formats: std::cell::RefCell<HashMap<usize, Type>>,
@@ -477,6 +473,9 @@ pub struct TypeChecker {
     /// Each checked function's body type, its last expression's: `aipl eval
     /// -e` reads its wrapper's to print the value (body_type).
     bodies: std::cell::RefCell<HashMap<String, Type>>,
+    /// Which functions may make memory that is never freed, for the type of
+    /// `(ref f)` (MEMORY_PLAN.md decision 9).
+    leaks: Option<crate::leaks::Analysis>,
 }
 
 impl Default for TypeChecker {
@@ -499,20 +498,11 @@ impl TypeChecker {
             unsafe_fns: std::collections::HashSet::new(),
             unsafe_depth: std::cell::Cell::new(0),
             in_unsafe_fn: std::cell::Cell::new(false),
-            payloads: std::cell::RefCell::new(HashMap::new()),
             formats: std::cell::RefCell::new(HashMap::new()),
             in_defer: std::cell::Cell::new(false),
             bodies: std::cell::RefCell::new(HashMap::new()),
+            leaks: None,
         }
-    }
-
-    /// The type of every `ok`/`err` payload in `module`, keyed by the
-    /// payload expression's address (stable while the module's boxes live).
-    /// Payloads in functions that do not check are left out.
-    pub fn payload_types(module: &Module) -> HashMap<usize, Type> {
-        let mut checker = TypeChecker::new();
-        let _ = checker.check_module(module);
-        checker.payloads.into_inner()
     }
 
     /// A defer's statements, each checked, in an environment of their own.
@@ -605,10 +595,18 @@ impl TypeChecker {
     /// written, each error is prefixed with its item's file.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
         self.check_items(module).map_err(|e| self.name_file(module, e))?;
+        self.leaks = Some(crate::leaks::Analysis::new(module));
         let mut errors = Vec::new();
         for f in &module.functions {
             self.at_item("fn", &f.name);
             if let Err(e) = self.check_fn_def(f) {
+                errors.push(self.name_file(module, e));
+            }
+        }
+        if errors.is_empty() {
+            // (no_leak) promises, once every body checks (docs/design/MEMORY_PLAN.md M3)
+            for (name, e) in crate::leaks::check(module) {
+                self.at_item("fn", &name);
                 errors.push(self.name_file(module, e));
             }
         }
@@ -718,6 +716,8 @@ impl TypeChecker {
             }
             self.union_defs.insert(u.name.clone(), u.clone());
         }
+        // which unions are values, which a result's slots count
+        self.struct_defs = Structs::new(&module.structs, &module.unions);
 
         // Field types may name structs and unions defined later in the module.
         for s in &module.structs {
@@ -737,6 +737,13 @@ impl TypeChecker {
                     self.validate_type(&f.ty, u.span)
                         .map_err(|e| format!("{} (field '{}' of variant '{}.{}')", e, f.name, shown(&u.name), v.name))?;
                 }
+            }
+        }
+        // every union is a value (AIPL_SPEC.md 4.J)
+        for u in &module.unions {
+            self.at_item("union", &u.name);
+            if let Some(e) = union_error(u, &self.struct_defs) {
+                return Err(format!("{}:{}: {e}", u.span.0, u.span.1));
             }
         }
 
@@ -885,9 +892,10 @@ impl TypeChecker {
             }
             Type::ResultType(a, b) => {
                 self.validate_type(a, span)?;
-                self.validate_type(b, span)
+                self.validate_type(b, span)?;
+                self.result_fits(a, b, span)
             }
-            Type::Fn(params, ret) => {
+            Type::Fn(params, ret, _) => {
                 for p in params {
                     self.validate_type(p, span)?;
                 }
@@ -908,6 +916,53 @@ impl TypeChecker {
             Type::Enum(name) => Err(format!("{}:{}: Unknown type '{}' (not a scalar type or an enum)", span.0, span.1, name)),
             _ => Ok(()),
         }
+    }
+
+    /// Whether a value of type `got` fits where `want` is asked for: the
+    /// same type, or a function reference that promises (no_leak) where one
+    /// that does not is asked for (dropping a promise is always safe). Only
+    /// at the top: inside an array or a pointer the types are the same.
+    /// Where two branches' (or two compared values') types meet: the same type,
+/// or two function types that differ only in the promise meet at the type
+/// without it, which both fit (MEMORY_PLAN.md decision 9).
+fn meet(a: &Type, b: &Type) -> Option<Type> {
+    match (a, b) {
+        _ if a == b => Some(a.clone()),
+        (Type::Fn(p, r, _), Type::Fn(q, s, _)) if p == q && r == s => Some(Type::Fn(p.clone(), r.clone(), false)),
+        _ => None,
+    }
+}
+
+fn fits(got: &Type, want: &Type) -> bool {
+        got == want || matches!((got, want), (Type::Fn(p, r, true), Type::Fn(q, s, false)) if p == q && r == s)
+    }
+
+    /// What to add to a mismatch's message when a function reference that
+    /// does not promise (no_leak) is given where one that does is asked for:
+    /// for (ref f), why f may keep memory.
+    fn fit_why(&self, got: &Type, want: &Type, e: &Expr) -> String {
+        if let (Type::Fn(p, r, false), Type::Fn(q, w, true)) = (got, want) {
+            if p == q && r == w {
+                return match (e, &self.leaks) {
+                    (Expr::Ref { name, .. }, Some(a)) => format!(": {} may keep memory ({})", shown(name), a.chain(name)),
+                    _ => ": this function value's type does not promise (no_leak)".to_string(),
+                };
+            }
+        }
+        String::new()
+    }
+
+    /// A result is held by value (AIPL_SPEC.md 4.F), so one needing more
+    /// than MAX_SCALARS slots is refused.
+    fn result_fits(&self, ok: &Type, err: &Type, (l, c): (u32, u32)) -> Result<(), String> {
+        let n = self.struct_defs.result_slots(ok, err);
+        if n <= MAX_SCALARS {
+            return Ok(());
+        }
+        Err(format!(
+            "{l}:{c}: {} needs {n} slots, more than the {MAX_SCALARS} a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)",
+            Type::ResultType(Box::new(ok.clone()), Box::new(err.clone()))
+        ))
     }
 
     /// An op's operands: exactly `want.len()` of them, of those types.
@@ -972,6 +1027,15 @@ impl TypeChecker {
         }
         self.validate_type(&f.return_type, f.span)
             .map_err(|e| format!("{} (return type of '{}')", e, shown(&f.name)))?;
+        // the program's main gives its exit status (AIPL_SPEC.md 6.5)
+        let status = matches!(&f.return_type, Type::I32 | Type::Void)
+            || matches!(&f.return_type, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str);
+        if f.name == "main" && f.params.is_empty() && !status {
+            return Err(format!(
+                "{}:{}: main gives the program's exit status: it returns i32 (0 for success, 1-125 for a failure), (result i32 str) (ok with the status, or err with a message, printed to stderr, and status 1), or void (status 0); got {}",
+                f.span.0, f.span.1, f.return_type
+            ));
+        }
 
         // Check contracts
         for c in &f.contracts {
@@ -1026,7 +1090,7 @@ impl TypeChecker {
 
         // A body may end in (return v) instead of a bare value.
         let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));
-        if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
+        if f.return_type != Type::Void && !Self::fits(&last_ty, &f.return_type) && !ends_in_return {
             return Err(format!(
                 "{}:{}: Function '{}' expects return type {}, but body returned {}",
                 f.span.0, f.span.1, shown(&f.name), f.return_type, last_ty
@@ -1080,10 +1144,10 @@ impl TypeChecker {
                 }
                 self.validate_type(ty, (l, c))?;
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != *ty {
+                if !Self::fits(&val_ty, ty) {
                     return Err(format!(
-                        "{}:{}: Type mismatch in 'let': expected {}, got {}",
-                        l, c, ty, val_ty
+                        "{}:{}: Type mismatch in 'let': expected {}, got {}{}",
+                        l, c, ty, val_ty, self.fit_why(&val_ty, ty, val)
                     ));
                 }
                 self.declare(name, ty, (l, c))?;
@@ -1096,7 +1160,7 @@ impl TypeChecker {
                     .cloned()
                     .ok_or_else(|| format!("{}:{}: Undefined variable '{}' in set!", l, c, name))?;
                 let val_ty = self.infer_expr_type(val, env)?;
-                if var_ty != val_ty {
+                if !Self::fits(&val_ty, &var_ty) {
                     return Err(format!(
                         "{}:{}: Type mismatch in 'set!': variable is {}, value is {}",
                         l, c, var_ty, val_ty
@@ -1118,8 +1182,8 @@ impl TypeChecker {
                     Ok(then_ty)
                 } else if then_ty == Type::Void && else_ty == Type::Void {
                     Ok(Type::Void)
-                } else if then_ty != Type::Void && else_ty != Type::Void && then_ty == else_ty {
-                    Ok(then_ty)
+                } else if let Some(t) = Self::meet(&then_ty, &else_ty).filter(|_| then_ty != Type::Void && else_ty != Type::Void) {
+                    Ok(t)
                 } else {
                     Err(format!(
                         "{}:{}: If branch type mismatch: then is {}, else is {}. If mixing void and non-void, consider wrapping in (block ... value)",
@@ -1163,7 +1227,7 @@ impl TypeChecker {
                     Some(v) => self.infer_expr_type(v, env)?,
                     None => Type::Void,
                 };
-                if got != expected {
+                if !Self::fits(&got, &expected) {
                     return Err(format!(
                         "{}:{}: return value has type {}, but the function returns {}",
                         l, c, got, expected
@@ -1192,10 +1256,10 @@ impl TypeChecker {
                 }
                 for (i, arg) in args.iter().enumerate() {
                     let arg_ty = self.infer_expr_type(arg, env)?;
-                    if arg_ty != param_types[i] {
+                    if !Self::fits(&arg_ty, &param_types[i]) {
                         return Err(format!(
-                            "{}:{}: Arg {} of '{}' expects {}, got {}",
-                            l, c, i, shown(func), param_types[i], arg_ty
+                            "{}:{}: Arg {} of '{}' expects {}, got {}{}",
+                            l, c, i, shown(func), param_types[i], arg_ty, self.fit_why(&arg_ty, &param_types[i], arg)
                         ));
                     }
                 }
@@ -1317,12 +1381,12 @@ impl TypeChecker {
                     // A pointer, function ref, or enum operand gets its own
                     // explanation even when the other operand is a number:
                     // (+ p 4), (+ 1 e).
-                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_));
+                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(..) | Type::Enum(_) | Type::Union(_));
                     let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
                     if t1 != t2 && !special(&t1) {
                         return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(..)) {
                         return Err(format!(
                             "{}:{}: {} on {}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
@@ -1438,9 +1502,9 @@ impl TypeChecker {
                             format!("{}:{}: {} on {}: a type parameter has no order of its own; add (where (cmp.Ord {})) and call (cmp.Ord.compare {})", l, c, op, p, p, p)
                         });
                     }
-                    if t1 != t2 {
+                    let Some(t1) = Self::meet(&t1, &t2) else {
                         return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}", l, c, t1, t2));
-                    }
+                    };
                     if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
                         return Err(format!("{}:{}: {} compares integers (i32 or i64) as unsigned, got {}", l, c, op, t1));
                     }
@@ -1461,7 +1525,7 @@ impl TypeChecker {
                             l, c, op
                         ));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(..) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {} on {}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
                     // lt/lte/gt/gte order numbers; bool compares only with eq/neq
@@ -1616,14 +1680,34 @@ impl TypeChecker {
                     self.expect_operands("fs.stat", "(fs.stat ptr len out)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
+                OpCode::NetListen => {
+                    self.expect_operands("net.listen", "(net.listen addr len port)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetAccept => {
+                    self.expect_operands("net.accept", "(net.accept h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetRecv => {
+                    self.expect_operands("net.recv", "(net.recv h buf max)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetSend => {
+                    self.expect_operands("net.send", "(net.send h buf len)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetClose => {
+                    self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
                         return Err(format!("{}:{}: thread.spawn requires 2 arguments (worker: (fn [i32] -> i32), arg: i32)", l, c));
                     }
-                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32));
+                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32), false);
                     let t = self.infer_expr_type(&args[0], env)?;
-                    if t != worker {
+                    if !Self::fits(&t, &worker) {
                         return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {}", l, c, t));
                     }
                     let a = self.infer_expr_type(&args[1], env)?;
@@ -1696,9 +1780,9 @@ impl TypeChecker {
                 }
                 let inner_ty = self.infer_expr_type(val, env)?;
                 check_result_payload(&inner_ty, (l, c))?;
-                self.payloads.borrow_mut().insert(&**val as *const Expr as usize, inner_ty.clone());
                 let err_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&err_ty, (l, c))?;
+                self.result_fits(&inner_ty, &err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(inner_ty), Box::new(err_ty)))
             }
             Expr::Err(err, extra_ty, _) => {
@@ -1707,9 +1791,9 @@ impl TypeChecker {
                 }
                 let err_ty = self.infer_expr_type(err, env)?;
                 check_result_payload(&err_ty, (l, c))?;
-                self.payloads.borrow_mut().insert(&**err as *const Expr as usize, err_ty.clone());
                 let ok_ty = extra_ty.clone().unwrap_or(Type::I32);
                 self.validate_type(&ok_ty, (l, c))?;
+                self.result_fits(&ok_ty, &err_ty, (l, c))?;
                 Ok(Type::ResultType(Box::new(ok_ty), Box::new(err_ty)))
             }
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
@@ -1747,8 +1831,8 @@ impl TypeChecker {
                     Ok(last_ok_ty)
                 } else if last_ok_ty == Type::Void && last_err_ty == Type::Void {
                     Ok(Type::Void)
-                } else if last_ok_ty != Type::Void && last_err_ty != Type::Void && last_ok_ty == last_err_ty {
-                    Ok(last_ok_ty)
+                } else if let Some(t) = Self::meet(&last_ok_ty, &last_err_ty).filter(|_| last_ok_ty != Type::Void && last_err_ty != Type::Void) {
+                    Ok(t)
                 } else {
                     Err(format!(
                         "{}:{}: match_result arm type mismatch: ok arm yields {}, err arm yields {}",
@@ -1775,18 +1859,6 @@ impl TypeChecker {
                 });
                 self.unsafe_depth.set(self.unsafe_depth.get() - 1);
                 r.map(|_| last_ty)
-            }
-            Expr::NewStruct { struct_name, span } => {
-                if !self.struct_defs.contains_key(struct_name) {
-                    return Err(not_a_struct(*span, struct_name));
-                }
-                if self.is_value(struct_name) {
-                    return Err(format!(
-                        "{}:{}: '{}' is a value struct: make one with (make {} field-values...), not new",
-                        span.0, span.1, shown(struct_name), shown(struct_name)
-                    ));
-                }
-                Ok(Type::Ptr(Box::new(Type::Struct(struct_name.clone()))))
             }
             Expr::GetField {
                 struct_name,
@@ -1842,7 +1914,7 @@ impl TypeChecker {
                 let (written, field_ty) = self.walk_path((struct_name, field_name), field_ty, path, "put", *span)?;
                 let field_ty = value_of(&field_ty);
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != field_ty {
+                if !Self::fits(&val_ty, &field_ty) {
                     return Err(format!(
                         "{}:{}: Type mismatch writing to field '{}.{}': expected {}, got {}",
                         span.0, span.1, shown(&written.0), written.1, field_ty, val_ty
@@ -1868,10 +1940,10 @@ impl TypeChecker {
                 let def = def.clone();
                 for (a, f) in args.iter().zip(&def.fields) {
                     let t = self.infer_expr_type(a, env)?;
-                    if t != f.ty {
+                    if !Self::fits(&t, &f.ty) {
                         return Err(format!(
-                            "{}:{}: make {}: field '{}' is {}, got {}",
-                            span.0, span.1, shown(struct_name), f.name, f.ty, t
+                            "{}:{}: make {}: field '{}' is {}, got {}{}",
+                            span.0, span.1, shown(struct_name), f.name, f.ty, t, self.fit_why(&t, &f.ty, a)
                         ));
                     }
                 }
@@ -1894,7 +1966,7 @@ impl TypeChecker {
                     ));
                 }
                 let n = self.infer_expr_type(new_val, env)?;
-                if n != field_ty {
+                if !Self::fits(&n, &field_ty) {
                     return Err(format!(
                         "{}:{}: with {}.{}: expected {}, got {}",
                         span.0, span.1, shown(struct_name), field_name, field_ty, n
@@ -1922,17 +1994,6 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::I32)
-            }
-            Expr::ArrNew { elem_ty, size, span } => {
-                self.validate_type(&Type::Array(Box::new(elem_ty.clone())), *span)?;
-                let sz_ty = self.infer_expr_type(size, env)?;
-                if sz_ty != Type::I32 {
-                    return Err(format!(
-                        "{}:{}: arr.new size must be i32, got {}",
-                        span.0, span.1, sz_ty
-                    ));
-                }
-                Ok(Type::Array(Box::new(elem_ty.clone())))
             }
             Expr::ArrGet {
                 elem_ty,
@@ -1996,7 +2057,7 @@ impl TypeChecker {
                     }
                 };
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != target {
+                if !Self::fits(&val_ty, &target) {
                     return Err(format!(
                         "{}:{}: arr.set value mismatch: expected {}, got {}",
                         span.0, span.1, target, val_ty
@@ -2044,20 +2105,23 @@ impl TypeChecker {
             Expr::Ref { name, span } => match self.fn_signatures.get(name) {
                 Some((params, ret)) => {
                     self.require_unsafe_fn(name, span.0, span.1)?;
-                    Ok(Type::Fn(params.clone(), Box::new(ret.clone())))
+                    // it promises (no_leak) when the checker proves f keeps
+                    // no memory (MEMORY_PLAN.md decision 9)
+                    let promise = self.leaks.as_ref().is_some_and(|a| !a.may_leak(name));
+                    Ok(Type::Fn(params.clone(), Box::new(ret.clone()), promise))
                 }
                 None => Err(format!("{}:{}: Undefined function '{}' in ref", span.0, span.1, name)),
             },
             Expr::CallRef { sig, func, args, span } => {
                 self.validate_type(sig, *span)?;
                 let (params, ret) = match sig {
-                    Type::Fn(p, r) => (p.clone(), *r.clone()),
+                    Type::Fn(p, r, _) => (p.clone(), *r.clone()),
                     other => {
                         return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {}", span.0, span.1, other))
                     }
                 };
                 let ft = self.infer_expr_type(func, env)?;
-                if ft != *sig {
+                if !Self::fits(&ft, sig) {
                     return Err(format!("{}:{}: call_ref signature {} does not match the function's type {}", span.0, span.1, sig, ft));
                 }
                 if args.len() != params.len() {
@@ -2065,7 +2129,7 @@ impl TypeChecker {
                 }
                 for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
                     let at = self.infer_expr_type(a, env)?;
-                    if at != *p {
+                    if !Self::fits(&at, p) {
                         return Err(format!("{}:{}: call_ref argument {} expects {}, got {}", span.0, span.1, i + 1, p, at));
                     }
                 }
@@ -2094,8 +2158,8 @@ impl TypeChecker {
                 }
                 for (a, f) in args.iter().zip(v.fields.iter()) {
                     let at = self.infer_expr_type(a, env)?;
-                    if at != f.ty {
-                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}", l, c, shown(union_name), variant, f.name, f.ty, at));
+                    if !Self::fits(&at, &f.ty) {
+                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}{}", l, c, shown(union_name), variant, f.name, f.ty, at, self.fit_why(&at, &f.ty, a)));
                     }
                 }
                 Ok(Type::Union(union_name.clone()))
@@ -2186,12 +2250,14 @@ impl TypeChecker {
                 }
                 // arms that always leave take the others' type
                 let Some((first_name, first)) = arm_types.first() else { return Ok(Type::Void) };
+                let mut joined = first.clone();
                 for (name, t) in &arm_types[1..] {
-                    if t != first {
-                        return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t));
+                    match Self::meet(&joined, t) {
+                        Some(m) => joined = m,
+                        None => return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t)),
                     }
                 }
-                Ok(first.clone())
+                Ok(joined)
             }
             Expr::Addr { val, kind, span } => {
                 let t = self.infer_expr_type(val, env)?;
@@ -2297,6 +2363,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
+            | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

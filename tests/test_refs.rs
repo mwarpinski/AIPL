@@ -4,18 +4,27 @@
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
-use aipl_core::parser::Parser;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
-use wasmtime::{Engine, Instance, Module as WasmModule, Store, TypedFunc};
+use wasmtime::{Engine, Module as WasmModule, TypedFunc};
+
+/// The program as the toolchain reads it: resolved when it imports (an
+/// allocation names its allocator from std/alloc), else just parsed.
+fn parse_program(src: &str) -> Result<aipl_core::ast::Module, String> {
+    if src.contains("(import ") {
+        aipl_core::resolver::Resolver::resolve_source(src, &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inline.aipl"))
+    } else {
+        aipl_core::parser::Parser::parse(src)
+    }
+}
 
 fn check_err(src: &str) -> String {
-    let m = Parser::parse(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
+    let m = parse_program(src).unwrap_or_else(|e| panic!("parse failed: {e}"));
     TypeChecker::new().check_module(&m).expect_err("expected a checker error")
 }
 
 fn run_both(src: &str, f: &str) -> i32 {
-    let module = Parser::parse(src).unwrap();
+    let module = parse_program(src).unwrap();
     TypeChecker::new().check_module(&module).unwrap_or_else(|e| panic!("check failed: {e}"));
     let mut vm = VM::new();
     vm.load_module(module.clone());
@@ -28,15 +37,18 @@ fn run_both(src: &str, f: &str) -> i32 {
     wasmparser::Validator::new().validate_all(&wasm).expect("valid wasm");
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let func: TypedFunc<(), i32> = inst.get_typed_func(&mut store, f).unwrap();
     assert_eq!(vm_val, func.call(&mut store, ()).unwrap(), "VM and wasm disagree on {f}");
     vm_val
 }
 
 pub const REFS_PROGRAM: &str = r#"
-(module refs
+(module refs (import alloc)
   (struct Op [apply:(fn [i32 i32] -> i32) name:str])
   (fn add [a:i32 b:i32] -> i32 (+ a b))
   (fn mul [a:i32 b:i32] -> i32 (* a b))
@@ -44,10 +56,10 @@ pub const REFS_PROGRAM: &str = r#"
   (fn twice [f:(fn [i32 i32] -> i32) x:i32] -> i32
     (call_ref (fn [i32 i32] -> i32) f x x))
   (fn main [] -> i32
-    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) 2))
+    (let ops:(arr (fn [i32 i32] -> i32)) (arr.new (fn [i32 i32] -> i32) (call alloc.forever) 2))
     (arr.set (fn [i32 i32] -> i32) ops 0 (ref add))
     (arr.set (fn [i32 i32] -> i32) ops 1 (ref mul))
-    (let o:(ptr Op) (new Op))
+    (let o:(ptr Op) (new Op (call alloc.forever)))
     (put o Op.apply (ref mul))
     (let n:i64 (call_ref (fn [i64] -> i64) (ref neg) 5i64))
     (+ (call twice (arr.get (fn [i32 i32] -> i32) ops 0) 20)
@@ -109,8 +121,11 @@ fn refs_in_an_imported_module_point_at_its_qualified_functions() {
     let wasm = WasmCompiler::compile(&module).unwrap();
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let f: TypedFunc<(), i32> = inst.get_typed_func(&mut store, "main").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 36);
 }

@@ -21,8 +21,8 @@
   (fn try_line [line:str] -> void
     (let a:alloc.Allocator (call alloc.default))
     (let argv:(ptr (vec.Vec str)) (call (vec.make str) a 8))
-    (let parts:(ptr (vec.Vec (ptr str.Bytes))) (call text.fields a (call str.from_str line)))
-    (for k 0 (call (vec.len (ptr str.Bytes)) parts) (call (vec.push str) argv (call str.from_bytes (call (vec.at (ptr str.Bytes)) parts k))))
+    (let parts:(ptr (vec.Vec str.Bytes)) (call text.fields a (call str.from_str line)))
+    (for k 0 (call (vec.len str.Bytes) parts) (call (vec.push str) argv (call str.from_bytes (call (vec.at str.Bytes) parts k))))
     (match_result (call cli.parse_list (call spec a) argv)
       (ok args
         (block

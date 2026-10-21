@@ -35,7 +35,7 @@
 
   ;; A parser for the program `name`, which does `about`.
   (fn parser [a:alloc.Allocator name:str about:str] -> (ptr Parser) (pub)
-    (let p:(ptr Parser) (call (alloc.create Parser) a))
+    (let p:(ptr Parser) (new Parser a))
     (put p Parser.name name)
     (put p Parser.about about)
     (put p Parser.specs (call (vec.make (ptr Spec)) a 8))
@@ -43,7 +43,7 @@
     p)
 
   (fn add [p:(ptr Parser) kind:Kind name:str short:str help:str default:str] -> void
-    (let s:(ptr Spec) (new Spec))
+    (let s:(ptr Spec) (new Spec (call alloc.forever)))
     (put s Spec.kind kind)
     (put s Spec.name name)
     (put s Spec.short short)
@@ -115,7 +115,7 @@
         (format "    --{(get s Spec.name)}{v}")))
 
   (fn upper [s:str] -> str
-    (let b:(ptr str.Bytes) (call str.from_str s))
+    (let b:str.Bytes (call str.from_str s))
     (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
     (for k 0 (get b str.Bytes.len)
       (let c:i32 (call str.byte_at b k))
@@ -126,7 +126,7 @@
 
   ;; ===== Parsing =====
 
-  (fn find_long [p:(ptr Parser) name:(ptr str.Bytes)] -> (ptr Spec)
+  (fn find_long [p:(ptr Parser) name:str.Bytes] -> (ptr Spec)
     (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
     (for k 0 (call (vec.len (ptr Spec)) specs)
       (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
@@ -138,7 +138,7 @@
     (let specs:(ptr (vec.Vec (ptr Spec))) (get p Parser.specs))
     (for k 0 (call (vec.len (ptr Spec)) specs)
       (let s:(ptr Spec) (call (vec.at (ptr Spec)) specs k))
-      (let sb:(ptr str.Bytes) (call str.from_str (get s Spec.short)))
+      (let sb:str.Bytes (call str.from_str (get s Spec.short)))
       (when (and (eq (get sb str.Bytes.len) 1) (eq (call str.byte_at sb 0) c)) (return s)))
     (ptr.null Spec))
 
@@ -151,14 +151,14 @@
     (call (vec.push str) names name)
     (call (vec.push str) (get args Args.values) value))
 
-  (fn text_of [b:(ptr str.Bytes) from:i32] -> str
+  (fn text_of [b:str.Bytes from:i32] -> str
     (call str.from_bytes (call str.slice b from (- (get b str.Bytes.len) from))))
 
   ;; The arguments in argv (argument 1 on, as os.arg gives them), or the
   ;; first that does not fit, with a hint; "help" when --help was asked.
   (fn parse_list [p:(ptr Parser) argv:(ptr (vec.Vec str))] -> (result (ptr Args) str) (pub)
     (let a:alloc.Allocator (get p Parser.a))
-    (let args:(ptr Args) (new Args))
+    (let args:(ptr Args) (new Args (call alloc.forever)))
     (put args Args.names (call (vec.make str) a 8))
     (put args Args.values (call (vec.make str) a 8))
     (put args Args.rest (call (vec.make str) a 4))
@@ -173,7 +173,7 @@
     (let n:i32 (call (vec.len str) argv))
     (while (lt i n)
       (let arg:str (call (vec.at str) argv i))
-      (let b:(ptr str.Bytes) (call str.from_str arg))
+      (let b:str.Bytes (call str.from_str arg))
       (let len:i32 (get b str.Bytes.len))
       (cond
         ((or options_end (or (lt len 2) (neq (call str.byte_at b 0) 45))) (call (vec.push str) positionals arg))
@@ -182,7 +182,7 @@
         ;; --name, --name=value
         ((eq (call str.byte_at b 1) 45)
          (let eq_at:i32 (call str.find_byte b 61))
-         (let name:(ptr str.Bytes) (call str.slice b 2 (- (if (lt eq_at 0) len eq_at) 2)))
+         (let name:str.Bytes (call str.slice b 2 (- (if (lt eq_at 0) len eq_at) 2)))
          (let s:(ptr Spec) (call find_long p name))
          (when (eq s (ptr.null Spec)) (return (err:(ptr Args) (format "unknown option '{arg}'"))))
          (cond
@@ -246,7 +246,7 @@
           (if (call str.same why "help")
               (block (print "{(call usage p)}") (sys.exit 0))
               (block (eprintln "{(get p Parser.name)}: {why} ({(get p Parser.name)} --help shows the options)") (sys.exit 2)))
-          (new Args)))))
+          (new Args (call alloc.forever))))))
 
   ;; ===== Values =====
 

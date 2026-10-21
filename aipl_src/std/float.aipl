@@ -13,6 +13,7 @@
 ;; and the remainder decides the rounding.
 (module float
   (import bigint)
+  (import alloc)
 
   ;; The f64 nearest the decimal number at (addr, len): an optional sign,
   ;; digits with one '.' and at least one digit, then optionally 'e' or
@@ -74,10 +75,16 @@
        ;; 9 decimal digits fit in a 32-bit limb (10^9 < 2^30); room for the
        ;; larger of the two numbers, plus the scaling to within 2^60 of it
        (let limbs:i32 (+ (/ (+ sig (if (lt p 0) (- 0 p) p)) 9) 8))
-       (let n:(ptr bigint.Int) (call bigint.with_capacity limbs))
-       (let chunk:(ptr bigint.Int) (call bigint.with_capacity 4))
+       ;; the numbers come from the shared heap and go back to it
+       (let a:alloc.Allocator (call alloc.default))
+       (let n:(ptr bigint.Int) (call bigint.with_capacity a limbs))
+       (let chunk:(ptr bigint.Int) (call bigint.with_capacity a 4))
+       (let scratch:(ptr bigint.Int) (call bigint.with_capacity a limbs))
        (call read_digits n chunk addr digits_at digits_end)
-       (set! v (f64.reinterpret_i64 (call nearest_bits n (call bigint.with_capacity limbs) p)))))
+       (set! v (f64.reinterpret_i64 (call nearest_bits n scratch p)))
+       (call bigint.free scratch)
+       (call bigint.free chunk)
+       (call bigint.free n)))
     (if neg (f64.reinterpret_i64 (bitor (i64.reinterpret_f64 v) -9223372036854775808i64)) v))
 
   (fn is_mantissa_char [c:i32] -> bool (or (eq c 46) (and (gte c 48) (lte c 57))))

@@ -35,16 +35,48 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false))
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768))
+
+  ;; compile_file with memory's maximum lowered to max_pages (--max-memory).
+  (fn compile_file_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages))
 
   ;; compile_file for the file's test build (resolver.rs resolve_tests): its
   ;; (test ...) items as functions, and a _start running the one its first
   ;; argument names.
   (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true))
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768))
 
-  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool] -> (ptr Out)
-    (unsafe (let res:(ptr Out) (new Out))
+  ;; compile_tests with memory's maximum lowered to max_pages.
+  (fn compile_tests_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages))
+
+  ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
+  ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
+  ;; 64 KiB pages from 1M to 2G.
+  (fn memory_pages [t:str.Bytes] -> i32 (pub)
+    (let n:i32 (get t str.Bytes.len))
+    (let digits:i32 0)
+    (while (and (lt digits n) (and (gte (call str.byte_at t digits) 48) (lte (call str.byte_at t digits) 57)))
+      (set! digits (+ digits 1)))
+    (if (or (eq digits 0) (or (gt digits 10) (gt (- n digits) 1))) (return -1) (block))
+    (let shift:i64 (if (eq digits n) 0i64
+                       (cond ((eq (call str.byte_at t digits) 75) 10i64)
+                             ((eq (call str.byte_at t digits) 77) 20i64)
+                             ((eq (call str.byte_at t digits) 71) 30i64)
+                             (else -1i64))))
+    (if (lt shift 0i64) (return -1) (block))
+    (let v:i64 0i64)
+    (loop i 0 (- digits 1) 1
+      (set! v (+ (* v 10i64) (i64.extend_s (- (call str.byte_at t i) 48)))))
+    ;; at most 10 digits: v < 2^34, and shifted by 30 < 2^64
+    (let bytes:i64 (shl v shift))
+    (if (neq (bitand bytes 65535i64) 0i64) (return -1) (block))
+    (let pages:i64 (shru bytes 16i64))
+    (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
+
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32] -> (ptr Out)
+    (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))
@@ -64,8 +96,8 @@
         (block))
     (if (gt (call buf.len arch) 0)
         (block
-          (let at:(ptr str.Bytes) (call buf.bytes arch))
-          (let ap:(ptr checker.Problem) (call front.check (get at str.Bytes.addr) (get at str.Bytes.len)))
+          (let at:str.Bytes (call buf.bytes arch))
+          (let ap:(ptr checker.Problem) (call front.check (call str.addr at) (get at str.Bytes.len)))
           (if (neq ap (ptr.null checker.Problem))
               (block (call put_text res 3 (call locate orig agen ap (call str.bytes path_addr path_len))) (return res))
               (block)))
@@ -73,20 +105,20 @@
     (if (not (call resolver.expand_generics pre out err orig gen))
         (block (call put_text res 1 err) (return res))
         (block))
-    (let flat:(ptr str.Bytes) (call buf.bytes out))
+    (let flat:str.Bytes (call buf.bytes out))
     (let fmts:(ptr (vec.Vec (ptr checker.Fmt))) (call (vec.make (ptr checker.Fmt)) (call alloc.default) 8))
-    (let problem:(ptr checker.Problem) (call front.check_formats (get flat str.Bytes.addr) (get flat str.Bytes.len) fmts))
+    (let problem:(ptr checker.Problem) (call front.check_formats (call str.addr flat) (get flat str.Bytes.len) fmts))
     (if (neq problem (ptr.null checker.Problem))
         (block (call put_text res 3 (call locate orig gen problem (call str.bytes path_addr path_len))) (return res))
         (block))
     ;; the formatting forms become std/show calls (fmtlower.aipl)
     (let lowered:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get flat str.Bytes.len) 1024)))
     (let low:(ptr origins.Origins) (call origins.make))
-    (let n:i32 (if (call fmtlower.lower (get flat str.Bytes.addr) (get flat str.Bytes.len) fmts lowered low)
+    (let n:i32 (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
                    (block
-                     (let lt:(ptr str.Bytes) (call buf.bytes lowered))
-                     (call codegen.compile_lowered (get lt str.Bytes.addr) (get lt str.Bytes.len) gen orig low))
-                   (call codegen.compile_mapped (get flat str.Bytes.addr) (get flat str.Bytes.len) gen orig)))
+                     (let lt:str.Bytes (call buf.bytes lowered))
+                     (call codegen.compile_lowered (call str.addr lt) (get lt str.Bytes.len) gen orig low max_pages))
+                   (call codegen.compile_mapped (call str.addr flat) (get flat str.Bytes.len) gen orig max_pages)))
     (if (gt n 0)
         (block
           (put res Out.status 0)
@@ -99,13 +131,13 @@
     res))
 
   (fn put_text [res:(ptr Out) status:i32 b:(ptr buf.Buf)] -> void
-    (let t:(ptr str.Bytes) (call buf.bytes b))
+    (let t:str.Bytes (call buf.bytes b))
     (put res Out.status status)
-    (put res Out.addr (get t str.Bytes.addr))
+    (put res Out.addr (call str.addr t))
     (put res Out.len (get t str.Bytes.len)))
 
   ;; "path: line:col: message" for each error, one per line.
-  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
+  (fn locate [orig:(ptr origins.Origins) gen:(ptr origins.Origins) first:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
     (let pr:(ptr checker.Problem) first)
     (while (neq pr (ptr.null checker.Problem))
@@ -117,20 +149,20 @@
   ;; "path: line:col: message" for an error at an offset in the flat
   ;; program: through gen (empty when there were no generics) to the
   ;; resolver's text, through orig to a file.
-  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:(ptr str.Bytes)] -> (ptr buf.Buf)
+  (fn locate_one [orig:(ptr origins.Origins) gen:(ptr origins.Origins) pr:(ptr checker.Problem) entry:str.Bytes] -> (ptr buf.Buf)
     (let at:i32 (get pr checker.Problem.at))
     (let g:(ptr origins.Entry) (call origins.find gen at))
     (if (neq g (ptr.null origins.Entry)) (set! at (get g origins.Entry.pos)) (block))
     (let r:(ptr origins.Entry) (call origins.find orig at))
     (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 160))
-    (let path:(ptr str.Bytes) entry)
+    (let path:str.Bytes entry)
     (let line:i32 1)
     (let col:i32 1)
     (if (and (neq r (ptr.null origins.Entry)) (gte (get r origins.Entry.file) 0))
         (block
           (let f:(ptr origins.File) (call origins.file_at orig (get r origins.Entry.file)))
           (set! path (get f origins.File.path))
-          (let lc:(ptr compiler.LineCol) (call compiler.line_col (get (get f origins.File.text) str.Bytes.addr) (get r origins.Entry.pos)))
+          (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get f origins.File.text)) (get r origins.Entry.pos)))
           (set! line (get lc compiler.LineCol.line))
           (set! col (get lc compiler.LineCol.col)))
         (block))
@@ -143,8 +175,8 @@
     (call buf.push_bytes b (call buf.bytes (get pr checker.Problem.text)))
     b)
 
-  (fn write_err [b:(ptr str.Bytes)] -> void
-    (unsafe (fs.write 2 (get b str.Bytes.addr) (get b str.Bytes.len))))
+  (fn write_err [b:str.Bytes] -> void
+    (unsafe (fs.write 2 (call str.addr b) (get b str.Bytes.len))))
 
   ;; driver ENTRY.aipl OUT.wasm: 0 on success, 1 on a resolve, type,
   ;; compile, or write error (reported on stderr), 2 on bad usage.
@@ -152,16 +184,16 @@
     (unsafe (if (neq (call os.arg_count) 3)
         (block (call io.eprintln "usage: driver ENTRY.aipl OUT.wasm") (return 2))
         (block))
-    (let std_dir:(ptr str.Bytes) (call os.env "AIPL_STD"))
+    (let std_dir:str.Bytes (call os.env "AIPL_STD"))
     (if (lt (get std_dir str.Bytes.len) 0) (set! std_dir (call str.from_str "aipl_src/std/")) (block))
-    (let entry:(ptr str.Bytes) (call os.arg 1))
-    (let out:(ptr str.Bytes) (call os.arg 2))
-    (let res:(ptr Out) (call compile_file (get entry str.Bytes.addr) (get entry str.Bytes.len)
-                                          (get std_dir str.Bytes.addr) (get std_dir str.Bytes.len)))
+    (let entry:str.Bytes (call os.arg 1))
+    (let out:str.Bytes (call os.arg 2))
+    (let res:(ptr Out) (call compile_file (call str.addr entry) (get entry str.Bytes.len)
+                                          (call str.addr std_dir) (get std_dir str.Bytes.len)))
     (let status:i32 (get res Out.status))
     (cond
       ((eq status 0)
-       (let wasm:(ptr str.Bytes) (call str.bytes (get res Out.addr) (get res Out.len)))
+       (let wasm:str.Bytes (call str.bytes (get res Out.addr) (get res Out.len)))
        (if (eq (call io.write_path out wasm) (get res Out.len))
            (block
              (call io.println_int "compiled, bytes: " (get res Out.len))

@@ -34,7 +34,7 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
     Ok(m)
 }
 
-/// The programs and the checksum each one's main returns: every form, and
+/// The programs and the checksum each one's `checksum` returns: every form, and
 /// every way through control flow.
 const PROGRAMS: [(&str, i64); 4] = [
     ("tests/aipl/values.aipl", 649),
@@ -50,7 +50,7 @@ fn values_programs_run_in_the_vm() {
         TypeChecker::new().check_module(&m).unwrap();
         let mut vm = VM::new();
         vm.load_module(m);
-        assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(sum), "{path}");
+        assert_eq!(vm.invoke("checksum", vec![]).unwrap(), Value::Int(sum), "{path}");
     }
 }
 
@@ -75,7 +75,7 @@ fn printer_round_trips_value_structs() {
 /// Every rule of a value struct, with its message (after the position).
 #[test]
 fn value_struct_rules_have_messages() {
-    let header = "(module m\n  (struct V [x:i32 y:i32] (value))\n  (struct P [v:V n:i32])\n  ";
+    let header = "(module m (import alloc)\n  (struct V [x:i32 y:i32] (value))\n  (struct P [v:V n:i32])\n  ";
     let cases: &[(&str, &str)] = &[
         ("(struct E [] (value)) (fn main [] -> i32 0)", "value struct 'E' has no fields"),
         ("(struct S [s:str] (value)) (fn main [] -> i32 0)", "Field 's' of value struct 'S': a value struct holds numbers, bools, enums, pointers, arrays, function references, and value structs, not str"),
@@ -84,22 +84,22 @@ fn value_struct_rules_have_messages() {
         ("(struct A [b:B] (value)) (struct B [a:A] (value)) (fn main [] -> i32 0)", "value struct 'A' contains itself (through field 'b'): a value has a fixed size; hold it through a pointer"),
         ("(struct Big [a:V b:V c:V d:V e:i32] (value)) (fn main [] -> i32 0)", "value struct 'Big' holds 9 scalars, counting the value structs in it; at most 8: keep a larger record behind a pointer"),
         ("(fn main [] -> i32 (let p:(ptr V) (ptr.null V)) 0)", "'V' is a value struct, which has no address: write V, not (ptr V)"),
-        ("(fn main [] -> i32 (let v:V (new V)) 0)", "'V' is a value struct: make one with (make V field-values...), not new"),
+        ("(fn main [] -> i32 (let v:V (new V (call alloc.forever))) 0)", "alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"),
         ("(fn main [] -> i32 (let v:V (make V 1)) 0)", "make V takes 2 field value(s) (x y), got 1"),
         ("(fn main [] -> i32 (let v:V (make V 1 true)) 0)", "make V: field 'y' is i32, got bool"),
         ("(fn main [] -> i32 (let v:V (make V 1 2)) (put v V.x 3) 0)", "a value struct's fields do not change: (with v V.x x) is a copy with one changed"),
         ("(fn main [] -> i32 (let v:V (make V 1 2)) (if (eq v v) 1 0))", "eq on value struct 'V': value structs do not compare; implement cmp.Eq for it (section 4.H) and call (cmp.Eq.same V)"),
         ("(fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.z 3)) 0)", "Struct 'V' has no field 'z'"),
         ("(fn main [] -> i32 (let v:V (make V 1 2)) (let w:V (with v V.x true)) 0)", "with V.x: expected i32, got bool"),
-        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (let w:V (with p V.x 1)) 0)", "with V.x needs a V, got (ptr P)"),
-        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (let w:(ptr P) (with p P.n 1)) 0)", "with makes a copy of a value struct, and 'P' is not one: change a field with (put p P.n x)"),
-        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (get p V.x))", "get V.x needs a V, got (ptr P)"),
-        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (put p P.n V.x 3) 0)", "put path: P.n is i32, not the value struct V"),
-        ("(fn main [] -> i32 (let p:(ptr P) (new P)) (put p P.v V.x true) 0)", "Type mismatch writing to field 'V.x': expected i32, got bool"),
-        ("(fn main [] -> i32 (let a:(arr i32) (arr.new i32 2)) (arr.set i32 a 0 V.x 3) 0)", "arr.set path: the elements are i32, not the value struct V"),
-        ("(fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.x true) 0)", "arr.set value mismatch: expected i32, got bool"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (let w:V (with p V.x 1)) 0)", "with V.x needs a V, got (ptr P)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (let w:(ptr P) (with p P.n 1)) 0)", "with makes a copy of a value struct, and 'P' is not one: change a field with (put p P.n x)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p V.x))", "get V.x needs a V, got (ptr P)"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (put p P.n V.x 3) 0)", "put path: P.n is i32, not the value struct V"),
+        ("(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (put p P.v V.x true) 0)", "Type mismatch writing to field 'V.x': expected i32, got bool"),
+        ("(fn main [] -> i32 (let a:(arr i32) (arr.new i32 (call alloc.forever) 2)) (arr.set i32 a 0 V.x 3) 0)", "arr.set path: the elements are i32, not the value struct V"),
+        ("(fn main [] -> i32 (let a:(arr V) (arr.new V (call alloc.forever) 2)) (arr.set V a 0 V.x true) 0)", "arr.set value mismatch: expected i32, got bool"),
         ("(fn main [] -> i32 (make P 1 2))", "make names a value struct or a union variant (Union.variant), got P"),
-        ("(fn main [] -> i32 (let a:V (make V 1 2)) (put (new P) P.v (get a V.x)) 0)", "Type mismatch writing to field 'P.v': expected V, got i32"),
+        ("(fn main [] -> i32 (let a:V (make V 1 2)) (put (new P (call alloc.forever)) P.v (get a V.x)) 0)", "Type mismatch writing to field 'P.v': expected V, got i32"),
     ];
     for (k, (body, want)) in cases.iter().enumerate() {
         let src = format!("{}{})", header, body);
@@ -110,8 +110,8 @@ fn value_struct_rules_have_messages() {
     }
     // and what is allowed
     for body in [
-        "(fn main [] -> i32 (let p:(ptr P) (new P)) (get p P.v V.x))",
-        "(fn main [] -> i32 (let a:(arr V) (arr.new V 2)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y))",
+        "(fn main [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.v V.x))",
+        "(fn main [] -> i32 (let a:(arr V) (arr.new V (call alloc.forever) 2)) (arr.set V a 0 V.y 3) (arr.get V a 0 V.y))",
         "(fn f [v:V] -> V (with v V.x (+ (get v V.x) 1))) (fn main [] -> i32 (get (call f (make V 1 2)) V.x))",
         "(struct W [a:V b:(ptr P) c:(arr V) d:(fn [V] -> V)] (value)) (fn main [] -> i32 (sizeof W))",
     ] {
@@ -132,11 +132,11 @@ fn value_structs_across_modules() {
       (fn moved [p:Pt dx:i32] -> Pt (pub) (with p Pt.x (+ (get p Pt.x) dx))))";
     let main = |body: &str| {
         format!(
-            "(module main (import geo)
+            "(module main (import alloc) (import geo)
                (fn main [] -> i32
                  (let p:geo.Pt (make geo.Pt 3 4))
                  (let s:geo.Sealed (call geo.sealed 5))
-                 (let h:(ptr geo.Holder) (new geo.Holder))
+                 (let h:(ptr geo.Holder) (new geo.Holder (call alloc.forever)))
                  {body}
                  0))"
         )
@@ -179,7 +179,7 @@ fn value_structs_as_type_arguments() {
     assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(3 + 16));
     let bad = "(module m (import alloc)
       (struct V [x:i32] (value))
-      (fn main [] -> i32 (let p:(ptr V) (call (alloc.create V) (call alloc.default))) 0))";
+      (fn main [] -> i32 (let p:(ptr V) (new V (call alloc.default))) 0))";
     let err = check_files("kinds_bad", &[("m.aipl", bad)]).unwrap_err();
     assert!(err.ends_with("alloc.create<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address"), "{err}");
     // (pub) after (value), not before
@@ -202,7 +202,7 @@ fn the_aipl_resolver_agrees_on_value_structs() {
     // the kinds of type arguments, and malformed forms, in both resolvers
     for (src, want) in [
         (
-            "(module m (struct V [x:i32] (value)) (fn (mk T) [] -> (ptr T) (where (struct T)) (new T)) (fn main [] -> i32 (let p:(ptr V) (call (mk V))) 0))",
+            "(module m (import alloc) (struct V [x:i32] (value)) (fn (mk T) [] -> (ptr T) (where (struct T)) (new T (call alloc.forever))) (fn main [] -> i32 (let p:(ptr V) (call (mk V))) 0))",
             "mk<V>: T must be a struct used through a pointer (where (struct T)), and V is a value struct, which has no address",
         ),
         (
@@ -222,7 +222,7 @@ fn the_aipl_resolver_agrees_on_value_structs() {
 }
 
 /// main's result under wasmtime, or the error.
-fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+fn wasm_call(wasm: &[u8], name: &str) -> Result<i32, String> {
     use wasmtime::{Engine, Linker, Module, Store};
     use wasmtime_wasi::p1::WasiP1Ctx;
     let engine = Engine::default();
@@ -231,8 +231,12 @@ fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).map_err(|e| format!("{e:?}"))?;
-    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    let main = inst.get_typed_func::<(), i32>(&mut store, name).unwrap();
     main.call(&mut store, ()).map_err(|e| format!("{e:?}"))
+}
+
+fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+    wasm_call(wasm, "main")
 }
 
 #[test]
@@ -242,7 +246,7 @@ fn values_programs_run_under_wasmtime() {
         TypeChecker::new().check_module(&m).unwrap();
         let wasm = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wasm).unwrap_or_else(|e| panic!("{path}: {e}"));
-        assert_eq!(wasm_main(&wasm), Ok(sum as i32), "{path}");
+        assert_eq!(wasm_call(&wasm, "checksum"), Ok(sum as i32), "{path}");
     }
 }
 
@@ -287,12 +291,14 @@ fn contract_messages_show_values_as_aipl() {
 fn unions_by_value_are_decided_as_specified() {
     let m = Resolver::resolve(&root().join("tests/aipl/unions_by_value.aipl")).unwrap();
     let st = aipl_core::checker::Structs::new(&m.structs, &m.unions);
-    let mut values: Vec<&str> = st.by_value.keys().map(String::as_str).filter(|n| !n.contains('<') || n.contains("Vec2") || n.contains("Shape")).collect();
+    // every union is a value: the program's own, and the Options it names
+    let mut values: Vec<&str> = st.by_value.keys().map(String::as_str).filter(|n| !n.contains('<') || n.contains("Vec2") || n.contains("Outer")).collect();
     values.sort();
-    // Tagged and Option of Shape hold a whole Shape (8 slots) and a tag: 9;
-    // List and Chain contain themselves, Named a str, Wide needs 9 slots;
-    // HoldsWide holds Wide by address (one slot); Outer holds Inner by value
-    assert_eq!(values, ["HoldsWide", "Inner", "Outer", "Shape", "option.Option<Vec2>"]);
+    assert_eq!(values, ["Chain", "HoldsWide", "Inner", "List", "Named", "Outer", "Shape", "Tagged", "Wide", "alloc.Allocator", "option.Option<Outer>", "option.Option<Vec2>"]);
+    assert_eq!(st.unions.len(), st.by_value.len());
+    // a str is one slot; Tagged holds a pointer where its Shape was
+    assert_eq!(st.by_value["Tagged"].slots.len(), 3);
+    assert_eq!(st.by_value["Named"].slots, [aipl_core::ast::Type::I32, aipl_core::ast::Type::I32]);
     assert_eq!(st.by_value["Outer"].slots.len(), 4);
     use aipl_core::ast::Type::*;
     let shape = &st.by_value["Shape"];
@@ -388,9 +394,59 @@ fn results_by_value_are_decided_as_specified() {
     assert!(st.result_layout(&r(I64, Bool), &I32).is_some());
     // Vec2's two f64s beside Shape's slots (tag, two i32s, f64): six
     assert_eq!(st.result_layout(&vec2, &shape).unwrap().slots.len(), 6);
-    // four f64s beside four i32s: nine, a cell; a str side: a cell
-    assert_eq!(st.result_layout(&Struct("Quad".into()), &Struct("Ints".into())), None);
-    assert_eq!(st.result_layout(&I32, &Str), None);
+    // a str side: the tag and one shared i32 slot
+    assert_eq!(st.result_layout(&I32, &Str).unwrap().slots, [I32, I32]);
+    // four f64s beside four i32s: nine, which the checker refuses
+    let quad4 = aipl_core::ast::StructDef { name: "Quad4".into(), is_value: true, ..m.structs.iter().find(|s| s.name == "Quad").unwrap().clone() };
+    let st = aipl_core::checker::Structs::new(&[m.structs.clone(), vec![quad4]].concat(), &m.unions);
+    assert_eq!(st.result_slots(&Struct("Quad4".into()), &Struct("Ints".into())), 9);
+    assert_eq!(st.result_layout(&Struct("Quad4".into()), &Struct("Ints".into())), None);
+}
+
+/// A result is held by value, so one that needs more than eight slots is
+/// refused (MEMORY_PLAN.md M4), where its type is written and where one is
+/// made, with the same error from both toolchains.
+#[test]
+fn a_result_over_eight_slots_is_refused_by_both_toolchains() {
+    let defs = "  (struct Q [a:f64 b:f64 c:f64 d:f64] (value))\n  (struct I [a:i32 b:i32 c:i32 d:i32] (value))\n";
+    for (name, body, want) in [
+        ("written", "  (fn f [r:(result Q I)] -> i32 0)\n  (fn main [] -> i32 0))\n", "(result Q I) needs 9 slots"),
+        ("made", "  (fn main [] -> i32 (match_result (err:Q (make I 1 2 3 4)) (ok q 1) (err e 0))))\n", "4:36: (result Q I) needs 9 slots"),
+    ] {
+        let dir = scratch(&format!("wide_result_{name}"));
+        let file = dir.join("m.aipl");
+        std::fs::write(&file, format!("(module m\n{defs}{body}")).unwrap();
+        let module = Resolver::resolve(&file).unwrap();
+        let rust = aipl_core::checker::TypeChecker::new().check_module(&module).map(|_| ()).expect_err(name);
+        let aipl = aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).expect_err(name);
+        assert!(rust.contains(want), "{name}: {rust}");
+        assert!(rust.contains("more than the 8 a value holds: keep the larger side's data in a struct that is not (value) and make that side a (ptr S)"), "{rust}");
+        assert!(aipl.contains(&rust), "{name}: {aipl} / {rust}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Every union is a value (MEMORY_PLAN.md M4), so one that contains
+/// itself, directly or through another union, or needs more than eight
+/// slots is refused, with the same error from both toolchains.
+#[test]
+fn a_union_that_cannot_be_a_value_is_refused_by_both_toolchains() {
+    let shown = |n: &str| format!("union '{n}' contains itself (");
+    for (name, body, want) in [
+        ("direct", "  (union List [(nil) (cons head:i32 tail:List)])\n", format!("2:3: {}List.cons's field 'tail' has type List): a union is a value, so hold that field through a pointer, a (ptr S) to a struct that holds it", shown("List"))),
+        ("through", "  (union A [(one b:B) (none)])\n  (union B [(two a:A) (none)])\n", format!("2:3: {}A.one's field 'b' has type B)", shown("A"))),
+        ("wide", "  (union W [(small n:i32) (nine a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64)])\n", "2:3: union 'W' needs 10 slots, more than the 8 a value holds: move the fields of its widest variant, W.nine (8 slots), into a struct and hold a (ptr S)".to_string()),
+    ] {
+        let dir = scratch(&format!("refused_union_{name}"));
+        let file = dir.join("m.aipl");
+        std::fs::write(&file, format!("(module m\n{body}  (fn main [] -> i32 0))\n")).unwrap();
+        let module = Resolver::resolve(&file).unwrap();
+        let rust = aipl_core::checker::TypeChecker::new().check_module(&module).map(|_| ()).expect_err(name);
+        let aipl = aipl_core::selfhost::compile_with_aipl(&file).map(|_| ()).expect_err(name);
+        assert!(rust.contains(&want), "{name}: {rust}");
+        assert!(aipl.contains(&rust), "{name}: {aipl} / {rust}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Malformed items the program fuzzer found (tools/fuzz.py): an empty item

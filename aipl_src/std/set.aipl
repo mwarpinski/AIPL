@@ -1,5 +1,5 @@
 ;; std/set: a hash set of any type with a cmp.Hash implementation (i32,
-;; i64, str, and (ptr str.Bytes) by its contents come with std/cmp).
+;; i64, str, and str.Bytes by its contents come with std/cmp).
 ;;
 ;;   (let s:(ptr (set.Set str)) (call (set.make str) a 16))
 ;;   (let _new:bool (call (set.add str) s "apple"))
@@ -19,7 +19,7 @@
 
   ;; An empty set with room for about `capacity` items, from a.
   (fn (make K) [a:alloc.Allocator capacity:i32] -> (ptr (Set K)) (pub) (where (cmp.Hash K))
-    (let s:(ptr (Set K)) (call (alloc.create (Set K)) a))
+    (let s:(ptr (Set K)) (new (Set K) a))
     (put s (Set K) m (call (map.make K bool) a capacity))
     (put s (Set K) a a)
     s)

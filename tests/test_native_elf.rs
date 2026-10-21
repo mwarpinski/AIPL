@@ -20,7 +20,7 @@ fn runtime() -> aipl_core::ast::Module {
     m
 }
 
-/// runtime.hello_exe in the VM: the bytes of the (ptr str.Bytes) it returns.
+/// runtime.hello_exe in the VM: the bytes of the str.Bytes it returns.
 fn hello_from_vm() -> Vec<u8> {
     let mut vm = VM::new();
     vm.load_module(runtime());

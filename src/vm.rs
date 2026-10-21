@@ -34,6 +34,9 @@ pub enum Value {
 /// concurrency, instead of each thread getting its own disconnected copy.
 pub struct SharedMemory {
     pub bytes: Vec<u8>,
+    /// The most pages memory may grow to: MAX_PAGES, or lower with
+    /// `--max-memory` (set_max_pages), as a compiled module declares it.
+    pub max_pages: usize,
 }
 
 /// One wasm page.
@@ -103,6 +106,9 @@ pub struct VM {
     /// "." and ".." first as wasmtime gives them; a cookie is an index.
     dirs: HashMap<i32, Vec<(Vec<u8>, u8)>>,
     next_fd: i32,
+    /// Sockets (aipl_net_v1) and the grants they need, shared by every
+    /// thread of the program.
+    net: crate::net::Net,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     /// String literal -> address of its interned bytes, laid out exactly as
     /// the wasm backend's data segment (wasm::string_layout).
@@ -130,10 +136,6 @@ pub struct VM {
     /// Each function's source file name (Module::sources, file_names), for
     /// the positions in a call chain.
     places: Arc<HashMap<String, String>>,
-    /// The type of each `ok`/`err` payload, by the payload expression's
-    /// address (TypeChecker::payload_types): a result cell's size depends on
-    /// it and is claimed before the payload runs.
-    payloads: Arc<HashMap<usize, Type>>,
 }
 
 impl Default for VM {
@@ -152,6 +154,7 @@ impl VM {
             enums: Arc::new(HashMap::new()),
             flow: None,
             shared: Arc::new(Mutex::new(SharedMemory {
+                max_pages: MAX_PAGES,
                 bytes: {
                     // 16 pages, with the heap cursor at address 0 pre-set to
                     // HEAP_START - exactly what the wasm backend's data
@@ -164,6 +167,7 @@ impl VM {
             fd_table: HashMap::new(),
             dirs: HashMap::new(),
             next_fd: 3,
+            net: crate::net::Net::new(Vec::new()),
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
@@ -174,7 +178,6 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::new(HashMap::new()),
-            payloads: Arc::new(HashMap::new()),
         }
     }
 
@@ -195,6 +198,7 @@ impl VM {
             fd_table: HashMap::new(),
             dirs: HashMap::new(),
             next_fd: 3,
+            net: self.net.clone(),
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
@@ -204,7 +208,6 @@ impl VM {
             error_at: None,
             trace: Vec::new(),
             places: Arc::clone(&self.places),
-            payloads: Arc::clone(&self.payloads),
             stdin: self.stdin.clone(),
         }
     }
@@ -212,6 +215,16 @@ impl VM {
     /// The command line `args.*` report, argv[0] first.
     pub fn set_args(&mut self, args: Vec<String>) {
         self.args = Arc::new(args);
+    }
+
+    /// The most pages memory may grow to (`--max-memory`), at most MAX_PAGES.
+    pub fn set_max_pages(&mut self, pages: usize) {
+        self.shared.lock().unwrap().max_pages = pages.min(MAX_PAGES);
+    }
+
+    /// The addresses `net.listen` may use (`--listen`); none by default.
+    pub fn set_listen(&mut self, grants: Vec<std::net::SocketAddr>) {
+        self.net = crate::net::Net::new(grants);
     }
 
     /// What `fs.read` on fd 0 returns, instead of the process's stdin.
@@ -273,6 +286,11 @@ impl VM {
         }
     }
 
+    /// Whether len bytes at ptr are inside linear memory.
+    fn in_memory(&self, ptr: usize, len: usize) -> bool {
+        ptr.checked_add(len).is_some_and(|end| end <= self.shared.lock().unwrap().bytes.len())
+    }
+
     pub fn read_bytes(&self, ptr: usize, len: usize) -> Vec<u8> {
         self.shared.lock().unwrap().bytes[ptr..ptr + len].to_vec()
     }
@@ -306,10 +324,6 @@ impl VM {
             }
         }
         self.places = Arc::new(places);
-        // the payloads' boxes keep their addresses when the functions move below
-        let mut payloads = (*self.payloads).clone();
-        payloads.extend(crate::checker::TypeChecker::payload_types(&module));
-        self.payloads = Arc::new(payloads);
         let mut f_map = (*self.functions).clone();
         let mut order = (*self.fn_order).clone();
         for f in module.functions {
@@ -640,17 +654,9 @@ impl VM {
                 let name = self.fn_ref_name(func, scope, "call_ref")?;
                 self.invoke(&name, evaluated_args)
             }
-            // A result occupies 8 heap bytes [tag:i32 payload:i32] (tag 0 = ok,
-            // 1 = err), allocated before the payload is evaluated, exactly as the
-            // wasm backend lays it out, so both backends leave the same heap.
-            Expr::Ok(val, other, _) => {
-                let inner = self.eval_result_cell(0, val, other, scope)?;
-                Ok(Value::Ok(Box::new(inner)))
-            }
-            Expr::Err(err, other, _) => {
-                let inner = self.eval_result_cell(1, err, other, scope)?;
-                Ok(Value::Err(Box::new(inner)))
-            }
+            // a result is held by value (AIPL_SPEC.md 4.F): nothing allocated
+            Expr::Ok(val, ..) => Ok(Value::Ok(Box::new(self.eval_expr(val, scope)?))),
+            Expr::Err(err, ..) => Ok(Value::Err(Box::new(self.eval_expr(err, scope)?))),
             Expr::MatchResult { expr, ok_var, ok_body, err_var, err_body, .. } => {
                 let res_val = self.eval_expr(expr, scope)?;
                 let keys_before: std::collections::HashSet<String> = scope.keys().cloned().collect();
@@ -677,24 +683,12 @@ impl VM {
             Expr::Make { union_name, variant, args, .. } => {
                 let def = self.unions.get(union_name).ok_or_else(|| format!("VM: Unknown union '{}'", union_name))?.clone();
                 let tag = def.variants.iter().position(|v| &v.name == variant).ok_or_else(|| format!("VM: Unknown variant '{}'", variant))?;
-                // a union by value: its fields, nothing allocated
-                if self.structs.is_value_union(union_name) {
-                    let mut fields = Vec::with_capacity(args.len());
-                    for a in args {
-                        fields.push(self.eval_expr(a, scope)?);
-                    }
-                    return Ok(Value::Union(tag, fields));
+                // a union is a value (AIPL_SPEC.md 4.J): its fields, nothing allocated
+                let mut fields = Vec::with_capacity(args.len());
+                for a in args {
+                    fields.push(self.eval_expr(a, scope)?);
                 }
-                let v = &def.variants[tag];
-                let (offsets, size) = crate::checker::variant_layout(v, &self.structs)?;
-                // the cell is claimed before the fields are evaluated, as in the wasm lowering
-                let cell = self.alloc_bytes(size) as u32 as usize;
-                self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
-                for ((a, f), off) in args.iter().zip(v.fields.iter()).zip(offsets) {
-                    let val = self.eval_expr(a, scope)?;
-                    self.store_val_at(cell + off, &f.ty, val)?;
-                }
-                Ok(Value::Int(cell as i64))
+                Ok(Value::Union(tag, fields))
             }
             Expr::Record { args, .. } => {
                 let mut fields = Vec::with_capacity(args.len());
@@ -738,22 +732,7 @@ impl VM {
                     }
                     other => return Err(format!("VM: match expected a union or enum value, got {:?}", other)),
                 };
-                if let Some(def) = self.unions.get(&tname).cloned() {
-                    let cell = v as u32 as usize;
-                    let tag = match self.load_val_at(cell, &Type::I32)? {
-                        Value::Int(t) => t as usize,
-                        _ => unreachable!(),
-                    };
-                    if let Some(arm) = arms.iter().find(|a| def.variants.get(tag).is_some_and(|w| w.name == member(&a.member))) {
-                        let var = &def.variants[tag];
-                        let (offsets, _) = crate::checker::variant_layout(var, &self.structs)?;
-                        for ((name, f), off) in arm.binders.iter().flatten().zip(var.fields.iter()).zip(offsets).filter(|((n, _), _)| n.as_str() != "_") {
-                            let fv = self.load_val_at(cell + off, &f.ty)?;
-                            scope.insert(name.clone(), fv);
-                        }
-                        chosen = Some(&arm.body);
-                    }
-                } else if let Some(def) = self.enums.get(&tname) {
+                if let Some(def) = self.enums.get(&tname) {
                     chosen = arms
                         .iter()
                         .find(|a| def.members.iter().any(|(m, val)| *m == member(&a.member) && *val as i64 == v))
@@ -765,17 +744,6 @@ impl VM {
                 };
                 scope.retain(|k, _| keys_before.contains(k));
                 res
-            }
-            Expr::NewStruct { struct_name, .. } => {
-                let def = self
-                    .structs
-                    .get(struct_name)
-                    .ok_or_else(|| format!("VM: Unknown struct '{}'", struct_name))?
-                    .clone();
-                let size = crate::checker::get_struct_size(&def, &self.structs)?;
-                // [generation 0][unused][object], as compiled code lays it out
-                let ptr = self.alloc_bytes(size + 8) as u32 + 8;
-                Ok(Value::Int64(ptr as i64))
             }
             Expr::GetField { struct_name, field_name, ptr, .. } => {
                 let def = self
@@ -831,19 +799,6 @@ impl VM {
                     other => crate::checker::type_size_and_align(other, &self.structs)?.0,
                 };
                 Ok(Value::Int(size as i64))
-            }
-            Expr::ArrNew { elem_ty, size, .. } => {
-                let count = match self.eval_expr(size, scope)? {
-                    Value::Int(i) if i >= 0 => i as usize,
-                    Value::Int(i) => return Err(format!("Array index out of bounds: invalid array size {}", i)),
-                    other => return Err(format!("VM: Expected Int size for arr.new, got {:?}", other)),
-                };
-                let (elem_size, _) = crate::checker::type_size_and_align(elem_ty, &self.structs)?;
-                // [generation 0][count][elements]
-                let total_size = 8 + count * elem_size;
-                let raw_ptr = self.alloc_bytes(total_size) as u32 as usize;
-                self.store_val_at(raw_ptr + 4, &Type::I32, Value::Int(count as i64))?;
-                Ok(Value::Int64((raw_ptr + 8) as i64))
             }
             Expr::ArrGet { elem_ty, ptr, index, .. } => {
                 let ptr_val = self.eval_expr(ptr, scope)?;
@@ -947,29 +902,6 @@ impl VM {
         }
     }
 
-    /// tag 0 (ok) or 1 (err), the other side's type written as `other`.
-    fn eval_result_cell(&mut self, tag: i32, payload: &Expr, other: &Option<Type>, scope: &mut HashMap<String, Value>) -> Result<Value, String> {
-        let ty = self.payloads.get(&(payload as *const Expr as usize)).cloned().unwrap_or(Type::I32);
-        // a result held by value: no cell (AIPL_SPEC.md 4.F)
-        let other = other.clone().unwrap_or(Type::I32);
-        let (ok, err) = if tag == 0 { (&ty, &other) } else { (&other, &ty) };
-        if self.structs.result_layout(ok, err).is_some() {
-            return self.eval_expr(payload, scope);
-        }
-        let (offset, size) = crate::checker::result_cell_layout(&ty, &self.structs);
-        let cell = self.alloc_bytes(size as usize) as u32 as usize;
-        self.store_val_at(cell, &Type::I32, Value::Int(tag as i64))?;
-        let inner = self.eval_expr(payload, scope)?;
-        let at = cell + offset as usize;
-        match (&ty, &inner) {
-            (Type::I64 | Type::F64 | Type::F32, _) | (Type::Struct(_), Value::Record(_)) | (Type::Union(_), Value::Union(..)) => self.store_val_at(at, &ty, inner.clone())?,
-            (Type::ResultType(a, b), Value::Ok(_) | Value::Err(_)) if self.structs.result_layout(a, b).is_some() => self.store_val_at(at, &ty, inner.clone())?,
-            (_, Value::Int(_) | Value::Bool(_)) => self.store_val_at(at, &Type::I32, inner.clone())?,
-            _ => {}
-        }
-        Ok(inner)
-    }
-
     /// The address of `s`'s bytes: its interned literal (the same address as
     /// in wasm), or else a fresh heap copy as `[len u32 LE][bytes]`.
     fn materialize_str(&self, op: &str, s: &str) -> Result<usize, String> {
@@ -1063,7 +995,7 @@ impl VM {
         if next as u32 > have {
             let pages = ((next as u32).wrapping_sub(have).wrapping_add(65535) >> 16) as usize;
             let old_pages = mem.bytes.len() / PAGE_SIZE;
-            if old_pages + pages <= MAX_PAGES {
+            if old_pages + pages <= mem.max_pages {
                 mem.bytes.resize((old_pages + pages) * PAGE_SIZE, 0);
             }
         }
@@ -1114,7 +1046,7 @@ impl VM {
         match ty {
             Type::Narrow(n) => {
                 let w = n.size();
-                if addr + w > mem.bytes.len() {
+                if addr.checked_add(w).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let v = match n {
@@ -1125,8 +1057,8 @@ impl VM {
                 };
                 Ok(Value::Int(v))
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
-                if addr + 4 > mem.bytes.len() {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1134,7 +1066,7 @@ impl VM {
                 Ok(Value::Int(v as i64))
             }
             Type::Bool => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1143,7 +1075,7 @@ impl VM {
             }
             Type::Str => {
                 // The word is the address of the bytes; the length is in the 4 bytes before them.
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let p = u32::from_le_bytes(mem.bytes[addr..addr + 4].try_into().unwrap()) as usize;
@@ -1151,13 +1083,13 @@ impl VM {
                     return Err(format!("VM: str field at address {} holds invalid string pointer {}", addr, p));
                 }
                 let len = u32::from_le_bytes(mem.bytes[p - 4..p].try_into().unwrap()) as usize;
-                if p + len > mem.bytes.len() {
+                if p.checked_add(len).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM: str at {} with length {} runs past memory", p, len));
                 }
                 Ok(Value::Str(String::from_utf8_lossy(&mem.bytes[p..p + len]).into_owned()))
             }
             Type::I64 | Type::Ptr(_) | Type::Array(_) => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
@@ -1165,7 +1097,7 @@ impl VM {
                 Ok(Value::Int64(v))
             }
             Type::F32 => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 4] = mem.bytes[addr..addr + 4].try_into().unwrap();
@@ -1173,7 +1105,7 @@ impl VM {
                 Ok(Value::Float32(v))
             }
             Type::F64 => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
                 let bytes: [u8; 8] = mem.bytes[addr..addr + 8].try_into().unwrap();
@@ -1210,7 +1142,7 @@ impl VM {
         match ty {
             Type::Narrow(n) => {
                 let w = n.size();
-                if addr + w > mem.bytes.len() {
+                if addr.checked_add(w).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1220,8 +1152,8 @@ impl VM {
                 mem.bytes[addr..addr + w].copy_from_slice(&v.to_le_bytes()[..w]);
                 Ok(())
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
-                if addr + 4 > mem.bytes.len() {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) | Type::Str => {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1233,7 +1165,7 @@ impl VM {
                 Ok(())
             }
             Type::Bool => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v: i32 = match val {
@@ -1245,7 +1177,7 @@ impl VM {
                 Ok(())
             }
             Type::I64 | Type::Ptr(_) | Type::Array(_) => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1257,7 +1189,7 @@ impl VM {
                 Ok(())
             }
             Type::F32 => {
-                if addr + 4 > mem.bytes.len() {
+                if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1269,7 +1201,7 @@ impl VM {
                 Ok(())
             }
             Type::F64 => {
-                if addr + 8 > mem.bytes.len() {
+                if addr.checked_add(8).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
                 let v = match val {
@@ -1534,7 +1466,7 @@ impl VM {
                 };
                 let mut mem = self.shared.lock().unwrap();
                 let old_pages = mem.bytes.len() / PAGE_SIZE;
-                if pages < 0 || old_pages + pages as usize > MAX_PAGES {
+                if pages < 0 || old_pages + pages as usize > mem.max_pages {
                     // wasm memory.grow reports failure as -1 rather than trapping.
                     return Ok(Value::Int(-1));
                 }
@@ -1604,7 +1536,7 @@ impl VM {
                 loop {
                     {
                         let mut mem = self.shared.lock().unwrap();
-                        if ptr + 4 > mem.bytes.len() {
+                        if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                             return Err(format!("atomic.lock out of bounds: ptr {}", ptr));
                         }
                         let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
@@ -1637,7 +1569,7 @@ impl VM {
                 self.check_write("atomic.unlock", ptr)?;
                 check_atomic_alignment("atomic.unlock", ptr)?;
                 let mut mem = self.shared.lock().unwrap();
-                if ptr + 4 > mem.bytes.len() {
+                if ptr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("atomic.unlock out of bounds: ptr {}", ptr));
                 }
                 let bytes: [u8; 4] = mem.bytes[ptr..ptr + 4].try_into().unwrap();
@@ -2027,6 +1959,50 @@ impl VM {
                 } else {
                     Ok(Value::Int(-1))
                 }
+            }
+            OpCode::NetListen => {
+                let addr = self.int_operand(&args[0], scope, "net.listen")? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, "net.listen")? as u32 as usize;
+                let port = self.int_operand(&args[2], scope, "net.listen")? as i32;
+                if !self.in_memory(addr, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(addr, len);
+                Ok(Value::Int(self.net.listen(&bytes, port) as i64))
+            }
+            OpCode::NetAccept => {
+                let h = self.int_operand(&args[0], scope, "net.accept")? as i32;
+                Ok(Value::Int(self.net.accept(h) as i64))
+            }
+            OpCode::NetRecv => {
+                // like fs.read, the host writes without the store guard; a
+                // range outside memory is a failure
+                let h = self.int_operand(&args[0], scope, "net.recv")? as i32;
+                let buf = self.int_operand(&args[1], scope, "net.recv")? as u32 as usize;
+                let max = self.int_operand(&args[2], scope, "net.recv")? as u32 as usize;
+                if !self.in_memory(buf, max) {
+                    return Ok(Value::Int(-1));
+                }
+                let mut into = vec![0u8; max];
+                let n = self.net.recv(h, &mut into);
+                if n > 0 {
+                    self.write_bytes(buf, &into[..n as usize]);
+                }
+                Ok(Value::Int(n as i64))
+            }
+            OpCode::NetSend => {
+                let h = self.int_operand(&args[0], scope, "net.send")? as i32;
+                let buf = self.int_operand(&args[1], scope, "net.send")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "net.send")? as u32 as usize;
+                if !self.in_memory(buf, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(buf, len);
+                Ok(Value::Int(self.net.send(h, &bytes) as i64))
+            }
+            OpCode::NetClose => {
+                let h = self.int_operand(&args[0], scope, "net.close")? as i32;
+                Ok(Value::Int(self.net.close(h) as i64))
             }
             OpCode::FsOpendir => {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);

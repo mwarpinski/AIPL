@@ -2,6 +2,7 @@
 ;; programming errors. A failed operation returns (err:i32 code) and changes
 ;; nothing; callers branch with match_result.
 (module accounts
+  (import alloc)
   ;; balance in cents
   (struct Account [id:i32 balance:i32 frozen:bool])
 
@@ -12,7 +13,7 @@
 
   (fn open [id:i32 initial:i32] -> (ptr Account)
     (req (gte initial 0))
-    (let a:(ptr Account) (new Account))
+    (let a:(ptr Account) (new Account (call alloc.forever)))
     (put a Account.id id)
     (put a Account.balance initial)
     (put a Account.frozen false)
@@ -67,7 +68,11 @@
       (err code (and (eq code (call err_frozen)) (eq (get a Account.balance) 500)))))
 
   ;; 10000 - 3 * 2500 = 2500; a fourth and fifth transfer run out of funds (-2).
-  (fn main [] -> i32
-    (if (call frozen_is_atomic)
-        (+ (call simulate 10000 2500 3) (call simulate 10000 2500 5))
-        -1000)))
+  ;; Three transfers of 2500 from 10000 leave 2500; the fifth would
+  ;; overdraw, so it fails with err_funds and changes nothing.
+  (fn main [] -> (result i32 str)
+    (when (not (call frozen_is_atomic))
+      (return (err:i32 "accounts: a transfer to a frozen account changed the source")))
+    (println "after three transfers: {(call simulate 10000 2500 3)} cents left")
+    (println "five transfers stop with error {(- 0 (call simulate 10000 2500 5))} (not enough funds)")
+    (ok:str 0)))

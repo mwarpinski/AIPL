@@ -36,7 +36,7 @@ fn check(name: &str, src: &str) -> Result<aipl_core::ast::Module, String> {
 }
 
 /// main's result under wasmtime, or the trap's message.
-fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+fn wasm_call(wasm: &[u8], name: &str) -> Result<i32, String> {
     use wasmtime::{Engine, Linker, Module, Store};
     use wasmtime_wasi::p1::WasiP1Ctx;
     let engine = Engine::default();
@@ -45,8 +45,12 @@ fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).unwrap();
-    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    let main = inst.get_typed_func::<(), i32>(&mut store, name).unwrap();
     main.call(&mut store, ()).map_err(|e| format!("{e:?}"))
+}
+
+fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+    wasm_call(wasm, "main")
 }
 
 /// tests/aipl/sum_types.aipl built as a native executable, through a
@@ -61,7 +65,7 @@ fn native_main() -> Option<i32> {
         std::fs::copy(root().join("tests/aipl").join(f), dir.join(f)).unwrap();
     }
     let wrap = dir.join("wrap.aipl");
-    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call sum_types.main)) 0))").unwrap();
+    std::fs::write(&wrap, "(module wrap (import sum_types) (import io)\n  (fn main [] -> i32 (call io.println_int \"\" (call sum_types.checksum)) 0))").unwrap();
     let m = Resolver::resolve(&wrap).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let exe = dir.join("prog");
@@ -85,15 +89,15 @@ fn sum_types_agree_in_every_backend() {
     TypeChecker::new().check_module(&module).unwrap();
     let mut vm = VM::new();
     vm.load_module(module.clone());
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(1103));
+    assert_eq!(vm.invoke("checksum", vec![]).unwrap(), Value::Int(1103));
     let wasm = WasmCompiler::compile(&module).unwrap();
-    assert_eq!(wasm_main(&wasm), Ok(1103));
+    assert_eq!(wasm_call(&wasm, "checksum"), Ok(1103));
     if let Some(n) = native_main() {
         assert_eq!(n, 1103);
     }
     // the printer round trip: unions, union types, make, and match arms
     let printed = print_module(&module);
-    assert!(printed.contains("(union geometry.Path [(stop) (step dx:i32 dy:i32 rest:geometry.Path)])"), "{printed}");
+    assert!(printed.contains("(union geometry.Path [(stop) (step dx:i32 dy:i32 rest:(ptr geometry.Rest))])"), "{printed}");
     assert!(printed.contains("(match s (geometry.Shape.rect [w h] 4) (geometry.Shape.circle [r] 0) (else 1))"), "{printed}");
     let reparsed = Parser::parse(&printed).unwrap();
     assert_eq!(print_module(&reparsed), printed);
@@ -123,29 +127,33 @@ fn every_field_type_round_trips() {
     assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(103));
 }
 
-/// make claims a cell union's cell before evaluating the fields: a field
-/// that allocates gets memory after the cell (8 bytes here), in both
-/// backends. U contains itself, so it is a cell; W is held by value
-/// (AIPL_SPEC.md 4.J) and takes no memory.
+/// make allocates nothing: every union is a value (AIPL_SPEC.md 4.J), so
+/// a field that allocates gets the memory right after the block before it,
+/// in both backends; only the cell a recursive union's program makes
+/// itself (U's Next, from alloc) takes memory.
 #[test]
-fn make_allocates_before_its_fields() {
+fn make_allocates_nothing() {
     let m = check(
         "order",
-        "(module m (union U [(v p:i32) (more next:U)]) (union W [(v p:i32)])
-           (fn cell [] -> i32
+        "(module m (import alloc)
+           (union U [(v p:i32) (more next:(ptr Next))]) (struct Next [u:U]) (union W [(v p:i32)])
+           (fn chain [] -> i32 (unsafe)
              (let p0:i32 (mem.alloc 8))
-             (match (make U.v (mem.alloc 8)) (U.v [p1] (- p1 p0)) (U.more [_] 0)))
-           (fn main [] -> i32
+             (let n:(ptr Next) (new Next (call alloc.default)))
+             (put n Next.u (make U.v (mem.alloc 8)))
+             (match (get n Next.u) (U.v [p1] (- p1 p0)) (U.more [_] 0)))
+           (fn main [] -> i32 (unsafe)
              (let p0:i32 (mem.alloc 8))
-             (+ (* 100 (call cell)) (match (make W.v (mem.alloc 8)) (W.v [p1] (- p1 p0))))))",
+             (let w:i32 (match (make W.v (mem.alloc 8)) (W.v [p1] (- p1 p0))))
+             (+ (* 100 (call chain)) w)))",
     )
     .unwrap();
     let mut vm = VM::new();
     vm.load_module(m.clone());
-    // cell: 16 apart (the 8-byte cell between); W's field lands after main's
-    // block and cell's three (8 each): 32 apart, nothing for W itself
-    assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(1632));
-    assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(1632));
+    let want = vm.invoke("main", vec![]).unwrap();
+    assert_eq!(wasm_main(&WasmCompiler::compile(&m).unwrap()), Ok(match want { Value::Int(n) => n as i32, _ => -1 }));
+    // W's field lands right after main's block, nothing between
+    assert_eq!(match want { Value::Int(n) => n % 100, _ => -1 }, 8, "{want:?}");
 }
 
 /// Only an enum.cast value that is no member reaches the end of a match

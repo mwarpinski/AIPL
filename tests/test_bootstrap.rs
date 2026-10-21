@@ -129,6 +129,25 @@ fn the_aipl_command_matches_the_rust_command() {
     assert_eq!(a.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&a.stderr), String::from_utf8_lossy(&r.stderr));
 
+    // flags: a memory limit and listen grants in the module or executable,
+    // and a size or grant that is not one refused with the same message
+    for args in [
+        &["compile", "--max-memory", "4M"][..],
+        &["compile", "--exe", "--max-memory", "4M"],
+        &["compile", "--exe", "--listen", "127.0.0.1:8080", "--listen", "[::1]:9000"],
+    ] {
+        let (want, got) = (dir.join("want"), dir.join("got"));
+        let r = run(Command::new(AIPL).args(args).arg("tests/aipl/memory/hog.aipl").arg("-o").arg(&want));
+        let a = run(Command::new(&aipl).args(args).arg("tests/aipl/memory/hog.aipl").arg("-o").arg(&got));
+        assert!(r.status.success() && a.status.success(), "{args:?}: {}", String::from_utf8_lossy(&a.stderr));
+        assert!(std::fs::read(&want).unwrap() == std::fs::read(&got).unwrap(), "{args:?}: different bytes");
+    }
+    for args in [&["compile", "--max-memory", "3G"][..], &["compile", "--exe", "--listen", "127.0.0.1"]] {
+        let r = run(Command::new(AIPL).args(args).arg("tests/aipl/memory/hog.aipl").arg("-o").arg(dir.join("x")));
+        let a = run(Command::new(&aipl).args(args).arg("tests/aipl/memory/hog.aipl").arg("-o").arg(dir.join("x")));
+        assert_eq!((a.status.code(), String::from_utf8_lossy(&a.stderr).to_string()), (r.status.code(), String::from_utf8_lossy(&r.stderr).to_string()), "{args:?}");
+    }
+
     // usage and version
     assert_eq!(run(&mut Command::new(&aipl)).status.code(), Some(2));
     assert_eq!(run(Command::new(&aipl).args(["compile", "--sandbox", "x.aipl", "-o", "y"])).status.code(), Some(2));
