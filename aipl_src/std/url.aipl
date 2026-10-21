@@ -29,14 +29,15 @@
 
   ;; A URL's parts (port -1 if none); scheme is empty if there is none;
   ;; authority is all of it as written (user info, host, and port). From
-  ;; the allocator it was made with; free gives it back.
+  ;; the allocator it was made with; free gives it back, with the path
+  ;; resolve made for it (owned).
   (struct Url [(read scheme:str.Bytes)
                (read has_authority:bool) (read authority:str.Bytes) (read has_user:bool) (read user:str.Bytes)
                (read has_password:bool) (read password:str.Bytes)
                (read host:str.Bytes) (read port:i32)
                (read path:str.Bytes)
                (read has_query:bool) (read query:str.Bytes)
-               (read has_fragment:bool) (read fragment:str.Bytes) a:alloc.Allocator] (pub))
+               (read has_fragment:bool) (read fragment:str.Bytes) a:alloc.Allocator owned:(ptr buf.Buf)] (pub))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
     (let e:(ptr Error) (new Error a))
@@ -45,7 +46,7 @@
     e)
 
   ;; Frees an Error parse or a query function gave.
-  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (call (alloc.destroy Error) a e))
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (no_leak) (call (alloc.destroy Error) a e))
 
   (fn is_alpha [c:i32] -> bool (or (and (gte c 65) (lte c 90)) (and (gte c 97) (lte c 122))))
   (fn is_digit [c:i32] -> bool (and (gte c 48) (lte c 57)))
@@ -61,7 +62,7 @@
   (fn view [b:str.Bytes from:i32 to:i32] -> str.Bytes (call str.slice b from (- to from)))
 
   ;; text's parts, from a, or why it is not a URL.
-  (fn parse [a:alloc.Allocator text:str.Bytes] -> (result (ptr Url) (ptr Error)) (pub)
+  (fn parse [a:alloc.Allocator text:str.Bytes] -> (result (ptr Url) (ptr Error)) (pub) (no_leak)
     (let n:i32 (get text str.Bytes.len))
     (let empty:str.Bytes (call view text 0 0))
     ;; a scheme: a letter, then letters, digits, + - ., before a ':' that
@@ -143,15 +144,18 @@
     (put u Url.has_fragment (lt hash n))
     (put u Url.fragment (if (lt hash n) (call view text (+ hash 1) n) empty))
     (put u Url.a a)
+    (put u Url.owned (ptr.null buf.Buf))
     (ok:(ptr Error) u))
 
-  ;; Frees the Url (its parts are views of the text it came from, or of
-  ;; bytes resolve made, which are not freed).
-  (fn free [u:(ptr Url)] -> void (pub) (call (alloc.destroy Url) (get u Url.a) u))
+  ;; Frees the Url, and the path resolve made for it (its other parts are
+  ;; views of the text it came from).
+  (fn free [u:(ptr Url)] -> void (pub) (no_leak)
+    (when (neq (get u Url.owned) (ptr.null buf.Buf)) (call buf.free (get u Url.owned)))
+    (call (alloc.destroy Url) (get u Url.a) u))
 
   ;; Appends u as text (RFC 3986, 5.3): an IPv6 host in brackets, the port
   ;; if there is one.
-  (fn write [o:(ptr buf.Buf) u:(ptr Url)] -> void (pub)
+  (fn write [o:(ptr buf.Buf) u:(ptr Url)] -> void (pub) (no_leak)
     (when (gt (get (get u Url.scheme) str.Bytes.len) 0)
       (call buf.push_bytes o (get u Url.scheme))
       (call buf.push_byte o 58))
@@ -181,9 +185,10 @@
 
   ;; ===== resolving (RFC 3986, 5.2) =====
 
-  ;; path with its "." and ".." segments taken out (5.2.4), as new bytes.
-  (fn remove_dots [path:str.Bytes] -> str.Bytes (pub)
-    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get path str.Bytes.len) 1)))
+  ;; path with its "." and ".." segments taken out (5.2.4), written to o,
+  ;; which must be empty: nothing is allocated but o's growth.
+  (fn remove_dots_into [o:(ptr buf.Buf) path:str.Bytes] -> void (pub) (no_leak)
+    (req (eq (call buf.len o) 0))
     (let n:i32 (get path str.Bytes.len))
     (let i:i32 0)
     (while (lt i n)
@@ -207,6 +212,13 @@
           (let end:i32 (call find_any path (+ i first) n 47 -1 -1 -1))
           (for k i end (call buf.push_byte o (call str.byte_at path k)))
           (set! i end))))
+    (block))
+
+  ;; path with its "." and ".." segments taken out (5.2.4), as new bytes,
+  ;; never freed (a str's): remove_dots_into keeps no memory.
+  (fn remove_dots [path:str.Bytes] -> str.Bytes (pub)
+    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) (+ (get path str.Bytes.len) 1)))
+    (call remove_dots_into o path)
     (let s:str (call buf.to_str o))
     (call buf.free o)
     (call str.from_str s))
@@ -220,15 +232,16 @@
 
   ;; ref resolved against base (RFC 3986, 5.2.2, strict), as a new Url
   ;; from a.
-  (fn resolve [a:alloc.Allocator base:(ptr Url) ref:(ptr Url)] -> (ptr Url) (pub)
+  (fn resolve [a:alloc.Allocator base:(ptr Url) ref:(ptr Url)] -> (ptr Url) (pub) (no_leak)
     (let t:(ptr Url) (new Url a))
     (put t Url.a a)
+    (put t Url.owned (ptr.null buf.Buf))
     (call copy_parts t ref)
     (when (gt (get (get ref Url.scheme) str.Bytes.len) 0)
-      (put t Url.path (call remove_dots (get ref Url.path)))
+      (call set_path a t (get ref Url.path))
       (return t))
     (if (get ref Url.has_authority)
-        (put t Url.path (call remove_dots (get ref Url.path)))
+        (call set_path a t (get ref Url.path))
         (block
           (if (eq (get (get ref Url.path) str.Bytes.len) 0)
               (block
@@ -237,8 +250,12 @@
                   (put t Url.has_query (get base Url.has_query))
                   (put t Url.query (get base Url.query))))
               (if (eq (call str.byte_at (get ref Url.path) 0) 47)
-                  (put t Url.path (call remove_dots (get ref Url.path)))
-                  (put t Url.path (call remove_dots (call merge base (get ref Url.path))))))
+                  (call set_path a t (get ref Url.path))
+                  (block
+                    (let m:(ptr buf.Buf) (call buf.make a 64))
+                    (call merge_into m base (get ref Url.path))
+                    (call set_path a t (call buf.bytes m))
+                    (call buf.free m))))
           (put t Url.has_authority (get base Url.has_authority))
           (put t Url.authority (get base Url.authority))
           (put t Url.has_user (get base Url.has_user))
@@ -249,6 +266,14 @@
           (put t Url.port (get base Url.port))))
     (put t Url.scheme (get base Url.scheme))
     t)
+
+  ;; t's path: path with its dot segments taken out, in a buffer from a
+  ;; that t owns (free frees it).
+  (fn set_path [a:alloc.Allocator t:(ptr Url) path:str.Bytes] -> void (no_leak)
+    (let o:(ptr buf.Buf) (call buf.make a (+ (get path str.Bytes.len) 1)))
+    (call remove_dots_into o path)
+    (put t Url.owned o)
+    (put t Url.path (call buf.bytes o)))
 
   ;; Sets every part of t to u's.
   (fn copy_parts [t:(ptr Url) u:(ptr Url)] -> void
@@ -267,9 +292,8 @@
     (put t Url.has_fragment (get u Url.has_fragment))
     (put t Url.fragment (get u Url.fragment)))
 
-  ;; ref's path after base's directory (5.2.3).
-  (fn merge [base:(ptr Url) path:str.Bytes] -> str.Bytes
-    (let o:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+  ;; ref's path after base's directory (5.2.3), appended to o.
+  (fn merge_into [o:(ptr buf.Buf) base:(ptr Url) path:str.Bytes] -> void (no_leak)
     (let bp:str.Bytes (get base Url.path))
     (if (and (get base Url.has_authority) (eq (get bp str.Bytes.len) 0))
         (call buf.push_byte o 47)
@@ -277,10 +301,7 @@
           (let k:i32 (get bp str.Bytes.len))
           (while (and (gt k 0) (neq (call str.byte_at bp (- k 1)) 47)) (set! k (- k 1)))
           (call buf.push_bytes o (call view bp 0 k))))
-    (call buf.push_bytes o path)
-    (let s:str (call buf.to_str o))
-    (call buf.free o)
-    (call str.from_str s))
+    (call buf.push_bytes o path))
 
   ;; ref resolved against base, as text, or why one is not a URL.
   (fn resolve_str [a:alloc.Allocator base:str ref:str] -> (result str (ptr Error)) (pub)
@@ -303,11 +324,27 @@
   ;; skipped, a part without '=' a name with an empty value (as Python's
   ;; parse_qsl with keep_blank_values). A % without two hex digits, or
   ;; bytes that are not UTF-8, is an error (Python passes them through).
+  ;; Each is a str, never freed: query_pairs_into keeps no memory.
   (fn query_pairs [a:alloc.Allocator q:str.Bytes] -> (result (ptr (vec.Vec str)) (ptr Error)) (pub)
-    (let out:(ptr (vec.Vec str)) (call (vec.make str) a 8))
+    (let o:(ptr buf.Buf) (call buf.make a 64))
+    (match_result (call query_pairs_into a o q)
+      (ok vs
+        (let out:(ptr (vec.Vec str)) (call (vec.make str) a (call (vec.len str.Bytes) vs)))
+        (for k 0 (call (vec.len str.Bytes) vs)
+          (let v:str.Bytes (call (vec.at str.Bytes) vs k))
+          (call (vec.push str) out (if (gt (get v str.Bytes.len) 0) (call str.from_bytes v) "")))
+        (call (vec.free str.Bytes) vs)
+        (call buf.free o)
+        (ok:(ptr Error) out))
+      (err e (call buf.free o) (err:(ptr (vec.Vec str)) e))))
+
+  ;; query_pairs, the names and values decoded into o (after what it
+  ;; holds) and given as views of it, in a new vector from a: no str is
+  ;; made, so nothing is kept. The views are good until o changes.
+  (fn query_pairs_into [a:alloc.Allocator o:(ptr buf.Buf) q:str.Bytes] -> (result (ptr (vec.Vec str.Bytes)) (ptr Error)) (pub) (no_leak)
+    (let spans:(ptr (vec.Vec i32)) (call (vec.make i32) a 16))
     (let n:i32 (get q str.Bytes.len))
     (let i:i32 0)
-    (let o:(ptr buf.Buf) (call buf.make a 64))
     (while (lt i n)
       (let end:i32 (call find_any q i n 38 -1 -1 -1))
       (when (gt end i)
@@ -315,32 +352,54 @@
         (for side 0 2
           (let from:i32 (if (eq side 0) i (+ eq_at 1)))
           (let to:i32 (if (eq side 0) eq_at end))
-          (call buf.clear o)
+          (let start:i32 (call buf.len o))
           (when (lt from to)
             (match_result (call encode.percent_decode_to o (call view q from to) true)
               (ok _k (block))
-              (err at (call buf.free o) (call (vec.free str) out) (return (err:(ptr (vec.Vec str)) (call error a (+ from at) "a % without two hex digits"))))))
-          (when (not (call str.valid_utf8 (call buf.bytes o)))
-            (call buf.free o)
-            (call (vec.free str) out)
-            (return (err:(ptr (vec.Vec str)) (call error a from "a part that is not UTF-8"))))
-          (call (vec.push str) out (if (lt from to) (call buf.to_str o) ""))))
+              (err at (call (vec.free i32) spans) (return (err:(ptr (vec.Vec str.Bytes)) (call error a (+ from at) "a % without two hex digits"))))))
+          (when (not (call str.valid_utf8 (call str.slice (call buf.bytes o) start (- (call buf.len o) start))))
+            (call (vec.free i32) spans)
+            (return (err:(ptr (vec.Vec str.Bytes)) (call error a from "a part that is not UTF-8"))))
+          (call (vec.push i32) spans start)
+          (call (vec.push i32) spans (call buf.len o))))
       (set! i (+ end 1)))
-    (call buf.free o)
+    ;; the views last, once o has stopped growing
+    (let all:str.Bytes (call buf.bytes o))
+    (let count:i32 (/ (call (vec.len i32) spans) 2))
+    (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a count))
+    (for k 0 count
+      (let from:i32 (call (vec.at i32) spans (* 2 k)))
+      (call (vec.push str.Bytes) out (call str.slice all from (- (call (vec.at i32) spans (+ (* 2 k) 1)) from))))
+    (call (vec.free i32) spans)
     (ok:(ptr Error) out))
 
   ;; The first value for name in the query q, decoded as query_pairs
-  ;; decodes, if there is one.
+  ;; decodes, if there is one: a str, never freed (query_get_into keeps
+  ;; no memory).
   (fn query_get [a:alloc.Allocator q:str.Bytes name:str] -> (result (option.Option str) (ptr Error)) (pub)
-    (let pairs:(ptr (vec.Vec str)) (try (call query_pairs a q)))
-    (let found:(option.Option str) (make (option.Option str) none))
+    (let o:(ptr buf.Buf) (call buf.make a 64))
+    (match_result (call query_get_into a o q name)
+      (ok found
+        (let r:(option.Option str) (match found
+                                     ((option.Option str.Bytes) some [v] (make (option.Option str) some (if (gt (get v str.Bytes.len) 0) (call str.from_bytes v) "")))
+                                     ((option.Option str.Bytes) none (make (option.Option str) none))))
+        (call buf.free o)
+        (ok:(ptr Error) r))
+      (err e (call buf.free o) (err:(option.Option str) e))))
+
+  ;; query_get, the value decoded into o and given as a view of it, good
+  ;; until o changes: nothing is kept.
+  (fn query_get_into [a:alloc.Allocator o:(ptr buf.Buf) q:str.Bytes name:str] -> (result (option.Option str.Bytes) (ptr Error)) (pub) (no_leak)
+    (let pairs:(ptr (vec.Vec str.Bytes)) (try (call query_pairs_into a o q)))
+    (let key:str.Bytes (call str.from_str name))
+    (let found:(option.Option str.Bytes) (make (option.Option str.Bytes) none))
     (let k:i32 0)
-    (while (lt k (call (vec.len str) pairs))
-      (when (call str.same (call (vec.at str) pairs k) name)
-        (set! found (make (option.Option str) some (call (vec.at str) pairs (+ k 1))))
-        (set! k (call (vec.len str) pairs)))
+    (while (lt k (call (vec.len str.Bytes) pairs))
+      (when (call str.bytes_eq (call (vec.at str.Bytes) pairs k) key)
+        (set! found (make (option.Option str.Bytes) some (call (vec.at str.Bytes) pairs (+ k 1))))
+        (set! k (call (vec.len str.Bytes) pairs)))
       (set! k (+ k 2)))
-    (call (vec.free str) pairs)
+    (call (vec.free str.Bytes) pairs)
     (ok:(ptr Error) found))
 
   ;; The query for the names and values in turn (as query_pairs gives

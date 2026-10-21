@@ -1,0 +1,34 @@
+;; A handler that keeps a view of a request past the request, the mistake
+;; std/serve's arena makes safe (tests/test_serve.rs): the first request
+;; is answered; on the second, reading the first's target, whose memory
+;; the arena's reset freed, stops the program with "Use after free"
+;; instead of reading the second request's bytes.
+(module serve_keep
+  (import alloc)
+  (import str)
+  (import os)
+  (import net)
+  (import http)
+  (import buf)
+  (import serve)
+
+  ;; The last request's target, kept by mistake.
+  (struct Keep [has:bool last:str.Bytes])
+
+  (fn handle [k:(ptr Keep) a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)
+    (let first:i32 (if (get k Keep.has) (call str.byte_at (get k Keep.last) 0) 0))
+    (put k Keep.has true)
+    (put k Keep.last (get req http.Message.target))
+    (call http.start_response out 200)
+    (call http.end_head out (get req http.Message.target))
+    (let _f:i32 first)
+    (block))
+
+  (fn main [] -> (result i32 str)
+    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+      (ok l
+        (let k:(ptr Keep) (new Keep (call alloc.default)))
+        (let _s:serve.Stats (call (serve.run_with (ptr Keep)) l k (ref handle) (call serve.requests (call serve.options) 2)))
+        (ok:str 0))
+      (err e (err:i32 (call net.message e)))))
+)

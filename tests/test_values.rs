@@ -34,7 +34,7 @@ fn check_files(name: &str, files: &[(&str, &str)]) -> Result<aipl_core::ast::Mod
     Ok(m)
 }
 
-/// The programs and the checksum each one's main returns: every form, and
+/// The programs and the checksum each one's `checksum` returns: every form, and
 /// every way through control flow.
 const PROGRAMS: [(&str, i64); 4] = [
     ("tests/aipl/values.aipl", 649),
@@ -50,7 +50,7 @@ fn values_programs_run_in_the_vm() {
         TypeChecker::new().check_module(&m).unwrap();
         let mut vm = VM::new();
         vm.load_module(m);
-        assert_eq!(vm.invoke("main", vec![]).unwrap(), Value::Int(sum), "{path}");
+        assert_eq!(vm.invoke("checksum", vec![]).unwrap(), Value::Int(sum), "{path}");
     }
 }
 
@@ -222,7 +222,7 @@ fn the_aipl_resolver_agrees_on_value_structs() {
 }
 
 /// main's result under wasmtime, or the error.
-fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+fn wasm_call(wasm: &[u8], name: &str) -> Result<i32, String> {
     use wasmtime::{Engine, Linker, Module, Store};
     use wasmtime_wasi::p1::WasiP1Ctx;
     let engine = Engine::default();
@@ -231,8 +231,12 @@ fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut WasiP1Ctx| t).unwrap();
     let mut store = Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
     let inst = linker.instantiate(&mut store, &module).map_err(|e| format!("{e:?}"))?;
-    let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
+    let main = inst.get_typed_func::<(), i32>(&mut store, name).unwrap();
     main.call(&mut store, ()).map_err(|e| format!("{e:?}"))
+}
+
+fn wasm_main(wasm: &[u8]) -> Result<i32, String> {
+    wasm_call(wasm, "main")
 }
 
 #[test]
@@ -242,7 +246,7 @@ fn values_programs_run_under_wasmtime() {
         TypeChecker::new().check_module(&m).unwrap();
         let wasm = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&wasm).unwrap_or_else(|e| panic!("{path}: {e}"));
-        assert_eq!(wasm_main(&wasm), Ok(sum as i32), "{path}");
+        assert_eq!(wasm_call(&wasm, "checksum"), Ok(sum as i32), "{path}");
     }
 }
 

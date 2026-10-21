@@ -1,0 +1,233 @@
+;; std/ip: IP addresses and socket addresses from text, as Rust's standard
+;; library reads them (core::net::parser, step for step; tests/test_web.rs
+;; checks the two agree on generated texts), so a grant on the command line
+;; (`--listen 127.0.0.1:8080`) means the same to every backend.
+;;
+;;   (call ip.parse (call str.from_str "::1"))                 ;; => some, v6
+;;   (call ip.parse_endpoint (call str.from_str "10.0.0.7:8080"))
+;;   (call ip.byte_at a 0)                                       ;; => 10
+;;
+;; IPv4 is four decimal numbers of 0-255 without leading zeros (01 is
+;; refused, since some readers take it as octal); IPv6 is up to eight
+;; groups of one to four hex digits, one `::` standing for one or more
+;; groups of zeros, and an IPv4 address in the last two groups. An
+;; endpoint is `ADDR:PORT`, with an IPv6 address in brackets
+;; (`[::1]:8080`). A zone index (`%eth0`, `%3`) is refused. Nothing here
+;; allocates.
+(module ip
+  (import str)
+  (import option)
+
+  ;; An address: IPv4 (v6 false, its 32 bits the low half of lo) or IPv6,
+  ;; 128 bits in network order (hi the first 8 bytes, lo the last 8).
+  (struct Addr [(read v6:bool) (read hi:i64) (read lo:i64)] (value) (pub))
+
+  ;; An address and a port (0-65535).
+  (struct Endpoint [(read addr:Addr) (read port:i32)] (value) (pub))
+
+  ;; How many bytes the address has: 4 or 16.
+  (fn len [a:Addr] -> i32 (pub) (no_leak)
+    (if (get a Addr.v6) 16 4))
+
+  ;; Byte i of the address, in network order.
+  (fn byte_at [a:Addr i:i32] -> i32 (pub) (no_leak)
+    (req (and (gte i 0) (lt i (call len a))))
+    (let word:i64 (cond ((not (get a Addr.v6)) (get a Addr.lo)) ((lt i 8) (get a Addr.hi)) (else (get a Addr.lo))))
+    (let from_end:i32 (cond ((not (get a Addr.v6)) (- 3 i)) ((lt i 8) (- 7 i)) (else (- 15 i))))
+    (i32.wrap (bitand (shru word (i64.extend_u (* 8 from_end))) 255i64)))
+
+  ;; ===== Reading =====
+
+  ;; A reader's result: the position after what it read, or -1 if the text
+  ;; there is not what it reads; and what it read.
+  (struct R [pos:i32 val:i32] (value))
+  ;; IPv6 groups read: the position after them, how many, whether the last
+  ;; two came from an IPv4 address, and their bits (the last group lowest).
+  (struct G [pos:i32 count:i32 v4:bool hi:i64 lo:i64] (value))
+
+  (fn no [] -> R (no_leak) (make R -1 0))
+
+  ;; The byte at i, or -1 past the end.
+  (fn at [t:str.Bytes i:i32] -> i32 (no_leak)
+    (if (and (gte i 0) (lt i (get t str.Bytes.len))) (call str.byte_at t i) -1))
+
+  ;; c's value as a digit of radix 10 or 16, or -1.
+  (fn digit [c:i32 radix:i32] -> i32 (no_leak)
+    (cond ((and (gte c 48) (lte c 57)) (- c 48))
+          ((neq radix 16) -1)
+          ((and (gte c 97) (lte c 102)) (- c 87))
+          ((and (gte c 65) (lte c 70)) (- c 55))
+          (else -1)))
+
+  ;; parser.rs read_number: digits of `radix` from pos, at most max_digits
+  ;; (0: any number), the value at most max; with a leading 0 only if
+  ;; zero_prefix or the number is 0 itself.
+  (fn number [t:str.Bytes pos:i32 radix:i32 max_digits:i32 max:i32 zero_prefix:bool] -> R (no_leak)
+    (let leading_zero:bool (eq (call at t pos) 48))
+    (let v:i32 0)
+    (let n:i32 0)
+    (let i:i32 pos)
+    (while (gte (call digit (call at t i) radix) 0)
+      (set! v (+ (* v radix) (call digit (call at t i) radix)))
+      (when (gt v max) (return (call no)))
+      (set! n (+ n 1))
+      (when (and (gt max_digits 0) (gt n max_digits)) (return (call no)))
+      (set! i (+ i 1)))
+    (cond ((eq n 0) (call no))
+          ((and (not zero_prefix) leading_zero (gt n 1)) (call no))
+          (else (make R i v))))
+
+  ;; parser.rs read_ipv4_addr: the address's 32 bits.
+  (fn v4 [t:str.Bytes pos:i32] -> R (no_leak)
+    (let v:i32 0)
+    (let i:i32 pos)
+    (for k 0 4
+      (when (gt k 0)
+        (if (eq (call at t i) 46) (set! i (+ i 1)) (return (call no))))
+      (let r:R (call number t i 10 3 255 false))
+      (when (lt (get r R.pos) 0) (return r))
+      (set! v (bitor (shl v 8) (get r R.val)))
+      (set! i (get r R.pos)))
+    (make R i v))
+
+  ;; (hi, lo) shifted left by `bits` (0-128), as 128 bits.
+  (fn shl_hi [hi:i64 lo:i64 bits:i32] -> i64 (no_leak)
+    (cond ((eq bits 0) hi)
+          ((gte bits 128) 0i64)
+          ((gte bits 64) (shl lo (i64.extend_u (- bits 64))))
+          (else (bitor (shl hi (i64.extend_u bits)) (shru lo (i64.extend_u (- 64 bits)))))))
+  (fn shl_lo [lo:i64 bits:i32] -> i64 (no_leak)
+    (cond ((eq bits 0) lo)
+          ((gte bits 64) 0i64)
+          (else (shl lo (i64.extend_u bits)))))
+
+  ;; parser.rs read_groups: up to `limit` groups from pos, the first with no
+  ;; ':' before it; an IPv4 address takes the last two when two are left.
+  (fn groups [t:str.Bytes pos:i32 limit:i32] -> G (no_leak)
+    (let hi:i64 0i64)
+    (let lo:i64 0i64)
+    (let i:i32 pos)
+    (let count:i32 0)
+    (while (lt count limit)
+      (let j:i32 i)
+      (let sep:bool (or (eq count 0) (eq (call at t i) 58)))
+      (when (gt count 0) (set! j (+ i 1)))
+      (when (and sep (lt count (- limit 1)))
+        (let r:R (call v4 t j))
+        (when (gte (get r R.pos) 0)
+          (let bits:i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64))
+          (return (make G (get r R.pos) (+ count 2) true
+                        (call shl_hi hi lo 32) (bitor (call shl_lo lo 32) bits)))))
+      (when (not sep) (return (make G i count false hi lo)))
+      (let g:R (call number t j 16 4 65535 true))
+      (when (lt (get g R.pos) 0) (return (make G i count false hi lo)))
+      (set! hi (call shl_hi hi lo 16))
+      (set! lo (bitor (call shl_lo lo 16) (i64.extend_u (get g R.val))))
+      (set! i (get g R.pos))
+      (set! count (+ count 1)))
+    (make G i count false hi lo))
+
+  ;; parser.rs read_ipv6_addr: the position after it (-1 if none) and its
+  ;; bits, in a G.
+  (fn v6 [t:str.Bytes pos:i32] -> G (no_leak)
+    (let none:G (make G -1 0 false 0i64 0i64))
+    (let h:G (call groups t pos 8))
+    (when (eq (get h G.count) 8) (return h))
+    ;; an IPv4 part only at the end, after `::` if there is one
+    (when (get h G.v4) (return none))
+    (let i:i32 (get h G.pos))
+    (when (not (and (eq (call at t i) 58) (eq (call at t (+ i 1)) 58))) (return none))
+    ;; `::` is at least one group, so at most 7 - head groups follow it
+    (let tl:G (call groups t (+ i 2) (- 7 (get h G.count))))
+    (let up:i32 (* 16 (- 8 (get h G.count))))
+    (make G (get tl G.pos) 8 false
+          (bitor (call shl_hi (get h G.hi) (get h G.lo) up) (get tl G.hi))
+          (bitor (call shl_lo (get h G.lo) up) (get tl G.lo))))
+
+  ;; parser.rs read_port: ':' then a decimal number of 0-65535 (leading
+  ;; zeros allowed, as Rust allows them).
+  (fn port [t:str.Bytes pos:i32] -> R (no_leak)
+    (if (eq (call at t pos) 58) (call number t (+ pos 1) 10 0 65535 true) (call no)))
+
+  ;; ===== Parsing =====
+
+  ;; The address `t` is, all of it: IPv4 or IPv6 (Rust's IpAddr::from_str).
+  (fn parse [t:str.Bytes] -> (option.Option Addr) (pub) (no_leak)
+    (let n:i32 (get t str.Bytes.len))
+    (let r:R (call v4 t 0))
+    ;; as Rust's or_else: an IPv4 address read is the answer, whole or not
+    (when (gte (get r R.pos) 0)
+      (return (if (eq (get r R.pos) n)
+                  (make (option.Option Addr) some (make Addr false 0i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64)))
+                  (make (option.Option Addr) none))))
+    (let g:G (call v6 t 0))
+    (if (eq (get g G.pos) n)
+        (make (option.Option Addr) some (make Addr true (get g G.hi) (get g G.lo)))
+        (make (option.Option Addr) none)))
+
+  ;; The endpoint `t` is, all of it: `a.b.c.d:port` or `[v6]:port` (Rust's
+  ;; SocketAddr::from_str, less zone indexes).
+  (fn parse_endpoint [t:str.Bytes] -> (option.Option Endpoint) (pub) (no_leak)
+    (let n:i32 (get t str.Bytes.len))
+    (let none:(option.Option Endpoint) (make (option.Option Endpoint) none))
+    (let r:R (call v4 t 0))
+    (when (gte (get r R.pos) 0)
+      (let p:R (call port t (get r R.pos)))
+      (when (gte (get p R.pos) 0)
+        (return (if (eq (get p R.pos) n)
+                    (make (option.Option Endpoint) some
+                          (make Endpoint (make Addr false 0i64 (bitand (i64.extend_u (get r R.val)) 4294967295i64)) (get p R.val)))
+                    none))))
+    (when (neq (call at t 0) 91) (return none))
+    (let g:G (call v6 t 1))
+    (when (lt (get g G.pos) 0) (return none))
+    (when (neq (call at t (get g G.pos)) 93) (return none))
+    (let p:R (call port t (+ (get g G.pos) 1)))
+    (if (eq (get p R.pos) n)
+        (make (option.Option Endpoint) some (make Endpoint (make Addr true (get g G.hi) (get g G.lo)) (get p R.val)))
+        none))
+
+  ;; ===== Tests =====
+
+  ;; Whether a's bytes are `want`'s decimal numbers, one space between.
+  (fn bytes_are [a:Addr want:str] -> bool
+    (let t:str.Bytes (call str.from_str want))
+    (let i:i32 0)
+    (for k 0 (call len a)
+      (when (gt k 0) (if (eq (call at t i) 32) (set! i (+ i 1)) (return false)))
+      (let r:R (call number t i 10 3 255 true))
+      (when (or (lt (get r R.pos) 0) (neq (get r R.val) (call byte_at a k))) (return false))
+      (set! i (get r R.pos)))
+    (eq i (get t str.Bytes.len)))
+
+  (fn parses_to [text:str want:str] -> bool
+    (match (call parse (call str.from_str text))
+      ((option.Option Addr) some [a] (call bytes_are a want))
+      ((option.Option Addr) none false)))
+
+  (fn refused [text:str] -> bool
+    (call (option.is_none Addr) (call parse (call str.from_str text))))
+
+  ;; Pass count; test_suite.aipl expects 5.
+  (fn run_ip_tests [] -> i32 (pub)
+    (let p:i32 0)
+    (when (and (call parses_to "127.0.0.1" "127 0 0 1") (call parses_to "0.0.0.0" "0 0 0 0"))
+      (set! p (+ p 1)))
+    (when (and (call parses_to "::1" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1")
+               (call parses_to "1:2:3:4:5:6:7:8" "0 1 0 2 0 3 0 4 0 5 0 6 0 7 0 8")
+               (call parses_to "::ffff:1.2.3.4" "0 0 0 0 0 0 0 0 0 0 255 255 1 2 3 4"))
+      (set! p (+ p 1)))
+    (when (and (call refused "01.2.3.4") (call refused "256.1.1.1") (call refused "1.2.3") (call refused "1.2.3.4.")
+               (call refused "1:2:3:4:5:6:7:8:9") (call refused "1::2::3") (call refused "1.2.3.4::") (call refused "12345::")
+               (call refused "") (call refused "::1%3"))
+      (set! p (+ p 1)))
+    (let e:(option.Option Endpoint) (call parse_endpoint (call str.from_str "[::1]:8080")))
+    (when (match e ((option.Option Endpoint) some [x] (and (eq (get x Endpoint.port) 8080) (get (get x Endpoint.addr) Addr.v6)))
+                   ((option.Option Endpoint) none false))
+      (set! p (+ p 1)))
+    (when (and (call (option.is_none Endpoint) (call parse_endpoint (call str.from_str "1.2.3.4:65536")))
+               (call (option.is_none Endpoint) (call parse_endpoint (call str.from_str "::1:80")))
+               (call (option.is_some Endpoint) (call parse_endpoint (call str.from_str "1.2.3.4:0080"))))
+      (set! p (+ p 1)))
+    p)
+)

@@ -20,14 +20,19 @@ use std::collections::{HashMap, HashSet};
 
 /// Why a function may leak: its first allocation that is never freed, or
 /// its first call to a function that may.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Why {
     Uses(String),
     Calls(String),
 }
 
+/// A call through a function reference whose signature does not promise
+/// (no_leak): its target is not known, so it may keep memory.
+const THROUGH: &str = "a call through a function type without (no_leak)";
+
 /// What a site in a function does: an allocation that is never freed (what
 /// it is), or a call.
+#[derive(Clone, Debug)]
 enum Site {
     Leak(String),
     Call(String),
@@ -58,7 +63,11 @@ fn sites(f: &FnDef) -> Vec<Sited> {
         let site = match e {
             Expr::Op { op: OpCode::MemAlloc, .. } => Some(Site::Leak("mem.alloc".into())),
             Expr::Op { op: OpCode::FormatStr, .. } => Some(Site::Leak("format (a str)".into())),
-            Expr::CallRef { .. } => Some(Site::Leak("a call through a function reference (its target is not known)".into())),
+            // a reference whose type promises (no_leak) keeps no memory
+            // (MEMORY_PLAN.md decision 9): the checker let only such a
+            // function into it
+            Expr::CallRef { sig: crate::ast::Type::Fn(_, _, true), .. } => None,
+            Expr::CallRef { .. } => Some(Site::Leak(THROUGH.into())),
             Expr::Call { func, .. } if func == "alloc.forever" => Some(Site::Leak("alloc.forever".into())),
             Expr::Call { func, .. } => Some(Site::Call(func.clone())),
             _ => None,
@@ -79,41 +88,59 @@ fn span_of(e: &Expr) -> (u32, u32) {
     e.span()
 }
 
-/// The errors for the functions marked `(no_leak)` that may make memory
-/// that is never freed, one per function, in the module's order: each
-/// `L:C: f is marked (no_leak) but ...`, at the first offending site.
-pub fn check(module: &Module) -> Vec<(String, String)> {
-    let all: HashMap<&str, Vec<Sited>> = module.functions.iter().map(|f| (f.name.as_str(), sites(f))).collect();
-    let marked: HashSet<&str> = module.functions.iter().filter(|f| f.is_no_leak).map(|f| f.name.as_str()).collect();
-    // which unmarked functions may leak, and why (to a fixed point; each
-    // reason names something found earlier, so the chains end)
-    let mut why: HashMap<&str, Why> = HashMap::new();
-    loop {
-        let mut more = false;
-        for f in &module.functions {
-            let name = f.name.as_str();
-            if marked.contains(name) || why.contains_key(name) {
-                continue;
+/// Which functions may make memory that is never freed, and why: what
+/// the checker needs to type `(ref f)` (decision 9) and `check` to give
+/// its errors.
+#[derive(Clone, Debug)]
+pub struct Analysis {
+    all: HashMap<String, Vec<Sited>>,
+    why: HashMap<String, Why>,
+}
+
+impl Analysis {
+    pub fn new(module: &Module) -> Analysis {
+        let all: HashMap<String, Vec<Sited>> = module.functions.iter().map(|f| (f.name.clone(), sites(f))).collect();
+        let marked: HashSet<&str> = module.functions.iter().filter(|f| f.is_no_leak).map(|f| f.name.as_str()).collect();
+        // which unmarked functions may leak, and why (to a fixed point; each
+        // reason names something found earlier, so the chains end)
+        let mut why: HashMap<String, Why> = HashMap::new();
+        loop {
+            let mut more = false;
+            for f in &module.functions {
+                let name = f.name.as_str();
+                if marked.contains(name) || why.contains_key(name) {
+                    continue;
+                }
+                let reason = all[name].iter().find_map(|(_, s, _)| match s {
+                    Site::Leak(what) => Some(Why::Uses(what.clone())),
+                    Site::Call(g) if why.contains_key(g.as_str()) => Some(Why::Calls(g.clone())),
+                    Site::Call(_) => None,
+                });
+                if let Some(r) = reason {
+                    why.insert(name.to_string(), r);
+                    more = true;
+                }
             }
-            let reason = all[name].iter().find_map(|(_, s, _)| match s {
-                Site::Leak(what) => Some(Why::Uses(what.clone())),
-                Site::Call(g) if why.contains_key(g.as_str()) => Some(Why::Calls(g.clone())),
-                Site::Call(_) => None,
-            });
-            if let Some(r) = reason {
-                why.insert(name, r);
-                more = true;
+            if !more {
+                break;
             }
         }
-        if !more {
-            break;
-        }
+        Analysis { all, why }
     }
-    let chain = |start: &str| -> String {
+
+    /// Whether f may make memory that is never freed (a function marked
+    /// `(no_leak)` does not, for its callers).
+    pub fn may_leak(&self, f: &str) -> bool {
+        self.why.contains_key(f)
+    }
+
+    /// "g calls h; h uses mem.alloc": the chain from start down to the
+    /// allocation.
+    pub fn chain(&self, start: &str) -> String {
         let mut parts = Vec::new();
         let mut at = start.to_string();
         loop {
-            match why.get(at.as_str()) {
+            match self.why.get(at.as_str()) {
                 Some(Why::Uses(what)) => {
                     parts.push(format!("{at} uses {what}"));
                     break;
@@ -126,20 +153,28 @@ pub fn check(module: &Module) -> Vec<(String, String)> {
             }
         }
         parts.join("; ")
-    };
+    }
+}
+
+/// The errors for the functions marked `(no_leak)` that may make memory
+/// that is never freed, one per function, in the module's order: each
+/// `L:C: f is marked (no_leak) but ...`, at the first offending site.
+pub fn check(module: &Module) -> Vec<(String, String)> {
+    let a = Analysis::new(module);
     let mut errors = Vec::new();
     for f in module.functions.iter().filter(|f| f.is_no_leak) {
-        let first = all[f.name.as_str()].iter().find(|(_, s, in_unsafe)| {
+        let first = a.all[f.name.as_str()].iter().find(|(_, s, in_unsafe)| {
             !*in_unsafe
                 && match s {
                     Site::Leak(_) => true,
-                    Site::Call(g) => why.contains_key(g.as_str()),
+                    Site::Call(g) => a.may_leak(g),
                 }
         });
         if let Some(((l, c), s, _)) = first {
             let what = match s {
+                Site::Leak(what) if what == THROUGH => format!("uses {what}, which may keep memory (a signature with (no_leak) takes only functions that keep none)"),
                 Site::Leak(what) => format!("uses {what}, whose memory is never freed"),
-                Site::Call(g) => format!("calls {g}, which may make memory that is never freed ({})", chain(g)),
+                Site::Call(g) => format!("calls {g}, which may make memory that is never freed ({})", a.chain(g)),
             };
             errors.push((f.name.clone(), format!("{l}:{c}: {} is marked (no_leak) but {what}", f.name)));
         }

@@ -37,7 +37,7 @@
   (struct Error [(read at:i32) (read what:str)] (pub))
 
   ;; A member for building an object: key and value.
-  (fn field [a:alloc.Allocator key:str.Bytes value:Value] -> (ptr Field) (pub)
+  (fn field [a:alloc.Allocator key:str.Bytes value:Value] -> (ptr Field) (pub) (no_leak)
     (let f:(ptr Field) (new Field a))
     (put f Field.key key)
     (put f Field.value value)
@@ -46,7 +46,7 @@
   ;; ===== Reading values =====
 
   ;; The value of member `key` of an object; none for any other value.
-  (fn get [v:Value key:str] -> (option.Option Value) (pub)
+  (fn get [v:Value key:str] -> (option.Option Value) (pub) (no_leak)
     (match v
       (Value.object [fields]
         (loop i 0 (- (call (vec.len (ptr Field)) fields) 1) 1
@@ -56,7 +56,7 @@
       (else (make (option.Option Value) none))))
 
   ;; Element i of a list; none past its end or for any other value.
-  (fn at [v:Value i:i32] -> (option.Option Value) (pub)
+  (fn at [v:Value i:i32] -> (option.Option Value) (pub) (no_leak)
     (match v
       (Value.list [items]
         (if (and (gte i 0) (lt i (call (vec.len Value) items)))
@@ -67,7 +67,7 @@
   ;; Whether path is one get_path reads: empty, or steps, each a key (any
   ;; bytes but '.' and '[', after a '.' unless it is the first step) or an
   ;; index in brackets: "a.b[2].c", "[0].name", "".
-  (fn valid_path [path:str] -> bool (pub)
+  (fn valid_path [path:str] -> bool (pub) (no_leak)
     (let b:str.Bytes (call str.from_str path))
     (let n:i32 (get b str.Bytes.len))
     (let i:i32 0)
@@ -99,7 +99,7 @@
   ;; that list's element 2, then its member c), or none if a step finds
   ;; nothing; "" is v itself. A key cannot hold '.' or '[' (use get for
   ;; those). path must be valid (valid_path).
-  (fn get_path [v:Value path:str] -> (option.Option Value) (pub)
+  (fn get_path [v:Value path:str] -> (option.Option Value) (pub) (no_leak)
     (req (call valid_path path))
     (let b:str.Bytes (call str.from_str path))
     (let n:i32 (get b str.Bytes.len))
@@ -145,7 +145,7 @@
       (else (make (option.Option Value) none))))
 
   ;; A list's elements or an object's members; 0 for any other value.
-  (fn count [v:Value] -> i32 (pub)
+  (fn count [v:Value] -> i32 (pub) (no_leak)
     (match v
       (Value.list [items] (call (vec.len Value) items))
       (Value.object [fields] (call (vec.len (ptr Field)) fields))
@@ -159,7 +159,7 @@
   ;; not JSON.
   ;; An error, and the parser's own state, come from a (free an error with
   ;; free_error).
-  (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub)
+  (fn parse [a:alloc.Allocator text:str.Bytes] -> (result Value (ptr Error)) (pub) (no_leak)
     (let p:(ptr P) (new P a))
     (put p P.text text)
     (put p P.pos 0)
@@ -178,7 +178,7 @@
     (if (eq e (ptr.null Error)) (ok:(ptr Error) v) (err:Value e)))
 
   ;; Frees an error parse returned, given the allocator parse was given.
-  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub)
+  (fn free_error [a:alloc.Allocator e:(ptr Error)] -> void (pub) (no_leak)
     (call (alloc.destroy Error) a e))
 
   ;; The first error wins.
@@ -391,7 +391,7 @@
   ;; ===== Writing =====
 
   ;; v as compact JSON text, appended to b.
-  (fn write [b:(ptr buf.Buf) v:Value] -> void (pub)
+  (fn write [b:(ptr buf.Buf) v:Value] -> void (pub) (no_leak)
     (match v
       (Value.null (call buf.push_str b "null"))
       (Value.boolean [x] (call buf.push_str b (if x "true" "false")))

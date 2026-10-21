@@ -59,7 +59,7 @@
           (+ (+ (get o Oct.f) (i32.wrap (get o Oct.h)))
              (i32.wrap (i64.trunc_f64_s (* 4.0 (+ (get o Oct.c) (get o Oct.g)))))))))
 
-  (fn main [] -> i32
+  (fn checksum [] -> i32
     (let total:i32 0)
     (let a:V2 (call pick 5))                                            ;; (10 11)
     (let b:V2 (call pick -3))                                           ;; (-1 -1)
@@ -105,4 +105,7 @@
     (set! total (+ total (call oct_sum (call oct 3))))                  ;; +39
     (let g:(fn [i32] -> Oct) (ref oct))
     (set! total (+ total (get (call_ref (fn [i32] -> Oct) g 3) Oct.f)))  ;; +7
-    (+ total (i32.wrap (get bx Box.tag)))))                             ;; 219
+    (+ total (i32.wrap (get bx Box.tag))))                              ;; 219
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

@@ -2139,7 +2139,8 @@
             (call str.addr opt_src)
             (get opt_src str.Bytes.len)
             (call origins.make)
-            opt_orig)))
+            opt_orig
+            32768)))
 
   ;; Drop-in optimizing replacement for driver.compile_file: resolves imports,
   ;; expands generics, type-checks, lowers format strings, runs the 4-pass
@@ -2191,7 +2192,8 @@
                        (get opt_src str.Bytes.len)
                        gen
                        orig
-                       opt_orig))
+                       opt_orig
+                       32768))
       (if (gt n 0)
           (block
             (put res Out.status 0)
@@ -2298,7 +2300,7 @@
   (fn test_wasm_compilation_shrink [] -> i32
     (unsafe
       (let src:str "(module m (fn a [i:i32 j:i32] -> f64 (/ 1.0 (f64.convert_i64_s (i64.extend_s (+ (/ (* (+ i j) (+ (+ i j) 1)) 2) (+ i 1)))))) (fn unused_1 [x:i32] -> i32 (+ x 111)) (fn unused_2 [x:i32] -> i32 (* x 222)) (fn main [] -> i32 (let v:f64 (call a 3 4)) (if (gt v 0.0) 0 1)))")
-      (let unopt_len:i32 (call codegen.compile_mapped (str.ptr src) (str.len src) (call origins.make) (call origins.make)))
+      (let unopt_len:i32 (call codegen.compile_mapped (str.ptr src) (str.len src) (call origins.make) (call origins.make) 32768))
       (let opt_len:i32 (call compile_module (str.ptr src) (str.len src)))
       (let out:i32 (mem.load32 60))
       ;; Verify valid Wasm header ("\0asm" version 1) and significant byte reduction
@@ -2419,7 +2421,7 @@
     (let bytes:str.Bytes (unsafe (call str.bytes (get res Out.addr) (get res Out.len))))
     (if exe
         (block
-          (let o:(ptr native.Output) (call native.compile_with bytes sandbox))
+          (let o:(ptr native.Output) (call native.compile_with bytes sandbox (call str.from_str "")))
           (if (not (get o native.Output.ok)) (return (call fail_bytes "native backend: " (get o native.Output.error))) (block))
           (set! bytes (get o native.Output.exe)))
         (block))

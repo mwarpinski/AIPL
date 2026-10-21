@@ -68,7 +68,7 @@ fn an_ordinary_build_leaves_the_tests_out() {
     assert!(has(&tests, "__test_6") && has(&tests, "testing.fail_cmp"));
     // and the program itself still runs
     let o = aipl(&["eval", ROWS]);
-    assert!(stdout(&o).contains("Int(2)"), "{}", stdout(&o));
+    assert!(o.status.success() && stdout(&o).contains("a,b has 2 fields"), "{}", stdout(&o));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -79,5 +79,10 @@
     (call sort same)
     (and (call is_sorted up) (call is_sorted same)))
 
-  (fn main [] -> i32
-    (if (call handles_sorted_and_equal 2000) (call sorted_median 5000 42) -1)))
+  (fn main [] -> (result i32 str)
+    (when (not (call handles_sorted_and_equal 2000))
+      (return (err:i32 "quicksort: sorted or all-equal input came out wrong")))
+    (let m:i32 (call sorted_median 5000 42))
+    (when (lt m 0) (return (err:i32 "quicksort: the result is not sorted")))
+    (println "median of 5000 random values: {m}")
+    (ok:str 0)))

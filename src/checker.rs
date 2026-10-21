@@ -325,7 +325,7 @@ fn layout_at(ty: &Type, structs: &Structs, depth: usize) -> Result<(usize, usize
         // a pointer or array: the address, then the generation (GENERATIONS_PLAN.md)
         Type::Ptr(_) | Type::Array(_) => Ok((8, 8)),
         Type::Narrow(n) => Ok((n.size(), n.size())),
-        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
+        Type::I32 | Type::F32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => Ok((4, 4)),
         Type::I64 | Type::F64 => Ok((8, 8)),
         Type::Struct(name) if depth < 64 => match structs.get(name) {
             Some(def) if def.is_value => {
@@ -473,6 +473,9 @@ pub struct TypeChecker {
     /// Each checked function's body type, its last expression's: `aipl eval
     /// -e` reads its wrapper's to print the value (body_type).
     bodies: std::cell::RefCell<HashMap<String, Type>>,
+    /// Which functions may make memory that is never freed, for the type of
+    /// `(ref f)` (MEMORY_PLAN.md decision 9).
+    leaks: Option<crate::leaks::Analysis>,
 }
 
 impl Default for TypeChecker {
@@ -498,6 +501,7 @@ impl TypeChecker {
             formats: std::cell::RefCell::new(HashMap::new()),
             in_defer: std::cell::Cell::new(false),
             bodies: std::cell::RefCell::new(HashMap::new()),
+            leaks: None,
         }
     }
 
@@ -591,6 +595,7 @@ impl TypeChecker {
     /// written, each error is prefixed with its item's file.
     pub fn check_module(&mut self, module: &Module) -> Result<(), String> {
         self.check_items(module).map_err(|e| self.name_file(module, e))?;
+        self.leaks = Some(crate::leaks::Analysis::new(module));
         let mut errors = Vec::new();
         for f in &module.functions {
             self.at_item("fn", &f.name);
@@ -890,7 +895,7 @@ impl TypeChecker {
                 self.validate_type(b, span)?;
                 self.result_fits(a, b, span)
             }
-            Type::Fn(params, ret) => {
+            Type::Fn(params, ret, _) => {
                 for p in params {
                     self.validate_type(p, span)?;
                 }
@@ -911,6 +916,40 @@ impl TypeChecker {
             Type::Enum(name) => Err(format!("{}:{}: Unknown type '{}' (not a scalar type or an enum)", span.0, span.1, name)),
             _ => Ok(()),
         }
+    }
+
+    /// Whether a value of type `got` fits where `want` is asked for: the
+    /// same type, or a function reference that promises (no_leak) where one
+    /// that does not is asked for (dropping a promise is always safe). Only
+    /// at the top: inside an array or a pointer the types are the same.
+    /// Where two branches' (or two compared values') types meet: the same type,
+/// or two function types that differ only in the promise meet at the type
+/// without it, which both fit (MEMORY_PLAN.md decision 9).
+fn meet(a: &Type, b: &Type) -> Option<Type> {
+    match (a, b) {
+        _ if a == b => Some(a.clone()),
+        (Type::Fn(p, r, _), Type::Fn(q, s, _)) if p == q && r == s => Some(Type::Fn(p.clone(), r.clone(), false)),
+        _ => None,
+    }
+}
+
+fn fits(got: &Type, want: &Type) -> bool {
+        got == want || matches!((got, want), (Type::Fn(p, r, true), Type::Fn(q, s, false)) if p == q && r == s)
+    }
+
+    /// What to add to a mismatch's message when a function reference that
+    /// does not promise (no_leak) is given where one that does is asked for:
+    /// for (ref f), why f may keep memory.
+    fn fit_why(&self, got: &Type, want: &Type, e: &Expr) -> String {
+        if let (Type::Fn(p, r, false), Type::Fn(q, w, true)) = (got, want) {
+            if p == q && r == w {
+                return match (e, &self.leaks) {
+                    (Expr::Ref { name, .. }, Some(a)) => format!(": {} may keep memory ({})", shown(name), a.chain(name)),
+                    _ => ": this function value's type does not promise (no_leak)".to_string(),
+                };
+            }
+        }
+        String::new()
     }
 
     /// A result is held by value (AIPL_SPEC.md 4.F), so one needing more
@@ -988,6 +1027,15 @@ impl TypeChecker {
         }
         self.validate_type(&f.return_type, f.span)
             .map_err(|e| format!("{} (return type of '{}')", e, shown(&f.name)))?;
+        // the program's main gives its exit status (AIPL_SPEC.md 6.5)
+        let status = matches!(&f.return_type, Type::I32 | Type::Void)
+            || matches!(&f.return_type, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str);
+        if f.name == "main" && f.params.is_empty() && !status {
+            return Err(format!(
+                "{}:{}: main gives the program's exit status: it returns i32 (0 for success, 1-125 for a failure), (result i32 str) (ok with the status, or err with a message, printed to stderr, and status 1), or void (status 0); got {}",
+                f.span.0, f.span.1, f.return_type
+            ));
+        }
 
         // Check contracts
         for c in &f.contracts {
@@ -1042,7 +1090,7 @@ impl TypeChecker {
 
         // A body may end in (return v) instead of a bare value.
         let ends_in_return = matches!(f.body.iter().rfind(|e| !matches!(e, Expr::Op { op: OpCode::Defer, .. })), Some(Expr::Return { .. }));
-        if f.return_type != Type::Void && last_ty != f.return_type && !ends_in_return {
+        if f.return_type != Type::Void && !Self::fits(&last_ty, &f.return_type) && !ends_in_return {
             return Err(format!(
                 "{}:{}: Function '{}' expects return type {}, but body returned {}",
                 f.span.0, f.span.1, shown(&f.name), f.return_type, last_ty
@@ -1096,10 +1144,10 @@ impl TypeChecker {
                 }
                 self.validate_type(ty, (l, c))?;
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != *ty {
+                if !Self::fits(&val_ty, ty) {
                     return Err(format!(
-                        "{}:{}: Type mismatch in 'let': expected {}, got {}",
-                        l, c, ty, val_ty
+                        "{}:{}: Type mismatch in 'let': expected {}, got {}{}",
+                        l, c, ty, val_ty, self.fit_why(&val_ty, ty, val)
                     ));
                 }
                 self.declare(name, ty, (l, c))?;
@@ -1112,7 +1160,7 @@ impl TypeChecker {
                     .cloned()
                     .ok_or_else(|| format!("{}:{}: Undefined variable '{}' in set!", l, c, name))?;
                 let val_ty = self.infer_expr_type(val, env)?;
-                if var_ty != val_ty {
+                if !Self::fits(&val_ty, &var_ty) {
                     return Err(format!(
                         "{}:{}: Type mismatch in 'set!': variable is {}, value is {}",
                         l, c, var_ty, val_ty
@@ -1134,8 +1182,8 @@ impl TypeChecker {
                     Ok(then_ty)
                 } else if then_ty == Type::Void && else_ty == Type::Void {
                     Ok(Type::Void)
-                } else if then_ty != Type::Void && else_ty != Type::Void && then_ty == else_ty {
-                    Ok(then_ty)
+                } else if let Some(t) = Self::meet(&then_ty, &else_ty).filter(|_| then_ty != Type::Void && else_ty != Type::Void) {
+                    Ok(t)
                 } else {
                     Err(format!(
                         "{}:{}: If branch type mismatch: then is {}, else is {}. If mixing void and non-void, consider wrapping in (block ... value)",
@@ -1179,7 +1227,7 @@ impl TypeChecker {
                     Some(v) => self.infer_expr_type(v, env)?,
                     None => Type::Void,
                 };
-                if got != expected {
+                if !Self::fits(&got, &expected) {
                     return Err(format!(
                         "{}:{}: return value has type {}, but the function returns {}",
                         l, c, got, expected
@@ -1208,10 +1256,10 @@ impl TypeChecker {
                 }
                 for (i, arg) in args.iter().enumerate() {
                     let arg_ty = self.infer_expr_type(arg, env)?;
-                    if arg_ty != param_types[i] {
+                    if !Self::fits(&arg_ty, &param_types[i]) {
                         return Err(format!(
-                            "{}:{}: Arg {} of '{}' expects {}, got {}",
-                            l, c, i, shown(func), param_types[i], arg_ty
+                            "{}:{}: Arg {} of '{}' expects {}, got {}{}",
+                            l, c, i, shown(func), param_types[i], arg_ty, self.fit_why(&arg_ty, &param_types[i], arg)
                         ));
                     }
                 }
@@ -1333,12 +1381,12 @@ impl TypeChecker {
                     // A pointer, function ref, or enum operand gets its own
                     // explanation even when the other operand is a number:
                     // (+ p 4), (+ 1 e).
-                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_));
+                    let special = |t: &Type| matches!(t, Type::Ptr(_) | Type::Array(_) | Type::Fn(..) | Type::Enum(_) | Type::Union(_));
                     let t1 = if !special(&t1) && special(&t2) { t2.clone() } else { t1 };
                     if t1 != t2 && !special(&t1) {
                         return Err(format!("{}:{}: Type mismatch in binary op: {} vs {}", l, c, t1, t2));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _)) {
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(..)) {
                         return Err(format!(
                             "{}:{}: {} on {}: pointers, arrays, and function refs have no arithmetic; use get/put or arr.get/arr.set, or convert with ptr.addr/arr.addr and ptr.cast/arr.cast",
                             l, c, op, t1
@@ -1454,9 +1502,9 @@ impl TypeChecker {
                             format!("{}:{}: {} on {}: a type parameter has no order of its own; add (where (cmp.Ord {})) and call (cmp.Ord.compare {})", l, c, op, p, p, p)
                         });
                     }
-                    if t1 != t2 {
+                    let Some(t1) = Self::meet(&t1, &t2) else {
                         return Err(format!("{}:{}: Type mismatch in comparison: {} vs {}", l, c, t1, t2));
-                    }
+                    };
                     if matches!(op, OpCode::LtU | OpCode::LteU | OpCode::GtU | OpCode::GteU) && !matches!(t1, Type::I32 | Type::I64) {
                         return Err(format!("{}:{}: {} compares integers (i32 or i64) as unsigned, got {}", l, c, op, t1));
                     }
@@ -1477,7 +1525,7 @@ impl TypeChecker {
                             l, c, op
                         ));
                     }
-                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(_, _) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
+                    if matches!(t1, Type::Ptr(_) | Type::Array(_) | Type::Fn(..) | Type::Enum(_)) && !matches!(op, OpCode::Eq | OpCode::Neq) {
                         return Err(format!("{}:{}: {} on {}: pointers, arrays, function refs, and enums compare only with eq/neq", l, c, op, t1));
                     }
                     // lt/lte/gt/gte order numbers; bool compares only with eq/neq
@@ -1632,14 +1680,34 @@ impl TypeChecker {
                     self.expect_operands("fs.stat", "(fs.stat ptr len out)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
                     Ok(Type::I32)
                 }
+                OpCode::NetListen => {
+                    self.expect_operands("net.listen", "(net.listen addr len port)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetAccept => {
+                    self.expect_operands("net.accept", "(net.accept h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetRecv => {
+                    self.expect_operands("net.recv", "(net.recv h buf max)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetSend => {
+                    self.expect_operands("net.send", "(net.send h buf len)", args, &[Type::I32, Type::I32, Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
+                OpCode::NetClose => {
+                    self.expect_operands("net.close", "(net.close h)", args, &[Type::I32], env, (l, c))?;
+                    Ok(Type::I32)
+                }
                 OpCode::ThreadSpawn => {
                     // (thread.spawn (ref worker) arg): the worker takes the i32 arg.
                     if args.len() != 2 {
                         return Err(format!("{}:{}: thread.spawn requires 2 arguments (worker: (fn [i32] -> i32), arg: i32)", l, c));
                     }
-                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32));
+                    let worker = Type::Fn(vec![Type::I32], Box::new(Type::I32), false);
                     let t = self.infer_expr_type(&args[0], env)?;
-                    if t != worker {
+                    if !Self::fits(&t, &worker) {
                         return Err(format!("{}:{}: thread.spawn needs a worker of type (fn [i32] -> i32), got {}", l, c, t));
                     }
                     let a = self.infer_expr_type(&args[1], env)?;
@@ -1763,8 +1831,8 @@ impl TypeChecker {
                     Ok(last_ok_ty)
                 } else if last_ok_ty == Type::Void && last_err_ty == Type::Void {
                     Ok(Type::Void)
-                } else if last_ok_ty != Type::Void && last_err_ty != Type::Void && last_ok_ty == last_err_ty {
-                    Ok(last_ok_ty)
+                } else if let Some(t) = Self::meet(&last_ok_ty, &last_err_ty).filter(|_| last_ok_ty != Type::Void && last_err_ty != Type::Void) {
+                    Ok(t)
                 } else {
                     Err(format!(
                         "{}:{}: match_result arm type mismatch: ok arm yields {}, err arm yields {}",
@@ -1846,7 +1914,7 @@ impl TypeChecker {
                 let (written, field_ty) = self.walk_path((struct_name, field_name), field_ty, path, "put", *span)?;
                 let field_ty = value_of(&field_ty);
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != field_ty {
+                if !Self::fits(&val_ty, &field_ty) {
                     return Err(format!(
                         "{}:{}: Type mismatch writing to field '{}.{}': expected {}, got {}",
                         span.0, span.1, shown(&written.0), written.1, field_ty, val_ty
@@ -1872,10 +1940,10 @@ impl TypeChecker {
                 let def = def.clone();
                 for (a, f) in args.iter().zip(&def.fields) {
                     let t = self.infer_expr_type(a, env)?;
-                    if t != f.ty {
+                    if !Self::fits(&t, &f.ty) {
                         return Err(format!(
-                            "{}:{}: make {}: field '{}' is {}, got {}",
-                            span.0, span.1, shown(struct_name), f.name, f.ty, t
+                            "{}:{}: make {}: field '{}' is {}, got {}{}",
+                            span.0, span.1, shown(struct_name), f.name, f.ty, t, self.fit_why(&t, &f.ty, a)
                         ));
                     }
                 }
@@ -1898,7 +1966,7 @@ impl TypeChecker {
                     ));
                 }
                 let n = self.infer_expr_type(new_val, env)?;
-                if n != field_ty {
+                if !Self::fits(&n, &field_ty) {
                     return Err(format!(
                         "{}:{}: with {}.{}: expected {}, got {}",
                         span.0, span.1, shown(struct_name), field_name, field_ty, n
@@ -1989,7 +2057,7 @@ impl TypeChecker {
                     }
                 };
                 let val_ty = self.infer_expr_type(val, env)?;
-                if val_ty != target {
+                if !Self::fits(&val_ty, &target) {
                     return Err(format!(
                         "{}:{}: arr.set value mismatch: expected {}, got {}",
                         span.0, span.1, target, val_ty
@@ -2037,20 +2105,23 @@ impl TypeChecker {
             Expr::Ref { name, span } => match self.fn_signatures.get(name) {
                 Some((params, ret)) => {
                     self.require_unsafe_fn(name, span.0, span.1)?;
-                    Ok(Type::Fn(params.clone(), Box::new(ret.clone())))
+                    // it promises (no_leak) when the checker proves f keeps
+                    // no memory (MEMORY_PLAN.md decision 9)
+                    let promise = self.leaks.as_ref().is_some_and(|a| !a.may_leak(name));
+                    Ok(Type::Fn(params.clone(), Box::new(ret.clone()), promise))
                 }
                 None => Err(format!("{}:{}: Undefined function '{}' in ref", span.0, span.1, name)),
             },
             Expr::CallRef { sig, func, args, span } => {
                 self.validate_type(sig, *span)?;
                 let (params, ret) = match sig {
-                    Type::Fn(p, r) => (p.clone(), *r.clone()),
+                    Type::Fn(p, r, _) => (p.clone(), *r.clone()),
                     other => {
                         return Err(format!("{}:{}: call_ref needs a (fn [...] -> r) signature, got {}", span.0, span.1, other))
                     }
                 };
                 let ft = self.infer_expr_type(func, env)?;
-                if ft != *sig {
+                if !Self::fits(&ft, sig) {
                     return Err(format!("{}:{}: call_ref signature {} does not match the function's type {}", span.0, span.1, sig, ft));
                 }
                 if args.len() != params.len() {
@@ -2058,7 +2129,7 @@ impl TypeChecker {
                 }
                 for (i, (a, p)) in args.iter().zip(params.iter()).enumerate() {
                     let at = self.infer_expr_type(a, env)?;
-                    if at != *p {
+                    if !Self::fits(&at, p) {
                         return Err(format!("{}:{}: call_ref argument {} expects {}, got {}", span.0, span.1, i + 1, p, at));
                     }
                 }
@@ -2087,8 +2158,8 @@ impl TypeChecker {
                 }
                 for (a, f) in args.iter().zip(v.fields.iter()) {
                     let at = self.infer_expr_type(a, env)?;
-                    if at != f.ty {
-                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}", l, c, shown(union_name), variant, f.name, f.ty, at));
+                    if !Self::fits(&at, &f.ty) {
+                        return Err(format!("{}:{}: make {}.{}: field '{}' is {}, got {}{}", l, c, shown(union_name), variant, f.name, f.ty, at, self.fit_why(&at, &f.ty, a)));
                     }
                 }
                 Ok(Type::Union(union_name.clone()))
@@ -2179,12 +2250,14 @@ impl TypeChecker {
                 }
                 // arms that always leave take the others' type
                 let Some((first_name, first)) = arm_types.first() else { return Ok(Type::Void) };
+                let mut joined = first.clone();
                 for (name, t) in &arm_types[1..] {
-                    if t != first {
-                        return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t));
+                    match Self::meet(&joined, t) {
+                        Some(m) => joined = m,
+                        None => return Err(format!("{}:{}: match arm type mismatch: {} yields {}, {} yields {}", l, c, first_name, first, name, t)),
                     }
                 }
-                Ok(first.clone())
+                Ok(joined)
             }
             Expr::Addr { val, kind, span } => {
                 let t = self.infer_expr_type(val, env)?;
@@ -2290,6 +2363,7 @@ pub fn is_unchecked_op(op: &OpCode) -> bool {
             | AtomicAdd | AtomicCas | AtomicLock | AtomicUnlock
             | ThreadSpawn | ThreadJoin
             | FsOpen | FsRead | FsWrite | FsDelete | FsOpendir | FsReaddir | FsStat
+            | NetListen | NetAccept | NetRecv | NetSend | NetClose
             | ArgsSizes | ArgsGet | EnvSizes | EnvGet
             | SysRandom
     )

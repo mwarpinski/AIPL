@@ -13,6 +13,7 @@ pub mod formats;
 pub mod leaks;
 pub mod sugar;
 pub mod native;
+pub mod net;
 pub mod tools;
 pub mod testrun;
 pub mod watch;

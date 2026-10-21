@@ -358,8 +358,11 @@ fn wasm_driver_is_a_wasi_command() {
     assert_eq!(status, 0);
     let engine = wasmtime::Engine::default();
     let m = wasmtime::Module::new(&engine, std::fs::read(work.join("app.wasm")).unwrap()).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let inst = wasmtime::Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let main = inst.get_typed_func::<(), i32>(&mut store, "main").unwrap();
     assert_eq!(main.call(&mut store, ()).unwrap(), 10);
 
@@ -565,6 +568,69 @@ fn malformed_files_are_rejected_like_rust() {
         // the same file is blamed (an import's own error names the import)
         let stem = |f: &str| f.rsplit('/').next().unwrap().to_string();
         assert_eq!(stem(our_file), stem(rust_file), "{name}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// (no_leak) on function types (MEMORY_PLAN.md decision 9) through the
+/// whole AIPL toolchain: the parser, generics (`Vec<fn<i32->i32,no_leak>>`),
+/// the checker with its leaks analysis, and codegen give the Rust
+/// toolchain's bytes for tests/aipl/memory/no_leak_slots.aipl, and refuse a
+/// function into a promising slot unless it is proven to keep no memory,
+/// with Rust's message and chain.
+#[test]
+fn wasm_toolchain_checks_no_leak_function_types_like_rust() {
+    let driver = driver_wasm();
+    let rel = "tests/aipl/memory/no_leak_slots.aipl";
+    assert_resolves_like_rust(rel);
+    match wasm_driver::run(&driver, rel, "aipl_src/std/") {
+        wasm_driver::Outcome::Wasm(bytes) => assert!(bytes == rust_bytes(&root().join(rel)), "{rel}: wasm toolchain output differs from Rust"),
+        wasm_driver::Outcome::ResolveError(e) => panic!("{rel}: resolve error: {e}"),
+        wasm_driver::Outcome::CompileError(c) => panic!("{rel}: compile error {c}"),
+        wasm_driver::Outcome::TypeError(e) => panic!("{rel}: type error {e}"),
+    }
+    let dir = root().join("target").join(format!("aipl_no_leak_slots_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let apply = "(fn apply [f:(fn [i32] -> i32 (no_leak)) x:i32] -> i32 (no_leak)\n    (call_ref (fn [i32] -> i32 (no_leak)) f x))";
+    let keeps = "(fn keeps [x:i32] -> i32 (str.len (call str.concat \"a\" \"b\")))";
+    let cases = [
+        // an argument, through std: the chain names each step
+        ("arg", format!("(module arg (import str)\n  {apply}\n  {keeps}\n  (fn main [] -> i32 (call apply (ref keeps) 1)))"),
+         "5:22: Arg 0 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+        // a let
+        ("let", format!("(module lets (import str)\n  {keeps}\n  (fn main [] -> i32\n    (let g:(fn [i32] -> i32 (no_leak)) (ref keeps))\n    0))"),
+         "4:5: Type mismatch in 'let': expected (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): keeps may keep memory (keeps calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+        // an ordinary function value into a promising slot: nothing to prove
+        ("plain", format!("(module plain\n  {apply}\n  (fn id [x:i32] -> i32 x)\n  (fn main [] -> i32\n    (let g:(fn [i32] -> i32) (ref id))\n    (call apply g 1)))"),
+         "7:5: Arg 0 of 'apply' expects (fn [i32] -> i32 (no_leak)), got (fn [i32] -> i32): this function value's type does not promise (no_leak)"),
+        // a (no_leak) function calling through an ordinary signature
+        ("through", "(module through\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32 (no_leak)\n    (call_ref (fn [i32] -> i32) f x))\n  (fn main [] -> i32 0))".to_string(),
+         "3:5: run is marked (no_leak) but uses a call through a function type without (no_leak), which may keep memory (a signature with (no_leak) takes only functions that keep none)"),
+        // a stream source of its own that keeps memory (std/stream takes only promising ones)
+        ("stream_src", "(module stream_src (import alloc) (import buf) (import str) (import stream)\n  (fn fill [n:i32 into:(ptr buf.Buf)] -> i32\n    (call buf.push_str into (call str.concat \"a\" \"b\"))\n    0)\n  (fn main [] -> i32\n    (let r:(ptr stream.Reader) (call (stream.reader_of i32) (call alloc.default) 0 (ref fill)))\n    0))".to_string(),
+         "6:32: Arg 2 of 'stream.reader_of<i32>' expects (fn [i32 (ptr buf.Buf)] -> i32 (no_leak)), got (fn [i32 (ptr buf.Buf)] -> i32): fill may keep memory (fill calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+        // a comparator that keeps memory (vec.sort_by takes only promising ones)
+        ("sort_cmp", "(module sort_cmp (import alloc) (import vec) (import str)\n  (fn by_len [a:i32 b:i32] -> i32 (str.len (call str.concat \"a\" \"b\")))\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))\n    (call (vec.sort_by i32) v (ref by_len))\n    0))".to_string(),
+         "5:5: Arg 1 of 'vec.sort_by<i32>' expects (fn [i32 i32] -> i32 (no_leak)), got (fn [i32 i32] -> i32): by_len may keep memory (by_len calls str.concat; str.concat calls str.room; str.room uses mem.alloc)"),
+        // a call_ref whose signature promises more than the value's type
+        ("sig", "(module sig\n  (fn run [f:(fn [i32] -> i32) x:i32] -> i32\n    (call_ref (fn [i32] -> i32 (no_leak)) f x))\n  (fn main [] -> i32 0))".to_string(),
+         "3:5: call_ref signature (fn [i32] -> i32 (no_leak)) does not match the function's type (fn [i32] -> i32)"),
+    ];
+    for (name, src, want) in cases {
+        let path = dir.join(format!("{name}.aipl"));
+        std::fs::write(&path, &src).unwrap();
+        let rel = path.strip_prefix(root()).unwrap().to_str().unwrap().to_string();
+        let rust = Resolver::resolve(&path).and_then(|m| TypeChecker::new().check_module(&m)).unwrap_err();
+        let (_, rust) = rust.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: Rust names no file in {rust}"));
+        assert_eq!(rust, want, "{name}");
+        match wasm_driver::run(&driver, &rel, "aipl_src/std/") {
+            wasm_driver::Outcome::TypeError(e) => {
+                let (_, msg) = e.split_once(".aipl: ").unwrap_or_else(|| panic!("{name}: no file in {e}"));
+                assert_eq!(msg, rust, "{name}");
+            }
+            _ => panic!("{name}: expected a type error ({rust})"),
+        }
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }

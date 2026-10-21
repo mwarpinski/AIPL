@@ -15,7 +15,7 @@
     (put r Row.name "r")
     r)
 
-  (fn main [] -> i32 (call parse_row "a,b"))
+  (fn main [] -> i32 (let n:i32 (call parse_row "a,b")) (println "a,b has {n} fields") 0)
 
   (test "an empty line has no fields"
     (expect (eq (call parse_row "") 0)))

@@ -109,7 +109,7 @@ not about this repository), **unchecked** (with why).
 
 | Claim | Verdict | Evidence and action |
 |---|---|---|
-| `--exe --target wasm` appends the module to aipl-run with a 16-byte AIPLEXE1 trailer | true | src/main.rs:279-289, src/bin/aipl_run.rs:32. |
+| `--exe --target wasm` appends the module to aipl-run with a 16-byte AIPLEXE1 trailer | true then; since 2026-10-20 a 20-byte AIPLEXE2 trailer after the module and its --listen grants | src/main.rs write_executable, src/bin/aipl_run.rs MAGIC. |
 | GitHub's macos-14 and ubuntu-24.04-arm runners can build ARM64 releases | external | GitHub's offering; relevant to prebuilt binaries (launch checklist section 4). |
 | An ARM64 backend would reuse wasm_reader.aipl unchanged; fixed 32-bit instructions are simpler | true as a design | The native backend reads WebAssembly, so a second target shares the reader. |
 | ARM64's `sdiv` does not trap on division by zero or INT_MIN / -1, unlike x86 | true about the hardware, wrong as an advantage | WebAssembly requires those traps, so an ARM64 backend has to add the checks that x86's `idiv` gives for free. |

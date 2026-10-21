@@ -83,6 +83,12 @@
   (fn lit [b:str.Bytes s:str] -> bool
     (call str.bytes_eq b (call str.from_str s)))
 
+  ;; (fn [..] -> r), or with its (no_leak) clause (fn [..] -> r (no_leak)):
+  ;; h is n's head.
+  (fn is_fn_type [h:str.Bytes n:(ptr compiler.Node)] -> bool
+    (let c:i32 (call count_children n))
+    (and (call lit h "fn") (or (eq c 4) (eq c 5))))
+
   ;; The head symbol of a (...) group, or len -1.
   (fn head [st:(ptr St) g:(ptr compiler.Node)] -> str.Bytes
     (unsafe (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return (call str.bytes 0 -1)) (block))
@@ -149,16 +155,17 @@
     (if (call is_app st n false) (return (call instance st n env)) (block))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
     (let h:str.Bytes (call head st n))
-    ;; (fn [..] -> r), or (Name args...) with at least one argument (generics.rs type_name)
+    ;; (fn [..] -> r [(no_leak)]), or (Name args...) with at least one argument (generics.rs type_name)
+    (let fn_type:bool (call is_fn_type h n))
     (if (or (lt (get h str.Bytes.len) 0)
-            (and (not (and (call lit h "fn") (eq (call count_children n) 4))) (lt (call count_children n) 2)))
+            (and (not fn_type) (lt (call count_children n) 2)))
         (return (call not_a_type st n))
         (block))
     (call buf.push_bytes out h)
     (call buf.push_byte out 60)
-    (if (and (call lit h "fn") (eq (call count_children n) 4))
+    (if fn_type
         (block
-          ;; (fn [a b] -> r) -> fn<a,b->r>
+          ;; (fn [a b] -> r) -> fn<a,b->r>; (fn [a b] -> r (no_leak)) -> fn<a,b->r,no_leak>
           (let p:(ptr compiler.Node) (call first_child (call nth n 1)))
           (let first:bool true)
           (while (neq p (ptr.null compiler.Node))
@@ -167,7 +174,8 @@
             (set! first false)
             (set! p (get p compiler.Node.next)))
           (call buf.push_str out "->")
-          (call buf.push_bytes out (call mangle st (call nth n 3) env)))
+          (call buf.push_bytes out (call mangle st (call nth n 3) env))
+          (if (eq (call count_children n) 5) (call buf.push_str out ",no_leak") (block)))
         (block
           (let a:(ptr compiler.Node) (get (call first_child n) compiler.Node.next))
           (let first:bool true)
@@ -700,7 +708,7 @@
           (return (if (gte k 0) (call (vec.at str.Bytes) (get env Env.mangled) k) t)))
         (block))
     (let h:str.Bytes (call head st n))
-    (let fn_type:bool (and (call lit h "fn") (eq (call count_children n) 4)))
+    (let fn_type:bool (call is_fn_type h n))
     (if (or (lt (get h str.Bytes.len) 0) (and (not fn_type) (lt (call count_children n) 2)))
         (block
           (if report (call fail_at st (get n compiler.Node.pos) (call msg "not a type")) (block))
@@ -723,7 +731,8 @@
           (let r:str.Bytes (call type_text st (call nth n 3) env report))
           (if (lt (get r str.Bytes.len) 0) (return r) (block))
           (call buf.push_str out "->")
-          (call buf.push_bytes out r))
+          (call buf.push_bytes out r)
+          (if (eq (call count_children n) 5) (call buf.push_str out ",no_leak") (block)))
         (block))
     (call buf.push_byte out 62)
     (call as_bytes out)))

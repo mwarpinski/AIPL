@@ -1,0 +1,67 @@
+;; A (no_leak) handler reading and writing through std/stream (MEMORY_PLAN.md
+;; decision 9): readers over a str and over a source of its own (Drip),
+;; writers to a buf.Buf and to a sink of its own (Tally), all on the arena
+;; it is handed. The checker proves the handler keeps no memory; run 1,000
+;; times on an arena reset after each, the arena holds no more than after
+;; the first. Prints "3 lines, 14 bytes; drip 3 lines", "tally 31" (the
+;; summary's length), "flat".
+(module no_leak_stream
+  (import alloc)
+  (import arena)
+  (import buf)
+  (import str)
+  (import stream)
+  (import io)
+
+  ;; a source of its own: hands out "ab\n" `left` times
+  (struct Drip [left:i32])
+  (fn drip [d:(ptr Drip) into:(ptr buf.Buf)] -> i32
+    (if (eq (get d Drip.left) 0) (return 0) (block))
+    (put d Drip.left (- (get d Drip.left) 1))
+    (call buf.push_str into "ab\n")
+    3)
+
+  ;; a sink of its own: counts what it is given
+  (struct Tally [n:i32])
+  (fn tally [t:(ptr Tally) b:str.Bytes] -> bool
+    (put t Tally.n (+ (get t Tally.n) (get b str.Bytes.len)))
+    true)
+
+  (fn count_lines [r:(ptr stream.Reader)] -> i32 (no_leak)
+    (let n:i32 0)
+    (while (call stream.next_line r) (set! n (+ n 1)))
+    (call stream.close_reader r)
+    n)
+
+  ;; reads `text` by lines and a Drip by lines, writes a summary to out
+  ;; through a buf writer and the same summary to a Tally; gives the
+  ;; Tally's count
+  (fn handle [a:alloc.Allocator text:str out:(ptr buf.Buf)] -> i32 (no_leak)
+    (let lines:i32 (call count_lines (call stream.of_str a text)))
+    (let d:(ptr Drip) (new Drip a))
+    (put d Drip.left 3)
+    (let dl:i32 (call count_lines (call (stream.reader_of (ptr Drip)) a d (ref drip))))
+    (let w:(ptr stream.Writer) (call stream.to_buf a out))
+    (format_to w "{lines} lines, {(str.len text)} bytes; drip {dl} lines")
+    (let _ok:bool (call stream.close_writer w))
+    (let t:(ptr Tally) (new Tally a))
+    (let tw:(ptr stream.Writer) (call (stream.writer_of (ptr Tally)) a t (ref tally)))
+    (call stream.write_bytes tw (call buf.bytes out))
+    (let _ok2:bool (call stream.close_writer tw))
+    (get t Tally.n))
+
+  (fn main [] -> i32
+    (let ar:(ptr arena.Arena) (call arena.make 4096))
+    (let a:alloc.Allocator (call alloc.of_arena ar))
+    (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    (let t:i32 (call handle a "one\ntwo\nthree\n" out))
+    (call io.println (call buf.to_str out))
+    (call io.println_int "tally " t)
+    (call arena.reset ar)
+    (let first:i32 (call arena.reserved ar))
+    (for i 0 1000
+      (call buf.clear out)
+      (let _t:i32 (call handle a "one\ntwo\nthree\n" out))
+      (call arena.reset ar))
+    (call io.println (if (eq (call arena.reserved ar) first) "flat" "grew"))
+    0))

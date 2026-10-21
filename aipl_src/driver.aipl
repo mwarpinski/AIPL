@@ -35,15 +35,47 @@
   ;; Compiles the program whose entry file is (path_addr, path_len), searching
   ;; the colon-separated library directories at (dirs_addr, dirs_len).
   (fn compile_file [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len false))
+    (call compile_as path_addr path_len dirs_addr dirs_len false 32768))
+
+  ;; compile_file with memory's maximum lowered to max_pages (--max-memory).
+  (fn compile_file_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len false max_pages))
 
   ;; compile_file for the file's test build (resolver.rs resolve_tests): its
   ;; (test ...) items as functions, and a _start running the one its first
   ;; argument names.
   (fn compile_tests [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32] -> (ptr Out) (pub)
-    (call compile_as path_addr path_len dirs_addr dirs_len true))
+    (call compile_as path_addr path_len dirs_addr dirs_len true 32768))
 
-  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool] -> (ptr Out)
+  ;; compile_tests with memory's maximum lowered to max_pages.
+  (fn compile_tests_limited [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 max_pages:i32] -> (ptr Out) (pub)
+    (call compile_as path_addr path_len dirs_addr dirs_len true max_pages))
+
+  ;; `--max-memory SIZE` as wasm pages, or -1 (src/compiler/mod.rs
+  ;; memory_pages): bytes, or K, M, or G of them (binary), a whole number of
+  ;; 64 KiB pages from 1M to 2G.
+  (fn memory_pages [t:str.Bytes] -> i32 (pub)
+    (let n:i32 (get t str.Bytes.len))
+    (let digits:i32 0)
+    (while (and (lt digits n) (and (gte (call str.byte_at t digits) 48) (lte (call str.byte_at t digits) 57)))
+      (set! digits (+ digits 1)))
+    (if (or (eq digits 0) (or (gt digits 10) (gt (- n digits) 1))) (return -1) (block))
+    (let shift:i64 (if (eq digits n) 0i64
+                       (cond ((eq (call str.byte_at t digits) 75) 10i64)
+                             ((eq (call str.byte_at t digits) 77) 20i64)
+                             ((eq (call str.byte_at t digits) 71) 30i64)
+                             (else -1i64))))
+    (if (lt shift 0i64) (return -1) (block))
+    (let v:i64 0i64)
+    (loop i 0 (- digits 1) 1
+      (set! v (+ (* v 10i64) (i64.extend_s (- (call str.byte_at t i) 48)))))
+    ;; at most 10 digits: v < 2^34, and shifted by 30 < 2^64
+    (let bytes:i64 (shl v shift))
+    (if (neq (bitand bytes 65535i64) 0i64) (return -1) (block))
+    (let pages:i64 (shru bytes 16i64))
+    (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
+
+  (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32] -> (ptr Out)
     (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
@@ -85,8 +117,8 @@
     (let n:i32 (if (call fmtlower.lower (call str.addr flat) (get flat str.Bytes.len) fmts lowered low)
                    (block
                      (let lt:str.Bytes (call buf.bytes lowered))
-                     (call codegen.compile_lowered (call str.addr lt) (get lt str.Bytes.len) gen orig low))
-                   (call codegen.compile_mapped (call str.addr flat) (get flat str.Bytes.len) gen orig)))
+                     (call codegen.compile_lowered (call str.addr lt) (get lt str.Bytes.len) gen orig low max_pages))
+                   (call codegen.compile_mapped (call str.addr flat) (get flat str.Bytes.len) gen orig max_pages)))
     (if (gt n 0)
         (block
           (put res Out.status 0)

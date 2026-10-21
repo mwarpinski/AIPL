@@ -34,6 +34,9 @@ pub enum Value {
 /// concurrency, instead of each thread getting its own disconnected copy.
 pub struct SharedMemory {
     pub bytes: Vec<u8>,
+    /// The most pages memory may grow to: MAX_PAGES, or lower with
+    /// `--max-memory` (set_max_pages), as a compiled module declares it.
+    pub max_pages: usize,
 }
 
 /// One wasm page.
@@ -103,6 +106,9 @@ pub struct VM {
     /// "." and ".." first as wasmtime gives them; a cookie is an index.
     dirs: HashMap<i32, Vec<(Vec<u8>, u8)>>,
     next_fd: i32,
+    /// Sockets (aipl_net_v1) and the grants they need, shared by every
+    /// thread of the program.
+    net: crate::net::Net,
     thread_handles: HashMap<i32, JoinHandle<Result<Value, String>>>,
     /// String literal -> address of its interned bytes, laid out exactly as
     /// the wasm backend's data segment (wasm::string_layout).
@@ -148,6 +154,7 @@ impl VM {
             enums: Arc::new(HashMap::new()),
             flow: None,
             shared: Arc::new(Mutex::new(SharedMemory {
+                max_pages: MAX_PAGES,
                 bytes: {
                     // 16 pages, with the heap cursor at address 0 pre-set to
                     // HEAP_START - exactly what the wasm backend's data
@@ -160,6 +167,7 @@ impl VM {
             fd_table: HashMap::new(),
             dirs: HashMap::new(),
             next_fd: 3,
+            net: crate::net::Net::new(Vec::new()),
             thread_handles: HashMap::new(),
             strings: Arc::new(HashMap::new()),
             heap_start: HEAP_START,
@@ -190,6 +198,7 @@ impl VM {
             fd_table: HashMap::new(),
             dirs: HashMap::new(),
             next_fd: 3,
+            net: self.net.clone(),
             thread_handles: HashMap::new(),
             strings: Arc::clone(&self.strings),
             heap_start: self.heap_start,
@@ -206,6 +215,16 @@ impl VM {
     /// The command line `args.*` report, argv[0] first.
     pub fn set_args(&mut self, args: Vec<String>) {
         self.args = Arc::new(args);
+    }
+
+    /// The most pages memory may grow to (`--max-memory`), at most MAX_PAGES.
+    pub fn set_max_pages(&mut self, pages: usize) {
+        self.shared.lock().unwrap().max_pages = pages.min(MAX_PAGES);
+    }
+
+    /// The addresses `net.listen` may use (`--listen`); none by default.
+    pub fn set_listen(&mut self, grants: Vec<std::net::SocketAddr>) {
+        self.net = crate::net::Net::new(grants);
     }
 
     /// What `fs.read` on fd 0 returns, instead of the process's stdin.
@@ -265,6 +284,11 @@ impl VM {
             Value::Int(i) => Ok(i),
             other => Err(format!("{} requires i32 operands, got {:?}", op, other)),
         }
+    }
+
+    /// Whether len bytes at ptr are inside linear memory.
+    fn in_memory(&self, ptr: usize, len: usize) -> bool {
+        ptr.checked_add(len).is_some_and(|end| end <= self.shared.lock().unwrap().bytes.len())
     }
 
     pub fn read_bytes(&self, ptr: usize, len: usize) -> Vec<u8> {
@@ -971,7 +995,7 @@ impl VM {
         if next as u32 > have {
             let pages = ((next as u32).wrapping_sub(have).wrapping_add(65535) >> 16) as usize;
             let old_pages = mem.bytes.len() / PAGE_SIZE;
-            if old_pages + pages <= MAX_PAGES {
+            if old_pages + pages <= mem.max_pages {
                 mem.bytes.resize((old_pages + pages) * PAGE_SIZE, 0);
             }
         }
@@ -1033,7 +1057,7 @@ impl VM {
                 };
                 Ok(Value::Int(v))
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                 if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory load out of bounds: address {}", addr));
                 }
@@ -1128,7 +1152,7 @@ impl VM {
                 mem.bytes[addr..addr + w].copy_from_slice(&v.to_le_bytes()[..w]);
                 Ok(())
             }
-            Type::I32 | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) | Type::Str => {
+            Type::I32 | Type::Fn(..) | Type::Enum(_) | Type::Union(_) | Type::Str => {
                 if addr.checked_add(4).is_none_or(|end| end > mem.bytes.len()) {
                     return Err(format!("VM memory store out of bounds: address {}", addr));
                 }
@@ -1442,7 +1466,7 @@ impl VM {
                 };
                 let mut mem = self.shared.lock().unwrap();
                 let old_pages = mem.bytes.len() / PAGE_SIZE;
-                if pages < 0 || old_pages + pages as usize > MAX_PAGES {
+                if pages < 0 || old_pages + pages as usize > mem.max_pages {
                     // wasm memory.grow reports failure as -1 rather than trapping.
                     return Ok(Value::Int(-1));
                 }
@@ -1935,6 +1959,50 @@ impl VM {
                 } else {
                     Ok(Value::Int(-1))
                 }
+            }
+            OpCode::NetListen => {
+                let addr = self.int_operand(&args[0], scope, "net.listen")? as u32 as usize;
+                let len = self.int_operand(&args[1], scope, "net.listen")? as u32 as usize;
+                let port = self.int_operand(&args[2], scope, "net.listen")? as i32;
+                if !self.in_memory(addr, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(addr, len);
+                Ok(Value::Int(self.net.listen(&bytes, port) as i64))
+            }
+            OpCode::NetAccept => {
+                let h = self.int_operand(&args[0], scope, "net.accept")? as i32;
+                Ok(Value::Int(self.net.accept(h) as i64))
+            }
+            OpCode::NetRecv => {
+                // like fs.read, the host writes without the store guard; a
+                // range outside memory is a failure
+                let h = self.int_operand(&args[0], scope, "net.recv")? as i32;
+                let buf = self.int_operand(&args[1], scope, "net.recv")? as u32 as usize;
+                let max = self.int_operand(&args[2], scope, "net.recv")? as u32 as usize;
+                if !self.in_memory(buf, max) {
+                    return Ok(Value::Int(-1));
+                }
+                let mut into = vec![0u8; max];
+                let n = self.net.recv(h, &mut into);
+                if n > 0 {
+                    self.write_bytes(buf, &into[..n as usize]);
+                }
+                Ok(Value::Int(n as i64))
+            }
+            OpCode::NetSend => {
+                let h = self.int_operand(&args[0], scope, "net.send")? as i32;
+                let buf = self.int_operand(&args[1], scope, "net.send")? as u32 as usize;
+                let len = self.int_operand(&args[2], scope, "net.send")? as u32 as usize;
+                if !self.in_memory(buf, len) {
+                    return Ok(Value::Int(-1));
+                }
+                let bytes = self.read_bytes(buf, len);
+                Ok(Value::Int(self.net.send(h, &bytes) as i64))
+            }
+            OpCode::NetClose => {
+                let h = self.int_operand(&args[0], scope, "net.close")? as i32;
+                Ok(Value::Int(self.net.close(h) as i64))
             }
             OpCode::FsOpendir => {
                 let (ptr, len) = (self.int_operand(&args[0], scope, "fs.opendir")?, self.int_operand(&args[1], scope, "fs.opendir")?);

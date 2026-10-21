@@ -4,7 +4,8 @@
 //! cannot start itself, so something native loads wasmtime, hands it the
 //! module, and connects it to the terminal. It contains no compiler logic.
 //!
-//!   aipl-run [--sandbox] prog.wasm [args...]   run a compiled module
+//!   aipl-run [--sandbox] [--listen ADDR:PORT]... prog.wasm [args...]
+//!                                               run a compiled module
 //!   ./prog [args...]                            run the module appended to
 //!                                               this file by `aipl compile --exe`
 //!
@@ -12,7 +13,9 @@
 //! is the program), the environment, the working directory as preopened fd 3
 //! and `/` as fd 4 (so absolute paths work; `--sandbox` grants only the
 //! working directory), the wasi-threads `thread-spawn` import for threaded
-//! modules, and its exit status (`sys.exit`, or 0 when `_start` returns).
+//! modules, AIPL's sockets (`aipl_net_v1`, src/net.rs: a listen only on an
+//! address `--listen` grants), and its exit status (`sys.exit`, or 0 when
+//! `_start` returns).
 //!
 //! A trap (or another runtime error) prints one line, `<argv[0]>: <reason>`
 //! (e.g. `prog: wasm trap: integer divide by zero`), and exits with 134, the
@@ -26,16 +29,18 @@ use wasmtime::{Config, Engine, Linker, MemoryType, Module, SharedMemory, Store};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
-/// An executable made by `aipl compile --exe` is this runner followed by the
-/// wasm module and a 16-byte trailer: flags (u32 LE; bit 0 = sandbox),
-/// the module's length (u32 LE), and this magic.
-const MAGIC: &[u8; 8] = b"AIPLEXE1";
+/// An executable made by `aipl compile --exe --target wasm` is this runner
+/// followed by the wasm module, its --listen grants (one ADDR:PORT a line),
+/// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox), the grants'
+/// length and the module's (u32 LE each), and this magic.
+const MAGIC: &[u8; 8] = b"AIPLEXE2";
 const FLAG_SANDBOX: u32 = 1;
 
 struct Program {
     wasm: Vec<u8>,
     argv: Vec<String>,
     sandbox: bool,
+    listen: Vec<std::net::SocketAddr>,
 }
 
 fn main() {
@@ -57,24 +62,38 @@ fn main() {
 fn embedded(args: &[String]) -> Option<Program> {
     let me = std::fs::read(std::env::current_exe().ok()?).ok()?;
     let n = me.len();
-    if n < 16 || &me[n - 8..] != MAGIC {
+    if n < 20 || &me[n - 8..] != MAGIC {
         return None;
     }
-    let flags = u32::from_le_bytes(me[n - 16..n - 12].try_into().ok()?);
-    let len = u32::from_le_bytes(me[n - 12..n - 8].try_into().ok()?) as usize;
-    let start = n.checked_sub(16 + len)?;
-    Some(Program { wasm: me[start..n - 16].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0 })
+    let word = |at: usize| me[at..at + 4].try_into().ok().map(u32::from_le_bytes);
+    let (flags, glen, len) = (word(n - 20)?, word(n - 16)? as usize, word(n - 12)? as usize);
+    let grants_at = n.checked_sub(20 + glen)?;
+    let start = grants_at.checked_sub(len)?;
+    // write_executable checked each grant
+    let listen = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok()).collect();
+    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen })
 }
 
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
-    let sandbox = rest.first().is_some_and(|a| a == "--sandbox");
-    if sandbox {
-        rest = &rest[1..];
+    let (mut sandbox, mut listen) = (false, Vec::new());
+    loop {
+        match rest.first().map(String::as_str) {
+            Some("--sandbox") => {
+                sandbox = true;
+                rest = &rest[1..];
+            }
+            Some("--listen") => {
+                let g = rest.get(1).ok_or("--listen needs ADDR:PORT")?;
+                listen.push(aipl_core::net::Net::parse_grant(g)?);
+                rest = &rest[2..];
+            }
+            _ => break,
+        }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-    Ok(Program { wasm, argv: rest.to_vec(), sandbox })
+    Ok(Program { wasm, argv: rest.to_vec(), sandbox, listen })
 }
 
 /// What one thread's instance needs: shared by the main thread and every
@@ -97,6 +116,76 @@ fn wasi(argv: &[String], sandbox: bool) -> Result<WasiP1Ctx, String> {
         b.preopened_dir("/", "/", FsPerms::ReadWrite).map_err(|e| format!("cannot open /: {e}"))?;
     }
     Ok(b.build_p1())
+}
+
+/// n bytes at `at` of the calling instance's memory (its own, or the
+/// threads' shared one), or None past its end.
+fn read_mem(caller: &mut wasmtime::Caller<'_, WasiP1Ctx>, shared: &Option<SharedMemory>, at: i32, n: i32) -> Option<Vec<u8>> {
+    let (at, n) = (at as u32 as usize, n as u32 as usize);
+    match caller.get_export("memory").and_then(|e| e.into_memory()) {
+        Some(m) => m.data(&caller).get(at..at.checked_add(n)?).map(|b| b.to_vec()),
+        None => read_shared(shared.as_ref()?, at, n),
+    }
+}
+
+/// Writes bytes at `at` of the calling instance's memory; false past its end.
+fn write_mem(caller: &mut wasmtime::Caller<'_, WasiP1Ctx>, shared: &Option<SharedMemory>, at: i32, bytes: &[u8]) -> bool {
+    let at = at as u32 as usize;
+    let Some(end) = at.checked_add(bytes.len()) else { return false };
+    match caller.get_export("memory").and_then(|e| e.into_memory()) {
+        Some(m) => match m.data_mut(&mut *caller).get_mut(at..end) {
+            Some(d) => {
+                d.copy_from_slice(bytes);
+                true
+            }
+            None => false,
+        },
+        None => match shared.as_ref().and_then(|s| s.data().get(at..end)) {
+            Some(cells) => {
+                // as fs.read does: the host writes the bytes it was asked to
+                for (c, b) in cells.iter().zip(bytes) {
+                    unsafe { *c.get() = *b };
+                }
+                true
+            }
+            None => false,
+        },
+    }
+}
+
+/// The `aipl_net_v1` imports (src/net.rs), on `net`'s sockets.
+fn add_net(linker: &mut Linker<WasiP1Ctx>, net: &aipl_core::net::Net, shared: &Option<SharedMemory>) -> wasmtime::Result<()> {
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "listen", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, addr: i32, len: i32, port: i32| -> i32 {
+        match read_mem(&mut c, &sh, addr, len) {
+            Some(a) => n.listen(&a, port),
+            None => -1,
+        }
+    })?;
+    let n = net.clone();
+    linker.func_wrap("aipl_net_v1", "accept", move |h: i32| -> i32 { n.accept(h) })?;
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "recv", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, h: i32, buf: i32, max: i32| -> i32 {
+        if read_mem(&mut c, &sh, buf, max).is_none() {
+            return -1;
+        }
+        let mut into = vec![0u8; max as u32 as usize];
+        let got = n.recv(h, &mut into);
+        if got > 0 && !write_mem(&mut c, &sh, buf, &into[..got as usize]) {
+            return -1;
+        }
+        got
+    })?;
+    let (n, sh) = (net.clone(), shared.clone());
+    linker.func_wrap("aipl_net_v1", "send", move |mut c: wasmtime::Caller<'_, WasiP1Ctx>, h: i32, buf: i32, len: i32| -> i32 {
+        match read_mem(&mut c, &sh, buf, len) {
+            Some(b) => n.send(h, &b),
+            None => -1,
+        }
+    })?;
+    let n = net.clone();
+    linker.func_wrap("aipl_net_v1", "close", move |h: i32| -> i32 { n.close(h) })?;
+    Ok(())
 }
 
 /// n bytes at `at` of a shared memory, or None past its end.
@@ -328,7 +417,16 @@ fn run(p: Program) -> i32 {
     let mut shared: Option<SharedMemory> = None;
     if threaded {
         // every thread instantiates the module again on one shared memory
-        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, 32768) /* vm.rs MAX_PAGES: 2 GiB */) {
+        // the memory the module imports: 16 pages, to its declared maximum
+        // (2 GiB, vm.rs MAX_PAGES, or lower with `aipl compile --max-memory`)
+        let max = module
+            .imports()
+            .find_map(|i| match i.ty() {
+                wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => m.maximum(),
+                _ => None,
+            })
+            .unwrap_or(32768) as u32;
+        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, max)) {
             Ok(m) => m,
             Err(e) => return fail(e.to_string()),
         };
@@ -365,6 +463,9 @@ fn run(p: Program) -> i32 {
         if let Err(e) = spawn {
             return fail(e.to_string());
         }
+    }
+    if let Err(e) = add_net(&mut linker, &aipl_core::net::Net::new(p.listen.clone()), &shared) {
+        return fail(e.to_string());
     }
     let instance = match linker.instantiate(&mut store, &module) {
         Ok(i) => i,

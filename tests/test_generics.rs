@@ -8,7 +8,7 @@ use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
 use std::path::{Path, PathBuf};
-use wasmtime::{Engine, Instance, Module as WasmModule, Store};
+use wasmtime::{Engine, Module as WasmModule};
 
 /// Writes `files` into a fresh directory; returns the path of the first.
 fn write_program(name: &str, files: &[(&str, &str)]) -> PathBuf {
@@ -34,8 +34,11 @@ fn run_both(entry: &Path, f: &str) -> i32 {
     let wasm = WasmCompiler::compile(&module).unwrap();
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let w = inst.get_typed_func::<(), i32>(&mut store, f).unwrap().call(&mut store, ()).unwrap();
     assert_eq!(v, w, "VM and wasm disagree on {f}");
     v

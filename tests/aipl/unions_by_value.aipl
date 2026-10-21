@@ -72,7 +72,7 @@
   (fn found [ok:bool] -> (result Outer i32)
     (if ok (ok:i32 (make Outer.holds (make Inner.pair 4 0.0))) (err:Outer 5)))
 
-  (fn main [] -> i32
+  (fn checksum [] -> i32
     (let a:alloc.Allocator (call alloc.default))
     (let total:f64 0.0)
     (let c:Shape (make Shape.circle (make Vec2 2.0 3.0) 1.0))
@@ -130,4 +130,7 @@
     (match ou
       (Outer.holds [inner] (match inner (Inner.pair [pn pf] (set! total (+ total (+ (f64.convert_i64_s (i64.extend_s pn)) pf))))))  ;; +4.5
       (Outer.empty (block)))
-    (i32.wrap (i64.trunc_f64_s (* total 2.0)))))                              ;; 239
+    (i32.wrap (i64.trunc_f64_s (* total 2.0))))                               ;; 239
+  ;; prints the checksum the tests compare (they call checksum)
+  (import io)
+  (fn main [] -> i32 (call io.println_int "checksum " (call checksum)) 0))

@@ -3,8 +3,10 @@
 ;; NUL-terminated strings). The same in the VM, where `aipl eval FILE -- a b`
 ;; supplies the arguments, and compiled, where the WASI host does
 ;; (`wasmtime run --invoke main prog.wasm a b`; environment variables only
-;; when forwarded, e.g. `--env AIPL_PATH`). Each call reads a fresh copy
-;; (allocated, never freed); fetch once and keep the result in a loop.
+;; when forwarded, e.g. `--env AIPL_PATH`). Each table is read once, on
+;; first use, and kept (neither changes while the program runs), so arg
+;; and env allocate nothing after the first call: a (no_leak) function may
+;; use them.
 (module os
   (import alloc)
   (import str)
@@ -28,8 +30,19 @@
     (put t Table.argv argv)
     t))
 
+  ;; The table, read on first use and kept in cell 28 (the arguments) or 32
+  ;; (the environment) of the runtime block (AIPL_SPEC.md 7.9). Two threads
+  ;; reading it at once agree on one, as alloc.default does ((no_leak): it
+  ;; is made once, then handed out each time).
+  (fn table [is_env:bool] -> (ptr Table) (no_leak)
+    (unsafe (let cell:i32 (if is_env 32 28))
+    (if (eq (mem.load32 cell) 0)
+        (block (let _won:bool (atomic.cas cell 0 (ptr.addr (call fetch is_env)))))
+        (block))
+    (ptr.cast Table (mem.load32 cell))))
+
   ;; Entry i of a table, without its NUL.
-  (fn entry [t:(ptr Table) i:i32] -> str.Bytes
+  (fn entry [t:(ptr Table) i:i32] -> str.Bytes (no_leak)
     (req (and (gte i 0) (lt i (get t Table.count))))
     (unsafe (let p:i32 (mem.load32 (+ (get t Table.argv) (* 4 i))))
     (let n:i32 0)
@@ -37,19 +50,19 @@
     (call str.bytes p n)))
 
   ;; Number of command-line arguments, argv[0] (the program) included.
-  (fn arg_count [] -> i32 (pub)
-    (get (call fetch false) Table.count))
+  (fn arg_count [] -> i32 (pub) (no_leak)
+    (get (call table false) Table.count))
 
   ;; Argument i (0 is the program), or len -1 when there is no argument i.
-  (fn arg [i:i32] -> str.Bytes (pub)
-    (unsafe (let t:(ptr Table) (call fetch false))
+  (fn arg [i:i32] -> str.Bytes (pub) (no_leak)
+    (unsafe (let t:(ptr Table) (call table false))
     (if (and (gte i 0) (lt i (get t Table.count))) (call entry t i) (call str.bytes 0 -1))))
 
   ;; The value of environment variable `name`, or len -1 when it is not set.
-  (fn env [name:str] -> str.Bytes (pub)
+  (fn env [name:str] -> str.Bytes (pub) (no_leak)
     (unsafe (let key:str.Bytes (call str.from_str name))
     (let klen:i32 (get key str.Bytes.len))
-    (let t:(ptr Table) (call fetch true))
+    (let t:(ptr Table) (call table true))
     (loop i 0 (- (get t Table.count) 1) 1
       (let e:str.Bytes (call entry t i))
       (if (and (gt (get e str.Bytes.len) klen)
@@ -61,7 +74,7 @@
 
   ;; Argument i as a decimal i32, or `default` if there is no argument i or
   ;; it is not a number: (call os.arg_int 1 1000).
-  (fn arg_int [i:i32 default:i32] -> i32 (pub)
+  (fn arg_int [i:i32 default:i32] -> i32 (pub) (no_leak)
     (if (gte i (call arg_count)) (return default) (block))
     (call str.parse_int_or (call arg i) default))
 

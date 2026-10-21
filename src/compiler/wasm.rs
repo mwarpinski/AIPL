@@ -9,6 +9,13 @@ pub struct WasmCompiler;
 
 impl WasmCompiler {
     pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
+        Self::compile_limited(module, crate::vm::MAX_PAGES as u32)
+    }
+
+    /// compile, with memory's maximum lowered to `max_pages`
+    /// (`--max-memory`; at most vm::MAX_PAGES): the module declares it, so
+    /// every host stops at the same place.
+    pub fn compile_limited(module: &Module, max_pages: u32) -> Result<Vec<u8>, String> {
         let mut wasm_module = WasmModule::new();
         let mut types = TypeSection::new();
         let mut functions = FunctionSection::new();
@@ -67,7 +74,7 @@ impl WasmCompiler {
         let mut fn_types: HashMap<String, Type> = HashMap::new();
         for f in &module.functions {
             let params = f.params.iter().map(|(_, t)| t.clone()).collect();
-            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone())));
+            fn_types.insert(f.name.clone(), Type::Fn(params, Box::new(f.return_type.clone()), false));
         }
         let mut uses_refs = false;
         let mut ref_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = Vec::new();
@@ -108,11 +115,13 @@ impl WasmCompiler {
         }
         let worker_type = ref_type_base + ref_sigs.iter().position(|s| *s == worker_sig).unwrap_or(0) as u32;
         // A module with a zero-argument `main` and no `_start` of its own gets
-        // a WASI command entry point: `_start` calls `main` and discards its
-        // result (exit status 0 unless the program calls sys.exit). It comes
-        // after every other function, with its own [] -> [] type.
-        let main_fn = module.functions.iter().position(|f| f.name == "main" && f.params.is_empty());
-        let auto_start = main_fn.is_some() && !module.functions.iter().any(|f| f.name == "_start");
+        // a WASI command entry point: `_start` calls `main`, whose value is the
+        // exit status (AIPL_SPEC.md 6.5): an i32 is proc_exit'ed unless it is
+        // 0; a (result i32 str)'s ok likewise, and its err's message is
+        // written to fd 2 with a newline, then proc_exit(1). It comes after
+        // every other function, with its own [] -> [] type.
+        let main_fn = start_entry(module);
+        let auto_start = main_fn.is_some();
         let start_fn = import_count + n_user + if threaded { 2 } else { 0 };
         if auto_start {
             let base = ref_type_base + ref_sigs.len() as u32 + if threaded { 2 } else { 0 };
@@ -321,7 +330,7 @@ impl WasmCompiler {
         // thread's instance uses the same memory.
         let memory_type = wasm_encoder::MemoryType {
             minimum: 16,
-            maximum: Some(crate::vm::MAX_PAGES as u64),
+            maximum: Some(max_pages.min(crate::vm::MAX_PAGES as u32) as u64),
             memory64: false,
             shared: threaded,
             page_size_log2: None,
@@ -361,10 +370,67 @@ impl WasmCompiler {
             }
         }
         if let (true, Some(m)) = (auto_start, main_fn) {
-            let mut f = Body::new(vec![]);
+            let ret = &module.functions[m].return_type;
+            let status = *ret == Type::I32;
+            let result = is_result_main(ret);
+            let mut f = Body::new(if result { vec![(2, ValType::I32)] } else if status { vec![(1, ValType::I32)] } else { vec![] });
             f.instruction(&Instruction::Call(import_count + m as u32));
-            for _ in 0..width(&module.functions[m].return_type, &structs) {
-                f.instruction(&Instruction::Drop);
+            if status || result {
+                let proc_exit = wasi_indices[&Wasi::ProcExit];
+                if result {
+                    // [tag, slot]: tag 0 is ok, its slot the status; else the
+                    // slot is err's str, written to fd 2 as sys.print writes
+                    let fd_write = wasi_indices[&Wasi::FdWrite];
+                    let rt = |f: &mut Body, cell: i32| {
+                        if threaded {
+                            f.instruction(&Instruction::GlobalGet(0));
+                            if cell != RT_IOV0_BUF {
+                                f.instruction(&Instruction::I32Const(cell - RT_IOV0_BUF));
+                                f.instruction(&Instruction::I32Add);
+                            }
+                        } else {
+                            f.instruction(&Instruction::I32Const(cell));
+                        }
+                    };
+                    f.instruction(&Instruction::LocalSet(1));
+                    f.instruction(&Instruction::If(BlockType::Empty));
+                    rt(&mut f, RT_IOV0_BUF);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV0_LEN);
+                    f.instruction(&Instruction::LocalGet(1));
+                    f.instruction(&Instruction::I32Const(4));
+                    f.instruction(&Instruction::I32Sub);
+                    f.instruction(&Instruction::I32Load(M4));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_BUF);
+                    f.instruction(&Instruction::I32Const(newline_addr as i32));
+                    f.instruction(&Instruction::I32Store(M4));
+                    rt(&mut f, RT_IOV1_LEN);
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::I32Store(M4));
+                    for iov in [RT_IOV0_BUF, RT_IOV1_BUF] {
+                        f.instruction(&Instruction::I32Const(2));
+                        rt(&mut f, iov);
+                        f.instruction(&Instruction::I32Const(1));
+                        rt(&mut f, RT_NBYTES);
+                        f.instruction(&Instruction::Call(fd_write));
+                        f.instruction(&Instruction::Drop);
+                    }
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::Call(proc_exit));
+                    f.instruction(&Instruction::End);
+                    f.instruction(&Instruction::LocalGet(1));
+                }
+                f.instruction(&Instruction::LocalTee(0));
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(0));
+                f.instruction(&Instruction::Call(proc_exit));
+                f.instruction(&Instruction::End);
+            } else {
+                for _ in 0..width(&module.functions[m].return_type, &structs) {
+                    f.instruction(&Instruction::Drop);
+                }
             }
             f.instruction(&Instruction::End);
             codes.function(&f.f);
@@ -703,7 +769,7 @@ fn with_label<T>(ctx: &Ctx, label: Label, body: impl FnOnce() -> Result<T, Strin
 /// The wasm params/results of a `(fn [...] -> r)` type.
 fn wasm_signature(sig: &Type, structs: &crate::checker::Structs) -> (Vec<ValType>, Vec<ValType>) {
     match sig {
-        Type::Fn(params, ret) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
+        Type::Fn(params, ret, _) => (params.iter().flat_map(|t| valtypes(t, structs)).collect(), valtypes(ret, structs)),
         _ => (vec![], vec![]),
     }
 }
@@ -1200,7 +1266,7 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
         Expr::Ref { name, .. } => ctx.fn_types.get(name).cloned().unwrap_or(Type::I32),
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => Type::Void,
         Expr::CallRef { sig, .. } => match sig {
-            Type::Fn(_, ret) => (**ret).clone(),
+            Type::Fn(_, ret, _) => (**ret).clone(),
             _ => Type::I32,
         },
         Expr::ArrGet { elem_ty, .. } => crate::checker::value_of(elem_ty),
@@ -1282,6 +1348,11 @@ fn type_in(expr: &Expr, ctx: &Typing) -> Type {
             | OpCode::FsOpendir
             | OpCode::FsReaddir
             | OpCode::FsStat
+            | OpCode::NetListen
+            | OpCode::NetAccept
+            | OpCode::NetRecv
+            | OpCode::NetSend
+            | OpCode::NetClose
             | OpCode::ArgsSizes
             | OpCode::ArgsGet
             | OpCode::EnvSizes
@@ -1353,8 +1424,8 @@ fn compare_instruction(op: &OpCode, ty: &Type) -> Result<Instruction<'static>, S
     use Instruction::*;
     let ins = match (op, ty) {
         // bool and str are i32 in wasm (str is a placeholder 0 today).
-        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Eq,
-        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_)) => I32Ne,
+        (OpCode::Eq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Eq,
+        (OpCode::Neq, Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_)) => I32Ne,
         // pointers and arrays: address and generation (a cast of 0 is null)
         (OpCode::Eq, Type::Ptr(_) | Type::Array(_)) => I64Eq,
         (OpCode::Neq, Type::Ptr(_) | Type::Array(_)) => I64Ne,
@@ -1605,7 +1676,7 @@ fn aipl_to_wasm_type(ty: &Type) -> ValType {
         // the high half (docs/design/GENERATIONS_PLAN.md).
         Type::Ptr(_) | Type::Array(_) => ValType::I64,
         // Results, unions, and function refs are i32 addresses/indices.
-        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => ValType::I32,
+        Type::Struct(_) | Type::ResultType(_, _) | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => ValType::I32,
     }
 }
 
@@ -2041,6 +2112,15 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 func.instruction(&Instruction::Call(host));
                 emit_errno_to_result(func, ctx, None);
             }
+            OpCode::NetListen | OpCode::NetAccept | OpCode::NetRecv | OpCode::NetSend | OpCode::NetClose => {
+                // aipl_net_v1 returns the result itself (a handle, a count, or
+                // -1/-2), so the call is the whole operation
+                let host = wasi_index(ctx, Wasi::for_op(op).expect("a net op has an import"))?;
+                for a in args {
+                    compile_expr(a, ctx, func)?;
+                }
+                func.instruction(&Instruction::Call(host));
+            }
             OpCode::SysExit => {
                 let proc_exit = wasi_index(ctx, Wasi::ProcExit)?;
                 compile_expr(&args[0], ctx, func)?;
@@ -2379,7 +2459,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2443,7 +2523,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(n, offset as u64));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
                         offset: offset as u64,
                         align: 2,
@@ -2593,7 +2673,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_load(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Load(M4));
                     if *elem_ty == Type::Bool {
                         normalize_bool(func);
@@ -2646,7 +2726,7 @@ fn compile_expr_at(expr: &Expr, ctx: &Ctx, func: &mut Body) -> Result<(), String
                 Type::Narrow(n) => {
                     func.instruction(&narrow_store(*n, 0));
                 }
-                Type::I32 | Type::Bool | Type::Str | Type::Fn(_, _) | Type::Enum(_) | Type::Union(_) => {
+                Type::I32 | Type::Bool | Type::Str | Type::Fn(..) | Type::Enum(_) | Type::Union(_) => {
                     func.instruction(&Instruction::I32Store(M4));
                 }
                 Type::I64 | Type::Ptr(_) | Type::Array(_) => {
@@ -3100,7 +3180,7 @@ fn is_void_expr(expr: &Expr, ctx: &Ctx) -> bool {
         | Expr::Addr { .. }
         | Expr::Ref { .. } => false,
         Expr::Return { .. } | Expr::Break(_) | Expr::Continue(_) => true,
-        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret) if **ret == Type::Void),
+        Expr::CallRef { sig, .. } => matches!(sig, Type::Fn(_, ret, _) if **ret == Type::Void),
     }
 }
 
@@ -3671,7 +3751,7 @@ enum MsgItem {
 fn shown_as(ty: &Type, name: &str) -> Option<MsgItem> {
     match ty {
         Type::Union(_) => None,
-        Type::I32 | Type::Enum(_) | Type::Fn(_, _) => Some(MsgItem::Int(name.to_string())),
+        Type::I32 | Type::Enum(_) | Type::Fn(..) => Some(MsgItem::Int(name.to_string())),
         Type::I64 => Some(MsgItem::Long(name.to_string())),
         Type::Ptr(_) | Type::Array(_) => Some(MsgItem::Addr(name.to_string())),
         Type::Bool => Some(MsgItem::Bool(name.to_string())),
@@ -3868,7 +3948,9 @@ pub fn string_layout(module: &Module) -> Result<StringLayout, String> {
         addr
     };
     let mut newline_addr = 0u32;
-    if collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint) {
+    // sys.print ends each line with it, and _start a result main's err
+    let result_main = start_entry(module).is_some_and(|m| is_result_main(&module.functions[m].return_type));
+    if (collect_wasi_imports(module).contains(&Wasi::FdWrite) && module_uses_op(module, &OpCode::SysPrint)) || result_main {
         newline_addr = intern("\n", &mut blob, &mut addrs);
     }
     walk_module(module, &mut |e| {
@@ -4058,13 +4140,25 @@ enum Wasi {
     RandomGet,
     FdReaddir,
     PathFilestatGet,
+    /// AIPL's own host interface, module "aipl_net_v1" (docs/design/NET_PLAN.md
+    /// section 3): sockets, provided by aipl-run and lowered to Linux system
+    /// calls natively.
+    NetListen,
+    NetAccept,
+    NetRecv,
+    NetSend,
+    NetClose,
 }
 
 impl Wasi {
     /// The import module: wasi-threads' spawn lives in "wasi", the rest in
     /// "wasi_snapshot_preview1".
     fn module(self) -> &'static str {
-        if self == Wasi::ThreadSpawn { "wasi" } else { "wasi_snapshot_preview1" }
+        match self {
+            Wasi::ThreadSpawn => "wasi",
+            Wasi::NetListen | Wasi::NetAccept | Wasi::NetRecv | Wasi::NetSend | Wasi::NetClose => "aipl_net_v1",
+            _ => "wasi_snapshot_preview1",
+        }
     }
 
     fn name(self) -> &'static str {
@@ -4084,6 +4178,11 @@ impl Wasi {
             Wasi::RandomGet => "random_get",
             Wasi::FdReaddir => "fd_readdir",
             Wasi::PathFilestatGet => "path_filestat_get",
+            Wasi::NetListen => "listen",
+            Wasi::NetAccept => "accept",
+            Wasi::NetRecv => "recv",
+            Wasi::NetSend => "send",
+            Wasi::NetClose => "close",
         }
     }
 
@@ -4102,6 +4201,8 @@ impl Wasi {
             Wasi::RandomGet => (vec![I32, I32], vec![I32]),
             Wasi::FdReaddir => (vec![I32, I32, I32, I64, I32], vec![I32]),
             Wasi::PathFilestatGet => (vec![I32, I32, I32, I32, I32], vec![I32]),
+            Wasi::NetListen | Wasi::NetRecv | Wasi::NetSend => (vec![I32, I32, I32], vec![I32]),
+            Wasi::NetAccept | Wasi::NetClose => (vec![I32], vec![I32]),
         }
     }
 
@@ -4123,6 +4224,11 @@ impl Wasi {
             OpCode::ThreadSpawn => Some(Wasi::ThreadSpawn),
             OpCode::SysTime | OpCode::SysMonotonic => Some(Wasi::ClockTimeGet),
             OpCode::SysRandom => Some(Wasi::RandomGet),
+            OpCode::NetListen => Some(Wasi::NetListen),
+            OpCode::NetAccept => Some(Wasi::NetAccept),
+            OpCode::NetRecv => Some(Wasi::NetRecv),
+            OpCode::NetSend => Some(Wasi::NetSend),
+            OpCode::NetClose => Some(Wasi::NetClose),
             _ => None,
         }
     }
@@ -4266,9 +4372,34 @@ fn module_uses_op(module: &Module, wanted: &OpCode) -> bool {
     found
 }
 
-/// The WASI functions this module needs, in a fixed canonical order.
+/// The function a compiler-made `_start` calls: a zero-argument `main`,
+/// unless the module has a `_start` of its own.
+fn start_entry(module: &Module) -> Option<usize> {
+    if module.functions.iter().any(|f| f.name == "_start") {
+        return None;
+    }
+    module.functions.iter().position(|f| f.name == "main" && f.params.is_empty())
+}
+
+/// A main returning (result i32 str) (AIPL_SPEC.md 6.5).
+fn is_result_main(ret: &Type) -> bool {
+    matches!(ret, Type::ResultType(ok, err) if **ok == Type::I32 && **err == Type::Str)
+}
+
+/// The WASI functions this module needs, in a fixed canonical order:
+/// proc_exit too when `_start` exits with main's status, and fd_write when
+/// it may write a result main's err.
 fn collect_wasi_imports(module: &Module) -> Vec<Wasi> {
     let mut set: Vec<Wasi> = Vec::new();
+    if let Some(m) = start_entry(module) {
+        let ret = &module.functions[m].return_type;
+        if *ret == Type::I32 || is_result_main(ret) {
+            set.push(Wasi::ProcExit);
+        }
+        if is_result_main(ret) {
+            set.push(Wasi::FdWrite);
+        }
+    }
     walk_module(module, &mut |e| {
         if let Expr::Op { op, .. } = e {
             if let Some(w) = Wasi::for_op(op) {

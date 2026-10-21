@@ -1,0 +1,109 @@
+;; std/net: TCP sockets (docs/design/NET_PLAN.md), over AIPL's own host
+;; interface, aipl_net_v1: the same in the VM, under aipl-run, and in
+;; native executables.
+;;
+;;   (let l:net.Socket (try (call net.listen a (call str.from_str "127.0.0.1:8080"))))
+;;   (let c:net.Socket (try (call net.accept l)))
+;;   (let r:(ptr stream.Reader) (call net.reader a c))
+;;   (let w:(ptr stream.Writer) (call net.writer a c))
+;;   ... read lines from r, write to w ...
+;;   (let _ok:bool (call stream.close_writer w))   ;; flushes
+;;   (call stream.close_reader r)
+;;   (call net.close c)
+;;
+;; A program may listen only where it was granted: `aipl eval --listen
+;; 127.0.0.1:8080 prog.aipl`, `aipl-run --listen ...`, or, fixed in a native
+;; executable, `aipl compile --exe --listen ...`; elsewhere listen gives
+;; Error.not_granted. Addresses are read by std/ip, as Rust reads them.
+;; A Socket's handle is private to this module, so a socket cannot be given
+;; to std/fs, or a file to it. Every call blocks until it is done; one
+;; connection at a time for now (a pool of threads later). Nothing here
+;; keeps memory: the address bytes listen needs come from its allocator
+;; and go back to it, and a reader's or writer's memory comes from the
+;; allocator it is made with.
+(module net
+  (import alloc)
+  (import buf)
+  (import str)
+  (import ip)
+  (import option)
+  (import stream)
+
+  ;; A listening socket or a connection.
+  (struct Socket [h:i32] (value) (pub))
+
+  ;; Why a call failed.
+  (enum Error [not_an_address not_granted refused] (pub))
+
+  ;; What went wrong, for a message.
+  (fn message [e:Error] -> str (pub) (no_leak)
+    (match e
+      (Error.not_an_address "not an ADDR:PORT (127.0.0.1:8080, [::1]:8080)")
+      (Error.not_granted "not granted: run the program with --listen ADDR:PORT")
+      (Error.refused "refused by the system")))
+
+  ;; A socket listening on `at` (ADDR:PORT), with SO_REUSEADDR and a
+  ;; backlog of 128.
+  (fn listen [a:alloc.Allocator at:str.Bytes] -> (result Socket Error) (pub) (no_leak)
+    (match (call ip.parse_endpoint at)
+      ((option.Option ip.Endpoint) none (err:Socket Error.not_an_address))
+      ((option.Option ip.Endpoint) some [e]
+       (let ad:ip.Addr (get e ip.Endpoint.addr))
+       (let n:i32 (call ip.len ad))
+       (let b:(arr u8) (arr.new u8 a n))
+       (for i 0 n (arr.set u8 b i (call ip.byte_at ad i)))
+       (let h:i32 (unsafe (net.listen (arr.addr b) n (get e ip.Endpoint.port))))
+       (call (alloc.free_array u8) a b)
+       (cond ((eq h -2) (err:Socket Error.not_granted))
+             ((lt h 0) (err:Socket Error.refused))
+             (else (ok:Error (make Socket h)))))))
+
+  ;; The next connection on listening socket l (waiting for one).
+  (fn accept [l:Socket] -> (result Socket Error) (pub) (no_leak)
+    (let h:i32 (unsafe (net.accept (get l Socket.h))))
+    (if (lt h 0) (err:Socket Error.refused) (ok:Error (make Socket h))))
+
+  ;; Up to max bytes from connection c, added to `into`: how many, 0 at the
+  ;; end of the connection, or -1 on an error.
+  (fn recv [c:Socket into:(ptr buf.Buf) max:i32] -> i32 (pub) (no_leak)
+    (req (gte max 0))
+    (unsafe
+      (let at:i32 (call buf.room into max))
+      (let n:i32 (net.recv (get c Socket.h) at max))
+      (when (gt n 0) (call buf.grew into n))
+      n))
+
+  ;; Sends all of b on connection c; false on an error (the peer gone, say).
+  (fn send [c:Socket b:str.Bytes] -> bool (pub) (no_leak)
+    (let done:i32 0)
+    (let n:i32 (get b str.Bytes.len))
+    (while (lt done n)
+      (let part:str.Bytes (call str.slice b done (- n done)))
+      (let k:i32 (unsafe (net.send (get c Socket.h) (call str.addr part) (get part str.Bytes.len))))
+      (when (lte k 0) (return false))
+      (set! done (+ done k)))
+    true)
+
+  ;; Closes a socket (a connection is shut down first).
+  (fn close [s:Socket] -> void (pub) (no_leak)
+    (let _r:i32 (unsafe (net.close (get s Socket.h))))
+    (block))
+
+  ;; ===== Streams =====
+
+  (fn fill [c:Socket into:(ptr buf.Buf)] -> i32 (no_leak)
+    (call recv c into 8192))
+
+  (fn drain [c:Socket b:str.Bytes] -> bool (no_leak)
+    (call send c b))
+
+  ;; A reader of connection c (std/stream: by lines, bytes, or all of it),
+  ;; its window from a. close_reader leaves c open.
+  (fn reader [a:alloc.Allocator c:Socket] -> (ptr stream.Reader) (pub) (no_leak)
+    (call (stream.reader_of Socket) a c (ref fill)))
+
+  ;; A writer to connection c, holding what it is given until 8 KB, flush,
+  ;; or close_writer; close_writer leaves c open.
+  (fn writer [a:alloc.Allocator c:Socket] -> (ptr stream.Writer) (pub) (no_leak)
+    (call (stream.writer_of Socket) a c (ref drain)))
+)

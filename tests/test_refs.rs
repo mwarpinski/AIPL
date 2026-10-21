@@ -6,7 +6,7 @@ use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
 use aipl_core::resolver::Resolver;
 use aipl_core::vm::{Value, VM};
-use wasmtime::{Engine, Instance, Module as WasmModule, Store, TypedFunc};
+use wasmtime::{Engine, Module as WasmModule, TypedFunc};
 
 /// The program as the toolchain reads it: resolved when it imports (an
 /// allocation names its allocator from std/alloc), else just parsed.
@@ -37,8 +37,11 @@ fn run_both(src: &str, f: &str) -> i32 {
     wasmparser::Validator::new().validate_all(&wasm).expect("valid wasm");
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let func: TypedFunc<(), i32> = inst.get_typed_func(&mut store, f).unwrap();
     assert_eq!(vm_val, func.call(&mut store, ()).unwrap(), "VM and wasm disagree on {f}");
     vm_val
@@ -118,8 +121,11 @@ fn refs_in_an_imported_module_point_at_its_qualified_functions() {
     let wasm = WasmCompiler::compile(&module).unwrap();
     let engine = Engine::default();
     let m = WasmModule::new(&engine, &wasm).unwrap();
-    let mut store = Store::new(&engine, ());
-    let inst = Instance::new(&mut store, &m, &[]).unwrap();
+    // main's status makes a module import proc_exit (AIPL_SPEC.md 6.5)
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(&engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(&engine, wasmtime_wasi::WasiCtxBuilder::new().build_p1());
+    let inst = linker.instantiate(&mut store, &m).unwrap();
     let f: TypedFunc<(), i32> = inst.get_typed_func(&mut store, "main").unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), 36);
 }

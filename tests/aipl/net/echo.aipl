@@ -1,0 +1,53 @@
+;; A server for tests/test_net.rs: listens on the ADDR:PORT given as its
+;; first argument and serves four connections, one at a time, each on an
+;; arena reset after it. A connection's lines come back numbered, `N: line`
+;; (a line ends at \n or \r\n), then `bye N` once the client stops
+;; sending. The handler keeps no memory, which the checker proves
+;; ((no_leak)); the arena, grown for the third connection's long line,
+;; holds no more after the fourth, which sends the same. A listen that
+;; fails is main's err: why, on standard error, and status 1.
+(module echo
+  (import alloc)
+  (import arena)
+  (import str)
+  (import stream)
+  (import net)
+  (import os)
+  (import io)
+
+  ;; One connection: each line back numbered, then `bye N`; closes it.
+  (fn serve [a:alloc.Allocator c:net.Socket] -> i32 (no_leak)
+    (let r:(ptr stream.Reader) (call net.reader a c))
+    (let w:(ptr stream.Writer) (call net.writer a c))
+    (let n:i32 0)
+    (while (call stream.next_line r)
+      (set! n (+ n 1))
+      (format_to w "{n}: ")
+      (call stream.write_bytes w (call stream.line r))
+      (call stream.write_byte w 10)
+      (let _sent:bool (call stream.flush w)))
+    (format_to w "bye {n}\n")
+    (let _ok:bool (call stream.close_writer w))
+    (call stream.close_reader r)
+    (call net.close c)
+    n)
+
+  (fn main [] -> (result i32 str)
+    (match_result (call net.listen (call alloc.default) (call os.arg 1))
+      (ok l
+        (let ar:(ptr arena.Arena) (call arena.make 65536))
+        (let a:alloc.Allocator (call alloc.of_arena ar))
+        (let first:i32 0)
+        (for k 0 4
+          (match_result (call net.accept l)
+            (ok c
+              (let lines:i32 (call serve a c))
+              (call arena.reset ar)
+              (when (eq k 2) (set! first (call arena.reserved ar)))
+              (println "connection {k}: {lines} lines"))
+            (err e (call io.println (call net.message e)))))
+        (call net.close l)
+        (call io.println (if (eq (call arena.reserved ar) first) "arena flat" "arena grew"))
+        (ok:str 0))
+      (err e (err:i32 (call net.message e)))))
+)

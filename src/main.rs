@@ -38,6 +38,14 @@ enum Commands {
         /// With -e: compile to a native executable and run it instead of the VM
         #[arg(long, requires = "expr")]
         native: bool,
+        /// An address and port the program may listen on, as 127.0.0.1:8080
+        /// or [::1]:8080 (repeatable; none by default)
+        #[arg(long = "listen", value_name = "ADDR:PORT")]
+        listen: Vec<String>,
+        /// The most memory the program may use, from 1M to 2G (the default) in
+        /// whole 64K pages, as 512M (what `aipl compile --max-memory` records)
+        #[arg(long = "max-memory", value_name = "SIZE")]
+        max_memory: Option<String>,
         /// Command-line arguments for the program (after `--`); with FILE as
         /// argv[0] they are what std/os.arg reports.
         #[arg(last = true)]
@@ -48,7 +56,8 @@ enum Commands {
         file: String,
         #[arg(short, long, default_value = "out.wasm")]
         output: String,
-        /// Also compile with the self-hosted toolchain (resolver.aipl + codegen.aipl, in the VM)
+        /// Also compile with the self-hosted toolchain (driver.aipl: resolver, checker, codegen;
+        /// compiled to wasm by the Rust toolchain and run under wasmtime)
     /// and fail unless its bytes equal the Rust compiler's
         #[arg(long = "self")]
         self_flag: bool,
@@ -59,6 +68,14 @@ enum Commands {
         /// With --exe: the program may only access the working directory, not absolute paths
         #[arg(long, requires = "exe")]
         sandbox: bool,
+        /// With --exe: an address and port the program may listen on, fixed in the
+        /// executable (repeatable; none by default)
+        #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
+        listen: Vec<String>,
+        /// The most memory the program may use, from 1M to 2G (the default) in whole
+        /// 64K pages, as 512M; recorded in the module, so every host stops there
+        #[arg(long = "max-memory", value_name = "SIZE")]
+        max_memory: Option<String>,
         /// With --exe: `native` (Linux x86-64; the default there) or `wasm` (the launcher bundle;
         /// the default elsewhere)
         #[arg(long, requires = "exe", value_parser = ["native", "wasm"])]
@@ -73,6 +90,9 @@ enum Commands {
         file: String,
         #[arg(long)]
         sandbox: bool,
+        /// An address and port the program may listen on (repeatable)
+        #[arg(long = "listen", value_name = "ADDR:PORT")]
+        listen: Vec<String>,
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -275,18 +295,36 @@ fn runner_path() -> Result<std::path::PathBuf, String> {
     }
 }
 
+/// Ends the process with exit status `n`, as compiled programs end: a
+/// status outside 0-125 is an error with status 134, as under wasmtime
+/// (shells keep 126 and up).
+fn exit_with(program: &str, n: i64) -> ! {
+    if (0..=125).contains(&n) {
+        std::process::exit(n as i32)
+    }
+    eprintln!("{program}: exit with invalid exit status outside of [0..126)");
+    std::process::exit(134)
+}
+
 /// A standalone executable (AIPL_SPEC.md 6.5): the launcher, then the module,
-/// then a 16-byte trailer [flags u32 LE][module length u32 LE]["AIPLEXE1"].
+/// then the --listen grants (one ADDR:PORT a line), then a 20-byte trailer
+/// [flags u32 LE][grants length u32 LE][module length u32 LE]["AIPLEXE2"].
 /// Rust only because WASI cannot set the executable bit; the format is plain.
-fn write_executable(output: &str, wasm: &[u8], sandbox: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn write_executable(output: &str, wasm: &[u8], sandbox: bool, listen: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = fs::read(runner_path()?)?;
-    if bytes.ends_with(b"AIPLEXE1") {
+    if bytes.ends_with(b"AIPLEXE1") || bytes.ends_with(b"AIPLEXE2") {
         return Err("the aipl-run launcher already has a program appended".into());
     }
+    for g in listen {
+        aipl_core::net::Net::parse_grant(g)?;
+    }
+    let grants: String = listen.iter().map(|g| format!("{g}\n")).collect();
     bytes.extend_from_slice(wasm);
+    bytes.extend_from_slice(grants.as_bytes());
     bytes.extend_from_slice(&(sandbox as u32).to_le_bytes());
+    bytes.extend_from_slice(&(grants.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(b"AIPLEXE1");
+    bytes.extend_from_slice(b"AIPLEXE2");
     fs::write(output, &bytes)?;
     #[cfg(unix)]
     {
@@ -300,7 +338,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func, expr, with, wasm, native, args } => {
+        Commands::Eval { file, func, expr, with, wasm, native, listen, max_memory, args } => {
             if let Some(exprs) = expr {
                 use aipl_core::evalexpr::{run, Backend};
                 let backend = if wasm { Backend::Wasm } else if native { Backend::Native } else { Backend::Vm };
@@ -314,29 +352,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut vm = VM::new();
             vm.set_args(std::iter::once(file.clone()).chain(args).collect());
+            vm.set_listen(listen.iter().map(|g| aipl_core::net::Net::parse_grant(g)).collect::<Result<_, _>>()?);
+            if let Some(m) = &max_memory {
+                vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
+            }
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             // an error is followed by its call chain, as compiled code prints it
             let res = match vm.invoke(&func, vec![]) {
                 // the VM's sys.exit ends the run with this error: exit as compiled code does
                 Err(e) if e.starts_with("sys.exit(") && e.ends_with(") requested") => {
-                    std::process::exit(e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
+                    exit_with(&file, e["sys.exit(".len()..e.len() - ") requested".len()].parse().unwrap_or(1))
                 }
                 r => r.map_err(|e| format!("{e}\n{}", vm.call_chain()).trim_end().to_string())?,
             };
             println!("[AIPL Result]: {:?}", res);
+            // main's value is the exit status (AIPL_SPEC.md 6.5), as compiled
+            // programs exit: an i32, or a (result i32 str)'s ok, or 1 after
+            // err's message on standard error
+            if func == "main" {
+                use aipl_core::vm::Value;
+                match res {
+                    Value::Int(n) => exit_with(&file, n),
+                    Value::Ok(v) => {
+                        if let Value::Int(n) = *v {
+                            exit_with(&file, n)
+                        }
+                    }
+                    Value::Err(e) => {
+                        if let Value::Str(m) = *e {
+                            eprintln!("{m}");
+                            std::process::exit(1)
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox, target, tests } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox, listen, max_memory, target, tests } => {
+            // a grant is checked before anything is compiled (aipl.aipl does the same)
+            for g in &listen {
+                aipl_core::net::Net::parse_grant(g)?;
+            }
+            let max_pages = match &max_memory {
+                Some(m) => aipl_core::compiler::memory_pages(m)?,
+                None => aipl_core::vm::MAX_PAGES as u32,
+            };
             let module = if tests { Resolver::resolve_tests(Path::new(&file))?.0 } else { Resolver::resolve(Path::new(&file))? };
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
-            let rust_bytes = WasmCompiler::compile(&module)?;
+            let rust_bytes = WasmCompiler::compile_limited(&module, max_pages)?;
             if self_flag {
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
                 // Self-hosted end to end, as aiplc: driver.aipl resolves,
                 // checks, and compiles (aipl_src/driver.aipl), in the VM.
-                let self_bytes = aipl_core::selfhost::compile_with_aipl(Path::new(&file)).map_err(|e| format!("Self-host error: {}", e))?;
+                let self_bytes = aipl_core::selfhost::compile_with_aipl_limited(Path::new(&file), max_pages).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
                     eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));
@@ -364,7 +435,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 if native {
                     // on failure, no module is left where the executable was asked for
-                    let exe_bytes = aipl_core::native::executable(&wasm, sandbox).inspect_err(|_| {
+                    let exe_bytes = aipl_core::native::executable_with(&wasm, sandbox, &listen).inspect_err(|_| {
                         let _ = fs::remove_file(&output);
                     })?;
                     fs::write(&output, &exe_bytes)?;
@@ -376,15 +447,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     // launcher + module + trailer
-                    write_executable(&output, &wasm, sandbox)?;
+                    write_executable(&output, &wasm, sandbox, &listen)?;
                 }
             }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
         }
-        Commands::Run { file, sandbox, args } => {
+        Commands::Run { file, sandbox, listen, args } => {
             let mut cmd = std::process::Command::new(runner_path()?);
             if sandbox {
                 cmd.arg("--sandbox");
+            }
+            for g in &listen {
+                cmd.arg("--listen").arg(g);
             }
             let status = cmd.arg(&file).args(&args).status()?;
             std::process::exit(status.code().unwrap_or(1));

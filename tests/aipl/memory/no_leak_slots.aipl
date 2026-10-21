@@ -1,0 +1,34 @@
+;; (no_leak) on function types (MEMORY_PLAN.md decision 9): a slot whose
+;; type carries the promise takes a function marked (no_leak) or proven to
+;; keep no memory; a call through it is not a leak site, so a (no_leak)
+;; function may call what it is given. A promising function also fits an
+;; ordinary slot. Prints "apply 42" and "twice 7".
+(module no_leak_slots
+  (import alloc)
+  (import vec)
+  (import io)
+  (struct Op [apply:(fn [i32] -> i32 (no_leak)) scale:i32] (value))
+  ;; the promise is in the slot's type
+  (fn apply [f:(fn [i32] -> i32 (no_leak)) x:i32] -> i32 (no_leak)
+    (call_ref (fn [i32] -> i32 (no_leak)) f x))
+  ;; an ordinary slot
+  (fn apply_any [f:(fn [i32] -> i32) x:i32] -> i32
+    (call_ref (fn [i32] -> i32) f x))
+  ;; marked
+  (fn inc [x:i32] -> i32 (no_leak) (+ x 1))
+  ;; proven to keep no memory, with no mark
+  (fn double [x:i32] -> i32 (* 2 x))
+  ;; a template whose slot carries the promise (instance twice<i32>), and
+  ;; vec over a promising type (instance Vec<fn<i32->i32,no_leak>>)
+  (fn (twice T) [f:(fn [T] -> T (no_leak)) x:T] -> T (no_leak)
+    (call_ref (fn [T] -> T (no_leak)) f (call_ref (fn [T] -> T (no_leak)) f x)))
+  (fn main [] -> i32
+    (let a:alloc.Allocator (call alloc.default))
+    (let ops:(ptr (vec.Vec (fn [i32] -> i32 (no_leak)))) (call (vec.make (fn [i32] -> i32 (no_leak))) a 2))
+    (call (vec.push (fn [i32] -> i32 (no_leak))) ops (ref inc))
+    (call (vec.push (fn [i32] -> i32 (no_leak))) ops (ref double))
+    (let op:Op (make Op (ref double) 2))
+    (let g:(fn [i32] -> i32) (get op Op.apply))
+    (call io.println_int "apply " (+ (call apply (call (vec.at (fn [i32] -> i32 (no_leak))) ops 1) 20) (call apply_any g 1)))
+    (call io.println_int "twice " (call (twice i32) (call (vec.at (fn [i32] -> i32 (no_leak))) ops 0) 5))
+    0))

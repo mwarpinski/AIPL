@@ -47,6 +47,9 @@
              fmts:(ptr (vec.Vec (ptr Fmt)))
              ;; inside a (defer ...), which may not return
              in_defer:bool
+             ;; which functions may make memory that is never freed, for the
+             ;; type of (ref f) (MEMORY_PLAN.md decision 9; null until known)
+             leaks:(ptr leaks.Analysis)
              ;; the unions held by value, each with its slot counts (Slots)
              by_value:(ptr (map.Map str.Bytes (arr i32)))])
 
@@ -148,6 +151,7 @@
        (match b
          (ast.Type.fn_ [n_fn2] (let pb:(arr ast.Type) (get n_fn2 ast.FnType.params)) (let rb:ast.Type (get n_fn2 ast.FnType.ret))
           (if (neq (arr.len pa) (arr.len pb)) (return false) (block))
+          (if (neq (get n_fn ast.FnType.no_leak) (get n_fn2 ast.FnType.no_leak)) (return false) (block))
           (loop k 0 (- (arr.len pa) 1) 1
             (if (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k)) (block) (return false)))
           (call teq ra rb))
@@ -322,6 +326,7 @@
       (call (map.set str.Bytes (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     ;; a definition's error is reported alone
     (if (get c C.failed) (return) (block))
+    (put c C.leaks (call leaks.analyze m))
     (loop k 0 (- (arr.len fns) 1) 1
       (call check_fn c (arr.get (ptr ast.FnDef) fns k))
       (if (get c C.failed)
@@ -813,11 +818,75 @@
   (fn validate_or_fail [c:(ptr C) t:ast.Type at:i32] -> void
     (call fail_if c (call validate c t at)))
 
+  ;; src/checker.rs fits: a value of type got fits where want is asked for
+  ;; when it is the same type, or a function reference that promises
+  ;; (no_leak) where one that does not is asked for. Only at the top.
+  (fn fits [got:ast.Type want:ast.Type] -> bool
+    (if (call teq got want) (return true) (block))
+    (match got
+      (ast.Type.fn_ [g]
+       (match want
+         (ast.Type.fn_ [w] (and (get g ast.FnType.no_leak) (and (not (get w ast.FnType.no_leak)) (call same_shape g w))))
+         (else false)))
+      (else false)))
+
+  ;; src/checker.rs meet: two branches' (or two compared values') types
+  ;; meet when they are the same, or are function types that differ only in
+  ;; the promise (at the type without it, which both fit).
+  (fn meets [a:ast.Type b:ast.Type] -> bool
+    (if (call teq a b) (return true) (block))
+    (match a
+      (ast.Type.fn_ [g] (match b (ast.Type.fn_ [w] (call same_shape g w)) (else false)))
+      (else false)))
+
+  ;; Where a and b meet; a and b meet (meets).
+  (fn meet [a:ast.Type b:ast.Type] -> ast.Type
+    (if (call teq a b) (return a) (block))
+    (match a
+      (ast.Type.fn_ [g] (call ast.fn_type (call alloc.default) (get g ast.FnType.params) (get g ast.FnType.ret) false))
+      (else a)))
+
+  ;; Two function types' parameters and result, the promise aside.
+  (fn same_shape [g:(ptr ast.FnType) w:(ptr ast.FnType)] -> bool
+    (let pa:(arr ast.Type) (get g ast.FnType.params))
+    (let pb:(arr ast.Type) (get w ast.FnType.params))
+    (if (neq (arr.len pa) (arr.len pb)) (return false) (block))
+    (for k 0 (arr.len pa) (when (not (call teq (arr.get ast.Type pa k) (arr.get ast.Type pb k))) (return false)))
+    (call teq (get g ast.FnType.ret) (get w ast.FnType.ret)))
+
+  ;; src/checker.rs fit_why: what a mismatch's message adds when a function
+  ;; reference that does not promise (no_leak) is given where one that does
+  ;; is asked for: for (ref f), why f may keep memory.
+  (fn fit_why [c:(ptr C) b:(ptr buf.Buf) got:ast.Type want:ast.Type e:ast.Expr] -> void
+    (match got
+      (ast.Type.fn_ [g]
+       (match want
+         (ast.Type.fn_ [w]
+          (when (and (not (get g ast.FnType.no_leak)) (and (get w ast.FnType.no_leak) (call same_shape g w)))
+            (match e
+              (ast.Expr.ref [_ rname]
+               (if (neq (get c C.leaks) (ptr.null leaks.Analysis))
+                   (block
+                     (call s b ": ") (call by b (call names.shown rname)) (call s b " may keep memory (")
+                     (call leaks.push_chain b (get c C.leaks) rname) (call s b ")"))
+                   (call s b ": this function value's type does not promise (no_leak)")))
+              (else (call s b ": this function value's type does not promise (no_leak)")))))
+         (else (block))))
+      (else (block))))
+
   ;; Fails with b, if b is an error (not null).
   (fn fail_if [c:(ptr C) b:(ptr buf.Buf)] -> void
     (if (neq b (ptr.null buf.Buf)) (call fail c b) (block)))
 
   ;; ===== Functions =====
+
+  ;; Whether t is a type main may return: i32, void, or (result i32 str).
+  (fn gives_status [t:ast.Type] -> bool
+    (match t
+      (ast.Type.i32 true)
+      (ast.Type.void true)
+      (ast.Type.result [r] (and (call teq (get r ast.ResultType.ok) (call i32_t)) (call teq (get r ast.ResultType.err) (make ast.Type.str))))
+      (else false)))
 
   (fn check_fn [c:(ptr C) f:(ptr ast.FnDef)] -> void
     (put c C.in_unsafe_fn (get f ast.FnDef.unsafe_))
@@ -841,6 +910,14 @@
     (if (neq rb (ptr.null buf.Buf))
         (block (call s rb " (return type of '") (call by rb (call names.shown fname)) (call s rb "')") (call fail c rb) (return))
         (block))
+    ;; the program's main gives its exit status (checker.rs check_fn_def)
+    (when (and (call str.bytes_eq fname (call str.from_str "main"))
+               (and (eq (arr.len ps) 0) (not (call gives_status (get f ast.FnDef.ret)))))
+      (let b:(ptr buf.Buf) (call msg c at))
+      (call s b "main gives the program's exit status: it returns i32 (0 for success, 1-125 for a failure), (result i32 str) (ok with the status, or err with a message, printed to stderr, and status 1), or void (status 0); got ")
+      (call ty b (get f ast.FnDef.ret))
+      (call fail c b)
+      (return))
     ;; contracts
     (let cs:(arr ast.Contract) (get f ast.FnDef.contracts))
     (loop k 0 (- (arr.len cs) 1) 1
@@ -879,7 +956,7 @@
          (if (lt last_stmt 0)
              false
              (match (arr.get ast.Expr body last_stmt) (ast.Expr.return_ [_] true) (else false))))
-    (if (and (not (call is_void (get f ast.FnDef.ret))) (and (not (call teq last (get f ast.FnDef.ret))) (not ends_in_return)))
+    (if (and (not (call is_void (get f ast.FnDef.ret))) (and (not (call fits last (get f ast.FnDef.ret))) (not ends_in_return)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Function '") (call by b (call names.shown fname)) (call s b "' expects return type ") (call ty b (get f ast.FnDef.ret))
@@ -1090,7 +1167,9 @@
            (block
              (let sig:(ptr Sig) (call (map.get_or str.Bytes (ptr Sig)) (get c C.fns) name (ptr.null Sig)))
              (call require_unsafe_fn c at name sig)
-             (call ast.fn_type (call alloc.default) (get sig Sig.params) (get sig Sig.ret)))
+             ;; it promises (no_leak) when the checker proves f keeps no memory
+             (let promise:bool (and (neq (get c C.leaks) (ptr.null leaks.Analysis)) (not (call leaks.may_leak (get c C.leaks) name))))
+             (call ast.fn_type (call alloc.default) (get sig Sig.params) (get sig Sig.ret) promise))
            (block
              (let b:(ptr buf.Buf) (call msg c at))
              (call s b "Undefined function '") (call by b name) (call s b "' in ref")
@@ -1175,10 +1254,11 @@
     (if (get c C.failed) (return (call void_t)) (block))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt lty))
+    (if (not (call fits vt lty))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Type mismatch in 'let': expected ") (call ty b lty) (call s b ", got ") (call ty b vt)
+          (call fit_why c b vt lty val)
           (call fail c b) (return (call void_t)))
         (block))
     (call declare c name lty at)
@@ -1196,7 +1276,7 @@
     (let var_t:ast.Type (call type_of env name))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq var_t vt))
+    (if (not (call fits vt var_t))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Type mismatch in 'set!': variable is ") (call ty b var_t) (call s b ", value is ") (call ty b vt)
@@ -1222,7 +1302,7 @@
       ((call diverges thn) (if (call diverges els) (call void_t) et))
       ((call diverges els) tt)
       ((and (call is_void tt) (call is_void et)) (call void_t))
-      ((and (not (call is_void tt)) (and (not (call is_void et)) (call teq tt et))) tt)
+      ((and (not (call is_void tt)) (and (not (call is_void et)) (call meets tt et))) (call meet tt et))
       (else
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b "If branch type mismatch: then is ") (call ty b tt) (call s b ", else is ") (call ty b et)
@@ -1263,7 +1343,7 @@
     (if (get c C.failed) (return (call void_t)) (block))
     (let got:ast.Type (match rv (ast.MaybeExpr.some [v] (call infer c v env)) (ast.MaybeExpr.none (call void_t))))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq got expected))
+    (if (not (call fits got expected))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "return value has type ") (call ty b got) (call s b ", but the function returns ") (call ty b expected)
@@ -1292,11 +1372,12 @@
     (loop k 0 (- (arr.len args) 1) 1
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
-      (if (not (call teq t (arr.get ast.Type ps k)))
+      (if (not (call fits t (arr.get ast.Type ps k)))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "Arg ") (call buf.push_int b k) (call s b " of '") (call by b (call names.shown func)) (call s b "' expects ")
             (call ty b (arr.get ast.Type ps k)) (call s b ", got ") (call ty b t)
+            (call fit_why c b t (arr.get ast.Type ps k) (arr.get ast.Expr args k))
             (call fail c b) (return (call void_t)))
           (block)))
     (get sig Sig.ret))
@@ -1341,7 +1422,7 @@
       ((call body_diverges ok_body) (if (call body_diverges err_body) (call void_t) last_err))
       ((call body_diverges err_body) last_ok)
       ((and (call is_void last_ok) (call is_void last_err)) (call void_t))
-      ((and (not (call is_void last_ok)) (and (not (call is_void last_err)) (call teq last_ok last_err))) last_ok)
+      ((and (not (call is_void last_ok)) (and (not (call is_void last_err)) (call meets last_ok last_err))) (call meet last_ok last_err))
       (else
        (let b:(ptr buf.Buf) (call msg c at))
        (call s b "match_result arm type mismatch: ok arm yields ") (call ty b last_ok) (call s b ", err arm yields ") (call ty b last_err)
@@ -1386,7 +1467,7 @@
     (let wt:ast.Type (call value_of (get w Walked.ty)))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt wt))
+    (if (not (call fits vt wt))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "Type mismatch writing to field '") (call by b (call names.shown (get w Walked.sname))) (call s b ".") (call by b (get w Walked.fname))
@@ -1461,11 +1542,12 @@
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
-      (if (not (call teq t (get f ast.Field.ty)))
+      (if (not (call fits t (get f ast.Field.ty)))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "make ") (call by b (call names.shown sname)) (call s b ": field '") (call by b (get f ast.Field.name)) (call s b "' is ")
             (call ty b (get f ast.Field.ty)) (call s b ", got ") (call ty b t)
+            (call fit_why c b t (get f ast.Field.ty) (arr.get ast.Expr args k))
             (call fail c b) (return (call void_t)))
           (block)))
     (make ast.Type.struct_ sname))
@@ -1494,7 +1576,7 @@
         (block))
     (let n:ast.Type (call infer c nv env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq n ft))
+    (if (not (call fits n ft))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "with ") (call by b (call names.shown sname)) (call s b ".") (call by b fname) (call s b ": expected ") (call ty b ft)
@@ -1528,7 +1610,7 @@
         (block))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt target))
+    (if (not (call fits vt target))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "arr.set value mismatch: expected ") (call ty b target) (call s b ", got ") (call ty b vt)
@@ -1565,7 +1647,7 @@
     (if (not with_val) (return (call value_of ety)) (block))
     (let vt:ast.Type (call infer c val env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq vt (call value_of ety)))
+    (if (not (call fits vt (call value_of ety)))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "arr.set value mismatch: expected ") (call ty b (call value_of ety)) (call s b ", got ") (call ty b vt)
@@ -1586,7 +1668,7 @@
        (call fail c b) (return (call void_t))))
     (let ft:ast.Type (call infer c callee env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq ft sig))
+    (if (not (call fits ft sig))
         (block
           (let b:(ptr buf.Buf) (call msg c at))
           (call s b "call_ref signature ") (call ty b sig) (call s b " does not match the function's type ") (call ty b ft)
@@ -1601,7 +1683,7 @@
     (loop k 0 (- (arr.len args) 1) 1
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
-      (if (not (call teq t (arr.get ast.Type ps k)))
+      (if (not (call fits t (arr.get ast.Type ps k)))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "call_ref argument ") (call buf.push_int b (+ k 1)) (call s b " expects ") (call ty b (arr.get ast.Type ps k))
@@ -1651,11 +1733,12 @@
       (let t:ast.Type (call infer c (arr.get ast.Expr args k) env))
       (if (get c C.failed) (return (call void_t)) (block))
       (let f:(ptr ast.Field) (arr.get (ptr ast.Field) fs k))
-      (if (not (call teq t (get f ast.Field.ty)))
+      (if (not (call fits t (get f ast.Field.ty)))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "make ") (call by b (call names.shown uname)) (call s b ".") (call by b variant) (call s b ": field '")
             (call by b (get f ast.Field.name)) (call s b "' is ") (call ty b (get f ast.Field.ty)) (call s b ", got ") (call ty b t)
+            (call fit_why c b t (get f ast.Field.ty) (arr.get ast.Expr args k))
             (call fail c b) (return (call void_t)))
           (block)))
     (make ast.Type.union_ uname))
@@ -1798,17 +1881,18 @@
             (block)))
     (if (eq (call (vec.len ast.Type) arm_types) 0) (return (call void_t)) (block))
     (let t0:ast.Type (call (vec.at ast.Type) arm_types 0))
+    (let joined:ast.Type t0)
     (loop k 1 (- (call (vec.len ast.Type) arm_types) 1) 1
       (let tk:ast.Type (call (vec.at ast.Type) arm_types k))
-      (if (and (not (get c C.failed)) (not (call teq tk t0)))
+      (if (and (not (get c C.failed)) (not (call meets joined tk)))
           (block
             (let b:(ptr buf.Buf) (call msg c at))
             (call s b "match arm type mismatch: ") (call by b (call (vec.at str.Bytes) arm_names 0))
             (call s b " yields ") (call ty b t0) (call s b ", ")
             (call by b (call (vec.at str.Bytes) arm_names k)) (call s b " yields ") (call ty b tk)
             (call fail c b))
-          (block)))
-    t0))
+          (set! joined (call meet joined tk))))
+    joined))
 
   ;; A union arm's binders: one per field, in order; `_` binds nothing.
   (fn bind_fields [c:(ptr C) env:(ptr Env) aat:i32 tname:str.Bytes member:str.Bytes fs:(arr (ptr ast.Field)) binders:(arr str.Bytes)] -> void
@@ -1869,7 +1953,13 @@
     (or (or (or (eq o ast.Op.atomic_lock) (eq o ast.Op.atomic_unlock)) (or (eq o ast.Op.thread_spawn) (eq o ast.Op.thread_join)))
     (or (or (or (eq o ast.Op.fs_open) (eq o ast.Op.fs_read)) (or (eq o ast.Op.fs_write) (eq o ast.Op.fs_delete)))
     (or (or (or (eq o ast.Op.args_sizes) (eq o ast.Op.args_get)) (or (eq o ast.Op.env_sizes) (eq o ast.Op.env_get)))
-        (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat)))))))))))
+        (or (or (eq o ast.Op.sys_random) (or (eq o ast.Op.fs_opendir) (or (eq o ast.Op.fs_readdir) (eq o ast.Op.fs_stat))))
+            (call is_net_op o)))))))))
+
+  ;; The aipl_net_v1 operations (docs/design/NET_PLAN.md section 3).
+  (fn is_net_op [o:ast.Op] -> bool
+    (or (or (eq o ast.Op.net_listen) (eq o ast.Op.net_accept))
+        (or (or (eq o ast.Op.net_recv) (eq o ast.Op.net_send)) (eq o ast.Op.net_close))))
 
   (fn infer_op [c:(ptr C) env:(ptr Env) at:i32 o:ast.Op args:(arr ast.Expr)] -> ast.Type
     (if (call is_unchecked_op o) (call require_unsafe c at (call op_debug o)) (block))
@@ -1914,6 +2004,11 @@
       ((eq o ast.Op.atomic_add) (call operands c env at "atomic.add" "(atomic.add p v)" args 2) (call i32_t))
       ((eq o ast.Op.fs_opendir) (call operands c env at "fs.opendir" "(fs.opendir ptr len)" args 2) (call i32_t))
       ((eq o ast.Op.fs_stat) (call operands c env at "fs.stat" "(fs.stat ptr len out)" args 3) (call i32_t))
+      ((eq o ast.Op.net_listen) (call operands c env at "net.listen" "(net.listen addr len port)" args 3) (call i32_t))
+      ((eq o ast.Op.net_accept) (call operands c env at "net.accept" "(net.accept h)" args 1) (call i32_t))
+      ((eq o ast.Op.net_recv) (call operands c env at "net.recv" "(net.recv h buf max)" args 3) (call i32_t))
+      ((eq o ast.Op.net_send) (call operands c env at "net.send" "(net.send h buf len)" args 3) (call i32_t))
+      ((eq o ast.Op.net_close) (call operands c env at "net.close" "(net.close h)" args 1) (call i32_t))
       ((eq o ast.Op.fs_readdir) (call readdir_operands c env at args) (call i32_t))
       ((eq o ast.Op.atomic_cas) (call operands c env at "atomic.cas" "(atomic.cas p expected new)" args 3) (call bool_t))
       ((eq o ast.Op.atomic_lock) (call operands c env at "atomic.lock" "(atomic.lock p)" args 1) (call void_t))
@@ -2455,10 +2550,10 @@
         (block))
     (let ps:(arr ast.Type) (arr.new ast.Type (call alloc.forever) 1))
     (arr.set ast.Type ps 0 (call i32_t))
-    (let worker:ast.Type (call ast.fn_type (call alloc.default) ps (call i32_t)))
+    (let worker:ast.Type (call ast.fn_type (call alloc.default) ps (call i32_t) false))
     (let t:ast.Type (call infer c (arr.get ast.Expr args 0) env))
     (if (get c C.failed) (return (call void_t)) (block))
-    (if (not (call teq t worker))
+    (if (not (call fits t worker))
         (block
           (let b:(ptr buf.Buf) (call msg c at)) (call s b "thread.spawn needs a worker of type (fn [i32] -> i32), got ") (call ty b t)
           (call fail c b) (return (call void_t)))
@@ -2575,7 +2670,8 @@
           (call fail c b)
           (return (call void_t)))
         (block))
-    (if (not (call teq t1 t2)) (block (call pair_msg c at "Type mismatch in comparison: " t1 " vs " t2) (return (call void_t))) (block))
+    (if (not (call meets t1 t2)) (block (call pair_msg c at "Type mismatch in comparison: " t1 " vs " t2) (return (call void_t))) (block))
+    (set! t1 (call meet t1 t2))
     (let k:i32 (call tag t1))
     (let equality:bool (or (eq o ast.Op.eq) (eq o ast.Op.neq)))
     (if (and (call is_unsigned o) (not (call is_int t1)))
@@ -2670,6 +2766,7 @@
     (put c C.enums (call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16))
     (put c C.unions (call (map.make str.Bytes (ptr ast.UnionDef)) (call alloc.default) 16))
     (put c C.by_value (call (map.make str.Bytes (arr i32)) (call alloc.default) 16))
+    (put c C.leaks (ptr.null leaks.Analysis))
     (put c C.fns (call (map.make str.Bytes (ptr Sig)) (call alloc.default) 256))
     (put c C.declared (call (map.make str.Bytes ast.Type) (call alloc.default) 32))
     (put c C.loop_depth 0)

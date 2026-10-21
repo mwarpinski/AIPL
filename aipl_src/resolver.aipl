@@ -2007,7 +2007,7 @@
     (if (and ok (eq fns 1)) (set! p (+ p 1)) (block))
     ;; the entry keeps bare names and calls through qualified ones
     (let has_main:bool false)
-    (let main_marker:str.Bytes (call str.from_str "(fn main [] -> i32"))
+    (let main_marker:str.Bytes (call str.from_str "(fn main [] ->"))
     (loop i 0 (- (get flat str.Bytes.len) (get main_marker str.Bytes.len)) 1
       (if (call str.bytes_eq (call slice flat i (get main_marker str.Bytes.len)) main_marker) (set! has_main true) (block)))
     (if has_main (set! p (+ p 1)) (block))

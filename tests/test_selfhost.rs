@@ -12,19 +12,22 @@ fn run_self_hosted(src: &str, name: &str) -> Vec<u8> {
     self_host_named(src, name).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// Runs `codegen.compile_module` over `src` in the VM. Returns the module bytes
-/// or the compile error code it reported (AIPL_SPEC.md 6.4).
+/// Runs `codegen.compile_module` over `src`: codegen.aipl compiled to wasm
+/// by the Rust toolchain, under wasmtime (in the VM until 2026-10-20, many
+/// times slower; codegen.aipl compiling itself, below, still runs in the
+/// VM). Returns the module bytes or the compile error code it reported
+/// (AIPL_SPEC.md 6.4).
 fn self_host(src: &str) -> Result<Vec<u8>, String> {
     self_host_named(src, "")
 }
 
 /// self_host, naming the source file in the line table (codegen.compile_named).
 fn self_host_named(src: &str, name: &str) -> Result<Vec<u8>, String> {
-    // The tree-walking VM recurses once per nested AIPL call; give the compile a big stack.
     let src = flat(src);
     let name = name.to_string();
+    // the code generator recurses once per nesting level of what it compiles
     std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
+        .stack_size(128 << 20)
         .spawn(move || self_host_on_this_thread(&src, &name))
         .unwrap()
         .join()
@@ -42,7 +45,82 @@ fn flat(src: &str) -> String {
     aipl_core::printer::print_module(&m)
 }
 
+/// codegen.aipl as wasm, compiled once per process.
+fn codegen_wasm() -> &'static (wasmtime::Engine, wasmtime::Module) {
+    static CODEGEN: std::sync::OnceLock<(wasmtime::Engine, wasmtime::Module)> = std::sync::OnceLock::new();
+    CODEGEN.get_or_init(|| {
+        let module = Resolver::resolve(&Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/codegen.aipl")).expect("resolve codegen.aipl");
+        TypeChecker::new().check_module(&module).expect("check codegen.aipl");
+        let wasm = WasmCompiler::compile(&module).expect("compile codegen.aipl");
+        let mut config = wasmtime::Config::new();
+        config.async_stack_size(80 << 20).max_wasm_stack(64 << 20);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let m = wasmtime::Module::new(&engine, &wasm).unwrap();
+        (engine, m)
+    })
+}
+
 fn self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
+    use wasmtime::Val;
+    let (engine, module) = codegen_wasm();
+    let mut linker: wasmtime::Linker<wasmtime_wasi::p1::WasiP1Ctx> = wasmtime::Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t| t).unwrap();
+    let mut store = wasmtime::Store::new(engine, wasmtime_wasi::WasiCtxBuilder::new().inherit_stderr().build_p1());
+    let inst = linker.instantiate(&mut store, module).expect("instantiate codegen.aipl");
+    let memory = inst.get_memory(&mut store, "memory").unwrap();
+    // each export's one result as an i32 (a pointer's address: the low half)
+    let call = |store: &mut wasmtime::Store<_>, f: &str, args: &[i32]| -> i32 {
+        let func = inst.get_func(&mut *store, f).unwrap_or_else(|| panic!("no export {f}"));
+        let args: Vec<Val> = args.iter().map(|a| Val::I32(*a)).collect();
+        let mut out = [Val::I32(0)];
+        func.call(&mut *store, &args, &mut out).unwrap_or_else(|e| panic!("{f} trapped: {e}"));
+        match out[0] {
+            Val::I32(v) => v,
+            Val::I64(v) => v as i32,
+            ref other => panic!("{f} gave {other:?}"),
+        }
+    };
+    let res = call(&mut store, "init_keywords", &[]);
+    assert!(res >= 0, "init_keywords failed with {}", res);
+    let src_bytes = src.as_bytes();
+    let src_ptr = call(&mut store, "alloc_src", &[(src_bytes.len() + 16) as i32]);
+    memory.write(&mut store, src_ptr as usize, src_bytes).unwrap();
+    let name_ptr = call(&mut store, "alloc_src", &[(name.len() + 16) as i32]);
+    memory.write(&mut store, name_ptr as usize, name.as_bytes()).unwrap();
+    let out_len = call(&mut store, "compile_named", &[src_ptr, src_bytes.len() as i32, name_ptr, name.len() as i32]);
+    let data = memory.data(&store);
+    let word = |addr: usize| u32::from_le_bytes(data[addr..addr + 4].try_into().unwrap()) as usize;
+    if out_len <= 0 {
+        let code = word(4);
+        // compile_call records the unresolved callee's source span in cells 44/48.
+        let detail = if code == 1452 {
+            let (pos, len) = (word(44), word(48));
+            format!(" (unknown function '{}')", String::from_utf8_lossy(&src_bytes[pos..(pos + len).min(src_bytes.len())]))
+        } else {
+            String::new()
+        };
+        return Err(format!("compile_module returned {} with compile error {}{}", out_len, code, detail));
+    }
+    let out_ptr = word(60);
+    let bytes = data[out_ptr..out_ptr + out_len as usize].to_vec();
+    wasmparser::Validator::new().validate_all(&bytes).map_err(|e| format!("self-hosted output does not validate: {e}"))?;
+    Ok(bytes)
+}
+
+/// codegen.compile_named run in the VM, for the one test that keeps the VM
+/// tested on the whole compiler (self_hosted_bytes_match_codegen).
+fn vm_self_host(src: &str) -> Result<Vec<u8>, String> {
+    let src = flat(src);
+    // the tree-walking VM recurses once per nested AIPL call
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || vm_self_host_on_this_thread(&src, ""))
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn vm_self_host_on_this_thread(src: &str, name: &str) -> Result<Vec<u8>, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let codegen_path = root.join("aipl_src/codegen.aipl");
     let module = Resolver::resolve(&codegen_path).expect("resolve codegen.aipl");
@@ -660,7 +738,7 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
     std::fs::write(&path, r#"(module surface
   (import io)
   (import os)
-  (fn main [] -> i64 (unsafe)
+  (fn surface [] -> i64 (unsafe)
     (let b:str.Bytes (call io.read_stdin))
     (let p:i32 (mem.alloc 8))
     (let ok:i32 (sys.random p 8))
@@ -1118,11 +1196,15 @@ fn codegen_combined_source() -> String {
     src
 }
 
-/// The self-hosted compiler, run in the VM, compiles itself to the same bytes
-/// as the Rust backend.
+/// The self-hosted compiler compiles itself to the same bytes as the Rust
+/// backend, under wasmtime and, run in the VM, there too: the one test that
+/// keeps the VM running the whole compiler.
 #[test]
 fn self_hosted_bytes_match_codegen() {
-    assert_self_hosted_matches_rust("codegen", &codegen_combined_source());
+    let src = codegen_combined_source();
+    assert_self_hosted_matches_rust("codegen", &src);
+    let rust = WasmCompiler::compile(&aipl_core::parser::Parser::parse(&flat(&src)).unwrap()).unwrap();
+    assert!(vm_self_host(&src).unwrap() == rust, "codegen.aipl run in the VM: its bytes differ from the Rust backend's");
 }
 
 /// Bootstrap fixpoint: compile the self-hosted compiler with the Rust backend,

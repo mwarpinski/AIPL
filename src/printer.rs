@@ -78,9 +78,9 @@ pub fn type_str(t: &Type) -> String {
         Type::Struct(name) => name.clone(),
         Type::Array(e) => format!("(arr {})", type_str(e)),
         Type::ResultType(a, b) => format!("(result {} {})", type_str(a), type_str(b)),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, no_leak) => {
             let ps: Vec<String> = params.iter().map(type_str).collect();
-            format!("(fn [{}] -> {})", ps.join(" "), type_str(ret))
+            format!("(fn [{}] -> {}{})", ps.join(" "), type_str(ret), if *no_leak { " (no_leak)" } else { "" })
         }
         Type::Enum(name) | Type::Union(name) => name.clone(),
     }
@@ -217,6 +217,11 @@ pub fn op_name(op: &OpCode) -> &'static str {
         FsOpendir => "fs.opendir",
         FsReaddir => "fs.readdir",
         FsStat => "fs.stat",
+        NetListen => "net.listen",
+        NetAccept => "net.accept",
+        NetRecv => "net.recv",
+        NetSend => "net.send",
+        NetClose => "net.close",
         ArgsSizes => "args.sizes",
         ArgsGet => "args.get",
         EnvSizes => "env.sizes",
