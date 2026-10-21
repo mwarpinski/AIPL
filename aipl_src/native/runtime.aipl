@@ -25,7 +25,7 @@
   (fn rcx [] -> i32 1)
 
   ;; write(fd, addr, len) with constant arguments; the result stays in rax.
-  (fn emit_write [c:(ptr buf.Buf) fd:i32 addr:i32 len:i32] -> void
+  (fn emit_write [c:(ptr buf.Buf) fd:i32 addr:i32 len:i32] -> void (pub)
     (call x64.mov_ri32 c (call rdi) fd)
     (call x64.mov_ri32 c (call rsi) addr)
     (call x64.mov_ri32 c (call rdx) len)
@@ -143,7 +143,7 @@
 
   ;; Writes argv[0] and ": " to stderr, or nothing if there is no argv[0].
   ;; Clobbers rax rbx rcx rdx rsi rdi r11.
-  (fn emit_write_argv0 [c:(ptr buf.Buf) argv0_cell:i32 sep:i32] -> void
+  (fn emit_write_argv0 [c:(ptr buf.Buf) argv0_cell:i32 sep:i32] -> void (pub)
     (let rbx:i32 3)
     (call x64.mov_ri32 c (call rax) argv0_cell)
     (call x64.load c 64 rbx (call x64.mem (call rax) 0))
@@ -199,7 +199,7 @@
 
   ;; Writes the unsigned value in register `reg` to stderr in decimal, from a
   ;; buffer on the stack. Clobbers rax rcx rdx rsi rdi r9 r11.
-  (fn emit_write_decimal [c:(ptr buf.Buf) reg:i32] -> void
+  (fn emit_write_decimal [c:(ptr buf.Buf) reg:i32] -> void (pub)
     (let r9:i32 9)
     (call x64.alu_ri c 64 (call x64.op_sub) 4 32)
     (call x64.mov_rr c 64 (call rax) reg)

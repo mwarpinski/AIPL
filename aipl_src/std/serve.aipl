@@ -135,8 +135,9 @@
   ;; --exe --serve`), the connection as its input and the client getting
   ;; its output. Nothing outlives the request, and a trap costs only it:
   ;; the host answers 500. Also how a saved request is tried: `aipl eval
-  ;; prog.aipl < request.txt`. 0 if it answered (a refusal too), 1 if the
-  ;; input ended before a request began.
+  ;; prog.aipl < request.txt`. 0 if it answered (a refusal too); 1 if the
+  ;; input ended before a request began, or the answer could not all be
+  ;; written (so a host never sends part of one as if it were whole).
   (fn once [handler:(fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak)) o:Options] -> i32 (pub)
     (call (once_with (fn [alloc.Allocator (ptr http.Message) (ptr buf.Buf)] -> void (no_leak))) handler (ref plain) o))
 
@@ -145,7 +146,7 @@
     (let a:alloc.Allocator (call alloc.default))
     (let out:(ptr buf.Buf) (call buf.make a 4096))
     (if (call (answer i32 C) a 0 (ref read_more) ctx handler (get o Options.limits) out)
-        (block (call write_all 1 (call buf.bytes out)) 0)
+        (if (call write_all 1 (call buf.bytes out)) 0 1)
         1))
 
   (fn read_more [fd:i32 in:(ptr buf.Buf)] -> i32 (no_leak)
@@ -155,14 +156,16 @@
       (when (gt n 0) (call buf.grew in n))
       n))
 
-  ;; All of b to file descriptor fd (a write may take only part).
-  (fn write_all [fd:i32 b:str.Bytes] -> void (no_leak)
+  ;; All of b to file descriptor fd (a write may take only part); false
+  ;; if a write fails first.
+  (fn write_all [fd:i32 b:str.Bytes] -> bool (no_leak)
     (let done:i32 0)
     (let n:i32 (get b str.Bytes.len))
     (while (lt done n)
       (let part:str.Bytes (call str.slice b done (- n done)))
       (let k:i32 (unsafe (fs.write fd (call str.addr part) (get part str.Bytes.len))))
-      (if (lte k 0) (set! done n) (set! done (+ done k)))))
+      (if (lte k 0) (return false) (set! done (+ done k))))
+    true)
 
   ;; A refusal: its status, and the reason as the body.
   (fn refuse [out:(ptr buf.Buf) status:i32 why:str] -> void (no_leak)

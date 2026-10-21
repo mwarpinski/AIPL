@@ -21,13 +21,14 @@ pub fn supported() -> bool {
 /// The executable for `wasm` (a module AIPL compiled), or the native
 /// backend's error. `sandbox`: only the working directory, no absolute paths.
 pub fn executable(wasm: &[u8], sandbox: bool) -> Result<Vec<u8>, String> {
-    executable_with(wasm, sandbox, &[])
+    executable_with(wasm, sandbox, &[], None)
 }
 
 /// `executable`, with the addresses and ports the program may listen on
-/// (`--listen ADDR:PORT`) fixed in it; the native backend reads them with
-/// std/ip.
-pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String]) -> Result<Vec<u8>, String> {
+/// (`--listen ADDR:PORT`) fixed in it, and the address it serves on, a
+/// fresh copy of the program per connection (`--serve ADDR:PORT`,
+/// aipl_src/native/fresh.aipl); the native backend reads them with std/ip.
+pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String], serve: Option<&str>) -> Result<Vec<u8>, String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("aipl_src/native/native.aipl");
     let backend = Resolver::resolve(&path).map_err(|e| format!("native backend: {e}"))?;
     TypeChecker::new().check_module(&backend).map_err(|e| format!("native backend: {e}"))?;
@@ -39,16 +40,19 @@ pub fn executable_with(wasm: &[u8], sandbox: bool, listen: &[String]) -> Result<
     let mut store = Store::new(&engine, WasiCtxBuilder::new().inherit_stderr().build_p1());
     let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
     let alloc = inst.get_typed_func::<i32, i32>(&mut store, "host_alloc").map_err(|e| e.to_string())?;
-    let compile = inst.get_typed_func::<(i32, i32, i32, i32, i32), i64>(&mut store, "compile_full_at").map_err(|e| e.to_string())?;
+    let compile = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32, i32), i64>(&mut store, "compile_full_at").map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").ok_or("native backend: no memory")?;
     let addr = alloc.call(&mut store, wasm.len() as i32 + 8).map_err(|e| e.to_string())?;
     mem.write(&mut store, addr as usize, wasm).map_err(|e| e.to_string())?;
     let grants: String = listen.iter().map(|g| format!("{g}\n")).collect();
     let gaddr = alloc.call(&mut store, grants.len() as i32 + 8).map_err(|e| e.to_string())?;
     mem.write(&mut store, gaddr as usize, grants.as_bytes()).map_err(|e| e.to_string())?;
+    let serve = serve.unwrap_or("");
+    let saddr = alloc.call(&mut store, serve.len() as i32 + 8).map_err(|e| e.to_string())?;
+    mem.write(&mut store, saddr as usize, serve.as_bytes()).map_err(|e| e.to_string())?;
     // a (ptr Output): the address in the low half (GENERATIONS_PLAN.md)
     let out = compile
-        .call(&mut store, (addr, wasm.len() as i32, sandbox as i32, gaddr, grants.len() as i32))
+        .call(&mut store, (addr, wasm.len() as i32, sandbox as i32, gaddr, grants.len() as i32, saddr, serve.len() as i32))
         .map_err(|e| format!("native backend trapped: {e}"))? as u32 as usize;
     // native.Output starts [addr:i32 len:i32 ok:bool]: the executable's
     // bytes when ok, else the error's

@@ -1,8 +1,9 @@
 ;; A fresh-instance server (NET_PLAN.md mode B, tests/test_serve.rs): one
 ;; request from standard input, answered on standard output (serve.once).
 ;; GET / says hello, GET /echo... gives back its target, GET /crash traps
-;; (an index past the end of an array), anything else is 404. Run once per
-;; connection by a host (aipl-run --serve-fresh, or an executable made
+;; (an index past the end of an array), GET /big answers 64 MiB, more
+;; than a host keeps (so it answers 500), anything else is 404. Run once
+;; per connection by a host (aipl-run --serve-fresh, or an executable made
 ;; with --serve), the crash costs only its own request.
 (module fresh_demo
   (import alloc)
@@ -29,6 +30,10 @@
       ((call str.bytes_eq target (call str.from_str "/crash"))
        (let xs:(arr i32) (arr.new i32 a 1))
        (call text out 200 (call str.from_str (if (eq (arr.get i32 xs 5) 0) "zero\n" "not zero\n"))))
+      ((call str.bytes_eq target (call str.from_str "/big"))
+       (let big:(ptr buf.Buf) (call buf.make a 16))
+       (call buf.insert big 0 67108864 120)
+       (call text out 200 (call buf.bytes big)))
       (else (call text out 404 (call str.from_str "not found\n")))))
 
   (fn main [] -> i32

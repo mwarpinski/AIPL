@@ -46,7 +46,12 @@ impl Net {
     /// std/ip's parse_endpoint reads (Rust's parser, less zone indexes), so
     /// a grant means the same in every backend.
     pub fn parse_grant(text: &str) -> Result<SocketAddr, String> {
-        let bad = || format!("--listen {text}: expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080");
+        Self::parse_address("--listen", text)
+    }
+
+    /// An ADDR:PORT given with `flag`, named in the message if it is not one.
+    pub fn parse_address(flag: &str, text: &str) -> Result<SocketAddr, String> {
+        let bad = || format!("{flag} {text}: expected ADDR:PORT, as 127.0.0.1:8080 or [::1]:8080");
         if text.contains('%') {
             return Err(bad());
         }

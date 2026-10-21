@@ -34,10 +34,13 @@ use wasmtime_wasi::{FsPerms, I32Exit, WasiCtxBuilder};
 
 /// An executable made by `aipl compile --exe --target wasm` is this runner
 /// followed by the wasm module, its --listen grants (one ADDR:PORT a line),
-/// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox), the grants'
-/// length and the module's (u32 LE each), and this magic.
+/// and a 20-byte trailer: flags (u32 LE; bit 0 = sandbox, bit 1 = serve a
+/// fresh instance per connection on the address that is then the grants'
+/// first line: --serve), the grants' length and the module's (u32 LE
+/// each), and this magic.
 const MAGIC: &[u8; 8] = b"AIPLEXE2";
 const FLAG_SANDBOX: u32 = 1;
+const FLAG_SERVE: u32 = 2;
 
 struct Program {
     wasm: Vec<u8>,
@@ -76,18 +79,26 @@ fn embedded(args: &[String]) -> Option<Program> {
     let grants_at = n.checked_sub(20 + glen)?;
     let start = grants_at.checked_sub(len)?;
     // write_executable checked each grant
-    let listen = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok()).collect();
-    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, fresh: None })
+    let mut lines = std::str::from_utf8(&me[grants_at..n - 20]).ok()?.lines().filter_map(|g| aipl_core::net::Net::parse_grant(g).ok());
+    let fresh = if flags & FLAG_SERVE != 0 { Some((lines.next()?, None)) } else { None };
+    let listen = lines.collect();
+    Some(Program { wasm: me[start..grants_at].to_vec(), argv: args.to_vec(), sandbox: flags & FLAG_SANDBOX != 0, listen, fresh })
 }
 
 fn from_command_line(args: &[String]) -> Result<Program, String> {
     let mut rest = &args[1.min(args.len())..];
-    let (mut sandbox, mut listen, mut fresh, mut requests) = (false, Vec::new(), None, None);
+    let (mut sandbox, mut listen, mut fresh, mut requests, mut name) = (false, Vec::new(), None, None, None);
     loop {
         match rest.first().map(String::as_str) {
             Some("--serve-fresh") => {
                 let g = rest.get(1).ok_or("--serve-fresh needs ADDR:PORT")?;
-                fresh = Some(aipl_core::net::Net::parse_grant(g).map_err(|e| e.replace("--listen", "--serve-fresh"))?);
+                fresh = Some(aipl_core::net::Net::parse_address("--serve-fresh", g)?);
+                rest = &rest[2..];
+            }
+            // the program's argv[0], in place of the module's path (aipl
+            // serve names it by its source, as aipl eval does)
+            Some("--name") => {
+                name = Some(rest.get(1).ok_or("--name needs the program's name")?.clone());
                 rest = &rest[2..];
             }
             Some("--requests") => {
@@ -107,12 +118,16 @@ fn from_command_line(args: &[String]) -> Result<Program, String> {
             _ => break,
         }
     }
-    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] PROGRAM.wasm [ARGS...]")?;
+    let file = rest.first().ok_or("usage: aipl-run [--sandbox] [--listen ADDR:PORT]... [--name NAME] PROGRAM.wasm [ARGS...], or aipl-run --serve-fresh ADDR:PORT [--requests N] [--name NAME] PROGRAM.wasm [ARGS...]")?;
     let wasm = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
     if requests.is_some() && fresh.is_none() {
         return Err("--requests goes with --serve-fresh".into());
     }
-    Ok(Program { wasm, argv: rest.to_vec(), sandbox, listen, fresh: fresh.map(|at| (at, requests)) })
+    let mut argv = rest.to_vec();
+    if let Some(n) = name {
+        argv[0] = n;
+    }
+    Ok(Program { wasm, argv, sandbox, listen, fresh: fresh.map(|at| (at, requests)) })
 }
 
 /// What one thread's instance needs: shared by the main thread and every
