@@ -6,6 +6,7 @@
 ;;
 ;;   aipl compile FILE.aipl -o OUT.wasm
 ;;   aipl compile --exe [--sandbox] [--listen ADDR:PORT]... FILE.aipl -o OUT
+;;   aipl compile [--exe] --max-memory SIZE FILE.aipl -o OUT   (memory's limit, 1M to 2G)
 ;;   aipl doc [MODULE | MODULE.ITEM | FILE.aipl]  (aipl_src/doc.aipl)
 ;;   aipl --version
 ;;
@@ -26,7 +27,7 @@
   (import alloc)
 
   (fn usage [] -> i32
-    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]...] [--tests] FILE.aipl -o OUT")
+    (call io.eprintln "usage: aipl compile [--exe [--sandbox] [--listen ADDR:PORT]...] [--tests] [--max-memory SIZE] FILE.aipl -o OUT")
     (call io.eprintln "       aipl doc [MODULE | MODULE.ITEM | FILE.aipl] [--private] | --find WORD | --check FILE.aipl...")
     (call io.eprintln "       aipl --version")
     2)
@@ -59,6 +60,8 @@
     (let sandbox:bool false)
     ;; --listen grants, one ADDR:PORT a line (native.compile_with)
     (let listen:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+    ;; memory's maximum in pages (--max-memory; src/compiler/mod.rs memory_pages)
+    (let max_pages:i32 32768)
     (let in_i:i32 -1)
     (let out_i:i32 -1)
     (let i:i32 2)
@@ -68,6 +71,18 @@
         ((call str.is a "--exe") (set! exe true))
         ((call str.is a "--tests") (set! tests true))
         ((call str.is a "--sandbox") (set! sandbox true))
+        ((call str.is a "--max-memory")
+         (if (gte (+ i 1) n) (return (call usage)) (block))
+         (set! max_pages (call driver.memory_pages (call os.arg (+ i 1))))
+         (if (lt max_pages 0)
+             (block
+               (let m:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+               (call buf.push_str m "--max-memory ")
+               (call buf.push_bytes m (call os.arg (+ i 1)))
+               (call buf.push_str m ": expected a size from 1M to 2G in whole 64K pages, as 512M")
+               (return (call fail_bytes "" (call buf.bytes m))))
+             (block))
+         (set! i (+ i 1)))
         ((call str.is a "--listen")
          (if (gte (+ i 1) n) (return (call usage)) (block))
          ;; checked before anything is compiled, with src/net.rs parse_grant's message
@@ -96,10 +111,10 @@
     (let entry:str.Bytes (call os.arg in_i))
     (let out:str.Bytes (call os.arg out_i))
     (let res:(ptr driver.Out) (if tests
-                                  (call driver.compile_tests (call str.addr entry) (get entry str.Bytes.len)
-                                                             (call str.addr std_dir) (get std_dir str.Bytes.len))
-                                  (call driver.compile_file (call str.addr entry) (get entry str.Bytes.len)
-                                                            (call str.addr std_dir) (get std_dir str.Bytes.len))))
+                                  (call driver.compile_tests_limited (call str.addr entry) (get entry str.Bytes.len)
+                                                                     (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)
+                                  (call driver.compile_file_limited (call str.addr entry) (get entry str.Bytes.len)
+                                                                    (call str.addr std_dir) (get std_dir str.Bytes.len) max_pages)))
     (let status:i32 (get res driver.Out.status))
     (if (or (eq status 1) (eq status 3))
         (return (call fail_bytes "" (unsafe (call str.bytes (get res driver.Out.addr) (get res driver.Out.len)))))

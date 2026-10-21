@@ -103,3 +103,57 @@ fn a_no_leak_handler_reads_and_writes_through_streams() {
         assert_eq!(stdout, "3 lines, 14 bytes; drip 3 lines\ntally 31\nflat\n", "{backend}");
     }
 }
+
+/// `--max-memory` (docs/LAUNCH_CHECKLIST.md section 6): the limit is in the
+/// module, so the VM, aipl-run, native executables, and the launcher bundle
+/// stop at the same place, having printed the same; without it the program
+/// runs to the end. Both toolchains write the same module with the limit,
+/// and the AIPL command the same executable as the Rust one; a size that is
+/// not one is refused alike by both.
+#[test]
+fn max_memory_stops_every_backend_at_the_same_place() {
+    let dir = std::env::temp_dir().join(format!("aipl_memory_{}_hog", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = root().join("tests/aipl/memory/hog.aipl");
+    let (wasm, exe, bundle) = (dir.join("p.wasm"), dir.join("p"), dir.join("p_bundle"));
+    for (out, extra) in [(&wasm, vec![]), (&exe, vec!["--exe"]), (&bundle, vec!["--exe", "--target", "wasm"])] {
+        let o = Command::new(AIPL).arg("compile").args(&extra).args(["--max-memory", "4M"]).arg(&src).arg("-o").arg(out).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let printed = |o: &Output| -> String { String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect() };
+    let want: String = (0..=48).step_by(16).map(|i| format!("{i} blocks\n")).collect();
+    for (backend, o) in [
+        ("VM", Command::new(AIPL).args(["eval", "--max-memory", "4M"]).arg(&src).output().unwrap()),
+        ("aipl-run", Command::new(RUNNER).arg(&wasm).output().unwrap()),
+        ("native", Command::new(&exe).output().unwrap()),
+        ("bundle", Command::new(&bundle).output().unwrap()),
+    ] {
+        assert!(!o.status.success(), "{backend}: should stop at 4 MiB");
+        assert_eq!(printed(&o), want, "{backend}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("at heap.raw"), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    // without a limit it runs to the end
+    let o = Command::new(AIPL).arg("eval").arg(&src).output().unwrap();
+    assert!(o.status.success() && printed(&o).ends_with("992 blocks\n"), "{}", String::from_utf8_lossy(&o.stderr));
+    // both toolchains: the module, and the AIPL command's executable
+    let m = aipl_core::resolver::Resolver::resolve(&src).unwrap();
+    let rust = aipl_core::compiler::wasm::WasmCompiler::compile_limited(&m, 64).unwrap();
+    assert!(rust == std::fs::read(&wasm).unwrap());
+    assert!(aipl_core::selfhost::compile_with_aipl_limited(&src, 64).unwrap() == rust, "the self-hosted toolchain's module");
+    let o = Command::new(AIPL).args(["compile", "--self", "--max-memory", "4M"]).arg(&src).arg("-o").arg(dir.join("s.wasm")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // sizes that are not one, from the Rust command
+    for bad in ["4", "4m", "1K", "3G", "512K1", "M", "", "100000"] {
+        let o = Command::new(AIPL).args(["compile", "--max-memory", bad]).arg(&src).arg("-o").arg(dir.join("x.wasm")).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&o.stderr).trim(),
+            format!("Error: --max-memory {bad}: expected a size from 1M to 2G in whole 64K pages, as 512M"),
+            "{bad}"
+        );
+    }
+    for good in ["1M", "2G", "1048576", "65536K", "512M"] {
+        assert!(aipl_core::compiler::memory_pages(good).is_ok(), "{good}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

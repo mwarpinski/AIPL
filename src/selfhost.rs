@@ -44,7 +44,7 @@ fn toolchain(name: &'static str, cell: &'static OnceLock<Result<(Engine, WasmMod
 /// the path and the standard library's directory, in a fresh instance with
 /// the working directory and `/` preopened (as aipl-run gives them): the
 /// three words of the Out it returns, and the instance's memory.
-fn call_toolchain(t: &(Engine, WasmModule), entry: &str, path: &str) -> Result<([i32; 3], Vec<u8>), String> {
+fn call_toolchain(t: &(Engine, WasmModule), entry: &str, path: &str, extra: Option<i32>) -> Result<([i32; 3], Vec<u8>), String> {
     let (engine, module) = t;
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |c: &mut WasiP1Ctx| c).map_err(|e| e.to_string())?;
@@ -64,8 +64,17 @@ fn call_toolchain(t: &(Engine, WasmModule), entry: &str, path: &str) -> Result<(
     let dirs = std_dir();
     let (p, d) = (put(path)?, put(&dirs)?);
     // a (ptr Out): the address in the low half (GENERATIONS_PLAN.md)
-    let f: TypedFunc<(i32, i32, i32, i32), i64> = inst.get_typed_func(&mut store, entry).map_err(|e| e.to_string())?;
-    let out = f.call(&mut store, (p, path.len() as i32, d, dirs.len() as i32)).map_err(|e| format!("{entry} trapped: {e}"))? as u32 as usize;
+    let out = match extra {
+        None => {
+            let f: TypedFunc<(i32, i32, i32, i32), i64> = inst.get_typed_func(&mut store, entry).map_err(|e| e.to_string())?;
+            f.call(&mut store, (p, path.len() as i32, d, dirs.len() as i32))
+        }
+        Some(x) => {
+            let f: TypedFunc<(i32, i32, i32, i32, i32), i64> = inst.get_typed_func(&mut store, entry).map_err(|e| e.to_string())?;
+            f.call(&mut store, (p, path.len() as i32, d, dirs.len() as i32, x))
+        }
+    }
+    .map_err(|e| format!("{entry} trapped: {e}"))? as u32 as usize;
     let data = memory.data(&store).to_vec();
     let word = |at: usize| i32::from_le_bytes(data[at..at + 4].try_into().unwrap());
     Ok(([word(out), word(out + 4), word(out + 8)], data))
@@ -93,7 +102,7 @@ pub fn resolve_with_aipl(path: &Path) -> Result<String, String> {
     let t = toolchain("resolver", &RESOLVER)?;
     let path = path.to_string_lossy().into_owned();
     // Out [ok addr len]
-    let ([ok, addr, len], data) = on_big_stack(move || call_toolchain(t, "resolve_file", &path))?;
+    let ([ok, addr, len], data) = on_big_stack(move || call_toolchain(t, "resolve_file", &path, None))?;
     let text = String::from_utf8(bytes(&data, addr, len)).map_err(|e| e.to_string())?;
     if ok == 1 { Ok(text) } else { Err(text) }
 }
@@ -102,11 +111,17 @@ pub fn resolve_with_aipl(path: &Path) -> Result<String, String> {
 /// toolchain (`driver.compile_file`: resolver, checker, code generator):
 /// the module's bytes, or its error. What `aiplc` does natively.
 pub fn compile_with_aipl(path: &Path) -> Result<Vec<u8>, String> {
+    compile_with_aipl_limited(path, crate::vm::MAX_PAGES as u32)
+}
+
+/// compile_with_aipl with memory's maximum lowered to `max_pages`
+/// (`driver.compile_file_limited`, as `--max-memory`).
+pub fn compile_with_aipl_limited(path: &Path, max_pages: u32) -> Result<Vec<u8>, String> {
     static DRIVER: OnceLock<Result<(Engine, WasmModule), String>> = OnceLock::new();
     let t = toolchain("driver", &DRIVER)?;
     let path = path.to_string_lossy().into_owned();
     // Out [status addr len]: 0 the module, 1 and 3 an error's text, 2 a compile error's code
-    let ([status, addr, len], data) = on_big_stack(move || call_toolchain(t, "compile_file", &path))?;
+    let ([status, addr, len], data) = on_big_stack(move || call_toolchain(t, "compile_file_limited", &path, Some(max_pages as i32)))?;
     match status {
         0 => Ok(bytes(&data, addr, len)),
         2 => Err(format!("compile error {len} (see AIPL_SPEC.md 6.4)")),

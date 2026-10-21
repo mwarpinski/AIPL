@@ -34,6 +34,9 @@ pub enum Value {
 /// concurrency, instead of each thread getting its own disconnected copy.
 pub struct SharedMemory {
     pub bytes: Vec<u8>,
+    /// The most pages memory may grow to: MAX_PAGES, or lower with
+    /// `--max-memory` (set_max_pages), as a compiled module declares it.
+    pub max_pages: usize,
 }
 
 /// One wasm page.
@@ -151,6 +154,7 @@ impl VM {
             enums: Arc::new(HashMap::new()),
             flow: None,
             shared: Arc::new(Mutex::new(SharedMemory {
+                max_pages: MAX_PAGES,
                 bytes: {
                     // 16 pages, with the heap cursor at address 0 pre-set to
                     // HEAP_START - exactly what the wasm backend's data
@@ -211,6 +215,11 @@ impl VM {
     /// The command line `args.*` report, argv[0] first.
     pub fn set_args(&mut self, args: Vec<String>) {
         self.args = Arc::new(args);
+    }
+
+    /// The most pages memory may grow to (`--max-memory`), at most MAX_PAGES.
+    pub fn set_max_pages(&mut self, pages: usize) {
+        self.shared.lock().unwrap().max_pages = pages.min(MAX_PAGES);
     }
 
     /// The addresses `net.listen` may use (`--listen`); none by default.
@@ -986,7 +995,7 @@ impl VM {
         if next as u32 > have {
             let pages = ((next as u32).wrapping_sub(have).wrapping_add(65535) >> 16) as usize;
             let old_pages = mem.bytes.len() / PAGE_SIZE;
-            if old_pages + pages <= MAX_PAGES {
+            if old_pages + pages <= mem.max_pages {
                 mem.bytes.resize((old_pages + pages) * PAGE_SIZE, 0);
             }
         }
@@ -1457,7 +1466,7 @@ impl VM {
                 };
                 let mut mem = self.shared.lock().unwrap();
                 let old_pages = mem.bytes.len() / PAGE_SIZE;
-                if pages < 0 || old_pages + pages as usize > MAX_PAGES {
+                if pages < 0 || old_pages + pages as usize > mem.max_pages {
                     // wasm memory.grow reports failure as -1 rather than trapping.
                     return Ok(Value::Int(-1));
                 }

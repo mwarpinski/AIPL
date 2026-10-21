@@ -271,7 +271,7 @@ is a small, honest experiment:
 Not all need building before a post; each needs an honest answer in the
 FAQ or ROADMAP.md.
 
-- [ ] **A lower memory limit** (decided 2026-10-19): `aipl compile
+- [x] **A lower memory limit** (decided 2026-10-19, done 2026-10-20: tests/test_memory.rs, test_bootstrap.rs): `aipl compile
   --max-memory 512M` (and `--exe`) records the limit in the module's
   memory declaration, its max pages, so the VM, aipl-run, native
   executables, and any wasm host stop at the same place, with the
@@ -280,6 +280,12 @@ FAQ or ROADMAP.md.
   the signed address comparisons in std and the compiler rely on. Wanted
   with the servers (MEMORY_PLAN.md M5): a runaway request fails cleanly
   instead of taking the machine.
+- [ ] **"Out of memory" said as such**: at the limit (2 GiB, or
+  `--max-memory`'s) `mem.alloc` does not fail, so the program stops at its
+  first access past the end, with "Memory store out of bounds" (VM) or
+  "wasm trap: out of bounds memory access" (compiled) and a call chain into
+  std/heap. A failed grow should stop at `mem.alloc` with "out of memory:
+  the limit is N MiB", alike in every backend and both toolchains.
 - [ ] **An address-sized integer, decided on purpose** (before launch):
   `ptr.addr`, `mem.*`, and `mem.alloc` use `i32` addresses, a promise to
   users' (unsafe) code. A 64-bit target (ROADMAP.md, after launch) wants

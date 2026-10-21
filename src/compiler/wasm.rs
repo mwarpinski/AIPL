@@ -9,6 +9,13 @@ pub struct WasmCompiler;
 
 impl WasmCompiler {
     pub fn compile(module: &Module) -> Result<Vec<u8>, String> {
+        Self::compile_limited(module, crate::vm::MAX_PAGES as u32)
+    }
+
+    /// compile, with memory's maximum lowered to `max_pages`
+    /// (`--max-memory`; at most vm::MAX_PAGES): the module declares it, so
+    /// every host stops at the same place.
+    pub fn compile_limited(module: &Module, max_pages: u32) -> Result<Vec<u8>, String> {
         let mut wasm_module = WasmModule::new();
         let mut types = TypeSection::new();
         let mut functions = FunctionSection::new();
@@ -323,7 +330,7 @@ impl WasmCompiler {
         // thread's instance uses the same memory.
         let memory_type = wasm_encoder::MemoryType {
             minimum: 16,
-            maximum: Some(crate::vm::MAX_PAGES as u64),
+            maximum: Some(max_pages.min(crate::vm::MAX_PAGES as u32) as u64),
             memory64: false,
             shared: threaded,
             page_size_log2: None,

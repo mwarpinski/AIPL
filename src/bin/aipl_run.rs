@@ -417,7 +417,16 @@ fn run(p: Program) -> i32 {
     let mut shared: Option<SharedMemory> = None;
     if threaded {
         // every thread instantiates the module again on one shared memory
-        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, 32768) /* vm.rs MAX_PAGES: 2 GiB */) {
+        // the memory the module imports: 16 pages, to its declared maximum
+        // (2 GiB, vm.rs MAX_PAGES, or lower with `aipl compile --max-memory`)
+        let max = module
+            .imports()
+            .find_map(|i| match i.ty() {
+                wasmtime::ExternType::Memory(m) if i.module() == "env" && i.name() == "memory" => m.maximum(),
+                _ => None,
+            })
+            .unwrap_or(32768) as u32;
+        let memory = match SharedMemory::new(&engine, MemoryType::shared(16, max)) {
             Ok(m) => m,
             Err(e) => return fail(e.to_string()),
         };

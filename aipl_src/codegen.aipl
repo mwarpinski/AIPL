@@ -62,7 +62,8 @@
               uses_checks:bool checks_base:i32 ens_block:bool src_len:i32
               places:(ptr places.Places) scratch:i32 groups:(ptr (vec.Vec (ptr Group))) has_values:bool
               results:(ptr (vec.Vec (ptr StructInfo)))
-              may_free:(arr bool) proven:(ptr (vec.Vec (ptr compiler.Node))) versioning:bool])
+              may_free:(arr bool) proven:(ptr (vec.Vec (ptr compiler.Node))) versioning:bool
+              max_pages:i32])
 
   ;; A string literal's spelling (a span of the source; pos -1 for the
   ;; newline sys.print reserves) and the address of its interned bytes. The
@@ -164,6 +165,7 @@
     (put cg Cg.nstrs 0)
     (put cg Cg.blob (call buf.make (call alloc.default) 4096))
     (put cg Cg.newline 0)
+    (put cg Cg.max_pages MAX_PAGES)
     (put cg Cg.scratch 0)
     (put cg Cg.has_values false)
     (put cg Cg.results (call (vec.make (ptr StructInfo)) (call alloc.default) 8))
@@ -5257,19 +5259,21 @@
 
   ;; One file's text, named (name_ptr, name_len) in the line table.
   (fn compile_named [src_ptr:i32 src_len:i32 name_ptr:i32 name_len:i32] -> i32
-    (unsafe (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len)))))
+    (unsafe (call compile_at src_ptr src_len (call places.single (call str.bytes name_ptr name_len) (call str.bytes src_ptr src_len)) MAX_PAGES)))
 
   ;; The flat program the resolver (orig) and the generics pass (gen)
   ;; printed: the line table names the files they read.
-  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins)] -> i32 (pub)
-    (call compile_at src_ptr src_len (call places.mapped gen orig)))
+  (fn compile_mapped [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) max_pages:i32] -> i32 (pub)
+    (call compile_at src_ptr src_len (call places.mapped gen orig) max_pages))
 
   ;; The same for a program whose formatting forms were lowered (low maps
   ;; the lowered text back to the program the generics pass printed).
-  (fn compile_lowered [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins)] -> i32 (pub)
-    (call compile_at src_ptr src_len (call places.lowered gen orig low)))
+  (fn compile_lowered [src_ptr:i32 src_len:i32 gen:(ptr origins.Origins) orig:(ptr origins.Origins) low:(ptr origins.Origins) max_pages:i32] -> i32 (pub)
+    (call compile_at src_ptr src_len (call places.lowered gen orig low) max_pages))
 
-  (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places)] -> i32
+  ;; max_pages: memory's declared maximum (wasm.rs compile_limited; at most
+  ;; MAX_PAGES, which --max-memory may only lower).
+  (fn compile_at [src_ptr:i32 src_len:i32 where:(ptr places.Places) max_pages:i32] -> i32
     (unsafe (let _init:i32 (call init_keywords))
     ;; constants and enums are erased to literals and i32 first (consts.aipl)
     (let plain:(ptr buf.Buf) (call buf.make (call alloc.default) (+ src_len 64)))
@@ -5279,6 +5283,7 @@
     (set! src_ptr (call str.addr (call buf.bytes plain)))
     (let cg:(ptr Cg) (call new_cg src_ptr))
     (put cg Cg.places where)
+    (put cg Cg.max_pages (if (lt max_pages MAX_PAGES) max_pages MAX_PAGES))
     (set! src_len (call buf.len plain))
     (put cg Cg.src_len src_len)
     ;; Buffers are sized from the input: a token is at least one source byte
@@ -5385,7 +5390,7 @@
                 (call emit_name sec "memory")
                 (call put_byte sec 2) (call put_byte sec 3)
                 (call put_u32 sec 16)
-                (call put_u32 sec MAX_PAGES))
+                (call put_u32 sec (get cg Cg.max_pages)))
               (block))
           (call emit_section o 2 sec))
         (block))
@@ -5431,7 +5436,7 @@
           (call put_byte sec 1)     ;; one memory
           (call put_byte sec 1)     ;; with a max
           (call put_u32 sec 16)
-          (call put_u32 sec MAX_PAGES)
+          (call put_u32 sec (get cg Cg.max_pages))
           (call emit_section o 5 sec)))
 
     ;; Export (7): every function by name, the memory, wasi_thread_start, _start

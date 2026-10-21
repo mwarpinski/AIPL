@@ -42,6 +42,10 @@ enum Commands {
         /// or [::1]:8080 (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT")]
         listen: Vec<String>,
+        /// The most memory the program may use, from 1M to 2G (the default) in
+        /// whole 64K pages, as 512M (what `aipl compile --max-memory` records)
+        #[arg(long = "max-memory", value_name = "SIZE")]
+        max_memory: Option<String>,
         /// Command-line arguments for the program (after `--`); with FILE as
         /// argv[0] they are what std/os.arg reports.
         #[arg(last = true)]
@@ -68,6 +72,10 @@ enum Commands {
         /// executable (repeatable; none by default)
         #[arg(long = "listen", value_name = "ADDR:PORT", requires = "exe")]
         listen: Vec<String>,
+        /// The most memory the program may use, from 1M to 2G (the default) in whole
+        /// 64K pages, as 512M; recorded in the module, so every host stops there
+        #[arg(long = "max-memory", value_name = "SIZE")]
+        max_memory: Option<String>,
         /// With --exe: `native` (Linux x86-64; the default there) or `wasm` (the launcher bundle;
         /// the default elsewhere)
         #[arg(long, requires = "exe", value_parser = ["native", "wasm"])]
@@ -330,7 +338,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Eval { file, func, expr, with, wasm, native, listen, args } => {
+        Commands::Eval { file, func, expr, with, wasm, native, listen, max_memory, args } => {
             if let Some(exprs) = expr {
                 use aipl_core::evalexpr::{run, Backend};
                 let backend = if wasm { Backend::Wasm } else if native { Backend::Native } else { Backend::Vm };
@@ -345,6 +353,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut vm = VM::new();
             vm.set_args(std::iter::once(file.clone()).chain(args).collect());
             vm.set_listen(listen.iter().map(|g| aipl_core::net::Net::parse_grant(g)).collect::<Result<_, _>>()?);
+            if let Some(m) = &max_memory {
+                vm.set_max_pages(aipl_core::compiler::memory_pages(m)? as usize);
+            }
             vm.load_module(module);
             println!("[AIPL VM] Executing function '{}' from '{}'...", func, file);
             // an error is followed by its call chain, as compiled code prints it
@@ -378,21 +389,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Compile { file, output, self_flag, exe, sandbox, listen, target, tests } => {
+        Commands::Compile { file, output, self_flag, exe, sandbox, listen, max_memory, target, tests } => {
             // a grant is checked before anything is compiled (aipl.aipl does the same)
             for g in &listen {
                 aipl_core::net::Net::parse_grant(g)?;
             }
+            let max_pages = match &max_memory {
+                Some(m) => aipl_core::compiler::memory_pages(m)?,
+                None => aipl_core::vm::MAX_PAGES as u32,
+            };
             let module = if tests { Resolver::resolve_tests(Path::new(&file))?.0 } else { Resolver::resolve(Path::new(&file))? };
             let mut checker = TypeChecker::new();
             checker.check_module(&module)?;
 
-            let rust_bytes = WasmCompiler::compile(&module)?;
+            let rust_bytes = WasmCompiler::compile_limited(&module, max_pages)?;
             if self_flag {
                 println!("[AIPL Self-Host] Compiling '{}' via self-hosted codegen.aipl...", file);
                 // Self-hosted end to end, as aiplc: driver.aipl resolves,
                 // checks, and compiles (aipl_src/driver.aipl), in the VM.
-                let self_bytes = aipl_core::selfhost::compile_with_aipl(Path::new(&file)).map_err(|e| format!("Self-host error: {}", e))?;
+                let self_bytes = aipl_core::selfhost::compile_with_aipl_limited(Path::new(&file), max_pages).map_err(|e| format!("Self-host error: {}", e))?;
                 if rust_bytes != self_bytes {
                     eprintln!("[AIPL Self-Host ERROR] Mismatch between Rust backend and self-hosted codegen!");
                     eprintln!("{}", describe_divergence(&rust_bytes, &self_bytes));
