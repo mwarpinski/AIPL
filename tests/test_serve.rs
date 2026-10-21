@@ -233,3 +233,104 @@ fn both_toolchains_compile_the_server_alike() {
         assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust, "{name}");
     }
 }
+
+// ---- A fresh instance per request (NET_PLAN.md step 4) ----
+
+/// serve.once answers one request from standard input on standard output,
+/// alike in the VM, under aipl-run, and natively: a saved request piped
+/// through it, no network needed. A trap stops it with its message; input
+/// that ends before a request begins gives status 1.
+#[test]
+fn once_answers_a_piped_request_alike_everywhere() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let dir = scratch("once");
+    let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
+    compile(&src, &wasm, &[]);
+    compile(&src, &exe, &["--exe"]);
+    let pipe = |mut c: Command, input: &[u8]| -> (Option<i32>, String, String) {
+        let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let o = child.wait_with_output().unwrap();
+        // the VM's banner comes first, on its own line, and its result line
+        // last, after the program's output
+        let all = String::from_utf8_lossy(&o.stdout).to_string();
+        let body = match all.split_once('\n') {
+            Some((first, rest)) if first.starts_with("[AIPL VM]") => rest,
+            _ => &all,
+        };
+        let out = body.rfind("[AIPL Result]:").map_or(body, |i| &body[..i]).to_string();
+        (o.status.code(), out, String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let cases: [(&[u8], &str); 4] = [
+        (b"GET /echo?a=1 HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 9\r\n\r\n/echo?a=1"),
+        (b"GET /nowhere HTTP/1.1\r\n\r\n", "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 10\r\n\r\nnot found\n"),
+        (b"GARBAGE\r\n\r\n", "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 27\r\n\r\na start line without spaces"),
+        (b"", ""),
+    ];
+    for backend in ["VM", "aipl-run", "native"] {
+        let cmd = || match backend {
+            "VM" => {
+                let mut c = Command::new(AIPL);
+                c.arg("eval").arg(&src);
+                c
+            }
+            "aipl-run" => {
+                let mut c = Command::new(RUNNER);
+                c.arg(&wasm);
+                c
+            }
+            _ => Command::new(&exe),
+        };
+        for (input, want) in cases {
+            let (status, out, err) = pipe(cmd(), input);
+            assert_eq!(out, want, "{backend}: {:?}", String::from_utf8_lossy(input));
+            assert_eq!(status, Some(if input.is_empty() { 1 } else { 0 }), "{backend}: {err}");
+        }
+        let (status, out, err) = pipe(cmd(), b"GET /crash HTTP/1.1\r\n\r\n");
+        assert!(status != Some(0) && out.is_empty(), "{backend}: the crash writes nothing");
+        assert!(err.contains("Array index out of bounds: index 5 for array of length 1") && err.contains("at handle (fresh_demo.aipl:31:54)"), "{backend}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `aipl serve --fresh`: each connection a new instance under aipl-run. A
+/// handler that traps answers 500 (its message and call chain go to the
+/// server's standard error), and the next request is served.
+#[test]
+fn a_fresh_instance_per_request_isolates_a_crash() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let at = format!("127.0.0.1:{}", free_port());
+    let requests: [(&str, Vec<u8>); 4] = [
+        ("/", text_response("200 OK", "hello\n")),
+        ("/crash", b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n".to_vec()),
+        ("/echo?after=crash", text_response("200 OK", "/echo?after=crash")),
+        ("/", text_response("200 OK", "hello\n")),
+    ];
+    let mut server = Command::new(AIPL)
+        .args(["serve", "--fresh", "--listen", &at, "--requests", "4"])
+        .arg(&src)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    for (path, want) in &requests {
+        let got = exchange(&at, &mut server, format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes());
+        assert!(got == *want, "{path}: {:?}", String::from_utf8_lossy(&got));
+    }
+    let o = server.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.contains("Array index out of bounds") && err.contains("at handle (fresh_demo.aipl:31:54)"), "{err}");
+    // without --fresh, the way to a long-running server
+    let o = Command::new(AIPL).args(["serve", "--listen", &at]).arg(&src).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("add --fresh"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn both_toolchains_compile_the_fresh_server_alike() {
+    let src = root().join("tests/aipl/net/fresh_demo.aipl");
+    let m = aipl_core::resolver::Resolver::resolve(&src).unwrap();
+    aipl_core::checker::TypeChecker::new().check_module(&m).unwrap();
+    let rust = aipl_core::compiler::wasm::WasmCompiler::compile(&m).unwrap();
+    assert_eq!(aipl_core::selfhost::compile_with_aipl(&src).unwrap(), rust);
+}

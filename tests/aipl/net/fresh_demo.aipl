@@ -1,0 +1,36 @@
+;; A fresh-instance server (NET_PLAN.md mode B, tests/test_serve.rs): one
+;; request from standard input, answered on standard output (serve.once).
+;; GET / says hello, GET /echo... gives back its target, GET /crash traps
+;; (an index past the end of an array), anything else is 404. Run once per
+;; connection by a host (aipl-run --serve-fresh, or an executable made
+;; with --serve), the crash costs only its own request.
+(module fresh_demo
+  (import alloc)
+  (import buf)
+  (import str)
+  (import http)
+  (import serve)
+
+  (fn starts [b:str.Bytes s:str] -> bool (no_leak)
+    (let p:str.Bytes (call str.from_str s))
+    (and (gte (get b str.Bytes.len) (get p str.Bytes.len))
+         (call str.bytes_eq (call str.slice b 0 (get p str.Bytes.len)) p)))
+
+  (fn text [out:(ptr buf.Buf) status:i32 body:str.Bytes] -> void (no_leak)
+    (call http.start_response out status)
+    (call http.add_header out "Content-Type" "text/plain; charset=utf-8")
+    (call http.end_head out body))
+
+  (fn handle [a:alloc.Allocator req:(ptr http.Message) out:(ptr buf.Buf)] -> void (no_leak)
+    (let target:str.Bytes (get req http.Message.target))
+    (cond
+      ((call str.bytes_eq target (call str.from_str "/")) (call text out 200 (call str.from_str "hello\n")))
+      ((call starts target "/echo") (call text out 200 target))
+      ((call str.bytes_eq target (call str.from_str "/crash"))
+       (let xs:(arr i32) (arr.new i32 a 1))
+       (call text out 200 (call str.from_str (if (eq (arr.get i32 xs 5) 0) "zero\n" "not zero\n"))))
+      (else (call text out 404 (call str.from_str "not found\n")))))
+
+  (fn main [] -> i32
+    (call serve.once (ref handle) (call serve.options)))
+)

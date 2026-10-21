@@ -4,7 +4,8 @@
 memory work.** Steps 1 and 2 built 2026-10-20 (decision 9; aipl_net_v1 in
 the VM, aipl-run, and native executables, std/ip, std/net:
 tests/test_net.rs); step 3 too (std/serve, tests/test_serve.rs, and
-`--max-memory`); step 4 next. STDLIB_PLAN.md asked for this document before any code:
+`--max-memory`); step 4's `aipl serve --fresh` and `serve.once` too
+(tests/test_serve.rs), its native forking host next. STDLIB_PLAN.md asked for this document before any code:
 "an `aipl` host interface (versioned imports beside WASI preview 1:
 listening and connecting TCP sockets, permissions granted on the command
 line), in the VM, natively as Linux system calls, and in aipl-run; then
@@ -78,7 +79,7 @@ the program from the start for each request.
   written), which also keeps what was loaded at start-up.
 
 ```
-aipl serve shop.aipl --listen 127.0.0.1:8080              (A, in the VM)
+aipl eval --listen 127.0.0.1:8080 shop.aipl              (A, in the VM)
 aipl serve --fresh shop.aipl --listen 127.0.0.1:8080      (B)
 aipl compile --exe --serve shop.aipl -o shop && ./shop --listen 127.0.0.1:8080
 ```
@@ -184,7 +185,14 @@ and unaudited until audited.
    backend); `--max-memory` done the same day (tests/test_memory.rs).
 4. **The fresh instance per request (B)**, `aipl serve --fresh` and
    native `--serve` forking: a handler that traps answers 500 and the
-   next request is served.
+   next request is served. `serve.once` and `aipl serve --fresh` (aipl-run
+   `--serve-fresh`: the module compiled once, an instance per connection,
+   the connection its standard input, its output held until it exits)
+   done 2026-10-20: tests/test_serve.rs pipes saved requests through one
+   in the VM, under aipl-run, and natively, the same bytes from each, and
+   serves four connections with a crash among them. As built, `aipl serve`
+   without `--fresh` is refused with the way to a long-running server
+   (`aipl eval --listen`), rather than being a second way to run one.
 5. **`connect`, `--allow-connect`, and `http.fetch`**, tested against
    step 3's server in each backend.
 6. **TLS from the host:** `tls_connect` and `tls_accept`, `https://` in

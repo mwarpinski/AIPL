@@ -85,6 +85,26 @@ enum Commands {
         #[arg(long)]
         tests: bool,
     },
+    /// Serve a program a fresh instance per connection (docs/design/NET_PLAN.md
+    /// mode B): aipl serve --fresh FILE --listen ADDR:PORT [--requests N]. The
+    /// program reads one request from standard input and answers on standard
+    /// output (std/serve's once); a trap answers 500 and the next request is
+    /// served. A long-running server is a program that calls serve.run: run it
+    /// with aipl eval --listen ADDR:PORT FILE.
+    Serve {
+        file: String,
+        /// A fresh instance per connection (the only way aipl serve runs)
+        #[arg(long)]
+        fresh: bool,
+        /// The address and port to serve on
+        #[arg(long = "listen", value_name = "ADDR:PORT")]
+        listen: String,
+        /// Stop after answering this many connections (no end by default)
+        #[arg(long)]
+        requests: Option<usize>,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Run a compiled module with the aipl-run launcher: aipl run prog.wasm [-- ARGS...]
     Run {
         file: String,
@@ -451,6 +471,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!("[AIPL Compiler] Successfully compiled '{}' -> '{}' ({} bytes)", file, output, fs::metadata(&output)?.len());
+        }
+        Commands::Serve { file, fresh, listen, requests, args } => {
+            if !fresh {
+                return Err(format!("aipl serve runs a fresh instance per connection: add --fresh. A long-running server is a program that calls serve.run: run it with aipl eval --listen {listen} {file}").into());
+            }
+            aipl_core::net::Net::parse_grant(&listen)?;
+            let module = Resolver::resolve(Path::new(&file))?;
+            TypeChecker::new().check_module(&module)?;
+            let wasm = WasmCompiler::compile(&module)?;
+            let dir = std::env::temp_dir().join(format!("aipl_serve_{}", std::process::id()));
+            fs::create_dir_all(&dir)?;
+            let module_path = dir.join("program.wasm");
+            fs::write(&module_path, &wasm)?;
+            let mut cmd = std::process::Command::new(runner_path()?);
+            cmd.args(["--serve-fresh", &listen]);
+            if let Some(n) = requests {
+                cmd.args(["--requests", &n.to_string()]);
+            }
+            let status = cmd.arg(&module_path).args(&args).status()?;
+            let _ = fs::remove_dir_all(&dir);
+            std::process::exit(status.code().unwrap_or(1));
         }
         Commands::Run { file, sandbox, listen, args } => {
             let mut cmd = std::process::Command::new(runner_path()?);
