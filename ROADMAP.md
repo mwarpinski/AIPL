@@ -129,14 +129,30 @@ a CSV query tool, its answers checked against SQLite's on the same data;
 the full language only if that lands. Not before launch: it would pull
 focus.
 
-Then, perhaps, a storage engine under it, in the manner of SQLite: pages
-and B-trees for tables and indexes, a page cache, a journal or
-write-ahead log so a crash loses no committed data, file locking, and a
-planner that uses the indexes. Months, not days (SQLite's strength is
-its test suite), and it needs host operations AIPL lacks today: forcing
-data to disk (WASI's fd_sync), file locks, and random-access file I/O.
-The order: the CSV query tool, AI-SQL, then the engine, each worth
-having alone.
+**Timeline, re-estimated 2026-10-20.** An agent wrote the CSV query tool
+(about 4,700 lines of AIPL, outside this repository in ../AI-SQL) in an
+hour, and a second model's review and the fixes took fifteen minutes.
+That first draft also had silent wrong answers (trailing input ignored,
+so `LIMTI 2` dropped the limit; float join keys colliding; `none`
+handled two ways), found only by reading and running it. So writing is
+no longer the schedule; earning trust in the answers is. In calendar
+time, with agents writing and a person deciding:
+
+- **The CSV query tool, trustworthy: days.** What is left is evidence:
+  differential testing against SQLite on generated queries as well as
+  generated data (in the manner of SQLancer), the semantics written
+  down and decided (none, typing, ordering), and a cold review.
+- **The full language** (INSERT, UPDATE, DELETE, subqueries, window
+  functions, typed DDL): **one to two weeks**, each part landing with
+  its differential tests.
+- **The storage engine: weeks to a couple of months**, set by testing,
+  not code: crash and power-loss simulation, fault injection, and
+  concurrent access, against a durable format that must stay readable.
+  It needs host operations first (fd_sync, file locks, random-access
+  I/O), each a few days in three backends and both toolchains.
+
+The order is unchanged: the CSV query tool, AI-SQL, then the engine,
+each worth having alone.
 
 ### After launch: a 64-bit target
 
