@@ -4,10 +4,35 @@ A system-prompt module and verified examples for LLMs writing **AIPL**. Every ex
 
 ---
 
+## Start here
+
+**First, look before you write.** Before writing any helper (a parser, a splitter, a formatter, a sort, a hash table), search the standard library: `aipl doc --find WORD` searches every module's functions (`aipl doc --find split`), `aipl doc MODULE` lists one module's functions with their exact parameters, and `aipl doc MODULE.NAME` shows one. A program that hand-wrote a float parser did it beside `text.parse_f64`.
+
+**The ten mistakes models make most.** Each is a compile error, a wrong answer, or a form being retired (`loop`, an empty `else`); the fix is the right-hand side.
+
+| # | You write | Write |
+|---|---|---|
+| 1 | `(f x)` to call your own function | `(call f x)`. Only built-in operations are written bare. |
+| 2 | `(if c (set! x 1))`, or `(if c x (block))` | An `if` has two real branches. For one, `(when c (set! x 1))`. |
+| 3 | `(let x 5)` | `(let x:i32 5)`. Every `let`, parameter, return and field names its type. |
+| 4 | `(loop i 0 n 1 ...)` for n iterations | `(for i 0 n ...)`: the end is left out. `loop`'s end is inclusive, so that loop runs n + 1 times. |
+| 5 | A string literal inside a placeholder: `{(call f "x")}` | `(let s:str (call f "x"))`, then `{s}`. A placeholder cannot hold a string literal. |
+| 6 | One name with two types in a function: `v` as an `i32` in one `match` arm and a `str` in the next | A name keeps one type per function: rename one binder, or write `_` for a field you do not read. |
+| 7 | `(new S)` or `(arr.new T n)` | Every allocation names its allocator: `(new S a)`, `(arr.new T a n)`, with `a:alloc.Allocator` passed in as a parameter. |
+| 8 | An array literal such as `(arr.of i32 1 2 3)` | There is none yet: `(arr.new i32 a 3)`, then one `(arr.set i32 xs i v)` per value. |
+| 9 | `(ok 5)`, or `(match_result r (ok [v] ...) (err [e] ...))` | `(ok:E 5)` names the type of the side it does not carry; the arms bind without brackets: `(match_result r (ok v ...) (err e ...))`. |
+| 10 | `(+ s1 s2)` or `(eq s1 s2)` on strings | `(call str.concat s1 s2)` and `(call str.same s1 s2)`. Numbers of two types never mix either: `(i64.extend_s n)`, `(i32.wrap x)`. |
+
+The full list is [AIPL_SPEC.md](AIPL_SPEC.md) section 13. When the compiler's message does not name the fix, look the form up there before guessing again.
+
+---
+
 ## SYSTEM PROMPT MODULE (include in agent context)
 
 ```sysprompt
 You write AIPL, a statically typed S-expression language that compiles to WebAssembly.
+
+BEFORE WRITING A HELPER, search the standard library: `aipl doc --find WORD` (then `aipl doc MODULE` for the exact parameters). It probably has it.
 
 RULES:
 1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), (const ...), (enum ...), (union ...), and (fn ...) forms.
@@ -276,7 +301,7 @@ Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held 
 - [ ] `for` leaves out its end: `(for i 0 n ...)` runs `n` times; `loop`'s end is inclusive: `(loop i 0 (- n 1) 1 ...)` runs `n` times.
 - [ ] `return`/`break`/`continue` sit in statement positions (`(if c (return v) (block))`), and every `cond` ends with `(else ...)`.
 - [ ] No mixed `i32`/`i64` operands; conversions are explicit.
-- [ ] `and`/`or` have exactly two operands (nest for more).
+- [ ] `and`/`or` have two or more operands: `(and a b c)`, not nested pairs.
 - [ ] Fixed values and codes are `const`s and `enum`s, not bare numbers; enums are compared with `eq`/`neq`, never with arithmetic or `lt`.
 - [ ] Data that is one of several shapes is a `union`, built with `make` and read with `match`; each `match` covers every variant or ends in `else`, and every arm yields the same type.
 - [ ] A value struct (declared `(value)`) is written `V`, made with `(make V ...)`, changed by `(with v V.f x)`; a pointer struct is `(ptr S)`, made with `new`, changed by `put`.
@@ -286,4 +311,4 @@ Prints `-20; a num is a leaf: true`: `(2 + 3) * -4` is `-20`. A union that held 
 - [ ] In a program of several modules, everything another module uses is `(pub)`, and fields others read are `(read x:T)` (or `(pub x:T)` if they write them).
 - [ ] Contracts are S-expressions such as `(req (gt n 0))`, and postconditions use `res`.
 
-Look up a standard function before guessing it: `aipl doc text` lists a module's functions with their exact parameters and what they do, `aipl doc text.split` shows one, and `aipl doc --find split` searches every module. Write tests next to the code: (test "three fields" (let n:i32 (call parse_row "a,b,c")) (expect (eq n 3))) is an item of the module (it may call private functions), (expect c) checks a bool and shows both sides of a failed comparison, and `aipl test file.aipl` runs each test alone (-k NAME picks some); tests are left out of ordinary builds. Try an expression before building on it: `aipl eval -e '(call str.trim (call str.from_str "  x "))'` prints its value and type, and `aipl eval --with file.aipl -e '(call my_fn 3)'` runs it with that file's functions (private ones too). Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: ')'`.
+Look up a standard function before guessing it, and before writing any helper (`aipl doc --find WORD` first, as under "Start here"): `aipl doc text` lists a module's functions with their exact parameters and what they do, `aipl doc text.split` shows one, and `aipl doc --find split` searches every module. Write tests next to the code: (test "three fields" (let n:i32 (call parse_row "a,b,c")) (expect (eq n 3))) is an item of the module (it may call private functions), (expect c) checks a bool and shows both sides of a failed comparison, and `aipl test file.aipl` runs each test alone (-k NAME picks some); tests are left out of ordinary builds. Try an expression before building on it: `aipl eval -e '(call str.trim (call str.from_str "  x "))'` prints its value and type, and `aipl eval --with file.aipl -e '(call my_fn 3)'` runs it with that file's functions (private ones too). Validate with `aipl verify file.aipl`. Every error is `path: line:col: message`. A syntax error or an error in a definition is reported alone; otherwise each function with an error reports its first one, one per line, so fix them all and verify again. An `if` missing its else branch is reported as `Unexpected token parsing expression: ')'`.

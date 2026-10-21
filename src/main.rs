@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 #[derive(ClapParser)]
-#[command(name = "aipl", version)]
+#[command(name = "aipl", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("AIPL_COMMIT"), ")"))]
 #[command(about = "AIPL: an unambiguous, statically typed S-expression language for AI agents. Runs in a reference VM and compiles to WebAssembly + WASI, with a self-hosted compiler written in AIPL.")]
 struct Cli {
     #[command(subcommand)]

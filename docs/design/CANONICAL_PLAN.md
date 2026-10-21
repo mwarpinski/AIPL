@@ -3,7 +3,7 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Nothing built yet.
+step 5). Step 1 built 2026-10-21.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
@@ -20,7 +20,7 @@ decides the larger syntax questions with numbers.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | Not started |
+| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
 | 2 | Errors that name the right form, for every guess a model makes | Not started |
 | 3 | Retire `loop`: `for` is the only counted loop | Not started |
 | 4 | `when` is the only `if` with one branch | Not started |
@@ -45,6 +45,30 @@ every backend; the spec, the prompt guide, and the tour; the full CI.
 - `aipl doc --find WORD` before writing any helper: the review found
   AI-SQL hand-writing a float parser std/text already has.
 
+Built 2026-10-21 (PROMPT_GUIDE_FOR_AIS.md "Start here"; build.rs and
+tools/make_kit.sh):
+
+- The checklist now says two or more operands.
+- `aipl --version` prints `aipl 0.1.0 (d7a02a9)` from the Rust command
+  (build.rs records the commit). tools/make_kit.sh puts the same line at
+  the top of the kit's three docs and checks it against the kit's
+  `aipl --version`. The self-hosted command still prints `aipl 0.1.0`
+  (tests/test_bootstrap.rs compares the two): a compiled program cannot
+  know its commit without a build step, and the kit's `aipl` is the Rust
+  command anyway. Revisit when the Rust command is retired.
+- The ten pitfalls are, in order: bare `(f x)`, one-branch `if`, `let`
+  without a type, `loop`'s inclusive end, a string literal in a
+  placeholder, a name with two types, a missing allocator, no array
+  literal, `(ok v)` and `match_result` binders, and `+`/`eq` on strings.
+  Chosen from AGENT_FRICTION.md rows 1, 2, 18, 19, 25 and 33, the
+  review's two first-try failures, and the spec's table; each checked
+  against the compiler on 2026-10-21. AI-SQL's mistake log is not in this
+  repository, so it was not used: when it is, revisit the list. Rows 2,
+  4 and 8 change when steps 3 to 5 land (the table must follow them).
+- `aipl doc --find` is the first thing under "Start here", the first
+  line of the system prompt module, and the start of the guide's last
+  paragraph.
+
 ## 2. Errors that name the right form
 
 The errors for the forms models guess say what is wrong, not what to
@@ -56,6 +80,15 @@ write. Today:
 | `(let x 5)` | `Expected ':', got '5'` | `let names its type: (let x:i32 5)` |
 | `(arr.of i32 1 2 3)` | `Unknown op/keyword: arr.of` | (step 5 makes it the literal, with its allocator) |
 | `(if c x)` | `Unexpected token parsing expression: ')'` | `if needs both branches; for one, (when c x)` |
+
+Checked 2026-10-21: some rows of section 13 already have a message that
+names the fix, so the step is the rows that do not. Already good: `(new S)`
+("new takes the allocator to make it from: ..."), `(ok 5)` ("write (ok:E
+v)"), `eq` and `+` on `str` (name `str.same` and `str.concat`), and a name
+with two types ("rename one"). Still bad: the four rows above, `(ok
+[v] ...)` in `match_result` ("Expected ok var, got '['"), and a string
+literal inside a placeholder ("unexpected input after the module's
+closing ')'", far from the cause; AGENT_FRICTION.md rows 25 and 33).
 
 The step: every row of the spec's pitfall table (section 13) that is a
 compile error gets a message naming the fix, the same in both
