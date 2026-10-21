@@ -231,17 +231,19 @@ owner's to overrule:
   compiler's source has no `loop` now. A new seed would only make the
   checked-in binary the one that refuses `loop`; ask the owner when one is
   wanted for another reason.
+- Built later the same day: `(for i 0 n 1 ...)`, a step carried over from
+  `loop`, whose `1` would have been taken as the first statement of the body
+  and dropped, is an error from both bare parsers and both resolvers: `a for
+  has no step: ... for another step, use while`, at the number. Only an
+  integer literal right after the end is refused; a step written as a
+  variable or an expression (`(for i 0 n step ...)`) is still taken as a
+  statement and dropped, a smaller trap left open.
 - Not measured: the benchmarks' times. Their outputs are checked by the
   suite; times are as before apart from the adds above, which run once per
   loop, not per pass.
 
 **Outstanding in step 3:**
 
-- `(for i 0 n 1 ...)`, a step carried over from `loop`: the `1` is taken as
-  the first statement of the body and dropped, so the loop runs and does
-  the wrong thing without a message. A body that begins with a bare literal
-  is almost certainly this; refuse it in both parsers and the resolver's
-  `for` shape check with a message naming `while` for another step.
 - `for` as a node of its own (the decision above, not built): an exclusive
   compare in the checker (src/checker.rs, aipl_src/checker.aipl), the VM
   (src/vm.rs), the wasm backend (src/compiler/wasm.rs), the self-hosted code

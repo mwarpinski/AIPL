@@ -999,6 +999,11 @@ impl Parser {
     /// What to add when a function type is written wrongly.
 const FN_TYPE_HINT: &str = "a function type is (fn [i32] -> i32): the parameters in brackets, then ->";
 
+/// A number straight after a `for`'s end: a step carried over from `loop`, which
+/// would be taken as the first statement of the body and dropped
+/// (CANONICAL_PLAN.md step 3).
+pub const FOR_HAS_NO_STEP: &str = "a for has no step: (for i start end body...) counts up by one. A number here would be the first statement of the body, not a step; for another step, use while";
+
 /// What to add to a field-reference error: the struct and field are one symbol.
 const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Point.x)";
 
@@ -1321,6 +1326,9 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                             let var = self.expect_symbol("loop var", span)?;
                             let start = self.parse_expr()?;
                             let end = self.parse_expr()?;
+                            if let Some(tok) = self.peek().filter(|t| matches!(t.kind, TokenKind::IntLit(_))) {
+                                return Err(format!("{}:{}: {}", tok.line, tok.col, Self::FOR_HAS_NO_STEP));
+                            }
                             let mut body = Vec::new();
                             while let Some(kind) = self.peek_kind() {
                                 if *kind == TokenKind::RParen {

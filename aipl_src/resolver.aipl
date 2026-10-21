@@ -1470,6 +1470,12 @@
                   (call buf.push_str b "when takes a condition and a body: (when c body...)")
                   (return b))
                 (block))
+            (when (and (call symbol_is src toks (+ i 1) "for") (gte (call form_args toks count i) 4))
+              (let bi:i32 (call skip_form toks (call skip_form toks (call skip_form toks (+ i 2)))))
+              (when (eq (call kind_at toks bi) compiler.Kind.int)
+                (let b:(ptr buf.Buf) (call at_token src toks bi ""))
+                (call buf.push_str b "a for has no step: (for i start end body...) counts up by one. A number here would be the first statement of the body, not a step; for another step, use while")
+                (return b)))
             (if (and (call symbol_is src toks (+ i 1) "for")
                      (or (lt (call form_args toks count i) 3) (neq (call kind_at toks (+ i 2)) compiler.Kind.symbol)))
                 (block

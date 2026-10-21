@@ -683,6 +683,11 @@
        (let var:str.Bytes (call expect_symbol p "loop var" at))
        (let s:ast.Expr (call parse_expr p))
        (let e:ast.Expr (call parse_expr p))
+       (if (eq (call peek p) compiler.Kind.int)
+           (block
+             (call fail_here p "a for has no step: (for i start end body...) counts up by one. A number here would be the first statement of the body, not a step; for another step, use while")
+             (return (call placeholder at)))
+           (block))
        (let body:(arr ast.Expr) (call parse_body p))
        (let ends:(ptr (vec.Vec ast.Expr)) (call exprs))
        (call (vec.push ast.Expr) ends e)
