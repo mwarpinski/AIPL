@@ -3,8 +3,8 @@
 **Status: approved 2026-10-20** (the owner's answers to Sonnet's review of
 2026-10-19: retire `loop`, `when` as the only one-branch `if`, measure
 the syntax proposals before deciding, and do this batch before NET_PLAN.md
-step 5). Step 1 built 2026-10-21; step 2 built 2026-10-21 apart from one
-row listed under it.
+step 5). Steps 1 to 3 built 2026-10-21; what each still has outstanding is
+listed at the end of its section.
 
 AIPL is written by models, and a model does best with one obvious way to
 do each thing: every second way is a choice it can get wrong, and a
@@ -21,9 +21,9 @@ decides the larger syntax questions with numbers.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 |
-| 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (one row not built, in section 2) |
-| 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (internal Loop node kept, see section 3) |
+| 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 (two small items outstanding, in section 1) |
+| 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
+| 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
 | 4 | `when` is the only `if` with one branch | Not started |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
@@ -64,11 +64,23 @@ tools/make_kit.sh):
   Chosen from AGENT_FRICTION.md rows 1, 2, 18, 19, 25 and 33, the
   review's two first-try failures, and the spec's table; each checked
   against the compiler on 2026-10-21. AI-SQL's mistake log is not in this
-  repository, so it was not used: when it is, revisit the list. Rows 2,
-  4 and 8 change when steps 3 to 5 land (the table must follow them).
+  repository, so it was not used: when it is, revisit the list. Row 4
+  followed step 3 (`loop` is gone); rows 2 and 8 must follow steps 4 and 5.
 - `aipl doc --find` is the first thing under "Start here", the first
   line of the system prompt module, and the start of the guide's last
   paragraph.
+
+**Outstanding in step 1:**
+
+- The guide's pitfall table: row 2 (`if` with one branch) says `when` is the
+  way, which step 4 makes an error rather than a habit, and row 8 says there
+  is no array literal, which step 5 ends. Edit both rows, and the intro
+  line's "a form that no longer exists", when those steps land.
+- AI-SQL's mistake log (AI-SQL/mistake_log.md) was meant to be a source for
+  the ten and is not in this repository. When it is, check the ten against
+  it.
+- The self-hosted `aipl --version` prints no commit (see above); the Rust
+  command, which the kit ships, does.
 
 ## 2. Errors that name the right form
 
@@ -137,6 +149,24 @@ deliberately leaves the searched paths out of the comparison; `aipl doc
 --find` and the guide list the modules). `(for i 0 3 1 ...)` taking the 1
 as a statement belongs to step 3, which retires `loop`.
 
+**Outstanding in step 2:**
+
+- The "did you mean" for `(import nosuch)`, above: a directory listing in
+  both resolvers, compared in a test that today ignores the searched paths.
+- Messages that still say `loop` or `step` to a program that wrote `for`:
+  `Loop bounds and step must be i32`, `Cannot shadow existing variable 'i' in
+  loop`, and `break is only allowed inside a while or loop body` (both
+  checkers, and the tests that pin them: tests/test_control_flow.rs,
+  tests/test_checker_aipl.rs, tests/test_diagnostics.rs). They should say
+  `for`.
+- The survey covered the rows of section 13 that are compile errors and a
+  few more (about 80 programs, 2026-10-21); rows that are runtime traps or
+  behaviours (a stack that is exhausted, `%` on a negative, a program run
+  with the stock wasmtime) have no message to improve. A row added to
+  section 13 later needs its message and test the same way.
+- Step 5 replaces the `arr.of` message ("there is no array literal") with
+  the literal itself, and step 4 adds the message for an empty `else`.
+
 ## 3. Retire `loop`
 
 `(loop i start end step body...)` includes its end, unlike every
@@ -204,6 +234,33 @@ owner's to overrule:
 - Not measured: the benchmarks' times. Their outputs are checked by the
   suite; times are as before apart from the adds above, which run once per
   loop, not per pass.
+
+**Outstanding in step 3:**
+
+- `(for i 0 n 1 ...)`, a step carried over from `loop`: the `1` is taken as
+  the first statement of the body and dropped, so the loop runs and does
+  the wrong thing without a message. A body that begins with a bare literal
+  is almost certainly this; refuse it in both parsers and the resolver's
+  `for` shape check with a message naming `while` for another step.
+- `for` as a node of its own (the decision above, not built): an exclusive
+  compare in the checker (src/checker.rs, aipl_src/checker.aipl), the VM
+  (src/vm.rs), the wasm backend (src/compiler/wasm.rs), the self-hosted code
+  generator (aipl_src/codegen.aipl, codegen_opt.aipl), the leaks pass, and the
+  printer, in both toolchains with byte-equal output. It fixes `end` = i32's
+  least value, and drops a subtract per loop entry. Do it if the benchmarks
+  below show the subtract matters, or when the owner asks for it.
+- Measure the benchmarks again (docs/BENCHMARKS.md): the plan asked for it
+  after the loop changes, and 89 loops in the compiler now add 1 to their
+  end. Compare against the table dated 2026-10-16.
+- `counted_loop` is readable by a program and undocumented. If a model finds
+  it, it gets the old inclusive, stepped loop. To close it, the parser
+  would have to know whether its text came from a program or from the
+  resolver; today it cannot. Revisit if it turns up in generated code.
+- A seed refresh is optional (above); do it with the next change that needs
+  one, and with the owner's approval.
+- Prose that still describes `loop` as a live form, left as history: docs/
+  notes/, docs/history/, docs/NOTES_REVIEW.md, and the other plans in
+  docs/design/. The spec's and the guide's live text was updated.
 
 ## 4. `when` is the only one-branch `if`
 
