@@ -1,0 +1,18 @@
+;; std/os reads the command line and the environment once (tests/test_memory.rs):
+;; a (no_leak) function may call os.arg and os.env, and 10,000 calls leave
+;; the heap where the first left it. Prints "flat".
+(module os_flat
+  (import str)
+  (import os)
+
+  (fn reads [] -> i32 (no_leak)
+    (+ (get (call os.arg 0) str.Bytes.len) (get (call os.env "PATH") str.Bytes.len)))
+
+  (fn heap_top [] -> i32 (unsafe (mem.load32 0)))
+
+  (fn main [] -> i32
+    (let _first:i32 (call reads))
+    (let before:i32 (call heap_top))
+    (for i 0 10000 (let _n:i32 (call reads)))
+    (if (eq (call heap_top) before) (println "flat") (println "grew"))
+    0))

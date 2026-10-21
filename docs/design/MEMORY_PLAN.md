@@ -1,7 +1,9 @@
 # Memory for programs that run for days
 
 **Status: approved 2026-10-19, to do it properly even where that is
-more work.** Written when the networking plan (NET_PLAN.md) met AIPL's
+more work. Done 2026-10-20:** M1 to M5, F, and decisions 6 to 9, each
+with its tests (tests/test_memory.rs, test_values.rs, test_serve.rs,
+test_resolver_aipl.rs); the step table in section 4 says where. Written when the networking plan (NET_PLAN.md) met AIPL's
 memory model. Decisions (section 5): checked value views; the
 `str`-returning conveniences kept for programs that run and exit, with
 `(no_leak)` refusing them; the name `(no_leak)`; networking after M1 and
@@ -121,8 +123,15 @@ number keep nothing (10,000 of each move the heap cursor 0 bytes); and
 io.read_fd frees each buffer it outgrows, its view now checked. std/http's
 request path (parse_request, header, the response writers) is proven
 (no_leak): std/serve's per-request function is marked, and calls them
-(2026-10-20). Left: os.arg and os.env (a fresh copy per call), and
-marking std/url, std/json, and std/text's request paths. std/stream, every call of
+(2026-10-20). os.arg and os.env read their tables once and keep them
+(cells 28 and 32; tests/aipl/memory/os_flat.aipl, 10,000 calls in a
+(no_leak) function, the heap unchanged). std/url, std/json, and std/text's
+request paths are marked (no_leak) and proven (2026-10-20): json and
+text as they were; url's resolve now builds its path in a buffer the new
+Url owns, and remove_dots, query_pairs, and query_get gained _into forms
+that write into the caller's buffer (the str forms, never freed, are
+built on them). tests/aipl/memory/request_paths.aipl runs a (no_leak)
+handler over all three 10,000 times with the arena and heap flat. std/stream, every call of
 which could leak through a custom reader's or writer's function
 reference, takes only promising ones since decision 9 (2026-10-20:
 tests/aipl/memory/no_leak_stream.aipl, a (no_leak) handler over four
@@ -235,7 +244,7 @@ NET_PLAN.md's fresh instance per request stays as the simple choice
 | M3 | `(no_leak)` (done 2026-10-19: both checkers, word for word; std's allocators marked after a second seed refresh; tests/test_memory.rs) | one test per kind of immortal allocation, refused with its path; std's request-path functions marked and checked |
 | F | `alloc.forever` (decision 5): a variant of `alloc.Allocator` whose memory is never reused (a free retires the generation, so stale pointers still trap); then `new` and `arr.new` name their allocator, `(new S a)` and `(arr.new T a n)` (decision 8). Done 2026-10-19 but the last step: `alloc.forever` and `gen.forever` (8298bd3); every `new` and `arr.new` moved to `alloc.create` / `alloc.array` by tools/migrate_new.py (the compiler's output unchanged, compiling itself 1.5% slower); then the short form in both resolvers (sugar.rs, resolver.aipl), std/alloc imported for a module that uses it, the one-operand forms errors with the fix, the old forms gone from the VM and every code generator, and tests, examples, and the tested docs back in the short form (migrate_new.py --short). The seed was refreshed from 7a55d99 and the compiler's own source and std moved to the short form. Left: a format placeholder cannot yet hold a `new` (placeholders are split after the rewrite) | the same bytes from both toolchains; the compiler compiling itself, timed before and after |
 | M4 (a) | results always by value (done 2026-10-19: a `str` side is one slot; over 8 slots refused by both checkers; result cells removed from all three code generators; tests/test_values.rs) | a result with a `str` side allocates nothing in any backend; the 9-slot refusal is the same from both toolchains |
-| M2, M4 (b) | std and the compiler stop making hidden cells | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
+| M2, M4 (b) | std and the compiler stop making hidden cells (done 2026-10-20: std/http's path proven through std/serve; url, json, text marked and proven, request_paths.aipl; os.arg/env read once) | `(no_leak)` holds for std/http, std/url, std/json, std/text on their request paths |
 | M5 | servers (done 2026-10-20: std/serve, tests/test_serve.rs; a million requests natively and under aipl-run passed 2026-10-20 (100,000 in CI, a million with AIPL_MILLION=1), 20,000 in the VM, the heap unchanged after the first thousand; a kept view traps in every backend) | a server serves a million requests with memory flat, in all three backends; a handler that keeps a pointer across requests traps on its next use |
 
 M1 is the largest; the rest are each about the size of one stdlib

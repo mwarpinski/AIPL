@@ -17,7 +17,7 @@
 
   ;; The pieces of b between each sep: "a,,b" gives "a", "", "b"; "" gives
   ;; one empty piece.
-  (fn split [a:alloc.Allocator b:str.Bytes sep:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+  (fn split [a:alloc.Allocator b:str.Bytes sep:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub) (no_leak)
     (req (gt (get sep str.Bytes.len) 0))
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (let start:i32 0)
@@ -30,7 +30,7 @@
     out)
 
   ;; The runs of non-whitespace in b (ASCII whitespace): "  a b\n" gives "a", "b".
-  (fn fields [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+  (fn fields [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub) (no_leak)
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 8))
     (let n:i32 (get b str.Bytes.len))
     (let i:i32 0)
@@ -44,7 +44,7 @@
   ;; The lines of b: split at each \n, a \r before it dropped, and no empty
   ;; line after a final \n ("a\r\nb\n" gives "a", "b"; "" gives none), as
   ;; Rust's str::lines.
-  (fn lines [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub)
+  (fn lines [a:alloc.Allocator b:str.Bytes] -> (ptr (vec.Vec str.Bytes)) (pub) (no_leak)
     (let out:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) a 16))
     (let n:i32 (get b str.Bytes.len))
     (let s:i32 0)
@@ -60,7 +60,7 @@
     out)
 
   ;; The parts with sep between each.
-  (fn join [a:alloc.Allocator parts:(ptr (vec.Vec str.Bytes)) sep:str.Bytes] -> (ptr buf.Buf) (pub)
+  (fn join [a:alloc.Allocator parts:(ptr (vec.Vec str.Bytes)) sep:str.Bytes] -> (ptr buf.Buf) (pub) (no_leak)
     (let out:(ptr buf.Buf) (call buf.make a 64))
     (loop i 0 (- (call (vec.len str.Bytes) parts) 1) 1
       (if (gt i 0) (call buf.push_bytes out sep) (block))
@@ -68,7 +68,7 @@
     out)
 
   ;; b with every `from` replaced by `to`, from the left, not overlapping.
-  (fn replace [a:alloc.Allocator b:str.Bytes from:str.Bytes to:str.Bytes] -> (ptr buf.Buf) (pub)
+  (fn replace [a:alloc.Allocator b:str.Bytes from:str.Bytes to:str.Bytes] -> (ptr buf.Buf) (pub) (no_leak)
     (req (gt (get from str.Bytes.len) 0))
     (let out:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 16)))
     (let start:i32 0)
@@ -82,16 +82,16 @@
     out)
 
   ;; b, n times.
-  (fn repeat [a:alloc.Allocator b:str.Bytes n:i32] -> (ptr buf.Buf) (pub)
+  (fn repeat [a:alloc.Allocator b:str.Bytes n:i32] -> (ptr buf.Buf) (pub) (no_leak)
     (req (gte n 0))
     (let out:(ptr buf.Buf) (call buf.make a (+ (* (get b str.Bytes.len) n) 1)))
     (loop i 1 n 1 (call buf.push_bytes out b))
     out)
 
   ;; b with ASCII letters in upper or lower case (other bytes as they are).
-  (fn to_upper [a:alloc.Allocator b:str.Bytes] -> (ptr buf.Buf) (pub) (call with_case a b true))
+  (fn to_upper [a:alloc.Allocator b:str.Bytes] -> (ptr buf.Buf) (pub) (no_leak) (call with_case a b true))
   ;; b with ASCII letters in lower case (other bytes as they are).
-  (fn to_lower [a:alloc.Allocator b:str.Bytes] -> (ptr buf.Buf) (pub) (call with_case a b false))
+  (fn to_lower [a:alloc.Allocator b:str.Bytes] -> (ptr buf.Buf) (pub) (no_leak) (call with_case a b false))
 
   (fn with_case [a:alloc.Allocator b:str.Bytes upper:bool] -> (ptr buf.Buf)
     (let out:(ptr buf.Buf) (call buf.make a (+ (get b str.Bytes.len) 1)))
@@ -107,7 +107,7 @@
   ;; one '.', at least one digit, then optionally e or E, a sign, and
   ;; digits ("12", "-0.5", "1e-3", ".5"); or (err i), the index of the
   ;; first byte that does not fit (the length when b ends too soon).
-  (fn parse_f64 [b:str.Bytes] -> (result f64 i32) (pub)
+  (fn parse_f64 [b:str.Bytes] -> (result f64 i32) (pub) (no_leak)
     (let n:i32 (get b str.Bytes.len))
     (let i:i32 0)
     (if (and (lt i n) (or (eq (call str.byte_at b 0) 45) (eq (call str.byte_at b 0) 43))) (set! i 1) (block))

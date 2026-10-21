@@ -157,3 +157,28 @@ fn max_memory_stops_every_backend_at_the_same_place() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// std/os's tables are read once and kept: a (no_leak) function may call
+/// os.arg and os.env, and 10,000 calls leave the heap unchanged, in every
+/// backend (MEMORY_PLAN.md M2).
+#[test]
+fn os_arg_and_env_read_their_tables_once() {
+    for (backend, o) in runs("os_flat") {
+        let stdout: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(stdout, "flat\n", "{backend}");
+    }
+}
+
+/// std/url, std/json, and std/text on a request's path keep no memory
+/// (MEMORY_PLAN.md M2): a (no_leak) handler using each, run 10,000 times on
+/// an arena, gives the same answers in every backend and leaves the arena
+/// and the heap where the first request left them.
+#[test]
+fn url_json_and_text_request_paths_keep_no_memory() {
+    for (backend, o) in runs("request_paths") {
+        let stdout: String = String::from_utf8_lossy(&o.stdout).split_inclusive('\n').filter(|l| !l.starts_with("[AIPL")).collect();
+        assert!(o.status.success(), "{backend}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(stdout, "name=two words resolved=http://example.com/a/up/there id=42.5 words=3 FLAT\nflat\n", "{backend}");
+    }
+}
