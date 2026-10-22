@@ -53,6 +53,9 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
         Some("arr.new") if n == 3 => return Err(err(sx, ARR_NEW_NEEDS_ALLOCATOR)),
         Some("arr.new") if n != 4 => return Err(err(sx, "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length")),
         Some("when") if n < 2 => return Err(err(sx, "when takes a condition and a body: (when c body...)")),
+        Some("for") if n >= 5 && matches!(&sx.items()[4], Sx::Atom(Token { kind: TokenKind::IntLit(_), .. })) => {
+            return Err(err(&sx.items()[4], crate::parser::Parser::FOR_HAS_NO_STEP))
+        }
         Some("for") if n < 4 || sx.items()[1].symbol().is_none() => {
             return Err(err(sx, "for is (for i start end body...): i from start up to end, end left out"))
         }

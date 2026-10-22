@@ -850,7 +850,7 @@ Three forms are written for the reader and rewritten as the resolver reads a mod
 | Form | Is | |
 |---|---|---|
 | `(when c body...)` | `(if c (block body...) (block))` | an `if` with nothing to do otherwise (`void`) |
-| `(for i start end body...)` | an internal counted loop, `(loop i start (- end 1) 1 body...)` (`loop` written in a program is an error: CANONICAL_PLAN.md step 3) | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `while` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
+| `(for i start end body...)` | the internal counted loop `(counted_loop i start (- end 1) 1 body...)` (inclusive, with a step; not for programs, and `loop` written in a program is an error: CANONICAL_PLAN.md step 3) | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `while` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
 | `(and a b c ...)`, `(or a b c ...)` | `(and a (and b c ...))` | left to right, stopping at the first operand that decides |
 
 Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
@@ -934,7 +934,7 @@ A **threaded module** (one that uses `thread.spawn`) differs: it imports its mem
 | String literal | `i32.const <address of its bytes>`; `str` values are pointers (section 4.B) |
 | I/O scratch | functions that do I/O, `atomic.cas/lock/unlock`, or `thread.spawn` get two extra `i32` locals; the WASI lowerings use runtime cells 64-87 for iovecs and out-parameters (section 7.9), or in a threaded module the same offsets in the current thread's scratch block |
 | Heap cursor | the `i32` at address 0; `mem.alloc` compiles to `i32.const 0; <size>; i32.atomic.rmw.add` (the size is evaluated first, then one atomic add claims the block), followed by a check that grows memory with `memory.grow` when the cursor passes `memory.size` (no locals used) |
-| Loops | `block { loop { ... } }`; a `loop` (counted) also wraps its body in a block so `continue` falls into the step (section 7.10) |
+| Loops | `block { loop { ... } }`; a counted loop (what `for` becomes, `counted_loop`) also wraps its body in a block so `continue` falls into the step (section 7.10) |
 | Store guard | every `mem.store*`, `put`, and `arr.set` is preceded by two checks, each an `if` that traps (`unreachable`), one if the address is in bytes 0-3 and one if it is between 64 and the heap start (the runtime block and the string literals); each function gets two extra `i32` scratch locals, the first for this check (which `ok`/`err`, `match_result`, and `arr.new` also use) and the second for the index of a bounds check |
 | Bounds checks | `arr.get`/`arr.set` compare the index (unsigned) with the length at `a - 4` and on failure call `$aipl_oob`, which writes `Array index out of bounds: ...` and traps (section 4.E) |
 | Contracts | each `req` is checked at the function's entry; with an `ens`, the body is a `block` that `return` branches to the end of, where the result is kept in a hidden local `res` and each `ens` is checked; a failure writes the message (section 3) through `$aipl_begin`/`$aipl_text`/`$aipl_dec`/`$aipl_end` and traps |
@@ -944,7 +944,7 @@ A **threaded module** (one that uses `thread.spawn`) differs: it imports its mem
 | Lines | an `aipl.lines` custom section, last: for each function, the source position (`file:line:col`) of every call and every instruction that can trap, and of every `if` (docs/design/LINES_PLAN.md has the format). Files are named by the entry file's name and each import's path (`shapes.aipl`, `vec.aipl`, `native/lower.aipl`), so the bytes do not depend on where the files are. It adds about a fifth to a module's size |
 | Exports | **every** function in the flat module, under its AIPL name (`add`, `compiler.tokenize`, ...), plus `memory`; `_start` when the module has a zero-argument `main` (section 6.5); `wasi_thread_start` in a threaded module |
 | Function types | params map `i32/bool/str` and every pointer, array, enum, union, result, and function reference to `i32`, `i64 -> i64`, `f32 -> f32`, `f64 -> f64`; a `void` return is an empty result list |
-| Locals | every `let` anywhere in the body (including nested in `if`/`while`/`loop`/`block`) plus every `loop` induction variable becomes one wasm local, allocated after the params; then `res` for a function with `ens`, the two scratch locals, and the two I/O scratch locals |
+| Locals | every `let` anywhere in the body (including nested in `if`/`while`/`for`/`block`) plus every `for` variable becomes one wasm local, allocated after the params; then `res` for a function with `ens`, the two scratch locals, and the two I/O scratch locals |
 
 Bytes 0..8 are always `00 61 73 6D 01 00 00 00` (`\0asm`, version 1). A module that compiles must also pass `wasmparser::Validator::validate_all`; the test suite enforces this.
 
@@ -1883,7 +1883,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 |---|---|
 | `(mem.load32 p)`, `(ptr.cast S a)`, or `(thread.spawn ...)` in an ordinary function | wrap it in `(unsafe ...)`, or mark the function `(unsafe)` if wrong arguments could break memory (section 3); usually `new`, arrays, or a std function avoid it |
 | `(f x)` to call a user function | `(call f x)`; bare `(name ...)` is only for built-in ops |
-| `(if c (set! x 1))` with no else | `if` always takes three arguments; for a statement write `(if c (set! x 1) (block))`; both branches must be void or both the same value type |
+| `(if c (set! x 1))` with no else | `if` always takes three arguments; for one branch write `(when c (set! x 1))`; both branches must be void or both the same value type |
 | `(let x 5)` | `(let x:i32 5)`; the type annotation is mandatory |
 | `(let x:i32 5)` inside a block when `x` is already in scope | shadowing is a type error (`Cannot shadow existing variable`); `let` is block-scoped, so reuse a name only in sibling blocks |
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |

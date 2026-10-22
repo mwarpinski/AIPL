@@ -166,6 +166,13 @@ as a statement belongs to step 3, which retires `loop`.
   section 13 later needs its message and test the same way.
 - Step 5 replaces the `arr.of` message ("there is no array literal") with
   the literal itself, and step 4 adds the message for an empty `else`.
+- (Built 2026-10-21, found in the verification below.) A generic's
+  application that names no generic function, `(call (vec.psh i32) v 1)`,
+  used to say `Expected func name in call, got '('`; both generics passes
+  now say `'vec.psh' is not a generic function; did you mean vec.push?`.
+  Still open beside it: a typo in a generic struct's name in a type,
+  `(ptr (vec.Vecc i32))`, and a program with no generics at all, where the
+  generics pass does not run and the parser's message stands.
 
 ## 3. Retire `loop`
 
@@ -216,9 +223,16 @@ owner's to overrule:
 - Every `loop` in the repository was rewritten by tools/retire_loop.py:
   727 in aipl_src, tests/aipl, benchmarks and examples; 69 in tests/*.rs;
   18 in the spec, guide and tour. A step of 1 became `for` with the end
-  plus one (`(- X 1)` became `X`, `(- X k)` became `(- X k-1)`, a number
-  became the next, anything else `(+ E 1)`: 89 loops in the compiler, so
-  the compiled compiler differs from before only by those adds). The four
+  plus one: `(- X 1)` became `X`, `(- X k)` became `(- X k-1)`, a number
+  became the next, anything else `(+ E 1)`. Counted by the tool's own rule
+  over the sources before the change (corrected 2026-10-21; an earlier
+  count here was wrong): of the 661 loops in aipl_src, 471 had a `(- X 1)`
+  end and compile exactly as before (`for` gives back `(- X 1)`); the other
+  190 compile with more arithmetic on entry: 95 with a number end now
+  compute `(- 8 1)` where they had `7`, 80 compute `(- (+ E 1) 1)` where
+  they had `E`, and 15 `(- (- X k-1) 1)` where they had `(- X k)`. Across
+  all programs (aipl_src, tests/aipl, benchmarks, examples): 727 loops, 506,
+  113, 92, and 15 of those kinds, plus the one with a step of 7. The four
   with another step were done by hand as `while` (tests/aipl/
   results_by_value.aipl is the one in a program; three more in tests). The
   tests that feed the bare parser or the self-hosted code generator a
@@ -231,17 +245,19 @@ owner's to overrule:
   compiler's source has no `loop` now. A new seed would only make the
   checked-in binary the one that refuses `loop`; ask the owner when one is
   wanted for another reason.
+- Built later the same day: `(for i 0 n 1 ...)`, a step carried over from
+  `loop`, whose `1` would have been taken as the first statement of the body
+  and dropped, is an error from both bare parsers and both resolvers: `a for
+  has no step: ... for another step, use while`, at the number. Only an
+  integer literal right after the end is refused; a step written as a
+  variable or an expression (`(for i 0 n step ...)`) is still taken as a
+  statement and dropped, a smaller trap left open.
 - Not measured: the benchmarks' times. Their outputs are checked by the
-  suite; times are as before apart from the adds above, which run once per
-  loop, not per pass.
+  suite; times are as before apart from the extra arithmetic above, which
+  runs once per loop, on entry, not per pass.
 
 **Outstanding in step 3:**
 
-- `(for i 0 n 1 ...)`, a step carried over from `loop`: the `1` is taken as
-  the first statement of the body and dropped, so the loop runs and does
-  the wrong thing without a message. A body that begins with a bare literal
-  is almost certainly this; refuse it in both parsers and the resolver's
-  `for` shape check with a message naming `while` for another step.
 - `for` as a node of its own (the decision above, not built): an exclusive
   compare in the checker (src/checker.rs, aipl_src/checker.aipl), the VM
   (src/vm.rs), the wasm backend (src/compiler/wasm.rs), the self-hosted code
@@ -250,8 +266,11 @@ owner's to overrule:
   least value, and drops a subtract per loop entry. Do it if the benchmarks
   below show the subtract matters, or when the owner asks for it.
 - Measure the benchmarks again (docs/BENCHMARKS.md): the plan asked for it
-  after the loop changes, and 89 loops in the compiler now add 1 to their
-  end. Compare against the table dated 2026-10-16.
+  after the loop changes, and 190 loops in the compiler (227 across all
+  programs, the benchmarks' among them) now do more arithmetic on entry.
+  Compare against the table dated 2026-10-16. Folding a number end in the
+  resolver's `for` rewrite (`(for i 0 8)` to `(counted_loop i 0 7 1)`, in
+  both toolchains) would make 95 of them exact again.
 - `counted_loop` is readable by a program and undocumented. If a model finds
   it, it gets the old inclusive, stepped loop. To close it, the parser
   would have to know whether its text came from a program or from the
@@ -309,19 +328,81 @@ measurement:
 families, or to run those by hand.
 
 
-Opus Findings:
-Problems found
+## Verification findings (Opus, 2026-10-21)
 
-1. aipl doc teaches the retired form. aipl doc map prints "Iterate with (loop i 0 ...)", and aipl doc bigint prints (loop k 1 30 1 ...). These are module header comments the rewrite tool didn't touch. The guide tells models to run aipl doc first, so they would copy an error.
-2. A wrong suggestion. (set x 1) says "did you mean get?". get, let and set! are each one edit away, and the tie goes to whichever sorts first. Breaking ties by shared prefix would pick set!.
-3. The placeholder diagnosis can blame the wrong thing. A file with an extra ) and an innocent (let s:str "{") gets "this string ends inside a placeholder". It should only fire when the string is directly followed by more code, which is the pattern of the real mistake.
-4. Two stale lines in the spec.
-Line 853 still names the internal form (loop ...) rather than counted_loop.
-§13 line 1886 still recommends (if c (set! x 1) (block)), while the guide and the new error message say when.
-5. Inaccurate numbers in the plan. It says "89 loops in the compiler" got a (+ E 1) end. The real figure for aipl_src is 77 (89 was across all program directories). It also says the compiled compiler differs "only by those adds", but 95 more loops with a literal end now compile (- 8 1) instead of the constant 7.
-6. A false entry in AGENT_FRICTION.md. Row 43 says "aipl verify said where" for the stray ], but it was caught by re-reading before any verify. Step 3's real process mistakes aren't logged at all:
-refusing loop in the resolver broke 71 tests
-the step-7 loop the tool skipped wasn't converted before the CI run
-the flat() change broke byte parity
-a second constant landed inside the impl block
-7. An unhelpful message missing from the plan. A typo in a generic name, (call (vec.psh i32) v 1), still says "Expected func name in call, got '('". The plan's step 2 outstanding list doesn't mention it.
+The owner's list of what a second review of steps 1 to 3 found, each
+marked as it is fixed.
+
+1. aipl doc teaches the retired form. aipl doc map prints "Iterate with
+   (loop i 0 ...)", and aipl doc bigint prints (loop k 1 30 1 ...). These are
+   module header comments the rewrite tool didn't touch. The guide tells
+   models to run aipl doc first, so they would copy an error.
+   **Done** 2026-10-21: both comments now show for
+   (aipl_src/std/bigint.aipl, map.aipl), and tests/test_doc_examples.rs
+   no_program_or_doc_comment_writes_loop fails if any .aipl file in
+   aipl_src, examples, benchmarks, or tests/aipl writes a loop form,
+   comments included.
+2. A wrong suggestion. (set x 1) says "did you mean get?". get, let and set!
+   are each one edit away, and the tie goes to whichever sorts first.
+   Breaking ties by shared prefix would pick set!.
+   **Done** 2026-10-21: of equal distance, the candidate that begins with
+   more of the name as written wins, then sort order, in src/parser.rs
+   nearest_name and aipl_src/suggest.aipl alike: (set x 1) now says did
+   you mean set!?. The case is in tests/test_checker_aipl.rs BAD_PARSES,
+   compared word for word.
+3. The placeholder diagnosis can blame the wrong thing. A file with an extra
+   ) and an innocent (let s:str "{") gets "this string ends inside a
+   placeholder". It should only fire when the string is directly followed by
+   more code, which is the pattern of the real mistake.
+   **Done** 2026-10-21: the diagnosis now needs more code after the string
+   (a next token that is not a closing bracket), in src/sexpr.rs read_one
+   and aipl_src/resolver.aipl bracket_error alike. (let s:str "{") before
+   an extra ) now gets the bracket error itself; the real mistake, {(call
+   f "x")}, is still named. tests/test_resolver_aipl.rs
+   brace_string_then_extra_paren compares both toolchains. Left: a string
+   ending in { that is followed by a symbol, then a bracket error
+   elsewhere, is still blamed; telling them apart needs the gap between
+   tokens, which the Rust tokens do not keep.
+4. Two stale lines in the spec. Line 853 still names the internal form
+   (loop ...) rather than counted_loop. Section 13 line 1886 still recommends
+   (if c (set! x 1) (block)), while the guide and the new error message say
+   when.
+   **Done** 2026-10-21: AIPL_SPEC.md 4.M's for row names the internal form
+   counted_loop; section 13's one-branch if row says (when c (set! x 1));
+   and the two lowering rows (6.x Loops, Locals) that called it a loop say
+   counted loop and for.
+5. Inaccurate numbers in the plan. It says "89 loops in the compiler" got a
+   (+ E 1) end. The real figure for aipl_src is 77 (89 was across all program
+   directories). It also says the compiled compiler differs "only by those
+   adds", but 95 more loops with a literal end now compile (- 8 1) instead of
+   the constant 7.
+   **Done** 2026-10-21: the figures were recounted with
+   tools/retire_loop.py's own rule over the sources before step 3, and
+   both earlier numbers were wrong: 80 loops in aipl_src got an (+ E 1)
+   end, not 89 or 77. Of aipl_src's 661 loops, 471 compile exactly as
+   before and 190 do more arithmetic on entry (95 number ends, 80 (+ E 1),
+   15 (- X k)); across all programs 727: 506, 113, 92, and 15. Section 3
+   and its outstanding list now say so.
+6. A false entry in AGENT_FRICTION.md. Row 43 says "aipl verify said where"
+   for the stray ], but it was caught by re-reading before any verify. Step
+   3's real process mistakes aren't logged at all: refusing loop in the
+   resolver broke 71 tests; the step-7 loop the tool skipped wasn't converted
+   before the CI run; the flat() change broke byte parity; a second constant
+   landed inside the impl block.
+   **Done** 2026-10-21: row 43 now says the stray ] was caught by re-
+   reading, with the correction dated; rows 46 to 50 log step 3's
+   mistakes: the resolver refusal that broke 71 tests, the skipped step-7
+   loop run through CI, the flat() change that broke byte parity, the
+   second const inside impl Parser, and the rewrite tool misreading Rust
+   raw strings and a four-backtick Markdown fence.
+7. An unhelpful message missing from the plan. A typo in a generic name,
+   (call (vec.psh i32) v 1), still says "Expected func name in call, got
+   '('". The plan's step 2 outstanding list doesn't mention it.
+   **Done** 2026-10-21: fixed rather than only listed: both generics
+   passes (src/generics.rs rewrite, aipl_src/generics.aipl
+   check_not_generic) now say 'vec.psh' is not a generic function; did you
+   mean vec.push?, or how to call one when no name is close;
+   tests/test_resolver_aipl.rs generic_name_typo and generic_name_unknown
+   compare both toolchains. Step 2's outstanding list records it and what
+   is still open beside it (a typo in a generic struct's name in a type; a
+   program with no generics). AGENT_FRICTION.md row 17 is marked fixed.

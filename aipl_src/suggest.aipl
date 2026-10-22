@@ -4,7 +4,8 @@
 ;; before they are compared (lt_u is ltu); then at most 1 edit (insert,
 ;; delete, or change one byte) for a name of 3 to 5 bytes, 2 for a longer
 ;; one, none for a shorter one. The closest wins; of equal ones, the one
-;; that sorts first.
+;; that begins with more of the name as written (set is set!, not get),
+;; then the one that sorts first.
 (module suggest
   (import alloc)
   (import str)
@@ -66,6 +67,14 @@
       (set! k (+ k 1)))
     (lt (get a str.Bytes.len) (get b str.Bytes.len)))
 
+  ;; How many bytes a and b share at their start.
+  (fn shared [a:str.Bytes b:str.Bytes] -> i32
+    (let k:i32 0)
+    (while (and (lt k (get a str.Bytes.len)) (lt k (get b str.Bytes.len)))
+      (if (neq (call str.byte_at a k) (call str.byte_at b k)) (return k) (block))
+      (set! k (+ k 1)))
+    k)
+
   ;; The index in names of the one nearest to name, or -1 if none is near
   ;; enough to be worth naming.
   (fn nearest [names:(ptr (vec.Vec str.Bytes)) name:str.Bytes] -> i32 (pub)
@@ -74,6 +83,7 @@
     (if (lt limit 0) (return -1) (block))
     (let best:i32 -1)
     (let best_d:i32 0)
+    (let best_p:i32 0)
     (let k:i32 0)
     (while (lt k (call (vec.len str.Bytes) names))
       (let c:str.Bytes (call (vec.at str.Bytes) names k))
@@ -81,11 +91,14 @@
           (block)
           (block
             (let d:i32 (call distance x (call plain c)))
+            (let sp:i32 (call shared name c))
             (if (lte d limit)
                 (if (or (lt best 0)
                         (or (lt d best_d)
-                            (and (eq d best_d) (call bytes_less c (call (vec.at str.Bytes) names best)))))
-                    (block (set! best k) (set! best_d d))
+                            (and (eq d best_d)
+                                 (or (gt sp best_p)
+                                     (and (eq sp best_p) (call bytes_less c (call (vec.at str.Bytes) names best)))))))
+                    (block (set! best k) (set! best_d d) (set! best_p sp))
                     (block))
                 (block))))
       (set! k (+ k 1)))

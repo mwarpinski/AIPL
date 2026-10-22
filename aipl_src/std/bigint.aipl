@@ -3,7 +3,7 @@
 ;; was made with, and goes back to it when the number grows or is freed.
 ;;
 ;;   (let a:(ptr bigint.Int) (call bigint.from_i32 (call alloc.default) 1))
-;;   (loop k 1 30 1 (call bigint.mul_small a k))      ;; a = 30!
+;;   (for k 1 31 (call bigint.mul_small a k))         ;; a = 30!
 ;;   (call bigint.push_decimal b a)                    ;; "265252859812191058636308480000000"
 ;;
 ;; Sign and magnitude. The magnitude's limbs are 32 bits, least significant

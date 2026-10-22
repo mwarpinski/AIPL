@@ -65,8 +65,10 @@ impl Sx {
 
     /// The whole input as one form; anything after it is an error (as in the parser).
     /// A bracket error in a program with a string that ends inside a
-    /// placeholder says so instead: the quote that ended the string is
-    /// what unbalanced the brackets (aipl_src/resolver.aipl bracket_error).
+    /// placeholder, and has more code after it, says so instead: the quote
+    /// that ended the string is what unbalanced the brackets (aipl_src/
+    /// resolver.aipl bracket_error). A string followed by a closing bracket,
+    /// such as `"{"` in `(let s:str "{")`, is an ordinary string.
     pub fn read_one(tokens: &[Token]) -> Result<Sx, String> {
         let read = || {
             let mut pos = 0;
@@ -76,8 +78,12 @@ impl Sx {
             }
             Ok(sx)
         };
-        read().map_err(|e| match tokens.iter().find(|t| matches!(&t.kind, TokenKind::StringLit(s) if ends_in_placeholder(s))) {
-            Some(t) => format!("{}:{}: {}", t.line, t.col, OPEN_PLACEHOLDER),
+        let split = |k: usize, t: &Token| {
+            matches!(&t.kind, TokenKind::StringLit(s) if ends_in_placeholder(s))
+                && tokens.get(k + 1).is_some_and(|n| !matches!(n.kind, TokenKind::RParen | TokenKind::RBracket))
+        };
+        read().map_err(|e| match tokens.iter().enumerate().find(|(k, t)| split(*k, t)) {
+            Some((_, t)) => format!("{}:{}: {}", t.line, t.col, OPEN_PLACEHOLDER),
             None => e,
         })
     }

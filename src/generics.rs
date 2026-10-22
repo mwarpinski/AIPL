@@ -23,7 +23,7 @@
 //! then the function instances.
 
 use crate::checker::shown;
-use crate::parser::{Token, TokenKind};
+use crate::parser::{nearest_name, Token, TokenKind};
 use crate::resolver::{item_name, FlatProgram, Item};
 use crate::sexpr::Sx;
 use std::collections::{HashMap, HashSet};
@@ -449,7 +449,19 @@ fn rewrite(
         }
     }
     let Some(h) = head else { return Ok(()) };
-    let Some(t) = templates.get(&h) else { return Ok(()) };
+    let Some(t) = templates.get(&h) else {
+        // (call (vec.psh i32) ...): a callee written as a generic's application
+        // names no generic function (aipl_src/generics.aipl check_not_generic)
+        if callee && paren {
+            let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file);
+            let hint = match nearest_name(&h, templates.iter().filter(|(_, t)| !t.is_struct).map(|(k, _)| k.as_str())) {
+                Some(near) => format!("; did you mean {near}?"),
+                None => ": call a function as (call f args...), or a generic one as (call (f T) args...)".to_string(),
+            };
+            return Err(at(place, sx, &format!("'{h}' is not a generic function{hint}")));
+        }
+        return Ok(());
+    };
     if !is_app || !sx.is_paren() {
         return Ok(());
     }
