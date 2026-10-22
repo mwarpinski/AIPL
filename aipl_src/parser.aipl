@@ -18,7 +18,7 @@
   (import suggest)
 
   ;; The forms of src/parser.rs parse_expr that are not operators.
-  (enum Form [none let_ set if_ loop for_ while_ call ok err make match_ block match_result get_ put_
+  (enum Form [none let_ set if_ loop for_ when_ while_ call ok err make match_ block match_result get_ put_
               sizeof return_ break_ continue_ cond ref call_ref arr_len ptr_null arr_null ptr_cast
               arr_cast ptr_addr arr_addr enum_ord enum_cast arr_get arr_set mem_free float_mem unsafe_ with_
               ptr_make arr_make ptr_gen arr_gen fmt_surface])
@@ -694,6 +694,16 @@
        (call (vec.push ast.Expr) ends (make ast.Expr.lit_int at 1i64))
        (call ast.loop_expr (call alloc.default) at var s (make ast.Expr.op at ast.Op.sub (call (to_arr ast.Expr) ends))
              (make ast.Expr.lit_int at 1i64) body))
+      ;; (when c body...): the resolver rewrites it as (if c (block body...) (block));
+      ;; read here too, into that tree, every part at the when's place
+      ;; (src/parser.rs "when")
+      ((eq form Form.when_)
+       (if (eq (call peek p) compiler.Kind.rparen)
+           (block (call fail_str p at "when takes a condition and a body: (when c body...)") (return (call placeholder at)))
+           (block))
+       (let wc:ast.Expr (call parse_expr p))
+       (let wbody:(arr ast.Expr) (call parse_body p))
+       (call ast.if_expr (call alloc.default) at wc (make ast.Expr.block at wbody) (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs)))))
       ((eq form Form.while_)
        (let c:ast.Expr (call parse_expr p))
        (call ast.while_expr (call alloc.default) at c (call parse_body p)))
@@ -1096,7 +1106,7 @@
   (fn form_table [] -> (ptr (map.Map str.Bytes Form))
     (let m:(ptr (map.Map str.Bytes Form)) (call (map.make str.Bytes Form) (call alloc.default) 64))
     (call form m "let" Form.let_) (call form m "set!" Form.set) (call form m "if" Form.if_)
-    (call form m "counted_loop" Form.loop) (call form m "for" Form.for_) (call form m "while" Form.while_) (call form m "call" Form.call)
+    (call form m "counted_loop" Form.loop) (call form m "for" Form.for_) (call form m "when" Form.when_) (call form m "while" Form.while_) (call form m "call" Form.call)
     (call form m "ok" Form.ok) (call form m "err" Form.err) (call form m "make" Form.make)
     (call form m "match" Form.match_) (call form m "block" Form.block) (call form m "unsafe" Form.unsafe_) (call form m "match_result" Form.match_result)
     (call form m "new" Form.fmt_surface) (call form m "get" Form.get_) (call form m "put" Form.put_)

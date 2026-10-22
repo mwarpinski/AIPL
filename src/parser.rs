@@ -67,7 +67,7 @@ pub struct Token {
 /// form_table and op_table list the same names (tests/test_checker_aipl.rs
 /// compares them).
 pub const HEAD_NAMES: &[&str] = &[
-    "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
+    "when", "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
     "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.set", "atomic.add",
     "atomic.cas", "atomic.lock", "atomic.unlock", "bitand", "bitor", "block", "break", "call",
     "call_ref", "checked.add", "checked.mul", "checked.sub", "cond", "continue", "dbg", "defer",
@@ -1345,6 +1345,28 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 end: Box::new(Expr::Op { op: OpCode::Sub, args: vec![end, one()], span }),
                                 step: Box::new(one()),
                                 body,
+                                span,
+                            }
+                        }
+                        // (when c body...): the resolver rewrites it as (if c (block
+                        // body...) (block)) (src/sugar.rs); read here too, into that tree,
+                        // every part at the when's place
+                        "when" => {
+                            if self.peek_kind() == Some(&TokenKind::RParen) {
+                                return Err(format!("{}:{}: when takes a condition and a body: (when c body...)", span.0, span.1));
+                            }
+                            let cond = self.parse_expr()?;
+                            let mut body = Vec::new();
+                            while let Some(kind) = self.peek_kind() {
+                                if *kind == TokenKind::RParen {
+                                    break;
+                                }
+                                body.push(self.parse_expr()?);
+                            }
+                            Expr::If {
+                                cond: Box::new(cond),
+                                then_branch: Box::new(Expr::Block(body, span)),
+                                else_branch: Box::new(Expr::Block(Vec::new(), span)),
                                 span,
                             }
                         }

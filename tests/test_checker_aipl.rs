@@ -314,6 +314,7 @@ const EVERY_FORM: &str = r#"(module every
     (if d (block) (block (return 1)))
     (counted_loop i 0 10 2 (if (eq i 4) (continue) (block)) (if (eq i 8) (break) (block)))
     (for k 0 3 (if (eq k 1) (continue) (block)))
+    (when (gt n 0) (set! n (- n 1)) (set! n (+ n 1)))
     (while false)
     (let r:(result i32 str) (ok:str 5))
     (let r2:(result bool i32) (err:bool 7))
@@ -475,6 +476,8 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32 (set! 5 1)))",
     "(module m (fn f [] -> i32 (counted_loop 5 0 1 1)))",
     "(module m (fn f [] -> i32 (for 5 0 1)))",
+    "(module m (fn f [] -> i32 (when)))",
+    "(module m (fn f [] -> i32 (when true (let x 5)) 0))",
     "(module m (fn f [] -> i32 (loop i 0 3 1)))",
     // a step carried over from loop would be a statement of the body
     "(module m (fn main [] -> i32 (for i 0 3 1 (set! i 0))))",
