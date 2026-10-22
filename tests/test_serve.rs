@@ -22,23 +22,43 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// A port nothing listens on now (the system's choice, released), and
-/// one no other test here was given: the system may hand a released port
-/// out again at once (2.6% of runs of 30 picks did, 2026-10-20), and two
-/// tests running at the same time with the same port talk to each
-/// other's servers. One did: a native server took a VM test's port while
-/// the VM started, answered its first requests, and the VM server, short
-/// of them, waited for ever.
-fn free_port() -> u16 {
+/// A port nothing listens on now, for a server a test is about to start,
+/// and one no other test here was given. It comes from below the range the
+/// system takes ports from for bind(0) and for every outgoing connection
+/// (/proc/sys/net/ipv4/ip_local_port_range, 32768-60999 by default): a port
+/// from that range, once released, can be taken by any connection before
+/// the server binds it, and these tests make thousands of connections at
+/// once. That was the cause of the "Address already in use" and the empty
+/// answers measured on 2026-10-21, in about one run in five of
+/// tests/test_serve.rs. The search starts at a point that depends on the
+/// process id, so two runs at once start apart.
+fn free_port(ip: &str) -> u16 {
     static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
-    loop {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let mut given = GIVEN.lock().unwrap();
-        if !given.contains(&port) {
+    let low: u16 = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse().ok())
+        .unwrap_or(32768);
+    let (first, span) = (10000u16, low.saturating_sub(10000));
+    let mut given = GIVEN.lock().unwrap();
+    if span < 1000 {
+        // an unusual range: the system's choice, as before
+        loop {
+            let port = TcpListener::bind((ip, 0)).unwrap().local_addr().unwrap().port();
+            if !given.contains(&port) {
+                given.push(port);
+                return port;
+            }
+        }
+    }
+    let start = (u64::from(std::process::id()) * 7919 + given.len() as u64) % u64::from(span);
+    for k in 0..u64::from(span) {
+        let port = first + ((start + k) % u64::from(span)) as u16;
+        if !given.contains(&port) && TcpListener::bind((ip, port)).is_ok() {
             given.push(port);
             return port;
         }
     }
+    panic!("no free port from {first} to {low}");
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -87,7 +107,9 @@ fn start(backend: &str, src: &Path, dir: &Path, at: &str, args: &[&str]) -> Chil
 /// answer to its end; waits for the server to listen first.
 fn exchange(at: &str, server: &mut Child, request: &[u8]) -> Vec<u8> {
     let start = Instant::now();
+    let mut tries = 0;
     let mut s = loop {
+        tries += 1;
         if let Ok(s) = TcpStream::connect(at) {
             break s;
         }
@@ -101,7 +123,10 @@ fn exchange(at: &str, server: &mut Child, request: &[u8]) -> Vec<u8> {
     s.write_all(request).unwrap();
     let _ = s.shutdown(Shutdown::Write);
     let mut got = Vec::new();
-    let _ = s.read_to_end(&mut got);
+    let r = s.read_to_end(&mut got);
+    if got.is_empty() {
+        eprintln!("DEBUG exchange {at}: empty answer after {tries} connect tries, {:?} after start; read: {r:?}; local {:?}", start.elapsed(), s.local_addr());
+    }
     got
 }
 
@@ -164,7 +189,7 @@ fn every_backend_answers_alike() {
     let answered = exchanges().iter().filter(|(_, w)| w.is_some()).count();
     for backend in ["VM", "aipl-run", "native", "bundle"] {
         let dir = scratch(&format!("answers_{backend}"));
-        let at = format!("127.0.0.1:{}", free_port());
+        let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
         let mut server = start(backend, &src, &dir, &at, &[&answered.to_string()]);
         for (k, (req, want)) in exchanges().into_iter().enumerate() {
             let got = exchange(&at, &mut server, &req);
@@ -196,7 +221,7 @@ fn every_backend_answers_alike() {
 fn memory_stays_flat(backend: &str, n: usize) {
     let src = root().join("tests/aipl/net/serve_demo.aipl");
     let dir = scratch(&format!("flat_{backend}"));
-    let at = format!("127.0.0.1:{}", free_port());
+    let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
     let total = 1000 + n + 2;
     let mut server = start(backend, &src, &dir, &at, &[&total.to_string()]);
     let request = |k: usize| -> Vec<u8> {
@@ -249,7 +274,7 @@ fn a_view_kept_past_its_request_stops_the_program() {
     let src = root().join("tests/aipl/net/serve_keep.aipl");
     for backend in ["VM", "aipl-run", "native"] {
         let dir = scratch(&format!("keep_{backend}"));
-        let at = format!("127.0.0.1:{}", free_port());
+        let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
         let mut server = start(backend, &src, &dir, &at, &[]);
         let first = exchange(&at, &mut server, b"GET /first HTTP/1.1\r\n\r\n");
         if !first.ends_with(b"/first") {
@@ -358,7 +383,7 @@ fn a_fresh_instance_per_request_isolates_a_crash() {
         ("/", text_response("200 OK", "hello\n")),
     ];
     for host in ["aipl serve --fresh", "native", "bundle"] {
-        let at = format!("127.0.0.1:{}", free_port());
+        let at = format!("127.0.0.1:{}", free_port("127.0.0.1"));
         let mut cmd = match host {
             "native" | "bundle" => {
                 let exe = dir.join(host);
@@ -400,7 +425,8 @@ fn a_fresh_instance_per_request_isolates_a_crash() {
 fn a_fresh_server_that_cannot_listen_says_so() {
     let src = root().join("tests/aipl/net/fresh_demo.aipl");
     let dir = scratch("fresh_busy");
-    let busy = TcpListener::bind(("127.0.0.1", free_port())).unwrap();
+    // a port held busy here: no gap in which another socket could take it
+    let busy = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = busy.local_addr().unwrap().to_string();
     let why = format!(": cannot listen on {at}: Address already in use (os error 98)\n");
     let (native, bundle) = (dir.join("native"), dir.join("bundle"));

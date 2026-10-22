@@ -99,7 +99,10 @@ impl Net {
         };
         match l.and_then(|l| l.accept()) {
             Ok((s, _)) => self.insert(Sock::Stream(s)),
-            Err(_) => -1,
+            Err(e) => {
+                if std::env::var_os("AIPL_NET_DEBUG").is_some() { eprintln!("net debug: accept({h}) failed: {e:?}"); }
+                -1
+            }
         }
     }
 
@@ -112,7 +115,11 @@ impl Net {
 
     /// `recv(h, buf, max)`: reads into `into`; bytes read, 0 at the end, -1.
     pub fn recv(&self, h: i32, into: &mut [u8]) -> i32 {
-        match self.stream(h).map(|mut s| s.read(into)) {
+        let r = self.stream(h).map(|mut s| s.read(into));
+        if std::env::var_os("AIPL_NET_DEBUG").is_some() {
+            match &r { Some(Ok(n)) if *n > 0 => {}, other => eprintln!("net debug: recv({h}) -> {other:?}") }
+        }
+        match r {
             Some(Ok(n)) => n as i32,
             _ => -1,
         }
