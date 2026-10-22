@@ -225,3 +225,41 @@ fn doc_examples_run_in_both_backends() {
         assert!(seen.iter().any(|s| s == name), "documented example '{name}' not found in the docs");
     }
 }
+
+/// `loop` is retired (CANONICAL_PLAN.md step 3): no program in the
+/// repository, and no comment in one (what `aipl doc` prints), writes it.
+/// The internal form is `counted_loop`; `(loop n:...)` in ast.aipl and
+/// `(loop 12)` in codegen.aipl's tables are a variant and a table entry.
+#[test]
+fn no_program_or_doc_comment_writes_loop() {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "aipl") {
+                out.push(p);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    for d in ["aipl_src", "examples", "benchmarks", "tests/aipl"] {
+        walk(&root.join(d), &mut files);
+    }
+    let mut found = Vec::new();
+    for f in &files {
+        for (k, line) in std::fs::read_to_string(f).unwrap().lines().enumerate() {
+            if let Some(at) = line.find("(loop ") {
+                let rest = &line[at + 6..];
+                let var: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                let is_form = !var.is_empty() && !var.starts_with(|c: char| c.is_ascii_digit()) && rest[var.len()..].starts_with(' ');
+                if is_form {
+                    found.push(format!("{}:{}: {}", f.display(), k + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(files.len() > 100, "{} files", files.len());
+    assert!(found.is_empty(), "loop is retired; these write it:\n{}", found.join("\n"));
+}

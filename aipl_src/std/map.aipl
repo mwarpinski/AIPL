@@ -121,7 +121,7 @@
     (put m (Map K V) count (- (get m (Map K V) count) 1))
     true)
 
-  ;; Iterate with (loop i 0 (- (call (map.capacity K V) m) 1) 1 (if (call (map.slot_used K V) m i) ...)).
+  ;; Iterate with (for i 0 (call (map.capacity K V) m) (if (call (map.slot_used K V) m i) ...)).
   (fn (slot_used K V) [m:(ptr (Map K V)) i:i32] -> bool (pub) (where (cmp.Hash K)) (eq (arr.get i32 (get m (Map K V) states) i) 1))
   ;; The key in slot i (slot_used must be true for it).
   (fn (slot_key K V) [m:(ptr (Map K V)) i:i32] -> K (pub) (where (cmp.Hash K)) (arr.get K (get m (Map K V) keys) i))

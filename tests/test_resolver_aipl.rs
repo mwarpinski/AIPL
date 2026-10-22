@@ -551,8 +551,12 @@ fn malformed_files_are_rejected_like_rust() {
         ("type_without_constructor", b"(module m\n  (fn main [x:()] -> i32 1))"),
         // CANONICAL_PLAN.md step 3: loop is retired in source, in both resolvers
         ("loop_retired", b"(module m\n  (fn main [] -> i32\n    (let s:i32 0)\n    (loop i 0 3 1 (set! s (+ s i)))\n    s))"),
+        ("for_with_a_step", b"(module m\n  (fn main [] -> i32\n    (for i 0 9 3 (break))\n    0))"),
         ("loop_retired_with_a_step", b"(module m\n  (fn main [] -> i32\n    (loop i 0 9 3 (break))\n    0))"),
         // CANONICAL_PLAN.md step 2: a generic written without its type arguments
+        // a generic application naming no generic function
+        ("generic_name_typo", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 2))\n    (call (vec.psh i32) v 1)\n    0))"),
+        ("generic_name_unknown", b"(module m (import vec)\n  (fn main [] -> i32 (call (zzzzzz i32) 1)))"),
         ("generic_call_without_types", b"(module m (import vec) (import alloc)\n  (fn main [] -> i32\n    (let v:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 4))\n    (call vec.push v 1)\n    0))"),
         ("generic_ref_without_types", b"(module m (import vec)\n  (fn main [] -> i32 (let f:i32 (ref vec.len)) 0))"),
         ("generic_field_without_types", b"(module m (import alloc)\n  (struct (B T) [v:T])\n  (fn main [] -> i32 (let b:(ptr (B i32)) (new (B i32) (call alloc.forever))) (get b B.v)))"),
@@ -560,6 +564,8 @@ fn malformed_files_are_rejected_like_rust() {
         ("generic_make_without_types", b"(module m (import option)\n  (fn main [] -> i32 (let o:(option.Option i32) (make option.Option.some 5)) 0))"),
         // CANONICAL_PLAN.md step 2: a string literal inside a placeholder ends the string
         ("placeholder_string", b"(module m (fn f [s:str] -> str s)\n  (fn main [] -> i32 (println \"{(call f \"x\")}\") 0))"),
+        // a string ending in an open brace, then a closing bracket, is not that mistake
+        ("brace_string_then_extra_paren", b"(module m\n  (fn main [] -> i32 (let s:str \"{\") 0)))"),
         ("placeholder_string_two_closers", b"(module m (fn f [s:str] -> str s)\n  (fn main [] -> i32 (println \"a {{b}} {(call f \"x\")}\"))))"),
     ];
     let driver = driver_wasm();

@@ -1207,11 +1207,15 @@
       (set! k (+ k 1)))
     open))
 
-  ;; A bracket error at token i; when a string ends inside a placeholder
-  ;; (its closing quote is what unbalanced the brackets), that is the error.
+  ;; A bracket error at token i; when a string ends inside a placeholder and
+  ;; more code follows it (its closing quote is what unbalanced the
+  ;; brackets), that is the error. A string followed by a closing bracket is
+  ;; an ordinary one (src/sexpr.rs read_one).
   (fn bracket_error [src:i32 toks:i32 count:i32 i:i32 what:str] -> (ptr buf.Buf)
     (for k 0 count
-      (when (and (eq (call kind_at toks k) compiler.Kind.string) (call string_ends_open src toks k))
+      (when (and (eq (call kind_at toks k) compiler.Kind.string)
+                 (and (call string_ends_open src toks k)
+                      (and (lt (+ k 1) count) (not (call is_closer (call kind_at toks (+ k 1)))))))
         (return (call at_token src toks k "this string ends inside a placeholder whose { is never closed: a placeholder cannot hold a string literal; bind the value with let first"))))
     (call at_token src toks i what))
   (fn is_opener [k:compiler.Kind] -> bool (or (eq k compiler.Kind.lparen) (eq k compiler.Kind.lbracket)))
@@ -1470,6 +1474,12 @@
                   (call buf.push_str b "when takes a condition and a body: (when c body...)")
                   (return b))
                 (block))
+            (when (and (call symbol_is src toks (+ i 1) "for") (gte (call form_args toks count i) 4))
+              (let bi:i32 (call skip_form toks (call skip_form toks (call skip_form toks (+ i 2)))))
+              (when (eq (call kind_at toks bi) compiler.Kind.int)
+                (let b:(ptr buf.Buf) (call at_token src toks bi ""))
+                (call buf.push_str b "a for has no step: (for i start end body...) counts up by one. A number here would be the first statement of the body, not a step; for another step, use while")
+                (return b)))
             (if (and (call symbol_is src toks (+ i 1) "for")
                      (or (lt (call form_args toks count i) 3) (neq (call kind_at toks (+ i 2)) compiler.Kind.symbol)))
                 (block

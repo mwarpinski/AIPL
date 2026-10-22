@@ -22,7 +22,7 @@ Written 2026-10-21 for an agent (or the owner) picking the work up on another co
 
 CI on GitHub runs: build, clippy with `-D warnings`, `cargo test --release`, the AIPL test suite, `fuzz.py` and `run_fuzz.py`. Run **every** step, doc-only changes included (docs are tests; a README edit once broke CI), and run `sh bootstrap/build.sh` first (3 seconds; it fails fast if the compiler's imported std uses a feature the checked-in seed cannot read). Takes about 15 minutes.
 
-The scripts are now `tools/ci.sh` and `tools/ci-status.sh` (they were in the git-ignored `target/` until 2026-10-21); the copies below are the originals. Usage: `sh tools/ci.sh /path/to/checkout`, and `sh tools/ci-status.sh [/path/to/checkout]` shows progress (it reads `target/ci_steps.log` inside the checkout).
+The scripts are now `tools/ci.sh` and `tools/ci-status.sh` (they were in the git-ignored `target/` until 2026-10-21); the copies below are the first versions, kept for the record. Usage: `sh tools/ci.sh /path/to/checkout`. Since 2026-10-21 the tests run through `tools/ci_tests.py` (each test binary in turn, as `cargo test` runs them, with cargo's environment from `.cargo/config.toml`; `CI_PLAIN=1` runs plain `cargo test`), which records every test's start, end, and time in `target/ci_tests.jsonl`. `sh tools/ci-status.sh [/path/to/checkout] [--watch [SECONDS]] [--all]` shows the steps and their times, the tests running now and for how long, each binary's result, time, and peak memory, the slowest tests, the failures with the start of their output, and how long the rest should take from the last run's times. Memory is per test binary: a binary's tests share one process.
 
 `ci.sh`:
 
