@@ -307,3 +307,21 @@ measurement:
 
 **Open for the owner:** whether to give the harness API keys for other
 families, or to run those by hand.
+
+
+Opus Findings:
+Problems found
+
+1. aipl doc teaches the retired form. aipl doc map prints "Iterate with (loop i 0 ...)", and aipl doc bigint prints (loop k 1 30 1 ...). These are module header comments the rewrite tool didn't touch. The guide tells models to run aipl doc first, so they would copy an error.
+2. A wrong suggestion. (set x 1) says "did you mean get?". get, let and set! are each one edit away, and the tie goes to whichever sorts first. Breaking ties by shared prefix would pick set!.
+3. The placeholder diagnosis can blame the wrong thing. A file with an extra ) and an innocent (let s:str "{") gets "this string ends inside a placeholder". It should only fire when the string is directly followed by more code, which is the pattern of the real mistake.
+4. Two stale lines in the spec.
+Line 853 still names the internal form (loop ...) rather than counted_loop.
+§13 line 1886 still recommends (if c (set! x 1) (block)), while the guide and the new error message say when.
+5. Inaccurate numbers in the plan. It says "89 loops in the compiler" got a (+ E 1) end. The real figure for aipl_src is 77 (89 was across all program directories). It also says the compiled compiler differs "only by those adds", but 95 more loops with a literal end now compile (- 8 1) instead of the constant 7.
+6. A false entry in AGENT_FRICTION.md. Row 43 says "aipl verify said where" for the stray ], but it was caught by re-reading before any verify. Step 3's real process mistakes aren't logged at all:
+refusing loop in the resolver broke 71 tests
+the step-7 loop the tool skipped wasn't converted before the CI run
+the flat() change broke byte parity
+a second constant landed inside the impl block
+7. An unhelpful message missing from the plan. A typo in a generic name, (call (vec.psh i32) v 1), still says "Expected func name in call, got '('". The plan's step 2 outstanding list doesn't mention it.
