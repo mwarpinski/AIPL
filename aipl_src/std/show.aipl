@@ -99,17 +99,15 @@
     (let len:i32 (call buf.len b))
     (let chars:i32 0)
     (for i from len
-      (if (neq (bitand (call byte_of b i) 192) 128) (set! chars (+ chars 1)) (block)))
-    (if (gte chars w) (return) (block))
+      (when (neq (bitand (call byte_of b i) 192) 128) (set! chars (+ chars 1))))
+    (when (gte chars w) (return))
     (let n:i32 (- w chars))
     (let al:i32 (call align s))
     ;; '0' with no alignment: zeros after the sign
-    (if (and numeric (and (call zero s) (eq al 0)))
-        (block
+    (when (and numeric (and (call zero s) (eq al 0)))
           (let c:i32 (if (lt from len) (call byte_of b from) 0))
           (call buf.insert b (if (or (eq c 45) (eq c 43)) (+ from 1) from) n 48)
           (return))
-        (block))
     (let f:i32 (cond ((neq (call fill s) 0) (call fill s)) ((call zero s) 48) (else 32)))
     (let a:i32 (if (eq al 0) (if numeric 2 1) al))
     (cond
@@ -182,11 +180,9 @@
     (let neg:bool (lt bits 0i64))
     (let field:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
     (let frac:i64 (bitand bits 4503599627370495i64))
-    (if (and (eq field 2047) (neq frac 0i64))
-        (block (if (call plus s) (call buf.push_byte b 43) (block)) (call buf.push_str b "nan") (return))
-        (block))
+    (when (and (eq field 2047) (neq frac 0i64)) (when (call plus s) (call buf.push_byte b 43)) (call buf.push_str b "nan") (return))
     (cond (neg (call buf.push_byte b 45)) ((call plus s) (call buf.push_byte b 43)) (else (block)))
-    (if (eq field 2047) (block (call buf.push_str b "inf") (return)) (block))
+    (when (eq field 2047) (call buf.push_str b "inf") (return))
     (let mag:f64 (f64.reinterpret_i64 (bitand bits 9223372036854775807i64)))
     (cond
       ((gte (call decimals s) 0)
@@ -227,7 +223,7 @@
       (set! ni (+ ni 1)))
     (for j 0 ni (call buf.push_byte b (+ 48 (arr.get i32 ints (- (- ni 1) j)))))
     (call (alloc.free_array i32) (call alloc.default) ints)
-    (if (gt d 0) (call buf.push_byte b 46) (block))
+    (when (gt d 0) (call buf.push_byte b 46))
     (for q 1 (+ d 1)
       (if (eq k 0)
           (call buf.push_byte b 48)
@@ -236,14 +232,12 @@
             (call buf.push_byte b (+ 48 (+ (call bit fr k) (+ (* 2 (call bit fr (+ k 1))) (+ (* 4 (call bit fr (+ k 2))) (* 8 (call bit fr (+ k 3))))))))
             (call mask fr k))))
     ;; what is left is fr / 2^k, below one unit in the last place
-    (if (gt k 0)
-        (block
+    (when (gt k 0)
           (let half:bool (eq (call bit fr (- k 1)) 1))
           (call mask fr (- k 1))
           (let above:bool (and half (not (call is_zero fr))))
           (let last_odd:bool (eq (% (- (call byte_of b (- (call buf.len b) 1)) 48) 2) 1))
-          (if (or above (and half (and (call is_zero fr) last_odd))) (call round_up b start) (block)))
-        (block))
+          (when (or above (and half (and (call is_zero fr) last_odd))) (call round_up b start)))
     (call drop whole)
     (call drop fr))
 
@@ -304,10 +298,9 @@
       (let d:i32 (arr.get i32 ints (- (- ni 1) j)))
       (if (lt count 19)
           (block (arr.set i32 ds count d) (set! count (+ count 1)))
-          (if (neq d 0) (set! more true) (block))))
+          (when (neq d 0) (set! more true))))
     ;; then the fraction's: times ten, the digit above bit k
-    (if (gt k 0)
-        (block
+    (when (gt k 0)
           (while (and (lt count 19) (not (call is_zero fr)))
             (call mul_small fr 10i64)
             (let d:i32 (+ (call bit fr k) (+ (* 2 (call bit fr (+ k 1))) (+ (* 4 (call bit fr (+ k 2))) (* 8 (call bit fr (+ k 3)))))))
@@ -315,8 +308,7 @@
             (if (and (eq count 0) (eq d 0))
                 (set! n (- n 1))
                 (block (arr.set i32 ds count d) (set! count (+ count 1)))))
-          (if (not (call is_zero fr)) (set! more true) (block)))
-        (block))
+          (when (not (call is_zero fr)) (set! more true)))
     (call drop whole)
     (call drop fr)
     (call (alloc.free_array i32) (call alloc.default) ints)
@@ -340,10 +332,10 @@
       (for q 0 p (set! down (+ (* down 10i64) (i64.extend_s (if (lt q count) (arr.get i32 ds q) 0)))))
       (let next:i32 (if (lt p count) (arr.get i32 ds p) 0))
       (let rest:bool (get ex Exact.more))
-      (for q (+ p 1) count (if (neq (arr.get i32 ds q) 0) (set! rest true) (block)))
+      (for q (+ p 1) count (when (neq (arr.get i32 ds q) 0) (set! rest true)))
       (let up:i64 (+ down 1i64))
       (let up_n:i32 n)
-      (if (eq up (call pow10 p)) (block (set! up (call pow10 (- p 1))) (set! up_n (+ n 1))) (block))
+      (when (eq up (call pow10 p)) (set! up (call pow10 (- p 1))) (set! up_n (+ n 1)))
       (let exact_cut:bool (and (eq next 0) (not rest)))
       (let nearer_up:bool (or (gt next 5) (and (eq next 5) (or rest (eq (remu down 2i64) 1i64)))))
       (cond
@@ -354,7 +346,7 @@
         ((and (not nearer_up) (and (not exact_cut) (call reads x up (- up_n p) single)))
          (set! chosen up) (set! chosen_n up_n))
         (else (block)))
-      (if (gte chosen 0i64) (block (set! chosen_p p) (break)) (block)))
+      (when (gte chosen 0i64) (set! chosen_p p) (break)))
     ;; the chosen digits into ds, trailing zeros dropped
     (let v:i64 chosen)
     (for j 0 chosen_p
@@ -388,16 +380,14 @@
            (call buf.push_byte b 48)))
       (else
        (call buf.push_byte b (+ 48 (arr.get i32 ds 0)))
-       (if (gt k 1)
-           (block
+       (when (gt k 1)
              (call buf.push_byte b 46)
              (for i 1 k (call buf.push_byte b (+ 48 (arr.get i32 ds i)))))
-           (block))
        (call buf.push_byte b 101)
        (let ev:i32 (- n 1))
        (call buf.push_byte b (if (lt ev 0) 45 43))
        (let a:i32 (if (lt ev 0) (- 0 ev) ev))
-       (if (lt a 10) (call buf.push_byte b 48) (block))
+       (when (lt a 10) (call buf.push_byte b 48))
        (call buf.push_int b a))))
 
   ;; Whether the decimal c = d * 10^q reads back as x: as an f64, it rounds
@@ -405,7 +395,7 @@
   ;; x's significand is even, as ties go to even); as an f32 (`single`), its
   ;; nearest f64 rounds to x as an f32.
   (fn reads [x:f64 d:i64 q:i32 single:bool] -> bool
-    (if single (return (call reads32 x d q)) (block))
+    (when single (return (call reads32 x d q)))
     (let bits:i64 (i64.reinterpret_f64 x))
     (let field:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
     (let fb:i64 (bitand bits 4503599627370495i64))
@@ -433,7 +423,7 @@
     (let lo:i64 (if (and (eq fb 0) (gt field 1)) (- (* 4i64 m) 1i64) (- (* 4i64 m) 2i64)))
     (let hi:i64 (+ (* 4i64 m) 2i64))
     (let even:bool (eq (bitand m 1i64) 0i64))
-    (if (or (call near d q lo (- e 2)) (call near d q hi (- e 2))) (return even) (block))
+    (when (or (call near d q lo (- e 2)) (call near d q hi (- e 2))) (return even))
     (and (gt (call compare d q lo (- e 2)) 0) (lt (call compare d q hi (- e 2)) 0)))
 
   ;; Whether d * 10^q rounds, as an f64, to the midpoint mn * 2^k (which an
@@ -481,7 +471,7 @@
     (arr.set i64 a 1 (shru v 32i64)))
 
   (fn is_zero [a:(arr i64)] -> bool
-    (for i 0 (call limbs) (if (neq (arr.get i64 a i) 0i64) (return false) (block)))
+    (for i 0 (call limbs) (when (neq (arr.get i64 a i) 0i64) (return false)))
     true)
 
   ;; a = a * f (0 <= f < 2^31)
@@ -535,8 +525,8 @@
       (let i:i32 (- (- (call limbs) 1) j))
       (let x:i64 (arr.get i64 a i))
       (let y:i64 (arr.get i64 c i))
-      (if (lt x y) (return -1) (block))
-      (if (gt x y) (return 1) (block)))
+      (when (lt x y) (return -1))
+      (when (gt x y) (return 1)))
     0)
 
   ;; ===== Tests =====
@@ -560,7 +550,7 @@
     (let p:i32 0)
     (let none:i32 0)
     ;; shortest floats, as Python's repr
-    (if (and (call f64_is 0.1 none "0.1")
+    (when (and (call f64_is 0.1 none "0.1")
              (and (call f64_is 100.0 none "100.0")
                   (and (call f64_is 1.0e16 none "1e+16")
                        (and (call f64_is 1.5e-7 none "1.5e-07")
@@ -569,42 +559,37 @@
                                       (and (call f64_is (/ 1.0 3.0) none "0.3333333333333333")
                                            (and (call f64_is 5.0e-324 none "5e-324")
                                                 (call f64_is 1.7976931348623157e308 none "1.7976931348623157e+308")))))))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; the f32 rule: 0.1f32 prints 0.1, not its f64 digits
-    (if (and (call shows (call put_f32 (call start) 0.1f32 none) "0.1")
+    (when (and (call shows (call put_f32 (call start) 0.1f32 none) "0.1")
              (and (call shows (call put_f32 (call start) 16777216.0f32 none) "16777216.0")
                   (call shows (call put_f32 (call start) 3.4028235e38f32 none) "3.4028235e+38")))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; decimals, signs, infinities, NaN
-    (if (and (call f64_is 2.675 (call spec 0 2 0 false 0 false 0) "2.67")
+    (when (and (call f64_is 2.675 (call spec 0 2 0 false 0 false 0) "2.67")
              (and (call f64_is -0.001 (call spec 0 2 0 false 0 false 0) "-0.00")
                   (and (call f64_is (/ 1.0 0.0) (call spec 0 0 0 false 0 true 0) "+inf")
                        (call f64_is (/ 0.0 0.0) none "nan"))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; integers in every base, the lowest i64 included
-    (if (and (call i64_is -9223372036854775808i64 none "-9223372036854775808")
+    (when (and (call i64_is -9223372036854775808i64 none "-9223372036854775808")
              (and (call i64_is 255i64 (call spec 0 -1 0 false 1 false 0) "ff")
                   (and (call i64_is -255i64 (call spec 0 -1 0 false 2 false 0) "-FF")
                        (call i64_is 5i64 (call spec 0 -1 0 false 3 true 0) "+101"))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; widths: numbers right, text left; zeros after the sign; a fill
-    (if (and (call i64_is -5i64 (call spec 5 -1 0 true 0 false 0) "-0005")
+    (when (and (call i64_is -5i64 (call spec 5 -1 0 true 0 false 0) "-0005")
              (and (call i64_is 42i64 (call spec 6 -1 3 false 0 false 42) "**42**")
                   (and (call shows (call put_str (call start) "ab" (call spec 4 -1 0 false 0 false 0)) "ab  ")
                        (call shows (call put_str (call start) "é" (call spec 3 -1 2 false 0 false 0)) "  é"))))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     ;; chaining
     (let s:str (call done (call put_bool (call lit (call put_i32 (call lit (call start) "n=") 3 none) " ok=") true none)))
-    (if (call str.same s "n=3 ok=true") (set! p (+ p 1)) (block))
+    (when (call str.same s "n=3 ok=true") (set! p (+ p 1)))
     ;; printing many values keeps no memory: after a first round (which may
     ;; take the heap's first block), more rounds take nothing more
     (call churn 50)
     (let before:i32 (unsafe (mem.load32 0)))
     (call churn 300)
-    (if (eq (unsafe (mem.load32 0)) before) (set! p (+ p 1)) (block))
+    (when (eq (unsafe (mem.load32 0)) before) (set! p (+ p 1)))
     p))

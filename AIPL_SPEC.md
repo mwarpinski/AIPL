@@ -574,7 +574,7 @@ An interface names functions a type can have; an implementation provides them fo
     (req (gt (arr.len xs) 0))
     (let best:T (arr.get T xs 0))
     (for i 1 (arr.len xs)
-      (if (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i)) (block)))
+      (when (gt (call (cmp.Ord.compare T) (arr.get T xs i) best) 0) (set! best (arr.get T xs i))))
     best)
 
   (fn main [] -> i32
@@ -753,7 +753,7 @@ A union may take type parameters, like a struct (section 4.H). Every use writes 
   ;; the first index of `want`, or none
   (fn find [xs:(arr i64) want:i64] -> (option.Option i32)
     (for i 0 (arr.len xs)
-      (if (eq (arr.get i64 xs i) want) (return (make (option.Option i32) some i)) (block)))
+      (when (eq (arr.get i64 xs i) want) (return (make (option.Option i32) some i))))
     (make (option.Option i32) none))
 
   (fn main [] -> i32
@@ -1270,7 +1270,7 @@ Rules that follow from this:
 ```lisp
 (fn index_of [a:(arr i32) target:i32] -> i32
   (for i 0 (arr.len a)
-    (if (eq (arr.get i32 a i) target) (return i) (block)))
+    (when (eq (arr.get i32 a i) target) (return i)))
   -1)
 
 (fn classify [n:i32] -> str

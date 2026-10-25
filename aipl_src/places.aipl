@@ -65,30 +65,27 @@
   ;; printed nothing. Sets p's file to the entry's file (-1: the pass's input).
   (fn back [p:(ptr Places) o:(ptr origins.Origins) at:i32] -> i32
     (put p Places.file -1)
-    (if (eq o (ptr.null origins.Origins)) (return at) (block))
+    (when (eq o (ptr.null origins.Origins)) (return at))
     (let e:(ptr origins.Entry) (call origins.find o at))
-    (if (eq e (ptr.null origins.Entry)) (return at) (block))
+    (when (eq e (ptr.null origins.Entry)) (return at))
     (put p Places.file (get e origins.Entry.file))
     (get e origins.Entry.pos))
 
   ;; The place of offset `at` in the code generator's text.
   (fn place [p:(ptr Places) at:i32] -> (ptr Place) (pub)
     (let pos:i32 (call back p (get p Places.consts) at))
-    (if (neq (get p Places.low) (ptr.null origins.Origins)) (set! pos (call back p (get p Places.low) pos)) (block))
+    (when (neq (get p Places.low) (ptr.null origins.Origins)) (set! pos (call back p (get p Places.low) pos)))
     (let t:(ptr Text) (get p Places.flat))
-    (if (neq (get p Places.orig) (ptr.null origins.Origins))
-        (block
+    (when (neq (get p Places.orig) (ptr.null origins.Origins))
           (set! pos (call back p (get p Places.gen) pos))
           (set! pos (call back p (get p Places.orig) pos))
-          (if (gte (get p Places.file) 0)
-              (set! t (call (vec.at (ptr Text)) (get p Places.files) (get p Places.file)))
-              (block)))
-        (block))
+          (when (gte (get p Places.file) 0)
+              (set! t (call (vec.at (ptr Text)) (get p Places.files) (get p Places.file)))))
     (call locate t pos))
 
   ;; Line and column (1-based; a column counts characters) of pos in t.
   (fn locate [t:(ptr Text) pos:i32] -> (ptr Place)
-    (unsafe (if (eq (get t Text.starts) (ptr.null (vec.Vec i32))) (call find_starts t) (block))
+    (unsafe (when (eq (get t Text.starts) (ptr.null (vec.Vec i32))) (call find_starts t))
     (let starts:(ptr (vec.Vec i32)) (get t Text.starts))
     ;; the last line starting at or before pos
     (let lo:i32 0)
@@ -101,7 +98,7 @@
     (let src:i32 (call str.addr (get t Text.text)))
     (for k start pos
       ;; a UTF-8 continuation byte is part of the character before it
-      (if (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1)) (block)))
+      (when (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1))))
     (let r:(ptr Place) (new Place (call alloc.forever)))
     (put r Place.file (get t Text.name))
     (put r Place.line (+ lo 1))
@@ -113,5 +110,5 @@
     (let starts:(ptr (vec.Vec i32)) (call (vec.make i32) (call alloc.default) 64))
     (call (vec.push i32) starts 0)
     (for k 0 (get s str.Bytes.len)
-      (if (eq (mem.load8 (+ (call str.addr s) k)) 10) (call (vec.push i32) starts (+ k 1)) (block)))
+      (when (eq (mem.load8 (+ (call str.addr s) k)) 10) (call (vec.push i32) starts (+ k 1))))
     (put t Text.starts starts))))

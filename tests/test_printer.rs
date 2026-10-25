@@ -54,11 +54,11 @@ fn literals_print_in_forms_both_tokenizers_read() {
 /// is not a block keeps its `if`.
 #[test]
 fn when_prints_as_when() {
-    let src = "(module w (fn f [n:i32] -> i32 (let x:i32 0) (when (gt n 0) (set! x 1) (set! x (+ x 1))) (when (lt n 0)) (if (eq n 5) (set! x 7) (block)) x))";
+    let src = "(module w (fn f [n:i32] -> i32 (let x:i32 0) (when (gt n 0) (set! x 1) (set! x (+ x 1))) (when (lt n 0)) (when (eq n 5) (set! x 7)) x))";
     let printed = print_module(&Parser::parse(src).unwrap());
     assert!(printed.contains("(when (gt n 0) (set! x 1) (set! x (+ x 1)))"), "{printed}");
     assert!(printed.contains("(when (lt n 0))"), "{printed}");
-    assert!(printed.contains("(if (eq n 5) (set! x 7) (block))"), "{printed}");
+    assert!(printed.contains("(when (eq n 5) (set! x 7))"), "{printed}");
     let again = print_module(&Parser::parse(&printed).unwrap());
     assert_eq!(again, printed);
 }

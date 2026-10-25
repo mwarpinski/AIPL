@@ -94,11 +94,11 @@
   ;; when any bit is set, or when `force` (byte access to spl bpl sil dil).
   (fn rex [c:(ptr buf.Buf) w:bool r:i32 x:i32 b:i32 force:bool] -> void
     (let v:i32 (bitor (if w 8 0) (bitor (shl (bitand (shr r 3) 1) 2) (bitor (shl (bitand (shr x 3) 1) 1) (bitand (shr b 3) 1)))))
-    (if (or (neq v 0) force) (call byte c (bitor 64 v)) (block)))
+    (when (or (neq v 0) force) (call byte c (bitor 64 v))))
 
   ;; One- or two-byte opcode: values above 255 are 0x0F-prefixed (0x0FAF).
   (fn opcode [c:(ptr buf.Buf) op:i32] -> void
-    (if (gt op 255) (call byte c 15) (block))
+    (when (gt op 255) (call byte c 15))
     (call byte c op))
 
   ;; op with ModRM register-direct: reg field `reg` (a register or /digit),
@@ -517,7 +517,7 @@
   ;; operands), 0x0F, op, and ModRM with `reg` and `rm`.
   (fn sse [c:(ptr buf.Buf) prefix:i32 wide:bool op:i32 reg:i32 rm:i32] -> void
     (req (and (call reg_ok reg) (call reg_ok rm)))
-    (if (neq prefix 0) (call byte c prefix) (block))
+    (when (neq prefix 0) (call byte c prefix))
     (call rex c wide reg 0 rm false)
     (call byte c 15)
     (call byte c op)
@@ -630,7 +630,7 @@
   ;; (test vector checked by decoding it with objdump: each is one nop).
   (fn nop [c:(ptr buf.Buf) n:i32] -> void (pub)
     (req (and (gte n 1) (lte n 9)))
-    (if (or (eq n 2) (or (eq n 6) (eq n 9))) (call byte c 102) (block))
+    (when (or (eq n 2) (or (eq n 6) (eq n 9))) (call byte c 102))
     (cond
       ((eq n 1) (call byte c 144))
       ((eq n 2) (call byte c 144))

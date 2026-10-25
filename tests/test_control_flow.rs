@@ -40,7 +40,7 @@ pub const PROGRAM: &str = r#"
   ;; early return inside a loop: index of the first multiple of 7 at or above n
   (fn first_mult7 [n:i32] -> i32 (unsafe)
     (for i n (+ n 101)
-      (if (eq (% i 7) 0) (return i) (block)))
+      (when (eq (% i 7) 0) (return i)))
     -1)
 
   ;; break inside a nested if: sum 1.. until the total passes n
@@ -58,7 +58,7 @@ pub const PROGRAM: &str = r#"
   (fn sum_odd [n:i32] -> i32 (unsafe)
     (let total:i32 0)
     (for i 0 (+ n 1)
-      (if (eq (% i 2) 0) (continue) (block))
+      (when (eq (% i 2) 0) (continue))
       (set! total (+ total i)))
     total)
 
@@ -69,7 +69,7 @@ pub const PROGRAM: &str = r#"
     (while (gt v 0)
       (let d:i32 (% v 10))
       (set! v (/ v 10))
-      (if (eq d 0) (continue) (block))
+      (when (eq d 0) (continue))
       (set! count (+ count 1)))
     count)
 
@@ -78,8 +78,8 @@ pub const PROGRAM: &str = r#"
     (let hits:i32 0)
     (for i 1 (+ n 1)
       (for j 1 (+ n 1)
-        (if (gt j i) (break) (block))
-        (if (eq j 2) (continue) (block))
+        (when (gt j i) (break))
+        (when (eq j 2) (continue))
         (set! hits (+ hits 1))))
     hits)
 
@@ -116,7 +116,7 @@ pub const PROGRAM: &str = r#"
     (let x:i32 (* n 3))
     (return (+ x 1)))
   (fn bump [p:i32] -> void (unsafe)
-    (if (lt p 0) (return) (block))
+    (when (lt p 0) (return))
     (mem.store32 p (+ (mem.load32 p) 1)))
   (fn uses_void_return [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
@@ -132,8 +132,8 @@ pub const PROGRAM: &str = r#"
     (let count:i32 0)
     (for i 0 (+ limit 1)
       (set! count (+ count 1))
-      (if (eq i 2) (set! limit (- limit 1)) (block))
-      (if (eq i 0) (set! i 1) (block)))
+      (when (eq i 2) (set! limit (- limit 1)))
+      (when (eq i 0) (set! i 1)))
     count))
 "#;
 
@@ -197,7 +197,7 @@ fn loop_bounds_are_evaluated_once_and_the_variable_may_be_set() {
 
 #[test]
 fn ens_sees_the_early_returned_value() {
-    let src = "(module m (fn f [n:i32] -> i32 (ens (gt res 0)) (if (lt n 0) (return -1) (block)) n))";
+    let src = "(module m (fn f [n:i32] -> i32 (ens (gt res 0)) (when (lt n 0) (return -1)) n))";
     let m = Parser::parse(src).unwrap();
     TypeChecker::new().check_module(&m).unwrap();
     let mut vm = VM::new();
@@ -223,7 +223,7 @@ fn misplaced_control_flow_is_rejected() {
     // 7.1); a void branch that does not leave still mismatches
     let m = Parser::parse("(module m (fn f [n:i32] -> i32 (if (lt n 0) (return 0) 5)))").unwrap();
     TypeChecker::new().check_module(&m).expect("a returning branch fits any type");
-    let err = check_err("(module m (fn f [n:i32] -> i32 (if (lt n 0) (block) 5)))");
+    let err = check_err("(module m (fn f [n:i32] -> i32 (when (not (lt n 0)) 5)))");
     assert!(err.contains("If branch type mismatch"), "{err}");
 }
 
@@ -260,32 +260,32 @@ pub const SHORT_CIRCUIT: &str = r#"
   (fn first_index_over [n:i32] -> i32 (unsafe)
     (let found:i32 -1)
     (for i 0 (+ n 1)
-      (if (and (gt i 3) (block (set! found i) (break) true)) (block) (block)))
+      (when (and (gt i 3) (block (set! found i) (break) true))))
     found)
 
   ;; break and return inside arithmetic operands: later operands must not run
   (fn jump_in_operand [n:i32] -> i32 (unsafe)
     (let p:i32 (mem.alloc 4))
     (for i 0 (+ n 1)
-      (let x:i32 (+ (block (if (eq i 2) (break) (block)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
-    (+ (* 100 (mem.load32 p)) (+ 1 (block (if (gt n 50) (return -7) (block)) 0))))
+      (let x:i32 (+ (block (when (eq i 2) (break)) i) (block (mem.store32 p (+ (mem.load32 p) 1)) 0))))
+    (+ (* 100 (mem.load32 p)) (+ 1 (block (when (gt n 50) (return -7)) 0))))
 
   ;; a return inside a return's value leaves with the inner value
   (fn return_in_return [n:i32] -> i32 (unsafe)
-    (return (block (if (gt n 0) (return (* n 10)) (block)) -3)))
+    (return (block (when (gt n 0) (return (* n 10))) -3)))
 
   ;; a return inside a call's argument: the call never happens, and the
   ;; caller still returns (the VM's callee once took the return as its own)
   (fn add_one [x:i32] -> i32 (unsafe) (+ x 1))
   (fn return_in_argument [n:i32] -> i32 (unsafe)
-    (let r:i32 (call add_one (block (if (gt n 0) (return 7) (block)) n)))
+    (let r:i32 (call add_one (block (when (gt n 0) (return 7)) n)))
     (+ r 100))
 
   ;; a break inside a set!'s value assigns nothing
   (fn break_in_assignment [n:i32] -> i32 (unsafe)
     (let x:i32 5)
     (for i 0 (+ n 1)
-      (set! x (+ (block (if (eq i 2) (break) (block)) i) 10)))
+      (set! x (+ (block (when (eq i 2) (break)) i) 10)))
     x)
 
   ;; nested, as the checker requires for more than two operands

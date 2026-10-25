@@ -40,7 +40,7 @@
   ;; Moves amount from one account to the other, or neither changes. Checks
   ;; the destination first so a failed deposit never needs undoing.
   (fn transfer [from:(ptr Account) to:(ptr Account) amount:i32] -> (result i32 i32)
-    (if (get to Account.frozen) (return (err:i32 (call err_frozen))) (block))
+    (when (get to Account.frozen) (return (err:i32 (call err_frozen))))
     (match_result (call withdraw from amount)
       (ok left (block (call deposit to amount) (ok:i32 left)))
       (err code (err:i32 code))))

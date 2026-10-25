@@ -41,7 +41,7 @@
     (req (gte lim 0))
     (req (gt (get (call twice p) V2.x) -1000))
     (ens (lte (get res V2.x) lim))
-    (if (gt (get p V2.x) lim) (return (with p V2.x lim)) (block))
+    (when (gt (get p V2.x) lim) (return (with p V2.x lim)))
     (if (lt (get p V2.y) 0) (with p V2.y 0) p))
 
   ;; reads from values that are computed, not held
@@ -83,7 +83,7 @@
     (put bx Box.tag 5i64)
     (set! total (+ total (get (get (get bx Box.seg) Seg.b) V2.y)))      ;; +5
     (set! total (+ total (get (get (get bx Box.seg) Seg.a) V2.y)))      ;; +30
-    (if (get (get bx Box.seg) Seg.on) (set! total (+ total 1)) (block)) ;; +1 = 123
+    (when (get (get bx Box.seg) Seg.on) (set! total (+ total 1))) ;; +1 = 123
     ;; an array of them
     (let segs:(arr Seg) (arr.new Seg (call alloc.forever) 3))
     (arr.set Seg segs 0 (get bx Box.seg))
@@ -91,7 +91,7 @@
     (arr.set Seg segs 2 Seg.on true)
     (set! total (+ total (get (get (arr.get Seg segs 0) Seg.a) V2.y)))  ;; +30
     (set! total (+ total (get (get (arr.get Seg segs 1) Seg.a) V2.y)))  ;; +4
-    (if (get (arr.get Seg segs 2) Seg.on) (set! total (+ total 1)) (block))  ;; +1 = 158
+    (when (get (arr.get Seg segs 2) Seg.on) (set! total (+ total 1)))  ;; +1 = 158
     ;; a function reference that takes and gives values
     (let f:(fn [V2] -> V2) (ref twice))
     (set! total (+ total (get (call_ref (fn [V2] -> V2) f (make V2 1 2)) V2.y)))  ;; +4

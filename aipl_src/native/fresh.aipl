@@ -85,7 +85,7 @@
     (call buf.push_byte sa 0)
     (call buf.push_byte sa (bitand (shru port 8) 255))
     (call buf.push_byte sa (bitand port 255))
-    (if v4 (block) (for k 0 4 (call buf.push_byte sa 0)))
+    (when (not v4) (for k 0 4 (call buf.push_byte sa 0)))
     (for k 0 (get g sockets.Grant.len) (call buf.push_byte sa (arr.get u8 (get g sockets.Grant.addr) k)))
     (if v4 (for k 0 8 (call buf.push_byte sa 0)) (for k 0 4 (call buf.push_byte sa 0)))
     (let sa_addr:i32 (call lower.data_bytes l (call buf.bytes sa)))

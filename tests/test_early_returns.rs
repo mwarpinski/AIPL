@@ -72,7 +72,7 @@ fn every_error_has_one_message_in_both_toolchains() {
         ("(fn f [] -> i32 (block (defer (call r))) 1)", "defer is a statement of a function's body (it runs when the function returns), not part of an expression or a block"),
         ("(fn f [] -> i32 (defer (return 1)) 1)", "a defer cannot return: it runs as the function returns"),
         ("(fn f [] -> (result i32 str) (defer (let q:i32 (try (call r)))) (ok:str 1))", "a defer cannot try: it runs as the function returns"),
-        ("(fn f [n:i32] -> i32 (if (gt n 0) n (block)))", "If branch type mismatch: then is i32, else is void"),
+        ("(fn f [n:i32] -> i32 (when (gt n 0) n))", "If branch type mismatch: then is i32, else is void"),
     ];
     let dir = scratch("errors");
     for (k, (item, want)) in cases.iter().enumerate() {

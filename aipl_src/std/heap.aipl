@@ -69,14 +69,14 @@
   (fn class_of [n:i32] -> i32
     (req (gt n 0))
     (let s:i32 (bitand (+ n 7) -8))
-    (if (lte s 24) (return (- (/ s 8) 1)) (block))
+    (when (lte s 24) (return (- (/ s 8) 1)))
     ;; k: the highest bit of s, so 2^k <= s < 2^(k+1); then the quarter step
     (let k:i32 5)
     (while (gte s (shl 1 (+ k 1))) (set! k (+ k 1)))
     (let base:i32 (shl 1 k))
     (let step:i32 (shl 1 (- k 2)))
     (let j:i32 (/ (+ (- s base) (- step 1)) step))
-    (if (eq j 4) (block (set! k (+ k 1)) (set! j 0)) (block))
+    (when (eq j 4) (set! k (+ k 1)) (set! j 0))
     (+ 3 (+ (* 4 (- k 5)) j)))
 
   ;; ===== Allocating and freeing =====
@@ -108,13 +108,11 @@
   ;; or from a new one.
   (fn carve [h:(ptr Heap) size:i32] -> i32
     (let need:i32 (+ size 8))
-    (if (gt need (- (get h Heap.end) (get h Heap.cur)))
-        (block
+    (when (gt need (- (get h Heap.end) (get h Heap.cur)))
           (let chunk:i32 (if (gt need CHUNK) need CHUNK))
           (put h Heap.cur (mem.alloc chunk))
           (put h Heap.end (+ (get h Heap.cur) chunk))
           (put h Heap.reserved (+ (get h Heap.reserved) chunk)))
-        (block))
     (let p:i32 (+ (get h Heap.cur) 8))
     (put h Heap.cur (+ (get h Heap.cur) need))
     p)
@@ -129,7 +127,7 @@
     (let end:i32 (+ p (bitand (+ (mem.load32 (- p 4)) 7) -8)))
     (let q:i32 (+ p 8))
     (while (lt q end)
-      (if (neq (mem.load64 q) POISON) (return true) (block))
+      (when (neq (mem.load64 q) POISON) (return true))
       (set! q (+ q 8)))
     false)
 
@@ -155,10 +153,10 @@
 
   ;; The checks of free_raw, named for the failure they catch.
   (fn not_freed_already [h:(ptr Heap) p:i32] -> bool (unsafe)
-    (if (or (lt p 1032) (neq (bitand p 7) 0)) (return true) (block))
+    (when (or (lt p 1032) (neq (bitand p 7) 0)) (return true))
     (neq (mem.load32 (- p 8)) (^ (ptr.addr h) FREED)))
   (fn allocated_by [h:(ptr Heap) p:i32] -> bool (unsafe)
-    (if (or (lt p 1032) (neq (bitand p 7) 0)) (return false) (block))
+    (when (or (lt p 1032) (neq (bitand p 7) 0)) (return false))
     (eq (mem.load32 (- p 8)) (^ (ptr.addr h) LIVE)))
   (fn size_matches [p:i32 n:i32] -> bool (unsafe)
     (eq (mem.load32 (- p 4)) n))
@@ -204,42 +202,40 @@
     (let classes_ok:bool true)
     (for n 1 5001
       (let c:i32 (call class_of n))
-      (if (or (lt (call class_size c) n) (and (gt c 0) (gte (call class_size (- c 1)) (bitand (+ n 7) -8))))
-          (set! classes_ok false)
-          (block)))
-    (if (and classes_ok (eq (call class_size (call class_of 1000000)) 1048576)) (set! p (+ p 1)) (block))
+      (when (or (lt (call class_size c) n) (and (gt c 0) (gte (call class_size (- c 1)) (bitand (+ n 7) -8))))
+          (set! classes_ok false)))
+    (when (and classes_ok (eq (call class_size (call class_of 1000000)) 1048576)) (set! p (+ p 1)))
     (let h:(ptr Heap) (call make))
     ;; typed, zeroed, distinct, 8-aligned
     (let x:(ptr Pair) (call (create Pair) h))
     (let y:(ptr Pair) (call (create Pair) h))
     (put x Pair.right 7i64)
-    (if (and (eq (get y Pair.right) 0i64) (and (neq (ptr.addr x) (ptr.addr y)) (eq (bitand (ptr.addr y) 7) 0)))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (get y Pair.right) 0i64) (and (neq (ptr.addr x) (ptr.addr y)) (eq (bitand (ptr.addr y) 7) 0)))
+        (set! p (+ p 1)))
     ;; a freed block is reused for the next request of its class, zeroed again
     (call (destroy Pair) h x)
     (let z:(ptr Pair) (call (create Pair) h))
-    (if (and (eq (ptr.addr z) (ptr.addr x)) (eq (get z Pair.right) 0i64)) (set! p (+ p 1)) (block))
+    (when (and (eq (ptr.addr z) (ptr.addr x)) (eq (get z Pair.right) 0i64)) (set! p (+ p 1)))
     ;; arrays: length, zeroed, usable like arr.new's
     (let a:(arr i64) (call (array i64) h 100))
     (arr.set i64 a 99 5i64)
-    (if (and (eq (arr.len a) 100) (and (eq (arr.get i64 a 0) 0i64) (eq (arr.get i64 a 99) 5i64))) (set! p (+ p 1)) (block))
+    (when (and (eq (arr.len a) 100) (and (eq (arr.get i64 a 0) 0i64) (eq (arr.get i64 a 99) 5i64))) (set! p (+ p 1)))
     ;; accounting: three live blocks, then none
-    (if (eq (call live h) 3) (set! p (+ p 1)) (block))
+    (when (eq (call live h) 3) (set! p (+ p 1)))
     (call (free_array i64) h a)
     (call (destroy Pair) h y)
     (call (destroy Pair) h z)
-    (if (and (eq (call live h) 0) (eq (call live_bytes h) 0)) (set! p (+ p 1)) (block))
+    (when (and (eq (call live h) 0) (eq (call live_bytes h) 0)) (set! p (+ p 1)))
     ;; freed memory reads as the junk pattern, not the old values
     (let e:(arr i32) (call (array i32) h 4))
     (arr.set i32 e 3 42)
     (call (free_array i32) h e)
-    (if (eq (mem.load32 (+ (arr.addr e) 8)) -559038737) (set! p (+ p 1)) (block))
+    (when (eq (mem.load32 (+ (arr.addr e) 8)) -559038737) (set! p (+ p 1)))
     ;; churn: memory is reused, so a thousand allocations of 1 KiB, each freed,
     ;; take no more than the first chunk
     (let before:i32 (call reserved h))
     (for i 1 1001
       (let b:i32 (call raw h 1024))
       (call free_raw h b 1024))
-    (if (eq (call reserved h) before) (set! p (+ p 1)) (block))
+    (when (eq (call reserved h) before) (set! p (+ p 1)))
     p)))

@@ -68,9 +68,8 @@ an `i64`, `2.0` an `f64`. Nothing converts on its own, so `(+ a b)` with an
   (fn sum_even [n:i32] -> i32
     (let total:i32 0)
     (for i 1 (+ n 1)                     ;; i = 1, 2, ..., n (the end, n + 1, is left out)
-      (if (eq (% i 2) 0)
-          (set! total (+ total i))
-          (block)))
+      (when (eq (% i 2) 0)
+          (set! total (+ total i))))
     total)
 
   (fn sign [x:i32] -> i32

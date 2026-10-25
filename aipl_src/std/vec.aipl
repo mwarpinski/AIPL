@@ -47,14 +47,12 @@
   (fn (push T) [v:(ptr (Vec T)) x:T] -> void (pub)
     (let n:i32 (get v (Vec T) len))
     (let items:(arr T) (get v (Vec T) items))
-    (if (eq n (arr.len items))
-        (block
+    (when (eq n (arr.len items))
           (let bigger:(arr T) (arr.new T (get v (Vec T) allocator) (* 2 n)))
           (for i 0 n
             (arr.set T bigger i (arr.get T items i)))
           (call (alloc.free_array T) (get v (Vec T) allocator) items)
           (put v (Vec T) items bigger))
-        (block))
     (arr.set T (get v (Vec T) items) n x)
     (put v (Vec T) len (+ n 1)))
 
@@ -78,7 +76,7 @@
   ;; for pointers), or -1.
   (fn (index_of T) [v:(ptr (Vec T)) x:T] -> i32 (pub) (where (cmp.Eq T))
     (for i 0 (get v (Vec T) len)
-      (if (call (cmp.Eq.same T) (arr.get T (get v (Vec T) items) i) x) (return i) (block)))
+      (when (call (cmp.Eq.same T) (arr.get T (get v (Vec T) items) i) x) (return i)))
     -1)
 
   (fn min_i32 [a:i32 b:i32] -> i32 (if (lt a b) a b))
@@ -91,7 +89,7 @@
   ;; before a, zero keeps their order. Bottom-up merge sort, O(n log n).
   (fn (sort_by T) [v:(ptr (Vec T)) cmp:(fn [T T] -> i32 (no_leak))] -> void (pub)
     (let n:i32 (get v (Vec T) len))
-    (if (lt n 2) (return) (block))
+    (when (lt n 2) (return))
     (let src:(arr T) (get v (Vec T) items))
     (let scratch:(arr T) (arr.new T (get v (Vec T) allocator) n))
     (let dst:(arr T) scratch)
@@ -123,10 +121,9 @@
       (set! dst tmp)
       (set! width (* width 2)))
     ;; the sorted run is in src; copy it back if that is the scratch array
-    (if (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
+    (when (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
         (for i 0 n
-          (arr.set T (get v (Vec T) items) i (arr.get T src i)))
-        (block))
+          (arr.set T (get v (Vec T) items) i (arr.get T src i))))
     (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
   ;; sort_by, with a context passed to every comparison: (cmp ctx a b). AIPL
@@ -136,7 +133,7 @@
   ;; indirect call per comparison (9% on a million i32s).
   (fn (sort_by_with T C) [v:(ptr (Vec T)) ctx:C cmp:(fn [C T T] -> i32 (no_leak))] -> void (pub)
     (let n:i32 (get v (Vec T) len))
-    (if (lt n 2) (return) (block))
+    (when (lt n 2) (return))
     (let src:(arr T) (get v (Vec T) items))
     (let scratch:(arr T) (arr.new T (get v (Vec T) allocator) n))
     (let dst:(arr T) scratch)
@@ -168,10 +165,9 @@
       (set! dst tmp)
       (set! width (* width 2)))
     ;; the sorted run is in src; copy it back if that is the scratch array
-    (if (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
+    (when (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
         (for i 0 n
-          (arr.set T (get v (Vec T) items) i (arr.get T src i)))
-        (block))
+          (arr.set T (get v (Vec T) items) i (arr.get T src i))))
     (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
   ;; Ascending by T's order (std/cmp's Ord: i32, i64, str, or a type that
@@ -181,7 +177,7 @@
   ;; memory; here a compare that keeps some makes only this sort may-leak).
   (fn (sort T) [v:(ptr (Vec T))] -> void (pub) (where (cmp.Ord T))
     (let n:i32 (get v (Vec T) len))
-    (if (lt n 2) (return) (block))
+    (when (lt n 2) (return))
     (let src:(arr T) (get v (Vec T) items))
     (let scratch:(arr T) (arr.new T (get v (Vec T) allocator) n))
     (let dst:(arr T) scratch)
@@ -213,10 +209,9 @@
       (set! dst tmp)
       (set! width (* width 2)))
     ;; the sorted run is in src; copy it back if that is the scratch array
-    (if (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
+    (when (neq (arr.addr src) (arr.addr (get v (Vec T) items)))
         (for i 0 n
-          (arr.set T (get v (Vec T) items) i (arr.get T src i)))
-        (block))
+          (arr.set T (get v (Vec T) items) i (arr.get T src i))))
     (call (alloc.free_array T) (get v (Vec T) allocator) scratch))
 
 
@@ -237,10 +232,10 @@
     (let p:i32 0)
     (let v:(ptr (Vec i32)) (call (make i32) (call alloc.default) 0))
     (for i 0 1000 (call (push i32) v (* i 3)))
-    (if (and (eq (call (len i32) v) 1000) (and (eq (call (at i32) v 0) 0) (eq (call (at i32) v 999) 2997))) (set! p (+ p 1)) (block))
+    (when (and (eq (call (len i32) v) 1000) (and (eq (call (at i32) v 0) 0) (eq (call (at i32) v 999) 2997))) (set! p (+ p 1)))
     (call (set i32) v 5 -7)
-    (if (and (eq (call (pop i32) v) 2997) (and (eq (call (len i32) v) 999) (eq (call (at i32) v 5) -7))) (set! p (+ p 1)) (block))
-    (if (and (eq (call (index_of i32) v 30) 10) (eq (call (index_of i32) v 31) -1)) (set! p (+ p 1)) (block))
+    (when (and (eq (call (pop i32) v) 2997) (and (eq (call (len i32) v) 999) (eq (call (at i32) v 5) -7))) (set! p (+ p 1)))
+    (when (and (eq (call (index_of i32) v 30) 10) (eq (call (index_of i32) v 31) -1)) (set! p (+ p 1)))
     ;; sort 200 pseudo-random values; sorted and the same multiset (sum, count)
     (let r:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (let x:i32 12345)
@@ -254,15 +249,14 @@
     (let sum2:i32 0)
     (for i 0 200
       (set! sum2 (+ sum2 (call (at i32) r i)))
-      (if (and (gt i 0) (gt (call (at i32) r (- i 1)) (call (at i32) r i))) (set! ok false) (block)))
-    (if (and ok (eq sum sum2)) (set! p (+ p 1)) (block))
+      (when (and (gt i 0) (gt (call (at i32) r (- i 1)) (call (at i32) r i))) (set! ok false)))
+    (when (and ok (eq sum sum2)) (set! p (+ p 1)))
     ;; stability: equal keys keep their order
     (let s:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (call (push i32) s 31) (call (push i32) s 12) (call (push i32) s 35) (call (push i32) s 10) (call (push i32) s 33)
     (call (sort_by i32) s (ref cmp_tens))
-    (if (and (eq (call (at i32) s 0) 12) (and (eq (call (at i32) s 1) 10) (and (eq (call (at i32) s 2) 31) (and (eq (call (at i32) s 3) 35) (eq (call (at i32) s 4) 33)))))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (call (at i32) s 0) 12) (and (eq (call (at i32) s 1) 10) (and (eq (call (at i32) s 2) 31) (and (eq (call (at i32) s 3) 35) (eq (call (at i32) s 4) 33)))))
+        (set! p (+ p 1)))
     ;; other element types: i64 values and struct pointers, sorted by a field
     (let big:(ptr (Vec i64)) (call (make i64) (call alloc.default) 0))
     (call (push i64) big 5000000000i64)
@@ -272,18 +266,16 @@
       (put pt Point.x (- 10 i))
       (call (push (ptr Point)) pts pt))
     (call (sort_by (ptr Point)) pts (ref by_x))
-    (if (and (eq (call (at i64) big 0) 5000000000i64) (eq (get (call (at (ptr Point)) pts 0) Point.x) 6))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (call (at i64) big 0) 5000000000i64) (eq (get (call (at (ptr Point)) pts 0) Point.x) 6))
+        (set! p (+ p 1)))
     ;; a context: positions sorted by the scores they index, highest first
     (let scores:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (arr.set i32 scores 0 30) (arr.set i32 scores 1 90) (arr.set i32 scores 2 10) (arr.set i32 scores 3 50)
     (let idx:(ptr (Vec i32)) (call (make i32) (call alloc.default) 4))
     (for i 0 4 (call (push i32) idx i))
     (call (sort_by_with i32 (arr i32)) idx scores (ref by_score))
-    (if (and (eq (call (at i32) idx 0) 1) (and (eq (call (at i32) idx 1) 3) (and (eq (call (at i32) idx 2) 0) (eq (call (at i32) idx 3) 2))))
-        (set! p (+ p 1))
-        (block))
+    (when (and (eq (call (at i32) idx 0) 1) (and (eq (call (at i32) idx 1) 3) (and (eq (call (at i32) idx 2) 0) (eq (call (at i32) idx 3) 2))))
+        (set! p (+ p 1)))
     ;; sort by cmp.Ord: str (bytewise, a prefix first) and i64
     (let names:(ptr (Vec str)) (call (make str) (call alloc.default) 4))
     (call (push str) names "pear") (call (push str) names "apple") (call (push str) names "app") (call (push str) names "Zoo")
@@ -291,13 +283,12 @@
     (let ns:(ptr (Vec i64)) (call (make i64) (call alloc.default) 4))
     (call (push i64) ns 5000000000i64) (call (push i64) ns -3i64) (call (push i64) ns 0i64)
     (call (sort i64) ns)
-    (if (and (call (cmp.Eq.same str) (call (at str) names 0) "Zoo")
+    (when (and (call (cmp.Eq.same str) (call (at str) names 0) "Zoo")
              (call (cmp.Eq.same str) (call (at str) names 1) "app")
              (call (cmp.Eq.same str) (call (at str) names 2) "apple")
              (call (cmp.Eq.same str) (call (at str) names 3) "pear")
              (eq (call (at i64) ns 0) -3i64) (eq (call (at i64) ns 2) 5000000000i64))
-        (set! p (+ p 1))
-        (block))
+        (set! p (+ p 1)))
     p)
 
   ;; higher scores first

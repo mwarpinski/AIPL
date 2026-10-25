@@ -70,7 +70,7 @@
 
   (fn big_is_zero [a:(arr i64)] -> bool
     (for i 0 (call big_limbs)
-      (if (neq (arr.get i64 a i) 0i64) (return false) (block)))
+      (when (neq (arr.get i64 a i) 0i64) (return false)))
     true)
 
   ;; a = a << s (bits), in place
@@ -142,10 +142,9 @@
     (let ex:i32 (i32.wrap (bitand (shru bits 52i64) 2047i64)))
     (let mant:i64 (bitand bits 4503599627370495i64))
     (let n:i32 0)
-    (if neg (block (mem.store8 out 45) (set! n 1)) (block))
-    (if (eq ex 2047)
-        (return (+ n (call put_str (+ out n) (if (eq mant 0i64) "inf" "nan"))))
-        (block))
+    (when neg (mem.store8 out 45) (set! n 1))
+    (when (eq ex 2047)
+        (return (+ n (call put_str (+ out n) (if (eq mant 0i64) "inf" "nan")))))
     ;; x = m * 2^e
     (let m:i64 (if (eq ex 0) mant (bitor mant 4503599627370496i64)))
     (let e:i32 (if (eq ex 0) -1074 (- ex 1075)))
@@ -180,7 +179,7 @@
       (mem.store8 (+ out a) (mem.load8 (+ out b)))
       (mem.store8 (+ out b) t))
     ;; fraction digits: times ten, take the digit above bit k, keep the rest
-    (if (gt digits 0) (block (mem.store8 (+ out n) 46) (set! n (+ n 1))) (block))
+    (when (gt digits 0) (mem.store8 (+ out n) 46) (set! n (+ n 1)))
     (for d 1 (+ digits 1)
       (if (eq k 0)
           (mem.store8 (+ out n) 48)
@@ -190,16 +189,14 @@
             (call big_mask frac k)))
       (set! n (+ n 1)))
     ;; round half to even on what remains (frac / 2^k)
-    (if (gt k 0)
-        (block
+    (when (gt k 0)
           (let half_bit:i32 (call big_bit frac (- k 1)))
           (for i 0 (call big_limbs) (arr.set i64 rest i (arr.get i64 frac i)))
           (call big_mask rest (- k 1))
           (let above:bool (and (eq half_bit 1) (not (call big_is_zero rest))))
           (let tie:bool (and (eq half_bit 1) (call big_is_zero rest)))
           (let last_odd:bool (eq (% (- (mem.load8 (+ out (- n 1))) 48) 2) 1))
-          (if (or above (and tie last_odd)) (set! n (call round_up out start n)) (block)))
-        (block))
+          (when (or above (and tie last_odd)) (set! n (call round_up out start n))))
     n)
 
   ;; Adds one unit in the last place to the decimal at out[start..n) (digits
@@ -243,29 +240,29 @@
 
   ;; True if the n bytes at out spell s.
   (fn spells [out:i32 n:i32 s:str] -> bool (unsafe)
-    (if (neq n (str.len s)) (return false) (block))
+    (when (neq n (str.len s)) (return false))
     (let p:i32 (str.ptr s))
     (for i 0 n
-      (if (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (return false) (block)))
+      (when (neq (mem.load8 (+ out i)) (mem.load8 (+ p i))) (return false)))
     true)
 
   ;; Pass count; test_suite.aipl expects 14.
   (fn run_fmt_tests [] -> i32 (pub)
     (unsafe (let b:i32 (mem.alloc 400))
     (let p:i32 0)
-    (if (call spells b (call uint_to_bytes 0 b) "0") (set! p (+ p 1)) (block))
-    (if (call spells b (call uint_to_bytes -1 b) "4294967295") (set! p (+ p 1)) (block))
-    (if (call spells b (call int_to_bytes -2147483648 b) "-2147483648") (set! p (+ p 1)) (block))
-    (if (call spells b (call int_to_bytes 907 b) "907") (set! p (+ p 1)) (block))
-    (if (call spells b (call hex_to_bytes 255 b) "ff") (set! p (+ p 1)) (block))
-    (if (call spells b (call hex_to_bytes -1 b) "ffffffff") (set! p (+ p 1)) (block))
-    (if (call spells b (call int64_to_bytes -9223372036854775808i64 b) "-9223372036854775808") (set! p (+ p 1)) (block))
-    (if (call spells b (call uint64_to_bytes -1i64 b) "18446744073709551615") (set! p (+ p 1)) (block))
-    (if (call spells b (call int64_to_bytes 0i64 b) "0") (set! p (+ p 1)) (block))
-    (if (call spells b (call int64_to_bytes 4294967296i64 b) "4294967296") (set! p (+ p 1)) (block))
-    (if (call spells b (call f64_fixed -0.1690751638285 9 b) "-0.169075164") (set! p (+ p 1)) (block))
+    (when (call spells b (call uint_to_bytes 0 b) "0") (set! p (+ p 1)))
+    (when (call spells b (call uint_to_bytes -1 b) "4294967295") (set! p (+ p 1)))
+    (when (call spells b (call int_to_bytes -2147483648 b) "-2147483648") (set! p (+ p 1)))
+    (when (call spells b (call int_to_bytes 907 b) "907") (set! p (+ p 1)))
+    (when (call spells b (call hex_to_bytes 255 b) "ff") (set! p (+ p 1)))
+    (when (call spells b (call hex_to_bytes -1 b) "ffffffff") (set! p (+ p 1)))
+    (when (call spells b (call int64_to_bytes -9223372036854775808i64 b) "-9223372036854775808") (set! p (+ p 1)))
+    (when (call spells b (call uint64_to_bytes -1i64 b) "18446744073709551615") (set! p (+ p 1)))
+    (when (call spells b (call int64_to_bytes 0i64 b) "0") (set! p (+ p 1)))
+    (when (call spells b (call int64_to_bytes 4294967296i64 b) "4294967296") (set! p (+ p 1)))
+    (when (call spells b (call f64_fixed -0.1690751638285 9 b) "-0.169075164") (set! p (+ p 1)))
     ;; ties round to even: 2.5 -> 2, 0.125 -> 0.12
-    (if (call spells b (call f64_fixed 2.5 0 b) "2") (set! p (+ p 1)) (block))
-    (if (call spells b (call f64_fixed 0.125 2 b) "0.12") (set! p (+ p 1)) (block))
-    (if (call spells b (call f64_fixed 9.9996 3 b) "10.000") (set! p (+ p 1)) (block))
+    (when (call spells b (call f64_fixed 2.5 0 b) "2") (set! p (+ p 1)))
+    (when (call spells b (call f64_fixed 0.125 2 b) "0.12") (set! p (+ p 1)))
+    (when (call spells b (call f64_fixed 9.9996 3 b) "10.000") (set! p (+ p 1)))
     p)))

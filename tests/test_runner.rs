@@ -53,7 +53,7 @@ fn the_runner_gives_programs_args_files_stdin_and_exit_codes() {
     (call io.println_int "stdin words: " (call str.count_words (call io.read_stdin)))
     (let f:str.Bytes (call io.read_path (call os.arg 1)))
     (call io.println_int "file bytes: " (get f str.Bytes.len))
-    (if (gt (call os.arg_count) 2) (sys.exit 3) (block))
+    (when (gt (call os.arg_count) 2) (sys.exit 3))
     0))"#,
     )
     .unwrap();
