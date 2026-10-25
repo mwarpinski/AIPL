@@ -377,14 +377,13 @@
     (call note_at m (get g compiler.Node.pos) out)
     (call buf.push_byte out 41))
 
-  ;; 1 (when ...), 2 (for ...), 3 an and/or of three or more, 4 (new ...),
+  ;; (when ...) is not rewritten: the parsers read it (src/sugar.rs). 2 (for ...), 3 an and/or of three or more, 4 (new ...),
   ;; 5 (arr.new ...), else 0 (sugar.rs); their shapes were checked when the
   ;; file was read.
   (fn sugar_kind [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
     (if (neq (get g compiler.Node.kind) compiler.Kind.paren) (return 0) (block))
     (let h:str.Bytes (call head (get m Mod.src) g))
     (cond
-      ((call str.is h "when") 1)
       ((call str.is h "for") 2)
       ((and (or (call str.is h "and") (call str.is h "or")) (gt (call count_kids g) 3)) 3)
       ((call str.is h "new") 4)
@@ -392,7 +391,7 @@
       (else 0)))
 
   ;; The sugar.rs rewrites, every token they add at the form's place:
-  ;; (when c b...) as (if c (block b...) (block)); (for i s e b...) as
+  ;; (for i s e b...) as
   ;; (counted_loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...));
   ;; (new S a) as (call (alloc.create S) a), (arr.new T a n) as
   ;; (call (alloc.array T) a n).
@@ -414,16 +413,6 @@
          (call emit m c 0 out)
          (set! c (get c compiler.Node.next)))
        (call note_at m at out) (call buf.push_byte out 41))
-      ((eq kind 1)
-       (call note_at m at out) (call buf.push_str out "(if ")
-       (call emit m c 0 out)
-       (call note_at m at out) (call buf.push_str out " (block")
-       (set! c (get c compiler.Node.next))
-       (while (neq c (ptr.null compiler.Node))
-         (call buf.push_byte out 32)
-         (call emit m c 0 out)
-         (set! c (get c compiler.Node.next)))
-       (call note_at m at out) (call buf.push_str out ") (block))"))
       ((eq kind 2)
        (call note_at m at out) (call buf.push_str out "(counted_loop ")
        (call emit m c 0 out)
