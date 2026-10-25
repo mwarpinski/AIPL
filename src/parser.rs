@@ -1276,6 +1276,14 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 ));
                             }
                             let else_b = self.parse_expr()?;
+                            // one branch is when (CANONICAL_PLAN.md step 4)
+                            let empty = |e: &Expr| matches!(e, Expr::Block(items, _) if items.is_empty());
+                            for (branch, why) in [(&else_b, "an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)"), (&then_b, "an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)")] {
+                                if empty(branch) {
+                                    let (l, c) = branch.span();
+                                    return Err(format!("{l}:{c}: {why}"));
+                                }
+                            }
                             Expr::If {
                                 cond: Box::new(cond),
                                 then_branch: Box::new(then_b),
@@ -1363,6 +1371,9 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 }
                                 body.push(self.parse_expr()?);
                             }
+                            // an empty block last: every expression of the body is a
+                            // statement, its value dropped, and the when has none
+                            body.push(Expr::Block(Vec::new(), span));
                             Expr::If {
                                 cond: Box::new(cond),
                                 then_branch: Box::new(Expr::Block(body, span)),

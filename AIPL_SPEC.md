@@ -845,15 +845,16 @@ Errors: `a test is (test "name" body...)`; `expect is only for a test's body: (t
 
 ### M. `when`, `for`, and `and`/`or` of more than two
 
-Three forms are written for the reader and rewritten as the resolver reads a module (src/sugar.rs; aipl_src/resolver.aipl), so nothing after it sees them:
+`(when c body...)` is the `if` with one branch, and the only one: an `if` whose then or else is an empty `(block)` is an error (`an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)`, and for an empty then `an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)`). The parsers read `when` themselves, as `(if c (block body... (block)) (block))`: the empty block that ends the body makes every expression of the body a statement, so a value in it is dropped, as in a `while` or `for` body, and the `when` is `void`. The printers write that tree back as `when` (CANONICAL_PLAN.md step 4).
+
+The others are written for the reader and rewritten as the resolver reads a module (src/sugar.rs; aipl_src/resolver.aipl), so nothing after it sees them:
 
 | Form | Is | |
 |---|---|---|
-| `(when c body...)` | `(if c (block body...) (block))` | an `if` with nothing to do otherwise (`void`) |
 | `(for i start end body...)` | the internal counted loop `(counted_loop i start (- end 1) 1 body...)` (inclusive, with a step; not for programs, and `loop` written in a program is an error: CANONICAL_PLAN.md step 3) | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `while` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
 | `(and a b c ...)`, `(or a b c ...)` | `(and a (and b c ...))` | left to right, stopping at the first operand that decides |
 
-Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
+Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`; `a for has no step: ...` for a number right after a `for`'s end. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
 
 ## 5. WebAssembly Binary Execution Semantics
 
@@ -1084,7 +1085,8 @@ The checker (`src/checker.rs`) enforces these six rules; the VM (`src/vm.rs`), t
 | `"text"` | `str` | |
 | `(let x:T v)` | `void` (declares `x` as `T`; `v` must be `T`) | `(let n:i32 (+ 1 2))` |
 | `(set! x v)` | `void` (`v` must match `x`; `x` must be declared) | `(set! n 5)` |
-| `(if c a b)` | `void` if both `a`,`b` are `void`; else `T` where `typeof(a)==typeof(b)==T` | |
+| `(if c a b)` | `void` if both `a`,`b` are `void`; else `T` where `typeof(a)==typeof(b)==T`; neither branch an empty `(block)` | |
+| `(when c body*)` | `void`; the body's expressions are statements (a value is dropped) | |
 | `(for i s e body*)` | `void`; `s e` must be `i32`; `i` is block-scoped to the body | |
 | `(while c body*)` | `void` | |
 | `(block e1 ... en)` | type of `en` (or `void` if empty); introduces a block scope | |
@@ -1265,7 +1267,7 @@ Rules that follow from this:
 | `(and a b)` / `(or a b)` | short-circuit: `b` runs only if `a` is `true` (for `and`) or `false` (for `or`). Two or more `bool` operands, left to right (more than two are rewritten as nested pairs, section 4.M). So `(and (lt i n) (eq (arr.get i32 a i) x))` is a safe guard |
 | `(cond (c1 e...) (c2 e...) ... (else e...))` | the first clause whose test is true runs its body; `else` is required, like `if`'s else branch. The parser rewrites it to `(if c1 (block e...) (if c2 (block e...) ... (block e...)))`, so the `if` typing rules apply |
 
-`return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or an `if`. An early exit is written `(if (lt i 0) (return -1) (block))`; where the `if` gives a value, a branch that always returns, breaks, or continues fits any type (section 7.1), so `(let x:i32 (if (lt i 0) (return -1) i))` is fine too (checked in the VM, wasm, and native, 2026-10-21). A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
+`return`, `break`, and `continue` are statements of type `void`. They go where a statement goes: in a body, a `block`, a `cond` clause, or an `if`. An early exit is written `(when (lt i 0) (return -1))`; where the `if` gives a value, a branch that always returns, breaks, or continues fits any type (section 7.1), so `(let x:i32 (if (lt i 0) (return -1) i))` is fine too (checked in the VM, wasm, and native, 2026-10-21). A function body may end in `(return v)` instead of a bare `v`. `break` and `continue` outside a loop body (including a `while` condition) and `return` inside a contract are checker errors.
 
 ```lisp
 (fn index_of [a:(arr i32) target:i32] -> i32
@@ -1282,7 +1284,7 @@ Rules that follow from this:
 
 Lowering (wasm and the self-hosted compiler): `return` is the `return` instruction, or in a function with an `ens` a branch to the end of the body's block, where the `ens` checks run (section 6.2). Loops are `block { loop { ... } }`; `break` branches to the outer block. A `while` body's `continue` branches to the loop header. A `loop` wraps its body in one more block, and `continue` branches to that block's end, which falls into the step. `(and a b)` is `a; if (result i32) b else i32.const 0 end` and `(or a b)` is `a; if (result i32) i32.const 1 else b end`. Branch depths count the enclosing `if`s (including those of `and`/`or`) and `match_result` arms.
 
-A jump inside an operand (`(+ x (block (if c (break) (block)) 1))`, legal because a `block` may end in a value) leaves the whole expression at once in both backends: operands after it are not evaluated.
+A jump inside an operand (`(+ x (block (when c (break)) 1))`, legal because a `block` may end in a value) leaves the whole expression at once in both backends: operands after it are not evaluated.
 
 ### 7.11 Recursion depth
 
@@ -1884,6 +1886,7 @@ Each of these is a real failure mode observed when LLMs write AIPL. The fix is i
 | `(mem.load32 p)`, `(ptr.cast S a)`, or `(thread.spawn ...)` in an ordinary function | wrap it in `(unsafe ...)`, or mark the function `(unsafe)` if wrong arguments could break memory (section 3); usually `new`, arrays, or a std function avoid it |
 | `(f x)` to call a user function | `(call f x)`; bare `(name ...)` is only for built-in ops |
 | `(if c (set! x 1))` with no else | `if` always takes three arguments; for one branch write `(when c (set! x 1))`; both branches must be void or both the same value type |
+| `(if c (set! x 1) (block))` or `(if c (block) (set! x 1))` | an empty `(block)` branch is an error naming `when`: `(when c (set! x 1))`, `(when (not c) (set! x 1))` |
 | `(let x 5)` | `(let x:i32 5)`; the type annotation is mandatory |
 | `(let x:i32 5)` inside a block when `x` is already in scope | shadowing is a type error (`Cannot shadow existing variable`); `let` is block-scoped, so reuse a name only in sibling blocks |
 | `(set! y 1)` without a prior `let y` | declare first; there are no implicit globals |

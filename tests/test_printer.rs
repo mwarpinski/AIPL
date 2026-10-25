@@ -50,15 +50,16 @@ fn literals_print_in_forms_both_tokenizers_read() {
 }
 
 /// The tree `(when c body...)` reads into prints as `when`, so printed text is
-/// what a program would write (CANONICAL_PLAN.md step 4); an `if` whose then
-/// is not a block keeps its `if`.
+/// what a program would write (CANONICAL_PLAN.md step 4), and the empty block
+/// the parser ends its body with is not written.
 #[test]
 fn when_prints_as_when() {
-    let src = "(module w (fn f [n:i32] -> i32 (let x:i32 0) (when (gt n 0) (set! x 1) (set! x (+ x 1))) (when (lt n 0)) (when (eq n 5) (set! x 7)) x))";
+    let src = "(module w (fn g [n:i32] -> i32 n) (fn f [n:i32] -> i32 (let x:i32 0) (when (gt n 0) (set! x 1) (set! x (+ x 1))) (when (lt n 0)) (when (eq n 5) (call g n)) x))";
     let printed = print_module(&Parser::parse(src).unwrap());
     assert!(printed.contains("(when (gt n 0) (set! x 1) (set! x (+ x 1)))"), "{printed}");
     assert!(printed.contains("(when (lt n 0))"), "{printed}");
-    assert!(printed.contains("(when (eq n 5) (set! x 7))"), "{printed}");
+    assert!(printed.contains("(when (eq n 5) (call g n))"), "{printed}");
+    assert!(!printed.contains("(block)"), "{printed}");
     let again = print_module(&Parser::parse(&printed).unwrap());
     assert_eq!(again, printed);
 }

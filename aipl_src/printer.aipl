@@ -175,13 +175,23 @@
       (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
       (call s b " ") (call by b (get st ast.Step.sname)) (call s b ".") (call by b (get st ast.Step.fname))))
 
+  ;; body less the empty block a parser ends a when's body with, if it is last.
+  (fn without_last_empty [body:(arr ast.Expr)] -> (arr ast.Expr)
+    (let n:i32 (arr.len body))
+    (when (eq n 0) (return body))
+    (let last_empty:bool (match (arr.get ast.Expr body (- n 1)) (ast.Expr.block [_ items] (eq (arr.len items) 0)) (else false)))
+    (when (not last_empty) (return body))
+    (let out:(arr ast.Expr) (arr.new ast.Expr (call alloc.forever) (- n 1)))
+    (for k 0 (- n 1) (arr.set ast.Expr out k (arr.get ast.Expr body k)))
+    out)
+
   ;; The body of the tree (when c body...) reads into (src/parser.rs): a then
   ;; that is a block and an else that is an empty one; else null.
   (fn when_body [t:ast.Expr f:ast.Expr] -> (arr ast.Expr)
     (match f
       (ast.Expr.block [_ none]
        (if (eq (arr.len none) 0)
-           (match t (ast.Expr.block [_ body] body) (else (arr.null ast.Expr)))
+           (match t (ast.Expr.block [_ body] (call without_last_empty body)) (else (arr.null ast.Expr)))
            (arr.null ast.Expr)))
       (else (arr.null ast.Expr))))
 

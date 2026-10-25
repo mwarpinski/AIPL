@@ -257,7 +257,14 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::Set { name, val, .. } => format!("(set! {} {})", name, expr_str(val)),
         Expr::If { cond, then_branch, else_branch, .. } => match (then_branch.as_ref(), else_branch.as_ref()) {
             // the tree (when c body...) reads into (src/parser.rs), written as when
-            (Expr::Block(body, _), Expr::Block(none, _)) if none.is_empty() => with_body(format!("when {}", expr_str(cond)), body),
+            (Expr::Block(body, _), Expr::Block(none, _)) if none.is_empty() => {
+                // the empty block the parser ends a when's body with is not written
+                let shown = match body.last() {
+                    Some(Expr::Block(last, _)) if last.is_empty() => &body[..body.len() - 1],
+                    _ => &body[..],
+                };
+                with_body(format!("when {}", expr_str(cond)), shown)
+            }
             _ => format!("(if {} {} {})", expr_str(cond), expr_str(then_branch), expr_str(else_branch)),
         },
         Expr::Loop { var, start, end, step, body, .. } => with_body(

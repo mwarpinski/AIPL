@@ -625,6 +625,10 @@
     (call want p compiler.Kind.rparen)
     e)
 
+  ;; Whether e is an empty (block).
+  (fn is_empty_block [e:ast.Expr] -> bool
+    (match e (ast.Expr.block [_ items] (eq (arr.len items) 0)) (else false)))
+
   (fn parse_form [p:(ptr P) form:Form head:str.Bytes at:i32] -> ast.Expr
     (cond
       ((eq form Form.let_)
@@ -641,7 +645,12 @@
        (when (eq (call peek p) compiler.Kind.rparen)
              (call fail_here p "Unexpected token parsing expression: ')'; if needs both branches: (if c then else); for one branch, write (when c then)")
              (return (call placeholder at)))
-       (call ast.if_expr (call alloc.default) at c t (call parse_expr p)))
+       (let e:ast.Expr (call parse_expr p))
+       ;; one branch is when (CANONICAL_PLAN.md step 4; src/parser.rs "if")
+       (cond
+         ((call is_empty_block e) (call fail_str p (call ast.at e) "an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)") (call placeholder at))
+         ((call is_empty_block t) (call fail_str p (call ast.at t) "an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)") (call placeholder at))
+         (else (call ast.if_expr (call alloc.default) at c t e))))
       ((eq form Form.loop)
        (let var:str.Bytes (call expect_symbol p "loop var" at))
        (let s:ast.Expr (call parse_expr p))
@@ -669,8 +678,13 @@
       ((eq form Form.when_)
        (when (eq (call peek p) compiler.Kind.rparen) (call fail_str p at "when takes a condition and a body: (when c body...)") (return (call placeholder at)))
        (let wc:ast.Expr (call parse_expr p))
-       (let wbody:(arr ast.Expr) (call parse_body p))
-       (call ast.if_expr (call alloc.default) at wc (make ast.Expr.block at wbody) (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs)))))
+       (let wv:(ptr (vec.Vec ast.Expr)) (call exprs))
+       (while (and (neq (call peek p) compiler.Kind.rparen) (neq (call peek p) compiler.Kind.none))
+         (call (vec.push ast.Expr) wv (call parse_expr p)))
+       ;; an empty block last: every expression of the body is a statement, its
+       ;; value dropped, and the when has none (src/parser.rs "when")
+       (call (vec.push ast.Expr) wv (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs))))
+       (call ast.if_expr (call alloc.default) at wc (make ast.Expr.block at (call (to_arr ast.Expr) wv)) (make ast.Expr.block at (call (to_arr ast.Expr) (call exprs)))))
       ((eq form Form.while_)
        (let c:ast.Expr (call parse_expr p))
        (call ast.while_expr (call alloc.default) at c (call parse_body p)))

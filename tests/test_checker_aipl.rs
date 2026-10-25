@@ -477,6 +477,11 @@ const BAD_PARSES: &[&str] = &[
     "(module m (fn f [] -> i32 (counted_loop 5 0 1 1)))",
     "(module m (fn f [] -> i32 (for 5 0 1)))",
     "(module m (fn f [] -> i32 (when)))",
+    // one branch is when (CANONICAL_PLAN.md step 4)
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (set! x 1) (block)) x))",
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (block) (set! x 1)) x))",
+    "(module m (fn f [x:i32] -> i32 (if (gt x 0) (block) (block)) x))",
+    "(module m (fn f [x:i32] -> i32 (let y:i32 (if (gt x 0) (block) 2)) y))",
     "(module m (fn f [] -> i32 (when true (let x 5)) 0))",
     "(module m (fn f [] -> i32 (loop i 0 3 1)))",
     // a step carried over from loop would be a statement of the body
@@ -1068,6 +1073,10 @@ const FORMS: &[&str] = &[
     "(let q:(ptr U) (ptr.null U)) 0",
     "(+ result 1)",
     "M:(module m (fn main [] -> i32 (let x:i32 1)))",
+    // a when's body is statements: a value is dropped, and the when has none
+    "(when true (call w 1)) 0",
+    "(when (gt 2 1) 5 (call w 2)) 0",
+    "(let v:i32 (when true 5)) v",
     "M:(module m (fn f [n:i32] -> i32 (let k:i32 1) (req (gt k 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn f [n:i32] -> i32 (ens (gt result 0)) n) (fn main [] -> i32 0))",
     "M:(module m (fn main [] -> i32 (let i:i32 0) (while (lt i 3) (set! i (+ i 1)))))",

@@ -296,6 +296,7 @@ fn self_hosted_bytes_match_when() {
     assert_self_hosted_matches_rust(
         "when_forms",
         "(module w
+  (fn g [n:i32] -> i32 (* n 2))
   (fn f [n:i32] -> i32
     (let x:i32 0)
     (when (gt n 0) (set! x 1) (when (gt n 10) (set! x (+ x 10))))
@@ -307,6 +308,7 @@ fn self_hosted_bytes_match_when() {
       (when (gt i 7) (break))
       (set! x (+ x i)))
     (when (eq n 99) (return -1))
+    (when (gt n 2) (+ n 1) (call g n))
     (let y:i32 (if (gt x 5) x 0))
     (cond ((eq y 1) (when (gt n 1) (set! x 2))) (else (block)))
     (+ x y)))",

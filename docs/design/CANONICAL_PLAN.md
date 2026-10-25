@@ -24,7 +24,7 @@ decides the larger syntax questions with numbers.
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 (two small items outstanding, in section 1) |
 | 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
-| 4 | `when` is the only `if` with one branch | **In progress** on features/when: stages 1 to 3 of 5 done (section 4) |
+| 4 | `when` is the only `if` with one branch | **Done** 2026-10-25 on features/when (outstanding items in section 4) |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
 | 7 | The A/B harness, then the syntax proposals one at a time | Not started |
@@ -337,7 +337,7 @@ in five stages, each checked by the full CI before the next:
 3. **Done** (2026-10-25; full CI before the commit): the resolver (src/sugar.rs, resolver.aipl emit_sugar kind 1) stops
    expanding `when`; the parsers read it (stage 1), and its flat output
    then holds `when`, which stage 2 lets the code generator read.
-4. Both parsers refuse an `if` whose then or else is an empty `(block)`:
+4. **Done** (2026-10-25; full CI before the commit): both parsers refuse an `if` whose then or else is an empty `(block)`:
    `an if has two real branches: for one, write (when c then...)`, and for
    an empty then `(when (not c) else...)`. Nothing internal writes that
    form after stages 2 and 3 (checked: no generated text in either
@@ -351,7 +351,7 @@ in five stages, each checked by the full CI before the next:
    the else is the empty block; or the parsers can append an empty block
    to a when's body, which needs no change behind them, and the printers
    leave it out.
-5. Rewrite the repository's uses (counted 2026-10-21 over .aipl and .rs
+5. **Done** (2026-10-25, commit 2506725; full CI before it): rewrite the repository's uses (counted 2026-10-21 over .aipl and .rs
    files: 2,367 in 83 files; 1,505 `(if c X (block))` with one form as
    then, 798 with a `(block ...)` then, 64 `(if c (block) X)`, and one
    `(if c (block) (block))` to look at by hand), with a tool like
@@ -364,6 +364,33 @@ in five stages, each checked by the full CI before the next:
 
 Order note: stage 5's rewrite must come before stage 4's refusal, or the
 repository stops building; do 5 then 4.
+
+How stage 4 was built: the value rule is the parsers ending a when's body
+with an empty block (no change to the checkers, the VM, or wasm.rs; the
+printers leave the block out; `compile_when` compiles the body's
+expressions as statements, then that block's position marks), so
+`(when c (call f x))` with an i32 `f` checks and runs (tests/
+test_control_flow.rs `a_whens_body_drops_its_value`), and every existing
+`when`, whose last expression was void, compiles to the same bytes. One
+internal producer of the refused form was found only in this stage:
+`expect`'s lowering, `(if c (block) (call testing.fail ...))`, which
+src/formats.rs builds as a tree and aipl_src/fmtlower.aipl writes as text
+for the parser; both now make `(when (not c) ...)`. The repository's
+first search for producers had looked for the form in one string, and
+fmtlower writes it in pieces. Tests: the refusals (both messages, both
+toolchains) in tests/test_checker_aipl.rs BAD_PARSES; a when with a value
+in FORMS and in tests/test_selfhost.rs `self_hosted_bytes_match_when`.
+
+**Outstanding in step 4:**
+
+- codegen_opt.aipl does not know `when` (it is not wired into any
+  pipeline; when `--opt` is built, it must).
+- `aipl serve --fresh` should exec aipl-run instead of starting it as a
+  child (below).
+- tools/when_rewrite.py rewrote prose inside the guide's fenced
+  system-prompt block (it reads every fenced block as code); rules 6 and 7
+  were fixed by hand. A later rewrite tool should skip fences that are
+  not ```lisp.
 
 Found on the way, not part of the step: `aipl serve --fresh` starts
 `aipl-run --serve-fresh` as a child, so killing `aipl serve` by its

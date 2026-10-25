@@ -4311,8 +4311,8 @@
 
 
 
-  ;; (when c body...): what compile_if emits for (if c (block body...) (block)), the
-  ;; tree src/parser.rs reads it into: the condition, an if of no value, the body
+  ;; (when c body...): what compile_if emits for (if c (block body... (block)) (block)),
+  ;; the tree src/parser.rs reads it into: the condition, an if of no value, the body
   ;; as a block's statements, and an empty else, each branch at the when's
   ;; position (compile_expr's at_push), so the bytes and the line table match.
   (fn compile_when [cg:(ptr Cg) node:(ptr compiler.Node) o:(ptr Out)] -> void
@@ -4320,7 +4320,11 @@
     (call put_op o OP_IF) (call put_byte o 64)
     (call label_push cg Label.if_else)
     (call at_push o (get node compiler.Node.pos))
-    (call compile_stmt_seq cg (call nth_child node 2) o)
+    ;; every expression of the body a statement, then the empty block the
+    ;; parsers end the body with (src/parser.rs "when")
+    (call compile_all_stmts cg (call nth_child node 2) o)
+    (call at_push o (get node compiler.Node.pos))
+    (call at_pop o)
     (call at_pop o)
     (call put_op o OP_ELSE)
     (call at_push o (get node compiler.Node.pos))

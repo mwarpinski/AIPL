@@ -223,7 +223,7 @@ fn misplaced_control_flow_is_rejected() {
     // 7.1); a void branch that does not leave still mismatches
     let m = Parser::parse("(module m (fn f [n:i32] -> i32 (if (lt n 0) (return 0) 5)))").unwrap();
     TypeChecker::new().check_module(&m).expect("a returning branch fits any type");
-    let err = check_err("(module m (fn f [n:i32] -> i32 (when (not (lt n 0)) 5)))");
+    let err = check_err("(module m (fn f [n:i32] -> i32 (if (lt n 0) (set! n 1) 5)))");
     assert!(err.contains("If branch type mismatch"), "{err}");
 }
 
@@ -353,4 +353,20 @@ fn running_out_of_stack_is_an_error() {
     assert!(e.starts_with("Call stack exhausted calling 'down': "), "{e}");
     // the VM can run again afterwards
     assert_eq!(vm.invoke("down", vec![Value::Int(3)]), Ok(Value::Int(3)));
+}
+
+/// A when's body is statements (CANONICAL_PLAN.md step 4): a value in it is
+/// dropped, in the VM and compiled alike, and the when itself has none.
+#[test]
+fn a_whens_body_drops_its_value() {
+    let src = r#"(module m
+  (fn twice [n:i32] -> i32 (* n 2))
+  (fn f [n:i32] -> i32
+    (let x:i32 0)
+    (when (gt n 0) (set! x (call twice n)) (call twice x))
+    (when (gt n 10) (+ x 1))
+    x))"#;
+    assert_eq!(run_both(src, "f", 3), 6);
+    assert_eq!(run_both(src, "f", 11), 22);
+    assert_eq!(run_both(src, "f", -1), 0);
 }

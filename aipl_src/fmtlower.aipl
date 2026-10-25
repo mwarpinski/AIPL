@@ -390,9 +390,9 @@
           (when (neq (call expect_sides l i) (ptr.null checker.Fmt)) (set! k (+ k 1)))))
     k)
 
-  ;; (format.expect "LABEL" c) as (if c (block) (call testing.fail "LABEL"));
+  ;; (format.expect "LABEL" c) as (when (not c) (call testing.fail "LABEL"));
   ;; a comparison (OP a b) the forms print as (block (let _x_N:T a) (let
-  ;; _y_N:T b) (if (OP _x_N _y_N) (block) (call testing.fail_cmp "LABEL" X
+  ;; _y_N:T b) (when (not (OP _x_N _y_N)) (call testing.fail_cmp "LABEL" X
   ;; Y))), X and Y each side as (call show.done CHAIN) (formats.rs
   ;; lower_expect). N counts the function's expects that show their sides.
   (fn lower_expect [l:(ptr L) g:i32] -> void
@@ -403,9 +403,9 @@
     (let lt:(ptr compiler.Token) (call tok l lab))
     (let f:(ptr checker.Fmt) (call expect_sides l g))
     (when (eq f (ptr.null checker.Fmt))
-          (call gen l at "(if ")
+          (call gen l at "(when (not ")
           (call emit_elem l cond)
-          (call gen l at " (block) (call testing.fail \"")
+          (call gen l at ") (call testing.fail \"")
           (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
           (call buf.push_str out "\"))")
           (return))
@@ -430,14 +430,14 @@
     (call printer.print_type out t)
     (call buf.push_byte out 32)
     (call emit_elem l b)
-    (call gen l at ") (if (")
+    (call gen l at ") (when (not (")
     (let ot:(ptr compiler.Token) (call tok l opt))
     (call raw l (get ot compiler.Token.a) (+ (get ot compiler.Token.a) (get ot compiler.Token.b)))
     (call buf.push_str out " _x_")
     (call buf.push_bytes out num)
     (call buf.push_str out " _y_")
     (call buf.push_bytes out num)
-    (call buf.push_str out ") (block) (call testing.fail_cmp \"")
+    (call buf.push_str out ")) (call testing.fail_cmp \"")
     (call raw l (get lt compiler.Token.a) (+ (get lt compiler.Token.a) (get lt compiler.Token.b)))
     (call buf.push_str out "\" (call show.done ")
     (call put_value l at f (call str.from_str "_x_") num)
