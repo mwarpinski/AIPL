@@ -48,3 +48,17 @@ fn literals_print_in_forms_both_tokenizers_read() {
     assert!(printed.contains("-0.0") && printed.contains("7.0"), "{printed}");
     assert!(printed.contains("0.0000000000000000000001") && !printed.contains("1e-"), "{printed}");
 }
+
+/// The tree `(when c body...)` reads into prints as `when`, so printed text is
+/// what a program would write (CANONICAL_PLAN.md step 4); an `if` whose then
+/// is not a block keeps its `if`.
+#[test]
+fn when_prints_as_when() {
+    let src = "(module w (fn f [n:i32] -> i32 (let x:i32 0) (when (gt n 0) (set! x 1) (set! x (+ x 1))) (when (lt n 0)) (if (eq n 5) (set! x 7) (block)) x))";
+    let printed = print_module(&Parser::parse(src).unwrap());
+    assert!(printed.contains("(when (gt n 0) (set! x 1) (set! x (+ x 1)))"), "{printed}");
+    assert!(printed.contains("(when (lt n 0))"), "{printed}");
+    assert!(printed.contains("(if (eq n 5) (set! x 7) (block))"), "{printed}");
+    let again = print_module(&Parser::parse(&printed).unwrap());
+    assert_eq!(again, printed);
+}

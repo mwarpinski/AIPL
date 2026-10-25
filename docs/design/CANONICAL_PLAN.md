@@ -24,7 +24,7 @@ decides the larger syntax questions with numbers.
 | 1 | Docs: the guide's `and`/`or` contradiction, a version stamp, the top pitfalls first, `aipl doc --find` as step one | **Done** 2026-10-21 (two small items outstanding, in section 1) |
 | 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
-| 4 | `when` is the only `if` with one branch | **In progress** on features/when: stage 1 of 5 done (section 4) |
+| 4 | `when` is the only `if` with one branch | **In progress** on features/when: stages 1 and 2 of 5 done (section 4) |
 | 5 | An array literal, `arr.of` | Not started |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
 | 7 | The A/B harness, then the syntax proposals one at a time | Not started |
@@ -309,7 +309,7 @@ in five stages, each checked by the full CI before the next:
    `(when)` says `when takes a condition and a body`. Full CI: every test
    passed except two in tests/test_serve.rs, the intermittent failures
    being investigated (docs/HANDOFF.md, Open problems), not this change.
-2. Both printers print `(if c (block b...) (block))` as `(when c b...)`
+2. **Done** (2026-10-25; full CI before the commit): both printers print `(if c (block b...) (block))` as `(when c b...)`
    (only when the then is a block and the else an empty one), and the
    self-hosted code generator learns `when`. What was found reading
    aipl_src/codegen.aipl: `cond` is the precedent (compiled from its own
@@ -326,7 +326,14 @@ in five stages, each checked by the full CI before the next:
    always leaves: its else is empty). codegen_opt.aipl is not wired into
    any pipeline (`--opt` is not built), so it is left, and listed below.
    Check: tests/test_selfhost.rs byte parity, whose flat() gives the code
-   generator the Rust printer's text.
+   generator the Rust printer's text. Built as described: `compile_when`
+   emits what `compile_if` emits for that tree, the position marks
+   included; tests/test_selfhost.rs `self_hosted_bytes_match_when` (when
+   nested, in a loop with break and continue, with a return, with no body,
+   beside a valued if, in a cond) fails if `compile_when` drops its else
+   (tried), and tests/test_printer.rs `when_prints_as_when` checks the
+   printing and that an `if` whose then is not a block keeps its `if`.
+   Outstanding: codegen_opt.aipl does not know `when` (not wired in).
 3. The resolver (src/sugar.rs, resolver.aipl emit_sugar kind 1) stops
    expanding `when`; the parsers read it (stage 1), and its flat output
    then holds `when`, which stage 2 lets the code generator read.

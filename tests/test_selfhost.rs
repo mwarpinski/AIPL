@@ -287,6 +287,32 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
     handle.join().unwrap();
 }
 
+/// `when` read by the self-hosted code generator gives the bytes the Rust
+/// backend gives for the tree it reads into, `(if c (block body...) (block))`
+/// (CANONICAL_PLAN.md step 4): nested, in a loop with break and continue, with
+/// a return, with no body, beside a valued if, and in a cond's clause.
+#[test]
+fn self_hosted_bytes_match_when() {
+    assert_self_hosted_matches_rust(
+        "when_forms",
+        "(module w
+  (fn f [n:i32] -> i32
+    (let x:i32 0)
+    (when (gt n 0) (set! x 1) (when (gt n 10) (set! x (+ x 10))))
+    (when (lt n 0))
+    (let i:i32 0)
+    (while (lt i n)
+      (set! i (+ i 1))
+      (when (eq i 3) (continue))
+      (when (gt i 7) (break))
+      (set! x (+ x i)))
+    (when (eq n 99) (return -1))
+    (let y:i32 (if (gt x 5) x 0))
+    (cond ((eq y 1) (when (gt n 1) (set! x 2))) (else (block)))
+    (+ x y)))",
+    );
+}
+
 #[test]
 fn self_hosted_bytes_match_minimal() {
     assert_self_hosted_matches_rust("min", "(module min (fn f [] -> i32 42))");

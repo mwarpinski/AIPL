@@ -255,9 +255,11 @@ pub fn expr_str(e: &Expr) -> String {
         Expr::Var(n, _) => n.clone(),
         Expr::Let { name, ty, val, .. } => format!("(let {}:{} {})", name, type_str(ty), expr_str(val)),
         Expr::Set { name, val, .. } => format!("(set! {} {})", name, expr_str(val)),
-        Expr::If { cond, then_branch, else_branch, .. } => {
-            format!("(if {} {} {})", expr_str(cond), expr_str(then_branch), expr_str(else_branch))
-        }
+        Expr::If { cond, then_branch, else_branch, .. } => match (then_branch.as_ref(), else_branch.as_ref()) {
+            // the tree (when c body...) reads into (src/parser.rs), written as when
+            (Expr::Block(body, _), Expr::Block(none, _)) if none.is_empty() => with_body(format!("when {}", expr_str(cond)), body),
+            _ => format!("(if {} {} {})", expr_str(cond), expr_str(then_branch), expr_str(else_branch)),
+        },
         Expr::Loop { var, start, end, step, body, .. } => with_body(
             format!("counted_loop {} {} {} {}", var, expr_str(start), expr_str(end), expr_str(step)),
             body,

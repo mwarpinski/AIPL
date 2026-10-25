@@ -177,6 +177,16 @@
       (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
       (call s b " ") (call by b (get st ast.Step.sname)) (call s b ".") (call by b (get st ast.Step.fname))))
 
+  ;; The body of the tree (when c body...) reads into (src/parser.rs): a then
+  ;; that is a block and an else that is an empty one; else null.
+  (fn when_body [t:ast.Expr f:ast.Expr] -> (arr ast.Expr)
+    (match f
+      (ast.Expr.block [_ none]
+       (if (eq (arr.len none) 0)
+           (match t (ast.Expr.block [_ body] body) (else (arr.null ast.Expr)))
+           (arr.null ast.Expr)))
+      (else (arr.null ast.Expr))))
+
   (fn print_expr [b:(ptr buf.Buf) e:ast.Expr] -> void (pub)
     (match e
       (ast.Expr.lit_int [_ iv] (call buf.push_i64 b iv))
@@ -190,7 +200,10 @@
        (call s b "(let ") (call by b name) (call s b ":") (call print_type b ty) (call s b " ") (call print_expr b val) (call s b ")"))
       (ast.Expr.set [n_set] (let name:str.Bytes (get n_set ast.SetExpr.name)) (let val:ast.Expr (get n_set ast.SetExpr.val)) (call s b "(set! ") (call by b name) (call s b " ") (call print_expr b val) (call s b ")"))
       (ast.Expr.if_ [n_if] (let c:ast.Expr (get n_if ast.IfExpr.cond)) (let t:ast.Expr (get n_if ast.IfExpr.then_)) (let f:ast.Expr (get n_if ast.IfExpr.else_))
-       (call s b "(if ") (call print_expr b c) (call s b " ") (call print_expr b t) (call s b " ") (call print_expr b f) (call s b ")"))
+       (let wbody:(arr ast.Expr) (call when_body t f))
+       (if (neq wbody (arr.null ast.Expr))
+           (block (call s b "(when ") (call print_expr b c) (call with_body b wbody))
+           (block (call s b "(if ") (call print_expr b c) (call s b " ") (call print_expr b t) (call s b " ") (call print_expr b f) (call s b ")"))))
       (ast.Expr.loop [n_loop] (let var:str.Bytes (get n_loop ast.LoopExpr.var)) (let start:ast.Expr (get n_loop ast.LoopExpr.start)) (let end:ast.Expr (get n_loop ast.LoopExpr.end)) (let step:ast.Expr (get n_loop ast.LoopExpr.step)) (let body:(arr ast.Expr) (get n_loop ast.LoopExpr.body))
        (call s b "(counted_loop ") (call by b var) (call s b " ") (call print_expr b start) (call s b " ")
        (call print_expr b end) (call s b " ") (call print_expr b step) (call with_body b body))
