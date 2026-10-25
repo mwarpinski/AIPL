@@ -459,20 +459,9 @@ fn serve_fresh(p: Program) -> i32 {
     };
     let mut served = 0usize;
     while requests.is_none_or(|n| served < n) {
-        let dbg = std::env::var_os("AIPL_NET_DEBUG").is_some();
-        let (conn, peer) = match listener.accept() {
-            Ok(c) => c,
-            Err(e) => {
-                if dbg { eprintln!("DEBUG fresh: accept failed: {e:?}"); }
-                continue;
-            }
-        };
-        if dbg { eprintln!("DEBUG fresh: accepted {peer}"); }
+        let Ok((conn, _)) = listener.accept() else { continue };
         served += 1;
-        let Ok(input) = conn.try_clone() else {
-            if dbg { eprintln!("DEBUG fresh: try_clone failed"); }
-            continue
-        };
+        let Ok(input) = conn.try_clone() else { continue };
         let output = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(64 << 20);
         let mut b = WasiCtxBuilder::new();
         b.stdin(wasmtime_wasi::cli::InputFile::new(std::fs::File::from(std::os::fd::OwnedFd::from(input))));
@@ -494,13 +483,11 @@ fn serve_fresh(p: Program) -> i32 {
             }
         };
         let mut conn = conn;
-        if dbg { eprintln!("DEBUG fresh: {peer}: instance status {code}, {} bytes out", output.contents().len()); }
-        let w = if code == 0 {
+        let _ = if code == 0 {
             conn.write_all(&output.contents())
         } else {
             conn.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 22\r\n\r\nInternal Server Error\n")
         };
-        if dbg { eprintln!("DEBUG fresh: {peer}: write {w:?}"); }
         let _ = conn.shutdown(std::net::Shutdown::Both);
     }
     0
