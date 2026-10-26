@@ -197,13 +197,21 @@ fn assert_self_hosted_matches_rust(test_name: &str, src: &str) {
             // code generators flat, as the front end hands it over
             // a program with imports or a `for` is resolved first: the code generator reads
             // what the resolver prints (counted_loop), not the sugar
+            // and so is one in which the generics pass renames a local declared
+            // again in a sibling scope (src/scopes.rs: a name 'K.x)
+            let flat = || aipl_core::printer::print_module(&Resolver::resolve_flat(&src, &temp_src).expect("resolve test src"));
             let src = if src.contains("(import ") || src.contains("(for ") {
-                let text = fs::read_to_string(&temp_src).unwrap();
-                let flat = aipl_core::printer::print_module(&Resolver::resolve_flat(&text, &temp_src).expect("resolve test src"));
+                let flat = flat();
                 fs::write(&temp_src, &flat).unwrap();
                 flat
             } else {
-                src
+                match flat() {
+                    f if f.contains(" '") || f.contains("('") => {
+                        fs::write(&temp_src, &f).unwrap();
+                        f
+                    }
+                    _ => src,
+                }
             };
 
             let rust_bytes = run_rust_backend(&temp_src);
