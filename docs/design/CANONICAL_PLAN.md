@@ -25,7 +25,7 @@ decides the larger syntax questions with numbers.
 | 2 | Errors that name the right form, for every guess a model makes | **Done** 2026-10-21 (outstanding items in section 2) |
 | 3 | Retire `loop`: `for` is the only counted loop | **Done** 2026-10-21 (outstanding items in section 3: the internal Loop node is kept) |
 | 4 | `when` is the only `if` with one branch | **Done** 2026-10-25 on features/when (outstanding items in section 4) |
-| 5 | An array literal, `arr.of` | Not started |
+| 5 | An array literal, `arr.of` | Done 2026-10-26 (LANGUAGE_DECISIONS.md item 3) |
 | 6 | The other duplicates: a sweep of the spec, a proposal for each | Not started |
 | 7 | The A/B harness, then the syntax proposals one at a time | Not started |
 

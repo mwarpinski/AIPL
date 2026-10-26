@@ -318,6 +318,7 @@ Struct definitions are module-level. Layout rules, identical in the checker, VM,
 | `(put p S.f v)` | `void` | `p` must be a `(ptr S)`; store at `p + offset(f)`; `v` must have `f`'s type |
 | `(sizeof S)` | `i32` | compile-time constant: a struct's size, or for any type that can be stored in memory its width (`(sizeof i64)` 8, `(sizeof (ptr S))` 8), so generic code can size a `T`; `void`, a result, and an unknown struct are checker errors |
 | `(arr.new T a n)` | `(arr T)` | `n` zeroed `T`s from the allocator `a`: `(call (alloc.array T) a n)`; `n < 0` fails its contract. The block is `8 + n * sizeof(T)` bytes: the generation word, `n`, then the elements; the array is the first element's address. `(arr.new T n)` is an error naming the allocator it needs |
+| `(arr.of T a x y ...)` | `(arr T)` | the array literal: an `(arr T)` from the allocator `a` holding the values in order, its length their count; `(arr.of T a)` is an empty array (to start with and replace by longer ones; a list that grows is `vec.Vec`). The allocator is evaluated first, then the values, each once. Without an allocator, `arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array`. Rewritten as the resolver reads the module (section 4.M) |
 | `(arr.get T a i)` | `T` | `a` must be an `(arr T)`; checks `0 <= i < (arr.len a)` (below), then loads at `a + i * sizeof(T)` |
 | `(arr.set T a i v)` | `void` | `a` must be an `(arr T)`; checks the index, then evaluates `v` and stores it at `a + i * sizeof(T)` |
 | `(arr.len a)` | `i32` | the element count stored in the 4 bytes before `a` |
@@ -845,7 +846,7 @@ Tests are left out of every build but a test build, so they cost an ordinary pro
 
 Errors: `a test is (test "name" body...)`; `expect is only for a test's body: (test "name" ... (expect c))`; `expect takes one condition, e.g. (expect (eq n 3))`; `expect takes a bool, e.g. (expect (eq n 3)), got i32`; `a test build makes its own _start: test a module without one`.
 
-### M. `when`, `for`, and `and`/`or` of more than two
+### M. `when`, `for`, `and`/`or` of more than two, and the array literal
 
 `(when c body...)` is the `if` with one branch, and the only one: an `if` whose then or else is an empty `(block)` is an error (`an if has two real branches, and this else is an empty (block): for one branch, write (when c then...)`, and for an empty then `an if has two real branches, and this then is an empty (block): for an else alone, write (when (not c) else...)`). The parsers read `when` themselves, as `(if c (block body... (block)) (block))`: the empty block that ends the body makes every expression of the body a statement, so a value in it is dropped, as in a `while` or `for` body, and the `when` is `void`. The printers write that tree back as `when` (CANONICAL_PLAN.md step 4).
 
@@ -855,8 +856,9 @@ The others are written for the reader and rewritten as the resolver reads a modu
 |---|---|---|
 | `(for i start end body...)` | the internal counted loop `(counted_loop i start (- end 1) 1 body...)` (inclusive, with a step; not for programs, and `loop` written in a program is an error: CANONICAL_PLAN.md step 3) | `i` from `start` up to `end`, `end` left out: `(for i 0 (arr.len xs) ...)` visits every element; `start` and `end` are evaluated once, before the first iteration; `break` and `continue` work as in `while` (`end` must be above `i32`'s least value, as `(- end 1)` wraps) |
 | `(and a b c ...)`, `(or a b c ...)` | `(and a (and b c ...))` | left to right, stopping at the first operand that decides |
+| `(arr.of T a x y z)` | `(block (let _arr_of_L_C:(arr T) (call (alloc.array T) a 3)) (arr.set T _arr_of_L_C 0 x) (arr.set T _arr_of_L_C 1 y) (arr.set T _arr_of_L_C 2 z) _arr_of_L_C)`, `L` and `C` the form's line and column | the array literal (section 4.A); `(arr.of T a)` an empty array; not inside a formatting form's placeholder (bind it with `let` first) |
 
-Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`; `a for has no step: ...` for a number right after a `for`'s end. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
+Errors: `when takes a condition and a body: (when c body...)`; `for is (for i start end body...): i from start up to end, end left out`; `a for has no step: ...` for a number right after a `for`'s end. `arr.of takes the allocator to make it from, then the values: ...` for an `arr.of` with no allocator, or a literal where the allocator goes. Every list a rewrite makes is at the form's place, so positions, and bytes, are the same in both toolchains.
 
 ## 5. WebAssembly Binary Execution Semantics
 

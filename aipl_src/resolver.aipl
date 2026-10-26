@@ -365,8 +365,8 @@
     (call buf.push_byte out 41))
 
   ;; (when ...) is not rewritten: the parsers read it (src/sugar.rs). 2 (for ...), 3 an and/or of three or more, 4 (new ...),
-  ;; 5 (arr.new ...), else 0 (sugar.rs); their shapes were checked when the
-  ;; file was read.
+  ;; 5 (arr.new ...), 6 (arr.of ...), else 0 (sugar.rs); their shapes were
+  ;; checked when the file was read.
   (fn sugar_kind [m:(ptr Mod) g:(ptr compiler.Node)] -> i32
     (when (neq (get g compiler.Node.kind) compiler.Kind.paren) (return 0))
     (let h:str.Bytes (call head (get m Mod.src) g))
@@ -375,17 +375,21 @@
       ((and (or (call str.is h "and") (call str.is h "or")) (gt (call count_kids g) 3)) 3)
       ((call str.is h "new") 4)
       ((call str.is h "arr.new") 5)
+      ((call str.is h "arr.of") 6)
       (else 0)))
 
   ;; The sugar.rs rewrites, every token they add at the form's place:
   ;; (for i s e b...) as
   ;; (counted_loop i s (- e 1) 1 b...); (and a b c ...) as (and a (and b c ...));
   ;; (new S a) as (call (alloc.create S) a), (arr.new T a n) as
-  ;; (call (alloc.array T) a n).
+  ;; (call (alloc.array T) a n); (arr.of T a x ...) as (block (let
+  ;; _arr_of_L_C:(arr T) (call (alloc.array T) a n)) (arr.set T _arr_of_L_C
+  ;; 0 x) ... _arr_of_L_C).
   (fn emit_sugar [m:(ptr Mod) g:(ptr compiler.Node) kind:i32 out:(ptr buf.Buf)] -> void
     (let at:i32 (get g compiler.Node.pos))
     (let c:(ptr compiler.Node) (get (call first_child g) compiler.Node.next))
     (cond
+      ((eq kind 6) (call emit_arr_of m g out))
       ((or (eq kind 4) (eq kind 5))
        (call note_at m at out)
        (call buf.push_str out (if (eq kind 4) "(call (alloc.create " "(call (alloc.array "))
@@ -430,6 +434,57 @@
          (set! c (get c compiler.Node.next)))
        (call note_at m at out)
        (for j 1 n (call buf.push_byte out 41)))))
+
+  ;; (arr.of T a x ...), token for token as sugar.rs makes it: the name from
+  ;; the form's line and column, T written where (arr T), (alloc.array T),
+  ;; and each arr.set take it.
+  (fn emit_arr_of [m:(ptr Mod) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let at:i32 (get g compiler.Node.pos))
+    (let src:(ptr Src) (get m Mod.src))
+    (let lc:(ptr compiler.LineCol) (call compiler.line_col (call str.addr (get src Src.text)) at))
+    (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call buf.push_str nb "_arr_of_")
+    (call buf.push_int nb (get lc compiler.LineCol.line))
+    (call buf.push_byte nb 95)
+    (call buf.push_int nb (get lc compiler.LineCol.col))
+    (let name:str.Bytes (call buf.bytes nb))
+    (let t:(ptr compiler.Node) (get (call first_child g) compiler.Node.next))
+    (let a:(ptr compiler.Node) (get t compiler.Node.next))
+    (let n:i32 (- (call count_kids g) 3))
+    (call note_at m at out) (call buf.push_str out "(block ")
+    (call note_at m at out) (call buf.push_str out "(let ")
+    (call note_at m at out) (call buf.push_bytes out name)
+    (call note_at m at out) (call buf.push_byte out 58)
+    (call note_at m at out) (call buf.push_str out "(arr ")
+    (call emit m t 0 out)
+    (call note_at m at out) (call buf.push_str out ") ")
+    (call note_at m at out) (call buf.push_str out "(call ")
+    (call note_at m at out) (call buf.push_str out "(alloc.array ")
+    (call emit m t 2 out)
+    (when (call is_symbol t) (call check_type_arg m (call rename m (call text src t) 2) t))
+    (call note_at m at out) (call buf.push_str out ") ")
+    (call emit m a 0 out)
+    (call buf.push_byte out 32)
+    (call note_at m at out) (call buf.push_int out n)
+    (call note_at m at out) (call buf.push_str out "))")
+    (let v:(ptr compiler.Node) (get a compiler.Node.next))
+    (let k:i32 0)
+    (while (neq v (ptr.null compiler.Node))
+      (call buf.push_byte out 32)
+      (call note_at m at out) (call buf.push_str out "(arr.set ")
+      (call emit m t 0 out)
+      (call buf.push_byte out 32)
+      (call note_at m at out) (call buf.push_bytes out name)
+      (call buf.push_byte out 32)
+      (call note_at m at out) (call buf.push_int out k)
+      (call buf.push_byte out 32)
+      (call emit m v 0 out)
+      (call note_at m at out) (call buf.push_byte out 41)
+      (set! k (+ k 1))
+      (set! v (get v compiler.Node.next)))
+    (call buf.push_byte out 32)
+    (call note_at m at out) (call buf.push_bytes out name)
+    (call note_at m at out) (call buf.push_byte out 41))
 
   ;; A path's last component.
   (fn file_name [p:str.Bytes] -> str.Bytes
@@ -1400,6 +1455,13 @@
                                            "new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"
                                            "new is (new S a): the struct, then the allocator to make it from"))
                   (return b))
+            ;; (arr.of T) names no allocator, nor does (arr.of T 1 2 3), whose
+            ;; allocator would be a literal (sugar.rs)
+            (when (and (call symbol_is src toks (+ i 1) "arr.of")
+                       (or (lt (call form_args toks count i) 2) (call is_literal_kind (call kind_at toks (call skip_form toks (+ i 2))))))
+                  (let b:(ptr buf.Buf) (call at_token src toks i ""))
+                  (call buf.push_str b "arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array")
+                  (return b))
             (when (and (call symbol_is src toks (+ i 1) "arr.new") (neq (call form_args toks count i) 3))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
                   (call buf.push_str b (if (eq (call form_args toks count i) 2)
@@ -1698,11 +1760,17 @@
         (call resolve_module st dir (call str.from_str "show") (get src Src.path))
         true))
 
-  ;; Whether node n holds a (new ...) or (arr.new ...) outside a [...] list.
+  ;; Whether a token of kind k is a literal.
+  (fn is_literal_kind [k:compiler.Kind] -> bool
+    (or (eq k compiler.Kind.int) (or (eq k compiler.Kind.int64) (or (eq k compiler.Kind.float)
+        (or (eq k compiler.Kind.float32) (or (eq k compiler.Kind.string) (eq k compiler.Kind.bool)))))))
+
+  ;; Whether node n holds a (new ...), (arr.new ...), or (arr.of ...) outside
+  ;; a [...] list.
   (fn uses_new [src:(ptr Src) n:(ptr compiler.Node)] -> bool
     (when (neq (get n compiler.Node.kind) compiler.Kind.paren) (return false))
     (let h:str.Bytes (call head src n))
-    (when (or (call str.is h "new") (call str.is h "arr.new")) (return true))
+    (when (or (call str.is h "new") (or (call str.is h "arr.new") (call str.is h "arr.of"))) (return true))
     (let c:(ptr compiler.Node) (call first_child n))
     (while (neq c (ptr.null compiler.Node))
       (when (call uses_new src c) (return true))
