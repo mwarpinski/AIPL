@@ -47,7 +47,7 @@
     (let m:(ptr (map.Map str.Bytes i32)) (call (map.make str.Bytes i32) (call alloc.default) 64))
     (for i 0 (+ (- (get seq str.Bytes.len) k) 1)
       (let key:str.Bytes (call str.slice seq i k))
-      (call (map.set str.Bytes i32) m key (+ 1 (call (map.get_or str.Bytes i32) m key 0))))
+      (let _c:i32 (call (map.add str.Bytes) m key 1)))
     m)
 
   ;; byte order, then length

@@ -127,6 +127,20 @@ binarytrees native +5%, wasm +7%; nbody native +6%, wasm +22% (its inner
 loop is struct-field reads and writes); spectralnorm +2% and +3%; fannkuch
 +8% and +6%. Every table since includes them.
 
+## Profiling
+
+`perf` names each AIPL function of a wasm build run under aipl-run with
+`AIPL_PROFILE=perfmap` (wasmtime writes /tmp/perf-PID.map):
+
+    aipl compile prog.aipl -o prog.wasm
+    AIPL_PROFILE=perfmap perf record -e cycles:u target/release/aipl-run prog.wasm < input
+    perf report --no-children --sort dso,sym     # the [JIT] rows are the program
+
+(`perf` needs `kernel.perf_event_paranoid` at 2 or below; Ubuntu ships 4:
+`sudo sysctl kernel.perf_event_paranoid=1` until the next boot.) Native
+executables carry no symbol table, so profile the wasm build.
+`AIPL_OPT_DUMP=FILE aipl compile ...` shows what the optimizer made.
+
 ## Notes per benchmark
 
 **spigot** (pi by the Rabinowitz-Wagon spigot: integers and one array, no

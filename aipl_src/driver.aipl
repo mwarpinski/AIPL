@@ -121,6 +121,9 @@
           (let stage:str.Bytes (if is_lowered (call buf.bytes lowered) flat))
           (let opt_orig:(ptr origins.Origins) (call origins.make))
           (let opt_src:str.Bytes (call codegen_opt.optimize_mapped stage (call str.absent) (ptr.null codegen_opt.Stats) low opt_orig -1))
+          ;; AIPL_OPT_DUMP=FILE: the optimizer's output, for reading what it did
+          (let dump:str.Bytes (call os.env "AIPL_OPT_DUMP"))
+          (when (gt (get dump str.Bytes.len) 0) (let _w:i32 (call io.write_path dump opt_src)))
           (let op:(ptr checker.Problem) (call front.check (call str.addr opt_src) (get opt_src str.Bytes.len)))
           (when (neq op (ptr.null checker.Problem))
                 (let eb:(ptr buf.Buf) (call buf.make (call alloc.default) 256))

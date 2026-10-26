@@ -74,6 +74,10 @@
     (read locals_eliminated:i32)
     (read fns_eliminated:i32)
     (read fns_kept:i32)
+    ;; the inliner's fresh names: this prefix (found in no symbol of the
+    ;; program, optimize_mapped) and a count
+    fresh_prefix:str.Bytes
+    fresh_count:i32
   ] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
@@ -83,7 +87,17 @@
     (put s Stats.locals_eliminated 0)
     (put s Stats.fns_eliminated 0)
     (put s Stats.fns_kept 0)
+    (put s Stats.fresh_prefix (call str.from_str "_inl"))
+    (put s Stats.fresh_count 0)
     s)
+
+  ;; A name no symbol of the program has: the fresh prefix and a number.
+  (fn fresh_name [s:(ptr Stats)] -> str.Bytes
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+    (call buf.push_bytes b (get s Stats.fresh_prefix))
+    (call buf.push_int b (get s Stats.fresh_count))
+    (put s Stats.fresh_count (+ (get s Stats.fresh_count) 1))
+    (call buf.bytes b))
 
   (fn bump_folded [s:(ptr Stats)] -> void
     (when (neq s (ptr.null Stats))
@@ -684,7 +698,7 @@
     (while (neq cur (ptr.null ONode))
       (let nxt:(ptr ONode) (get cur ONode.next))
       (put cur ONode.next (ptr.null ONode))
-      (let opt_s:(ptr ONode) (call opt_expr cur stats))
+      (let opt_s:(ptr ONode) (if (call is_clause cur) cur (call opt_expr cur stats)))
       (let is_empty_blk:bool (and (call is_form opt_s "block") (eq (call onode_count opt_s) 1)))
       ;; Keep an empty (block) when it is the final statement (`nxt == null`) so a
       ;; `(block <non-void-stmt> (block))` sequence preserves its `void` type.
@@ -1172,6 +1186,7 @@
   (struct InlineDef [
     name:str.Bytes
     params:(ptr (vec.Vec str.Bytes))
+    param_types:(ptr (vec.Vec (ptr ONode)))
     param_uses:(ptr (vec.Vec i32))
     body_first:(ptr ONode)
     stmt_count:i32
@@ -1318,12 +1333,15 @@
 
     ;; Extract parameter names from [p1 : T1 p2 : T2 ...]
     (let params:(ptr (vec.Vec str.Bytes)) (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let types:(ptr (vec.Vec (ptr ONode))) (call (vec.make (ptr ONode)) (call alloc.default) 4))
     (let pc:(ptr ONode) (get params_node ONode.first))
     (while (neq pc (ptr.null ONode))
       (call (vec.push str.Bytes) params (get pc ONode.text))
       (let colon:(ptr ONode) (get pc ONode.next))
       (let ty:(ptr ONode) (if (neq colon (ptr.null ONode)) (get colon ONode.next) (ptr.null ONode)))
-      (set! pc (if (neq ty (ptr.null ONode)) (get ty ONode.next) (ptr.null ONode))))
+      (when (eq ty (ptr.null ONode)) (return (ptr.null InlineDef)))
+      (call (vec.push (ptr ONode)) types (call clone_node ty))
+      (set! pc (get ty ONode.next)))
 
     ;; Inspect clauses and body statements after return type
     (let cur:(ptr ONode) (get ret_node ONode.next))
@@ -1390,6 +1408,7 @@
     (let def:(ptr InlineDef) (new InlineDef (call alloc.forever)))
     (put def InlineDef.name fname)
     (put def InlineDef.params params)
+    (put def InlineDef.param_types types)
     (put def InlineDef.param_uses p_uses)
     (put def InlineDef.body_first cloned_body)
     (put def InlineDef.stmt_count stmt_count)
@@ -1545,42 +1564,83 @@
     (let nargs:i32 (- (call onode_count n) 2))
     (when (neq nargs nparams) (return n))
 
-    ;; Verify call-site argument hygiene
+    ;; The arguments. An atom, or (for a one-expression body) a pure argument
+    ;; used at most once, takes its parameter's place. Otherwise every
+    ;; argument but a literal is bound, in order, to a let with a fresh name
+    ;; ahead of the body: each is evaluated once, in the call's order, before
+    ;; the body, as the call evaluated it (a variable too, since a later
+    ;; argument may assign it).
     (let env:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 8))
     (let multi_stmt:bool (gt (get def InlineDef.stmt_count) 1))
+    (let bind:bool false)
     (for i 0 nparams
       (let arg:(ptr ONode) (call onode_nth n (+ i 2)))
       (let uses:i32 (call (vec.at i32) (get def InlineDef.param_uses) i))
-      (if multi_stmt
-          (when (not (call is_atom arg)) (return n))
-          (when (not (call is_atom arg))
-              (when (or (gt uses 1) (not (call is_pure arg))) (return n))))
-      (call (map.set str.Bytes (ptr ONode)) env (call (vec.at str.Bytes) (get def InlineDef.params) i) arg))
+      (when (and (not (call is_atom arg)) (or multi_stmt (or (gt uses 1) (not (call is_pure arg)))))
+            (set! bind true)))
+    (let pos:i32 (get n ONode.pos))
+    (let lets_first:(ptr ONode) (ptr.null ONode))
+    (let lets_last:(ptr ONode) (ptr.null ONode))
+    (for i 0 nparams
+      (let arg:(ptr ONode) (call onode_nth n (+ i 2)))
+      (let pname:str.Bytes (call (vec.at str.Bytes) (get def InlineDef.params) i))
+      (if (and bind (not (call is_literal arg)))
+          (block
+            (let nm:str.Bytes (call fresh_name stats))
+            (let l:(ptr ONode) (call make_let nm (call (vec.at (ptr ONode)) (get def InlineDef.param_types) i) arg pos))
+            (if (eq lets_last (ptr.null ONode)) (set! lets_first l) (put lets_last ONode.next l))
+            (set! lets_last l)
+            (call (map.set str.Bytes (ptr ONode)) env pname (call make_sym_bytes nm pos)))
+          (call (map.set str.Bytes (ptr ONode)) env pname arg)))
 
     (call bump_inlined stats)
-    (let pos:i32 (get n ONode.pos))
-    (if (eq (get def InlineDef.stmt_count) 1)
-        (block
-          (let inlined:(ptr ONode) (call subst_with_map (get def InlineDef.body_first) env))
-          (call restamp inlined pos)
-          (if (and (get def InlineDef.is_unsafe) (not (call is_form inlined "unsafe")))
-              (call opt_expr (call make_op1 "unsafe" inlined pos) stats)
-              (call opt_expr inlined stats)))
-        (block
-          (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
-          (let head_kw:str (if (get def InlineDef.is_unsafe) "unsafe" "block"))
-          (let bh:(ptr ONode) (call make_sym head_kw pos))
-          (let b_last:(ptr ONode) bh)
-          (let st:(ptr ONode) (get def InlineDef.body_first))
-          (while (neq st (ptr.null ONode))
-            (let raw_st:(ptr ONode) (call subst_with_map st env))
-            (call restamp raw_st pos)
-            (let sub_st:(ptr ONode) (call opt_expr raw_st stats))
-            (put b_last ONode.next sub_st)
-            (set! b_last sub_st)
-            (set! st (get st ONode.next)))
-          (put g ONode.first bh)
-          g)))
+    (let body:(ptr ONode)
+      (if (eq (get def InlineDef.stmt_count) 1)
+          (block
+            (let inlined:(ptr ONode) (call subst_with_map (get def InlineDef.body_first) env))
+            (call restamp inlined pos)
+            (if (and (get def InlineDef.is_unsafe) (not (call is_form inlined "unsafe")))
+                (call opt_expr (call make_op1 "unsafe" inlined pos) stats)
+                (call opt_expr inlined stats)))
+          (block
+            (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+            (let head_kw:str (if (get def InlineDef.is_unsafe) "unsafe" "block"))
+            (let bh:(ptr ONode) (call make_sym head_kw pos))
+            (let b_last:(ptr ONode) bh)
+            (let st:(ptr ONode) (get def InlineDef.body_first))
+            (while (neq st (ptr.null ONode))
+              (let raw_st:(ptr ONode) (call subst_with_map st env))
+              (call restamp raw_st pos)
+              (let sub_st:(ptr ONode) (call opt_expr raw_st stats))
+              (put b_last ONode.next sub_st)
+              (set! b_last sub_st)
+              (set! st (get st ONode.next)))
+            (put g ONode.first bh)
+            g)))
+    (when (eq lets_first (ptr.null ONode)) (return body))
+    ;; (block (let ...)... body): the lets' scope is the block alone
+    (let blk:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym "block" pos))
+    (put h ONode.next lets_first)
+    (put lets_last ONode.next body)
+    (put body ONode.next (ptr.null ONode))
+    (put blk ONode.first h)
+    blk)
+
+  ;; (let name:ty init), ty and init copied.
+  (fn make_let [name:str.Bytes ty:(ptr ONode) init:(ptr ONode) pos:i32] -> (ptr ONode)
+    (let g:(ptr ONode) (call new_onode OKind.paren (call str.absent) 0 0i64 pos))
+    (let h:(ptr ONode) (call make_sym "let" pos))
+    (let v:(ptr ONode) (call make_sym_bytes name pos))
+    (let c:(ptr ONode) (call new_onode OKind.colon (call str.absent) 0 0i64 pos))
+    (let t:(ptr ONode) (call clone_node ty))
+    (let e:(ptr ONode) (call clone_node init))
+    (put h ONode.next v)
+    (put v ONode.next c)
+    (put c ONode.next t)
+    (put t ONode.next e)
+    (put g ONode.first h)
+    g)
 
   ;; ===== Pass 3: Immutable Local Propagation & Dead Local Elimination =====
 
@@ -1650,7 +1710,9 @@
     (while (neq cur (ptr.null ONode))
       (let nxt:(ptr ONode) (get cur ONode.next))
       (put cur ONode.next (ptr.null ONode))
-      (let s:(ptr ONode) (call opt_expr (call subst_with_map cur env) stats))
+      ;; a contract later in the body stays as written (it sees only the
+      ;; parameters, and a failed one prints its text)
+      (let s:(ptr ONode) (if (call is_clause cur) cur (call opt_expr (call subst_with_map cur env) stats)))
       (let dropped:bool false)
       (when (and (call is_form s "let") (neq nxt (ptr.null ONode)))
             (let vnode:(ptr ONode) (call onode_nth s 1))
@@ -1726,21 +1788,13 @@
       (call scan_fn_locals bscan mutated decls)
       (set! bscan (get bscan ONode.next)))
 
-    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe), (no_leak) clauses
+    ;; Advance past leading (req ...), (ens ...), (inv ...), (unsafe), (no_leak)
+    ;; clauses, as written: a failed contract prints its text
     (let prev:(ptr ONode) ret_node)
     (let cur:(ptr ONode) (get ret_node ONode.next))
-    (while (and (neq cur (ptr.null ONode))
-                (or (call is_form cur "req")
-                    (or (call is_form cur "ens")
-                        (or (call is_form cur "inv")
-                            (call is_flag_clause cur)))))
-      (let nxt:(ptr ONode) (get cur ONode.next))
-      (put cur ONode.next (ptr.null ONode))
-      (let oc:(ptr ONode) (call opt_expr cur stats))
-      (put prev ONode.next oc)
-      (put oc ONode.next nxt)
-      (set! prev oc)
-      (set! cur nxt))
+    (while (and (neq cur (ptr.null ONode)) (call is_clause cur))
+      (set! prev cur)
+      (set! cur (get cur ONode.next)))
 
     (let env:(ptr (map.Map str.Bytes (ptr ONode))) (call (map.make str.Bytes (ptr ONode)) (call alloc.default) 16))
     (let new_body:(ptr ONode) (call propagate_in_stmts cur mutated decls env stats))
@@ -1770,10 +1824,15 @@
   ;; (unsafe) or (no_leak): not a statement of its body (the inliner once
   ;; copied (no_leak) into callers as an expression; the type check of the
   ;; optimizer's output found it, OPT_PLAN.md step 1).
+  ;; A contract (req, ens, inv) or a flag clause.
+  (fn is_clause [n:(ptr ONode)] -> bool
+    (or (call is_form n "req") (or (call is_form n "ens") (or (call is_form n "inv") (call is_flag_clause n)))))
+
   (fn is_flag_clause [n:(ptr ONode)] -> bool
     (and (eq (call onode_count n) 1) (or (call is_form n "unsafe") (call is_form n "no_leak"))))
 
-  (fn optimize_mapped [src:str.Bytes root_override:str.Bytes stats:(ptr Stats) in_low:(ptr origins.Origins) out_orig:(ptr origins.Origins) orig_file:i32] -> str.Bytes (pub)
+  (fn optimize_mapped [src:str.Bytes root_override:str.Bytes stats_in:(ptr Stats) in_low:(ptr origins.Origins) out_orig:(ptr origins.Origins) orig_file:i32] -> str.Bytes (pub)
+    (let stats:(ptr Stats) (if (neq stats_in (ptr.null Stats)) stats_in (call make_stats)))
     ;; Step 0: constants to their literals; enums stay, so what this makes is
     ;; still a program the checker reads (compile_file type-checks it; the code
     ;; generator erases the enums)
@@ -1786,6 +1845,12 @@
     (let pbytes:str.Bytes (call buf.bytes plain))
     (let src_ptr:i32 (call str.addr pbytes))
     (let src_len:i32 (get pbytes str.Bytes.len))
+    ;; the inliner's fresh names start with a prefix found nowhere in the text
+    (while (call str.contains pbytes (get stats Stats.fresh_prefix))
+      (let longer:(ptr buf.Buf) (call buf.make (call alloc.default) 16))
+      (call buf.push_bytes longer (get stats Stats.fresh_prefix))
+      (call buf.push_byte longer 120)
+      (put stats Stats.fresh_prefix (call buf.bytes longer)))
 
     ;; Tokenize, strip visibility marks, and parse into ONode IR
     (let tok_cnt_raw:i32 (call compiler.count_tokens src_ptr src_len))
@@ -1842,7 +1907,10 @@
                   (while (neq cur (ptr.null ONode))
                     (let nxt:(ptr ONode) (get cur ONode.next))
                     (put cur ONode.next (ptr.null ONode))
-                    (let inl:(ptr ONode) (call inline_in_node cur defs fname stats))
+                    ;; not into the contracts and flags, wherever they stand:
+                    ;; code generation takes a function's locals from its
+                    ;; body, and an inlined call may bring lets
+                    (let inl:(ptr ONode) (if (call is_clause cur) cur (call inline_in_node cur defs fname stats)))
                     (put prev ONode.next inl)
                     (put inl ONode.next nxt)
                     (set! prev inl)
@@ -2040,23 +2108,19 @@
     (if (and (call str.bytes_eq got (call str.from_str want)) (call str.bytes_eq got2 (call str.from_str want2))) 1 0))
 
   ;; Test 7: what it must not do: drop a call or a read (only pure operands
-  ;; fold away), inline an argument that is not an atom where it would be
-  ;; evaluated twice, or where it could trap and might not be evaluated, or
-  ;; fuse shifts past 31 (counts are masked)
+  ;; fold away), evaluate an argument twice, or skip one's trap, or fuse
+  ;; shifts past 31 (counts are masked). An argument that is not an atom or a
+  ;; pure one used once is bound to a fresh let, in order, ahead of the
+  ;; inlined body; the fresh names' prefix avoids every symbol of the
+  ;; program (here a parameter named _inl, so the prefix is _inlx).
   (fn test_refusals [] -> i32
     (let s:(ptr Stats) (call make_stats))
-    (let fns:str "(struct S [x:i32]) (fn g [] -> i32 (sys.print \"g\") 7) (fn twice [x:i32] -> i32 (+ x x)) (fn pick [c:bool x:i32] -> i32 (if c x 0))")
-    (let body:str "(* (call g) 0) (% (get p S.x) 1) (and (gt (call g) 0) false) (call twice (call g)) (call twice (+ a 1)) (call pick (gt a 0) (/ a b)) (shl (shl a 16) 16)")
     (let src:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
-    (call buf.push_str src "(module m ")
-    (call buf.push_str src fns)
-    (call buf.push_str src " (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
-    (call buf.push_str src body)
-    (call buf.push_str src " (shl (shl a 3) 4)))")
+    (call buf.push_str src "(module m (struct S [x:i32]) (fn g [] -> i32 (sys.print \"g\") 7) (fn twice [x:i32] -> i32 (+ x x)) (fn pick [c:bool x:i32] -> i32 (if c x 0)) ")
+    (call buf.push_str src "(fn main [a:i32 _inl:i32 p:(ptr S)] -> i32 (* (call g) 0) (% (get p S.x) 1) (and (gt (call g) 0) false) (call twice (call g)) (call twice (+ a 1)) (call pick (gt a 0) (/ a _inl)) (shl (shl a 16) 16) (shl (shl a 3) 4)))")
     (let want:(ptr buf.Buf) (call buf.make (call alloc.default) 512))
-    (call buf.push_str want "(module m\n  (struct S [x:i32])\n  (fn g [] -> i32 (sys.print \"g\") 7)\n  (fn twice [x:i32] -> i32 (+ x x))\n  (fn pick [c:bool x:i32] -> i32 (if c x 0))\n  (fn main [a:i32 b:i32 p:(ptr S)] -> i32 ")
-    (call buf.push_str want body)
-    (call buf.push_str want " (shl a 7))\n)")
+    (call buf.push_str want "(module m\n  (struct S [x:i32])\n  (fn g [] -> i32 (sys.print \"g\") 7)\n  (fn main [a:i32 _inl:i32 p:(ptr S)] -> i32 (* (call g) 0) (% (get p S.x) 1) (and (gt (call g) 0) false) ")
+    (call buf.push_str want "(block (let _inlx0:i32 (call g)) (+ _inlx0 _inlx0)) (block (let _inlx1:i32 (+ a 1)) (+ _inlx1 _inlx1)) (block (let _inlx2:bool (gt a 0)) (let _inlx3:i32 (/ a _inl)) (if _inlx2 _inlx3 0)) (shl (shl a 16) 16) (shl a 7))\n)")
     (if (call str.bytes_eq (call optimize_with_stats (call buf.bytes src) s) (call buf.bytes want)) 1 0))
 
   ;; Group runner returning pass count (7), matching test_suite.aipl convention.

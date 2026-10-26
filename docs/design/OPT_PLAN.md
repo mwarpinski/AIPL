@@ -215,3 +215,35 @@ binarytrees and fannkuch 2.0x natively, spectralnorm 1.7x, and pidigits
 (no C here: 10.4x on the earlier machine; bigint without a 64x64 to
 128-bit multiply). Each gets profiled, and a plan names what to change
 (std, the optimizer, or the native backend), measured before and after.
+
+**knucleotide, done 2026-10-26.** Profiled (`AIPL_PROFILE=perfmap`, new in
+aipl-run; docs/BENCHMARKS.md, "Profiling"): the program itself was under 4%;
+std/map was the rest, comparing keys 37%, probing 20%, hashing 14%. Probe
+lengths were fine (1.4 to 1.7 keys compared a lookup, simulated on the
+real k-mers; a stronger hash changed nothing), so the cost was two lookups
+per count (`get_or`, then `set`) and a comparison wrapper the inliner left.
+Changes, all general:
+- std/map `(map.add K) [m k d] -> i32`: a count in one lookup (`claim`,
+  shared with `set`). knucleotide 0.391 s to 0.258 natively (0.66), 0.332
+  to 0.225 under wasmtime (0.68): 8.9x C to 5.8x, and now faster than
+  Python (0.295).
+- The inliner binds an argument that is not an atom (or a pure one used
+  once) to a fresh `let`, in the call's order; every argument but a
+  literal, once any is bound, so a variable is read where the call read it.
+  The fresh names' prefix is found in no symbol of the program. This
+  inlined `cmp.Hash<str.Bytes>.same`; no benchmark moved by more than
+  noise.
+- Two bugs found on the way, both fixed: the optimizer folded contracts,
+  so a failed one printed rewritten text (`(shl i 1)` for `(* i 2)`), and
+  an inlined call in a contract brought a `let` that code generation
+  cannot see (contracts are now never rewritten;
+  tests/aipl/opt/contracts.aipl). And one in the language, open: a `let`
+  inside a contract verifies but does not compile (docs/HANDOFF.md, Open
+  problems).
+- Left: storing each slot's hash would skip most comparisons (about 6% of
+  knucleotide) but changes the order a map iterates in, which the
+  self-hosted compiler's output may depend on; not now.
+
+pidigits now has a C time on this machine: 7.9x natively, 4.7x under
+wasmtime. Next: nbody natively (3.3x, against 1.7x under wasmtime: the
+native backend), then pidigits.
