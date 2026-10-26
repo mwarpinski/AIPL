@@ -22,7 +22,7 @@ model has to remember that the compiler could check.
 
 | # | Change | Breaks programs? | Cost | Recommendation |
 |---|---|---|---|---|
-| 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Yes** (strong) |
+| 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Decided yes, done 2026-10-26** |
 | 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Yes** (strong) |
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Yes** (strong) |
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Yes** (moderate); a question on its shape |
@@ -77,6 +77,16 @@ aipl_src/resolver.aipl), with a message test in each.
 
 **Recommendation: yes, strongly.** Cheap now, impossible after release
 without breaking users.
+
+**Decided (owner, 2026-10-26): yes. Done 2026-10-26** on branch
+features/explicit-imports: both resolvers (`foreign` in src/resolver.rs
+and aipl_src/resolver.aipl) refuse a module's name the file does not
+import, with one message; the compiler's own writing (`alloc.create`
+and `alloc.array` for `new` and `arr.new`, a test build's `_start`) is
+exempt, and the formatting forms' std/show calls are written after the
+check in both toolchains. One file needed its line. AIPL_SPEC.md 11
+and 13, the guide's rule 1, tests/test_visibility.rs (three cases, both
+resolvers message for message).
 
 ## 2. A missing value is an Option, not a fake piece of text
 

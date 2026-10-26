@@ -1,7 +1,8 @@
 //! Visibility (AIPL_SPEC.md 11.1): items private to their module unless
 //! (pub); fields private, (read x:T), or (pub x:T); a struct made outside
-//! its module only when every field is (pub). Both resolvers report the
-//! same first error, and what is allowed runs in both backends.
+//! its module only when every field is (pub); every module a file names, it
+//! imports. Both resolvers report the same first error, and what is allowed
+//! runs in both backends.
 
 use aipl_core::checker::TypeChecker;
 use aipl_core::compiler::wasm::WasmCompiler;
@@ -114,6 +115,11 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(put (call lib.mh) lib.H.v lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.set lib.V a 0 lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
         (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.get lib.V a 0 lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        // every module a file names, it imports (AIPL_SPEC.md 11): str is
+        // loaded (lib imports it), but main does not import it
+        (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(let b:str.Bytes (call lib.bytes)) 0"#, r#"'str.Bytes' is in module str, which this file does not import: add (import str)"#),
+        (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(call str.from_str "x") 0"#, r#"'str.from_str' is in module str, which this file does not import: add (import str)"#),
+        (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(get (call lib.bytes) str.Bytes.len)"#, r#"'str.Bytes' is in module str, which this file does not import: add (import str)"#),
         (r#"(module lib (struct V [x:i32] (pub) (value)))"#, r#"0"#, r#"1:31: (pub) comes right after the signature: (fn f [params] -> type (pub) ...), (struct S [fields] (pub)), (struct S [fields] (value) (pub)), (union U [variants] (pub)), (enum E [members] (pub)), (const NAME:type value (pub)), (interface (Name T) (pub) ...)"#),
     ];
     for (k, (lib, body, want)) in cases.iter().enumerate() {

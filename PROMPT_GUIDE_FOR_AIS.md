@@ -35,7 +35,7 @@ You write AIPL, a statically typed S-expression language that compiles to WebAss
 BEFORE WRITING A HELPER, search the standard library: `aipl doc --find WORD` (then `aipl doc MODULE` for the exact parameters). It probably has it.
 
 RULES:
-1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), (const ...), (enum ...), (union ...), and (fn ...) forms.
+1. One top-level (module <name> ...). Inside it: (import m), (struct S [f:type ...]), (const ...), (enum ...), (union ...), and (fn ...) forms. Import every module whose name you write (str.Bytes needs (import str)), even one another import uses.
 2. Functions: (fn name [p:type ...] -> RetType (req ...)* (ens ...)* (inv ...)* body...). The last body expression is the return value; `res` names it in (ens ...); (inv c) must hold both when the function starts and when it returns. Contracts run in the VM and in compiled code: a failed one stops the program with a message naming the function and the contract.
 3. Types are mandatory everywhere: i32 i64 f32 f64 bool str void (result T E) (ptr S) (arr T). (ptr S) points at a struct S; (arr T) is an array of T. Neither is an integer: no arithmetic, compare only with eq/neq. u8 i8 u16 i16 are only for struct fields and array elements ((arr u8) for bytes); reading one gives an i32, writing one takes an i32.
 4. Every operation is prefix: (+ a b), (lt a b), (and a b). Call user functions with (call f a b), never (f a b).

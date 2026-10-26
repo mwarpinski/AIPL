@@ -43,6 +43,8 @@
   (struct Mod [src:(ptr Src) prefix:str.Bytes imported:bool
                fns:(ptr (map.Map str.Bytes i32)) structs:(ptr (map.Map str.Bytes i32)) decls:(ptr (map.Map str.Bytes i32))
                aliases:(ptr (map.Map str.Bytes str.Bytes))
+               ;; the modules its own (import ...) lines name (resolver.rs ModuleSx uses)
+               uses:(ptr (map.Map str.Bytes i32))
                templates:(ptr (map.Map str.Bytes i32)) known:(ptr (map.Map str.Bytes i32))
                vis:(ptr Vis) name:str.Bytes paths:(ptr (map.Map str.Bytes str.Bytes))
                item:(ptr compiler.Node) err:(ptr buf.Buf)
@@ -695,18 +697,30 @@
     (call buf.push_str b s)
     b)
 
-  ;; The module a canonical name belongs to, if it is another module; else len -1.
-  (fn foreign [m:(ptr Mod) name:str.Bytes] -> str.Bytes
+  ;; The module a canonical name belongs to, if it is another module; else
+  ;; len -1. Naming one this file does not import is an error (resolver.rs
+  ;; foreign): every module a file names, it imports. alloc.create and
+  ;; alloc.array are what new and arr.new are written as.
+  (fn foreign [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> str.Bytes
     (unsafe (let dot:i32 (call str.find_byte name 46))
     (when (lt dot 0) (return (call str.bytes 0 -1)))
     (let first:str.Bytes (call slice name 0 dot))
-    (if (and (not (call str.bytes_eq first (get m Mod.name))) (call (map.has str.Bytes str.Bytes) (get m Mod.paths) first))
-        first
-        (call str.bytes 0 -1))))
+    (let other:bool (and (not (call str.bytes_eq first (get m Mod.name))) (call (map.has str.Bytes str.Bytes) (get m Mod.paths) first)))
+    (when (and other (and (not (call (map.has str.Bytes i32) (get m Mod.uses) first))
+                          (and (not (call str.is name "alloc.create")) (not (call str.is name "alloc.array")))))
+          (let b:(ptr buf.Buf) (call vis_msg "'"))
+          (call buf.push_bytes b name)
+          (call buf.push_str b "' is in module ")
+          (call buf.push_bytes b first)
+          (call buf.push_str b ", which this file does not import: add (import ")
+          (call buf.push_bytes b first)
+          (call buf.push_str b ")")
+          (call vis_fail m n b))
+    (if other first (call str.bytes 0 -1))))
 
   ;; name (canonical) may be used here: it is this module's, or (pub).
   (fn check_item [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
-    (let fm:str.Bytes (call foreign m name))
+    (let fm:str.Bytes (call foreign m name n))
     (when (and (gte (get fm str.Bytes.len) 0) (not (call (map.has str.Bytes i32) (get (get m Mod.vis) Vis.public) name)))
           (let b:(ptr buf.Buf) (call vis_msg "'"))
           (call buf.push_bytes b name)
@@ -754,7 +768,7 @@
   ;; A constant, enum, union, or one of their members: the declaration is
   ;; the first two parts.
   (fn check_decl [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
-    (when (lt (get (call foreign m name) str.Bytes.len) 0) (return))
+    (when (lt (get (call foreign m name n) str.Bytes.len) 0) (return))
     (let first:i32 (call str.find_byte name 46))
     (let rest:str.Bytes (call slice name (+ first 1) (- (get name str.Bytes.len) (+ first 1))))
     (let second:i32 (call str.find_byte rest 46))
@@ -766,7 +780,7 @@
     (call check_makes m name n))
 
   (fn check_makes [m:(ptr Mod) name:str.Bytes n:(ptr compiler.Node)] -> void
-    (let fm:str.Bytes (call foreign m name))
+    (let fm:str.Bytes (call foreign m name n))
     (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
          (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) name (ptr.null (map.Map str.Bytes i32))))
@@ -787,7 +801,7 @@
 
   ;; Field f of struct s (canonical), read (get) or written (put).
   (fn check_field [m:(ptr Mod) s:str.Bytes f:str.Bytes put:bool n:(ptr compiler.Node)] -> void
-    (let fm:str.Bytes (call foreign m s))
+    (let fm:str.Bytes (call foreign m s n))
     (when (lt (get fm str.Bytes.len) 0) (return))
     (let fields:(ptr (map.Map str.Bytes i32))
          (call (map.get_or str.Bytes (ptr (map.Map str.Bytes i32))) (get (get m Mod.vis) Vis.fields) s (ptr.null (map.Map str.Bytes i32))))
@@ -1442,6 +1456,7 @@
     (put m Mod.structs (call (map.make str.Bytes i32) (call alloc.default) 8))
     (put m Mod.decls (call (map.make str.Bytes i32) (call alloc.default) 8))
     (put m Mod.aliases (call (map.make str.Bytes str.Bytes) (call alloc.default) 8))
+    (put m Mod.uses (call (map.make str.Bytes i32) (call alloc.default) 8))
     (put m Mod.templates (call (map.make str.Bytes i32) (call alloc.default) 8))
     (put m Mod.known known)
     (put m Mod.square 0)
@@ -1467,6 +1482,7 @@
         ((and (or (call eq_lit h "const") (or (call eq_lit h "enum") (call eq_lit h "union"))) (call is_symbol name))
          (call (map.set str.Bytes i32) (get m Mod.decls) (call text src name) 1))
         ((call eq_lit h "import")
+         (call (map.set str.Bytes i32) (get m Mod.uses) (call module_name (call text src name)) 1)
          ;; (import name as alias)
          (let alias:(ptr compiler.Node) (call nth item 3))
          (when (call is_symbol alias)

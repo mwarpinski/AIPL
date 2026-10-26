@@ -13,6 +13,7 @@
   (import url)
   (import json)
   (import text)
+  (import vec)
 
   (fn handle [a:alloc.Allocator target:str.Bytes body:str.Bytes out:(ptr buf.Buf)] -> void (no_leak)
     (match_result (call url.parse a target)
