@@ -17,7 +17,7 @@ A system-prompt module and verified examples for LLMs writing **AIPL**. Every ex
 | 3 | `(let x 5)` | `(let x:i32 5)`. Every `let`, parameter, return and field names its type. |
 | 4 | `(loop i 0 n 1 ...)` | `loop` is gone (an error). `(for i 0 n ...)` runs n times: the end is left out. For another step, use `while`. |
 | 5 | A string literal inside a placeholder: `{(call f "x")}` | `(let s:str (call f "x"))`, then `{s}`. A placeholder cannot hold a string literal. |
-| 6 | One name with two types in a function: `v` as an `i32` in one `match` arm and a `str` in the next | A name keeps one type per function: rename one binder, or write `_` for a field you do not read. |
+| 6 | A `let` or binder reusing a name that is still in scope (a `let x` inside a block within the scope of another `x`) | Shadowing is an error: rename the inner one. A name's scope is its block or arm, so sibling blocks and arms may each reuse a name, with any type. |
 | 7 | `(new S)` or `(arr.new T n)` | Every allocation names its allocator: `(new S a [x:1 y:2])`, `(arr.new T a n)`, with `a:alloc.Allocator` passed in as a parameter. |
 | 8 | An array literal without an allocator, `(arr.of i32 1 2 3)` | Name the allocator first: `(arr.of i32 a 1 2 3)`, e.g. `(arr.of i32 (call alloc.default) 1 2 3)`; `(arr.of i32 a)` is an empty array. |
 | 9 | `(ok 5)`, or `(match_result r (ok [v] ...) (err [e] ...))` | `(ok:E 5)` names the type of the side it does not carry; the arms bind without brackets: `(match_result r (ok v ...) (err e ...))`. |

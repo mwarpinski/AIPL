@@ -211,9 +211,10 @@ fn every_rule_has_its_message() {
         (format!("{u} (fn f [a:S] -> i32 (+ a 1))"), "+ on union 'S': unions have no arithmetic; take them apart with match"),
         (format!("{u} (fn f [] -> S (ptr.null S))"), "'S' is a union, which is a value: write S, not (ptr S); a union is never null, so use a variant such as (none) for no value"),
         (format!("{u} (fn f [] -> S (enum.cast S 1))"), "'S' is a union, not an enum: its values are made with (make S.variant ...)"),
-        // a name keeps one type per function
-        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] x) (else 0)))"), "'x' is i32 here but f64 elsewhere in this function; a name keeps one type per function (rename one)"),
-        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) y))".into(), "'y' is i32 here but f64 elsewhere in this function"),
+        // a name's scope is its arm or block, and one still visible is not shadowed
+        // (named as written, though the second x is renamed for the code generators)
+        (format!("{u} (fn f [s:S] -> i32 (match s (S.circle [x] 1) (S.sq [x] (let x:f64 2.0) 1) (else 0)))"), "Cannot shadow existing variable 'x'"),
+        ("(fn f [] -> i32 (block (let y:f64 1.5) 0) (block (let y:i32 3) (block (let y:i32 4) y)))".into(), "Cannot shadow existing variable 'y'"),
     ];
     for (i, (body, want)) in cases.iter().enumerate() {
         let src = format!("(module m {body})");

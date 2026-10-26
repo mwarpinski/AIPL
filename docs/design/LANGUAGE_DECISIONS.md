@@ -26,7 +26,7 @@ model has to remember that the compiler could check.
 | 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Decided yes, done 2026-10-26** |
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Decided yes, done 2026-10-26** |
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`; done 2026-10-26** |
-| 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Yes** (moderate) |
+| 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Decided yes, done 2026-10-26** |
 | 6 | One way to print: the format forms | Yes (~105 call sites) | Medium, by a tool | **Yes** (moderate) |
 | 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
 | 8 | `(= x 1)` says to write `eq` (today it suggests `(call = ...)`) | No (a message) | Tiny | **Yes**, just do it |
@@ -330,6 +330,20 @@ bytes in both toolchains.
 **Recommendation: yes, moderately.** It does not break anything, so it
 could also wait until after launch; it is here because the guide's
 pitfall list should be final before the evidence is gathered.
+
+**Decided (2026-10-26), and done.** Neither checker keeps a name's type
+per function any more. The code generators are unchanged: the generics
+pass, the last before the checkers and code generators in both
+toolchains, renames a name declared again where its first declaration is
+no longer visible to `'K.name` (its K-th declaration), with every use in
+its scope (src/scopes.rs, generics.aipl scope_fn), and a message writes it
+back as `name` (`shown`). A declaration of a name still visible keeps that
+name, so shadowing is reported as before. A name redeclared with the same
+type is renamed too: one more local, which costs nothing measurable, and
+the rule stays syntactic, the same in both toolchains.
+tests/test_scopes.rs runs blocks, arms, loops, and clauses that each
+declare a name again, with other types and in a template, in every
+backend and both toolchains' bytes.
 
 ## 6. One way to print
 
