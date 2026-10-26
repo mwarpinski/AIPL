@@ -615,7 +615,8 @@ fn zero_of(
     let fail = |what: &str| Err(at(place, form, &format!("{} {}", shown(&render(&t)), what)));
     if let Some(s) = t.symbol() {
         return match s {
-            "i32" => Ok(atom(TokenKind::IntLit(0))),
+            // a storage type's field reads and writes an i32
+            "i32" | "u8" | "i8" | "u16" | "i16" => Ok(atom(TokenKind::IntLit(0))),
             "i64" => Ok(atom(TokenKind::Int64Lit(0))),
             "f64" => Ok(atom(TokenKind::FloatLit(0.0, "0.0".to_string()))),
             "f32" => Ok(atom(TokenKind::Float32Lit(0.0, "0.0f32".to_string()))),

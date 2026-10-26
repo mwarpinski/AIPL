@@ -345,10 +345,20 @@ fn self_hosted_bytes_match_f64_sqrt() {
 /// 15, which the native backend's translator state passed in NE8).
 #[test]
 fn self_hosted_bytes_match_a_wide_struct() {
-    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", if i % 3 == 0 { "i64" } else { "i32" })).collect();
+    let ty = |i: usize| if i % 3 == 0 { "i64" } else { "i32" };
+    let fields: Vec<String> = (0..40).map(|i| format!("f{i}:{}", ty(i))).collect();
+    // every field named, f37 and f38 given, the rest their zeros
+    let given: Vec<String> = (0..40)
+        .map(|i| match i {
+            37 => "f37:7".to_string(),
+            38 => "f38:5".to_string(),
+            _ => format!("f{i}:(zero {})", ty(i)),
+        })
+        .collect();
     let src = format!(
-        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever) [])) (put w W.f37 7) (put w W.f38 5) (+ (get w W.f37) (get w W.f38))))",
-        fields.join(" ")
+        "(module wide (import alloc) (struct W [{}]) (fn f [] -> i32 (let w:(ptr W) (new W (call alloc.forever) [{}])) (+ (get w W.f37) (get w W.f38))))",
+        fields.join(" "),
+        given.join(" ")
     );
     assert_self_hosted_matches_rust("wide", &src);
 }

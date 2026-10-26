@@ -522,7 +522,9 @@
 
   (fn zero_named [st:(ptr St) name:str.Bytes g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
     (cond
-      ((call lit name "i32") (call buf.push_str out "0"))
+      ;; a storage type's field reads and writes an i32
+      ((or (call lit name "i32") (or (call lit name "u8") (or (call lit name "i8") (or (call lit name "u16") (call lit name "i16")))))
+       (call buf.push_str out "0"))
       ((call lit name "i64") (call buf.push_str out "0i64"))
       ((call lit name "f64") (call buf.push_str out "0.0"))
       ((call lit name "f32") (call buf.push_str out "0.0f32"))

@@ -1593,13 +1593,33 @@
       (set! c (call skip_form toks c)))
     n)
 
+  ;; Marks the [ and ] of each new's or make's last argument when it is a
+  ;; [...] list: a struct's named fields, whose values are expressions
+  ;; (sugar.rs rewrite).
+  (fn named_lists [src:i32 toks:i32 count:i32] -> (arr bool)
+    (let named:(arr bool) (arr.new bool (call alloc.default) count))
+    (for i 0 (- count 1)
+      (when (and (eq (call kind_at toks i) compiler.Kind.lparen)
+                 (or (call symbol_is src toks (+ i 1) "new") (call symbol_is src toks (+ i 1) "make")))
+            (let c:i32 (+ i 2))
+            (let last:i32 -1)
+            (while (and (lt c count) (not (call is_closer (call kind_at toks c))))
+              (set! last c)
+              (set! c (call skip_form toks c)))
+            (when (and (gte last 0) (eq (call kind_at toks last) compiler.Kind.lbracket))
+                  (arr.set bool named last true)
+                  (arr.set bool named (- (call skip_form toks last) 1) true))))
+    named)
+
   ;; (when c body...) and (for i start end body...) shapes (sugar.rs): the
-  ;; first error, or null.
+  ;; first error, or null. Nothing inside a [...] list is a form, but for a
+  ;; struct's named fields.
   (fn sugar_error [src:i32 toks:i32 count:i32 skip:(arr bool)] -> (ptr buf.Buf)
     (unsafe (let square:i32 0)
+    (let named:(arr bool) (call named_lists src toks count))
     (for i 0 (- count 1)
-      (when (eq (call kind_at toks i) compiler.Kind.lbracket) (set! square (+ square 1)))
-      (when (eq (call kind_at toks i) compiler.Kind.rbracket) (set! square (- square 1)))
+      (when (and (eq (call kind_at toks i) compiler.Kind.lbracket) (not (arr.get bool named i))) (set! square (+ square 1)))
+      (when (and (eq (call kind_at toks i) compiler.Kind.rbracket) (not (arr.get bool named i))) (set! square (- square 1)))
       (when (and (and (eq square 0) (not (arr.get bool skip i))) (eq (call kind_at toks i) compiler.Kind.lparen))
             (when (and (call symbol_is src toks (+ i 1) "when") (lt (call form_args toks count i) 1))
                   (let b:(ptr buf.Buf) (call at_token src toks i ""))
