@@ -21,8 +21,10 @@ target/bootstrap/aipl compile FILE.aipl -o OUT.wasm
 target/bootstrap/aipl compile --exe [--sandbox] FILE.aipl -o OUT
 ```
 
-It finds the standard library at `$AIPL_STD`, else `aipl_src/std/` under
-the working directory. WASI has no way to set a file's execute bit, so an
+It finds the standard library at `$AIPL_STD`, else `share/aipl/std/`
+beside its folder (an install or a kit, `<prefix>/bin/aipl` with
+`<prefix>/share/aipl/std/`), else `aipl_src/std/` under the working
+directory (aipl_src/stdpath.aipl). WASI has no way to set a file's execute bit, so an
 executable it writes needs `chmod +x` (the script does this).
 
 The rest of the Rust command (`eval`, `test`, `run`) is not here: the

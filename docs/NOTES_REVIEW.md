@@ -61,7 +61,7 @@ not about this repository), **unchecked** (with why).
 
 | Claim | Verdict | Evidence and action |
 |---|---|---|
-| The Rust CLI hardcodes `CARGO_MANIFEST_DIR/aipl_src/std` | true | src/resolver.rs, `find_module_file` (line 994 now; the note says 880). It also ignores `AIPL_STD`. **Open: launch checklist section 4**, "A binary that works wherever it is". install.sh works only because it builds in place. |
+| The Rust CLI hardcodes `CARGO_MANIFEST_DIR/aipl_src/std` | true | src/resolver.rs, `find_module_file` (line 994 now; the note says 880). It also ignores `AIPL_STD`. **Fixed 2026-10-26**: the binary carries its library (src/library.rs) and honours `AIPL_STD`; launch checklist section 4, "A binary that works wherever it is" (a copied binary runs every command: tests/test_portable.rs). |
 | The self-hosted CLI falls back to `./aipl_src/std/` | true | aipl.aipl:76, driver.aipl:155, doc.aipl:618. Same item. |
 | The self-hosted CLI has only `compile` and `--version` | partly | It has `doc` too since 2026-10-18; `verify` and `test` are missing. Same item. |
 | `--exe` output needs `chmod +x` | partly | Only from the self-hosted CLI (WASI cannot set file modes; aipl.aipl:16 says so); the Rust CLI sets 0755 (src/main.rs:294). |
