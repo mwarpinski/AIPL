@@ -291,3 +291,31 @@ fn value_structs_build_for_both_targets() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// On Apple Silicon (macOS), standalone executables are launcher bundles
+/// (aipl-run with wasm and an AIPLEXE2 trailer appended). This test checks
+/// that the bundle executes on macOS, passes arguments, and exits cleanly.
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_launcher_bundle_executes_and_preserves_behavior() {
+    let dir = scratch("macos_bundle");
+    let src = dir.join("prog.aipl");
+    std::fs::write(
+        &src,
+        r#"(module prog
+  (import io) (import os) (import str)
+  (fn main [] -> i32
+    (call io.println_int "args: " (call os.arg_count))
+    (let f:str.Bytes (call os.arg 1))
+    (call io.println_int "arg1 len: " (get f str.Bytes.len))
+    0))"#,
+    )
+    .unwrap();
+    let exe = dir.join("bundle_test");
+    compile(&src, &exe, &["--exe"]);
+    assert_kind(&exe, "wasm");
+    let o = run_in(&dir, &exe, &["hello"], "");
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(stdout(&o), "args: 2\narg1 len: 5\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
