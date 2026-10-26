@@ -24,7 +24,7 @@ model has to remember that the compiler could check.
 |---|---|---|---|---|
 | 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Decided yes, done 2026-10-26** |
 | 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Decided yes, done 2026-10-26** |
-| 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Yes** (strong) |
+| 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Decided yes, done 2026-10-26** |
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Yes** (moderate); a question on its shape |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Yes** (moderate) |
 | 6 | One way to print: the format forms | Yes (~105 call sites) | Medium, by a tool | **Yes** (moderate) |
@@ -194,6 +194,18 @@ the length or an index wrong.
 as `arr.new T a 0` is.
 
 **Recommendation: yes, strongly.**
+
+**Decided (owner, 2026-10-26):** yes; the allocator required; an empty
+`(arr.of T a)` allowed, as an initializer to replace with longer arrays
+(a list that grows is `vec.Vec`; no `vec.of` for now). **Done** on branch
+features/arr-of: both resolvers rewrite it as a block that makes the
+array and sets each value (sugar.rs, resolver.aipl emit_arr_of), the
+temporary named by the form's line and column, so it stays flat however
+many values it holds; a missing allocator, or a literal where it goes, is
+one message in both. tests/test_sugar.rs: alike in every backend, both
+toolchains' bytes, five message cases. Found on the way, open: sugar
+inside a formatting placeholder is rewritten by the self-hosted resolver
+but refused by the Rust one (docs/HANDOFF.md, Open problems).
 
 ## 4. A heap struct is made in one form
 

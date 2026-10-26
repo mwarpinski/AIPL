@@ -1,6 +1,8 @@
-;; when, for, and variadic and/or (tests/test_sugar.rs; sugar.rs): each
-;; rewritten as the resolver reads the module, the same in every backend.
+;; when, for, variadic and/or, and the array literal arr.of
+;; (tests/test_sugar.rs; sugar.rs): each rewritten as the resolver reads the
+;; module, the same in every backend.
 (module main
+  (import alloc)
   (import lib)
 
   (fn noisy [label:str v:bool] -> bool
@@ -37,6 +39,11 @@
     (let o:bool (or (call noisy "o1" false) (call noisy "o2" true) (call noisy "o3" true)))
     (println "= {o}")
     (println "lib {(call lib.count_to 6)}")
+    ;; an array literal, an empty one (an initializer), and one in place
+    (let xs:(arr i32) (arr.of i32 (call alloc.default) 3 1 4 1 5))
+    (let none:(arr i32) (arr.of i32 (call alloc.default)))
+    (let second:i32 (arr.get i32 (arr.of i32 (call alloc.default) 7 8) 1))
+    (println "arr.of {(arr.len xs)} {(arr.get i32 xs 2)} {(arr.len none)} {second}")
     0)
 
   (test "for counts up to the end"

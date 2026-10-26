@@ -2,8 +2,8 @@
 //! tests/aipl/sugar/main.aipl prints the same in the VM, under aipl-run, and
 //! natively; the self-hosted aipl compiles it (and its test build) to the
 //! Rust toolchain's bytes; and each mistake is one message in both, a test's
-//! body read only in a test build. new and arr.new, which name their
-//! allocator, are rewritten here too.
+//! body read only in a test build. new, arr.new, and arr.of (the array
+//! literal), which name their allocator, are rewritten here too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -29,7 +29,7 @@ fn run(exe: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn the_forms_run_alike_in_every_backend() {
-    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\n";
+    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\narr.of 5 4 0 8\n";
     let dir = scratch("run");
     let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
     assert!(run(Path::new(AIPL), &["compile", MAIN, "-o", wasm.to_str().unwrap()]).status.success());
@@ -81,6 +81,12 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a): the struct, then the allocator to make it from"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32 3)))", false, "3:38: arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32)))", false, "3:38: arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"),
+        // arr.of, the array literal: an allocator, then the values (or none)
+        ("(fn g [a:alloc.Allocator] -> i32 (arr.len (arr.of i32 a 4 5 6)))", false, ""),
+        ("(fn g [a:alloc.Allocator] -> i32 (arr.len (arr.of i32 a)))", false, ""),
+        ("(fn g [] -> i32 (arr.len (arr.of i32 1 2 3)))", false, "3:28: arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array"),
+        ("(fn g [] -> i32 (arr.len (arr.of i32)))", false, "3:28: arr.of takes the allocator to make it from"),
+        ("(fn g [] -> i32 (arr.len (arr.of (arr i32) 7)))", false, "3:28: arr.of takes the allocator to make it from"),
         ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", false, ""),
         ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", true, "3:47: new takes the allocator to make it from"),
     ];

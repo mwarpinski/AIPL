@@ -68,7 +68,7 @@ pub struct Token {
 /// compares them).
 pub const HEAD_NAMES: &[&str] = &[
     "when", "%", "*", "+", "-", "/", "^", "and", "args.get", "args.sizes", "arr.addr", "arr.cast",
-    "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.set", "atomic.add",
+    "arr.gen", "arr.get", "arr.len", "arr.make", "arr.new", "arr.null", "arr.of", "arr.set", "atomic.add",
     "atomic.cas", "atomic.lock", "atomic.unlock", "bitand", "bitor", "block", "break", "call",
     "call_ref", "checked.add", "checked.mul", "checked.sub", "cond", "continue", "dbg", "defer",
     "divu", "enum.cast", "enum.ord", "env.get", "env.sizes", "eprintln", "eq", "err", "expect",
@@ -1933,7 +1933,7 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
                                 "format.expect" => OpCode::FormatExpect,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" => {
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" | "arr.of" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str
@@ -1944,8 +1944,6 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                         "there is no else if, elif, switch, or case: use (cond (test body...) ... (else body...))".to_string()
                                     } else if other == "loop" {
                                         "loop is retired: (for i start end body...) counts from start up to end, end left out; for another step, use while".to_string()
-                                    } else if other == "arr.of" {
-                                        "there is no array literal: make the array with (arr.new T a n) and fill it with (arr.set T xs i v)".to_string()
                                     } else if let Some(near) = nearest_name(other, HEAD_NAMES.iter().copied()) {
                                         format!("did you mean {near}?")
                                     } else {
