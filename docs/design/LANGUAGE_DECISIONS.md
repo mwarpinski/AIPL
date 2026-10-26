@@ -25,7 +25,7 @@ model has to remember that the compiler could check.
 | 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Decided yes, done 2026-10-26** |
 | 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Decided yes, done 2026-10-26** |
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Decided yes, done 2026-10-26** |
-| 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Yes** (moderate); a question on its shape |
+| 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Decided yes: fields by name, zeros written with `(zero T)`**; in progress |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Yes** (moderate) |
 | 6 | One way to print: the format forms | Yes (~105 call sites) | Medium, by a tool | **Yes** (moderate) |
 | 7 | An address-sized integer type | No, if not done | None now | **No: say why in the FAQ** (strong) |
@@ -256,6 +256,33 @@ the new form to both toolchains, keeping the old; (b) refresh the seed
 **Recommendation: yes, moderately.** The protection is real and the cost
 is mostly mechanical; it is the largest item here, so if time is short it
 is the one to drop.
+
+**Decided (2026-10-26).** A struct's fields are given by name, a
+variant's payload by position: `(new S a [x:1 y:2])` and
+`(make V [x:1 y:2])`, every field once, in declaration order (each value
+evaluated in the order written). The owner asked whether positional with
+optional names was possible (as some languages' calls are); it is, but it
+would be two ways to write the same thing, so names only.
+
+The zeroed `(new S a)` goes, as proposed. A scan before the rewrite found
+that about 150 of some 370 sites leave fields zero (about 70 make a struct
+empty and fill it later), and that two kinds of field have no zero that
+can be written: a `T` inside a template, and a union. Keeping the zeroed
+form for "fill it in later" was weighed and refused: a zero written out is
+the same value as one implied, and only the written one makes a new field
+an error at every site that does not say what it is. So there is a form
+for the zero of a type, `(zero T)`, written out by the generics pass
+(generics.rs zero_of, generics.aipl print_zero), where every type is
+known, a template's `T` included: `0`, `0i64`, `0.0`, `0.0f32`, `false`,
+`""`, `(ptr.null S)`, `(arr.null T)`, an enum's first member, a value
+struct made of its fields' zeros. A union, a function reference, a
+result, and a struct used through a pointer have none: a union's zero
+would be whichever variant happens to be declared first.
+
+Order: (a) the named forms in both toolchains, keeping the old (done);
+(b) `(zero T)` (done); (c) the seed refreshed (owner approved,
+2026-10-26); (d) the repository rewritten by a tool, its dry run read
+first; (e) the old forms removed, with messages that show the new ones.
 
 ## 5. A name's scope is its block or match arm
 

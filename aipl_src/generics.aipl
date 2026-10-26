@@ -417,6 +417,7 @@
                           ((call is_app st (call first_child g) false) 0)
                           ((and (gte (get h str.Bytes.len) 0) (and (call lit h "make") (call is_union_app st (call nth g 1)))) 1)
                           (else -1)))
+    (when (and (not square) (call lit h "zero")) (call print_zero st g env out) (return))
     (call note st g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
@@ -455,6 +456,138 @@
       (set! c (get c compiler.Node.next)))
     (when (gte (get g compiler.Node.a) 0) (call origins.note (get st St.origins) out -1 (get g compiler.Node.a)))
     (call buf.push_byte out (if square 93 41)))
+
+  ;; ===== (zero T) (generics.rs zero_of) =====
+
+  ;; Whether n holds a (zero ...) form, [...] groups included.
+  (fn has_zero [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (when (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (return false))
+    (when (and (eq k compiler.Kind.paren) (call lit (call head st n) "zero")) (return true))
+    (let c:(ptr compiler.Node) (call first_child n))
+    (while (neq c (ptr.null compiler.Node))
+      (when (call has_zero st c) (return true))
+      (set! c (get c compiler.Node.next)))
+    false)
+
+  (fn any_zero [st:(ptr St) items:(ptr (vec.Vec (ptr compiler.Node)))] -> bool
+    (for i 0 (call (vec.len (ptr compiler.Node)) items)
+      (when (call has_zero st (call (vec.at (ptr compiler.Node)) items i)) (return true)))
+    false)
+
+  ;; (zero T) written out, every token at the form's position (one note):
+  ;; 0, 0i64, 0.0, 0.0f32, false, "", (ptr.null S), (arr.null T), an enum's
+  ;; first member, a value struct made of its fields' zeros, and for a
+  ;; placeholder of the value kind (checked, never compiled)
+  ;; (arr.get 'f.T (arr.null 'f.T) 0). The instances T names are made first,
+  ;; in generics.rs's order.
+  (fn print_zero [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
+    (when (neq (call count_children g) 2)
+          (call fail_at st (get g compiler.Node.pos) (call msg "zero is (zero T): the zero of the type T"))
+          (return))
+    (call note st g out)
+    (call zero_type st (call nth g 1) env g out))
+
+  ;; "T what": a (zero T) error at g, T as source shows it.
+  (fn zero_fail [st:(ptr St) g:(ptr compiler.Node) name:str.Bytes what:str] -> void
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_bytes b (call names.shown name))
+    (call buf.push_byte b 32)
+    (call buf.push_str b what)
+    (call fail_at st (get g compiler.Node.pos) b))
+
+  (fn zero_type [st:(ptr St) t:(ptr compiler.Node) env:(ptr Env) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    ;; a type parameter: its argument, where that was written
+    (when (call is_symbol t)
+          (let i:i32 (call lookup env (call text st t)))
+          (when (and (gte i 0) (not (get env Env.sealed)))
+                (call zero_type st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) g out)
+                (return)))
+    (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call render st t env false nb)
+    (when (get st St.failed) (return))
+    (let name:str.Bytes (call as_bytes nb))
+    (let h:str.Bytes (call head st t))
+    (cond
+      ((or (call is_symbol t) (call is_app st t false)) (call zero_named st name g out))
+      ((and (or (call lit h "ptr") (call lit h "arr")) (eq (call count_children t) 2))
+       (call buf.push_byte out 40)
+       (call buf.push_bytes out h)
+       (call buf.push_str out ".null ")
+       (call render st (call nth t 1) env false out)
+       (call buf.push_byte out 41))
+      ((call lit h "fn") (call zero_fail st g name "is a function reference, which has no zero"))
+      ((call lit h "result") (call zero_fail st g name "is a result, which has no zero"))
+      (else (call zero_fail st g name "is not a type with a zero"))))
+
+  (fn zero_named [st:(ptr St) name:str.Bytes g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (cond
+      ((call lit name "i32") (call buf.push_str out "0"))
+      ((call lit name "i64") (call buf.push_str out "0i64"))
+      ((call lit name "f64") (call buf.push_str out "0.0"))
+      ((call lit name "f32") (call buf.push_str out "0.0f32"))
+      ((call lit name "bool") (call buf.push_str out "false"))
+      ((call lit name "str") (call buf.push_byte out 34) (call buf.push_byte out 34))
+      ((or (call (map.has str.Bytes i32) (get st St.struct_names) name) (call (map.has str.Bytes i32) (get st St.made_structs) name))
+       (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+       (call buf.push_str b "is a struct, used only through a pointer: (zero (ptr ")
+       (call buf.push_bytes b (call names.shown name))
+       (call buf.push_str b ")) is a null pointer")
+       (call zero_fail st g name (call buf.to_str b)))
+      ((eq (call str.byte_at name 0) 39)
+       (call buf.push_str out "(arr.get ")
+       (call buf.push_bytes out name)
+       (call buf.push_str out " (arr.null ")
+       (call buf.push_bytes out name)
+       (call buf.push_str out ") 0)"))
+      (else (call zero_defined st name g out))))
+
+  ;; The zero of an enum, union, or value struct named `name`, concrete or
+  ;; an instance (its template read with the instance's environment).
+  (fn zero_defined [st:(ptr St) name:str.Bytes g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let def:(ptr compiler.Node) (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.defs) name (ptr.null compiler.Node)))
+    (let env:(ptr Env) (ptr.null Env))
+    (when (eq def (ptr.null compiler.Node))
+          (let q:(ptr (vec.Vec (ptr Inst))) (get st St.queue))
+          (for i 0 (call (vec.len (ptr Inst)) q)
+            (let inst:(ptr Inst) (call (vec.at (ptr Inst)) q i))
+            (when (and (eq def (ptr.null compiler.Node)) (call str.bytes_eq (get inst Inst.name) name))
+                  (let t:(ptr Tmpl) (get inst Inst.tmpl))
+                  (when (get t Tmpl.is_struct)
+                        (set! def (get t Tmpl.node))
+                        (set! env (get inst Inst.env))))))
+    (when (eq def (ptr.null compiler.Node)) (call zero_fail st g name "is not a type with a zero") (return))
+    (let h:str.Bytes (call head st def))
+    (let body:(ptr compiler.Node) (call nth def 2))
+    (cond
+      ((call lit h "enum")
+       (let m:(ptr compiler.Node) (call first_child body))
+       (cond
+         ((eq m (ptr.null compiler.Node))
+          (call buf.push_str out "(enum.cast ")
+          (call buf.push_bytes out name)
+          (call buf.push_str out " 0)"))
+         (else
+          (call buf.push_bytes out name)
+          (call buf.push_byte out 46)
+          (call buf.push_bytes out (if (call is_symbol m) (call text st m) (call head st m))))))
+      ((call lit h "union") (call zero_fail st g name "is a union, which has no zero: write the variant you mean with make"))
+      (else
+       (call buf.push_str out "(make ")
+       (call buf.push_bytes out name)
+       ;; [x:T (pub y:U) ...]: each field's type (generics.rs field_types)
+       (let c:(ptr compiler.Node) (call first_child body))
+       (while (and (neq c (ptr.null compiler.Node)) (not (get st St.failed)))
+         (call buf.push_byte out 32)
+         (if (eq (get c compiler.Node.kind) compiler.Kind.paren)
+             (block
+               (call zero_type st (call nth c 3) env g out)
+               (set! c (get c compiler.Node.next)))
+             (block
+               (let ty:(ptr compiler.Node) (get (get c compiler.Node.next) compiler.Node.next))
+               (call zero_type st ty env g out)
+               (set! c (get ty compiler.Node.next)))))
+       (call buf.push_byte out 41))))
 
   (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:str.Bytes out:(ptr buf.Buf)] -> void
     (call buf.push_str out "  ")
@@ -643,7 +776,10 @@
       (set! item (get item compiler.Node.next)))
     (when (get st St.failed) (return false))
     (when (and archetypes (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0)) (return true))
-    (when (and (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0) (eq (call (map.count str.Bytes (ptr Iface)) (get st St.ifaces)) 0)) (call buf.push_bytes out flat) (return true))
+    ;; (zero T) is written out here, so a program with one takes the whole walk
+    (when (and (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0)
+               (and (eq (call (map.count str.Bytes (ptr Iface)) (get st St.ifaces)) 0) (not (call any_zero st items))))
+        (call buf.push_bytes out flat) (return true))
     (let so:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let si:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let fo:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))

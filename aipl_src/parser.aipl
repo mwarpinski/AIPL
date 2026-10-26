@@ -1069,7 +1069,7 @@
     (call form m "ptr.addr" Form.ptr_addr) (call form m "arr.addr" Form.arr_addr) (call form m "enum.ord" Form.enum_ord)
     (call form m "ptr.make" Form.ptr_make) (call form m "arr.make" Form.arr_make)
     (call form m "ptr.gen" Form.ptr_gen) (call form m "arr.gen" Form.arr_gen)
-    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.fmt_surface) (call form m "arr.of" Form.fmt_surface) (call form m "arr.get" Form.arr_get)
+    (call form m "enum.cast" Form.enum_cast) (call form m "arr.new" Form.fmt_surface) (call form m "arr.of" Form.fmt_surface) (call form m "zero" Form.fmt_surface) (call form m "arr.get" Form.arr_get)
     (call form m "arr.set" Form.arr_set) (call form m "mem.free" Form.mem_free) (call form m "with" Form.with_)
     (call form m "mem.load_f32" Form.float_mem) (call form m "mem.load_f64" Form.float_mem)
     (call form m "mem.store_f32" Form.float_mem) (call form m "mem.store_f64" Form.float_mem)

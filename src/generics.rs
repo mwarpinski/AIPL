@@ -139,7 +139,8 @@ fn expand_with(prog: FlatProgram, archetypes: bool) -> Result<Option<FlatProgram
     if archetypes && templates.is_empty() {
         return Ok(None);
     }
-    if templates.is_empty() && ifaces.defs.is_empty() {
+    // (zero T) is written out here, so a program with one takes the whole walk
+    if templates.is_empty() && ifaces.defs.is_empty() && !work.iter().any(|(i, _)| has_zero(&i.sx)) {
         return Ok(Some(regroup(prog.name, files, work)));
     }
     // the placeholders, and the functions each template's where clauses grant
@@ -422,6 +423,16 @@ fn rewrite(
             _ => return Err(at(foreign.get(&items[2].position()).map(|p| p.as_path()).unwrap_or(file), &items[2], "a generic struct field is written (get p (Name T...) field)")),
         }
     }
+    // (zero T): its type's instances are made (above), then it is written out
+    if paren && head.as_deref() == Some("zero") {
+        let place = foreign.get(&sx.position()).map(|p| p.as_path()).unwrap_or(file).to_path_buf();
+        if sx.items().len() != 2 {
+            return Err(at(&place, sx, ZERO_FORM));
+        }
+        let t = sx.items()[1].clone();
+        *sx = zero_of(&t, sx, &place, file, foreign, known, made, created)?;
+        return Ok(());
+    }
     // (call (Interface.function type) ...): the implementation's function
     if callee && paren {
         if let Some((iname, f)) = head.as_deref().and_then(|h| h.rsplit_once('.')) {
@@ -565,6 +576,103 @@ fn rewrite(
     }
     *sx = Sx::symbol_at(name, sx);
     Ok(())
+}
+
+const ZERO_FORM: &str = "zero is (zero T): the zero of the type T";
+
+/// Whether `sx` holds a `(zero ...)` form, `[...]` lists included.
+fn has_zero(sx: &Sx) -> bool {
+    match sx {
+        Sx::Atom(_) => false,
+        Sx::List { .. } => (sx.is_paren() && sx.head() == Some("zero")) || sx.items().iter().any(has_zero),
+    }
+}
+
+/// `(zero T)` written out (AIPL_SPEC.md 4.E), every token at the form's
+/// position: `0`, `0i64`, `0.0`, `0.0f32`, `false`, `""`, `(ptr.null S)`,
+/// `(arr.null T)`, an enum's first member, a value struct made of its fields'
+/// zeros, and for a placeholder of the value kind (checked, never compiled)
+/// `(arr.get 'f.T (arr.null 'f.T) 0)`. A
+/// union, a function reference, a result, and a struct used through a pointer
+/// have no zero. `t` has its template applications made into instances
+/// first, as `aipl_src/generics.aipl` print_zero does, in the same order.
+#[allow(clippy::too_many_arguments)]
+fn zero_of(
+    t: &Sx,
+    form: &Sx,
+    place: &std::path::Path,
+    file: &std::path::Path,
+    foreign: &HashMap<(u32, u32), std::path::PathBuf>,
+    known: &Known,
+    made: &mut Made,
+    created: &mut Vec<(Item, Kind)>,
+) -> Result<Sx, String> {
+    let mut t = t.clone();
+    rewrite(&mut t, file, foreign, known, made, created, false)?;
+    let (line, col) = form.position();
+    let atom = |kind: TokenKind| Sx::Atom(Token { kind, line, col });
+    let sym = |s: &str| atom(TokenKind::Symbol(s.to_string()));
+    let fail = |what: &str| Err(at(place, form, &format!("{} {}", shown(&render(&t)), what)));
+    if let Some(s) = t.symbol() {
+        return match s {
+            "i32" => Ok(atom(TokenKind::IntLit(0))),
+            "i64" => Ok(atom(TokenKind::Int64Lit(0))),
+            "f64" => Ok(atom(TokenKind::FloatLit(0.0, "0.0".to_string()))),
+            "f32" => Ok(atom(TokenKind::Float32Lit(0.0, "0.0f32".to_string()))),
+            "bool" => Ok(atom(TokenKind::BoolLit(false))),
+            "str" => Ok(atom(TokenKind::StringLit(String::new()))),
+            _ if known.struct_names.contains(s) || made.structs.contains(s) => {
+                fail(&format!("is a struct, used only through a pointer: (zero (ptr {})) is a null pointer", shown(s)))
+            }
+            // a placeholder is only checked, never compiled: any T will do
+            _ if s.starts_with('\'') => Ok(list(form, vec![sym("arr.get"), sym(s), list(form, vec![sym("arr.null"), sym(s)]), atom(TokenKind::IntLit(0))])),
+            _ => {
+                let Some(def) = known.defs.get(s).or_else(|| made.defs.get(s)).cloned() else {
+                    return fail("is not a type with a zero");
+                };
+                match def.head() {
+                    Some("enum") => {
+                        let first = def.items().get(2).and_then(|m| m.items().first()).and_then(|m| m.symbol().or_else(|| m.head()));
+                        match first {
+                            Some(m) => Ok(sym(&format!("{}.{}", s, m))),
+                            None => Ok(list(form, vec![sym("enum.cast"), sym(s), atom(TokenKind::IntLit(0))])),
+                        }
+                    }
+                    Some("union") => fail("is a union, which has no zero: write the variant you mean with make"),
+                    _ => {
+                        let mut out = vec![sym("make"), sym(s)];
+                        for ft in field_types(def.items()[2].items()) {
+                            out.push(zero_of(ft, form, place, file, foreign, known, made, created)?);
+                        }
+                        Ok(list(form, out))
+                    }
+                }
+            }
+        };
+    }
+    match t.head() {
+        Some(h @ ("ptr" | "arr")) if t.items().len() == 2 => {
+            let mut inner = t.items()[1].clone();
+            placed(&mut inner, line, col);
+            Ok(list(form, vec![sym(&format!("{h}.null")), inner]))
+        }
+        Some("fn") => fail("is a function reference, which has no zero"),
+        Some("result") => fail("is a result, which has no zero"),
+        _ => fail("is not a type with a zero"),
+    }
+}
+
+/// Moves every token of `sx` to (line, col).
+fn placed(sx: &mut Sx, line: u32, col: u32) {
+    match sx {
+        Sx::Atom(t) => (t.line, t.col) = (line, col),
+        Sx::List { open, items, close } => {
+            (open.line, open.col, close.line, close.col) = (line, col, line, col);
+            for i in items {
+                placed(i, line, col);
+            }
+        }
+    }
 }
 
 /// Replaces each type parameter symbol with its argument.

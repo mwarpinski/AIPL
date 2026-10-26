@@ -87,7 +87,7 @@ pub const HEAD_NAMES: &[&str] = &[
     "print", "println", "ptr.addr", "ptr.cast", "ptr.gen", "ptr.make", "ptr.null", "put", "ref",
     "remu", "return", "set!", "shl", "shr", "shru", "sizeof", "str.len", "str.ptr", "sys.exit",
     "sys.monotonic", "sys.print", "sys.random", "sys.time", "thread.join", "thread.spawn",
-    "try", "try_opt", "try_or", "unsafe", "while", "with",
+    "try", "try_opt", "try_or", "unsafe", "while", "with", "zero",
 ];
 
 /// Edit distance between two names, by bytes (aipl_src/suggest.aipl is the
@@ -1933,7 +1933,7 @@ const FIELD_HINT: &str = "; the struct and field are one symbol, as in (get p Po
                                 "defer" => OpCode::Defer,
                                 "format.dbg" => OpCode::FormatDbg,
                                 "format.expect" => OpCode::FormatExpect,
-                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" | "arr.of" => {
+                                "format" | "format_to" | "print" | "println" | "eprintln" | "dbg" | "expect" | "new" | "arr.new" | "arr.of" | "zero" => {
                                     return Err(format!(
                                         "{}:{}: ({} ...) is expanded during import resolution; parse the file with Resolver, not Parser::parse",
                                         span.0, span.1, op_str
