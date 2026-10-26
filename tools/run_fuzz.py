@@ -708,8 +708,10 @@ def check(case, seed):
     if v != 0:
         problems.append(f"rejected (generator or checker bug): {(v_out + v_err).strip()[-400:]}")
     else:
-        c, c_out, c_err = run([AIPL, "compile", "prog.aipl", "-o", "prog.wasm"], d)
-        n, n_out, n_err = run([AIPL, "compile", "--exe", "prog.aipl", "-o", "prog"], d)
+        # --no-opt: the VM's heap layout, which the printed addresses show
+        # (tools/opt_diff.py compares the optimized build)
+        c, c_out, c_err = run([AIPL, "compile", "--no-opt", "prog.aipl", "-o", "prog.wasm"], d)
+        n, n_out, n_err = run([AIPL, "compile", "--no-opt", "--exe", "prog.aipl", "-o", "prog"], d)
         if c != 0:
             problems.append(f"verify accepts, compile fails: {(c_out + c_err).strip()[-400:]}")
         elif n != 0:

@@ -40,9 +40,11 @@ fn failures(name: &str, body: &str) -> [String; 3] {
 
     let wasm = dir.join("prog.wasm");
     let exe = dir.join("prog");
-    let c = Command::new(AIPL).arg("compile").arg(&src).arg("-o").arg(&wasm).output().unwrap();
+    // --no-opt: the messages carry addresses, the VM's only unoptimized (the
+    // optimizer shrinks the data, which moves the heap)
+    let c = Command::new(AIPL).args(["compile", "--no-opt"]).arg(&src).arg("-o").arg(&wasm).output().unwrap();
     assert!(c.status.success(), "{name}: {}", String::from_utf8_lossy(&c.stderr));
-    let c = Command::new(AIPL).arg("compile").arg(&src).arg("--exe").arg("-o").arg(&exe).output().unwrap();
+    let c = Command::new(AIPL).args(["compile", "--no-opt"]).arg(&src).arg("--exe").arg("-o").arg(&exe).output().unwrap();
     assert!(c.status.success(), "{name}: {}", String::from_utf8_lossy(&c.stderr));
     let run = |cmd: &mut Command, prog: &PathBuf| {
         let o = cmd.output().unwrap();

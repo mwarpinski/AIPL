@@ -108,7 +108,7 @@ def check(case, sources, seed):
             problems.append(f"{name} crashed (exit {status}): {out[-300:]}")
     if not problems:
         if v == 0:
-            c, c_out = run([AIPL, "compile", path, "-o", os.path.join(d, "rust.wasm")])
+            c, c_out = run([AIPL, "compile", "--no-opt", path, "-o", os.path.join(d, "rust.wasm")])
             if c != 0:
                 problems.append(f"verify accepts but compile fails: {message(c_out)}")
             elif a != 0:

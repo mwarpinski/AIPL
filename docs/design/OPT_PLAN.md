@@ -1,7 +1,8 @@
 # The optimizer: faster programs by default
 
 **Status: approved 2026-10-25: the optimizer on by default for compiled
-output, once step 1 is done. Step 1 done 2026-10-25; step 2 next.** The owner's aim: faster programs first, a
+output, once step 1 is done. Steps 1 and 2 done 2026-10-25: `aipl
+compile` optimizes by default; step 3 next.** The owner's aim: faster programs first, a
 faster compiler second.
 
 ## What exists
@@ -114,6 +115,46 @@ text is codegen.aipl's input (enums already numbers), not AIPL source.
   the optimizer afresh for each program (below).
 
 ### 2. Make it the default for compiled output
+
+**Done 2026-10-25** (branch features/optimizer):
+
+- driver.aipl's `compile_file_opt` and `compile_tests_opt` run the
+  optimizer between format lowering and code generation and type-check
+  what it makes; codegen_opt.aipl keeps only the optimizer (its pipeline
+  copy and its own command are gone), and its tests are a group of
+  aipl_src/test_suite.aipl.
+- Both commands optimize by default, `--no-opt` as before (and `--self`
+  implies it). The Rust command checks with its own front end first, so
+  every error reads as it did, then runs `driver.compile_file_opt` under
+  wasmtime (src/selfhost.rs). **Parity survives:** both commands run the
+  same AIPL, so they write the same bytes optimized as unoptimized
+  (tests/test_bootstrap.rs compares them on every repository program), and
+  the bootstrap reaches its fixed point with an optimized stage 2 (3.65 MB
+  against 3.94 MB).
+- **The cost, solved.** Compiled toolchain modules are cached between runs
+  (`$AIPL_CACHE`, else `$XDG_CACHE_HOME/aipl` or `~/.cache/aipl`), keyed by
+  the Rust sources (build.rs `AIPL_SRC_HASH`) and every file below
+  aipl_src/; `Module::serialize`, with wasmtime refusing a stale or damaged
+  entry, which is then compiled again. An optimized compile: 0.08 s (0.5 s
+  and 1.8 s of CPU the first time after a change). src/native.rs uses the
+  same loader, so `--exe` no longer resolves, checks, and compiles the
+  backend on every call. tools/opt_diff.py's 500 generated programs went
+  from 85 s to 30 s.
+- Tests that compare a compiled build with the VM's addresses or call
+  chains, or the Rust code generator's bytes, pass `--no-opt`
+  (tests/test_formats.rs, test_heap.rs, test_memory.rs, test_runner.rs,
+  tools/fuzz.py, tools/run_fuzz.py); every other test now runs optimized
+  builds. tests/test_opt.rs: an inlined function's trap at its call under
+  aipl-run and natively, `--no-opt` keeping the frame, and the cache
+  surviving a damaged entry and turned off.
+- The spec (pipeline, 6.1, a new 6.7, section 9) and the guide say what
+  `aipl compile` does and what differs (frames, addresses).
+- Known: optimizing the whole compiler peaks at 1 GB of the 2 GB a module
+  may use; the optimizer allocates without freeing. A program several
+  times its size could fail to optimize (an error naming `--no-opt`).
+  Freeing per function is the fix when one does.
+
+What was planned:
 
 `aipl compile` (wasm and `--exe`) builds through the optimizer; `--no-opt`
 builds as today. `aipl eval` (the VM), `aipl test`, and `aipl verify` are
