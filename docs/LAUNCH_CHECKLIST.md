@@ -351,15 +351,15 @@ FAQ or ROADMAP.md.
   blocks it crashed instead of giving error 100), and a refusal should
   say what it refuses, not "compile error 94 (AIPL_SPEC.md 6.4)". Until
   then the two compilers agree only below those sizes.
-- [ ] **Using a module without importing it** (found 2026-10-19; a
-  decision). A module that imports `io` can call `str.from_str` without
-  `(import str)`, because io imports str and imports are flattened into
-  one program (AIPL_SPEC.md 11); with no imports at all, `str.Bytes` is
-  "Unknown struct". The spec says neither that this is allowed nor that it
-  is not. For a language that wants every dependency written down, the
-  rule should be: `m.x` needs `(import m)` in that module, checked by
-  both resolvers; existing programs that lean on an import's imports
-  would need the missing lines.
+- [x] **Using a module without importing it** (decided and done
+  2026-10-26, docs/design/LANGUAGE_DECISIONS.md item 1). `m.x` needs
+  `(import m)` in that file, checked by both resolvers with one message
+  (`'str.Bytes' is in module str, which this file does not import: add
+  (import str)`); what the compiler writes for `new`, the formatting
+  forms, and a test build is exempt. One repository file needed a line
+  (tests/aipl/memory/request_paths.aipl), as did two programs inside Rust
+  tests, tools/run_fuzz.py's generated ones, and the kit's test program. AIPL_SPEC.md 11,
+  tests/test_visibility.rs.
 - [ ] **Making a heap struct in one form** (noted 2026-10-18, from
   docs/notes/painpoints.md item 4; a language change, for approval).
   Today it is `(new S)` and a `put` per field (std/regex's Regex: 20), and

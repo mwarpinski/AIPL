@@ -768,6 +768,7 @@ fn self_hosted_bytes_match_clock_random_stdin_paths() {
     std::fs::write(&path, r#"(module surface
   (import io)
   (import os)
+  (import str)
   (fn surface [] -> i64 (unsafe)
     (let b:str.Bytes (call io.read_stdin))
     (let p:i32 (mem.alloc 8))

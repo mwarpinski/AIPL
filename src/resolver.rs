@@ -83,6 +83,11 @@ enum Level {
 struct ModuleSx {
     name: String,
     imports: Vec<(String, Option<String>)>,
+    /// the modules its own `(import ...)` lines name (not those the
+    /// compiler adds for `new`, the formatting forms, or a test build)
+    uses: HashSet<String>,
+    /// a test build's `_start`, which the compiler writes, is in items
+    generated_start: bool,
     items: Vec<Sx>,
     /// its `(test "name" ...)` items: each name and where it is
     tests: Vec<TestInfo>,
@@ -287,7 +292,9 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
             items.push(item.clone());
         }
     }
-    if tests && !test_items.is_empty() {
+    let uses: HashSet<String> = imports.iter().map(|(m, _)| module_name(m).to_string()).collect();
+    let generated_start = tests && !test_items.is_empty();
+    if generated_start {
         test_functions(&test_items, &mut imports, &mut items)?;
     }
     // when, for, variadic and/or, and new and arr.new (sugar.rs): new and
@@ -326,7 +333,7 @@ fn read_module(src: &str, file: &str, tests: bool) -> Result<ModuleSx, String> {
             })?;
         }
     }
-    Ok(ModuleSx { name: name.to_string(), imports, items, tests: infos })
+    Ok(ModuleSx { name: name.to_string(), imports, uses, generated_start, items, tests: infos })
 }
 
 /// A test build's entry: test K as `(fn __test_K [] -> void body...)`, and
@@ -483,6 +490,8 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         known_templates: &st.templates,
         module: prefix.clone().unwrap_or_else(|| module.name.clone()),
         modules,
+        uses: module.uses.clone(),
+        generated: std::cell::Cell::new(false),
         vis: &st.vis,
         file: file.to_path_buf(),
         err: std::cell::RefCell::new(None),
@@ -514,6 +523,8 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
     let mut out_structs = Vec::new();
     let mut out_fns = Vec::new();
     for mut item in module.items {
+        // a test build's _start is the compiler's, not the file's
+        names.generated.set(module.generated_start && item.head() == Some("fn") && item.items().get(1).and_then(|n| n.symbol()) == Some("_start"));
         names.walk(&mut item, 0);
         if let Some(e) = names.err.borrow_mut().take() {
             return Err(e);
@@ -700,6 +711,10 @@ struct Names<'a> {
     /// This module's name, every module's name, and what they give others.
     module: String,
     modules: HashSet<String>,
+    /// The modules this file imports by its own lines (ModuleSx uses), and
+    /// whether the item being walked is one the compiler wrote.
+    uses: HashSet<String>,
+    generated: std::cell::Cell<bool>,
     vis: &'a Vis,
     file: PathBuf,
     /// The first use of something another module keeps private.
@@ -707,10 +722,19 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
-    /// The module a canonical name belongs to, if it is another module.
-    fn foreign<'s>(&self, name: &'s str) -> Option<&'s str> {
+    /// The module a canonical name belongs to, if it is another module;
+    /// naming one this file does not import is an error (AIPL_SPEC.md 11:
+    /// every module a file names, it imports, so a file shows what it
+    /// depends on). The names `new` and `arr.new` are written as
+    /// (alloc.create, alloc.array) and a test build's _start are the
+    /// compiler's.
+    fn foreign<'s>(&self, name: &'s str, at: (u32, u32)) -> Option<&'s str> {
         let (m, _) = name.split_once('.')?;
-        (m != self.module && self.modules.contains(m)).then_some(m)
+        let other = m != self.module && self.modules.contains(m);
+        if other && !self.uses.contains(m) && !self.generated.get() && name != "alloc.create" && name != "alloc.array" {
+            self.fail(at, format!("'{name}' is in module {m}, which this file does not import: add (import {m})"));
+        }
+        other.then_some(m)
     }
 
     fn fail(&self, at: (u32, u32), msg: String) {
@@ -722,7 +746,7 @@ impl Names<'_> {
 
     /// `name` (canonical) may be used here: it is this module's, or (pub).
     fn check_item(&self, name: &str, at: (u32, u32)) {
-        if let Some(m) = self.foreign(name) {
+        if let Some(m) = self.foreign(name, at) {
             if !self.vis.public.contains(name) {
                 if self.vis.all.contains(name) {
                     self.fail(at, format!("'{}' is private to module {}: mark it (pub) there to use it here", name, m));
@@ -741,7 +765,7 @@ impl Names<'_> {
     /// A constant, enum, union, or one of their members (`m.Color.red`):
     /// the declaration is the first two parts.
     fn check_decl(&self, name: &str, at: (u32, u32)) {
-        if self.foreign(name).is_some() {
+        if self.foreign(name, at).is_some() {
             let decl: Vec<&str> = name.splitn(3, '.').take(2).collect();
             self.check_item(&decl.join("."), at);
         }
@@ -750,7 +774,7 @@ impl Names<'_> {
     /// Made outside its module (`new`, or a struct type argument, which
     /// lets a template make one): every field must be (pub).
     fn check_makes(&self, name: &str, at: (u32, u32)) {
-        if let Some(m) = self.foreign(name) {
+        if let Some(m) = self.foreign(name, at) {
             if let Some(fields) = self.vis.fields.get(name) {
                 if fields.values().any(|l| *l != Level::Pub) {
                     self.fail(at, format!("'{}' has fields private to module {}, so only {} can make one", name, m, m));
@@ -761,7 +785,7 @@ impl Names<'_> {
 
     /// Field `f` of struct `s` (canonical), read (get) or written (put).
     fn check_field(&self, s: &str, f: &str, put: bool, at: (u32, u32)) {
-        let Some(m) = self.foreign(s) else { return };
+        let Some(m) = self.foreign(s, at) else { return };
         let level = self.vis.fields.get(s).and_then(|fs| fs.get(f)).copied().unwrap_or(Level::Private);
         if level == Level::Private {
             self.fail(at, format!("field '{}' of {} is private to module {}", f, s, m));

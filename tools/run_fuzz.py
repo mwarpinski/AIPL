@@ -600,7 +600,8 @@ class Gen:
 
     def program(self):
         rng = self.rng
-        lines = ["(module prog", "  (import io)"]
+        # every module a program names, it imports (AIPL_SPEC.md 11)
+        lines = ["(module prog", "  (import io)", "  (import alloc)"]
         for v, fs in self.values.items():
             lines.append(f"  (struct {v} [{' '.join(f'{f}:{t}' for f, t in fs)}] (value))")
         for s, fs in self.structs.items():

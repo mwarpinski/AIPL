@@ -87,6 +87,7 @@ cp -r "$KIT" "$T/kit"
 mkdir "$T/work"
 cat > "$T/work/prog.aipl" <<'EOF'
 (module prog
+  (import alloc)
   (import vec)
   (import text)
   (import str)
