@@ -39,12 +39,15 @@ fn int_at(v: i64, at: (u32, u32)) -> Sx {
 }
 
 /// The message for `(new S)` and `(arr.new T n)`, which name no allocator.
-pub const NEW_NEEDS_ALLOCATOR: &str = "new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits";
+pub const NEW_NEEDS_ALLOCATOR: &str = "new takes the allocator to make it from, then each field by name: (new S a [x:v y:v]), e.g. (new S (call alloc.default) [x:1 y:2]), or (call alloc.forever) for memory kept until the program exits";
+/// The message for any other `new` but the named one, `(new S a)` included.
+pub const NEW_NAMES_FIELDS: &str = "new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)";
 pub const ARR_NEW_NEEDS_ALLOCATOR: &str = "arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits";
 pub const ARR_OF_NEEDS_ALLOCATOR: &str = "arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array";
 
 /// Rewrites the forms in `sx`, inner ones first; `err` places a message at
-/// a form. A `[...]` list holds no expression and is left alone. `alloc`
+/// a form. A `[...]` list holds no expression and is left alone, but for
+/// the field values of a named `new` or `make`. `alloc`
 /// is how this module names std/alloc's functions (`alloc.`, an alias's
 /// prefix, or none in std/alloc itself), or why it cannot use new; `used`
 /// is set when a new or arr.new is rewritten.
@@ -62,7 +65,11 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
             return Err(err(sx, ARR_OF_NEEDS_ALLOCATOR))
         }
         Some("new") if n == 2 => return Err(err(sx, NEW_NEEDS_ALLOCATOR)),
-        Some("new") if n != 3 => return Err(err(sx, "new is (new S a): the struct, then the allocator to make it from")),
+        // (new S a [f:v ...]), its fields named, is checked and rewritten
+        // where the struct's fields are known (resolver.rs named_fields)
+        Some("new") if n == 4 && matches!(&sx.items()[3], Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }) => {}
+        // the zeroed (new S a) is gone (LANGUAGE_DECISIONS.md item 4)
+        Some("new") => return Err(err(sx, NEW_NAMES_FIELDS)),
         Some("arr.new") if n == 3 => return Err(err(sx, ARR_NEW_NEEDS_ALLOCATOR)),
         Some("arr.new") if n != 4 => return Err(err(sx, "arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length")),
         Some("when") if n < 2 => return Err(err(sx, "when takes a condition and a body: (when c body...)")),
@@ -74,9 +81,18 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
         }
         _ => {}
     }
+    // the [f:v ...] of a named new or make holds expressions
+    let named = matches!(sx.head(), Some("new" | "make")) && matches!(sx.items().last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }));
     if let Some(items) = sx.items_mut() {
-        for i in items {
-            rewrite(i, alloc, used, err)?;
+        let last = items.len() - 1;
+        for (k, i) in items.iter_mut().enumerate() {
+            if named && k == last {
+                for v in i.items_mut().into_iter().flatten() {
+                    rewrite(v, alloc, used, err)?;
+                }
+            } else {
+                rewrite(i, alloc, used, err)?;
+            }
         }
     }
     let at = sx.position();
@@ -88,10 +104,10 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
             out.extend(items[4..].iter().cloned());
             *sx = list_at(out, at);
         }
-        Some(form @ ("new" | "arr.new")) => {
+        Some("new") => *used = true,
+        Some("arr.new") => {
             let prefix = alloc.as_ref().unwrap_or_else(|_| unreachable!());
-            let f = if form == "new" { "create" } else { "array" };
-            let mut out = vec![symbol_at("call", at), list_at(vec![symbol_at(&format!("{prefix}{f}"), at), items[1].clone()], at)];
+            let mut out = vec![symbol_at("call", at), list_at(vec![symbol_at(&format!("{prefix}array"), at), items[1].clone()], at)];
             out.extend(items[2..].iter().cloned());
             *sx = list_at(out, at);
             *used = true;

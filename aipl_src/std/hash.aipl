@@ -40,9 +40,18 @@
 
   ;; A Hasher for alg, from a; nothing given to it yet.
   (fn make [a:alloc.Allocator alg:Algorithm] -> (ptr Hasher) (pub)
-    (let x:(ptr Hasher) (new Hasher a))
-    (put x Hasher.alg alg)
-    (put x Hasher.a a)
+    (let x:(ptr Hasher) (new Hasher a [alg:alg
+                                       a:a
+                                       h32:(zero (arr i32))
+                                       h64:(zero (arr i64))
+                                       k32:(zero (arr i32))
+                                       k64:(zero (arr i64))
+                                       w32:(zero (arr i32))
+                                       w64:(zero (arr i64))
+                                       block:(zero (arr i32))
+                                       fill:(zero i32)
+                                       total:(zero i64)
+                                       done:(zero bool)]))
     (let wide:bool (eq alg Algorithm.sha512))
     (put x Hasher.h32 (arr.new i32 a (if wide 0 8)))
     (put x Hasher.h64 (arr.new i64 a (if wide 8 0)))

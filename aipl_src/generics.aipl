@@ -271,19 +271,19 @@
             (return name)))
     (when (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
         (call (map.set str.Bytes i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1))
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (get t Tmpl.params))
-    (put e Env.mangled names)
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(get t Tmpl.params)
+                                                    args:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                    outer:(zero (ptr Env))
+                                                    mangled:names
+                                                    sealed:(zero bool)
+                                                    at:(zero i32)]))
     (put e Env.outer env)
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
     (set! a (get (call first_child app) compiler.Node.next))
     (while (neq a (ptr.null compiler.Node))
       (call (vec.push (ptr compiler.Node)) (get e Env.args) a)
       (set! a (get a compiler.Node.next)))
-    (let inst:(ptr Inst) (new Inst (call alloc.forever)))
-    (put inst Inst.tmpl t)
-    (put inst Inst.env e)
-    (put inst Inst.name name)
+    (let inst:(ptr Inst) (new Inst (call alloc.forever) [tmpl:t env:e name:name]))
     (call (vec.push (ptr Inst)) (get st St.queue) inst)
     name)
 
@@ -417,6 +417,7 @@
                           ((call is_app st (call first_child g) false) 0)
                           ((and (gte (get h str.Bytes.len) 0) (and (call lit h "make") (call is_union_app st (call nth g 1)))) 1)
                           (else -1)))
+    (when (and (not square) (call lit h "zero")) (call print_zero st g env out) (return))
     (call note st g out)
     (call buf.push_byte out (if square 91 40))
     (let c:(ptr compiler.Node) (call first_child g))
@@ -456,6 +457,140 @@
     (when (gte (get g compiler.Node.a) 0) (call origins.note (get st St.origins) out -1 (get g compiler.Node.a)))
     (call buf.push_byte out (if square 93 41)))
 
+  ;; ===== (zero T) (generics.rs zero_of) =====
+
+  ;; Whether n holds a (zero ...) form, [...] groups included.
+  (fn has_zero [st:(ptr St) n:(ptr compiler.Node)] -> bool
+    (let k:compiler.Kind (get n compiler.Node.kind))
+    (when (and (neq k compiler.Kind.paren) (neq k compiler.Kind.bracket)) (return false))
+    (when (and (eq k compiler.Kind.paren) (call lit (call head st n) "zero")) (return true))
+    (let c:(ptr compiler.Node) (call first_child n))
+    (while (neq c (ptr.null compiler.Node))
+      (when (call has_zero st c) (return true))
+      (set! c (get c compiler.Node.next)))
+    false)
+
+  (fn any_zero [st:(ptr St) items:(ptr (vec.Vec (ptr compiler.Node)))] -> bool
+    (for i 0 (call (vec.len (ptr compiler.Node)) items)
+      (when (call has_zero st (call (vec.at (ptr compiler.Node)) items i)) (return true)))
+    false)
+
+  ;; (zero T) written out, every token at the form's position (one note):
+  ;; 0, 0i64, 0.0, 0.0f32, false, "", (ptr.null S), (arr.null T), an enum's
+  ;; first member, a value struct made of its fields' zeros, and for a
+  ;; placeholder of the value kind (checked, never compiled)
+  ;; (arr.get 'f.T (arr.null 'f.T) 0). The instances T names are made first,
+  ;; in generics.rs's order.
+  (fn print_zero [st:(ptr St) g:(ptr compiler.Node) env:(ptr Env) out:(ptr buf.Buf)] -> void
+    (when (neq (call count_children g) 2)
+          (call fail_at st (get g compiler.Node.pos) (call msg "zero is (zero T): the zero of the type T"))
+          (return))
+    (call note st g out)
+    (call zero_type st (call nth g 1) env g out))
+
+  ;; "T what": a (zero T) error at g, T as source shows it.
+  (fn zero_fail [st:(ptr St) g:(ptr compiler.Node) name:str.Bytes what:str] -> void
+    (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 96))
+    (call buf.push_bytes b (call names.shown name))
+    (call buf.push_byte b 32)
+    (call buf.push_str b what)
+    (call fail_at st (get g compiler.Node.pos) b))
+
+  (fn zero_type [st:(ptr St) t:(ptr compiler.Node) env:(ptr Env) g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    ;; a type parameter: its argument, where that was written
+    (when (call is_symbol t)
+          (let i:i32 (call lookup env (call text st t)))
+          (when (and (gte i 0) (not (get env Env.sealed)))
+                (call zero_type st (call (vec.at (ptr compiler.Node)) (get env Env.args) i) (get env Env.outer) g out)
+                (return)))
+    (let nb:(ptr buf.Buf) (call buf.make (call alloc.default) 32))
+    (call render st t env false nb)
+    (when (get st St.failed) (return))
+    (let name:str.Bytes (call as_bytes nb))
+    (let h:str.Bytes (call head st t))
+    (cond
+      ((or (call is_symbol t) (call is_app st t false)) (call zero_named st name g out))
+      ((and (or (call lit h "ptr") (call lit h "arr")) (eq (call count_children t) 2))
+       (call buf.push_byte out 40)
+       (call buf.push_bytes out h)
+       (call buf.push_str out ".null ")
+       (call render st (call nth t 1) env false out)
+       (call buf.push_byte out 41))
+      ((call lit h "fn") (call zero_fail st g name "is a function reference, which has no zero"))
+      ((call lit h "result") (call zero_fail st g name "is a result, which has no zero"))
+      (else (call zero_fail st g name "is not a type with a zero"))))
+
+  (fn zero_named [st:(ptr St) name:str.Bytes g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (cond
+      ;; a storage type's field reads and writes an i32
+      ((or (call lit name "i32") (or (call lit name "u8") (or (call lit name "i8") (or (call lit name "u16") (call lit name "i16")))))
+       (call buf.push_str out "0"))
+      ((call lit name "i64") (call buf.push_str out "0i64"))
+      ((call lit name "f64") (call buf.push_str out "0.0"))
+      ((call lit name "f32") (call buf.push_str out "0.0f32"))
+      ((call lit name "bool") (call buf.push_str out "false"))
+      ((call lit name "str") (call buf.push_byte out 34) (call buf.push_byte out 34))
+      ((or (call (map.has str.Bytes i32) (get st St.struct_names) name) (call (map.has str.Bytes i32) (get st St.made_structs) name))
+       (let b:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
+       (call buf.push_str b "is a struct, used only through a pointer: (zero (ptr ")
+       (call buf.push_bytes b (call names.shown name))
+       (call buf.push_str b ")) is a null pointer")
+       (call zero_fail st g name (call buf.to_str b)))
+      ((eq (call str.byte_at name 0) 39)
+       (call buf.push_str out "(arr.get ")
+       (call buf.push_bytes out name)
+       (call buf.push_str out " (arr.null ")
+       (call buf.push_bytes out name)
+       (call buf.push_str out ") 0)"))
+      (else (call zero_defined st name g out))))
+
+  ;; The zero of an enum, union, or value struct named `name`, concrete or
+  ;; an instance (its template read with the instance's environment).
+  (fn zero_defined [st:(ptr St) name:str.Bytes g:(ptr compiler.Node) out:(ptr buf.Buf)] -> void
+    (let def:(ptr compiler.Node) (call (map.get_or str.Bytes (ptr compiler.Node)) (get st St.defs) name (ptr.null compiler.Node)))
+    (let env:(ptr Env) (ptr.null Env))
+    (when (eq def (ptr.null compiler.Node))
+          (let q:(ptr (vec.Vec (ptr Inst))) (get st St.queue))
+          (for i 0 (call (vec.len (ptr Inst)) q)
+            (let inst:(ptr Inst) (call (vec.at (ptr Inst)) q i))
+            (when (and (eq def (ptr.null compiler.Node)) (call str.bytes_eq (get inst Inst.name) name))
+                  (let t:(ptr Tmpl) (get inst Inst.tmpl))
+                  (when (get t Tmpl.is_struct)
+                        (set! def (get t Tmpl.node))
+                        (set! env (get inst Inst.env))))))
+    (when (eq def (ptr.null compiler.Node)) (call zero_fail st g name "is not a type with a zero") (return))
+    (let h:str.Bytes (call head st def))
+    (let body:(ptr compiler.Node) (call nth def 2))
+    (cond
+      ((call lit h "enum")
+       (let m:(ptr compiler.Node) (call first_child body))
+       (cond
+         ((eq m (ptr.null compiler.Node))
+          (call buf.push_str out "(enum.cast ")
+          (call buf.push_bytes out name)
+          (call buf.push_str out " 0)"))
+         (else
+          (call buf.push_bytes out name)
+          (call buf.push_byte out 46)
+          (call buf.push_bytes out (if (call is_symbol m) (call text st m) (call head st m))))))
+      ((call lit h "union") (call zero_fail st g name "is a union, which has no zero: write the variant you mean with make"))
+      (else
+       (call buf.push_str out "(make ")
+       (call buf.push_bytes out name)
+       ;; [x:T (pub y:U) ...]: each field's type (generics.rs field_types)
+       (let c:(ptr compiler.Node) (call first_child body))
+       (while (and (neq c (ptr.null compiler.Node)) (not (get st St.failed)))
+         (call buf.push_byte out 32)
+         (if (eq (get c compiler.Node.kind) compiler.Kind.paren)
+             (block
+               (call zero_type st (call nth c 3) env g out)
+               (set! c (get c compiler.Node.next)))
+             (block
+               (let ty:(ptr compiler.Node) (get (get c compiler.Node.next) compiler.Node.next))
+               (call zero_type st ty env g out)
+               (set! c (get ty compiler.Node.next)))))
+       (call buf.push_byte out 41))))
+
   (fn print_item [st:(ptr St) item:(ptr compiler.Node) env:(ptr Env) rename:str.Bytes out:(ptr buf.Buf)] -> void
     (call buf.push_str out "  ")
     ;; a stray atom at module level stays an atom, for the parser to report
@@ -494,11 +629,8 @@
           (let bb:(ptr buf.Buf) (call quoted (call msg "generic name ") (call last_part name)))
           (call buf.push_str bb " is a built-in form; choose another name")
           (call fail_at st (get header compiler.Node.pos) bb))
-    (let t:(ptr Tmpl) (new Tmpl (call alloc.forever)))
-    (put t Tmpl.node item)
-    (put t Tmpl.is_struct (and (gte (get h str.Bytes.len) 0)
-                               (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))))
-    (put t Tmpl.params (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let t:(ptr Tmpl) (new Tmpl (call alloc.forever) [node:item is_struct:(and (gte (get h str.Bytes.len) 0)
+                               (or (call lit h "struct") (or (call lit h "const") (or (call lit h "enum") (call lit h "union"))))) params:(call (vec.make str.Bytes) (call alloc.default) 4) wheres:(zero (ptr (vec.Vec (ptr compiler.Node)))) struct_kind:(zero (arr bool)) name:(zero str.Bytes) plain_kind:(zero (arr bool))]))
     (let p:(ptr compiler.Node) (get (call first_child header) compiler.Node.next))
     (while (neq p (ptr.null compiler.Node))
       (let pt:str.Bytes (if (call is_symbol p) (call text st p) (call str.from_str "")))
@@ -598,15 +730,26 @@
     (let count:i32 (call compiler.tokenize (call str.addr flat) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
-    (let st:(ptr St) (new St (call alloc.forever)))
-    (put st St.text flat)
-    (put st St.templates (call (map.make str.Bytes (ptr Tmpl)) (call alloc.default) 16))
-    (put st St.made (call (map.make str.Bytes i32) (call alloc.default) 64))
-    (put st St.queue (call (vec.make (ptr Inst)) (call alloc.default) 16))
-    (put st St.err err)
-    (put st St.failed false)
-    (put st St.origins gen)
-    (put st St.failure failure)
+    (let st:(ptr St) (new St (call alloc.forever) [text:flat
+                                                   templates:(call (map.make str.Bytes (ptr Tmpl)) (call alloc.default) 16)
+                                                   made:(call (map.make str.Bytes i32) (call alloc.default) 64)
+                                                   queue:(call (vec.make (ptr Inst)) (call alloc.default) 16)
+                                                   err:err
+                                                   failed:false
+                                                   origins:gen
+                                                   failure:failure
+                                                   ifaces:(zero (ptr (map.Map str.Bytes (ptr Iface))))
+                                                   impls:(zero (ptr (map.Map str.Bytes i32)))
+                                                   order:(zero (ptr (vec.Vec (ptr Tmpl))))
+                                                   struct_names:(zero (ptr (map.Map str.Bytes i32)))
+                                                   made_structs:(zero (ptr (map.Map str.Bytes i32)))
+                                                   archetypes:(zero bool)
+                                                   value_names:(zero (ptr (map.Map str.Bytes i32)))
+                                                   made_values:(zero (ptr (map.Map str.Bytes i32)))
+                                                   granted:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                   granted_by:(zero (ptr (vec.Vec (ptr Tmpl))))
+                                                   defs:(zero (ptr (map.Map str.Bytes (ptr compiler.Node))))
+                                                   plain_names:(zero (ptr (map.Map str.Bytes i32)))]))
     (let items:(ptr (vec.Vec (ptr compiler.Node))) (call (vec.make (ptr compiler.Node)) (call alloc.default) 64))
     (let item:(ptr compiler.Node) (call nth root 2))
     (put st St.ifaces (call (map.make str.Bytes (ptr Iface)) (call alloc.default) 8))
@@ -643,7 +786,10 @@
       (set! item (get item compiler.Node.next)))
     (when (get st St.failed) (return false))
     (when (and archetypes (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0)) (return true))
-    (when (and (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0) (eq (call (map.count str.Bytes (ptr Iface)) (get st St.ifaces)) 0)) (call buf.push_bytes out flat) (return true))
+    ;; (zero T) is written out here, so a program with one takes the whole walk
+    (when (and (eq (call (map.count str.Bytes (ptr Tmpl)) (get st St.templates)) 0)
+               (and (eq (call (map.count str.Bytes (ptr Iface)) (get st St.ifaces)) 0) (not (call any_zero st items))))
+        (call buf.push_bytes out flat) (return true))
     (let so:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let si:(ptr buf.Buf) (call buf.make (call alloc.default) 1024))
     (let fo:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
@@ -792,8 +938,12 @@
 
   ;; An environment putting `ty` in for the interface's parameter.
   (fn iface_env [st:(ptr St) i:(ptr Iface) ty:(ptr compiler.Node) tn:str.Bytes] -> (ptr Env)
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (call (vec.make str.Bytes) (call alloc.default) 1))
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(call (vec.make str.Bytes) (call alloc.default) 1)
+                                                    args:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                    outer:(zero (ptr Env))
+                                                    mangled:(zero (ptr (vec.Vec str.Bytes)))
+                                                    sealed:(zero bool)
+                                                    at:(zero i32)]))
     (call (vec.push str.Bytes) (get e Env.names) (get i Iface.param))
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
     (call (vec.push (ptr compiler.Node)) (get e Env.args) ty)
@@ -867,10 +1017,9 @@
           (call fail_at st (get item compiler.Node.pos) db)
           (return))
     (when (lt (call count_children item) 3) (call fail_at st (get header compiler.Node.pos) (call msg "an interface declares at least one function")) (return))
-    (let i:(ptr Iface) (new Iface (call alloc.forever)))
-    (put i Iface.node item)
-    (put i Iface.param (call text st (call nth header 1)))
-    (put i Iface.fns (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
+    (let i:(ptr Iface) (new Iface (call alloc.forever) [node:item
+                                                        param:(call text st (call nth header 1))
+                                                        fns:(call (vec.make (ptr compiler.Node)) (call alloc.default) 4)]))
     (let f:(ptr compiler.Node) (call nth item 2))
     (while (neq f (ptr.null compiler.Node))
       (let end:i32 (call sig_end st f))
@@ -1261,9 +1410,12 @@
     (call (map.set str.Bytes i32) seen key 1)
     (let def:(ptr compiler.Node) (get t Tmpl.node))
     (when (not (or (call is_value_item st def) (call lit (call head st def) "union"))) (return false))
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (get t Tmpl.params))
-    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 1))
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(get t Tmpl.params)
+                                                    args:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                    outer:(zero (ptr Env))
+                                                    mangled:(call (vec.make str.Bytes) (call alloc.default) 1)
+                                                    sealed:(zero bool)
+                                                    at:(zero i32)]))
     (put e Env.outer env)
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 4))
     (let a:(ptr compiler.Node) (get (call first_child n) compiler.Node.next))
@@ -1342,10 +1494,12 @@
 
   ;; An environment putting placeholders in for t's parameters.
   (fn sealed_env [t:(ptr Tmpl)] -> (ptr Env)
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (get t Tmpl.params))
-    (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
-    (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 4))
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(get t Tmpl.params)
+                                                    args:(call (vec.make (ptr compiler.Node)) (call alloc.default) 1)
+                                                    outer:(zero (ptr Env))
+                                                    mangled:(call (vec.make str.Bytes) (call alloc.default) 4)
+                                                    sealed:(zero bool)
+                                                    at:(zero i32)]))
     (let ps:(ptr (vec.Vec str.Bytes)) (get t Tmpl.params))
     (for k 0 (call (vec.len str.Bytes) ps)
       (call (vec.push str.Bytes) (get e Env.mangled) (call placeholder_name t (call (vec.at str.Bytes) ps k))))
@@ -1356,8 +1510,12 @@
 
   ;; An environment putting placeholder `ph` in for interface i's parameter.
   (fn sealed_iface_env [i:(ptr Iface) ph:str.Bytes at:i32] -> (ptr Env)
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (call (vec.make str.Bytes) (call alloc.default) 1))
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(call (vec.make str.Bytes) (call alloc.default) 1)
+                                                    args:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                    outer:(zero (ptr Env))
+                                                    mangled:(zero (ptr (vec.Vec str.Bytes)))
+                                                    sealed:(zero bool)
+                                                    at:(zero i32)]))
     (call (vec.push str.Bytes) (get e Env.names) (get i Iface.param))
     (put e Env.args (call (vec.make (ptr compiler.Node)) (call alloc.default) 1))
     (put e Env.mangled (call (vec.make str.Bytes) (call alloc.default) 1))
@@ -1417,10 +1575,7 @@
             (return)))
     (when (and (get t Tmpl.is_struct) (call lit (call head st (get t Tmpl.node)) "struct"))
         (call (map.set str.Bytes i32) (if (call is_value_item st (get t Tmpl.node)) (get st St.made_values) (get st St.made_structs)) name 1))
-    (let inst:(ptr Inst) (new Inst (call alloc.forever)))
-    (put inst Inst.tmpl t)
-    (put inst Inst.env env)
-    (put inst Inst.name name)
+    (let inst:(ptr Inst) (new Inst (call alloc.forever) [tmpl:t env:env name:name]))
     (call (vec.push (ptr Inst)) (get st St.queue) inst))
 
   ;; (enum 'name.T []) for a value parameter, (struct 'name.T []) for a struct.

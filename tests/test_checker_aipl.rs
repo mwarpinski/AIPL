@@ -396,10 +396,10 @@ fn parsers_agree_on_original_sources() {
         compared += 1;
     }
     // every repository file the bare parser reads (one with a formatting
-    // form or an import's sugar needs the resolver first): 14 since
-    // examples/word_count.aipl and word_freq.aipl report a failed read with
-    // format (2026-10-26)
-    assert!(compared >= 14, "{compared}");
+    // form, an import's sugar, or a struct's named fields needs the resolver
+    // first): 13 since examples/spectralnorm_par.aipl makes its value
+    // structs with named fields (2026-10-26)
+    assert!(compared >= 13, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the
@@ -635,7 +635,7 @@ fn constants_expand_like_rust() {
     ] {
         let path = root().join(rel);
         let flat = aipl_core::selfhost::resolve_with_aipl(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        let theirs = aipl_core::printer::print_module(&Resolver::resolve_source(&flat, &path).unwrap());
+        let theirs = aipl_core::printer::print_module(&Resolver::resolve_flat(&flat, &path).unwrap());
         let ours = front.run("expand_print", &flat).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let ours = aipl_core::printer::print_module(&Parser::parse(&ours).unwrap_or_else(|e| panic!("{rel}: {e}\n{ours}")));
         assert!(ours == theirs, "{rel}: expanded programs differ");
@@ -699,7 +699,8 @@ fn constant_errors_match_word_for_word() {
 fn rust_verdict(flat: &str) -> Result<(), String> {
     // both name the file; check_text is given text, not a file
     let strip = |e: String| e.split('\n').map(|l| l.strip_prefix("m.aipl: ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
-    let m = Resolver::resolve_source(flat, Path::new("m.aipl")).map_err(strip)?;
+    // the cases are resolved programs, as checker.aipl reads them
+    let m = Resolver::resolve_flat(flat, Path::new("m.aipl")).map_err(strip)?;
     TypeChecker::new().check_module(&m).map_err(strip)
 }
 

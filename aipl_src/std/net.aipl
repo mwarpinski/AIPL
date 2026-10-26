@@ -56,12 +56,12 @@
        (call (alloc.free_array u8) a b)
        (cond ((eq h -2) (err:Socket Error.not_granted))
              ((lt h 0) (err:Socket Error.refused))
-             (else (ok:Error (make Socket h)))))))
+             (else (ok:Error (make Socket [h:h])))))))
 
   ;; The next connection on listening socket l (waiting for one).
   (fn accept [l:Socket] -> (result Socket Error) (pub) (no_leak)
     (let h:i32 (unsafe (net.accept (get l Socket.h))))
-    (if (lt h 0) (err:Socket Error.refused) (ok:Error (make Socket h))))
+    (if (lt h 0) (err:Socket Error.refused) (ok:Error (make Socket [h:h]))))
 
   ;; Up to max bytes from connection c, added to `into`: how many, 0 at the
   ;; end of the connection, or -1 on an error.

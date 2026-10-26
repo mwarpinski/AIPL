@@ -27,7 +27,7 @@
     (let ops:(ptr (vec.Vec (fn [i32] -> i32 (no_leak)))) (call (vec.make (fn [i32] -> i32 (no_leak))) a 2))
     (call (vec.push (fn [i32] -> i32 (no_leak))) ops (ref inc))
     (call (vec.push (fn [i32] -> i32 (no_leak))) ops (ref double))
-    (let op:Op (make Op (ref double) 2))
+    (let op:Op (make Op [apply:(ref double) scale:2]))
     (let g:(fn [i32] -> i32) (get op Op.apply))
     (call io.println_int "apply " (+ (call apply (call (vec.at (fn [i32] -> i32 (no_leak))) ops 1) 20) (call apply_any g 1)))
     (call io.println_int "twice " (call (twice i32) (call (vec.at (fn [i32] -> i32 (no_leak))) ops 0) 5))

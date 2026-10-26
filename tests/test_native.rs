@@ -1148,7 +1148,7 @@ fn float_programs_match_natively() {
            (fn uses_lerp [] -> f64 (call lerp 1.0 3.0 0.25))
            (fn pick [a:f64 b:f64] -> f64 (if (gt a b) a (/ b a)))
            (fn uses_pick [] -> f64 (+ (call pick 4.0 2.0) (call pick 2.0 4.0)))
-           (fn struct_field [] -> f64 (let p:(ptr P) (new P (call alloc.forever))) (put p P.z 6.5) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
+           (fn struct_field [] -> f64 (let p:(ptr P) (new P (call alloc.forever) [x:(zero f64) y:(zero f32) z:6.5])) (put p P.x -1.25) (+ (get p P.z) (get p P.x)))
            (fn struct_size [] -> i32 (sizeof P))
            (fn sqrt_two [] -> f64 (f64.sqrt 2.0))
            (fn sqrt_neg_zero [] -> f64 (f64.sqrt -0.0))
@@ -1680,7 +1680,8 @@ fn parse_program(src: &str) -> aipl_core::ast::Module {
     let dir = scratch(&format!("resolve_{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let path = dir.join("prog.aipl");
     std::fs::write(&path, src).unwrap();
-    let m = Resolver::resolve(&path).unwrap_or_else(|e| panic!("{e}"));
+    // src may be a resolved program, printed: resolve_flat reads it too
+    let m = Resolver::resolve_flat(src, &path).unwrap_or_else(|e| panic!("{e}"));
     let _ = std::fs::remove_dir_all(&dir);
     m
 }

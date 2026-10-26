@@ -182,10 +182,13 @@ class Gen:
         if t == "U":
             return self.make_union(None, 0)
         if t in self.values:
-            return f"(make {t} {' '.join(self.literal(ft) for _, ft in self.values[t])})"
+            return f"(make {t} [{' '.join(f + ':' + self.literal(ft) for f, ft in self.values[t])}])"
         # now and then a null, which every backend must stop on alike
         if t.startswith("(ptr "):
-            return f"(ptr.null {t[5:-1]})" if rng.random() < 0.02 else f"(new {t[5:-1]} (call alloc.forever))"
+            # every field named, each its zero, as the zeroed (new S a) gave
+            s = t[5:-1]
+            zeros = ' '.join(f"{f}:(zero {ft})" for f, ft in self.structs[s])
+            return f"(ptr.null {s})" if rng.random() < 0.02 else f"(new {s} (call alloc.forever) [{zeros}])"
         if t.startswith("(arr "):
             el = t[5:-1]
             return f"(arr.null {el})" if rng.random() < 0.02 else f"(arr.new {el} (call alloc.forever) {rng.randint(1, 5)})"
@@ -228,7 +231,7 @@ class Gen:
         return self.literal(t)
 
     def make_value(self, ctx, t, d):
-        return f"(make {t} {' '.join(self.expr(ctx, ft, d) for _, ft in self.values[t])})"
+        return f"(make {t} [{' '.join(f + ':' + self.expr(ctx, ft, d) for f, ft in self.values[t])}])"
 
     def with_expr(self, ctx, t, d):
         f, ft = self.rng.choice(self.values[t])

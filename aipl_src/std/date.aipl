@@ -50,7 +50,7 @@
   ;; The date and time given, which must be valid (see valid).
   (fn make [year:i32 month:i32 day:i32 hour:i32 minute:i32 second:i32 nano:i32] -> Date (pub)
     (req (call valid year month day hour minute second nano))
-    (make Date year month day hour minute second nano))
+    (make Date [year:year month:month day:day hour:hour minute:minute second:second nano:nano]))
 
   ;; Days since 1970-01-01 of a valid year, month, and day.
   (fn days_from_civil [year:i32 month:i32 day:i32] -> i64
@@ -73,7 +73,7 @@
     (let d:i32 (i32.wrap (+ (- doy (/ (+ (* 153i64 mp) 2i64) 5i64)) 1i64)))
     (let m:i32 (i32.wrap (if (lt mp 10i64) (+ mp 3i64) (- mp 9i64))))
     (let y:i32 (i32.wrap (+ yoe (* era 400i64))))
-    (make Date (if (lte m 2) (+ y 1) y) m d 0 0 0 0))
+    (make Date [year:(if (lte m 2) (+ y 1) y) month:m day:d hour:0 minute:0 second:0 nano:0]))
 
   ;; The instant `secs` seconds and `nano` nanoseconds after 1970-01-01T00:00:00Z.
   (fn from_unix_parts [secs:i64 nano:i32] -> Date
@@ -85,7 +85,13 @@
     (when (lt rest 0i64) (set! days (- days 1i64)) (set! rest (+ rest 86400i64)))
     (let d:Date (call civil_from_days days))
     (let s:i32 (i32.wrap rest))
-    (make Date (get d Date.year) (get d Date.month) (get d Date.day) (/ s 3600) (/ (% s 3600) 60) (% s 60) nano))
+    (make Date [year:(get d Date.year)
+                month:(get d Date.month)
+                day:(get d Date.day)
+                hour:(/ s 3600)
+                minute:(/ (% s 3600) 60)
+                second:(% s 60)
+                nano:nano]))
 
   ;; Unix time in seconds (in years 0000-9999).
   (fn from_unix [secs:i64] -> Date (pub) (call from_unix_parts secs 0))
@@ -211,7 +217,13 @@
     (when (not (call byte_is t 7 45)) (return (err:Date (call min_at n 7))))
     (let day:i32 (call digits t 8 2))
     (when (or (lt day 1) (gt day (call days_in_month year month))) (return (err:Date (call bad_digit t 8 2))))
-    (when (eq n 10) (return (ok:i32 (make Date year month day 0 0 0 0))))
+    (when (eq n 10) (return (ok:i32 (make Date [year:year
+                                                month:month
+                                                day:day
+                                                hour:0
+                                                minute:0
+                                                second:0
+                                                nano:0]))))
     (when (not (or (call byte_is t 10 84) (or (call byte_is t 10 116) (call byte_is t 10 32)))) (return (err:Date 10)))
     (let hour:i32 (call digits t 11 2))
     (when (or (lt hour 0) (gt hour 23)) (return (err:Date (call bad_digit t 11 2))))
@@ -246,7 +258,13 @@
        (set! i (+ i 6)))
       (else (return (err:Date (call min_at n i)))))
     (when (neq i n) (return (err:Date i)))
-    (let secs:i64 (- (call to_unix (make Date year month day hour minute second 0)) (i64.extend_s (* off 60))))
+    (let secs:i64 (- (call to_unix (make Date [year:year
+                                               month:month
+                                               day:day
+                                               hour:hour
+                                               minute:minute
+                                               second:second
+                                               nano:0])) (i64.extend_s (* off 60))))
     ;; an offset can carry the instant out of years 0000-9999
     (when (or (lt secs FIRST) (gte secs END)) (return (err:Date (- i 6))))
     (ok:i32 (call from_unix_parts secs nano)))

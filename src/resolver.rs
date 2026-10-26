@@ -68,6 +68,9 @@ struct Vis {
     all: HashSet<String>,
     public: HashSet<String>,
     fields: HashMap<String, HashMap<String, Level>>,
+    /// each struct's field names in declaration order, for the named forms
+    /// (new S a [f:v ...]) and (make V [f:v ...])
+    order: HashMap<String, Vec<String>>,
     values: HashSet<String>,
 }
 
@@ -122,6 +125,23 @@ impl Resolver {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
             .spawn(move || Self::resolve_on_this_thread(&src, &path))
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(|_| "the resolver thread panicked".to_string())?
+    }
+
+    /// `resolve_source` for a resolver's own output (the flat program
+    /// aipl_src/resolver.aipl writes, which the tests compare by resolving
+    /// it again): it holds the positional `(make V v ...)` the resolver
+    /// writes for a value struct's named make, which source may not.
+    pub fn resolve_flat(flat: &str, entry_path: &Path) -> Result<Module, String> {
+        let (src, path) = (flat.to_string(), entry_path.to_path_buf());
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || {
+                READING_FLAT.with(|f| f.set(true));
+                Self::resolve_on_this_thread(&src, &path)
+            })
             .map_err(|e| e.to_string())?
             .join()
             .map_err(|_| "the resolver thread panicked".to_string())?
@@ -463,7 +483,10 @@ fn emit_module(st: &mut State, module: ModuleSx, prefix: Option<String>, file: &
         }
         if item.head() == Some("struct") {
             let levels = take_field_marks(item, file)?;
+            // with the marks out, the list is name : type, three by three
+            let order: Vec<String> = item.items().get(2).map(|l| l.items().iter().step_by(3).filter_map(|e| e.symbol().map(str::to_string)).collect()).unwrap_or_default();
             if let Some(n) = &named {
+                st.vis.order.insert(canonical(n), order);
                 if is_value_struct(item) {
                     st.vis.values.insert(canonical(n));
                 }
@@ -694,6 +717,12 @@ fn at_sx(file: &Path, sx: &Sx, msg: &str) -> String {
     format!("{}: {}:{}: {}", file.display(), l, c, msg)
 }
 
+thread_local! {
+    /// Set on the thread of Resolver::resolve_flat, which reads a resolver's
+    /// output: forms only the resolvers write are accepted there.
+    static READING_FLAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The renaming rules (resolver.aipl `rename` and `child_role`). Roles: 0
 /// none, 1 function name, 2 struct name, 3 field reference `S.f`.
 /// Constants and enums are renamed wherever their names appear (a constant
@@ -889,7 +918,95 @@ impl Names<'_> {
         }
     }
 
+    /// A struct made with its fields named, (new S a [f:v ...]) or
+    /// (make V [f:v ...]) (LANGUAGE_DECISIONS.md item 4): every field once,
+    /// in declaration order, or an error; then the form it is,
+    /// (block (let _new_L_C:(ptr S) (call (alloc.create S) a)) (put _new_L_C S.f v) ... _new_L_C)
+    /// or (make V v ...), at the form's place (aipl_src/resolver.aipl
+    /// emit_named_fields alike). None for any other form.
+    fn named_fields(&self, sx: &Sx) -> Option<Sx> {
+        let items = sx.items();
+        let bracket = |e: &Sx| matches!(e, Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. });
+        let is_new = match sx.head() {
+            Some("new") if items.len() == 4 && bracket(&items[3]) => true,
+            Some("make") if items.len() == 3 && bracket(&items[2]) => false,
+            _ => return None,
+        };
+        let at = sx.position();
+        let form = if is_new { "new" } else { "make" };
+        let list = &items[if is_new { 3 } else { 2 }];
+        let entries = list.items();
+        let colon = |e: &Sx| matches!(e, Sx::Atom(Token { kind: TokenKind::Colon, .. }));
+        if !entries.len().is_multiple_of(3) || entries.chunks(3).any(|c| c[0].symbol().is_none() || !colon(&c[1])) {
+            self.fail(list.position(), format!("{form}'s fields are given as name:value, each once and in order: ({form} S{} [x:1 y:2])", if is_new { " a" } else { "" }));
+            return None;
+        }
+        let given: Vec<&str> = entries.chunks(3).map(|c| c[0].symbol().unwrap()).collect();
+        // the struct, canonical: a name, or a generic one's template
+        let s = &items[1];
+        let canonical = match (s.symbol(), s.head()) {
+            (Some(n), _) => Some(self.rename(n, 2)),
+            (None, Some(h)) => self.template_ref(h),
+            _ => None,
+        };
+        if let Some(order) = canonical.as_ref().and_then(|c| self.vis.order.get(c)) {
+            if given != *order {
+                self.fail(at, format!("{form} gives the fields [{}]; {}'s fields, each once and in order, are [{}]", given.join(" "), canonical.as_deref().unwrap_or(""), order.join(" ")));
+                return None;
+            }
+        }
+        let list_at = |items: Vec<Sx>| Sx::List { open: Token { kind: TokenKind::LParen, line: at.0, col: at.1 }, items, close: Token { kind: TokenKind::RParen, line: at.0, col: at.1 } };
+        let sym = |t: &str| Sx::Atom(Token { kind: TokenKind::Symbol(t.to_string()), line: at.0, col: at.1 });
+        let values = entries.chunks(3).map(|c| c[2].clone());
+        if !is_new {
+            let mut out = vec![items[0].clone(), s.clone()];
+            out.extend(values);
+            return Some(list_at(out));
+        }
+        let name = format!("_new_{}_{}", at.0, at.1);
+        let make = list_at(vec![sym("call"), list_at(vec![sym("alloc.create"), s.clone()]), items[2].clone()]);
+        let colon_tok = Sx::Atom(Token { kind: TokenKind::Colon, line: at.0, col: at.1 });
+        let mut out = vec![sym("block"), list_at(vec![sym("let"), sym(&name), colon_tok, list_at(vec![sym("ptr"), s.clone()]), make])];
+        for (f, v) in given.iter().zip(values) {
+            out.push(match s.symbol() {
+                Some(n) => list_at(vec![sym("put"), sym(&name), sym(&format!("{n}.{f}")), v]),
+                // a generic struct's field: (put p (Name T) f v)
+                None => list_at(vec![sym("put"), sym(&name), s.clone(), sym(f), v]),
+            });
+        }
+        out.push(sym(&name));
+        Some(list_at(out))
+    }
+
+    /// `(make V v ...)` of a value struct, its fields by position: refused
+    /// as written in source (LANGUAGE_DECISIONS.md item 4); named_fields
+    /// writes this form, after (aipl_src/resolver.aipl positional_make).
+    fn positional_make(&self, sx: &Sx) {
+        if READING_FLAT.with(|f| f.get()) {
+            return;
+        }
+        let items = sx.items();
+        if sx.head() != Some("make") || items.len() < 2 || matches!(items.last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. })) {
+            return;
+        }
+        let s = &items[1];
+        let canonical = match (s.symbol(), s.head()) {
+            (Some(n), _) => Some(self.rename(n, 2)),
+            (None, Some(h)) => self.template_ref(h),
+            _ => None,
+        };
+        let Some(c) = canonical.filter(|c| self.vis.values.contains(c)) else { return };
+        let fields: Vec<String> = self.vis.order.get(&c).map(|o| o.iter().map(|f| format!("{f}:v")).collect()).unwrap_or_default();
+        self.fail(sx.position(), format!("a value struct's fields are given by name, each once and in order: (make {} [{}])", c, fields.join(" ")));
+    }
+
     fn walk(&self, sx: &mut Sx, role: u8) {
+        match self.named_fields(sx) {
+            Some(r) => *sx = r,
+            // (call (make T) ...) calls a generic function named make (std/vec's)
+            None if role != 1 => self.positional_make(sx),
+            None => {}
+        }
         let at = sx.position();
         match sx {
             Sx::Atom(Token { kind: TokenKind::Symbol(s), .. }) => {

@@ -49,12 +49,12 @@
     (let extra:i32 (% n parts))
     (let copy:(arr T) (arr.new T (call alloc.default) (arr.len xs)))
     (for i 0 (arr.len xs) (arr.set T copy i (arr.get T xs i)))
-    (let j:(ptr (Job T U C)) (new (Job T U C) (call alloc.default)))
-    (put j (Job T U C) out out)
-    (put j (Job T U C) f f)
-    (put j (Job T U C) ctx ctx)
-    (put j (Job T U C) xs copy)
-    (put j (Job T U C) lo (+ (* k base) (if (lt k extra) k extra)))
+    (let j:(ptr (Job T U C)) (new (Job T U C) (call alloc.default) [out:out
+                                                                    f:f
+                                                                    ctx:ctx
+                                                                    xs:copy
+                                                                    lo:(+ (* k base) (if (lt k extra) k extra))
+                                                                    hi:(zero i32)]))
     (put j (Job T U C) hi (+ (get j (Job T U C) lo) (+ base (if (lt k extra) 1 0))))
     j)
 
@@ -118,11 +118,12 @@
     (for k 0 parts
       (let copy:(arr T) (arr.new T a (arr.len xs)))
       (for i 0 (arr.len xs) (arr.set T copy i (arr.get T xs i)))
-      (let j:(ptr (Fold T U C)) (new (Fold T U C) a))
-      (put j (Fold T U C) f f)
-      (put j (Fold T U C) ctx ctx)
-      (put j (Fold T U C) xs copy)
-      (put j (Fold T U C) lo (+ (* k base) (if (lt k extra) k extra)))
+      (let j:(ptr (Fold T U C)) (new (Fold T U C) a [f:f
+                                                     ctx:ctx
+                                                     xs:copy
+                                                     lo:(+ (* k base) (if (lt k extra) k extra))
+                                                     hi:(zero i32)
+                                                     acc:(zero U)]))
       (put j (Fold T U C) hi (+ (get j (Fold T U C) lo) (+ base (if (lt k extra) 1 0))))
       (put j (Fold T U C) acc init)
       (arr.set (ptr (Fold T U C)) jobs k j))
@@ -160,9 +161,11 @@
   (struct Stats [sum:i64 max:i32] (value))
   (fn note [s:Scale xs:(arr i32) i:i32 acc:Stats] -> Stats
     (let x:i32 (arr.get i32 xs i))
-    (make Stats (+ (get acc Stats.sum) (i64.extend_s x)) (if (gt x (get acc Stats.max)) x (get acc Stats.max))))
+    (make Stats [sum:(+ (get acc Stats.sum) (i64.extend_s x))
+                 max:(if (gt x (get acc Stats.max)) x (get acc Stats.max))]))
   (fn merge [a:Stats b:Stats] -> Stats
-    (make Stats (+ (get a Stats.sum) (get b Stats.sum)) (if (gt (get b Stats.max) (get a Stats.max)) (get b Stats.max) (get a Stats.max))))
+    (make Stats [sum:(+ (get a Stats.sum) (get b Stats.sum))
+                 max:(if (gt (get b Stats.max) (get a Stats.max)) (get b Stats.max) (get a Stats.max))]))
   ;; the parts are joined in order: text-like, order-sensitive joining
   (fn digit [s:Scale xs:(arr i32) i:i32 acc:i64] -> i64 (+ (* acc 10i64) (i64.extend_s (% i 10))))
   (fn shift_join [a:i64 b:i64] -> i64 (+ (* a 1000i64) b))
@@ -174,30 +177,31 @@
     (for i 0 100 (arr.set i32 xs i i))
     ;; four parts give what one does
     (let out:(arr i32) (arr.new i32 (call alloc.forever) 100))
-    (call (map i32 i32 Scale) out (ref triple) (make Scale 3) xs 4)
+    (call (map i32 i32 Scale) out (ref triple) (make Scale [by:3]) xs 4)
     (let ok:bool true)
     (for i 0 100 (when (neq (arr.get i32 out i) (* 3 i)) (set! ok false)))
     (when ok (set! p (+ p 1)))
     ;; more threads than elements, and fewer than one
     (let few:(arr i32) (arr.new i32 (call alloc.forever) 3))
-    (call (map i32 i32 Scale) few (ref triple) (make Scale 2) xs 64)
+    (call (map i32 i32 Scale) few (ref triple) (make Scale [by:2]) xs 64)
     (when (and (eq (arr.get i32 few 2) 4) (eq (arr.get i32 few 0) 0)) (set! p (+ p 1)))
-    (call (map i32 i32 Scale) few (ref triple) (make Scale 5) xs 0)
+    (call (map i32 i32 Scale) few (ref triple) (make Scale [by:5]) xs 0)
     (when (eq (arr.get i32 few 1) 5) (set! p (+ p 1)))
     ;; the input is unchanged, whatever the workers do to their copies
-    (call (map i32 i32 Scale) out (ref scribble) (make Scale 1) xs 4)
+    (call (map i32 i32 Scale) out (ref scribble) (make Scale [by:1]) xs 4)
     (when (and (eq (arr.get i32 out 50) -1) (eq (arr.get i32 xs 50) 50)) (set! p (+ p 1)))
     ;; reduce: a sum on 1, 4, and more threads than indices
     (let want:i64 (* 3i64 4950i64))
-    (when (and (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale 3) xs 100 0i64 1) want)
-             (and (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale 3) xs 100 0i64 4) want)
-                  (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale 3) xs 100 0i64 500) want)))
+    (when (and (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale [by:3]) xs 100 0i64 1) want)
+             (and (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale [by:3]) xs 100 0i64 4) want)
+                  (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale [by:3]) xs 100 0i64 500) want)))
         (set! p (+ p 1)))
     ;; no indices: init
-    (when (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale 3) xs 0 7i64 4) 7i64) (set! p (+ p 1)))
+    (when (eq (call (reduce i32 i64 Scale) (ref add_scaled) (ref plus) (make Scale [by:3]) xs 0 7i64 4) 7i64) (set! p (+ p 1)))
     ;; a value struct result
-    (let st:Stats (call (reduce i32 Stats Scale) (ref note) (ref merge) (make Scale 1) xs 100 (make Stats 0i64 -1) 3))
+    (let st:Stats (call (reduce i32 Stats Scale) (ref note) (ref merge) (make Scale [by:1]) xs 100 (make Stats [sum:0i64
+                                                                                                           max:-1]) 3))
     (when (and (eq (get st Stats.sum) 4950i64) (eq (get st Stats.max) 99)) (set! p (+ p 1)))
     ;; parts in order: 3 parts of 0..8 are 012, 345, 678
-    (when (eq (call (reduce i32 i64 Scale) (ref digit) (ref shift_join) (make Scale 1) xs 9 0i64 3) 12345678i64) (set! p (+ p 1)))
+    (when (eq (call (reduce i32 i64 Scale) (ref digit) (ref shift_join) (make Scale [by:1]) xs 9 0i64 3) 12345678i64) (set! p (+ p 1)))
     p))

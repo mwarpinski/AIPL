@@ -29,7 +29,7 @@ fn run(exe: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn the_forms_run_alike_in_every_backend() {
-    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\narr.of 5 4 0 8\n";
+    let want = "end evaluated\nsum 6\nodd 16\npairs 3\na1 a2 a3 = false\no1 o2 = true\nlib 3\narr.of 5 4 0 8\nnamed 30 40 6 9\nzero 0 0 true low 0.0 []\n";
     let dir = scratch("run");
     let (wasm, exe) = (dir.join("p.wasm"), dir.join("p"));
     assert!(run(Path::new(AIPL), &["compile", MAIN, "-o", wasm.to_str().unwrap()]).status.success());
@@ -75,10 +75,13 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(test \"t\" (println \"{\"))", false, ""),
         ("(test \"t\" (println \"{\"))", true, "3:22: unclosed { in a format string (write {{ for a brace)"),
         // new and arr.new name their allocator (sugar.rs), std/alloc imported for them
-        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, ""),
+        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever) [x:4])) (get p P.x))", false, ""),
+        // the zeroed (new S a) is gone: every field is named, an empty one given its zero
+        ("(struct P [x:i32]) (fn g [] -> i32 (let p:(ptr P) (new P (call alloc.forever))) (get p P.x))", false, "3:53: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)"),
+        ("(struct V [x:i32 y:i32] (value)) (fn g [] -> V (make V 1 2))", false, "3:50: a value struct's fields are given by name, each once and in order: (make V [x:v y:v])"),
         ("(struct P [x:i32]) (fn g [a:alloc.Allocator] -> i32 (arr.len (arr.new i32 a 4)))", false, ""),
-        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from: (new S a), e.g. (new S (call alloc.default)), or (new S (call alloc.forever)) for memory kept until the program exits"),
-        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a): the struct, then the allocator to make it from"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P)))", false, "3:54: new takes the allocator to make it from, then each field by name: (new S a [x:v y:v]), e.g. (new S (call alloc.default) [x:1 y:2]), or (call alloc.forever) for memory kept until the program exits"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:(ptr P) (new P 1 2)))", false, "3:54: new is (new S a [x:v y:v]): the struct, the allocator to make it from, then each field by name; a field that starts empty is given its zero, (zero T)"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32 3)))", false, "3:38: arr.new takes the allocator to make it from: (arr.new T a n), e.g. (arr.new T (call alloc.default) n), or (arr.new T (call alloc.forever) n) for memory kept until the program exits"),
         ("(fn g [] -> void (let xs:(arr i32) (arr.new i32)))", false, "3:38: arr.new is (arr.new T a n): the element type, the allocator to make the array from, then its length"),
         // arr.of, the array literal: an allocator, then the values (or none)
@@ -87,6 +90,15 @@ fn both_toolchains_rewrite_alike_with_the_same_errors() {
         ("(fn g [] -> i32 (arr.len (arr.of i32 1 2 3)))", false, "3:28: arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array"),
         ("(fn g [] -> i32 (arr.len (arr.of i32)))", false, "3:28: arr.of takes the allocator to make it from"),
         ("(fn g [] -> i32 (arr.len (arr.of (arr i32) 7)))", false, "3:28: arr.of takes the allocator to make it from"),
+        // the forms inside a struct's named fields are read like any others
+        ("(struct P [xs:(arr i32)]) (fn g [a:alloc.Allocator] -> (ptr P) (new P a [xs:(arr.new i32 a)]))", false, "3:79: arr.new takes the allocator to make it from"),
+        // (zero T): the zero of any type that has one, written out with generics (generics.rs zero_of)
+        ("(fn (d T) [] -> T (zero T)) (fn g [] -> f64 (call (d f64)))", false, ""),
+        ("(union U [(a) (b x:i32)]) (fn g [] -> void (let u:U (zero U)))", false, "3:55: U is a union, which has no zero: write the variant you mean with make"),
+        ("(fn (d T) [] -> T (zero T)) (union U [(a)]) (fn g [] -> void (let u:U (call (d U))))", false, "3:21: U is a union, which has no zero"),
+        ("(struct P [x:i32]) (fn g [] -> void (let p:P (zero P)))", false, "3:48: P is a struct, used only through a pointer: (zero (ptr P)) is a null pointer"),
+        ("(fn g [] -> void (let f:(fn [] -> i32) (zero (fn [] -> i32))))", false, "3:42: (fn [] -> i32) is a function reference, which has no zero"),
+        ("(fn g [] -> i32 (zero i32 i32))", false, "3:19: zero is (zero T): the zero of the type T"),
         ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", false, ""),
         ("(struct P [x:i32]) (test \"t\" (let p:(ptr P) (new P)))", true, "3:47: new takes the allocator to make it from"),
     ];

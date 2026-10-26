@@ -48,22 +48,20 @@
                    chunks:(ptr buf.Buf) a:alloc.Allocator] (pub))
 
   ;; 64 KiB of head, 100 headers, 8 MiB of body.
-  (fn default_limits [] -> Limits (pub) (make Limits 65536 100 8388608))
+  (fn default_limits [] -> Limits (pub) (make Limits [head_bytes:65536
+                                                      headers:100
+                                                      body_bytes:8388608]))
 
   ;; Limits of your own.
   (fn limits [head_bytes:i32 headers:i32 body_bytes:i32] -> Limits (pub)
     (req (and (gt head_bytes 0) (and (gte headers 0) (gte body_bytes 0))))
-    (make Limits head_bytes headers body_bytes))
+    (make Limits [head_bytes:head_bytes headers:headers body_bytes:body_bytes]))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
     (call error_as a at what 400 false))
 
   (fn error_as [a:alloc.Allocator at:i32 what:str status:i32 incomplete:bool] -> (ptr Error)
-    (let e:(ptr Error) (new Error a))
-    (put e Error.at at)
-    (put e Error.what what)
-    (put e Error.status status)
-    (put e Error.incomplete incomplete)
+    (let e:(ptr Error) (new Error a [at:at what:what status:status incomplete:incomplete]))
     e)
 
   ;; Cut short: more bytes could complete the message.
@@ -184,18 +182,20 @@
             (when (gte (call (vec.len Header) headers) (get lim Limits.headers))
               (call (vec.free Header) headers)
               (return (err:(ptr Message) (call error_as a p "more headers than the limit" 431 false))))
-            (call (vec.push Header) headers (make Header (call view text p colon) (call view text vs ve)))))
+            (call (vec.push Header) headers (make Header [name:(call view text p colon)
+                                                          value:(call view text vs ve)]))))
       (set! p (call next_line text end)))
-    (let m:(ptr Message) (new Message a))
-    (put m Message.is_request request)
-    (put m Message.method method)
-    (put m Message.target target)
-    (put m Message.status status)
-    (put m Message.reason reason)
-    (put m Message.version version)
-    (put m Message.headers headers)
-    (put m Message.chunks (ptr.null buf.Buf))
-    (put m Message.a a)
+    (let m:(ptr Message) (new Message a [is_request:request
+                                         method:method
+                                         target:target
+                                         status:status
+                                         reason:reason
+                                         version:version
+                                         headers:headers
+                                         body:(zero str.Bytes)
+                                         length:(zero i32)
+                                         chunks:(ptr.null buf.Buf)
+                                         a:a]))
     (put m Message.body empty)
     (put m Message.length p)
     (match_result (call read_body m text p lim)

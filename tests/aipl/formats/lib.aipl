@@ -6,6 +6,5 @@
   (struct P [x:i32])
   (fn helper [n:i32] -> i32 (* n 2))
   (fn report [n:i32] -> void (pub)
-    (let p:(ptr P) (new P (call alloc.forever)))
-    (put p P.x 5)
+    (let p:(ptr P) (new P (call alloc.forever) [x:5]))
     (println "lib: {(call helper n)} {MAX} {(get p P.x)}")))

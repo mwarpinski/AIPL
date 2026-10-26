@@ -194,9 +194,8 @@
   ;; ===== Environment =====
 
   (fn new_env [] -> (ptr Env)
-    (let e:(ptr Env) (new Env (call alloc.forever)))
-    (put e Env.names (call (vec.make str.Bytes) (call alloc.default) 32))
-    (put e Env.types (call (vec.make ast.Type) (call alloc.default) 32))
+    (let e:(ptr Env) (new Env (call alloc.forever) [names:(call (vec.make str.Bytes) (call alloc.default) 32)
+                                                    types:(call (vec.make ast.Type) (call alloc.default) 32)]))
     e)
 
   (fn mark [e:(ptr Env)] -> i32 (call (vec.len str.Bytes) (get e Env.names)))
@@ -320,12 +319,11 @@
                 (let b:(ptr buf.Buf) (call msg c (get fd ast.FnDef.at)))
                 (call s b "function '") (call by b (call names.shown (get fd ast.FnDef.name))) (call s b "' has two parameters named '") (call by b pn) (call s b "'")
                 (call fail c b) (return))))
-      (let sig:(ptr Sig) (new Sig (call alloc.forever)))
-      (let pts:(arr ast.Type) (arr.new ast.Type (call alloc.forever) (arr.len ps)))
+      (let sig:(ptr Sig) (new Sig (call alloc.forever) [params:(arr.new ast.Type (call alloc.forever) (arr.len ps))
+                                                        ret:(get fd ast.FnDef.ret)
+                                                        unsafe_:(get fd ast.FnDef.unsafe_)]))
+      (let pts:(arr ast.Type) (get sig Sig.params))
       (for j 0 (arr.len ps) (arr.set ast.Type pts j (get (arr.get (ptr ast.Param) ps j) ast.Param.ty)))
-      (put sig Sig.params pts)
-      (put sig Sig.ret (get fd ast.FnDef.ret))
-      (put sig Sig.unsafe_ (get fd ast.FnDef.unsafe_))
       (call (map.set str.Bytes (ptr Sig)) (get c C.fns) (get fd ast.FnDef.name) sig))
     ;; a definition's error is reported alone
     (when (get c C.failed) (return))
@@ -1470,10 +1468,7 @@
   ;; src/checker.rs walk_path: from field fname of sname (of type ty), each
   ;; step a field of the value struct the step before holds.
   (fn walk_path [c:(ptr C) at:i32 sname:str.Bytes fname:str.Bytes ty:ast.Type path:(arr (ptr ast.Step)) form:str] -> (ptr Walked)
-    (let w:(ptr Walked) (new Walked (call alloc.forever)))
-    (put w Walked.sname sname)
-    (put w Walked.fname fname)
-    (put w Walked.ty ty)
+    (let w:(ptr Walked) (new Walked (call alloc.forever) [sname:sname fname:fname ty:ty]))
     (when (eq path (arr.null (ptr ast.Step))) (return w))
     (for k 0 (arr.len path)
       (let st:(ptr ast.Step) (arr.get (ptr ast.Step) path k))
@@ -1681,7 +1676,10 @@
   (struct Members [type_name:str.Bytes names:(arr str.Bytes) fields:(arr (arr (ptr ast.Field))) is_union:bool])
 
   (fn members_of [c:(ptr C) t:ast.Type] -> (ptr Members)
-    (let ms:(ptr Members) (new Members (call alloc.forever)))
+    (let ms:(ptr Members) (new Members (call alloc.forever) [type_name:(zero str.Bytes)
+                                                             names:(zero (arr str.Bytes))
+                                                             fields:(zero (arr (arr (ptr ast.Field))))
+                                                             is_union:(zero bool)]))
     (match t
       (ast.Type.union_ [u]
        (let vs:(arr (ptr ast.Variant)) (get (call union_def c u) ast.UnionDef.variants))
@@ -2123,13 +2121,12 @@
              (call s b ", not a (result T E)")
              (call fail c b) (return (call void_t))))))
     (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
-          (let f:(ptr Fmt) (new Fmt (call alloc.forever)))
-          (put f Fmt.at (call ast.at (arr.get ast.Expr args 0)))
-          ;; a try's operand
-          (put f Fmt.k -4)
-          (put f Fmt.ty t)
-          (put f Fmt.members (arr.null (ptr ast.Member)))
-          (put f Fmt.text (ptr.null buf.Buf))
+          ;; k -4: a try's operand
+          (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at (arr.get ast.Expr args 0))
+                                                          k:-4
+                                                          ty:t
+                                                          members:(arr.null (ptr ast.Member))
+                                                          text:(ptr.null buf.Buf)]))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f))
     value)
 
@@ -2170,12 +2167,11 @@
           ;; flush check), so it must be a variable
           (when (and writer (match target (ast.Expr.var [_ _] false) (else true))) (call fail_str c at "format_to takes a (ptr stream.Writer) as a variable: bind it with let first") (return (call void_t)))
           (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
-                (let f:(ptr Fmt) (new Fmt (call alloc.forever)))
-                (put f Fmt.at (call ast.at target))
-                (put f Fmt.k -1)
-                (put f Fmt.ty bt)
-                (put f Fmt.members (arr.null (ptr ast.Member)))
-                (put f Fmt.text (ptr.null buf.Buf))
+                (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at target)
+                                                                k:-1
+                                                                ty:bt
+                                                                members:(arr.null (ptr ast.Member))
+                                                                text:(ptr.null buf.Buf)]))
                 (call (vec.push (ptr Fmt)) (get c C.fmts) f))
           (set! first 1))
     (let k:i32 0)
@@ -2239,17 +2235,11 @@
   ;; target, -2 a dbg's value; an enum's members come with it.
   (fn note_fmt [c:(ptr C) v:ast.Expr t:ast.Type k:i32] -> void
     (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
-          (let f:(ptr Fmt) (new Fmt (call alloc.forever)))
-          (put f Fmt.at (call ast.at v))
-          (put f Fmt.k k)
-          (put f Fmt.ty t)
-          (put f Fmt.members
-            (match t
+          (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at v) k:k ty:t members:(match t
               (ast.Type.enum_ [en]
                (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
-              (else (arr.null (ptr ast.Member)))))
-          (put f Fmt.text (ptr.null buf.Buf))
+              (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f)))
 
   (fn check_piece [c:(ptr C) env:(ptr Env) at:i32 v:ast.Expr fe:ast.Expr k:i32] -> void
@@ -2281,17 +2271,11 @@
       (else (block)))
     (when (gt (str.len why) 0) (let b:(ptr buf.Buf) (call msg c at)) (call s b why) (call ty b t) (call fail c b) (return))
     (when (neq (get c C.fmts) (ptr.null (vec.Vec (ptr Fmt))))
-          (let f:(ptr Fmt) (new Fmt (call alloc.forever)))
-          (put f Fmt.at (call ast.at v))
-          (put f Fmt.k k)
-          (put f Fmt.ty t)
-          (put f Fmt.members
-            (match t
+          (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:(call ast.at v) k:k ty:t members:(match t
               (ast.Type.enum_ [en]
                (let d:(ptr ast.EnumDef) (call (map.get_or str.Bytes (ptr ast.EnumDef)) (get c C.enums) en (ptr.null ast.EnumDef)))
                (if (eq d (ptr.null ast.EnumDef)) (arr.null (ptr ast.Member)) (get d ast.EnumDef.members)))
-              (else (arr.null (ptr ast.Member)))))
-          (put f Fmt.text (ptr.null buf.Buf))
+              (else (arr.null (ptr ast.Member)))) text:(ptr.null buf.Buf)]))
           (call (vec.push (ptr Fmt)) (get c C.fmts) f)))
 
   ;; A message's fixed text, after the op's Debug name when `pre`.
@@ -2557,24 +2541,26 @@
 
   ;; check, noting each formatting piece's type in `out` (when not null).
   (fn check_formats [src:i32 m:(ptr ast.Module) out:(ptr (vec.Vec (ptr Fmt)))] -> (ptr Problem) (pub)
-    (let c:(ptr C) (new C (call alloc.forever)))
-    (put c C.fmts out)
-    (put c C.in_defer false)
-    (put c C.src src)
-    (put c C.structs (call (map.make str.Bytes (ptr ast.StructDef)) (call alloc.default) 64))
-    (put c C.enums (call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16))
-    (put c C.unions (call (map.make str.Bytes (ptr ast.UnionDef)) (call alloc.default) 16))
-    (put c C.by_value (call (map.make str.Bytes (arr i32)) (call alloc.default) 16))
-    (put c C.leaks (ptr.null leaks.Analysis))
-    (put c C.fns (call (map.make str.Bytes (ptr Sig)) (call alloc.default) 256))
-    (put c C.declared (call (map.make str.Bytes ast.Type) (call alloc.default) 32))
-    (put c C.loop_depth 0)
-    (put c C.unsafe_depth 0)
-    (put c C.in_unsafe_fn false)
-    (put c C.ret (make ast.MaybeType.none))
-    (put c C.failed false)
-    (put c C.problems (ptr.null Problem))
-    (put c C.last_problem (ptr.null Problem))
+    (let c:(ptr C) (new C (call alloc.forever) [src:src
+                                                structs:(call (map.make str.Bytes (ptr ast.StructDef)) (call alloc.default) 64)
+                                                enums:(call (map.make str.Bytes (ptr ast.EnumDef)) (call alloc.default) 16)
+                                                unions:(call (map.make str.Bytes (ptr ast.UnionDef)) (call alloc.default) 16)
+                                                fns:(call (map.make str.Bytes (ptr Sig)) (call alloc.default) 256)
+                                                declared:(call (map.make str.Bytes ast.Type) (call alloc.default) 32)
+                                                loop_depth:0
+                                                ret:(make ast.MaybeType.none)
+                                                err:(ptr.null buf.Buf)
+                                                err_at:0
+                                                last_at:0
+                                                failed:false
+                                                problems:(ptr.null Problem)
+                                                last_problem:(ptr.null Problem)
+                                                unsafe_depth:0
+                                                in_unsafe_fn:false
+                                                fmts:out
+                                                in_defer:false
+                                                leaks:(ptr.null leaks.Analysis)
+                                                by_value:(call (map.make str.Bytes (arr i32)) (call alloc.default) 16)]))
     (call check_module c m)
     (when (and (neq out (ptr.null (vec.Vec (ptr Fmt)))) (and (not (get c C.failed)) (eq (get c C.problems) (ptr.null Problem))))
         (call note_printers c out))
@@ -2591,21 +2577,18 @@
                (and (not (call fmtdebug.printable (get f Fmt.ty))) (call fmtdebug.prints (get f Fmt.ty))))
           (call (vec.push ast.Type) roots (get f Fmt.ty))))
     (when (eq (call (vec.len ast.Type) roots) 0) (return))
-    (let d:(ptr fmtdebug.Defs) (new fmtdebug.Defs (call alloc.forever)))
-    (put d fmtdebug.Defs.structs (get c C.structs))
-    (put d fmtdebug.Defs.unions (get c C.unions))
-    (put d fmtdebug.Defs.enums (get c C.enums))
-    (let f:(ptr Fmt) (new Fmt (call alloc.forever)))
-    (put f Fmt.at -1)
-    (put f Fmt.k -3)
-    (put f Fmt.ty (call void_t))
-    (put f Fmt.members (arr.null (ptr ast.Member)))
-    (put f Fmt.text (call fmtdebug.debug_functions d roots))
+    (let d:(ptr fmtdebug.Defs) (new fmtdebug.Defs (call alloc.forever) [structs:(get c C.structs)
+                                                                        unions:(get c C.unions)
+                                                                        enums:(get c C.enums)]))
+    (let f:(ptr Fmt) (new Fmt (call alloc.forever) [at:-1
+                                                    k:-3
+                                                    ty:(call void_t)
+                                                    members:(arr.null (ptr ast.Member))
+                                                    text:(call fmtdebug.debug_functions d roots)]))
     (call (vec.push (ptr Fmt)) out f))
 
   (fn problem [at:i32 text:(ptr buf.Buf)] -> (ptr Problem) (pub)
-    (let pr:(ptr Problem) (new Problem (call alloc.forever)))
-    (put pr Problem.at at)
-    (put pr Problem.text text)
-    (put pr Problem.next (ptr.null Problem))
+    (let pr:(ptr Problem) (new Problem (call alloc.forever) [at:at
+                                                             text:text
+                                                             next:(ptr.null Problem)]))
     pr))

@@ -18,10 +18,7 @@
 
   ;; A generator from a seed, on the stream `seq` (pcg32_srandom_r).
   (fn seeded_stream [a:alloc.Allocator seed:i64 seq:i64] -> (ptr Rng) (pub)
-    (let r:(ptr Rng) (new Rng a))
-    (put r Rng.state 0i64)
-    (put r Rng.inc (bitor (shl seq 1i64) 1i64))
-    (put r Rng.a a)
+    (let r:(ptr Rng) (new Rng a [state:0i64 inc:(bitor (shl seq 1i64) 1i64) a:a]))
     (let _x:i32 (call next_u32 r))
     (put r Rng.state (+ (get r Rng.state) seed))
     (let _y:i32 (call next_u32 r))

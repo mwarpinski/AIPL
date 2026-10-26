@@ -34,11 +34,7 @@
   (const THROUGH:str "a call through a function type without (no_leak)")
 
   (fn site [out:(ptr (vec.Vec (ptr Site))) at:i32 call:bool what:str.Bytes inside:bool] -> void
-    (let s:(ptr Site) (new Site (call alloc.default)))
-    (put s Site.at at)
-    (put s Site.call call)
-    (put s Site.what what)
-    (put s Site.in_unsafe inside)
+    (let s:(ptr Site) (new Site (call alloc.default) [at:at call:call what:what in_unsafe:inside]))
     (call (vec.push (ptr Site)) out s))
 
   (fn leak [out:(ptr (vec.Vec (ptr Site))) at:i32 what:str inside:bool] -> void
@@ -156,17 +152,12 @@
           (while (and (lt j (call (vec.len (ptr Site)) ss)) (eq found (ptr.null Why)))
             (let s:(ptr Site) (call (vec.at (ptr Site)) ss j))
             (when (or (not (get s Site.call)) (call why_of why (get s Site.what)))
-              (set! found (new Why a))
-              (put found Why.uses (not (get s Site.call)))
-              (put found Why.what (get s Site.what)))
+              (set! found (new Why a [uses:(not (get s Site.call)) what:(get s Site.what)])))
             (set! j (+ j 1)))
           (when (neq found (ptr.null Why))
             (call (map.set str.Bytes (ptr Why)) why name found)
             (set! more true)))))
-    (let an:(ptr Analysis) (new Analysis a))
-    (put an Analysis.fns fns)
-    (put an Analysis.all all)
-    (put an Analysis.why why)
+    (let an:(ptr Analysis) (new Analysis a [fns:fns all:all why:why]))
     an)
 
   ;; Whether f may make memory that is never freed (a function marked
@@ -217,8 +208,6 @@
                 (if (call str.bytes_eq (get hit Site.what) (call str.from_str THROUGH))
                     (call buf.push_str b ", which may keep memory (a signature with (no_leak) takes only functions that keep none)")
                     (call buf.push_str b ", whose memory is never freed"))))
-          (let fd:(ptr Found) (new Found a))
-          (put fd Found.at (get hit Site.at))
-          (put fd Found.text b)
+          (let fd:(ptr Found) (new Found a [at:(get hit Site.at) text:b]))
           (call (vec.push (ptr Found)) out fd))))
     out))

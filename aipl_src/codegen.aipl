@@ -139,17 +139,39 @@
   (struct Group [node:(ptr compiler.Node) spill:bool ty:Ty vs:(ptr StructInfo) slot:i32])
 
   (fn new_cg [src:i32] -> (ptr Cg)
-    (let cg:(ptr Cg) (new Cg (call alloc.forever)))
-    (put cg Cg.src src)
-    (put cg Cg.locals (arr.new (ptr Local) (call alloc.forever) 1024))
-    (put cg Cg.nlocals 0)
-    (put cg Cg.fns (arr.new (ptr FnInfo) (call alloc.forever) MAX_FNS))
-    (put cg Cg.nfns 0)
-    (put cg Cg.structs (arr.new (ptr StructInfo) (call alloc.forever) 255))
-    (put cg Cg.nstructs 0)
-    (put cg Cg.unions (arr.new (ptr UnionInfo) (call alloc.forever) 255))
-    (put cg Cg.nunions 0)
-    (put cg Cg.wasi (arr.new i32 (call alloc.forever) NWASI))
+    (let cg:(ptr Cg) (new Cg (call alloc.forever) [src:src
+                                                   locals:(arr.new (ptr Local) (call alloc.forever) 1024)
+                                                   nlocals:0
+                                                   fns:(arr.new (ptr FnInfo) (call alloc.forever) MAX_FNS)
+                                                   nfns:0
+                                                   structs:(arr.new (ptr StructInfo) (call alloc.forever) 255)
+                                                   nstructs:0
+                                                   unions:(arr.new (ptr UnionInfo) (call alloc.forever) 255)
+                                                   nunions:0
+                                                   wasi:(arr.new i32 (call alloc.forever) NWASI)
+                                                   nimports:(zero i32)
+                                                   labels:(zero (arr Label))
+                                                   nlabels:(zero i32)
+                                                   uses_refs:(zero bool)
+                                                   sigs:(zero (arr (ptr Sig)))
+                                                   nsigs:(zero i32)
+                                                   strs:(zero (arr (ptr StrLit)))
+                                                   nstrs:(zero i32)
+                                                   blob:(zero (ptr buf.Buf))
+                                                   newline:(zero i32)
+                                                   uses_checks:(zero bool)
+                                                   checks_base:(zero i32)
+                                                   ens_block:(zero bool)
+                                                   src_len:(zero i32)
+                                                   places:(zero (ptr places.Places))
+                                                   scratch:(zero i32)
+                                                   groups:(zero (ptr (vec.Vec (ptr Group))))
+                                                   has_values:(zero bool)
+                                                   results:(zero (ptr (vec.Vec (ptr StructInfo))))
+                                                   may_free:(zero (arr bool))
+                                                   proven:(zero (ptr (vec.Vec (ptr compiler.Node))))
+                                                   versioning:(zero bool)
+                                                   max_pages:(zero i32)]))
     (for w 0 NWASI (arr.set i32 (get cg Cg.wasi) w -1))
     (put cg Cg.nimports 0)
     (put cg Cg.labels (arr.new Label (call alloc.forever) 255))
@@ -238,8 +260,7 @@
   (fn keywords [] -> (ptr Keywords) (unsafe (ptr.cast Keywords (mem.load32 16))))
 
   (fn new_keywords [] -> (ptr Keywords)
-    (unsafe (let ks:(ptr Keywords) (new Keywords (call alloc.forever)))
-    (put ks Keywords.map (call (map.make str.Bytes Kw) (call alloc.default) 256))
+    (unsafe (let ks:(ptr Keywords) (new Keywords (call alloc.forever) [map:(call (map.make str.Bytes Kw) (call alloc.default) 256)]))
     ks))
 
   (fn reg [m:(ptr (map.Map str.Bytes Kw)) word:str k:Kw] -> void
@@ -584,11 +605,15 @@
             (let fname_node:(ptr compiler.Node) (call nth_child child 1))
             (let params_node:(ptr compiler.Node) (call nth_child child 2))
             (if (gte count MAX_FNS) (call set_compile_error CgErr.too_many_functions) 0)
-            (let f:(ptr FnInfo) (new FnInfo (call alloc.forever)))
-            (put f FnInfo.name_pos (call node_a fname_node))
-            (put f FnInfo.name_len (call node_b fname_node))
-            (put f FnInfo.ret (call type_node_id cg (call nth_child child 4)))
-            (put f FnInfo.ret_vs (call type_node_struct cg (call nth_child child 4)))
+            (let f:(ptr FnInfo) (new FnInfo (call alloc.forever) [name_pos:(call node_a fname_node)
+                                                                  name_len:(call node_b fname_node)
+                                                                  nparams:(zero i32)
+                                                                  ret:(call type_node_id cg (call nth_child child 4))
+                                                                  index:(zero i32)
+                                                                  node:(zero (ptr compiler.Node))
+                                                                  params:(zero (arr Ty))
+                                                                  ret_vs:(call type_node_struct cg (call nth_child child 4))
+                                                                  pvs:(zero (arr (ptr StructInfo)))]))
             (put f FnInfo.index count)
             (put f FnInfo.node child)
             (put f FnInfo.params (arr.new Ty (call alloc.forever) 16))
@@ -632,11 +657,13 @@
   (fn add_local [cg:(ptr Cg) name_ptr:i32 name_len:i32 ty:Ty vs:(ptr StructInfo)] -> void
     (let count:i32 (get cg Cg.nlocals))
     (if (gte count 1024) (call set_compile_error CgErr.too_many_locals) 0)
-    (let l:(ptr Local) (new Local (call alloc.forever)))
-    (put l Local.name_pos name_ptr)
-    (put l Local.name_len name_len)
-    (put l Local.ty ty)
-    (put l Local.vs vs)
+    (let l:(ptr Local) (new Local (call alloc.forever) [name_pos:name_ptr
+                                                        name_len:name_len
+                                                        ty:ty
+                                                        from:(zero (ptr Desc))
+                                                        bound:(zero bool)
+                                                        vs:vs
+                                                        slot:(zero i32)]))
     (arr.set (ptr Local) (get cg Cg.locals) (if (gte count 1024) 1023 count) l)
     (put cg Cg.nlocals (if (gte count 1024) 1024 (+ count 1))))
 
@@ -740,9 +767,7 @@
     (when (eq (get l Local.from) (ptr.null Desc)) (put l Local.from (call desc type_node false))))
 
   (fn desc [node:(ptr compiler.Node) expr:bool] -> (ptr Desc)
-    (let d:(ptr Desc) (new Desc (call alloc.forever)))
-    (put d Desc.node node)
-    (put d Desc.expr expr)
+    (let d:(ptr Desc) (new Desc (call alloc.forever) [node:node expr:expr]))
     d)
 
   (fn desc_ty [cg:(ptr Cg) d:(ptr Desc)] -> Ty
@@ -1002,10 +1027,7 @@
   (struct Out [base:i32 pos:i32 lines:(ptr Lines)])
 
   (fn out_at [addr:i32] -> (ptr Out)
-    (let o:(ptr Out) (new Out (call alloc.forever)))
-    (put o Out.base addr)
-    (put o Out.pos 0)
-    (put o Out.lines (ptr.null Lines))
+    (let o:(ptr Out) (new Out (call alloc.forever) [base:addr pos:0 lines:(ptr.null Lines)]))
     o)
 
   ;; ===== Line table (docs/design/LINES_PLAN.md; wasm.rs Body) =====
@@ -1021,10 +1043,9 @@
   (struct FnLines [index:i32 entries:(ptr (vec.Vec (ptr LEntry)))])
 
   (fn new_lines [p:(ptr places.Places)] -> (ptr Lines)
-    (let ls:(ptr Lines) (new Lines (call alloc.forever)))
-    (put ls Lines.places p)
-    (put ls Lines.at (call (vec.make i32) (call alloc.default) 32))
-    (put ls Lines.entries (call (vec.make (ptr LEntry)) (call alloc.default) 32))
+    (let ls:(ptr Lines) (new Lines (call alloc.forever) [places:p
+                                                         at:(call (vec.make i32) (call alloc.default) 32)
+                                                         entries:(call (vec.make (ptr LEntry)) (call alloc.default) 32)]))
     ls)
 
   ;; Whether a frame can point at the opcode: a call, one that can trap, or
@@ -1061,11 +1082,10 @@
                    (and (eq (get last LEntry.col) (get p places.Place.col))
                         (call str.bytes_eq (get last LEntry.file) (get p places.Place.file))))
               (return)))
-    (let e:(ptr LEntry) (new LEntry (call alloc.forever)))
-    (put e LEntry.at at)
-    (put e LEntry.file (get p places.Place.file))
-    (put e LEntry.line (get p places.Place.line))
-    (put e LEntry.col (get p places.Place.col))
+    (let e:(ptr LEntry) (new LEntry (call alloc.forever) [at:at
+                                                          file:(get p places.Place.file)
+                                                          line:(get p places.Place.line)
+                                                          col:(get p places.Place.col)]))
     (call (vec.push (ptr LEntry)) es e))
 
   ;; The expression at source offset `at` is being compiled / is done.
@@ -1641,11 +1661,20 @@
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.struct))
             (let sname_node:(ptr compiler.Node) (call nth_child child 1))
             (if (gte scount 255) (call set_compile_error CgErr.table_full) 0)
-            (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
-            (put si StructInfo.name_pos (call node_a sname_node))
-            (put si StructInfo.name_len (call node_b sname_node))
-            (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 64))
-            (put si StructInfo.node child)
+            (let si:(ptr StructInfo) (new StructInfo (call alloc.forever) [name_pos:(call node_a sname_node)
+                                                                           name_len:(call node_b sname_node)
+                                                                           size:(zero i32)
+                                                                           fields:(arr.new (ptr Field) (call alloc.forever) 64)
+                                                                           nfields:(zero i32)
+                                                                           node:child
+                                                                           value:(zero bool)
+                                                                           laid:(zero bool)
+                                                                           align:(zero i32)
+                                                                           width:(zero i32)
+                                                                           flat_ty:(zero (arr Ty))
+                                                                           flat_off:(zero (arr i32))
+                                                                           union_of:(zero (ptr UnionInfo))
+                                                                           result:(zero bool)]))
             (let mark:(ptr compiler.Node) (call nth_child child 3))
             (put si StructInfo.value (and (neq mark (ptr.null compiler.Node))
                                           (and (eq (call node_kind mark) compiler.Kind.paren)
@@ -1704,11 +1733,12 @@
   (fn new_field [cg:(ptr Cg) fchild:(ptr compiler.Node) type_node:(ptr compiler.Node)] -> (ptr Field)
     (let ftype:Ty (call type_node_id cg type_node))
     (if (and (call is_memory_type ftype) (neq (call group_head_keyword cg type_node) Kw.ty_result)) 0 (call set_compile_error CgErr.not_a_memory_type))
-    (let f:(ptr Field) (new Field (call alloc.forever)))
-    (put f Field.name_pos (call node_a fchild))
-    (put f Field.name_len (call node_b fchild))
-    (put f Field.ty ftype)
-    (put f Field.vs (if (eq ftype Ty.value) (call type_node_struct cg type_node) (ptr.null StructInfo)))
+    (let f:(ptr Field) (new Field (call alloc.forever) [name_pos:(call node_a fchild)
+                                                        name_len:(call node_b fchild)
+                                                        offset:(zero i32)
+                                                        ty:ftype
+                                                        vs:(if (eq ftype Ty.value) (call type_node_struct cg type_node) (ptr.null StructInfo))
+                                                        slot:(zero i32)]))
     f)
 
   ;; Appends field f's scalars (at its offset) to value struct si's, from
@@ -1759,11 +1789,12 @@
       (when (and (eq (call node_kind child) compiler.Kind.paren) (eq (call group_head_keyword cg child) Kw.union))
             (let name_node:(ptr compiler.Node) (call nth_child child 1))
             (if (gte ucount 255) (call set_compile_error CgErr.table_full) 0)
-            (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever)))
-            (put u UnionInfo.name_pos (call node_a name_node))
-            (put u UnionInfo.name_len (call node_b name_node))
-            (put u UnionInfo.variants (arr.new (ptr VariantInfo) (call alloc.forever) 255))
-            (put u UnionInfo.nvariants 0)
+            (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever) [name_pos:(call node_a name_node)
+                                                                        name_len:(call node_b name_node)
+                                                                        variants:(arr.new (ptr VariantInfo) (call alloc.forever) 255)
+                                                                        nvariants:0
+                                                                        value:(zero bool)
+                                                                        vs:(zero (ptr StructInfo))]))
             (arr.set (ptr UnionInfo) (get cg Cg.unions) (if (gte ucount 255) 254 ucount) u)
             (when (lt ucount 255) (set! ucount (+ ucount 1))))
       (set! child (call node_next child)))
@@ -1777,10 +1808,15 @@
             (let vnode:(ptr compiler.Node) (call first_child (call nth_child child 2)))
             (while (neq vnode (ptr.null compiler.Node))
               (if (gte vcount 255) (call set_compile_error CgErr.table_full) 0)
-              (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever)))
-              (put v VariantInfo.name_pos (call node_a (call first_child vnode)))
-              (put v VariantInfo.name_len (call node_b (call first_child vnode)))
-              (put v VariantInfo.node vnode)
+              (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever) [name_pos:(call node_a (call first_child vnode))
+                                                                              name_len:(call node_b (call first_child vnode))
+                                                                              size:(zero i32)
+                                                                              fields:(zero (arr (ptr Field)))
+                                                                              nfields:(zero i32)
+                                                                              node:vnode
+                                                                              slots:(zero (arr i32))
+                                                                              nslots:(zero i32)
+                                                                              kinds:(zero (ptr (vec.Vec Ty)))]))
               (arr.set (ptr VariantInfo) (get u UnionInfo.variants) (if (gte vcount 255) 254 vcount) v)
               (when (lt vcount 255) (set! vcount (+ vcount 1)))
               (set! vnode (call node_next vnode)))
@@ -1901,10 +1937,20 @@
   ;; The StructInfo of a result's slots, its sides' kinds ok_k and er_k
   ;; (checker.rs sum_layout).
   (fn build_sum [cg:(ptr Cg) ok_k:(ptr (vec.Vec Ty)) er_k:(ptr (vec.Vec Ty))] -> (ptr StructInfo)
-    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
-    (put si StructInfo.value true)
-    (put si StructInfo.laid true)
-    (put si StructInfo.result true)
+    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever) [name_pos:(zero i32)
+                                                                   name_len:(zero i32)
+                                                                   size:(zero i32)
+                                                                   fields:(zero (arr (ptr Field)))
+                                                                   nfields:(zero i32)
+                                                                   node:(zero (ptr compiler.Node))
+                                                                   value:true
+                                                                   laid:true
+                                                                   align:(zero i32)
+                                                                   width:(zero i32)
+                                                                   flat_ty:(zero (arr Ty))
+                                                                   flat_off:(zero (arr i32))
+                                                                   union_of:(zero (ptr UnionInfo))
+                                                                   result:true]))
     (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 1))
     (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
     (put si StructInfo.flat_off (arr.new i32 (call alloc.forever) 8))
@@ -1927,11 +1973,12 @@
     (put si StructInfo.width n)
     (put si StructInfo.align align)
     (put si StructInfo.size (bitand (+ off (- align 1)) (- 0 align)))
-    (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever)))
-    (put u UnionInfo.variants (arr.new (ptr VariantInfo) (call alloc.forever) 2))
-    (put u UnionInfo.nvariants 2)
-    (put u UnionInfo.value true)
-    (put u UnionInfo.vs si)
+    (let u:(ptr UnionInfo) (new UnionInfo (call alloc.forever) [name_pos:(zero i32)
+                                                                name_len:(zero i32)
+                                                                variants:(arr.new (ptr VariantInfo) (call alloc.forever) 2)
+                                                                nvariants:2
+                                                                value:true
+                                                                vs:si]))
     (arr.set (ptr VariantInfo) (get u UnionInfo.variants) 0 (call side_slots ok_k base))
     (arr.set (ptr VariantInfo) (get u UnionInfo.variants) 1 (call side_slots er_k base))
     (put si StructInfo.union_of u)
@@ -1939,8 +1986,15 @@
 
   ;; A side's scalars to the next free slot of their kind.
   (fn side_slots [ks:(ptr (vec.Vec Ty)) base:(arr i32)] -> (ptr VariantInfo)
-    (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever)))
-    (put v VariantInfo.kinds ks)
+    (let v:(ptr VariantInfo) (new VariantInfo (call alloc.forever) [name_pos:(zero i32)
+                                                                    name_len:(zero i32)
+                                                                    size:(zero i32)
+                                                                    fields:(zero (arr (ptr Field)))
+                                                                    nfields:(zero i32)
+                                                                    node:(zero (ptr compiler.Node))
+                                                                    slots:(zero (arr i32))
+                                                                    nslots:(zero i32)
+                                                                    kinds:ks]))
     (let used:(arr i32) (arr.new i32 (call alloc.forever) 4))
     (put v VariantInfo.slots (arr.new i32 (call alloc.forever) (+ (call (vec.len Ty) ks) 1)))
     (put v VariantInfo.nslots (call (vec.len Ty) ks))
@@ -2042,12 +2096,20 @@
   (fn build_union [cg:(ptr Cg) u:(ptr UnionInfo)] -> void
     (when (get u UnionInfo.value) (return))
     (put cg Cg.has_values true)
-    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever)))
-    (put si StructInfo.name_pos (get u UnionInfo.name_pos))
-    (put si StructInfo.name_len (get u UnionInfo.name_len))
-    (put si StructInfo.value true)
-    (put si StructInfo.laid true)
-    (put si StructInfo.union_of u)
+    (let si:(ptr StructInfo) (new StructInfo (call alloc.forever) [name_pos:(get u UnionInfo.name_pos)
+                                                                   name_len:(get u UnionInfo.name_len)
+                                                                   size:(zero i32)
+                                                                   fields:(zero (arr (ptr Field)))
+                                                                   nfields:(zero i32)
+                                                                   node:(zero (ptr compiler.Node))
+                                                                   value:true
+                                                                   laid:true
+                                                                   align:(zero i32)
+                                                                   width:(zero i32)
+                                                                   flat_ty:(zero (arr Ty))
+                                                                   flat_off:(zero (arr i32))
+                                                                   union_of:u
+                                                                   result:(zero bool)]))
     (put si StructInfo.fields (arr.new (ptr Field) (call alloc.forever) 1))
     (put si StructInfo.nfields 0)
     (put si StructInfo.flat_ty (arr.new Ty (call alloc.forever) 8))
@@ -2325,10 +2387,7 @@
           (for i 0 n
             (arr.set (ptr StrLit) bigger i (arr.get (ptr StrLit) (get cg Cg.strs) i)))
           (put cg Cg.strs bigger))
-    (let e:(ptr StrLit) (new StrLit (call alloc.forever)))
-    (put e StrLit.pos pos)
-    (put e StrLit.len len)
-    (put e StrLit.addr addr)
+    (let e:(ptr StrLit) (new StrLit (call alloc.forever) [pos:pos len:len addr:addr]))
     (arr.set (ptr StrLit) (get cg Cg.strs) (get cg Cg.nstrs) e)
     (put cg Cg.nstrs (+ (get cg Cg.nstrs) 1)))
 
@@ -2531,8 +2590,10 @@
     out)
 
   (fn new_sig [] -> (ptr Sig)
-    (let s:(ptr Sig) (new Sig (call alloc.forever)))
-    (put s Sig.params (arr.new i32 (call alloc.forever) 128))
+    (let s:(ptr Sig) (new Sig (call alloc.forever) [nparams:(zero i32)
+                                                    params:(arr.new i32 (call alloc.forever) 128)
+                                                    nresults:(zero i32)
+                                                    results:(zero (arr i32))]))
     (put s Sig.nparams 0)
     (put s Sig.results (arr.new i32 (call alloc.forever) 8))
     (put s Sig.nresults 0)
@@ -2951,10 +3012,7 @@
   ;; Follows the path symbols (S.f ...) from `first` up to (not including)
   ;; `stop`, starting from a value of type t (struct vs) at offset off.
   (fn follow_path [cg:(ptr Cg) first:(ptr compiler.Node) stop:(ptr compiler.Node) t:Ty vs:(ptr StructInfo) off:i32] -> (ptr Target)
-    (let tg:(ptr Target) (new Target (call alloc.forever)))
-    (put tg Target.ty t)
-    (put tg Target.vs vs)
-    (put tg Target.offset off)
+    (let tg:(ptr Target) (new Target (call alloc.forever) [ty:t vs:vs offset:off]))
     (let step:(ptr compiler.Node) first)
     (while (and (neq step stop) (neq step (ptr.null compiler.Node)))
       (let f:(ptr Field) (call ref_field cg step))
@@ -2979,11 +3037,11 @@
   ;; The groups of the function being compiled, found in source order (its
   ;; body, then its req and ens conditions), as wasm.rs value_groups.
   (fn add_group [cg:(ptr Cg) node:(ptr compiler.Node) spill:bool vs:(ptr StructInfo)] -> void
-    (let g:(ptr Group) (new Group (call alloc.forever)))
-    (put g Group.node node)
-    (put g Group.spill spill)
-    (put g Group.ty Ty.value)
-    (put g Group.vs vs)
+    (let g:(ptr Group) (new Group (call alloc.forever) [node:node
+                                                        spill:spill
+                                                        ty:Ty.value
+                                                        vs:vs
+                                                        slot:(zero i32)]))
     (call (vec.push (ptr Group)) (get cg Cg.groups) g))
 
   ;; The first local of node's group (spill: its spill group); a missing
@@ -3135,9 +3193,10 @@
   (struct Root [kind:RootKind node:(ptr compiler.Node) slot:i32 off:i32])
 
   (fn find_root [cg:(ptr Cg) node:(ptr compiler.Node)] -> (ptr Root)
-    (let rt:(ptr Root) (new Root (call alloc.forever)))
-    (put rt Root.slot 0)
-    (put rt Root.off 0)
+    (let rt:(ptr Root) (new Root (call alloc.forever) [kind:(zero RootKind)
+                                                       node:(zero (ptr compiler.Node))
+                                                       slot:0
+                                                       off:0]))
     (let cur:(ptr compiler.Node) node)
     (let found:bool false)
     (while (and (not found) (call reads_value cg cur))
@@ -4744,9 +4803,10 @@
     (call append_to_blob cg data len))
 
   (fn add_item [cg:(ptr Cg) m:(ptr Msg) kind:ItemKind b:(ptr buf.Buf) local:i32] -> void
-    (let it:(ptr Item) (new Item (call alloc.forever)))
-    (put it Item.kind kind)
-    (put it Item.local local)
+    (let it:(ptr Item) (new Item (call alloc.forever) [kind:kind
+                                                       addr:(zero i32)
+                                                       len:(zero i32)
+                                                       local:local]))
     (when (eq kind ItemKind.text)
           (put it Item.addr (call intern_raw cg (get b buf.Buf.data) (call buf.len b)))
           (put it Item.len (call buf.len b)))
@@ -4833,9 +4893,10 @@
     (let at:i32 (get e compiler.Node.pos))
     (call printer.print_expr t (call parser.parse_expr_text (+ src at) (call expr_text_len cg at)))
     (call buf.push_str t ")")
-    (let m:(ptr Msg) (new Msg (call alloc.forever)))
-    (put m Msg.addr (call intern_raw cg (get t buf.Buf.data) (call buf.len t)))
-    (put m Msg.len (call buf.len t))
+    (let m:(ptr Msg) (new Msg (call alloc.forever) [addr:(call intern_raw cg (get t buf.Buf.data) (call buf.len t))
+                                                    len:(call buf.len t)
+                                                    items:(zero (arr (ptr Item)))
+                                                    n:(zero i32)]))
     (let np:i32 (get entry FnInfo.nparams))
     (put m Msg.items (arr.new (ptr Item) (call alloc.forever) (+ (* 3 (+ np 1)) 1)))
     (put m Msg.n 0)
@@ -4971,7 +5032,10 @@
   ;; A signature from a pattern of parameter types, i for i32 and l for i64,
   ;; and a result value type (0 for none).
   (fn sig_from [params:str result:i32] -> (ptr Sig)
-    (unsafe (let s:(ptr Sig) (new Sig (call alloc.forever)))
+    (unsafe (let s:(ptr Sig) (new Sig (call alloc.forever) [nparams:(zero i32)
+                                                            params:(zero (arr i32))
+                                                            nresults:(zero i32)
+                                                            results:(zero (arr i32))]))
     (let n:i32 (str.len params))
     (put s Sig.params (arr.new i32 (call alloc.forever) (if (eq n 0) 1 n)))
     (for i 0 n
@@ -5277,9 +5341,8 @@
       (call at_push fc (get (get (call func_entry_ptr cg f) FnInfo.node) compiler.Node.pos))
       (call emit_function cg (call func_entry_ptr cg f) fc)
       (when (not quiet)
-            (let fl:(ptr FnLines) (new FnLines (call alloc.forever)))
-            (put fl FnLines.index (+ imports f))
-            (put fl FnLines.entries (get (get fc Out.lines) Lines.entries))
+            (let fl:(ptr FnLines) (new FnLines (call alloc.forever) [index:(+ imports f)
+                                                                     entries:(get (get fc Out.lines) Lines.entries)]))
             (when (gt (call (vec.len (ptr LEntry)) (get fl FnLines.entries)) 0) (call (vec.push (ptr FnLines)) fn_lines fl)))
       (if (gt (get fc Out.pos) cap) (call set_compile_error CgErr.output_full) 0)
       (call emit_sized sec fc))

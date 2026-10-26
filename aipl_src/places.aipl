@@ -25,21 +25,20 @@
   (struct Place [(read file:str.Bytes) (read line:i32) (read col:i32)] (pub))
 
   (fn text_of [name:str.Bytes text:str.Bytes] -> (ptr Text)
-    (let t:(ptr Text) (new Text (call alloc.forever)))
-    (put t Text.name name)
-    (put t Text.text text)
-    (put t Text.starts (ptr.null (vec.Vec i32)))
+    (let t:(ptr Text) (new Text (call alloc.forever) [name:name
+                                                      text:text
+                                                      starts:(ptr.null (vec.Vec i32))]))
     t)
 
   ;; Positions in one file's text, under that name.
   (fn single [name:str.Bytes text:str.Bytes] -> (ptr Places) (pub)
-    (let p:(ptr Places) (new Places (call alloc.forever)))
-    (put p Places.consts (call origins.make))
-    (put p Places.low (ptr.null origins.Origins))
-    (put p Places.gen (ptr.null origins.Origins))
-    (put p Places.orig (ptr.null origins.Origins))
-    (put p Places.flat (call text_of name text))
-    (put p Places.files (call (vec.make (ptr Text)) (call alloc.default) 1))
+    (let p:(ptr Places) (new Places (call alloc.forever) [consts:(call origins.make)
+                                                          low:(ptr.null origins.Origins)
+                                                          gen:(ptr.null origins.Origins)
+                                                          orig:(ptr.null origins.Origins)
+                                                          flat:(call text_of name text)
+                                                          files:(call (vec.make (ptr Text)) (call alloc.default) 1)
+                                                          file:(zero i32)]))
     p)
 
   ;; Positions in the files the resolver read (orig), through the generics
@@ -99,10 +98,9 @@
     (for k start pos
       ;; a UTF-8 continuation byte is part of the character before it
       (when (neq (bitand (mem.load8 (+ src k)) 192) 128) (set! col (+ col 1))))
-    (let r:(ptr Place) (new Place (call alloc.forever)))
-    (put r Place.file (get t Text.name))
-    (put r Place.line (+ lo 1))
-    (put r Place.col col)
+    (let r:(ptr Place) (new Place (call alloc.forever) [file:(get t Text.name)
+                                                        line:(+ lo 1)
+                                                        col:col]))
     r))
 
   (fn find_starts [t:(ptr Text)] -> void

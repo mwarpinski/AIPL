@@ -2425,7 +2425,8 @@ fn from_scalars(ty: &Type, s: &[Value], structs: &crate::checker::Structs) -> Va
 }
 
 /// A value of type `ty` as AIPL source would write it (pointers and arrays
-/// as their address, a value struct as the make that builds it).
+/// as their address, a value struct as the make that builds it, its fields
+/// named).
 fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String {
     match (v, ty) {
         (Value::Int(i), _) => i.to_string(),
@@ -2440,8 +2441,8 @@ fn value_str(v: &Value, ty: &Type, structs: &crate::checker::Structs) -> String 
         (Value::Err(x), Type::ResultType(t, e)) => format!("(err:{} {})", t, value_str(x, e, structs)),
         (Value::Record(fields), Type::Struct(name)) => match structs.get(name) {
             Some(def) => {
-                let shown: Vec<String> = fields.iter().zip(&def.fields).map(|(x, f)| value_str(x, &f.ty, structs)).collect();
-                format!("(make {} {})", name, shown.join(" "))
+                let shown: Vec<String> = fields.iter().zip(&def.fields).map(|(x, f)| format!("{}:{}", f.name, value_str(x, &f.ty, structs))).collect();
+                format!("(make {} [{}])", name, shown.join(" "))
             }
             None => format!("(make {name})"),
         },
