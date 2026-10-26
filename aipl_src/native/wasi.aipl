@@ -44,8 +44,13 @@
 
   ;; The data the routines use: the fd table (stdio open) and the errno table.
   (fn make [l:(ptr lower.L)] -> (ptr W) (pub)
-    (let w:(ptr W) (new W (call alloc.forever)))
-    (put w W.region_routine -1)
+    (let w:(ptr W) (new W (call alloc.forever) [region_routine:-1
+                                                fd_table:(zero i32)
+                                                errno_table:(zero i32)
+                                                argc_cell:(zero i32)
+                                                argv_cell:(zero i32)
+                                                envc_cell:(zero i32)
+                                                envp_cell:(zero i32)]))
     (let fds:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (for i 0 (call fd_slots)
       (call push_u32 fds (if (lte i 2) i -1)))

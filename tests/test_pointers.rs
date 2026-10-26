@@ -115,9 +115,7 @@ fn typed_linked_list_runs_in_both_backends() {
 (module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)])
   (fn push [head:(ptr Node) v:i32] -> (ptr Node)
-    (let n:(ptr Node) (new Node (call alloc.forever)))
-    (put n Node.val v)
-    (put n Node.next head)
+    (let n:(ptr Node) (new Node (call alloc.forever) [val:v next:head]))
     n)
   (fn sum [] -> i32
     (let h:(ptr Node) (ptr.null Node))
@@ -139,8 +137,7 @@ fn arrays_of_pointers_lengths_and_casts_run_in_both_backends() {
   (fn f [] -> i32 (unsafe)
     (let ps:(arr (ptr P)) (arr.new (ptr P) (call alloc.forever) 4))
     (for i 0 4
-      (let p:(ptr P) (new P (call alloc.forever)))
-      (put p P.x (* i i))
+      (let p:(ptr P) (new P (call alloc.forever) [x:(* i i)]))
       (arr.set (ptr P) ps i p))
     (let total:i32 0)
     (for i 0 (arr.len ps)
@@ -199,17 +196,14 @@ fn two_imported_modules_may_each_define_the_same_struct_name() {
 (module geo (import alloc)
   (struct Node [(read x:i32) y:i32] (pub))
   (fn make [x:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (new Node (call alloc.forever)))
-    (put n Node.x (call ident x))
+    (let n:(ptr Node) (new Node (call alloc.forever) [x:(call ident x) y:(zero i32)]))
     n)
   (fn ident [v:i32] -> i32 v))"#),
         ("list", r#"
 (module list (import alloc)
   (struct Node [(read val:i32) next:(ptr Node)] (pub))
   (fn make [v:i32] -> (ptr Node) (pub)
-    (let n:(ptr Node) (new Node (call alloc.forever)))
-    (put n Node.val v)
-    (put n Node.next (ptr.null Node))
+    (let n:(ptr Node) (new Node (call alloc.forever) [val:v next:(ptr.null Node)]))
     n))"#),
     ])
     .expect("resolve");

@@ -81,14 +81,13 @@
   ] (pub))
 
   (fn make_stats [] -> (ptr Stats) (pub)
-    (let s:(ptr Stats) (new Stats (call alloc.forever)))
-    (put s Stats.consts_folded 0)
-    (put s Stats.calls_inlined 0)
-    (put s Stats.locals_eliminated 0)
-    (put s Stats.fns_eliminated 0)
-    (put s Stats.fns_kept 0)
-    (put s Stats.fresh_prefix (call str.from_str "_inl"))
-    (put s Stats.fresh_count 0)
+    (let s:(ptr Stats) (new Stats (call alloc.forever) [consts_folded:0
+                                                        calls_inlined:0
+                                                        locals_eliminated:0
+                                                        fns_eliminated:0
+                                                        fns_kept:0
+                                                        fresh_prefix:(call str.from_str "_inl")
+                                                        fresh_count:0]))
     s)
 
   ;; A name no symbol of the program has: the fresh prefix and a number.
@@ -126,14 +125,13 @@
   ])
 
   (fn new_onode [k:OKind text:str.Bytes ival:i32 lval:i64 pos:i32] -> (ptr ONode)
-    (let n:(ptr ONode) (new ONode (call alloc.forever)))
-    (put n ONode.kind k)
-    (put n ONode.text text)
-    (put n ONode.ival ival)
-    (put n ONode.lval lval)
-    (put n ONode.first (ptr.null ONode))
-    (put n ONode.next (ptr.null ONode))
-    (put n ONode.pos pos)
+    (let n:(ptr ONode) (new ONode (call alloc.forever) [kind:k
+                                                        text:text
+                                                        ival:ival
+                                                        lval:lval
+                                                        first:(ptr.null ONode)
+                                                        next:(ptr.null ONode)
+                                                        pos:pos]))
     n)
 
   (fn make_int [v:i32 pos:i32] -> (ptr ONode)
@@ -1405,15 +1403,14 @@
           (when (not (call is_syntactic_void_stmt last_st))
                 (put last_st ONode.next (call make_empty_block (get fn_node ONode.pos)))
                 (set! stmt_count (+ stmt_count 1))))
-    (let def:(ptr InlineDef) (new InlineDef (call alloc.forever)))
-    (put def InlineDef.name fname)
-    (put def InlineDef.params params)
-    (put def InlineDef.param_types types)
-    (put def InlineDef.param_uses p_uses)
-    (put def InlineDef.body_first cloned_body)
-    (put def InlineDef.stmt_count stmt_count)
-    (put def InlineDef.is_void is_void)
-    (put def InlineDef.is_unsafe is_unsafe)
+    (let def:(ptr InlineDef) (new InlineDef (call alloc.forever) [name:fname
+                                                                  params:params
+                                                                  param_types:types
+                                                                  param_uses:p_uses
+                                                                  body_first:cloned_body
+                                                                  stmt_count:stmt_count
+                                                                  is_void:is_void
+                                                                  is_unsafe:is_unsafe]))
     def)
 
   (fn clone_stmt_list [first:(ptr ONode)] -> (ptr ONode)

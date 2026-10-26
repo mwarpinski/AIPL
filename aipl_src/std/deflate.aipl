@@ -54,7 +54,10 @@
   (struct Tables [lbase:(arr i32) lext:(arr i32) dbase:(arr i32) dext:(arr i32)])
 
   (fn make_tables [a:alloc.Allocator] -> (ptr Tables)
-    (let t:(ptr Tables) (new Tables a))
+    (let t:(ptr Tables) (new Tables a [lbase:(zero (arr i32))
+                                       lext:(zero (arr i32))
+                                       dbase:(zero (arr i32))
+                                       dext:(zero (arr i32))]))
     (let lbase:(arr i32) (arr.new i32 a 29))
     (let lext:(arr i32) (arr.new i32 a 29))
     (let dbase:(arr i32) (arr.new i32 a 30))
@@ -248,25 +251,24 @@
   ;; Appends what the raw DEFLATE stream at in[from] stands for to o (at
   ;; most limit bytes); the offset just past the stream, or the error.
   (fn inflate_at [a:alloc.Allocator o:(ptr buf.Buf) input:str.Bytes from:i32 limit:i32] -> (result i32 (ptr Error))
-    (let s:(ptr Inflate) (new Inflate a))
-    (put s Inflate.a a)
-    (put s Inflate.input input)
-    (put s Inflate.pos from)
-    (put s Inflate.bitbuf 0)
-    (put s Inflate.bitcnt 0)
-    (put s Inflate.o o)
-    (put s Inflate.start (call buf.len o))
-    (put s Inflate.limit limit)
-    (put s Inflate.lcnt (arr.new i32 a 16))
-    (put s Inflate.lsym (arr.new i32 a 288))
-    (put s Inflate.dcnt (arr.new i32 a 16))
-    (put s Inflate.dsym (arr.new i32 a 30))
-    (put s Inflate.lengths (arr.new i32 a 320))
-    (put s Inflate.offs (arr.new i32 a 16))
-    (put s Inflate.t (call make_tables a))
-    (put s Inflate.failed false)
-    (put s Inflate.at 0)
-    (put s Inflate.what "")
+    (let s:(ptr Inflate) (new Inflate a [a:a
+                                         input:input
+                                         pos:from
+                                         bitbuf:0
+                                         bitcnt:0
+                                         o:o
+                                         start:(call buf.len o)
+                                         limit:limit
+                                         lcnt:(arr.new i32 a 16)
+                                         lsym:(arr.new i32 a 288)
+                                         dcnt:(arr.new i32 a 16)
+                                         dsym:(arr.new i32 a 30)
+                                         lengths:(arr.new i32 a 320)
+                                         offs:(arr.new i32 a 16)
+                                         t:(call make_tables a)
+                                         failed:false
+                                         at:0
+                                         what:""]))
     (let last:i32 0)
     (while (and (eq last 0) (not (get s Inflate.failed)))
       (set! last (call bits s 1))
@@ -292,9 +294,7 @@
     (if failed (err:i32 (call error a at what)) (ok:(ptr Error) end)))
 
   (fn error [a:alloc.Allocator at:i32 what:str] -> (ptr Error)
-    (let e:(ptr Error) (new Error a))
-    (put e Error.at at)
-    (put e Error.what what)
+    (let e:(ptr Error) (new Error a [at:at what:what]))
     e)
 
   ;; Frees an Error a decoder gave.
@@ -465,10 +465,7 @@
   ;; 9 smallest) to o.
   (fn compress_to [a:alloc.Allocator o:(ptr buf.Buf) b:str.Bytes level:i32] -> void (pub)
     (req (and (gte level 0) (lte level 9)))
-    (let w:(ptr Bits) (new Bits a))
-    (put w Bits.o o)
-    (put w Bits.acc 0)
-    (put w Bits.cnt 0)
+    (let w:(ptr Bits) (new Bits a [o:o acc:0 cnt:0]))
     (let n:i32 (get b str.Bytes.len))
     (if (eq level 0)
         (block
@@ -535,11 +532,31 @@
     (call free_deflate d))
 
   (fn make_deflate [a:alloc.Allocator w:(ptr Bits) b:str.Bytes] -> (ptr Deflate)
-    (let d:(ptr Deflate) (new Deflate a))
-    (put d Deflate.a a)
-    (put d Deflate.input b)
-    (put d Deflate.w w)
-    (put d Deflate.t (call make_tables a))
+    (let d:(ptr Deflate) (new Deflate a [a:a
+                                         input:b
+                                         w:w
+                                         t:(call make_tables a)
+                                         head:(zero (arr i32))
+                                         prev:(zero (arr i32))
+                                         lens:(zero (arr i32))
+                                         vals:(zero (arr i32))
+                                         count:(zero i32)
+                                         block_start:(zero i32)
+                                         lfreq:(zero (arr i32))
+                                         dfreq:(zero (arr i32))
+                                         llen:(zero (arr i32))
+                                         dlen:(zero (arr i32))
+                                         lcode:(zero (arr i32))
+                                         dcode:(zero (arr i32))
+                                         cfreq:(zero (arr i32))
+                                         clen:(zero (arr i32))
+                                         ccode:(zero (arr i32))
+                                         runs:(zero (arr i32))
+                                         runx:(zero (arr i32))
+                                         nruns:(zero i32)
+                                         hfreq:(zero (arr i32))
+                                         hparent:(zero (arr i32))
+                                         hlive:(zero (arr i32))]))
     (let head:(arr i32) (arr.new i32 a HASH))
     (for i 0 HASH (arr.set i32 head i -1))
     (put d Deflate.head head)

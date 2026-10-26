@@ -11,8 +11,7 @@
   (union Op [(lit v:i32) (neg e:(ptr Sub)) (add a:(ptr Sub) b:(ptr Sub))])
   (struct Sub [op:Op])
   (fn sub [a:alloc.Allocator o:Op] -> (ptr Sub)
-    (let s:(ptr Sub) (new Sub a))
-    (put s Sub.op o)
+    (let s:(ptr Sub) (new Sub a [op:o]))
     s)
   (fn eval [e:Op] -> i32
     (match e
@@ -29,9 +28,7 @@
       (let s:geometry.Shape (call (vec.at geometry.Shape) shapes i))
       (set! total (+ total (+ (call geo.area s) (call sides s)))))
     ;; total: (10 + 4) + (3 + 0) + (0 + 1) = 18
-    (let l:(ptr geo.Labelled) (new geo.Labelled (call alloc.forever)))
-    (put l geometry.Labelled.shape (make geo.Shape.rect 3 3))
-    (put l geo.Labelled.turn geometry.Turn.back)
+    (let l:(ptr geo.Labelled) (new geo.Labelled (call alloc.forever) [shape:(make geo.Shape.rect 3 3) turn:geometry.Turn.back]))
     (let p:geo.Path (call geometry.step a 1 2 (call geo.step a 3 4 (make geo.Path.stop))))
     (+ total                                                          ;; 18
        (+ (call geometry.area (get l geo.Labelled.shape))              ;; 9

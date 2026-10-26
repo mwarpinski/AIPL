@@ -202,12 +202,14 @@
     (let count:i32 (call compiler.tokenize (call str.addr src) n tok))
     (let ast:i32 (mem.alloc (+ 8 (* (sizeof compiler.Node) (+ count 2)))))
     (let root:(ptr compiler.Node) (call compiler.parse_ast tok count ast))
-    (let st:(ptr St) (new St (call alloc.forever)))
-    (put st St.text src)
-    (put st St.consts (call (map.make str.Bytes (ptr compiler.Node)) (call alloc.default) 16))
-    (put st St.enums (call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 16))
-    (put st St.err err)
-    (put st St.origins o)
+    (let st:(ptr St) (new St (call alloc.forever) [text:src
+                                                   consts:(call (map.make str.Bytes (ptr compiler.Node)) (call alloc.default) 16)
+                                                   enums:(call (map.make str.Bytes (ptr (map.Map str.Bytes i32))) (call alloc.default) 16)
+                                                   err:err
+                                                   failed:(zero bool)
+                                                   origins:o
+                                                   defs:(zero (ptr cexpr.Defs))
+                                                   keep_enums:(zero bool)]))
     (put st St.failed false)
     (put st St.defs (call cexpr.make src))
     (put st St.keep_enums keep_enums)

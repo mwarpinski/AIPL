@@ -24,11 +24,10 @@
   ;; Zero from a, with room for `limbs` 64-bit limbs (at least 4) before it
   ;; grows.
   (fn with_capacity [a:alloc.Allocator limbs:i32] -> (ptr Int) (pub)
-    (let n:(ptr Int) (new Int a))
-    (put n Int.limbs (arr.new i64 a (if (lt limbs 4) 4 limbs)))
-    (put n Int.len 0)
-    (put n Int.neg false)
-    (put n Int.a a)
+    (let n:(ptr Int) (new Int a [limbs:(arr.new i64 a (if (lt limbs 4) 4 limbs))
+                                 len:0
+                                 neg:false
+                                 a:a]))
     n)
 
   ;; A number from any i32, from a.

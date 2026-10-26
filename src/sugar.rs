@@ -44,7 +44,8 @@ pub const ARR_NEW_NEEDS_ALLOCATOR: &str = "arr.new takes the allocator to make i
 pub const ARR_OF_NEEDS_ALLOCATOR: &str = "arr.of takes the allocator to make it from, then the values: (arr.of T a x y ...), e.g. (arr.of i32 (call alloc.default) 1 2 3), or (arr.of i32 a) for an empty array";
 
 /// Rewrites the forms in `sx`, inner ones first; `err` places a message at
-/// a form. A `[...]` list holds no expression and is left alone. `alloc`
+/// a form. A `[...]` list holds no expression and is left alone, but for
+/// the field values of a named `new` or `make`. `alloc`
 /// is how this module names std/alloc's functions (`alloc.`, an alias's
 /// prefix, or none in std/alloc itself), or why it cannot use new; `used`
 /// is set when a new or arr.new is rewritten.
@@ -77,9 +78,18 @@ pub fn rewrite(sx: &mut Sx, alloc: &Result<String, String>, used: &mut bool, err
         }
         _ => {}
     }
+    // the [f:v ...] of a named new or make holds expressions
+    let named = matches!(sx.head(), Some("new" | "make")) && matches!(sx.items().last(), Some(Sx::List { open: Token { kind: TokenKind::LBracket, .. }, .. }));
     if let Some(items) = sx.items_mut() {
-        for i in items {
-            rewrite(i, alloc, used, err)?;
+        let last = items.len() - 1;
+        for (k, i) in items.iter_mut().enumerate() {
+            if named && k == last {
+                for v in i.items_mut().into_iter().flatten() {
+                    rewrite(v, alloc, used, err)?;
+                }
+            } else {
+                rewrite(i, alloc, used, err)?;
+            }
         }
     }
     let at = sx.position();

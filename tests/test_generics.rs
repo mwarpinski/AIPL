@@ -65,17 +65,13 @@ fn assert_aipl_resolver_agrees(entry: &Path) {
 const BOX: &str = r#"(module box (import alloc)
   (struct (Box T) [value:T next:(ptr (Box T))] (pub))
   (fn (make T) [v:T] -> (ptr (Box T)) (pub)
-    (let b:(ptr (Box T)) (new (Box T) (call alloc.forever)))
-    (put b (Box T) value v)
-    (put b (Box T) next (ptr.null (Box T)))
+    (let b:(ptr (Box T)) (new (Box T) (call alloc.forever) [value:v next:(ptr.null (Box T))]))
     b)
   (fn (value T) [b:(ptr (Box T))] -> T (pub) (get b (Box T) value))
   ;; a generic calling a generic, and a two-parameter struct
   (struct (Pair A B) [(read first:A) (read second:B)] (pub))
   (fn (pair A B) [a:A b:B] -> (ptr (Pair A B))
-    (let p:(ptr (Pair A B)) (new (Pair A B) (call alloc.forever)))
-    (put p (Pair A B) first a)
-    (put p (Pair A B) second b)
+    (let p:(ptr (Pair A B)) (new (Pair A B) (call alloc.forever) [first:a second:b]))
     p)
   (fn (boxed_pair A B) [a:A b:B] -> (ptr (Box (ptr (Pair A B)))) (pub)
     (call (make (ptr (Pair A B))) (call (pair A B) a b))))"#;
@@ -90,8 +86,7 @@ const MAIN: &str = r#"(module main (import alloc)
     (let b:(ptr (bx.Box i64)) (call (bx.make i64) 2i64))
     (+ (call (bx.value i32) a) (i32.wrap (call (bx.value i64) b))))
   (fn structs [] -> i32
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x 7)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:7 y:(zero i32)]))
     (let c:(ptr (bx.Box (ptr Point))) (call (bx.make (ptr Point)) p))
     (get (call (bx.value (ptr Point)) c) Point.x))
   (fn nested [] -> i32
@@ -201,8 +196,7 @@ const UNIONS: &str = r#"(module main
   (struct (Rest T) [l:(List T)])
 
   (fn (cons T) [a:alloc.Allocator h:T t:(List T)] -> (List T)
-    (let r:(ptr (Rest T)) (new (Rest T) a))
-    (put r (Rest T) l t)
+    (let r:(ptr (Rest T)) (new (Rest T) a [l:t]))
     (make (List T) cons h r))
   (fn (sum T) [l:(List T) f:(fn [T] -> i64)] -> i64
     (match l
@@ -241,8 +235,7 @@ const SHAPES: &str = r#"(module shapes (import alloc)
   (struct Point [(read x:i32) y:i32] (pub))
   (union (Either L R) [(left value:L) (right value:R)] (pub))
   (fn right_point [x:i32] -> (Either i32 (ptr Point)) (pub)
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x x)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:x y:(zero i32)]))
     (make (Either i32 (ptr Point)) right p)))"#;
 
 #[test]

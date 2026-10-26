@@ -17,13 +17,8 @@
   ;; An empty buffer with room for `capacity` bytes (at least 16), from a.
   (fn make [a:alloc.Allocator capacity:i32] -> (ptr Buf) (pub)
     (let cap:i32 (if (lt capacity 16) 16 capacity))
-    (let b:(ptr Buf) (new Buf a))
-    (let store:(arr u8) (arr.new u8 a cap))
-    (put b Buf.store store)
-    (put b Buf.data (arr.addr store))
-    (put b Buf.len 0)
-    (put b Buf.cap cap)
-    (put b Buf.allocator a)
+    (let b:(ptr Buf) (new Buf a [data:0 store:(arr.new u8 a cap) len:0 cap:cap allocator:a]))
+    (put b Buf.data (arr.addr (get b Buf.store)))
     b)
 
   ;; Frees the storage and the buffer itself; any view of them then stops

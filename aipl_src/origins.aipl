@@ -24,28 +24,23 @@
   (struct Origins [entries:(ptr (vec.Vec (ptr Entry))) (read files:(ptr (vec.Vec (ptr File))))] (pub))
 
   (fn make [] -> (ptr Origins) (pub)
-    (let o:(ptr Origins) (new Origins (call alloc.forever)))
-    (put o Origins.entries (call (vec.make (ptr Entry)) (call alloc.default) 1024))
-    (put o Origins.files (call (vec.make (ptr File)) (call alloc.default) 8))
+    (let o:(ptr Origins) (new Origins (call alloc.forever) [entries:(call (vec.make (ptr Entry)) (call alloc.default) 1024)
+                                                            files:(call (vec.make (ptr File)) (call alloc.default) 8)]))
     o)
 
   ;; Registers a file; its index.
   (fn add_file [o:(ptr Origins) path:str.Bytes text:str.Bytes] -> i32 (pub)
-    (let f:(ptr File) (new File (call alloc.forever)))
-    (put f File.path path)
-    (put f File.text text)
-    (put f File.name path)
+    (let f:(ptr File) (new File (call alloc.forever) [path:path text:text name:path]))
     (call (vec.push (ptr File)) (get o Origins.files) f)
     (- (call (vec.len (ptr File)) (get o Origins.files)) 1))
 
   ;; Notes that the next byte printed into b comes from (file, pos).
   (fn note [o:(ptr Origins) b:(ptr buf.Buf) file:i32 pos:i32] -> void (pub)
     (when (eq o (ptr.null Origins)) (return))
-    (let e:(ptr Entry) (new Entry (call alloc.forever)))
-    (put e Entry.buffer (ptr.addr b))
-    (put e Entry.at (call buf.len b))
-    (put e Entry.file file)
-    (put e Entry.pos pos)
+    (let e:(ptr Entry) (new Entry (call alloc.forever) [buffer:(ptr.addr b)
+                                                        at:(call buf.len b)
+                                                        file:file
+                                                        pos:pos]))
     (call (vec.push (ptr Entry)) (get o Origins.entries) e))
 
   ;; The buffers were joined in this order, starting at these offsets:

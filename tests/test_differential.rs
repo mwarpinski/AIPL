@@ -667,9 +667,7 @@ fn p8_structs_and_arrays() {
   (struct Named [id:i32 name:str])
 
   (fn test_point_ops [x:i32 y:i32] -> i32 (unsafe)
-    (let p:(ptr Point) (new Point (call alloc.forever)))
-    (put p Point.x x)
-    (put p Point.y y)
+    (let p:(ptr Point) (new Point (call alloc.forever) [x:x y:y]))
     (+ (get p Point.x) (get p Point.y)))
 
   (fn test_sizeof [] -> i32 (unsafe)
@@ -681,17 +679,13 @@ fn p8_structs_and_arrays() {
 
   ;; i64 field at offset 8 (after bool + 4 bytes padding), tag at 16
   (fn test_mixed [n:i32] -> i32 (unsafe)
-    (let m:(ptr Mixed) (new Mixed (call alloc.forever)))
-    (put m Mixed.flag true)
-    (put m Mixed.val (* (i64.extend_s n) 4294967296i64))
-    (put m Mixed.tag 7)
+    (let m:(ptr Mixed) (new Mixed (call alloc.forever) [flag:true val:(* (i64.extend_s n) 4294967296i64) tag:7]))
     (if (get m Mixed.flag)
         (+ (i32.wrap (shr (get m Mixed.val) 32i64)) (+ (get m Mixed.tag) (mem.load32 (+ (ptr.addr m) 16))))
         -1))
 
   (fn test_floats [] -> i32 (unsafe)
-    (let f:(ptr Floats) (new Floats (call alloc.forever)))
-    (put f Floats.b 2.5)
+    (let f:(ptr Floats) (new Floats (call alloc.forever) [a:(zero f32) b:2.5]))
     (if (gt (get f Floats.b) 2.0) 1 0))
 
   (fn test_array_ops [n:i32] -> i32 (unsafe)
@@ -742,9 +736,7 @@ fn p8_structs_and_arrays() {
   (fn test_points [] -> i32 (unsafe)
     (let ps:(arr (ptr Point)) (arr.new (ptr Point) (call alloc.forever) 3))
     (for i 0 3
-      (let p:(ptr Point) (new Point (call alloc.forever)))
-      (put p Point.x i)
-      (put p Point.y (* i 10))
+      (let p:(ptr Point) (new Point (call alloc.forever) [x:i y:(* i 10)]))
       (arr.set (ptr Point) ps i p))
     (let sum:i32 0)
     (for i 0 3
@@ -754,7 +746,7 @@ fn p8_structs_and_arrays() {
 
   ;; a bool word holding 2 (written raw) reads as true in both backends
   (fn test_bool_word [] -> i32 (unsafe)
-    (let p:(ptr Mixed) (new Mixed (call alloc.forever)))
+    (let p:(ptr Mixed) (new Mixed (call alloc.forever) [flag:(zero bool) val:(zero i64) tag:(zero i32)]))
     (mem.store32 (ptr.addr p) 2)
     (let a:(arr bool) (arr.new bool (call alloc.forever) 1))
     (mem.store32 (arr.addr a) 7)
@@ -763,7 +755,7 @@ fn p8_structs_and_arrays() {
   ;; str fields and elements hold the address of the bytes; the VM copies the
   ;; string into the heap, wasm points at the interned literal
   (fn test_str_field [] -> i32 (unsafe)
-    (let n:(ptr Named) (new Named (call alloc.forever)))
+    (let n:(ptr Named) (new Named (call alloc.forever) [id:(zero i32) name:(zero str)]))
     (put n Named.name "abc")
     (let a:(arr str) (arr.new str (call alloc.forever) 2))
     (arr.set str a 1 (get n Named.name))
@@ -878,8 +870,7 @@ fn allocation_grows_memory_identically() {
   (fn main [] -> i32 (unsafe)
     (let total:i32 0)
     (for i 1 3001
-      (let p:(ptr P) (new P (call alloc.forever)))
-      (put p P.x i)
+      (let p:(ptr P) (new P (call alloc.forever) [x:i y:(zero i64)]))
       (let a:(arr i32) (arr.new i32 (call alloc.forever) 100))
       (arr.set i32 a 99 i)
       (let r:(result i32 i32) (ok:i32 i))
@@ -1111,8 +1102,7 @@ fn value_structs_agree() {
 
   ;; written whole, then one field through a path; read as raw words
   (fn raw [] -> i32 (unsafe)
-    (let h:(ptr Holder) (new Holder (call alloc.forever)))
-    (put h Holder.w (make W (make V 7 2.5 true) 9i64))
+    (let h:(ptr Holder) (new Holder (call alloc.forever) [w:(make W [v:(make V [a:7 b:2.5 c:true]) n:9i64]) k:(zero i32)]))
     (put h Holder.w W.v V.a 11)
     (+ (mem.load32 (ptr.addr h)) (+ (mem.load32 (+ (ptr.addr h) 16)) (i32.wrap (mem.load64 (+ (ptr.addr h) 24))))))
 
@@ -1120,15 +1110,15 @@ fn value_structs_agree() {
   ;; two 4-byte blocks, each rounded to 8, are 8 apart
   (fn result_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
-    (let r:(result V str) (ok:str (make V 1 2.0 false)))
+    (let r:(result V str) (ok:str (make V [a:1 b:2.0 c:false])))
     (- (mem.alloc 4) a0))
 
   ;; a union holding a V takes no cell, whether or not it also holds a
   ;; pointer (every union is a value): the two 4-byte blocks are 8 apart
   (fn union_cell [] -> i32 (unsafe)
     (let a0:i32 (mem.alloc 4))
-    (let u:U (make U.p (make V 3 1.5 true)))
-    (let x:X (make X.p (make V 3 1.5 true)))
+    (let u:U (make U.p (make V [a:3 b:1.5 c:true])))
+    (let x:X (make X.p (make V [a:3 b:1.5 c:true])))
     (- (mem.alloc 4) a0))
 
   ;; elements 24 bytes apart
@@ -1144,7 +1134,7 @@ fn value_structs_agree() {
     (get (arr.get V xs i) V.a))
 
   (fn write_reserved [] -> i32 (unsafe)
-    (put (ptr.cast Holder (- 600 88)) Holder.w (make W (make V 1 1.0 true) 1i64))
+    (put (ptr.cast Holder (- 600 88)) Holder.w (make W [v:(make V [a:1 b:1.0 c:true]) n:1i64]))
     0)
 )
 "#;

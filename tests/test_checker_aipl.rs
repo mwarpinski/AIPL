@@ -396,10 +396,10 @@ fn parsers_agree_on_original_sources() {
         compared += 1;
     }
     // every repository file the bare parser reads (one with a formatting
-    // form or an import's sugar needs the resolver first): 14 since
-    // examples/word_count.aipl and word_freq.aipl report a failed read with
-    // format (2026-10-26)
-    assert!(compared >= 14, "{compared}");
+    // form, an import's sugar, or a struct's named fields needs the resolver
+    // first): 13 since examples/spectralnorm_par.aipl makes its value
+    // structs with named fields (2026-10-26)
+    assert!(compared >= 13, "{compared}");
 }
 
 /// CK4: malformed programs reaching each of src/parser.rs's errors (and the

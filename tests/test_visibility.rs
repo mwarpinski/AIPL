@@ -31,8 +31,8 @@ const LIB: &str = r#"(module lib (import alloc)
   (fn shown [] -> i32 (pub) 2)
   (fn (gen T) [x:T] -> T x)
   (fn (pgen T) [x:T] -> T (pub) x)
-  (fn make_s [] -> (ptr S) (pub) (new S (call alloc.forever)))
-  (fn pt [] -> Pt (pub) (make Pt 4 5))
+  (fn make_s [] -> (ptr S) (pub) (new S (call alloc.forever) [r:(zero i32) w:(zero i32) p:(zero i32)]))
+  (fn pt [] -> Pt (pub) (make Pt [x:4 y:5]))
   (struct Vp [(pub x:i32) (pub y:i32)] (value) (pub)))"#;
 
 /// main.aipl (importing lib) with `body` as main's, and lib.aipl.
@@ -112,13 +112,13 @@ fn what_a_module_keeps_is_an_error_in_both_resolvers() {
         (r#"(module lib (struct P [x:i32]) (struct Q [(read p:(ptr P))] (pub)))"#, r#"0"#, r#"1:56: 'Q' is (pub) but its signature uses 'P', which is private: mark 'P' (pub) too"#),
         (r#"(module lib (enum E [a b]) (union U [(v e:E)] (pub)))"#, r#"0"#, r#"1:43: 'U' is (pub) but its signature uses 'E', which is private: mark 'E' (pub) too"#),
         // value structs (AIPL_SPEC.md 4.E): make, with, and field paths
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let v:lib.V (make lib.V 1 2 3)) 0"#, r#"'lib.V' has fields private to module lib, so only lib can make one"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let v:lib.V (with (call lib.mk) lib.V.y 5)) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(get (call lib.mk) lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(get (call lib.mh) lib.H.v lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(put (call lib.mh) lib.H.v lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.set lib.V a 0 lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
-        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V 1 2 3)) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever))))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.get lib.V a 0 lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let v:lib.V (make lib.V 1 2 3)) 0"#, r#"'lib.V' has fields private to module lib, so only lib can make one"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let v:lib.V (with (call lib.mk) lib.V.y 5)) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(get (call lib.mk) lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(get (call lib.mh) lib.H.v lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(put (call lib.mh) lib.H.v lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.set lib.V a 0 lib.V.y 1) 0"#, r#"field 'y' of lib.V is read-only outside module lib"#),
+        (r#"(module lib (import alloc) (struct V [(pub x:i32) (read y:i32) z:i32] (value) (pub)) (struct H [(pub v:V)] (pub)) (fn mk [] -> V (pub) (make V [x:1 y:2 z:3])) (fn mh [] -> (ptr H) (pub) (new H (call alloc.forever) [v:(zero V)])))"#, r#"(let a:(arr lib.V) (arr.new lib.V (call alloc.forever) 1)) (arr.get lib.V a 0 lib.V.z)"#, r#"field 'z' of lib.V is private to module lib"#),
         // every module a file names, it imports (AIPL_SPEC.md 11): str is
         // loaded (lib imports it), but main does not import it
         (r#"(module lib (import str) (fn bytes [] -> str.Bytes (pub) (call str.from_str "ab")))"#, r#"(let b:str.Bytes (call lib.bytes)) 0"#, r#"'str.Bytes' is in module str, which this file does not import: add (import str)"#),

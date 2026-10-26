@@ -51,7 +51,7 @@
   ;; The grants as data, [count:u32] then [len:u32 port:u32 addr:16 bytes]
   ;; each, and the socket table.
   (fn make [l:(ptr lower.L) grants:(ptr (vec.Vec Grant))] -> (ptr N) (pub)
-    (let n:(ptr N) (new N (call alloc.forever)))
+    (let n:(ptr N) (new N (call alloc.forever) [grants:(zero i32) table:(zero i32)]))
     (let g:(ptr buf.Buf) (call buf.make (call alloc.default) 64))
     (let count:i32 (call (vec.len Grant) grants))
     (call push_u32 g count)

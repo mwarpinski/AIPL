@@ -10,7 +10,7 @@
     (let t:i32 (match k (K.a 1) (K.b (return -1)) (K.c (if (gt n 0) n (return -2)))))
     (+ t 100))
   (fn vs [n:i32] -> f64
-    (let v:V (if (gt n 0) (make V n 1.5) (return 0.0)))
+    (let v:V (if (gt n 0) (make V [x:n y:1.5]) (return 0.0)))
     (get v V.y))
   (fn sum_pos [n:i32] -> i32
     (let s:i32 0)

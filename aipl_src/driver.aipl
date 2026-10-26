@@ -89,7 +89,9 @@
     (if (or (lt pages 16i64) (gt pages 32768i64)) -1 (i32.wrap pages)))
 
   (fn compile_as [path_addr:i32 path_len:i32 dirs_addr:i32 dirs_len:i32 tests:bool max_pages:i32 opt:bool] -> (ptr Out)
-    (unsafe (let res:(ptr Out) (new Out (call alloc.forever)))
+    (unsafe (let res:(ptr Out) (new Out (call alloc.forever) [status:(zero i32)
+                                                              addr:(zero i32)
+                                                              len:(zero i32)]))
     (let out:(ptr buf.Buf) (call buf.make (call alloc.default) 65536))
     (let err:(ptr buf.Buf) (call buf.make (call alloc.default) 256))
     (let orig:(ptr origins.Origins) (call origins.make))

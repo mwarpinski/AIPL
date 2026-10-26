@@ -63,8 +63,7 @@
 
   ;; head before rest, the cell from a
   (fn cons [a:alloc.Allocator head:i32 rest:List] -> List
-    (let t:(ptr Tail) (new Tail a))
-    (put t Tail.l rest)
+    (let t:(ptr Tail) (new Tail a [l:rest]))
     (make List.cons head t))
 
   ;; a result holding a union by value: five slots (Shape's eight with the
@@ -75,18 +74,17 @@
   (fn checksum [] -> i32
     (let a:alloc.Allocator (call alloc.default))
     (let total:f64 0.0)
-    (let c:Shape (make Shape.circle (make Vec2 2.0 3.0) 1.0))
+    (let c:Shape (make Shape.circle (make Vec2 [x:2.0 y:3.0]) 1.0))
     (set! total (+ total (call area c)))                                      ;; 5
     (set! total (+ total (call area (call grow c))))                          ;; +14
     (set! total (+ total (call area (make Shape.big 40i64 Color.blue))))  ;; +40
     (set! total (+ total (call area (make Shape.dot))))                       ;; +0
-    (let held:(ptr Held) (new Held a))
-    (put held Held.s c)
+    (let held:(ptr Held) (new Held a [s:c]))
     (set! total (+ total (call tagged_area (make Tagged.plain held))))         ;; +5
     (set! total (+ total (call tagged_area (make Tagged.count 7))))           ;; +7 = 71
     ;; in a heap struct's field, and an array
-    (let b:(ptr Box) (new Box (call alloc.forever)))
-    (put b Box.shape (make Shape.big 9i64 Color.blue))
+    (let b:(ptr Box) (new Box (call alloc.forever) [shape:(make Shape.big 9i64 Color.blue)
+                                                    count:(zero i32)]))
     (set! total (+ total (call area (get b Box.shape))))                      ;; +9
     (let shapes:(arr Shape) (arr.new Shape (call alloc.forever) 3))
     (arr.set Shape shapes 2 c)
@@ -97,15 +95,19 @@
     (set! total (+ total (f64.convert_i64_s (i64.extend_s (call list_sum l)))))  ;; +7
     (let nm:Named (make Named.name "abc"))
     (match nm (Named.name [text] (set! total (+ total (f64.convert_i64_s (i64.extend_s (str.len text)))))) (Named.anon (block)))  ;; +3
-    (let nine:(ptr Nine) (new Nine a))
-    (put nine Nine.h 8i64)
+    (let nine:(ptr Nine) (new Nine a [a:(zero i64)
+                                      b:(zero i64)
+                                      c:(zero i64)
+                                      d:(zero i64)
+                                      e:(zero i64)
+                                      f:(zero i64)
+                                      g:(zero i64)
+                                      h:8i64]))
     (let hw:HoldsWide (make HoldsWide.w (make Wide.nine nine)))
     (match hw
       (HoldsWide.w [x] (match x (Wide.nine [w9] (set! total (+ total (f64.convert_i64_s (get w9 Nine.h)))))))  ;; +8
       (HoldsWide.none (block)))
-    (let link:(ptr Link) (new Link a))
-    (put link Link.s (make Shape.big 2i64 Color.blue))
-    (put link Link.next (make Chain.end))
+    (let link:(ptr Link) (new Link a [s:(make Shape.big 2i64 Color.blue) next:(make Chain.end)]))
     (let ch:Chain (make Chain.link link))
     (match ch (Chain.link [k] (set! total (+ total (call area (get k Link.s))))) (Chain.end (block)))  ;; +2 = 105
     ;; a result holding a union by value
@@ -115,7 +117,7 @@
                (Outer.empty (block))))                                         ;; +4
       (err e (set! total (- total 100.0))))
     ;; Option of a value struct, and of a union
-    (let o:(option.Option Vec2) (make (option.Option Vec2) some (make Vec2 0.5 0.25)))
+    (let o:(option.Option Vec2) (make (option.Option Vec2) some (make Vec2 [x:0.5 y:0.25])))
     (match o
       ((option.Option Vec2) some [v] (set! total (+ total (* 4.0 (get v Vec2.y)))))  ;; +1
       ((option.Option Vec2) none (block)))

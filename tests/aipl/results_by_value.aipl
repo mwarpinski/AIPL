@@ -18,7 +18,7 @@
     (req (gte n 0))
     (ens (gte (match_result res (ok v 1) (err e 0)) 0))
     (when (gt n 100) (return (err:Vec2 (i64.extend_s n))))
-    (ok:i64 (make Vec2 (f64.convert_i64_s (i64.extend_s n)) 0.5)))
+    (ok:i64 (make Vec2 [x:(f64.convert_i64_s (i64.extend_s n)) y:0.5])))
 
   ;; a union held by value as a side
   (fn shape_of [n:i32] -> (result Shape bool)
@@ -33,14 +33,16 @@
   (fn wide [ok:bool] -> (result (ptr Quad) Ints)
     (if ok
         (block
-          (let q:(ptr Quad) (new Quad (call alloc.default)))
-          (put q Quad.b 2.0)
+          (let q:(ptr Quad) (new Quad (call alloc.default) [a:(zero f64)
+                                                            b:2.0
+                                                            c:(zero f64)
+                                                            d:(zero f64)]))
           (ok:Ints q))
-        (err:(ptr Quad) (make Ints 9 9 9 0))))
+        (err:(ptr Quad) (make Ints [a:9 b:9 c:9 d:0]))))
 
   ;; six slots, a value: Vec2's two f64s beside Shape's tag, two i32s, f64
   (fn either [ok:bool] -> (result Vec2 Shape)
-    (if ok (ok:Shape (make Vec2 1.0 2.0)) (err:Vec2 (make Shape.circle 3.0))))
+    (if ok (ok:Shape (make Vec2 [x:1.0 y:2.0])) (err:Vec2 (make Shape.circle 3.0))))
 
   ;; a str side: one i32 slot, shared with the other side's
   (fn named [n:i32] -> (result i32 str)

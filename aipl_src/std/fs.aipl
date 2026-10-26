@@ -106,8 +106,9 @@
     (let st:i32 (call alloc.raw a 64))
     (let r:i32 (fs.stat addr len st))
     (let filetype:i32 (mem.load8 (+ st 16)))
-    (let i:Info (make Info (cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other))
-                           (mem.load64 (+ st 32)) (mem.load64 (+ st 48))))
+    (let i:Info (make Info [kind:(cond ((eq filetype 3) Kind.directory) ((eq filetype 4) Kind.file) (else Kind.other))
+                            size:(mem.load64 (+ st 32))
+                            modified:(mem.load64 (+ st 48))]))
     (call alloc.free_raw a st 64)
     (if (lt r 0) (make (option.Option Info) none) (make (option.Option Info) some i)))
 

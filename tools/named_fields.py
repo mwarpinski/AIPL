@@ -20,7 +20,7 @@ A struct is found by its name: unqualified, in the same program (a
 `(module ...)` form); qualified, in the module the name or an import alias
 names, preferring one in the same file. A site whose struct is not found,
 or found twice with different fields, or whose zero names a module the
-file does not import, is left alone and listed; in Markdown, only the
+file does not import or is a union's, is left alone and listed; in Markdown, only the
 ```lisp and bare ``` blocks are read; so is a `make` whose value
 count is not the field count; `(call (make T) ...)`, a generic function
 named make, is not a struct's. Every other byte of the file stays.
@@ -46,6 +46,7 @@ class Program:
         self.file, self.name, self.start, self.end = file, name, start, end
         self.structs = {}   # bare name -> Def
         self.types = set()  # every struct, enum, and union name it defines
+        self.unions = set()
         self.aliases = {}   # name written before a '.' -> module name
 
 
@@ -55,9 +56,9 @@ class Def:
 
 
 class Source:
-    def __init__(self, path):
+    def __init__(self, path, text):
         self.path = path
-        self.text = open(path, errors='replace').read()
+        self.text = text
         self.rust = not path.endswith(('.aipl', '.md'))
         # in Markdown only the ```lisp and bare ``` blocks: prose has quotes
         # and parentheses of its own (blanked, so offsets stay)
@@ -151,6 +152,8 @@ def collect(src):
                 else:
                     continue
                 p.types.add(name)
+                if h == 'union':
+                    p.unions.add(name)
                 if h != 'struct' or src.toks[ch[2][0]][0] != '[':
                     continue
                 fa, fb = ch[2]
@@ -185,6 +188,22 @@ class Index:
         if len({tuple(d.fields) for d in pick}) > 1:
             return None, f"{written} is defined differently in {len(pick)} places"
         return pick[0], None
+
+
+def is_union(ty, d, index):
+    """Whether field type `ty` of d is a union (which has no zero), plain or
+    generic: its first name, unless that is ptr, arr, fn, or result."""
+    m = re.match(r'[\s(]*([^\s()\[\]]+)', ty)
+    if not m or m.group(1) in BUILTIN:
+        return False
+    w = m.group(1)
+    if '.' in w:
+        q, bare = w.rsplit('.', 1)
+        mod = d.prog.aliases.get(q, q)
+    else:
+        mod, bare = d.prog.name, w
+    progs = [d.prog] if mod == d.prog.name else index.by_module.get(mod, [])
+    return any(bare in p.unions for p in progs)
 
 
 def qualify(ty, d, site, subst):
@@ -251,7 +270,7 @@ def column(text, at):
 
 
 def rewrite(src, index, report):
-    edits = []  # (start, end, text)
+    edits = []  # per site, its edits: [(start, end, text)]
     done_new = set()
     for k in range(len(src.toks)):
         h = src.head(k)
@@ -287,7 +306,7 @@ def rewrite(src, index, report):
                 continue
             start = src.toks[ch[2][0]][1]
             end = src.toks[ch[-1][1] - 1][2]
-            edits.append((start, end, named_list([(f[0], v) for f, v in zip(d.fields, vals)], column(src.text, start), src.rust)))
+            edits.append([(start, end, named_list([(f[0], v) for f, v in zip(d.fields, vals)], column(src.text, start), src.rust))])
     return edits
 
 
@@ -339,44 +358,61 @@ def fold_new(src, index, prog, k, var, after, edits, report):
         if n in given:
             pairs.append((n, given[n]))
             continue
+        if is_union(ty, d, index):
+            report.append((src.path, where, f"(new {written} ...): field {n} is a union, {ty}, which has no zero: give it by hand"))
+            return
         q, need = qualify(ty, d, prog, subst)
         if need:
             report.append((src.path, where, f"(new {written} ...): the zero of field {n} names module {need}, which this file does not import"))
             return
         pairs.append((n, f"(zero {q})"))
     end = src.toks[ch[2][1] - 1][2]
-    edits.append((end, end, ' ' + named_list(pairs, column(src.text, end) + 1, src.rust)))
-    edits.extend((a, b, '') for a, b in removes)
+    edits.append([(end, end, ' ' + named_list(pairs, column(src.text, end) + 1, src.rust))] + [(a, b, '') for a, b in removes])
 
 
 def main():
     args = sys.argv[1:]
     write = '--write' in args
     paths = [a for a in args if a != '--write']
-    sources = []
-    for p in paths:
-        s = Source(p)
-        collect(s)
-        sources.append(s)
-    index = Index(sources)
-    total, report = 0, []
-    for s in sources:
-        edits = rewrite(s, index, report)
-        if not edits:
-            continue
-        total += len(edits)
-        text = s.text
-        for a, b, t in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
-            text = text[:a] + t + text[b:]
-        if write:
-            open(s.path, 'w').write(text)
-        else:
-            print(f"{s.path}: {len(edits)} edits")
+    texts = {p: open(p, errors='replace').read() for p in paths}
+    total, passes = 0, 0
+    # a site inside another (nested makes) waits for the next pass, which
+    # reads the text the last one wrote
+    while True:
+        sources = []
+        for p in paths:
+            s = Source(p, texts[p])
+            collect(s)
+            sources.append(s)
+        index = Index(sources)
+        report, done = [], 0
+        for s in sources:
+            taken = []
+            for site in sorted(rewrite(s, index, report), key=lambda g: min(e[0] for e in g)):
+                lo, hi = min(e[0] for e in site), max(e[1] for e in site)
+                if any(lo < b and a < hi or lo == hi and a < lo < b or a == b and lo < a < hi for a, b in taken):
+                    continue
+                taken.append((lo, hi))
+                done += 1
+                s.accepted = getattr(s, 'accepted', []) + site
+            if getattr(s, 'accepted', None):
+                text = s.text
+                for a, b, t in sorted(s.accepted, key=lambda e: (e[0], e[1]), reverse=True):
+                    text = text[:a] + t + text[b:]
+                texts[s.path] = text
+        total += done
+        passes += 1
+        if done == 0 or not write:
+            break
+    if write:
+        for p in paths:
+            if texts[p] != open(p, errors='replace').read():
+                open(p, 'w').write(texts[p])
     for path, at, why in report:
         src = next(s for s in sources if s.path == path)
         line = src.text.count('\n', 0, at) + 1
         print(f"left alone: {path}:{line}: {why}")
-    print(f"{total} edits{' written' if write else ''}, {len(report)} left alone")
+    print(f"{total} sites{' written' if write else ''} in {passes} pass(es), {len(report)} left alone")
 
 
 if __name__ == '__main__':

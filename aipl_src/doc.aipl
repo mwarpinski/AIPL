@@ -152,14 +152,14 @@
           (let c:i32 0)
           (while (and (lt c (get bare str.Bytes.len)) (neq (call str.byte_at bare c) 58)) (set! c (+ c 1)))
           (set! bare (call str.slice bare 0 c)))
-    (let it:(ptr Item) (new Item (call alloc.forever)))
-    (put it Item.kind kind)
-    (put it Item.name (call slice b n0 n1))
-    (put it Item.bare bare)
-    (put it Item.from from)
-    (put it Item.to to)
-    (put it Item.line line)
-    (put it Item.doc doc)
+    (let it:(ptr Item) (new Item (call alloc.forever) [kind:kind
+                                                       name:(call slice b n0 n1)
+                                                       bare:bare
+                                                       from:from
+                                                       to:to
+                                                       line:line
+                                                       doc:doc
+                                                       public:(zero bool)]))
     ;; (pub) is one of the item's own forms
     (let public:bool false)
     (let i:i32 (call next_token b n1 to))
@@ -173,10 +173,13 @@
   ;; Reads the module in src (from path).
   (fn scan [path:str.Bytes src:str.Bytes] -> (ptr Mod)
     (let a:alloc.Allocator (call alloc.default))
-    (let m:(ptr Mod) (new Mod (call alloc.forever)))
-    (put m Mod.path path)
-    (put m Mod.src src)
-    (put m Mod.ok false)
+    (let m:(ptr Mod) (new Mod (call alloc.forever) [name:(zero str.Bytes)
+                                                    path:path
+                                                    src:src
+                                                    doc:(zero (ptr buf.Buf))
+                                                    items:(zero (ptr (vec.Vec (ptr Item))))
+                                                    types:(zero (ptr (vec.Vec str.Bytes)))
+                                                    ok:false]))
     (put m Mod.name (call str.from_str "?"))
     (put m Mod.doc (call buf.make a 64))
     (put m Mod.items (call (vec.make (ptr Item)) a 32))

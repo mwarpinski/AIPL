@@ -125,9 +125,7 @@
   (fn need_printer [d:(ptr Defs) t:ast.Type need:(ptr (vec.Vec (ptr Need)))] -> void
     (let name:str.Bytes (call debug_name t))
     (when (or (call has need name) (or (call printable t) (not (call prints t)))) (return))
-    (let nd:(ptr Need) (new Need (call alloc.forever)))
-    (put nd Need.name name)
-    (put nd Need.ty t)
+    (let nd:(ptr Need) (new Need (call alloc.forever) [name:name ty:t]))
     (call (vec.push (ptr Need)) need nd)
     (match t
       (ast.Type.ptr [n_ptr] (let inner:ast.Type (get n_ptr ast.PtrType.inner)) (match inner (ast.Type.struct_ [n] (call need_fields d (call struct_fields d n) need)) (else (block))))

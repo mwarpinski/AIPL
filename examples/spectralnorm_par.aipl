@@ -31,7 +31,8 @@
     sum)
 
   (fn times [n:i32 v:(arr f64) out:(arr f64) transposed:bool threads:i32] -> void
-    (call (par.map f64 f64 Size) out (if transposed (ref row_transposed) (ref row)) (make Size n transposed) v threads))
+    (call (par.map f64 f64 Size) out (if transposed (ref row_transposed) (ref row)) (make Size [n:n
+                                                                                                transposed:transposed]) v threads))
 
   (fn main [] -> i32
     (let n:i32 (call os.arg_int 1 100))

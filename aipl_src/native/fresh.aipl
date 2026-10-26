@@ -49,7 +49,7 @@
   (struct Why [errno:i32 text:i32 len:i32] (value))
 
   (fn why [l:(ptr lower.L) errno:i32 text:str] -> Why
-    (make Why errno (call lower.data_text l text) (str.len text)))
+    (make Why [errno:errno text:(call lower.data_text l text) len:(str.len text)]))
 
   (fn syscall [c:(ptr buf.Buf) n:i32] -> void
     (call x64.mov_ri32 c (call rax) n)

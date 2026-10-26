@@ -7,7 +7,7 @@
   (fn c2 [n:i32] -> i32
     (let t:i32 (cond ((gt n 0) 5) ((eq n 0) (return 0)) (else (return -5))))
     t)
-  (fn r [n:i32] -> (result V i32) (if (gt n 0) (ok:i32 (make V n 2.5)) (err:V n)))
+  (fn r [n:i32] -> (result V i32) (if (gt n 0) (ok:i32 (make V [x:n y:2.5])) (err:V n)))
   (fn vr [n:i32] -> f64
     (let v:V (match_result (call r n) (ok x x) (err e (return (f64.convert_i64_s (i64.extend_s e))))))
     (get v V.y))
