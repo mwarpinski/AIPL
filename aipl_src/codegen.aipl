@@ -3650,9 +3650,16 @@
 
 
 
+  ;; With a WASI errno on the stack: minus it if it is non-zero, else the i32
+  ;; at out_cell (or 0 without one); held in the index scratch local
+  ;; (wasm.rs emit_errno_to_result).
   (fn emit_errno_to_result [cg:(ptr Cg) o:(ptr Out) out_cell:i32] -> void
+    (let e:i32 (+ (get cg Cg.scratch) 1))
+    (call emit_local_tee o e)
     (call put_op o OP_IF) (call put_byte o VT_I32)
-    (call emit_i32_const o -1)
+    (call emit_i32_const o 0)
+    (call emit_local_get o e)
+    (call put_op o OP_I32_SUB)
     (call put_op o OP_ELSE)
     (if (gte out_cell 0)
         (block

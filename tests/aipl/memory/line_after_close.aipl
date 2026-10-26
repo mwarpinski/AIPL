@@ -3,6 +3,7 @@
 ;; own (a file) frees the window, so its line stops the program when read.
 (module line_after_close
   (import stream)
+  (import io)
   (import str)
   (import alloc)
   (import heap)
@@ -15,7 +16,7 @@
     (println "memory: {kept}")
     (match_result (call stream.create a "_lines.txt")
       (ok w (call stream.write_str w "windowed\n") (let _c:bool (call stream.close_writer w)))
-      (err msg (println "{msg}")))
+      (err msg (println "{(call io.message msg)}")))
     (match_result (call stream.open a "_lines.txt")
       (ok f
         (let _n:bool (call stream.next_line f))
@@ -23,5 +24,5 @@
         (println "before close: {line}")
         (call stream.close_reader f)
         (println "after close: {line}"))
-      (err msg (println "{msg}")))
+      (err msg (println "{(call io.message msg)}")))
     0))

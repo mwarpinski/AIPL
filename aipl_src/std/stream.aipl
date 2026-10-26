@@ -28,6 +28,7 @@
 ;; is at its end; after a write error a writer drops what it is given.
 (module stream
   (import str)
+  (import io)
   (import buf)
   (import alloc)
   (import option)
@@ -86,15 +87,16 @@
   (fn stdin [a:alloc.Allocator] -> (ptr Reader) (pub)
     (call fd_reader a 0 false))
 
-  ;; Opens a file to read; close_reader closes it.
-  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) str) (pub)
+  ;; Opens a file to read, or says why not (io.message gives the words);
+  ;; close_reader closes it.
+  (fn open [a:alloc.Allocator path:str] -> (result (ptr Reader) io.Error) (pub)
     (call open_path a (call str.from_str path)))
 
   ;; open for a path held as bytes.
-  (fn open_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Reader) str) (pub)
+  (fn open_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Reader) io.Error) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 0)))
-    (when (lt fd 0) (return (err:(ptr Reader) (format "cannot open {path} to read"))))
-    (ok:str (call fd_reader a fd true)))
+    (when (lt fd 0) (return (err:(ptr Reader) (call io.error_of fd))))
+    (ok:io.Error (call fd_reader a fd true)))
 
   ;; Reads b's bytes where they are, so b must not change or be freed
   ;; while the reader is in use.
@@ -298,15 +300,16 @@
   ;; Writes to standard error (held until 8 KB, flush, or close_writer).
   (fn stderr [a:alloc.Allocator] -> (ptr Writer) (pub) (call to_fd a 2))
 
-  ;; Creates (or empties) a file to write; close_writer closes it.
-  (fn create [a:alloc.Allocator path:str] -> (result (ptr Writer) str) (pub)
+  ;; Creates (or empties) a file to write, or says why not; close_writer
+  ;; closes it.
+  (fn create [a:alloc.Allocator path:str] -> (result (ptr Writer) io.Error) (pub)
     (call create_path a (call str.from_str path)))
 
   ;; create for a path held as bytes.
-  (fn create_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Writer) str) (pub)
+  (fn create_path [a:alloc.Allocator path:str.Bytes] -> (result (ptr Writer) io.Error) (pub)
     (let fd:i32 (unsafe (fs.open (call str.addr path) (get path str.Bytes.len) 1)))
-    (when (lt fd 0) (return (err:(ptr Writer) (format "cannot open {path} to write"))))
-    (ok:str (call make_writer a (make Sink.fd fd) true (call buf.make a 8192))))
+    (when (lt fd 0) (return (err:(ptr Writer) (call io.error_of fd))))
+    (ok:io.Error (call make_writer a (make Sink.fd fd) true (call buf.make a 8192))))
 
   ;; Appends to b as it is written to; close_writer leaves b.
   (fn to_buf [a:alloc.Allocator b:(ptr buf.Buf)] -> (ptr Writer) (pub)

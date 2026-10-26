@@ -23,7 +23,7 @@ model has to remember that the compiler could check.
 | # | Change | Breaks programs? | Cost | Recommendation |
 |---|---|---|---|---|
 | 1 | Every module a file uses, it imports | Yes, barely (1 file) | Small | **Decided yes, done 2026-10-26** |
-| 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Yes** (strong) |
+| 2 | A missing value is an Option, not a fake piece of text | Yes (~30 call sites) | Medium | **Decided yes, done 2026-10-26** |
 | 3 | An array literal, `(arr.of T a x y z)` | No (new form) | Small | **Yes** (strong) |
 | 4 | A heap struct is made in one form, every field given | Yes (268 sites) | Large, mostly by a tool | **Yes** (moderate); a question on its shape |
 | 5 | A name's scope is its block or match arm | No (it allows more) | Medium | **Yes** (moderate) |
@@ -136,6 +136,40 @@ anything else is changed).
 
 **Recommendation: yes, strongly.** A value that pretends to be text is
 exactly the kind of silent failure AIPL exists to rule out.
+
+**Decided (owner, 2026-10-26):** yes, in place (the same names, new
+types); a failed read or write gives **both an error type to branch on
+and its words**, as std/net does: `(enum io.Error [not_found denied
+is_directory other])` (chosen now: a member added later would break an
+exhaustive match) and `io.message`, which leaves the path out (the
+program has it, and its own file and line say where); `read_stdin` and
+the writes (`write_file`, `write_path`) take the same shape; and
+`stream.open` and `stream.create` (and `csv.open`, which passes
+`stream.open`'s error up) give `io.Error` too, one type for one kind of
+failure.
+
+**Done 2026-10-26** on branch features/missing-values:
+- `os.arg` and `os.env` return `(option.Option str.Bytes)`.
+- Every WASI-backed op (`fs.*`, `sys.random`, `args.*`, `env.*`) fails
+  with minus its WASI errno instead of -1, in every backend: both code
+  generators emit the negated errno (the same bytes), the VM translates
+  its OS errors through the native backend's table, and native
+  executables already did. Reading a directory was the one place the
+  backends differed (EISDIR natively and in the VM, EBADF in wasmtime,
+  whose directory handles cannot be read); the VM and native now give
+  EBADF, as the spec's rule that wasm is the reference says. AIPL_SPEC.md
+  4.C.
+- std/io: `io.Error`, `io.message`, `io.error_of` (an fs result to an
+  Error); `read_file`, `read_path`, `read_stdin`, `read_fd`, `write_file`,
+  `write_path` return results. std/stream and std/csv as decided.
+- The callers: about 40, in the compiler, std, examples, a benchmark,
+  test programs, and programs inside Rust tests; tests that check
+  printed numbers keep them (a failure still prints -1 there).
+- tests/test_io.rs: each kind (a missing file, a directory, a missing
+  directory on the path, a file used as one, no permission, a write into
+  a missing directory and onto a directory, and a branch on the kind) the
+  same in the VM, under aipl-run, and natively, both toolchains' bytes
+  alike (tests/aipl/io/errors.aipl).
 
 ## 3. An array literal
 

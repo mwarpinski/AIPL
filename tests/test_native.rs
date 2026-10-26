@@ -499,31 +499,33 @@ fn wasi_programs_match_natively() {
         ),
         (
             "stdin_words",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (call io.read_stdin))) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"words: \" (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\"))))) 0))".into(),
             Io { stdin: b"one two\nthree four five\n".to_vec(), ..Io::default() },
         ),
         (
             "stdin_large",
-            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (call io.read_stdin)) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (let b:str.Bytes (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str \"\")))) (call io.println_int \"bytes: \" (get b str.Bytes.len)) (call io.println_int \"words: \" (call str.count_words b)) 0))".into(),
             Io { stdin: big_input.clone(), ..Io::default() },
         ),
         (
             "stdin_empty",
-            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (get (call io.read_stdin) str.Bytes.len)) 0))".into(),
+            "(module m (import io) (import str) (fn main [] -> i32 (call io.println_int \"bytes: \" (match_result (call io.read_stdin) (ok in (get in str.Bytes.len)) (err e -1))) 0))".into(),
             Io::default(),
         ),
         (
             "command_line_and_environment",
-            "(module m (import io) (import os) (import str)
+            "(module m (import io) (import os) (import str) (import option)
+               (fn len_of [o:(option.Option str.Bytes)] -> i32 (match o ((option.Option str.Bytes) some [b] (get b str.Bytes.len)) ((option.Option str.Bytes) none -1)))
+               (fn text_of [o:(option.Option str.Bytes)] -> str.Bytes (call (option.unwrap_or str.Bytes) o (call str.from_str \"\")))
                (fn main [] -> i32
                  (call io.println_int \"argc: \" (call os.arg_count))
-                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (get (call os.arg i) str.Bytes.len)))
-                 (call io.println_int \"byte: \" (call str.byte_at (call os.arg 2) 1))
-                 (call io.println_int \"missing: \" (get (call os.arg 9) str.Bytes.len))
-                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call os.env \"AIPL_PROBE\")) (ok v v) (err e -1000)))
-                 (call io.println_int \"prefix: \" (get (call os.env \"AIPL_PRO\") str.Bytes.len))
-                 (call io.println_int \"empty: \" (get (call os.env \"AIPL_EMPTY\") str.Bytes.len))
-                 (call io.println_int \"unset: \" (get (call os.env \"AIPL_UNSET\") str.Bytes.len))
+                 (for i 0 (call os.arg_count) (call io.println_int \"len: \" (call len_of (call os.arg i))))
+                 (call io.println_int \"byte: \" (call str.byte_at (call text_of (call os.arg 2)) 1))
+                 (call io.println_int \"missing: \" (call len_of (call os.arg 9)))
+                 (call io.println_int \"probe: \" (match_result (call str.parse_int (call text_of (call os.env \"AIPL_PROBE\"))) (ok v v) (err e -1000)))
+                 (call io.println_int \"prefix: \" (call len_of (call os.env \"AIPL_PRO\")))
+                 (call io.println_int \"empty: \" (call len_of (call os.env \"AIPL_EMPTY\")))
+                 (call io.println_int \"unset: \" (call len_of (call os.env \"AIPL_UNSET\")))
                  0))".into(),
             Io {
                 args: vec!["hello".into(), "a b".into(), "".into(), "three".into()],
@@ -533,7 +535,7 @@ fn wasi_programs_match_natively() {
         ),
         (
             "no_environment",
-            "(module m (import io) (import os) (import str) (fn main [] -> i32 (call io.println_int \"home: \" (get (call os.env \"HOME\") str.Bytes.len)) 0))".into(),
+            "(module m (import io) (import os) (import str) (import option) (fn main [] -> i32 (call io.println_int \"home: \" (match (call os.env \"HOME\") ((option.Option str.Bytes) some [h] (get h str.Bytes.len)) ((option.Option str.Bytes) none -1))) 0))".into(),
             Io { env: env(&[]), ..Io::default() },
         ),
         (
@@ -628,8 +630,8 @@ fn file_programs_match_natively() {
     let abs_boxed = format!("{}/abs.txt", run_dir(abs_boxed_name));
     let write_read = |path: &str| {
         probe(&format!(
-            "(call io.println_int \"wrote: \" (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")))
-             (call io.println_int \"read: \" (get (call io.read_path (call str.from_str \"{path}\")) str.Bytes.len))"
+            "(call io.println_int \"wrote: \" (match_result (call io.write_path (call str.from_str \"{path}\") (call str.from_str \"absolute ok\")) (ok n n) (err e -1)))
+             (call io.println_int \"read: \" (match_result (call io.read_path (call str.from_str \"{path}\")) (ok b (get b str.Bytes.len)) (err e -1)))"
         ))
     };
     let big: Vec<u8> = (0..30000).map(|i| format!("w{} ", i % 977)).collect::<String>().into_bytes();
@@ -643,9 +645,9 @@ fn file_programs_match_natively() {
         (
             "write_then_read",
             probe(
-                "(call io.println_int \"wrote: \" (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")))
-                 (call io.println_int \"lines: \" (call str.count_lines (call io.read_file \"out.txt\")))
-                 (call io.println_int \"again: \" (call io.write_file \"out.txt\" (call str.from_str \"short\")))",
+                "(call io.println_int \"wrote: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"line one\\nline two\\n\")) (ok n n) (err e -1)))
+                 (call io.println_int \"lines: \" (match_result (call io.read_file \"out.txt\") (ok b (call str.count_lines b)) (err e -1)))
+                 (call io.println_int \"again: \" (match_result (call io.write_file \"out.txt\" (call str.from_str \"short\")) (ok n n) (err e -1)))",
             ),
             Io::default(),
         ),
@@ -758,8 +760,10 @@ fn file_programs_match_natively() {
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 5, "{text}");
-        assert!(lines[..4].iter().all(|l| l.ends_with(": -1")), "an escape was allowed:\n{text}");
-        assert_eq!(lines[4].ends_with(": -1"), sandbox, "absolute path, sandbox {sandbox}:\n{text}");
+        // refused as wasmtime refuses it: EPERM (AIPL_SPEC.md 4.C)
+        assert!(lines[..4].iter().all(|l| l.ends_with(": -63")), "an escape was allowed:\n{text}");
+        let refused = |l: &str| l.rsplit(": ").next().and_then(|n| n.parse::<i32>().ok()).is_some_and(|n| n < 0);
+        assert_eq!(refused(lines[4]), sandbox, "absolute path, sandbox {sandbox}:\n{text}");
         assert!(!root.join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -4452,12 +4452,18 @@ fn io_locals(ctx: &Ctx) -> Result<(u32, u32), String> {
         .ok_or_else(|| "Wasm Codegen: internal error, I/O op in a function without I/O scratch locals".to_string())
 }
 
-/// With a WASI errno on the stack: leaves -1 if it is non-zero, otherwise the
-/// i32 loaded from `out_cell` (or 0 when there is no out-parameter). This is
-/// the VM's convention for every fs.* op: a count/fd on success, -1 on failure.
+/// With a WASI errno on the stack: leaves minus it if it is non-zero,
+/// otherwise the i32 loaded from `out_cell` (or 0 when there is no
+/// out-parameter). The convention of every fs.* op in every backend
+/// (AIPL_SPEC.md 4.C): a count or fd on success, minus the WASI errno on
+/// failure (std/io's io.Error reads it). The index scratch local holds the
+/// errno (no bounds check is pending after a host call).
 fn emit_errno_to_result(func: &mut Body, ctx: &Ctx, out_cell: Option<i32>) {
+    func.instruction(&Instruction::LocalTee(ctx.index_scratch));
     func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-    func.instruction(&Instruction::I32Const(-1));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::LocalGet(ctx.index_scratch));
+    func.instruction(&Instruction::I32Sub);
     func.instruction(&Instruction::Else);
     match out_cell {
         Some(cell) => {

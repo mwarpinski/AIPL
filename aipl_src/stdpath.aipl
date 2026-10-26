@@ -15,9 +15,9 @@
 
   ;; The standard library's directory, ending in /.
   (fn find [] -> str.Bytes (pub)
-    (let env:str.Bytes (call os.env "AIPL_STD"))
+    (let env:str.Bytes (call (option.unwrap_or str.Bytes) (call os.env "AIPL_STD") (call str.from_str "")))
     (when (gt (get env str.Bytes.len) 0) (return env))
-    (let exe:str.Bytes (call os.arg 0))
+    (let exe:str.Bytes (call (option.unwrap_or str.Bytes) (call os.arg 0) (call str.from_str "")))
     (let slash:i32 -1)
     (for i 0 (get exe str.Bytes.len)
       (when (eq (call str.byte_at exe i) 47) (set! slash i)))

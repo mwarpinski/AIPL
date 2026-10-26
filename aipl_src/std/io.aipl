@@ -1,5 +1,7 @@
 ;; std/io: printing and whole-file reads/writes over fs.*. fds 1 and 2 are
-;; stdout and stderr in both the VM and under WASI.
+;; stdout and stderr in both the VM and under WASI. A read or write that
+;; fails gives an io.Error (not_found, denied, is_directory, other), with
+;; io.message for its words.
 (module io
   (import str)
   (import fmt)
@@ -60,28 +62,58 @@
     (call print_int n)
     (call write_str 1 "\n"))
 
-  ;; The whole file in a buffer that is never freed (read_fd), or len -1 if
-  ;; it cannot be opened or read.
-  (fn read_file [path:str] -> str.Bytes (pub)
+  ;; What went wrong reading or writing a file; io.message says it in words.
+  ;; A program that needs more (which file, what it was doing) says so
+  ;; itself: it has the path.
+  (enum Error [not_found denied is_directory other] (pub))
+
+  ;; e in words, for a message: "notes.txt: no such file or directory".
+  (fn message [e:Error] -> str (pub) (no_leak)
+    (match e
+      (Error.not_found "no such file or directory")
+      (Error.denied "permission denied")
+      (Error.is_directory "is a directory")
+      (Error.other "the file could not be read or written")))
+
+  ;; The Error for a failed fs.* operation's result: minus a WASI errno
+  ;; (AIPL_SPEC.md 4.C), as every backend gives it. A missing file or
+  ;; directory on the path (ENOENT 44, ENOTDIR 54) is not_found; no access
+  ;; (EACCES 2, EPERM 63, outside what the program may reach ENOTCAPABLE 76)
+  ;; denied; EISDIR (31) is_directory; anything else other.
+  (fn error_of [code:i32] -> Error (pub) (no_leak)
+    (cond
+      ((or (eq code -44) (eq code -54)) Error.not_found)
+      ((or (eq code -2) (or (eq code -63) (eq code -76))) Error.denied)
+      ((eq code -31) Error.is_directory)
+      (else Error.other)))
+
+  ;; The whole file, in a buffer that is never freed (read_fd), or why not.
+  (fn read_file [path:str] -> (result str.Bytes Error) (pub)
     (call read_path (call str.from_str path)))
 
   ;; read_file for a path held as bytes (e.g. one built at run time).
-  (fn read_path [path:str.Bytes] -> str.Bytes (pub)
+  (fn read_path [path:str.Bytes] -> (result str.Bytes Error) (pub)
     (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 0))
-    (when (lt fd 0) (return (call str.bytes 0 -1)))
-    (let b:str.Bytes (call read_fd fd))
+    (when (lt fd 0) (return (err:str.Bytes (call error_of fd))))
+    ;; a directory opens, and then cannot be read (EBADF, in every backend)
+    (let r:(result str.Bytes Error) (call read_all fd true))
     (fs.close fd)
-    b))
+    r))
 
-  ;; Everything on standard input, until end of input (len -1 on a read error).
-  (fn read_stdin [] -> str.Bytes (pub)
+  ;; Everything on standard input, until end of input (empty input is an
+  ;; empty view, not an error), or why it could not be read.
+  (fn read_stdin [] -> (result str.Bytes Error) (pub)
     (call read_fd 0))
 
   ;; Reads fd to its end into a buffer from the shared heap that doubles
   ;; as it fills (each outgrown one freed); the view is checked. The last
   ;; buffer is never freed: for a program that reads as it goes for a long
   ;; time, use std/stream with an allocator of its own.
-  (fn read_fd [fd:i32] -> str.Bytes (pub)
+  (fn read_fd [fd:i32] -> (result str.Bytes Error) (pub)
+    (call read_all fd false))
+
+  ;; read_fd; opened: fd was just opened by path, so EBADF means a directory.
+  (fn read_all [fd:i32 opened:bool] -> (result str.Bytes Error)
     (let a:alloc.Allocator (call alloc.default))
     (let data:(arr u8) (arr.new u8 a 4096))
     (let len:i32 0)
@@ -93,32 +125,34 @@
         (set! data bigger))
       (let n:i32 (unsafe (fs.read fd (+ (arr.addr data) len) (- (arr.len data) len))))
       (cond
-        ((lt n 0) (call (alloc.free_array u8) a data) (return (call str.absent)))
+        ((lt n 0)
+         (call (alloc.free_array u8) a data)
+         (return (err:str.Bytes (if (and opened (eq n -8)) Error.is_directory (call error_of n)))))
         ((eq n 0) (break))
         (else (set! len (+ len n)))))
-    (call str.of_array data 0 len))
+    (ok:Error (call str.of_array data 0 len)))
 
-  ;; Creates or truncates the file; returns bytes written, or -1.
-  (fn write_file [path:str b:str.Bytes] -> i32 (pub)
+  ;; Creates or truncates the file and writes b: the bytes written, or why
+  ;; not.
+  (fn write_file [path:str b:str.Bytes] -> (result i32 Error) (pub)
     (call write_path (call str.from_str path) b))
 
   ;; write_file for a path held as bytes.
-  (fn write_path [path:str.Bytes b:str.Bytes] -> i32 (pub)
+  (fn write_path [path:str.Bytes b:str.Bytes] -> (result i32 Error) (pub)
     (unsafe (let fd:i32 (fs.open (call str.addr path) (get path str.Bytes.len) 1))
-    (if (lt fd 0)
-        -1
-        (block
-          (let n:i32 (fs.write fd (call str.addr b) (get b str.Bytes.len)))
-          (fs.close fd)
-          n))))
+    (when (lt fd 0) (return (err:i32 (call error_of fd))))
+    (let n:i32 (fs.write fd (call str.addr b) (get b str.Bytes.len)))
+    (fs.close fd)
+    (if (lt n 0) (err:i32 (call error_of n)) (ok:Error n))))
 
   ;; Pass count; test_suite.aipl expects 2. Uses a scratch file in the cwd.
   (fn run_io_tests [] -> i32 (pub)
     (unsafe (let p:i32 0)
     (let data:str.Bytes (call str.from_str "io\nround trip\n"))
-    (let wrote:i32 (call write_file "_io_test.tmp" data))
-    (let back:str.Bytes (call read_file "_io_test.tmp"))
+    (let wrote:i32 (match_result (call write_file "_io_test.tmp" data) (ok n n) (err e -1)))
+    (let same:bool (match_result (call read_file "_io_test.tmp") (ok back (call str.bytes_eq back data)) (err e false)))
     (fs.delete (str.ptr "_io_test.tmp") (str.len "_io_test.tmp"))
-    (when (and (eq wrote 14) (call str.bytes_eq back data)) (set! p (+ p 1)))
-    (when (eq (get (call read_file "_io_missing.tmp") str.Bytes.len) -1) (set! p (+ p 1)))
+    (when (and (eq wrote 14) same) (set! p (+ p 1)))
+    (let missing:bool (match_result (call read_file "_io_missing.tmp") (ok b false) (err e (eq e Error.not_found))))
+    (when missing (set! p (+ p 1)))
     p)))

@@ -198,7 +198,8 @@ fn large_string_literals_compile_and_the_limit_is_a_compile_error() {
 }
 
 #[test]
-fn fs_open_of_a_missing_file_returns_minus_one_in_both_backends() {
+/// A failed fs.* op is minus its WASI errno (AIPL_SPEC.md 4.C): ENOENT, 44.
+fn fs_open_of_a_missing_file_returns_minus_enoent_in_both_backends() {
     let src = r#"(module m
         (fn main [] -> i32 (unsafe)
           (let p:i32 (mem.alloc 8))
@@ -206,9 +207,9 @@ fn fs_open_of_a_missing_file_returns_minus_one_in_both_backends() {
           (fs.open p 2 0)))"#;
     let (m, wasm) = compile(src);
     let dir = scratch_dir("missing");
-    assert_eq!(vm_run_in(&m, "main", &dir).unwrap(), Value::Int(-1));
+    assert_eq!(vm_run_in(&m, "main", &dir).unwrap(), Value::Int(-44));
     let mut w = instantiate(&wasm, &dir);
-    assert_eq!(call_i32(&mut w, "main").unwrap(), -1);
+    assert_eq!(call_i32(&mut w, "main").unwrap(), -44);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -314,7 +315,7 @@ fn word_count_example_reports_a_missing_input_file_in_both_backends() {
     let module = Resolver::resolve(&root.join("examples/word_count.aipl")).unwrap();
     let wasm = WasmCompiler::compile(&module).unwrap();
     let dir = scratch_dir("wc_missing");
-    assert_eq!(vm_run_in(&module, "main", &dir).unwrap(), Value::Err(Box::new(Value::Str("word_count: cannot read the input file".into()))));
+    assert_eq!(vm_run_in(&module, "main", &dir).unwrap(), Value::Err(Box::new(Value::Str("word_count: input.txt: no such file or directory".into()))));
     let mut w = instantiate(&wasm, &dir);
     assert_eq!(exit_status(&mut w), 1);
     assert!(w.stdout.contents().is_empty(), "error goes to stderr, not stdout");
@@ -390,18 +391,23 @@ fn command_line_and_environment_agree_in_both_backends() {
         r#"(module os_probe
   (import os)
   (import str)
+  (import option)
   (fn argc [] -> i32 (call os.arg_count))
+  ;; a value's length, or -1 for none (an unset variable, an argument past the end)
+  (fn len_of [o:(option.Option str.Bytes)] -> i32
+    (match o ((option.Option str.Bytes) some [b] (get b str.Bytes.len)) ((option.Option str.Bytes) none -1)))
+  (fn text_of [o:(option.Option str.Bytes)] -> str.Bytes (call (option.unwrap_or str.Bytes) o (call str.from_str "")))
   ;; lengths of argv[1] and argv[2] as 100 * len1 + len2
-  (fn arg_lens [] -> i32 (+ (* 100 (get (call os.arg 1) str.Bytes.len)) (get (call os.arg 2) str.Bytes.len)))
+  (fn arg_lens [] -> i32 (+ (* 100 (call len_of (call os.arg 1))) (call len_of (call os.arg 2))))
   ;; the second byte of argv[2] (a multi-byte argument with a space)
-  (fn arg2_byte1 [] -> i32 (call str.byte_at (call os.arg 2) 1))
-  (fn missing_arg [] -> i32 (get (call os.arg 9) str.Bytes.len))
+  (fn arg2_byte1 [] -> i32 (call str.byte_at (call text_of (call os.arg 2)) 1))
+  (fn missing_arg [] -> i32 (call len_of (call os.arg 9)))
   (fn env_value [] -> i32
-    (match_result (call str.parse_int (call os.env "AIPL_PROBE")) (ok v v) (err e -1000)))
+    (match_result (call str.parse_int (call text_of (call os.env "AIPL_PROBE"))) (ok v v) (err e -1000)))
   ;; a variable whose name is a prefix of another is not confused with it
-  (fn env_prefix [] -> i32 (get (call os.env "AIPL_PRO") str.Bytes.len))
-  (fn env_empty [] -> i32 (get (call os.env "AIPL_EMPTY") str.Bytes.len))
-  (fn env_unset [] -> i32 (get (call os.env "AIPL_UNSET") str.Bytes.len)))"#,
+  (fn env_prefix [] -> i32 (call len_of (call os.env "AIPL_PRO")))
+  (fn env_empty [] -> i32 (call len_of (call os.env "AIPL_EMPTY")))
+  (fn env_unset [] -> i32 (call len_of (call os.env "AIPL_UNSET"))))"#,
     )
     .unwrap();
     let module = Resolver::resolve(&src_path).expect("resolve");
@@ -499,7 +505,7 @@ fn stdin_clocks_random_and_absolute_paths() {
   (import io)
   (import str)
   (import os)
-  (fn stdin_words [] -> i32 (unsafe) (call str.count_words (call io.read_stdin)))
+  (fn stdin_words [] -> i32 (unsafe) (call str.count_words (match_result (call io.read_stdin) (ok in in) (err e (call str.from_str "")))))
   (fn clocks [] -> i32 (unsafe)
     (let t0:i64 (sys.monotonic))
     (let t1:i64 (sys.monotonic))
@@ -514,9 +520,9 @@ fn stdin_clocks_random_and_absolute_paths() {
     (+ (* 10 ok) nonzero))
   (fn absolute [] -> i32 (unsafe)
     (let path:str.Bytes (call str.from_str "{abs}"))
-    (let wrote:i32 (call io.write_path path (call str.from_str "absolute ok")))
-    (let back:str.Bytes (call io.read_path path))
-    (+ (* 100 wrote) (get back str.Bytes.len))))"#,
+    (let wrote:i32 (match_result (call io.write_path path (call str.from_str "absolute ok")) (ok n n) (err e -1)))
+    (let back:i32 (match_result (call io.read_path path) (ok b (get b str.Bytes.len)) (err e2 -1)))
+    (+ (* 100 wrote) back)))"#,
             abs = abs_file.display()
         ),
     )
